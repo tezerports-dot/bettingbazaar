@@ -1,0 +1,14 @@
+node_modules
+dist
+.git
+.github
+.env
+*.log
+npm-debug.log*
+Dockerfile
+.dockerignore
+README.md
+requirements.md
+e2e
+playwright-report
+test-results

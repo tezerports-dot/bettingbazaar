@@ -1,0 +1,478 @@
+// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+import { Cycle, Bet, User, Transaction, AuditLog } from './models/index.js';
+import mongoose from 'mongoose';
+import { CacheService } from './services/cache.service.js';
+import { creditWinnings, creditCommission } from './services/walletAuthority.service.js';
+
+// ── Inline helper: unlock losing-bet locked amounts + write ledger entry ─────
+async function unlockLostBet(userId, amount, betId, fromDeposit, fromWinnings) {
+    const WalletLedger = mongoose.model('WalletLedger');
+    const txId = `unlock_lost_${betId}`;
+    // Idempotency
+    if (await WalletLedger.findOne({ txId }).lean()) return;
+    await User.findByIdAndUpdate(userId, {
+        $inc: {
+            lockedBalance:        -amount,
+            lockedDepositAmount:  -fromDeposit,
+            lockedWinningsAmount: -fromWinnings,
+        }
+    });
+    const user = await User.findById(userId).select('depositBalance winningsBalance').lean();
+    await WalletLedger.create({
+        userId, type: 'DEBIT', field: 'winningsBalance',
+        amount: 0,   // balance fields unchanged — this is a lock release, not a balance change
+        balanceBefore: user?.winningsBalance || 0,
+        balanceAfter:  user?.winningsBalance || 0,
+        reason: `Lost bet unlock — cycle result`,
+        refModel: 'Bet', refId: betId, txId,
+    });
+}
+
+
+class GameEngine {
+    constructor(io) {
+        this.io = io;
+        this.isProcessing = false;
+        this.currentCycle = null; // Track current active cycle
+        this.tickInterval = setInterval(() => this.tick(), 1000);
+        // Recovery task runs every 5 minutes
+        this.recoveryInterval = setInterval(() => this.payoutRecoveryTask(), 300000);
+    }
+
+    start() {
+        console.log("🎮 Game Engine: Payout System Active");
+        // Load current cycle on startup
+        this.loadCurrentCycle();
+    }
+
+    /**
+     * ✅ FIX #1: Load current active cycle — uses statuses that actually exist
+     */
+    async loadCurrentCycle() {
+        try {
+            // ✅ FIX: OPEN/MERGED/CLOSED are what CycleGenerator creates
+            this.currentCycle = await Cycle.findOne({
+                status: { $in: ['OPEN', 'MERGED', 'CLOSED', 'RESULT_DECLARED'] }
+            }).sort({ createdAt: -1 });
+        } catch (error) {
+            console.error('❌ Error loading current cycle:', error);
+        }
+    }
+
+    /**
+     * ✅ FIX #4: Get current game state — uses correct schema field names
+     */
+    async getGameState() {
+        try {
+            await this.loadCurrentCycle();
+            
+            if (!this.currentCycle) {
+                return {
+                    status: 'NO_ACTIVE_CYCLE',
+                    message: 'No active betting cycle available',
+                    timestamp: new Date()
+                };
+            }
+
+            const now = Date.now();
+            const endTime = new Date(this.currentCycle.endTime).getTime();
+            const timeRemaining = Math.max(0, Math.floor((endTime - now) / 1000));
+
+            // ✅ FIX #4: Use correct schema field names (realDelhi not delhiPool)
+            const realDelhi  = this.currentCycle.realDelhi  || 0;
+            const realBombay = this.currentCycle.realBombay || 0;
+            const phantomDelhi  = this.currentCycle.phantomDelhi  || 0;
+            const phantomBombay = this.currentCycle.phantomBombay || 0;
+
+            return {
+                cycleId: this.currentCycle.cycleId,
+                status: this.currentCycle.status,
+                startTime: this.currentCycle.startTime,
+                endTime: this.currentCycle.endTime,
+                timeRemaining,
+                // Display pools include phantom (so UI sees balanced view)
+                delhiPool:  realDelhi  + phantomDelhi,
+                bombayPool: realBombay + phantomBombay,
+                totalPool:  realDelhi  + realBombay + phantomDelhi + phantomBombay,
+                // Admin fields — real only
+                realDelhiPool:  realDelhi,
+                realBombayPool: realBombay,
+                winner:    this.currentCycle.winner    || null,
+                result:    this.currentCycle.result    || null,
+                isSettled: this.currentCycle.isSettled || 'PENDING',
+                timestamp: new Date()
+            };
+        } catch (error) {
+            console.error('❌ Error getting game state:', error);
+            return {
+                status: 'ERROR',
+                message: 'Failed to retrieve game state',
+                error: error.message,
+                timestamp: new Date()
+            };
+        }
+    }
+
+    async payoutRecoveryTask() {
+        // Find cycles that got stuck in 'PROCESSING' state due to server restart
+        const stuckCycles = await Cycle.find({ isSettled: 'PROCESSING' });
+        for (const cycle of stuckCycles) {
+            console.warn(`[Recovery] Resuming interrupted payout for cycle: ${cycle.cycleId}`);
+            await this.processPayoutsOptimized(cycle);
+        }
+    }
+
+    async tick() {
+        if (this.isProcessing) return; 
+        this.isProcessing = true;
+
+        try {
+            // ✅ FIX #1/#2: Look for RESULT_DECLARED — set by fixed CycleGenerator.completeCycle()
+            const cyclesToSettle = await Cycle.find({ 
+                status: 'RESULT_DECLARED', 
+                isSettled: 'PENDING' 
+            }).limit(1);
+            
+            if (cyclesToSettle.length > 0) {
+                await this.processPayoutsOptimized(cyclesToSettle[0]);
+                await this.loadCurrentCycle();
+            }
+
+        } catch (e) {
+            console.error("GameEngine Tick Error:", e);
+        } finally {
+            this.isProcessing = false;
+        }
+    }
+
+    /**
+     * ✅ FIX #4, #5: Optimized Payout Engine with Dual Balance System
+     * - 2x payout (bet amount × 2)
+     * - ALL payouts go to winningsBalance (withdrawable)
+     * - Unlocks both deposit and winnings portions of locked balance
+     * Uses MongoDB cursors and bulk writes for O(1) memory usage.
+     * Ensures transaction logs are created for every wallet credit.
+     */
+    async processPayoutsOptimized(cycle) {
+        const BATCH_SIZE = 500; 
+
+        // Lock cycle to prevent concurrent settlement by multiple nodes
+        const lock = await Cycle.findOneAndUpdate(
+            { _id: cycle._id, $or: [{ isSettled: 'PENDING' }, { isSettled: 'PROCESSING' }] }, 
+            { $set: { isSettled: 'PROCESSING' } }
+        );
+        
+        if (!lock) {
+            console.log(`[Engine] Cycle ${cycle.cycleId} already being processed`);
+            return;
+        }
+
+        console.log(`[Engine] Starting payout for cycle ${cycle.cycleId}, Winner: ${cycle.winner}`);
+
+        // Mark losing bets immediately and unlock their balances
+        const losingBets = await Bet.find({
+            cycleId: cycle.cycleId,
+            side: { $ne: cycle.winner },
+            status: 'PENDING',
+            isPhantom: false
+        });
+
+        // Unlock losing bet balances via WalletAuthority helper
+        for (const bet of losingBets) {
+            await unlockLostBet(bet.userId, bet.amount, bet._id,
+                bet.fromDepositBalance || 0, bet.fromWinningsBalance || 0);
+        }
+
+        await Bet.updateMany(
+            { cycleId: cycle.cycleId, side: { $ne: cycle.winner }, status: 'PENDING', isPhantom: false },
+            { $set: { status: 'LOST' } }
+        );
+
+        // Process winning bets
+        const cursor = Bet.aggregate([
+            { $match: { cycleId: cycle.cycleId, side: cycle.winner, status: 'PENDING', isPhantom: false } },
+            { $group: { 
+                _id: "$userId", 
+                totalBetAmount: { $sum: "$amount" },
+                totalPayout: { $sum: { $multiply: ["$amount", 2] } },  // ✅ FIX #5: 2x payout
+                betIds: { $push: "$_id" },
+                bets: {
+                    $push: {
+                        betId: "$_id",
+                        amount: "$amount",
+                        fromDeposit: "$fromDepositBalance",
+                        fromWinnings: "$fromWinningsBalance"
+                    }
+                }
+            } }
+        ]).cursor({ batchSize: BATCH_SIZE });
+
+        let userBulkOps = [];
+        let txBulkOps = [];
+        let betIdsToUpdate = [];
+        let totalPaidOut = 0;
+        let totalWinners = 0;
+
+        // Track winner payouts so we can emit per-user payout_success via WS
+        const winnerPayouts = []; // { userId, payout, betAmount }
+
+        for await (const winGroup of cursor) {
+            const payout = winGroup.totalPayout;  // Already 2x from aggregation
+            
+            // ✅ FIX #4: Calculate locked amounts to release
+            let totalLockedDeposit = 0;
+            let totalLockedWinnings = 0;
+            
+            for (const bet of winGroup.bets) {
+                totalLockedDeposit += bet.fromDeposit || 0;
+                totalLockedWinnings += bet.fromWinnings || 0;
+            }
+
+            // Queue payout — executed via WalletAuthority in executeSettlementBatch
+            userBulkOps.push({
+                userId: winGroup._id.toString(),
+                payout,
+                totalBetAmount: winGroup.totalBetAmount,
+                totalLockedDeposit,
+                totalLockedWinnings,
+                betIds: winGroup.betIds,
+            });
+
+            // Track for WS emit after batch
+            winnerPayouts.push({
+                userId:    winGroup._id.toString(),
+                payout,
+                betAmount: winGroup.totalBetAmount,
+            });
+
+            txBulkOps.push({
+                insertOne: {
+                    document: {
+                        userId: winGroup._id,
+                        type: 'BET_WIN',
+                        amount: payout,
+                        balanceType: 'WINNINGS',  // ✅ FIX #4: Track that this went to winnings
+                        status: 'SUCCESS',
+                        referenceId: cycle.cycleId,
+                        description: `Payout: ${cycle.cycleId} - ${cycle.winner} won - 2x ${winGroup.totalBetAmount} = ${payout}`,
+                        timestamp: new Date()
+                    }
+                }
+            });
+
+            betIdsToUpdate.push(...winGroup.betIds);
+            totalPaidOut += payout;
+            totalWinners++;
+
+            if (userBulkOps.length >= BATCH_SIZE) {
+                await this.executeSettlementBatch(userBulkOps, txBulkOps, betIdsToUpdate);
+                userBulkOps = []; txBulkOps = []; betIdsToUpdate = [];
+            }
+        }
+
+        if (userBulkOps.length > 0) {
+            await this.executeSettlementBatch(userBulkOps, txBulkOps, betIdsToUpdate);
+        }
+
+        // ── REALTIME PAYOUT NOTIFICATION ──────────────────────────────────────
+        // Emit payout_success to each winner's personal room so their wallet
+        
+        // We query fresh balances so the frontend gets the exact new values.
+        if (winnerPayouts.length > 0 && this.io) {
+            try {
+                const winnerIds   = winnerPayouts.map(w => w.userId);
+                const freshUsers  = await User.find({ _id: { $in: winnerIds } })
+                                              .select('winningsBalance depositBalance lockedBalance')
+                                              .lean();
+
+                const balanceMap  = {};
+                for (const u of freshUsers) {
+                    balanceMap[u._id.toString()] = u;
+                }
+
+                for (const wp of winnerPayouts) {
+                    const freshUser = balanceMap[wp.userId];
+                    if (!freshUser) continue;
+                    this.io.to(`user-${wp.userId}`).emit('payout_success', {
+                        type:            'PAYOUT_SUCCESS',
+                        cycleId:         cycle.cycleId,
+                        winner:          cycle.winner,
+                        amount:          wp.payout,
+                        betAmount:       wp.betAmount,
+                        // Fresh balances — frontend applies directly, no HTTP needed
+                        winningsBalance: freshUser.winningsBalance || 0,
+                        depositBalance:  freshUser.depositBalance  || 0,
+                        lockedBalance:   freshUser.lockedBalance   || 0,
+                        walletBalance:   (freshUser.depositBalance || 0) + (freshUser.winningsBalance || 0),
+                        timestamp:       Date.now(),
+                    });
+                }
+            } catch (emitErr) {
+                // Non-critical — payouts were already written to DB
+                console.warn('[Engine] payout_success emit error:', emitErr.message);
+            }
+        }
+
+        // ✅ FIX #6: Mark phantom bets as lost (they never win)
+        await Bet.updateMany(
+            { cycleId: cycle.cycleId, isPhantom: true, status: 'PENDING' },
+            { $set: { status: 'LOST' } }
+        );
+
+        // Calculate final stats
+        const realPool = (cycle.realDelhi || 0) + (cycle.realBombay || 0);
+        const netProfit = realPool - totalPaidOut;
+
+        await Cycle.updateOne(
+            { _id: cycle._id }, 
+            { 
+                isSettled: 'COMPLETED', 
+                settledAt: Date.now(),
+                totalPaidOut: totalPaidOut,
+                netProfit: netProfit
+            }
+        );
+
+        await CacheService.del('financial_stats');
+        
+        console.log(`[Engine] ✅ Cycle ${cycle.cycleId} settled successfully`);
+        console.log(`   Winners: ${totalWinners} users`);
+        console.log(`   Total Paid: ₹${totalPaidOut.toLocaleString()} (2x payout)`);
+        console.log(`   Net Profit: ₹${netProfit.toLocaleString()}`);
+        console.log(`   Profit Margin: ${((netProfit / realPool) * 100).toFixed(2)}%`);
+
+        // F1 referral commission (non-blocking — won't affect main settlement)
+        if (winnerPayouts.length > 0) {
+            this.creditF1Commission(winnerPayouts, cycle.cycleId).catch(e =>
+                console.warn('[Commission] background error:', e.message)
+            );
+        }
+
+        // Broadcast settlement complete
+        this.io?.emit('payout_complete', {
+            cycleId: cycle.cycleId,
+            winner: cycle.winner,
+            totalPaidOut,
+            netProfit,
+            winners: totalWinners
+        });
+
+        // REALTIME: Push financial delta to admin dashboard — no page reload needed
+        this.io?.to('admin-room').emit('admin_stats_update', {
+            type:        'PAYOUT_COMPLETE',
+            cycleId:     cycle.cycleId,
+            totalPaidOut,
+            netProfit,
+            winners:     totalWinners,
+            server_ts:   Date.now()
+        });
+    }
+
+    /**
+     * executeSettlementBatch
+     * userOps is now an array of payout descriptors (not raw bulkWrite ops).
+     * Each element: { userId, payout, totalBetAmount, totalLockedDeposit, totalLockedWinnings, betIds }
+     * We call WalletAuthority.creditWinnings per user (idempotent via win_<betId>),
+     * then unlock the locked amounts, then mark bets WON.
+     */
+    async executeSettlementBatch(userOps, txOps, betIds) {
+        // ── 1. Credit winnings + unlock locked balance per winner ──────────────
+        for (const op of userOps) {
+            try {
+                // Credit payout to winningsBalance (idempotent: txId = win_<first betId>)
+                await creditWinnings(
+                    op.userId, op.payout,
+                    `Cycle win payout (2x)`, op.betIds[0],
+                    `win_${op.betIds[0]}`
+                );
+                // Unlock locked balance (raw $inc — no balance change, just lock release)
+                await User.findByIdAndUpdate(op.userId, {
+                    $inc: {
+                        lockedBalance:        -op.totalBetAmount,
+                        lockedDepositAmount:  -op.totalLockedDeposit,
+                        lockedWinningsAmount: -op.totalLockedWinnings,
+                    }
+                });
+            } catch (e) {
+                console.error(`[Engine] WalletAuthority payout error for user ${op.userId}:`, e.message);
+                throw e;
+            }
+        }
+
+        // ── 2. Write Transaction logs ──────────────────────────────────────────
+        if (txOps.length > 0) {
+            try {
+                await Transaction.bulkWrite(txOps);
+            } catch (e) {
+                console.warn('[Engine] Transaction log write failed (non-critical):', e.message);
+            }
+        }
+
+        // ── 3. Mark bets WON (idempotent: WON bets are skipped on retry) ──────
+        const allBetIds = userOps.flatMap(op => op.betIds);
+        if (allBetIds.length > 0) {
+            await Bet.updateMany(
+                { _id: { $in: allBetIds }, status: { $ne: 'WON' } },
+                [{ $set: { status: 'WON', payout: { $multiply: ['$amount', 2] } } }]
+            );
+        }
+    }
+
+    /**
+     * F1 Referral Commission — 1% of winning bet amount credited to direct referrer.
+     * Rate is admin-configurable via PUT /api/referral/config { f1Rate: 0.01 }
+     */
+    async creditF1Commission(winnerPayouts, cycleId) {
+        try {
+            const CommissionLevel  = mongoose.model('CommissionLevel');
+            const cfg = await CommissionLevel.findOne({ key: 'main' }).lean();
+            if (!cfg || cfg.commissionEnabled === false || !(cfg.f1Rate > 0)) return;
+
+            const Referral         = mongoose.model('Referral');
+            const CommissionRecord = mongoose.model('CommissionRecord');
+
+            const winnerIds = winnerPayouts.map(w => new mongoose.Types.ObjectId(w.userId));
+            const refs = await Referral.find({ userId: { $in: winnerIds }, referredBy: { $ne: null } }).lean();
+            if (!refs.length) return;
+
+            const commOps = [];
+            for (const ref of refs) {
+                const wp = winnerPayouts.find(w => w.userId === String(ref.userId));
+                if (!wp) continue;
+                const commission = Math.round(wp.betAmount * cfg.f1Rate * 100) / 100;
+                if (commission <= 0) continue;
+                commOps.push({ insertOne: { document: {
+                    beneficiaryId: ref.referredBy, fromUserId: ref.userId,
+                    amount: commission, rate: cfg.f1Rate, level: 1,
+                    betAmount: wp.betAmount, cycleId, credited: true, createdAt: new Date()
+                }}});
+            }
+
+            if (commOps.length > 0) {
+                // Credit commissions via WalletAuthority (ledgered, idempotent per cycleId+userId pair)
+                for (const op of commOps) {
+                    const doc = op.insertOne.document;
+                    await creditCommission(
+                        String(doc.beneficiaryId),
+                        doc.amount,
+                        String(doc.fromUserId),
+                        cycleId
+                    ).catch(e => console.warn('[Commission] creditCommission error:', e.message));
+                }
+                await CommissionRecord.bulkWrite(commOps);
+                console.log('[Commission] F1 paid to ' + commOps.length + ' referrers @ ' + (cfg.f1Rate*100).toFixed(1) + '%');
+            }
+        } catch (e) { console.error('[Commission] F1 error:', e.message); }
+    }
+
+    /**
+     * Cleanup on shutdown
+     */
+    stop() {
+        if (this.tickInterval) clearInterval(this.tickInterval);
+        if (this.recoveryInterval) clearInterval(this.recoveryInterval);
+        console.log('🎮 Game Engine: Stopped');
+    }
+}
+
+export default GameEngine;

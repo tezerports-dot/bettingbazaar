@@ -1,0 +1,41 @@
+// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+/**
+ * routes/admin/index.js
+ * Aggregates all admin domain sub-routers into a single Express router.
+ * server.js mounts this at: app.use('/api/admin', adminRoutes)
+ *
+ * Adding a new admin domain = create new file + one import + one use() here.
+ * Zero changes to server.js required.
+ */
+import express from 'express';
+import analyticsRoutes  from './analytics.admin.routes.js';
+import usersRoutes      from './users.admin.routes.js';
+import kycRoutes        from './kyc.admin.routes.js';
+import subAdminsRoutes  from './subadmins.admin.routes.js';
+import merchantsRoutes  from './merchants.admin.routes.js';
+import brandingRoutes   from './branding.admin.routes.js';
+import contentRoutes    from './content.admin.routes.js';
+import disputesRoutes   from './disputeResolution.admin.routes.js';
+import utrRoutes        from './utr.admin.routes.js';
+import queueRoutes      from './queue.admin.routes.js';
+import cyclesRoutes     from './cycles.admin.routes.js';
+import systemRoutes     from './system.admin.routes.js';
+import auditRoutes      from './audit.admin.routes.js';
+
+const router = express.Router();
+
+router.use('/', analyticsRoutes);
+router.use('/', usersRoutes);
+router.use('/', kycRoutes);
+router.use('/', subAdminsRoutes);
+router.use('/', merchantsRoutes);
+router.use('/', brandingRoutes);
+router.use('/', contentRoutes);
+router.use('/', disputesRoutes);
+router.use('/', utrRoutes);
+router.use('/', queueRoutes);
+router.use('/', cyclesRoutes);
+router.use('/', systemRoutes);
+router.use('/', auditRoutes);
+
+export default router;

@@ -1,0 +1,38 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# UNIFIED CADDYFILE — Single Railway service, 3 panels on one port
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Routing:
+#   /admin/*    → admin-panel/dist    (HashRouter, base="/admin/")
+#   /merchant/* → merchant-panel/dist (BrowserRouter, basename="/merchant")
+#   /*          → dist                (user panel, HashRouter, base="/")
+#
+# Path stripping: Caddy strips the prefix before looking up files so that
+# the built asset paths (e.g. /admin/assets/main.js) resolve correctly
+# inside each panel's dist/ folder.
+# ══════════════════════════════════════════════════════════════════════════════
+
+:{$PORT}
+
+# ── Admin Panel ──────────────────────────────────────────────────────────────
+handle /admin* {
+    uri strip_prefix /admin
+    root * /app/admin-panel/dist
+    file_server
+    try_files {path} /index.html
+}
+
+# ── Merchant Panel ───────────────────────────────────────────────────────────
+handle /merchant* {
+    uri strip_prefix /merchant
+    root * /app/merchant-panel/dist
+    file_server
+    try_files {path} /index.html
+}
+
+# ── User Panel (catch-all) ───────────────────────────────────────────────────
+handle {
+    root * /app/dist
+    file_server
+    try_files {path} /index.html
+}

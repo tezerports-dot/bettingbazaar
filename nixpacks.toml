@@ -1,0 +1,5 @@
+[phases.build]
+cmds = ["npm install --legacy-peer-deps && ./node_modules/.bin/vite build && node scripts/inject-build-id.cjs && cd admin-panel && npm install --legacy-peer-deps && ./node_modules/.bin/vite build && cd ../merchant-panel && npm install --legacy-peer-deps && ./node_modules/.bin/vite build"]
+
+[variables]
+NIXPACKS_NO_CACHE = "1"

@@ -1,0 +1,83 @@
+{
+  "generated_at": "2026-06-27T14:27:09.964291",
+  "repo_root": "/workspaces/betting-bazaar",
+  "summary": {
+    "created": 7,
+    "modified": 6,
+    "deleted": 8,
+    "skipped": 0
+  },
+  "files": {
+    "modified": [
+      "/workspaces/betting-bazaar/types.ts",
+      "/workspaces/betting-bazaar/backend/middleware/validation.js",
+      "/workspaces/betting-bazaar/pages/WalletPage.tsx",
+      "/workspaces/betting-bazaar/services/paymentStateMachine.ts",
+      "/workspaces/betting-bazaar/backend/models/paymentOrder.model.js",
+      "/workspaces/betting-bazaar/backend/routes/payment.routes.js"
+    ],
+    "deleted": [
+      "/workspaces/betting-bazaar/backend/models/p2pOrder.model.js",
+      "/workspaces/betting-bazaar/types.ts.bak",
+      "/workspaces/betting-bazaar/services/paymentStateMachine.ts.bak",
+      "/workspaces/betting-bazaar/pages/WalletPage.tsx.bak",
+      "/workspaces/betting-bazaar/backend/middleware/validation.js.bak",
+      "/workspaces/betting-bazaar/backend/routes/payment.routes.js.bak",
+      "/workspaces/betting-bazaar/backend/models/paymentOrder.model.js.bak",
+      "/workspaces/betting-bazaar/backend/models/p2pOrder.model.js.bak"
+    ],
+    "created": [
+      "/workspaces/betting-bazaar/backend/providers/payment/PaymentProvider.interface.js",
+      "/workspaces/betting-bazaar/backend/providers/casino/CasinoProvider.interface.js",
+      "/workspaces/betting-bazaar/backend/providers/sportsbook/SportsbookProvider.interface.js",
+      "/workspaces/betting-bazaar/backend/providers/registry.js",
+      "/workspaces/betting-bazaar/backend/services/eventBus.service.js",
+      "/workspaces/betting-bazaar/backend/services/featureFlags.service.js",
+      "/workspaces/betting-bazaar/services/sseEvents.types.ts"
+    ],
+    "skipped": []
+  },
+  "state": [
+    "step_delete_p2p_files",
+    "step_create_payment_order_model",
+    "step_create_payment_service",
+    "step_create_payment_routes",
+    "step_patch_models_index",
+    "step_patch_server_js",
+    "step_patch_cron_jobs",
+    "step_patch_admin_routes",
+    "step_patch_merchant_routes",
+    "step_patch_frontend_types",
+    "step_create_payment_state_machine",
+    "step_patch_wallet_modal",
+    "step_patch_frontend_files",
+    "step_patch_backend_interface",
+    "step_patch_real_backend",
+    "step_patch_wallet_dto",
+    "step_patch_merchant_panel",
+    "step_patch_admin_queue_dashboard",
+    "step_patch_upload_routes",
+    "step_patch_sse_routes",
+    "step_patch_socket_handlers",
+    "step_patch_dispute_routes",
+    "step_patch_wallet_services",
+    "step_patch_auth_middleware",
+    "step_ensure_governance_headers",
+    "step_safety_sweep",
+    "p1_01_delete_legacy_p2p_model",
+    "p1_02_patch_validation_schema",
+    "p1_03_patch_wallet_page",
+    "p1_04_strip_p2p_state_machine_aliases",
+    "p1_05_strip_p2p_order_alias",
+    "p1_06_remove_legacy_redirect_shim",
+    "p2_01_create_payment_provider_interface",
+    "p2_02_create_casino_provider_interface",
+    "p2_03_create_sportsbook_provider_interface",
+    "p2_04_create_provider_registry",
+    "p2_05_create_event_bus",
+    "p2_06_create_feature_flags",
+    "p2_07_create_sse_event_types",
+    "p3_01_cleanup_bak_files",
+    "p3_02_scan_dead_files"
+  ]
+}

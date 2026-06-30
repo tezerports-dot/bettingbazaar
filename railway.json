@@ -1,0 +1,19 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "NIXPACKS",
+    "buildCommand": "npm install --legacy-peer-deps && ./node_modules/.bin/vite build && cd admin-panel && npm install --legacy-peer-deps && ./node_modules/.bin/vite build && cd ../merchant-panel && npm install --legacy-peer-deps && ./node_modules/.bin/vite build",
+    "nixpacksPlan": {
+      "variables": {
+        "NIXPACKS_NO_CACHE": "1"
+      }
+    }
+  },
+  "deploy": {
+    "startCommand": "node backend/server.js",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10,
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 60
+  }
+}

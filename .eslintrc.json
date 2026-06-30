@@ -1,0 +1,7 @@
+{
+  "extends": "react-app",
+  "plugins": ["react"],
+  "rules": {
+    "react/jsx-no-leaked-render": ["error", { "validStrategies": ["ternary"] }]
+  }
+}
