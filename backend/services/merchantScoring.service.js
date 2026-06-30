@@ -68,7 +68,7 @@ function scoreMerchant(merchant) {
 export async function selectBestMerchant(orderType, tokenAmount) {
   const Merchant = mongoose.model('Merchant');
 
-  const baseQuery: Record<string, any> = {
+  const baseQuery = {
     isOnline:               true,
     merchantApprovalStatus: 'APPROVED',
     // NOTE: Do NOT filter on status:'ACTIVE' here — many existing approved merchants
