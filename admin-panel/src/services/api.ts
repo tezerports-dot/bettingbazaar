@@ -328,13 +328,15 @@ export const queueManager = {
 
   
   getGroupedQueue: async (status?: string) => {
-    const res = await api.get<any>('/api/admin/p2p-queue', { params: status ? { status } : {} });
+    // FIX: p2p-queue route no longer exists post P2P->Merchant migration; use payment-queue (same response shape)
+    const res = await api.get<any>('/api/admin/payment-queue', { params: status ? { status } : {} });
     return res.data;
   },
 
   
   reassignOrder: async (orderId: string, merchantId: string) => {
-    const res = await api.post(`/api/admin/p2p-queue/${orderId}/assign`, { merchantId });
+    // FIX: p2p-queue route no longer exists; use payment-orders/:id/reassign (correct status guard for already-assigned orders)
+    const res = await api.post(`/api/admin/payment-orders/${orderId}/reassign`, { merchantId });
     return res.data;
   },
 };
