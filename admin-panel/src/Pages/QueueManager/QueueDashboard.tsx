@@ -6,13 +6,13 @@ import sseService from '../../services/sse';
  * All Orders tab:    GET /api/admin/payment-queue (all statuses grouped — was orphaned)
  */
 import React, { useEffect, useState, useCallback } from 'react';
-import { Layers, Store, Clock, CheckCircle, XCircle, RefreshCw, List } from 'lucide-react';
+import { Layers, Store, Clock, CheckCircle, XCircle, RefreshCw, List, Users } from 'lucide-react';
 import { LoadingSpinner } from '../../components/LoadingSpinner';
 import api from '../../services/api';
 import type { PaymentOrder, Merchant } from '../../types';
 import toast from 'react-hot-toast';
 
-type Tab = 'pending' | 'all';
+type Tab = 'pending' | 'all' | 'pool';
 
 export const QueueDashboard: React.FC = () => {
   const [tab, setTab]                           = useState<Tab>('pending');
@@ -25,6 +25,14 @@ export const QueueDashboard: React.FC = () => {
   const [allStatusFilter, setAllStatusFilter]   = useState('ALL');
   const [assigningId, setAssigningId]           = useState<string|null>(null);
   const [loadError, setLoadError]               = useState(false);
+
+  // ── Merchant Pool state (BBEPS F2 redesign) ──────────────────────────────
+  const [poolMerchants, setPoolMerchants]       = useState<any[]>([]);
+  const [eligibleMerchants, setEligibleMerchants] = useState<any[]>([]);
+  const [selectedPoolIds, setSelectedPoolIds]   = useState<Set<string>>(new Set());
+  const [poolLoading, setPoolLoading]           = useState(false);
+  const [poolSaving, setPoolSaving]             = useState(false);
+  const [poolLoaded, setPoolLoaded]             = useState(false);
 
   const loadPending = useCallback(async () => {
     const [ordRes, depRes, witRes] = await Promise.all([
@@ -65,6 +73,63 @@ export const QueueDashboard: React.FC = () => {
     sseService.on('queue_order_update', onUpdate);
     return () => { sseService.off('new_order', onNew); sseService.off('queue_order_update', onUpdate); };
   }, [loadData, loadGrouped]);
+
+  const loadPool = useCallback(async () => {
+    setPoolLoading(true);
+    try {
+      const [poolRes, eligRes] = await Promise.all([
+        api.queueManager.getMerchantPool(),
+        api.queueManager.getEligibleMerchants(),
+      ]);
+      if (poolRes.success) {
+        setPoolMerchants(poolRes.pool || []);
+        setSelectedPoolIds(new Set((poolRes.pool || []).map((m: any) => m._id)));
+      }
+      if (eligRes.success) setEligibleMerchants(eligRes.merchants || []);
+      setPoolLoaded(true);
+    } catch {
+      toast.error('Failed to load merchant pool');
+    } finally {
+      setPoolLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (tab === 'pool' && !poolLoaded) loadPool();
+  }, [tab, poolLoaded, loadPool]);
+
+  const togglePoolSelection = (merchantId: string) => {
+    setSelectedPoolIds(prev => {
+      const next = new Set(prev);
+      if (next.has(merchantId)) next.delete(merchantId);
+      else if (next.size < 5) next.add(merchantId);
+      else toast.error('Pool can hold at most 5 merchants — remove one first');
+      return next;
+    });
+  };
+
+  const handleSavePool = async () => {
+    if (selectedPoolIds.size < 3 || selectedPoolIds.size > 5) {
+      toast.error('Select 3 to 5 merchants for the pool');
+      return;
+    }
+    setPoolSaving(true);
+    try {
+      const res = await api.queueManager.setMerchantPool(Array.from(selectedPoolIds));
+      if (res.success) {
+        toast.success(res.message || 'Merchant pool updated');
+        setPoolLoaded(false);
+        await loadPool();
+        await loadPending(); // refresh assign dropdowns with the new pool
+      } else {
+        toast.error(res.message || 'Failed to update pool');
+      }
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Failed to update pool');
+    } finally {
+      setPoolSaving(false);
+    }
+  };
 
   const handleAssign = async (orderId: string, merchantId: string, fromGrouped = false) => {
     setAssigningId(orderId);
@@ -176,6 +241,7 @@ export const QueueDashboard: React.FC = () => {
   const TAB_CFG = [
     { id: 'pending' as Tab, label: 'Pending Queue', count: pendingOrders.length, color: 'text-yellow-400' },
     { id: 'all'     as Tab, label: 'All Orders',    count: groupedStats.total,   color: 'text-blue-400'   },
+    { id: 'pool'    as Tab, label: 'Merchant Pool', count: poolMerchants.length, color: 'text-purple-400' },
   ];
 
   return (
@@ -196,7 +262,7 @@ export const QueueDashboard: React.FC = () => {
           <button key={tc.id} onClick={() => setTab(tc.id)}
             className={`px-5 py-2 text-sm font-medium rounded-t transition-colors flex items-center gap-2
               ${tab===tc.id ? `bg-dark-700 ${tc.color} border-b-2 border-current` : 'text-gray-400 hover:text-white'}`}>
-            {tc.id==='pending' ? <Layers size={14}/> : <List size={14}/>}
+            {tc.id==='pending' ? <Layers size={14}/> : tc.id==='all' ? <List size={14}/> : <Users size={14}/>}
             {tc.label}
             <span className={`text-xs px-1.5 py-0.5 rounded bg-dark-600 ${tc.color}`}>{tc.count||0}</span>
           </button>
@@ -242,7 +308,13 @@ export const QueueDashboard: React.FC = () => {
           <div className="card">
             <h3 className="text-lg font-semibold mb-4">Available Merchants ({merchants.length})</h3>
             {merchants.length===0
-              ? <div className="text-center py-8 text-gray-500"><Store size={40} className="mx-auto mb-3 opacity-40"/><p>No merchants online</p></div>
+              ? <div className="text-center py-8 text-gray-500">
+                  <Store size={40} className="mx-auto mb-3 opacity-40"/>
+                  <p>No merchants available</p>
+                  <button onClick={() => setTab('pool')} className="text-purple-400 text-sm underline mt-2">
+                    Set up the Merchant Pool →
+                  </button>
+                </div>
               : <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {merchants.map(m => (
                     <div key={m._id} className="bg-dark-700 rounded-lg p-4 space-y-1.5">
@@ -295,6 +367,85 @@ export const QueueDashboard: React.FC = () => {
               ? <div className="text-center py-10 text-gray-500"><List size={40} className="mx-auto mb-3 opacity-40"/><p>No orders found</p></div>
               : <div className="space-y-3">{allFlat.map(o => <OrderCard key={o._id||o.orderId} order={o} grouped/>)}</div>}
           </div>
+        </>
+      )}
+      {/* ─── MERCHANT POOL TAB ─── */}
+      {tab==='pool' && (
+        <>
+          <div className="card bg-purple-500/5 border border-purple-500/20">
+            <p className="text-sm text-gray-300">
+              These 3–5 merchants are the only ones eligible for <strong>manual or forced order assignment</strong>
+              {' '}(the "Assign to merchant" dropdown and "Reassign" actions above). This keeps manual assignment
+              separate from the automatic assignment algorithm, which scores and picks from the full merchant pool
+              on its own. Changing this list does not affect automatic assignment at all.
+            </p>
+          </div>
+
+          {poolLoading ? <LoadingSpinner size="lg" /> : (
+            <>
+              <div className="card">
+                <h3 className="text-lg font-semibold mb-4">Current Pool ({poolMerchants.length}/5)</h3>
+                {poolMerchants.length === 0
+                  ? <div className="text-center py-6 text-gray-500">
+                      <Users size={36} className="mx-auto mb-3 opacity-40"/>
+                      <p>No pool configured yet. Select 3–5 merchants below and save.</p>
+                    </div>
+                  : <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {poolMerchants.map((m: any) => (
+                        <div key={m._id} className="bg-dark-700 rounded-lg p-3 flex items-center justify-between">
+                          <div>
+                            <p className="font-medium">{m.name}</p>
+                            <p className="text-xs text-gray-400">{m.mobile || '—'} · {(m.tokenBalance||0).toLocaleString()} BB</p>
+                          </div>
+                          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${m.isOnline?'bg-green-500':'bg-gray-500'}`}/>
+                        </div>
+                      ))}
+                    </div>}
+              </div>
+
+              <div className="card">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold">
+                    Select Pool Merchants
+                    <span className="ml-2 text-sm text-gray-400">({selectedPoolIds.size}/5 selected, min 3)</span>
+                  </h3>
+                  <button
+                    onClick={handleSavePool}
+                    disabled={poolSaving || selectedPoolIds.size < 3 || selectedPoolIds.size > 5}
+                    className="btn-primary flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {poolSaving ? <RefreshCw size={15} className="animate-spin"/> : <CheckCircle size={15}/>}
+                    Save Pool
+                  </button>
+                </div>
+                {eligibleMerchants.length === 0
+                  ? <div className="text-center py-8 text-gray-500">
+                      <Store size={40} className="mx-auto mb-3 opacity-40"/>
+                      <p>No ACTIVE, approved merchants available to pool yet.</p>
+                    </div>
+                  : <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {eligibleMerchants.map((m: any) => {
+                        const selected = selectedPoolIds.has(m._id);
+                        return (
+                          <button
+                            key={m._id}
+                            onClick={() => togglePoolSelection(m._id)}
+                            className={`text-left rounded-lg p-3 border transition-colors ${
+                              selected ? 'bg-purple-500/10 border-purple-500' : 'bg-dark-700 border-transparent hover:border-dark-500'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <p className="font-medium">{m.name}</p>
+                              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${m.isOnline?'bg-green-500':'bg-gray-500'}`}/>
+                            </div>
+                            <p className="text-xs text-gray-400">{m.mobile || '—'} · {(m.tokenBalance||0).toLocaleString()} BB · {m.totalOrdersProcessed||0} orders</p>
+                          </button>
+                        );
+                      })}
+                    </div>}
+              </div>
+            </>
+          )}
         </>
       )}
     </div>

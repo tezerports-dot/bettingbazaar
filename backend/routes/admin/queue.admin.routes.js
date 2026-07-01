@@ -123,6 +123,20 @@ router.post('/payment-orders/:id/assign', authenticate, isAdmin, async (req, res
     const merchant = await Merchant.findById(merchantId);
     if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
 
+    // ── Queue Manager Pool guard: manual assignment is confined to the
+    // curated pool (see systemConfig.model.js queueManagerPool). This keeps
+    // manual/forced assignment from competing with merchantScoring.service.js's
+    // full ACTIVE merchant set for automatic assignment. ─────────────────────
+    const SystemConfig_pa = mongoose.model('SystemConfig');
+    const poolConfig_pa   = await SystemConfig_pa.findOne({ key: 'main' }).lean();
+    const pool_pa         = (poolConfig_pa?.queueManagerPool || []).map(String);
+    if (pool_pa.length === 0) {
+      return res.status(400).json({ success: false, message: 'No merchant pool configured. Set one via PUT /api/admin/queue/merchant-pool (3-5 merchants) before assigning manually.' });
+    }
+    if (!pool_pa.includes(String(merchant._id))) {
+      return res.status(400).json({ success: false, message: 'This merchant is not in the queue manager pool. Manual assignment is restricted to pooled merchants.' });
+    }
+
     // ── Finding 5: Inventory check before assignment ───────────────────────
     if (merchant.tokenBalance < order.tokenAmount) {
       return res.status(400).json({
@@ -174,7 +188,7 @@ router.post('/payment-orders/:id/assign', authenticate, isAdmin, async (req, res
 // ─── POST /api/admin/payment-orders/:id/reassign ─────────────────────────────────
 // Reassign to a different merchant. New snapshot, reset timer.
 // Spec Section 11.3 / 16.1
-router.post('/payment-orders/:id/reassign', authenticate, isAdmin, async (req, res) => {
+router.post('/payment-orders/:id/reassign', authenticate, isAdminOrSubAdminOrQueueManager, async (req, res) => {
   try {
     const { id }         = req.params;
     const { merchantId } = req.body;
@@ -193,6 +207,17 @@ router.post('/payment-orders/:id/reassign', authenticate, isAdmin, async (req, r
     if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
     if (merchant.status !== 'ACTIVE') {
       return res.status(400).json({ success: false, message: 'Merchant is not ACTIVE' });
+    }
+
+    // ── Queue Manager Pool guard (same rule as /payment-orders/:id/assign) ──
+    const SystemConfig_pr = mongoose.model('SystemConfig');
+    const poolConfig_pr   = await SystemConfig_pr.findOne({ key: 'main' }).lean();
+    const pool_pr         = (poolConfig_pr?.queueManagerPool || []).map(String);
+    if (pool_pr.length === 0) {
+      return res.status(400).json({ success: false, message: 'No merchant pool configured. Set one via PUT /api/admin/queue/merchant-pool (3-5 merchants) before reassigning manually.' });
+    }
+    if (!pool_pr.includes(String(merchant._id))) {
+      return res.status(400).json({ success: false, message: 'This merchant is not in the queue manager pool. Manual reassignment is restricted to pooled merchants.' });
     }
 
     // ── Finding 5: Inventory check ─────────────────────────────────────────
@@ -234,53 +259,23 @@ router.post('/payment-orders/:id/reassign', authenticate, isAdmin, async (req, r
 });
 
 
-router.post('/payment-queue/:orderId/assign', authenticate, isAdmin, async (req, res) => {
-  try {
-    const { orderId }    = req.params;
-    const { merchantId } = req.body;
-    const { PaymentOrder }   = getModels();
-    const Merchant       = mongoose.model('Merchant');
-    if (!merchantId) return res.status(400).json({ success: false, message: 'merchantId is required' });
-    const order    = await PaymentOrder.findById(orderId);
-    if (!order)    return res.status(404).json({ success: false, message: 'Order not found' });
-    const merchant = await Merchant.findById(merchantId);
-    if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
-
-    if (merchant.tokenBalance < order.tokenAmount) {
-      return res.status(400).json({
-        success: false,
-        message: `Merchant inventory insufficient (${merchant.tokenBalance} tokens, need ${order.tokenAmount}).`,
-      });
-    }
-
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
-    order.merchantId       = merchant._id;
-    order.merchantSnapshot = buildSnapshot(merchant, expiresAt);
-    order.status           = 'ASSIGNED';
-    order.assignedAt       = new Date();
-    order.assignedBy       = req.user._id;
-    order.expiresAt        = expiresAt;
-    await order.save();
-
-    emitMerchantUpdate(merchant._id.toString(), 'new_order', {
-      orderId: order._id, orderStrId: order.orderId,
-      type: order.type, tokenAmount: order.tokenAmount, fiatAmount: order.fiatAmount,
-      expiresAt, server_ts: Date.now(),
-    });
-    emitOrderUpdate(order.userId.toString(), 'order_assigned', {
-      orderId: order.orderId, _id: order._id, status: 'ASSIGNED',
-      merchantSnapshot: order.merchantSnapshot, expiresAt, server_ts: Date.now(),
-    });
-    emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'ASSIGNED' });
-
-    res.json({ success: true, message: 'Order assigned', order });
-  } catch (error) {
-    console.error('POST /payment-queue/:orderId/assign error:', error);
-    res.status(500).json({ success: false, message: 'Failed to assign order' });
-  }
-});
-
+// NOTE: POST /payment-queue/:orderId/assign was REMOVED here (BBEPS Phase 0
+// Risk A / SD-002 "Delete Before Rewrite"). It was a byte-for-byte functional
+// duplicate of /payment-orders/:id/assign below, with WEAKER validation (no
+// PENDING_QUEUE status guard, no merchantApprovalStatus check) and zero
+// verified callers in admin-panel or merchant-panel (confirmed via exhaustive
+// grep before removal). Keeping it would have meant three parallel manual-
+// assign code paths with inconsistent validation — exactly the kind of drift
+// BBEPS Phase 0 exists to eliminate. Use /payment-orders/:id/assign or
+// /queue/assign/:orderId instead — both are exercised by the live frontend
+// and both now enforce the queue manager merchant pool.
 // ─── GET /api/admin/queue/available-merchants ─────────────────────────────────
+// FIX (Queue Manager Pool redesign): candidates now come from the curated
+// queueManagerPool (systemConfig.model.js), not a full search of every ACTIVE
+// merchant. This is what actually stops manual/forced assignment from
+// competing with merchantScoring.service.js's full candidate set — the pool
+// membership is enforced again server-side in every assign/reassign endpoint
+// below, so this filter isn't just cosmetic.
 router.get('/queue/available-merchants', authenticate, isAdminOrSubAdminOrQueueManager, async (req, res) => {
   if (!req.user.isQueueManager && !req.user.isAdmin) {
     return res.status(403).json({ success: false, message: 'Queue manager access required' });
@@ -289,8 +284,21 @@ router.get('/queue/available-merchants', authenticate, isAdminOrSubAdminOrQueueM
     const { type, orderAmount } = req.query;
     const amount = parseFloat(orderAmount) || 0;
     const Merchant = mongoose.model('Merchant');
+    const SystemConfig = mongoose.model('SystemConfig');
 
-    const merchantFilter = { status: 'ACTIVE', isOnline: true };
+    const poolConfig = await SystemConfig.findOne({ key: 'main' }).lean();
+    const poolIds = poolConfig?.queueManagerPool || [];
+
+    if (poolIds.length === 0) {
+      return res.json({
+        success: true,
+        merchants: [],
+        isPoolConfigured: false,
+        message: 'No merchant pool configured yet. Ask an admin to set one via the Queue Manager Pool settings (3-5 merchants).',
+      });
+    }
+
+    const merchantFilter = { _id: { $in: poolIds }, status: 'ACTIVE', isOnline: true };
     if (type === 'DEPOSIT')    merchantFilter.acceptsDeposits    = true;
     if (type === 'WITHDRAWAL') merchantFilter.acceptsWithdrawals = true;
     const merchantDocs = await Merchant.find(merchantFilter).lean();
@@ -321,10 +329,130 @@ router.get('/queue/available-merchants', authenticate, isAdminOrSubAdminOrQueueM
       })
       .sort((a, b) => b.tokenBalance - a.tokenBalance);
 
-    res.json({ success: true, merchants });
+    res.json({ success: true, merchants, isPoolConfigured: true, poolSize: poolIds.length });
   } catch (error) {
     console.error('Get available merchants error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch available merchants' });
+  }
+});
+
+// ─── GET /api/admin/queue/merchant-pool ───────────────────────────────────────
+// Returns the full curated pool (including offline/ineligible members, unlike
+// available-merchants above) so the settings UI can show and edit it.
+router.get('/queue/merchant-pool', authenticate, isAdminOrSubAdminOrQueueManager, async (req, res) => {
+  try {
+    const SystemConfig = mongoose.model('SystemConfig');
+    const Merchant = mongoose.model('Merchant');
+    const config = await SystemConfig.findOne({ key: 'main' }).lean();
+    const poolIds = config?.queueManagerPool || [];
+
+    const merchants = poolIds.length
+      ? await Merchant.find({ _id: { $in: poolIds } })
+          .select('name username mobile status isOnline acceptsDeposits acceptsWithdrawals tokenBalance merchantStats')
+          .lean()
+      : [];
+
+    res.json({
+      success: true,
+      pool: merchants,
+      poolSize: merchants.length,
+      isConfigured: poolIds.length > 0,
+      message: poolIds.length === 0
+        ? 'No merchant pool configured yet. Set one with PUT /api/admin/queue/merchant-pool (3-5 merchant IDs).'
+        : undefined,
+    });
+  } catch (error) {
+    console.error('Get merchant pool error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch merchant pool' });
+  }
+});
+
+// ─── PUT /api/admin/queue/merchant-pool ───────────────────────────────────────
+// Replaces the whole pool. Body: { merchantIds: string[] } — must be 3-5
+// unique, existing, ACTIVE + APPROVED merchant IDs. Same role gate as manual
+// assignment itself (admin, sub-admin, or queue_manager) since curating the
+// pool is part of the queue manager's job per business direction.
+router.put('/queue/merchant-pool', authenticate, isAdminOrSubAdminOrQueueManager, async (req, res) => {
+  try {
+    const { merchantIds } = req.body;
+    if (!Array.isArray(merchantIds) || merchantIds.length < 3 || merchantIds.length > 5) {
+      return res.status(400).json({ success: false, message: 'merchantIds must be an array of 3 to 5 merchant IDs.' });
+    }
+    const uniqueIds = [...new Set(merchantIds.map(String))];
+    if (uniqueIds.length !== merchantIds.length) {
+      return res.status(400).json({ success: false, message: 'Duplicate merchant IDs in pool.' });
+    }
+
+    const SystemConfig = mongoose.model('SystemConfig');
+    const Merchant = mongoose.model('Merchant');
+    const EnhancedAuditLog = mongoose.model('EnhancedAuditLog');
+
+    const foundMerchants = await Merchant.find({ _id: { $in: uniqueIds } })
+      .select('name username status merchantApprovalStatus').lean();
+    if (foundMerchants.length !== uniqueIds.length) {
+      return res.status(400).json({ success: false, message: 'One or more merchant IDs do not exist.' });
+    }
+    const notEligible = foundMerchants.filter(m => m.status !== 'ACTIVE' || m.merchantApprovalStatus !== 'APPROVED');
+    if (notEligible.length) {
+      return res.status(400).json({
+        success: false,
+        message: `These merchants are not ACTIVE/APPROVED and cannot be pooled: ${notEligible.map(m => m.name || m.username).join(', ')}`,
+      });
+    }
+
+    const before = await SystemConfig.findOne({ key: 'main' }).lean();
+
+    await SystemConfig.findOneAndUpdate(
+      { key: 'main' },
+      { $set: { queueManagerPool: uniqueIds, updatedAt: new Date(), updatedBy: req.user._id } },
+      { upsert: true, new: true }
+    );
+
+    await EnhancedAuditLog.create({
+      performedBy: req.user._id,
+      performedByName: req.user.username,
+      performedByRole: req.user.isAdmin ? 'admin' : (req.user.isSubAdmin ? 'subadmin' : 'queue_manager'),
+      action: 'UPDATE_QUEUE_MANAGER_POOL',
+      category: 'MERCHANT',
+      details: {
+        oldPool: (before?.queueManagerPool || []).map(String),
+        newPool: uniqueIds,
+        merchantNames: foundMerchants.map(m => m.name || m.username),
+      },
+      success: true,
+    });
+
+    res.json({ success: true, message: `Merchant pool updated (${uniqueIds.length} merchants)`, pool: uniqueIds });
+  } catch (error) {
+    console.error('Update merchant pool error:', error);
+    res.status(500).json({ success: false, message: 'Failed to update merchant pool' });
+  }
+});
+
+// ─── GET /api/admin/queue/eligible-merchants ──────────────────────────────────
+// Lists every ACTIVE + APPROVED merchant as pool-picker candidates (unlike
+// available-merchants above, this is NOT filtered to current pool members —
+// it's the full candidate list you choose the pool FROM). Deliberately minimal
+// fields and scoped to queue_manager's job (unlike /api/admin/merchants, which
+// is isAdmin-only and returns broader account data not needed here).
+router.get('/queue/eligible-merchants', authenticate, isAdminOrSubAdminOrQueueManager, async (req, res) => {
+  try {
+    const Merchant = mongoose.model('Merchant');
+    const merchantDocs = await Merchant.find({ status: 'ACTIVE', merchantApprovalStatus: 'APPROVED' })
+      .select('name username mobile isOnline tokenBalance merchantStats')
+      .lean();
+    const merchants = merchantDocs.map(m => ({
+      _id: m._id,
+      name: m.name || m.username || '',
+      mobile: m.mobile || '',
+      isOnline: m.isOnline || false,
+      tokenBalance: m.tokenBalance || 0,
+      totalOrdersProcessed: m.merchantStats?.totalOrdersProcessed || 0,
+    }));
+    res.json({ success: true, merchants });
+  } catch (error) {
+    console.error('Get eligible merchants error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch eligible merchants' });
   }
 });
 
@@ -376,6 +504,17 @@ router.post('/queue/assign/:orderId', authenticate, isAdminOrSubAdminOrQueueMana
     const merchantDoc = await Merchant.findById(merchantId);
     if (!merchantDoc || merchantDoc.merchantApprovalStatus !== 'APPROVED') {
       return res.status(400).json({ success: false, message: 'Invalid or unapproved merchant' });
+    }
+
+    // ── Queue Manager Pool guard (same rule as payment-orders assign/reassign) ─
+    const SystemConfig_qa = mongoose.model('SystemConfig');
+    const poolConfig_qa   = await SystemConfig_qa.findOne({ key: 'main' }).lean();
+    const pool_qa         = (poolConfig_qa?.queueManagerPool || []).map(String);
+    if (pool_qa.length === 0) {
+      return res.status(400).json({ success: false, message: 'No merchant pool configured. Set one via PUT /api/admin/queue/merchant-pool (3-5 merchants) before assigning manually.' });
+    }
+    if (!pool_qa.includes(String(merchantDoc._id))) {
+      return res.status(400).json({ success: false, message: 'This merchant is not in the queue manager pool. Manual assignment is restricted to pooled merchants.' });
     }
 
     // Finding 5: inventory check

@@ -321,8 +321,26 @@ export const queueManager = {
   getAvailableMerchants: async (type: 'DEPOSIT' | 'WITHDRAWAL') => {
     const res = await api.get<any>('/api/admin/queue/available-merchants', { params: { type } });
     if (res.data?.success && res.data?.merchants) {
-      return { success: true, data: res.data.merchants };
+      return { success: true, data: res.data.merchants, isPoolConfigured: res.data.isPoolConfigured };
     }
+    return res.data;
+  },
+
+  // Merchant pool: the 3-5 curated merchants manual/forced assignment draws
+  // from, instead of searching every ACTIVE merchant. Configured by admin or
+  // queue_manager. See backend/routes/admin/queue.admin.routes.js.
+  getMerchantPool: async () => {
+    const res = await api.get<any>('/api/admin/queue/merchant-pool');
+    return res.data;
+  },
+
+  setMerchantPool: async (merchantIds: string[]) => {
+    const res = await api.put('/api/admin/queue/merchant-pool', { merchantIds });
+    return res.data;
+  },
+
+  getEligibleMerchants: async () => {
+    const res = await api.get<any>('/api/admin/queue/eligible-merchants');
     return res.data;
   },
 

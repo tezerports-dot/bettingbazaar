@@ -46,6 +46,22 @@ const systemConfigSchema = new mongoose.Schema({
   registrationEnabled: { type: Boolean, default: true },
   depositMethods:      { type: [String], default: ['UPI', 'BANK_TRANSFER'] },
   withdrawalMethods:   { type: [String], default: ['UPI', 'BANK_TRANSFER'] },
+  // ── QUEUE MANAGER MERCHANT POOL (BBEPS Phase 007 §7.4 "Exception Queue") ──
+  // Curated set of 3–5 merchants eligible for MANUAL/FORCED order assignment.
+  // Bounds queue.admin.routes.js's manual-assign endpoints so they never draw
+  // from the full merchant pool merchantScoring.service.js uses for automatic
+  // assignment — manual overrides stay confined to pre-vetted merchants only.
+  // Empty array = not yet configured (manual assignment endpoints will refuse
+  // to return candidates until an admin/queue_manager sets one via
+  // PUT /api/admin/queue/merchant-pool).
+  queueManagerPool: {
+    type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Merchant' }],
+    default: [],
+    validate: {
+      validator: function (arr) { return arr.length === 0 || (arr.length >= 3 && arr.length <= 5); },
+      message: 'Queue manager pool must contain either 0 (unconfigured) or 3–5 merchants.',
+    },
+  },
   updatedAt: { type: Date, default: Date.now },
   updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 });
