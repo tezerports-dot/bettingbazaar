@@ -37,8 +37,8 @@ import authRoutes, { loginHandler } from './routes.js';
 import adminRoutes        from './routes/admin/index.js';      // ← new modular index
 import betRoutes          from './routes/bet.routes.js';
 import userRoutes         from './routes/user.routes.js';
-import merchantRoutes     from './routes/merchant.routes.js';
-import paymentRoutes      from './routes/payment.routes.js';
+import merchantRoutes     from './domains/merchant/merchant.routes.js';
+import paymentRoutes      from './domains/payment/payment.routes.js';
 import uploadRoutes       from './routes/upload.routes.js';
 import referralRoutes     from './routes/referral.routes.js';
 import paymentCfgRoutes   from './routes/payment-config.routes.js';

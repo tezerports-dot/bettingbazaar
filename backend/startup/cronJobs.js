@@ -42,7 +42,7 @@ export function registerCronJobs(rebuildLeaderboard) {
   // Delegates to paymentProcessing.service.js (domain service owns this logic).
   setInterval(async () => {
     try {
-      const { expireOrders } = await import('../services/paymentProcessing.service.js');
+      const { expireOrders } = await import('../domains/payment/paymentProcessing.service.js');
       const count = await expireOrders();
       if (count > 0) console.log(`[expiry-worker] Expired ${count} order(s)`);
     } catch (e) { console.error('[expiry-worker] cron error:', e.message); }

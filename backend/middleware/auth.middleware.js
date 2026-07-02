@@ -131,7 +131,7 @@ const authenticate = async (req, res, next) => {
     req.userId = user._id;
 
     
-    // Merchant JWT contains { merchantId, isMerchant: true } — set by merchant.routes.js /auth/login.
+    // Merchant JWT contains { merchantId, isMerchant: true } — set by domains/merchant/merchant.routes.js /auth/login.
     // isMerchant is a JWT claim, NOT a User schema field. merchantAuth middleware handles Merchant JWTs.
     // This authenticate middleware is for User JWTs only (players, admin, sub-admin, queue manager).
     

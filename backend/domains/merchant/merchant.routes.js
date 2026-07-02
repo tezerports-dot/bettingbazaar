@@ -1,15 +1,17 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// Domain: Merchant (BBEPS Phase 003 §3.3) — player-facing merchant registration/auth.
+// Moved from backend/routes/merchant.routes.js on 2026-07-01 (BBEPS Phase 004 migration).
 
 
 import express   from 'express';
-import { creditDeposit, refundOrder, creditWinnings, debitWinningsForWithdrawal } from '../services/walletAuthority.service.js';
+import { creditDeposit, refundOrder, creditWinnings, debitWinningsForWithdrawal } from '../../services/walletAuthority.service.js';
 import mongoose  from 'mongoose';
 import bcrypt    from 'bcryptjs';
 import jwt       from 'jsonwebtoken';
-import { merchantAuth } from '../middleware/merchantAuth.js';
-import { releaseUTR } from '../middleware/utrValidation.js';
-import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../services/realtimeEmitters.js';
-import { tryAssignMerchant, buildMerchantSnapshot, updateMerchantStatsOnComplete } from '../services/paymentProcessing.service.js';
+import { merchantAuth } from '../../middleware/merchantAuth.js';
+import { releaseUTR } from '../../middleware/utrValidation.js';
+import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../../services/realtimeEmitters.js';
+import { tryAssignMerchant, buildMerchantSnapshot, updateMerchantStatsOnComplete } from '../payment/paymentProcessing.service.js';
 
 const router     = express.Router();
 const JWT_SECRET  = process.env.JWT_SECRET  || 'fallback-secret';

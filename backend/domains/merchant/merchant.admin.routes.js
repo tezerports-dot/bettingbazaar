@@ -1,6 +1,8 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-/** merchants.admin.routes.js — All merchant management routes */
-import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from './_adminShared.js';
+/** merchant.admin.routes.js — admin-facing merchant management. Domain: Merchant
+ * (BBEPS Phase 003 §3.3). Moved from backend/routes/admin/merchants.admin.routes.js
+ * on 2026-07-01 (BBEPS Phase 004 migration). */
+import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from '../../routes/admin/_adminShared.js';
 
 const router = express.Router();
 

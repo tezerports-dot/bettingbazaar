@@ -75,7 +75,7 @@ const userSchema = new mongoose.Schema({
 
   isAdmin: { type: Boolean, default: false },
   // NOTE: NO isMerchant field here. Merchants are a completely separate entity.
-  // Merchant auth uses the Merchant model (merchant.routes.js /auth/login → Merchant JWT).
+  // Merchant auth uses the Merchant model (domains/merchant/merchant.routes.js /auth/login → Merchant JWT).
   // The merchantAuth middleware checks decoded.isMerchant in the Merchant JWT claim — 
   // that is a JWT field, NOT a User schema field. Never mix them.
   isQueueManager: { type: Boolean, default: false }, 

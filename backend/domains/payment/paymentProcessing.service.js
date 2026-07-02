@@ -1,11 +1,18 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// Domain: Payment (BBEPS Phase 003 §3.3). Moved from backend/services/paymentProcessing.service.js
+// on 2026-07-01 (BBEPS Phase 004 migration).
+// NOTE: this file calls into the Merchant domain's selectBestMerchant() algorithm
+// directly (see import below). That's pre-existing cross-domain coupling, not
+// something this migration introduced or resolved — flagged here per BBEPS Phase 003
+// §3.7 "Domain Dependency Rules" as a candidate for a future migration (route the
+// call through a proper Merchant-domain public interface instead of a direct import).
 
 import mongoose from 'mongoose';
 import crypto   from 'crypto';
-import { debitWinningsForWithdrawal, creditDeposit, creditWinnings, refundOrder, lockWithdrawal, releaseWithdrawal } from './walletAuthority.service.js';
-import { selectBestMerchant } from './merchantScoring.service.js';
-import { markUTRAsUsed, releaseUTR }   from '../middleware/utrValidation.js';
-import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from './realtimeEmitters.js';
+import { debitWinningsForWithdrawal, creditDeposit, creditWinnings, refundOrder, lockWithdrawal, releaseWithdrawal } from '../../services/walletAuthority.service.js';
+import { selectBestMerchant } from '../merchant/merchantScoring.service.js';
+import { markUTRAsUsed, releaseUTR }   from '../../middleware/utrValidation.js';
+import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../../services/realtimeEmitters.js';
 
 // ─── Session helpers (graceful degradation on standalone MongoDB) ─────────────
 async function safeSession() {

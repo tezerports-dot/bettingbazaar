@@ -1,8 +1,9 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-
+// Domain: Payment (BBEPS Phase 003 §3.3). Moved from backend/models/paymentOrder.model.js
+// on 2026-07-01 (BBEPS Phase 004 migration).
 
 import mongoose from 'mongoose';
-import { setOrderHmacHook } from '../middleware/order-crypto-access.js';
+import { setOrderHmacHook } from '../../middleware/order-crypto-access.js';
 
 const paymentOrderSchema = new mongoose.Schema({
   orderId:        { type: String, required: true, unique: true },

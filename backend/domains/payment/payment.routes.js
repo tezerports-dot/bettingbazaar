@@ -1,13 +1,14 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-/** payment.routes.js — Merchant Payment Processing routes v1.0.0 */
+/** payment.routes.js — player-facing Payment domain routes (BBEPS Phase 003 §3.3).
+ * Moved from backend/routes/payment.routes.js on 2026-07-01 (BBEPS Phase 004 migration). */
 import express   from 'express';
 import mongoose  from 'mongoose';
-import { authenticate } from '../middleware/auth.middleware.js';
-import { withdrawalLimiter } from '../middleware/security.js';
-import { createDepositOrder, createWithdrawalOrder, markOrderPaid, cancelOrder } from '../services/paymentProcessing.service.js';
-import { creditDeposit } from '../services/walletAuthority.service.js';
-import { releaseUTR } from '../middleware/utrValidation.js';
-import { emitWalletUpdate, emitAdminUpdate, emitOrderUpdate } from '../services/realtimeEmitters.js';
+import { authenticate } from '../../middleware/auth.middleware.js';
+import { withdrawalLimiter } from '../../middleware/security.js';
+import { createDepositOrder, createWithdrawalOrder, markOrderPaid, cancelOrder } from './paymentProcessing.service.js';
+import { creditDeposit } from '../../services/walletAuthority.service.js';
+import { releaseUTR } from '../../middleware/utrValidation.js';
+import { emitWalletUpdate, emitAdminUpdate, emitOrderUpdate } from '../../services/realtimeEmitters.js';
 
 const router = express.Router();
 
