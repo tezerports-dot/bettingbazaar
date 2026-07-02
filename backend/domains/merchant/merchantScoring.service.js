@@ -71,16 +71,25 @@ export async function selectBestMerchant(orderType, tokenAmount) {
   const baseQuery = {
     isOnline:               true,
     merchantApprovalStatus: 'APPROVED',
-    // NOTE: Do NOT filter on status:'ACTIVE' here — many existing approved merchants
-    // have status:'PENDING' as the schema default. Approval status is the gating field.
-    // activeOrderCount < maxConcurrentOrders — use $or to handle missing fields on old docs
-    $or: [
-      // New docs: compare the two scoring fields
-      { $expr: { $lt: ['$activeOrderCount', '$maxConcurrentOrders'] } },
-      // Old docs: no activeOrderCount field yet — treat as 0 active orders (always eligible)
-      { activeOrderCount: { $exists: false } },
-      { activeOrderCount: null },
-    ],
+    status:                 'ACTIVE',
+    // activeOrderCount < maxConcurrentOrders
+    // CONFIRMED BUG (2026-07-02): a bare $expr comparing two field paths treats a
+    // genuinely missing field as BSON null, which sorts below every number — so
+    // merchants missing maxConcurrentOrders (e.g. documents created before this
+    // field existed in the schema) NEVER matched, regardless of activeOrderCount.
+    // Verified empirically against production: 100% of merchants were missing this
+    // field, meaning automatic assignment had never successfully matched anyone.
+    // $ifNull substitutes the schema default (3) when the field is absent, mirroring
+    // the same `?? 3` fallback scoreMerchant() already uses for scoring (see above).
+    // See backend/migrations/003-backfill-merchant-defaults.js for the accompanying
+    // one-time data fix — this query fix is defense-in-depth so the same class of
+    // bug can't silently reoccur if another defaulted field gets added later.
+    $expr: {
+      $lt: [
+        { $ifNull: ['$activeOrderCount', 0] },
+        { $ifNull: ['$maxConcurrentOrders', 3] },
+      ],
+    },
   };
 
   if (orderType === 'DEPOSIT') {
