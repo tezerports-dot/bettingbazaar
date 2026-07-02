@@ -9,6 +9,11 @@ the actual code and found incorrect (P2P state machine names; "private channels 
 as a universal claim; "single `setToken()` call site"). Until `ARCHITECTURE.md` is corrected
 or retired, treat this file as authoritative for anything it covers.
 
+**Authority chain (updated 2026-07-02, approved):** The Betting Bazaar Enterprise Platform
+Specification (BBEPS) is now the senior authority for this repository. Where BBEPS and this
+document disagree, BBEPS wins. This document remains binding as the implementation-level
+ruleset that enforces BBEPS against this specific codebase.
+
 This document is binding for all future changes to the repository, human or AI-assisted.
 
 ---

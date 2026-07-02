@@ -326,7 +326,7 @@ export const queueManager = {
     return res.data;
   },
 
-  // Merchant pool: the 3-5 curated merchants manual/forced assignment draws
+  // Merchant pool: the curated merchants manual/forced assignment draws
   // from, instead of searching every ACTIVE merchant. Configured by admin or
   // queue_manager. See backend/routes/admin/queue.admin.routes.js.
   getMerchantPool: async () => {

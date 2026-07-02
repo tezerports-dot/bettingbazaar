@@ -16,7 +16,7 @@ export * from '../domains/merchant/merchant.model.js';
 export * from '../domains/payment/paymentOrder.model.js';
 export * from './audit.model.js';
 export * from './auth.model.js';
-export * from './systemConfig.model.js';
+export * from '../domains/configuration/systemConfig.model.js';
 export * from './content.model.js';
 export * from './notification.model.js';
 export * from './payment.model.js';

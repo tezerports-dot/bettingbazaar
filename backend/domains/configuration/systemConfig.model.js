@@ -57,10 +57,6 @@ const systemConfigSchema = new mongoose.Schema({
   queueManagerPool: {
     type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Merchant' }],
     default: [],
-    validate: {
-      validator: function (arr) { return arr.length === 0 || (arr.length >= 3 && arr.length <= 5); },
-      message: 'Queue manager pool must contain either 0 (unconfigured) or 3–5 merchants.',
-    },
   },
   updatedAt: { type: Date, default: Date.now },
   updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }

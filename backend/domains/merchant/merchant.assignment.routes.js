@@ -89,14 +89,14 @@ router.post('/payment-orders/:id/assign', authenticate, isAdmin, async (req, res
     if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
 
     // ── Queue Manager Pool guard: manual assignment is confined to the
-    // curated pool (see systemConfig.model.js queueManagerPool). This keeps
+    // curated pool (see domains/configuration/systemConfig.model.js queueManagerPool). This keeps
     // manual/forced assignment from competing with merchantScoring.service.js's
     // full ACTIVE merchant set for automatic assignment. ─────────────────────
     const SystemConfig_pa = mongoose.model('SystemConfig');
     const poolConfig_pa   = await SystemConfig_pa.findOne({ key: 'main' }).lean();
     const pool_pa         = (poolConfig_pa?.queueManagerPool || []).map(String);
     if (pool_pa.length === 0) {
-      return res.status(400).json({ success: false, message: 'No merchant pool configured. Set one via PUT /api/admin/queue/merchant-pool (3-5 merchants) before assigning manually.' });
+      return res.status(400).json({ success: false, message: 'No merchant pool configured. Set one via PUT /api/admin/queue/merchant-pool (any number, 1+) before assigning manually.' });
     }
     if (!pool_pa.includes(String(merchant._id))) {
       return res.status(400).json({ success: false, message: 'This merchant is not in the queue manager pool. Manual assignment is restricted to pooled merchants.' });
@@ -179,7 +179,7 @@ router.post('/payment-orders/:id/reassign', authenticate, isAdminOrSubAdminOrQue
     const poolConfig_pr   = await SystemConfig_pr.findOne({ key: 'main' }).lean();
     const pool_pr         = (poolConfig_pr?.queueManagerPool || []).map(String);
     if (pool_pr.length === 0) {
-      return res.status(400).json({ success: false, message: 'No merchant pool configured. Set one via PUT /api/admin/queue/merchant-pool (3-5 merchants) before reassigning manually.' });
+      return res.status(400).json({ success: false, message: 'No merchant pool configured. Set one via PUT /api/admin/queue/merchant-pool (any number, 1+) before reassigning manually.' });
     }
     if (!pool_pr.includes(String(merchant._id))) {
       return res.status(400).json({ success: false, message: 'This merchant is not in the queue manager pool. Manual reassignment is restricted to pooled merchants.' });
@@ -236,7 +236,7 @@ router.post('/payment-orders/:id/reassign', authenticate, isAdminOrSubAdminOrQue
 // and both now enforce the queue manager merchant pool.
 // ─── GET /api/admin/queue/available-merchants ─────────────────────────────────
 // FIX (Queue Manager Pool redesign): candidates now come from the curated
-// queueManagerPool (systemConfig.model.js), not a full search of every ACTIVE
+// queueManagerPool (domains/configuration/systemConfig.model.js), not a full search of every ACTIVE
 // merchant. This is what actually stops manual/forced assignment from
 // competing with merchantScoring.service.js's full candidate set — the pool
 // membership is enforced again server-side in every assign/reassign endpoint
@@ -259,7 +259,7 @@ router.get('/queue/available-merchants', authenticate, isAdminOrSubAdminOrQueueM
         success: true,
         merchants: [],
         isPoolConfigured: false,
-        message: 'No merchant pool configured yet. Ask an admin to set one via the Queue Manager Pool settings (3-5 merchants).',
+        message: 'No merchant pool configured yet. Ask an admin to set one via the Queue Manager Pool settings.',
       });
     }
 
@@ -323,7 +323,7 @@ router.get('/queue/merchant-pool', authenticate, isAdminOrSubAdminOrQueueManager
       poolSize: merchants.length,
       isConfigured: poolIds.length > 0,
       message: poolIds.length === 0
-        ? 'No merchant pool configured yet. Set one with PUT /api/admin/queue/merchant-pool (3-5 merchant IDs).'
+        ? 'No merchant pool configured yet. Set one with PUT /api/admin/queue/merchant-pool (1 or more merchant IDs).'
         : undefined,
     });
   } catch (error) {
@@ -340,8 +340,8 @@ router.get('/queue/merchant-pool', authenticate, isAdminOrSubAdminOrQueueManager
 router.put('/queue/merchant-pool', authenticate, isAdminOrSubAdminOrQueueManager, async (req, res) => {
   try {
     const { merchantIds } = req.body;
-    if (!Array.isArray(merchantIds) || merchantIds.length < 3 || merchantIds.length > 5) {
-      return res.status(400).json({ success: false, message: 'merchantIds must be an array of 3 to 5 merchant IDs.' });
+    if (!Array.isArray(merchantIds) || merchantIds.length < 1) {
+      return res.status(400).json({ success: false, message: 'merchantIds must be an array of at least 1 merchant ID.' });
     }
     const uniqueIds = [...new Set(merchantIds.map(String))];
     if (uniqueIds.length !== merchantIds.length) {
@@ -476,7 +476,7 @@ router.post('/queue/assign/:orderId', authenticate, isAdminOrSubAdminOrQueueMana
     const poolConfig_qa   = await SystemConfig_qa.findOne({ key: 'main' }).lean();
     const pool_qa         = (poolConfig_qa?.queueManagerPool || []).map(String);
     if (pool_qa.length === 0) {
-      return res.status(400).json({ success: false, message: 'No merchant pool configured. Set one via PUT /api/admin/queue/merchant-pool (3-5 merchants) before assigning manually.' });
+      return res.status(400).json({ success: false, message: 'No merchant pool configured. Set one via PUT /api/admin/queue/merchant-pool (any number, 1+) before assigning manually.' });
     }
     if (!pool_qa.includes(String(merchantDoc._id))) {
       return res.status(400).json({ success: false, message: 'This merchant is not in the queue manager pool. Manual assignment is restricted to pooled merchants.' });
