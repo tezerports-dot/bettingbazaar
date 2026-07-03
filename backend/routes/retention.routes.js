@@ -7,7 +7,7 @@ import { creditWinnings, adminAdjustment } from '../domains/wallet/walletAuthori
 import express from 'express';
 import mongoose from 'mongoose';
 import crypto from 'crypto';
-import { authenticate, isAdmin, isAdminOrSubAdmin } from '../middleware/auth.middleware.js';
+import { authenticate, isAdmin, isAdminOrSubAdmin } from '../domains/identity/auth.middleware.js';
 const router = express.Router();
 
 // ── LEADERBOARD ───────────────────────────────────────────────────────────────

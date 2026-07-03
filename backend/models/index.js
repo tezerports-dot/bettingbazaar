@@ -8,14 +8,14 @@
  * Import pattern: import { User } from '../models/index.js';
  * Dynamic access:  mongoose.model('User')  — works after this barrel is loaded.
  */
-export * from './user.model.js';
+export * from '../domains/user/user.model.js';
 export * from '../domains/game/cycle.model.js';
 export * from '../domains/betting/bet.model.js';
 export * from './transaction.model.js';
 export * from '../domains/merchant/merchant.model.js';
 export * from '../domains/payment/paymentOrder.model.js';
 export * from './audit.model.js';
-export * from './auth.model.js';
+export * from '../domains/identity/auth.model.js';
 export * from '../domains/configuration/systemConfig.model.js';
 export * from './content.model.js';
 export * from './notification.model.js';

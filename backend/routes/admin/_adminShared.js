@@ -6,7 +6,7 @@
  */
 import express      from 'express';
 import mongoose     from 'mongoose';
-import { authenticate, isAdmin, isAdminOrSubAdmin, hasPermission } from '../../middleware/auth.middleware.js';
+import { authenticate, isAdmin, isAdminOrSubAdmin, hasPermission } from '../../domains/identity/auth.middleware.js';
 
 export { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, hasPermission };
 

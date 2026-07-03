@@ -4,7 +4,7 @@
 import express from 'express';
 import mongoose from 'mongoose';
 import cdnService from '../services/cdn.service.js';
-import { authenticate, isAdmin } from '../middleware/auth.middleware.js';
+import { authenticate, isAdmin } from '../domains/identity/auth.middleware.js';
 import { merchantAuth } from '../middleware/merchantAuth.js';
 
 const router = express.Router();

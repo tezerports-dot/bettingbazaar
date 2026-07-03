@@ -1,9 +1,7 @@
-# domains/identity — PLACEHOLDER
+# domains/identity/ -- MIGRATED
 
-Not yet migrated. See ../README.md for the full domain map and status legend.
+Owns authentication, sessions, JWT. auth.middleware.js, auth.model.js.
+Moved 2026-07-02. 13 external files import auth.middleware.js directly;
+all other admin routes get it transitively via _adminShared.js.
 
-**Purpose:** Owns authentication, sessions, tokens.
-
-**Current source of truth (until migrated):** backend/middleware/auth.middleware.js, backend/models/auth.model.js
-
-Do not import from this folder — nothing lives here yet.
+Full domain map: see ../README.md.

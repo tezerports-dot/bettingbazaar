@@ -1,6 +1,6 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import mongoose from 'mongoose';
-import { setOrderHmacHook } from '../middleware/order-crypto-access.js';
+import { setOrderHmacHook } from '../../middleware/order-crypto-access.js';
 
 const userSchema = new mongoose.Schema({
   username: { type: String, required: true, trim: true },

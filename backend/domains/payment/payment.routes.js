@@ -3,7 +3,7 @@
  * Moved from backend/routes/payment.routes.js on 2026-07-01 (BBEPS Phase 004 migration). */
 import express   from 'express';
 import mongoose  from 'mongoose';
-import { authenticate } from '../../middleware/auth.middleware.js';
+import { authenticate } from '../identity/auth.middleware.js';
 import { withdrawalLimiter } from '../../middleware/security.js';
 import { createDepositOrder, createWithdrawalOrder, markOrderPaid, cancelOrder } from './paymentProcessing.service.js';
 import { creditDeposit } from '../wallet/walletAuthority.service.js';

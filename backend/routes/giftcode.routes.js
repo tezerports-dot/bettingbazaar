@@ -2,7 +2,7 @@
 import { creditWinnings, creditDeposit } from '../domains/wallet/walletAuthority.service.js';
 import express from 'express';
 import mongoose from 'mongoose';
-import { authenticate, isAdmin, isAdminOrSubAdmin } from '../middleware/auth.middleware.js';
+import { authenticate, isAdmin, isAdminOrSubAdmin } from '../domains/identity/auth.middleware.js';
 const router = express.Router();
 
 // POST /api/giftcode/redeem

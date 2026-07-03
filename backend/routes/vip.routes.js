@@ -2,7 +2,7 @@
 import express from 'express';
 import mongoose from 'mongoose';
 const router = express.Router();
-import { authenticate } from '../middleware/auth.middleware.js';
+import { authenticate } from '../domains/identity/auth.middleware.js';
 
 router.get('/my', authenticate, async (req, res) => {
   try {

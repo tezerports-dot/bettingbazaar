@@ -22,7 +22,7 @@
  */
 
 import jwt from 'jsonwebtoken';
-import { User } from '../models/index.js';
+import { User } from '../../models/index.js';
 
 /**
  * JWT Secret (should be in environment variables)

@@ -1,9 +1,6 @@
-# domains/user — PLACEHOLDER
+# domains/user/ -- MIGRATED
 
-Not yet migrated. See ../README.md for the full domain map and status legend.
+Owns player profile, preferences, verification status. user.model.js, user.routes.js.
+Moved 2026-07-02. Never owns authentication -- that's domains/identity/.
 
-**Purpose:** Owns player profile, preferences, verification status.
-
-**Current source of truth (until migrated):** backend/models/user.model.js, backend/routes/user.routes.js
-
-Do not import from this folder — nothing lives here yet.
+Full domain map: see ../README.md.
