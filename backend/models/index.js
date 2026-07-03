@@ -9,7 +9,7 @@
  * Dynamic access:  mongoose.model('User')  — works after this barrel is loaded.
  */
 export * from './user.model.js';
-export * from './cycle.model.js';
+export * from '../domains/game/cycle.model.js';
 export * from '../domains/betting/bet.model.js';
 export * from './transaction.model.js';
 export * from '../domains/merchant/merchant.model.js';

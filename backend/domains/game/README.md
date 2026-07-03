@@ -1,9 +1,9 @@
-# domains/game — PLACEHOLDER
+# domains/game/ — MIGRATED
 
-Not yet migrated. See ../README.md for the full domain map and status legend.
+Owns the proprietary cycle/crash prediction engine — the actual core product.
+gameEngine.js (payout/settlement), cycleGenerator.service.js (scheduling),
+cycle.model.js (schema). Moved 2026-07-02.
 
-**Purpose:** Owns the proprietary cycle/crash prediction game engine — the actual core product.
+cache.service.js stays in backend/services/ — genuinely shared, not Game-exclusive.
 
-**Current source of truth (until migrated):** backend/gameEngine.js, backend/services/cycleGenerator.service.js, backend/models/cycle.model.js
-
-Do not import from this folder — nothing lives here yet.
+Full domain map: see ../README.md.

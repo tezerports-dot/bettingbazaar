@@ -1,8 +1,8 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-import { Cycle, Bet, User, Transaction, AuditLog } from './models/index.js';
+import { Cycle, Bet, User, Transaction, AuditLog } from '../../models/index.js';
 import mongoose from 'mongoose';
-import { CacheService } from './services/cache.service.js';
-import { creditWinnings, creditCommission } from './domains/wallet/walletAuthority.service.js';
+import { CacheService } from '../../services/cache.service.js';
+import { creditWinnings, creditCommission } from '../wallet/walletAuthority.service.js';
 
 // ── Inline helper: unlock losing-bet locked amounts + write ledger entry ─────
 async function unlockLostBet(userId, amount, betId, fromDeposit, fromWinnings) {

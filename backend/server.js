@@ -53,8 +53,8 @@ import vipRoutes          from './routes/vip.routes.js';
 import { requestLogger }  from './middleware/requestLogger.js';
 import { errorHandler }   from './middleware/errorHandler.js';
 import { authLimiter, adminAuthLimiter, betLimiter } from './middleware/security.js';
-import GameEngine         from './gameEngine.js';
-import CycleGenerator     from './services/cycleGenerator.service.js';
+import GameEngine         from './domains/game/gameEngine.js';
+import CycleGenerator     from './domains/game/cycleGenerator.service.js';
 import SSEManager         from './services/sseManager.service.js';
 import { initSSERoutes }  from './routes/sse.routes.js';
 
