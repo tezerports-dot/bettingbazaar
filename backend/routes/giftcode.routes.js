@@ -1,5 +1,5 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-import { creditWinnings, creditDeposit } from '../services/walletAuthority.service.js';
+import { creditWinnings, creditDeposit } from '../domains/wallet/walletAuthority.service.js';
 import express from 'express';
 import mongoose from 'mongoose';
 import { authenticate, isAdmin, isAdminOrSubAdmin } from '../middleware/auth.middleware.js';

@@ -6,7 +6,7 @@
 // of the Merchant+Payment domain migration (BBEPS Phase 004). See backend/domains/README.md.
 
 import { express, mongoose, authenticate, isAdminOrSubAdmin, getModels } from '../../routes/admin/_adminShared.js';
-import { creditDeposit, creditWinnings } from '../../services/walletAuthority.service.js';
+import { creditDeposit, creditWinnings } from '../wallet/walletAuthority.service.js';
 import { emitAdminUpdate, emitOrderUpdate, emitWalletUpdate } from '../../services/realtimeEmitters.js';
 
 const router = express.Router();

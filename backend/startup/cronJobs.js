@@ -5,7 +5,7 @@
  * Import and call registerCronJobs(rebuildLeaderboard) from server.js after DB init.
  */
 import mongoose from 'mongoose';
-import { creditWinnings } from '../services/walletAuthority.service.js';
+import { creditWinnings } from '../domains/wallet/walletAuthority.service.js';
 import { emitOrderUpdate, emitAdminUpdate } from '../services/realtimeEmitters.js';
 
 export function registerCronJobs(rebuildLeaderboard) {

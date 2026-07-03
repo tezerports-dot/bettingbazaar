@@ -24,7 +24,7 @@ export * from './referral.model.js';
 export * from './gamification.model.js';
 export * from './vip.model.js';
 export * from './gameProvider.model.js';
-export * from './wallet.model.js';
+export * from '../domains/wallet/wallet.model.js';
 export * from './social.model.js';
 export * from './accountRecovery.model.js';
 // UTR global uniqueness registry — Section 9 of Migration Spec

@@ -9,7 +9,7 @@
 
 import mongoose from 'mongoose';
 import crypto   from 'crypto';
-import { debitWinningsForWithdrawal, creditDeposit, creditWinnings, refundOrder, lockWithdrawal, releaseWithdrawal } from '../../services/walletAuthority.service.js';
+import { debitWinningsForWithdrawal, creditDeposit, creditWinnings, refundOrder, lockWithdrawal, releaseWithdrawal } from '../wallet/walletAuthority.service.js';
 import { selectBestMerchant } from '../merchant/merchantScoring.service.js';
 import { markUTRAsUsed, releaseUTR }   from '../../middleware/utrValidation.js';
 import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../../services/realtimeEmitters.js';

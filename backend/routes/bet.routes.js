@@ -3,7 +3,7 @@
 
 import express from 'express';
 import { randomUUID } from 'crypto'; // MED-01: for collision-safe ledger txId
-import { creditWinnings } from '../services/walletAuthority.service.js'; // HIGH-03: atomicBet removed (never called; inline atomic pattern used instead)
+import { creditWinnings } from '../domains/wallet/walletAuthority.service.js'; // HIGH-03: atomicBet removed (never called; inline atomic pattern used instead)
 import mongoose from 'mongoose';
 import { authenticate } from '../middleware/auth.middleware.js';
 import { betLimiter } from '../middleware/security.js';

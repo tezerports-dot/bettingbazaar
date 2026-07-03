@@ -8,7 +8,7 @@
 // See backend/domains/README.md.
 
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels, isAdminOrSubAdminOrQueueManager } from '../../routes/admin/_adminShared.js';
-import { creditDeposit, creditWinnings } from '../../services/walletAuthority.service.js';
+import { creditDeposit, creditWinnings } from '../wallet/walletAuthority.service.js';
 import { emitAdminUpdate, emitMerchantUpdate, emitOrderUpdate, emitWalletUpdate } from '../../services/realtimeEmitters.js';
 
 const router = express.Router();

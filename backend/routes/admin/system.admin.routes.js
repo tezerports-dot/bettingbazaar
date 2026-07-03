@@ -443,7 +443,7 @@ router.delete('/error-reports', authenticate, isAdmin, async (req, res) => {
 
 import path_node from 'path';
 import fs_node from 'fs';
-import { releaseWithdrawal, refundWithdrawal } from '../../services/walletAuthority.service.js';
+import { releaseWithdrawal, refundWithdrawal } from '../../domains/wallet/walletAuthority.service.js';
 
 const ASSET_SLOTS = {
   'logo.png':           { label: 'App Logo (Loading & Share)',   w: 512,  h: 512,  hint: 'Square PNG, transparent bg. Loading screen + share modal.' },

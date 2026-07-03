@@ -1,7 +1,7 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** users.admin.routes.js — User management, balance adjust, block/unblock, phantom, queue managers */
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from './_adminShared.js';
-import { adminAdjustment } from '../../services/walletAuthority.service.js';
+import { adminAdjustment } from '../../domains/wallet/walletAuthority.service.js';
 
 const router = express.Router();
 

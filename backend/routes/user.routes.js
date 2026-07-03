@@ -41,7 +41,7 @@ import crypto  from 'crypto';
 import mongoose from 'mongoose';
 import { withdrawalLimiter } from '../middleware/security.js';
 import { authenticate } from '../middleware/auth.middleware.js';
-import { lockWithdrawal, getUserLedger } from '../services/walletAuthority.service.js';
+import { lockWithdrawal, getUserLedger } from '../domains/wallet/walletAuthority.service.js';
 
 const router = express.Router();
 

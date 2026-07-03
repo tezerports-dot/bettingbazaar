@@ -2,7 +2,7 @@
 import { Cycle, Bet, User, Transaction, AuditLog } from './models/index.js';
 import mongoose from 'mongoose';
 import { CacheService } from './services/cache.service.js';
-import { creditWinnings, creditCommission } from './services/walletAuthority.service.js';
+import { creditWinnings, creditCommission } from './domains/wallet/walletAuthority.service.js';
 
 // ── Inline helper: unlock losing-bet locked amounts + write ledger entry ─────
 async function unlockLostBet(userId, amount, betId, fromDeposit, fromWinnings) {

@@ -4,7 +4,7 @@
 
 
 import express   from 'express';
-import { creditDeposit, refundOrder, creditWinnings, debitWinningsForWithdrawal } from '../../services/walletAuthority.service.js';
+import { creditDeposit, refundOrder, creditWinnings, debitWinningsForWithdrawal } from '../wallet/walletAuthority.service.js';
 import mongoose  from 'mongoose';
 import bcrypt    from 'bcryptjs';
 import jwt       from 'jsonwebtoken';

@@ -1,5 +1,5 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-import { creditWinnings, adminAdjustment } from '../services/walletAuthority.service.js';
+import { creditWinnings, adminAdjustment } from '../domains/wallet/walletAuthority.service.js';
 /**
  * retention.routes.js — Leaderboard, Spin Wheel, Announcements,
  * Bonus history, Balance Adjustment, VIP, Recharge requests
