@@ -1,9 +1,11 @@
-# domains/betting — PLACEHOLDER
+# domains/betting/ — MIGRATED
 
-Not yet migrated. See ../README.md for the full domain map and status legend.
+Owns bet creation, validation, lifecycle. bet.model.js (schema), bet.routes.js
+(placement/history endpoints). Moved 2026-07-02.
 
-**Purpose:** Owns bet creation, validation, and lifecycle.
+Deliberately does NOT include gameEngine.js / cycleGenerator.service.js /
+cycle.model.js — those are the core cycle/crash engine, a separate and larger
+domain (domains/game/, still a placeholder), kept as its own future migration
+rather than bundled here.
 
-**Current source of truth (until migrated):** backend/models/bet.model.js, backend/routes/bet.routes.js
-
-Do not import from this folder — nothing lives here yet.
+Full domain map: see ../README.md.

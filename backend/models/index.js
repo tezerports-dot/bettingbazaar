@@ -10,7 +10,7 @@
  */
 export * from './user.model.js';
 export * from './cycle.model.js';
-export * from './bet.model.js';
+export * from '../domains/betting/bet.model.js';
 export * from './transaction.model.js';
 export * from '../domains/merchant/merchant.model.js';
 export * from '../domains/payment/paymentOrder.model.js';

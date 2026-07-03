@@ -35,7 +35,7 @@ import './models/index.js';
 // ─── ROUTES ───────────────────────────────────────────────────────────────────
 import authRoutes, { loginHandler } from './routes.js';
 import adminRoutes        from './routes/admin/index.js';      // ← new modular index
-import betRoutes          from './routes/bet.routes.js';
+import betRoutes          from './domains/betting/bet.routes.js';
 import userRoutes         from './routes/user.routes.js';
 import merchantRoutes     from './domains/merchant/merchant.routes.js';
 import paymentRoutes      from './domains/payment/payment.routes.js';
