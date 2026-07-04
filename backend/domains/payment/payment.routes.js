@@ -8,7 +8,7 @@ import { withdrawalLimiter } from '../../middleware/security.js';
 import { createDepositOrder, createWithdrawalOrder, markOrderPaid, cancelOrder } from './paymentProcessing.service.js';
 import { creditDeposit } from '../wallet/walletAuthority.service.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
-import { emitWalletUpdate, emitAdminUpdate, emitOrderUpdate } from '../../services/realtimeEmitters.js';
+import { emitWalletUpdate, emitAdminUpdate, emitOrderUpdate } from '../notification/realtimeEmitters.js';
 
 const router = express.Router();
 

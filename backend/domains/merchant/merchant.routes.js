@@ -10,7 +10,7 @@ import bcrypt    from 'bcryptjs';
 import jwt       from 'jsonwebtoken';
 import { merchantAuth } from '../../middleware/merchantAuth.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
-import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../../services/realtimeEmitters.js';
+import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import { tryAssignMerchant, buildMerchantSnapshot, updateMerchantStatsOnComplete } from '../payment/paymentProcessing.service.js';
 
 const router     = express.Router();

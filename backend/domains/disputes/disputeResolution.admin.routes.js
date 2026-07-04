@@ -1,7 +1,7 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 
-import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from './_adminShared.js';
-import { creditDeposit, creditWinnings } from '../../domains/wallet/walletAuthority.service.js';
+import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from '../../routes/admin/_adminShared.js';
+import { creditDeposit, creditWinnings } from '../wallet/walletAuthority.service.js';
 
 const router = express.Router();
 

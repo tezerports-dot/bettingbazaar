@@ -55,7 +55,7 @@ import { errorHandler }   from './middleware/errorHandler.js';
 import { authLimiter, adminAuthLimiter, betLimiter } from './middleware/security.js';
 import GameEngine         from './domains/game/gameEngine.js';
 import CycleGenerator     from './domains/game/cycleGenerator.service.js';
-import SSEManager         from './services/sseManager.service.js';
+import SSEManager         from './domains/notification/sseManager.service.js';
 import { initSSERoutes }  from './routes/sse.routes.js';
 
 // ─── APP SETUP ────────────────────────────────────────────────────────────────

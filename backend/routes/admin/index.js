@@ -8,14 +8,14 @@
  * Zero changes to server.js required.
  */
 import express from 'express';
-import analyticsRoutes  from './analytics.admin.routes.js';
+import analyticsRoutes  from '../../domains/analytics/analytics.admin.routes.js';
 import usersRoutes      from './users.admin.routes.js';
 import kycRoutes        from './kyc.admin.routes.js';
 import subAdminsRoutes  from './subadmins.admin.routes.js';
 import merchantsRoutes  from '../../domains/merchant/merchant.admin.routes.js';
 import brandingRoutes   from './branding.admin.routes.js';
-import contentRoutes    from './content.admin.routes.js';
-import disputesRoutes   from './disputeResolution.admin.routes.js';
+import contentRoutes    from '../../domains/cms/content.admin.routes.js';
+import disputesRoutes   from '../../domains/disputes/disputeResolution.admin.routes.js';
 import utrRoutes        from './utr.admin.routes.js';
 import merchantAssignmentRoutes from '../../domains/merchant/merchant.assignment.routes.js';
 import paymentOrderRoutes       from '../../domains/payment/paymentOrder.routes.js';

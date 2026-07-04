@@ -1,32 +1,11 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-import { Cycle, Bet, User, Transaction, AuditLog } from '../../models/index.js';
+import { Cycle, Bet, User } from '../../models/index.js';
 import mongoose from 'mongoose';
 import { CacheService } from '../../services/cache.service.js';
 import { creditWinnings, creditCommission } from '../wallet/walletAuthority.service.js';
-
-// ── Inline helper: unlock losing-bet locked amounts + write ledger entry ─────
-async function unlockLostBet(userId, amount, betId, fromDeposit, fromWinnings) {
-    const WalletLedger = mongoose.model('WalletLedger');
-    const txId = `unlock_lost_${betId}`;
-    // Idempotency
-    if (await WalletLedger.findOne({ txId }).lean()) return;
-    await User.findByIdAndUpdate(userId, {
-        $inc: {
-            lockedBalance:        -amount,
-            lockedDepositAmount:  -fromDeposit,
-            lockedWinningsAmount: -fromWinnings,
-        }
-    });
-    const user = await User.findById(userId).select('depositBalance winningsBalance').lean();
-    await WalletLedger.create({
-        userId, type: 'DEBIT', field: 'winningsBalance',
-        amount: 0,   // balance fields unchanged — this is a lock release, not a balance change
-        balanceBefore: user?.winningsBalance || 0,
-        balanceAfter:  user?.winningsBalance || 0,
-        reason: `Lost bet unlock — cycle result`,
-        refModel: 'Bet', refId: betId, txId,
-    });
-}
+import { unlockLostBet, executeSettlementBatch } from '../settlement/settlementService.js';
+// unlockLostBet and executeSettlementBatch moved to domains/settlement/ on 2026-07-03.
+// processPayoutsOptimized stays here as the orchestrator -- see domains/settlement/README.md.
 
 
 class GameEngine {
@@ -265,13 +244,13 @@ class GameEngine {
             totalWinners++;
 
             if (userBulkOps.length >= BATCH_SIZE) {
-                await this.executeSettlementBatch(userBulkOps, txBulkOps, betIdsToUpdate);
+                await executeSettlementBatch(userBulkOps, txBulkOps, betIdsToUpdate);
                 userBulkOps = []; txBulkOps = []; betIdsToUpdate = [];
             }
         }
 
         if (userBulkOps.length > 0) {
-            await this.executeSettlementBatch(userBulkOps, txBulkOps, betIdsToUpdate);
+            await executeSettlementBatch(userBulkOps, txBulkOps, betIdsToUpdate);
         }
 
         // ── REALTIME PAYOUT NOTIFICATION ──────────────────────────────────────
@@ -366,56 +345,6 @@ class GameEngine {
             winners:     totalWinners,
             server_ts:   Date.now()
         });
-    }
-
-    /**
-     * executeSettlementBatch
-     * userOps is now an array of payout descriptors (not raw bulkWrite ops).
-     * Each element: { userId, payout, totalBetAmount, totalLockedDeposit, totalLockedWinnings, betIds }
-     * We call WalletAuthority.creditWinnings per user (idempotent via win_<betId>),
-     * then unlock the locked amounts, then mark bets WON.
-     */
-    async executeSettlementBatch(userOps, txOps, betIds) {
-        // ── 1. Credit winnings + unlock locked balance per winner ──────────────
-        for (const op of userOps) {
-            try {
-                // Credit payout to winningsBalance (idempotent: txId = win_<first betId>)
-                await creditWinnings(
-                    op.userId, op.payout,
-                    `Cycle win payout (2x)`, op.betIds[0],
-                    `win_${op.betIds[0]}`
-                );
-                // Unlock locked balance (raw $inc — no balance change, just lock release)
-                await User.findByIdAndUpdate(op.userId, {
-                    $inc: {
-                        lockedBalance:        -op.totalBetAmount,
-                        lockedDepositAmount:  -op.totalLockedDeposit,
-                        lockedWinningsAmount: -op.totalLockedWinnings,
-                    }
-                });
-            } catch (e) {
-                console.error(`[Engine] WalletAuthority payout error for user ${op.userId}:`, e.message);
-                throw e;
-            }
-        }
-
-        // ── 2. Write Transaction logs ──────────────────────────────────────────
-        if (txOps.length > 0) {
-            try {
-                await Transaction.bulkWrite(txOps);
-            } catch (e) {
-                console.warn('[Engine] Transaction log write failed (non-critical):', e.message);
-            }
-        }
-
-        // ── 3. Mark bets WON (idempotent: WON bets are skipped on retry) ──────
-        const allBetIds = userOps.flatMap(op => op.betIds);
-        if (allBetIds.length > 0) {
-            await Bet.updateMany(
-                { _id: { $in: allBetIds }, status: { $ne: 'WON' } },
-                [{ $set: { status: 'WON', payout: { $multiply: ['$amount', 2] } } }]
-            );
-        }
     }
 
     /**

@@ -1,7 +1,7 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** content.admin.routes.js — FAQ, support links, promo, announcements */
-import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from './_adminShared.js';
-import contentService from '../../services/content.service.js';
+import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from '../../routes/admin/_adminShared.js';
+import contentService from './content.service.js';
 
 const router = express.Router();
 

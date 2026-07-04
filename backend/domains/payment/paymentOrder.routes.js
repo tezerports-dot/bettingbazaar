@@ -7,7 +7,7 @@
 
 import { express, mongoose, authenticate, isAdminOrSubAdmin, getModels } from '../../routes/admin/_adminShared.js';
 import { creditDeposit, creditWinnings } from '../wallet/walletAuthority.service.js';
-import { emitAdminUpdate, emitOrderUpdate, emitWalletUpdate } from '../../services/realtimeEmitters.js';
+import { emitAdminUpdate, emitOrderUpdate, emitWalletUpdate } from '../notification/realtimeEmitters.js';
 
 const router = express.Router();
 

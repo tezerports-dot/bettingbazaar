@@ -6,7 +6,7 @@
  */
 import mongoose from 'mongoose';
 import { creditWinnings } from '../domains/wallet/walletAuthority.service.js';
-import { emitOrderUpdate, emitAdminUpdate } from '../services/realtimeEmitters.js';
+import { emitOrderUpdate, emitAdminUpdate } from '../domains/notification/realtimeEmitters.js';
 
 export function registerCronJobs(rebuildLeaderboard) {
 

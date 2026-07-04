@@ -1,9 +1,3 @@
-# domains/cms — PLACEHOLDER
-
-Not yet migrated. See ../README.md for the full domain map and status legend.
-
-**Purpose:** Static pages, banners, announcements.
-
-**Current source of truth (until migrated):** backend/services/content.service.js, backend/models/content.model.js
-
-Do not import from this folder — nothing lives here yet.
+# domains/cms/ -- MIGRATED
+Owns static pages, banners, announcements. Moved 2026-07-02.
+Full domain map: see ../README.md.

@@ -12,7 +12,7 @@ import crypto   from 'crypto';
 import { debitWinningsForWithdrawal, creditDeposit, creditWinnings, refundOrder, lockWithdrawal, releaseWithdrawal } from '../wallet/walletAuthority.service.js';
 import { selectBestMerchant } from '../merchant/merchantScoring.service.js';
 import { markUTRAsUsed, releaseUTR }   from '../../middleware/utrValidation.js';
-import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../../services/realtimeEmitters.js';
+import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 
 // ─── Session helpers (graceful degradation on standalone MongoDB) ─────────────
 async function safeSession() {

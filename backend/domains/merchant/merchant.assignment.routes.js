@@ -9,7 +9,7 @@
 
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels, isAdminOrSubAdminOrQueueManager } from '../../routes/admin/_adminShared.js';
 import { creditDeposit, creditWinnings } from '../wallet/walletAuthority.service.js';
-import { emitAdminUpdate, emitMerchantUpdate, emitOrderUpdate, emitWalletUpdate } from '../../services/realtimeEmitters.js';
+import { emitAdminUpdate, emitMerchantUpdate, emitOrderUpdate, emitWalletUpdate } from '../notification/realtimeEmitters.js';
 
 const router = express.Router();
 
