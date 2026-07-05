@@ -1,8 +1,33 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** system.admin.routes.js — System config, token rates, withdrawal requests, error logs */
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from './_adminShared.js';
+import { setConfigField } from '../../domains/configuration/configVersioning.service.js';
 
 const router = express.Router();
+
+// ── Shared validation, used by BOTH /token-rates and /system/config below ────
+// CONSOLIDATED 2026-07-03: these two endpoints previously validated buyRate >
+// sellRate independently — /system/config didn't check it at all, meaning an
+// admin could set an invalid (or even loss-making) rate pair through that path
+// while the dedicated /token-rates endpoint correctly blocked it. Single
+// function now, called from both places, so they can't diverge again.
+// Checks against whichever value ISN'T being changed too — if only one of the
+// two fields is submitted, the resulting pair is still validated, not just the
+// field present in this particular request.
+async function validateAndResolveRates(newBuyRate, newSellRate) {
+  if (newBuyRate === undefined && newSellRate === undefined) return null;
+  const TokenRates = mongoose.model('TokenRates');
+  const current = await TokenRates.findOne({ key: 'main' }).lean() || {};
+  const finalBuy  = newBuyRate  !== undefined ? parseFloat(newBuyRate)  : current.buyRate;
+  const finalSell = newSellRate !== undefined ? parseFloat(newSellRate) : current.sellRate;
+  if (!finalBuy || !finalSell || finalBuy <= 0 || finalSell <= 0) {
+    throw new Error('Buy and sell rates must be positive numbers');
+  }
+  if (finalBuy <= finalSell) {
+    throw new Error('Buy rate must be higher than sell rate (merchant profit)');
+  }
+  return { finalBuy, finalSell };
+}
 
 router.get('/transactions', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
@@ -44,7 +69,6 @@ router.get('/token-rates', authenticate, isAdmin, async (req, res) => {
     const TokenRates = mongoose.model('TokenRates');
     const rates = await TokenRates.findOne({ key: 'main' });
 
-    // Return null data if admin has never set rates — do NOT auto-create with fake values
     if (!rates) {
       return res.json({
         success: true,
@@ -53,7 +77,6 @@ router.get('/token-rates', authenticate, isAdmin, async (req, res) => {
       });
     }
 
-    // MED-06 FIX: normalized to {rates:{}} shape (was {data:{}} — mismatched PUT response shape)
     res.json({
       success: true,
       rates: {
@@ -75,34 +98,30 @@ router.put('/token-rates', authenticate, isAdmin, async (req, res) => {
     const { buyRate, sellRate } = req.body;
     const TokenRates = mongoose.model('TokenRates');
     const EnhancedAuditLog = mongoose.model('EnhancedAuditLog');
-    
-    if (!buyRate || !sellRate || buyRate <= 0 || sellRate <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Buy and sell rates must be positive numbers'
-      });
+
+    if (buyRate === undefined || sellRate === undefined) {
+      return res.status(400).json({ success: false, message: 'buyRate and sellRate are required' });
     }
-    
-    if (buyRate <= sellRate) {
-      return res.status(400).json({
-        success: false,
-        message: 'Buy rate must be higher than sell rate (merchant profit)'
-      });
+
+    let resolved;
+    try {
+      resolved = await validateAndResolveRates(buyRate, sellRate);
+    } catch (validationError) {
+      return res.status(400).json({ success: false, message: validationError.message });
     }
-    
+
     const oldRates = await TokenRates.findOne({ key: 'main' });
-    
-    const rates = await TokenRates.findOneAndUpdate(
-      { key: 'main' },
-      {
-        buyRate: parseFloat(buyRate),
-        sellRate: parseFloat(sellRate),
-        updatedAt: new Date(),
-        updatedBy: req.user._id
-      },
-      { new: true, upsert: true }
-    );
-    
+    const actor = { userId: req.user._id, userName: req.user.username };
+
+    await setConfigField('TokenRates', 'buyRate', resolved.finalBuy, actor, {
+      justification: 'Admin token rate update via dedicated /token-rates endpoint',
+    });
+    await setConfigField('TokenRates', 'sellRate', resolved.finalSell, actor, {
+      justification: 'Admin token rate update via dedicated /token-rates endpoint',
+    });
+
+    const rates = await TokenRates.findOne({ key: 'main' });
+
     await EnhancedAuditLog.create({
       performedBy: req.user._id,
       performedByName: req.user.username,
@@ -111,16 +130,16 @@ router.put('/token-rates', authenticate, isAdmin, async (req, res) => {
       category: 'FINANCIAL',
       details: {
         oldBuyRate: oldRates?.buyRate,
-        newBuyRate: buyRate,
+        newBuyRate: resolved.finalBuy,
         oldSellRate: oldRates?.sellRate,
-        newSellRate: sellRate,
-        merchantProfit: buyRate - sellRate
+        newSellRate: resolved.finalSell,
+        merchantProfit: resolved.finalBuy - resolved.finalSell
       },
       success: true
     });
-    
-    console.log(`✅ Token rates updated: Buy ₹${buyRate}, Sell ₹${sellRate}`);
-    
+
+    console.log(`✅ Token rates updated: Buy ₹${resolved.finalBuy}, Sell ₹${resolved.finalSell}`);
+
     res.json({
       success: true,
       message: 'Token rates updated successfully',
@@ -146,25 +165,20 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
   try {
     const SystemConfig = mongoose.model('SystemConfig');
     const TokenRates   = mongoose.model('TokenRates');
-    // Read from the actual SystemConfig schema fields (betLimits, maintenanceMode, etc.)
-    // NOT from config.value which does not exist in the schema.
     const config = await SystemConfig.findOne({ key: 'main' }).lean() || {};
     const rates  = await TokenRates.findOne({ key: 'main' }).lean() || {};
     res.json({
       success: true,
       config: {
-        // Bet limits — stored under betLimits in schema, NOT config.value
         minBet:                config.betLimits?.thirtyMin?.min   || 10,
         maxBet:                config.betLimits?.thirtyMin?.max   || 100000,
         max30MinBet:           config.betLimits?.thirtyMin?.max   || 100000,
         maxFullDayBet:         config.betLimits?.fullDay?.max     || 500000,
-        // Deposit/withdrawal limits — stored as top-level fields on SystemConfig
         minDeposit:            config.minDeposit            || 100,
         maxDeposit:            config.maxDeposit            || 50000,
         minWithdrawal:         config.minWithdrawal         || 500,
         maxWithdrawal:         config.maxWithdrawal         || 50000,
         maxWinningsWithdrawal: config.maxWinningsWithdrawal || 500000,
-        // Token rates — stored in TokenRates collection
         tokenBuyRate:          rates.buyRate                ?? 1,
         tokenSellRate:         rates.sellRate               ?? 1,
         kycRequired:           config.kycRequired           !== false,
@@ -173,7 +187,6 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
         maintenanceMessage:    config.maintenanceMessage    || '',
         depositMethods:        config.depositMethods        || ['UPI', 'BANK_TRANSFER'],
         withdrawalMethods:     config.withdrawalMethods     || ['UPI', 'BANK_TRANSFER'],
-        // App distribution — admin sets these, ShareModal + SystemGuard read them
         webUrl:        config.webUrl        || '',
         androidUrl:    config.androidUrl    || '',
         iosUrl:        config.iosUrl        || '',
@@ -191,9 +204,8 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
   try {
     const SystemConfig = mongoose.model('SystemConfig');
     const TokenRates   = mongoose.model('TokenRates');
+    const actor = { userId: req.user._id, userName: req.user.username };
 
-    // Map admin panel field names → actual SystemConfig schema paths (betLimits, top-level fields)
-    // and TokenRates (buyRate, sellRate stored in separate collection).
     const {
       minBet, maxBet, max30MinBet, maxFullDayBet,
       minDeposit, maxDeposit, minWithdrawal, maxWithdrawal, maxWinningsWithdrawal,
@@ -204,50 +216,47 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
       webUrl, androidUrl, iosUrl, minVersion, latestVersion,
     } = req.body;
 
-    // Build SystemConfig $set using real schema paths
-    const scSet = { updatedAt: new Date() };
-    if (minBet          !== undefined) scSet['betLimits.thirtyMin.min'] = minBet;
-    if (maxBet          !== undefined) scSet['betLimits.thirtyMin.max'] = maxBet;
-    if (max30MinBet     !== undefined) scSet['betLimits.thirtyMin.max'] = max30MinBet;
-    if (maxFullDayBet   !== undefined) scSet['betLimits.fullDay.max']   = maxFullDayBet;
-    if (minDeposit            !== undefined) scSet.minDeposit            = minDeposit;
-    if (maxDeposit            !== undefined) scSet.maxDeposit            = maxDeposit;
-    if (minWithdrawal         !== undefined) scSet.minWithdrawal         = minWithdrawal;
-    if (maxWithdrawal         !== undefined) scSet.maxWithdrawal         = maxWithdrawal;
-    if (maxWinningsWithdrawal !== undefined) scSet.maxWinningsWithdrawal = maxWinningsWithdrawal;
-    if (kycRequired           !== undefined) scSet.kycRequired           = kycRequired;
-    if (registrationEnabled   !== undefined) scSet.registrationEnabled   = registrationEnabled;
-    if (maintenanceMode       !== undefined) scSet.maintenanceMode       = maintenanceMode;
-    if (maintenanceMessage    !== undefined) scSet.maintenanceMessage    = maintenanceMessage;
-    if (depositMethods        !== undefined) scSet.depositMethods        = depositMethods;
-    if (withdrawalMethods     !== undefined) scSet.withdrawalMethods     = withdrawalMethods;
-    if (webUrl        !== undefined) scSet.webUrl        = webUrl;
-    if (androidUrl    !== undefined) scSet.androidUrl    = androidUrl;
-    if (iosUrl        !== undefined) scSet.iosUrl        = iosUrl;
-    if (minVersion    !== undefined) scSet.minVersion    = minVersion;
-    if (latestVersion !== undefined) scSet.latestVersion = latestVersion;
+    const fieldWrites = [];
+    if (minBet          !== undefined) fieldWrites.push(['SystemConfig', 'betLimits.thirtyMin.min', minBet]);
+    if (maxBet          !== undefined) fieldWrites.push(['SystemConfig', 'betLimits.thirtyMin.max', maxBet]);
+    if (max30MinBet     !== undefined) fieldWrites.push(['SystemConfig', 'betLimits.thirtyMin.max', max30MinBet]);
+    if (maxFullDayBet   !== undefined) fieldWrites.push(['SystemConfig', 'betLimits.fullDay.max', maxFullDayBet]);
+    if (minDeposit            !== undefined) fieldWrites.push(['SystemConfig', 'minDeposit', minDeposit]);
+    if (maxDeposit            !== undefined) fieldWrites.push(['SystemConfig', 'maxDeposit', maxDeposit]);
+    if (minWithdrawal         !== undefined) fieldWrites.push(['SystemConfig', 'minWithdrawal', minWithdrawal]);
+    if (maxWithdrawal         !== undefined) fieldWrites.push(['SystemConfig', 'maxWithdrawal', maxWithdrawal]);
+    if (maxWinningsWithdrawal !== undefined) fieldWrites.push(['SystemConfig', 'maxWinningsWithdrawal', maxWinningsWithdrawal]);
+    if (kycRequired           !== undefined) fieldWrites.push(['SystemConfig', 'kycRequired', kycRequired]);
+    if (registrationEnabled   !== undefined) fieldWrites.push(['SystemConfig', 'registrationEnabled', registrationEnabled]);
+    if (maintenanceMode       !== undefined) fieldWrites.push(['SystemConfig', 'maintenanceMode', maintenanceMode]);
+    if (maintenanceMessage    !== undefined) fieldWrites.push(['SystemConfig', 'maintenanceMessage', maintenanceMessage]);
+    if (depositMethods        !== undefined) fieldWrites.push(['SystemConfig', 'depositMethods', depositMethods]);
+    if (withdrawalMethods     !== undefined) fieldWrites.push(['SystemConfig', 'withdrawalMethods', withdrawalMethods]);
+    if (webUrl        !== undefined) fieldWrites.push(['SystemConfig', 'webUrl', webUrl]);
+    if (androidUrl    !== undefined) fieldWrites.push(['SystemConfig', 'androidUrl', androidUrl]);
+    if (iosUrl        !== undefined) fieldWrites.push(['SystemConfig', 'iosUrl', iosUrl]);
+    if (minVersion    !== undefined) fieldWrites.push(['SystemConfig', 'minVersion', minVersion]);
+    if (latestVersion !== undefined) fieldWrites.push(['SystemConfig', 'latestVersion', latestVersion]);
 
-    await SystemConfig.findOneAndUpdate(
-      { key: 'main' },
-      { $set: scSet },
-      { upsert: true, new: true }
-    );
+    for (const [modelName, path, value] of fieldWrites) {
+      await setConfigField(modelName, path, value, actor, {
+        justification: 'Admin bulk system config update via /system/config',
+      });
+    }
 
-    // Token rates are in a separate collection — update if provided
     if (tokenBuyRate !== undefined || tokenSellRate !== undefined) {
-      const ratesSet = {};
-      if (tokenBuyRate  !== undefined) ratesSet.buyRate  = tokenBuyRate;
-      if (tokenSellRate !== undefined) ratesSet.sellRate = tokenSellRate;
-      await TokenRates.findOneAndUpdate(
-        { key: 'main' },
-        { $set: ratesSet },
-        { upsert: true, new: true }
-      );
-      console.log(`✅ Token rates updated: Buy ₹${tokenBuyRate ?? '(unchanged)'}, Sell ₹${tokenSellRate ?? '(unchanged)'}`);
+      let resolved;
+      try {
+        resolved = await validateAndResolveRates(tokenBuyRate, tokenSellRate);
+      } catch (validationError) {
+        return res.status(400).json({ success: false, message: validationError.message });
+      }
+      if (tokenBuyRate  !== undefined) await setConfigField('TokenRates', 'buyRate',  resolved.finalBuy,  actor, { justification: 'Admin bulk system config update via /system/config' });
+      if (tokenSellRate !== undefined) await setConfigField('TokenRates', 'sellRate', resolved.finalSell, actor, { justification: 'Admin bulk system config update via /system/config' });
+      console.log(`✅ Token rates updated: Buy ₹${resolved.finalBuy}, Sell ₹${resolved.finalSell}`);
     }
 
     
-    // so the user panel SystemGuard and WalletModal pick up new limits instantly
     if (global.io) {
       const updatedConfig = await SystemConfig.findOne({ key: 'main' }).lean() || {};
       const updatedRates  = await TokenRates.findOne({ key: 'main' }).lean()   || {};
@@ -293,11 +302,6 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
 // (/api/admin/download/... vs /api/download/...) — server.js versions are canonical.
 
 // ─── DOWNLOAD LINK ADMIN ROUTES ──────────────────────────────────────────────
-// These sit at /api/admin/download/* and require admin auth — they're used by
-// the SystemSettings page "Test Link" buttons so admin can verify APK/iOS URLs
-// before saving. The public (no-auth) redirects live in server.js at /api/download/*.
-
-// GET /api/admin/download/android — admin test redirect for Android APK
 router.get('/download/android', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
     const SystemConfig = mongoose.model('SystemConfig');
@@ -309,7 +313,6 @@ router.get('/download/android', authenticate, isAdminOrSubAdmin, async (req, res
   }
 });
 
-// GET /api/admin/download/ios — admin test redirect for iOS App Store / PWA link
 router.get('/download/ios', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
     const SystemConfig = mongoose.model('SystemConfig');
@@ -321,8 +324,6 @@ router.get('/download/ios', authenticate, isAdminOrSubAdmin, async (req, res) =>
   }
 });
 
-// GET /api/admin/download/links — returns both URLs as JSON so SystemSettings can
-// display them without following a redirect.
 router.get('/download/links', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
     const SystemConfig = mongoose.model('SystemConfig');
@@ -360,7 +361,6 @@ router.post('/withdrawal-requests/:id/approve', authenticate, isAdmin, async (re
     if (!wr) return res.status(404).json({ success: false, message: 'Request not found' });
     if (wr.status !== 'PENDING') return res.status(400).json({ success: false, message: 'Request is not pending' });
 
-    // Release locked balance via WalletAuthority (writes WalletLedger, idempotent)
     await releaseWithdrawal(String(wr.userId), wr.amount, String(wr._id));
     await WithdrawalRequest.findByIdAndUpdate(wr._id, {
       status: 'APPROVED', adminNote: note, processedBy: req.user._id, processedAt: new Date()
@@ -378,7 +378,6 @@ router.post('/withdrawal-requests/:id/reject', authenticate, isAdmin, async (req
     if (!wr) return res.status(404).json({ success: false, message: 'Request not found' });
     if (wr.status !== 'PENDING') return res.status(400).json({ success: false, message: 'Request is not pending' });
 
-    // Refund locked balance → winningsBalance via WalletAuthority (writes WalletLedger, idempotent)
     await refundWithdrawal(String(wr.userId), wr.amount, String(wr._id));
     await WithdrawalRequest.findByIdAndUpdate(wr._id, {
       status: 'REJECTED', adminNote: note, processedBy: req.user._id, processedAt: new Date()
@@ -396,11 +395,6 @@ router.post('/withdrawal-requests/:id/reject', authenticate, isAdmin, async (req
  * Real route: GET /api/admin/analytics/dashboard
  * ════════════════════════════════════════════════════════════════════════════
  */
-// GET /api/admin/stats
-// Alias for analytics/dashboard — some older admin panel versions call /stats.
-// AUDIT FIX: was using next('route') + req.url rewrite which Express ignores (routes
-// are matched once at mount time, not on req.url change). Now runs the same query
-// as analytics/dashboard directly so it never falls through to 404.
 router.get('/stats', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
     const { getDashboardStats } = await import('../../services/admin.service.js');
@@ -435,10 +429,6 @@ router.delete('/error-reports', authenticate, isAdmin, async (req, res) => {
 
 // =============================================================================
 // APP-ASSETS upload routes
-// POST /api/admin/app-assets/upload  — upload a logo/icon/splash as base64 JSON
-// GET  /api/admin/app-assets         — list all slots with public URLs
-// DELETE /api/admin/app-assets/:name — delete a specific asset
-// Assets served at /app-assets/:filename via server.js express.static
 // =============================================================================
 
 import path_node from 'path';
