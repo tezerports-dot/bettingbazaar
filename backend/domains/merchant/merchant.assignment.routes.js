@@ -14,10 +14,18 @@ import { emitAdminUpdate, emitMerchantUpdate, emitOrderUpdate, emitWalletUpdate 
 const router = express.Router();
 
 // ─── Helper: build merchantSnapshot from a Merchant doc ──────────────────────
+// PRIVACY FIX 2026-07-05: merchantName was merchantDoc.name||merchantDoc.username,
+// which in this data is literally the merchant's own mobile number -- every user
+// assigned an order could see the merchant's real phone number. Replaced with a
+// short, non-identifying reference derived from the merchant's _id.
+function merchantDisplayRef(merchantDoc) {
+  return `Merchant #${String(merchantDoc._id).slice(-4).toUpperCase()}`;
+}
+
 function buildSnapshot(merchantDoc, expiresAt) {
   return {
     merchantId:    merchantDoc._id,
-    merchantName:  merchantDoc.name || merchantDoc.username || '',
+    merchantName:  merchantDisplayRef(merchantDoc),
     upiId:         merchantDoc.bankDetails?.upiId              || '',
     bankName:      merchantDoc.bankDetails?.bankName           || '',
     accountNo:     merchantDoc.bankDetails?.accountNo          || '',
