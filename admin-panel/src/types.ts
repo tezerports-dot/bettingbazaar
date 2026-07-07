@@ -155,6 +155,42 @@ export interface Bet {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Deposit Policy — Business Policy Platform (BBEPS Phase 006)
+// Whole-document versioned: every version is a complete, self-consistent
+// snapshot (deposit%/reserve% always sum to 100 within one version). See
+// backend/domains/configuration/depositPolicy.model.js for the source of truth.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type DepositPolicyCurrency = 'INR' | 'USDT';
+
+export interface DepositPolicyReserveUsageRules {
+  withdrawable: boolean;
+  settlementBuffer: boolean;
+  notes: string;
+}
+
+export interface DepositPolicyVersion {
+  _id: string;
+  currency: DepositPolicyCurrency;
+  depositAllocationPercent: number;
+  reserveAllocationPercent: number;
+  merchantCommissionPercent: number;
+  commissionFundingSource: 'PLATFORM';
+  reserveUsageRules: DepositPolicyReserveUsageRules;
+  version: number;
+  status: 'PENDING_APPROVAL' | 'SCHEDULED' | 'ACTIVE' | 'SUPERSEDED' | 'ROLLED_BACK' | 'REJECTED';
+  approvalStatus: 'AUTO_APPROVED' | 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED';
+  effectiveAt: string;
+  appliedAt?: string;
+  isRollback: boolean;
+  rollbackOfVersionId?: string;
+  businessJustification: string;
+  changedBy: string | { _id: string; username: string };
+  changedByName?: string;
+  createdAt: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Token Rates
 // ─────────────────────────────────────────────────────────────────────────────
 

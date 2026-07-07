@@ -302,6 +302,48 @@ export const tokenRates = {
   },
 };
 
+// --- DEPOSIT POLICY — Business Policy Platform (BBEPS Phase 006) --------------
+// Whole-document versioned: see backend/domains/configuration/depositPolicy.*.js
+
+export const depositPolicy = {
+  getCurrent: async (currency: 'INR' | 'USDT') => {
+    const res = await api.get<any>(`/api/admin/deposit-policy/${currency}`);
+    return res.data;
+  },
+
+  getHistory: async (currency: 'INR' | 'USDT') => {
+    const res = await api.get<any>(`/api/admin/deposit-policy/${currency}/history`);
+    return res.data;
+  },
+
+  update: async (
+    currency: 'INR' | 'USDT',
+    fields: {
+      depositAllocationPercent: number;
+      reserveAllocationPercent: number;
+      merchantCommissionPercent: number;
+      commissionFundingSource: 'PLATFORM';
+      reserveUsageRules: { withdrawable: boolean; settlementBuffer: boolean; notes: string };
+      justification: string;
+      effectiveAt?: string;
+      requireApproval?: boolean;
+    }
+  ) => {
+    const res = await api.put(`/api/admin/deposit-policy/${currency}`, fields);
+    return res.data;
+  },
+
+  approve: async (versionId: string, approve: boolean) => {
+    const res = await api.post(`/api/admin/deposit-policy/version/${versionId}/approve`, { approve });
+    return res.data;
+  },
+
+  rollback: async (versionId: string) => {
+    const res = await api.post(`/api/admin/deposit-policy/version/${versionId}/rollback`);
+    return res.data;
+  },
+};
+
 // --- QUEUE MANAGER ------------------------------------------------------------
 
 export const queueManager = {
@@ -754,6 +796,7 @@ export default {
   merchants,
   cycles,
   tokenRates,
+  depositPolicy,
   queueManager,
   kyc,
   subAdmins,

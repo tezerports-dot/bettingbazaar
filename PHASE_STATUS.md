@@ -58,16 +58,28 @@ full architecture decision and reasoning.
    by the DepositPolicy migration (only the hardcoded ratio inside that same
    route was fixed) — rerouting these writes through `walletAuthority.service.js`
    is a bigger, separate change and deserves its own review.
-7. **Discovered 2026-07-07, not fixed (dead code):** `paymentProcessing.service.js`
-   exports `approveDeposit()`, which duplicates the logic in
-   `merchant.routes.js`'s live `/orders/:id/approve` route but is never
-   imported or called anywhere. Left as-is (out of scope for this migration);
-   candidate for BBEPS §13 Dead Artifact cleanup.
+7. **Discovered 2026-07-07:** `paymentProcessing.service.js` exports
+   `approveDeposit()`, which duplicates the logic in `merchant.routes.js`'s
+   live `/orders/:id/approve` route but is never imported or called anywhere.
+   Comments clarified (it already read `order.depositAllocation`/
+   `reserveAllocation` correctly — no functional change). Still dead code;
+   left in place pending a decision — candidate for BBEPS §13 cleanup.
 8. **New with this migration:** `DepositPolicy.merchantCommissionPercent` and
    `commissionFundingSource` are fully modeled, validated, versioned, and
-   admin-editable, but no code anywhere reads them to actually pay a merchant
-   a platform-funded commission. That payout engine does not exist yet — see
-   "Next concrete step" below.
+   admin-editable (including via the new admin-panel UI), but no code
+   anywhere reads them to actually pay a merchant a platform-funded
+   commission. That payout engine does not exist yet — see EXECUTION_QUEUE.md.
+9. **Found and fixed while verifying runtime consumers (2026-07-07):** a
+   third independent hardcoded 90/10, in `paymentProcessing.service.js`'s
+   `createDepositOrder()` — it computed `depositAllocation`/`reserveAllocation`
+   locally (redundant with, and silently overwritten by, the model's pre-save
+   hook), then built the user-facing order confirmation `note` string from
+   those stale local variables rather than the actual post-save values. A
+   real (if minor) bug: if an admin had set a non-90/10 DepositPolicy, the
+   confirmation message shown to the depositing user would describe the
+   wrong split, even though the order itself was allocated correctly. Fixed
+   to read `order.depositAllocation`/`order.reserveAllocation` after
+   `order.save()`.
 
 ---
 
@@ -145,33 +157,43 @@ sync mid-change. New files, all in `domains/configuration/`:
     only, commissionRate retired" for the platform-funded-commission case —
     not a silent contradiction of that earlier decision.
 
+**Admin UI shipped (2026-07-07):** `admin-panel/src/Pages/BusinessPolicy/DepositPolicy.tsx`
+— currency tabs (INR/USDT), current-active-policy view, "Configure Now" empty
+state for unconfigured currencies, an example calculator, full version-history
+table with approve/reject/rollback actions, and a create-new-version form
+(linked deposit%/reserve% inputs, commission%, reserve-usage-rule toggles,
+required business justification, optional scheduling/approval-gating). New
+`'policy'` nav group ("Business Policy Platform") — deliberately separate
+from `'payments'`, since future sibling policies belong there too. Verified
+with a real `tsc --noEmit` and a real `vite build` (not just eyeballed) —
+both confirmed zero new errors introduced (5 pre-existing, unrelated TS
+errors in other files, present in the pristine repo too).
+
+**Platform-oriented architecture, formalized 2026-07-07:** going forward,
+new work is organized under platforms, not isolated features — Business
+Policy, Operations, Revenue & Settlement, Merchant, Funding, Risk,
+Sportsbook, Casino, Communication. See ENTERPRISE_DECISIONS.md. This gives
+future work (opposite-side betting rules, reserve usage, payout fees, new
+payment providers) a natural home without another structural migration.
+
 **Not yet done, explicitly out of scope for this piece:**
-- No merchant-commission payout engine exists. `merchantCommissionPercent` /
-  `commissionFundingSource` are captured, versioned, validated, and readable —
-  no code executes an actual platform-funded payment to a merchant yet.
+- No merchant-commission payout engine exists (Revenue & Settlement
+  Platform-scoped work — see EXECUTION_QUEUE.md).
 - `applyScheduledPolicyChanges()` not wired into `cronJobs.js`.
-- The pre-existing `merchant.routes.js` raw-`$inc` wallet writes (§7 violation)
-  were not rerouted through `walletAuthority.service.js` — only the ratio
-  itself was fixed. See Known Open Items #6.
-- `SUPPORTED_CURRENCIES` includes `'USDT'` but no USDT deposit flow exists yet
-  to actually create an order with that currency — schema/service are ready,
-  nothing calls them for USDT today.
-- No admin-panel frontend UI for editing DepositPolicy yet (backend is fully
-  wired: model, service, versioning, validation, admin API, audit, runtime
-  consumption). Same shape as `/token-rates`'s existing admin page — would be
-  a small, contained follow-on.
+- The pre-existing `merchant.routes.js` raw-`$inc` wallet writes (§7
+  violation) were not rerouted through `walletAuthority.service.js`.
+- `SUPPORTED_CURRENCIES` includes `'USDT'` but no USDT deposit flow exists
+  yet to actually create an order with that currency.
+- **Operational note, not a code gap:** no `DepositPolicy` version has been
+  created yet in the live database — the runtime fallback (90/10, logged as
+  a warning) is what's actually in effect until an admin uses the new UI (or
+  the API directly) to create v1 for `INR`. This is expected bootstrap
+  behavior, not a bug.
 
-**Next concrete step (pick one):**
-1. **Admin UI for DepositPolicy** — small, contained, makes the already-built
-   backend actually usable by a human admin instead of only via `curl`/Postman.
-2. **Merchant commission payout engine** — the bigger, separate piece flagged
-   above: define how/when a merchant is actually paid `merchantCommissionPercent`
-   from platform funds (new Transaction type, ledger entries via
-   `walletAuthority.service.js`, and a decision on timing — per-order vs.
-   batched settlement).
-3. **buyRate/sellRate → 1:1 flattening** — the other major piece of the 2026-07
-   business-model change, independent of DepositPolicy, ~19 files affected.
-
-Not yet decided which — flagging as an open choice rather than picking one
-unilaterally, since #2 in particular is a real financial-flow design decision,
-not just an implementation detail.
+**Next concrete step: buyRate/sellRate → 1:1 flattening.** Per the decision
+made earlier this same day (2026-07-07): "the buyRate/sellRate 1:1 migration
+should begin only after this Business Policy foundation is complete." That
+foundation (DepositPolicy model/service/admin-API/UI) is now complete —
+this is the next task per that already-established dependency order, not a
+new choice being made now. ~19 files reference `buyRate`/`sellRate` across
+models, routes, services, and both frontends (user-panel, admin-panel).

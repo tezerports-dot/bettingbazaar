@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
-  LayoutDashboard, Users, Store, Activity, DollarSign, Layers,
+  LayoutDashboard, Users, Store, Activity, DollarSign, Layers, Landmark,
   UserCheck, FileText, Palette, Settings, LogOut, Menu, X,
   TrendingUp, ShieldCheck, HelpCircle, Image as ImageIcon,
   MessageCircle, Shield, History, Scale, AlertOctagon, Upload,
@@ -47,6 +47,13 @@ const ALL_MENU_ITEMS: MenuItem[] = [
   { path: '/token-rates',    icon: DollarSign,     label: 'Token Rates',      adminOnly: true,                   group: 'payments' },
   { path: '/payment-control',icon: Zap,            label: 'Payment System',   adminOnly: true,                   group: 'payments' },
   { path: '/disputes',       icon: Scale,          label: 'Disputes',         permission: 'canResolveDisputes',  group: 'payments' },
+
+  // ── BUSINESS POLICY PLATFORM (BBEPS Phase 006) ──────────────────────────────
+  // New 'policy' group, deliberately separate from 'payments' — future
+  // siblings (Withdrawal Policy, Risk Policy, Merchant Policy, Settlement
+  // Policy...) belong here too, not scattered across other groups. See
+  // ENTERPRISE_DECISIONS.md 2026-07-07 "Platform-oriented architecture".
+  { path: '/business-policy/deposit', icon: Landmark, label: 'Deposit Policy', adminOnly: true, group: 'policy' },
 
   // ── GAME PROVIDERS (Casino / Crash / Sports API config) ────────────────────
   { path: '/game-providers', icon: Star,           label: 'Game Providers',   adminOnly: true,                   group: 'games' },
@@ -140,6 +147,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
               core: 'Analytics', people: 'Users & Merchants',
               payments: 'Payments & Queue', games: 'Game Providers',
               promos: 'Promotions', content: 'Content & Branding', admin: 'Admin',
+              policy: 'Business Policy Platform',
             };
             let lastGroup = '';
             return visibleItems.map((item) => {

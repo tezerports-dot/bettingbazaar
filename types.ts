@@ -273,8 +273,8 @@ export interface PaymentOrder {
   fiatAmount:         number;
   rateUsed:           number;
   merchantProfit:     number;
-  depositAllocation:  number;   // 90% of tokenAmount → depositBalance
-  reserveAllocation:  number;   // 10% of tokenAmount → reserveBalance
+  depositAllocation:  number;   // share of tokenAmount → depositBalance (DepositPolicy, admin-configurable)
+  reserveAllocation:  number;   // share of tokenAmount → reserveBalance (DepositPolicy, admin-configurable)
   platformFeeRate:    number;   // 3% deducted on bet settlement
   status:             PaymentOrderStatus;
   escrowStatus:       'NONE' | 'LOCKED' | 'RELEASED' | 'REFUNDED';

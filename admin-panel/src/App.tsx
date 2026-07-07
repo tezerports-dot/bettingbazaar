@@ -10,6 +10,7 @@ import { MerchantsList } from './Pages/Merchants/MerchantsList';
 import { LiveCycles } from './Pages/Cycles/LiveCycles';
 import { CycleHistory } from './Pages/Cycles/CycleHistory';
 import { TokenRates } from './Pages/Finance/TokenRates';
+import { DepositPolicy } from './Pages/BusinessPolicy/DepositPolicy';
 import { TransactionsList } from './Pages/Finance/TransactionsList';
 import { ProfitLoss } from './Pages/Finance/ProfitLoss';
 import { QueueDashboard } from './Pages/QueueManager/QueueDashboard';
@@ -251,6 +252,10 @@ const App: React.FC = () => {
         {/* Admin-only routes */}
         <Route path="/token-rates" element={
           <AdminOnly><Layout><TokenRates /></Layout></AdminOnly>
+        } />
+        {/* Business Policy Platform (BBEPS Phase 006) — first sibling: DepositPolicy */}
+        <Route path="/business-policy/deposit" element={
+          <AdminOnly><Layout><DepositPolicy /></Layout></AdminOnly>
         } />
         <Route path="/sub-admins" element={
           <AdminOnly><Layout><SubAdminsList /></Layout></AdminOnly>

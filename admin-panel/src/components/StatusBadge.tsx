@@ -3,7 +3,7 @@ import React from 'react';
 
 interface StatusBadgeProps {
   status: string;
-  type?: 'user' | 'merchant' | 'order' | 'cycle' | 'kyc';
+  type?: 'user' | 'merchant' | 'order' | 'cycle' | 'kyc' | 'policy';
 }
 
 export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, type = 'user' }) => {
@@ -54,6 +54,16 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, type = 'user' 
       if (upperStatus === 'PENDING_APPROVAL') return 'bg-yellow-500/20 text-yellow-500';
       if (upperStatus === 'PENDING_SUBMISSION') return 'bg-gray-500/20 text-gray-500';
       if (upperStatus === 'REJECTED') return 'bg-red-500/20 text-red-500';
+    }
+
+    // Business Policy Platform statuses (DepositPolicy and future sibling policies)
+    if (type === 'policy') {
+      if (upperStatus === 'ACTIVE')           return 'bg-green-500/20 text-green-500';
+      if (upperStatus === 'SCHEDULED')        return 'bg-blue-500/20 text-blue-500';
+      if (upperStatus === 'PENDING_APPROVAL') return 'bg-yellow-500/20 text-yellow-500';
+      if (upperStatus === 'SUPERSEDED')       return 'bg-gray-500/20 text-gray-400';
+      if (upperStatus === 'ROLLED_BACK')      return 'bg-purple-500/20 text-purple-500';
+      if (upperStatus === 'REJECTED')         return 'bg-red-500/20 text-red-500';
     }
 
     return 'bg-gray-500/20 text-gray-500';

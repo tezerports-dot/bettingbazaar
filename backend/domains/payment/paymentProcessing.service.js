@@ -194,8 +194,15 @@ export async function createDepositOrder(userId, tokenAmount) {
     const buyRate            = rates.buyRate;
     const fiatAmount         = tokenAmount * buyRate;
     const merchantProfit     = tokenAmount * (buyRate - rates.sellRate);
-    const depositAllocation  = Math.floor(tokenAmount * 0.90);
-    const reserveAllocation  = tokenAmount - depositAllocation;
+    // depositAllocation / reserveAllocation are NOT computed here — the
+    // PaymentOrder pre-save hook (paymentOrder.model.js) is the single
+    // computation site, deriving them from the active DepositPolicy. This
+    // function used to independently compute them with a hardcoded 0.90,
+    // which the hook then silently overwrote on save — the persisted order
+    // was already correct, but the `note` text below was built from the
+    // stale, pre-overwrite local variables, so it could describe a split
+    // the admin had already changed away from. Fixed by reading the
+    // authoritative values off `order` AFTER save.
 
     const order = new PaymentOrder({
       orderId:           `DEP_${crypto.randomBytes(12).toString('hex')}`,
@@ -205,8 +212,6 @@ export async function createDepositOrder(userId, tokenAmount) {
       fiatAmount,
       rateUsed:          buyRate,
       merchantProfit,
-      depositAllocation,
-      reserveAllocation,
       status:            'PENDING_QUEUE',
       createdAt:         new Date(),
     });
@@ -237,7 +242,7 @@ export async function createDepositOrder(userId, tokenAmount) {
         merchantSnapshot:  order.merchantSnapshot,
         expiresAt:         order.expiresAt,
       },
-      note: `You will pay ₹${fiatAmount.toLocaleString()} to receive ${tokenAmount} BB tokens (${depositAllocation} betting + ${reserveAllocation} reserve)`,
+      note: `You will pay ₹${fiatAmount.toLocaleString()} to receive ${tokenAmount} BB tokens (${order.depositAllocation} betting + ${order.reserveAllocation} reserve)`,
     };
   } catch (err) {
     await abortOrEnd(session);
@@ -428,7 +433,12 @@ export async function markOrderPaid(userId, orderId, utrNumber, proofScreenshot)
 
 // ═════════════════════════════════════════════════════════════════════════════
 // approveDeposit  — merchant confirms payment received (DEPOSIT)
-//   90% → user.depositBalance, 10% → platform reserve (reserveBalance field)
+//   NOTE: this function is not currently called anywhere in the codebase.
+//   The live approval path is merchant.routes.js POST /orders/:id/approve.
+//   Left in place (not deleted) pending a decision — see EXECUTION_QUEUE.md.
+//   Split percentages come from order.depositAllocation/reserveAllocation,
+//   set once at order creation from the active DepositPolicy — not hardcoded
+//   here (this function already did it the right way).
 // ═════════════════════════════════════════════════════════════════════════════
 export async function approveDeposit(actorId, orderId, session) {
   const PaymentOrder = mongoose.model('PaymentOrder');
@@ -450,10 +460,10 @@ export async function approveDeposit(actorId, orderId, session) {
   if (!updatedMerchant)
     throw Object.assign(new Error('Merchant has insufficient token balance'), { status: 400 });
 
-  // 90% to user depositBalance
+  // Deposit-allocation share to user depositBalance (order.depositAllocation, DepositPolicy-derived)
   await creditDeposit(order.userId, order.depositAllocation || order.tokenAmount, order._id.toString(), session);
 
-  // 10% to platform reserve (reserveBalance on User)
+  // Reserve-allocation share to platform reserve (order.reserveAllocation, DepositPolicy-derived)
   if (order.reserveAllocation > 0) {
     const User = mongoose.model('User');
     await User.findByIdAndUpdate(

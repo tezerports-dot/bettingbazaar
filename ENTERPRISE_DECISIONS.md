@@ -8,6 +8,48 @@ need a durable home.
 
 ---
 
+## 2026-07-07 — Platform-oriented architecture (formalized, not new)
+
+**Decision:** future work is organized under named platforms rather than
+isolated features:
+
+- **Business Policy Platform** — versioned business rules (DepositPolicy
+  today; Withdrawal/Risk/Merchant/Settlement policies to follow).
+- **Operations Platform** — orchestration/admin tooling that reads and acts
+  on domains, owns no business data itself.
+- **Revenue & Settlement Platform** — ledger, merchant payouts, commission
+  settlement, financial reconciliation.
+- **Merchant Platform** — merchant lifecycle, pool assignment, scoring.
+- **Funding Platform** — INR, USDT, and future payment/funding providers as
+  interchangeable adapters behind one interface.
+- **Risk Platform** — thresholds, fraud signals, limits.
+- **Sportsbook Platform** / **Casino Platform** — game/bet-type-specific logic.
+- **Communication Platform** — notifications across channels/providers.
+
+**Why:** this isn't a new direction — FUTURE_CAPABILITIES.md already used
+"Platform" language for several of these. What changed 2026-07-07 is treating
+it as the organizing principle for where NEW code goes, starting now, rather
+than a future aspiration. Concretely: `DepositPolicy` went into a fresh
+`Pages/BusinessPolicy/` frontend folder (not `Pages/Finance/`, where
+`TokenRates`/`ProfitLoss`/`UTRManager` already live as a grab-bag of
+finance-adjacent-but-not-actually-related concerns), and got its own admin
+nav group (`'policy'` → "Business Policy Platform") instead of being folded
+into the existing `'payments'` group. Every future policy, payout mechanism,
+funding provider, or risk rule has an obvious home decided in advance,
+instead of prompting "where does this go?" — and therefore another
+structural migration — each time.
+
+**Scope of this decision today:** naming and folder/nav placement for new
+work. It does NOT mean existing code (e.g. `TokenRates` staying in
+`Pages/Finance/`, or `merchant.routes.js` staying where it is) gets moved
+retroactively — that would be exactly the "expand scope into an unrelated
+migration" pattern 04-GOVERNANCE.md warns against. Existing code moves to
+its platform home opportunistically, when it's already being touched for
+another reason (as `merchant.routes.js`'s hardcoded-split fix was, in this
+same migration) — not as a dedicated reshuffle.
+
+---
+
 ## 2026-07-07 — DepositPolicy: whole-document versioning, not field-level
 
 **Decision:** Deposit-allocation %, reserve-allocation %, merchant-commission
