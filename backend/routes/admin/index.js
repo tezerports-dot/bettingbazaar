@@ -22,6 +22,7 @@ import paymentOrderRoutes       from '../../domains/payment/paymentOrder.routes.
 import cyclesRoutes     from './cycles.admin.routes.js';
 import systemRoutes     from './system.admin.routes.js';
 import auditRoutes      from './audit.admin.routes.js';
+import depositPolicyRoutes from '../../domains/configuration/depositPolicy.admin.routes.js';
 
 const router = express.Router();
 
@@ -39,5 +40,6 @@ router.use('/', paymentOrderRoutes);
 router.use('/', cyclesRoutes);
 router.use('/', systemRoutes);
 router.use('/', auditRoutes);
+router.use('/', depositPolicyRoutes);
 
 export default router;

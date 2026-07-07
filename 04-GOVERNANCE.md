@@ -44,14 +44,15 @@ compute, or default this value independently.
 
 | Value | Allowed Owner |
 |---|---|
-| Token buy/sell rates | `TokenRates` model — **NOT SystemSettings** (C-05 fix) |
+| Token buy/sell rates | `TokenRates` model — **NOT SystemSettings** (C-05 fix). Being phased out in favor of fixed 1:1 internal conversion (2026-07 direction); not yet removed. |
+| Deposit/reserve wallet split, merchant commission %, commission funding source, reserve usage rules (per currency) | `DepositPolicy` model (`domains/configuration/depositPolicy.model.js`) — whole-document versioned, written only via `depositPolicy.service.js`. **Supersedes** the "Merchant earnings model: Buy/sell spread only, commissionRate retired" line below for the specific case of commission funded by the platform on deposit approval — see that line's note. |
 | Bet min/max (per cycle type) | `SystemConfig.betLimits` |
 | Deposit/withdrawal limits (platform-wide) | `SystemConfig` |
 | Per-merchant order min/max | `Merchant.minOrder` / `Merchant.maxOrder` (edited per-merchant from admin) |
 | Merchant token capacity (buy orders) | `Merchant.tokenBalance` (current wallet) |
 | Merchant token capacity (sell orders) | Lifetime initial top-up (tracked in merchant wallet history) |
 | Referral commission rates | `CommissionLevel.f1Rate` only — F2/F3 not implemented (H-03) |
-| Merchant earnings model | Buy/sell spread only. `Merchant.commissionRate` is retired. |
+| Merchant earnings model | Buy/sell spread only. `Merchant.commissionRate` is retired. **Superseded 2026-07 (in progress):** business direction is moving to platform-funded commission (`DepositPolicy.merchantCommissionPercent`, funded via `commissionFundingSource: 'PLATFORM'`, never deducted from users) as buyRate/sellRate spread is phased out toward 1:1 conversion. `DepositPolicy` captures and versions this commission % today; no payout engine yet reads it to actually pay a merchant — that is separate, not-yet-started work (see PHASE_STATUS.md). Do not reintroduce `Merchant.commissionRate` — the new mechanism is a `DepositPolicy` field, not a revival of the old per-merchant field. |
 | Sub-admin permission keys | `User.subAdminPermissions` schema — frontend imports from `utils/permissions.ts` |
 | Chat rules (cooldown, length, banned words) | Chat config document via `/api/chat/config` |
 | Branding (colors, logo, names, banners) | `Branding` document — **see §3 and §12** |
@@ -209,6 +210,7 @@ Any new event must be added here in the same PR that introduces it.
 | `merchant_orders_snapshot` | server→merchant | Active orders array | On connect to merchant SSE |
 | `new_order` | server→merchant | PaymentOrder snapshot | Via private /api/sse/merchant/events |
 | `merchant_stats` | server→merchant | Balance/earnings snapshot | Via private /api/sse/merchant/events |
+| `deposit_policy_updated` | server→admin | `{ currency, policy }` | After PUT/approve/rollback on `/api/admin/deposit-policy/:currency` |
 
 **Merchant panel `SOCKET_EVENTS.ORDER_UPDATE` must equal `'order_update'`** (H-02 fix). The
 constant in `merchant-panel/src/constants.ts` is the canonical value — do not use string

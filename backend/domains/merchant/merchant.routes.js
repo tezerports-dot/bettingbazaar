@@ -1211,18 +1211,25 @@ router.post('/orders/:id/approve', merchantAuth, async (req, res) => {
             });
         }
 
-        // ── Token allocation: 90% depositBalance, 10% reserveBalance (Section 4) ─
-        const depositCredit = Math.floor(order.tokenAmount * 0.90);
-        const reserveCredit = Math.floor(order.tokenAmount * 0.10);
-        // Spec 4.4: remainder (0 or 1 token) goes to depositBalance, never reserveBalance
-        const remainder     = order.tokenAmount - depositCredit - reserveCredit;
+        // ── Token allocation (Section 4) ────────────────────────────────────────
+        // Uses the split already locked in at order creation
+        // (paymentOrder.model.js pre-save hook), driven by the active
+        // DepositPolicy — NOT recomputed here. This route previously had its
+        // own independent hardcoded 90/10, a second write path to the same
+        // value the model's pre-save hook already computes; removed per
+        // 04-GOVERNANCE.md §2 ("No second write path to a value with a
+        // designated single-writer service"). depositAllocation already
+        // includes the floor() remainder (Spec 4.4: remainder goes to
+        // deposit, never reserve — see the pre-save hook).
+        const depositCredit = order.depositAllocation;
+        const reserveCredit = order.reserveAllocation;
 
         // ── Finding 4: Single atomic balance credit ────────────────────────────
         const updatedUser = await User.findOneAndUpdate(
             { _id: order.userId },
             {
                 $inc: {
-                    depositBalance: depositCredit + remainder,
+                    depositBalance: depositCredit,
                     reserveBalance: reserveCredit,
                 },
             },
@@ -1236,8 +1243,8 @@ router.post('/orders/:id/approve', merchantAuth, async (req, res) => {
                 userId:        order.userId,
                 type:          'CREDIT',
                 field:         'depositBalance',
-                amount:        depositCredit + remainder,
-                balanceBefore: (updatedUser.depositBalance  || 0) - (depositCredit + remainder),
+                amount:        depositCredit,
+                balanceBefore: (updatedUser.depositBalance  || 0) - depositCredit,
                 balanceAfter:  updatedUser.depositBalance   || 0,
                 reason:        'TOKEN_PURCHASE deposit allocation',
                 refModel:      'PaymentOrder',
@@ -1266,7 +1273,7 @@ router.post('/orders/:id/approve', merchantAuth, async (req, res) => {
             balanceType: 'DEPOSIT',
             status:      'SUCCESS',
             referenceId: order._id.toString(),
-            description: `Token purchase approved: ${order.tokenAmount} tokens (${depositCredit + remainder} deposit + ${reserveCredit} reserve)`,
+            description: `Token purchase approved: ${order.tokenAmount} tokens (${depositCredit} deposit + ${reserveCredit} reserve)`,
             timestamp:   now,
         }], withSession(session));
 
@@ -1291,7 +1298,7 @@ router.post('/orders/:id/approve', merchantAuth, async (req, res) => {
         res.json({
             success: true,
             message: 'Order approved. Tokens credited to user.',
-            creditedDeposit:  depositCredit + remainder,
+            creditedDeposit:  depositCredit,
             creditedReserve:  reserveCredit,
             order,
         });

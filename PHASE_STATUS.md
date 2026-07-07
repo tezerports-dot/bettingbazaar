@@ -4,7 +4,7 @@
 Update it after every significant change. If this file and a chat summary disagree,
 this file wins — that's the point of it existing.
 
-Last updated: 2026-07-03
+Last updated: 2026-07-07
 
 ---
 
@@ -17,7 +17,7 @@ Last updated: 2026-07-03
 | 003 — Domain Discovery & Bounded Contexts | Substantively complete | 13 domains with real code have enforced bounded contexts |
 | 004 — Target Enterprise Architecture | Decision locked, execution complete for existing code | backend/domains/ + backend/shared/ inside the existing app |
 | 005 — Technology Strategy | Corrected 2026-07-03 | Originally under-scoped (language choice only). Now includes real research: Provider/Adapter pattern and Policy/Rules-Engine pattern both confirmed as standard, industry-proven fits for this platform. See FUTURE_CAPABILITIES.md architecture decision. |
-| 006 — Configuration Engine / Business Policy Platform | Data model done, platform not built | domains/configuration/ holds SystemConfig/TokenRates. Renamed in direction (not yet in code) to Business Policy Platform per 2026-07-03 decision — same underlying phase, wider scope. THIS IS THE CURRENT ACTIVE PHASE. |
+| 006 — Configuration Engine / Business Policy Platform | First vertical slice shipped (2026-07-07) | `domains/configuration/depositPolicy.model.js` + `.service.js` + `.admin.routes.js` — whole-document versioned policy (deposit/reserve split, merchant commission %, funding source, reserve usage rules, per-currency). Wired into real runtime consumers: `paymentOrder.model.js` pre-save hook and `merchant.routes.js` POST /orders/:id/approve (previously two independently hardcoded 90/10s — both now read the same policy-derived stored fields). Renamed in direction (not yet fully in code) to Business Policy Platform per 2026-07-03 decision — same underlying phase, wider scope. THIS IS THE CURRENT ACTIVE PHASE. |
 | 007 — Enterprise Control Center / Operations Platform | Not started | Confirmed as orchestration-only, does not own data (2026-07-03) |
 | 008 — Financial Core (ledger-first) | Not started | Wallet has correct single-writer authority; not the same as ledger-event-sourcing |
 | 009 — Workflow Engine | Not started | — |
@@ -51,6 +51,23 @@ full architecture decision and reasoning.
 4. `backend/debug-merchant-query.mjs` and `check-merchants.mjs` — stray debug
    scripts, not imported anywhere, safe to delete, not yet removed.
 5. Phase 002 "no orphaned functionality" — verified at capability level only.
+6. **Discovered 2026-07-07, not fixed (separate task):** `merchant.routes.js`
+   POST `/orders/:id/approve` writes `User.depositBalance`/`reserveBalance` via
+   raw `$inc` — a pre-existing 04-GOVERNANCE.md §7 violation ("all wallet
+   balance reads/writes go through `walletAuthority.service.js`"). Not touched
+   by the DepositPolicy migration (only the hardcoded ratio inside that same
+   route was fixed) — rerouting these writes through `walletAuthority.service.js`
+   is a bigger, separate change and deserves its own review.
+7. **Discovered 2026-07-07, not fixed (dead code):** `paymentProcessing.service.js`
+   exports `approveDeposit()`, which duplicates the logic in
+   `merchant.routes.js`'s live `/orders/:id/approve` route but is never
+   imported or called anywhere. Left as-is (out of scope for this migration);
+   candidate for BBEPS §13 Dead Artifact cleanup.
+8. **New with this migration:** `DepositPolicy.merchantCommissionPercent` and
+   `commissionFundingSource` are fully modeled, validated, versioned, and
+   admin-editable, but no code anywhere reads them to actually pay a merchant
+   a platform-funded commission. That payout engine does not exist yet — see
+   "Next concrete step" below.
 
 ---
 
@@ -64,24 +81,97 @@ thresholds, feature toggles, notification templates, and more, admin-editable wi
 validation, defaults, examples, and audit history.
 
 **Foundation built (2026-07-03):** `domains/configuration/configVersion.model.js`
-and `configVersioning.service.js` — per-field versioning with immediate/scheduled/
-approval-gated writes, rollback that creates new history rather than deleting old,
-and a scheduled-apply function ready to wire into `cronJobs.js`. Verified with a
-control-flow mock test (no live DB available in this environment — `mongodb-memory-
-server`'s binary download is blocked by the sandbox's network allowlist, same
-constraint as live DB access) covering all three write paths: immediate apply,
-future-dated scheduling, and approval-gated holds — each confirmed to leave the live
-config untouched until its condition is met, and to produce a genuinely distinct
-status from the others (a real design gap — conflating "pending approval" with
-"scheduled" — was caught and fixed during this build, not shipped).
+and `configVersioning.service.js` — per-FIELD versioning on flat `key:'main'`
+documents (SystemConfig, TokenRates). Correct for independent values (bet limits,
+maintenance mode); still not retrofitted onto any existing config writes (deliberate,
+separate decision — see Known Open Items).
+
+**First policy vertical slice shipped (2026-07-07): `DepositPolicy`.**
+Mid-session, the plan changed from "add one `reserveRatio` field to `SystemConfig`"
+to "build the reusable whole-policy pattern," specifically because deposit%/
+reserve%/commission%/funding-source/reserve-usage-rules are one coherent business
+decision, not independent fields — versioning them separately (the
+`configVersioning.service.js` field-level approach) would let them drift out of
+sync mid-change. New files, all in `domains/configuration/`:
+  - `depositPolicy.model.js` — each document IS a version (whole-policy, not
+    per-field); exactly one ACTIVE document per currency; fields: `currency`
+    (extensible list, `SUPPORTED_CURRENCIES`), `depositAllocationPercent` +
+    `reserveAllocationPercent` (validated to sum to 100), `merchantCommissionPercent`,
+    `commissionFundingSource` (locked to `'PLATFORM'` — hard business rule, not a
+    default), `reserveUsageRules` (typed, not Mixed), plus the same
+    approval/scheduling/rollback lifecycle fields as `ConfigVersion`.
+  - `depositPolicy.service.js` — sole writer. `createPolicyVersion` (immediate /
+    scheduled / approval-gated, mirrors `setConfigField`'s status logic but also
+    supersedes the prior ACTIVE version for that currency), `approvePolicyVersion`,
+    `rollbackToPolicyVersion` (creates a new version copying old field values
+    forward — never mutates or resurrects history), `applyScheduledPolicyChanges`
+    (not yet wired into `cronJobs.js` — same status as `applyScheduledConfigChanges`),
+    `getActivePolicy` (the runtime read path), `getPolicyHistory` (audit trail).
+  - `depositPolicy.admin.routes.js` — `GET /api/admin/deposit-policy/:currency`,
+    `GET .../:currency/history`, `PUT .../:currency` (create version — requires
+    `businessJustification`), `POST .../version/:id/approve`,
+    `POST .../version/:id/rollback`. Mounted via `routes/admin/index.js`
+    (zero changes needed in `server.js`). Emits `deposit_policy_updated`
+    (registered in 04-GOVERNANCE.md §11) and writes `EnhancedAuditLog` entries
+    (category `FINANCIAL`) on every write.
+  - Verified with an 11-assertion control-flow mock test against the real
+    service code (same documented constraint as `configVersioning.service.js`:
+    `mongodb-memory-server`'s binary download is blocked by this sandbox's
+    network allowlist) — version numbering, immediate/scheduled/pending-approval
+    branching, supersession (exactly one ACTIVE per currency, always), approval
+    workflow, scheduled-apply, and rollback-never-mutates-history all passed.
+    Split arithmetic (`Math.floor` + remainder-to-deposit, BBEPS Spec 4.4)
+    separately verified to conserve the full token amount across edge cases
+    including small amounts and non-round percentages.
+
+**Runtime consumption — real, not just plumbing:**
+  - `paymentOrder.model.js` pre-save hook now reads the active `DepositPolicy`
+    for `'INR'` (statically imported, no dynamic `import()`) at order-creation
+    time only, computes `depositAllocation`/`reserveAllocation` from it, and
+    snapshots the policy version + terms onto the order
+    (`depositPolicySnapshot`) for audit/reconciliation. Falls back to a logged
+    90/10 only if no policy has ever been configured (fresh-install bootstrap
+    state).
+  - `merchant.routes.js` POST `/orders/:id/approve` — **this is the route that
+    actually runs in production** (the alternate `approveDeposit()` in
+    `paymentProcessing.service.js` is dead code, never called — see Known Open
+    Items). It previously had its OWN independent hardcoded 90/10, silently
+    ignoring the model's computed fields — a real 04-GOVERNANCE.md §2 violation
+    ("no second write path to a value with a designated single-writer
+    service") that predates this migration. Fixed to consume
+    `order.depositAllocation`/`order.reserveAllocation` instead of recomputing.
+  - `04-GOVERNANCE.md` §1 updated: new `DepositPolicy` authority added,
+    explicitly noted as superseding "Merchant earnings model: buy/sell spread
+    only, commissionRate retired" for the platform-funded-commission case —
+    not a silent contradiction of that earlier decision.
 
 **Not yet done, explicitly out of scope for this piece:**
-- No admin route/API exposes this service yet — it's the write-path infrastructure, not a feature.
-- No existing config writes were retrofitted to use it (the Merchant Pool's direct `SystemConfig.findOneAndUpdate` still bypasses this) — that's a deliberate, separate decision per the service's own scope note, not silently changed.
-- `applyScheduledConfigChanges()` is not wired into `cronJobs.js` yet.
+- No merchant-commission payout engine exists. `merchantCommissionPercent` /
+  `commissionFundingSource` are captured, versioned, validated, and readable —
+  no code executes an actual platform-funded payment to a merchant yet.
+- `applyScheduledPolicyChanges()` not wired into `cronJobs.js`.
+- The pre-existing `merchant.routes.js` raw-`$inc` wallet writes (§7 violation)
+  were not rerouted through `walletAuthority.service.js` — only the ratio
+  itself was fixed. See Known Open Items #6.
+- `SUPPORTED_CURRENCIES` includes `'USDT'` but no USDT deposit flow exists yet
+  to actually create an order with that currency — schema/service are ready,
+  nothing calls them for USDT today.
+- No admin-panel frontend UI for editing DepositPolicy yet (backend is fully
+  wired: model, service, versioning, validation, admin API, audit, runtime
+  consumption). Same shape as `/token-rates`'s existing admin page — would be
+  a small, contained follow-on.
 
-**Next concrete step:** build the first real admin-facing config field on top of
-this (a genuine BBEPS §6.14 "Simulation Mode" candidate would be the reserve ratio
-or deposit split, since those have the clearest before/after financial impact to
-show an admin), verified end-to-end, before building more of the platform on an
-unproven foundation.
+**Next concrete step (pick one):**
+1. **Admin UI for DepositPolicy** — small, contained, makes the already-built
+   backend actually usable by a human admin instead of only via `curl`/Postman.
+2. **Merchant commission payout engine** — the bigger, separate piece flagged
+   above: define how/when a merchant is actually paid `merchantCommissionPercent`
+   from platform funds (new Transaction type, ledger entries via
+   `walletAuthority.service.js`, and a decision on timing — per-order vs.
+   batched settlement).
+3. **buyRate/sellRate → 1:1 flattening** — the other major piece of the 2026-07
+   business-model change, independent of DepositPolicy, ~19 files affected.
+
+Not yet decided which — flagging as an open choice rather than picking one
+unilaterally, since #2 in particular is a real financial-flow design decision,
+not just an implementation detail.

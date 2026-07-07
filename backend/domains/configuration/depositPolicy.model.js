@@ -1,0 +1,114 @@
+// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// Domain: Configuration / Business Policy Platform (BBEPS Phase 006 §6.7-§6.10).
+// See FUTURE_CAPABILITIES.md "Business Policy Platform: Commission · Wallet ·
+// Reserve · Deposit ..." — these are grouped as one platform capability there
+// on purpose, which is why they are one policy document here, not four
+// unrelated SystemConfig fields.
+//
+// WHY A DEDICATED MODEL INSTEAD OF MORE SystemConfig FIELDS:
+// configVersioning.service.js + ConfigVersion version individual FIELDS on a
+// flat key:'main' document. That's correct for independent values (bet
+// limits, maintenance mode) but wrong here: deposit-allocation %,
+// reserve-allocation %, merchant-commission %, and its funding source are not
+// independent numbers — they are one coherent business decision about what
+// happens to a single incoming deposit. Field-level versioning would let
+// deposit%+reserve% and commission% drift out of sync mid-change (e.g. an
+// admin updates reserve% in one request and commission% in a second request
+// a minute later — with field-level versioning there is no single version ID
+// that describes "the policy in effect" during that gap). Whole-document
+// versioning closes that gap: every version is a complete, internally
+// consistent snapshot.
+//
+// NAMING: called DepositPolicy, not "Deposit Allocation Policy" or
+// "Financial Allocation Policy" — to match the sibling policies this same
+// migration anticipates (WithdrawalPolicy, SettlementPolicy, RiskPolicy,
+// MerchantPolicy): one policy per money-moving EVENT TYPE, not one policy per
+// field group. "Allocation" describes only the wallet-split fields and would
+// undersell the commission-funding-source and reserve-usage-rules fields this
+// document also owns.
+//
+// VERSIONING MODEL: each document IS a version (whole-policy, not per-field).
+// Exactly one ACTIVE document per currency at a time — enforced in
+// depositPolicy.service.js (the only allowed writer of this model; see
+// 04-GOVERNANCE.md §2 "No second write path to a value with a designated
+// single-writer service" — added as a new §1 authority in this migration).
+
+import mongoose from 'mongoose';
+
+// Currencies this policy can govern. Extending to a new currency is:
+// (1) add it here, (2) have an admin create its first DepositPolicy version
+// for it via PUT /api/admin/deposit-policy/:currency — no other schema or
+// service change required. This is the concrete mechanism behind BBEPS'
+// "future currencies" requirement.
+export const SUPPORTED_CURRENCIES = ['INR', 'USDT'];
+
+const depositPolicySchema = new mongoose.Schema({
+  currency: { type: String, required: true, enum: SUPPORTED_CURRENCIES, index: true },
+
+  // ── Wallet split ─────────────────────────────────────────────────────────
+  // Must sum to 100 — enforced in depositPolicy.service.js validatePolicyFields(),
+  // not here (cross-field validation belongs in the service so the error
+  // message can name both fields together).
+  depositAllocationPercent: { type: Number, required: true, min: 0, max: 100 },
+  reserveAllocationPercent: { type: Number, required: true, min: 0, max: 100 },
+
+  // ── Merchant commission ──────────────────────────────────────────────────
+  // % of the deposit's token value paid to the fulfilling merchant as commission.
+  merchantCommissionPercent: { type: Number, required: true, min: 0, max: 100, default: 0 },
+
+  // Current business rule (2026-07 direction): "merchant commission is NEVER
+  // deducted from users" — commission is funded by the platform, not carved
+  // out of the user's allocation. Modeled as an enum (not a boolean) so a
+  // genuinely new funding source could be added later without a field
+  // rename, but depositPolicy.service.js rejects anything but PLATFORM today
+  // — this is a hard business rule, not a default that happens to be PLATFORM.
+  commissionFundingSource: { type: String, enum: ['PLATFORM'], default: 'PLATFORM', required: true },
+
+  // ── Reserve usage rules ──────────────────────────────────────────────────
+  // Typed, not Schema.Types.Mixed — a Mixed blob would lose validation and
+  // defeat the point of a versioned, admin-editable policy. Extend with new
+  // named fields as real reserve-usage rules are defined.
+  reserveUsageRules: {
+    withdrawable:     { type: Boolean, default: false }, // can a user ever withdraw FROM reserveBalance directly?
+    settlementBuffer: { type: Boolean, default: true },   // is reserve treated as a settlement/loss buffer?
+    notes:            { type: String, default: '' },
+  },
+
+  // ── Versioning / lifecycle (whole-policy granularity — see file header) ──
+  version: { type: Number, required: true }, // human-readable, per-currency sequence: 1, 2, 3...
+
+  status: {
+    type: String,
+    enum: ['PENDING_APPROVAL', 'SCHEDULED', 'ACTIVE', 'SUPERSEDED', 'ROLLED_BACK', 'REJECTED'],
+    default: 'ACTIVE',
+    index: true,
+  },
+  approvalStatus: {
+    type: String,
+    enum: ['AUTO_APPROVED', 'PENDING_APPROVAL', 'APPROVED', 'REJECTED'],
+    default: 'AUTO_APPROVED',
+  },
+  approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  approvedAt: { type: Date },
+
+  effectiveAt: { type: Date, default: Date.now, index: true },
+  appliedAt:   { type: Date }, // null until actually made ACTIVE
+
+  // A rollback (per depositPolicy.service.js rollbackToPolicyVersion) creates
+  // a NEW version copying an old version's field values forward — it never
+  // deletes or mutates the version being restored from (BBEPS §6.10).
+  isRollback:          { type: Boolean, default: false },
+  rollbackOfVersionId: { type: mongoose.Schema.Types.ObjectId, ref: 'DepositPolicy' },
+
+  businessJustification: { type: String, required: true }, // mandatory here: every DepositPolicy
+                                                             // change is high-impact by definition
+  changedBy:     { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  changedByName: { type: String },
+
+  createdAt: { type: Date, default: Date.now, index: true },
+});
+
+depositPolicySchema.index({ currency: 1, version: -1 });
+depositPolicySchema.index({ currency: 1, status: 1, effectiveAt: 1 }); // scheduled-apply job
+
+export const DepositPolicy = mongoose.model('DepositPolicy', depositPolicySchema);
