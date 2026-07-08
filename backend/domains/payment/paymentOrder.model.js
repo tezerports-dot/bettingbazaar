@@ -21,10 +21,10 @@ const paymentOrderSchema = new mongoose.Schema({
   // to this schema once a non-INR deposit flow actually exists).
   // 97/3 betting deduction:  3% platform fee deducted on settlement
   tokenAmount:    { type: Number, required: true },   // BB tokens to transfer
-  fiatAmount:     { type: Number, required: true },   // INR user pays/receives
+  fiatAmount:     { type: Number, required: true },   // INR user pays/receives (= tokenAmount, fixed 1:1 since 2026-07-08)
   amount:         { type: Number },                   // alias = fiatAmount (set on save)
-  rateUsed:       { type: Number, required: true },   // buy or sell rate used
-  merchantProfit: { type: Number, default: 0 },       // (buyRate - sellRate) * tokenAmount
+  rateUsed:       { type: Number, required: true },   // always 1 for new orders (fixed 1:1); historical orders retain their real rate
+  merchantProfit: { type: Number, default: 0 },       // spread retired 2026-07-08 — always 0 for new orders; historical audit only
   merchantFee:    { type: Number, default: 0 },       // fee paid to merchant
 
   // ── Token Allocation ──────────────────────────────────────────────────────

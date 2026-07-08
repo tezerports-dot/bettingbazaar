@@ -168,7 +168,6 @@ export async function createDepositOrder(userId, tokenAmount) {
   try {
     const User         = mongoose.model('User');
     const PaymentOrder = mongoose.model('PaymentOrder');
-    const TokenRates   = mongoose.model('TokenRates');
     const SystemConfig = mongoose.model('SystemConfig');
 
     const cfg        = await SystemConfig.findOne({ key: 'main' }).lean();
@@ -187,13 +186,12 @@ export async function createDepositOrder(userId, tokenAmount) {
     if (user.kycStatus !== 'APPROVED')
       throw Object.assign(new Error('Please complete KYC verification to purchase tokens'), { status: 403 });
 
-    const rates = await TokenRates.findOne({ key: 'main' }, null, withSession(session));
-    if (!rates?.buyRate || !rates?.sellRate)
-      throw Object.assign(new Error('Token rates not configured. Please contact admin.'), { status: 503 });
-
-    const buyRate            = rates.buyRate;
-    const fiatAmount         = tokenAmount * buyRate;
-    const merchantProfit     = tokenAmount * (buyRate - rates.sellRate);
+    // Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08):
+    // 1 BB token = ₹1, no buy/sell spread. Merchant earnings come from the
+    // future cycle-completion-triggered Merchant Performance Bonus, never
+    // from a rate spread — see ENTERPRISE_DECISIONS.md.
+    const fiatAmount         = tokenAmount;
+    const merchantProfit     = 0; // spread retired; schema default is also 0
     // depositAllocation / reserveAllocation are NOT computed here — the
     // PaymentOrder pre-save hook (paymentOrder.model.js) is the single
     // computation site, deriving them from the active DepositPolicy. This
@@ -210,7 +208,7 @@ export async function createDepositOrder(userId, tokenAmount) {
       userId:            user._id,
       tokenAmount,
       fiatAmount,
-      rateUsed:          buyRate,
+      rateUsed:          1, // fixed 1:1 conversion
       merchantProfit,
       status:            'PENDING_QUEUE',
       createdAt:         new Date(),
@@ -258,7 +256,6 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
   try {
     const User         = mongoose.model('User');
     const PaymentOrder = mongoose.model('PaymentOrder');
-    const TokenRates   = mongoose.model('TokenRates');
     const SystemConfig = mongoose.model('SystemConfig');
 
     const cfg         = await SystemConfig.findOne({ key: 'main' }).lean();
@@ -297,12 +294,10 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
         { status: 400, balance: { deposit: user.depositBalance, winnings: user.winningsBalance } }
       );
 
-    const rates = await TokenRates.findOne({ key: 'main' }, null, withSession(session));
-    if (!rates?.sellRate)
-      throw Object.assign(new Error('Token rates not configured. Please contact admin.'), { status: 503 });
-
-    const sellRate   = rates.sellRate;
-    const fiatAmount = tokenAmount * sellRate;
+    // Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08):
+    // 1 BB token = ₹1 on withdrawal too — the user receives exactly the
+    // token amount in fiat, no spread taken.
+    const fiatAmount = tokenAmount;
 
     const order = new PaymentOrder({
       orderId:         `WD_${crypto.randomBytes(12).toString('hex')}`,
@@ -310,7 +305,7 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
       userId:          user._id,
       tokenAmount,
       fiatAmount,
-      rateUsed:        sellRate,
+      rateUsed:        1, // fixed 1:1 conversion
       status:          'PENDING_QUEUE',
       createdAt:       new Date(),
       escrowLocked:    true,

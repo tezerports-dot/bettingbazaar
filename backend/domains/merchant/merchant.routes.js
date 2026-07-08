@@ -188,18 +188,16 @@ router.post('/auth/login', async (req, res) => {
 
 router.get('/profile', merchantAuth, async (req, res) => {
     try {
-        const [merchant, rates] = await Promise.all([
-            mongoose.model('Merchant').findById(req.merchantId).lean(),
-            mongoose.model('TokenRates').findOne({ key: 'main' }).lean(),
-        ]);
+        const merchant = await mongoose.model('Merchant').findById(req.merchantId).lean();
         if (!merchant) return res.status(404).json({ success: false, message: 'Merchant profile not found.' });
-        const buyPrice  = rates?.buyRate  ?? 0;
-        const sellPrice = rates?.sellRate ?? 0;
+        // Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08):
+        // no buy/sell spread. Shape kept for merchant-panel compatibility;
+        // merchant earnings move to the future Merchant Performance Bonus.
         res.json({
             success: true,
             merchant: {
                 ...formatMerchant(merchant, req.user),
-                prices: { buyPrice, sellPrice, profit: parseFloat((buyPrice - sellPrice).toFixed(4)) },
+                prices: { buyPrice: 1, sellPrice: 1, profit: 0 },
             },
         });
     } catch (err) {
