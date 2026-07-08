@@ -44,15 +44,15 @@ compute, or default this value independently.
 
 | Value | Allowed Owner |
 |---|---|
-| Token buy/sell rates | `TokenRates` model — **NOT SystemSettings** (C-05 fix). Being phased out in favor of fixed 1:1 internal conversion (2026-07 direction); not yet removed. |
-| Deposit/reserve wallet split, merchant commission %, commission funding source, reserve usage rules (per currency) | `DepositPolicy` model (`domains/configuration/depositPolicy.model.js`) — whole-document versioned, written only via `depositPolicy.service.js`. **Supersedes** the "Merchant earnings model: Buy/sell spread only, commissionRate retired" line below for the specific case of commission funded by the platform on deposit approval — see that line's note. |
+| Token buy/sell rates | **REMOVED 2026-07-08** — token conversion is fixed 1:1 (1 BB token = ₹1), not configurable. The `TokenRates` model, its admin endpoints (`/api/admin/token-rates`), and the admin UI page are gone; public rate endpoints remain but return constant 1/1/0 for client compatibility. Do not reintroduce configurable rates — see ENTERPRISE_DECISIONS.md 2026-07-08. |
+| Deposit/reserve wallet split, reserve usage rules (per currency) | `DepositPolicy` model (`domains/configuration/depositPolicy.model.js`) — whole-document versioned, written only via `depositPolicy.service.js`. **Corrected 2026-07-08:** `merchantCommissionPercent`/`commissionFundingSource` were removed — merchant incentive pay is cycle-completion-triggered (Merchant Performance Bonus), not deposit-triggered, and does not belong on this policy. See the "Merchant earnings model" line below. |
 | Bet min/max (per cycle type) | `SystemConfig.betLimits` |
 | Deposit/withdrawal limits (platform-wide) | `SystemConfig` |
 | Per-merchant order min/max | `Merchant.minOrder` / `Merchant.maxOrder` (edited per-merchant from admin) |
 | Merchant token capacity (buy orders) | `Merchant.tokenBalance` (current wallet) |
 | Merchant token capacity (sell orders) | Lifetime initial top-up (tracked in merchant wallet history) |
 | Referral commission rates | `CommissionLevel.f1Rate` only — F2/F3 not implemented (H-03) |
-| Merchant earnings model | Buy/sell spread only. `Merchant.commissionRate` is retired. **Superseded 2026-07 (in progress):** business direction is moving to platform-funded commission (`DepositPolicy.merchantCommissionPercent`, funded via `commissionFundingSource: 'PLATFORM'`, never deducted from users) as buyRate/sellRate spread is phased out toward 1:1 conversion. `DepositPolicy` captures and versions this commission % today; no payout engine yet reads it to actually pay a merchant — that is separate, not-yet-started work (see PHASE_STATUS.md). Do not reintroduce `Merchant.commissionRate` — the new mechanism is a `DepositPolicy` field, not a revival of the old per-merchant field. |
+| Merchant earnings model | **The buy/sell spread is retired (2026-07-08, fixed 1:1 conversion)** — new orders carry `merchantProfit: 0`. `Merchant.commissionRate` remains retired; the interim `DepositPolicy.merchantCommissionPercent` mechanism was removed 2026-07-08 before ever being consumed. The go-forward mechanism is the **Merchant Performance Bonus**: triggered by completed buy+sell cycles, a % of cycle volume, funded from platform revenue, NEVER deducted from users/deposits/withdrawals. Not yet built — see EXECUTION_QUEUE.md and ENTERPRISE_DECISIONS.md 2026-07-08. Do not reintroduce `Merchant.commissionRate`, a rate spread, or a deposit-triggered commission. |
 | Sub-admin permission keys | `User.subAdminPermissions` schema — frontend imports from `utils/permissions.ts` |
 | Chat rules (cooldown, length, banned words) | Chat config document via `/api/chat/config` |
 | Branding (colors, logo, names, banners) | `Branding` document — **see §3 and §12** |
@@ -84,7 +84,7 @@ compute, or default this value independently.
   social links in Branding removed (H-04). `SupportLinks` is the sole social-link authority.
 - **No frontend enum/constant mirror with zero consumers.**
 - **No second write path to a value with a designated single-writer service.**
-  Wallet writes: `walletAuthority.service.js` only. Token rates: `TokenRates` page only.
+  Wallet writes: `walletAuthority.service.js` only. (Token rates are no longer writable at all — fixed 1:1 since 2026-07-08.)
 - **No real-time event emitted under more than one name for the same logical state change.**
 - **No private real-time channel without a verified backend registration route.**
 - **No version literal in any component source file.** Version lives in `package.json` and
@@ -317,7 +317,7 @@ requires no governance changes:
 |---|---|---|
 | Branding | `Branding` model | Socket `branding` event → `localStorage.app_branding` |
 | System config | `SystemConfig` model | Socket `system_config` event |
-| Token rates | `TokenRates` model | Socket `system_config` event |
+| Token rates | Fixed 1:1 constant (2026-07-08) — no model | Socket `system_config` event (reports constant 1/1) |
 | Support links | `SupportLinks` model | REST `GET /api/content/support-links` |
 | Permission keys | `User.subAdminPermissions` | JWT payload on login |
 | Routes | Each panel's own `constants.ts` | Import-time constant |

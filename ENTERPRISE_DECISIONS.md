@@ -8,6 +8,52 @@ need a durable home.
 
 ---
 
+## 2026-07-08 — buyRate/sellRate fully flattened to fixed 1:1; TokenRates removed
+
+**Decision:** token conversion is now a fixed 1:1 constant (1 BB token = ₹1)
+across the entire stack. The `TokenRates` model, its admin endpoints
+(GET/PUT `/api/admin/token-rates`), the admin-panel Token Rates page, and
+all rate reads in order creation, public config endpoints, and all three
+frontends are gone. New orders carry `rateUsed: 1`, `fiatAmount ===
+tokenAmount`, and `merchantProfit: 0`.
+
+**Sequencing:** executed in five slices, each independently green:
+(1) order-creation conversion math, (2) public rate surfaces flattened to
+constants, (3) user-panel + merchant-panel UI, (4) admin routes + admin
+page removal, (5) the model itself. This honored the already-established
+dependency order — flattening began only after the Business Policy
+foundation (DepositPolicy) shipped 2026-07-07.
+
+**Compatibility choices, made deliberately:**
+- Public rate endpoints (`/api/payments/rates`, `/api/v1/tokens/rate`,
+  `/api/v1/token/rates`) and the `system_config` payload keep their
+  response shapes but return constant 1/1/0 — old clients keep working;
+  their math degrades to identity.
+- Historical `PaymentOrder` documents keep their real `rateUsed`/
+  `merchantProfit` values; only new orders are 1:1. The profit-engine
+  admin report still reads per-order stored `fiatAmount`, so historical
+  revenue figures are unaffected.
+- `'TokenRates'` stays in the `ConfigVersion.modelName` enum so historical
+  config-version audit documents stay valid, but it was removed from
+  `MODEL_BY_KEY` in `configVersioning.service.js`, so no new TokenRates
+  version can ever be written.
+- The old `tokenrates` Mongo collection is left in place (nothing reads or
+  writes it) — dropping it is a DB operation, not a code change.
+
+**Merchant earnings consequence (explicit, not accidental):** with the
+spread gone and `DepositPolicy.merchantCommissionPercent` removed (entry
+below), merchants currently earn nothing per order. This is the accepted
+interim state per the established dependency chain: the Merchant
+Performance Bonus engine (cycle-completion-triggered, platform-funded) is
+the next major Merchant Platform work item — see EXECUTION_QUEUE.md.
+
+**Also deleted:** `backend/scripts/migrate-wallet-system.js` — marked
+APPLIED since before this migration; §13 dead-artifact policy says applied
+migrations are deleted, and it imported the now-removed model, so keeping
+it would have left knowingly broken code.
+
+---
+
 ## 2026-07-08 — Correction: merchant incentive removed from DepositPolicy;
 ## "Merchant Performance Bonus" is cycle-completion-triggered, not deposit-triggered
 

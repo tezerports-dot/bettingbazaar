@@ -52,16 +52,22 @@ deleted, so this file also works as a short-form recent-history log.
 - [x] Wired `applyScheduledPolicyChanges()` and `applyScheduledConfigChanges()`
       into `cronJobs.js` (60s interval, same dynamic-import pattern as the
       order expiry worker). Per-item failures logged, never thrown.
+- [x] **buyRate/sellRate → 1:1 flattening — COMPLETE.** Five slices, each a
+      commit on `main`: (1) order-creation math (rateUsed=1, fiat=tokens,
+      merchantProfit=0), (2) public rate surfaces → constant 1/1/0 with
+      shapes kept for client compat, (3) user-panel + merchant-panel UI,
+      (4) admin token-rates routes + admin page removed, (5) `TokenRates`
+      model removed (`'TokenRates'` kept in ConfigVersion enum for
+      historical audit docs; `migrate-wallet-system.js` deleted per §13).
+      04-GOVERNANCE.md §1/§2/§14 updated. See ENTERPRISE_DECISIONS.md.
 
 ---
 
 ## NEXT — per established dependency order (not an open choice)
 
-- [ ] **buyRate/sellRate → 1:1 flattening.** Explicitly deferred until the
-      Business Policy foundation was complete (2026-07-07 decision); that
-      foundation (model + service + admin API + UI) is now done. ~19 files
-      reference `buyRate`/`sellRate` across models, routes, services, and
-      both frontends (user-panel, admin-panel).
+- [ ] **Phase 007 — Operations Platform.** Orchestration-only admin control
+      center; owns NO data (2026-07-03 decision). First 006-exit criterion
+      work is done; this is the next roadmap phase.
 
 ## AFTER THAT — Merchant Platform / Revenue & Settlement Platform scoped
 
@@ -99,3 +105,17 @@ deleted, so this file also works as a short-form recent-history log.
       applied" / patch files must not live in the repo root). Not deleted
       here — out of scope for this task, flagged instead per the "never
       silently fix out-of-scope issues" rule.
+- [ ] **Discovered 2026-07-08:** merchant-panel `npm run build` is broken in
+      the pristine repo — its build script is `tsc && vite build` and `tsc`
+      fails with 20 pre-existing errors (OrderCard null-safety, unused
+      imports, etc.). `vite build` alone succeeds. Not introduced by and not
+      fixed in the 1:1 flattening (verified identical error list before/
+      after); needs its own cleanup pass.
+- [ ] **Discovered 2026-07-08:** the user panel has ~95 pre-existing
+      `tsc --noEmit` errors (two of which — broken `TokenRates` type imports
+      — the 1:1 flattening incidentally fixed). Vite builds fine; type
+      cleanup is a separate task.
+- [ ] Old `tokenrates` Mongo collection still exists with historical data;
+      nothing reads or writes it since the TokenRates model removal. Drop it
+      during a scheduled DB maintenance window if desired (DB operation, not
+      a code change).

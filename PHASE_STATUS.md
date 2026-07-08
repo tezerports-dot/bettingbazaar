@@ -17,7 +17,7 @@ Last updated: 2026-07-08
 | 003 — Domain Discovery & Bounded Contexts | Substantively complete | 13 domains with real code have enforced bounded contexts |
 | 004 — Target Enterprise Architecture | Decision locked, execution complete for existing code | backend/domains/ + backend/shared/ inside the existing app |
 | 005 — Technology Strategy | Corrected 2026-07-03 | Originally under-scoped (language choice only). Now includes real research: Provider/Adapter pattern and Policy/Rules-Engine pattern both confirmed as standard, industry-proven fits for this platform. See FUTURE_CAPABILITIES.md architecture decision. |
-| 006 — Configuration Engine / Business Policy Platform | First vertical slice shipped (2026-07-07); scope corrected (2026-07-08) | `domains/configuration/depositPolicy.model.js` + `.service.js` + `.admin.routes.js` — whole-document versioned policy (deposit/reserve split, reserve usage rules, per-currency). Wired into real runtime consumers: `paymentOrder.model.js` pre-save hook and `merchant.routes.js` POST /orders/:id/approve (previously two independently hardcoded 90/10s — both now read the same policy-derived stored fields). Scheduled-apply now wired into `cronJobs.js` (60s interval). Merchant commission fields removed 2026-07-08 (see Known Open Items #8) — they never belonged on a deposit-triggered policy. Renamed in direction (not yet fully in code) to Business Policy Platform per 2026-07-03 decision — same underlying phase, wider scope. THIS IS THE CURRENT ACTIVE PHASE. |
+| 006 — Configuration Engine / Business Policy Platform | Core complete (2026-07-08) | DepositPolicy vertical slice (model/service/admin API/UI, wired into real runtime consumers) shipped 2026-07-07; scope corrected 2026-07-08 (merchant commission fields removed — deposit-triggered policy can't own cycle-triggered incentive pay); scheduled-apply wired into `cronJobs.js` (60s); **buyRate/sellRate fully flattened to fixed 1:1 and `TokenRates` removed (2026-07-08)**. Renamed in direction to Business Policy Platform per 2026-07-03 decision. Future sibling policies (Withdrawal/Risk/Merchant/Settlement) remain open Business Policy Platform work, but the 006 exit criteria are met. |
 | 007 — Enterprise Control Center / Operations Platform | Not started | Confirmed as orchestration-only, does not own data (2026-07-03) |
 | 008 — Financial Core (ledger-first) | Not started | Wallet has correct single-writer authority; not the same as ledger-event-sourcing |
 | 009 — Workflow Engine | Not started | — |
@@ -199,10 +199,17 @@ payment providers) a natural home without another structural migration.
   the API directly) to create v1 for `INR`. This is expected bootstrap
   behavior, not a bug.
 
-**Next concrete step: buyRate/sellRate → 1:1 flattening.** Per the decision
-made earlier this same day (2026-07-07): "the buyRate/sellRate 1:1 migration
-should begin only after this Business Policy foundation is complete." That
-foundation (DepositPolicy model/service/admin-API/UI) is now complete —
-this is the next task per that already-established dependency order, not a
-new choice being made now. ~19 files reference `buyRate`/`sellRate` across
-models, routes, services, and both frontends (user-panel, admin-panel).
+**buyRate/sellRate → 1:1 flattening: DONE (2026-07-08).** Executed in five
+slices directly on `main` (per owner instruction, no feature branches):
+order-creation math (`rateUsed: 1`, `fiatAmount === tokenAmount`,
+`merchantProfit: 0`), public rate surfaces (shapes kept, constant 1/1/0),
+user-panel + merchant-panel UI, admin routes + Token Rates page removal,
+and finally the `TokenRates` model itself. Historical orders keep their
+real stored values; `'TokenRates'` remains in the `ConfigVersion` enum for
+historical audit docs only. `migrate-wallet-system.js` deleted per §13.
+See ENTERPRISE_DECISIONS.md 2026-07-08 for compatibility choices and the
+explicit interim merchant-earnings consequence.
+
+**Next per the roadmap:** Phase 007 (Operations Platform, orchestration-only)
+and the Merchant Performance Bonus engine (Merchant Platform: Cycle Tracker →
+Bonus Calculator → Bonus Ledger) — see EXECUTION_QUEUE.md for order.

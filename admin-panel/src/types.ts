@@ -269,7 +269,7 @@ export interface PaymentOrder {
   tokenAmount: number;
   fiatAmount: number;
   rateUsed: number;
-  merchantProfit: number; // = (buyRate - sellRate) * tokenAmount
+  merchantProfit: number; // spread retired 2026-07-08 (fixed 1:1) — 0 for new orders, historical audit only
   status: OrderStatus;
   assignedBy?: string;
   assignedAt?: string;
