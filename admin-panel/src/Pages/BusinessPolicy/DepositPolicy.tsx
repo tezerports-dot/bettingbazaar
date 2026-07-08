@@ -4,12 +4,16 @@
  *
  * Admin UI for backend/domains/configuration/depositPolicy.{model,service,admin.routes}.js.
  * This is the first page in what FUTURE_CAPABILITIES.md calls the "Business
- * Policy Platform" — deposit/reserve split, merchant commission, and reserve
- * usage rules are versioned together as ONE policy per currency because they
- * describe a single coherent business decision, not independent settings.
- * Future siblings (Withdrawal Policy, Risk Policy, Merchant Policy...) belong
- * in this same Pages/BusinessPolicy/ folder and the same 'policy' nav group,
- * not scattered into Finance/Settings.
+ * Policy Platform" — deposit/reserve split and reserve usage rules are
+ * versioned together as ONE policy per currency because they describe a
+ * single coherent business decision, not independent settings. This page
+ * governs ONLY the deposit/reserve split and reserve usage rules — merchant
+ * incentive pay ("Merchant Performance Bonus") is a separate, cycle-
+ * completion-triggered mechanism, not a deposit-time one (2026-07-08
+ * correction, see ENTERPRISE_DECISIONS.md). Future siblings (Withdrawal
+ * Policy, Risk Policy, Merchant Policy...) belong in this same
+ * Pages/BusinessPolicy/ folder and the same 'policy' nav group, not
+ * scattered into Finance/Settings.
  */
 import React, { useEffect, useState, useCallback } from 'react';
 import {
@@ -34,14 +38,12 @@ const CURRENCIES: DepositPolicyCurrency[] = ['INR', 'USDT'];
 const BOOTSTRAP_DEFAULTS = {
   depositAllocationPercent: 90,
   reserveAllocationPercent: 10,
-  merchantCommissionPercent: 0,
   reserveUsageRules: { withdrawable: false, settlementBuffer: true, notes: '' },
 };
 
 interface FormState {
   depositAllocationPercent: string;
   reserveAllocationPercent: string;
-  merchantCommissionPercent: string;
   withdrawable: boolean;
   settlementBuffer: boolean;
   notes: string;
@@ -54,7 +56,6 @@ function blankForm(seed?: Partial<FormState>): FormState {
   return {
     depositAllocationPercent: String(BOOTSTRAP_DEFAULTS.depositAllocationPercent),
     reserveAllocationPercent: String(BOOTSTRAP_DEFAULTS.reserveAllocationPercent),
-    merchantCommissionPercent: String(BOOTSTRAP_DEFAULTS.merchantCommissionPercent),
     withdrawable: BOOTSTRAP_DEFAULTS.reserveUsageRules.withdrawable,
     settlementBuffer: BOOTSTRAP_DEFAULTS.reserveUsageRules.settlementBuffer,
     notes: BOOTSTRAP_DEFAULTS.reserveUsageRules.notes,
@@ -118,7 +119,6 @@ export const DepositPolicy: React.FC = () => {
       blankForm({
         depositAllocationPercent: String(activePolicy.depositAllocationPercent),
         reserveAllocationPercent: String(activePolicy.reserveAllocationPercent),
-        merchantCommissionPercent: String(activePolicy.merchantCommissionPercent),
         withdrawable: activePolicy.reserveUsageRules?.withdrawable ?? false,
         settlementBuffer: activePolicy.reserveUsageRules?.settlementBuffer ?? true,
         notes: activePolicy.reserveUsageRules?.notes ?? '',
@@ -149,18 +149,13 @@ export const DepositPolicy: React.FC = () => {
   const handleSubmit = async () => {
     const depositPct = parseFloat(form.depositAllocationPercent);
     const reservePct = parseFloat(form.reserveAllocationPercent);
-    const commissionPct = parseFloat(form.merchantCommissionPercent);
 
-    if (isNaN(depositPct) || isNaN(reservePct) || isNaN(commissionPct)) {
+    if (isNaN(depositPct) || isNaN(reservePct)) {
       toast.error('Please enter valid numbers');
       return;
     }
     if (Math.abs(depositPct + reservePct - 100) > 0.01) {
       toast.error('Deposit % + Reserve % must equal 100');
-      return;
-    }
-    if (commissionPct < 0 || commissionPct > 100) {
-      toast.error('Commission % must be between 0 and 100');
       return;
     }
     if (!form.justification.trim()) {
@@ -173,8 +168,6 @@ export const DepositPolicy: React.FC = () => {
       const res = await api.depositPolicy.update(currency, {
         depositAllocationPercent: depositPct,
         reserveAllocationPercent: reservePct,
-        merchantCommissionPercent: commissionPct,
-        commissionFundingSource: 'PLATFORM',
         reserveUsageRules: {
           withdrawable: form.withdrawable,
           settlementBuffer: form.settlementBuffer,
@@ -219,14 +212,11 @@ export const DepositPolicy: React.FC = () => {
   };
 
   // Example calculator — uses the active policy if one exists, otherwise the
-  // same 90/10/0 fallback the backend itself falls back to.
+  // same 90/10 fallback the backend itself falls back to.
   const previewReservePct = activePolicy?.reserveAllocationPercent ?? BOOTSTRAP_DEFAULTS.reserveAllocationPercent;
-  const previewDepositPct = activePolicy?.depositAllocationPercent ?? BOOTSTRAP_DEFAULTS.depositAllocationPercent;
-  const previewCommissionPct = activePolicy?.merchantCommissionPercent ?? BOOTSTRAP_DEFAULTS.merchantCommissionPercent;
   const amountNum = parseFloat(exampleAmount || '0');
   const previewReserve = Math.floor(amountNum * (previewReservePct / 100));
   const previewDeposit = amountNum - previewReserve;
-  const previewCommission = amountNum * (previewCommissionPct / 100);
 
   const historyColumns = [
     { key: 'version', label: 'V', render: (v: DepositPolicyVersion) => (
@@ -237,9 +227,6 @@ export const DepositPolicy: React.FC = () => {
     )},
     { key: 'split', label: 'Deposit / Reserve', render: (v: DepositPolicyVersion) => (
       <span>{v.depositAllocationPercent}% / {v.reserveAllocationPercent}%</span>
-    )},
-    { key: 'commission', label: 'Commission', render: (v: DepositPolicyVersion) => (
-      <span>{v.merchantCommissionPercent}% ({v.commissionFundingSource.toLowerCase()})</span>
     )},
     { key: 'effectiveAt', label: 'Effective', render: (v: DepositPolicyVersion) => (
       <span className="text-sm text-gray-400">{new Date(v.effectiveAt).toLocaleString()}</span>
@@ -290,7 +277,7 @@ export const DepositPolicy: React.FC = () => {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold mb-2">Deposit Policy</h1>
-          <p className="text-gray-400">Business Policy Platform — deposit/reserve split &amp; merchant commission</p>
+          <p className="text-gray-400">Business Policy Platform — deposit/reserve split &amp; reserve usage rules</p>
         </div>
         <div className="flex bg-dark-700 rounded-lg p-1">
           {CURRENCIES.map((c) => (
@@ -314,7 +301,6 @@ export const DepositPolicy: React.FC = () => {
             <p className="font-semibold text-blue-400 mb-1">What This Policy Governs</p>
             <ul className="space-y-1 text-gray-300">
               <li>• <strong>Deposit / Reserve split:</strong> how each deposit's tokens divide between the user's deposit balance and the platform reserve</li>
-              <li>• <strong>Merchant commission:</strong> % of the deposit paid to the fulfilling merchant — always platform-funded, never deducted from the user</li>
               <li>• <strong>Reserve usage rules:</strong> whether reserve funds are user-withdrawable and whether they act as a settlement buffer</li>
             </ul>
             <p className="mt-2 text-gray-400">
@@ -330,7 +316,7 @@ export const DepositPolicy: React.FC = () => {
         <EmptyState
           icon={Landmark}
           title={`No Deposit Policy configured for ${currency}`}
-          description={`Orders currently fall back to a hardcoded ${BOOTSTRAP_DEFAULTS.depositAllocationPercent}/${BOOTSTRAP_DEFAULTS.reserveAllocationPercent} split with 0% commission — configure a real policy to make this admin-editable and audited.`}
+          description={`Orders currently fall back to a hardcoded ${BOOTSTRAP_DEFAULTS.depositAllocationPercent}/${BOOTSTRAP_DEFAULTS.reserveAllocationPercent} split — configure a real policy to make this admin-editable and audited.`}
           action={{ label: 'Configure Now', onClick: openConfigureNow }}
         />
       ) : (
@@ -351,12 +337,6 @@ export const DepositPolicy: React.FC = () => {
                   <p className="text-sm text-gray-400 mb-1">Reserve Wallet</p>
                   <p className="text-2xl font-bold text-blue-500">{activePolicy.reserveAllocationPercent}%</p>
                 </div>
-              </div>
-              <div className="p-4 bg-gold-500/10 border border-gold-500/30 rounded-lg">
-                <p className="text-sm text-gray-400 mb-1">Merchant Commission</p>
-                <p className="text-2xl font-bold text-gold-500">
-                  {activePolicy.merchantCommissionPercent}% — funded by {activePolicy.commissionFundingSource.toLowerCase()}, never the user
-                </p>
               </div>
               <div className="p-3 bg-dark-700 rounded-lg text-sm">
                 <p className="text-gray-400">Reserve usage: {activePolicy.reserveUsageRules.withdrawable ? 'user-withdrawable' : 'not user-withdrawable'}, {activePolicy.reserveUsageRules.settlementBuffer ? 'settlement buffer' : 'not a settlement buffer'}</p>
@@ -399,14 +379,9 @@ export const DepositPolicy: React.FC = () => {
                   <span className="text-sm text-gray-400">→ Reserve Wallet</span>
                   <span className="text-xl font-bold text-blue-500">{previewReserve.toLocaleString()}</span>
                 </div>
-                <div className="p-4 bg-gold-500/10 border border-gold-500/30 rounded-lg flex justify-between items-center">
-                  <span className="text-sm text-gray-400">→ Merchant Commission (platform-funded, on top)</span>
-                  <span className="text-xl font-bold text-gold-500">{previewCommission.toLocaleString()}</span>
-                </div>
               </div>
               <p className="text-xs text-gray-500">
                 Deposit + Reserve always equal the full deposit amount — the user never loses value.
-                Commission is paid separately by the platform, never subtracted from the figures above.
               </p>
             </div>
           </div>
@@ -461,22 +436,6 @@ export const DepositPolicy: React.FC = () => {
               <p className="text-sm text-red-400">Deposit % + Reserve % must equal 100</p>
             </div>
           )}
-
-          <div>
-            <label className="label">Merchant Commission %</label>
-            <input
-              type="number" step="0.01" min="0" max="100"
-              value={form.merchantCommissionPercent}
-              onChange={(e) => setForm((f) => ({ ...f, merchantCommissionPercent: e.target.value }))}
-              className="input"
-            />
-          </div>
-
-          <div>
-            <label className="label">Commission Funding Source</label>
-            <input type="text" value="PLATFORM — never deducted from users" disabled className="input opacity-60 cursor-not-allowed" />
-            <p className="text-xs text-gray-500 mt-1">Hard business rule, not editable here. See 04-GOVERNANCE.md §1.</p>
-          </div>
 
           <div className="p-4 bg-dark-700 rounded-lg space-y-3">
             <p className="text-sm font-semibold text-gray-300">Reserve Usage Rules</p>

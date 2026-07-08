@@ -189,9 +189,8 @@ export async function rollbackToVersion(versionId, actor) {
 }
 
 /**
- * applyScheduledConfigChanges — run on a schedule (e.g. every minute via
- * cronJobs.js) to apply SCHEDULED versions whose effectiveAt has passed.
- * Not wired into cronJobs.js yet — this is the function to call once it is.
+ * applyScheduledConfigChanges — run every 60 seconds via cronJobs.js to
+ * apply SCHEDULED versions whose effectiveAt has passed.
  */
 export async function applyScheduledConfigChanges() {
   const due = await ConfigVersion.find({ status: 'SCHEDULED', effectiveAt: { $lte: new Date() } });

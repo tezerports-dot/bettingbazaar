@@ -57,16 +57,15 @@ router.get('/deposit-policy/:currency/history', authenticate, isAdminOrSubAdmin,
 });
 
 // PUT /api/admin/deposit-policy/:currency — create a new version.
-// Body: { depositAllocationPercent, reserveAllocationPercent, merchantCommissionPercent,
-//         commissionFundingSource, reserveUsageRules, justification, effectiveAt, requireApproval }
+// Body: { depositAllocationPercent, reserveAllocationPercent,
+//         reserveUsageRules, justification, effectiveAt, requireApproval }
 router.put('/deposit-policy/:currency', authenticate, isAdmin, async (req, res) => {
   try {
     const currency = assertCurrency(req, res);
     if (!currency) return;
 
     const {
-      depositAllocationPercent, reserveAllocationPercent,
-      merchantCommissionPercent, commissionFundingSource, reserveUsageRules,
+      depositAllocationPercent, reserveAllocationPercent, reserveUsageRules,
       justification, effectiveAt, requireApproval,
     } = req.body;
 
@@ -82,7 +81,7 @@ router.put('/deposit-policy/:currency', authenticate, isAdmin, async (req, res) 
     try {
       doc = await createPolicyVersion(
         currency,
-        { depositAllocationPercent, reserveAllocationPercent, merchantCommissionPercent, commissionFundingSource, reserveUsageRules },
+        { depositAllocationPercent, reserveAllocationPercent, reserveUsageRules },
         actor,
         { justification, effectiveAt: effectiveAt ? new Date(effectiveAt) : undefined, requireApproval: !!requireApproval }
       );
@@ -105,8 +104,6 @@ router.put('/deposit-policy/:currency', authenticate, isAdmin, async (req, res) 
         status: doc.status,
         depositAllocationPercent: doc.depositAllocationPercent,
         reserveAllocationPercent: doc.reserveAllocationPercent,
-        merchantCommissionPercent: doc.merchantCommissionPercent,
-        commissionFundingSource: doc.commissionFundingSource,
         justification,
       },
       success: true,

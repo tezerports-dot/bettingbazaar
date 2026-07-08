@@ -48,5 +48,32 @@ export function registerCronJobs(rebuildLeaderboard) {
     } catch (e) { console.error('[expiry-worker] cron error:', e.message); }
   }, 60 * 1000);
 
+  // ── Scheduled policy/config apply worker — runs every 60 seconds ────────────
+  // Activates DepositPolicy versions and ConfigVersion field changes whose
+  // effectiveAt has passed. Both functions process every due item independently
+  // and return a per-item result; a single item's failure is logged, never
+  // thrown, so it can't block the rest of the batch or crash the interval.
+  setInterval(async () => {
+    try {
+      const { applyScheduledPolicyChanges } = await import('../domains/configuration/depositPolicy.service.js');
+      const results = await applyScheduledPolicyChanges();
+      for (const r of results) {
+        if (!r.applied) console.error(`[scheduled-policy] Failed to apply ${r.currency} version ${r.versionId}:`, r.error);
+      }
+      const applied = results.filter(r => r.applied).length;
+      if (applied > 0) console.log(`[scheduled-policy] Applied ${applied} DepositPolicy version(s)`);
+    } catch (e) { console.error('[scheduled-policy] cron error:', e.message); }
+
+    try {
+      const { applyScheduledConfigChanges } = await import('../domains/configuration/configVersioning.service.js');
+      const results = await applyScheduledConfigChanges();
+      for (const r of results) {
+        if (!r.applied) console.error(`[scheduled-config] Failed to apply version ${r.versionId}:`, r.error);
+      }
+      const applied = results.filter(r => r.applied).length;
+      if (applied > 0) console.log(`[scheduled-config] Applied ${applied} config version(s)`);
+    } catch (e) { console.error('[scheduled-config] cron error:', e.message); }
+  }, 60 * 1000);
+
   console.log('✅ Cron jobs registered');
 }

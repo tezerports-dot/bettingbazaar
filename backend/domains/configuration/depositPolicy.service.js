@@ -9,11 +9,11 @@
 //   - backend/domains/payment/paymentOrder.model.js pre-save hook — computes
 //     depositAllocation/reserveAllocation for new DEPOSIT orders and snapshots
 //     the policy version used onto the order (depositPolicySnapshot).
-//   - Not yet wired: an actual merchant-commission payout engine. This service
-//     makes merchantCommissionPercent / commissionFundingSource versioned,
-//     validated, and readable — but no code in this repository yet executes a
-//     platform-funded commission payment to a merchant. See the migration
-//     notes in PHASE_STATUS.md for why that's a deliberately separate task.
+//
+// SCOPE (corrected 2026-07-08): this policy governs ONLY the deposit/reserve
+// wallet split and reserve usage rules. Merchant incentive pay is a separate
+// mechanism ("Merchant Performance Bonus") triggered by completed buy+sell
+// cycles, not by deposit approval — see ENTERPRISE_DECISIONS.md.
 
 import mongoose from 'mongoose';
 import { DepositPolicy, SUPPORTED_CURRENCIES } from './depositPolicy.model.js';
@@ -28,8 +28,6 @@ export function validatePolicyFields(fields) {
     currency,
     depositAllocationPercent,
     reserveAllocationPercent,
-    merchantCommissionPercent = 0,
-    commissionFundingSource = 'PLATFORM',
   } = fields;
 
   if (!SUPPORTED_CURRENCIES.includes(currency)) {
@@ -45,15 +43,6 @@ export function validatePolicyFields(fields) {
   const sum = depositAllocationPercent + reserveAllocationPercent;
   if (Math.abs(sum - 100) > 0.01) {
     throw new Error(`depositAllocationPercent + reserveAllocationPercent must equal 100 (got ${sum}).`);
-  }
-  if (merchantCommissionPercent < 0 || merchantCommissionPercent > 100) {
-    throw new Error('merchantCommissionPercent must be between 0 and 100.');
-  }
-  // Hard business rule (2026-07 direction): commission is never user-funded.
-  // This is not a default — reject explicitly even if a caller tries to pass
-  // something else, so the rule can't be silently bypassed via the API.
-  if (commissionFundingSource !== 'PLATFORM') {
-    throw new Error(`commissionFundingSource must be 'PLATFORM' — merchant commission is never deducted from user balances.`);
   }
   return true;
 }
@@ -81,7 +70,6 @@ async function nextVersionNumber(currency) {
  *
  * @param {string} currency
  * @param {object} fields    { depositAllocationPercent, reserveAllocationPercent,
- *                             merchantCommissionPercent, commissionFundingSource,
  *                             reserveUsageRules }
  * @param {object} actor     { userId, userName }
  * @param {object} opts      { justification (required), effectiveAt, requireApproval }
@@ -101,8 +89,6 @@ export async function createPolicyVersion(currency, fields, actor, opts = {}) {
     currency,
     depositAllocationPercent: fields.depositAllocationPercent,
     reserveAllocationPercent: fields.reserveAllocationPercent,
-    merchantCommissionPercent: fields.merchantCommissionPercent ?? 0,
-    commissionFundingSource: fields.commissionFundingSource ?? 'PLATFORM',
   };
   validatePolicyFields(merged);
 
@@ -125,8 +111,6 @@ export async function createPolicyVersion(currency, fields, actor, opts = {}) {
     currency,
     depositAllocationPercent: merged.depositAllocationPercent,
     reserveAllocationPercent: merged.reserveAllocationPercent,
-    merchantCommissionPercent: merged.merchantCommissionPercent,
-    commissionFundingSource: merged.commissionFundingSource,
     reserveUsageRules: fields.reserveUsageRules ?? undefined, // falls back to schema defaults
     version,
     status,
@@ -212,8 +196,6 @@ export async function rollbackToPolicyVersion(versionId, actor) {
     currency: target.currency,
     depositAllocationPercent: target.depositAllocationPercent,
     reserveAllocationPercent: target.reserveAllocationPercent,
-    merchantCommissionPercent: target.merchantCommissionPercent,
-    commissionFundingSource: target.commissionFundingSource,
     reserveUsageRules: target.reserveUsageRules,
     version,
     status: 'ACTIVE',
@@ -230,11 +212,9 @@ export async function rollbackToPolicyVersion(versionId, actor) {
 }
 
 /**
- * applyScheduledPolicyChanges — run on a schedule (e.g. every minute via
- * cronJobs.js, alongside applyScheduledConfigChanges) to activate SCHEDULED
- * versions whose effectiveAt has passed. Not wired into cronJobs.js yet —
- * this is the function to call once it is (same status as
- * applyScheduledConfigChanges was before this migration).
+ * applyScheduledPolicyChanges — run every 60 seconds via cronJobs.js
+ * (alongside applyScheduledConfigChanges) to activate SCHEDULED versions
+ * whose effectiveAt has passed.
  */
 export async function applyScheduledPolicyChanges() {
   const due = await DepositPolicy.find({ status: 'SCHEDULED', effectiveAt: { $lte: new Date() } });

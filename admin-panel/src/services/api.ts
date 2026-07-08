@@ -321,8 +321,6 @@ export const depositPolicy = {
     fields: {
       depositAllocationPercent: number;
       reserveAllocationPercent: number;
-      merchantCommissionPercent: number;
-      commissionFundingSource: 'PLATFORM';
       reserveUsageRules: { withdrawable: boolean; settlementBuffer: boolean; notes: string };
       justification: string;
       effectiveAt?: string;

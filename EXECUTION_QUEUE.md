@@ -39,6 +39,22 @@ deleted, so this file also works as a short-form recent-history log.
 
 ---
 
+## DONE — 2026-07-08
+
+- [x] **Correction:** removed `DepositPolicy.merchantCommissionPercent` /
+      `commissionFundingSource` entirely (schema, service validation/create/
+      rollback, admin route body+audit-log, `paymentOrder.model.js`
+      `depositPolicySnapshot` + pre-save hook, admin-panel types/api/UI).
+      Deposit creation and a completed buy+sell cycle are different trigger
+      events — merchant incentive pay cannot live on a deposit-triggered
+      policy. Safe: no code consumed these fields, no `DepositPolicy`
+      document exists yet in the live DB. See ENTERPRISE_DECISIONS.md.
+- [x] Wired `applyScheduledPolicyChanges()` and `applyScheduledConfigChanges()`
+      into `cronJobs.js` (60s interval, same dynamic-import pattern as the
+      order expiry worker). Per-item failures logged, never thrown.
+
+---
+
 ## NEXT — per established dependency order (not an open choice)
 
 - [ ] **buyRate/sellRate → 1:1 flattening.** Explicitly deferred until the
@@ -47,14 +63,20 @@ deleted, so this file also works as a short-form recent-history log.
       reference `buyRate`/`sellRate` across models, routes, services, and
       both frontends (user-panel, admin-panel).
 
-## AFTER THAT — Revenue & Settlement Platform scoped
+## AFTER THAT — Merchant Platform / Revenue & Settlement Platform scoped
 
-- [ ] **Merchant commission payout engine.** How/when a merchant actually
-      gets paid `merchantCommissionPercent` from platform funds — new
-      `Transaction` type(s), ledger entries via `walletAuthority.service.js`,
-      timing (per-order vs. batched settlement). Natural home: a new
-      `domains/settlement/` or `domains/revenue/` module, not bolted onto
-      `merchant.routes.js`.
+- [ ] **Merchant Performance Bonus engine.** 2026-07-08 decision: a
+      cycle-completion-triggered (not deposit-triggered), platform-funded
+      operating expense — `merchantBonusPercent` of completed buy→sell cycle
+      volume, never deducted from users/deposits/withdrawals. Needs a Cycle
+      Tracker → Bonus Calculator → Bonus Ledger (Merchant Platform, per
+      ENTERPRISE_DECISIONS.md), new `Transaction` type(s), ledger entries via
+      `walletAuthority.service.js`, and a timing decision (per-cycle vs.
+      batched settlement). Natural home: `domains/merchant/` bonus
+      sub-module or a new `domains/settlement/`/`domains/revenue/` module —
+      not bolted onto `merchant.routes.js`. Slots in after 1:1 buyRate/
+      sellRate flattening per the dependency chain in
+      ENTERPRISE_DECISIONS.md.
 
 ---
 
@@ -65,10 +87,15 @@ deleted, so this file also works as a short-form recent-history log.
       §7 violation, not introduced by or fixed in this migration).
 - [ ] Remove or repurpose `paymentProcessing.service.js`'s orphaned
       `approveDeposit()` (dead code, never called).
-- [ ] Wire `applyScheduledPolicyChanges()` (and the older
-      `applyScheduledConfigChanges()`) into `cronJobs.js`.
 - [ ] Merchant `maxConcurrentOrders` production backfill confirmation.
 - [ ] `PaymentGatewayConfig` — confirmed intentional future scaffolding, not
       yet wired in.
 - [ ] `backend/debug-merchant-query.mjs` / `check-merchants.mjs` — stray,
       unimported debug scripts, safe to delete.
+- [ ] `deposit-policy-migration.patch` (repo root) — a stale, committed patch
+      file describing the now-removed `merchantCommissionPercent`/
+      `commissionFundingSource` fields. Violates 04-GOVERNANCE.md §13 ("no
+      committed artifact may describe a pending fix that is not yet
+      applied" / patch files must not live in the repo root). Not deleted
+      here — out of scope for this task, flagged instead per the "never
+      silently fix out-of-scope issues" rule.

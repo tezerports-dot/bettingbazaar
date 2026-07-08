@@ -14,8 +14,8 @@ const paymentOrderSchema = new mongoose.Schema({
   type:           { type: String, enum: ['DEPOSIT', 'WITHDRAWAL'], required: true },
 
   // ── Token & Pricing ─────────────────────────────────────────────────────
-  // Token allocation split and merchant commission are governed by the active
-  // DepositPolicy for this order's currency (domains/configuration/depositPolicy.model.js,
+  // Token allocation split is governed by the active DepositPolicy for this
+  // order's currency (domains/configuration/depositPolicy.model.js,
   // BBEPS §6.7 Business Policy) — currency is implicitly 'INR' today (see
   // depositPolicySnapshot.currency default below; add a real `currency` field
   // to this schema once a non-INR deposit flow actually exists).
@@ -37,19 +37,13 @@ const paymentOrderSchema = new mongoose.Schema({
   reserveAllocation: { type: Number, default: 0 },
 
   // Immutable audit snapshot of exactly which DepositPolicy version produced
-  // the split above (and what commission terms were in effect), independent
-  // of whatever the policy is later changed to. Mirrors the existing
-  // `rateUsed` snapshot pattern for TokenRates. merchantCommissionPercent /
-  // commissionFundingSource are captured for future settlement/payout
-  // reconciliation — no code yet reads them to actually pay a merchant
-  // commission (see depositPolicy.service.js file header).
+  // the split above, independent of whatever the policy is later changed to.
+  // Mirrors the existing `rateUsed` snapshot pattern for TokenRates.
   depositPolicySnapshot: {
     policyVersionId:           { type: mongoose.Schema.Types.ObjectId, ref: 'DepositPolicy' },
     currency:                  { type: String, default: 'INR' },
     depositAllocationPercent:  { type: Number },
     reserveAllocationPercent:  { type: Number },
-    merchantCommissionPercent: { type: Number },
-    commissionFundingSource:   { type: String },
   },
 
   // ── Betting Deduction (97/3) ─────────────────────────────────────────────
@@ -217,16 +211,14 @@ paymentOrderSchema.pre('save', async function (next) {
       const currency = 'INR'; // only currency this flow supports today — see schema note above
       const policy = await getActivePolicy(currency);
 
-      let depositPercent, reservePercent, commissionPercent, fundingSource, policyVersionId;
+      let depositPercent, reservePercent, policyVersionId;
       if (policy) {
         depositPercent    = policy.depositAllocationPercent;
         reservePercent    = policy.reserveAllocationPercent;
-        commissionPercent = policy.merchantCommissionPercent;
-        fundingSource     = policy.commissionFundingSource;
         policyVersionId   = policy._id;
       } else {
         console.warn(`⚠️  No active DepositPolicy for ${currency} — falling back to 90/10. Configure one via PUT /api/admin/deposit-policy/${currency}.`);
-        depositPercent = 90; reservePercent = 10; commissionPercent = 0; fundingSource = 'PLATFORM';
+        depositPercent = 90; reservePercent = 10;
       }
 
       // Spec 4.4: remainder (0 or 1 token from the floor()) goes to deposit, never reserve.
@@ -237,8 +229,6 @@ paymentOrderSchema.pre('save', async function (next) {
         currency,
         depositAllocationPercent: depositPercent,
         reserveAllocationPercent: reservePercent,
-        merchantCommissionPercent: commissionPercent,
-        commissionFundingSource: fundingSource,
       };
     }
     next();
