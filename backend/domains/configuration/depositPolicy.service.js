@@ -212,11 +212,9 @@ export async function rollbackToPolicyVersion(versionId, actor) {
 }
 
 /**
- * applyScheduledPolicyChanges — run on a schedule (e.g. every minute via
- * cronJobs.js, alongside applyScheduledConfigChanges) to activate SCHEDULED
- * versions whose effectiveAt has passed. Not wired into cronJobs.js yet —
- * this is the function to call once it is (same status as
- * applyScheduledConfigChanges was before this migration).
+ * applyScheduledPolicyChanges — run every 60 seconds via cronJobs.js
+ * (alongside applyScheduledConfigChanges) to activate SCHEDULED versions
+ * whose effectiveAt has passed.
  */
 export async function applyScheduledPolicyChanges() {
   const due = await DepositPolicy.find({ status: 'SCHEDULED', effectiveAt: { $lte: new Date() } });
