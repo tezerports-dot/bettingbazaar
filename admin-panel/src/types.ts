@@ -174,8 +174,6 @@ export interface DepositPolicyVersion {
   currency: DepositPolicyCurrency;
   depositAllocationPercent: number;
   reserveAllocationPercent: number;
-  merchantCommissionPercent: number;
-  commissionFundingSource: 'PLATFORM';
   reserveUsageRules: DepositPolicyReserveUsageRules;
   version: number;
   status: 'PENDING_APPROVAL' | 'SCHEDULED' | 'ACTIVE' | 'SUPERSEDED' | 'ROLLED_BACK' | 'REJECTED';
