@@ -1,20 +1,25 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Domain: Configuration / Business Policy Platform (BBEPS Phase 006 §6.7-§6.10).
-// See FUTURE_CAPABILITIES.md "Business Policy Platform: Commission · Wallet ·
-// Reserve · Deposit ..." — these are grouped as one platform capability there
-// on purpose, which is why they are one policy document here, not four
-// unrelated SystemConfig fields.
+//
+// SCOPE (corrected 2026-07-08): this policy governs ONLY the deposit/reserve
+// wallet split and reserve usage rules for a single incoming deposit. It does
+// NOT govern merchant incentive pay. Deposit creation and a completed
+// buy+sell cycle are different trigger events — the merchant bonus is earned
+// on cycle completion, not on deposit approval, so it cannot live on a
+// deposit-triggered policy. See ENTERPRISE_DECISIONS.md 2026-07-08 for the
+// correction and "Merchant Performance Bonus" as the platform-funded,
+// cycle-completion-triggered mechanism that replaces the fields formerly
+// modeled here (`merchantCommissionPercent`, `commissionFundingSource`).
 //
 // WHY A DEDICATED MODEL INSTEAD OF MORE SystemConfig FIELDS:
 // configVersioning.service.js + ConfigVersion version individual FIELDS on a
 // flat key:'main' document. That's correct for independent values (bet
-// limits, maintenance mode) but wrong here: deposit-allocation %,
-// reserve-allocation %, merchant-commission %, and its funding source are not
-// independent numbers — they are one coherent business decision about what
-// happens to a single incoming deposit. Field-level versioning would let
-// deposit%+reserve% and commission% drift out of sync mid-change (e.g. an
-// admin updates reserve% in one request and commission% in a second request
-// a minute later — with field-level versioning there is no single version ID
+// limits, maintenance mode) but wrong here: deposit-allocation % and
+// reserve-allocation % are not independent numbers — they are one coherent
+// business decision about what happens to a single incoming deposit.
+// Field-level versioning would let them drift out of sync mid-change (e.g.
+// an admin updates one in one request and the other in a second request a
+// minute later — with field-level versioning there is no single version ID
 // that describes "the policy in effect" during that gap). Whole-document
 // versioning closes that gap: every version is a complete, internally
 // consistent snapshot.
@@ -23,9 +28,7 @@
 // "Financial Allocation Policy" — to match the sibling policies this same
 // migration anticipates (WithdrawalPolicy, SettlementPolicy, RiskPolicy,
 // MerchantPolicy): one policy per money-moving EVENT TYPE, not one policy per
-// field group. "Allocation" describes only the wallet-split fields and would
-// undersell the commission-funding-source and reserve-usage-rules fields this
-// document also owns.
+// field group.
 //
 // VERSIONING MODEL: each document IS a version (whole-policy, not per-field).
 // Exactly one ACTIVE document per currency at a time — enforced in
@@ -51,18 +54,6 @@ const depositPolicySchema = new mongoose.Schema({
   // message can name both fields together).
   depositAllocationPercent: { type: Number, required: true, min: 0, max: 100 },
   reserveAllocationPercent: { type: Number, required: true, min: 0, max: 100 },
-
-  // ── Merchant commission ──────────────────────────────────────────────────
-  // % of the deposit's token value paid to the fulfilling merchant as commission.
-  merchantCommissionPercent: { type: Number, required: true, min: 0, max: 100, default: 0 },
-
-  // Current business rule (2026-07 direction): "merchant commission is NEVER
-  // deducted from users" — commission is funded by the platform, not carved
-  // out of the user's allocation. Modeled as an enum (not a boolean) so a
-  // genuinely new funding source could be added later without a field
-  // rename, but depositPolicy.service.js rejects anything but PLATFORM today
-  // — this is a hard business rule, not a default that happens to be PLATFORM.
-  commissionFundingSource: { type: String, enum: ['PLATFORM'], default: 'PLATFORM', required: true },
 
   // ── Reserve usage rules ──────────────────────────────────────────────────
   // Typed, not Schema.Types.Mixed — a Mixed blob would lose validation and
