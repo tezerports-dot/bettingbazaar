@@ -8,6 +8,70 @@ need a durable home.
 
 ---
 
+## 2026-07-08 — Correction: merchant incentive removed from DepositPolicy;
+## "Merchant Performance Bonus" is cycle-completion-triggered, not deposit-triggered
+
+**Decision:** `DepositPolicy.merchantCommissionPercent` and
+`commissionFundingSource` — added 2026-07-07 — have been removed entirely
+from the schema, service, admin route, `paymentOrder.model.js`'s
+`depositPolicySnapshot`, and the admin-panel UI. `DepositPolicy` now governs
+**only** the deposit/reserve wallet split and reserve usage rules for a
+single incoming deposit.
+
+The replacement concept — not yet built, tracked in EXECUTION_QUEUE.md as
+the Merchant Performance Bonus engine — is:
+- Triggered by a **completed buy+sell cycle** (a merchant fulfilling both
+  sides of a cycle), not by deposit approval.
+- A **% of completed cycle volume** (`merchantBonusPercent`), configured on
+  a future Merchant/Business Policy, not on `DepositPolicy`.
+- A **platform-funded operating expense** — paid from platform revenue,
+  **never** deducted from user balances, deposits, or withdrawals. This
+  hard rule carries forward unchanged from the 2026-07-07
+  `commissionFundingSource: 'PLATFORM'` decision below; only its home and
+  name changed.
+- Named **"Merchant Performance Bonus"**, not "commission" — deliberately
+  distinct terminology from the retired `Merchant.commissionRate` (buy/sell
+  spread era) and from yesterday's `merchantCommissionPercent`, so future
+  sessions don't conflate three different mechanisms that have shared a
+  name at different points in this repo's history.
+
+**Why this is a correction, not just an addition:** `DepositPolicy` is
+whole-document versioned specifically because its fields describe "what
+happens to one incoming deposit" as a single coherent decision (see the
+2026-07-07 entry below). Merchant bonus pay does not happen at deposit time
+— it happens when a merchant completes a full buy+sell cycle, a distinct
+event with its own timing, its own volume calculation, and no natural
+version-coupling to the deposit/reserve split. Modeling it on `DepositPolicy`
+made "what version was active" ambiguous for a value that was never actually
+resolved at that trigger point. Compounding this, `merchantCommissionPercent`
+was already dead: no code anywhere read it to pay a merchant (confirmed in
+the 2026-07-07 "Merchant-commission payout is explicitly deferred" entry
+below) — so removing it deletes only unused surface area, not working
+behavior.
+
+**Safe to remove outright (not deprecate):** no `DepositPolicy` document has
+ever been created in the live database (bootstrap fallback state, unchanged
+since 2026-07-07 — see PHASE_STATUS.md). There is no data migration, no
+in-flight order referencing the removed snapshot fields, and no consumer
+code to update elsewhere.
+
+**04-GOVERNANCE.md §1 updated to match:** the `DepositPolicy` authority line
+now covers only deposit/reserve split, reserve usage rules; the "Merchant
+earnings model" line's note about `DepositPolicy`-driven commission is
+superseded by this entry — the platform-funded, never-user-deducted rule
+itself survives, but its owner is now the not-yet-built Merchant Performance
+Bonus mechanism, not `DepositPolicy`.
+
+**Also done in this pass:** `applyScheduledPolicyChanges()`
+(`depositPolicy.service.js`) and `applyScheduledConfigChanges()`
+(`configVersioning.service.js`) — both written 2026-07-07 but never called
+from anywhere — are now wired into `cronJobs.js` on a 60-second interval,
+matching the existing order-expiry-worker pattern (dynamic `import()`,
+per-item try/catch so one bad version can't crash the interval or block the
+rest of the batch).
+
+---
+
 ## 2026-07-07 — Platform-oriented architecture (formalized, not new)
 
 **Decision:** future work is organized under named platforms rather than
@@ -91,6 +155,11 @@ will use (`WithdrawalPolicy`, `SettlementPolicy`, ...).
 ---
 
 ## 2026-07-07 — `commissionFundingSource` is validated, not just defaulted
+**[SUPERSEDED 2026-07-08 — see entry at top of file. The field itself was
+removed from `DepositPolicy`; the "platform-funded, never user-deducted"
+rule survives, now owned by the not-yet-built Merchant Performance Bonus
+mechanism. Kept below for historical context on why the enum-not-boolean
+modeling choice was made.]**
 
 **Decision:** `DepositPolicy.commissionFundingSource` is a schema enum of one
 value (`'PLATFORM'`) today, and `depositPolicy.service.js`'s
@@ -118,6 +187,11 @@ accident.
 ---
 
 ## 2026-07-07 — Merchant-commission *payout* is explicitly deferred
+**[SUPERSEDED 2026-07-08 — the modeled `merchantCommissionPercent`/
+`commissionFundingSource` fields described here were removed, not just left
+unpaid; the deferred payout-engine work continues under the renamed
+Merchant Performance Bonus concept — see entry at top of file and
+EXECUTION_QUEUE.md.]**
 
 **Decision:** this migration models, validates, versions, and exposes
 `merchantCommissionPercent`/`commissionFundingSource` for admin editing — but
