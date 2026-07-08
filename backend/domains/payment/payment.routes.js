@@ -93,12 +93,10 @@ router.get('/order/:orderId', authenticate, async (req, res) => {
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
 
+// Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08) — no
+// buy/sell spread. Response shape kept for client compatibility.
 router.get('/rates', async (req, res) => {
-  try {
-    const rates = await mongoose.model('TokenRates').findOne({ key: 'main' });
-    if (!rates) return res.json({ success: true, rates: null });
-    res.json({ success: true, rates: { buyRate: rates.buyRate, sellRate: rates.sellRate, merchantProfitPerToken: rates.buyRate - rates.sellRate } });
-  } catch { res.status(500).json({ success: false, message: 'Failed to fetch rates' }); }
+  res.json({ success: true, rates: { buyRate: 1, sellRate: 1, merchantProfitPerToken: 0 } });
 });
 
 router.post('/order/cancel', authenticate, async (req, res) => {

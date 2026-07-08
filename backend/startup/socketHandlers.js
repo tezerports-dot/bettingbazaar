@@ -16,9 +16,7 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
     const sendSystemConfig = async () => {
       try {
         const SystemConfig = mongoose.model('SystemConfig');
-        const TokenRates   = mongoose.model('TokenRates');
         const cfg   = await SystemConfig.findOne({ key: 'main' }).lean();
-        const rates = await TokenRates.findOne({ key: 'main' }).lean();
         const configData = {
           minBet:             cfg?.betLimits?.thirtyMin?.min  ?? 10,      // schema default: 10
           maxBet:             cfg?.betLimits?.thirtyMin?.max  ?? 100000,  // schema default: 100000
@@ -29,8 +27,8 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
           maxWithdrawal:      cfg?.maxWithdrawal              ?? 50000,   // schema default: 50000
           // payoutMultiplier from admin-editable config; fallback = GAME_CORE.ts PAYOUT.MULTIPLIER = 2
           payoutMultiplier:   cfg?.payoutMultiplier           ?? 2,
-          tokenBuyRate:       rates?.buyRate                  ?? 1,
-          tokenSellRate:      rates?.sellRate                 ?? 1,
+          tokenBuyRate:       1, // fixed 1:1 conversion (Phase 006 flattening, 2026-07-08)
+          tokenSellRate:      1, // fixed 1:1 conversion
           maintenanceMode:    cfg?.maintenanceMode            ?? false,
           maintenanceMessage: cfg?.maintenanceMessage         ?? '',
           minVersion:         cfg?.minVersion                 ?? '1.0.0',

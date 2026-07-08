@@ -533,9 +533,7 @@ router.get('/user/:userId/transactions', authenticate, async (req, res) => {
 router.get('/v1/system/config', async (req, res) => {
   try {
     const SystemConfig = mongoose.model('SystemConfig');
-    const TokenRates   = mongoose.model('TokenRates');
     const config = await SystemConfig.findOne({ key: 'main' }).lean();
-    const rates  = await TokenRates.findOne({ key: 'main' }).lean();
 
     res.json({
       success: true,
@@ -549,9 +547,9 @@ router.get('/v1/system/config', async (req, res) => {
         maxDeposit:       config?.maxDeposit       || 50000,
         minWithdrawal:    config?.minWithdrawal    || 500  /* schema default — was incorrectly 100 (GOVERNANCE.md M-5) */,
         maxWithdrawal:    config?.maxWithdrawal    || 50000,
-        // Token rates from TokenRates collection
-        tokenBuyRate:     rates?.buyRate           ?? 1,
-        tokenSellRate:    rates?.sellRate          ?? 1,
+        // Fixed 1:1 conversion (Phase 006 flattening, 2026-07-08)
+        tokenBuyRate:     1,
+        tokenSellRate:    1,
         payoutMultiplier: 2,
         maintenanceMode:  config?.maintenanceMode  || false,
         maintenanceMessage: config?.maintenanceMessage || '',
@@ -871,33 +869,23 @@ router.get('/v1/wallet/ledger', authenticate, async (req, res) => { // paginated
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /api/v1/tokens/rate  — public live token exchange rates
-// Returns buyRate (what user pays per token) and sellRate (what user receives).
-// Used by WalletPage Token Exchange Panel for live INR conversion display.
+// GET /api/v1/tokens/rate  — public token exchange rates.
+// Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08): 1 BB
+// token = ₹1, no buy/sell spread. Response shape kept for client compat.
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/v1/tokens/rate', async (req, res) => {
   try {
-    const TokenRates   = mongoose.model('TokenRates');
     const SystemConfig = mongoose.model('SystemConfig');
-
-    const [rates, config] = await Promise.all([
-      TokenRates.findOne({ key: 'main' }).lean(),
-      SystemConfig.findOne({ key: 'main' }).lean(),
-    ]);
-
-    // MED-05 FIX: warn when using fallback rates; expose ratesConfigured flag to clients
-    if (!rates) {
-      console.warn('[token-rates] No TokenRates document found — using hardcoded fallback rates (1.1/1.0)');
-    }
+    const config = await SystemConfig.findOne({ key: 'main' }).lean();
     res.json({
       success:        true,
-      buyRate:        rates?.buyRate     ?? 1.1,
-      sellRate:       rates?.sellRate    ?? 1.0,
-      ratesConfigured: !!rates, // MED-05: false = admin has never configured rates
+      buyRate:        1,
+      sellRate:       1,
+      ratesConfigured: true, // rates are no longer configurable — always 1:1
       minExchange:    config?.minWithdrawal ?? 500  /* schema default — was incorrectly 100 (GOVERNANCE.md M-5) */,
       maxExchange:    config?.maxWithdrawal ?? 50000,
       currency:       'INR',
-      updatedAt:      rates?.updatedAt ?? null,
+      updatedAt:      null,
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -907,28 +895,20 @@ router.get('/v1/tokens/rate', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/v1/token/rates  — canonical alias used by WalletModal + WalletPage
 // (WalletModal calls /api/v1/token/rates; old route was /v1/tokens/rate)
-// Both now return the same shape.
+// Both return the same fixed 1:1 values.
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/v1/token/rates', async (req, res) => {
   try {
-    const TokenRates   = mongoose.model('TokenRates');
     const SystemConfig = mongoose.model('SystemConfig');
-    const [rates, config] = await Promise.all([
-      TokenRates.findOne({ key: 'main' }).lean(),
-      SystemConfig.findOne({ key: 'main' }).lean(),
-    ]);
+    const config = await SystemConfig.findOne({ key: 'main' }).lean();
     res.json({
       success:  true,
-      rates: {
-        buyRate:     rates?.buyRate     ?? 1.1,
-        sellRate:    rates?.sellRate    ?? 1.0,
-        updatedAt:   rates?.updatedAt   ?? null,
-      },
+      rates: { buyRate: 1, sellRate: 1, updatedAt: null },
       minExchange: config?.minWithdrawal ?? 500  /* schema default — was incorrectly 100 (GOVERNANCE.md M-5) */,
       maxExchange: config?.maxWithdrawal ?? 50000,
       // Flat fields for back-compat
-      buyRate:  rates?.buyRate  ?? 1.1,
-      sellRate: rates?.sellRate ?? 1.0,
+      buyRate:  1,
+      sellRate: 1,
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
