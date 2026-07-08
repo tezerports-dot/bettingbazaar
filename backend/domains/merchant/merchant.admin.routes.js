@@ -221,12 +221,8 @@ router.get('/merchants/:merchantId/profile', authenticate, isAdmin, async (req, 
   try {
     const { merchantId } = req.params;
     const Merchant   = mongoose.model('Merchant');
-    const TokenRates = mongoose.model('TokenRates');
     const PaymentOrder   = mongoose.model('PaymentOrder');
-    const [merchant, rates] = await Promise.all([
-      Merchant.findById(merchantId).lean(),
-      TokenRates.findOne({ key: 'main' }).lean(),
-    ]);
+    const merchant = await Merchant.findById(merchantId).lean();
     if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
     const [totalOrders, completedOrders, failedOrders] = await Promise.all([
       PaymentOrder.countDocuments({ merchantId: merchant._id }),
@@ -238,11 +234,8 @@ router.get('/merchants/:merchantId/profile', authenticate, isAdmin, async (req, 
       success: true,
       merchant: {
         ...merchant,
-        prices: {
-          buyPrice:  rates?.buyRate  ?? 0,
-          sellPrice: rates?.sellRate ?? 0,
-          profit: parseFloat(((rates?.buyRate ?? 0) - (rates?.sellRate ?? 0)).toFixed(4)),
-        },
+        // Fixed 1:1 conversion (Phase 006 flattening, 2026-07-08) — no spread.
+        prices: { buyPrice: 1, sellPrice: 1, profit: 0 },
         statistics: { totalOrders, completedOrders, failedOrders, successRate: parseFloat(successRate) },
       },
     });
@@ -505,18 +498,17 @@ router.get('/merchants/:merchantId/profit-engine', authenticate, isAdmin, async 
     const { merchantId } = req.params;
     const Merchant   = mongoose.model('Merchant');
     const PaymentOrder   = mongoose.model('PaymentOrder');
-    const TokenRates = mongoose.model('TokenRates');
 
-    const [merchant, rates] = await Promise.all([
-      Merchant.findById(merchantId).lean(),
-      TokenRates.findOne({ key: 'main' }).lean(),
-    ]);
+    const merchant = await Merchant.findById(merchantId).lean();
     if (!merchant)
       return res.status(404).json({ success: false, message: 'Merchant not found' });
 
-    const sellRate = rates?.sellRate ?? 1.0;
-    const buyRate  = rates?.buyRate  ?? 1.1;
-    const spread   = buyRate - sellRate;   // merchant profit per token via rate spread
+    // Fixed 1:1 conversion (Phase 006 flattening, 2026-07-08): 1 token = ₹1,
+    // no spread. Revenue/withdrawal figures below still come from each
+    // order's stored fiatAmount, so historical orders keep their real values.
+    const sellRate = 1;
+    const buyRate  = 1;
+    const spread   = 0;
 
     // Pull all COMPLETED orders for this merchant from the ledger
     const [depositOrders, withdrawalOrders, allOrders] = await Promise.all([

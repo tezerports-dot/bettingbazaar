@@ -5,32 +5,10 @@ import { setConfigField } from '../../domains/configuration/configVersioning.ser
 
 const router = express.Router();
 
-// ── Shared validation, used by BOTH /token-rates and /system/config below ────
-// CONSOLIDATED 2026-07-03: these two endpoints previously validated buyRate >
-// sellRate independently — /system/config didn't check it at all, meaning an
-// admin could set an invalid (or even loss-making) rate pair through that path
-// while the dedicated /token-rates endpoint correctly blocked it. Single
-// function now, called from both places, so they can't diverge again.
-// Checks against whichever value ISN'T being changed too — if only one of the
-// two fields is submitted, the resulting pair is still validated, not just the
-// field present in this particular request.
-async function validateAndResolveRates(newBuyRate, newSellRate) {
-  if (newBuyRate === undefined && newSellRate === undefined) return null;
-  const TokenRates = mongoose.model('TokenRates');
-  const current = await TokenRates.findOne({ key: 'main' }).lean() || {};
-  const finalBuy  = newBuyRate  !== undefined ? parseFloat(newBuyRate)  : current.buyRate;
-  const finalSell = newSellRate !== undefined ? parseFloat(newSellRate) : current.sellRate;
-  if (!finalBuy || !finalSell || finalBuy <= 0 || finalSell <= 0) {
-    throw new Error('Buy and sell rates must be positive numbers');
-  }
-  // RELAXED 2026-07-08: buyRate === sellRate now ALLOWED (first step toward
-  // fixed 1:1 conversion — see ENTERPRISE_DECISIONS.md). buyRate < sellRate
-  // (a merchant loss) is still rejected.
-  if (finalBuy < finalSell) {
-    throw new Error('Buy rate cannot be lower than sell rate (that would mean a merchant loss)');
-  }
-  return { finalBuy, finalSell };
-}
+// Token rates removed 2026-07-08: conversion is fixed 1:1 (Phase 006
+// flattening — see ENTERPRISE_DECISIONS.md). The GET/PUT /token-rates
+// endpoints and rate validation that lived here are gone; rates are no
+// longer admin-editable.
 
 router.get('/transactions', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
@@ -65,99 +43,6 @@ router.get('/transactions', authenticate, isAdminOrSubAdmin, async (req, res) =>
   }
 });
 
-// Get merchants — source of truth is the Merchant collection.
-// _id in every response is Merchant._id. No User._id is ever used as a merchant identifier.
-router.get('/token-rates', authenticate, isAdmin, async (req, res) => {
-  try {
-    const TokenRates = mongoose.model('TokenRates');
-    const rates = await TokenRates.findOne({ key: 'main' });
-
-    if (!rates) {
-      return res.json({
-        success: true,
-        data: null,
-        message: 'No rates configured yet. Use PUT /admin/token-rates to set them.'
-      });
-    }
-
-    res.json({
-      success: true,
-      rates: {
-        buyRate:                rates.buyRate,
-        sellRate:               rates.sellRate,
-        merchantProfitPerToken: rates.buyRate - rates.sellRate,
-        updatedAt:              rates.updatedAt
-      }
-    });
-  } catch (error) {
-    console.error('Get rates error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch rates' });
-  }
-});
-
-// Update token rates
-router.put('/token-rates', authenticate, isAdmin, async (req, res) => {
-  try {
-    const { buyRate, sellRate } = req.body;
-    const TokenRates = mongoose.model('TokenRates');
-    const EnhancedAuditLog = mongoose.model('EnhancedAuditLog');
-
-    if (buyRate === undefined || sellRate === undefined) {
-      return res.status(400).json({ success: false, message: 'buyRate and sellRate are required' });
-    }
-
-    let resolved;
-    try {
-      resolved = await validateAndResolveRates(buyRate, sellRate);
-    } catch (validationError) {
-      return res.status(400).json({ success: false, message: validationError.message });
-    }
-
-    const oldRates = await TokenRates.findOne({ key: 'main' });
-    const actor = { userId: req.user._id, userName: req.user.username };
-
-    await setConfigField('TokenRates', 'buyRate', resolved.finalBuy, actor, {
-      justification: 'Admin token rate update via dedicated /token-rates endpoint',
-    });
-    await setConfigField('TokenRates', 'sellRate', resolved.finalSell, actor, {
-      justification: 'Admin token rate update via dedicated /token-rates endpoint',
-    });
-
-    const rates = await TokenRates.findOne({ key: 'main' });
-
-    await EnhancedAuditLog.create({
-      performedBy: req.user._id,
-      performedByName: req.user.username,
-      performedByRole: 'admin',
-      action: 'UPDATE_TOKEN_RATES',
-      category: 'FINANCIAL',
-      details: {
-        oldBuyRate: oldRates?.buyRate,
-        newBuyRate: resolved.finalBuy,
-        oldSellRate: oldRates?.sellRate,
-        newSellRate: resolved.finalSell,
-        merchantProfit: resolved.finalBuy - resolved.finalSell
-      },
-      success: true
-    });
-
-    console.log(`✅ Token rates updated: Buy ₹${resolved.finalBuy}, Sell ₹${resolved.finalSell}`);
-
-    res.json({
-      success: true,
-      message: 'Token rates updated successfully',
-      rates: {
-        buyRate: rates.buyRate,
-        sellRate: rates.sellRate,
-        merchantProfitPerToken: rates.buyRate - rates.sellRate
-      }
-    });
-  } catch (error) {
-    console.error('Update rates error:', error);
-    res.status(500).json({ success: false, message: 'Failed to update rates' });
-  }
-});
-
 // ════════════════════════════════════════════════════════════════════════════
 // ✅ FIX #8: MERCHANT MANAGEMENT ENDPOINTS
 // ════════════════════════════════════════════════════════════════════════════
@@ -167,9 +52,7 @@ router.put('/token-rates', authenticate, isAdmin, async (req, res) => {
 router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
     const SystemConfig = mongoose.model('SystemConfig');
-    const TokenRates   = mongoose.model('TokenRates');
     const config = await SystemConfig.findOne({ key: 'main' }).lean() || {};
-    const rates  = await TokenRates.findOne({ key: 'main' }).lean() || {};
     res.json({
       success: true,
       config: {
@@ -182,8 +65,8 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
         minWithdrawal:         config.minWithdrawal         || 500,
         maxWithdrawal:         config.maxWithdrawal         || 50000,
         maxWinningsWithdrawal: config.maxWinningsWithdrawal || 500000,
-        tokenBuyRate:          rates.buyRate                ?? 1,
-        tokenSellRate:         rates.sellRate               ?? 1,
+        tokenBuyRate:          1, // fixed 1:1 conversion (Phase 006 flattening, 2026-07-08)
+        tokenSellRate:         1, // fixed 1:1 conversion
         kycRequired:           config.kycRequired           !== false,
         registrationEnabled:   config.registrationEnabled   !== false,
         maintenanceMode:       config.maintenanceMode       || false,
@@ -206,13 +89,11 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
 router.put('/system/config', authenticate, isAdmin, async (req, res) => {
   try {
     const SystemConfig = mongoose.model('SystemConfig');
-    const TokenRates   = mongoose.model('TokenRates');
     const actor = { userId: req.user._id, userName: req.user.username };
 
     const {
       minBet, maxBet, max30MinBet, maxFullDayBet,
       minDeposit, maxDeposit, minWithdrawal, maxWithdrawal, maxWinningsWithdrawal,
-      tokenBuyRate, tokenSellRate,
       kycRequired, registrationEnabled,
       maintenanceMode, maintenanceMessage,
       depositMethods, withdrawalMethods,
@@ -247,22 +128,8 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
       });
     }
 
-    if (tokenBuyRate !== undefined || tokenSellRate !== undefined) {
-      let resolved;
-      try {
-        resolved = await validateAndResolveRates(tokenBuyRate, tokenSellRate);
-      } catch (validationError) {
-        return res.status(400).json({ success: false, message: validationError.message });
-      }
-      if (tokenBuyRate  !== undefined) await setConfigField('TokenRates', 'buyRate',  resolved.finalBuy,  actor, { justification: 'Admin bulk system config update via /system/config' });
-      if (tokenSellRate !== undefined) await setConfigField('TokenRates', 'sellRate', resolved.finalSell, actor, { justification: 'Admin bulk system config update via /system/config' });
-      console.log(`✅ Token rates updated: Buy ₹${resolved.finalBuy}, Sell ₹${resolved.finalSell}`);
-    }
-
-    
     if (global.io) {
       const updatedConfig = await SystemConfig.findOne({ key: 'main' }).lean() || {};
-      const updatedRates  = await TokenRates.findOne({ key: 'main' }).lean()   || {};
       const broadcastPayload = {
         minBet:          updatedConfig.betLimits?.thirtyMin?.min   || 10,
         maxBet:          updatedConfig.betLimits?.thirtyMin?.max   || 100000,
@@ -273,8 +140,8 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
         maxWithdrawal:   updatedConfig.maxWithdrawal         || 50000,
         maintenanceMode: updatedConfig.maintenanceMode       || false,
         maintenanceMessage: updatedConfig.maintenanceMessage || '',
-        tokenBuyRate:    updatedRates.buyRate                ?? 1,
-        tokenSellRate:   updatedRates.sellRate               ?? 1,
+        tokenBuyRate:    1, // fixed 1:1 conversion (Phase 006 flattening, 2026-07-08)
+        tokenSellRate:   1, // fixed 1:1 conversion
         webUrl:        updatedConfig.webUrl        || '',
         androidUrl:    updatedConfig.androidUrl    || '',
         iosUrl:        updatedConfig.iosUrl        || '',

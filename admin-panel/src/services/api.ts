@@ -4,7 +4,6 @@ import type {
   Admin,
   User,
   Cycle,
-  TokenRates,
   Merchant,
   MerchantProfile,
   PaymentOrder,
@@ -288,19 +287,9 @@ export const cycles = {
   },
 };
 
-// --- TOKEN RATES --------------------------------------------------------------
-
-export const tokenRates = {
-  getCurrent: async () => {
-    const res = await api.get<any>('/api/admin/token-rates');
-    return res.data;
-  },
-
-  update: async (buyRate: number, sellRate: number) => {
-    const res = await api.put('/api/admin/token-rates', { buyRate, sellRate });
-    return res.data;
-  },
-};
+// --- TOKEN RATES ---------------------------------------------------------------
+// Removed 2026-07-08: token conversion is fixed 1:1 (Phase 006 flattening) —
+// rates are no longer admin-editable and the backend endpoints are gone.
 
 // --- DEPOSIT POLICY — Business Policy Platform (BBEPS Phase 006) --------------
 // Whole-document versioned: see backend/domains/configuration/depositPolicy.*.js
@@ -793,7 +782,6 @@ export default {
   users,
   merchants,
   cycles,
-  tokenRates,
   depositPolicy,
   queueManager,
   kyc,

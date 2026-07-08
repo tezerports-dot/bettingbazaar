@@ -192,13 +192,8 @@ export interface DepositPolicyVersion {
 // Token Rates
 // ─────────────────────────────────────────────────────────────────────────────
 
-export interface TokenRates {
-  _id: string;
-  buyRate: number;
-  sellRate: number;
-  updatedAt: string;
-  updatedBy?: string;
-}
+// TokenRates interface removed 2026-07-08 — token conversion is fixed 1:1
+// (Phase 006 flattening); rates are no longer fetched or edited anywhere.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Merchants

@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
-  LayoutDashboard, Users, Store, Activity, DollarSign, Layers, Landmark,
+  LayoutDashboard, Users, Store, Activity, Layers, Landmark,
   UserCheck, FileText, Palette, Settings, LogOut, Menu, X,
   TrendingUp, ShieldCheck, HelpCircle, Image as ImageIcon,
   MessageCircle, Shield, History, Scale, AlertOctagon, Upload,
@@ -44,7 +44,7 @@ const ALL_MENU_ITEMS: MenuItem[] = [
   { path: '/queue-manager',  icon: Layers,         label: 'Queue Manager',    queueManagerAccess: true,          group: 'payments' },
   // UTR Monitor nav item removed
   { path: '/transactions',   icon: FileText,       label: 'Transactions',     permission: 'canViewTransactions', group: 'payments' },
-  { path: '/token-rates',    icon: DollarSign,     label: 'Token Rates',      adminOnly: true,                   group: 'payments' },
+  // Token Rates nav removed 2026-07-08 — conversion is fixed 1:1 (Phase 006 flattening)
   { path: '/payment-control',icon: Zap,            label: 'Payment System',   adminOnly: true,                   group: 'payments' },
   { path: '/disputes',       icon: Scale,          label: 'Disputes',         permission: 'canResolveDisputes',  group: 'payments' },
 

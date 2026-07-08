@@ -31,7 +31,7 @@ export const ADMIN_ROUTES = {
   CDN:             '/content/cdn',
   BRANDING:        '/branding',
   APP_ASSETS:      '/app-assets',
-  TOKEN_RATES:     '/token-rates',
+  // TOKEN_RATES removed 2026-07-08 — conversion is fixed 1:1 (Phase 006 flattening)
   SUB_ADMINS:      '/sub-admins',
   SETTINGS:        '/settings',
   AUDIT_LOGS:      '/audit-logs',
