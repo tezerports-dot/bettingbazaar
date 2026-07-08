@@ -38,7 +38,7 @@ const paymentOrderSchema = new mongoose.Schema({
 
   // Immutable audit snapshot of exactly which DepositPolicy version produced
   // the split above, independent of whatever the policy is later changed to.
-  // Mirrors the existing `rateUsed` snapshot pattern for TokenRates.
+  // Mirrors the `rateUsed` snapshot pattern (rateUsed is now always 1).
   depositPolicySnapshot: {
     policyVersionId:           { type: mongoose.Schema.Types.ObjectId, ref: 'DepositPolicy' },
     currency:                  { type: String, default: 'INR' },

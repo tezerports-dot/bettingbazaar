@@ -62,26 +62,9 @@ const systemConfigSchema = new mongoose.Schema({
   updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-// 📢 PROMO CONTENT SCHEMA
-// ════════════════════════════════════════════════════════════════════════════
-const tokenRatesSchema = new mongoose.Schema({
-  key: { type: String, default: 'main', unique: true },
-  
-  // ✅ ADMIN-CONTROLLED RATES (FIX #4)
-  // Example: buyRate = 1.1 (user pays ₹1.1 for 1 BB token)
-  //          sellRate = 1.0 (user receives ₹1.0 for 1 BB token)
-  //          Merchant profit = ₹0.1 per token
-  buyRate: { type: Number, required: true, default: 1.1 },   // Price user pays per token
-  sellRate: { type: Number, required: true, default: 1.0 },  // Price user receives per token
-  
-  updatedAt: { type: Date, default: Date.now },
-  updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
-});
-
-// ════════════════════════════════════════════════════════════════════════════
-// 🎨 BRANDING SCHEMA
-// ════════════════════════════════════════════════════════════════════════════
+// TokenRates model removed 2026-07-08 — token conversion is fixed 1:1
+// (Phase 006 flattening, see ENTERPRISE_DECISIONS.md). The old `tokenrates`
+// Mongo collection may still hold historical data; nothing reads or writes
+// it anymore.
 
 export const SystemConfig = mongoose.model('SystemConfig', systemConfigSchema);
-export const TokenRates   = mongoose.model('TokenRates',   tokenRatesSchema);

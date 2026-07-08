@@ -15,7 +15,10 @@
 import mongoose from 'mongoose';
 import { ConfigVersion } from './configVersion.model.js';
 
-const MODEL_BY_KEY = { SystemConfig: 'SystemConfig', TokenRates: 'TokenRates' };
+// 'TokenRates' removed 2026-07-08 (fixed 1:1 conversion, Phase 006 flattening).
+// Historical ConfigVersion documents with modelName 'TokenRates' remain valid
+// audit records; no new versions can be written for it.
+const MODEL_BY_KEY = { SystemConfig: 'SystemConfig' };
 
 function getModel(modelName) {
   if (!MODEL_BY_KEY[modelName]) {
@@ -31,7 +34,7 @@ function getByPath(obj, path) {
 /**
  * setConfigField — the write path for a single business-parameter change.
  *
- * @param {string} modelName    'SystemConfig' | 'TokenRates'
+ * @param {string} modelName    'SystemConfig' (see MODEL_BY_KEY)
  * @param {string} field        dot-path, e.g. 'betLimits.thirtyMin.min'
  * @param {*}      newValue
  * @param {object} actor        { userId, userName }
@@ -46,7 +49,7 @@ function getByPath(obj, path) {
 export async function setConfigField(modelName, field, newValue, actor, opts = {}) {
   const { justification = '', effectiveAt = new Date(), requireApproval = false } = opts;
   const Model = getModel(modelName);
-  const configKey = 'main'; // both SystemConfig and TokenRates use key:'main' today
+  const configKey = 'main'; // SystemConfig uses key:'main'
 
   const current = await Model.findOne({ key: configKey }).lean();
   const previousValue = current ? getByPath(current, field) : undefined;

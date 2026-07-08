@@ -29,6 +29,6 @@ export const getModels = () => ({
   SystemConfig:     mongoose.model('SystemConfig'),
   EnhancedAuditLog: mongoose.model('EnhancedAuditLog'),
   // Dispute model removed — see GOVERNANCE.md C-1 (PaymentOrder embedded fields)
-  TokenRates:       mongoose.model('TokenRates'),
+  // TokenRates model removed 2026-07-08 — fixed 1:1 conversion (Phase 006)
   Branding:         mongoose.model('Branding'),
 });

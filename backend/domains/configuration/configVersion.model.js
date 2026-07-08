@@ -17,12 +17,14 @@
 import mongoose from 'mongoose';
 
 const configVersionSchema = new mongoose.Schema({
-  // Which Mongoose model this touches — 'SystemConfig' or 'TokenRates'. Both
-  // currently use key:'main', so configKey alone can't disambiguate; this field
-  // is the actual disambiguator.
+  // Which Mongoose model this touches. 'TokenRates' stays in the enum ONLY so
+  // historical version documents from before its 2026-07-08 removal (fixed
+  // 1:1 conversion, Phase 006 flattening) remain valid audit records — new
+  // TokenRates versions are impossible (removed from MODEL_BY_KEY in
+  // configVersioning.service.js).
   modelName: { type: String, required: true, enum: ['SystemConfig', 'TokenRates'], index: true },
 
-  // Matches SystemConfig.key ('main') or TokenRates.key — which config document this touches.
+  // Matches SystemConfig.key ('main') — which config document this touches.
   configKey: { type: String, required: true, index: true },
 
   // Dot-notation field path within that document, e.g. 'betLimits.thirtyMin.min'

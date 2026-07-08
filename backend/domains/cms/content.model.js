@@ -21,10 +21,11 @@ const promoContentSchema = new mongoose.Schema({
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// 💱 TOKEN RATES SCHEMA - ✅ FIX #4: ADMIN-CONTROLLED PRICING
+// 🎨 BRANDING SCHEMA
 // ════════════════════════════════════════════════════════════════════════════
-// Admin sets BB token buy and sell prices
-// Merchant profit = (buyRate - sellRate) * tokenAmount
+// (This block was mislabeled "TOKEN RATES SCHEMA" until 2026-07-08 — the
+// TokenRates model never lived here, and was removed entirely in the Phase
+// 006 fixed-1:1 flattening.)
 const brandingSchema = new mongoose.Schema({
   key: { type: String, default: 'main', unique: true },
   // ── Core identity ──────────────────────────────────────────────────────────
