@@ -23,8 +23,11 @@ async function validateAndResolveRates(newBuyRate, newSellRate) {
   if (!finalBuy || !finalSell || finalBuy <= 0 || finalSell <= 0) {
     throw new Error('Buy and sell rates must be positive numbers');
   }
-  if (finalBuy <= finalSell) {
-    throw new Error('Buy rate must be higher than sell rate (merchant profit)');
+  // RELAXED 2026-07-08: buyRate === sellRate now ALLOWED (first step toward
+  // fixed 1:1 conversion — see ENTERPRISE_DECISIONS.md). buyRate < sellRate
+  // (a merchant loss) is still rejected.
+  if (finalBuy < finalSell) {
+    throw new Error('Buy rate cannot be lower than sell rate (that would mean a merchant loss)');
   }
   return { finalBuy, finalSell };
 }

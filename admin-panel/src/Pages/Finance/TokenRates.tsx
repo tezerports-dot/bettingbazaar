@@ -52,8 +52,8 @@ export const TokenRates: React.FC = () => {
       return;
     }
 
-    if (buyRateNum <= sellRateNum) {
-      toast.error('Buy rate must be higher than sell rate');
+    if (buyRateNum < sellRateNum) {
+      toast.error('Buy rate cannot be lower than sell rate (that would mean a merchant loss)');
       return;
     }
 
