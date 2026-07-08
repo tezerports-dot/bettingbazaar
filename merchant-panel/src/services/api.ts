@@ -381,14 +381,8 @@ export const redFlagOrder = async (orderId: string, reason: string): Promise<any
 // BULK PAYOUTS (FIX M7 / new BulkPayouts page)
 // =======================================================================
 
-export const getRates = async (): Promise<{ buyRate: number; sellRate: number; merchantProfitPerToken: number } | null> => {
-  try {
-    const data = await request<any>('/api/payment/rates');
-    return data?.rates || null;
-  } catch {
-    return null;
-  }
-};
+// getRates removed: token conversion is fixed 1:1 (Phase 006 flattening,
+// 2026-07-08) — there is no buy/sell spread to fetch or display.
 
 export const getBulkPayouts = async (date?: string): Promise<any> => {
   const qs = date ? `?date=${date}` : '';
@@ -483,8 +477,7 @@ export const api = {
   getEarnings,
   getWeeklyEarnings,
   getStats,
-  getRates,
-  
+
   // Status
   toggleOnlineStatus,
   updatePreferences,

@@ -8,7 +8,8 @@ import { normalizeTransaction } from '../services/walletTransactionDTO';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 interface Balances { depositBalance: number; winningsBalance: number; lockedBalance: number; }
-interface TokenRates { buyRate: number; sellRate: number; }
+// Token conversion is fixed 1:1 (1 BB token = ₹1) — Phase 006 flattening,
+// 2026-07-08. The old TokenRates fetch/display was removed with it.
 interface LedgerEntry { _id: string; type: string; field: string; amount: number; balanceBefore: number; balanceAfter: number; reason: string; createdAt: string; }
 interface MerchantSnapshot {
   merchantId?: string;
@@ -298,7 +299,6 @@ function BuyPaymentUI({
 // ── Main WalletPage ───────────────────────────────────────────────────────────
 const WalletPage: React.FC = () => {
   const [balances, setBalances]         = useState<Balances>({ depositBalance: 0, winningsBalance: 0, lockedBalance: 0 });
-  const [rates, setRates]               = useState<TokenRates>({ buyRate: 1.1, sellRate: 1.0 });
   const [userProfile, setUserProfile]   = useState<UserProfile | null>(null);
   // M-05: ledger entries are raw shapes; use normalizeTransaction() when rendering.
   const [ledger, setLedger]             = useState<LedgerEntry[]>([]);
@@ -325,19 +325,15 @@ const WalletPage: React.FC = () => {
   // Polling ref for active orders
   const pollRef = useRef<NodeJS.Timeout | null>(null);
 
-  // ── Load profile + rates ──────────────────────────────────────────────────
+  // ── Load profile ──────────────────────────────────────────────────────────
   const loadMeta = useCallback(async () => {
     try {
-      const [prof, rts]: any[] = await Promise.all([
-        apiClient.get('/api/v1/user/profile'),
-        apiClient.get('/api/v1/token/rates'),
-      ]);
+      const prof: any = await apiClient.get('/api/v1/user/profile');
       const u = prof?.user;
       if (u) {
         setUserProfile({ id: u._id || u.id, username: u.username || u.mobile || 'User', bankDetails: u.bankDetails });
         setBalances({ depositBalance: u.depositBalance ?? 0, winningsBalance: u.winningsBalance ?? 0, lockedBalance: u.lockedBalance ?? 0 });
       }
-      setRates({ buyRate: rts?.rates?.buyRate ?? rts?.buyRate ?? 1.1, sellRate: rts?.rates?.sellRate ?? rts?.sellRate ?? 1.0 });
     } catch (err: unknown) {
       console.error('[WalletPage/loadMeta]', err instanceof Error ? err.message : err);
     }
@@ -468,7 +464,7 @@ const WalletPage: React.FC = () => {
           <input value={buyTokens} onChange={e => setBuyTokens(e.target.value)} type="number" min="1"
             placeholder="e.g. 100" className="w-full bg-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 border border-white/10 focus:border-yellow-500/50 outline-none" />
           {buyTokens && !isNaN(parseInt(buyTokens)) && (
-            <p className="text-xs text-yellow-400 mt-1">You pay: {fmtINR(parseInt(buyTokens) * rates.buyRate)}</p>
+            <p className="text-xs text-yellow-400 mt-1">You pay: {fmtINR(parseInt(buyTokens))}</p>
           )}
         </div>
         {buyError && <p className="text-red-400 text-xs">{buyError}</p>}
@@ -503,7 +499,7 @@ const WalletPage: React.FC = () => {
           <input value={sellTokens} onChange={e => setSellTokens(e.target.value)} type="number" min="1"
             placeholder="e.g. 100" className="w-full bg-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 border border-white/10 focus:border-green-500/50 outline-none" />
           {sellTokens && !isNaN(parseInt(sellTokens)) && (
-            <p className="text-xs text-green-400 mt-1">You receive: {fmtINR(parseInt(sellTokens) * rates.sellRate)}</p>
+            <p className="text-xs text-green-400 mt-1">You receive: {fmtINR(parseInt(sellTokens))}</p>
           )}
           <p className="text-xs text-gray-500 mt-1">Available winnings: {fmtT(balances.winningsBalance)}</p>
         </div>
@@ -595,17 +591,17 @@ const WalletPage: React.FC = () => {
         </div>
       </div>
 
-      {/* ── Rate cards ────────────────────────────────────────────────────── */}
+      {/* ── Rate cards — fixed 1:1 conversion ─────────────────────────────── */}
       <div className="grid grid-cols-2 gap-3 px-4 mb-4">
         <div className="bg-white/5 rounded-xl p-3 border border-white/10">
           <p className="text-xs text-gray-400 mb-0.5">Buy Rate</p>
-          <p className="text-xl font-bold text-yellow-400">₹{rates.buyRate}<span className="text-xs text-gray-500 font-normal">/token</span></p>
-          <p className="text-xs text-gray-500">You pay ₹{rates.buyRate} → get 1 token</p>
+          <p className="text-xl font-bold text-yellow-400">₹1<span className="text-xs text-gray-500 font-normal">/token</span></p>
+          <p className="text-xs text-gray-500">You pay ₹1 → get 1 token</p>
         </div>
         <div className="bg-white/5 rounded-xl p-3 border border-white/10">
           <p className="text-xs text-gray-400 mb-0.5">Sell Rate</p>
-          <p className="text-xl font-bold text-green-400">₹{rates.sellRate}<span className="text-xs text-gray-500 font-normal">/token</span></p>
-          <p className="text-xs text-gray-500">1 token → you get ₹{rates.sellRate}</p>
+          <p className="text-xl font-bold text-green-400">₹1<span className="text-xs text-gray-500 font-normal">/token</span></p>
+          <p className="text-xs text-gray-500">1 token → you get ₹1</p>
         </div>
       </div>
 
@@ -655,9 +651,9 @@ const WalletPage: React.FC = () => {
                 <p>📤 <strong className="text-white">Sell tokens:</strong> Enter amount → merchant auto-assigned → merchant sends INR to your bank → auto-completes → tokens debited</p>
                 <p>⏱ <strong className="text-white">15-minute window:</strong> Each order has a 15-min payment window. Orders expire automatically if not completed.</p>
                 <div className="bg-yellow-500/10 rounded-lg p-3 mt-3 border border-yellow-500/20">
-                  <p className="text-yellow-300 text-xs font-medium">Example at current rates:</p>
-                  <p className="text-xs text-gray-300 mt-1">100 tokens → pay {fmtINR(100 * rates.buyRate)}</p>
-                  <p className="text-xs text-gray-300">100 tokens → receive {fmtINR(100 * rates.sellRate)}</p>
+                  <p className="text-yellow-300 text-xs font-medium">Fixed 1:1 conversion:</p>
+                  <p className="text-xs text-gray-300 mt-1">100 tokens → pay {fmtINR(100)}</p>
+                  <p className="text-xs text-gray-300">100 tokens → receive {fmtINR(100)}</p>
                 </div>
               </div>
             </div>

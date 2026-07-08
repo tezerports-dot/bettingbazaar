@@ -28,7 +28,8 @@ const Dashboard: React.FC = () => {
   const [stats, setStats]         = useState<Stats | null>(null);
   const [loading, setLoading]     = useState(true);
   const [chartData, setChartData] = useState<any[]>([]);
-  const [rates, setRates]         = useState<{ buyRate: number; sellRate: number; merchantProfitPerToken: number } | null>(null);
+  // Token conversion is fixed 1:1 (Phase 006 flattening, 2026-07-08) — the
+  // rates fetch/display was removed; there is no buy/sell spread anymore.
 
   useEffect(() => {
     loadDashboardData();
@@ -54,18 +55,16 @@ const Dashboard: React.FC = () => {
 
   const loadDashboardData = async () => {
     try {
-      const [earningsData, statsData, profileData, weeklyData, ratesData] = await Promise.all([
+      const [earningsData, statsData, profileData, weeklyData] = await Promise.all([
         api.getEarnings(),
         api.getStats(),
         api.getMerchantProfile(),
         // FIX M4: fetch real 7-day data
         api.getWeeklyEarnings().catch(() => null),
-        api.getRates().catch(() => null),
       ]);
 
       setEarnings(earningsData.earnings);
       setStats(statsData);
-      if (ratesData) setRates(ratesData);
 
       if (profileData) {
         localStorage.setItem('merchantData', JSON.stringify(profileData));
@@ -209,44 +208,27 @@ const Dashboard: React.FC = () => {
         </div>
       </div>
 
-      {/* Token Rates & Wallet */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      {/* Token Conversion & Wallet — fixed 1:1, no spread */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="bg-gradient-to-br from-yellow-50 to-yellow-100 p-6 rounded-lg shadow-lg border border-yellow-200">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm text-yellow-700 font-medium">Token Buy Rate</p>
-              <p className="text-3xl font-bold text-yellow-900 mt-2">
-                Rs.{rates ? rates.buyRate.toFixed(2) : '—'}
-              </p>
-              <p className="text-xs text-yellow-600 mt-1">User pays per BB token</p>
+              <p className="text-sm text-yellow-700 font-medium">Token Conversion</p>
+              <p className="text-3xl font-bold text-yellow-900 mt-2">1 : 1</p>
+              <p className="text-xs text-yellow-600 mt-1">1 BB token = Rs.1 — fixed, no buy/sell spread</p>
             </div>
             <TrendingUp className="h-14 w-14 text-yellow-500 opacity-80" />
-          </div>
-        </div>
-
-        <div className="bg-gradient-to-br from-orange-50 to-orange-100 p-6 rounded-lg shadow-lg border border-orange-200">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-orange-700 font-medium">Token Sell Rate</p>
-              <p className="text-3xl font-bold text-orange-900 mt-2">
-                Rs.{rates ? rates.sellRate.toFixed(2) : '—'}
-              </p>
-              <p className="text-xs text-orange-600 mt-1">User receives per BB token</p>
-            </div>
-            <DollarSign className="h-14 w-14 text-orange-500 opacity-80" />
           </div>
         </div>
 
         <div className="bg-gradient-to-br from-emerald-50 to-emerald-100 p-6 rounded-lg shadow-lg border border-emerald-200">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm text-emerald-700 font-medium">Your Profit / Token</p>
+              <p className="text-sm text-emerald-700 font-medium">Wallet Balance</p>
               <p className="text-3xl font-bold text-emerald-900 mt-2">
-                Rs.{rates ? rates.merchantProfitPerToken.toFixed(2) : '—'}
+                Rs.{(merchant?.tokenBalance ?? 0).toLocaleString()}
               </p>
-              <p className="text-xs text-emerald-600 mt-1">
-                Wallet balance: Rs.{(merchant?.tokenBalance ?? 0).toLocaleString()}
-              </p>
+              <p className="text-xs text-emerald-600 mt-1">Available token balance</p>
             </div>
             <Users className="h-14 w-14 text-emerald-500 opacity-80" />
           </div>

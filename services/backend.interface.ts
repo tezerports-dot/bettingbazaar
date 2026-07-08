@@ -1,8 +1,8 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-import { 
-  User, Bet, GameCycle, BettingSide, CycleType, AdminUser, AuditLog, 
-  PromoContent, Transaction, PromoLocation, MerchantProfile, PaymentOrder, 
-  TokenRates, GameState, PaymentOrder 
+import {
+  User, Bet, GameCycle, BettingSide, CycleType, AdminUser, AuditLog,
+  PromoContent, Transaction, PromoLocation, MerchantProfile, PaymentOrder,
+  GameState, PaymentOrder
 } from '../types';
 
 export interface Backend {
@@ -68,10 +68,10 @@ export interface Backend {
   subscribeToTicker(callback: (data: { id: string, text: string, side: 'DELHI' | 'BOMBAY', amount: number }) => void): () => void;
   subscribeToUserUpdates(userId: string, callback: (data: any) => void): () => void;
 
-  
-  getTokenRates(): Promise<TokenRates>;
-  updateTokenRates(buy: number, sell: number, adminId: string): Promise<TokenRates>;
-  
+
+  // Token conversion is fixed 1:1 (Phase 006 flattening, 2026-07-08) —
+  // getTokenRates/updateTokenRates removed with the TokenRates model.
+
   // Admin Ops for Merchants
   addMerchant(profile: Partial<MerchantProfile>, adminId: string): Promise<MerchantProfile & { initialPassword?: string }>;
   removeMerchant(merchantId: string, adminId: string): Promise<void>;

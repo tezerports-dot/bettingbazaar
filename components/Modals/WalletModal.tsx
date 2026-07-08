@@ -21,14 +21,14 @@ interface Balances {
   depositBalance:  number;
   winningsBalance: number;
 }
-interface TokenRates { buyRate: number; sellRate: number; }
+// Token conversion is fixed 1:1 (1 BB token = ₹1) — Phase 006 flattening,
+// 2026-07-08. The old TokenRates fetch/display was removed with it.
 interface BankDetails { upiId?: string; accountNumber?: string; ifsc?: string; accountName?: string; }
 
 // ── Component ──────────────────────────────────────────────────────────────────
 const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose, onOpenChat, onNavigateToHistory, initialTab = 'buy' }) => {
   const [tab,          setTab]          = useState<ModalTab>('buy');
   const [balances,     setBalances]     = useState<Balances>({ depositBalance: 0, winningsBalance: 0 });
-  const [rates,        setRates]        = useState<TokenRates>({ buyRate: 1, sellRate: 1 });
   const [bankDetails,  setBankDetails]  = useState<BankDetails | null>(null);
   const [hasBankDetails, setHasBankDetails] = useState(false);
   const [amount,       setAmount]       = useState('');
@@ -38,21 +38,14 @@ const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose, onOpenChat, 
   const [activeOrder,  setActiveOrder]  = useState<{ id: string; status: PaymentOrderState } | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // ── Load balances + rates + bank details on open ────────────────────────────
+  // ── Load balances + bank details on open ────────────────────────────────────
   const loadMeta = useCallback(async () => {
     if (!isOpen) return;
     try {
-      const [profileResp, ratesResp]: any[] = await Promise.all([
-        apiClient.get('/api/v1/user/profile'),
-        apiClient.get('/api/v1/token/rates'),
-      ]);
+      const profileResp: any = await apiClient.get('/api/v1/user/profile');
       setBalances({
         depositBalance:  profileResp?.user?.depositBalance  ?? 0,
         winningsBalance: profileResp?.user?.winningsBalance ?? 0,
-      });
-      setRates({
-        buyRate:  ratesResp?.rates?.buyRate  ?? 1,
-        sellRate: ratesResp?.rates?.sellRate ?? 1,
       });
       const bd = profileResp?.user?.bankDetails;
       if (bd && (bd.upiId || bd.accountNumber)) {
@@ -146,9 +139,8 @@ const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose, onOpenChat, 
   const fmtAmount = (n: number) =>
     new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(n);
 
-  const fiatPreview = amount
-    ? (parseFloat(amount) * (tab === 'buy' ? rates.buyRate : rates.sellRate)).toFixed(0)
-    : '0';
+  // Fixed 1:1 conversion — fiat amount always equals token amount.
+  const fiatPreview = amount ? parseFloat(amount).toFixed(0) : '0';
 
   // ── Render ───────────────────────────────────────────────────────────────────
   if (!isOpen) return null;
@@ -206,7 +198,7 @@ const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose, onOpenChat, 
               </div>
               {amount && (
                 <p className="text-xs text-gray-400 mt-1.5">
-                  ≈ ₹{fiatPreview} at ₹{tab === 'buy' ? rates.buyRate : rates.sellRate}/token
+                  = ₹{fiatPreview} (fixed 1:1 — 1 token = ₹1)
                 </p>
               )}
             </div>

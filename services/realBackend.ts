@@ -31,7 +31,7 @@ import { PAYOUT, WINNER, PHASE } from '../GAME_CORE';
 import {
   User, Bet, BettingSide, CycleType, AdminUser, AuditLog,
   PromoContent, Transaction, PromoLocation, MerchantProfile, PaymentOrder,
-  TokenRates, GameState, ChatMessage, SystemConfigData, GameCycle
+  GameState, ChatMessage, SystemConfigData, GameCycle
 } from '../types';
 import { io, Socket } from 'socket.io-client';
 import { setToken } from './apiClient'; // GOVERNANCE.md M-9: single write path for auth_token
@@ -693,25 +693,7 @@ export class RealBackend implements Backend {
   }
 
   // -- TOKEN RATES --------------------------------------------------------------
-  async getTokenRates(): Promise<TokenRates | null> {
-    try {
-      const result = await this.request<any>('/p2p/rates');
-      const data = (result as any).rates || result;
-      if (!data?.buyRate && !data?.buyPrice) return null;
-      return {
-        buyRate:  data.buyRate  ?? data.buyPrice,
-        sellRate: data.sellRate ?? data.sellPrice,
-      } as TokenRates;
-    } catch {
-      return null;
-    }
-  }
-  async updateTokenRates(buy: number, sell: number, adminId?: string): Promise<TokenRates> {
-    const res = await this.request<any>('/admin/token-rates', {
-      method: 'PUT', body: JSON.stringify({ buyRate: buy, sellRate: sell })
-    });
-    return res.rates || { buyRate: buy, sellRate: sell } as any;
-  }
+  // Removed: token conversion is fixed 1:1 (Phase 006 flattening, 2026-07-08).
 
   // -- IMAGE / FILE UPLOAD -------------------------------------------------------
   // Uses S3 presigned URL flow (IDrive E2 S3 + BunnyCDN delivery):
