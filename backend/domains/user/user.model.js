@@ -140,8 +140,15 @@ userSchema.virtual('totalBalance').get(function() {
   return (this.depositBalance || 0) + (this.winningsBalance || 0) + (this.reserveBalance || 0) + (this.lockedBalance || 0);
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-// 🎮 GAME CYCLE SCHEMA - CORRECTED FOR 2 CYCLE TYPES ONLY (FIX #1, #3)
-// ════════════════════════════════════════════════════════════════════════════
+// ── Indexes for hot query paths (added 2026-07-09, audit) ────────────────────
+// mobile/status/walletAddress are already indexed inline above. These cover
+// the remaining scanned paths: referral-tree lookups (referredBy — 7 call
+// sites), the KYC admin queue (kycStatus), username lookups, and admin
+// listing/pagination by signup date. Without these, each query full-scans
+// the users collection — unacceptable past a few thousand users.
+userSchema.index({ referredBy: 1 });
+userSchema.index({ kycStatus: 1 });
+userSchema.index({ username: 1 });
+userSchema.index({ createdAt: -1 });
 
 export const User = mongoose.model('User', userSchema);

@@ -220,6 +220,48 @@ export async function creditDeposit(userId, amount, orderId, extSession) {
   } finally { await session.endSession(); }
 }
 
+/**
+ * creditReserve — credit the deposit's reserve-allocation share to
+ * reserveBalance. Mirrors creditDeposit exactly (idempotent via txId, writes
+ * a WalletLedger entry). Added 2026-07-09 (audit) so reserve credits stop
+ * being raw $inc writes with no audit trail (04-GOVERNANCE.md §7).
+ */
+export async function creditReserve(userId, amount, orderId, extSession) {
+  amount = round2(amount);
+  if (amount <= 0) throw new Error(`Invalid reserve amount: ${amount}`);
+  const tid = `reserve_credit_${orderId}`;
+
+  if (await checkIdempotent(tid)) return { idempotent: true, txId: tid };
+
+  const User         = mongoose.model('User');
+  const WalletLedger = mongoose.model('WalletLedger');
+
+  const run = async (session) => {
+    const user   = await User.findById(userId).session(session);
+    if (!user) throw new Error('User not found');
+    const before = round2(user.reserveBalance || 0);
+    const after  = round2(before + amount);
+
+    await User.findByIdAndUpdate(userId,
+      { $inc: { reserveBalance: amount } }, { session });
+
+    await WalletLedger.create([{
+      userId, type: 'CREDIT', field: 'reserveBalance',
+      amount, balanceBefore: before, balanceAfter: after,
+      reason: `Deposit reserve allocation ${orderId}`,
+      refModel: 'PaymentOrder', refId: orderId, txId: tid,
+    }], { session });
+
+    return { reserveBefore: before, reserveAfter: after, txId: tid };
+  };
+
+  if (extSession) return run(extSession);
+  const session = await mongoose.startSession();
+  try {
+    let r; await session.withTransaction(async () => { r = await run(session); }); return r;
+  } finally { await session.endSession(); }
+}
+
 // ── REFUND (cancelled order) ──────────────────────────────────────────────────
 /**
  * refundOrder — refund a locked amount back.

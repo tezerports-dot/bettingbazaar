@@ -8,7 +8,7 @@ import { withdrawalLimiter } from '../../middleware/security.js';
 import { markOrderPaid, cancelOrder } from './paymentProcessing.service.js';
 // Phase 009: money movement enters ONLY via the Funding Platform authority.
 import { requestDeposit, requestWithdrawal } from '../funding/fundingAuthority.service.js';
-import { creditDeposit } from '../wallet/walletAuthority.service.js';
+import { creditDeposit, creditReserve } from '../wallet/walletAuthority.service.js';
 import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
 import { emitWalletUpdate, emitAdminUpdate, emitOrderUpdate } from '../notification/realtimeEmitters.js';
@@ -65,7 +65,9 @@ router.post('/deposit/:orderId/confirm', authenticate, async (req, res) => {
     });
     if (!updatedMerchant) { await abortOrEnd(session); return res.status(400).json({ success: false, message: 'Merchant insufficient token balance' }); }
     await creditDeposit(order.userId, depositTokens, order._id.toString(), session);
-    if ((order.reserveAllocation || 0) > 0) await mongoose.model('User').findByIdAndUpdate(order.userId, { $inc: { reserveBalance: order.reserveAllocation } }, withSession(session));
+    // GOVERNANCE §7: reserveBalance is written ONLY via walletAuthority now
+    // (was a raw $inc with no ledger trail). Idempotent + ledgered.
+    if ((order.reserveAllocation || 0) > 0) await creditReserve(order.userId, order.reserveAllocation, order._id.toString(), session);
     order.status = 'COMPLETED'; order.completedAt = new Date(); order.approvedBy = req.merchantId || req.user._id; order.approvedAt = new Date(); order.updatedAt = new Date();
     await order.save(withSession(session));
     await releaseUTR(order._id);

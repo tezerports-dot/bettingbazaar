@@ -468,14 +468,10 @@ export async function approveDeposit(actorId, orderId, session) {
   // Deposit-allocation share to user depositBalance (order.depositAllocation, DepositPolicy-derived)
   await creditDeposit(order.userId, order.depositAllocation || order.tokenAmount, order._id.toString(), session);
 
-  // Reserve-allocation share to platform reserve (order.reserveAllocation, DepositPolicy-derived)
+  // Reserve-allocation share to platform reserve (order.reserveAllocation,
+  // DepositPolicy-derived). GOVERNANCE §7: via walletAuthority (was raw $inc).
   if (order.reserveAllocation > 0) {
-    const User = mongoose.model('User');
-    await User.findByIdAndUpdate(
-      order.userId,
-      { $inc: { reserveBalance: order.reserveAllocation } },
-      withSession(session)
-    );
+    await creditReserve(order.userId, order.reserveAllocation, order._id.toString(), session);
   }
 
   order.status      = 'COMPLETED';

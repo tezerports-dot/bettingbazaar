@@ -214,6 +214,15 @@ export async function creditDeposit(userId, amount, orderId, extSession) {
   return _cd(userId, amount, orderId, extSession);
 }
 
+/**
+ * Credit a deposit's reserve-allocation share to reserveBalance — the
+ * sanctioned single writer for reserveBalance (§7). Idempotent, ledgered.
+ */
+export async function creditReserve(userId, amount, orderId, extSession) {
+  const { creditReserve: _cr } = await import('./wallet.service.js');
+  return _cr(userId, amount, orderId, extSession);
+}
+
 
 export async function debitWinningsForWithdrawal(userId, amount, orderId, extSession) {
   return _debitWinningsForWithdrawal(userId, amount, orderId, extSession);

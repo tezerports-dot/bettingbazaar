@@ -273,3 +273,29 @@ Operations Platform (orchestration-only) slots later. See ENTERPRISE_DECISIONS.m
       nothing reads or writes it since the TokenRates model removal. Drop it
       during a scheduled DB maintenance window if desired (DB operation, not
       a code change).
+
+## AUDIT (2026-07-09) — hardening pass toward production
+
+- [x] Dead test suite resurrected (vitest config pointed at nonexistent
+      server/tests/**). 50 unit tests green in-sandbox; integration tests +
+      GitHub Actions CI added (integration runs where mongod is reachable).
+- [x] §7 fix: reserveBalance was credited via raw $inc with NO ledger trail
+      in payment.routes.js and paymentProcessing.service.js. Added
+      walletAuthority.creditReserve (idempotent, ledgered); both sites
+      rerouted; integration test added.
+- [x] Scale: added missing User indexes (referredBy, kycStatus, username,
+      createdAt) — were full-scanning.
+
+### AUDIT — still open (tracked, not silently skipped)
+- [ ] settlementService.js raw $inc on lockedBalance/lockedDepositAmount/
+      lockedWinningsAmount (lines ~12, ~27) — the settlement hot path.
+      Delicate; should be rerouted through a walletAuthority unlock method
+      WITH an integration test that runs the full settle flow under
+      concurrency, not changed blind. Highest-priority remaining money fix.
+- [ ] Redis-backed rate limiting: current limiter is in-memory, so it does
+      nothing across horizontally-scaled replicas (REDIS_RATE_LIMITER flag
+      is off). Required before running >1 backend instance.
+- [ ] Full auth/authz line-by-line audit + dependency audit (npm audit
+      reports 13 vulns in the newly added dev tooling — review prod deps).
+- [ ] admin-panel / merchant-panel tsc build breakage (pre-existing) blocks
+      full CI build gating.
