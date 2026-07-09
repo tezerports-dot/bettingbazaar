@@ -13,6 +13,7 @@ import { releaseUTR } from '../../middleware/utrValidation.js';
 import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import { tryAssignMerchant, buildMerchantSnapshot, updateMerchantStatsOnComplete } from '../payment/paymentProcessing.service.js';
 import { debitMerchantTokens, creditMerchantTokens } from './merchantWallet.service.js';
+import { publish as publishDomainEvent, EVENTS as DOMAIN_EVENTS } from '../../services/eventBus.service.js';
 
 const router     = express.Router();
 const JWT_SECRET  = process.env.JWT_SECRET  || 'fallback-secret';
@@ -512,6 +513,10 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         }
 
         await order.save();
+
+        // Funding event (Phase 009): lets the ledger reconciler pick this
+        // completion up within seconds. Non-blocking — never affects the flow.
+        try { publishDomainEvent(DOMAIN_EVENTS.PAYMENT_ORDER_COMPLETED, { orderId: order._id, type: order.type }); } catch (_) {}
 
         // Update merchant scoring stats
         await updateMerchantStatsOnComplete(req.merchantId, true).catch(() => {});
@@ -1296,6 +1301,9 @@ router.post('/orders/:id/approve', merchantAuth, async (req, res) => {
         await releaseUTR(order._id);
 
         await commitOrEnd(session);
+
+        // Funding event (Phase 009): nudges the ledger reconciler immediately.
+        try { publishDomainEvent(DOMAIN_EVENTS.PAYMENT_ORDER_COMPLETED, { orderId: order._id, type: order.type }); } catch (_) {}
 
         // ── SSE: notify user of new balances (Finding 3) ──────────────────────
         emitOrderUpdate(order.userId.toString(), 'order_completed', {

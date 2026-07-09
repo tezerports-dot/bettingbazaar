@@ -28,6 +28,7 @@ import { connectRedis }       from './startup/redisConnect.js';
 import { seedAdminAccount }   from './startup/seedAdmin.js';
 import { registerCronJobs }   from './startup/cronJobs.js';
 import { attachSocketHandlers } from './startup/socketHandlers.js';
+import { registerFundingEventSubscribers } from './domains/funding/fundingEvents.js';
 
 // ─── MODELS (must load before any route that calls mongoose.model()) ──────────
 import './models/index.js';
@@ -295,6 +296,7 @@ Promise.allSettled([
 ]).then(() => {
   console.log('✅ DB services initialized');
   registerCronJobs(rebuildLeaderboard);
+  registerFundingEventSubscribers(); // Funding Platform (Phase 009) — eventBus wiring
 });
 
 const _shutdown = (sig) => {

@@ -101,6 +101,26 @@ Operations Platform (orchestration-only) slots later. See ENTERPRISE_DECISIONS.m
 - [x] Merchant analytics: leaderboard, funding stats, performance history,
       wallet ledger admin API; platform README.
 
+## PHASE 009 — Funding Platform (owner directive 2026-07-09) — COMPLETE
+
+- [x] `domains/funding/`: fundingAuthority.service.js (single money-movement
+      entry), providerRegistry.js (MANUAL_P2P_INR live; USDT_TRC20 +
+      PAYMENT_GATEWAY declared inactive adapters), fundingEvents.js (eventBus
+      wired: created events from the facade; completed events from the two
+      live completion routes → immediate ledger reconciliation).
+- [x] payment.routes.js deposit/withdrawal creation rerouted through the
+      facade; subscribers registered at startup in server.js.
+- [x] 04-GOVERNANCE.md §1 rows: merchant wallet, funding authority,
+      MerchantBonusPolicy.
+
+### Deferred within 009
+- [ ] USDT Treasury build (address mgmt, TRC20 confirmation watching,
+      1:1 INR-peg crediting) to activate the USDT_TRC20 adapter.
+- [ ] PAYMENT_GATEWAY adapter implementation against a real gateway
+      (PaymentGatewayConfig scaffolding exists).
+- [ ] Publish PAYMENT_ORDER_COMPLETED from the remaining completion paths
+      (dispute-resolution, payment.routes confirm) — cron covers them today.
+
 ### Deferred within 008 (flagged, not forgotten)
 - [ ] MerchantBonusPolicy v1 has no scheduling/approval lifecycle (mirror
       depositPolicy.service.js when needed).

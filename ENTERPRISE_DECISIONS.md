@@ -8,6 +8,30 @@ need a durable home.
 
 ---
 
+## 2026-07-09 — Phase 009: Funding Platform (authority boundary, not a file move)
+
+**Decision:** `domains/funding/` is the only authority for money entering or
+leaving the ecosystem. It is an AUTHORITY BOUNDARY over the existing P2P
+machinery, not a file reshuffle: `paymentProcessing.service.js` et al. stay
+in `domains/payment/` per the opportunistic-move rule and become
+implementation details behind the `MANUAL_P2P_INR` provider adapter.
+Deposits/withdrawals enter only via `fundingAuthority.requestDeposit/
+requestWithdrawal`; future rails (USDT TRC20, payment gateways) are adapters
+in `providerRegistry.js` — declared today, inactive until built, so route
+code never changes when a rail goes live.
+
+**Funding events / eventBus:** the previously zero-importer
+`eventBus.service.js` is now genuinely wired ("wire, don't rewrite"):
+the facade publishes PAYMENT_ORDER_CREATED; the two live completion routes
+publish PAYMENT_ORDER_COMPLETED; a Funding subscriber nudges the R&S
+reconciler so ledger entries land within seconds (60s cron stays as the
+idempotent safety net; a subscriber failure can never affect money flow).
+
+**Boundary:** Funding NEVER owns accounting logic (R&S derives everything
+from completed orders), never mutates balances, owns no configurable rules.
+
+---
+
 ## 2026-07-09 — Phase 008: Merchant Platform (and the accepted 011/012 split)
 
 **Decision (owner directive):** Phase 008 = Merchant Platform, the only

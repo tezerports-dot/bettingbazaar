@@ -5,7 +5,9 @@ import express   from 'express';
 import mongoose  from 'mongoose';
 import { authenticate } from '../identity/auth.middleware.js';
 import { withdrawalLimiter } from '../../middleware/security.js';
-import { createDepositOrder, createWithdrawalOrder, markOrderPaid, cancelOrder } from './paymentProcessing.service.js';
+import { markOrderPaid, cancelOrder } from './paymentProcessing.service.js';
+// Phase 009: money movement enters ONLY via the Funding Platform authority.
+import { requestDeposit, requestWithdrawal } from '../funding/fundingAuthority.service.js';
 import { creditDeposit } from '../wallet/walletAuthority.service.js';
 import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
@@ -22,14 +24,14 @@ function withSession(s) { return s ? { session: s } : {}; }
 
 router.post('/deposit/create', authenticate, async (req, res) => {
   try {
-    const result = await createDepositOrder(req.user._id, Number(req.body.tokenAmount));
+    const result = await requestDeposit({ userId: req.user._id, tokenAmount: Number(req.body.tokenAmount) });
     res.json({ success: true, message: 'Deposit request created. Waiting for merchant assignment.', ...result });
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code }); }
 });
 
 router.post('/withdrawal/create', authenticate, withdrawalLimiter, async (req, res) => {
   try {
-    const result = await createWithdrawalOrder(req.user._id, Number(req.body.tokenAmount));
+    const result = await requestWithdrawal({ userId: req.user._id, tokenAmount: Number(req.body.tokenAmount) });
     res.json({ success: true, message: 'Withdrawal request created. Waiting for merchant assignment.', ...result });
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code, cutoffPassed: err.cutoffPassed, balance: err.balance }); }
 });
