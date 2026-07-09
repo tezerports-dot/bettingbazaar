@@ -8,6 +8,70 @@ need a durable home.
 
 ---
 
+## 2026-07-09 — Phase 007 = Revenue & Settlement Platform bootstrap (renumbered)
+
+**Decision (owner directive, 2026-07-09):** Phase 007 is the Revenue &
+Settlement Platform bootstrap, built as the single financial authority. The
+previous roadmap's 007 (Operations Platform) is NOT cancelled — it remains
+orchestration-only, owns no data, and slots after this. Phase 008 (Financial
+Core) is partially absorbed: this bootstrap delivers exactly the ledger
+foundation 008 called for (double-entry, append-only, idempotency keys,
+integer minor units).
+
+**What the platform owns (and nothing else does):** completed bets, completed
+payouts, platform revenue, the settlement ledger, reserve deductions, payout
+fees, accounting events, merchant bonus funding.
+
+**Boundary decisions:**
+- `walletAuthority.service.js` remains the sole wallet-balance writer (§7).
+  The R&S ledger is the ACCOUNTING view — it never mutates balances.
+- Business Policy Platform remains the only authority for configurable
+  percentages/rules. The bonus-funding function takes an explicit amount;
+  the future MerchantBonusPolicy (a Business Policy sibling) will automate
+  the percentage, and this platform will READ it.
+- Merchant bonuses: platform-funded only, issued after completed buy→sell
+  cycles from distributable platform revenue, never calculated from
+  buyRate/sellRate (which no longer exist), never deducted from users. The
+  ledger structurally enforces the funding rule: the only path into
+  MERCHANT_BONUS_POOL is a debit of PLATFORM_REVENUE, and funding is
+  rejected beyond the distributable balance.
+
+**Ledger design (standard fintech practice, researched 2026-07-09 —
+fintechly.com ledger-system-design, sdk.finance double-entry-ledger,
+finlego.com real-time ledger design):**
+- Append-only journal entries (`AccountingEvent`); mutation/deletion attempts
+  throw via model middleware. Corrections are new reversing ADJUSTMENT
+  entries, never edits.
+- Each entry: signed integer postings in paise summing to exactly zero,
+  validated in the service AND as a schema invariant.
+- Globally unique `idempotencyKey` per entry; duplicate recording is a
+  silent no-op (service check + unique index as belt-and-braces).
+- Balances are ALWAYS derived by summing postings — no stored balance field
+  that could drift. Distributable revenue = derived PLATFORM_REVENUE
+  balance; bonus funding debits it, so "already funded" needs no separate
+  bookkeeping.
+- Closed chart of accounts (EXTERNAL_FIAT, USER_FUNDS, PLATFORM_RESERVE,
+  PLATFORM_REVENUE, PAYOUT_FEES, MERCHANT_BONUS_POOL) with normal-balance
+  metadata; ad-hoc account strings are rejected.
+
+**Producer model — the ledger is DERIVED, not inline:** completion code
+paths (5 different places set PaymentOrder COMPLETED; gameEngine settles
+cycles) are left untouched. A reconciliation worker anti-joins completed
+source records against existing entries and records what's missing,
+idempotently. Why: one writer instead of five sprinkled recorders, no risk
+added to live money flows, self-healing after failures, and free historical
+backfill. Trade-off: entries lag up to ~60s and the anti-join scans grow
+with history — both acceptable now, checkpoint optimization flagged in
+EXECUTION_QUEUE.md.
+
+**Historical-rate residuals:** pre-1:1 orders (fiat ≠ tokens) balance via a
+PLATFORM_REVENUE residual leg — the old buy/sell spread lands in revenue,
+which is historically accurate. Verified by 34-assertion control-flow tests
+against the real posting builders (float-drift kill, profit/loss/zero
+cycles, legacy allocation-less orders, lifecycle conservation to zero).
+
+---
+
 ## 2026-07-08 — buyRate/sellRate fully flattened to fixed 1:1; TokenRates removed
 
 **Decision:** token conversion is now a fixed 1:1 constant (1 BB token = ₹1)

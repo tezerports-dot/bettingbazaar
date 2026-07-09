@@ -63,11 +63,38 @@ deleted, so this file also works as a short-form recent-history log.
 
 ---
 
-## NEXT — per established dependency order (not an open choice)
+## NEXT — Phase 007: Revenue & Settlement Platform bootstrap (owner directive 2026-07-09)
 
-- [ ] **Phase 007 — Operations Platform.** Orchestration-only admin control
-      center; owns NO data (2026-07-03 decision). First 006-exit criterion
-      work is done; this is the next roadmap phase.
+Phase renumbered 2026-07-09: 007 is now the R&S Platform bootstrap; the
+Operations Platform (orchestration-only) slots later. See ENTERPRISE_DECISIONS.md.
+
+- [x] Ledger core: `domains/revenue/` — chart of accounts, append-only
+      double-entry `AccountingEvent` model (integer paise, unique idempotency
+      keys, immutability middleware), sole-writer
+      `revenueSettlement.service.js` with pure posting builders (deposit /
+      withdrawal / cycle / bonus funding, incl. historical-rate residuals).
+      Verified with 34-assertion control-flow tests against the real code.
+- [ ] Reconciliation worker in `cronJobs.js` (60s): derive ledger entries
+      from COMPLETED PaymentOrders and settled Cycles, idempotent, per-item
+      failures logged never thrown, history backfills automatically.
+- [ ] Admin surface: GET /api/admin/revenue/summary (trial balance +
+      distributable revenue + integrity check), GET .../ledger (paginated),
+      POST .../bonus-pool/fund (explicit amount + businessJustification,
+      capped at distributable revenue, audit-logged).
+- [ ] 04-GOVERNANCE.md §1: AccountingEvent / settlement-ledger authority row.
+
+### Deferred within 007 (flagged, not forgotten)
+- [ ] Reconciler anti-join scans all completed sources each pass — add a
+      checkpoint/high-water-mark optimization when volume warrants.
+- [ ] `fundMerchantBonusPool` distributable check is read-then-write (no
+      cross-document transaction) — fine while funding is a rare manual
+      admin action; revisit before automated policy-driven funding.
+- [ ] MerchantBonusPolicy (Business Policy Platform sibling) to automate
+      funding percentage/cadence; Merchant Performance Bonus issuing engine
+      (Cycle Tracker → Bonus Calculator → Bonus Ledger) consumes the pool.
+- [ ] PAYOUT_FEES account + PAYOUT_FEE_CHARGED event type are defined with
+      no producer — the fee itself doesn't exist yet; Business Policy will
+      define it. Intentional registry entry, not an orphan.
 
 ## AFTER THAT — Merchant Platform / Revenue & Settlement Platform scoped
 

@@ -18,6 +18,8 @@ export * from './audit.model.js';
 export * from '../domains/identity/auth.model.js';
 export * from '../domains/configuration/systemConfig.model.js';
 export * from '../domains/configuration/depositPolicy.model.js';
+// Revenue & Settlement Platform (BBEPS Phase 007) — the settlement ledger
+export * from '../domains/revenue/accountingEvent.model.js';
 export * from '../domains/cms/content.model.js';
 export * from '../domains/notification/notification.model.js';
 export * from './payment.model.js';
