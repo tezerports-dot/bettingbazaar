@@ -30,7 +30,8 @@ export * from './payment.model.js';
 export * from './referral.model.js';
 export * from './gamification.model.js';
 export * from './vip.model.js';
-export * from './gameProvider.model.js';
+// Casino Platform (BBEPS Phase 011) — formerly models/gameProvider.model.js
+export * from '../domains/casino/gameProvider.model.js';
 export * from '../domains/wallet/wallet.model.js';
 export * from './social.model.js';
 export * from './accountRecovery.model.js';

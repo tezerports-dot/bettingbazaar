@@ -14,10 +14,10 @@
  *  4. Provider calls our webhook on every bet/win → we debit/credit user wallet
  */
 import express from 'express';
-import { debitForGameProviderBet, creditWinnings, refundOrder } from '../domains/wallet/walletAuthority.service.js';
+import { debitForGameProviderBet, creditWinnings, refundOrder } from '../wallet/walletAuthority.service.js';
 import mongoose from 'mongoose';
 import crypto from 'crypto';
-import { authenticate, isAdmin, isAdminOrSubAdmin } from '../domains/identity/auth.middleware.js';
+import { authenticate, isAdmin, isAdminOrSubAdmin } from '../identity/auth.middleware.js';
 
 const router = express.Router();
 

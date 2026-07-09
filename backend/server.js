@@ -45,7 +45,7 @@ import referralRoutes     from './routes/referral.routes.js';
 import paymentCfgRoutes   from './routes/payment-config.routes.js';
 import giftCodeRoutes     from './routes/giftcode.routes.js';
 import retentionRoutes, { rebuildLeaderboard } from './routes/retention.routes.js';
-import gameProviderRoutes from './routes/game-providers.routes.js';
+import gameProviderRoutes from './domains/casino/gameProvider.routes.js';
 import recoveryRoutes     from './routes/account-recovery.routes.js';
 import winnersRoutes      from './routes/winners.routes.js';
 
