@@ -75,5 +75,30 @@ export function registerCronJobs(rebuildLeaderboard) {
     } catch (e) { console.error('[scheduled-config] cron error:', e.message); }
   }, 60 * 1000);
 
+  // ── Settlement-ledger reconciliation — runs every 60 seconds ────────────────
+  // Revenue & Settlement Platform (BBEPS Phase 007): derives append-only
+  // AccountingEvent entries from COMPLETED PaymentOrders and settled Cycles.
+  // Idempotent (unique keys), so re-running is always safe; per-item failures
+  // are returned as results and logged, never thrown; historical records
+  // backfill automatically across the first passes (200 per source per pass).
+  setInterval(async () => {
+    try {
+      const { reconcileCompletedOrders, reconcileSettledCycles } =
+        await import('../domains/revenue/revenueSettlement.service.js');
+
+      const orderResults = await reconcileCompletedOrders();
+      for (const r of orderResults) {
+        if (r.error) console.error(`[ledger-reconcile] PaymentOrder ${r.refId} failed:`, r.error);
+      }
+      const cycleResults = await reconcileSettledCycles();
+      for (const r of cycleResults) {
+        if (r.error) console.error(`[ledger-reconcile] Cycle ${r.refId} failed:`, r.error);
+      }
+
+      const recorded = [...orderResults, ...cycleResults].filter(r => r.recorded).length;
+      if (recorded > 0) console.log(`[ledger-reconcile] Recorded ${recorded} accounting event(s)`);
+    } catch (e) { console.error('[ledger-reconcile] cron error:', e.message); }
+  }, 60 * 1000);
+
   console.log('✅ Cron jobs registered');
 }
