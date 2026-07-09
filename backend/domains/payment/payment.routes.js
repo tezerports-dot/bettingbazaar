@@ -7,6 +7,7 @@ import { authenticate } from '../identity/auth.middleware.js';
 import { withdrawalLimiter } from '../../middleware/security.js';
 import { createDepositOrder, createWithdrawalOrder, markOrderPaid, cancelOrder } from './paymentProcessing.service.js';
 import { creditDeposit } from '../wallet/walletAuthority.service.js';
+import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
 import { emitWalletUpdate, emitAdminUpdate, emitOrderUpdate } from '../notification/realtimeEmitters.js';
 
@@ -52,7 +53,14 @@ router.post('/deposit/:orderId/confirm', authenticate, async (req, res) => {
     if (!order || order.type !== 'DEPOSIT') { await abortOrEnd(session); return res.status(404).json({ success: false, message: 'Order not found' }); }
     if (!['PAID','PROCESSING'].includes(order.status)) { await abortOrEnd(session); return res.status(400).json({ success: false, message: `Cannot confirm in ${order.status} status` }); }
     const depositTokens = order.depositAllocation || order.tokenAmount;
-    const updatedMerchant = await mongoose.model('Merchant').findOneAndUpdate({ _id: order.merchantId, tokenBalance: { $gte: depositTokens } }, { $inc: { tokenBalance: -depositTokens } }, { ...withSession(session), new: true });
+    // GOVERNANCE §1: via merchantWallet.service.js (sole tokenBalance writer);
+    // canonical txId shared with every other deposit-deduction path.
+    const { merchant: updatedMerchant } = await debitMerchantTokens({
+      merchantId: order.merchantId, amount: depositTokens,
+      reason: `Deposit ${order.orderId} confirmed — tokens dispensed to user`,
+      refModel: 'PaymentOrder', refId: order._id.toString(),
+      txId: `mw_dep_deduct_${order._id}`, session,
+    });
     if (!updatedMerchant) { await abortOrEnd(session); return res.status(400).json({ success: false, message: 'Merchant insufficient token balance' }); }
     await creditDeposit(order.userId, depositTokens, order._id.toString(), session);
     if ((order.reserveAllocation || 0) > 0) await mongoose.model('User').findByIdAndUpdate(order.userId, { $inc: { reserveBalance: order.reserveAllocation } }, withSession(session));

@@ -3,6 +3,7 @@
  * (BBEPS Phase 003 §3.3). Moved from backend/routes/admin/merchants.admin.routes.js
  * on 2026-07-01 (BBEPS Phase 004 migration). */
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from '../../routes/admin/_adminShared.js';
+import { creditMerchantTokens } from './merchantWallet.service.js';
 
 const router = express.Router();
 
@@ -395,11 +396,15 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
     const Transaction = mongoose.model('Transaction');
 
     // merchantId = Merchant._id
-    const merchant = await Merchant.findByIdAndUpdate(
-      merchantId,
-      { $inc: { tokenBalance: tokenAmount } },
-      { new: true }
-    );
+    // GOVERNANCE §1: via merchantWallet.service.js (sole tokenBalance writer).
+    // Admin top-ups have no natural idempotency key — each request is a new
+    // funding action, so a fresh ObjectId is used (same semantics as before).
+    const { merchant } = await creditMerchantTokens({
+      merchantId, amount: tokenAmount,
+      reason: `Admin wallet top-up${note ? ` — ${note}` : ''}`,
+      refModel: 'Merchant', refId: String(merchantId),
+      txId: `mw_topup_${new mongoose.Types.ObjectId().toString()}`,
+    });
 
     if (!merchant) {
       return res.status(404).json({ success: false, message: 'Merchant not found' });

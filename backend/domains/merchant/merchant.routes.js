@@ -12,6 +12,7 @@ import { merchantAuth } from '../../middleware/merchantAuth.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
 import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import { tryAssignMerchant, buildMerchantSnapshot, updateMerchantStatsOnComplete } from '../payment/paymentProcessing.service.js';
+import { debitMerchantTokens, creditMerchantTokens } from './merchantWallet.service.js';
 
 const router     = express.Router();
 const JWT_SECRET  = process.env.JWT_SECRET  || 'fallback-secret';
@@ -474,8 +475,15 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
                 return res.status(500).json({ success: false, message: 'Wallet credit failed. Please retry.' });
             }
             // Step 2: deduct merchant tokenBalance (Merchant gives tokens to user)
-            await MerchantModel.findByIdAndUpdate(req.merchantId, { $inc: { tokenBalance: -order.tokenAmount } })
-                .catch(e => console.error('[Merchant confirm] tokenBalance decrement failed:', e.message));
+            // GOVERNANCE §1: merchantWallet.service.js is the sole tokenBalance
+            // writer. allowOverdraft preserves this site's historical blind-$inc
+            // semantics (failure never blocked completion) — see EXECUTION_QUEUE.md.
+            await debitMerchantTokens({
+                merchantId: req.merchantId, amount: order.tokenAmount,
+                reason: `Deposit ${order.orderId} confirmed — tokens dispensed to user`,
+                refModel: 'PaymentOrder', refId: order._id.toString(),
+                txId: `mw_dep_deduct_${order._id}`, allowOverdraft: true,
+            }).catch(e => console.error('[Merchant confirm] tokenBalance decrement failed:', e.message));
 
             order.status      = 'COMPLETED';
             order.completedAt = new Date();
@@ -487,8 +495,13 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             // No additional debit needed — winnings already moved to lockedBalance.
             // We just need to mark the order complete and clear the lock.
             // Merchant receives tokens (their balance increases)
-            await MerchantModel.findByIdAndUpdate(req.merchantId, { $inc: { tokenBalance: order.tokenAmount } })
-                .catch(e => console.error('[Merchant confirm] WITHDRAWAL tokenBalance increment failed:', e.message));
+            // GOVERNANCE §1: via merchantWallet.service.js (sole tokenBalance writer)
+            await creditMerchantTokens({
+                merchantId: req.merchantId, amount: order.tokenAmount,
+                reason: `Withdrawal ${order.orderId} confirmed — tokens received from user`,
+                refModel: 'PaymentOrder', refId: order._id.toString(),
+                txId: `mw_wd_credit_${order._id}`,
+            }).catch(e => console.error('[Merchant confirm] WITHDRAWAL tokenBalance increment failed:', e.message));
 
             order.status       = 'COMPLETED';
             order.completedAt  = new Date();
@@ -1194,11 +1207,15 @@ router.post('/orders/:id/approve', merchantAuth, async (req, res) => {
 
         // ── Finding 5: Merchant inventory validation ───────────────────────────
         // ── Finding 4: Atomic inventory deduction with $gte guard ──────────────
-        const updatedMerchant = await Merchant.findOneAndUpdate(
-            { _id: req.merchantId, tokenBalance: { $gte: order.tokenAmount } },
-            { $inc: { tokenBalance: -order.tokenAmount } },
-            { ...withSession(session), new: true }
-        );
+        // GOVERNANCE §1: via merchantWallet.service.js (sole tokenBalance writer);
+        // same canonical txId as every other deposit-deduction path, so a
+        // deposit's inventory can never be deducted twice across routes.
+        const { merchant: updatedMerchant } = await debitMerchantTokens({
+            merchantId: req.merchantId, amount: order.tokenAmount,
+            reason: `Deposit ${order.orderId} approved — tokens dispensed to user`,
+            refModel: 'PaymentOrder', refId: order._id.toString(),
+            txId: `mw_dep_deduct_${order._id}`, session,
+        });
         if (!updatedMerchant) {
             // Rollback status change
             await PaymentOrder.findByIdAndUpdate(id, { $set: { status: 'PAID', approvedBy: null, approvedAt: null } }, withSession(session));

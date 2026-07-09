@@ -7,6 +7,7 @@
 
 import { express, mongoose, authenticate, isAdminOrSubAdmin, getModels } from '../../routes/admin/_adminShared.js';
 import { creditDeposit, creditWinnings } from '../wallet/walletAuthority.service.js';
+import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
 import { emitAdminUpdate, emitOrderUpdate, emitWalletUpdate } from '../notification/realtimeEmitters.js';
 
 const router = express.Router();
@@ -127,9 +128,16 @@ router.post('/payment-orders/:orderId/resolve', authenticate, isAdminOrSubAdmin,
       }
 
       // Merchant inventory deduction for DEPOSIT
+      // GOVERNANCE §1: via merchantWallet.service.js; canonical txId means a
+      // deposit already deducted via the normal confirm/approve path is NOT
+      // deducted again here (idempotent no-op). allowOverdraft preserves this
+      // site's historical blind-$inc semantics.
       if (order.type === 'DEPOSIT' && order.merchantId) {
-        await Merchant.findByIdAndUpdate(order.merchantId, {
-          $inc: { tokenBalance: -order.tokenAmount },
+        await debitMerchantTokens({
+          merchantId: order.merchantId, amount: order.tokenAmount,
+          reason: `Deposit ${order.orderId} released via dispute resolution`,
+          refModel: 'PaymentOrder', refId: order._id.toString(),
+          txId: `mw_dep_deduct_${order._id}`, allowOverdraft: true,
         }).catch(e => console.error('[dispute resolve] tokenBalance decrement:', e.message));
       }
 

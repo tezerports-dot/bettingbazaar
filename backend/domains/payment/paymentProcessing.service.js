@@ -11,6 +11,7 @@ import mongoose from 'mongoose';
 import crypto   from 'crypto';
 import { debitWinningsForWithdrawal, creditDeposit, creditWinnings, refundOrder, lockWithdrawal, releaseWithdrawal } from '../wallet/walletAuthority.service.js';
 import { selectBestMerchant } from '../merchant/merchantScoring.service.js';
+import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
 import { markUTRAsUsed, releaseUTR }   from '../../middleware/utrValidation.js';
 import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 
@@ -447,11 +448,13 @@ export async function approveDeposit(actorId, orderId, session) {
     throw Object.assign(new Error(`Cannot approve order in ${order.status} status`), { status: 400 });
 
   // Deduct from merchant token balance
-  const updatedMerchant = await Merchant.findOneAndUpdate(
-    { _id: order.merchantId, tokenBalance: { $gte: order.depositAllocation || order.tokenAmount } },
-    { $inc: { tokenBalance: -(order.depositAllocation || order.tokenAmount) } },
-    { ...withSession(session), new: true }
-  );
+  // GOVERNANCE §1: via merchantWallet.service.js (sole tokenBalance writer)
+  const { merchant: updatedMerchant } = await debitMerchantTokens({
+    merchantId: order.merchantId, amount: order.depositAllocation || order.tokenAmount,
+    reason: `Deposit ${order.orderId} approved — tokens dispensed to user`,
+    refModel: 'PaymentOrder', refId: order._id.toString(),
+    txId: `mw_dep_deduct_${order._id}`, session,
+  });
   if (!updatedMerchant)
     throw Object.assign(new Error('Merchant has insufficient token balance'), { status: 400 });
 
