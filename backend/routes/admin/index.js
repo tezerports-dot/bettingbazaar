@@ -23,6 +23,7 @@ import cyclesRoutes     from './cycles.admin.routes.js';
 import systemRoutes     from './system.admin.routes.js';
 import auditRoutes      from './audit.admin.routes.js';
 import depositPolicyRoutes from '../../domains/configuration/depositPolicy.admin.routes.js';
+import merchantBonusPolicyRoutes from '../../domains/configuration/merchantBonusPolicy.admin.routes.js';
 import revenueRoutes    from '../../domains/revenue/revenue.admin.routes.js';
 
 const router = express.Router();
@@ -42,6 +43,7 @@ router.use('/', cyclesRoutes);
 router.use('/', systemRoutes);
 router.use('/', auditRoutes);
 router.use('/', depositPolicyRoutes);
+router.use('/', merchantBonusPolicyRoutes);
 router.use('/', revenueRoutes);
 
 export default router;
