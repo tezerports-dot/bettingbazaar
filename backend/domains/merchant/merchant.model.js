@@ -14,6 +14,11 @@ const merchantSchema = new mongoose.Schema({
   isOnline: { type: Boolean, default: false, index: true },
   acceptsDeposits: { type: Boolean, default: true },
   acceptsWithdrawals: { type: Boolean, default: true },
+  // Which fiat/crypto rails this merchant can fulfil (Phase-audit 2026-07-09).
+  // Admin-editable via PUT /merchants/:id/capabilities; ENFORCED in
+  // merchantScoring.selectBestMerchant so an order is only offered to a
+  // merchant that accepts its currency (no dead admin field — GOVERNANCE §2).
+  acceptedCurrencies: { type: [String], enum: ['INR', 'USDT'], default: ['INR'], index: true },
   bankDetails: {
     accountHolderName: String,   
     upiId: String,

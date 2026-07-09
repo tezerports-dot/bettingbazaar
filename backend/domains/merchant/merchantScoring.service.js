@@ -65,13 +65,16 @@ function scoreMerchant(merchant) {
  * @param {number}                 tokenAmount
  * @returns {Promise<object|null>} — Merchant document or null if none eligible
  */
-export async function selectBestMerchant(orderType, tokenAmount) {
+export async function selectBestMerchant(orderType, tokenAmount, currency = 'INR') {
   const Merchant = mongoose.model('Merchant');
 
   const baseQuery = {
     isOnline:               true,
     merchantApprovalStatus: 'APPROVED',
     status:                 'ACTIVE',
+    // Only merchants that accept this order's currency (INR/USDT) — the
+    // consumer that makes acceptedCurrencies a real capability, not a label.
+    acceptedCurrencies:     currency,
     // activeOrderCount < maxConcurrentOrders
     // CONFIRMED BUG (2026-07-02): a bare $expr comparing two field paths treats a
     // genuinely missing field as BSON null, which sorts below every number — so

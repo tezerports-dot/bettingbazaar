@@ -187,6 +187,70 @@ router.put('/merchants/:merchantId/limits', authenticate, isAdmin, async (req, r
 });
 
 
+// PUT /merchants/:merchantId/capabilities — one place to control WHAT a
+// merchant can do: order types (deposit/withdrawal), currencies (INR/USDT),
+// and order range. Everything here is enforced by
+// merchantScoring.selectBestMerchant, so toggling a capability immediately
+// changes which orders this merchant is offered. (Phase-audit 2026-07-09.)
+router.put('/merchants/:merchantId/capabilities', authenticate, isAdmin, async (req, res) => {
+  try {
+    const { merchantId } = req.params;
+    const { acceptsDeposits, acceptsWithdrawals, acceptedCurrencies, minOrder, maxOrder } = req.body;
+
+    const merchant = await Merchant.findById(merchantId);
+    if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
+
+    if (acceptedCurrencies !== undefined) {
+      if (!Array.isArray(acceptedCurrencies) || acceptedCurrencies.length === 0 ||
+          !acceptedCurrencies.every(c => ['INR', 'USDT'].includes(c))) {
+        return res.status(400).json({ success: false, message: 'acceptedCurrencies must be a non-empty subset of ["INR","USDT"].' });
+      }
+      merchant.acceptedCurrencies = [...new Set(acceptedCurrencies)];
+    }
+    if (typeof acceptsDeposits === 'boolean')    merchant.acceptsDeposits = acceptsDeposits;
+    if (typeof acceptsWithdrawals === 'boolean') merchant.acceptsWithdrawals = acceptsWithdrawals;
+    if (minOrder !== undefined) {
+      if (!(Number(minOrder) >= 0)) return res.status(400).json({ success: false, message: 'minOrder must be >= 0.' });
+      merchant.minOrder = Number(minOrder);
+    }
+    if (maxOrder !== undefined) {
+      if (!(Number(maxOrder) > 0)) return res.status(400).json({ success: false, message: 'maxOrder must be > 0.' });
+      merchant.maxOrder = Number(maxOrder);
+    }
+    if (merchant.maxOrder < merchant.minOrder) {
+      return res.status(400).json({ success: false, message: 'maxOrder cannot be less than minOrder.' });
+    }
+    await merchant.save();
+
+    try {
+      await mongoose.model('EnhancedAuditLog').create({
+        performedBy: req.user._id, performedByName: req.user.username, performedByRole: 'admin',
+        action: 'UPDATE_MERCHANT_CAPABILITIES', category: 'MERCHANT',
+        targetType: 'Merchant', targetId: String(merchant._id),
+        details: {
+          acceptsDeposits: merchant.acceptsDeposits, acceptsWithdrawals: merchant.acceptsWithdrawals,
+          acceptedCurrencies: merchant.acceptedCurrencies, minOrder: merchant.minOrder, maxOrder: merchant.maxOrder,
+        },
+        success: true,
+      });
+    } catch (_) {}
+
+    if (global.sseManager) global.sseManager.broadcastToAdmins('merchant_status_changed', { merchantId, status: merchant.status });
+
+    res.json({
+      success: true,
+      message: 'Merchant capabilities updated.',
+      capabilities: {
+        acceptsDeposits: merchant.acceptsDeposits, acceptsWithdrawals: merchant.acceptsWithdrawals,
+        acceptedCurrencies: merchant.acceptedCurrencies, minOrder: merchant.minOrder, maxOrder: merchant.maxOrder,
+      },
+    });
+  } catch (error) {
+    console.error('Update merchant capabilities error:', error);
+    res.status(500).json({ success: false, message: 'Failed to update merchant capabilities' });
+  }
+});
+
 // Get merchant earnings
 router.get('/merchants/:merchantId/earnings', authenticate, isAdmin, async (req, res) => {
   try {
