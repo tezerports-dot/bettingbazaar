@@ -67,7 +67,9 @@ compute, or default this value independently.
 | Settlement ledger / accounting events (completed bets & payouts, platform revenue, reserve deductions, payout fees, merchant bonus funding) | `AccountingEvent` model (`domains/revenue/accountingEvent.model.js`), written ONLY via `revenueSettlement.service.js` (Revenue & Settlement Platform, Phase 007). Append-only double-entry, integer paise, unique idempotency keys; balances always derived from postings, never stored. This is the ACCOUNTING authority — it never mutates wallet balances (walletAuthority keeps §7) and owns no configurable percentages (Business Policy Platform keeps those). |
 | P2P order lifecycle state | `P2POrder.status` enum: `PENDING_QUEUE, ASSIGNED, PROCESSING, PAID, COMPLETED, DISPUTED, CANCELLED, FAILED` |
 | Dispute resolution | `P2POrder` embedded fields — resolved. `Dispute` model removed. (I-01) |
-| Cycle timing | `cycleGenerator.service.js` computes; `GAME_CORE.ts` mirrors for display math only |
+| Cycle timing | `domains/markets/cycleGenerator.service.js` computes (Markets Platform, Phase 011 — formerly domains/game/); `GAME_CORE.ts` mirrors for display math only |
+| Trading vocabulary (market sides, position/settlement statuses) | `domains/trading/tradingModels.js` — products and Risk import from it; no re-declared side/status strings |
+| Product settlement integration | Products persist SOURCE RECORDS only; `revenueSettlement.service.js` derives ledger entries (see tradingModels.js contract). No product writes accounting. |
 | Auth tokens | One storage key per app (`auth_token` / `merchantToken` / `admin-auth`) |
 | Routes/navigation | One `ADMIN_ROUTES`/`ROUTES` constants module per panel |
 | Real-time event names | Backend constants module — see §11 |

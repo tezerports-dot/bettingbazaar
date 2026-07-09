@@ -8,6 +8,46 @@ need a durable home.
 
 ---
 
+## 2026-07-09 — Phase 011: Product Platforms + the accepted four-tier architecture
+
+**Decision (owner, 2026-07-09):** the final enterprise architecture is
+four tiers — future work EXTENDS these, never restructures again:
+
+- **Core Enterprise:** Business Policy, Operations, Revenue & Settlement,
+  Funding, Merchant, Risk.
+- **Product Platforms:** Sportsbook, Casino, Games, Markets, Odds, Event.
+- **Customer Platforms:** Communication, Wallet, Rewards, KYC.
+- **Enterprise Services:** Reporting, Analytics, Notification, Treasury,
+  Configuration, Audit, Integration.
+
+Existing domains map onto tiers without moves (wallet/identity/user/cms/
+notification etc. stay put; the tier is an ownership label, per the
+opportunistic-move rule) — EXCEPT where Phase 011 did real consolidation:
+
+**Markets Platform:** `domains/game/` + `domains/betting/` were two halves
+of one product (the DELHI/BOMBAY cycle market). git mv'd into
+`domains/markets/` — engine, cycle generator, cycle model, bet model,
+placement routes. Same-depth move; imports updated in models barrel,
+server.js, tests only.
+
+**Casino Platform:** `models/gameProvider.model.js` +
+`routes/game-providers.routes.js` git mv'd into `domains/casino/` — the
+third-party provider integration (catalogue, launch sessions, wallet
+webhooks) was already adapter-shaped; it now lives in its platform.
+
+**Shared Trading Models:** `domains/trading/tradingModels.js` — canonical
+sides/statuses consumed by Markets and Risk, plus the documented
+settlement-integration contract: a product persists source records, R&S
+derives ledger entries idempotently, wallets only via the authorities.
+This is how EVERY future product (sportsbook, new games) plugs into
+settlement without writing accounting logic.
+
+**Declared, not faked:** Sportsbook/Games/Event/Odds get boundary READMEs
++ feature flags (SPORTSBOOK, GAMES_PLATFORM, EVENT_FEEDS, ODDS_ENGINE —
+all default false). No placeholder engines, per the standing rule.
+
+---
+
 ## 2026-07-09 — Phase 010: Risk Platform (validation single-sourced)
 
 **Decision:** `domains/risk/riskValidation.service.js` is the single

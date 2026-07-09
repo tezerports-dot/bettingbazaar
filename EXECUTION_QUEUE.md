@@ -101,6 +101,27 @@ Operations Platform (orchestration-only) slots later. See ENTERPRISE_DECISIONS.m
 - [x] Merchant analytics: leaderboard, funding stats, performance history,
       wallet ledger admin API; platform README.
 
+## PHASE 011 — Product Platforms (owner directive 2026-07-09) — COMPLETE
+
+- [x] Markets Platform: domains/game + domains/betting → domains/markets
+      (git mv, imports updated, module graph verified).
+- [x] Casino Platform: gameProvider model + routes → domains/casino
+      (git mv, relative imports fixed, full server boot verified).
+- [x] Shared trading models (domains/trading) consumed by Markets + Risk;
+      settlement-integration contract documented.
+- [x] Sportsbook/Games/Event/Odds boundaries declared + feature flags
+      (SPORTSBOOK, GAMES_PLATFORM, EVENT_FEEDS, ODDS_ENGINE, LIVE_CASINO).
+- [x] Four-tier architecture recorded as the final structure.
+
+### Deferred within 011
+- [ ] Casino GGR ledger integration: derive R&S entries from
+      GameTransaction records (reconciler pattern, new event type + casino
+      accounts in the chart) — do BEFORE activating a live provider.
+- [ ] gameEngine.js internal status strings → tradingModels constants
+      (opportunistic; queries are correct today).
+- [ ] domains/settlement/ (batch executor) fold into markets or wallet
+      opportunistically.
+
 ## PHASE 010 — Risk Platform (owner directive 2026-07-09) — COMPLETE
 
 - [x] domains/risk/riskValidation.service.js — single validation authority:
