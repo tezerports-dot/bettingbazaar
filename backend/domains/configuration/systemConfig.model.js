@@ -41,6 +41,23 @@ const systemConfigSchema = new mongoose.Schema({
   minWithdrawal:         { type: Number, default: 500 },
   maxWithdrawal:         { type: Number, default: 50000 },
   maxWinningsWithdrawal: { type: Number, default: 500000 },
+  // ── RISK PLATFORM RULES (BBEPS Phase 010) ─────────────────────────────────
+  // Business Policy owns these numbers/toggles; domains/risk/
+  // riskValidation.service.js is the enforcement authority that reads them.
+  riskRules: {
+    // Multiples-of-10 for buy/sell/bet amounts (2026-07-09 owner directive).
+    enforceMultiplesOf10:     { type: Boolean, default: true },
+    // Block betting both sides of one cycle (wash-bet prevention). Default
+    // false = pre-Phase-010 behavior until an admin enables it.
+    blockOppositeSideBetting: { type: Boolean, default: false },
+    // Funding-order velocity limit per user per hour. 0 = off.
+    maxFundingOrdersPerHour:  { type: Number, default: 0, min: 0 },
+  },
+  // Payout fee % charged on withdrawals (0 = no fee, the default — behavior
+  // unchanged until an admin sets it). Enforced by the Risk Platform,
+  // recorded by the Revenue & Settlement Platform (PAYOUT_FEES account).
+  payoutFeePercent: { type: Number, default: 0, min: 0, max: 100 },
+
   // ── FEATURE FLAGS ─────────────────────────────────────────────────────────
   kycRequired:         { type: Boolean, default: true },
   registrationEnabled: { type: Boolean, default: true },

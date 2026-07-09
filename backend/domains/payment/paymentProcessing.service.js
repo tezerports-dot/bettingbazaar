@@ -12,6 +12,8 @@ import crypto   from 'crypto';
 import { debitWinningsForWithdrawal, creditDeposit, creditWinnings, refundOrder, lockWithdrawal, releaseWithdrawal } from '../wallet/walletAuthority.service.js';
 import { selectBestMerchant } from '../merchant/merchantScoring.service.js';
 import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
+// Risk Platform (Phase 010): the single validation authority for funding orders.
+import { assessFundingOrder, getRiskRules, computePayoutFeeMinor } from '../risk/riskValidation.service.js';
 import { markUTRAsUsed, releaseUTR }   from '../../middleware/utrValidation.js';
 import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 
@@ -175,10 +177,9 @@ export async function createDepositOrder(userId, tokenAmount) {
     const minDeposit = cfg?.minDeposit || 100; // schema default: 100
     const maxDeposit = cfg?.maxDeposit || 50000; // schema default: 50000
 
-    if (!tokenAmount || tokenAmount < minDeposit)
-      throw Object.assign(new Error(`Minimum purchase is ${minDeposit} BB tokens`), { status: 400 });
-    if (tokenAmount > maxDeposit)
-      throw Object.assign(new Error(`Maximum purchase is ${maxDeposit} BB tokens`), { status: 400 });
+    // Risk Platform gate (Phase 010): positive/numeric/multiples-of-10,
+    // min/max, velocity — the single validation authority.
+    await assessFundingOrder({ userId, tokenAmount, type: 'DEPOSIT', min: minDeposit, max: maxDeposit });
 
     const user = await User.findById(userId, null, withSession(session));
     if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
@@ -263,10 +264,9 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
     const minWithdraw = cfg?.minWithdrawal || 500; // schema default: 500
     const maxWithdraw = cfg?.maxWithdrawal || 50000; // schema default: 50000
 
-    if (!tokenAmount || tokenAmount < minWithdraw)
-      throw Object.assign(new Error(`Minimum withdrawal is ${minWithdraw} BB tokens`), { status: 400 });
-    if (tokenAmount > maxWithdraw)
-      throw Object.assign(new Error(`Maximum withdrawal is ${maxWithdraw} BB tokens`), { status: 400 });
+    // Risk Platform gate (Phase 010): positive/numeric/multiples-of-10,
+    // min/max, velocity — the single validation authority.
+    await assessFundingOrder({ userId, tokenAmount, type: 'WITHDRAWAL', min: minWithdraw, max: maxWithdraw });
 
     const user = await User.findById(userId, null, withSession(session));
     if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
@@ -296,9 +296,15 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
       );
 
     // Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08):
-    // 1 BB token = ₹1 on withdrawal too — the user receives exactly the
-    // token amount in fiat, no spread taken.
-    const fiatAmount = tokenAmount;
+    // 1 BB token = ₹1 on withdrawal. Phase 010: a configurable payout fee
+    // (SystemConfig.payoutFeePercent — Business Policy owns the number,
+    // Risk owns the arithmetic, R&S records it in PAYOUT_FEES) may be
+    // deducted from the fiat paid out. Default 0% — behavior unchanged
+    // until an admin sets a fee.
+    const riskRules      = await getRiskRules();
+    const payoutFeeMinor = computePayoutFeeMinor(tokenAmount, riskRules.payoutFeePercent);
+    const payoutFee      = payoutFeeMinor / 100; // rupees, for the order document
+    const fiatAmount     = tokenAmount - payoutFee;
 
     const order = new PaymentOrder({
       orderId:         `WD_${crypto.randomBytes(12).toString('hex')}`,
@@ -306,6 +312,7 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
       userId:          user._id,
       tokenAmount,
       fiatAmount,
+      payoutFee,
       rateUsed:        1, // fixed 1:1 conversion
       status:          'PENDING_QUEUE',
       createdAt:       new Date(),

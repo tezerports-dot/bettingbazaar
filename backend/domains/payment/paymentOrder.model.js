@@ -5,6 +5,8 @@
 import mongoose from 'mongoose';
 import { setOrderHmacHook } from '../../middleware/order-crypto-access.js';
 import { getActivePolicy } from '../configuration/depositPolicy.service.js';
+// Risk Platform (Phase 010) owns the reserve-ratio rounding rule (Spec 4.4).
+import { computeReserveSplit } from '../risk/riskValidation.service.js';
 
 const paymentOrderSchema = new mongoose.Schema({
   orderId:        { type: String, required: true, unique: true },
@@ -25,6 +27,10 @@ const paymentOrderSchema = new mongoose.Schema({
   amount:         { type: Number },                   // alias = fiatAmount (set on save)
   rateUsed:       { type: Number, required: true },   // always 1 for new orders (fixed 1:1); historical orders retain their real rate
   merchantProfit: { type: Number, default: 0 },       // spread retired 2026-07-08 — always 0 for new orders; historical audit only
+  // Payout fee (rupees) deducted from a WITHDRAWAL's fiat payout (Phase 010).
+  // % owned by SystemConfig.payoutFeePercent; computed by the Risk Platform
+  // at order creation; recorded in the PAYOUT_FEES ledger account by R&S.
+  payoutFee:      { type: Number, default: 0 },
   merchantFee:    { type: Number, default: 0 },       // fee paid to merchant
 
   // ── Token Allocation ──────────────────────────────────────────────────────
@@ -221,9 +227,11 @@ paymentOrderSchema.pre('save', async function (next) {
         depositPercent = 90; reservePercent = 10;
       }
 
-      // Spec 4.4: remainder (0 or 1 token from the floor()) goes to deposit, never reserve.
-      this.reserveAllocation = Math.floor(this.tokenAmount * (reservePercent / 100));
-      this.depositAllocation = this.tokenAmount - this.reserveAllocation;
+      // Spec 4.4 rounding rule — owned by the Risk Platform since Phase 010:
+      // reserve share floored, remainder to deposit, full amount conserved.
+      const split = computeReserveSplit(this.tokenAmount, reservePercent);
+      this.depositAllocation = split.depositAllocation;
+      this.reserveAllocation = split.reserveAllocation;
       this.depositPolicySnapshot = {
         policyVersionId,
         currency,

@@ -7,6 +7,8 @@ import { creditWinnings } from '../wallet/walletAuthority.service.js'; // HIGH-0
 import mongoose from 'mongoose';
 import { authenticate } from '../identity/auth.middleware.js';
 import { betLimiter } from '../../middleware/security.js';
+// Risk Platform (Phase 010): the single validation authority for bets.
+import { assessBet } from '../risk/riskValidation.service.js';
 
 const router = express.Router();
 
@@ -62,23 +64,18 @@ router.post('/place', betLimiter, authenticate, async (req, res) => {
     const minBet    = config?.betLimits?.[limitsKey]?.min ?? (isFullDay ? 100  : 10);
     const maxBet    = config?.betLimits?.[limitsKey]?.max ?? (isFullDay ? 500000 : 100000);
 
-    const parsedAmount = Number(amount);
-    if (!amount || isNaN(parsedAmount) || parsedAmount <= 0 || !Number.isInteger(parsedAmount)) {
-      return res.status(400).json({ success: false, message: 'Bet amount must be a positive whole number' });
-    }
-    if (parsedAmount < minBet) {
-      return res.status(400).json({ success: false, message: `Minimum bet is ₹${minBet}` });
-    }
-
-    if (amount > maxBet) {
-      return res.status(400).json({
-        success: false,
-        message: `Maximum bet is ₹${maxBet}`
-      });
-    }
-
     if (!['DELHI', 'BOMBAY'].includes(side)) {
       return res.status(400).json({ success: false, message: 'Invalid side — must be DELHI or BOMBAY' });
+    }
+
+    // ── Risk Platform gate (Phase 010) — the single validation authority ────
+    // positive/whole/multiples-of-10, min/max, and the config-gated
+    // opposite-side restriction. Replaces the inline checks this route
+    // previously ran itself.
+    try {
+      await assessBet({ userId, cycleId, side, amount, min: minBet, max: maxBet });
+    } catch (riskErr) {
+      return res.status(riskErr.status || 400).json({ success: false, message: riskErr.message, code: riskErr.code });
     }
 
     // ── Cycle check ──────────────────────────────────────────────────────────

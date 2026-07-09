@@ -8,6 +8,34 @@ need a durable home.
 
 ---
 
+## 2026-07-09 — Phase 010: Risk Platform (validation single-sourced)
+
+**Decision:** `domains/risk/riskValidation.service.js` is the single
+authority for operational rules and transaction validation. Inline checks
+were REMOVED from bet placement and funding-order creation and replaced by
+`assessBet` / `assessFundingOrder`; the Spec 4.4 reserve-split rounding
+moved out of `paymentOrder.model.js` into `computeReserveSplit`.
+
+**Configurable vs. enforced:** every number/toggle lives in Business Policy
+(`SystemConfig.riskRules`, `payoutFeePercent`, `betLimits`, policy docs);
+Risk only reads and enforces. New config fields ship with these defaults:
+- `riskRules.enforceMultiplesOf10 = true` — **a live behavior change by
+  explicit owner directive** (buy/sell/bet amounts must be multiples of 10).
+- `riskRules.blockOppositeSideBetting = false` — implemented, off until
+  enabled (preserves current behavior).
+- `riskRules.maxFundingOrdersPerHour = 0` — velocity limiting off by default.
+- `payoutFeePercent = 0` — no fee until set; when set, the fee is computed
+  by Risk at withdrawal creation (floored paise, never rounded up against
+  the user), stored on the order, deducted from the fiat payout, and posted
+  to the PAYOUT_FEES ledger account by R&S (its first real producer).
+
+**Deliberately not stubbed:** AML, fraud scoring, device risk, behaviour
+analysis, responsible gaming — declared capabilities in the Risk README,
+queued; building fake placeholder engines would violate the no-fake-
+placeholders rule this repo has held since Phase 003.
+
+---
+
 ## 2026-07-09 — Phase 009: Funding Platform (authority boundary, not a file move)
 
 **Decision:** `domains/funding/` is the only authority for money entering or

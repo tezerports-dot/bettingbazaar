@@ -67,6 +67,13 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
         maxWinningsWithdrawal: config.maxWinningsWithdrawal || 500000,
         tokenBuyRate:          1, // fixed 1:1 conversion (Phase 006 flattening, 2026-07-08)
         tokenSellRate:         1, // fixed 1:1 conversion
+        // Risk Platform rules (Phase 010) — schema defaults cited inline
+        payoutFeePercent:      config.payoutFeePercent ?? 0,  // schema default: 0
+        riskRules: {
+          enforceMultiplesOf10:     config.riskRules?.enforceMultiplesOf10     ?? true,  // schema default: true
+          blockOppositeSideBetting: config.riskRules?.blockOppositeSideBetting ?? false, // schema default: false
+          maxFundingOrdersPerHour:  config.riskRules?.maxFundingOrdersPerHour  ?? 0,     // schema default: 0
+        },
         kycRequired:           config.kycRequired           !== false,
         registrationEnabled:   config.registrationEnabled   !== false,
         maintenanceMode:       config.maintenanceMode       || false,
@@ -98,7 +105,17 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
       maintenanceMode, maintenanceMessage,
       depositMethods, withdrawalMethods,
       webUrl, androidUrl, iosUrl, minVersion, latestVersion,
+      payoutFeePercent, riskRules,
     } = req.body;
+
+    if (payoutFeePercent !== undefined &&
+        (typeof payoutFeePercent !== 'number' || payoutFeePercent < 0 || payoutFeePercent > 100)) {
+      return res.status(400).json({ success: false, message: 'payoutFeePercent must be a number between 0 and 100.' });
+    }
+    if (riskRules?.maxFundingOrdersPerHour !== undefined &&
+        (!Number.isInteger(riskRules.maxFundingOrdersPerHour) || riskRules.maxFundingOrdersPerHour < 0)) {
+      return res.status(400).json({ success: false, message: 'riskRules.maxFundingOrdersPerHour must be a non-negative integer.' });
+    }
 
     const fieldWrites = [];
     if (minBet          !== undefined) fieldWrites.push(['SystemConfig', 'betLimits.thirtyMin.min', minBet]);
@@ -121,6 +138,12 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     if (iosUrl        !== undefined) fieldWrites.push(['SystemConfig', 'iosUrl', iosUrl]);
     if (minVersion    !== undefined) fieldWrites.push(['SystemConfig', 'minVersion', minVersion]);
     if (latestVersion !== undefined) fieldWrites.push(['SystemConfig', 'latestVersion', latestVersion]);
+    // Risk Platform rules (Phase 010) — numbers owned here (Business Policy),
+    // enforcement in domains/risk/riskValidation.service.js
+    if (payoutFeePercent !== undefined) fieldWrites.push(['SystemConfig', 'payoutFeePercent', payoutFeePercent]);
+    if (riskRules?.enforceMultiplesOf10     !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.enforceMultiplesOf10', !!riskRules.enforceMultiplesOf10]);
+    if (riskRules?.blockOppositeSideBetting !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.blockOppositeSideBetting', !!riskRules.blockOppositeSideBetting]);
+    if (riskRules?.maxFundingOrdersPerHour  !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.maxFundingOrdersPerHour', riskRules.maxFundingOrdersPerHour]);
 
     for (const [modelName, path, value] of fieldWrites) {
       await setConfigField(modelName, path, value, actor, {

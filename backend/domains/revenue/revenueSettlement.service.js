@@ -83,19 +83,26 @@ export function buildDepositPostings(order) {
 
 /**
  * Postings for a completed WITHDRAWAL order (a completed payout).
- * User liability down (debit USER_FUNDS); fiat out (credit EXTERNAL_FIAT);
- * any residual — historical sell-rate spread — is platform revenue.
+ * User liability down (debit USER_FUNDS); fiat out (credit EXTERNAL_FIAT).
+ * Residual (tokens − fiat) splits into:
+ *   - the order's recorded payoutFee (Phase 010, Risk-computed) → PAYOUT_FEES
+ *   - anything else (historical sell-rate spread) → PLATFORM_REVENUE
  */
 export function buildWithdrawalPostings(order) {
   const tokenMinor = toMinor(order.tokenAmount || 0);
   const fiatMinor  = toMinor(order.fiatAmount || 0);
-  const residual   = tokenMinor - fiatMinor; // 0 at 1:1
+  const feeMinor   = toMinor(order.payoutFee || 0);
+  const residual   = tokenMinor - fiatMinor; // 0 at 1:1 with no fee
+  const spreadMinor = residual - feeMinor;   // historical spread portion
   const postings = [
     { account: ACCOUNTS.USER_FUNDS.code,    amountMinor: tokenMinor },
     { account: ACCOUNTS.EXTERNAL_FIAT.code, amountMinor: -fiatMinor },
   ];
-  if (residual !== 0) {
-    postings.push({ account: ACCOUNTS.PLATFORM_REVENUE.code, amountMinor: -residual });
+  if (feeMinor !== 0) {
+    postings.push({ account: ACCOUNTS.PAYOUT_FEES.code, amountMinor: -feeMinor });
+  }
+  if (spreadMinor !== 0) {
+    postings.push({ account: ACCOUNTS.PLATFORM_REVENUE.code, amountMinor: -spreadMinor });
   }
   return postings;
 }

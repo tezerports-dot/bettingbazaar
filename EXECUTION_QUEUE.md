@@ -101,6 +101,35 @@ Operations Platform (orchestration-only) slots later. See ENTERPRISE_DECISIONS.m
 - [x] Merchant analytics: leaderboard, funding stats, performance history,
       wallet ledger admin API; platform README.
 
+## PHASE 010 — Risk Platform (owner directive 2026-07-09) — COMPLETE
+
+- [x] domains/risk/riskValidation.service.js — single validation authority:
+      positive/numeric, multiples-of-10 (riskRules.enforceMultiplesOf10,
+      default ON per directive — NOTE: this is a live behavior change; a
+      user can no longer buy/sell/bet non-multiples of 10), limits,
+      reserve-split rounding (moved from paymentOrder pre-save),
+      opposite-side restriction (default off), funding velocity (default
+      off), payout-fee arithmetic.
+- [x] Wired: paymentProcessing deposit/withdrawal creation, bet.routes.js
+      placement, paymentOrder.model.js reserve split.
+- [x] Configurable payout fee: SystemConfig.payoutFeePercent (default 0),
+      order.payoutFee, withdrawal fiat = tokens − fee, ledger posts the fee
+      to PAYOUT_FEES (its first real producer). GET/PUT /system/config
+      exposes payoutFeePercent + riskRules.
+- [x] 04-GOVERNANCE.md §1 row: Risk Platform validation authority.
+- [x] 25 control-flow assertions on the real validators + fee postings.
+
+### Deferred within 010 (flagged, not forgotten)
+- [ ] AML screening, fraud-signal scoring, device risk, behaviour analysis,
+      responsible-gaming limits — declared Risk capabilities, deliberately
+      not stubbed (no fake placeholders).
+- [ ] Frontend UX for multiples-of-10 (step hints/validation messages in
+      WalletModal/WalletPage/bet UI) — server rejects with clear messages
+      today; client polish is Phase 012 scope.
+- [ ] Admin-panel UI for riskRules/payoutFeePercent (API-only today).
+- [ ] DepositPolicy.reserveUsageRules enforcement — rules are modeled;
+      Risk enforces when a reserve-consuming flow ships.
+
 ## PHASE 009 — Funding Platform (owner directive 2026-07-09) — COMPLETE
 
 - [x] `domains/funding/`: fundingAuthority.service.js (single money-movement
