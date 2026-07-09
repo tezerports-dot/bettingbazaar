@@ -1,8 +1,27 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** analytics.admin.routes.js — Dashboard, financial analytics, stats */
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from '../../routes/admin/_adminShared.js';
+// Analytics Platform trends (Phase 012 — Enterprise Services tier)
+import { growthTrend, businessTrend, revenueTrend, riskTrend } from './analyticsPlatform.service.js';
 
 const router = express.Router();
+
+// GET /api/admin/analytics/trends?days=30 — platform-level trend bundle:
+// growth (signups, first-time depositors), business (betting + funding
+// volume), revenue (from the settlement ledger), risk (order failure/
+// dispute signals). All derived, read-only, day-bucketed.
+router.get('/analytics/trends', authenticate, isAdminOrSubAdmin, async (req, res) => {
+  try {
+    const days = Math.min(365, Math.max(1, parseInt(req.query.days) || 30));
+    const [growth, business, revenue, risk] = await Promise.all([
+      growthTrend({ days }), businessTrend({ days }), revenueTrend({ days }), riskTrend({ days }),
+    ]);
+    res.json({ success: true, days, trends: { growth, business, revenue, risk } });
+  } catch (error) {
+    console.error('Analytics trends error:', error);
+    res.status(500).json({ success: false, message: 'Failed to build analytics trends' });
+  }
+});
 
 router.get('/analytics/dashboard', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {

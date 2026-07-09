@@ -114,8 +114,10 @@ Operations Platform (orchestration-only) slots later. See ENTERPRISE_DECISIONS.m
 - [x] Reporting Platform: financial / settlement / merchant reports +
       regulatory ledger CSV export (one row per journal posting), all
       derived read-only from the settlement ledger and orders.
-- [ ] Analytics Platform extension (business/growth/risk analytics beyond
-      the existing analytics domain) — next.
+- [x] Analytics Platform extension: GET /api/admin/analytics/trends —
+      growth (signups, first-time depositors), business (betting +
+      funding volume), revenue (from the settlement ledger), risk
+      (failure/dispute signals); extends the existing analytics domain.
 - [ ] Enterprise UI/UX: admin-panel consoles for the Phase 007-012 APIs
       (revenue, bonus policy, merchant platform, operations overview,
       config catalog, reports, audit feeds), user-panel polish incl.
