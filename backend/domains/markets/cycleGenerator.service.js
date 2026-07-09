@@ -625,7 +625,11 @@ class CycleGenerator {
     }
 
     async getCycleSnapshotData() {
-        const Cycle = (await import('../models/index.js')).Cycle;
+        // FIX (2026-07-09): was '../models/index.js' which resolves to the
+        // nonexistent domains/models/ — a latent runtime bug (dynamic import,
+        // so node --check never caught it) that crashed every SSE
+        // cycle_snapshot and cycle-ensure. Correct depth is ../../models/.
+        const Cycle = (await import('../../models/index.js')).Cycle;
         const types = ['30_MIN', 'FULL_DAY'];
         const snapshot = {};
 

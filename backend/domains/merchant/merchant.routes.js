@@ -463,7 +463,10 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         if (proof)     order.proofScreenshot = proof;
         if (utrNumber) order.utrNumber       = utrNumber.trim();
 
-        const { Merchant } = await import('../models/index.js').then(m => m).catch(() => ({}));
+        // FIX (2026-07-09): was '../models/' (nonexistent domains/models/) so
+        // the import ALWAYS threw and fell back to the mongoose lookup — the
+        // .catch() masked it. Correct depth is ../../models/.
+        const { Merchant } = await import('../../models/index.js').then(m => m).catch(() => ({}));
         const MerchantModel = Merchant || mongoose.model('Merchant');
 
         if (isDeposit) {

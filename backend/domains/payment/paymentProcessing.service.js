@@ -399,7 +399,9 @@ export async function markOrderPaid(userId, orderId, utrNumber, proofScreenshot)
     await markUTRAsUsed(normalizedUTR, order._id, order.userId, order.fiatAmount);
   } catch (err) {
     if (err.code === 11000) {
-      const { UTRRegistry } = await import('../models/utrRegistry.model.js');
+      // FIX (2026-07-09): was '../models/' (resolves to nonexistent
+      // domains/models/) — crashed the duplicate-UTR path. Correct: ../../models/.
+      const { UTRRegistry } = await import('../../models/utrRegistry.model.js');
       const existing = await UTRRegistry.findOne({ utr: normalizedUTR }).lean();
       throw Object.assign(
         new Error('This UTR was already used. Contact support.'),
