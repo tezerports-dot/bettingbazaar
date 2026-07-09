@@ -107,11 +107,19 @@ Operations Platform (orchestration-only) slots later. See ENTERPRISE_DECISIONS.m
       live; EMAIL/SMS/PUSH declared inactive), Audit Feed + Admin Activity
       Feed APIs, admin.service.js's four direct Notification.create sites
       rerouted; governance §1 row.
-- [ ] Operations Platform: enterprise overview + config catalog (next).
-- [ ] Reporting Platform: financial/merchant/settlement reports + CSV
-      regulatory export.
-- [ ] Analytics Platform extension; Enterprise UI/UX (admin consoles for
-      the new platform APIs, user-panel polish) — large, own slices.
+- [x] Operations Platform: GET /api/admin/operations/overview (settlement/
+      treasury/funding/risk/policy/merchant/communication/flag monitoring,
+      all read live from owning platforms) + /operations/config-catalog
+      (every configurable value → owning authority → edit endpoint).
+- [x] Reporting Platform: financial / settlement / merchant reports +
+      regulatory ledger CSV export (one row per journal posting), all
+      derived read-only from the settlement ledger and orders.
+- [ ] Analytics Platform extension (business/growth/risk analytics beyond
+      the existing analytics domain) — next.
+- [ ] Enterprise UI/UX: admin-panel consoles for the Phase 007-012 APIs
+      (revenue, bonus policy, merchant platform, operations overview,
+      config catalog, reports, audit feeds), user-panel polish incl.
+      multiples-of-10 hints — the largest remaining 012 item.
 
 ### Deferred within 012 (so far)
 - [ ] Remaining direct Notification.create writers outside admin.service.js

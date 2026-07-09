@@ -8,6 +8,29 @@ need a durable home.
 
 ---
 
+## 2026-07-09 — Phase 012 (in progress): Communication, Operations, Reporting
+
+**Communication Platform** (Customer Platforms tier): `notify()` is the
+single user-messaging path over a channel-adapter registry (IN_APP live —
+the existing Notification inbox; EMAIL/SMS/PUSH declared inactive).
+Messaging is never allowed to throw into business flows. The Audit Feed
+and Admin Activity Feed are read-only projections over EnhancedAuditLog —
+audit data ownership is unchanged.
+
+**Operations Platform** (Core Enterprise tier): stays orchestration-only.
+The enterprise overview reads every number live from its owning platform;
+the config catalog is the enforcement index for "no hardcoded
+percentages/limits/providers/rules" — a business value not in the catalog
+must not exist as a code constant (§2/§3).
+
+**Reporting Platform** (Enterprise Services tier): reports are DERIVED,
+read-only, and never re-compute business math — financial and settlement
+reports aggregate the append-only ledger; the regulatory export emits one
+CSV row per journal posting so external audit traces every rupee to an
+immutable entry.
+
+---
+
 ## 2026-07-09 — Phase 011: Product Platforms + the accepted four-tier architecture
 
 **Decision (owner, 2026-07-09):** the final enterprise architecture is

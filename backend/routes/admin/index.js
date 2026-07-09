@@ -28,6 +28,7 @@ import revenueRoutes    from '../../domains/revenue/revenue.admin.routes.js';
 import merchantPlatformRoutes from '../../domains/merchant/merchantPlatform.admin.routes.js';
 import communicationRoutes from '../../domains/communication/communication.admin.routes.js';
 import operationsRoutes from '../../domains/operations/operations.admin.routes.js';
+import reportingRoutes from '../../domains/reporting/reporting.admin.routes.js';
 
 const router = express.Router();
 
@@ -51,5 +52,6 @@ router.use('/', revenueRoutes);
 router.use('/', merchantPlatformRoutes);
 router.use('/', communicationRoutes);
 router.use('/', operationsRoutes);
+router.use('/', reportingRoutes);
 
 export default router;
