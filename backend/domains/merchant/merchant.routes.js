@@ -470,24 +470,38 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         const MerchantModel = Merchant || mongoose.model('Merchant');
 
         if (isDeposit) {
-            // Step 1: attempt wallet credit BEFORE marking complete
-            // GOVERNANCE §7: creditDeposit is wallet authority
-            try {
-                await creditDeposit(order.userId, order.tokenAmount, order._id.toString());
-            } catch (walletErr) {
-                console.error('[Merchant confirm] wallet credit failed — order NOT marked complete:', walletErr.message);
-                return res.status(500).json({ success: false, message: 'Wallet credit failed. Please retry.' });
-            }
-            // Step 2: deduct merchant tokenBalance (Merchant gives tokens to user)
-            // GOVERNANCE §1: merchantWallet.service.js is the sole tokenBalance
-            // writer. allowOverdraft preserves this site's historical blind-$inc
-            // semantics (failure never blocked completion) — see EXECUTION_QUEUE.md.
-            await debitMerchantTokens({
+            // AUDIT FIX F-1 (2026-07-09): tokens must be TRANSFERRED from the
+            // merchant, never minted. Previously the user was credited first
+            // and the merchant debit was best-effort (allowOverdraft + swallowed
+            // error) — so an under-funded merchant confirm minted tokens into
+            // existence. Correct order (mirrors the approve path): debit the
+            // merchant FIRST with a hard $gte guard; only if that succeeds do we
+            // credit the user. If the user credit then fails, refund the merchant
+            // (idempotent) so no tokens are burned either.
+            //
+            // Step 1: debit merchant inventory — hard-fail if insufficient.
+            const { merchant: debited } = await debitMerchantTokens({
                 merchantId: req.merchantId, amount: order.tokenAmount,
                 reason: `Deposit ${order.orderId} confirmed — tokens dispensed to user`,
                 refModel: 'PaymentOrder', refId: order._id.toString(),
-                txId: `mw_dep_deduct_${order._id}`, allowOverdraft: true,
-            }).catch(e => console.error('[Merchant confirm] tokenBalance decrement failed:', e.message));
+                txId: `mw_dep_deduct_${order._id}`,
+            });
+            if (!debited) {
+                return res.status(400).json({ success: false, message: 'Insufficient token inventory to confirm this deposit. Top up your merchant wallet.' });
+            }
+            // Step 2: credit the user. On failure, compensate the merchant debit.
+            try {
+                await creditDeposit(order.userId, order.tokenAmount, order._id.toString());
+            } catch (walletErr) {
+                console.error('[Merchant confirm] user credit failed — refunding merchant:', walletErr.message);
+                await creditMerchantTokens({
+                    merchantId: req.merchantId, amount: order.tokenAmount,
+                    reason: `Deposit ${order.orderId} confirm reversed — user credit failed`,
+                    refModel: 'PaymentOrder', refId: order._id.toString(),
+                    txId: `mw_dep_refund_${order._id}`,
+                }).catch(e => console.error('[Merchant confirm] CRITICAL: merchant refund failed, manual reconcile needed:', e.message));
+                return res.status(500).json({ success: false, message: 'Wallet credit failed. Please retry.' });
+            }
 
             order.status      = 'COMPLETED';
             order.completedAt = new Date();
