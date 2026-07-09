@@ -9,6 +9,8 @@ import { authenticate } from '../identity/auth.middleware.js';
 import { betLimiter } from '../../middleware/security.js';
 // Risk Platform (Phase 010): the single validation authority for bets.
 import { assessBet } from '../risk/riskValidation.service.js';
+// Shared trading vocabulary (Phase 011) — one source for sides/statuses.
+import { MARKET_SIDES } from '../trading/tradingModels.js';
 
 const router = express.Router();
 
@@ -64,7 +66,7 @@ router.post('/place', betLimiter, authenticate, async (req, res) => {
     const minBet    = config?.betLimits?.[limitsKey]?.min ?? (isFullDay ? 100  : 10);
     const maxBet    = config?.betLimits?.[limitsKey]?.max ?? (isFullDay ? 500000 : 100000);
 
-    if (!['DELHI', 'BOMBAY'].includes(side)) {
+    if (!MARKET_SIDES.includes(side)) {
       return res.status(400).json({ success: false, message: 'Invalid side — must be DELHI or BOMBAY' });
     }
 
@@ -417,7 +419,7 @@ router.post('/phantom', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid amount' });
     }
 
-    if (!['DELHI', 'BOMBAY'].includes(side)) {
+    if (!MARKET_SIDES.includes(side)) {
       return res.status(400).json({ success: false, message: 'Invalid side' });
     }
 

@@ -24,6 +24,8 @@
 // scoring, device risk, behaviour analysis, responsible-gaming limits.
 
 import mongoose from 'mongoose';
+// Shared trading vocabulary (Phase 011) — canonical sides, no local strings.
+import { oppositeSide } from '../trading/tradingModels.js';
 
 function reject(message, code = 'RISK_VALIDATION') {
   return Object.assign(new Error(message), { status: 400, code });
@@ -171,9 +173,8 @@ export async function assessBet({ userId, cycleId, side, amount, min, max }) {
 
   if (rules.blockOppositeSideBetting) {
     const Bet = mongoose.model('Bet');
-    const oppositeSide = side === 'DELHI' ? 'BOMBAY' : 'DELHI';
     const existing = await Bet.findOne({
-      userId, cycleId, side: oppositeSide, status: 'PENDING', isPhantom: false,
+      userId, cycleId, side: oppositeSide(side), status: 'PENDING', isPhantom: false,
     }).select('_id').lean();
     if (existing) {
       throw Object.assign(

@@ -21,9 +21,12 @@
 
 // ── Flag names (import FLAGS.* — never use raw strings) ───────────────────────
 export const FLAGS = Object.freeze({
-  // Casino & Sportsbook
+  // Product Platforms (Phase 011)
   LIVE_CASINO:          'LIVE_CASINO',
   SPORTSBOOK:           'SPORTSBOOK',
+  GAMES_PLATFORM:       'GAMES_PLATFORM',   // in-house games beyond the cycle market
+  EVENT_FEEDS:          'EVENT_FEEDS',      // fixtures/results/live-data ingestion
+  ODDS_ENGINE:          'ODDS_ENGINE',      // dynamic pricing (cycle market stays fixed 2x)
   // Chat
   PUBLIC_CHAT:          'PUBLIC_CHAT',
   // Payments
@@ -46,6 +49,9 @@ export const FLAGS = Object.freeze({
 const DEFAULTS = {
   [FLAGS.LIVE_CASINO]:           false,
   [FLAGS.SPORTSBOOK]:            false,
+  [FLAGS.GAMES_PLATFORM]:        false,
+  [FLAGS.EVENT_FEEDS]:           false,
+  [FLAGS.ODDS_ENGINE]:           false,
   [FLAGS.PUBLIC_CHAT]:           false,
   [FLAGS.MULTI_CURRENCY]:        false,
   [FLAGS.CRYPTO_PAYMENTS]:       false,
