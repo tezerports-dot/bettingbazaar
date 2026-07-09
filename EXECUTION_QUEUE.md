@@ -74,14 +74,23 @@ Operations Platform (orchestration-only) slots later. See ENTERPRISE_DECISIONS.m
       `revenueSettlement.service.js` with pure posting builders (deposit /
       withdrawal / cycle / bonus funding, incl. historical-rate residuals).
       Verified with 34-assertion control-flow tests against the real code.
-- [ ] Reconciliation worker in `cronJobs.js` (60s): derive ledger entries
+- [x] Reconciliation worker in `cronJobs.js` (60s): derives ledger entries
       from COMPLETED PaymentOrders and settled Cycles, idempotent, per-item
       failures logged never thrown, history backfills automatically.
-- [ ] Admin surface: GET /api/admin/revenue/summary (trial balance +
+- [x] Admin surface: GET /api/admin/revenue/summary (trial balance +
       distributable revenue + integrity check), GET .../ledger (paginated),
       POST .../bonus-pool/fund (explicit amount + businessJustification,
-      capped at distributable revenue, audit-logged).
-- [ ] 04-GOVERNANCE.md §1: AccountingEvent / settlement-ledger authority row.
+      capped at distributable revenue, audit-logged). Mounted via
+      routes/admin/index.js.
+- [x] 04-GOVERNANCE.md §1: AccountingEvent / settlement-ledger authority row.
+
+**Phase 007 bootstrap complete (2026-07-09).** The platform now records
+every completed bet cycle, completed deposit, and completed payout into an
+append-only double-entry ledger; platform revenue and reserve deductions
+are derived facts; the merchant bonus pool can be funded only from
+distributable revenue. Next major work per the dependency chain: the
+Merchant Performance Bonus issuing engine + MerchantBonusPolicy (below),
+then Operations Platform / remaining 008 scope.
 
 ### Deferred within 007 (flagged, not forgotten)
 - [ ] Reconciler anti-join scans all completed sources each pass — add a

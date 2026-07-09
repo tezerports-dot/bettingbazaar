@@ -60,6 +60,7 @@ compute, or default this value independently.
 | Social/support links | `SupportLinks` document — **NOT Branding** (H-04 fix) |
 | Homepage/banner content order | `PromoContent.priority` field |
 | Wallet balance mutations | `walletAuthority.service.js` exclusively |
+| Settlement ledger / accounting events (completed bets & payouts, platform revenue, reserve deductions, payout fees, merchant bonus funding) | `AccountingEvent` model (`domains/revenue/accountingEvent.model.js`), written ONLY via `revenueSettlement.service.js` (Revenue & Settlement Platform, Phase 007). Append-only double-entry, integer paise, unique idempotency keys; balances always derived from postings, never stored. This is the ACCOUNTING authority — it never mutates wallet balances (walletAuthority keeps §7) and owns no configurable percentages (Business Policy Platform keeps those). |
 | P2P order lifecycle state | `P2POrder.status` enum: `PENDING_QUEUE, ASSIGNED, PROCESSING, PAID, COMPLETED, DISPUTED, CANCELLED, FAILED` |
 | Dispute resolution | `P2POrder` embedded fields — resolved. `Dispute` model removed. (I-01) |
 | Cycle timing | `cycleGenerator.service.js` computes; `GAME_CORE.ts` mirrors for display math only |

@@ -4,7 +4,7 @@
 Update it after every significant change. If this file and a chat summary disagree,
 this file wins — that's the point of it existing.
 
-Last updated: 2026-07-08
+Last updated: 2026-07-09
 
 ---
 
@@ -18,7 +18,7 @@ Last updated: 2026-07-08
 | 004 — Target Enterprise Architecture | Decision locked, execution complete for existing code | backend/domains/ + backend/shared/ inside the existing app |
 | 005 — Technology Strategy | Corrected 2026-07-03 | Originally under-scoped (language choice only). Now includes real research: Provider/Adapter pattern and Policy/Rules-Engine pattern both confirmed as standard, industry-proven fits for this platform. See FUTURE_CAPABILITIES.md architecture decision. |
 | 006 — Configuration Engine / Business Policy Platform | Core complete (2026-07-08) | DepositPolicy vertical slice (model/service/admin API/UI, wired into real runtime consumers) shipped 2026-07-07; scope corrected 2026-07-08 (merchant commission fields removed — deposit-triggered policy can't own cycle-triggered incentive pay); scheduled-apply wired into `cronJobs.js` (60s); **buyRate/sellRate fully flattened to fixed 1:1 and `TokenRates` removed (2026-07-08)**. Renamed in direction to Business Policy Platform per 2026-07-03 decision. Future sibling policies (Withdrawal/Risk/Merchant/Settlement) remain open Business Policy Platform work, but the 006 exit criteria are met. |
-| 007 — Revenue & Settlement Platform (bootstrap) | **IN PROGRESS (2026-07-09)** | **Renumbered by owner directive 2026-07-09** (was "Enterprise Control Center / Operations Platform" — that remains orchestration-only and slots later; see ENTERPRISE_DECISIONS.md). `domains/revenue/` — the single financial authority: append-only double-entry settlement ledger (`accountingEvent.model.js`, integer paise, idempotency keys), chart of accounts, sole-writer `revenueSettlement.service.js` owning completed bets/payouts, platform revenue, reserve deductions, payout fees, accounting events, and merchant bonus funding. THIS IS THE CURRENT ACTIVE PHASE. |
+| 007 — Revenue & Settlement Platform (bootstrap) | **Bootstrap complete (2026-07-09)** | **Renumbered by owner directive 2026-07-09** (was "Enterprise Control Center / Operations Platform" — that remains orchestration-only and slots later; see ENTERPRISE_DECISIONS.md). `domains/revenue/` — the single financial authority: append-only double-entry settlement ledger (`accountingEvent.model.js`, integer paise, unique idempotency keys, immutability middleware), closed chart of accounts, sole-writer `revenueSettlement.service.js` owning completed bets/payouts, platform revenue, reserve deductions, payout fees, accounting events, and merchant bonus funding. Ledger is DERIVED: a 60s reconciliation worker (cronJobs.js) anti-joins completed PaymentOrders + settled Cycles and records what's missing — no live money flow was modified; history backfills automatically. Admin surface: /api/admin/revenue/summary, /ledger, /bonus-pool/fund (platform-funded only, capped at distributable revenue, audit-logged). New §1 authority row in 04-GOVERNANCE.md. Verified: 34-assertion control-flow tests on the real posting builders. Remaining 007-adjacent work (bonus issuing engine, MerchantBonusPolicy) tracked in EXECUTION_QUEUE.md. |
 | 008 — Financial Core (ledger-first) | Partially absorbed into 007 | The 007 R&S bootstrap delivers the ledger foundation (double-entry, append-only, idempotency keys, integer minor units) that 008 planned; remaining 008 scope (retro-fitting wallet mutations onto ledger postings, full event sourcing) stays open |
 | 009 — Workflow Engine | Not started | — |
 | 010 — Event Architecture | Not started | eventBus.service.js exists, zero importers |
@@ -29,7 +29,9 @@ Last updated: 2026-07-08
 
 ## Domain Migration Status
 
-**Migrated (13):** Merchant, Payment, Configuration, Wallet, Betting, Game, Identity,
+**Migrated (14):** Revenue (new domain, Phase 007 — not a migration but a
+platform bootstrap, listed here so the domain count stays honest), Merchant,
+Payment, Configuration, Wallet, Betting, Game, Identity,
 User, Disputes, Analytics, Notification, CMS, Settlement (partial by design — see
 domains/settlement/README.md)
 
@@ -92,10 +94,21 @@ full architecture decision and reasoning.
 
 ## Current Active Phase
 
-**Business Policy Platform** (BBEPS Phase 006, renamed/widened per 2026-07-03
-decision). Goal: no business constant remains hardcoded in a service when
-configuration is appropriate — merchant commission, reserve ratio, deposit split,
-withdrawal rules, USDT rate, algorithm parameters, betting limits, KYC policy, risk
+**Revenue & Settlement Platform** (BBEPS Phase 007, renumbered by owner
+directive 2026-07-09 — see ENTERPRISE_DECISIONS.md). Bootstrap shipped
+2026-07-09: `domains/revenue/` is the single financial authority — the
+append-only double-entry settlement ledger derived from completed source
+records, platform revenue as a derived fact, reserve deductions recorded per
+deposit, merchant bonus funding structurally restricted to distributable
+platform revenue. Next within/after this platform: the Merchant Performance
+Bonus issuing engine (Cycle Tracker → Bonus Calculator → Bonus Ledger) with
+its MerchantBonusPolicy percentage owned by the Business Policy Platform.
+
+### Prior phase context (006 — Business Policy Platform, core complete)
+
+Goal was: no business constant remains hardcoded in a service when
+configuration is appropriate — reserve ratio, deposit split,
+withdrawal rules, algorithm parameters, betting limits, KYC policy, risk
 thresholds, feature toggles, notification templates, and more, admin-editable with
 validation, defaults, examples, and audit history.
 
