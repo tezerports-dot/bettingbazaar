@@ -26,6 +26,7 @@ import depositPolicyRoutes from '../../domains/configuration/depositPolicy.admin
 import merchantBonusPolicyRoutes from '../../domains/configuration/merchantBonusPolicy.admin.routes.js';
 import revenueRoutes    from '../../domains/revenue/revenue.admin.routes.js';
 import merchantPlatformRoutes from '../../domains/merchant/merchantPlatform.admin.routes.js';
+import communicationRoutes from '../../domains/communication/communication.admin.routes.js';
 
 const router = express.Router();
 
@@ -47,5 +48,6 @@ router.use('/', depositPolicyRoutes);
 router.use('/', merchantBonusPolicyRoutes);
 router.use('/', revenueRoutes);
 router.use('/', merchantPlatformRoutes);
+router.use('/', communicationRoutes);
 
 export default router;

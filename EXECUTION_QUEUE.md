@@ -101,6 +101,26 @@ Operations Platform (orchestration-only) slots later. See ENTERPRISE_DECISIONS.m
 - [x] Merchant analytics: leaderboard, funding stats, performance history,
       wallet ledger admin API; platform README.
 
+## PHASE 012 — Enterprise Experience (owner directive 2026-07-09) — IN PROGRESS
+
+- [x] Communication Platform: notify() engine + channel adapters (IN_APP
+      live; EMAIL/SMS/PUSH declared inactive), Audit Feed + Admin Activity
+      Feed APIs, admin.service.js's four direct Notification.create sites
+      rerouted; governance §1 row.
+- [ ] Operations Platform: enterprise overview + config catalog (next).
+- [ ] Reporting Platform: financial/merchant/settlement reports + CSV
+      regulatory export.
+- [ ] Analytics Platform extension; Enterprise UI/UX (admin consoles for
+      the new platform APIs, user-panel polish) — large, own slices.
+
+### Deferred within 012 (so far)
+- [ ] Remaining direct Notification.create writers outside admin.service.js
+      (if any appear) → notify().
+- [ ] EMAIL/SMS/PUSH channel implementations (need provider credentials
+      config in Business Policy first).
+- [ ] Internal messaging (P2P chat/system messages) consolidation under
+      Communication — opportunistic.
+
 ## PHASE 011 — Product Platforms (owner directive 2026-07-09) — COMPLETE
 
 - [x] Markets Platform: domains/game + domains/betting → domains/markets

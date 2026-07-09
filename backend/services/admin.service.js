@@ -18,6 +18,8 @@
 // ✅ FIX #40: Converted from CommonJS (module.exports) to ESM so it can be imported
 //    in the ES Module project ("type": "module" in package.json).
 import mongoose from 'mongoose';
+// Communication Platform (Phase 012): notify() is the single user-messaging path.
+import { notify } from '../domains/communication/communication.service.js';
 import bcrypt from 'bcryptjs'; // ✅ FIX: package.json has bcryptjs (not bcrypt)
 
 // Models are accessed via mongoose.model() to avoid circular dependency
@@ -143,7 +145,7 @@ class AdminService {
       });
 
       // Send notification to user
-      await Notification.create({
+      await notify({
         userId,
         type: 'ERROR',
         title: 'Account Blocked',
@@ -198,7 +200,7 @@ class AdminService {
       });
 
       // Send notification to user
-      await Notification.create({
+      await notify({
         userId,
         type: 'SUCCESS',
         title: 'Account Unblocked',
@@ -316,7 +318,7 @@ class AdminService {
       });
 
       // Send notification to user
-      await Notification.create({
+      await notify({
         userId,
         type: 'SUCCESS',
         title: 'KYC Approved',
@@ -367,7 +369,7 @@ class AdminService {
       });
 
       // Send notification to user
-      await Notification.create({
+      await notify({
         userId,
         type: 'ERROR',
         title: 'KYC Rejected',
