@@ -2,8 +2,8 @@
 import { describe, it, expect } from 'vitest';
 import request from 'supertest';
 import express from 'express';
-import routes from '../routes.js';
-import { User } from '../models/index.js';
+import routes from '../../routes.js';
+import { User } from '../../models/index.js';
 
 const app = express();
 app.use(express.json());

@@ -1,0 +1,46 @@
+# CI — the proof that money-path code actually runs.
+# Unit tests (no DB) run always; integration tests boot an in-memory MongoDB
+# (mongodb-memory-server downloads a mongod binary — reachable on GitHub
+# runners, unlike the restricted build sandbox). See vitest*.config.ts.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci || npm install
+      - name: Unit tests (money math — no DB)
+        run: npm run test:unit
+      - name: Integration tests (real in-memory MongoDB)
+        run: npm run test:integration
+        env:
+          MONGOMS_VERSION: 7.0.14
+
+  typecheck-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm install
+      - name: Backend syntax check
+        run: node --check backend/server.js
+      # NOTE: admin-panel / merchant-panel tsc builds have pre-existing errors
+      # (tracked in EXECUTION_QUEUE.md) — build steps are added once those are
+      # fixed, so CI stays green and meaningful rather than perpetually red.
+      - name: User panel build
+        run: npx vite build

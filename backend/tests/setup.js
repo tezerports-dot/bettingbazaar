@@ -6,7 +6,7 @@ import { vi } from 'vitest';
 let replset;
 
 // Mocking Redis globally for tests
-vi.mock('../services/cache.service.js', () => ({
+vi.mock('../../services/cache.service.js', () => ({
   initCache: vi.fn().mockResolvedValue(true),
   CacheService: {
     get: vi.fn().mockResolvedValue(null),
@@ -17,9 +17,12 @@ vi.mock('../services/cache.service.js', () => ({
 }));
 
 beforeAll(async () => {
-  // Use MongoMemoryReplSet explicitly for better transaction support
+  // Replica set so Mongo multi-document transactions work in tests.
+  // Version pinned for reproducibility; MONGOMS_SYSTEM_BINARY (env) lets a
+  // preinstalled mongod be used where the download host is firewalled.
   replset = await MongoMemoryReplSet.create({
-    replSet: { count: 1, storageEngine: 'wiredTiger' }
+    replSet: { count: 1, storageEngine: 'wiredTiger' },
+    binary: { version: process.env.MONGOMS_VERSION || '7.0.14' },
   });
   const uri = replset.getUri();
   await mongoose.connect(uri);

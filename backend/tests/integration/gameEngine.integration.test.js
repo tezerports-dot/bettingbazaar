@@ -1,7 +1,7 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import { describe, it, expect, beforeEach } from 'vitest';
-import GameEngine from '../domains/markets/gameEngine.js';
-import { User, Cycle, Bet, Transaction } from '../models/index.js';
+import GameEngine from '../../domains/markets/gameEngine.js';
+import { User, Cycle, Bet, Transaction } from '../../models/index.js';
 import mongoose from 'mongoose';
 
 describe('Game Engine Settlement', () => {
