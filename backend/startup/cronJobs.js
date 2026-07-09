@@ -100,5 +100,27 @@ export function registerCronJobs(rebuildLeaderboard) {
     } catch (e) { console.error('[ledger-reconcile] cron error:', e.message); }
   }, 60 * 1000);
 
+  // ── Merchant Performance Bonus engine — runs every 10 minutes ───────────────
+  // Merchant Platform (BBEPS Phase 008). No-ops unless an admin has enabled
+  // an ACTIVE MerchantBonusPolicy with a non-zero percentage (Business Policy
+  // Platform). Issuance is idempotent (deterministic keys) and pool-capped —
+  // re-running is always safe. Per-merchant failures logged, never thrown.
+  setInterval(async () => {
+    try {
+      const { runBonusEngine } = await import('../domains/merchant/merchantBonus.service.js');
+      const outcome = await runBonusEngine();
+      if (!outcome.ran) return;
+      for (const r of outcome.results) {
+        if (r.error) console.error(`[bonus-engine] merchant ${r.merchantId} failed:`, r.error);
+        else if (!r.issued && r.reason) console.warn(`[bonus-engine] merchant ${r.merchantId} skipped: ${r.reason}`);
+      }
+      const issued = outcome.results.filter(r => r.issued);
+      if (issued.length > 0) {
+        console.log(`[bonus-engine] Issued ${issued.length} Merchant Performance Bonus(es):`,
+          issued.map(r => `${r.merchantId}: ₹${r.bonusRupees}`).join(', '));
+      }
+    } catch (e) { console.error('[bonus-engine] cron error:', e.message); }
+  }, 10 * 60 * 1000);
+
   console.log('✅ Cron jobs registered');
 }
