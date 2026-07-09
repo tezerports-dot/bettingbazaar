@@ -644,13 +644,16 @@ router.get('/v1/content/support-links', async (req, res) => {
     res.json({
       success: true,
       links: {
-        whatsapp:      raw.whatsapp      || '',
-        telegram:      raw.telegram      || '',
-        instagram:     raw.instagram     || '',
-        youtube:       raw.youtube       || '',
-        email:         raw.email         || '',
-        phone:         raw.phone         || '',
-        helpCenterUrl: raw.helpCenterUrl || '',
+        whatsapp:           raw.whatsapp           || '',
+        telegram:           raw.telegram           || '',
+        telegramUsername:   raw.telegramUsername   || '',
+        telegramGroupUrl:   raw.telegramGroupUrl   || '',
+        telegramChannelUrl: raw.telegramChannelUrl || '',
+        instagram:          raw.instagram          || '',
+        youtube:            raw.youtube            || '',
+        email:              raw.email              || '',
+        phone:              raw.phone              || '',
+        helpCenterUrl:      raw.helpCenterUrl      || '',
       }
     });
   } catch (error) {

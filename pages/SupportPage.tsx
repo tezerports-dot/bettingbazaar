@@ -14,6 +14,8 @@ const backend = getBackend();
 interface SupportLinks {
   whatsapp:  string;
   telegram:  string;
+  telegramGroupUrl:   string;
+  telegramChannelUrl: string;
   instagram: string;
   youtube:   string;
   email:     string;
@@ -29,7 +31,7 @@ const SupportPage: React.FC = () => {
     (backend as any).getSupportLinks?.()
       .then((data: any) => {
         const d = data?.links ?? data;
-        if (d) setLinks({ whatsapp: d.whatsapp||'', telegram: d.telegram||'', instagram: d.instagram||'', youtube: d.youtube||'', email: d.email||'' });
+        if (d) setLinks({ whatsapp: d.whatsapp||'', telegram: d.telegram||d.telegramUsername||'', telegramGroupUrl: d.telegramGroupUrl||'', telegramChannelUrl: d.telegramChannelUrl||'', instagram: d.instagram||'', youtube: d.youtube||'', email: d.email||'' });
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -38,7 +40,9 @@ const SupportPage: React.FC = () => {
   const channels = links
     ? [
         links.whatsapp  && { icon: '💬', label: 'WhatsApp',  sub: 'Chat with Support', href: `https://wa.me/${links.whatsapp.replace(/\D/g, '')}`, color: '#25D366' },
-        links.telegram  && { icon: '✈️',  label: 'Telegram',  sub: 'Join our channel',  href: links.telegram.startsWith('http') ? links.telegram : `https://t.me/${links.telegram.replace('@', '')}`, color: '#2AABEE' },
+        links.telegram  && { icon: '✈️',  label: 'Telegram',  sub: 'Message support',   href: links.telegram.startsWith('http') ? links.telegram : `https://t.me/${links.telegram.replace('@', '')}`, color: '#2AABEE' },
+        links.telegramGroupUrl   && { icon: '👥', label: 'Telegram Group',   sub: 'Join the community', href: links.telegramGroupUrl,   color: '#2AABEE' },
+        links.telegramChannelUrl && { icon: '📢', label: 'Telegram Channel', sub: 'Announcements',      href: links.telegramChannelUrl, color: '#2AABEE' },
         links.instagram && { icon: '📸', label: 'Instagram', sub: 'Follow us',          href: links.instagram.startsWith('http') ? links.instagram : `https://instagram.com/${links.instagram.replace('@', '')}`, color: '#E1306C' },
         links.youtube   && { icon: '▶️',  label: 'YouTube',   sub: 'Watch tutorials',   href: links.youtube, color: '#FF0000' },
         links.email     && { icon: '📧', label: 'Email',     sub: links.email,          href: `mailto:${links.email}`, color: '#D4AF37' },

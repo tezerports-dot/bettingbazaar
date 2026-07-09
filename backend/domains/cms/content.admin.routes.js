@@ -120,6 +120,9 @@ router.get('/content/support-links', authenticate, isAdminOrSubAdmin, async (req
         supportLinks: {
           whatsapp: '',
           telegram: '',
+          telegramUsername: '',
+          telegramGroupUrl: '',
+          telegramChannelUrl: '',
           email: '',
           helpCenterUrl: '',
           termsUrl: '',
@@ -141,24 +144,29 @@ router.get('/content/support-links', authenticate, isAdminOrSubAdmin, async (req
 // Update support links
 router.put('/content/support-links', authenticate, isAdmin, async (req, res) => {
   try {
-    const { whatsapp, telegram, email, helpCenterUrl, termsUrl, privacyUrl } = req.body;
+    const { whatsapp, telegram, telegramUsername, telegramGroupUrl, telegramChannelUrl,
+            email, helpCenterUrl, termsUrl, privacyUrl } = req.body;
     const { SystemConfig } = getModels();
-    
+
     let config = await SystemConfig.findOne();
     if (!config) {
       config = new SystemConfig();
     }
-    
+
     if (!config.supportLinks) {
       config.supportLinks = {};
     }
-    
+
     if (whatsapp !== undefined) config.supportLinks.whatsapp = whatsapp;
     if (telegram !== undefined) config.supportLinks.telegram = telegram;
+    if (telegramUsername !== undefined) config.supportLinks.telegramUsername = telegramUsername;
+    if (telegramGroupUrl !== undefined) config.supportLinks.telegramGroupUrl = telegramGroupUrl;
+    if (telegramChannelUrl !== undefined) config.supportLinks.telegramChannelUrl = telegramChannelUrl;
     if (email !== undefined) config.supportLinks.email = email;
     if (helpCenterUrl !== undefined) config.supportLinks.helpCenterUrl = helpCenterUrl;
     if (termsUrl !== undefined) config.supportLinks.termsUrl = termsUrl;
     if (privacyUrl !== undefined) config.supportLinks.privacyUrl = privacyUrl;
+    config.markModified('supportLinks');
     
     config.updatedAt = new Date();
     config.updatedBy = req.user._id;

@@ -16,7 +16,12 @@ const systemConfigSchema = new mongoose.Schema({
   // ✅ FIX: Support links object used in admin content routes
   supportLinks: {
     whatsapp: String,
-    telegram: String,
+    telegram: String,            // legacy single field (kept for back-compat)
+    // Structured Telegram config (Phase-audit 2026-07-09) — all admin-editable
+    // via PUT /api/admin/content/support-links, read by the user Support page.
+    telegramUsername: String,    // e.g. @BettingBazaarSupport
+    telegramGroupUrl: String,    // community group invite link
+    telegramChannelUrl: String,  // announcements channel link
     email: String,
     helpCenterUrl: String,
     termsUrl: String,
