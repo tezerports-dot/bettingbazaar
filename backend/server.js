@@ -36,7 +36,7 @@ import './models/index.js';
 // ─── ROUTES ───────────────────────────────────────────────────────────────────
 import authRoutes, { loginHandler } from './routes.js';
 import adminRoutes        from './routes/admin/index.js';      // ← new modular index
-import betRoutes          from './domains/betting/bet.routes.js';
+import betRoutes          from './domains/markets/bet.routes.js';
 import userRoutes         from './domains/user/user.routes.js';
 import merchantRoutes     from './domains/merchant/merchant.routes.js';
 import paymentRoutes      from './domains/payment/payment.routes.js';
@@ -54,8 +54,8 @@ import vipRoutes          from './routes/vip.routes.js';
 import { requestLogger }  from './middleware/requestLogger.js';
 import { errorHandler }   from './middleware/errorHandler.js';
 import { authLimiter, adminAuthLimiter, betLimiter } from './middleware/security.js';
-import GameEngine         from './domains/game/gameEngine.js';
-import CycleGenerator     from './domains/game/cycleGenerator.service.js';
+import GameEngine         from './domains/markets/gameEngine.js';
+import CycleGenerator     from './domains/markets/cycleGenerator.service.js';
 import SSEManager         from './domains/notification/sseManager.service.js';
 import { initSSERoutes }  from './routes/sse.routes.js';
 

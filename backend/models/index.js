@@ -9,8 +9,9 @@
  * Dynamic access:  mongoose.model('User')  — works after this barrel is loaded.
  */
 export * from '../domains/user/user.model.js';
-export * from '../domains/game/cycle.model.js';
-export * from '../domains/betting/bet.model.js';
+// Markets Platform (BBEPS Phase 011) — formerly domains/game + domains/betting
+export * from '../domains/markets/cycle.model.js';
+export * from '../domains/markets/bet.model.js';
 export * from './transaction.model.js';
 export * from '../domains/merchant/merchant.model.js';
 // Merchant Platform (BBEPS Phase 008) — merchant wallet audit ledger
