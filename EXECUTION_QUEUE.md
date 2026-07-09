@@ -84,13 +84,31 @@ Operations Platform (orchestration-only) slots later. See ENTERPRISE_DECISIONS.m
       routes/admin/index.js.
 - [x] 04-GOVERNANCE.md §1: AccountingEvent / settlement-ledger authority row.
 
-**Phase 007 bootstrap complete (2026-07-09).** The platform now records
-every completed bet cycle, completed deposit, and completed payout into an
-append-only double-entry ledger; platform revenue and reserve deductions
-are derived facts; the merchant bonus pool can be funded only from
-distributable revenue. Next major work per the dependency chain: the
-Merchant Performance Bonus issuing engine + MerchantBonusPolicy (below),
-then Operations Platform / remaining 008 scope.
+**Phase 007 bootstrap complete (2026-07-09).**
+
+## PHASE 008 — Merchant Platform (owner directive 2026-07-09) — COMPLETE
+
+- [x] R&S ledger side: MERCHANT_FUNDS account + issueMerchantBonus()
+      (pool-capped, idempotent).
+- [x] MerchantBonusPolicy in Business Policy Platform (whole-doc versioned,
+      immediate-apply v1, disabled by default, admin routes + audit).
+- [x] merchantWallet.service.js — sole Merchant.tokenBalance writer;
+      all 7 raw $inc sites rerouted; MerchantWalletLedger; canonical
+      per-operation txIds give cross-route double-deduction protection.
+- [x] Merchant Performance Bonus Engine (Cycle Tracker → Bonus Calculator →
+      issuance) + 10-min cron + POST /api/admin/merchant-platform/
+      bonus-engine/run. 7 control-flow assertions on the calculator.
+- [x] Merchant analytics: leaderboard, funding stats, performance history,
+      wallet ledger admin API; platform README.
+
+### Deferred within 008 (flagged, not forgotten)
+- [ ] MerchantBonusPolicy v1 has no scheduling/approval lifecycle (mirror
+      depositPolicy.service.js when needed).
+- [ ] Two historically blind merchant-wallet debit sites run with
+      allowOverdraft to preserve behavior (merchant confirm, dispute
+      release) — decide whether to make them strict.
+- [ ] No admin-panel UI for MerchantBonusPolicy / merchant-platform
+      analytics yet (API-only).
 
 ### Deferred within 007 (flagged, not forgotten)
 - [ ] Reconciler anti-join scans all completed sources each pass — add a

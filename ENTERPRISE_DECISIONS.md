@@ -8,6 +8,43 @@ need a durable home.
 
 ---
 
+## 2026-07-09 — Phase 008: Merchant Platform (and the accepted 011/012 split)
+
+**Decision (owner directive):** Phase 008 = Merchant Platform, the only
+authority for merchant lifecycle. Also accepted: after Phase 010, remaining
+work splits into **Phase 011 (Product Platforms: Sportsbook, Casino, Games,
+Markets)** and **Phase 012 (Enterprise Experience: Communication Platform,
+Operations Platform enhancements, Reporting, Analytics, UI/UX redesign,
+performance, production hardening)** — all financial/governance architecture
+finishes before product features and polish.
+
+**Merchant Performance Bonus — the design that shipped:**
+- "Completed buy→sell cycle" = matched volume: min(completed deposit fiat,
+  completed withdrawal fiat) per merchant. Bonus applies to NEWLY matched
+  volume above a high-water mark derived from the ledger itself (latest
+  MERCHANT_BONUS_ISSUED event's cumulativeMatchedMinor) — nothing stored
+  that can drift; each rupee of matched volume is bonused exactly once.
+- Issuance = two idempotent operations on ONE deterministic key
+  (acct_bonusissue_<merchantId>_<cumulativeMatchedMinor>): ledger event
+  (pool → MERCHANT_FUNDS, capped at pool balance) then merchant-wallet
+  credit. A crash between them heals on the next engine run.
+- Never partial-issues: if the pool can't cover the computed bonus, the
+  merchant is skipped with a fund-the-pool warning — paying less while
+  recording the full high-water would silently under-pay.
+- Percent/threshold/enablement live ONLY in MerchantBonusPolicy (Business
+  Policy Platform), shipped DISABLED by default — zero live-behavior change
+  until an admin turns it on. Engine floors to integer paise.
+
+**Merchant wallet single-writer:** `merchantWallet.service.js` now owns
+`Merchant.tokenBalance` (new §1 row). The seven scattered raw `$inc` sites
+were rerouted preserving each site's exact semantics (guarded sites still
+guard; historically blind sites pass allowOverdraft — tightening those is a
+queued item, not a silent behavior change). One canonical txId per logical
+operation (mw_dep_deduct_<orderId>) newly protects against cross-route
+double-deduction, which the raw $incs never did.
+
+---
+
 ## 2026-07-09 — Phase 007 = Revenue & Settlement Platform bootstrap (renumbered)
 
 **Decision (owner directive, 2026-07-09):** Phase 007 is the Revenue &
