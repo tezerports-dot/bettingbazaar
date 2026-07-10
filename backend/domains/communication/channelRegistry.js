@@ -27,15 +27,70 @@ const inApp = {
   },
 };
 
+// ── EMAIL — real SMTP adapter (Phase E, 2026-07-10), ACTIVATION-GATED on
+// environment credentials: set SMTP_HOST, SMTP_PORT (default 587),
+// SMTP_USER, SMTP_PASS and SMTP_FROM in Railway and the channel reports
+// active and delivers; unset, it stays a declared channel exactly as
+// before. No provider is hardcoded — any SMTP service works (SES,
+// Postmark, Brevo, ...). Users without an email on file are skipped with
+// a reason (mobile is the identity; User.email is optional).
+let _mailer = null;
+function smtpConfigured() {
+  return !!(process.env.SMTP_HOST && process.env.SMTP_FROM);
+}
+async function getMailer() {
+  if (_mailer) return _mailer;
+  const { default: nodemailer } = await import('nodemailer');
+  _mailer = nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: Number(process.env.SMTP_PORT || 587),
+    secure: Number(process.env.SMTP_PORT || 587) === 465,
+    auth: process.env.SMTP_USER
+      ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+      : undefined,
+  });
+  return _mailer;
+}
+
+const email = {
+  code: 'EMAIL',
+  label: 'Email',
+  get active() { return smtpConfigured(); },
+  async send({ userId, title, message, actionUrl, actionLabel }) {
+    if (!smtpConfigured()) {
+      return { delivered: false, reason: 'SMTP not configured (SMTP_HOST/SMTP_FROM env).' };
+    }
+    const User = mongoose.model('User');
+    const user = await User.findById(userId).select('email username').lean();
+    if (!user?.email) {
+      return { delivered: false, reason: 'User has no email on file.' };
+    }
+    const mailer = await getMailer();
+    const cta = actionUrl
+      ? `<p style="margin-top:16px"><a href="${actionUrl}" style="background:#D4AF37;color:#0B0E14;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:bold">${actionLabel || 'Open'}</a></p>`
+      : '';
+    const info = await mailer.sendMail({
+      from: process.env.SMTP_FROM,
+      to: user.email,
+      subject: title || 'Notification',
+      text: `${message || ''}${actionUrl ? `\n\n${actionLabel || 'Open'}: ${actionUrl}` : ''}`,
+      html: `<div style="font-family:sans-serif;max-width:520px">
+               <h2 style="margin:0 0 8px">${title || 'Notification'}</h2>
+               <p style="color:#333;line-height:1.5">${message || ''}</p>${cta}
+             </div>`,
+    });
+    return { delivered: true, id: info.messageId };
+  },
+};
+
 // ── Declared, inactive channels — activating one = implement send() against
-// a real provider and flip active (EMAIL/SMS need provider credentials in
-// admin config first; PUSH additionally gates on FLAGS.PUSH_NOTIFICATIONS).
+// a real provider (SMS needs a gateway choice + credentials; PUSH
+// additionally gates on FLAGS.PUSH_NOTIFICATIONS). No fake placeholders.
 const inactive = (code, label) => ({
   code, label, active: false,
   async send() { throw new Error(`${label} channel is not configured.`); },
 });
 
-const email = inactive('EMAIL', 'Email');
 const sms   = inactive('SMS', 'SMS');
 const push  = inactive('PUSH', 'Web/App push');
 

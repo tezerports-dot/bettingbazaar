@@ -96,8 +96,33 @@ full architecture decision and reasoning.
 
 ## Current Active Phase
 
-**Phase A — COMPLETE (2026-07-10).** Betting-logic correctness &
-admin-configurability (the PROJECT_HANDOFF.md roadmap letters, post-012):
+**Phases A–F ALL COMPLETE in-repo (2026-07-10).** The PROJECT_HANDOFF.md
+roadmap letters are done to the limit of what code can do:
+
+- **Phase B:** F-2 (settlement unlocks via walletAuthority, transactional +
+  idempotent, concurrency/crash-resume proven in CI), F-3 (Redis-shared
+  rate limiting, proven against real Redis in CI), merchant token-deduction
+  control, withdrawal + bonus integration coverage, §13 artifact cleanup.
+- **Phase C:** admin consoles for every Phase 007–012 API (/revenue,
+  /operations, /reports, /merchant-platform), money-rule settings with
+  plain-English explanations + live examples, merchant deduct UI, winner
+  board real-winner fix (queried fields that never existed on Bet).
+- **Phase D:** recover-account entry on auth modal, dense results list
+  (12-15/screen), sticky game header.
+- **Phase E:** real env-gated SMTP EMAIL adapter (active the moment
+  SMTP_* env vars are set); SMS/PUSH/USDT/gateway documented with
+  activation steps (need owner credentials — PRODUCTION_READINESS.md §B).
+- **Phase F:** bcrypt-12 standardization, env-tunable Mongo pool, and
+  PRODUCTION_READINESS.md (owner checklist: rotate secrets, licensing,
+  pentest, load test, backups).
+
+**Remaining work is owner-action or queued polish:** see
+PRODUCTION_READINESS.md §A (blocking) and EXECUTION_QUEUE.md "Discovered
+during Phases B–F" (notably: SSE/socket Redis bridge before >1 instance).
+
+### Phase A record (same day)
+
+Betting-logic correctness & admin-configurability:
 
 - **Step 0:** the integration test suite had NEVER passed in CI (every run
   failed on test-code bugs — see EXECUTION_QUEUE.md 2026-07-10). Fixed;

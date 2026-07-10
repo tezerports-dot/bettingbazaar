@@ -10,6 +10,63 @@ deleted, so this file also works as a short-form recent-history log.
 
 ---
 
+## DONE — 2026-07-10 (PHASES B–F, same session as Phase A)
+
+- [x] **F-2** — settlement locked-balance writes rerouted through the new
+      `walletAuthority.releaseLockedStake()` (transaction + unique-txId race
+      gate; the win-path unlock previously had NO idempotency guard at all).
+      `WalletLedger.field` gains 'lockedBalance' (honest unlock records).
+      Cycle totals now DERIVED from stamped WON bets (crash-resume-correct).
+      Proven by settlementConcurrency.integration.test.js: two concurrent
+      passes, full re-run, partial-crash resume.
+- [x] **F-3** — Redis-backed rate limiting: all six limiters share counters
+      across instances via middleware/redisRateLimitStore.js (atomic Lua
+      INCR+PEXPIRE, per-instance memory fallback when Redis absent/down).
+      CI proves cross-instance sharing against a real redis:7 service.
+- [x] Merchant token-**deduction** admin control: POST
+      /api/admin/merchants/:id/deduct (strict no-overdraft, reason required,
+      audit-logged) + MerchantsList UI.
+- [x] Withdrawal-lifecycle + merchant-bonus integration tests
+      (withdrawalBonus.integration.test.js): lock/approve/reject idempotency,
+      pool caps, two-step issuance replay with zero double-pay.
+- [x] §13 cleanup: migrations 001/002, debug-merchant-query.mjs,
+      deposit-policy-migration.patch deleted (all marked applied/safe).
+- [x] **Phase C admin consoles:** /revenue (ledger + bonus-pool funding),
+      /operations (overview + config catalog + audit feed), /reports
+      (financial/settlement/merchant + regulatory CSV), /merchant-platform
+      (MerchantBonusPolicy editor, leaderboard, wallet ledgers, engine run);
+      System Settings gains all money knobs with plain-English explanations
+      + live worked examples; merchant deduct UI. tsc + vite green.
+- [x] Winner board bug: /api/v1/winners queried isWinner/winAmount — fields
+      that never existed on Bet — so REAL winners never showed. Fixed to
+      status:'WON' + payout with cycle context.
+- [x] **Phase D:** recover-account link on the auth modal (flow existed,
+      nothing linked to it); ResultsPage 3-4/screen cards → 12-15/screen
+      dense rows; sticky game header (the "header hides" issue).
+- [x] **Phase E:** real SMTP EMAIL channel adapter, activation-gated on env
+      (SMTP_HOST/PORT/USER/PASS/FROM) — no fake code, no hardcoded provider;
+      optional User.email field. SMS/PUSH/USDT/gateway/Telegram documented
+      with exact activation steps in PRODUCTION_READINESS.md.
+- [x] **Phase F (in-repo):** bcrypt cost 10→12 standardized (M-2 — admin
+      service + sub-admin route), Mongo pool sizing via env, and
+      PRODUCTION_READINESS.md (owner checklist: secret rotation, licensing,
+      pentest, load test, backups + per-integration activation guides).
+
+### Discovered during Phases B–F (queued)
+
+- [ ] **SSE/socket fan-out is per-instance** (global.io / sseManager live in
+      one process). Before serving live traffic from >1 backend instance,
+      add the socket.io Redis adapter + a Redis pub/sub bridge for the SSE
+      manager. (Rate limiting is already instance-safe — this is the
+      remaining horizontal-scale item.)
+- [ ] User panel profile field + API for the new optional `User.email`
+      (EMAIL channel skips users without one).
+- [ ] merchantScoring.service.js references a nonexistent
+      `migrations/003-backfill-merchant-defaults.js` in a comment — stale
+      pointer, harmless; clean up opportunistically.
+
+---
+
 ## DONE — 2026-07-10 (PHASE A: betting-logic correctness & admin-configurability)
 
 - [x] **Step 0 — integration suite resurrected for real.** Discovered that CI

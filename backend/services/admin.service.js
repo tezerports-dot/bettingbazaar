@@ -426,7 +426,7 @@ class AdminService {
       }
 
       // Hash password
-      const passwordHash = await bcrypt.hash(password, 10);
+      const passwordHash = await bcrypt.hash(password, 12); // M-2: standardized on cost 12 (2026-07-10)
 
       // Create sub-admin user
       const subAdmin = await User.create({

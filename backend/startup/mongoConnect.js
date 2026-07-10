@@ -14,8 +14,11 @@ export async function connectMongoDB() {
         serverSelectionTimeoutMS: 30000,
         connectTimeoutMS:         30000,
         socketTimeoutMS:          45000,
-        maxPoolSize:              10,
-        minPoolSize:              2,
+        // Phase F (2026-07-10): pool sized via env so horizontal scaling can
+        // tune per-instance connections against the Atlas tier's connection
+        // budget without a code change. Defaults preserve prior behavior.
+        maxPoolSize:              Number(process.env.MONGO_MAX_POOL_SIZE || 10),
+        minPoolSize:              Number(process.env.MONGO_MIN_POOL_SIZE || 2),
         dbName:                   'bettingbazaar'
       });
       console.log('✅ MongoDB Connected');

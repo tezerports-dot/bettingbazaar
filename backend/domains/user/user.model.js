@@ -51,6 +51,11 @@ const userSchema = new mongoose.Schema({
   
   walletAddress: { type: String, unique: true, sparse: true }, 
   profilePic: { type: String, default: '' },
+
+  // Optional contact email (Phase E, 2026-07-10) — delivery target for the
+  // Communication Platform's EMAIL channel. Not collected at registration
+  // (mobile is the identity); users without one are skipped by the adapter.
+  email: { type: String, trim: true, lowercase: true, default: '' },
   
   status: { type: String, enum: ['ACTIVE', 'BLOCKED', 'SUSPENDED', 'PENDING_KYC', 'DELETED'], default: 'ACTIVE', index: true },
   

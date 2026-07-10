@@ -140,3 +140,20 @@ export class RedisRateLimitStore {
 export function createRateLimitStore(prefix) {
   return new RedisRateLimitStore(prefix);
 }
+
+/**
+ * awaitRateLimitRedisReady — resolve true once the shared client is ready
+ * (or immediately false when REDIS_URL is unset). The store itself never
+ * blocks a request on this — it falls back to memory while connecting; this
+ * exists for tests and optional startup warmup that want the Redis path
+ * deterministically active before proceeding.
+ */
+export function awaitRateLimitRedisReady(timeoutMs = 5000) {
+  const client = getClient();
+  if (!client) return Promise.resolve(false);
+  if (client.status === 'ready') return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(client.status === 'ready'), timeoutMs);
+    client.once('ready', () => { clearTimeout(timer); resolve(true); });
+  });
+}

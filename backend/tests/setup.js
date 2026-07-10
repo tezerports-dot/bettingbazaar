@@ -31,6 +31,12 @@ beforeAll(async () => {
   });
   const uri = replset.getUri();
   await mongoose.connect(uri);
+  // Wait for every model's index builds. The UNIQUE indexes (WalletLedger
+  // txId, AccountingEvent idempotencyKey, ...) are the durable idempotency
+  // gates the concurrency tests exercise — without this await, a test can
+  // race an index that doesn't exist yet and "prove" a double-spend that
+  // production (where indexes long exist) can't produce.
+  await Promise.all(Object.values(mongoose.models).map((m) => m.init()));
 });
 
 afterAll(async () => {

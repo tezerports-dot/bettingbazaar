@@ -213,37 +213,44 @@ controls (capabilities done; token-deduction control missing), Communication
 - Precision/default/ledger-routing decisions: ENTERPRISE_DECISIONS.md
   2026-07-10.
 
-**Phase B — Remaining open money bugs & scale blockers:**
-- **F-2:** `settlementService.js` raw `$inc` on locked balances (§7) — reroute
-  via wallet authority **with an integration test of settle-under-concurrency**.
-- **F-3:** rate limiting is **in-memory** → won't work across horizontally
-  scaled instances; move to **Redis store** (Redis already provisioned).
-- Merchant **token-deduction** admin control (only top-up/credit exists today).
-- Integration test coverage for every money flow (deposit→bet→settle→withdraw,
-  bonus issuance) — the prerequisite to trusting money code.
+**Phase B — Remaining open money bugs & scale blockers — ✅ COMPLETE (2026-07-10):**
+- ✅ **F-2** rerouted via `walletAuthority.releaseLockedStake` (transactional,
+  idempotent) WITH concurrency + crash-resume integration tests; cycle totals
+  now derived from the DB (resume-correct).
+- ✅ **F-3** Redis-backed rate limiting (all six limiters; cross-instance
+  sharing proven in CI against real Redis; graceful per-instance fallback).
+- ✅ Merchant **token-deduction** admin control (strict, audited, + UI).
+- ✅ Integration coverage: bet flow (Phase A), withdrawal lifecycle, bonus
+  funding/issuance replay — all green in CI. Remaining scale note: SSE/socket
+  fan-out needs a Redis bridge before >1 instance (EXECUTION_QUEUE.md).
 
-**Phase C — Admin panel UI build-out (the biggest visible gap):**
-- Screens for all Phase 7–12 APIs: revenue/ledger, bonus policy, merchant
-  platform, operations overview, **config catalog**, reports (with **search/
-  filter/date-range**, Excel-style tables), audit feeds.
-- **Merchant editor** wired to `/merchants/:id/capabilities` (ADM-1 API).
-- **KYC queue with document preview** (S3/CDN image) before approve/reject.
-- **Plain-English explanations + examples** on every setting (reserve ratio,
-  settlement deduction, daily cap, etc.).
-- Winner board fix (**cycle/game-based**, not platform-total).
-- Make **every** business variable admin-editable (USDT rate, FAQ, etc.).
+**Phase C — Admin panel UI build-out — ✅ COMPLETE (2026-07-10):**
+- ✅ Consoles for the Phase 7–12 APIs: **/revenue** (trial balance, journal,
+  bonus-pool funding), **/operations** (overview + **config catalog** + audit
+  feed), **/reports** (financial/settlement/merchant, date range, regulatory
+  **CSV export**), **/merchant-platform** (bonus policy editor, leaderboard,
+  wallet ledgers, engine run).
+- ✅ KYC document preview existed already (stale finding — verified in code).
+- ✅ Plain-English explanations + **live worked examples** on every money
+  setting (split, winnings fee, payout fee, risk rules).
+- ✅ Winner board fix — the real-winner query used fields that never existed
+  on the Bet schema; now cycle-based on status WON + net payout.
+- ✅ FAQ was already API-driven end-to-end (stale finding). USDT rate ships
+  with the USDT treasury work (PRODUCTION_READINESS.md §B4).
 
-**Phase D — User panel UX:** results density (many per screen), cycle
-toggle + timer placement, header-hides fix, global sizing (Stake-like density,
-easy on the eyes), recover-account on login/signup.
+**Phase D — User panel UX — ✅ core items done (2026-07-10):** dense results
+(12-15/screen), sticky header fix, recover-account link on login/signup.
+Broader visual-polish passes remain open-ended operator-taste work.
 
-**Phase E — Plugins/integrations (need real credentials):** Email/SMS/Push
-channel adapters; USDT/TRON treasury to activate USDT deposits; payment
-gateway; a real Telegram bot (if desired).
+**Phase E — Plugins/integrations — ✅ code-side done (2026-07-10):** EMAIL
+channel is a real env-gated SMTP adapter (set SMTP_* in Railway → live).
+SMS/PUSH/USDT-TRON/payment-gateway/Telegram require owner credentials and
+provider decisions — exact activation steps in **PRODUCTION_READINESS.md §B**.
 
-**Phase F — Production hardening:** external pentest, bug bounty, licensing
-(real-money betting is a licensed activity), responsible-gaming/geo controls,
-load testing, connection-pool/read-replica tuning.
+**Phase F — Production hardening — ✅ in-repo done; owner actions documented:**
+bcrypt-12 everywhere, env-tunable Mongo pool, Redis-shared rate limits.
+Pentest, licensing, responsible gaming, load testing, secret rotation =
+**PRODUCTION_READINESS.md §A** (only the owner can do these).
 
 ---
 
@@ -314,13 +321,15 @@ what actually separate a hobby build from a live operator.
 - ✅ buy/sell flattened to 1:1; TokenRates removed.
 
 **Wallet**
-- ⛔ **F-2:** `settlementService.js` raw `$inc` on locked balances (§7).
+- ✅ **F-2:** settlement unlocks via `walletAuthority.releaseLockedStake` —
+  transactional, idempotent, concurrency + crash-resume proven in CI. (2026-07-10)
 - ✅ **F-1:** merchant deposit-confirm token-minting order fixed.
 - ✅ reserve credit via `creditReserve` (was raw `$inc`, no ledger).
 
 **Payments / Funding**
-- ⛔ USDT deposits not live (declared adapter; needs TRON + admin rate).
-- ⛔ Merchant token-**deduction** admin control missing (only top-up).
+- ⛔ USDT deposits not live (owner-gated: TRON API + treasury —
+  PRODUCTION_READINESS.md §B4).
+- ✅ Merchant token-**deduction** admin control (strict, audited, + UI). (2026-07-10)
 - ✅ deposit/withdrawal creation via funding facade.
 
 **Merchant**
@@ -328,27 +337,31 @@ what actually separate a hobby build from a live operator.
   enforced in assignment.
 
 **Admin**
-- ⛔ Winner board shows **platform-total net profit**, not cycle/game-based.
-- ⛔ FAQ hardcoded (WF-2); no reports UI; no search/filter/date-range.
-- ⛔ Settings lack **explanations/examples** (reserve ratio, deductions, cap).
-- ⛔ Not every variable admin-editable yet (USDT rate, etc.).
+- ✅ Winner board: real winners never showed (query used fields that don't
+  exist on Bet); now cycle-based on WON + net payout. (2026-07-10)
+- ✅ FAQ was already API-driven (stale finding); reports UI with date range +
+  CSV shipped at /reports. (2026-07-10)
+- ✅ Money settings carry plain-English explanations + live examples. (2026-07-10)
+- ⛔ USDT rate ships with the USDT treasury work (owner-gated).
 - ✅ admin-panel build fixed (5 tsc errors).
 
 **KYC / Auth**
-- ⛔ KYC approve/reject has **no document preview** (WF-3).
-- ⛔ Recover-account link missing on login/signup (WF-4); backend model exists.
+- ✅ KYC document preview existed already (stale finding — verified in code).
+- ✅ Recover-account link added to the auth modal (flow already existed). (2026-07-10)
 
 **API / Runtime**
 - ✅ 3 broken dynamic `import()` paths crashing prod (FIXED — redeploy).
 - ✅ FORCE_RESULT verified to pay out via engine tick (NOT a bug).
 
 **Frontend / UX**
-- ⛔ Components/fonts too big; header hides; results density 3–4/screen; cycle
-  toggle + timer placement (UX-1/2/3).
+- ✅ Results density: 12-15/screen dense rows; ✅ sticky header (was scrolling
+  away). (2026-07-10) ⛔ Broader global-sizing polish = operator-taste pass.
 - ✅ merchant-panel build fixed (14 tsc errors).
 
 **Scale / Deployment**
-- ⛔ **F-3:** in-memory rate limiting won't scale horizontally (need Redis store).
+- ✅ **F-3:** Redis-shared rate limiting, cross-instance sharing CI-proven. (2026-07-10)
+- ⛔ SSE/socket fan-out is per-instance — add the Redis bridge before running
+  >1 backend instance (EXECUTION_QUEUE.md).
 - ✅ missing User indexes added.
 - ✅ Integration harness actually works in CI now (Phase A step 0 — it had
   never passed before); core bet flow covered end-to-end (place → settle →
@@ -356,7 +369,9 @@ what actually separate a hobby build from a live operator.
   settle-under-concurrency (Phase B, with F-2).
 
 **Communication**
-- ⛔ EMAIL/SMS/PUSH channels declared but inactive; no real Telegram bot (WF-5).
+- ✅ EMAIL is a real SMTP adapter — set SMTP_* env vars and it's live. (2026-07-10)
+- ⛔ SMS/PUSH need provider choices + credentials; Telegram bot optional
+  (PRODUCTION_READINESS.md §B).
 - ✅ ADM-2 structured telegram/social config admin-editable.
 
 **Security**
@@ -507,16 +522,18 @@ Before any change:
 
 ## 15. QUICK-START FOR THE NEXT SESSION
 
-**Phase A is DONE (2026-07-10)** — split + fee admin-editable, paise-exact,
-CI-proven end to end (see §5, ENTERPRISE_DECISIONS.md 2026-07-10).
+**Phases A–F are ALL DONE in-repo (2026-07-10)** — see §5, PHASE_STATUS.md,
+and EXECUTION_QUEUE.md "DONE — 2026-07-10". CI green throughout: 72 unit
+tests + 9 integration suites (real Mongo replica set + real Redis).
 
-The next task is **Phase B**: (1) **F-2** — reroute
-`domains/settlement/settlementService.js`'s raw `$inc` unlocks through a
-walletAuthority unlock method, WITH a settle-under-concurrency integration
-test first (the harness now genuinely works in CI); fold in the
-settlement-recovery totals issue found during Phase A (EXECUTION_QUEUE.md
-"Discovered during Phase A"). (2) **F-3** — Redis-backed rate limiting
-(Redis is already provisioned; in-memory limiter is a horizontal-scale
-blocker). (3) Merchant token-**deduction** admin control. (4) Integration
-coverage for deposit→withdraw and bonus-issuance flows. Then Phase C
-(admin UI build-out — the biggest visible gap).
+**What's left is owner-gated or queued polish:**
+1. **PRODUCTION_READINESS.md §A** — rotate all secrets (critical), licensing/
+   compliance, external pentest, load test, backups. Only the owner can do
+   these.
+2. **PRODUCTION_READINESS.md §B** — activate integrations by adding
+   credentials (EMAIL is one env-var set away; SMS/PUSH/USDT/gateway need
+   provider choices).
+3. **EXECUTION_QUEUE.md "Discovered during Phases B–F"** — notably the
+   SSE/socket Redis bridge required before running >1 backend instance,
+   and a profile UI for the new optional `User.email`.
+4. Open-ended UX polish passes on operator taste (global sizing/spacing).

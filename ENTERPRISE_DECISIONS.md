@@ -8,6 +8,35 @@ need a durable home.
 
 ---
 
+## 2026-07-10 — Phases B–F: the duplicate-txId gate; env-gated integrations
+
+**Wallet idempotency is the unique index, not the pre-read.** The
+`checkIdempotent` findOne in wallet.service.js is only a fast path — two
+truly concurrent calls both pass it. The durable gate is the WalletLedger
+unique txId index inside the money transaction: the losing writer aborts
+(directly, or after MongoDB's transient write-conflict retry re-runs the
+callback against the winner's committed state) and now resolves as
+`{ idempotent: true }` instead of erroring the caller. This was FORCED by
+the F-2 settle-under-concurrency test: the first CI run double-credited a
+winner (198 for a 99 payout) because (a) the test DB's index build wasn't
+awaited and (b) the credit path treated a duplicate-key abort as an error.
+Consequence for tests: setup.js awaits `Model.init()` for every model so
+unique-index semantics are real from the first assertion. The same
+insert-then-inc-in-one-transaction + 11000→idempotent pattern is now used
+by releaseLockedStake (new F-2 single writer for settle-time lock release)
+and all six wallet.service money movers.
+
+**Integrations are activation-gated on configuration, never stubbed.** The
+EMAIL channel is a full nodemailer/SMTP implementation whose `active` flag
+is computed from env (SMTP_HOST/SMTP_FROM) — zero behavior until the owner
+sets credentials, real delivery the moment they exist, no provider
+hardcoded. SMS/PUSH/USDT/payment-gateway stay declared-inactive because
+each requires a provider DECISION, not just keys — activation recipes live
+in PRODUCTION_READINESS.md. `User.email` added as an optional field
+(mobile remains the identity; the adapter skips users without it).
+
+---
+
 ## 2026-07-10 — Phase A: bet-funding split & winnings fee (precision, defaults, ledger routing)
 
 **Precision: PAISE (2 decimals), not whole tokens.** The owner's spec is

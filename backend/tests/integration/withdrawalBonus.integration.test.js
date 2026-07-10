@@ -19,23 +19,28 @@ import { ACCOUNTS, EVENT_TYPES } from '../../domains/revenue/chartOfAccounts.js'
 const User = () => mongoose.model('User');
 
 describe('withdrawal lock lifecycle (walletAuthority)', () => {
+  // Production passes WithdrawalRequest._id strings — WalletLedger.refId is
+  // ObjectId-typed, so the ids here must be ObjectId strings too.
+  const reqId = () => new mongoose.Types.ObjectId().toString();
+
   it('lock → approve burns the locked amount exactly once (idempotent)', async () => {
+    const wdReq = reqId();
     const u = await User().create({
       username: 'wduser1', mobile: '9300000001', winningsBalance: 500,
     });
 
-    const lock = await lockWithdrawal(String(u._id), 200, 'wd_req_1');
+    const lock = await lockWithdrawal(String(u._id), 200, wdReq);
     expect(lock.winningsAfter).toBe(300);
 
     // Same request re-locked (retry/double-click) → no double lock.
-    const again = await lockWithdrawal(String(u._id), 200, 'wd_req_1');
+    const again = await lockWithdrawal(String(u._id), 200, wdReq);
     expect(again.idempotent).toBe(true);
     let fresh = await User().findById(u._id).lean();
     expect(fresh.winningsBalance).toBe(300);
     expect(fresh.lockedBalance).toBe(200);
 
-    await releaseWithdrawal(String(u._id), 200, 'wd_req_1');
-    const releasedAgain = await releaseWithdrawal(String(u._id), 200, 'wd_req_1');
+    await releaseWithdrawal(String(u._id), 200, wdReq);
+    const releasedAgain = await releaseWithdrawal(String(u._id), 200, wdReq);
     expect(releasedAgain.idempotent).toBe(true);
 
     fresh = await User().findById(u._id).lean();
@@ -44,12 +49,13 @@ describe('withdrawal lock lifecycle (walletAuthority)', () => {
   });
 
   it('lock → reject returns the money to winningsBalance', async () => {
+    const wdReq = reqId();
     const u = await User().create({
       username: 'wduser2', mobile: '9300000002', winningsBalance: 500,
     });
 
-    await lockWithdrawal(String(u._id), 150, 'wd_req_2');
-    await refundWithdrawal(String(u._id), 150, 'wd_req_2');
+    await lockWithdrawal(String(u._id), 150, wdReq);
+    await refundWithdrawal(String(u._id), 150, wdReq);
 
     const fresh = await User().findById(u._id).lean();
     expect(fresh.winningsBalance).toBe(500); // fully restored
@@ -61,7 +67,7 @@ describe('withdrawal lock lifecycle (walletAuthority)', () => {
       username: 'wduser3', mobile: '9300000003',
       winningsBalance: 100, depositBalance: 9999, // deposit is NOT withdrawable
     });
-    await expect(lockWithdrawal(String(u._id), 200, 'wd_req_3')).rejects.toThrow(/Insufficient/i);
+    await expect(lockWithdrawal(String(u._id), 200, reqId())).rejects.toThrow(/Insufficient/i);
     const fresh = await User().findById(u._id).lean();
     expect(fresh.winningsBalance).toBe(100);
     expect(fresh.lockedBalance || 0).toBe(0);
@@ -78,6 +84,7 @@ describe('Merchant Performance Bonus accounting (Revenue & Settlement)', () => {
       idempotencyKey: 'acct_cycle_seed_' + Math.random().toString(16).slice(2),
       postings: buildCyclePostings({ netProfit: minor / 100 }),
       refModel: 'Cycle', refId: 'seed',
+      description: 'Test seed: profitable settled cycle (canonical revenue source)',
     });
   }
 

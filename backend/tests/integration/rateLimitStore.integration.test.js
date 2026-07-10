@@ -4,13 +4,21 @@
 // (simulating two backend nodes) must SHARE counters, which is exactly what
 // the old MemoryStore could not do. Skipped when REDIS_URL is absent (the
 // restricted sandbox); CI sets it.
-import { describe, it, expect } from 'vitest';
-import { RedisRateLimitStore } from '../../middleware/redisRateLimitStore.js';
+import { describe, it, expect, beforeAll } from 'vitest';
+import { RedisRateLimitStore, awaitRateLimitRedisReady } from '../../middleware/redisRateLimitStore.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const suite = process.env.REDIS_URL ? describe : describe.skip;
 
 suite('RedisRateLimitStore (real Redis — cross-instance counters)', () => {
+  beforeAll(async () => {
+    // The store deliberately serves from memory while the client is still
+    // connecting (requests must never wait on Redis) — for the shared-counter
+    // assertions we need the Redis path deterministically active first.
+    const ready = await awaitRateLimitRedisReady(10000);
+    expect(ready).toBe(true);
+  });
+
   it('two instances share one counter — the horizontal-scale property', async () => {
     const prefix = 'rl:it1:' + Math.random().toString(16).slice(2) + ':';
     const nodeA = new RedisRateLimitStore(prefix);

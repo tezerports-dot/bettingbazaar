@@ -24,6 +24,17 @@ async function checkIdempotent(txId) {
   return !!(await WalletLedger.findOne({ txId }).lean());
 }
 
+// The DURABLE idempotency gate (F-2, 2026-07-10). checkIdempotent above is a
+// fast-path read — two truly concurrent calls can both pass it. What actually
+// prevents double money movement is the WalletLedger's UNIQUE txId index:
+// the loser's transaction aborts on it (directly, or after MongoDB's
+// transient write-conflict retry re-runs the callback against the winner's
+// committed state) and must resolve as { idempotent } instead of erroring
+// the caller (e.g. a settlement pass racing the payout recovery task).
+function isDuplicateTxId(err) {
+  return err?.code === 11000 || /duplicate key/i.test(err?.message || '');
+}
+
 // ── DEBIT (for bets only) ─────────────────────────────────────────────────────
 /**
  * debitForBet — deduct `amount` from user wallet for a game bet.
@@ -91,6 +102,9 @@ export async function debitForBet(userId, amount, reason, refModel, refId, txId,
   const session = await mongoose.startSession();
   try {
     let r; await session.withTransaction(async () => { r = await run(session); }); return r;
+  } catch (err) {
+    if (isDuplicateTxId(err)) return { idempotent: true, txId: tid }; // concurrent duplicate — see isDuplicateTxId
+    throw err;
   } finally { await session.endSession(); }
 }
 
@@ -136,6 +150,9 @@ export async function debitWinningsForWithdrawal(userId, amount, orderId, extSes
   const session = await mongoose.startSession();
   try {
     let r; await session.withTransaction(async () => { r = await run(session); }); return r;
+  } catch (err) {
+    if (isDuplicateTxId(err)) return { idempotent: true, txId: tid }; // concurrent duplicate — see isDuplicateTxId
+    throw err;
   } finally { await session.endSession(); }
 }
 
@@ -178,6 +195,9 @@ export async function creditWinnings(userId, amount, reason, refModel, refId, tx
   const session = await mongoose.startSession();
   try {
     let r; await session.withTransaction(async () => { r = await run(session); }); return r;
+  } catch (err) {
+    if (isDuplicateTxId(err)) return { idempotent: true, txId: tid }; // concurrent duplicate — see isDuplicateTxId
+    throw err;
   } finally { await session.endSession(); }
 }
 
@@ -217,6 +237,9 @@ export async function creditDeposit(userId, amount, orderId, extSession) {
   const session = await mongoose.startSession();
   try {
     let r; await session.withTransaction(async () => { r = await run(session); }); return r;
+  } catch (err) {
+    if (isDuplicateTxId(err)) return { idempotent: true, txId: tid }; // concurrent duplicate — see isDuplicateTxId
+    throw err;
   } finally { await session.endSession(); }
 }
 
@@ -259,6 +282,9 @@ export async function creditReserve(userId, amount, orderId, extSession) {
   const session = await mongoose.startSession();
   try {
     let r; await session.withTransaction(async () => { r = await run(session); }); return r;
+  } catch (err) {
+    if (isDuplicateTxId(err)) return { idempotent: true, txId: tid }; // concurrent duplicate — see isDuplicateTxId
+    throw err;
   } finally { await session.endSession(); }
 }
 
@@ -300,6 +326,9 @@ export async function refundOrder(userId, amount, orderId, field = 'depositBalan
   const session = await mongoose.startSession();
   try {
     let r; await session.withTransaction(async () => { r = await run(session); }); return r;
+  } catch (err) {
+    if (isDuplicateTxId(err)) return { idempotent: true, txId: tid }; // concurrent duplicate — see isDuplicateTxId
+    throw err;
   } finally { await session.endSession(); }
 }
 
