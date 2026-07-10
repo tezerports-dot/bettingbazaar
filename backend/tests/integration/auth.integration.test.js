@@ -7,7 +7,9 @@ import { User } from '../../models/index.js';
 
 const app = express();
 app.use(express.json());
-app.use('/api/v1', routes);
+// Mirror the real mount: server.js does app.use('/api/v1/auth', authRoutes) —
+// the router's own paths are /register, /login, ... (no /auth prefix inside).
+app.use('/api/v1/auth', routes);
 
 describe('Auth API', () => {
   it('should register a new user successfully', async () => {
@@ -42,6 +44,7 @@ describe('Auth API', () => {
         password: 'password123'
       });
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(409); // routes.js returns 409 Conflict for a taken mobile
+    expect(res.body.success).toBe(false);
   });
 });
