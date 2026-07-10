@@ -4,10 +4,13 @@ import jwt         from 'jsonwebtoken';
 import bcrypt      from 'bcryptjs';
 import mongoose    from 'mongoose';
 import { rateLimit } from 'express-rate-limit';
+// F-3 (2026-07-10): Redis-shared counters with per-instance fallback.
+import { createRateLimitStore } from './middleware/redisRateLimitStore.js';
 
 const router = express.Router();
 
 const registerLimiter = rateLimit({
+  store: createRateLimitStore('rl:register:'),
   windowMs: 60 * 60 * 1000, max: 5,
   message: { success: false, message: 'Too many registration attempts. Try again in 1 hour.' },
   standardHeaders: true, legacyHeaders: false,

@@ -1,12 +1,16 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import { rateLimit } from 'express-rate-limit';
 import { AuditLog } from '../models/index.js';
+// F-3 (2026-07-10): counters shared across instances via Redis; graceful
+// per-instance fallback when Redis is absent/unreachable.
+import { createRateLimitStore } from './redisRateLimitStore.js';
 
 // ==================== AUTHENTICATION RATE LIMITERS ====================
 
 // Stricter rate limiting for authentication endpoints
 // Prevents brute force password attacks
 export const authLimiter = rateLimit({
+    store: createRateLimitStore('rl:auth:'),
     windowMs: 15 * 60 * 1000, // 15 minutes
     max: 5, // ✅ IMPROVED: Limit to 5 attempts per 15 minutes (was 10)
     message: { 
@@ -48,6 +52,7 @@ export const authLimiter = rateLimit({
 // Separate, even stricter limiter for admin logins
 // Admins need extra protection
 export const adminAuthLimiter = rateLimit({
+    store: createRateLimitStore('rl:adminauth:'),
     windowMs: 30 * 60 * 1000, // 30 minutes
     max: 3, // Only 3 attempts per 30 minutes for admin
     message: { 
@@ -86,6 +91,7 @@ export const adminAuthLimiter = rateLimit({
 // Rate limiter for bet placement
 // Prevents rapid-fire betting and potential abuse
 export const betLimiter = rateLimit({
+    store: createRateLimitStore('rl:bet:'),
     windowMs: 1 * 60 * 1000, // 1 minute
     max: 30, // ✅ IMPROVED: 30 bets per minute max (was 60)
     message: { 
@@ -103,6 +109,7 @@ export const betLimiter = rateLimit({
 // Rate limiter for withdrawal requests
 // Prevents rapid withdrawal attempts
 export const withdrawalLimiter = rateLimit({
+    store: createRateLimitStore('rl:withdraw:'),
     windowMs: 60 * 60 * 1000, // 1 hour
     max: 5, // Max 5 withdrawal requests per hour
     message: { 
@@ -118,6 +125,7 @@ export const withdrawalLimiter = rateLimit({
 
 // General API rate limiter for all other endpoints
 export const apiLimiter = rateLimit({
+    store: createRateLimitStore('rl:api:'),
     windowMs: 1 * 60 * 1000, // 1 minute
     max: 100, // 100 requests per minute
     message: { 

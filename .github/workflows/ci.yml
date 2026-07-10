@@ -13,6 +13,13 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      # F-3: real Redis so the rate-limit store's cross-instance counter
+      # sharing is proven, not assumed (rateLimitStore.integration.test.js).
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -23,10 +30,11 @@ jobs:
         run: npm ci || npm install
       - name: Unit tests (money math — no DB)
         run: npm run test:unit
-      - name: Integration tests (real in-memory MongoDB)
+      - name: Integration tests (real in-memory MongoDB + real Redis)
         run: npm run test:integration
         env:
           MONGOMS_VERSION: 7.0.14
+          REDIS_URL: redis://localhost:6379
 
   typecheck-build:
     runs-on: ubuntu-latest
