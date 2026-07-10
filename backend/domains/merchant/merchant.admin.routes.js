@@ -3,7 +3,7 @@
  * (BBEPS Phase 003 §3.3). Moved from backend/routes/admin/merchants.admin.routes.js
  * on 2026-07-01 (BBEPS Phase 004 migration). */
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from '../../routes/admin/_adminShared.js';
-import { creditMerchantTokens } from './merchantWallet.service.js';
+import { creditMerchantTokens, debitMerchantTokens } from './merchantWallet.service.js';
 
 const router = express.Router();
 
@@ -499,6 +499,81 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
   } catch (error) {
     console.error('❌ Admin fund merchant error:', error);
     res.status(500).json({ success: false, message: 'Failed to fund merchant wallet' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/admin/merchants/:merchantId/deduct — ADM (Phase B, 2026-07-10)
+// The missing counterpart to /fund: admin removes tokens from a merchant
+// wallet (top-up correction, off-boarding, penalty). STRICT — refuses if the
+// balance is insufficient (no overdraft): an admin deduction must never make
+// a merchant negative, that would silently mint liability elsewhere.
+// GOVERNANCE §1: via merchantWallet.service.js (sole tokenBalance writer).
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/merchants/:merchantId/deduct', authenticate, isAdmin, async (req, res) => {
+  try {
+    const { merchantId } = req.params;
+    const { tokenAmount, reason } = req.body;
+
+    if (!tokenAmount || tokenAmount <= 0 || !Number.isFinite(tokenAmount)) {
+      return res.status(400).json({ success: false, message: 'tokenAmount must be a positive number' });
+    }
+    if (!reason || !String(reason).trim()) {
+      return res.status(400).json({ success: false, message: 'A reason is required to deduct merchant tokens (audit trail).' });
+    }
+
+    const Transaction = mongoose.model('Transaction');
+
+    // Like top-ups, each deduction is a distinct admin action — fresh txId.
+    const { merchant, idempotent } = await debitMerchantTokens({
+      merchantId, amount: tokenAmount,
+      reason: `Admin wallet deduction — ${String(reason).trim()}`,
+      refModel: 'Merchant', refId: String(merchantId),
+      txId: `mw_deduct_${new mongoose.Types.ObjectId().toString()}`,
+      // allowOverdraft deliberately NOT set — strict $gte guard applies.
+    });
+
+    if (!merchant && !idempotent) {
+      // Either the merchant doesn't exist or the balance is short — look up
+      // which, so the admin gets an actionable message.
+      const Merchant = mongoose.model('Merchant');
+      const exists = await Merchant.findById(merchantId).select('tokenBalance').lean();
+      if (!exists) {
+        return res.status(404).json({ success: false, message: 'Merchant not found' });
+      }
+      return res.status(400).json({
+        success: false,
+        message: `Insufficient merchant balance: has ${exists.tokenBalance} tokens, tried to deduct ${tokenAmount}. Deductions never overdraft.`,
+        tokenBalance: exists.tokenBalance,
+      });
+    }
+
+    await Transaction.create([{
+      userId:      merchant.userId,
+      type:        'WITHDRAWAL',
+      amount:      tokenAmount,
+      balanceType: 'DEPOSIT',
+      status:      'SUCCESS',
+      description: `Admin wallet deduction: -${tokenAmount} tokens — ${String(reason).trim()}`,
+      referenceId: req.user._id.toString(),
+      adminId:     req.user._id.toString(),
+      merchantId:  String(merchantId),
+      timestamp:   new Date()
+    }]);
+
+    console.log(`💳 Admin ${req.user._id} deducted merchant ${merchantId} -${tokenAmount} tokens → balance: ${merchant.tokenBalance}`);
+
+    res.json({
+      success:            true,
+      message:            `Merchant wallet deducted by ${tokenAmount} tokens`,
+      merchantUserId:     merchantId,
+      tokenAmountRemoved: tokenAmount,
+      newTokenBalance:    merchant.tokenBalance
+    });
+
+  } catch (error) {
+    console.error('❌ Admin deduct merchant error:', error);
+    res.status(500).json({ success: false, message: 'Failed to deduct merchant wallet' });
   }
 });
 
