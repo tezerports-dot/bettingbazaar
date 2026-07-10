@@ -63,6 +63,15 @@ const systemConfigSchema = new mongoose.Schema({
   // recorded by the Revenue & Settlement Platform (PAYOUT_FEES account).
   payoutFeePercent: { type: Number, default: 0, min: 0, max: 100 },
 
+  // ── BET FUNDING SPLIT (Phase A, 2026-07-10) ───────────────────────────────
+  // % of every bet stake funded from reserveBalance; the remainder comes from
+  // depositBalance first, then winningsBalance (fallbacks per owner spec §6).
+  // Default 3 = the historical 97/3 split, now paise-exact and admin-editable
+  // (was hardcoded Math.round(amount*0.97)/(amount*0.03) in bet.routes.js).
+  // Read by bet.routes.js; arithmetic in riskValidation.computeBetFundingPlan.
+  // Used at basis-point precision (max 2 decimals).
+  betReservePercent: { type: Number, default: 3, min: 0, max: 100 },
+
   // ── FEATURE FLAGS ─────────────────────────────────────────────────────────
   kycRequired:         { type: Boolean, default: true },
   registrationEnabled: { type: Boolean, default: true },

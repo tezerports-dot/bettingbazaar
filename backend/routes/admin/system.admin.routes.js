@@ -69,6 +69,8 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
         tokenSellRate:         1, // fixed 1:1 conversion
         // Risk Platform rules (Phase 010) — schema defaults cited inline
         payoutFeePercent:      config.payoutFeePercent ?? 0,  // schema default: 0
+        // Bet funding split (Phase A) — % of each stake from reserveBalance
+        betReservePercent:     config.betReservePercent ?? 3, // schema default: 3
         riskRules: {
           enforceMultiplesOf10:     config.riskRules?.enforceMultiplesOf10     ?? true,  // schema default: true
           blockOppositeSideBetting: config.riskRules?.blockOppositeSideBetting ?? false, // schema default: false
@@ -105,12 +107,18 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
       maintenanceMode, maintenanceMessage,
       depositMethods, withdrawalMethods,
       webUrl, androidUrl, iosUrl, minVersion, latestVersion,
-      payoutFeePercent, riskRules,
+      payoutFeePercent, riskRules, betReservePercent,
     } = req.body;
 
     if (payoutFeePercent !== undefined &&
         (typeof payoutFeePercent !== 'number' || payoutFeePercent < 0 || payoutFeePercent > 100)) {
       return res.status(400).json({ success: false, message: 'payoutFeePercent must be a number between 0 and 100.' });
+    }
+    if (betReservePercent !== undefined &&
+        (typeof betReservePercent !== 'number' || !Number.isFinite(betReservePercent) ||
+         betReservePercent < 0 || betReservePercent > 100 ||
+         Math.abs(betReservePercent * 100 - Math.round(betReservePercent * 100)) > 1e-9)) {
+      return res.status(400).json({ success: false, message: 'betReservePercent must be a number between 0 and 100 with at most 2 decimals.' });
     }
     if (riskRules?.maxFundingOrdersPerHour !== undefined &&
         (!Number.isInteger(riskRules.maxFundingOrdersPerHour) || riskRules.maxFundingOrdersPerHour < 0)) {
@@ -141,6 +149,9 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     // Risk Platform rules (Phase 010) — numbers owned here (Business Policy),
     // enforcement in domains/risk/riskValidation.service.js
     if (payoutFeePercent !== undefined) fieldWrites.push(['SystemConfig', 'payoutFeePercent', payoutFeePercent]);
+    // Bet funding split (Phase A) — consumed by bet.routes.js via
+    // riskValidation.computeBetFundingPlan
+    if (betReservePercent !== undefined) fieldWrites.push(['SystemConfig', 'betReservePercent', betReservePercent]);
     if (riskRules?.enforceMultiplesOf10     !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.enforceMultiplesOf10', !!riskRules.enforceMultiplesOf10]);
     if (riskRules?.blockOppositeSideBetting !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.blockOppositeSideBetting', !!riskRules.blockOppositeSideBetting]);
     if (riskRules?.maxFundingOrdersPerHour  !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.maxFundingOrdersPerHour', riskRules.maxFundingOrdersPerHour]);

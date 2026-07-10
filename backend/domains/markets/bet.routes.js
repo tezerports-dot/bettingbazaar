@@ -8,7 +8,8 @@ import mongoose from 'mongoose';
 import { authenticate } from '../identity/auth.middleware.js';
 import { betLimiter } from '../../middleware/security.js';
 // Risk Platform (Phase 010): the single validation authority for bets.
-import { assessBet } from '../risk/riskValidation.service.js';
+// Phase A (2026-07-10): computeBetFundingPlan owns the stake-split arithmetic.
+import { assessBet, computeBetFundingPlan } from '../risk/riskValidation.service.js';
 // Shared trading vocabulary (Phase 011) — one source for sides/statuses.
 import { MARKET_SIDES } from '../trading/tradingModels.js';
 
@@ -115,20 +116,27 @@ router.post('/place', betLimiter, authenticate, async (req, res) => {
       });
     }
 
-    // ── 97/3 split (Section 5.1) ──────────────────────────────────────────
-    // mainDeduction = 97% consumed from depositBalance first, then winningsBalance overflow
-    // reserveDeduction = 3% from reserveBalance; shortfall shifts to mainDeduction (Section 5.2C)
-    const mainDeduction    = Math.round(amount * 0.97);
-    let   reserveDeduction = Math.round(amount * 0.03);
-
-    // Section 5.2C: if reserveBalance insufficient, shift shortfall to main
-    const reserveShortfall = Math.max(0, reserveDeduction - availableReserve);
-    const fromReserve      = reserveDeduction - reserveShortfall;
-    const adjustedMain     = mainDeduction + reserveShortfall;
-
-    // Deduction priority: DEPOSIT first (betting-only balance), then WINNINGS as overflow.
-    const fromDeposit  = Math.min(adjustedMain, availableDeposit);
-    const fromWinnings = adjustedMain - fromDeposit;
+    // ── Bet funding split (Phase A, 2026-07-10) ──────────────────────────────
+    // Admin-editable reserve % (Business Policy owns the number; Risk owns the
+    // arithmetic). Replaces the hardcoded 0.97/0.03 Math.round pair, which
+    // wasn't configurable, rounded 9.7/0.3 to 10/0, and could over-deduct
+    // (₹50 → 49+2 = ₹51). Paise-exact: parts always conserve the stake.
+    // Fallbacks preserved: reserve short → main; deposit short → winnings.
+    const reservePercent = config?.betReservePercent ?? 3; // schema default: 3
+    let plan;
+    try {
+      plan = computeBetFundingPlan({
+        amount, reservePercent,
+        availableDeposit, availableWinnings, availableReserve,
+      });
+    } catch (planErr) {
+      return res.status(planErr.status || 400).json({
+        success: false,
+        message: planErr.message,
+        balance: { deposit: availableDeposit, winnings: availableWinnings, reserve: availableReserve, total: totalAvailable }
+      });
+    }
+    const { fromDeposit, fromWinnings, fromReserve } = plan;
 
     // ── Finding 4 / Section 5.3: Three-field atomic check + deduct ──────────
     // Old: two-field (deposit + winnings). New: three-field adding reserveBalance.
@@ -194,7 +202,7 @@ router.post('/place', betLimiter, authenticate, async (req, res) => {
           amount: fromReserve,
           balanceBefore: availableReserve,
           balanceAfter:  availableReserve - fromReserve,
-          reason: `BET_PLACED reserve portion (3%) — ₹${amount} on ${side}`, refModel: 'Bet',
+          reason: `BET_PLACED reserve portion (${plan.reservePercentApplied}%) — ₹${amount} on ${side}`, refModel: 'Bet',
           txId: betTxBase + '_res',
         });
       }

@@ -4,6 +4,7 @@ import { describe, it, expect } from 'vitest';
 import {
   assertPositiveNumber, assertMultipleOf10, validateTokenPurchase,
   validateTokenSale, validateBetAmount, computeReserveSplit, computePayoutFeeMinor,
+  computeBetFundingPlan,
 } from '../../domains/risk/riskValidation.service.js';
 
 describe('positive / numeric guards', () => {
@@ -61,4 +62,98 @@ describe('payout fee (floored paise, never rounds up against the user)', () => {
   it('2% of 1000 = 2000 paise', () => expect(computePayoutFeeMinor(1000, 2)).toBe(2000));
   it('3% of 333 floors to 999 paise', () => expect(computePayoutFeeMinor(333, 3)).toBe(999));
   it('rejects >100%', () => expect(() => computePayoutFeeMinor(100, 101)).toThrow());
+});
+
+describe('bet funding plan (Phase A — paise-exact, admin-editable reserve %)', () => {
+  const ample = { availableDeposit: 100000, availableWinnings: 100000, availableReserve: 100000 };
+
+  it('₹10 @ 3% pulls 9.70 deposit / 0.30 reserve — the owner-intended split', () => {
+    const p = computeBetFundingPlan({ amount: 10, reservePercent: 3, ...ample });
+    expect(p.fromReserve).toBe(0.3);
+    expect(p.fromDeposit).toBe(9.7);
+    expect(p.fromWinnings).toBe(0);
+    expect(p.fromDepositMinor + p.fromWinningsMinor + p.fromReserveMinor).toBe(1000);
+  });
+
+  it('REGRESSION ₹50 @ 3%: old Math.round code deducted ₹51 for a ₹50 stake', () => {
+    const p = computeBetFundingPlan({ amount: 50, reservePercent: 3, ...ample });
+    expect(p.fromReserve).toBe(1.5);
+    expect(p.fromDeposit).toBe(48.5);
+    expect(p.fromDepositMinor + p.fromWinningsMinor + p.fromReserveMinor).toBe(5000);
+  });
+
+  it('₹100 @ 3% -> 97/3 whole tokens', () => {
+    const p = computeBetFundingPlan({ amount: 100, reservePercent: 3, ...ample });
+    expect(p.fromDeposit).toBe(97);
+    expect(p.fromReserve).toBe(3);
+  });
+
+  it('reserve short → shortfall shifts to main (Spec 5.2C)', () => {
+    const p = computeBetFundingPlan({
+      amount: 10, reservePercent: 3,
+      availableDeposit: 100, availableWinnings: 0, availableReserve: 0.1,
+    });
+    expect(p.fromReserve).toBe(0.1);   // drained
+    expect(p.fromDeposit).toBe(9.9);   // 9.70 + 0.20 shortfall
+    expect(p.fromDepositMinor + p.fromWinningsMinor + p.fromReserveMinor).toBe(1000);
+  });
+
+  it('deposit short → overflow to winnings', () => {
+    const p = computeBetFundingPlan({
+      amount: 100, reservePercent: 3,
+      availableDeposit: 50, availableWinnings: 100, availableReserve: 10,
+    });
+    expect(p.fromReserve).toBe(3);
+    expect(p.fromDeposit).toBe(50);    // drained
+    expect(p.fromWinnings).toBe(47);
+  });
+
+  it('0% reserve = everything from main; 100% = everything from reserve', () => {
+    const zero = computeBetFundingPlan({ amount: 10, reservePercent: 0, ...ample });
+    expect(zero.fromReserve).toBe(0);
+    expect(zero.fromDeposit).toBe(10);
+    const full = computeBetFundingPlan({ amount: 10, reservePercent: 100, ...ample });
+    expect(full.fromReserve).toBe(10);
+    expect(full.fromDeposit).toBe(0);
+  });
+
+  it('fractional percent works at basis-point precision: 2.5% of ₹10 = 0.25', () => {
+    const p = computeBetFundingPlan({ amount: 10, reservePercent: 2.5, ...ample });
+    expect(p.fromReserve).toBe(0.25);
+    expect(p.fromDeposit).toBe(9.75);
+  });
+
+  it('drained bucket returns the caller float verbatim so $gte guards cannot miss', () => {
+    const drifted = 0.1 + 0.2; // 0.30000000000000004 — classic float drift
+    const p = computeBetFundingPlan({
+      amount: 10, reservePercent: 3,
+      availableDeposit: 100, availableWinnings: 0, availableReserve: drifted,
+    });
+    expect(Object.is(p.fromReserve, drifted)).toBe(true); // bit-identical
+  });
+
+  it('conserves the exact stake across amounts × percents (property sweep)', () => {
+    for (const amount of [10, 20, 30, 50, 70, 90, 110, 250, 570, 1000, 99990]) {
+      for (const pct of [0, 1, 2.5, 3, 7, 10, 33.33, 50, 97, 100]) {
+        const p = computeBetFundingPlan({ amount, reservePercent: pct, ...ample });
+        expect(p.fromDepositMinor + p.fromWinningsMinor + p.fromReserveMinor).toBe(amount * 100);
+        expect(p.fromDepositMinor).toBeGreaterThanOrEqual(0);
+        expect(p.fromWinningsMinor).toBeGreaterThanOrEqual(0);
+        expect(p.fromReserveMinor).toBeGreaterThanOrEqual(0);
+      }
+    }
+  });
+
+  it('throws INSUFFICIENT_BALANCE when the three buckets cannot cover the stake', () => {
+    expect(() => computeBetFundingPlan({
+      amount: 100, reservePercent: 3,
+      availableDeposit: 40, availableWinnings: 40, availableReserve: 10,
+    })).toThrow(/Insufficient/);
+  });
+
+  it('rejects bad percents', () => {
+    expect(() => computeBetFundingPlan({ amount: 10, reservePercent: -1, ...ample })).toThrow();
+    expect(() => computeBetFundingPlan({ amount: 10, reservePercent: 101, ...ample })).toThrow();
+    expect(() => computeBetFundingPlan({ amount: 10, reservePercent: NaN, ...ample })).toThrow();
+  });
 });

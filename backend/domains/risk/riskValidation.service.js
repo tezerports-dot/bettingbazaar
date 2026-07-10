@@ -111,6 +111,88 @@ export function computePayoutFeeMinor(tokenAmount, payoutFeePercent) {
   return Math.floor(tokenMinor * payoutFeePercent / 100);
 }
 
+/**
+ * computeBetFundingPlan — THE bet-funding rule (Phase A, 2026-07-10).
+ * Splits a bet stake into reserve/deposit/winnings deductions at paise
+ * precision. Replaces the hardcoded Math.round(amount*0.97)/(amount*0.03)
+ * pair in bet.routes.js, which (a) wasn't admin-editable, (b) rounded the
+ * intended 9.7/0.3 of a ₹10 bet to 10/0, and (c) could over-deduct — a ₹50
+ * bet rounded to 49 + 2 = ₹51 taken for a ₹50 stake.
+ *
+ * Rules implemented (owner spec §6, PROJECT_HANDOFF.md):
+ *   - reservePercent of the stake comes from reserveBalance; the remainder
+ *     ("main") from depositBalance first, then winningsBalance as overflow.
+ *   - Fallbacks: reserve short → shortfall shifts to main (Spec 5.2C);
+ *     deposit short → overflow to winnings.
+ *   - Percent is owned by SystemConfig.betReservePercent (Business Policy);
+ *     this function is only the arithmetic rule.
+ *
+ * Precision (decided 2026-07-10, see ENTERPRISE_DECISIONS.md): PAISE.
+ * All arithmetic is integer paise with the percent in integer basis points,
+ * so the three parts ALWAYS conserve the exact stake (reserve is floored,
+ * remainder to main — same discipline as computeReserveSplit). Wallet
+ * balances already hold 2-decimal values (walletAuthority round2s every
+ * mutation; F1 commissions credit fractions), so fractional deductions are
+ * consistent with the existing wallet convention.
+ *
+ * Drain safety: when a bucket is emptied, the returned deduction is the
+ * caller-supplied available value ITSELF (bit-identical float), so the
+ * atomic `$gte` guard in bet.routes.js can never spuriously fail against a
+ * stored balance that carries float representation error.
+ *
+ * Throws INSUFFICIENT_BALANCE if the three buckets can't cover the stake.
+ */
+export function computeBetFundingPlan({ amount, reservePercent, availableDeposit, availableWinnings, availableReserve }) {
+  assertPositiveNumber(amount, 'Bet amount');
+  if (typeof reservePercent !== 'number' || !Number.isFinite(reservePercent) ||
+      reservePercent < 0 || reservePercent > 100) {
+    throw reject('betReservePercent must be between 0 and 100.');
+  }
+  const availDep = Math.max(0, availableDeposit  || 0);
+  const availWin = Math.max(0, availableWinnings || 0);
+  const availRes = Math.max(0, availableReserve  || 0);
+
+  const amountMinor = Math.round(amount * 100);
+  const reserveBp   = Math.round(reservePercent * 100); // percent → integer basis points
+  // Floored, remainder to main — conserves the stake exactly (Spec 4.4 discipline).
+  const reserveTargetMinor = Math.floor(amountMinor * reserveBp / 10000);
+  const mainTargetMinor    = amountMinor - reserveTargetMinor;
+
+  const availDepMinor = Math.round(availDep * 100);
+  const availWinMinor = Math.round(availWin * 100);
+  const availResMinor = Math.round(availRes * 100);
+
+  if (availDepMinor + availWinMinor + availResMinor < amountMinor) {
+    throw reject(
+      `Insufficient balance. Available: ₹${((availDepMinor + availWinMinor + availResMinor) / 100)}`,
+      'INSUFFICIENT_BALANCE'
+    );
+  }
+
+  // Reserve leg — shortfall shifts to main (Spec 5.2C).
+  const fromReserveMinor = Math.min(reserveTargetMinor, availResMinor);
+  const adjustedMainMinor = mainTargetMinor + (reserveTargetMinor - fromReserveMinor);
+
+  // Main leg — deposit first (betting-only balance), winnings as overflow.
+  const fromDepositMinor  = Math.min(adjustedMainMinor, availDepMinor);
+  const fromWinningsMinor = adjustedMainMinor - fromDepositMinor;
+  if (fromWinningsMinor > availWinMinor) {
+    // Guard for pathological float inputs the total pre-check missed.
+    throw reject('Insufficient balance for this bet.', 'INSUFFICIENT_BALANCE');
+  }
+
+  // Drained bucket → return the caller's float verbatim (see doc comment).
+  const fromReserve  = fromReserveMinor  === availResMinor ? availRes : fromReserveMinor  / 100;
+  const fromDeposit  = fromDepositMinor  === availDepMinor ? availDep : fromDepositMinor  / 100;
+  const fromWinnings = fromWinningsMinor === availWinMinor ? availWin : fromWinningsMinor / 100;
+
+  return {
+    fromDeposit, fromWinnings, fromReserve,
+    fromDepositMinor, fromWinningsMinor, fromReserveMinor,
+    reservePercentApplied: reserveBp / 100,
+  };
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Config-driven gates (read SystemConfig.riskRules — Business Policy owns it)
 // ═════════════════════════════════════════════════════════════════════════════
