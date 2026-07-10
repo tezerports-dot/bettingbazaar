@@ -286,7 +286,11 @@ const App: React.FC = () => {
 
         {}
         <Route path="/chat-management" element={
-          <PermRoute permission="canModerateChatPublic"><Layout>{}</Layout></PermRoute>
+          <PermRoute permission="canModerateChatPublic">
+            <Layout>
+              <div className="p-6 text-gray-400">Chat moderation console — coming soon.</div>
+            </Layout>
+          </PermRoute>
         } />
 
         {/* ── GAME PROVIDERS — admin only */}

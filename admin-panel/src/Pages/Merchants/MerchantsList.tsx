@@ -118,9 +118,8 @@ export const MerchantsList: React.FC = () => {
           // M-01 fix: use Merchant.limits from schema defaults (500 / 50000) — GOVERNANCE §5
           minOrder: mData.minOrder ?? mData.merchantLimits?.minOrder ?? 500,
           maxOrder: mData.maxOrder ?? mData.merchantLimits?.maxOrder ?? 50000,
-          dailyCap: mData.dailyCap ?? mData.merchantLimits?.dailyCap ?? 0,
           maxConcurrentOrders: mData.maxConcurrentOrders ?? 3, // schema default: 3
-          dailyCap: 0,  // wallet top-up amount — always start at 0 for safety
+          dailyCap: 0,  // this field is the wallet top-up amount — always start at 0 for safety
         });
         if (tab === 'history') loadMerchantOrders(merchantId);
       }

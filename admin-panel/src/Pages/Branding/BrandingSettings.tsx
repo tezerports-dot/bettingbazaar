@@ -103,6 +103,8 @@ const BrandingImageInput: React.FC<{
 };
 
 
+type Tab = 'identity' | 'images' | 'promo' | 'panels';
+
 export const BrandingSettings: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -123,6 +125,7 @@ export const BrandingSettings: React.FC = () => {
     logo: '',
     icon: '',
     favicon: '',
+    cdnBaseUrl: '',
     splashScreen: '',
 
     // Panel Names

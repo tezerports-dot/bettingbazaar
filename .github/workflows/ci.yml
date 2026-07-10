@@ -39,8 +39,11 @@ jobs:
       - run: npm install
       - name: Backend syntax check
         run: node --check backend/server.js
-      # NOTE: admin-panel / merchant-panel tsc builds have pre-existing errors
-      # (tracked in EXECUTION_QUEUE.md) — build steps are added once those are
-      # fixed, so CI stays green and meaningful rather than perpetually red.
       - name: User panel build
         run: npx vite build
+      - name: Admin panel typecheck + build
+        working-directory: admin-panel
+        run: npm install && npx tsc --noEmit && npx vite build
+      # NOTE: merchant-panel tsc still has pre-existing errors (tracked in
+      # EXECUTION_QUEUE.md) — its build step is added once those are fixed, so
+      # CI stays green and meaningful rather than perpetually red.
