@@ -2,6 +2,7 @@
 
 **Purpose:** the single source of context for any new Claude Code session.
 Read this first; it replaces re-explaining the project. Written 2026-07-09.
+Updated 2026-07-10 (Phase A complete — see §5/§8/§15 and the checkpoint docs).
 This document was created as a context handoff — it changes no code.
 
 Companion docs to read after this: `04-GOVERNANCE.md` (binding rules),
@@ -116,6 +117,9 @@ commits to `main`, with three checkpoint docs updated per slice.
     nonexistent `server/tests/` path, so `npm test` had silently found nothing.
     Now: 51 **unit tests green** (money math, no DB) + **integration tests**
     (real in-memory Mongo) + **GitHub Actions CI**.
+    **[Corrected 2026-07-10: the integration suite itself had test-code bugs
+    and CI had never actually passed — fixed as Phase A step 0; CI run #10 is
+    the first green run. See EXECUTION_QUEUE.md 2026-07-10.]**
   - **Fixed a live production crash** — 3 broken **dynamic `import()`** paths
     (`../models/` → nonexistent `domains/models/`). These crashed every SSE
     `cycle_snapshot` and cycle creation; **this was the root cause of "winner
@@ -155,8 +159,9 @@ commits to `main`, with three checkpoint docs updated per slice.
   - Configurable numbers/rules → Business Policy (`SystemConfig` + policy docs)
   - Validation/operational rules → `riskValidation.service.js`
 - **Build status:** all three frontends **build clean** (tsc 0 errors + vite
-  build). Backend: `node --check` clean; 51 unit tests pass; integration tests
-  run in CI (not in the restricted sandbox — see §12).
+  build). Backend: `node --check` clean; 68 unit tests pass; integration tests
+  (6 files incl. the end-to-end bet flow) pass in CI — green since run #10,
+  2026-07-10 (mongod can't run in the restricted sandbox — see §12).
 - **CI:** `.github/workflows/ci.yml` — unit tests + integration tests + build
   of all 3 panels on push/PR.
 - **Architecture drift:** mostly resolved. Remaining: `domains/settlement/`
@@ -192,18 +197,21 @@ controls (capabilities done; token-deduction control missing), Communication
 
 ## 5. REMAINING WORK (roadmap)
 
-**Phase A — Betting-logic correctness & admin-configurability (IN PROGRESS,
-current task):**
-- Make the **bet-funding split** (deposit% / reserve% of stake, default 97/3)
-  **admin-editable** — currently **hardcoded `0.97`/`0.03` and rounded to
-  integers** (a bet of 10 pulls 10/0, not the intended 9.7/0.3).
-- Implement the **1% platform fee on winnings settlement** (bet 100 → win 200
-  → charge ~2), **admin-editable** — currently **not implemented** (flat 2×
-  payout, no fee). Must flow to platform revenue in the ledger.
-- Confirm/keep the fallback funding (reserve short→deposit, deposit
-  short→winnings — already correct in code).
-- Why: these are the core money rules the operator must control; today they
-  are hardcoded/missing.
+**Phase A — Betting-logic correctness & admin-configurability — ✅ COMPLETE
+(2026-07-10):**
+- ✅ **Bet-funding split admin-editable** — `SystemConfig.betReservePercent`
+  (default 3), paise-exact via `riskValidation.computeBetFundingPlan()`
+  (a ₹10 bet now pulls 9.70/0.30 as intended; the old rounding could even
+  deduct ₹51 for a ₹50 bet — fixed). Fallbacks confirmed and kept.
+- ✅ **1% winnings platform fee implemented** — `SystemConfig.winningsFeePercent`
+  (default 1), engine pays net via `riskValidation.computeWinningsPayout()`,
+  fee flows to PLATFORM_REVENUE inside cycle netProfit, itemized on the
+  cycle + ledger metadata.
+- ✅ **Step 0 (forced):** the integration suite had never passed in CI —
+  fixed; CI green for the first time. End-to-end betFlow test proves
+  route → engine → ledger with the split and fee.
+- Precision/default/ledger-routing decisions: ENTERPRISE_DECISIONS.md
+  2026-07-10.
 
 **Phase B — Remaining open money bugs & scale blockers:**
 - **F-2:** `settlementService.js` raw `$inc` on locked balances (§7) — reroute
@@ -299,9 +307,10 @@ what actually separate a hobby build from a live operator.
 ## 8. KNOWN ISSUES (by module; ✅=fixed, ⛔=open)
 
 **Token economy / Betting logic**
-- ⛔ Bet-funding split hardcoded `0.97`/`0.03` **and** integer-rounded → gives
-  10/0 not 9.7/0.3; must be admin-editable + precision decided. (Phase A)
-- ⛔ **1% winnings platform fee not implemented** (flat 2× payout). (Phase A)
+- ✅ Bet-funding split admin-editable (`betReservePercent`, default 3) +
+  paise-exact — 9.7/0.3 as intended; over-deduction bug fixed. (Phase A, 2026-07-10)
+- ✅ **1% winnings platform fee implemented** (`winningsFeePercent`, default 1;
+  net payouts, fee → PLATFORM_REVENUE). (Phase A, 2026-07-10)
 - ✅ buy/sell flattened to 1:1; TokenRates removed.
 
 **Wallet**
@@ -341,7 +350,10 @@ what actually separate a hobby build from a live operator.
 **Scale / Deployment**
 - ⛔ **F-3:** in-memory rate limiting won't scale horizontally (need Redis store).
 - ✅ missing User indexes added.
-- ⛔ No integration coverage of money flows (harness exists; tests to write).
+- ✅ Integration harness actually works in CI now (Phase A step 0 — it had
+  never passed before); core bet flow covered end-to-end (place → settle →
+  ledger). ⛔ Remaining: deposit→withdraw flows, bonus issuance, and
+  settle-under-concurrency (Phase B, with F-2).
 
 **Communication**
 - ⛔ EMAIL/SMS/PUSH channels declared but inactive; no real Telegram bot (WF-5).
@@ -495,11 +507,16 @@ Before any change:
 
 ## 15. QUICK-START FOR THE NEXT SESSION
 
-The immediate in-progress task (Phase A): make the **bet-funding split**
-(deposit%/reserve% of stake) **admin-editable** (replace hardcoded `0.97`/`0.03`
-in `backend/domains/markets/bet.routes.js`; decide integer vs fractional
-precision), and **implement the admin-editable 1% winnings platform fee** in
-the settlement engine (`markets/gameEngine.js`), routing the fee to platform
-revenue in the ledger. Centralize both as pure functions in the Risk Platform
-with unit tests, expose the config via `SystemConfig` + admin GET/PUT, and add
-integration tests. Then Phase B (F-2/F-3), then the admin UI (Phase C).
+**Phase A is DONE (2026-07-10)** — split + fee admin-editable, paise-exact,
+CI-proven end to end (see §5, ENTERPRISE_DECISIONS.md 2026-07-10).
+
+The next task is **Phase B**: (1) **F-2** — reroute
+`domains/settlement/settlementService.js`'s raw `$inc` unlocks through a
+walletAuthority unlock method, WITH a settle-under-concurrency integration
+test first (the harness now genuinely works in CI); fold in the
+settlement-recovery totals issue found during Phase A (EXECUTION_QUEUE.md
+"Discovered during Phase A"). (2) **F-3** — Redis-backed rate limiting
+(Redis is already provisioned; in-memory limiter is a horizontal-scale
+blocker). (3) Merchant token-**deduction** admin control. (4) Integration
+coverage for deposit→withdraw and bonus-issuance flows. Then Phase C
+(admin UI build-out — the biggest visible gap).

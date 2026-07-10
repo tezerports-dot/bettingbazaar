@@ -8,6 +8,64 @@ need a durable home.
 
 ---
 
+## 2026-07-10 — Phase A: bet-funding split & winnings fee (precision, defaults, ledger routing)
+
+**Precision: PAISE (2 decimals), not whole tokens.** The owner's spec is
+explicit that a ₹10 bet should draw 9.7/0.3 — whole-token math cannot
+express it (and the old integer rounding produced 10/0, and could even
+over-deduct: ₹50 → 49+2 = ₹51). Paise precision is already the wallet
+convention (walletAuthority `round2`s every mutation; F1 commissions credit
+2-decimal amounts), so fractional balances introduce no new class of value.
+All money arithmetic is integer paise with percents converted to integer
+basis points — floats never participate in the math, only in storage.
+**Drain rule:** when a split empties a wallet bucket, the deduction returned
+is the caller-supplied stored value verbatim (bit-identical float), so the
+atomic `$gte` filter can never spuriously fail against a stored balance
+carrying float representation error.
+
+**One number, not two:** the split is stored as `betReservePercent` only
+(main share = 100 − reserve, derived). Storing both sides (like
+DepositPolicy does) invites sum-to-100 drift for what is arithmetically one
+degree of freedom; DepositPolicy keeps its two-field shape because it is a
+whole-document versioned policy with cross-field validation — SystemConfig
+fields are versioned independently, so the safe shape there is one field.
+
+**winningsFeePercent defaults to 1, not 0.** payoutFeePercent shipped 0
+because no fee existed in the product spec. Here the 1% fee IS the owner's
+specified core money rule (spec §6; Phase A directive: "implement the 1%
+fee"), previously missing. Same precedent as enforceMultiplesOf10: an
+explicit owner directive ships as a live behavior change, loudly documented.
+Setting it to 0 in the admin panel restores flat 2x exactly.
+
+**Fee → PLATFORM_REVENUE via netProfit, NOT a new ledger account/leg.**
+Winners are credited NET, so the retained fee never leaves the house — it
+is already inside `Cycle.netProfit`, which the existing BET_CYCLE_SETTLED
+posting moves to PLATFORM_REVENUE. Rejected alternative: a separate
+WINNINGS_FEES account (symmetric with PAYOUT_FEES). PAYOUT_FEES exists to
+disambiguate a withdrawal's residual (fee vs historical sell-spread) —
+two different values sharing one residual. A settled cycle has no such
+ambiguity, and routing the fee into PLATFORM_REVENUE keeps it inside
+distributable revenue (merchant bonuses remain fundable from it, per the
+2026-07-08 rule). Itemization for audit/reporting lives on the cycle
+(`totalPlatformFees`, `winningsFeePercentUsed` — snapshotted at settle time
+so later config edits can't rewrite history) and in the event metadata.
+
+**Fee timing: settlement-time config read, once per cycle.** The percent is
+read once per settlement (not per bet, not at bet placement), so every bet
+in a cycle settles under one snapshot; bets placed before a config change
+settle at the percent active when the cycle settles — acceptable, since the
+alternative (per-bet placement snapshots) would make one cycle pay two
+different fee rates and confuse the winner board.
+
+**Verification correction (recorded so no future doc repeats it):** the
+integration suite added in the 2026-07-09 audit had NEVER passed in CI —
+every run failed on test-code bugs (see EXECUTION_QUEUE.md 2026-07-10).
+"51 unit tests green + CI wired" was true; "integration tests run in CI"
+was not, until Phase A step 0 fixed the suite. CI run #10 (commit 6797c81)
+is the first green run in the repository's history.
+
+---
+
 ## 2026-07-09 — Phase 012 (in progress): Communication, Operations, Reporting
 
 **Communication Platform** (Customer Platforms tier): `notify()` is the

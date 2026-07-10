@@ -4,7 +4,7 @@
 Update it after every significant change. If this file and a chat summary disagree,
 this file wins — that's the point of it existing.
 
-Last updated: 2026-07-09
+Last updated: 2026-07-10
 
 ---
 
@@ -96,15 +96,44 @@ full architecture decision and reasoning.
 
 ## Current Active Phase
 
-**Revenue & Settlement Platform** (BBEPS Phase 007, renumbered by owner
-directive 2026-07-09 — see ENTERPRISE_DECISIONS.md). Bootstrap shipped
-2026-07-09: `domains/revenue/` is the single financial authority — the
-append-only double-entry settlement ledger derived from completed source
-records, platform revenue as a derived fact, reserve deductions recorded per
-deposit, merchant bonus funding structurally restricted to distributable
-platform revenue. Next within/after this platform: the Merchant Performance
-Bonus issuing engine (Cycle Tracker → Bonus Calculator → Bonus Ledger) with
-its MerchantBonusPolicy percentage owned by the Business Policy Platform.
+**Phase A — COMPLETE (2026-07-10).** Betting-logic correctness &
+admin-configurability (the PROJECT_HANDOFF.md roadmap letters, post-012):
+
+- **Step 0:** the integration test suite had NEVER passed in CI (every run
+  failed on test-code bugs — see EXECUTION_QUEUE.md 2026-07-10). Fixed;
+  CI run #10 is the repository's first green run. All money-flow claims
+  below are CI-proven, not static-check-proven.
+- **Bet-funding split:** `SystemConfig.betReservePercent` (default 3 =
+  historical 97/3), admin-editable; arithmetic single-sourced in
+  `riskValidation.computeBetFundingPlan()` — paise-exact, conserves the
+  stake (the old rounding could deduct ₹51 for a ₹50 bet), fallbacks kept.
+- **Winnings platform fee:** `SystemConfig.winningsFeePercent` (default 1
+  per owner spec §6 — live behavior change), admin-editable; arithmetic in
+  `riskValidation.computeWinningsPayout()` (fee floored, net+fee===gross);
+  engine pays NET, stamps Bet.payout/platformFee, snapshots cycle fee
+  totals; fee reaches PLATFORM_REVENUE inside netProfit via the existing
+  BET_CYCLE_SETTLED posting (decision log 2026-07-10).
+- **Proof:** 68 unit tests + end-to-end betFlow integration test (real
+  route → real engine → real ledger; balanced cycle where platform revenue
+  equals exactly the retained fee).
+
+**NEXT — Phase B (remaining open money bugs & scale blockers):**
+F-2 settlementService raw `$inc` reroute WITH a settle-under-concurrency
+integration test (now feasible — the harness works); F-3 Redis-backed rate
+limiting; merchant token-deduction admin control; the settlement-recovery
+totals issue found during Phase A (EXECUTION_QUEUE.md). Then Phase C
+(admin UI build-out).
+
+### Prior active phase (007 — Revenue & Settlement Platform)
+
+Bootstrap shipped 2026-07-09: `domains/revenue/` is the single financial
+authority — the append-only double-entry settlement ledger derived from
+completed source records, platform revenue as a derived fact, reserve
+deductions recorded per deposit, merchant bonus funding structurally
+restricted to distributable platform revenue. Next within/after this
+platform: the Merchant Performance Bonus issuing engine (Cycle Tracker →
+Bonus Calculator → Bonus Ledger) with its MerchantBonusPolicy percentage
+owned by the Business Policy Platform.
 
 ### Prior phase context (006 — Business Policy Platform, core complete)
 

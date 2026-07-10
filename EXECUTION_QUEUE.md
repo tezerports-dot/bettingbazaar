@@ -10,6 +10,62 @@ deleted, so this file also works as a short-form recent-history log.
 
 ---
 
+## DONE — 2026-07-10 (PHASE A: betting-logic correctness & admin-configurability)
+
+- [x] **Step 0 — integration suite resurrected for real.** Discovered that CI
+      had NEVER been green: every run since the suite was added failed its
+      integration step (the tests were written where mongod couldn't run and
+      pushed unverified). Four test-code root causes fixed (JWT_SECRET missing
+      in test env; ledger test cleanup tripping the append-only middleware;
+      Merchant fixtures missing required `name`; gameEngine test asserting a
+      nonexistent `walletBalance` field; auth test mounting the router at the
+      wrong path + expecting 400 where the route returns 409). **CI run #10 =
+      the first green CI in this repo's history.** No product code changed.
+- [x] **Bet-funding split admin-editable + paise-exact.**
+      `SystemConfig.betReservePercent` (default 3 = historical 97/3), admin
+      GET/PUT with validation, versioned via setConfigField.
+      `riskValidation.computeBetFundingPlan()` is the arithmetic authority:
+      integer paise + basis points, reserve floored/remainder to main
+      (conserves the stake exactly), fallbacks preserved (reserve short →
+      main, deposit first then winnings), drained buckets returned as the
+      caller's float verbatim so the route's atomic `$gte` guard can't
+      spuriously fail. Fixed en route: the old `Math.round` pair could
+      OVER-DEDUCT — a ₹50 bet took 49+2 = ₹51 while locking 50.
+- [x] **1% winnings platform fee implemented (owner spec §6).**
+      `SystemConfig.winningsFeePercent` (default 1 — deliberate live behavior
+      change per the Phase A directive; 0 restores flat 2x), admin GET/PUT.
+      `riskValidation.computeWinningsPayout()`: fee floored in paise, never
+      rounds up against the user; net+fee === gross exactly. gameEngine pays
+      NET, stamps `Bet.payout`/`Bet.platformFee`, snapshots
+      `Cycle.totalPlatformFees`/`winningsFeePercentUsed`. Ledger unchanged:
+      the retained fee is inside netProfit → PLATFORM_REVENUE via the
+      existing BET_CYCLE_SETTLED posting; itemized in event metadata.
+- [x] **Tests:** 17 new unit tests (68 total green) incl. conservation
+      property sweeps; gameEngine integration tests assert net payout,
+      stamped fee, paise case (₹10 → 19.80/0.20), and fee=0 → flat 2x;
+      new `betFlow.integration.test.js` runs the WHOLE flow through the real
+      route + engine + reconciler — balanced cycle where PLATFORM_REVENUE
+      equals exactly the retained fee, insufficient-balance rejection, and
+      both funding fallbacks.
+
+### Discovered during Phase A (queued, not silently fixed)
+
+- [ ] **Settlement recovery totals (Phase B, F-2-adjacent):** if
+      `processPayoutsOptimized` crashes mid-batch, the recovery re-run
+      aggregates only still-PENDING bets, so `Cycle.totalPaidOut`/`netProfit`/
+      `totalPlatformFees` would reflect only the tail of the payout (wallet
+      credits themselves are idempotent and safe). Fold into the F-2
+      settle-under-concurrency integration work.
+- [ ] `backend/migrations/002-fix-everything.js` still computes `bet.amount*2`
+      — marked-applied migration that §13 says should be deleted after prod
+      confirm; now also stale vs the fee logic. Delete with the other applied
+      migrations.
+- [ ] Frontend surfaces that display payouts as flat 2x (user-panel copy,
+      admin winner board) need the net-of-fee numbers — fold into Phase C/D
+      UI work (backend payloads already carry the real values).
+
+---
+
 ## DONE — 2026-07-07
 
 - [x] `DepositPolicy` model, service, admin routes (full versioning lifecycle:
