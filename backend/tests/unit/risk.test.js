@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest';
 import {
   assertPositiveNumber, assertMultipleOf10, validateTokenPurchase,
   validateTokenSale, validateBetAmount, computeReserveSplit, computePayoutFeeMinor,
-  computeBetFundingPlan,
+  computeBetFundingPlan, computeWinningsPayout,
 } from '../../domains/risk/riskValidation.service.js';
 
 describe('positive / numeric guards', () => {
@@ -155,5 +155,54 @@ describe('bet funding plan (Phase A — paise-exact, admin-editable reserve %)',
     expect(() => computeBetFundingPlan({ amount: 10, reservePercent: -1, ...ample })).toThrow();
     expect(() => computeBetFundingPlan({ amount: 10, reservePercent: 101, ...ample })).toThrow();
     expect(() => computeBetFundingPlan({ amount: 10, reservePercent: NaN, ...ample })).toThrow();
+  });
+});
+
+describe('winnings payout with platform fee (Phase A — 2x minus fee, floored)', () => {
+  it("owner's canonical example: bet 100 @ 1% → gross 200, fee 2, net 198", () => {
+    const p = computeWinningsPayout({ amount: 100, feePercent: 1 });
+    expect(p.gross).toBe(200);
+    expect(p.fee).toBe(2);
+    expect(p.net).toBe(198);
+  });
+
+  it('bet 10 @ 1% → gross 20, fee 0.20, net 19.80 (paise precision)', () => {
+    const p = computeWinningsPayout({ amount: 10, feePercent: 1 });
+    expect(p.gross).toBe(20);
+    expect(p.fee).toBe(0.2);
+    expect(p.net).toBe(19.8);
+  });
+
+  it('0% fee = flat 2x (pre-Phase-A behavior when admin sets 0)', () => {
+    const p = computeWinningsPayout({ amount: 50, feePercent: 0 });
+    expect(p.gross).toBe(100);
+    expect(p.fee).toBe(0);
+    expect(p.net).toBe(100);
+  });
+
+  it('fee floors in paise — never rounds up against the user', () => {
+    // gross 2000 paise × 0.33% = 6.6 paise → floors to 6 (0.06), not 7
+    const p = computeWinningsPayout({ amount: 10, feePercent: 0.33 });
+    expect(p.feeMinor).toBe(6);
+    expect(p.netMinor).toBe(1994);
+  });
+
+  it('net + fee equals gross exactly across amounts × percents (property sweep)', () => {
+    for (const amount of [10, 30, 50, 70, 110, 250, 570, 1000, 99990]) {
+      for (const pct of [0, 0.5, 1, 1.5, 2.5, 5, 10, 33.33, 100]) {
+        const p = computeWinningsPayout({ amount, feePercent: pct });
+        expect(p.netMinor + p.feeMinor).toBe(p.grossMinor);
+        expect(p.grossMinor).toBe(amount * 100 * 2);
+        expect(p.feeMinor).toBeGreaterThanOrEqual(0);
+      }
+    }
+  });
+
+  it('rejects bad fee percents and multipliers', () => {
+    expect(() => computeWinningsPayout({ amount: 10, feePercent: -1 })).toThrow();
+    expect(() => computeWinningsPayout({ amount: 10, feePercent: 101 })).toThrow();
+    expect(() => computeWinningsPayout({ amount: 10, feePercent: NaN })).toThrow();
+    expect(() => computeWinningsPayout({ amount: 10, feePercent: 1, multiplier: 0 })).toThrow();
+    expect(() => computeWinningsPayout({ amount: 10, feePercent: 1, multiplier: 1.5 })).toThrow();
   });
 });

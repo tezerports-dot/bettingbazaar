@@ -193,13 +193,48 @@ export function computeBetFundingPlan({ amount, reservePercent, availableDeposit
   };
 }
 
+/**
+ * computeWinningsPayout — THE settlement payout rule (Phase A, 2026-07-10).
+ * Winning bets pay gross = stake × multiplier (2x), minus the platform fee
+ * on winnings (owner spec §6: bet 100 → win 200 → ~2 fee → 198 net).
+ * The PERCENT is owned by SystemConfig.winningsFeePercent (Business Policy);
+ * this is only the arithmetic rule, used by markets/gameEngine.js.
+ *
+ * Paise-exact: integer paise + integer basis points; the fee is FLOORED so
+ * the platform never rounds up against the user; net + fee always equals
+ * gross exactly. The fee itself never touches a wallet — winners are
+ * credited net, so the retained fee lands in Cycle.netProfit and flows to
+ * PLATFORM_REVENUE through the existing BET_CYCLE_SETTLED ledger posting.
+ */
+export function computeWinningsPayout({ amount, feePercent, multiplier = 2 }) {
+  assertPositiveNumber(amount, 'Bet amount');
+  if (typeof feePercent !== 'number' || !Number.isFinite(feePercent) ||
+      feePercent < 0 || feePercent > 100) {
+    throw reject('winningsFeePercent must be between 0 and 100.');
+  }
+  if (!Number.isInteger(multiplier) || multiplier <= 0) {
+    throw reject('Payout multiplier must be a positive integer.');
+  }
+  const amountMinor = Math.round(amount * 100);
+  const grossMinor  = amountMinor * multiplier;
+  const feeBp       = Math.round(feePercent * 100); // percent → integer basis points
+  const feeMinor    = Math.floor(grossMinor * feeBp / 10000);
+  const netMinor    = grossMinor - feeMinor;
+  return {
+    gross: grossMinor / 100, fee: feeMinor / 100, net: netMinor / 100,
+    grossMinor, feeMinor, netMinor,
+    feePercentApplied: feeBp / 100,
+  };
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Config-driven gates (read SystemConfig.riskRules — Business Policy owns it)
 // ═════════════════════════════════════════════════════════════════════════════
 
 async function getRiskRules() {
   const SystemConfig = mongoose.model('SystemConfig');
-  const cfg = await SystemConfig.findOne({ key: 'main' }).select('riskRules payoutFeePercent').lean();
+  const cfg = await SystemConfig.findOne({ key: 'main' })
+    .select('riskRules payoutFeePercent winningsFeePercent betReservePercent').lean();
   return {
     // schema default: true (2026-07-09 owner directive — multiples of 10)
     enforceMultiplesOf10: cfg?.riskRules?.enforceMultiplesOf10 ?? true,
@@ -209,6 +244,10 @@ async function getRiskRules() {
     maxFundingOrdersPerHour: cfg?.riskRules?.maxFundingOrdersPerHour ?? 0,
     // schema default: 0 = no fee
     payoutFeePercent: cfg?.payoutFeePercent ?? 0,
+    // schema default: 1 (Phase A owner spec — 1% platform fee on winnings)
+    winningsFeePercent: cfg?.winningsFeePercent ?? 1,
+    // schema default: 3 (Phase A — % of each bet stake from reserveBalance)
+    betReservePercent: cfg?.betReservePercent ?? 3,
   };
 }
 

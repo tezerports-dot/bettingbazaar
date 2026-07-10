@@ -19,10 +19,16 @@ export async function unlockLostBet(userId, amount, betId, fromDeposit, fromWinn
     });
 }
 
-export async function executeSettlementBatch(userOps, txOps, betIds) {
+export async function executeSettlementBatch(userOps, txOps) {
     for (const op of userOps) {
         try {
-            await creditWinnings(op.userId, op.payout, `Cycle win payout (2x)`, op.betIds[0], `win_${op.betIds[0]}`);
+            // Phase A (2026-07-10): op.payout is NET — gross 2x minus the
+            // winnings platform fee, computed per bet by the Risk Platform
+            // (riskValidation.computeWinningsPayout) in gameEngine.js.
+            const reason = op.feePercent > 0
+                ? `Cycle win payout (2x minus ${op.feePercent}% platform fee)`
+                : `Cycle win payout (2x)`;
+            await creditWinnings(op.userId, op.payout, reason, op.betIds[0], `win_${op.betIds[0]}`);
             await User.findByIdAndUpdate(op.userId, {
                 $inc: { lockedBalance: -op.totalBetAmount, lockedDepositAmount: -op.totalLockedDeposit, lockedWinningsAmount: -op.totalLockedWinnings }
             });
@@ -35,8 +41,15 @@ export async function executeSettlementBatch(userOps, txOps, betIds) {
         try { await Transaction.bulkWrite(txOps); }
         catch (e) { console.warn('[Settlement] Transaction log write failed (non-critical):', e.message); }
     }
-    const allBetIds = userOps.flatMap(op => op.betIds);
-    if (allBetIds.length > 0) {
-        await Bet.updateMany({ _id: { $in: allBetIds }, status: { $ne: 'WON' } }, [{ $set: { status: 'WON', payout: { $multiply: ['$amount', 2] } } }]);
+    // Stamp each winning bet with its exact NET payout and retained fee
+    // (idempotent: status guard skips bets a recovery re-run already stamped).
+    const stampOps = userOps.flatMap(op => (op.betStamps || []).map(s => ({
+        updateOne: {
+            filter: { _id: s.betId, status: { $ne: 'WON' } },
+            update: { $set: { status: 'WON', payout: s.payout, platformFee: s.platformFee, settledAt: new Date() } },
+        }
+    })));
+    if (stampOps.length > 0) {
+        await Bet.bulkWrite(stampOps);
     }
 }

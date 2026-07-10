@@ -72,6 +72,16 @@ const systemConfigSchema = new mongoose.Schema({
   // Used at basis-point precision (max 2 decimals).
   betReservePercent: { type: Number, default: 3, min: 0, max: 100 },
 
+  // ── WINNINGS PLATFORM FEE (Phase A, 2026-07-10) ──────────────────────────
+  // % platform fee on gross winnings at cycle settlement (owner spec §6:
+  // bet 100 → win 200 → fee ~2 → 198 net to winningsBalance). Default 1 per
+  // the Phase A directive — this IS the intended business rule, previously
+  // missing (flat 2x). Winners are credited NET; the retained fee stays in
+  // Cycle.netProfit and flows to PLATFORM_REVENUE via BET_CYCLE_SETTLED.
+  // Read by markets/gameEngine.js; arithmetic in
+  // riskValidation.computeWinningsPayout. Basis-point precision (max 2 dp).
+  winningsFeePercent: { type: Number, default: 1, min: 0, max: 100 },
+
   // ── FEATURE FLAGS ─────────────────────────────────────────────────────────
   kycRequired:         { type: Boolean, default: true },
   registrationEnabled: { type: Boolean, default: true },

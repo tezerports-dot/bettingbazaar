@@ -71,6 +71,8 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
         payoutFeePercent:      config.payoutFeePercent ?? 0,  // schema default: 0
         // Bet funding split (Phase A) — % of each stake from reserveBalance
         betReservePercent:     config.betReservePercent ?? 3, // schema default: 3
+        // Winnings platform fee (Phase A) — % of gross 2x retained at settlement
+        winningsFeePercent:    config.winningsFeePercent ?? 1, // schema default: 1
         riskRules: {
           enforceMultiplesOf10:     config.riskRules?.enforceMultiplesOf10     ?? true,  // schema default: true
           blockOppositeSideBetting: config.riskRules?.blockOppositeSideBetting ?? false, // schema default: false
@@ -107,7 +109,7 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
       maintenanceMode, maintenanceMessage,
       depositMethods, withdrawalMethods,
       webUrl, androidUrl, iosUrl, minVersion, latestVersion,
-      payoutFeePercent, riskRules, betReservePercent,
+      payoutFeePercent, riskRules, betReservePercent, winningsFeePercent,
     } = req.body;
 
     if (payoutFeePercent !== undefined &&
@@ -119,6 +121,12 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
          betReservePercent < 0 || betReservePercent > 100 ||
          Math.abs(betReservePercent * 100 - Math.round(betReservePercent * 100)) > 1e-9)) {
       return res.status(400).json({ success: false, message: 'betReservePercent must be a number between 0 and 100 with at most 2 decimals.' });
+    }
+    if (winningsFeePercent !== undefined &&
+        (typeof winningsFeePercent !== 'number' || !Number.isFinite(winningsFeePercent) ||
+         winningsFeePercent < 0 || winningsFeePercent > 100 ||
+         Math.abs(winningsFeePercent * 100 - Math.round(winningsFeePercent * 100)) > 1e-9)) {
+      return res.status(400).json({ success: false, message: 'winningsFeePercent must be a number between 0 and 100 with at most 2 decimals.' });
     }
     if (riskRules?.maxFundingOrdersPerHour !== undefined &&
         (!Number.isInteger(riskRules.maxFundingOrdersPerHour) || riskRules.maxFundingOrdersPerHour < 0)) {
@@ -152,6 +160,9 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     // Bet funding split (Phase A) — consumed by bet.routes.js via
     // riskValidation.computeBetFundingPlan
     if (betReservePercent !== undefined) fieldWrites.push(['SystemConfig', 'betReservePercent', betReservePercent]);
+    // Winnings platform fee (Phase A) — consumed by markets/gameEngine.js via
+    // riskValidation.computeWinningsPayout
+    if (winningsFeePercent !== undefined) fieldWrites.push(['SystemConfig', 'winningsFeePercent', winningsFeePercent]);
     if (riskRules?.enforceMultiplesOf10     !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.enforceMultiplesOf10', !!riskRules.enforceMultiplesOf10]);
     if (riskRules?.blockOppositeSideBetting !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.blockOppositeSideBetting', !!riskRules.blockOppositeSideBetting]);
     if (riskRules?.maxFundingOrdersPerHour  !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.maxFundingOrdersPerHour', riskRules.maxFundingOrdersPerHour]);

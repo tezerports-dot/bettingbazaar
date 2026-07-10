@@ -452,6 +452,11 @@ export async function reconcileSettledCycles(limit = 200) {
           realPool: (cycle.realDelhi || 0) + (cycle.realBombay || 0),
           totalPaidOut: cycle.totalPaidOut,
           netProfit: cycle.netProfit,
+          // Phase A itemization: winners are paid NET, so the retained
+          // winnings fee is already inside netProfit (and therefore inside
+          // the PLATFORM_REVENUE leg) — recorded here for audit/reporting.
+          totalPlatformFees: cycle.totalPlatformFees ?? 0,
+          winningsFeePercentUsed: cycle.winningsFeePercentUsed ?? 0,
         },
       });
       results.push({ refId: String(cycle.cycleId), recorded: !res.idempotent });

@@ -30,12 +30,13 @@ export const ACCOUNTS = Object.freeze({
   PLATFORM_RESERVE: { code: 'PLATFORM_RESERVE', normalBalance: 'CREDIT',
     description: 'Reserve wallet allocations per DepositPolicy (deposit/reserve split)' },
 
-  // Platform earnings: net cycle settlement profit, historical rate-spread
-  // residuals, and (future) payout fees flow in here. Merchant bonus funding
-  // flows OUT of here — the reported balance of this account IS the
-  // distributable platform revenue.
+  // Platform earnings: net cycle settlement profit (which since Phase A
+  // includes the winnings platform fee — winners are paid net, the retained
+  // fee stays inside Cycle.netProfit), historical rate-spread residuals.
+  // Merchant bonus funding flows OUT of here — the reported balance of this
+  // account IS the distributable platform revenue.
   PLATFORM_REVENUE: { code: 'PLATFORM_REVENUE', normalBalance: 'CREDIT',
-    description: 'Platform revenue: cycle net profit, spread residuals, payout fees' },
+    description: 'Platform revenue: cycle net profit (incl. winnings fees), spread residuals' },
 
   // Future payout fees (no fee exists today — account + event type are
   // defined so the fee, when Business Policy introduces one, has a home;
@@ -72,6 +73,9 @@ export const EVENT_TYPES = Object.freeze({
 
   // A settled betting cycle: netProfit (realPool − totalPaidOut) moves from
   // user liability to platform revenue (signs flip naturally on a loss cycle).
+  // Since Phase A totalPaidOut is NET of the winnings platform fee, so the
+  // retained fee arrives here inside netProfit — itemized in the event
+  // metadata (totalPlatformFees / winningsFeePercentUsed), not a separate leg.
   BET_CYCLE_SETTLED: 'BET_CYCLE_SETTLED',
 
   // Future: a payout fee charged on a withdrawal (no producer yet — the fee

@@ -4,6 +4,9 @@ import mongoose from 'mongoose';
 import { CacheService } from '../../services/cache.service.js';
 import { creditWinnings, creditCommission } from '../wallet/walletAuthority.service.js';
 import { unlockLostBet, executeSettlementBatch } from '../settlement/settlementService.js';
+// Risk Platform (Phase A, 2026-07-10): payout arithmetic authority — winners
+// are paid gross 2x minus the admin-editable winnings platform fee.
+import { getRiskRules, computeWinningsPayout } from '../risk/riskValidation.service.js';
 // unlockLostBet and executeSettlementBatch moved to domains/settlement/ on 2026-07-03.
 // processPayoutsOptimized stays here as the orchestrator -- see domains/settlement/README.md.
 
@@ -148,6 +151,11 @@ class GameEngine {
 
         console.log(`[Engine] Starting payout for cycle ${cycle.cycleId}, Winner: ${cycle.winner}`);
 
+        // Winnings platform fee (Phase A): percent owned by Business Policy
+        // (SystemConfig.winningsFeePercent), read ONCE per settlement so every
+        // bet in this cycle settles under the same snapshot.
+        const { winningsFeePercent } = await getRiskRules();
+
         // Mark losing bets immediately and unlock their balances
         const losingBets = await Bet.find({
             cycleId: cycle.cycleId,
@@ -170,10 +178,9 @@ class GameEngine {
         // Process winning bets
         const cursor = Bet.aggregate([
             { $match: { cycleId: cycle.cycleId, side: cycle.winner, status: 'PENDING', isPhantom: false } },
-            { $group: { 
-                _id: "$userId", 
+            { $group: {
+                _id: "$userId",
                 totalBetAmount: { $sum: "$amount" },
-                totalPayout: { $sum: { $multiply: ["$amount", 2] } },  // ✅ FIX #5: 2x payout
                 betIds: { $push: "$_id" },
                 bets: {
                     $push: {
@@ -188,20 +195,33 @@ class GameEngine {
 
         let userBulkOps = [];
         let txBulkOps = [];
-        let betIdsToUpdate = [];
-        let totalPaidOut = 0;
+        let totalPaidOutMinor = 0;      // integer paise — exact accumulation
+        let totalPlatformFeesMinor = 0; // integer paise — retained winnings fees
         let totalWinners = 0;
 
         // Track winner payouts so we can emit per-user payout_success via WS
         const winnerPayouts = []; // { userId, payout, betAmount }
 
         for await (const winGroup of cursor) {
-            const payout = winGroup.totalPayout;  // Already 2x from aggregation
-            
+            // Phase A: per-bet NET payout (gross 2x − winnings platform fee),
+            // computed by the Risk Platform arithmetic authority in integer
+            // paise. Per-bet stamps let executeSettlementBatch persist the
+            // exact net/fee on each Bet document.
+            let payoutMinor = 0;
+            let feeMinor = 0;
+            const betStamps = []; // { betId, payout, platformFee }
+            for (const bet of winGroup.bets) {
+                const p = computeWinningsPayout({ amount: bet.amount, feePercent: winningsFeePercent });
+                payoutMinor += p.netMinor;
+                feeMinor    += p.feeMinor;
+                betStamps.push({ betId: bet.betId, payout: p.net, platformFee: p.fee });
+            }
+            const payout = payoutMinor / 100;
+
             // ✅ FIX #4: Calculate locked amounts to release
             let totalLockedDeposit = 0;
             let totalLockedWinnings = 0;
-            
+
             for (const bet of winGroup.bets) {
                 totalLockedDeposit += bet.fromDeposit || 0;
                 totalLockedWinnings += bet.fromWinnings || 0;
@@ -211,10 +231,12 @@ class GameEngine {
             userBulkOps.push({
                 userId: winGroup._id.toString(),
                 payout,
+                feePercent: winningsFeePercent,
                 totalBetAmount: winGroup.totalBetAmount,
                 totalLockedDeposit,
                 totalLockedWinnings,
                 betIds: winGroup.betIds,
+                betStamps,
             });
 
             // Track for WS emit after batch
@@ -233,25 +255,28 @@ class GameEngine {
                         balanceType: 'WINNINGS',  // ✅ FIX #4: Track that this went to winnings
                         status: 'SUCCESS',
                         referenceId: cycle.cycleId,
-                        description: `Payout: ${cycle.cycleId} - ${cycle.winner} won - 2x ${winGroup.totalBetAmount} = ${payout}`,
+                        description: `Payout: ${cycle.cycleId} - ${cycle.winner} won - 2x ${winGroup.totalBetAmount} minus ${winningsFeePercent}% platform fee (₹${feeMinor / 100}) = ${payout}`,
                         timestamp: new Date()
                     }
                 }
             });
 
-            betIdsToUpdate.push(...winGroup.betIds);
-            totalPaidOut += payout;
+            totalPaidOutMinor      += payoutMinor;
+            totalPlatformFeesMinor += feeMinor;
             totalWinners++;
 
             if (userBulkOps.length >= BATCH_SIZE) {
-                await executeSettlementBatch(userBulkOps, txBulkOps, betIdsToUpdate);
-                userBulkOps = []; txBulkOps = []; betIdsToUpdate = [];
+                await executeSettlementBatch(userBulkOps, txBulkOps);
+                userBulkOps = []; txBulkOps = [];
             }
         }
 
         if (userBulkOps.length > 0) {
-            await executeSettlementBatch(userBulkOps, txBulkOps, betIdsToUpdate);
+            await executeSettlementBatch(userBulkOps, txBulkOps);
         }
+
+        const totalPaidOut = totalPaidOutMinor / 100;
+        const totalPlatformFees = totalPlatformFeesMinor / 100;
 
         // ── REALTIME PAYOUT NOTIFICATION ──────────────────────────────────────
         // Emit payout_success to each winner's personal room so their wallet
@@ -298,27 +323,34 @@ class GameEngine {
             { $set: { status: 'LOST' } }
         );
 
-        // Calculate final stats
+        // Calculate final stats. totalPaidOut is NET of the winnings platform
+        // fee, so netProfit (realPool − totalPaidOut) already contains the
+        // retained fee — it reaches PLATFORM_REVENUE through the existing
+        // BET_CYCLE_SETTLED posting with no ledger change. The fee fields
+        // below itemize it for audit/reporting.
         const realPool = (cycle.realDelhi || 0) + (cycle.realBombay || 0);
         const netProfit = realPool - totalPaidOut;
 
         await Cycle.updateOne(
-            { _id: cycle._id }, 
-            { 
-                isSettled: 'COMPLETED', 
+            { _id: cycle._id },
+            {
+                isSettled: 'COMPLETED',
                 settledAt: Date.now(),
                 totalPaidOut: totalPaidOut,
-                netProfit: netProfit
+                netProfit: netProfit,
+                totalPlatformFees: totalPlatformFees,
+                winningsFeePercentUsed: winningsFeePercent
             }
         );
 
         await CacheService.del('financial_stats');
-        
+
         console.log(`[Engine] ✅ Cycle ${cycle.cycleId} settled successfully`);
         console.log(`   Winners: ${totalWinners} users`);
-        console.log(`   Total Paid: ₹${totalPaidOut.toLocaleString()} (2x payout)`);
+        console.log(`   Total Paid: ₹${totalPaidOut.toLocaleString()} (2x minus ${winningsFeePercent}% fee)`);
+        console.log(`   Platform Fees Retained: ₹${totalPlatformFees.toLocaleString()}`);
         console.log(`   Net Profit: ₹${netProfit.toLocaleString()}`);
-        console.log(`   Profit Margin: ${((netProfit / realPool) * 100).toFixed(2)}%`);
+        if (realPool > 0) console.log(`   Profit Margin: ${((netProfit / realPool) * 100).toFixed(2)}%`);
 
         // F1 referral commission (non-blocking — won't affect main settlement)
         if (winnerPayouts.length > 0) {
@@ -341,6 +373,7 @@ class GameEngine {
             type:        'PAYOUT_COMPLETE',
             cycleId:     cycle.cycleId,
             totalPaidOut,
+            totalPlatformFees,
             netProfit,
             winners:     totalWinners,
             server_ts:   Date.now()

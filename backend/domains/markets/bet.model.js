@@ -26,7 +26,13 @@ const betSchema = new mongoose.Schema({
   
   timestamp: { type: Date, default: Date.now, index: true },
   settledAt: { type: Date },
-  payout: { type: Number, default: 0 }  // 2x amount for winners
+  // NET payout credited to the winner (gross 2x − platformFee). Phase A:
+  // pre-fee bets have payout = 2x amount and platformFee 0.
+  payout: { type: Number, default: 0 },
+  // Platform fee on winnings retained at settlement (Phase A, 2026-07-10).
+  // Percent owned by SystemConfig.winningsFeePercent; arithmetic in
+  // riskValidation.computeWinningsPayout; stamped by gameEngine.
+  platformFee: { type: Number, default: 0 }
 });
 
 // CRITICAL PERFORMANCE INDEXES

@@ -51,15 +51,22 @@ const cycleSchema = new mongoose.Schema({
   },
   
   // SETTLEMENT (FIX #5 - 2x payout tracking)
-  isSettled: { 
-    type: String, 
-    enum: ['PENDING', 'PROCESSING', 'COMPLETED'], 
-    default: 'PENDING', 
-    index: true 
-  }, 
+  isSettled: {
+    type: String,
+    enum: ['PENDING', 'PROCESSING', 'COMPLETED'],
+    default: 'PENDING',
+    index: true
+  },
   settledAt: { type: Date },
-  totalPaidOut: { type: Number, default: 0 },   // Total 2x payouts to winners
-  netProfit: { type: Number, default: 0 }       // House profit
+  totalPaidOut: { type: Number, default: 0 },   // Total NET payouts to winners (gross − fee since Phase A)
+  netProfit: { type: Number, default: 0 },      // House result: realPool − totalPaidOut (includes retained winnings fees)
+  // ── WINNINGS PLATFORM FEE (Phase A, 2026-07-10) ─────────────────────────
+  // Itemization of the fee retained at settlement. The fee is already inside
+  // netProfit (winners are paid net), so the ledger needs no extra posting —
+  // these fields exist for audit/reporting. Percent snapshotted at settle
+  // time so later config changes can't rewrite history.
+  totalPlatformFees:      { type: Number, default: 0 },
+  winningsFeePercentUsed: { type: Number, default: 0 }
 });
 
 // FIX 5: Unique index on {type, startTime} guarantees at most one cycle per
