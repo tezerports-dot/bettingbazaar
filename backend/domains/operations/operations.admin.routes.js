@@ -103,7 +103,11 @@ router.get('/operations/config-catalog', authenticate, isAdminOrSubAdmin, async 
     { value: 'Deposit/withdrawal min/max', owner: 'Business Policy — SystemConfig', edit: 'PUT /api/admin/system/config' },
     { value: 'Payout fee %', owner: 'Business Policy — SystemConfig.payoutFeePercent (enforced by Risk, recorded by R&S)', edit: 'PUT /api/admin/system/config' },
     { value: 'Risk rules (multiples-of-10, opposite-side block, velocity/hour)', owner: 'Business Policy — SystemConfig.riskRules (enforced by Risk)', edit: 'PUT /api/admin/system/config' },
-    { value: 'Payout multiplier', owner: 'Business Policy — SystemConfig.payoutMultiplier', edit: 'PUT /api/admin/system/config' },
+    // Phase A (2026-07-10): the two core betting money rules, now configurable.
+    { value: 'Bet funding split — reserve % of each stake', owner: 'Business Policy — SystemConfig.betReservePercent (arithmetic in Risk computeBetFundingPlan)', edit: 'PUT /api/admin/system/config' },
+    { value: 'Winnings platform fee % (settlement)', owner: 'Business Policy — SystemConfig.winningsFeePercent (arithmetic in Risk computeWinningsPayout, paid by gameEngine)', edit: 'PUT /api/admin/system/config' },
+    // Corrected 2026-07-10: SystemConfig.payoutMultiplier never existed — the
+    // 2x payout is a fixed product rule (winnings fee % is the settlement knob).
     { value: 'Merchant bonus pool funding', owner: 'Revenue & Settlement (from distributable revenue only)', edit: 'POST /api/admin/revenue/bonus-pool/fund' },
     { value: 'Per-merchant order limits + wallet top-ups', owner: 'Merchant Platform', edit: 'PUT /api/admin/merchants/:id (limits) / POST /api/admin/merchants/:id/fund' },
     { value: 'Funding providers (P2P / USDT / gateways)', owner: 'Funding Platform — providerRegistry adapters', edit: 'code adapter + registry entry (activation is a deploy, not a constant)' },

@@ -38,6 +38,8 @@ export const MerchantsList: React.FC = () => {
   // GOVERNANCE §5: UI fallbacks must equal Merchant schema defaults (minOrder:500, maxOrder:50000).
   // Merchant.limits.minDeposit default=500, maxDeposit default=50000 per merchant.model.js.
   const [limitsForm, setLimitsForm]   = useState({ minOrder: 500, maxOrder: 50000, dailyCap: 0, maxConcurrentOrders: 3 });
+  // Phase B (2026-07-10): admin token-deduction control (strict, audited)
+  const [deductForm, setDeductForm]   = useState({ amount: 0, reason: '' });
   const [panelUrl, setPanelUrl]       = useState('');
   const [merchantEarnings, setMerchantEarnings] = useState<any>(null);
 
@@ -451,6 +453,55 @@ export const MerchantsList: React.FC = () => {
                 >
                   {isSavingLimits ? 'Processing...' : 'Top Up Wallet'}
                 </button>
+              </div>
+
+              {/* Phase B (2026-07-10): the missing counterpart to top-up.
+                  Strict — the backend refuses to overdraft the merchant. */}
+              <div className="border-t border-dark-600 pt-4 space-y-3">
+                <p className="text-sm font-semibold text-gray-300">Deduct From Wallet</p>
+                <div>
+                  <label className="label">Amount to Remove (Rs. tokens)</label>
+                  <input
+                    type="number" min="1"
+                    value={deductForm.amount || ''}
+                    onChange={(e) => setDeductForm(f => ({ ...f, amount: Number(e.target.value) || 0 }))}
+                    placeholder="e.g. 5000"
+                    className="input"
+                  />
+                </div>
+                <div>
+                  <label className="label">Reason (required, audit-logged)</label>
+                  <input
+                    type="text"
+                    value={deductForm.reason}
+                    onChange={(e) => setDeductForm(f => ({ ...f, reason: e.target.value }))}
+                    placeholder="e.g. top-up correction, off-boarding"
+                    className="input"
+                  />
+                </div>
+                <button
+                  disabled={isSavingLimits || !deductForm.amount || !deductForm.reason.trim()}
+                  onClick={async () => {
+                    setIsSavingLimits(true);
+                    try {
+                      const res = await (api.merchants as any).deductWallet(selectedMerchant._id, deductForm.amount, deductForm.reason.trim());
+                      if (res?.success) {
+                        toast.success(`Wallet deducted by Rs.${deductForm.amount}`);
+                        setDeductForm({ amount: 0, reason: '' });
+                        loadMerchants();
+                      } else {
+                        toast.error(res?.message || 'Failed to deduct wallet');
+                      }
+                    } catch (e: any) { toast.error(e?.response?.data?.message || 'Failed to deduct wallet'); }
+                    finally { setIsSavingLimits(false); }
+                  }}
+                  className="w-full px-4 py-2 rounded-lg font-semibold bg-red-600 hover:bg-red-700 text-white disabled:opacity-50"
+                >
+                  {isSavingLimits ? 'Processing...' : 'Deduct From Wallet'}
+                </button>
+                <p className="text-xs text-gray-500">
+                  Deductions never overdraft — if the merchant holds less than the amount, the request is refused.
+                </p>
               </div>
 
               <div className="border-t border-dark-600 pt-4 space-y-4">

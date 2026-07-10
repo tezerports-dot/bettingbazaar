@@ -217,6 +217,13 @@ export const merchants = {
     return res.data;
   },
 
+  // Phase B (2026-07-10): deduct merchant tokens — strict (no overdraft),
+  // reason required and audit-logged (backend: POST /merchants/:id/deduct)
+  deductWallet: async (merchantId: string, tokenAmount: number, reason: string) => {
+    const res = await api.post(`/api/admin/merchants/${merchantId}/deduct`, { tokenAmount, reason });
+    return res.data;
+  },
+
   create: async (data: { username: string; mobile: string; password: string; email?: string }) => {
     const res = await api.post('/api/admin/merchants/create', data);
     return res.data;

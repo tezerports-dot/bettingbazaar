@@ -34,6 +34,11 @@ import { BalanceAdjustment } from './Pages/Users/BalanceAdjustment';
 import { GameProviders }           from './Pages/GameProviders/GameProviders';
 import { AccountRecoveryAdmin } from './Pages/AccountRecovery/AccountRecoveryAdmin';
 import { FakeWinnersManager }  from './Pages/Winners/FakeWinnersManager';
+// ── ENTERPRISE PLATFORM CONSOLES (Phase C, 2026-07-10) ─────────────────────
+import { RevenueLedger }      from './Pages/Enterprise/RevenueLedger';
+import { OperationsOverview } from './Pages/Enterprise/OperationsOverview';
+import { Reports }            from './Pages/Enterprise/Reports';
+import { MerchantPlatform }   from './Pages/Enterprise/MerchantPlatform';
 import { useAuthStore } from './services/auth';
 import { usePermissions } from './hooks/usePermission';
 import sseService from './services/sse';
@@ -246,6 +251,28 @@ const App: React.FC = () => {
         {/* App Assets — admin only */}
         <Route path="/app-assets" element={
           <AdminOnly><Layout><AppAssetsPage /></Layout></AdminOnly>
+        } />
+
+        {/* ── ENTERPRISE PLATFORM CONSOLES (Phase C) ── */}
+        <Route path="/revenue" element={
+          <PermRoute permission="canViewAnalytics">
+            <Layout><RevenueLedger /></Layout>
+          </PermRoute>
+        } />
+        <Route path="/operations" element={
+          <PermRoute permission="canViewAnalytics">
+            <Layout><OperationsOverview /></Layout>
+          </PermRoute>
+        } />
+        <Route path="/reports" element={
+          <PermRoute permission="canViewAnalytics">
+            <Layout><Reports /></Layout>
+          </PermRoute>
+        } />
+        <Route path="/merchant-platform" element={
+          <PermRoute permission="canManageMerchants">
+            <Layout><MerchantPlatform /></Layout>
+          </PermRoute>
         } />
 
         {/* Admin-only routes */}

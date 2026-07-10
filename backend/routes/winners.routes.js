@@ -43,10 +43,14 @@ router.get('/v1/winners', async (req, res) => {
       .skip(skip)
       .lean();
 
-    // 2. Real recent winners — actual winning bets within the period window
+    // 2. Real recent winners — actual settled winning bets in the window.
+    // FIXED 2026-07-10: this queried isWinner/winAmount, fields that have
+    // NEVER existed on the Bet schema (it's status:'WON' + payout), so real
+    // winners never appeared — only curated entries. Now cycle-based real
+    // wins show with their true NET payout (2x minus the winnings fee).
     const realWins = await Bet.find({
-      isWinner: true, isPhantom: false, timestamp: { $gte: since }
-    }).sort({ winAmount: -1 }).limit(20).lean();
+      status: 'WON', isPhantom: false, settledAt: { $gte: since }
+    }).sort({ payout: -1 }).limit(20).lean();
 
     const realUserIds = [...new Set(realWins.map(b => b.userId))];
     const users = await User.find({ _id: { $in: realUserIds } })
@@ -58,10 +62,12 @@ router.get('/v1/winners', async (req, res) => {
       return {
         displayName: u.username || 'Player',
         profilePic:  u.profilePic || '',
-        amount:      b.winAmount || 0,
+        amount:      b.payout || 0,          // net payout actually credited
         game:        'Delhi/Bombay',
+        cycleId:     b.cycleId,              // per-cycle context, not platform-total
+        side:        b.side,
         city:        '',
-        displayTime: b.timestamp,
+        displayTime: b.settledAt || b.timestamp,
         isReal:      true,
       };
     });

@@ -23,6 +23,16 @@ export const SystemSettings: React.FC = () => {
     max30MinBet: 50000,
     maxFullDayBet: 100000,
     maxWinningsWithdrawal: 500000,
+    // ── Money rules (Phase A + Risk Platform) — consumed by bet.routes.js,
+    //    gameEngine.js and riskValidation.service.js on the backend ──────────
+    betReservePercent: 3,      // schema default: 3
+    winningsFeePercent: 1,     // schema default: 1
+    payoutFeePercent: 0,       // schema default: 0
+    riskRules: {
+      enforceMultiplesOf10: true,      // schema default: true
+      blockOppositeSideBetting: false, // schema default: false
+      maxFundingOrdersPerHour: 0,      // schema default: 0 (off)
+    },
     // App distribution
     webUrl:        '',
     androidUrl:    '',
@@ -50,6 +60,14 @@ export const SystemSettings: React.FC = () => {
           max30MinBet: response.data.max30MinBet || 50000,
           maxFullDayBet: response.data.maxFullDayBet || 100000,
           maxWinningsWithdrawal: response.data.maxWinningsWithdrawal || 500000,
+          betReservePercent:  response.data.betReservePercent  ?? 3, // schema default: 3
+          winningsFeePercent: response.data.winningsFeePercent ?? 1, // schema default: 1
+          payoutFeePercent:   response.data.payoutFeePercent   ?? 0, // schema default: 0
+          riskRules: {
+            enforceMultiplesOf10:     response.data.riskRules?.enforceMultiplesOf10     ?? true,
+            blockOppositeSideBetting: response.data.riskRules?.blockOppositeSideBetting ?? false,
+            maxFundingOrdersPerHour:  response.data.riskRules?.maxFundingOrdersPerHour  ?? 0,
+          },
           webUrl:        response.data.webUrl        || '',
           androidUrl:    response.data.androidUrl    || '',
           iosUrl:        response.data.iosUrl        || '',
@@ -294,7 +312,124 @@ export const SystemSettings: React.FC = () => {
         </div>
       </div>
 
-      {/* Token Exchange Rates are managed in Finance -> Token Rates page */}
+      {/* ── BETTING MONEY RULES (Phase A) ──────────────────────────────────── */}
+      <div className="card border-2 border-gold-500/30">
+        <h3 className="text-lg font-semibold mb-1">Betting Money Rules</h3>
+        <p className="text-xs text-gray-400 mb-4">
+          The core money rules of the cycle market. Every value here drives real behavior
+          the moment you save — bets and settlements pick it up immediately.
+        </p>
+
+        <div className="space-y-5">
+          <div>
+            <label className="label">Bet Reserve Percent (%)</label>
+            <input
+              type="number" min={0} max={100} step={0.01}
+              value={formData.betReservePercent}
+              onChange={(e) => setFormData({ ...formData, betReservePercent: Number(e.target.value) })}
+              className="input"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              What share of every bet stake is taken from the user's <strong>reserve wallet</strong>;
+              the rest comes from the deposit wallet first, then winnings. If the reserve runs short,
+              the shortfall shifts to the other wallets automatically.
+            </p>
+            <p className="text-xs text-gold-400/80 mt-1">
+              Example with {formData.betReservePercent}%: a ₹100 bet takes
+              ₹{(Math.floor(10000 * Math.round(formData.betReservePercent * 100) / 10000) / 100).toFixed(2)} from
+              reserve and ₹{(100 - Math.floor(10000 * Math.round(formData.betReservePercent * 100) / 10000) / 100).toFixed(2)} from
+              deposit/winnings. Paise-exact — the parts always add up to the stake.
+            </p>
+          </div>
+
+          <div className="pt-4 border-t border-dark-700">
+            <label className="label">Winnings Platform Fee (%)</label>
+            <input
+              type="number" min={0} max={100} step={0.01}
+              value={formData.winningsFeePercent}
+              onChange={(e) => setFormData({ ...formData, winningsFeePercent: Number(e.target.value) })}
+              className="input"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              The platform's cut of gross winnings at settlement. Winners are paid
+              2× their stake minus this fee; the fee goes to platform revenue in the ledger
+              (and becomes distributable — e.g. for merchant bonuses). Set 0 for a flat 2× payout.
+            </p>
+            <p className="text-xs text-gold-400/80 mt-1">
+              Example with {formData.winningsFeePercent}%: bet ₹100 → win gross ₹200 → fee
+              ₹{(Math.floor(20000 * Math.round(formData.winningsFeePercent * 100) / 10000) / 100).toFixed(2)} → user
+              receives ₹{(200 - Math.floor(20000 * Math.round(formData.winningsFeePercent * 100) / 10000) / 100).toFixed(2)} in
+              the winnings wallet. The fee is rounded down — never against the user.
+            </p>
+          </div>
+
+          <div className="pt-4 border-t border-dark-700">
+            <label className="label">Withdrawal Payout Fee (%)</label>
+            <input
+              type="number" min={0} max={100} step={0.01}
+              value={formData.payoutFeePercent}
+              onChange={(e) => setFormData({ ...formData, payoutFeePercent: Number(e.target.value) })}
+              className="input"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Fee charged when a user sells tokens back (withdrawal). The user receives
+              tokens − fee in INR; the fee posts to the PAYOUT_FEES ledger account. 0 = no fee.
+            </p>
+            <p className="text-xs text-gold-400/80 mt-1">
+              Example with {formData.payoutFeePercent}%: withdrawing 1000 tokens pays out
+              ₹{(1000 - Math.floor(100000 * Math.round(formData.payoutFeePercent * 100) / 10000) / 100).toFixed(2)}.
+            </p>
+          </div>
+
+          <div className="pt-4 border-t border-dark-700 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="pr-4">
+                <p className="font-medium">Enforce Multiples of 10</p>
+                <p className="text-xs text-gray-500">
+                  Buy, sell and bet amounts must be multiples of 10 tokens (e.g. 10, 50, 200 — not 15).
+                  Keeps amounts clean for P2P cash handling.
+                </p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" checked={formData.riskRules.enforceMultiplesOf10}
+                  onChange={(e) => setFormData({ ...formData, riskRules: { ...formData.riskRules, enforceMultiplesOf10: e.target.checked } })}
+                  className="sr-only peer" />
+                <div className="w-11 h-6 bg-gray-700 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gold-500"></div>
+              </label>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div className="pr-4">
+                <p className="font-medium">Block Opposite-Side Betting</p>
+                <p className="text-xs text-gray-500">
+                  Stops a user betting both DELHI and BOMBAY in the same cycle
+                  (wash-bet / guaranteed-arbitrage prevention).
+                </p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" checked={formData.riskRules.blockOppositeSideBetting}
+                  onChange={(e) => setFormData({ ...formData, riskRules: { ...formData.riskRules, blockOppositeSideBetting: e.target.checked } })}
+                  className="sr-only peer" />
+                <div className="w-11 h-6 bg-gray-700 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gold-500"></div>
+              </label>
+            </div>
+
+            <div>
+              <label className="label">Funding Velocity Limit (orders per hour per user)</label>
+              <input
+                type="number" min={0} step={1}
+                value={formData.riskRules.maxFundingOrdersPerHour}
+                onChange={(e) => setFormData({ ...formData, riskRules: { ...formData.riskRules, maxFundingOrdersPerHour: Math.max(0, Math.floor(Number(e.target.value) || 0)) } })}
+                className="input"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Maximum deposit/withdrawal requests a single user may create per hour.
+                0 = unlimited (off). Cancelled orders count — churn is velocity too.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
 
       {/* App Distribution */}
       <div className="card border-2 border-blue-500/30">

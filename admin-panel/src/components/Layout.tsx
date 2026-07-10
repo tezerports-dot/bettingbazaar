@@ -55,6 +55,14 @@ const ALL_MENU_ITEMS: MenuItem[] = [
   // ENTERPRISE_DECISIONS.md 2026-07-07 "Platform-oriented architecture".
   { path: '/business-policy/deposit', icon: Landmark, label: 'Deposit Policy', adminOnly: true, group: 'policy' },
 
+  // ── ENTERPRISE PLATFORMS (Phase C, 2026-07-10) — consoles for the Phase
+  //    007-012 backend APIs (revenue ledger, operations, reports, merchant
+  //    platform) ────────────────────────────────────────────────────────────
+  { path: '/revenue',           icon: Landmark,   label: 'Revenue & Ledger',  permission: 'canViewAnalytics',   group: 'enterprise' },
+  { path: '/operations',        icon: Activity,   label: 'Operations',        permission: 'canViewAnalytics',   group: 'enterprise' },
+  { path: '/reports',           icon: FileText,   label: 'Reports',           permission: 'canViewAnalytics',   group: 'enterprise' },
+  { path: '/merchant-platform', icon: Store,      label: 'Merchant Platform', permission: 'canManageMerchants', group: 'enterprise' },
+
   // ── GAME PROVIDERS (Casino / Crash / Sports API config) ────────────────────
   { path: '/game-providers', icon: Star,           label: 'Game Providers',   adminOnly: true,                   group: 'games' },
 
@@ -148,6 +156,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
               payments: 'Payments & Queue', games: 'Game Providers',
               promos: 'Promotions', content: 'Content & Branding', admin: 'Admin',
               policy: 'Business Policy Platform',
+              enterprise: 'Enterprise Platforms',
             };
             let lastGroup = '';
             return visibleItems.map((item) => {
