@@ -192,11 +192,64 @@ export async function releaseWithdrawal(userId, amount, withdrawalId) {
 }
 
 /**
- * Reject withdrawal — return lockedBalance to winningsBalance.
+ * Reject withdrawal — return the locked amount to winningsBalance.
  * Writes WalletLedger entry. Idempotent.
+ *
+ * FIXED 2026-07-10 (caught by withdrawalBonus.integration.test.js): this
+ * used to delegate to _refundOrder, which credits winningsBalance but never
+ * releases lockedBalance — every REJECTED withdrawal left the amount
+ * stranded as "in play" forever (approve released it; reject didn't). Now
+ * the reversal of lockWithdrawal is atomic: winnings +amount, locked
+ * −amount, one ledger entry. txId format `refund_<id>` is kept identical to
+ * the old delegation so historical idempotency continuity holds.
  */
 export async function refundWithdrawal(userId, amount, withdrawalId) {
-  return _refundOrder(userId, amount, withdrawalId, 'winningsBalance');
+  const txId = `refund_${withdrawalId}`;
+  const User         = mongoose.model('User');
+  const WalletLedger = mongoose.model('WalletLedger');
+
+  if (await WalletLedger.findOne({ txId }).lean()) {
+    return { idempotent: true, txId };
+  }
+
+  const session = await mongoose.startSession();
+  try {
+    let result;
+    await session.withTransaction(async () => {
+      const user = await User.findById(userId).session(session);
+      if (!user) throw new Error('User not found');
+
+      const winBefore    = round2(user.winningsBalance || 0);
+      const lockedBefore = round2(user.lockedBalance   || 0);
+      const winAfter     = round2(winBefore + amount);
+      const lockedAfter  = round2(lockedBefore - amount);
+      if (lockedAfter < 0)
+        throw new Error(`lockedBalance would go negative on refund: current=${lockedBefore} refund=${amount}`);
+
+      // Ledger first — its unique txId index is the concurrency race gate
+      // (same pattern as releaseLockedStake / wallet.service movers).
+      await _appendLedger(session, userId, 'winningsBalance', 'CREDIT',
+        amount, winBefore, winAfter,
+        `Withdrawal rejected — request ${withdrawalId} refunded to winnings`,
+        'PaymentOrder', txId
+      );
+
+      await User.findByIdAndUpdate(userId,
+        { $inc: { winningsBalance: amount, lockedBalance: -amount } },
+        { session }
+      );
+
+      result = { winningsBefore: winBefore, winningsAfter: winAfter, lockedAfter, txId };
+    });
+    return result;
+  } catch (err) {
+    if (err?.code === 11000 || /duplicate key/i.test(err?.message || '')) {
+      return { idempotent: true, txId };
+    }
+    throw err;
+  } finally {
+    await session.endSession();
+  }
 }
 
 /**
