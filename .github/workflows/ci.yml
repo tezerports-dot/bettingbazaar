@@ -44,6 +44,6 @@ jobs:
       - name: Admin panel typecheck + build
         working-directory: admin-panel
         run: npm install && npx tsc --noEmit && npx vite build
-      # NOTE: merchant-panel tsc still has pre-existing errors (tracked in
-      # EXECUTION_QUEUE.md) — its build step is added once those are fixed, so
-      # CI stays green and meaningful rather than perpetually red.
+      - name: Merchant panel typecheck + build
+        working-directory: merchant-panel
+        run: npm install && npx tsc --noEmit && npx vite build

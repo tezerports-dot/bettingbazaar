@@ -1,7 +1,7 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import React from 'react';
 import { PaymentOrder } from '../types';
-import { Clock, User, DollarSign, Phone, CreditCard, AlertCircle, CheckCircle, Shield, Copy } from 'lucide-react';
+import { Clock, User, Phone, Copy } from 'lucide-react';
 import { STATUS_LABELS } from '../constants';
 import CountdownTimer from './CountdownTimer';
 import toast from 'react-hot-toast';
@@ -43,7 +43,6 @@ const OrderCard: React.FC<OrderCardProps> = ({
   const tokenAmount  = order.tokenAmount  || (order as any).bbTokenAmount || 0;
   const merchantProfit = (order as any).merchantProfit || 0;
   const isDeposit    = order.type === 'DEPOSIT';
-  const snap         = order.merchantSnapshot;
   const bank         = order.userBankDetails;
   const kyc          = order.userKycSnapshot;
   const userName     = typeof order.userId === 'object' ? (order.userId as any).username : (order as any).user?.username || 'Unknown User';

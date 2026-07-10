@@ -2,7 +2,6 @@
 import {
   MerchantProfile,
   PaymentOrder,
-  ChatMessage,
   AuthResponse,
   Earnings,
   Stats,

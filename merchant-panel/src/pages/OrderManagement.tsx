@@ -255,14 +255,6 @@ const OrderManagement: React.FC = () => {
     };
 
     
-    const handleNewOrderLegacy = (order: PaymentOrder) => {
-      setOrders(prev => {
-        const exists = prev.find(o => o._id === order._id);
-        return exists ? prev : [order, ...prev];
-      });
-      toast.success(`New ${order.type} order: Rs.${order.fiatAmount}`);
-    };
-
     sseService.on('merchant_orders_snapshot', handleSnapshot);
     sseService.on('order_update',             handleOrderUpdate);
     sseService.on('new_order',                handleNewOrderSSE);
