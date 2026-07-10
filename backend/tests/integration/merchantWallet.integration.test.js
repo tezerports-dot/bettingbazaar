@@ -19,7 +19,7 @@ beforeEach(async () => {
 
 describe('merchant wallet transfer safety (F-1)', () => {
   it('refuses to debit below zero without allowOverdraft (no minting)', async () => {
-    const m = await Merchant().create({ username: 'm1', mobile: '9000001001', tokenBalance: 50 });
+    const m = await Merchant().create({ name: 'M One', username: 'm1', mobile: '9000001001', tokenBalance: 50 });
     const { merchant } = await debitMerchantTokens({
       merchantId: m._id, amount: 100, reason: 'test', refModel: 'PaymentOrder',
       refId: 'o1', txId: 'mw_test_1',
@@ -30,7 +30,7 @@ describe('merchant wallet transfer safety (F-1)', () => {
   });
 
   it('debits when funded and records a ledger entry', async () => {
-    const m = await Merchant().create({ username: 'm2', mobile: '9000001002', tokenBalance: 500 });
+    const m = await Merchant().create({ name: 'M Two', username: 'm2', mobile: '9000001002', tokenBalance: 500 });
     const { merchant } = await debitMerchantTokens({
       merchantId: m._id, amount: 100, reason: 'test', refModel: 'PaymentOrder',
       refId: 'o2', txId: 'mw_test_2',
@@ -40,7 +40,7 @@ describe('merchant wallet transfer safety (F-1)', () => {
   });
 
   it('debit is idempotent — same txId does not double-deduct', async () => {
-    const m = await Merchant().create({ username: 'm3', mobile: '9000001003', tokenBalance: 500 });
+    const m = await Merchant().create({ name: 'M Three', username: 'm3', mobile: '9000001003', tokenBalance: 500 });
     await debitMerchantTokens({ merchantId: m._id, amount: 100, reason: 't', refModel: 'PaymentOrder', refId: 'o3', txId: 'mw_test_3' });
     const again = await debitMerchantTokens({ merchantId: m._id, amount: 100, reason: 't', refModel: 'PaymentOrder', refId: 'o3', txId: 'mw_test_3' });
     expect(again.idempotent).toBe(true);
@@ -49,7 +49,7 @@ describe('merchant wallet transfer safety (F-1)', () => {
   });
 
   it('compensating refund restores the merchant (F-1 rollback path)', async () => {
-    const m = await Merchant().create({ username: 'm4', mobile: '9000001004', tokenBalance: 500 });
+    const m = await Merchant().create({ name: 'M Four', username: 'm4', mobile: '9000001004', tokenBalance: 500 });
     await debitMerchantTokens({ merchantId: m._id, amount: 100, reason: 't', refModel: 'PaymentOrder', refId: 'o4', txId: 'mw_dep_deduct_o4' });
     await creditMerchantTokens({ merchantId: m._id, amount: 100, reason: 'reversed', refModel: 'PaymentOrder', refId: 'o4', txId: 'mw_dep_refund_o4' });
     const fresh = await Merchant().findById(m._id).lean();

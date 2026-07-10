@@ -3,6 +3,11 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 import { vi } from 'vitest';
 
+// Test-only env — must exist BEFORE any test file imports app modules:
+// backend/routes.js throws at import time if JWT_SECRET is missing.
+process.env.NODE_ENV ||= 'test';
+process.env.JWT_SECRET ||= 'test-only-jwt-secret';
+
 let replset;
 
 // Mocking Redis globally for tests

@@ -4,7 +4,7 @@
 // money system: (1) the ledger derived from completed source records
 // conserves to zero across all accounts, and (2) reconciliation is
 // idempotent — re-running never double-posts. Runs in CI (mongod reachable).
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import mongoose from 'mongoose';
 import '../../models/index.js';
 import {
@@ -15,11 +15,10 @@ const PaymentOrder = () => mongoose.model('PaymentOrder');
 const Cycle        = () => mongoose.model('Cycle');
 const Ledger       = () => mongoose.model('AccountingEvent');
 
-beforeEach(async () => {
-  await Ledger().deleteMany({});
-  await PaymentOrder().deleteMany({});
-  await Cycle().deleteMany({});
-});
+// NOTE: no local beforeEach cleanup here. The global setup (tests/setup.js)
+// wipes every collection via the RAW driver between tests — a model-level
+// AccountingEvent.deleteMany() would (correctly) be rejected by the ledger's
+// append-only middleware and fail every test in this file.
 
 async function seedCompletedDeposit(overrides = {}) {
   return PaymentOrder().create({
@@ -61,6 +60,8 @@ describe('ledger reconciliation (real DB)', () => {
   it('records a settled cycle net profit into platform revenue', async () => {
     await Cycle().create({
       cycleId: 'CYC_' + Math.random().toString(16).slice(2),
+      type: '30_MIN', startTime: Date.now() - 3600000, endTime: Date.now() - 1800000,
+      status: 'COMPLETED',
       isSettled: 'COMPLETED', winner: 'DELHI',
       realDelhi: 500, realBombay: 500, totalPaidOut: 800, netProfit: 200,
       settledAt: new Date(),
