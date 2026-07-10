@@ -200,6 +200,72 @@ export async function refundWithdrawal(userId, amount, withdrawalId) {
 }
 
 /**
+ * releaseLockedStake — settle-time release of a bet's locked stake (F-2,
+ * 2026-07-10). THE sanctioned writer for lockedBalance/lockedDepositAmount/
+ * lockedWinningsAmount at settlement (§7) — replaces the raw `$inc`s that
+ * lived in domains/settlement/settlementService.js.
+ *
+ * Concurrency contract: settlement passes can legitimately overlap (engine
+ * tick + payout recovery task, or two nodes — the cycle lock re-admits
+ * PROCESSING on purpose). Safety comes from the ledger's UNIQUE txId index
+ * acting as the atomic gate: the ledger insert and the balance `$inc`
+ * happen inside one transaction, so a concurrent duplicate aborts the
+ * whole transaction (11000 / transient write-conflict retry → 11000) and
+ * the `$inc` never lands twice. Callers pass a deterministic txId
+ * (`unlock_win_<anchorBetId>` for wins, `unlock_lost_<betId>` for losses —
+ * the loss format predates F-2, preserving idempotency continuity with
+ * historical ledger entries).
+ */
+export async function releaseLockedStake(userId, { amount, fromDeposit = 0, fromWinnings = 0, txId, reason }) {
+  if (!txId) throw new Error('releaseLockedStake requires a deterministic txId');
+  if (!(amount > 0)) throw new Error(`releaseLockedStake: invalid amount ${amount}`);
+  const User         = mongoose.model('User');
+  const WalletLedger = mongoose.model('WalletLedger');
+
+  // Fast path — this unlock already happened (re-run / recovery).
+  if (await WalletLedger.findOne({ txId }).lean()) {
+    return { idempotent: true, txId };
+  }
+
+  const session = await mongoose.startSession();
+  try {
+    let result;
+    await session.withTransaction(async () => {
+      const user = await User.findById(userId).session(session);
+      if (!user) throw new Error('User not found');
+      const before = round2(user.lockedBalance || 0);
+      const after  = round2(before - amount);
+
+      // Ledger FIRST inside the transaction: its unique txId index is the
+      // race gate — if a concurrent pass committed the same txId, this
+      // insert throws and the transaction (including the $inc) aborts.
+      await _appendLedger(session, userId, 'lockedBalance', 'DEBIT',
+        amount, before, after, reason || 'Bet stake unlock — cycle settlement',
+        'Bet', txId
+      );
+
+      await User.findByIdAndUpdate(userId, {
+        $inc: {
+          lockedBalance:        -amount,
+          lockedDepositAmount:  -(fromDeposit  || 0),
+          lockedWinningsAmount: -(fromWinnings || 0),
+        }
+      }, { session });
+
+      result = { lockedBefore: before, lockedAfter: after, txId };
+    });
+    return result;
+  } catch (err) {
+    if (err?.code === 11000 || /duplicate key/i.test(err?.message || '')) {
+      return { idempotent: true, txId };
+    }
+    throw err;
+  } finally {
+    await session.endSession();
+  }
+}
+
+/**
  * Admin manual balance adjustment.
  * type = 'CREDIT' | 'DEBIT'
  * field = 'depositBalance' | 'winningsBalance'

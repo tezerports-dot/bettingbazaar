@@ -195,9 +195,6 @@ class GameEngine {
 
         let userBulkOps = [];
         let txBulkOps = [];
-        let totalPaidOutMinor = 0;      // integer paise — exact accumulation
-        let totalPlatformFeesMinor = 0; // integer paise — retained winnings fees
-        let totalWinners = 0;
 
         // Track winner payouts so we can emit per-user payout_success via WS
         const winnerPayouts = []; // { userId, payout, betAmount }
@@ -261,10 +258,6 @@ class GameEngine {
                 }
             });
 
-            totalPaidOutMinor      += payoutMinor;
-            totalPlatformFeesMinor += feeMinor;
-            totalWinners++;
-
             if (userBulkOps.length >= BATCH_SIZE) {
                 await executeSettlementBatch(userBulkOps, txBulkOps);
                 userBulkOps = []; txBulkOps = [];
@@ -275,8 +268,24 @@ class GameEngine {
             await executeSettlementBatch(userBulkOps, txBulkOps);
         }
 
-        const totalPaidOut = totalPaidOutMinor / 100;
-        const totalPlatformFees = totalPlatformFeesMinor / 100;
+        // Cycle totals are DERIVED from the stamped WON bets, not from this
+        // run's in-memory accumulators (F-2 recovery fix, 2026-07-10): a
+        // resume after a mid-batch crash only re-processes still-PENDING
+        // bets, so accumulators would undercount — the DB sees every bet
+        // paid across all passes. Round: payout/platformFee are 2-decimal
+        // values whose float sum can drift at the 1e-12 scale.
+        const [wonTotals] = await Bet.aggregate([
+            { $match: { cycleId: cycle.cycleId, status: 'WON', isPhantom: false } },
+            { $group: {
+                _id: null,
+                paid: { $sum: '$payout' },
+                fees: { $sum: '$platformFee' },
+                winners: { $addToSet: '$userId' },
+            } },
+        ]);
+        const totalPaidOut      = Math.round((wonTotals?.paid || 0) * 100) / 100;
+        const totalPlatformFees = Math.round((wonTotals?.fees || 0) * 100) / 100;
+        const totalWinners      = wonTotals?.winners?.length || 0;
 
         // ── REALTIME PAYOUT NOTIFICATION ──────────────────────────────────────
         // Emit payout_success to each winner's personal room so their wallet

@@ -6,7 +6,9 @@ import mongoose from 'mongoose';
 const walletLedgerSchema = new mongoose.Schema({
   userId:        { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   type:          { type: String, enum: ['CREDIT', 'DEBIT'], required: true },
-  field:         { type: String, enum: ['depositBalance', 'winningsBalance', 'tokenBalance', 'reserveBalance'], required: true },
+  // 'lockedBalance' added 2026-07-10 (F-2): stake-unlock entries are now
+  // honest first-class ledger records instead of 0-amount winningsBalance rows.
+  field:         { type: String, enum: ['depositBalance', 'winningsBalance', 'tokenBalance', 'reserveBalance', 'lockedBalance'], required: true },
   amount:        { type: Number, required: true },
   balanceBefore: { type: Number, required: true },
   balanceAfter:  { type: Number, required: true },
