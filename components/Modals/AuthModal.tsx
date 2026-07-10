@@ -126,11 +126,19 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
                         {loading ? 'Processing...' : (isLogin ? 'ENTER ARENA' : 'REGISTER NOW')}
                     </button>
                 </form>
-                <div className="mt-6 text-center">
+                <div className="mt-6 text-center space-y-2">
                     <button onClick={() => { setIsLogin(!isLogin); setError(''); setUsername(''); setRefCode(sessionStorage.getItem('referral_code') || ''); }}
-                        className="text-slate-400 hover:text-white text-xs underline transition-colors">
+                        className="text-slate-400 hover:text-white text-xs underline transition-colors block w-full">
                         {isLogin ? "New Player? Create Account" : "Already have an account? Login"}
                     </button>
+                    {/* W-3 fix (Phase D, 2026-07-10): the recovery flow existed
+                        (/recover-account + backend accountRecovery) but nothing
+                        linked to it from login/signup. HashRouter → plain anchor
+                        works from inside the modal and closes it via navigation. */}
+                    <a href="#/recover-account" onClick={() => { if (onClose) onClose(); }}
+                        className="text-slate-500 hover:text-[#D4AF37] text-xs underline transition-colors block w-full">
+                        Lost access to your account? Recover it here
+                    </a>
                 </div>
             </div>
         </div>

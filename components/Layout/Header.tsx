@@ -108,7 +108,10 @@ const Header: React.FC<HeaderProps> = ({ onAuthRequired }) => {
 
   return (
     <>
-      <header className="h-[9%] min-h-[60px] flex items-center justify-between px-4 bg-[#0B0E14]/90 backdrop-blur-md relative z-50 border-b border-[#D4AF37]/15 shadow-lg">
+      {/* UX-2 fix (Phase D, 2026-07-10): sticky + flex-shrink-0 — on short
+          viewports where the game column overflows and the page scrolls, the
+          header used to scroll away ("header hides") or get squashed. */}
+      <header className="h-[9%] min-h-[60px] flex-shrink-0 flex items-center justify-between px-4 bg-[#0B0E14]/90 backdrop-blur-md sticky top-0 z-50 border-b border-[#D4AF37]/15 shadow-lg">
         {/* Wallet pill — navigates directly to /wallet */}
         <div
           className="flex items-center gap-2 bg-[#121826] px-3 py-1.5 rounded-full border border-[#D4AF37]/30 cursor-pointer active:scale-95 transition-transform hover:border-[#D4AF37]/60 shadow-[0_0_10px_rgba(0,0,0,0.5)] relative"
