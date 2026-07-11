@@ -125,5 +125,18 @@ export function registerCronJobs(rebuildLeaderboard) {
     } catch (e) { console.error('[bonus-engine] cron error:', e.message); }
   }), 10 * 60 * 1000);
 
+  // ── Data retention worker — runs daily (Phase X X-7) ────────────────────────
+  // Prunes high-volume OPERATIONAL data (settled bets, completed cycles, error
+  // reports) older than SystemConfig.retentionMonths. NEVER touches financial/
+  // audit/user data (see retention.service.js + RETENTION_POLICY.md). Leader-
+  // locked so only one instance prunes; idempotent (re-running finds nothing
+  // new); a 30-day safety floor caps misconfiguration.
+  setInterval(() => withLeaderLock('data-retention', 24 * 60 * 60 * 1000, async () => {
+    try {
+      const { runRetention } = await import('../domains/operations/retention.service.js');
+      await runRetention();
+    } catch (e) { console.error('[retention] cron error:', e.message); }
+  }), 24 * 60 * 60 * 1000);
+
   console.log('✅ Cron jobs registered');
 }

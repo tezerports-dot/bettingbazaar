@@ -11,6 +11,7 @@
  * surface points at the platform that configures it.
  */
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import { runRetention } from './retention.service.js';
 import { getTrialBalance, getDistributableRevenueMinor } from '../revenue/revenueSettlement.service.js';
 import { ACCOUNTS, toRupees } from '../revenue/chartOfAccounts.js';
 import { listProviders } from '../funding/providerRegistry.js';
@@ -110,6 +111,8 @@ router.get('/operations/config-catalog', authenticate, isAdminOrSubAdmin, async 
     // 2x payout is a fixed product rule (winnings fee % is the settlement knob).
     // Phase X X-5: short-block cycle duration, previously hardcoded.
     { value: 'Cycle duration (short-block betting window, minutes)', owner: 'Business Policy — SystemConfig.cycleDurationMinutes (read by markets/cycleGenerator)', edit: 'PUT /api/admin/system/config' },
+    // Phase X X-7: operational-data retention window.
+    { value: 'Data retention (months of settled bets/cycles/error-reports kept)', owner: 'Business Policy — SystemConfig.retentionMonths (read by operations/retention.service)', edit: 'PUT /api/admin/system/config' },
     { value: 'Merchant bonus pool funding', owner: 'Revenue & Settlement (from distributable revenue only)', edit: 'POST /api/admin/revenue/bonus-pool/fund' },
     { value: 'Per-merchant order limits + wallet top-ups', owner: 'Merchant Platform', edit: 'PUT /api/admin/merchants/:id (limits) / POST /api/admin/merchants/:id/fund' },
     { value: 'Funding providers (P2P / USDT / gateways)', owner: 'Funding Platform — providerRegistry adapters', edit: 'code adapter + registry entry (activation is a deploy, not a constant)' },
@@ -120,6 +123,22 @@ router.get('/operations/config-catalog', authenticate, isAdminOrSubAdmin, async 
     { value: 'Branding (colors, logos, names, banners)', owner: 'Branding document (§3/§12)', edit: 'PUT /api/admin/branding' },
     { value: 'Chat rules, support links, promo content', owner: 'CMS domain documents', edit: 'respective /api/admin content endpoints' },
   ]});
+});
+
+// POST /api/admin/operations/retention/run — prune operational data now.
+// Body: { dryRun?: boolean, months?: number }. dryRun (default true) only
+// COUNTS; pass dryRun:false to actually delete. Admin-only. Financial/audit/
+// user data is never reachable from the retention service (X-7).
+router.post('/operations/retention/run', authenticate, isAdmin, async (req, res) => {
+  try {
+    const dryRun = req.body?.dryRun !== false; // default to a safe preview
+    const months = req.body?.months;
+    const outcome = await runRetention({ months, dryRun });
+    res.json({ success: true, ...outcome });
+  } catch (error) {
+    console.error('Retention run error:', error);
+    res.status(500).json({ success: false, message: 'Failed to run retention' });
+  }
 });
 
 export default router;

@@ -75,6 +75,14 @@ const systemConfigSchema = new mongoose.Schema({
   // the server-provided endTime, so no client change is needed.
   cycleDurationMinutes: { type: Number, default: 30, min: 10, max: 60 },
 
+  // ── DATA RETENTION (Phase X X-7, 2026-07-10) ──────────────────────────────
+  // How many months of high-volume OPERATIONAL data (settled bets, completed
+  // cycles, frontend error reports) to keep before the retention worker prunes
+  // it. Financial/audit/user data is NEVER pruned (kept forever — see
+  // RETENTION_POLICY.md). A hard 30-day safety floor applies regardless of
+  // this value. Read by domains/operations/retention.service.js.
+  retentionMonths: { type: Number, default: 6, min: 1, max: 120 },
+
   // ── BET FUNDING SPLIT (Phase A, 2026-07-10) ───────────────────────────────
   // % of every bet stake funded from reserveBalance; the remainder comes from
   // depositBalance first, then winningsBalance (fallbacks per owner spec §6).
