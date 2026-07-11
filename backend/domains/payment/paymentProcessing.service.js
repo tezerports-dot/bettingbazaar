@@ -67,13 +67,28 @@ function buildMerchantSnapshot(merchantDoc, expiresAt) {
   };
 }
 
+// ─── Payment order window (Business Config Audit, 2026-07-11) ─────────────────
+// Minutes a user has to pay the assigned merchant before the order auto-expires
+// and refunds. Owned by SystemConfig.orderExpiryMinutes (was hardcoded 15).
+// Falls back to 15 min if unset/invalid, so behavior is unchanged until an admin
+// edits it. Returns milliseconds for direct Date arithmetic.
+async function getOrderExpiryMs() {
+  try {
+    const SystemConfig = mongoose.model('SystemConfig');
+    const cfg = await SystemConfig.findOne({ key: 'main' }).select('orderExpiryMinutes').lean();
+    const m = cfg?.orderExpiryMinutes;
+    if (Number.isFinite(m) && m >= 1 && m <= 1440) return m * 60 * 1000;
+  } catch { /* fall through to default */ }
+  return 15 * 60 * 1000;
+}
+
 // ─── Attempt to assign order to best merchant; returns true if assigned ────────
 async function tryAssignMerchant(order) {
   const Merchant = mongoose.model('Merchant');
   const merchant = await selectBestMerchant(order.type, order.tokenAmount);
   if (!merchant) return false;
 
-  const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15-min window
+  const expiresAt = new Date(Date.now() + await getOrderExpiryMs()); // admin-configurable window
   order.merchantId       = merchant._id;
   order.status           = 'ASSIGNED';
   order.assignedAt       = new Date();

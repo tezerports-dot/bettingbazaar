@@ -1,9 +1,42 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** branding.admin.routes.js — Branding config, CDN images, app assets */
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from './_adminShared.js';
-import { generateBrandingUploadUrl } from '../../services/cdn.service.js';
+import { generateBrandingUploadUrl, isS3Configured, uploadBufferToS3, deleteFile } from '../../services/cdn.service.js';
+import path_node from 'path';
+import fs_node from 'fs';
 
 const router = express.Router();
+
+// ── APP-ASSET SLOTS (PWA icons / logos / splash) ──────────────────────────────
+// Fixed named slots the admin can upload. Bytes go to S3 when configured
+// (shared across instances) or local disk as a graceful fallback; the AppAsset
+// model records where each slot lives so listing is multi-instance-correct.
+// (Previously these consts lived in system.admin.routes.js while the routes lived
+// here — a cross-module reference that threw at request time. Now self-contained.)
+const ASSET_SLOTS = {
+  'logo.png':           { label: 'App Logo (Loading & Share)',   w: 512,  h: 512,  hint: 'Square PNG, transparent bg. Loading screen + share modal.' },
+  'logo-header.png':    { label: 'Header Banner Logo',           w: 600,  h: 120,  hint: 'Wide PNG, transparent bg. Shown in app header center.' },
+  'icon-192.png':       { label: 'PWA Icon 192x192',             w: 192,  h: 192,  hint: 'Square PNG. Android home screen shortcut.' },
+  'icon-512.png':       { label: 'PWA Icon 512x512 (Maskable)',  w: 512,  h: 512,  hint: 'Square PNG with safe zone. Splash + app store.' },
+  'icon-apple-180.png': { label: 'Apple Touch Icon 180x180',     w: 180,  h: 180,  hint: 'Square PNG. iPhone home screen.' },
+  'favicon-32.png':     { label: 'Favicon 32x32',                w: 32,   h: 32,   hint: 'Square PNG. Browser tab.' },
+  'splash.png':         { label: 'PWA Splash Screen',            w: 1242, h: 2688, hint: 'Portrait PNG. PWA loading splash.' },
+};
+
+// Local-disk fallback dir (used only when S3 isn't configured). Served by
+// server.js at GET /app-assets via express.static.
+const appAssetsDir_r = path_node.join(path_node.dirname(new URL(import.meta.url).pathname), '../../app-assets');
+fs_node.mkdirSync(appAssetsDir_r, { recursive: true });
+
+// App-asset uploads accept only safe raster image types — never SVG (XSS via
+// CDN) or anything executable.
+const APP_ASSET_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+
+// Append a cache-busting token so a re-uploaded slot (same URL) refreshes.
+function bust(url, ts) {
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}t=${ts}`;
+}
 
 router.get('/branding', authenticate, isAdmin, async (req, res) => {
   try {
@@ -279,10 +312,30 @@ router.post('/branding/confirm-upload', authenticate, isAdmin, async (req, res) 
   }
 });
 
-// Get merchant transaction history
-router.get('/app-assets', authenticate, isAdmin, (req, res) => {
+// GET /app-assets — list every slot with its current upload state. Metadata
+// comes from the AppAsset collection (multi-instance source of truth); if a slot
+// has no record we fall back to a local-disk stat so pre-existing disk uploads
+// still show (backward compatible).
+router.get('/app-assets', authenticate, isAdmin, async (req, res) => {
   try {
+    const AppAsset = mongoose.model('AppAsset');
+    const records = await AppAsset.find({}).lean();
+    const byslot = Object.fromEntries(records.map(r => [r.slot, r]));
+
     const slots = Object.entries(ASSET_SLOTS).map(([name, meta]) => {
+      const rec = byslot[name];
+      if (rec) {
+        const ts = new Date(rec.updatedAt).getTime();
+        return {
+          name, label: meta.label, width: meta.w, height: meta.h, hint: meta.hint,
+          uploaded:  true,
+          url:       bust(rec.url, ts),
+          size:      rec.size || null,
+          updatedAt: rec.updatedAt,
+          storage:   rec.storage,
+        };
+      }
+      // No record — check the local-disk fallback (legacy uploads).
       const filePath = path_node.join(appAssetsDir_r, name);
       const exists   = fs_node.existsSync(filePath);
       const stat     = exists ? fs_node.statSync(filePath) : null;
@@ -292,16 +345,19 @@ router.get('/app-assets', authenticate, isAdmin, (req, res) => {
         url:       exists ? `/app-assets/${name}?t=${stat.mtimeMs}` : null,
         size:      stat ? stat.size : null,
         updatedAt: stat ? stat.mtime : null,
+        storage:   exists ? 'LOCAL' : null,
       };
     });
-    res.json({ success: true, slots });
+    res.json({ success: true, slots, storage: isS3Configured() ? 'S3' : 'LOCAL' });
   } catch (err) {
+    console.error('[app-assets list]', err.message);
     res.status(500).json({ success: false, message: 'Failed to list app assets' });
   }
 });
 
 // POST body (JSON): { slot: "logo.png", data: "data:image/png;base64,..." }
-// Uses inline express.json with 6MB limit — no new npm dependencies needed
+// Uploads to S3 when configured (shared across instances) or local disk otherwise.
+// Uses inline express.json with 6MB limit — no new npm dependencies needed.
 router.post('/app-assets/upload',
   authenticate, isAdmin,
   express.json({ limit: '6mb' }),
@@ -312,12 +368,38 @@ router.post('/app-assets/upload',
       if (!ASSET_SLOTS[slot]) return res.status(400).json({ success: false, message: `Unknown slot: ${slot}` });
       const match = data.match(/^data:(image\/[a-z+]+);base64,(.+)$/);
       if (!match) return res.status(400).json({ success: false, message: 'data must be a base64 data URI' });
+      const mime = match[1].toLowerCase();
+      if (!APP_ASSET_MIMES.has(mime)) {
+        return res.status(400).json({ success: false, message: 'Only PNG, JPEG, WebP or GIF images are allowed.' });
+      }
       const buffer = Buffer.from(match[2], 'base64');
       if (buffer.length > 5 * 1024 * 1024) return res.status(400).json({ success: false, message: 'Max 5 MB' });
-      const filePath = path_node.join(appAssetsDir_r, slot);
-      fs_node.writeFileSync(filePath, buffer);
-      const stat = fs_node.statSync(filePath);
-      res.json({ success: true, slot, url: `/app-assets/${slot}?t=${stat.mtimeMs}`, size: stat.size });
+
+      const AppAsset = mongoose.model('AppAsset');
+      let url, storage, fileKey = '';
+
+      if (isS3Configured()) {
+        // Deterministic key so the public URL stays stable across re-uploads.
+        fileKey = `app-assets/${slot}`;
+        url     = await uploadBufferToS3(fileKey, buffer, mime);
+        storage = 'S3';
+        // Best-effort: drop any stale local copy so GET doesn't prefer it.
+        try { fs_node.unlinkSync(path_node.join(appAssetsDir_r, slot)); } catch { /* none */ }
+      } else {
+        const filePath = path_node.join(appAssetsDir_r, slot);
+        fs_node.writeFileSync(filePath, buffer);
+        url     = `/app-assets/${slot}`;
+        storage = 'LOCAL';
+      }
+
+      const now = new Date();
+      await AppAsset.findOneAndUpdate(
+        { slot },
+        { slot, url, storage, fileKey, size: buffer.length, contentType: mime, updatedAt: now, updatedBy: req.user._id },
+        { upsert: true, new: true }
+      );
+
+      res.json({ success: true, slot, url: bust(url, now.getTime()), size: buffer.length, storage });
     } catch (err) {
       console.error('[app-assets upload]', err.message);
       res.status(500).json({ success: false, message: 'Failed to save asset' });
@@ -325,15 +407,29 @@ router.post('/app-assets/upload',
   }
 );
 
-router.delete('/app-assets/:name', authenticate, isAdmin, (req, res) => {
+router.delete('/app-assets/:name', authenticate, isAdmin, async (req, res) => {
   const { name } = req.params;
   if (!ASSET_SLOTS[name]) return res.status(400).json({ success: false, message: 'Unknown slot' });
-  const filePath = path_node.join(appAssetsDir_r, name);
-  if (!fs_node.existsSync(filePath)) return res.status(404).json({ success: false, message: 'Not found' });
   try {
-    fs_node.unlinkSync(filePath);
+    const AppAsset = mongoose.model('AppAsset');
+    const rec = await AppAsset.findOne({ slot: name });
+    const filePath = path_node.join(appAssetsDir_r, name);
+    const diskExists = fs_node.existsSync(filePath);
+
+    if (!rec && !diskExists) return res.status(404).json({ success: false, message: 'Not found' });
+
+    // Remove the bytes wherever they live.
+    if (rec?.storage === 'S3' && rec.fileKey) {
+      try { await deleteFile(rec.fileKey); } catch (e) { console.warn('[app-assets delete] S3 delete failed:', e.message); }
+    }
+    if (diskExists) {
+      try { fs_node.unlinkSync(filePath); } catch { /* ignore */ }
+    }
+    if (rec) await AppAsset.deleteOne({ _id: rec._id });
+
     res.json({ success: true, message: `${name} deleted` });
   } catch (err) {
+    console.error('[app-assets delete]', err.message);
     res.status(500).json({ success: false, message: 'Failed to delete' });
   }
 });

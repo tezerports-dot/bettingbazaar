@@ -65,12 +65,16 @@ rewrite. That is a deliberate architectural choice, not an oversight; if
 SQL-portability is ever required it would be a dedicated project (introduce a
 repository/DAL abstraction over the domains). No such abstraction exists today.
 
-## Minor portability caveats (queued, not blockers)
+## Minor portability caveats
 
-- **App-asset uploads** (admin PWA icons) write to local disk
-  (`backend/app-assets/`) via multer — ephemeral on a container host and not
-  shared across instances. Branding/KYC uploads already use S3; app-assets
-  should move to S3 too before multi-instance. (Queued.)
+- ✅ **App-asset uploads** (admin PWA icons/logos/splash) — RESOLVED
+  (2026-07-11): the upload route now writes to **S3 when configured**
+  (`cdn.service.uploadBufferToS3`, deterministic keys under `app-assets/`) and
+  records each slot in the `AppAsset` collection, so listing is multi-instance
+  correct. Without S3 it gracefully falls back to local disk (single-instance
+  dev). Branding/KYC already used S3; app-assets now match. (Fixed a latent bug
+  en route: the handlers referenced consts declared in a different module and
+  would have thrown at request time — now self-contained.)
 - ✅ **SSE/socket fan-out** — RESOLVED (2026-07-10): a Redis pub/sub bridge
   (`startup/realtimeBridge.js`) fans socket.io + SSE events across all
   instances; graceful no-op without Redis.

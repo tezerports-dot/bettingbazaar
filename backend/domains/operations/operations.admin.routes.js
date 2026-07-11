@@ -103,12 +103,17 @@ router.get('/operations/config-catalog', authenticate, isAdminOrSubAdmin, async 
     { value: 'Bet limits (per cycle type)', owner: 'Business Policy — SystemConfig.betLimits', edit: 'PUT /api/admin/system/config' },
     { value: 'Deposit/withdrawal min/max', owner: 'Business Policy — SystemConfig', edit: 'PUT /api/admin/system/config' },
     { value: 'Payout fee %', owner: 'Business Policy — SystemConfig.payoutFeePercent (enforced by Risk, recorded by R&S)', edit: 'PUT /api/admin/system/config' },
-    { value: 'Risk rules (multiples-of-10, opposite-side block, velocity/hour)', owner: 'Business Policy — SystemConfig.riskRules (enforced by Risk)', edit: 'PUT /api/admin/system/config' },
+    { value: 'Risk rules (multiples-of-10, opposite-side block, velocity/hour, auto-block warnings)', owner: 'Business Policy — SystemConfig.riskRules incl. maxWarnings (enforced by Risk; auto-block in merchant reject)', edit: 'PUT /api/admin/system/config' },
     // Phase A (2026-07-10): the two core betting money rules, now configurable.
     { value: 'Bet funding split — reserve % of each stake', owner: 'Business Policy — SystemConfig.betReservePercent (arithmetic in Risk computeBetFundingPlan)', edit: 'PUT /api/admin/system/config' },
     { value: 'Winnings platform fee % (settlement)', owner: 'Business Policy — SystemConfig.winningsFeePercent (arithmetic in Risk computeWinningsPayout, paid by gameEngine)', edit: 'PUT /api/admin/system/config' },
-    // Corrected 2026-07-10: SystemConfig.payoutMultiplier never existed — the
-    // 2x payout is a fixed product rule (winnings fee % is the settlement knob).
+    // Business Config Audit (2026-07-11): payout multiplier is now a real config
+    // knob (was hardcoded 2x in gameEngine); the winnings fee % remains separate.
+    { value: 'Payout multiplier (winning bet pays stake × N, before fee)', owner: 'Business Policy — SystemConfig.payoutMultiplier (arithmetic in Risk computeWinningsPayout, paid by gameEngine)', edit: 'PUT /api/admin/system/config' },
+    // Business Config Audit (2026-07-11): payment order window, was hardcoded 15m.
+    { value: 'Payment order expiry (minutes to pay assigned merchant)', owner: 'Business Policy — SystemConfig.orderExpiryMinutes (read by payment/paymentProcessing)', edit: 'PUT /api/admin/system/config' },
+    // Business Config Audit (2026-07-11): cycle phase timings, were hardcoded.
+    { value: 'Cycle phase timings (merge/equalizer/close/celebrate offsets, per type)', owner: 'Business Policy — SystemConfig.cyclePhases (read cached by markets/cycleGenerator)', edit: 'PUT /api/admin/system/config' },
     // Phase X X-5: short-block cycle duration, previously hardcoded.
     { value: 'Cycle duration (short-block betting window, minutes)', owner: 'Business Policy — SystemConfig.cycleDurationMinutes (read by markets/cycleGenerator)', edit: 'PUT /api/admin/system/config' },
     // Phase X X-7: operational-data retention window.

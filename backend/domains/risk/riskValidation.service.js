@@ -234,7 +234,7 @@ export function computeWinningsPayout({ amount, feePercent, multiplier = 2 }) {
 async function getRiskRules() {
   const SystemConfig = mongoose.model('SystemConfig');
   const cfg = await SystemConfig.findOne({ key: 'main' })
-    .select('riskRules payoutFeePercent winningsFeePercent betReservePercent').lean();
+    .select('riskRules payoutFeePercent winningsFeePercent betReservePercent payoutMultiplier').lean();
   return {
     // schema default: true (2026-07-09 owner directive — multiples of 10)
     enforceMultiplesOf10: cfg?.riskRules?.enforceMultiplesOf10 ?? true,
@@ -242,12 +242,16 @@ async function getRiskRules() {
     blockOppositeSideBetting: cfg?.riskRules?.blockOppositeSideBetting ?? false,
     // schema default: 0 = off
     maxFundingOrdersPerHour: cfg?.riskRules?.maxFundingOrdersPerHour ?? 0,
+    // schema default: 3 — auto-block after N payment warnings (0 = never)
+    maxWarnings: cfg?.riskRules?.maxWarnings ?? 3,
     // schema default: 0 = no fee
     payoutFeePercent: cfg?.payoutFeePercent ?? 0,
     // schema default: 1 (Phase A owner spec — 1% platform fee on winnings)
     winningsFeePercent: cfg?.winningsFeePercent ?? 1,
     // schema default: 3 (Phase A — % of each bet stake from reserveBalance)
     betReservePercent: cfg?.betReservePercent ?? 3,
+    // schema default: 2 (2x payout; Business Config Audit 2026-07-11)
+    payoutMultiplier: cfg?.payoutMultiplier ?? 2,
   };
 }
 

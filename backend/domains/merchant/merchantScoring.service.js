@@ -84,9 +84,9 @@ export async function selectBestMerchant(orderType, tokenAmount, currency = 'INR
     // field, meaning automatic assignment had never successfully matched anyone.
     // $ifNull substitutes the schema default (3) when the field is absent, mirroring
     // the same `?? 3` fallback scoreMerchant() already uses for scoring (see above).
-    // See backend/migrations/003-backfill-merchant-defaults.js for the accompanying
-    // one-time data fix — this query fix is defense-in-depth so the same class of
-    // bug can't silently reoccur if another defaulted field gets added later.
+    // This query fix is self-contained defense-in-depth: it matches merchants
+    // whether or not the field was ever backfilled, so the same class of bug can't
+    // silently reoccur if another defaulted field gets added later.
     $expr: {
       $lt: [
         { $ifNull: ['$activeOrderCount', 0] },

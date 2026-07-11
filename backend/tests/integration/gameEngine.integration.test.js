@@ -159,6 +159,44 @@ describe('Game Engine Settlement', () => {
     expect(settledCycle.winningsFeePercentUsed).toBe(0);
   });
 
+  it('admin-editable: payoutMultiplier 3 pays 3x the stake (Business Config Audit)', async () => {
+    // Config change only — no code path is different. Proves gameEngine reads
+    // SystemConfig.payoutMultiplier at settlement (was hardcoded 2).
+    await SystemConfig().create({ key: 'main', payoutMultiplier: 3, winningsFeePercent: 0 });
+
+    const user = await User.create({
+      username: 'TripleWinner',
+      mobile: '1234567894',
+      depositBalance: 0,
+      winningsBalance: 0,
+      lockedBalance: 50,
+      lockedDepositAmount: 50,
+    });
+
+    const cycle = await makeCycle({ realDelhi: 50 });
+
+    await Bet.create({
+      userId: user._id,
+      cycleId: cycle.cycleId,
+      amount: 50,
+      side: 'DELHI',
+      fromDepositBalance: 50,
+      status: 'PENDING',
+    });
+
+    await engine.processPayoutsOptimized(cycle);
+
+    const updatedUser = await User.findById(user._id);
+    expect(updatedUser.winningsBalance).toBe(150); // 50 × 3, no fee
+
+    const bet = await Bet.findOne({ userId: user._id });
+    expect(bet.payout).toBe(150);
+    expect(bet.platformFee).toBe(0);
+
+    const settledCycle = await Cycle.findById(cycle._id);
+    expect(settledCycle.totalPaidOut).toBe(150);
+  });
+
   it('marks a loser LOST and releases their locked stake without crediting', async () => {
     const user = await User.create({
       username: 'Loser',

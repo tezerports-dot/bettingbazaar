@@ -2,6 +2,26 @@
 import { Cycle } from '../../models/index.js';
 import mongoose from 'mongoose';
 
+// ── CYCLE PHASE OFFSETS (Business Config Audit, 2026-07-11) ───────────────────
+// Seconds BEFORE a cycle's endTime that each phase fires. Previously hardcoded
+// inline in updateCycleStatuses(). Now admin-editable via SystemConfig.cyclePhases;
+// these are the historical defaults AND the safe fallback used whenever config is
+// unset or fails the ordering invariant. Invariant: merge > equalizer > close >
+// celebrate > 0 (each phase strictly earlier than the next, all within the block).
+const DEFAULT_CYCLE_PHASES = {
+  thirtyMin: { mergeBeforeEndSec: 180, equalizerBeforeEndSec: 120, closeBeforeEndSec: 30, celebrateBeforeEndSec: 10 },
+  fullDay:   { mergeBeforeEndSec: 300, equalizerBeforeEndSec: 120, closeBeforeEndSec: 30, celebrateBeforeEndSec: 10 },
+};
+
+// Reject a phase set that would break the state machine (out-of-order or negative
+// offsets). A bad admin value falls back to DEFAULT_CYCLE_PHASES for that type
+// rather than corrupting cycle transitions.
+function validPhaseSet(p) {
+  if (!p) return false;
+  const m = p.mergeBeforeEndSec, e = p.equalizerBeforeEndSec,
+        c = p.closeBeforeEndSec, f = p.celebrateBeforeEndSec;
+  return [m, e, c, f].every(v => Number.isFinite(v)) && m > e && e > c && c > f && f >= 0;
+}
 
 class CycleGenerator {
     constructor(io, sseManager) {
@@ -16,6 +36,42 @@ class CycleGenerator {
         // In-memory cache of active cycles — updated by manageCycles() every 1s,
         // read by broadcastLiveUpdates() in the same tick with zero DB hits.
         this.liveCycleCache = {};  // { '30_MIN': cycleDoc, 'FULL_DAY': cycleDoc }
+        // Short-TTL cache of the admin-configured phase offsets. The status tick
+        // runs every 1s for every active cycle; without this we'd re-read
+        // SystemConfig each tick. 30s TTL → an admin edit takes effect within 30s.
+        this._cyclePhasesCache = null;
+        this._cyclePhasesCacheAt = 0;
+    }
+
+    /**
+     * getCyclePhases — admin-configured phase offsets (Business Config Audit).
+     * Owned by SystemConfig.cyclePhases; cached 30s because the 1s status tick
+     * calls this for every active cycle. Any missing/invalid value (per-type)
+     * falls back to DEFAULT_CYCLE_PHASES, so timing is identical to the old
+     * hardcoded behavior until an admin changes it.
+     */
+    async getCyclePhases() {
+        const now = Date.now();
+        if (this._cyclePhasesCache && (now - this._cyclePhasesCacheAt) < 30000) {
+            return this._cyclePhasesCache;
+        }
+        let result = DEFAULT_CYCLE_PHASES;
+        try {
+            const SystemConfig = mongoose.model('SystemConfig');
+            const cfg = await SystemConfig.findOne({ key: 'main' }).select('cyclePhases').lean();
+            const cp = cfg?.cyclePhases;
+            if (cp) {
+                const thirtyMin = { ...DEFAULT_CYCLE_PHASES.thirtyMin, ...(cp.thirtyMin || {}) };
+                const fullDay   = { ...DEFAULT_CYCLE_PHASES.fullDay,   ...(cp.fullDay   || {}) };
+                result = {
+                    thirtyMin: validPhaseSet(thirtyMin) ? thirtyMin : DEFAULT_CYCLE_PHASES.thirtyMin,
+                    fullDay:   validPhaseSet(fullDay)   ? fullDay   : DEFAULT_CYCLE_PHASES.fullDay,
+                };
+            }
+        } catch { /* fall back to defaults */ }
+        this._cyclePhasesCache = result;
+        this._cyclePhasesCacheAt = now;
+        return result;
     }
 
     /**
@@ -134,6 +190,10 @@ class CycleGenerator {
                 status: { $in: ['OPEN', 'MERGED', 'CLOSED'] }
             });
 
+            // Admin-configured phase offsets (cached 30s). Read once per tick,
+            // applied to every active cycle below.
+            const phases = await this.getCyclePhases();
+
             for (const cycle of activeCycles) {
                 const cycleEndMs = new Date(cycle.endTime).getTime();
 
@@ -157,16 +217,15 @@ class CycleGenerator {
 
                 let mergeTime, equalizerTime, betsClosedTime, fireworksTime;
 
-                if (is30Min) {
-                    mergeTime      = cycle.endTime - (3 * 60 * 1000);
-                    equalizerTime  = cycle.endTime - (2 * 60 * 1000);
-                    betsClosedTime = cycle.endTime - (30 * 1000);     // 00:30 remaining
-                    fireworksTime  = cycle.endTime - (10 * 1000);
-                } else if (isFullDay) {
-                    mergeTime      = cycle.endTime - (5 * 60 * 1000);
-                    equalizerTime  = cycle.endTime - (2 * 60 * 1000);
-                    betsClosedTime = cycle.endTime - (30 * 1000);     // 00:30 remaining
-                    fireworksTime  = cycle.endTime - (10 * 1000);
+                // Phase offsets from admin config (SystemConfig.cyclePhases),
+                // seconds before endTime. Defaults preserve the historical
+                // 30-min (3m/2m/30s/10s) and full-day (5m/2m/30s/10s) timings.
+                const p = is30Min ? phases.thirtyMin : (isFullDay ? phases.fullDay : null);
+                if (p) {
+                    mergeTime      = cycleEndMs - (p.mergeBeforeEndSec     * 1000);
+                    equalizerTime  = cycleEndMs - (p.equalizerBeforeEndSec * 1000);
+                    betsClosedTime = cycleEndMs - (p.closeBeforeEndSec     * 1000);
+                    fireworksTime  = cycleEndMs - (p.celebrateBeforeEndSec * 1000);
                 }
 
                 // ─── PHASE 1: MERGE ─────────────────────────────────────────

@@ -172,7 +172,14 @@ export const WINNER = Object.freeze({
 
 export const PAYOUT = Object.freeze({
 
-  /** Every winning bet is paid out at exactly this multiplier. NEVER change inline. */
+  /**
+   * Display/estimate mirror of the payout multiplier. The AUTHORITATIVE value is
+   * server-side: SystemConfig.payoutMultiplier (Business Config Audit 2026-07-11),
+   * read by markets/gameEngine.js at settlement and pushed to clients in the
+   * `system_config` event's payoutMultiplier field. This 2 is the default/offline
+   * fallback only — prefer the server-pushed value for any user-facing number.
+   * Do not treat this constant as the source of truth for real credited amounts.
+   */
   MULTIPLIER: 2,
 
   /**

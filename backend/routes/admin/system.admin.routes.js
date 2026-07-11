@@ -5,6 +5,32 @@ import { setConfigField } from '../../domains/configuration/configVersioning.ser
 
 const router = express.Router();
 
+// ── Cycle-phase validation (Business Config Audit) ────────────────────────────
+// A phase set is {merge,equalizer,close,celebrate}BeforeEndSec (seconds before a
+// cycle's end). Enforce the state-machine invariant merge>equalizer>close>
+// celebrate>=0 and that merge fits inside the block. maxMerge caps the earliest
+// phase: 600s for 30-min-type blocks (< the 10-min minimum duration so it fits
+// any admin-chosen duration), larger for the full-day block. Returns an error
+// string, or null when valid.
+function validateCyclePhaseSet(label, p, maxMerge) {
+  if (!p || typeof p !== 'object') return `cyclePhases.${label} must be an object with all four offsets.`;
+  const fields = ['mergeBeforeEndSec', 'equalizerBeforeEndSec', 'closeBeforeEndSec', 'celebrateBeforeEndSec'];
+  for (const f of fields) {
+    const v = p[f];
+    if (!Number.isInteger(v) || v < 0 || v > 86400) {
+      return `cyclePhases.${label}.${f} must be an integer between 0 and 86400 seconds.`;
+    }
+  }
+  const { mergeBeforeEndSec: m, equalizerBeforeEndSec: e, closeBeforeEndSec: c, celebrateBeforeEndSec: fr } = p;
+  if (!(m > e && e > c && c > fr)) {
+    return `cyclePhases.${label} offsets must strictly decrease: merge > equalizer > close > celebrate.`;
+  }
+  if (m >= maxMerge) {
+    return `cyclePhases.${label}.mergeBeforeEndSec must be less than ${maxMerge}s so the phase fits inside the block.`;
+  }
+  return null;
+}
+
 // Token rates removed 2026-07-08: conversion is fixed 1:1 (Phase 006
 // flattening — see ENTERPRISE_DECISIONS.md). The GET/PUT /token-rates
 // endpoints and rate validation that lived here are gone; rates are no
@@ -77,10 +103,28 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
         cycleDurationMinutes:  config.cycleDurationMinutes ?? 30, // schema default: 30
         // Data retention (Phase X X-7) — months of operational data kept
         retentionMonths:       config.retentionMonths ?? 6, // schema default: 6
+        // Business Config Audit (2026-07-11) — formerly-hardcoded business values
+        payoutMultiplier:      config.payoutMultiplier ?? 2,   // schema default: 2 (2x)
+        orderExpiryMinutes:    config.orderExpiryMinutes ?? 15, // schema default: 15
+        cyclePhases: {
+          thirtyMin: {
+            mergeBeforeEndSec:     config.cyclePhases?.thirtyMin?.mergeBeforeEndSec     ?? 180,
+            equalizerBeforeEndSec: config.cyclePhases?.thirtyMin?.equalizerBeforeEndSec ?? 120,
+            closeBeforeEndSec:     config.cyclePhases?.thirtyMin?.closeBeforeEndSec     ?? 30,
+            celebrateBeforeEndSec: config.cyclePhases?.thirtyMin?.celebrateBeforeEndSec ?? 10,
+          },
+          fullDay: {
+            mergeBeforeEndSec:     config.cyclePhases?.fullDay?.mergeBeforeEndSec     ?? 300,
+            equalizerBeforeEndSec: config.cyclePhases?.fullDay?.equalizerBeforeEndSec ?? 120,
+            closeBeforeEndSec:     config.cyclePhases?.fullDay?.closeBeforeEndSec     ?? 30,
+            celebrateBeforeEndSec: config.cyclePhases?.fullDay?.celebrateBeforeEndSec ?? 10,
+          },
+        },
         riskRules: {
           enforceMultiplesOf10:     config.riskRules?.enforceMultiplesOf10     ?? true,  // schema default: true
           blockOppositeSideBetting: config.riskRules?.blockOppositeSideBetting ?? false, // schema default: false
           maxFundingOrdersPerHour:  config.riskRules?.maxFundingOrdersPerHour  ?? 0,     // schema default: 0
+          maxWarnings:              config.riskRules?.maxWarnings              ?? 3,     // schema default: 3 (0 = never)
         },
         kycRequired:           config.kycRequired           !== false,
         registrationEnabled:   config.registrationEnabled   !== false,
@@ -115,6 +159,7 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
       webUrl, androidUrl, iosUrl, minVersion, latestVersion,
       payoutFeePercent, riskRules, betReservePercent, winningsFeePercent,
       cycleDurationMinutes, retentionMonths,
+      payoutMultiplier, orderExpiryMinutes, cyclePhases,
     } = req.body;
 
     if (cycleDurationMinutes !== undefined &&
@@ -146,6 +191,27 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     if (riskRules?.maxFundingOrdersPerHour !== undefined &&
         (!Number.isInteger(riskRules.maxFundingOrdersPerHour) || riskRules.maxFundingOrdersPerHour < 0)) {
       return res.status(400).json({ success: false, message: 'riskRules.maxFundingOrdersPerHour must be a non-negative integer.' });
+    }
+    // ── Business Config Audit fields ──────────────────────────────────────────
+    if (riskRules?.maxWarnings !== undefined &&
+        (!Number.isInteger(riskRules.maxWarnings) || riskRules.maxWarnings < 0)) {
+      return res.status(400).json({ success: false, message: 'riskRules.maxWarnings must be a non-negative integer (0 = never auto-block).' });
+    }
+    if (payoutMultiplier !== undefined &&
+        (!Number.isInteger(payoutMultiplier) || payoutMultiplier < 1 || payoutMultiplier > 10)) {
+      return res.status(400).json({ success: false, message: 'payoutMultiplier must be an integer between 1 and 10.' });
+    }
+    if (orderExpiryMinutes !== undefined &&
+        (!Number.isInteger(orderExpiryMinutes) || orderExpiryMinutes < 1 || orderExpiryMinutes > 1440)) {
+      return res.status(400).json({ success: false, message: 'orderExpiryMinutes must be an integer between 1 and 1440.' });
+    }
+    if (cyclePhases?.thirtyMin !== undefined) {
+      const err = validateCyclePhaseSet('thirtyMin', cyclePhases.thirtyMin, 600);
+      if (err) return res.status(400).json({ success: false, message: err });
+    }
+    if (cyclePhases?.fullDay !== undefined) {
+      const err = validateCyclePhaseSet('fullDay', cyclePhases.fullDay, 3600);
+      if (err) return res.status(400).json({ success: false, message: err });
     }
 
     const fieldWrites = [];
@@ -185,6 +251,27 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     if (riskRules?.enforceMultiplesOf10     !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.enforceMultiplesOf10', !!riskRules.enforceMultiplesOf10]);
     if (riskRules?.blockOppositeSideBetting !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.blockOppositeSideBetting', !!riskRules.blockOppositeSideBetting]);
     if (riskRules?.maxFundingOrdersPerHour  !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.maxFundingOrdersPerHour', riskRules.maxFundingOrdersPerHour]);
+    // Business Config Audit (2026-07-11) — formerly-hardcoded values, now admin-owned
+    // Auto-block threshold — consumed by merchant.routes.js reject handler
+    if (riskRules?.maxWarnings !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.maxWarnings', riskRules.maxWarnings]);
+    // Payout multiplier — consumed by markets/gameEngine.js via riskValidation.computeWinningsPayout
+    if (payoutMultiplier   !== undefined) fieldWrites.push(['SystemConfig', 'payoutMultiplier', payoutMultiplier]);
+    // Payment order window — consumed by payment/paymentProcessing.tryAssignMerchant
+    if (orderExpiryMinutes !== undefined) fieldWrites.push(['SystemConfig', 'orderExpiryMinutes', orderExpiryMinutes]);
+    // Cycle phase offsets — consumed (cached) by markets/cycleGenerator.getCyclePhases.
+    // Written per-type as a whole validated subdocument.
+    if (cyclePhases?.thirtyMin !== undefined) fieldWrites.push(['SystemConfig', 'cyclePhases.thirtyMin', {
+      mergeBeforeEndSec:     cyclePhases.thirtyMin.mergeBeforeEndSec,
+      equalizerBeforeEndSec: cyclePhases.thirtyMin.equalizerBeforeEndSec,
+      closeBeforeEndSec:     cyclePhases.thirtyMin.closeBeforeEndSec,
+      celebrateBeforeEndSec: cyclePhases.thirtyMin.celebrateBeforeEndSec,
+    }]);
+    if (cyclePhases?.fullDay !== undefined) fieldWrites.push(['SystemConfig', 'cyclePhases.fullDay', {
+      mergeBeforeEndSec:     cyclePhases.fullDay.mergeBeforeEndSec,
+      equalizerBeforeEndSec: cyclePhases.fullDay.equalizerBeforeEndSec,
+      closeBeforeEndSec:     cyclePhases.fullDay.closeBeforeEndSec,
+      celebrateBeforeEndSec: cyclePhases.fullDay.celebrateBeforeEndSec,
+    }]);
 
     for (const [modelName, path, value] of fieldWrites) {
       await setConfigField(modelName, path, value, actor, {
@@ -361,25 +448,11 @@ router.delete('/error-reports', authenticate, isAdmin, async (req, res) => {
   }
 });
 
-// =============================================================================
-// APP-ASSETS upload routes
-// =============================================================================
-
-import path_node from 'path';
-import fs_node from 'fs';
+// Withdrawal approve/reject (above) delegate balance movement to the wallet
+// authority. NOTE: the app-asset upload routes + ASSET_SLOTS that used to be
+// declared here were dead in this module (the actual routes live in
+// branding.admin.routes.js, which now owns those consts and an S3-backed
+// implementation). Removed 2026-07-11 per §13 (no dead artifacts).
 import { releaseWithdrawal, refundWithdrawal } from '../../domains/wallet/walletAuthority.service.js';
-
-const ASSET_SLOTS = {
-  'logo.png':           { label: 'App Logo (Loading & Share)',   w: 512,  h: 512,  hint: 'Square PNG, transparent bg. Loading screen + share modal.' },
-  'logo-header.png':    { label: 'Header Banner Logo',           w: 600,  h: 120,  hint: 'Wide PNG, transparent bg. Shown in app header center.' },
-  'icon-192.png':       { label: 'PWA Icon 192x192',             w: 192,  h: 192,  hint: 'Square PNG. Android home screen shortcut.' },
-  'icon-512.png':       { label: 'PWA Icon 512x512 (Maskable)',  w: 512,  h: 512,  hint: 'Square PNG with safe zone. Splash + app store.' },
-  'icon-apple-180.png': { label: 'Apple Touch Icon 180x180',     w: 180,  h: 180,  hint: 'Square PNG. iPhone home screen.' },
-  'favicon-32.png':     { label: 'Favicon 32x32',                w: 32,   h: 32,   hint: 'Square PNG. Browser tab.' },
-  'splash.png':         { label: 'PWA Splash Screen',            w: 1242, h: 2688, hint: 'Portrait PNG. PWA loading splash.' },
-};
-
-const appAssetsDir_r = path_node.join(path_node.dirname(new URL(import.meta.url).pathname), '../app-assets');
-fs_node.mkdirSync(appAssetsDir_r, { recursive: true });
 
 export default router;

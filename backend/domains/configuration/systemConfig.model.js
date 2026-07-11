@@ -57,6 +57,10 @@ const systemConfigSchema = new mongoose.Schema({
     blockOppositeSideBetting: { type: Boolean, default: false },
     // Funding-order velocity limit per user per hour. 0 = off.
     maxFundingOrdersPerHour:  { type: Number, default: 0, min: 0 },
+    // Auto-block a user after this many payment warnings (merchant rejects /
+    // dispute losses). Was hardcoded 3 in merchant.routes.js. 0 = never
+    // auto-block.
+    maxWarnings:              { type: Number, default: 3, min: 0 },
   },
   // Payout fee % charged on withdrawals (0 = no fee, the default — behavior
   // unchanged until an admin sets it). Enforced by the Risk Platform,
@@ -82,6 +86,33 @@ const systemConfigSchema = new mongoose.Schema({
   // RETENTION_POLICY.md). A hard 30-day safety floor applies regardless of
   // this value. Read by domains/operations/retention.service.js.
   retentionMonths: { type: Number, default: 6, min: 1, max: 120 },
+
+  // ── BUSINESS CONFIG AUDIT (2026-07-11) — values that were hardcoded ───────
+  // Payout multiplier: a winning bet pays stake × this (minus winningsFeePercent).
+  // Default 2 = the historical 2x. Read by markets/gameEngine.js via Risk.
+  payoutMultiplier: { type: Number, default: 2, min: 1, max: 10 },
+  // Payment order window: minutes a user has to pay the assigned merchant
+  // before the order auto-expires and refunds. Was hardcoded 15 in
+  // paymentProcessing.service.js. Read there now.
+  orderExpiryMinutes: { type: Number, default: 15, min: 1, max: 1440 },
+  // Cycle phase timings — seconds BEFORE a cycle's end that each phase fires.
+  // Was hardcoded in cycleGenerator.service.js. merge > equalizer > close >
+  // celebrate > 0, and merge must be < the cycle duration. Read (cached) by
+  // the generator. Full-day merges earlier than 30-min by default.
+  cyclePhases: {
+    thirtyMin: {
+      mergeBeforeEndSec:     { type: Number, default: 180 },
+      equalizerBeforeEndSec: { type: Number, default: 120 },
+      closeBeforeEndSec:     { type: Number, default: 30 },
+      celebrateBeforeEndSec: { type: Number, default: 10 },
+    },
+    fullDay: {
+      mergeBeforeEndSec:     { type: Number, default: 300 },
+      equalizerBeforeEndSec: { type: Number, default: 120 },
+      closeBeforeEndSec:     { type: Number, default: 30 },
+      celebrateBeforeEndSec: { type: Number, default: 10 },
+    },
+  },
 
   // ── BET FUNDING SPLIT (Phase A, 2026-07-10) ───────────────────────────────
   // % of every bet stake funded from reserveBalance; the remainder comes from

@@ -25,6 +25,8 @@ export * from '../domains/configuration/merchantBonusPolicy.model.js';
 // Revenue & Settlement Platform (BBEPS Phase 007) — the settlement ledger
 export * from '../domains/revenue/accountingEvent.model.js';
 export * from '../domains/cms/content.model.js';
+// App-asset metadata (PWA icons/logos) — S3-or-disk storage record
+export * from '../domains/cms/appAsset.model.js';
 export * from '../domains/notification/notification.model.js';
 export * from './payment.model.js';
 export * from './referral.model.js';

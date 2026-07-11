@@ -259,6 +259,43 @@ export async function generatePresignedDownloadUrl(fileKey) {
 }
 
 /**
+ * True when S3 is fully configured for public serving (bucket + creds +
+ * endpoint). Used by callers that must gracefully fall back to local storage
+ * when object storage isn't set up (portability: runs with or without S3).
+ */
+export function isS3Configured() {
+  return Boolean(
+    process.env.S3_BUCKET_NAME &&
+    process.env.S3_ACCESS_KEY &&
+    process.env.S3_SECRET_KEY &&
+    process.env.S3_ENDPOINT
+  );
+}
+
+/**
+ * Server-side direct upload of an in-memory buffer to a DETERMINISTIC key
+ * (overwrites in place). For small fixed-slot admin assets (PWA icons/logos)
+ * whose public URL must stay stable across re-uploads — unlike the random-key
+ * presigned flow used for user uploads. Returns the public URL (CDN if
+ * CDN_URL is set, else the path-style S3 object URL).
+ */
+export async function uploadBufferToS3(fileKey, buffer, contentType) {
+  if (!isS3Configured()) throw new Error('S3 is not configured');
+  const cleanMime = (contentType || 'application/octet-stream').toLowerCase().split(';')[0].trim();
+  await s3Client.send(new PutObjectCommand({
+    Bucket: BUCKET_NAME,
+    Key: fileKey,
+    Body: buffer,
+    ContentType: cleanMime,
+    ContentLength: buffer.length,
+    CacheControl: 'public, max-age=3600',
+  }));
+  if (CDN_URL) return `${CDN_URL}/${fileKey}`;
+  const ep = process.env.S3_ENDPOINT.startsWith('http') ? process.env.S3_ENDPOINT : 'https://' + process.env.S3_ENDPOINT;
+  return `${ep}/${BUCKET_NAME}/${fileKey}`; // path-style (forcePathStyle S3)
+}
+
+/**
  * Delete file from S3 (admin use)
  */
 export async function deleteFile(fileKey) {

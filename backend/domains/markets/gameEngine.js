@@ -151,10 +151,11 @@ class GameEngine {
 
         console.log(`[Engine] Starting payout for cycle ${cycle.cycleId}, Winner: ${cycle.winner}`);
 
-        // Winnings platform fee (Phase A): percent owned by Business Policy
-        // (SystemConfig.winningsFeePercent), read ONCE per settlement so every
-        // bet in this cycle settles under the same snapshot.
-        const { winningsFeePercent } = await getRiskRules();
+        // Winnings platform fee + payout multiplier (Phase A / Business Config
+        // Audit): both owned by Business Policy (SystemConfig.winningsFeePercent,
+        // SystemConfig.payoutMultiplier), read ONCE per settlement so every bet
+        // in this cycle settles under the same snapshot.
+        const { winningsFeePercent, payoutMultiplier } = await getRiskRules();
 
         // Mark losing bets immediately and unlock their balances
         const losingBets = await Bet.find({
@@ -208,7 +209,7 @@ class GameEngine {
             let feeMinor = 0;
             const betStamps = []; // { betId, payout, platformFee }
             for (const bet of winGroup.bets) {
-                const p = computeWinningsPayout({ amount: bet.amount, feePercent: winningsFeePercent });
+                const p = computeWinningsPayout({ amount: bet.amount, feePercent: winningsFeePercent, multiplier: payoutMultiplier });
                 payoutMinor += p.netMinor;
                 feeMinor    += p.feeMinor;
                 betStamps.push({ betId: bet.betId, payout: p.net, platformFee: p.fee });

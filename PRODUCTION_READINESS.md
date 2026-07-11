@@ -29,10 +29,10 @@ runs on any host / any Mongo provider / any S3-compatible storage / any CDN).
    on real infra before real money).
 
 **Scale:** horizontal scaling is now supported end to end — Redis-shared rate
-limits (F-3), cron leader election (X-4), and the SSE/socket Redis bridge
-(2026-07-10) make the app tier stateless across instances. One minor item
-before multi-instance: move app-asset uploads to S3 (branding/KYC already do;
-it's admin PWA icons only).
+limits (F-3), cron leader election (X-4), the SSE/socket Redis bridge
+(2026-07-10), and (2026-07-11) app-asset uploads now going to S3 with a shared
+`AppAsset` metadata record make the app tier fully stateless across instances.
+No known per-instance local state remains on the request path.
 
 **Bottom line:** engineering-wise this is materially past a typical build —
 close to launch-grade. But **do not take real money from the public until the
@@ -107,8 +107,8 @@ Set env: `SMTP_HOST`, `SMTP_PORT` (587, or 465 for TLS), `SMTP_USER`,
 `SMTP_PASS`, `SMTP_FROM` (e.g. `"Betting Bazaar <no-reply@yourdomain>"`).
 The EMAIL channel then reports ACTIVE in /operations and delivers real
 mail. Works with any SMTP provider (SES, Postmark, Brevo, ...). Users need
-an email on file (`User.email`, optional — a profile-page field is queued
-UI work).
+an email on file (`User.email`, optional) — the user-panel Profile → Edit
+Profile page now has an Email field (validated) that writes it (2026-07-11).
 
 ### B2. SMS (Communication Platform) — needs a provider decision
 Pick an Indian-DLT-compliant gateway (MSG91, Kaleyra, Twilio). Then
@@ -155,7 +155,8 @@ admin-configurable and shown on the Support page without a bot.
 - Operability: /operations overview + config catalog, /revenue ledger
   console, /reports with regulatory CSV export, full audit trails.
 
-Known intentional gaps: horizontal SSE/socket fan-out is per-instance
-(needs a Redis pub/sub bridge before >1 instance serves live traffic —
-flagged in EXECUTION_QUEUE.md), responsible-gaming controls (A2), and the
-declared-inactive integrations above.
+Known intentional gaps: responsible-gaming controls (A2) and the
+declared-inactive integrations above (SMS/PUSH/USDT/gateway/Telegram, each
+with activation steps in §B). Horizontal scale is fully resolved — SSE/socket
+fan-out (Redis bridge), rate limits, cron leader election, and app-asset
+storage are all multi-instance-safe as of 2026-07-11.

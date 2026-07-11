@@ -25,6 +25,7 @@ export interface User {
   id: string;
   mobile: string;
   username: string;
+  email?: string;              // optional contact email (notifications)
   walletBalance: number;       
   lockedBalance: number;
 

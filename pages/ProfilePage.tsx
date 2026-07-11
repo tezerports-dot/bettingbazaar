@@ -36,7 +36,7 @@ const ProfilePage: React.FC = () => {
   const [activeTab, setActiveTab]           = useState<'profile' | 'security'>('profile');
   const [uploadingPic, setUploadingPic]     = useState(false);
 
-  const [formData, setFormData] = useState({ username: '', mobile: '', newPassword: '', confirmPassword: '' });
+  const [formData, setFormData] = useState({ username: '', mobile: '', email: '', newPassword: '', confirmPassword: '' });
   const [bankData, setBankData] = useState({ accountHolderName: '', accountNumber: '', ifscCode: '', bankName: '' });
 
   useEffect(() => {
@@ -60,7 +60,7 @@ const ProfilePage: React.FC = () => {
 
   const handleEditClick = () => {
     if (user) {
-      setFormData({ username: user.username || '', mobile: (user as any).mobile || '', newPassword: '', confirmPassword: '' });
+      setFormData({ username: user.username || '', mobile: (user as any).mobile || '', email: (user as any).email || '', newPassword: '', confirmPassword: '' });
       setActiveTab('profile');
       setIsEditOpen(true);
     }
@@ -78,12 +78,15 @@ const ProfilePage: React.FC = () => {
 
   const handleSaveProfile = async () => {
     if (!formData.username.trim()) return alert('Name is required.');
+    const trimmedEmail = formData.email.trim();
+    if (trimmedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) return alert('Please enter a valid email address.');
     if (formData.newPassword && formData.newPassword.length < 6) return alert('Password must be at least 6 characters.');
     if (formData.newPassword && formData.newPassword !== formData.confirmPassword) return alert('Passwords do not match.');
     setSaving(true);
     try {
       const updates: any = {};
       if (formData.username !== user?.username) updates.username = formData.username.trim();
+      if (trimmedEmail !== ((user as any)?.email || '')) updates.email = trimmedEmail;
       if (formData.newPassword) updates.password = formData.newPassword;
       if (Object.keys(updates).length > 0) {
         await updateProfile(updates);
@@ -290,6 +293,11 @@ const ProfilePage: React.FC = () => {
                   <label className={lbl}>Display Name</label>
                   <input type="text" value={formData.username} placeholder="Your name"
                     onChange={e => setFormData({ ...formData, username: e.target.value })} className={inp} />
+                </div>
+                <div>
+                  <label className={lbl}>Email <span className="text-slate-600 normal-case tracking-normal">(optional — for notifications)</span></label>
+                  <input type="email" value={formData.email} placeholder="you@example.com"
+                    onChange={e => setFormData({ ...formData, email: e.target.value })} className={inp} />
                 </div>
                 <div>
                   <label className={lbl}>Profile Photo</label>

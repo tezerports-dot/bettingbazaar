@@ -14,6 +14,7 @@ import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate 
 import { tryAssignMerchant, buildMerchantSnapshot, updateMerchantStatsOnComplete } from '../payment/paymentProcessing.service.js';
 import { debitMerchantTokens, creditMerchantTokens } from './merchantWallet.service.js';
 import { publish as publishDomainEvent, EVENTS as DOMAIN_EVENTS } from '../../services/eventBus.service.js';
+import { getRiskRules } from '../risk/riskValidation.service.js';
 
 const router     = express.Router();
 const JWT_SECRET  = process.env.JWT_SECRET  || 'fallback-secret';
@@ -1374,7 +1375,9 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
         await order.save();
 
         // ── Warning engine (Section 13.2) ──────────────────────────────────────
-        const WARNING_THRESHOLD = 3;
+        // Auto-block threshold is admin-owned (SystemConfig.riskRules.maxWarnings,
+        // was hardcoded 3). 0 = never auto-block. Business Config Audit 2026-07-11.
+        const { maxWarnings } = await getRiskRules();
         const updatedUser = await User.findOneAndUpdate(
             { _id: order.userId },
             { $inc: { warningCount: 1 } },
@@ -1382,13 +1385,14 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
         );
 
         const newCount = updatedUser?.warningCount || 0;
+        const hitThreshold = maxWarnings > 0 && newCount >= maxWarnings;
 
         // Auto-block at threshold
-        if (newCount >= WARNING_THRESHOLD && !updatedUser.isBlocked) {
+        if (hitThreshold && !updatedUser.isBlocked) {
             await User.findByIdAndUpdate(order.userId, {
                 $set: {
                     isBlocked:   true,
-                    blockReason: 'Automatic block: 3 payment warnings.',
+                    blockReason: `Automatic block: ${maxWarnings} payment warnings.`,
                     blockedAt:   new Date(),
                 },
             });
@@ -1400,7 +1404,7 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
             _id:          order._id,
             reason:       order.rejectedReason,
             warningCount: newCount,
-            isBlocked:    newCount >= WARNING_THRESHOLD,
+            isBlocked:    hitThreshold,
             server_ts:    Date.now(),
         });
         emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'CANCELLED', server_ts: Date.now() });
@@ -1409,7 +1413,7 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
             success: true,
             message: 'Order rejected.',
             warningCount: newCount,
-            autoBlocked:  newCount >= WARNING_THRESHOLD,
+            autoBlocked:  hitThreshold,
         });
     } catch (error) {
         console.error('POST /merchant/orders/:id/reject error:', error);

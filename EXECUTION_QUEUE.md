@@ -10,6 +10,33 @@ deleted, so this file also works as a short-form recent-history log.
 
 ---
 
+## DONE — 2026-07-11 (Business Config Audit + queue drain)
+
+- [x] **Business Configuration Audit** — every business rule now flows from
+      SystemConfig with an admin UI, DB persistence, runtime read, and no silent
+      hardcoded fallback. Moved four formerly-hardcoded values into config and
+      wired their consumers: `payoutMultiplier` (was `×2` in gameEngine →
+      Risk.computeWinningsPayout), `orderExpiryMinutes` (was `15*60*1000` in
+      paymentProcessing), `riskRules.maxWarnings` (was `WARNING_THRESHOLD=3` in
+      merchant reject), `cyclePhases` (was inline 3m/2m/30s/10s in cycleGenerator,
+      now a cached read). Admin GET/PUT + validation + SystemSettings UI +
+      config-catalog entries + versioned writes via setConfigField. Corrected a
+      stale catalog comment claiming `payoutMultiplier` "never existed", and the
+      user-panel game-config response that hardcoded `payoutMultiplier: 2`. New
+      unit tests (multiplier arithmetic) + a gameEngine integration test
+      (3× payout). Full write-up in **BUSINESS_CONFIG_AUDIT.md**.
+- [x] **App-asset uploads → S3** (portability): `cdn.service.uploadBufferToS3` +
+      `isS3Configured`; new `AppAsset` metadata model (multi-instance source of
+      truth); the three `/app-assets` handlers rewritten to use S3-when-configured
+      with a local-disk fallback. Fixed a latent bug: those handlers referenced
+      `ASSET_SLOTS`/`appAssetsDir_r` declared only in system.admin.routes.js
+      (different module) — would have thrown at request time. Removed that dead
+      block from system.admin.routes.js (§13).
+- [x] **User.email profile field + API** and **merchantScoring stale-comment
+      cleanup** — see the two items under "Discovered during Phases B–F" below.
+
+---
+
 ## DONE — 2026-07-10 (PHASES B–F, same session as Phase A)
 
 - [x] **F-2** — settlement locked-balance writes rerouted through the new
@@ -100,11 +127,13 @@ lifecycle, X-8 authz matrix. See AUDIT_PHASE_X.md for the fix commits.
       real-time events across all instances (origin-dedup, graceful no-Redis
       fallback), proven cross-instance in CI. The app tier is now horizontally
       scalable.
-- [ ] User panel profile field + API for the new optional `User.email`
-      (EMAIL channel skips users without one).
-- [ ] merchantScoring.service.js references a nonexistent
-      `migrations/003-backfill-merchant-defaults.js` in a comment — stale
-      pointer, harmless; clean up opportunistically.
+- [x] **DONE 2026-07-11.** User panel profile field + API for the optional
+      `User.email` — ProfilePage → Edit Profile now has a validated Email field;
+      `PUT /user/:userId/profile` accepts/validates `email`; both profile GETs
+      return it.
+- [x] **DONE 2026-07-11.** merchantScoring.service.js stale
+      `migrations/003-backfill-merchant-defaults.js` comment removed (the query
+      fix is self-contained defense-in-depth; no migration file exists).
 
 ---
 

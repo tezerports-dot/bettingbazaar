@@ -29,10 +29,18 @@ export const SystemSettings: React.FC = () => {
     winningsFeePercent: 1,     // schema default: 1
     payoutFeePercent: 0,       // schema default: 0
     cycleDurationMinutes: 30,  // schema default: 30 (Phase X X-5)
+    // Business Config Audit (2026-07-11) — formerly-hardcoded business values
+    payoutMultiplier: 2,       // schema default: 2 (2x)
+    orderExpiryMinutes: 15,    // schema default: 15
+    cyclePhases: {
+      thirtyMin: { mergeBeforeEndSec: 180, equalizerBeforeEndSec: 120, closeBeforeEndSec: 30, celebrateBeforeEndSec: 10 },
+      fullDay:   { mergeBeforeEndSec: 300, equalizerBeforeEndSec: 120, closeBeforeEndSec: 30, celebrateBeforeEndSec: 10 },
+    },
     riskRules: {
       enforceMultiplesOf10: true,      // schema default: true
       blockOppositeSideBetting: false, // schema default: false
       maxFundingOrdersPerHour: 0,      // schema default: 0 (off)
+      maxWarnings: 3,                  // schema default: 3 (0 = never auto-block)
     },
     // App distribution
     webUrl:        '',
@@ -65,10 +73,27 @@ export const SystemSettings: React.FC = () => {
           winningsFeePercent: response.data.winningsFeePercent ?? 1, // schema default: 1
           payoutFeePercent:   response.data.payoutFeePercent   ?? 0, // schema default: 0
           cycleDurationMinutes: response.data.cycleDurationMinutes ?? 30, // schema default: 30
+          payoutMultiplier:   response.data.payoutMultiplier   ?? 2,  // schema default: 2
+          orderExpiryMinutes: response.data.orderExpiryMinutes ?? 15, // schema default: 15
+          cyclePhases: {
+            thirtyMin: {
+              mergeBeforeEndSec:     response.data.cyclePhases?.thirtyMin?.mergeBeforeEndSec     ?? 180,
+              equalizerBeforeEndSec: response.data.cyclePhases?.thirtyMin?.equalizerBeforeEndSec ?? 120,
+              closeBeforeEndSec:     response.data.cyclePhases?.thirtyMin?.closeBeforeEndSec     ?? 30,
+              celebrateBeforeEndSec: response.data.cyclePhases?.thirtyMin?.celebrateBeforeEndSec ?? 10,
+            },
+            fullDay: {
+              mergeBeforeEndSec:     response.data.cyclePhases?.fullDay?.mergeBeforeEndSec     ?? 300,
+              equalizerBeforeEndSec: response.data.cyclePhases?.fullDay?.equalizerBeforeEndSec ?? 120,
+              closeBeforeEndSec:     response.data.cyclePhases?.fullDay?.closeBeforeEndSec     ?? 30,
+              celebrateBeforeEndSec: response.data.cyclePhases?.fullDay?.celebrateBeforeEndSec ?? 10,
+            },
+          },
           riskRules: {
             enforceMultiplesOf10:     response.data.riskRules?.enforceMultiplesOf10     ?? true,
             blockOppositeSideBetting: response.data.riskRules?.blockOppositeSideBetting ?? false,
             maxFundingOrdersPerHour:  response.data.riskRules?.maxFundingOrdersPerHour  ?? 0,
+            maxWarnings:              response.data.riskRules?.maxWarnings              ?? 3,
           },
           webUrl:        response.data.webUrl        || '',
           androidUrl:    response.data.androidUrl    || '',
@@ -345,6 +370,24 @@ export const SystemSettings: React.FC = () => {
           </div>
 
           <div className="pt-4 border-t border-dark-700">
+            <label className="label">Payout Multiplier (×)</label>
+            <input
+              type="number" min={1} max={10} step={1}
+              value={formData.payoutMultiplier}
+              onChange={(e) => setFormData({ ...formData, payoutMultiplier: Math.max(1, Math.min(10, Math.floor(Number(e.target.value) || 1))) })}
+              className="input"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Gross payout on a winning bet = stake × this multiplier (before the winnings
+              fee below). The default 2 pays winners double their stake. Whole number, 1–10.
+            </p>
+            <p className="text-xs text-gold-400/80 mt-1">
+              Example with {formData.payoutMultiplier}×: a ₹100 winning bet returns gross
+              ₹{100 * formData.payoutMultiplier} before the winnings fee.
+            </p>
+          </div>
+
+          <div className="pt-4 border-t border-dark-700">
             <label className="label">Winnings Platform Fee (%)</label>
             <input
               type="number" min={0} max={100} step={0.01}
@@ -354,13 +397,13 @@ export const SystemSettings: React.FC = () => {
             />
             <p className="text-xs text-gray-500 mt-1">
               The platform's cut of gross winnings at settlement. Winners are paid
-              2× their stake minus this fee; the fee goes to platform revenue in the ledger
-              (and becomes distributable — e.g. for merchant bonuses). Set 0 for a flat 2× payout.
+              {' '}{formData.payoutMultiplier}× their stake minus this fee; the fee goes to platform revenue in the ledger
+              (and becomes distributable — e.g. for merchant bonuses). Set 0 for a flat {formData.payoutMultiplier}× payout.
             </p>
             <p className="text-xs text-gold-400/80 mt-1">
-              Example with {formData.winningsFeePercent}%: bet ₹100 → win gross ₹200 → fee
-              ₹{(Math.floor(20000 * Math.round(formData.winningsFeePercent * 100) / 10000) / 100).toFixed(2)} → user
-              receives ₹{(200 - Math.floor(20000 * Math.round(formData.winningsFeePercent * 100) / 10000) / 100).toFixed(2)} in
+              Example with {formData.winningsFeePercent}%: bet ₹100 → win gross ₹{100 * formData.payoutMultiplier} → fee
+              ₹{(Math.floor(100 * formData.payoutMultiplier * 100 * Math.round(formData.winningsFeePercent * 100) / 10000) / 100).toFixed(2)} → user
+              receives ₹{(100 * formData.payoutMultiplier - Math.floor(100 * formData.payoutMultiplier * 100 * Math.round(formData.winningsFeePercent * 100) / 10000) / 100).toFixed(2)} in
               the winnings wallet. The fee is rounded down — never against the user.
             </p>
           </div>
@@ -429,6 +472,34 @@ export const SystemSettings: React.FC = () => {
                 0 = unlimited (off). Cancelled orders count — churn is velocity too.
               </p>
             </div>
+
+            <div>
+              <label className="label">Auto-Block After N Payment Warnings</label>
+              <input
+                type="number" min={0} step={1}
+                value={formData.riskRules.maxWarnings}
+                onChange={(e) => setFormData({ ...formData, riskRules: { ...formData.riskRules, maxWarnings: Math.max(0, Math.floor(Number(e.target.value) || 0)) } })}
+                className="input"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                A user is auto-blocked once a merchant has rejected their payment this many
+                times. Each merchant rejection adds one warning. 0 = never auto-block (off).
+              </p>
+            </div>
+
+            <div>
+              <label className="label">Payment Order Expiry (minutes)</label>
+              <input
+                type="number" min={1} max={1440} step={1}
+                value={formData.orderExpiryMinutes}
+                onChange={(e) => setFormData({ ...formData, orderExpiryMinutes: Math.max(1, Math.min(1440, Math.floor(Number(e.target.value) || 1))) })}
+                className="input"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                How long a user has to pay the assigned merchant before the order auto-expires
+                and any locked balance is refunded. Applies to new assignments only. 1–1440 min.
+              </p>
+            </div>
           </div>
         </div>
       </div>
@@ -456,6 +527,47 @@ export const SystemSettings: React.FC = () => {
             cycle starts at :00, :15, :30, :45). The cycle is still labelled
             &ldquo;30 Min&rdquo; internally — only its actual length changes.
           </p>
+        </div>
+
+        <div className="pt-4 mt-4 border-t border-dark-700">
+          <label className="label">Cycle Phase Timings (seconds before cycle end)</label>
+          <p className="text-xs text-gray-500 mb-3">
+            When each phase fires inside a cycle, measured in seconds before its end.
+            Values must strictly decrease: Merge &gt; Equalizer &gt; Close &gt; Celebrate.
+            Takes effect within ~30 seconds.
+          </p>
+          {([['thirtyMin', '30-Min Cycle'], ['fullDay', 'Full-Day Cycle']] as const).map(([key, label]) => (
+            <div key={key} className="mb-3">
+              <p className="text-sm font-medium mb-1">{label}</p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {([
+                  ['mergeBeforeEndSec', 'Merge'],
+                  ['equalizerBeforeEndSec', 'Equalizer'],
+                  ['closeBeforeEndSec', 'Close'],
+                  ['celebrateBeforeEndSec', 'Celebrate'],
+                ] as const).map(([field, flabel]) => (
+                  <div key={field}>
+                    <label className="text-xs text-gray-400">{flabel}</label>
+                    <input
+                      type="number" min={0} step={1}
+                      value={formData.cyclePhases[key][field]}
+                      onChange={(e) => setFormData({
+                        ...formData,
+                        cyclePhases: {
+                          ...formData.cyclePhases,
+                          [key]: {
+                            ...formData.cyclePhases[key],
+                            [field]: Math.max(0, Math.floor(Number(e.target.value) || 0)),
+                          },
+                        },
+                      })}
+                      className="input"
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 

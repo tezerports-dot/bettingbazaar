@@ -205,4 +205,27 @@ describe('winnings payout with platform fee (Phase A — 2x minus fee, floored)'
     expect(() => computeWinningsPayout({ amount: 10, feePercent: 1, multiplier: 0 })).toThrow();
     expect(() => computeWinningsPayout({ amount: 10, feePercent: 1, multiplier: 1.5 })).toThrow();
   });
+
+  // Business Config Audit (2026-07-11): payoutMultiplier is admin-configurable.
+  // These prove the arithmetic authority honors a non-default multiplier, so an
+  // admin changing SystemConfig.payoutMultiplier actually changes what winners get.
+  it('honors a configurable payout multiplier (3x, no fee)', () => {
+    const p = computeWinningsPayout({ amount: 100, feePercent: 0, multiplier: 3 });
+    expect(p.grossMinor).toBe(100 * 100 * 3); // 30000 paise
+    expect(p.net).toBe(300);
+    expect(p.feeMinor).toBe(0);
+  });
+
+  it('multiplier and fee compose; net + fee still equals gross exactly', () => {
+    for (const multiplier of [1, 2, 3, 5, 10]) {
+      for (const amount of [10, 250, 99990]) {
+        for (const pct of [0, 1, 2.5, 33.33, 100]) {
+          const p = computeWinningsPayout({ amount, feePercent: pct, multiplier });
+          expect(p.grossMinor).toBe(amount * 100 * multiplier);
+          expect(p.netMinor + p.feeMinor).toBe(p.grossMinor);
+          expect(p.feeMinor).toBeGreaterThanOrEqual(0);
+        }
+      }
+    }
+  });
 });
