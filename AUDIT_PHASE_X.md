@@ -12,6 +12,8 @@ authorization consistency, configuration bypasses, cross-panel contract
 drift, state-machine completeness, background-job resilience, observability,
 data lifecycle, concurrency.
 
+**UPDATE 2026-07-10 (same session):** X-1/X-2/X-3, X-4, X-5, X-9 were FIXED after this audit (reserve funding on both deposit paths + approve reroute off raw $inc [Known Open #6 closed], cron leader election, configurable cycle duration, assignment-race test). X-6 (observability), X-7 (data lifecycle), X-8 (authz matrix) remain open.
+
 CI at audit time: **green — 72 unit + 30 integration tests** (commit ef1c0ac).
 
 ---

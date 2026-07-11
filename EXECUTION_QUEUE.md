@@ -56,7 +56,13 @@ deleted, so this file also works as a short-form recent-history log.
 
 Systematic architectural audit (not feature work). Findings, highest value first:
 
-- [ ] **X-1/X-2 (🔴) Two divergent deposit-completion endpoints.**
+**FIXED 2026-07-10 (same session):** X-1/X-2/X-3 (reserve now funded on both
+deposit paths via the wallet authority; approve rerouted off raw $inc — Known
+Open #6 closed), X-4 (cron leader election), X-5 (cycle duration configurable),
+X-9 (assignment-race test). Remaining open: X-6 observability, X-7 data
+lifecycle, X-8 authz matrix. See AUDIT_PHASE_X.md for the fix commits.
+
+- [x] **X-1/X-2 (🔴) Two divergent deposit-completion endpoints. — FIXED**
       `/merchant/confirm/:id` credits full tokenAmount to deposit (NO reserve
       split); `/merchant/orders/:id/approve` applies the DepositPolicy split.
       The panel exposes both. If the live path is `/confirm`, the reserve
