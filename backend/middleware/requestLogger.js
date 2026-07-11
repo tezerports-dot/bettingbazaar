@@ -10,6 +10,7 @@ export const requestLogger = (req, res, next) => {
         const duration = Date.now() - start;
         const logData = {
             timestamp: new Date().toISOString(),
+            reqId: req.id, // X-6: correlation id, echoed on the response too
             method: req.method,
             url: req.originalUrl,
             status: res.statusCode,
@@ -24,7 +25,8 @@ export const requestLogger = (req, res, next) => {
             console.log(JSON.stringify(logData));
         } else {
             const color = res.statusCode >= 400 ? '\x1b[31m' : '\x1b[32m';
-            console.log(`[API] ${color}${req.method} ${req.originalUrl} ${res.statusCode}\x1b[0m - ${duration}ms`);
+            const rid = req.id ? ` \x1b[90m${String(req.id).slice(0, 8)}\x1b[0m` : '';
+            console.log(`[API]${rid} ${color}${req.method} ${req.originalUrl} ${res.statusCode}\x1b[0m - ${duration}ms`);
         }
     });
 

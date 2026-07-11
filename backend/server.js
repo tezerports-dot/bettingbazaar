@@ -53,6 +53,7 @@ import winnersRoutes      from './routes/winners.routes.js';
 import vipRoutes          from './routes/vip.routes.js';
 import { requestLogger }  from './middleware/requestLogger.js';
 import { errorHandler }   from './middleware/errorHandler.js';
+import { requestContext } from './middleware/requestContext.js'; // X-6: correlation ids
 import { authLimiter, adminAuthLimiter, betLimiter } from './middleware/security.js';
 import GameEngine         from './domains/markets/gameEngine.js';
 import CycleGenerator     from './domains/markets/cycleGenerator.service.js';
@@ -119,6 +120,7 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(mongoSanitize());
 app.use(cookieParser());
+app.use(requestContext); // X-6: correlation id (before the logger, so it's logged)
 app.use(requestLogger);
 app.use('/api/', rateLimit({
   windowMs: 15 * 60 * 1000, max: 1000, standardHeaders: true, legacyHeaders: false,

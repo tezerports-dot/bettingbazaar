@@ -23,6 +23,7 @@
 
 import jwt from 'jsonwebtoken';
 import { User } from '../../models/index.js';
+import { setContextUser } from '../../middleware/requestContext.js'; // X-6
 
 /**
  * JWT Secret (should be in environment variables)
@@ -129,6 +130,9 @@ const authenticate = async (req, res, next) => {
     // Attach user to request object for use in subsequent middleware/routes
     req.user = user;
     req.userId = user._id;
+    // X-6: tag the request-context so structured logs in downstream services
+    // (wallet, settlement, …) are attributable to this user by correlation id.
+    try { setContextUser(user._id); } catch { /* context is best-effort */ }
 
     
     // Merchant JWT contains { merchantId, isMerchant: true } — set by domains/merchant/merchant.routes.js /auth/login.
