@@ -71,5 +71,6 @@ repository/DAL abstraction over the domains). No such abstraction exists today.
   (`backend/app-assets/`) via multer — ephemeral on a container host and not
   shared across instances. Branding/KYC uploads already use S3; app-assets
   should move to S3 too before multi-instance. (Queued.)
-- **SSE/socket fan-out** is per-instance — needs a Redis pub/sub bridge before
-  running >1 instance (already queued with the horizontal-scale items).
+- ✅ **SSE/socket fan-out** — RESOLVED (2026-07-10): a Redis pub/sub bridge
+  (`startup/realtimeBridge.js`) fans socket.io + SSE events across all
+  instances; graceful no-op without Redis.

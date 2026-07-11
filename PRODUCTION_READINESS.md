@@ -28,9 +28,11 @@ runs on any host / any Mongo provider / any S3-compatible storage / any CDN).
    end-to-end (the reserve-funding change alters live balance behavior; verify it
    on real infra before real money).
 
-**Scale caveat:** a single-instance launch is fine now. Before running >1
-backend instance, add the SSE/socket Redis pub-sub bridge (background jobs are
-already leader-locked; app-asset uploads should move to S3).
+**Scale:** horizontal scaling is now supported end to end — Redis-shared rate
+limits (F-3), cron leader election (X-4), and the SSE/socket Redis bridge
+(2026-07-10) make the app tier stateless across instances. One minor item
+before multi-instance: move app-asset uploads to S3 (branding/KYC already do;
+it's admin PWA icons only).
 
 **Bottom line:** engineering-wise this is materially past a typical build —
 close to launch-grade. But **do not take real money from the public until the

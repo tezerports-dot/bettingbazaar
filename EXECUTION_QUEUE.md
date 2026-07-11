@@ -95,11 +95,11 @@ lifecycle, X-8 authz matrix. See AUDIT_PHASE_X.md for the fix commits.
 
 ### Discovered during Phases B–F (queued)
 
-- [ ] **SSE/socket fan-out is per-instance** (global.io / sseManager live in
-      one process). Before serving live traffic from >1 backend instance,
-      add the socket.io Redis adapter + a Redis pub/sub bridge for the SSE
-      manager. (Rate limiting is already instance-safe — this is the
-      remaining horizontal-scale item.)
+- [x] **SSE/socket fan-out** — DONE 2026-07-10. startup/realtimeBridge.js:
+      socket.io Redis adapter + a Redis pub/sub relay in SSEManager fan
+      real-time events across all instances (origin-dedup, graceful no-Redis
+      fallback), proven cross-instance in CI. The app tier is now horizontally
+      scalable.
 - [ ] User panel profile field + API for the new optional `User.email`
       (EMAIL channel skips users without one).
 - [ ] merchantScoring.service.js references a nonexistent
