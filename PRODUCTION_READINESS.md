@@ -1,5 +1,46 @@
 # Production Readiness — Owner Checklist & Integration Setup
 
+---
+
+## 🚦 LAUNCH VERDICT (2026-07-10, after Phase X)
+
+**Are we ready to launch to market? Not yet — but the software is close, and
+what's left is mostly NOT code.**
+
+**Engineering: strong.** The money core is double-entry, integer-paise,
+idempotent, and now concurrency- and crash-resume-proven in CI; the reserve
+economy actually runs (the deposit path was silently not funding reserve —
+fixed); settlement/withdrawal/bonus flows are integration-tested; rate limiting
+and background jobs are multi-instance-safe; there are correlation IDs +
+structured logs; a data-retention policy; a clean authorization matrix (no
+holes found); and the codebase is genuinely portable (Docker + all-env config,
+runs on any host / any Mongo provider / any S3-compatible storage / any CDN).
+72 unit + ~34 integration tests green on every push.
+
+**Hard blockers before a public launch (owner-owned, not code):**
+1. **Licensing** — real-money betting is a licensed activity; operating
+   unlicensed is illegal in most jurisdictions. This is the #1 gate.
+2. **Rotate all secrets** — they were exposed in chat (see §A1).
+3. **Responsible gaming + geo-blocking** — self-exclusion, deposit/loss limits,
+   cool-offs are NOT built and are usually license-mandated (§A2).
+4. **External pentest** on staging (§A3) and a **load test** at target scale (§A4).
+5. **A real staging soak** — run an actual deposit → bet → settle → withdraw
+   end-to-end (the reserve-funding change alters live balance behavior; verify it
+   on real infra before real money).
+
+**Scale caveat:** a single-instance launch is fine now. Before running >1
+backend instance, add the SSE/socket Redis pub-sub bridge (background jobs are
+already leader-locked; app-asset uploads should move to S3).
+
+**Bottom line:** engineering-wise this is materially past a typical build —
+close to launch-grade. But **do not take real money from the public until the
+licensing + responsible-gaming + secret-rotation + pentest items above are
+done**, and you've soaked a full money cycle on staging. For a licensed,
+single-instance beta after those, it's viable.
+
+---
+
+
 **Purpose:** everything that stands between the current build and a real
 public launch, split into (A) things only the owner can do, and (B) how to
 activate each dormant integration. Code-side items that could be done in-repo
