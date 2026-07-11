@@ -63,6 +63,18 @@ const systemConfigSchema = new mongoose.Schema({
   // recorded by the Revenue & Settlement Platform (PAYOUT_FEES account).
   payoutFeePercent: { type: Number, default: 0, min: 0, max: 100 },
 
+  // ── CYCLE TIMING (Phase X X-5, 2026-07-10) ────────────────────────────────
+  // Duration (minutes) of the recurring short market block — previously the
+  // hardcoded 30*60*1000 in cycleGenerator.service.js. Admin-editable so the
+  // betting-window length is not a code constant. MUST divide 60 evenly
+  // (10/12/15/20/30/60) so blocks tile the hour cleanly and the {type,startTime}
+  // uniqueness holds. NOTE: the cycle-type ENUM label '30_MIN' is a fixed
+  // identifier used across models/UI/results — it does NOT rename when this
+  // value changes; only the actual window length does. Read in the generator's
+  // endTime math + block anchoring; the client timer already derives from
+  // the server-provided endTime, so no client change is needed.
+  cycleDurationMinutes: { type: Number, default: 30, min: 10, max: 60 },
+
   // ── BET FUNDING SPLIT (Phase A, 2026-07-10) ───────────────────────────────
   // % of every bet stake funded from reserveBalance; the remainder comes from
   // depositBalance first, then winningsBalance (fallbacks per owner spec §6).

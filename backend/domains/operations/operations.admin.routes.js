@@ -108,6 +108,8 @@ router.get('/operations/config-catalog', authenticate, isAdminOrSubAdmin, async 
     { value: 'Winnings platform fee % (settlement)', owner: 'Business Policy — SystemConfig.winningsFeePercent (arithmetic in Risk computeWinningsPayout, paid by gameEngine)', edit: 'PUT /api/admin/system/config' },
     // Corrected 2026-07-10: SystemConfig.payoutMultiplier never existed — the
     // 2x payout is a fixed product rule (winnings fee % is the settlement knob).
+    // Phase X X-5: short-block cycle duration, previously hardcoded.
+    { value: 'Cycle duration (short-block betting window, minutes)', owner: 'Business Policy — SystemConfig.cycleDurationMinutes (read by markets/cycleGenerator)', edit: 'PUT /api/admin/system/config' },
     { value: 'Merchant bonus pool funding', owner: 'Revenue & Settlement (from distributable revenue only)', edit: 'POST /api/admin/revenue/bonus-pool/fund' },
     { value: 'Per-merchant order limits + wallet top-ups', owner: 'Merchant Platform', edit: 'PUT /api/admin/merchants/:id (limits) / POST /api/admin/merchants/:id/fund' },
     { value: 'Funding providers (P2P / USDT / gateways)', owner: 'Funding Platform — providerRegistry adapters', edit: 'code adapter + registry entry (activation is a deploy, not a constant)' },

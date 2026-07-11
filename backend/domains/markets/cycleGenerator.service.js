@@ -1,5 +1,6 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import { Cycle } from '../../models/index.js';
+import mongoose from 'mongoose';
 
 
 class CycleGenerator {
@@ -15,6 +16,23 @@ class CycleGenerator {
         // In-memory cache of active cycles — updated by manageCycles() every 1s,
         // read by broadcastLiveUpdates() in the same tick with zero DB hits.
         this.liveCycleCache = {};  // { '30_MIN': cycleDoc, 'FULL_DAY': cycleDoc }
+    }
+
+    /**
+     * getCycleDurationMinutes — the admin-configured short-block duration
+     * (Phase X X-5). Owned by SystemConfig.cycleDurationMinutes; must divide 60
+     * evenly so blocks tile the hour and {type,startTime} stays unique. Any
+     * unset/invalid value falls back to 30 (the historical hardcoded default),
+     * so behavior is identical until an admin changes it.
+     */
+    async getCycleDurationMinutes() {
+        try {
+            const SystemConfig = mongoose.model('SystemConfig');
+            const cfg = await SystemConfig.findOne({ key: 'main' }).select('cycleDurationMinutes').lean();
+            const d = cfg?.cycleDurationMinutes;
+            if (Number.isInteger(d) && d >= 10 && d <= 60 && 60 % d === 0) return d;
+        } catch { /* fall through to default */ }
+        return 30; // schema default / safe fallback
     }
 
     start() {
@@ -410,18 +428,25 @@ class CycleGenerator {
             const currentMinute = istTime.getUTCMinutes();
             const currentSecond = istTime.getUTCSeconds();
 
+            // ── Cycle duration — admin-configurable (Phase X X-5, 2026-07-10) ─────
+            // Was a hardcoded 30*60*1000. SystemConfig.cycleDurationMinutes owns
+            // it now; must divide 60 evenly so blocks tile the hour (fallback 30
+            // if unset/invalid). The '30_MIN' type label is unchanged — only the
+            // window length is tunable.
+            const durationMin = await this.getCycleDurationMinutes();
+
             // ── FIX: start at the CURRENT block boundary (now - elapsed) ──────────
             // OLD (buggy): minutesToAdd = 30 - currentMinute  → future boundary
             //   At 14:23 IST → startTime = 14:30  (7 min in the future)
             //   getCycleState at 14:23 queries startTime≈14:23 → no DB match → 404
-            // NEW (correct): elapsed since block start → startTime = now − elapsed
-            //   At 14:23 IST → startTime = 14:00  (current block)
-            //   At 14:45 IST → startTime = 14:30  (current block)
-            const blockStartMinute = currentMinute < 30 ? 0 : 30;
+            // NEW (correct): elapsed since block start → startTime = now − elapsed.
+            // Generalized to any hour-dividing duration:
+            //   floor(minute / d) * d  ⇒  {0,30} at d=30, {0,15,30,45} at d=15, …
+            const blockStartMinute = Math.floor(currentMinute / durationMin) * durationMin;
             const elapsedMs        = ((currentMinute - blockStartMinute) * 60 + currentSecond) * 1000;
             const startTime        = new Date(now.getTime() - elapsedMs);
             startTime.setMilliseconds(0);
-            const endTime = new Date(startTime.getTime() + 30 * 60 * 1000);
+            const endTime = new Date(startTime.getTime() + durationMin * 60 * 1000);
 
             // FIX 5: Duplicate cycle prevention — use findOneAndUpdate with upsert
             // so that if two service instances or two rapid interval ticks both

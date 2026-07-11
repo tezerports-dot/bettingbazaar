@@ -28,6 +28,7 @@ export const SystemSettings: React.FC = () => {
     betReservePercent: 3,      // schema default: 3
     winningsFeePercent: 1,     // schema default: 1
     payoutFeePercent: 0,       // schema default: 0
+    cycleDurationMinutes: 30,  // schema default: 30 (Phase X X-5)
     riskRules: {
       enforceMultiplesOf10: true,      // schema default: true
       blockOppositeSideBetting: false, // schema default: false
@@ -63,6 +64,7 @@ export const SystemSettings: React.FC = () => {
           betReservePercent:  response.data.betReservePercent  ?? 3, // schema default: 3
           winningsFeePercent: response.data.winningsFeePercent ?? 1, // schema default: 1
           payoutFeePercent:   response.data.payoutFeePercent   ?? 0, // schema default: 0
+          cycleDurationMinutes: response.data.cycleDurationMinutes ?? 30, // schema default: 30
           riskRules: {
             enforceMultiplesOf10:     response.data.riskRules?.enforceMultiplesOf10     ?? true,
             blockOppositeSideBetting: response.data.riskRules?.blockOppositeSideBetting ?? false,
@@ -428,6 +430,32 @@ export const SystemSettings: React.FC = () => {
               </p>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* ── CYCLE TIMING (Phase X X-5) ──────────────────────────────────────── */}
+      <div className="card">
+        <h3 className="text-lg font-semibold mb-1">Cycle Timing</h3>
+        <p className="text-xs text-gray-400 mb-4">
+          How long each short betting cycle stays open. Takes effect on the next
+          cycle the generator creates.
+        </p>
+        <div>
+          <label className="label">Short Cycle Duration</label>
+          <select
+            className="input"
+            value={formData.cycleDurationMinutes}
+            onChange={(e) => setFormData({ ...formData, cycleDurationMinutes: Number(e.target.value) })}
+          >
+            {[10, 12, 15, 20, 30, 60].map((m) => (
+              <option key={m} value={m}>{m} minutes</option>
+            ))}
+          </select>
+          <p className="text-xs text-gray-500 mt-1">
+            Must divide 60 evenly so cycles line up with the clock (e.g. a 15-minute
+            cycle starts at :00, :15, :30, :45). The cycle is still labelled
+            &ldquo;30 Min&rdquo; internally — only its actual length changes.
+          </p>
         </div>
       </div>
 

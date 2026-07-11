@@ -73,6 +73,8 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
         betReservePercent:     config.betReservePercent ?? 3, // schema default: 3
         // Winnings platform fee (Phase A) — % of gross 2x retained at settlement
         winningsFeePercent:    config.winningsFeePercent ?? 1, // schema default: 1
+        // Cycle duration (Phase X X-5) — short-block betting window length
+        cycleDurationMinutes:  config.cycleDurationMinutes ?? 30, // schema default: 30
         riskRules: {
           enforceMultiplesOf10:     config.riskRules?.enforceMultiplesOf10     ?? true,  // schema default: true
           blockOppositeSideBetting: config.riskRules?.blockOppositeSideBetting ?? false, // schema default: false
@@ -110,7 +112,14 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
       depositMethods, withdrawalMethods,
       webUrl, androidUrl, iosUrl, minVersion, latestVersion,
       payoutFeePercent, riskRules, betReservePercent, winningsFeePercent,
+      cycleDurationMinutes,
     } = req.body;
+
+    if (cycleDurationMinutes !== undefined &&
+        (!Number.isInteger(cycleDurationMinutes) || cycleDurationMinutes < 10 ||
+         cycleDurationMinutes > 60 || 60 % cycleDurationMinutes !== 0)) {
+      return res.status(400).json({ success: false, message: 'cycleDurationMinutes must be an integer that divides 60 evenly (10, 12, 15, 20, 30, or 60).' });
+    }
 
     if (payoutFeePercent !== undefined &&
         (typeof payoutFeePercent !== 'number' || payoutFeePercent < 0 || payoutFeePercent > 100)) {
@@ -163,6 +172,8 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     // Winnings platform fee (Phase A) — consumed by markets/gameEngine.js via
     // riskValidation.computeWinningsPayout
     if (winningsFeePercent !== undefined) fieldWrites.push(['SystemConfig', 'winningsFeePercent', winningsFeePercent]);
+    // Cycle duration (Phase X X-5) — consumed by cycleGenerator.ensureActive30MinCycle
+    if (cycleDurationMinutes !== undefined) fieldWrites.push(['SystemConfig', 'cycleDurationMinutes', cycleDurationMinutes]);
     if (riskRules?.enforceMultiplesOf10     !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.enforceMultiplesOf10', !!riskRules.enforceMultiplesOf10]);
     if (riskRules?.blockOppositeSideBetting !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.blockOppositeSideBetting', !!riskRules.blockOppositeSideBetting]);
     if (riskRules?.maxFundingOrdersPerHour  !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.maxFundingOrdersPerHour', riskRules.maxFundingOrdersPerHour]);
