@@ -4,7 +4,7 @@
 
 
 import express   from 'express';
-import { creditDeposit, refundOrder, creditWinnings, debitWinningsForWithdrawal } from '../wallet/walletAuthority.service.js';
+import { creditDeposit, creditReserve, refundOrder, creditWinnings, debitWinningsForWithdrawal } from '../wallet/walletAuthority.service.js';
 import mongoose  from 'mongoose';
 import bcrypt    from 'bcryptjs';
 import jwt       from 'jsonwebtoken';
@@ -489,9 +489,22 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             if (!debited) {
                 return res.status(400).json({ success: false, message: 'Insufficient token inventory to confirm this deposit. Top up your merchant wallet.' });
             }
-            // Step 2: credit the user. On failure, compensate the merchant debit.
+            // Step 2: credit the user — apply the DepositPolicy deposit/reserve
+            // split (Phase X fix X-1/X-2, 2026-07-10). This path previously
+            // credited the FULL tokenAmount to depositBalance with NO reserve
+            // split, so real deposits NEVER funded reserveBalance — leaving
+            // DepositPolicy + the Phase A betReservePercent split dormant in
+            // production, and making the derived ledger (which always posts
+            // order.reserveAllocation) disagree with the actual wallet.
+            // depositAllocation/reserveAllocation are computed by the
+            // paymentOrder pre-save hook from the active DepositPolicy (logged
+            // 90/10 fallback if none configured). Both credits are idempotent
+            // via their canonical keys (dep_complete_/reserve_credit_<orderId>).
+            const depositCredit = order.depositAllocation ?? order.tokenAmount;
+            const reserveCredit = order.reserveAllocation ?? 0;
             try {
-                await creditDeposit(order.userId, order.tokenAmount, order._id.toString());
+                await creditDeposit(order.userId, depositCredit, order._id.toString());
+                if (reserveCredit > 0) await creditReserve(order.userId, reserveCredit, order._id.toString());
             } catch (walletErr) {
                 console.error('[Merchant confirm] user credit failed — refunding merchant:', walletErr.message);
                 await creditMerchantTokens({
@@ -1200,7 +1213,8 @@ router.post('/orders/:id/approve', merchantAuth, async (req, res) => {
         const PaymentOrder    = mongoose.model('PaymentOrder');
         const User        = mongoose.model('User');
         const Merchant    = mongoose.model('Merchant');
-        const WalletLedger = mongoose.model('WalletLedger');
+        // WalletLedger no longer needed here — the wallet authority writes its
+        // own ledger entries now (Phase X X-3, 2026-07-10).
         const Transaction  = mongoose.model('Transaction');
         const { id }      = req.params;
 
@@ -1261,48 +1275,22 @@ router.post('/orders/:id/approve', merchantAuth, async (req, res) => {
         const depositCredit = order.depositAllocation;
         const reserveCredit = order.reserveAllocation;
 
-        // ── Finding 4: Single atomic balance credit ────────────────────────────
-        const updatedUser = await User.findOneAndUpdate(
-            { _id: order.userId },
-            {
-                $inc: {
-                    depositBalance: depositCredit,
-                    reserveBalance: reserveCredit,
-                },
-            },
-            { ...withSession(session), new: true }
-        );
-
-        // ── Ledger entries (Section 4.3) ───────────────────────────────────────
-        const now = new Date();
-        await WalletLedger.insertMany([
-            {
-                userId:        order.userId,
-                type:          'CREDIT',
-                field:         'depositBalance',
-                amount:        depositCredit,
-                balanceBefore: (updatedUser.depositBalance  || 0) - depositCredit,
-                balanceAfter:  updatedUser.depositBalance   || 0,
-                reason:        'TOKEN_PURCHASE deposit allocation',
-                refModel:      'PaymentOrder',
-                refId:         order._id,
-                txId:          `approve_dep_${order._id}`,
-            },
-            {
-                userId:        order.userId,
-                type:          'CREDIT',
-                field:         'reserveBalance',
-                amount:        reserveCredit,
-                balanceBefore: (updatedUser.reserveBalance || 0) - reserveCredit,
-                balanceAfter:  updatedUser.reserveBalance  || 0,
-                reason:        'TOKEN_PURCHASE reserve allocation',
-                refModel:      'PaymentOrder',
-                refId:         order._id,
-                txId:          `approve_res_${order._id}`,
-            },
-        ], { ...withSession(session), ordered: false });
+        // ── User balance credit — via the wallet authority (Phase X fix X-3,
+        // 2026-07-10). This route previously credited via a raw $inc + a
+        // hand-written WalletLedger, bypassing walletAuthority (§7) and — more
+        // importantly — with NO idempotency key: the ONLY double-credit defense
+        // was the PAID→COMPLETED status guard, and safeSession() silently
+        // degrades non-atomic on standalone Mongo. creditDeposit/creditReserve
+        // are idempotent on canonical keys (so this is now mutually idempotent
+        // with the /confirm path — an order credits at most once total) and
+        // run atomically under the route session on a replica set. Closes
+        // Known Open Item #6.
+        if (depositCredit > 0) await creditDeposit(order.userId, depositCredit, order._id.toString(), session);
+        if (reserveCredit > 0) await creditReserve(order.userId, reserveCredit, order._id.toString(), session);
+        const updatedUser = await User.findById(order.userId, null, withSession(session));
 
         // Transaction record
+        const now = new Date();
         await Transaction.create([{
             userId:      order.userId,
             type:        'TOKEN_PURCHASE',
