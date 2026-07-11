@@ -5,6 +5,13 @@
 > the **visual direction** (1xBet-inspired light theme, Stake-inspired dark theme,
 > BC.Game-inspired game discovery). Reference DNA only — do **not** clone any
 > competitor's exact logo, wordmark, or trade dress.
+>
+> **Also read `UI_UX_SPEC.md` (Part II)** — the exhaustive, research-driven
+> surface inventory: the neon-futuristic + 3D visual language, every screen &
+> element across the user / admin / merchant panels mapped to its backend source,
+> the Excel-grade reports spec, the public-chat spec, and the button inventory.
+> Note the one hard preserve rule: **do not restyle the core cycle game's bet
+> cards or chips** — everything else may be fully redesigned.
 
 ---
 
