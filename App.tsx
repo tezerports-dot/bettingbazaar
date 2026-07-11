@@ -18,8 +18,9 @@
  */
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import React, { Suspense, useEffect, useState } from 'react';
-import { Routes, Route, Navigate } from 'react-router';
+import { Routes, Route, Navigate, useLocation } from 'react-router';
 import { HashRouter } from 'react-router-dom';
+import { motion, MotionConfig } from 'framer-motion';
 import { GameProvider } from './services/GameContext';
 import { ToastProvider } from './components/ui/Toast';
 import GamePage    from './pages/GamePage';
@@ -34,8 +35,31 @@ import RulesPage   from './pages/RulesPage';
 import FaqPage     from './pages/FaqPage';
 import MyBetsPage  from './pages/MyBetsPage';
 import SupportPage from './pages/SupportPage';
-// ── ACTIVE 3D BACKGROUND — ARCH-FIX-002 ──────────────────────────────────────
-import SceneBackground from './components/SceneBackground';
+// ── 3D BACKGROUND — lazy + capability-gated (perf 2026-07-11) ────────────────
+// The WebGL scene pulls an ~832 KB three.js chunk and runs continuous GPU work
+// behind every page. It is now LAZY (chunk fetched only if actually rendered)
+// and only mounts on capable devices (desktop, fine pointer, enough memory, no
+// reduced-motion). Phones — the mobile-first majority — get a cheap CSS gradient
+// and never download three.js. Biggest single perceived-perf win.
+const SceneBackground = React.lazy(() => import('./components/SceneBackground'));
+
+function canRenderHeavyBackground(): boolean {
+  if (typeof window === 'undefined' || !window.matchMedia) return false;
+  try {
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const finePointer = window.matchMedia('(pointer: fine)').matches;
+    const wide = window.matchMedia('(min-width: 1024px)').matches;
+    const mem = (navigator as any).deviceMemory;           // undefined on some browsers
+    const enoughMem = mem === undefined || mem >= 4;
+    return !reduced && finePointer && wide && enoughMem;
+  } catch { return false; }
+}
+
+// Cheap static backdrop that always renders (no WebGL, no per-frame cost).
+const BACKDROP_GRADIENT =
+  'radial-gradient(1200px 600px at 50% -10%, rgba(212,175,55,0.06), transparent 60%),' +
+  'radial-gradient(900px 500px at 100% 100%, rgba(30,136,229,0.05), transparent 55%),' +
+  'linear-gradient(180deg, #0B0E14 0%, #090C12 100%)';
 // ── LAZY GAME SECTIONS ────────────────────────────────────────────────────────
 const CasinoPage          = React.lazy(() => import('./pages/CasinoPage'));
 const CrashPage           = React.lazy(() => import('./pages/CrashPage'));
@@ -63,16 +87,29 @@ const backend = getBackend();
  * It sits OUTSIDE all route children so it persists across every navigation.
  * The inner div holds all routed content above the 3D layer.
  */
-const Layout: React.FC<React.PropsWithChildren<{}>> = ({ children }) => (
-  <div className="w-full h-[100dvh] bg-[#0B0E14] text-white relative font-inter overflow-hidden">
-    {/* ARCH-FIX-002: 3D glassmorphism floating geometry background */}
-    <SceneBackground />
-    {/* All route content lives above the 3D canvas */}
-    <div className="relative z-10 w-full h-full">
-      {children}
+const Layout: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
+  // Decide once on the client whether this device can afford the WebGL scene.
+  // Starts false so the three.js chunk is never fetched on mobile.
+  const [heavyBg, setHeavyBg] = useState(false);
+  useEffect(() => { setHeavyBg(canRenderHeavyBackground()); }, []);
+  return (
+    <div
+      className="w-full h-[100dvh] text-white relative font-inter overflow-hidden"
+      style={{ background: BACKDROP_GRADIENT }}
+    >
+      {/* Heavy 3D background only on capable devices; lazy so mobile never loads it. */}
+      {heavyBg && (
+        <Suspense fallback={<PageSkeleton />}>
+          <SceneBackground />
+        </Suspense>
+      )}
+      {/* All route content lives above the background layer */}
+      <div className="relative z-10 w-full h-full">
+        {children}
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 const MerchantRedirect = () => { React.  
   // GOVERNANCE §12: all panels subscribe to branding events and apply CSS vars.
@@ -100,6 +137,7 @@ useEffect(() => { window.location.href = '/merchant'; }, []); return null; };
 
 const AppShell: React.FC<{ children: React.ReactNode; isGame?: boolean }> = ({ children, isGame }) => {
   const [showAuth, setShowAuth] = useState(false);
+  const location = useLocation();
   if (isGame) {
     // GamePage manages its own Header + CycleControl + Footer internally
     return <>{children}</>;
@@ -108,13 +146,39 @@ const AppShell: React.FC<{ children: React.ReactNode; isGame?: boolean }> = ({ c
     <div className="h-full flex flex-col">
       <Header onAuthRequired={() => setShowAuth(true)} />
       <GameCategoryStrip />
-      <div className="flex-1 overflow-y-auto min-h-0">
+      {/* Quick opacity fade on navigation — compositor-only (no layout/transform),
+          so it's smooth and cannot shift or clip page content. MotionConfig makes
+          it collapse to instant under prefers-reduced-motion. */}
+      <motion.div
+        key={location.pathname}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.16, ease: 'easeOut' }}
+        className="flex-1 overflow-y-auto min-h-0"
+      >
         {children}
-      </div>
+      </motion.div>
       <Footer />
     </div>
   );
 };
+
+// Lightweight skeleton shown while a lazy page chunk loads — matches the content
+// region and pulses subtly, so navigation reads as "loading fast" instead of a
+// blank flash or a spinner. Cheap (opacity pulse only).
+const PageSkeleton: React.FC = () => (
+  <div className="p-4 space-y-3 animate-pulse" aria-hidden="true">
+    <div className="h-28 rounded-2xl bg-white/5" />
+    <div className="grid grid-cols-2 gap-3">
+      <div className="h-24 rounded-xl bg-white/5" />
+      <div className="h-24 rounded-xl bg-white/5" />
+      <div className="h-24 rounded-xl bg-white/5" />
+      <div className="h-24 rounded-xl bg-white/5" />
+    </div>
+    <div className="h-4 w-1/3 rounded bg-white/5" />
+    <div className="h-4 w-2/3 rounded bg-white/5" />
+  </div>
+);
 
 const LoadingScreen = () => (
   <div className="flex flex-col items-center justify-center h-full bg-[#0B0E14] text-[#D4AF37]">
@@ -251,25 +315,26 @@ const App: React.FC = () => (
       <Suspense fallback={<LoadingScreen />}>
         <ToastProvider>
           <GameProvider>
+            <MotionConfig reducedMotion="user">
             <HashRouter>
               <Layout>
                 <ErrorBoundary panel="user">
                   <Routes>
                     {/* GamePage manages its own Header/CycleControl/Footer */}
                     <Route path="/"       element={<AppShell isGame><GamePage /></AppShell>} />
-                    <Route path="/casino" element={<AppShell><Suspense fallback={null}><CasinoPage /></Suspense></AppShell>} />
-                    <Route path="/crash"  element={<AppShell><Suspense fallback={null}><CrashPage /></Suspense></AppShell>} />
-                    <Route path="/sports" element={<AppShell><Suspense fallback={null}><SportsPage /></Suspense></AppShell>} />
+                    <Route path="/casino" element={<AppShell><Suspense fallback={<PageSkeleton />}><CasinoPage /></Suspense></AppShell>} />
+                    <Route path="/crash"  element={<AppShell><Suspense fallback={<PageSkeleton />}><CrashPage /></Suspense></AppShell>} />
+                    <Route path="/sports" element={<AppShell><Suspense fallback={<PageSkeleton />}><SportsPage /></Suspense></AppShell>} />
 
                     {/* Finance */}
-                    <Route path="/wallet"    element={<AppShell><Suspense fallback={null}><WalletPage /></Suspense></AppShell>} />
-                    <Route path="/invite"    element={<AppShell><Suspense fallback={null}><InvitePage /></Suspense></AppShell>} />
-                    <Route path="/vip"       element={<AppShell><Suspense fallback={null}><VIPPage /></Suspense></AppShell>} />
-                    <Route path="/gift-code" element={<AppShell><Suspense fallback={null}><GiftCodePage /></Suspense></AppShell>} />
+                    <Route path="/wallet"    element={<AppShell><Suspense fallback={<PageSkeleton />}><WalletPage /></Suspense></AppShell>} />
+                    <Route path="/invite"    element={<AppShell><Suspense fallback={<PageSkeleton />}><InvitePage /></Suspense></AppShell>} />
+                    <Route path="/vip"       element={<AppShell><Suspense fallback={<PageSkeleton />}><VIPPage /></Suspense></AppShell>} />
+                    <Route path="/gift-code" element={<AppShell><Suspense fallback={<PageSkeleton />}><GiftCodePage /></Suspense></AppShell>} />
 
                     {/* Community */}
-                    <Route path="/chat"             element={<AppShell><Suspense fallback={null}>{}</Suspense></AppShell>} />
-                    <Route path="/recover-account"  element={<AppShell><Suspense fallback={null}><AccountRecoveryPage /></Suspense></AppShell>} />
+                    <Route path="/chat"             element={<AppShell><Suspense fallback={<PageSkeleton />}>{}</Suspense></AppShell>} />
+                    <Route path="/recover-account"  element={<AppShell><Suspense fallback={<PageSkeleton />}><AccountRecoveryPage /></Suspense></AppShell>} />
 
                     {/* Account */}
                     <Route path="/profile"  element={<AppShell><ProfilePage /></AppShell>} />
@@ -283,7 +348,7 @@ const App: React.FC = () => (
                     <Route path="/faq"      element={<AppShell><FaqPage /></AppShell>} />
                     <Route path="/support"  element={<AppShell><SupportPage /></AppShell>} />
 
-                    <Route path="/winners" element={<AppShell><Suspense fallback={null}><WinnersPage /></Suspense></AppShell>} />
+                    <Route path="/winners" element={<AppShell><Suspense fallback={<PageSkeleton />}><WinnersPage /></Suspense></AppShell>} />
 
                     {/* Panel redirects */}
                     <Route path="/merchant/*" element={<MerchantRedirect />} />
@@ -293,6 +358,7 @@ const App: React.FC = () => (
                 </ErrorBoundary>
               </Layout>
             </HashRouter>
+            </MotionConfig>
           </GameProvider>
         </ToastProvider>
       </Suspense>

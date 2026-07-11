@@ -160,3 +160,25 @@
 @supports not (backdrop-filter: blur(1px)) {
   .glass-card,.glass-card-gold,.glass-heavy,.glass-light,.glass-modal,.header-glass,.chat-bubble-sent,.chat-bubble-recv { background: rgba(10,13,22,0.92) !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
 }
+
+/* ── PERFORMANCE: drop backdrop-blur where it costs the most (2026-07-11) ──────
+   backdrop-filter: blur() repaints every frame on scroll and is the single
+   biggest mobile FPS sink — the sticky .header-glass alone repaints the whole
+   viewport on every scroll tick. On phones (and whenever the user prefers
+   reduced motion) we remove the blur entirely and use a more OPAQUE solid
+   background so text stays legible over content. Desktop keeps the frosted
+   glass. The [class*="backdrop-blur"] selector also covers Tailwind's
+   backdrop-blur-* utilities used directly in components (header, modals, cards). */
+@media (max-width: 900px), (prefers-reduced-motion: reduce) {
+  .glass-card,.glass-card-gold,.glass-heavy,.glass-light,.bet-chip,
+  .glass-overlay,.glass-modal,.header-glass,.chat-bubble-sent,.chat-bubble-recv,
+  [class*="backdrop-blur"] {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+  .glass-card,.glass-light,.bet-chip { background: rgba(12,16,28,0.92) !important; }
+  .glass-heavy,.header-glass         { background: rgba(7,9,16,0.96) !important; }
+  .glass-card-gold                   { background: linear-gradient(145deg, rgba(20,15,5,0.94), rgba(12,10,2,0.96)) !important; }
+  .glass-modal                       { background: linear-gradient(145deg, rgba(14,18,32,0.97), rgba(8,11,20,0.98)) !important; }
+  .glass-overlay                     { background: rgba(4,6,12,0.85) !important; }
+}
