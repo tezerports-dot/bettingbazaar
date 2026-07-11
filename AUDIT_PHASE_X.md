@@ -32,7 +32,14 @@ The merchant panel exposes **both** (`merchant-panel/src/services/api.ts:246`
 calls `/orders/:id/approve`; `merchant-panel/src/constants.ts:34` defines
 `CONFIRM → /api/merchant/confirm/:id`).
 
-**Impact:** if the live deposit button calls `/confirm/:id`, the reserve
+**CONFIRMED LIVE PATH (2026-07-10):** the merchant panel's deposit UI
+(`merchant-panel/components/OrderCard.tsx:166` "PAID (DEPOSIT) — must
+confirm", `pages/OrderManagement.tsx:526`) calls **`CONFIRM → /confirm/:id`**
+(`services/api.ts:211`). `approveOrder` (the split path) has **no caller in
+the panel**. So the live deposit path is the **no-split** one — the reserve
+wallet is almost certainly **not being funded in production today.**
+
+**Impact:** with the live path being `/confirm/:id`, the reserve
 wallet is **never funded** — `reserveBalance` stays 0 for real deposits. That
 silently disables the entire reserve-funded economy the platform is built on:
 `DepositPolicy`, and the Phase A `betReservePercent` split, become dead
