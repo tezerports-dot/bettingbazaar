@@ -34,6 +34,8 @@ export * from './gamification.model.js';
 export * from './vip.model.js';
 // Casino Platform (BBEPS Phase 011) — formerly models/gameProvider.model.js
 export * from '../domains/casino/gameProvider.model.js';
+// Game Registry (Game Management, 2026-07-11) — catalogue metadata + categories
+export * from '../domains/gameRegistry/game.model.js';
 export * from '../domains/wallet/wallet.model.js';
 export * from './social.model.js';
 export * from './accountRecovery.model.js';

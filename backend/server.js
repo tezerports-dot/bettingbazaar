@@ -47,6 +47,8 @@ import paymentCfgRoutes   from './routes/payment-config.routes.js';
 import giftCodeRoutes     from './routes/giftcode.routes.js';
 import retentionRoutes, { rebuildLeaderboard } from './routes/retention.routes.js';
 import gameProviderRoutes from './domains/casino/gameProvider.routes.js';
+import gameRegistryRoutes from './domains/gameRegistry/gameRegistry.routes.js';
+import { seedGameRegistry } from './domains/gameRegistry/gameRegistry.seed.js';
 import recoveryRoutes     from './routes/account-recovery.routes.js';
 import winnersRoutes      from './routes/winners.routes.js';
 
@@ -240,6 +242,10 @@ app.get('/api/download/ios', async (req, res) => {
 });
 
 app.use('/api/game',      gameProviderRoutes);
+// Game Registry (catalogue metadata + categories). Same base path; its routes
+// (/games, /categories, /admin/games, /admin/categories) don't collide with the
+// provider router's (/providers, /launch, /admin/game-providers).
+app.use('/api/game',      gameRegistryRoutes);
 app.use('/api/bet',       betRoutes);
 app.use('/api',           userRoutes);
 app.use('/api/merchant',  merchantRoutes);
@@ -298,7 +304,7 @@ server.listen(PORT, '0.0.0.0', () => {
 });
 
 Promise.allSettled([
-  connectMongoDB().then(() => seedAdminAccount()),
+  connectMongoDB().then(() => seedAdminAccount()).then(() => seedGameRegistry()),
   connectRedis().then(r => { global.redis = r; })
 ]).then(() => {
   console.log('✅ DB services initialized');

@@ -6,7 +6,7 @@ import {
   UserCheck, FileText, Palette, Settings, LogOut, Menu, X,
   TrendingUp, ShieldCheck, HelpCircle, Image as ImageIcon,
   MessageCircle, Shield, History, Scale, AlertOctagon, Upload,
-  Zap, Gift, Calendar, Bell, SlidersHorizontal, Trophy, Star,
+  Zap, Gift, Calendar, Bell, SlidersHorizontal, Trophy, Star, Gamepad2,
   type LucideIcon,
 } from 'lucide-react';
 import { useAuthStore } from '../services/auth';
@@ -64,6 +64,7 @@ const ALL_MENU_ITEMS: MenuItem[] = [
   { path: '/merchant-platform', icon: Store,      label: 'Merchant Platform', permission: 'canManageMerchants', group: 'enterprise' },
 
   // ── GAME PROVIDERS (Casino / Crash / Sports API config) ────────────────────
+  { path: '/games',          icon: Gamepad2,       label: 'Game Registry',    adminOnly: true,                   group: 'games' },
   { path: '/game-providers', icon: Star,           label: 'Game Providers',   adminOnly: true,                   group: 'games' },
 
   // ── PROMOTIONS (sub-admins with canManageContent) ──────────────────────────
