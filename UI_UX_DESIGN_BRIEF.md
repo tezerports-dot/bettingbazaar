@@ -214,3 +214,58 @@ competitor's exact branding.
 feels like one continuous surface, and the app reads as a premium, native-feeling
 product — 1xBet's information density in light, Stake's calm precision in dark,
 BC.Game's vibrant discovery for games.
+
+---
+
+## WORKING IN THIS REPO (for a repo-linked agent — read before editing)
+
+**Do the work inside this existing app. Do NOT scaffold a new project.** The
+stack is already React 18 + TypeScript + Vite 7 + Tailwind 3.4 + framer-motion 11.
+
+**Three front-ends live here:**
+- **User panel** (primary for this brief) — at the **repo root**: `App.tsx`,
+  `pages/*.tsx`, `components/**`, `services/**`.
+- **Admin panel** — `admin-panel/src/**` (reuse the design system/tokens).
+- **Merchant panel** — `merchant-panel/src/**`.
+
+**Key files to touch:**
+- **Design tokens / global CSS**: `index.css` (CSS variables + base),
+  `glassmorphism.css` (the current glass/blur system + button/card classes),
+  `tailwind.config.js` (color tokens: `gold #D4AF37`, `delhi #E53935`,
+  `bombay #1E88E5`; animations; utilities). Add the **light/dark token layer as
+  CSS variables** here, themed by `:root` (light) and `[data-theme="dark"]`, and
+  map Tailwind `theme.extend.colors` to the variables.
+- **App shell / routing / transitions**: `App.tsx` (HashRouter, lazy routes,
+  `Layout`, `AppShell`, `SystemGuard`). Header/Footer/nav:
+  `components/Layout/Header.tsx`, `Footer.tsx`, `components/Game/GameCategoryStrip.tsx`.
+- **Core game (home)**: `pages/GamePage.tsx` + `components/Game/**` (countdown,
+  pools, bet card, celebration).
+- **Game lobbies (already metadata-driven)**: `pages/CasinoPage.tsx`,
+  `pages/CrashPage.tsx`. They fetch the catalogue from the **Game Registry** —
+  `GET /api/game/games` and `GET /api/game/categories` (see `GAME_REGISTRY.md`).
+  Keep those data contracts; restyle the cards/grids/filters only.
+- **Wallet / account**: `pages/WalletPage.tsx`, `components/Modals/WalletModal.tsx`,
+  `pages/ProfilePage.tsx`, `pages/ResultsPage.tsx`, auth in
+  `components/Modals/AuthModal.tsx`.
+- **Shared UI primitives**: `components/ui/**`, `components/Modals/**`.
+
+**Already done — build on it, don't redo (perf pass, 2026-07-11):**
+- WebGL 3D background (`components/SceneBackground.tsx`) is now **lazy +
+  capability-gated** in `App.tsx` (desktop/fine-pointer/enough-RAM/no-reduced-motion);
+  mobile gets a CSS gradient and never loads three.js.
+- **`backdrop-filter: blur()` is disabled on ≤900px and reduced-motion** in
+  `glassmorphism.css` (solid fallbacks). Keep new glass effects behind that same
+  guard; don't reintroduce heavy blur on mobile.
+- **framer-motion** route transition (160 ms opacity fade) + `PageSkeleton`
+  Suspense fallbacks are wired in `App.tsx`, under `MotionConfig
+  reducedMotion="user"`. Extend this pattern (e.g. persistent shell + exit
+  transitions); don't add a second animation library.
+
+**Constraints & verification:**
+- Keep the `react-router` routes and the Game Registry / wallet API contracts.
+- Mobile-first PWA; respect `prefers-reduced-motion`, safe-area insets
+  (`--sat/--sab` already defined), and `touch-action: manipulation` (already set).
+- **Verify with `npm run build` (Vite).** The user panel has ~95 **pre-existing**
+  `tsc --noEmit` errors unrelated to design — gate on the Vite build, not `tsc`.
+  Admin/merchant panels build with `npm run build` in their folders.
+- Preview locally with `npm run dev`.
