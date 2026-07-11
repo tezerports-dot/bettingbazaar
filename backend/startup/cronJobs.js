@@ -7,19 +7,22 @@
 import mongoose from 'mongoose';
 import { creditWinnings } from '../domains/wallet/walletAuthority.service.js';
 import { emitOrderUpdate, emitAdminUpdate } from '../domains/notification/realtimeEmitters.js';
+// Phase X fix X-4: leader election so a >1-instance deploy runs each job on
+// at most one instance per tick (instead of every replica running everything).
+import { withLeaderLock } from './cronLock.js';
 
 export function registerCronJobs(rebuildLeaderboard) {
 
   // ── Leaderboard rebuild every 10 minutes ────────────────────────────────────
-  setInterval(async () => {
+  setInterval(() => withLeaderLock('leaderboard-rebuild', 10 * 60 * 1000, async () => {
     try { await rebuildLeaderboard(); }
     catch (e) { console.error('Leaderboard rebuild error:', e.message); }
-  }, 10 * 60 * 1000);
+  }), 10 * 60 * 1000);
 
   rebuildLeaderboard().catch(e => console.error('Initial leaderboard:', e.message));
 
   // ── Referral commission credit every 5 minutes ──────────────────────────────
-  setInterval(async () => {
+  setInterval(() => withLeaderLock('commission-credit', 5 * 60 * 1000, async () => {
     try {
       const CommissionRecord = mongoose.model('CommissionRecord');
       const pending = await CommissionRecord.find({ credited: false }).limit(100);
@@ -35,25 +38,25 @@ export function registerCronJobs(rebuildLeaderboard) {
       }
       if (pending.length > 0) console.log(`💰 Credited ${pending.length} commission records`);
     } catch (e) { console.error('Commission credit error:', e.message); }
-  }, 5 * 60 * 1000);
+  }), 5 * 60 * 1000);
 
 
   // ── Order expiry worker — runs every 60 seconds ──────────────────────────────
   // Delegates to paymentProcessing.service.js (domain service owns this logic).
-  setInterval(async () => {
+  setInterval(() => withLeaderLock('order-expiry', 60 * 1000, async () => {
     try {
       const { expireOrders } = await import('../domains/payment/paymentProcessing.service.js');
       const count = await expireOrders();
       if (count > 0) console.log(`[expiry-worker] Expired ${count} order(s)`);
     } catch (e) { console.error('[expiry-worker] cron error:', e.message); }
-  }, 60 * 1000);
+  }), 60 * 1000);
 
   // ── Scheduled policy/config apply worker — runs every 60 seconds ────────────
   // Activates DepositPolicy versions and ConfigVersion field changes whose
   // effectiveAt has passed. Both functions process every due item independently
   // and return a per-item result; a single item's failure is logged, never
   // thrown, so it can't block the rest of the batch or crash the interval.
-  setInterval(async () => {
+  setInterval(() => withLeaderLock('scheduled-apply', 60 * 1000, async () => {
     try {
       const { applyScheduledPolicyChanges } = await import('../domains/configuration/depositPolicy.service.js');
       const results = await applyScheduledPolicyChanges();
@@ -73,7 +76,7 @@ export function registerCronJobs(rebuildLeaderboard) {
       const applied = results.filter(r => r.applied).length;
       if (applied > 0) console.log(`[scheduled-config] Applied ${applied} config version(s)`);
     } catch (e) { console.error('[scheduled-config] cron error:', e.message); }
-  }, 60 * 1000);
+  }), 60 * 1000);
 
   // ── Settlement-ledger reconciliation — runs every 60 seconds ────────────────
   // Revenue & Settlement Platform (BBEPS Phase 007): derives append-only
@@ -81,7 +84,7 @@ export function registerCronJobs(rebuildLeaderboard) {
   // Idempotent (unique keys), so re-running is always safe; per-item failures
   // are returned as results and logged, never thrown; historical records
   // backfill automatically across the first passes (200 per source per pass).
-  setInterval(async () => {
+  setInterval(() => withLeaderLock('ledger-reconcile', 60 * 1000, async () => {
     try {
       const { reconcileCompletedOrders, reconcileSettledCycles } =
         await import('../domains/revenue/revenueSettlement.service.js');
@@ -98,14 +101,14 @@ export function registerCronJobs(rebuildLeaderboard) {
       const recorded = [...orderResults, ...cycleResults].filter(r => r.recorded).length;
       if (recorded > 0) console.log(`[ledger-reconcile] Recorded ${recorded} accounting event(s)`);
     } catch (e) { console.error('[ledger-reconcile] cron error:', e.message); }
-  }, 60 * 1000);
+  }), 60 * 1000);
 
   // ── Merchant Performance Bonus engine — runs every 10 minutes ───────────────
   // Merchant Platform (BBEPS Phase 008). No-ops unless an admin has enabled
   // an ACTIVE MerchantBonusPolicy with a non-zero percentage (Business Policy
   // Platform). Issuance is idempotent (deterministic keys) and pool-capped —
   // re-running is always safe. Per-merchant failures logged, never thrown.
-  setInterval(async () => {
+  setInterval(() => withLeaderLock('bonus-engine', 10 * 60 * 1000, async () => {
     try {
       const { runBonusEngine } = await import('../domains/merchant/merchantBonus.service.js');
       const outcome = await runBonusEngine();
@@ -120,7 +123,7 @@ export function registerCronJobs(rebuildLeaderboard) {
           issued.map(r => `${r.merchantId}: ₹${r.bonusRupees}`).join(', '));
       }
     } catch (e) { console.error('[bonus-engine] cron error:', e.message); }
-  }, 10 * 60 * 1000);
+  }), 10 * 60 * 1000);
 
   console.log('✅ Cron jobs registered');
 }
