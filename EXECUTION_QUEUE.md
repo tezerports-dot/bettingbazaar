@@ -52,6 +52,41 @@ deleted, so this file also works as a short-form recent-history log.
       PRODUCTION_READINESS.md (owner checklist: secret rotation, licensing,
       pentest, load test, backups + per-integration activation guides).
 
+## PHASE X — Enterprise Validation & Hidden Workflow Audit (2026-07-10) — see AUDIT_PHASE_X.md
+
+Systematic architectural audit (not feature work). Findings, highest value first:
+
+- [ ] **X-1/X-2 (🔴) Two divergent deposit-completion endpoints.**
+      `/merchant/confirm/:id` credits full tokenAmount to deposit (NO reserve
+      split); `/merchant/orders/:id/approve` applies the DepositPolicy split.
+      The panel exposes both. If the live path is `/confirm`, the reserve
+      wallet is never funded → DepositPolicy + Phase A betReservePercent are
+      effectively dead for real deposits, and the derived ledger (which always
+      posts the reserve allocation from the order) disagrees with the actual
+      wallet. NEEDS A PRODUCT DECISION on the canonical path, then align/remove
+      the other + integration test that a completed deposit funds reserve.
+- [ ] **X-3 (🟠) approve path credits user via raw $inc.** Bypasses
+      walletAuthority.creditDeposit/creditReserve (§7 + Known Open #6): no
+      idempotency key backstop (only the status guard prevents double-credit),
+      and safeSession() degrades non-atomic on standalone Mongo → crash mid-way
+      leaves order COMPLETED but user un-credited, unrecoverable. Fix: reroute
+      through the authorities with the route session; test double-approve.
+- [ ] **X-4 (🟠) cron jobs have no leader election.** All setInterval in
+      cronJobs.js; every replica runs every job. Safe today only via per-job
+      idempotency. Needs a Mongo/Redis leader lock before >1 instance (same
+      cluster as the SSE-bridge item).
+- [ ] **X-5 (🟡) cycle duration hardcoded** (30*60*1000, cycleGenerator:424) —
+      move to SystemConfig, read in generator + GAME_CORE mirror, add to catalog.
+- [ ] **X-6 (🟡) observability** — request/correlation IDs, structured logging,
+      metrics/alerting (owner: alert on ledger integrityOk:false).
+- [ ] **X-7 (🟡) data lifecycle** — retention/archival plan per unbounded
+      collection (AccountingEvent/WalletLedger/Bet/Transaction/audit), soft-delete
+      convention.
+- [ ] **X-8 (verify) authz matrix** — build the full endpoint×role×ownership
+      table (per-route auth confirmed present at spot-checks; no hole asserted).
+- [ ] **X-9 (verify) merchant-assignment concurrency test** — prove the
+      two-merchants-same-order loser is rejected (settlement race already proven).
+
 ### Discovered during Phases B–F (queued)
 
 - [ ] **SSE/socket fan-out is per-instance** (global.io / sseManager live in
