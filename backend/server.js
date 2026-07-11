@@ -28,6 +28,7 @@ import { connectRedis }       from './startup/redisConnect.js';
 import { seedAdminAccount }   from './startup/seedAdmin.js';
 import { registerCronJobs }   from './startup/cronJobs.js';
 import { attachSocketHandlers } from './startup/socketHandlers.js';
+import { initRealtimeBridge } from './startup/realtimeBridge.js'; // Phase X: multi-instance real-time
 import { registerFundingEventSubscribers } from './domains/funding/fundingEvents.js';
 
 // ─── MODELS (must load before any route that calls mongoose.model()) ──────────
@@ -263,6 +264,10 @@ app.use('/api/sse', initSSERoutes(sseManager, cycleGenerator));
 
 
 attachSocketHandlers(io, cycleGenerator, gameEngine);
+
+// Cross-instance real-time bridge (Phase X): fan out socket.io + SSE events
+// across all backend instances via Redis. No-op without REDIS_URL.
+initRealtimeBridge(io, sseManager);
 
 // ─── SPA FALLBACKS ───────────────────────────────────────────────────────────
 app.get('/admin/*', (req, res, next) => {

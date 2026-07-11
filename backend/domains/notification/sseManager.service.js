@@ -2,6 +2,7 @@
 
 
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 
 class SSEManager {
     constructor() {
@@ -21,8 +22,58 @@ class SSEManager {
         this.nextId  = 0;
         this.stats   = { totalConnections: 0, totalMessages: 0 };
 
+        // ── Horizontal-scale bridge (Phase X, 2026-07-10) ─────────────────────
+        // SSE connections are pinned to one backend instance, but an event
+        // (bet_placed, cycle_result, balance_update) can be produced on ANY
+        // instance. attachRedis() wires a Redis pub/sub relay so a fan-out on
+        // one instance reaches SSE clients on all of them. Unset (single
+        // instance / no REDIS_URL) → purely local, identical to before.
+        this._origin = crypto.randomUUID(); // this instance's id (dedup tag)
+        this._pub = null;                    // ioredis publisher (or null)
+        this._channel = 'bb:sse';
+
         // Keep-alive ping every 25s — prevents Railway 30s idle timeout
         this._pingInterval = setInterval(() => this._ping(), 25000);
+    }
+
+    // ── REDIS BRIDGE ──────────────────────────────────────────────────────────
+
+    /**
+     * attachRedis — enable cross-instance fan-out. `pub` publishes; `sub` is a
+     * dedicated subscriber connection (subscribe-mode). A message this instance
+     * originated is skipped on receipt (it already delivered locally), so no
+     * client is written to twice.
+     */
+    attachRedis(pub, sub) {
+        this._pub = pub;
+        sub.subscribe(this._channel).catch((e) =>
+            console.warn('[sse-bridge] subscribe failed:', e.message));
+        sub.on('message', (channel, raw) => {
+            if (channel !== this._channel) return;
+            let msg;
+            try { msg = JSON.parse(raw); } catch { return; }
+            if (!msg || msg.origin === this._origin) return; // our own echo
+            this._dispatchLocal(msg);
+        });
+        console.log('📡 SSE Redis bridge active (cross-instance fan-out).');
+    }
+
+    /** Publish a fan-out to the other instances (no-op without the bridge). */
+    _publish(kind, args) {
+        if (!this._pub) return;
+        try {
+            this._pub.publish(this._channel, JSON.stringify({ origin: this._origin, kind, args }));
+        } catch (e) { /* delivery to remote instances is best-effort */ }
+    }
+
+    /** Apply a fan-out that arrived from another instance to LOCAL clients. */
+    _dispatchLocal({ kind, args }) {
+        switch (kind) {
+            case 'broadcast':        return this._localBroadcast(...args);
+            case 'sendToUser':       return this._localSendToUser(...args);
+            case 'sendToMerchant':   return this._localSendToMerchant(...args);
+            case 'broadcastToAdmins':return this._localBroadcastToAdmins(...args);
+        }
     }
 
     // ── PUBLIC CHANNEL ────────────────────────────────────────────────────────
@@ -56,6 +107,11 @@ class SSEManager {
      * Zero extra infrastructure: reuses the existing SSE HTTP connection.
      */
     sendToUser(userId, event, data) {
+        this._localSendToUser(userId, event, data);
+        this._publish('sendToUser', [String(userId), event, data]);
+    }
+
+    _localSendToUser(userId, event, data) {
         const set = this.userClients.get(String(userId));
         if (!set || set.size === 0) return;
         const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -67,8 +123,13 @@ class SSEManager {
         for (const res of dead) set.delete(res);
     }
 
-    /** Broadcast a named SSE event to ALL public clients. */
+    /** Broadcast a named SSE event to ALL public clients (all instances). */
     broadcast(event, data) {
+        this._localBroadcast(event, data);
+        this._publish('broadcast', [event, data]);
+    }
+
+    _localBroadcast(event, data) {
         if (this.clients.size === 0) return;
         const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
         const dead = [];
@@ -120,6 +181,11 @@ class SSEManager {
      * @param {object} data
      */
     sendToMerchant(merchantId, event, data) {
+        this._localSendToMerchant(String(merchantId), event, data);
+        this._publish('sendToMerchant', [String(merchantId), event, data]);
+    }
+
+    _localSendToMerchant(merchantId, event, data) {
         const key = merchantId.toString();
         const set = this.merchantClients.get(key);
         if (!set || set.size === 0) return;
@@ -154,6 +220,11 @@ class SSEManager {
      * @param {object} data
      */
     broadcastToAdmins(event, data) {
+        this._localBroadcastToAdmins(event, data);
+        this._publish('broadcastToAdmins', [event, data]);
+    }
+
+    _localBroadcastToAdmins(event, data) {
         if (this.adminClients.size === 0) return;
         const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
         const dead = [];
