@@ -27,11 +27,30 @@ spec:
     metadata:
       labels: { app: bettingbazaar, color: blue }
     spec:
+      # AQ-11: pod-level hardening (CIS Kubernetes Benchmark). Matches the
+      # non-root Dockerfile (USER node = uid 1000). seccomp RuntimeDefault
+      # filters the syscall surface; the container drops all Linux capabilities.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      # Spread replicas across nodes so a single node loss can't take the tier down.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: bettingbazaar }
       containers:
         - name: app
           image: bettingbazaar:latest   # replace with your registry tag
           ports: [{ containerPort: 8080 }]
           envFrom: [{ secretRef: { name: bb-env } }]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false   # app writes app-assets/storage locally when S3 is off
+            capabilities: { drop: ["ALL"] }
           # AQ-4: probes are split. Readiness (deps + drain aware) gates traffic;
           # liveness is process-only so a MongoDB outage can't trigger a
           # cluster-wide restart storm. A startupProbe protects slow first boots.
@@ -71,3 +90,14 @@ spec:
   metrics:
     - type: Resource
       resource: { name: cpu, target: { type: Utilization, averageUtilization: 70 } }
+---
+# AQ-11: guarantee capacity during voluntary disruptions (node drains, rolling
+# upgrades) — the scheduler may never take the tier below 1 healthy pod.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: bettingbazaar
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: bettingbazaar }

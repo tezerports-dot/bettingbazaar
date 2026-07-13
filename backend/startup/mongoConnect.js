@@ -19,6 +19,14 @@ export async function connectMongoDB() {
         // budget without a code change. Defaults preserve prior behavior.
         maxPoolSize:              Number(process.env.MONGO_MAX_POOL_SIZE || 10),
         minPoolSize:              Number(process.env.MONGO_MIN_POOL_SIZE || 2),
+        // AQ-14: autoIndex builds every model's indexes at boot. That's SAFE by
+        // default (the unique indexes are the money-path idempotency gates — a
+        // fresh DB MUST have them before it takes traffic), so it stays ON unless
+        // an operator explicitly opts into the manual-sync workflow by setting
+        // MONGO_AUTO_INDEX=false AND running `node scripts/sync-indexes.mjs` in
+        // the deploy pipeline. Disabling it without that script would leave a
+        // fresh production DB without its unique indexes — do not do that.
+        autoIndex:                process.env.MONGO_AUTO_INDEX !== 'false',
         dbName:                   'bettingbazaar'
       });
       console.log('✅ MongoDB Connected');

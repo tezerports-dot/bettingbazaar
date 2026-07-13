@@ -1,32 +1,52 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# UNIFIED CADDYFILE — Single Railway service, 3 panels on one port
+# UNIFIED CADDYFILE — optional edge: static panels + reverse-proxied backend
 # ══════════════════════════════════════════════════════════════════════════════
 #
-# Routing:
-#   /admin/*    → admin-panel/dist    (HashRouter, base="/admin/")
-#   /merchant/* → merchant-panel/dist (BrowserRouter, basename="/merchant")
-#   /*          → dist                (user panel, HashRouter, base="/")
+# NOTE ON DEPLOY PATHS: the Railway/Dockerfile path does NOT use Caddy — the Node
+# process serves the API and the built panels itself (railway.json / Dockerfile
+# CMD = `node backend/server.js`). This Caddyfile is for a SELF-HOSTED edge where
+# Caddy terminates TLS (HTTP/2 + HTTP/3 on by default), serves the static panel
+# bundles, and reverse-proxies everything dynamic to the Node backend.
 #
-# Path stripping: Caddy strips the prefix before looking up files so that
-# the built asset paths (e.g. /admin/assets/main.js) resolve correctly
-# inside each panel's dist/ folder.
+# AQ-12 (2026-07-13) FIX: the previous version served only static files and had
+# NO reverse_proxy — used as written, /api, realtime, health and uploads were
+# all unreachable. It now proxies them to the backend upstream.
+#
+# Routing:
+#   /api/*, /socket.io/*, /health*, /metrics, /app-assets/*, /storage/*
+#                → Node backend ({$BACKEND_UPSTREAM}, default localhost:8080)
+#   /admin/*     → admin-panel/dist   (SPA)
+#   /merchant/*  → merchant-panel/dist (SPA)
+#   /*           → dist                (user panel SPA)
 # ══════════════════════════════════════════════════════════════════════════════
 
 :{$PORT}
 
-# Item 26 (2026-07-13): proxy-level response compression. zstd preferred,
-# gzip fallback — cuts JS/CSS payloads ~70% for panel loads. HTTP/2+3 are on
-# by default in Caddy; verify post-deploy with `curl -I --http2 <url>`.
+# Proxy-level response compression. zstd preferred, gzip fallback.
 encode zstd gzip
 
-# Item 29 (multi-domain): this block is HOST-AGNOSTIC (:{$PORT}) — behind
-# Railway, every custom domain attached to the service already serves identical
-# content (TLS terminated by the platform; add domains in the dashboard + DNS,
-# zero code). Self-hosting Caddy at the edge instead? Use one site block per
-# domain with this same body — pattern + verification steps in deploy/README.md.
-# Canonical-URL normalization is app-side via CANONICAL_HOST (network.config.js).
+# Edge-terminated security headers. HSTS belongs here (TLS terminates at Caddy);
+# the app sets its own CSP/helmet headers on API responses.
+header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options "nosniff"
+    Referrer-Policy "no-referrer"
+    -Server
+}
 
-# ── Admin Panel ──────────────────────────────────────────────────────────────
+# Item 29 (multi-domain): this block is HOST-AGNOSTIC (:{$PORT}); every custom
+# domain attached to the service serves identical content. Canonical-URL
+# normalization is app-side via CANONICAL_HOST (network.config.js).
+
+# ── Dynamic → Node backend (API, realtime, health, metrics, app-managed assets)
+# Caddy v2 proxies WebSockets (socket.io) and SSE (/api/sse) transparently —
+# it auto-detects the Upgrade header and streams event-stream responses.
+@backend path /api/* /socket.io/* /health* /metrics /app-assets/* /storage/*
+handle @backend {
+    reverse_proxy {$BACKEND_UPSTREAM:localhost:8080}
+}
+
+# ── Admin Panel (static SPA) ─────────────────────────────────────────────────
 handle /admin* {
     uri strip_prefix /admin
     root * /app/admin-panel/dist
@@ -34,7 +54,7 @@ handle /admin* {
     try_files {path} /index.html
 }
 
-# ── Merchant Panel ───────────────────────────────────────────────────────────
+# ── Merchant Panel (static SPA) ──────────────────────────────────────────────
 handle /merchant* {
     uri strip_prefix /merchant
     root * /app/merchant-panel/dist
@@ -42,7 +62,7 @@ handle /merchant* {
     try_files {path} /index.html
 }
 
-# ── User Panel (catch-all) ───────────────────────────────────────────────────
+# ── User Panel (static SPA, catch-all) ───────────────────────────────────────
 handle {
     root * /app/dist
     file_server

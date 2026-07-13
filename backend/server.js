@@ -128,8 +128,17 @@ app.use(canonicalRedirect);
 const corsOptions = { origin: corsOriginCheck, ...CORS_SHAPE };
 app.options('*', cors(corsOptions));
 app.use(cors(corsOptions));
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+// AQ-10: tighten the request-body limit. It was 10mb on EVERY route — a large
+// DoS surface (each request could pin 10mb of memory + parse time). Uploads in
+// this app use presigned S3 URLs (client → S3 directly), so almost no route
+// legitimately posts a big JSON body. The one exception is the admin base64
+// app-asset upload, which gets a scoped larger parser; everything else is tight.
+const JSON_LIMIT = process.env.JSON_BODY_LIMIT || '1mb';
+const _tightJson = express.json({ limit: JSON_LIMIT });
+const _assetJson = express.json({ limit: process.env.ASSET_JSON_LIMIT || '8mb' });
+const _ASSET_UPLOAD_PATHS = new Set(['/api/admin/app-assets/upload']);
+app.use((req, res, next) => (_ASSET_UPLOAD_PATHS.has(req.path) ? _assetJson : _tightJson)(req, res, next));
+app.use(express.urlencoded({ extended: true, limit: JSON_LIMIT }));
 app.use(mongoSanitize());
 app.use(cookieParser());
 app.use(requestContext); // X-6: correlation id (before the logger, so it's logged)
