@@ -125,6 +125,8 @@ router.get('/operations/config-catalog', authenticate, isAdminOrSubAdmin, async 
     { value: 'Communication channels', owner: 'Communication Platform — channelRegistry adapters', edit: 'code adapter (activation gated by config/flags)' },
     { value: 'Product feature flags', owner: 'featureFlags.service.js (env FEATURE_* / runtime override / CDN hydrate)', edit: 'environment or hydrateFromConfig' },
     { value: 'Maintenance mode/message, KYC required, registration, app URLs/versions', owner: 'Business Policy — SystemConfig', edit: 'PUT /api/admin/system/config' },
+    // Footer navigation (2026-07-13): which pages appear in the user panel's bottom bar.
+    { value: 'User-panel footer navigation tabs (2–5 pages, ordered)', owner: 'Business Policy — SystemConfig.footerPages (read by user panel Footer via system_config)', edit: 'PUT /api/admin/system/config' },
     { value: 'Branding (colors, logos, names, banners)', owner: 'Branding document (§3/§12)', edit: 'PUT /api/admin/branding' },
     { value: 'Chat rules, support links, promo content', owner: 'CMS domain documents', edit: 'respective /api/admin content endpoints' },
   ]});

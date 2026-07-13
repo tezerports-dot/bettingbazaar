@@ -40,12 +40,15 @@ interface SysConfig {
   maxWithdrawal: number;
   tokenBuyRate:  number;
   tokenSellRate: number;
+  // Admin-editable footer tabs (SystemConfig.footerPages) — page keys, ordered.
+  footerPages:   string[];
 }
 const DEFAULT_SYS_CONFIG: SysConfig = {
   minBet: 10, maxBet: 100000, maxFullDayBet: 500000,
   minDeposit: 100, maxDeposit: 50000,
   minWithdrawal: 100, maxWithdrawal: 50000,
   tokenBuyRate: 1, tokenSellRate: 1,
+  footerPages: ['home', 'results', 'winners', 'promo', 'profile'], // schema default
 };
 import { logger } from './logging.service';
 import { useToast } from '../components/ui/Toast';
@@ -539,6 +542,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
         maxWithdrawal: data.maxWithdrawal ?? prev.maxWithdrawal,
         tokenBuyRate:  data.tokenBuyRate  ?? prev.tokenBuyRate,
         tokenSellRate: data.tokenSellRate ?? prev.tokenSellRate,
+        footerPages:   Array.isArray(data.footerPages) && data.footerPages.length ? data.footerPages : prev.footerPages,
       }));
     };
 

@@ -42,6 +42,8 @@ export const SystemSettings: React.FC = () => {
       maxFundingOrdersPerHour: 0,      // schema default: 0 (off)
       maxWarnings: 3,                  // schema default: 3 (0 = never auto-block)
     },
+    // Footer navigation (2026-07-13) — schema default: the historical five tabs
+    footerPages: ['home', 'results', 'winners', 'promo', 'profile'],
     // App distribution
     webUrl:        '',
     androidUrl:    '',
@@ -95,6 +97,7 @@ export const SystemSettings: React.FC = () => {
             maxFundingOrdersPerHour:  response.data.riskRules?.maxFundingOrdersPerHour  ?? 0,
             maxWarnings:              response.data.riskRules?.maxWarnings              ?? 3,
           },
+          footerPages: response.data.footerPages?.length ? response.data.footerPages : ['home', 'results', 'winners', 'promo', 'profile'],
           webUrl:        response.data.webUrl        || '',
           androidUrl:    response.data.androidUrl    || '',
           iosUrl:        response.data.iosUrl        || '',
@@ -569,6 +572,51 @@ export const SystemSettings: React.FC = () => {
             </div>
           ))}
         </div>
+      </div>
+
+      {/* ── FOOTER NAVIGATION (2026-07-13) — admin-editable user-panel tabs ── */}
+      <div className="card">
+        <h3 className="text-lg font-semibold mb-1">Footer Navigation (User Panel)</h3>
+        <p className="text-xs text-gray-400 mb-4">
+          Choose which pages appear in the user panel&apos;s bottom bar and in what
+          order (2–5 tabs). Applies live to all connected users — no redeploy.
+        </p>
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+          {[0, 1, 2, 3, 4].map((i) => {
+            const FOOTER_PAGE_OPTIONS: [string, string][] = [
+              ['home', '🎲 Game'], ['results', '📊 Results'], ['winners', '🏆 Winners'],
+              ['promo', '💡 Pro Tips'], ['profile', '👤 Profile'], ['wallet', '💰 Wallet'],
+              ['invite', '🤝 Invite'], ['vip', '👑 VIP'], ['gift-code', '🎁 Gifts'],
+              ['my-bets', '📜 My Bets'], ['history', '🕘 History'], ['rules', '📖 Rules'],
+              ['faq', '❓ FAQ'], ['support', '🛟 Support'], ['chat', '💬 Chat'],
+              ['casino', '🎰 Casino'], ['crash', '🚀 Crash'], ['sports', '⚽ Sports'],
+            ];
+            const current = formData.footerPages[i] || '';
+            const usedElsewhere = formData.footerPages.filter((_, j) => j !== i);
+            return (
+              <div key={i}>
+                <label className="text-[10px] text-gray-500 uppercase font-bold block mb-1">Slot {i + 1}</label>
+                <select
+                  className="input"
+                  value={current}
+                  onChange={(e) => {
+                    const slots = [0, 1, 2, 3, 4].map(j => (j === i ? e.target.value : (formData.footerPages[j] || '')));
+                    setFormData({ ...formData, footerPages: slots.filter(Boolean) });
+                  }}
+                >
+                  <option value="">— empty —</option>
+                  {FOOTER_PAGE_OPTIONS.map(([key, label]) => (
+                    <option key={key} value={key} disabled={usedElsewhere.includes(key)}>{label}</option>
+                  ))}
+                </select>
+              </div>
+            );
+          })}
+        </div>
+        <p className="text-xs text-gray-500 mt-2">
+          At least 2 tabs required; duplicates are disabled. Provider pages
+          (Casino/Crash/Sports) still only show when that provider is enabled.
+        </p>
       </div>
 
       {/* App Distribution */}

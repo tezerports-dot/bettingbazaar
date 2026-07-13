@@ -315,6 +315,11 @@ const App: React.FC = () => (
       <Suspense fallback={<LoadingScreen />}>
         <ToastProvider>
           <GameProvider>
+            {/* FIX (2026-07-13): GameProviderProvider was imported but never
+                mounted — every useGameProviders() consumer got the frozen
+                default context (all sections disabled), so Casino/Crash pages
+                always redirected home even with providers enabled. */}
+            <GameProviderProvider>
             <MotionConfig reducedMotion="user">
             <HashRouter>
               <Layout>
@@ -359,6 +364,7 @@ const App: React.FC = () => (
               </Layout>
             </HashRouter>
             </MotionConfig>
+            </GameProviderProvider>
           </GameProvider>
         </ToastProvider>
       </Suspense>

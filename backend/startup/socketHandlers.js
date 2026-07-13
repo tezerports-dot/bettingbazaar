@@ -31,6 +31,8 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
           tokenSellRate:      1, // fixed 1:1 conversion
           maintenanceMode:    cfg?.maintenanceMode            ?? false,
           maintenanceMessage: cfg?.maintenanceMessage         ?? '',
+          // Footer navigation (2026-07-13) — schema default: the historical five tabs
+          footerPages:        cfg?.footerPages?.length ? cfg.footerPages : ['home', 'results', 'winners', 'promo', 'profile'],
           minVersion:         cfg?.minVersion                 ?? '1.0.0',
           latestVersion:      cfg?.latestVersion              ?? '1.0.0',
           webUrl:             cfg?.webUrl                     ?? '',

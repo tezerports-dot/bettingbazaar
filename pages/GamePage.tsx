@@ -7,6 +7,7 @@ import CycleControl from '../components/Game/CycleControl';
 import BettingCard from '../components/Game/BettingCard';
 import BetControls from '../components/Game/BetControls';
 import LivePoolStats from '../components/Game/LivePoolStats';
+import ResultsPanel from '../components/Game/ResultsPanel';
 // Oracle (AIAnalyst) removed — the "Bazaar Oracle" prediction button has been
 // removed from the game page. It was a purple floating button that called an
 // AI prediction endpoint. Removed per product decision.
@@ -124,64 +125,8 @@ const GamePage: React.FC = () => {
 
       <BettingCard onPlaceBet={handlePlaceBet} selectedAmount={betAmount} isMerged={showMerged} />
 
-      {/* -- RESULT STRIP -- previous results, both cycle types, colored balls -- */}
-      <div className="flex-none py-2 px-3 flex items-center gap-1.5 border-y border-[#121826] bg-black/20 backdrop-blur-sm z-20 mb-2 min-h-[40px] overflow-x-auto scrollbar-none">
-
-        {/* 30-MIN results */}
-        <span className="text-[8px] font-bold text-[#D4AF37]/60 uppercase tracking-widest shrink-0 mr-0.5">30M</span>
-        <div className="flex items-center gap-1 flex-1 overflow-hidden">
-          {pastCycles
-            .filter(c => (c.type as string) === '30_MIN' && c.winner)
-            .slice(0, 30)
-            .map((c, i) => (
-              <div
-                key={`30m-${c.id || i}`}
-                title={c.winner === 'DELHI' ? 'Delhi won' : 'Bombay won'}
-                className={`w-5 h-5 rounded-full flex items-center justify-center text-[8px] font-bold text-white shrink-0 shadow-md border border-white/10
-                  ${c.winner === 'DELHI' ? 'bg-[#E53935]' : 'bg-[#1E88E5]'}
-                `}
-              >
-                {c.winner === 'DELHI' ? 'D' : 'B'}
-              </div>
-            ))}
-          {pastCycles.filter(c => (c.type as string) === '30_MIN' && c.winner).length === 0 && (
-            <span className="text-[9px] text-white/20 italic">no results yet</span>
-          )}
-        </div>
-
-        {/* Divider */}
-        <div className="w-px h-4 bg-[#D4AF37]/30 shrink-0 mx-0.5" />
-
-        {/* FULL-DAY results */}
-        <span className="text-[8px] font-bold text-[#D4AF37]/60 uppercase tracking-widest shrink-0 mr-0.5">24H</span>
-        <div className="flex items-center gap-1">
-          {pastCycles
-            .filter(c => (c.type as string) === 'FULL_DAY' && c.winner)
-            .slice(0, 5)
-            .map((c, i) => (
-              <div
-                key={`fd-${c.id || i}`}
-                title={c.winner === 'DELHI' ? 'Delhi won' : 'Bombay won'}
-                className={`w-5 h-5 rounded-full flex items-center justify-center text-[8px] font-bold text-white shrink-0 shadow-md border border-white/10
-                  ${c.winner === 'DELHI' ? 'bg-[#E53935]' : 'bg-[#1E88E5]'}
-                `}
-              >
-                {c.winner === 'DELHI' ? 'D' : 'B'}
-              </div>
-            ))}
-          {pastCycles.filter(c => (c.type as string) === 'FULL_DAY' && c.winner).length === 0 && (
-            <span className="text-[9px] text-white/20 italic">--</span>
-          )}
-        </div>
-
-        {/* Results button */}
-        <button
-          onClick={() => navigate('/history')}
-          className="text-[#D4AF37] text-[9px] uppercase font-bold tracking-wider px-2 py-0.5 border border-[#D4AF37]/50 rounded hover:bg-[#D4AF37] hover:text-black transition-colors shrink-0 ml-1"
-        >
-          All
-        </button>
-      </div>
+      {/* -- RESULT STRIP + expandable mini results box (ResultsPanel) -- */}
+      <ResultsPanel />
 
       <BetControls onAmountChange={setBetAmount} currentAmount={betAmount} />
       <Footer />

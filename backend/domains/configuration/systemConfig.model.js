@@ -133,6 +133,19 @@ const systemConfigSchema = new mongoose.Schema({
   // riskValidation.computeWinningsPayout. Basis-point precision (max 2 dp).
   winningsFeePercent: { type: Number, default: 1, min: 0, max: 100 },
 
+  // ── FOOTER NAVIGATION (2026-07-13) — admin-editable page tabs ─────────────
+  // Which pages appear in the user panel's bottom footer bar, in order. Keys
+  // reference the frontend's page catalog (route strings/icons stay in code per
+  // BUSINESS_CONFIG_AUDIT.md §4 — the SELECTION/order is the business decision,
+  // so it lives here). Default = the historical five tabs, so behavior is
+  // unchanged until an admin edits it. Validated against FOOTER_PAGE_KEYS in
+  // system.admin.routes.js (2–5 distinct keys). Delivered to the user panel in
+  // the system_config payload (socket + SSE + GET config) — applies live.
+  footerPages: {
+    type: [String],
+    default: ['home', 'results', 'winners', 'promo', 'profile'],
+  },
+
   // ── FEATURE FLAGS ─────────────────────────────────────────────────────────
   kycRequired:         { type: Boolean, default: true },
   registrationEnabled: { type: Boolean, default: true },

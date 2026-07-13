@@ -31,6 +31,16 @@ function validateCyclePhaseSet(label, p, maxMerge) {
   return null;
 }
 
+// ── Footer navigation validation (2026-07-13) ─────────────────────────────────
+// The complete set of user-panel pages an admin may place in the footer bar.
+// MUST mirror the PAGE_CATALOG in components/Layout/Footer.tsx — the frontend
+// owns route strings/icons (display), this list owns what's selectable.
+const FOOTER_PAGE_KEYS = [
+  'home', 'results', 'winners', 'promo', 'profile', 'wallet', 'invite', 'vip',
+  'gift-code', 'my-bets', 'history', 'rules', 'faq', 'support', 'chat',
+  'casino', 'crash', 'sports',
+];
+
 // Token rates removed 2026-07-08: conversion is fixed 1:1 (Phase 006
 // flattening — see ENTERPRISE_DECISIONS.md). The GET/PUT /token-rates
 // endpoints and rate validation that lived here are gone; rates are no
@@ -132,6 +142,8 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
         maintenanceMessage:    config.maintenanceMessage    || '',
         depositMethods:        config.depositMethods        || ['UPI', 'BANK_TRANSFER'],
         withdrawalMethods:     config.withdrawalMethods     || ['UPI', 'BANK_TRANSFER'],
+        // Footer navigation (2026-07-13) — schema default: the historical five tabs
+        footerPages:           config.footerPages?.length ? config.footerPages : ['home', 'results', 'winners', 'promo', 'profile'],
         webUrl:        config.webUrl        || '',
         androidUrl:    config.androidUrl    || '',
         iosUrl:        config.iosUrl        || '',
@@ -160,6 +172,7 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
       payoutFeePercent, riskRules, betReservePercent, winningsFeePercent,
       cycleDurationMinutes, retentionMonths,
       payoutMultiplier, orderExpiryMinutes, cyclePhases,
+      footerPages,
     } = req.body;
 
     if (cycleDurationMinutes !== undefined &&
@@ -212,6 +225,16 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     if (cyclePhases?.fullDay !== undefined) {
       const err = validateCyclePhaseSet('fullDay', cyclePhases.fullDay, 3600);
       if (err) return res.status(400).json({ success: false, message: err });
+    }
+    if (footerPages !== undefined) {
+      if (!Array.isArray(footerPages) || footerPages.length < 2 || footerPages.length > 5) {
+        return res.status(400).json({ success: false, message: 'footerPages must be an array of 2 to 5 page keys.' });
+      }
+      const bad = footerPages.find(k => !FOOTER_PAGE_KEYS.includes(k));
+      if (bad) return res.status(400).json({ success: false, message: `Unknown footer page key: "${bad}". Allowed: ${FOOTER_PAGE_KEYS.join(', ')}` });
+      if (new Set(footerPages).size !== footerPages.length) {
+        return res.status(400).json({ success: false, message: 'footerPages must not contain duplicates.' });
+      }
     }
 
     const fieldWrites = [];
@@ -272,6 +295,8 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
       closeBeforeEndSec:     cyclePhases.fullDay.closeBeforeEndSec,
       celebrateBeforeEndSec: cyclePhases.fullDay.celebrateBeforeEndSec,
     }]);
+    // Footer navigation (2026-07-13) — consumed by the user panel Footer via system_config
+    if (footerPages !== undefined) fieldWrites.push(['SystemConfig', 'footerPages', footerPages]);
 
     for (const [modelName, path, value] of fieldWrites) {
       await setConfigField(modelName, path, value, actor, {
@@ -291,6 +316,7 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
         maxWithdrawal:   updatedConfig.maxWithdrawal         || 50000,
         maintenanceMode: updatedConfig.maintenanceMode       || false,
         maintenanceMessage: updatedConfig.maintenanceMessage || '',
+        footerPages:     updatedConfig.footerPages?.length ? updatedConfig.footerPages : ['home', 'results', 'winners', 'promo', 'profile'],
         tokenBuyRate:    1, // fixed 1:1 conversion (Phase 006 flattening, 2026-07-08)
         tokenSellRate:   1, // fixed 1:1 conversion
         webUrl:        updatedConfig.webUrl        || '',

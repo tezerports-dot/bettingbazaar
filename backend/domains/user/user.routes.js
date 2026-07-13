@@ -565,6 +565,8 @@ router.get('/v1/system/config', async (req, res) => {
         payoutMultiplier: config?.payoutMultiplier ?? 2,
         maintenanceMode:  config?.maintenanceMode  || false,
         maintenanceMessage: config?.maintenanceMessage || '',
+        // Footer navigation (2026-07-13) — schema default: the historical five tabs
+        footerPages:      config?.footerPages?.length ? config.footerPages : ['home', 'results', 'winners', 'promo', 'profile'],
         minVersion:       config?.minVersion       || '1.0.0',
         latestVersion:    config?.latestVersion    || '1.0.0',
         kycRequired:      config?.kycRequired      !== false,
