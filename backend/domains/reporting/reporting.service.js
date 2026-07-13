@@ -161,13 +161,7 @@ export async function regulatoryLedgerExport({ from, to, limit = 10000 } = {}) {
   return rows;
 }
 
-/** toCsv — minimal, dependency-free CSV serialization with proper quoting. */
-export function toCsv(rows) {
-  if (!rows.length) return '';
-  const headers = Object.keys(rows[0]);
-  const esc = v => {
-    const s = String(v ?? '');
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-  return [headers.join(','), ...rows.map(r => headers.map(h => esc(r[h])).join(','))].join('\n');
-}
+// toCsv lives in the pure ./csv.util.js so the CPU worker (item 5) can import it
+// without pulling mongoose into the worker thread. Re-exported here so existing
+// callers/tests that import it from this service keep working unchanged.
+export { toCsv } from './csv.util.js';

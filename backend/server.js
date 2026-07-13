@@ -369,6 +369,8 @@ const _shutdown = (sig) => {
   import('./services/jobQueue.service.js').then(m => m.closeJobQueue()).catch(() => {});
   // Hybrid money DB: drain the PG pool.
   import('./postgres/pgClient.js').then(m => m.closePg()).catch(() => {});
+  // Item 5: terminate CPU worker threads so the process can exit cleanly.
+  import('./services/workerPool.service.js').then(m => m.closeWorkerPool()).catch(() => {});
   setTimeout(() => process.exit(0), 10000);
 };
 process.on('SIGTERM', () => _shutdown('SIGTERM'));

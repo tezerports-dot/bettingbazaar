@@ -7,6 +7,10 @@
  */
 import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
 import { financialReport, settlementReport, merchantReport, regulatoryLedgerExport, toCsv } from './reporting.service.js';
+// Item 5: a large regulatory CSV is CPU-bound string work — offload it to a
+// worker thread so serializing it doesn't block the event loop (and every
+// concurrent request, money paths included). Small exports stay inline.
+import { runCpuTask, shouldOffloadCsv } from '../../services/workerPool.service.js';
 
 const router = express.Router();
 
@@ -56,7 +60,9 @@ router.get('/reports/ledger-export', authenticate, isAdmin, async (req, res) => 
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
       res.setHeader('Content-Disposition',
         `attachment; filename="ledger-export-${(req.query.from || 'start')}-${(req.query.to || 'now')}.csv"`);
-      return res.send(toCsv(rows));
+      // Big export → serialize off the main loop; small → inline (no thread hop).
+      const csv = shouldOffloadCsv(rows) ? await runCpuTask('csvSerialize', rows) : toCsv(rows);
+      return res.send(csv);
     }
     res.json({ success: true, rows });
   } catch (error) {
