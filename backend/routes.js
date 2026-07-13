@@ -5,7 +5,7 @@ import { signToken, verifyJwt } from './domains/identity/jwt.util.js';
 // AQ-8: password hashing authority (argon2id + bcrypt verify-fallback).
 import { hashPassword, verifyPassword } from './domains/identity/password.util.js';
 import mongoose    from 'mongoose';
-import { rateLimit } from 'express-rate-limit';
+import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
 // F-3 (2026-07-10): Redis-shared counters with per-instance fallback.
 import { createRateLimitStore } from './middleware/redisRateLimitStore.js';
 
@@ -16,7 +16,7 @@ const registerLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, max: 5,
   message: { success: false, message: 'Too many registration attempts. Try again in 1 hour.' },
   standardHeaders: true, legacyHeaders: false,
-  keyGenerator: (req) => req.ip,
+  keyGenerator: (req) => ipKeyGenerator(req.ip), // AQ-6: IPv6-safe key (v8)
 });
 
 // JWT secret + expiry are owned by jwt.util.js (imported above); importing it
