@@ -1,0 +1,66 @@
+# GOVERNANCE: Read 04-GOVERNANCE.md before editing this file.
+# Kubernetes manifests (plan items 40 + 44, 2026-07-13). The app tier is
+# verified stateless (JWT auth, Redis-shared rate limits, cron leader election,
+# SSE/socket Redis bridge, S3 asset storage — see PORTABILITY.md), so it scales
+# horizontally with no session affinity.
+#
+# Item 44 (Rolling Deployment): the RollingUpdate strategy below IS rolling —
+# k8s shifts traffic pod-by-pod, maxUnavailable 0 means capacity never dips.
+# Item 43 (Blue/Green): see deploy/k8s/README.md — run a second Deployment
+# (color: green) and flip the Service selector; instant rollback = flip back.
+#
+# Prereqs: a MongoDB replica set + Redis reachable from the cluster; secrets
+# created from your env (kubectl create secret generic bb-env --from-env-file).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bettingbazaar
+  labels: { app: bettingbazaar, color: blue }
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  selector:
+    matchLabels: { app: bettingbazaar, color: blue }
+  template:
+    metadata:
+      labels: { app: bettingbazaar, color: blue }
+    spec:
+      containers:
+        - name: app
+          image: bettingbazaar:latest   # replace with your registry tag
+          ports: [{ containerPort: 8080 }]
+          envFrom: [{ secretRef: { name: bb-env } }]
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 40
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits:   { cpu: "1",  memory: 1Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bettingbazaar
+spec:
+  # Item 43: blue/green switch point — change `color` here to cut traffic over.
+  selector: { app: bettingbazaar, color: blue }
+  ports: [{ port: 80, targetPort: 8080 }]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: bettingbazaar
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: bettingbazaar }
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 70 } }

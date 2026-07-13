@@ -1,0 +1,52 @@
+# GOVERNANCE: Read 04-GOVERNANCE.md before editing this file.
+# Reproducible self-host stack (plan item 41, 2026-07-13) — the whole platform
+# from scratch on any Docker host: app + MongoDB single-node replica set
+# (transactions require a replica set) + Redis. Version-controlled environment
+# definition; see deploy/README.md for the IaC decision record.
+#
+#   docker compose -f deploy/docker-compose.yml up --build
+#
+# Then set real secrets via a .env file next to this compose file (JWT_SECRET
+# etc. — see .env.example at the repo root).
+services:
+  app:
+    build: ..
+    ports: ["8080:8080"]
+    environment:
+      MONGODB_URI: mongodb://mongo:27017/bettingbazaar?replicaSet=rs0&directConnection=true
+      REDIS_URL: redis://redis:6379
+      PORT: "8080"
+    env_file: [".env"]
+    depends_on:
+      mongo-init: { condition: service_completed_successfully }
+      redis: { condition: service_started }
+    restart: unless-stopped
+
+  mongo:
+    image: mongo:7
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    volumes: ["mongo-data:/data/db"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # One-shot: initialize the single-node replica set so transactions work.
+  mongo-init:
+    image: mongo:7
+    depends_on:
+      mongo: { condition: service_healthy }
+    entrypoint: >
+      mongosh --host mongo --quiet --eval
+      "try { rs.status().ok } catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]}) }"
+    restart: "no"
+
+  redis:
+    image: redis:7-alpine
+    volumes: ["redis-data:/data"]
+    restart: unless-stopped
+
+volumes:
+  mongo-data:
+  redis-data:

@@ -19,6 +19,13 @@
 # by default in Caddy; verify post-deploy with `curl -I --http2 <url>`.
 encode zstd gzip
 
+# Item 29 (multi-domain): this block is HOST-AGNOSTIC (:{$PORT}) — behind
+# Railway, every custom domain attached to the service already serves identical
+# content (TLS terminated by the platform; add domains in the dashboard + DNS,
+# zero code). Self-hosting Caddy at the edge instead? Use one site block per
+# domain with this same body — pattern + verification steps in deploy/README.md.
+# Canonical-URL normalization is app-side via CANONICAL_HOST (network.config.js).
+
 # ── Admin Panel ──────────────────────────────────────────────────────────────
 handle /admin* {
     uri strip_prefix /admin
