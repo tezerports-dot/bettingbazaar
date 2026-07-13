@@ -26,7 +26,8 @@
 import express   from 'express';
 import mongoose  from 'mongoose';
 import crypto    from 'crypto';
-import bcrypt    from 'bcryptjs';
+// AQ-8: hash via the password authority (argon2id).
+import { hashPassword } from '../domains/identity/password.util.js';
 import { authenticate, isAdmin, isAdminOrSubAdmin } from '../domains/identity/auth.middleware.js';
 
 const router = express.Router();
@@ -228,7 +229,7 @@ router.post('/admin/account-recovery/:id/approve', authenticate, isAdmin, async 
     // Generate temporary password: 8 chars, mixed
     const chars   = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
     const tempPw  = Array.from({ length: 10 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
-    const hashed  = await bcrypt.hash(tempPw, 12);
+    const hashed  = await hashPassword(tempPw);
 
     // Update user: reset password, unlock account, set flag to force password change
     const user = await User.findByIdAndUpdate(

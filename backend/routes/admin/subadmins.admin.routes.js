@@ -1,7 +1,8 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** subadmins.admin.routes.js — Sub-admin CRUD and permissions */
 import { express, mongoose, authenticate, isAdmin, getModels } from './_adminShared.js';
-import bcrypt from 'bcryptjs';
+// AQ-8: hash via the password authority (argon2id).
+import { hashPassword } from '../../domains/identity/password.util.js';
 
 const router = express.Router();
 
@@ -30,8 +31,7 @@ router.post('/sub-admins', authenticate, isAdmin, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Mobile number already exists' });
     }
 
-    const bcrypt = await import('bcryptjs');
-    const passwordHash = await bcrypt.hash(password, 12); // M-2: standardized on cost 12 (2026-07-10)
+    const passwordHash = await hashPassword(password); // AQ-8: argon2id (was bcrypt cost 12)
 
     const subAdmin = await User.create({
       username,

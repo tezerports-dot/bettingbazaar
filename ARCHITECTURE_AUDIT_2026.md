@@ -245,7 +245,32 @@ Estimated total: Session 1 ≈ 4h, Session 2 ≈ 4–5h, Session 3 ≈ 4h.
   `node:22-slim`); Dockerfile now multi-stage + non-root `USER node` + writable
   dirs provisioned. Node 20 was EOL (2026-04-30).
 - Result: 125 unit tests green (20 new). Full integration suite + panel builds
-  run in CI. **Remaining: AQ-6 (Express 5, its own session), AQ-7…14.**
+  run in CI.
+
+**2026-07-13 · BATCH 2 SHIPPED (AQ-10, 11, 12, 13, 14).** Opus 4.8.
+- **AQ-10** body limits: global JSON/urlencoded 10mb → 1mb default
+  (JSON_BODY_LIMIT); admin base64 asset upload keeps a scoped 8mb parser. All
+  other uploads use presigned S3. Verified 300KB→200, 1.5MB→413.
+- **AQ-11** k8s hardening: pod+container securityContext (non-root uid 1000,
+  drop ALL caps, seccomp RuntimeDefault, no-priv-esc), PDB (minAvailable 1),
+  topologySpreadConstraints.
+- **AQ-12** Caddyfile: was broken (no reverse_proxy — API unreachable); now
+  proxies /api,/socket.io,/health*,/metrics,/app-assets,/storage with WS+SSE
+  passthrough + edge security headers.
+- **AQ-13** log redaction: logger.redact() masks password/otp/token/secret/etc
+  recursively; unit-tested.
+- **AQ-14** index sync: autoIndex env-gated (default ON — idempotency indexes);
+  scripts/sync-indexes.mjs + `npm run sync:indexes` for the manual-sync workflow.
+- Result: 128 unit tests green (3 new).
+
+**2026-07-13 · BATCH 3 (AQ-8 SHIPPED).** Opus 4.8.
+- **AQ-8** argon2id: new domains/identity/password.util.js is the hashing
+  authority — argon2id (m=19456,t=2,p=1) for new hashes; verifyPassword accepts
+  BOTH argon2 and legacy bcrypt (no lockout) and reports needsRehash so the two
+  login handlers upgrade bcrypt→argon2id in place on next login. All 8 hash
+  sites + 3 verify sites rerouted; bcryptjs retained only as verify-fallback.
+  argon2 native prebuild confirmed clean on Node 22 (Docker/CI safe). 134 unit
+  tests green (6 new). **Remaining: AQ-6 (Express 5, dedicated), AQ-7, AQ-9.**
 
 ## 8. Sources (July 2026)
 
