@@ -4,7 +4,7 @@
 // is fully testable without a request.
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { runWithContext, getRequestId, setContextUser, getContextUser } from '../../middleware/requestContext.js';
-import { logger } from '../../services/logger.js';
+import { logger, redact } from '../../services/logger.js';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -56,5 +56,45 @@ describe('structured logger', () => {
     } finally {
       process.env.NODE_ENV = prev;
     }
+  });
+
+  it('REDACTS sensitive keys before they reach the log sink (AQ-13)', () => {
+    const prev = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      logger.info('login attempt', {
+        mobile: '9990001111',
+        password: 'hunter2',
+        body: { otp: '123456', token: 'ey.jwt.tok', note: 'ok' },
+        authorization: 'Bearer secret',
+      });
+      const rec = JSON.parse(spy.mock.calls.at(-1)[0]);
+      expect(rec.password).toBe('[REDACTED]');
+      expect(rec.authorization).toBe('[REDACTED]');
+      expect(rec.body.otp).toBe('[REDACTED]');
+      expect(rec.body.token).toBe('[REDACTED]');
+      // Non-sensitive fields are preserved.
+      expect(rec.mobile).toBe('9990001111');
+      expect(rec.body.note).toBe('ok');
+    } finally {
+      process.env.NODE_ENV = prev;
+    }
+  });
+});
+
+describe('redact()', () => {
+  it('masks nested and array-nested secrets, keeps depth bounded', () => {
+    const out = redact({ a: { jwt: 'x', list: [{ secret: 's', keep: 1 }] }, keep: 2 });
+    expect(out.a.jwt).toBe('[REDACTED]');
+    expect(out.a.list[0].secret).toBe('[REDACTED]');
+    expect(out.a.list[0].keep).toBe(1);
+    expect(out.keep).toBe(2);
+  });
+
+  it('serializes Error objects to readable fields instead of masking', () => {
+    const out = redact({ err: new Error('boom') });
+    expect(out.err.message).toBe('boom');
+    expect(out.err.name).toBe('Error');
   });
 });

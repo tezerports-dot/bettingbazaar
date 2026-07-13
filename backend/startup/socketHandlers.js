@@ -1,7 +1,8 @@
 
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import mongoose from 'mongoose';
-import jwt      from 'jsonwebtoken';
+// AQ-2: verify via the single JWT authority (HS256 pinned, iss/aud stamped).
+import { verifyJwt } from '../domains/identity/jwt.util.js';
 
 export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
 
@@ -147,7 +148,7 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
       const token = cookieToken || socket.handshake.auth?.token;
       if (!token) return;
       try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const decoded = verifyJwt(token);
         if (decoded.userId?.toString() === userId?.toString() || decoded.isAdmin) {
           socket.join(`user-${userId}`);
         }
@@ -161,7 +162,7 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
       const token = cookieToken || socket.handshake.auth?.token;
       if (!token) return;
       try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const decoded = verifyJwt(token);
         if (decoded.isMerchant || decoded.isAdmin) {
           socket.join(`merchant-${merchantId}`);
         }
@@ -172,7 +173,7 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
       try {
         const token = data?.token;
         if (!token) return;
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const decoded = verifyJwt(token);
         if (decoded.isAdmin || decoded.isSubAdmin) {
           socket.join('admin-room');
           socket.emit('joined_admin_room', { success: true });

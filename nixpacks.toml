@@ -3,3 +3,7 @@ cmds = ["npm install --legacy-peer-deps && ./node_modules/.bin/vite build && nod
 
 [variables]
 NIXPACKS_NO_CACHE = "1"
+# AQ-5: pin the Railway/nixpacks runtime to Node 22 LTS. Without this, nixpacks
+# resolves Node from package.json engines and could run an EOL line; this makes
+# the deployed runtime match CI (Node 22) and the Dockerfile (node:22-slim).
+NIXPACKS_NODE_VERSION = "22"

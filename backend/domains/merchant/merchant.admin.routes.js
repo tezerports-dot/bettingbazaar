@@ -380,14 +380,15 @@ router.put('/merchants/:merchantId/reject', authenticate, isAdmin, async (req, r
 // Create merchant account — FIX B6-c: also create Merchant doc (was User-only, broke all merchant APIs)
 router.post('/merchants/create', authenticate, isAdmin, async (req, res) => {
   try {
-    const bcrypt = await import('bcryptjs');
+    // AQ-8: hash via the password authority (argon2id).
+    const { hashPassword } = await import('../identity/password.util.js');
     const { username, mobile, password, email } = req.body;
     if (!username || !mobile || !password) return res.status(400).json({ success: false, message: 'username, mobile, password required' });
     const { User } = getModels();
     const Merchant = mongoose.model('Merchant');
     const existing = await User.findOne({ mobile });
     if (existing) return res.status(409).json({ success: false, message: 'Mobile already registered' });
-    const passwordHash = await bcrypt.hash(password, 12);
+    const passwordHash = await hashPassword(password);
     const user = await User.create({ username, mobile, email, passwordHash, status: 'ACTIVE', roles: ['merchant'] });
     const merchant = await Merchant.create({
       userId: user._id, name: username, username, mobile, email: email || undefined,

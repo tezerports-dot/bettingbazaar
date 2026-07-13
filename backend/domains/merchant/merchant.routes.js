@@ -6,8 +6,10 @@
 import express   from 'express';
 import { creditDeposit, creditReserve, refundOrder, creditWinnings, debitWinningsForWithdrawal } from '../wallet/walletAuthority.service.js';
 import mongoose  from 'mongoose';
-import bcrypt    from 'bcryptjs';
-import jwt       from 'jsonwebtoken';
+// AQ-2/AQ-8: sign via the single JWT authority; hash via the password authority
+// (argon2id + bcrypt verify-fallback). No direct bcrypt use remains here.
+import { signToken } from '../identity/jwt.util.js';
+import { hashPassword, verifyPassword } from '../identity/password.util.js';
 import { merchantAuth } from '../../middleware/merchantAuth.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
 import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
@@ -17,8 +19,9 @@ import { publish as publishDomainEvent, EVENTS as DOMAIN_EVENTS } from '../../se
 import { getRiskRules } from '../risk/riskValidation.service.js';
 
 const router     = express.Router();
-const JWT_SECRET  = process.env.JWT_SECRET  || 'fallback-secret';
-const JWT_EXPIRES = process.env.JWT_EXPIRES_IN || '7d'; // HIGH-05 fix: standardised to JWT_EXPIRES_IN
+// JWT secret + expiry owned by jwt.util.js — removed a '|| fallback-secret'
+// default here (AQ-1): a missing secret must fail-fast, never sign with a
+// public string that would let anyone forge merchant tokens.
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
@@ -79,7 +82,7 @@ router.post('/auth/signup', async (req, res) => {
             return res.status(409).json({ success: false, message: 'Mobile number already registered' });
         }
 
-        const passwordHash = await bcrypt.hash(password, 12);
+        const passwordHash = await hashPassword(password);
 
         const user = await User.create({
             username,
@@ -155,8 +158,18 @@ router.post('/auth/login', async (req, res) => {
             return res.status(401).json({ success: false, message: 'No merchant account found for this mobile number' });
 
         const hash = merchant.password || merchant.passwordHash;
-        if (!hash || !(await bcrypt.compare(password, hash)))
+        const { valid: pwValid, needsRehash: pwNeedsRehash } = await verifyPassword(hash, password);
+        if (!pwValid)
             return res.status(401).json({ success: false, message: 'Invalid credentials' });
+        // AQ-8: upgrade a legacy bcrypt hash to argon2id on successful login,
+        // writing back to whichever field held it.
+        if (pwNeedsRehash) {
+            try {
+                const upgraded = await hashPassword(password);
+                if (merchant.password) merchant.password = upgraded; else merchant.passwordHash = upgraded;
+                await merchant.save();
+            } catch { /* best-effort upgrade */ }
+        }
 
         if (merchant.merchantApprovalStatus !== 'APPROVED' || merchant.status !== 'ACTIVE') {
             const msgs = { PENDING: 'Application pending approval.', REJECTED: 'Application rejected.',
@@ -165,9 +178,8 @@ router.post('/auth/login', async (req, res) => {
                 message: msgs[merchant.status] || msgs[merchant.merchantApprovalStatus] || 'Account not active.' });
         }
 
-        const token = jwt.sign(
-            { merchantId: merchant._id, userId: merchant.userId, mobile: merchant.mobile, isMerchant: true, isAdmin: false },
-            JWT_SECRET, { expiresIn: JWT_EXPIRES }
+        const token = signToken(
+            { merchantId: merchant._id, userId: merchant.userId, mobile: merchant.mobile, isMerchant: true, isAdmin: false }
         );
 
         res.json({

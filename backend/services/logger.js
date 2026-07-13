@@ -22,10 +22,34 @@ const THRESHOLD = LEVELS[process.env.LOG_LEVEL] ??
 const COLOR = { error: '\x1b[31m', warn: '\x1b[33m', info: '\x1b[36m', debug: '\x1b[90m' };
 const RESET = '\x1b[0m';
 
+// AQ-13: secret redaction. A structured logger is a leak vector — one
+// `logger.info('login', { body })` can dump a password, OTP, or bearer token
+// into the log pipeline (and then into whatever ingests it). redact() walks the
+// meta object and masks any key whose name matches a sensitive pattern, so
+// secrets never reach the sink even if a caller passes a whole request body.
+const SENSITIVE_KEY = /pass(word|code)?|secret|token|authorization|auth_token|otp|jwt|api[-_]?key|cookie|cvv|card|pan|aadhaar|ssn|privateKey|mnemonic|seed/i;
+const REDACTED = '[REDACTED]';
+
+export function redact(value, depth = 0) {
+  if (value == null || depth > 4) return value;
+  if (Array.isArray(value)) return value.map((v) => redact(v, depth + 1));
+  if (typeof value === 'object') {
+    // Preserve Error objects as readable info rather than masking/serializing oddly.
+    if (value instanceof Error) return { name: value.name, message: value.message, stack: value.stack };
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = SENSITIVE_KEY.test(k) ? REDACTED : redact(v, depth + 1);
+    }
+    return out;
+  }
+  return value;
+}
+
 function emit(level, msg, meta) {
   if (LEVELS[level] > THRESHOLD) return;
   const reqId = getRequestId();
   const userId = getContextUser();
+  const safeMeta = meta && typeof meta === 'object' ? redact(meta) : meta;
 
   if (process.env.NODE_ENV === 'production') {
     const rec = {
@@ -34,12 +58,12 @@ function emit(level, msg, meta) {
       msg: String(msg),
       ...(reqId ? { reqId } : {}),
       ...(userId ? { userId } : {}),
-      ...(meta && typeof meta === 'object' ? meta : {}),
+      ...(safeMeta && typeof safeMeta === 'object' ? safeMeta : {}),
     };
     (level === 'error' ? console.error : console.log)(JSON.stringify(rec));
   } else {
     const tag = reqId ? ` (${String(reqId).slice(0, 8)})` : '';
-    const extra = meta && Object.keys(meta).length ? meta : '';
+    const extra = safeMeta && Object.keys(safeMeta).length ? safeMeta : '';
     (level === 'error' ? console.error : console.log)(
       `${COLOR[level]}[${level}]${RESET}${tag} ${msg}`, extra);
   }

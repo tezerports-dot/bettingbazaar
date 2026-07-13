@@ -17,7 +17,8 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:watch": "vitest --config vitest.config.ts",
     "check:deps": "depcruise backend --config .dependency-cruiser.cjs",
-    "reconcile:pg": "node backend/postgres/reconcile.js"
+    "reconcile:pg": "node backend/postgres/reconcile.js",
+    "sync:indexes": "node backend/scripts/sync-indexes.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.621.0",
@@ -27,6 +28,7 @@
     "@react-three/fiber": "^8.18.0",
     "@socket.io/redis-adapter": "^8.3.0",
     "@types/three": "^0.167.2",
+    "argon2": "^0.44.0",
     "bcryptjs": "^2.4.3",
     "bullmq": "^5.80.2",
     "compression": "^1.7.4",
@@ -75,7 +77,7 @@
     "vitest": "^4.1.10"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.0.0"
   },
   "keywords": [
     "betting",

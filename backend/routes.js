@@ -1,7 +1,9 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import express     from 'express';
-import jwt         from 'jsonwebtoken';
-import bcrypt      from 'bcryptjs';
+// AQ-2: sign/verify via the single JWT authority (HS256 pinned, iss/aud stamped).
+import { signToken, verifyJwt } from './domains/identity/jwt.util.js';
+// AQ-8: password hashing authority (argon2id + bcrypt verify-fallback).
+import { hashPassword, verifyPassword } from './domains/identity/password.util.js';
 import mongoose    from 'mongoose';
 import { rateLimit } from 'express-rate-limit';
 // F-3 (2026-07-10): Redis-shared counters with per-instance fallback.
@@ -17,9 +19,8 @@ const registerLimiter = rateLimit({
   keyGenerator: (req) => req.ip,
 });
 
-if (!process.env.JWT_SECRET) throw new Error('FATAL: JWT_SECRET env var is missing');
-const JWT_SECRET = process.env.JWT_SECRET;
-const JWT_EXPIRES = process.env.JWT_EXPIRES_IN || '7d';
+// JWT secret + expiry are owned by jwt.util.js (imported above); importing it
+// already fail-fasts on a missing secret, so no local re-declaration is needed.
 
 // httpOnly cookie options — secure in production, lax in dev
 const COOKIE_OPTS = {
@@ -56,9 +57,14 @@ export async function loginHandler(req, res) {
     if (user.status === 'BLOCKED' || user.isBlocked)
       return res.status(403).json({ success: false, message: 'Account blocked. Contact support.' });
 
-    const valid = await bcrypt.compare(password, user.passwordHash);
+    const { valid, needsRehash } = await verifyPassword(user.passwordHash, password);
     if (!valid)
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
+    // AQ-8: transparently upgrade a legacy bcrypt hash to argon2id on successful
+    // login. Persisted by the existing user.save() below (lastLogin update).
+    if (needsRehash) {
+      try { user.passwordHash = await hashPassword(password); } catch { /* best-effort upgrade */ }
+    }
 
     if (loginType === 'admin'         && !user.isAdmin)        return res.status(403).json({ success: false, message: 'Admin access required' });
     if (loginType === 'subadmin'      && !user.isSubAdmin)     return res.status(403).json({ success: false, message: 'Sub-admin access required' });
@@ -70,12 +76,11 @@ export async function loginHandler(req, res) {
     else if (user.isQueueManager) role = 'queue_manager';
     else if (user.isMediator)  role = 'mediator';
 
-    const token = jwt.sign(
+    const token = signToken(
       { userId: user._id, mobile: user.mobile, role,
         isAdmin: user.isAdmin || false, isSubAdmin: user.isSubAdmin || false,
         isQueueManager: user.isQueueManager || false,
-        permissions: user.subAdminPermissions || {} },
-      JWT_SECRET, { expiresIn: JWT_EXPIRES }
+        permissions: user.subAdminPermissions || {} }
     );
 
     user.lastLogin = new Date();
@@ -112,7 +117,7 @@ router.get('/me', async (req, res) => {
     const token = extractToken(req);
     if (!token) return res.status(401).json({ success: false, message: 'No token provided' });
 
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = verifyJwt(token);
 
     // Check blacklist
     try {
@@ -169,7 +174,7 @@ router.post('/register', registerLimiter, async (req, res) => {
     const existing = await User.findOne({ mobile: String(mobile) });
     if (existing) return res.status(409).json({ success: false, message: 'Mobile number already registered' });
 
-    const passwordHash = await bcrypt.hash(password, 12);
+    const passwordHash = await hashPassword(password);
     const user = await User.create({ username: cleanUsername, mobile, passwordHash, status: 'ACTIVE', kycStatus: 'PENDING_SUBMISSION', roles: ['user'], referralCode: null });
     // Auto-apply referral after account created
     if (referralCode) {
@@ -187,9 +192,8 @@ router.post('/register', registerLimiter, async (req, res) => {
       } catch(refErr) { console.error('Referral apply failed:', refErr.message); }
     }
 
-    const token = jwt.sign(
-      { userId: user._id, mobile: user.mobile, role: 'user', isAdmin: false },
-      JWT_SECRET, { expiresIn: JWT_EXPIRES }
+    const token = signToken(
+      { userId: user._id, mobile: user.mobile, role: 'user', isAdmin: false }
     );
 
     const userPayload = {

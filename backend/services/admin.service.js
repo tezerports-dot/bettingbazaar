@@ -20,7 +20,8 @@
 import mongoose from 'mongoose';
 // Communication Platform (Phase 012): notify() is the single user-messaging path.
 import { notify } from '../domains/communication/communication.service.js';
-import bcrypt from 'bcryptjs'; // ✅ FIX: package.json has bcryptjs (not bcrypt)
+// AQ-8: hash via the password authority (argon2id).
+import { hashPassword } from '../domains/identity/password.util.js';
 
 // Models are accessed via mongoose.model() to avoid circular dependency
 function getModels() {
@@ -426,7 +427,7 @@ class AdminService {
       }
 
       // Hash password
-      const passwordHash = await bcrypt.hash(password, 12); // M-2: standardized on cost 12 (2026-07-10)
+      const passwordHash = await hashPassword(password); // AQ-8: argon2id (was bcrypt cost 12)
 
       // Create sub-admin user
       const subAdmin = await User.create({

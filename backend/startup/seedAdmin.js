@@ -5,7 +5,8 @@
  * Never crashes server if it fails — logs warning and continues.
  */
 import mongoose from 'mongoose';
-import bcrypt   from 'bcryptjs';
+// AQ-8: password hashing authority (argon2id + bcrypt verify-fallback).
+import { hashPassword, verifyPassword, isArgon2 } from '../domains/identity/password.util.js';
 
 export async function seedAdminAccount() {
   try {
@@ -20,20 +21,24 @@ export async function seedAdminAccount() {
     const User = mongoose.model('User');
     const existingAdmin = await User.findOne({ isAdmin: true });
     if (existingAdmin) {
-      // LOW-03 FIX: only re-hash if credentials actually changed
-      const samePassword = await bcrypt.compare(adminPassword, existingAdmin.passwordHash || '');
+      // LOW-03 FIX: only re-hash if credentials actually changed — plus AQ-8:
+      // opportunistically upgrade a legacy bcrypt admin hash to argon2id.
+      const { valid: samePassword } = await verifyPassword(existingAdmin.passwordHash || '', adminPassword);
       const sameMobile   = existingAdmin.mobile === adminMobile;
-      if (!samePassword || !sameMobile) {
-        const passwordHash = await bcrypt.hash(adminPassword, 12);
+      const legacyHash   = !isArgon2(existingAdmin.passwordHash);
+      if (!samePassword || !sameMobile || legacyHash) {
+        const passwordHash = await hashPassword(adminPassword);
         await User.findByIdAndUpdate(existingAdmin._id, { mobile: adminMobile, passwordHash });
-        console.log('✅ Admin credentials updated from env vars');
+        console.log(legacyHash && samePassword && sameMobile
+          ? '✅ Admin password hash upgraded to argon2id'
+          : '✅ Admin credentials updated from env vars');
       } else {
         console.log('✅ Admin credentials unchanged — skipping re-hash');
       }
       return;
     }
 
-    const passwordHash = await bcrypt.hash(adminPassword, 12);
+    const passwordHash = await hashPassword(adminPassword);
     await User.create({
       username: 'Super Admin', mobile: adminMobile, passwordHash,
       // HIGH-09 FIX: removed walletBalance (not in User schema) and isMerchant (merchants are separate model)
