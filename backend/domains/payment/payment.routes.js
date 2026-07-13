@@ -5,6 +5,8 @@ import express   from 'express';
 import mongoose  from 'mongoose';
 import { authenticate } from '../identity/auth.middleware.js';
 import { withdrawalLimiter } from '../../middleware/security.js';
+// Item 12: per-subnet backstop against IP rotation on withdrawal creation.
+import { createSubnetLimiter, globalSurgeBreaker } from '../../middleware/ipDefense.js';
 import { markOrderPaid, cancelOrder } from './paymentProcessing.service.js';
 // Phase 009: money movement enters ONLY via the Funding Platform authority.
 import { requestDeposit, requestWithdrawal } from '../funding/fundingAuthority.service.js';
@@ -29,7 +31,7 @@ router.post('/deposit/create', authenticate, async (req, res) => {
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code }); }
 });
 
-router.post('/withdrawal/create', authenticate, withdrawalLimiter, async (req, res) => {
+router.post('/withdrawal/create', authenticate, withdrawalLimiter, createSubnetLimiter('withdrawal'), globalSurgeBreaker('withdrawal'), async (req, res) => {
   try {
     const result = await requestWithdrawal({ userId: req.user._id, tokenAmount: Number(req.body.tokenAmount) });
     res.json({ success: true, message: 'Withdrawal request created. Waiting for merchant assignment.', ...result });

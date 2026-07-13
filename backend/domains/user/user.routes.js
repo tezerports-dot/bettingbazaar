@@ -40,6 +40,8 @@ import express from 'express';
 import crypto  from 'crypto';
 import mongoose from 'mongoose';
 import { withdrawalLimiter } from '../../middleware/security.js';
+// Item 12: per-subnet backstop against IP rotation on withdrawal creation.
+import { createSubnetLimiter, globalSurgeBreaker } from '../../middleware/ipDefense.js';
 import { authenticate } from '../identity/auth.middleware.js';
 import { lockWithdrawal, getUserLedger } from '../wallet/walletAuthority.service.js';
 
@@ -801,7 +803,7 @@ router.get('/v1/branding', async (req, res) => {
 });
 
 // ── POST /api/v1/user/withdraw — request a withdrawal ───────────────────────
-router.post('/v1/user/withdraw', withdrawalLimiter, authenticate, async (req, res) => {
+router.post('/v1/user/withdraw', withdrawalLimiter, createSubnetLimiter('withdrawal'), globalSurgeBreaker('withdrawal'), authenticate, async (req, res) => {
   try {
     const { amount, method = 'UPI', upiId, bankName, accountNumber, ifscCode } = req.body;
     const User              = mongoose.model('User');

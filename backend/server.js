@@ -71,6 +71,9 @@ import { requestLogger }  from './middleware/requestLogger.js';
 import { errorHandler }   from './middleware/errorHandler.js';
 import { requestContext } from './middleware/requestContext.js'; // X-6: correlation ids
 import { authLimiter, adminAuthLimiter, betLimiter } from './middleware/security.js';
+// Item 12 (2026-07-13): IP-rotation defense — per-subnet backstop + optional
+// global surge breaker on sensitive endpoints, on top of the per-IP limiters.
+import { createSubnetLimiter, globalSurgeBreaker, startIpDefenseConfigRefresh } from './middleware/ipDefense.js';
 import GameEngine         from './domains/markets/gameEngine.js';
 import CycleGenerator     from './domains/markets/cycleGenerator.service.js';
 import SSEManager         from './domains/notification/sseManager.service.js';
@@ -226,13 +229,18 @@ app.get('/api/v1/health', (req, res) => {
 });
 
 // ─── API ROUTES ───────────────────────────────────────────────────────────────
-app.use('/api/v1/auth', authLimiter, authRoutes);
+// Item 12: chain order is per-IP → per-subnet → (optional) global surge, then
+// the routes. Per-IP catches the single abuser fastest; the subnet limiter
+// catches an attacker rotating IPs within one block; the surge breaker (off
+// until an admin sets a ceiling) catches distributed rotation across subnets.
+startIpDefenseConfigRefresh();
+app.use('/api/v1/auth', authLimiter, createSubnetLimiter('auth'), globalSurgeBreaker('auth'), authRoutes);
 // MED-04 FIX: removed /api/auth duplicate mount — it duplicated rate limit slots
 // allowing 2× brute-force attempts. All clients should use /api/v1/auth/*.
 app.use('/api', recoveryRoutes);
 app.use('/api', winnersRoutes);
 
-app.post('/api/admin/login', adminAuthLimiter, (req, res, next) => {
+app.post('/api/admin/login', adminAuthLimiter, createSubnetLimiter('adminAuth'), (req, res, next) => {
   req.body = { ...req.body, loginType: req.body.loginType || 'admin' };
   next();
 }, loginHandler);

@@ -167,6 +167,28 @@ const systemConfigSchema = new mongoose.Schema({
     maxEventLoopLagMs: { type: Number, default: 0, min: 0 }, // 0 = lag shedding off
   },
 
+  // ── IP-ROTATION DEFENSE (plan item 12, 2026-07-13) ────────────────────────
+  // Defeats attackers cycling source IPs to bypass per-IP rate limits. Two
+  // admin-editable layers on top of the per-IP limiters (middleware/ipDefense.js):
+  //   subnetMultiplier — the per-SUBNET (/24 IPv4, /64 IPv6) cap = per-IP cap ×
+  //     this. Generous (8) so shared-NAT users are safe; catches rotation within
+  //     a block. Primary defense, ON by default.
+  //   surge — OPTIONAL global aggregate ceiling per sensitive endpoint (auth /
+  //     withdrawal / funding): { windowSec, max }. max 0 = OFF (default) — set a
+  //     ceiling only once the owner knows the endpoint's normal baseline, or a
+  //     legitimate spike would be shed. Backstop for DISTRIBUTED rotation.
+  // Traffic-shape only — no geo/ISP inputs. env bootstrap: IP_DEFENSE_ENABLED,
+  // IP_DEFENSE_SUBNET_MULT.
+  ipDefense: {
+    enabled:          { type: Boolean, default: true },
+    subnetMultiplier: { type: Number, default: 8, min: 1 },
+    surge: {
+      auth:       { windowSec: { type: Number, default: 60 }, max: { type: Number, default: 0, min: 0 } },
+      withdrawal: { windowSec: { type: Number, default: 60 }, max: { type: Number, default: 0, min: 0 } },
+      funding:    { windowSec: { type: Number, default: 60 }, max: { type: Number, default: 0, min: 0 } },
+    },
+  },
+
   // ── FEATURE FLAGS ─────────────────────────────────────────────────────────
   kycRequired:         { type: Boolean, default: true },
   registrationEnabled: { type: Boolean, default: true },
