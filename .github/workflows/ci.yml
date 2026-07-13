@@ -71,17 +71,22 @@ jobs:
       - name: npm audit (fail on high/critical)
         run: npm audit --audit-level=high
 
-  # AQ-7: secret scan. Reports leaked credentials in the diff/history. Starts
-  # non-blocking (report-only) so a placeholder in .env.example can't wedge the
-  # pipeline; promote to required once the baseline is confirmed clean.
+  # AQ-7: secret scan. Reports leaked credentials in the diff/history. The
+  # gitleaks action reads PR commits via the API, so it needs pull-requests:read.
+  # Report-only for now via STEP-level continue-on-error (the job stays green
+  # even on a finding or an action error) — promote to a required check once the
+  # baseline is confirmed clean.
   secret-scan:
     runs-on: ubuntu-latest
-    continue-on-error: true
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
       - name: gitleaks
         uses: gitleaks/gitleaks-action@v2
+        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
