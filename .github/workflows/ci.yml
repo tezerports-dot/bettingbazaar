@@ -76,6 +76,26 @@ jobs:
       - name: npm audit (fail on high/critical)
         run: npm audit --audit-level=high
 
+  # 2026 supply-chain: emit a CycloneDX Software Bill of Materials for the
+  # production dependency tree and publish it as a build artifact. Uses npm's
+  # native generator (no extra tooling). This is the inventory a CVE-response or
+  # SLSA/attestation process consumes; artifact signing/provenance layer on top
+  # of it when an image registry is introduced (see CAPABILITY_MATRIX_2026.md).
+  sbom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: npm }
+      - run: npm ci --legacy-peer-deps
+      - name: Generate CycloneDX SBOM (production deps)
+        run: npm sbom --sbom-format cyclonedx --omit dev > sbom.cyclonedx.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cyclonedx.json
+          retention-days: 90
+
   # AQ-7: secret scan. Reports leaked credentials in the diff/history. The
   # gitleaks action reads PR commits via the API, so it needs pull-requests:read.
   # Report-only for now via STEP-level continue-on-error (the job stays green
