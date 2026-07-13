@@ -22,7 +22,14 @@ describe('validateEnv', () => {
 
   it('lists every missing required var in the thrown message', () => {
     expect(() => validateEnv({ NODE_ENV: 'production' }, true))
-      .toThrow(/JWT_SECRET[\s\S]*ORDER_HMAC_SECRET[\s\S]*MONGODB_URI/);
+      .toThrow(/JWT_SECRET[\s\S]*MONGODB_URI/);
+  });
+
+  it('does NOT require ORDER_HMAC_SECRET (it falls back to JWT_SECRET in code)', () => {
+    // JWT_SECRET + MONGODB_URI present, ORDER_HMAC_SECRET absent → must NOT throw.
+    const r = validateEnv({ JWT_SECRET: 's', MONGODB_URI: 'm', NODE_ENV: 'production' }, true);
+    expect(r.ok).toBe(true);
+    expect(r.advisedMissing).toContain('ORDER_HMAC_SECRET');
   });
 
   it('does NOT throw outside production, but reports what is missing', () => {
@@ -37,9 +44,9 @@ describe('validateEnv', () => {
   });
 
   it('reports advised-but-missing vars without failing', () => {
-    const required = { JWT_SECRET: 's', ORDER_HMAC_SECRET: 'h', MONGODB_URI: 'm' };
+    const required = { JWT_SECRET: 's', MONGODB_URI: 'm' };
     const r = validateEnv({ ...required, NODE_ENV: 'production' }, true);
     expect(r.ok).toBe(true);
-    expect(r.advisedMissing).toEqual(expect.arrayContaining(['REDIS_URL', 'S3_BUCKET_NAME']));
+    expect(r.advisedMissing).toEqual(expect.arrayContaining(['REDIS_URL', 'S3_BUCKET_NAME', 'ORDER_HMAC_SECRET']));
   });
 });

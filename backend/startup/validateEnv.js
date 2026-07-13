@@ -21,16 +21,20 @@
  */
 
 const REQUIRED = [
-  ['JWT_SECRET',        'signs/verifies every auth token — a fallback would let anyone forge sessions'],
-  ['ORDER_HMAC_SECRET', 'signs payment-order integrity HMACs — tamper protection on money orders'],
-  ['MONGODB_URI',       'primary datastore — unset silently connects to localhost'],
+  ['JWT_SECRET',  'signs/verifies every auth token — a fallback would let anyone forge sessions'],
+  ['MONGODB_URI', 'primary datastore — unset silently connects to localhost'],
 ];
 
 // Only meaningful in a real deployment; absence is a warning, not a failure.
+// NOTE: ORDER_HMAC_SECRET is ADVISED (not required) on purpose — the order-signing
+// code falls back to JWT_SECRET when it's unset, so making it fatal would refuse
+// to boot an existing production that relies on that fallback. It's strongly
+// recommended (key separation) but must not turn a deploy into an outage.
 const ADVISED = [
-  ['REDIS_URL',        'cross-instance rate limits, realtime fan-out, and job queue need Redis at >1 replica'],
-  ['ALLOWED_ORIGINS',  'CORS allow-list; without it, production falls back to localhost origins only'],
-  ['S3_BUCKET_NAME',   'asset/upload storage; without S3 the app uses ephemeral local disk (lost on redeploy)'],
+  ['ORDER_HMAC_SECRET', 'dedicated payment-order HMAC secret; falls back to JWT_SECRET if unset — set a distinct value for key separation'],
+  ['REDIS_URL',         'cross-instance rate limits, realtime fan-out, and job queue need Redis at >1 replica'],
+  ['ALLOWED_ORIGINS',   'CORS allow-list; without it, production falls back to localhost origins only'],
+  ['S3_BUCKET_NAME',    'asset/upload storage; without S3 the app uses ephemeral local disk (lost on redeploy)'],
 ];
 
 /**
