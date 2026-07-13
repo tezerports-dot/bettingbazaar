@@ -83,7 +83,7 @@ d('Hybrid money DB (Postgres dual-write)', () => {
     const doc = {
       _id: new mongoose.Types.ObjectId(), idempotencyKey: 'replay-1',
       eventType: 'DEPOSIT_COMPLETED', amountMinor: 5000,
-      entries: [{ account: 'A', amountMinor: 5000 }, { account: 'B', amountMinor: -5000 }],
+      postings: [{ account: 'A', amountMinor: 5000 }, { account: 'B', amountMinor: -5000 }],
     };
     await mirrorAccountingEvent(doc);
     await mirrorAccountingEvent(doc);
@@ -108,12 +108,17 @@ d('Hybrid money DB (Postgres dual-write)', () => {
   });
 
   it('reconcile detects drift and --backfill repairs it; PG trial balance conserves to zero', async () => {
-    // Create Mongo-side events WITHOUT letting this test depend on hook timing:
-    // ledger conserves across two balanced events.
+    // Create a Mongo-side balanced event. The post-save hook mirrors it to PG
+    // fire-and-forget, so wait for that row to land BEFORE simulating drift —
+    // otherwise the TRUNCATE races the async mirror and re-lands the row.
     await AccountingEvent.create({
       idempotencyKey: 'rc-1', eventType: 'DEPOSIT_COMPLETED', amountMinor: 10000,
-      refModel: 'PaymentOrder', refId: 'o1', description: 'rc test',
-      entries: [{ account: 'EXTERNAL_FIAT', amountMinor: 10000 }, { account: 'USER_FUNDS', amountMinor: -10000 }],
+      refModel: 'PaymentOrder', refId: 'o1', description: 'rc test', occurredAt: new Date(),
+      postings: [{ account: 'EXTERNAL_FIAT', amountMinor: 10000 }, { account: 'USER_FUNDS', amountMinor: -10000 }],
+    });
+    await eventually(async () => {
+      const { rows } = await pgQuery(`SELECT 1 FROM accounting_events WHERE idempotency_key='rc-1'`);
+      return rows[0];
     });
     // Simulate drift: wipe PG side, then reconcile with backfill.
     await pgQuery(`TRUNCATE accounting_events RESTART IDENTITY CASCADE`);

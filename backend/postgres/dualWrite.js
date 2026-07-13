@@ -76,9 +76,9 @@ export function mirrorAccountingEvent(doc) {
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,COALESCE($9, now()))
      ON CONFLICT (idempotency_key) DO NOTHING`,
     [String(doc._id), doc.idempotencyKey, doc.eventType, Number(doc.amountMinor) || 0,
-     doc.refModel || null, doc.refId || null,
-     JSON.stringify((doc.entries || []).map(p => ({ account: p.account, amountPaise: Number(p.amountMinor) || 0 }))),
-     doc.description || null, doc.createdAt || null],
+     doc.refModel || null, doc.refId ? String(doc.refId) : null,
+     JSON.stringify((doc.postings || []).map(p => ({ account: p.account, amountPaise: Number(p.amountMinor) || 0 }))),
+     doc.description || null, doc.createdAt || doc.occurredAt || null],
   ));
 }
 
