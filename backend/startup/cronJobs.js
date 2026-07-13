@@ -168,5 +168,40 @@ export function registerCronJobs(rebuildLeaderboard) {
     } catch (e) { console.error('[backup] cron error:', e.message); }
   });
 
+  // ── Hybrid money-DB continuous reconciliation (AQ-9) — every 5 minutes ──────
+  // No-ops unless DATABASE_URL is set (Postgres provisioned + dual-write live).
+  // While dual-write runs toward cutover, this proves Mongo and Postgres agree
+  // on every money table and that the PG ledger conserves to zero — surfacing
+  // drift as a metric + alert instead of waiting for a manual `reconcile:pg`.
+  // Detection ONLY: it never auto-backfills — a human decides how to resolve
+  // drift. Leader-locked (via the platform) so one instance reconciles.
+  registerRecurring('pg-reconcile', 5 * 60 * 1000, async () => {
+    try {
+      const { pgConfigured } = await import('../postgres/pgClient.js');
+      if (!pgConfigured()) return; // dormant until Postgres is wired
+      const { runReconcile } = await import('../postgres/reconcile.js');
+      const { pgDriftRows, pgTrialBalanceOk } = await import('../services/metrics.service.js');
+
+      const report = await runReconcile({ hours: 24 });
+      const missing = report.results.reduce((s, r) => s + r.missingInPg, 0);
+      pgDriftRows.set(missing);
+      pgTrialBalanceOk.set(report.trialBalance.conservesToZero ? 1 : 0);
+
+      if (report.drift) {
+        console.error(`[pg-reconcile] DRIFT: ${missing} missing row(s), trialBalanceOk=${report.trialBalance.conservesToZero}`);
+        sendAlert('pg-drift', 'Hybrid money-DB drift detected (Mongo vs Postgres)', {
+          missingRows: missing,
+          trialBalanceOk: report.trialBalance.conservesToZero,
+          perTable: report.results.filter(r => r.missingInPg > 0)
+            .map(r => ({ table: r.table, missing: r.missingInPg, sample: r.sampleMissing })),
+        });
+      }
+    } catch (e) {
+      console.error('[pg-reconcile] cron error:', e.message);
+      try { const { pgReconcileErrors } = await import('../services/metrics.service.js'); pgReconcileErrors.inc(); } catch { /* metrics optional */ }
+      sendAlert('pg-reconcile-cron', 'Postgres reconciliation cron crashed', { error: e.message });
+    }
+  });
+
   console.log('✅ Cron jobs registered');
 }

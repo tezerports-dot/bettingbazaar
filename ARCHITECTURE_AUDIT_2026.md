@@ -284,8 +284,20 @@ Estimated total: Session 1 ≈ 4h, Session 2 ≈ 4–5h, Session 3 ≈ 4h.
   + PR); gitleaks secret scan (report-only initially); CI service images bumped
   to redis:8 + postgres:18 (matches decision D-2). `.github/dependabot.yml`
   (grouped weekly updates across root + both panels + Actions).
-- **Remaining: AQ-6 (Express 5, dedicated session — highest risk), AQ-9
-  (continuous PG reconciliation — activates once Postgres is provisioned).**
+**2026-07-13 · AQ-9 SHIPPED (continuous PG reconciliation).** Opus 4.8.
+- New `pg-reconcile` cron (5-min, leader-locked) that no-ops until DATABASE_URL
+  is set, then runs the reconcile core each pass while dual-write is live —
+  proving Mongo and Postgres agree on every money table and the PG ledger
+  conserves to zero. Detection ONLY (never auto-backfills). Emits
+  `bb_pg_drift_rows`, `bb_pg_trial_balance_ok`, `bb_pg_reconcile_errors_total`
+  and alerts the webhook on drift. 134 unit tests green; dormant until PG is
+  provisioned.
+
+- **Remaining: AQ-6 (Express 5 migration) — the single item left. Highest risk
+  (framework breaking-changes: route wildcards, express-mongo-sanitize vs
+  read-only req.query, helmet 8, express-rate-limit 8 store contract), so it is
+  isolated to its own branch/PR per the audit's own guidance and validated
+  against the full CI integration suite + 3 panel builds.**
 
 ## 8. Sources (July 2026)
 

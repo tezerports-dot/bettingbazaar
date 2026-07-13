@@ -66,6 +66,26 @@ export const requestsShed = new client.Counter({
   registers: [registry],
 });
 
+// AQ-9: hybrid money-DB continuous reconciliation signals. Dormant (stay at 0)
+// until Postgres is provisioned and dual-write is live. A nonzero drift gauge or
+// a trial-balance flip to 0 means Mongo and Postgres disagree on money data —
+// alert on `bb_pg_drift_rows > 0` or `bb_pg_trial_balance_ok == 0`.
+export const pgDriftRows = new client.Gauge({
+  name: 'bb_pg_drift_rows',
+  help: 'Money rows present in MongoDB but missing from the Postgres mirror (0 = in sync)',
+  registers: [registry],
+});
+export const pgTrialBalanceOk = new client.Gauge({
+  name: 'bb_pg_trial_balance_ok',
+  help: 'Postgres ledger trial balance conserves to zero (1) or not (0)',
+  registers: [registry],
+});
+export const pgReconcileErrors = new client.Counter({
+  name: 'bb_pg_reconcile_errors_total',
+  help: 'Postgres reconciliation run failures',
+  registers: [registry],
+});
+
 /** GET /metrics handler. */
 export async function metricsHandler(req, res) {
   try {
