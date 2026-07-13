@@ -252,6 +252,13 @@ paymentOrderSchema.index({ expiresAt: 1, status: 1 });
 paymentOrderSchema.index({ bulkPayoutDate: 1, type: 1, status: 1 });
 
 // ── Exports ───────────────────────────────────────────────────────────────────
+// Hybrid money DB (plan step 2): mirror order lifecycle to Postgres.
+// findOneAndUpdate paths mirror best-effort (doc as returned); reconcile.js
+// is the completeness guarantee for any update shape hooks can't see.
+import { mirrorPaymentOrder } from '../../postgres/dualWrite.js';
+paymentOrderSchema.post('save', (doc) => { mirrorPaymentOrder(doc); });
+paymentOrderSchema.post('findOneAndUpdate', (doc) => { if (doc) mirrorPaymentOrder(doc); });
+
 export const PaymentOrder = mongoose.model('PaymentOrder', paymentOrderSchema);
 
 

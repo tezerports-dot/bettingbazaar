@@ -30,4 +30,8 @@ const merchantWalletLedgerSchema = new mongoose.Schema({
 
 merchantWalletLedgerSchema.index({ merchantId: 1, createdAt: -1 });
 
+// Hybrid money DB (plan step 2): mirror merchant money movements to Postgres.
+import { mirrorMerchantWalletLedger } from '../../postgres/dualWrite.js';
+merchantWalletLedgerSchema.post('save', (doc) => { mirrorMerchantWalletLedger(doc); });
+
 export const MerchantWalletLedger = mongoose.model('MerchantWalletLedger', merchantWalletLedgerSchema);

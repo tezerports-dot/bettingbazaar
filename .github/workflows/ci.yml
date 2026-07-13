@@ -20,6 +20,23 @@ jobs:
         image: redis:7
         ports:
           - 6379:6379
+      # Hybrid money DB (plan steps 1-4): real Postgres so the BIGINT-paise
+      # schema, append-only + conserve-to-zero triggers, dual-write hooks, and
+      # the reconcile/backfill loop are PROVEN in CI, not assumed
+      # (postgresDualWrite.integration.test.js).
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: bb_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -30,11 +47,13 @@ jobs:
         run: npm ci || npm install
       - name: Unit tests (money math — no DB)
         run: npm run test:unit
-      - name: Integration tests (real in-memory MongoDB + real Redis)
+      - name: Integration tests (real in-memory MongoDB + real Redis + real Postgres)
         run: npm run test:integration
         env:
           MONGOMS_VERSION: 7.0.14
           REDIS_URL: redis://localhost:6379
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bb_test
+          PG_SSL: 'false'
 
   typecheck-build:
     runs-on: ubuntu-latest

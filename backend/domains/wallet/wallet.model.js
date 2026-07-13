@@ -25,6 +25,12 @@ walletLedgerSchema.index({ txId: 1 }, { sparse: true, unique: true });
 walletLedgerSchema.pre('findOneAndUpdate', function() { throw new Error('WalletLedger is append-only'); });
 walletLedgerSchema.pre('updateOne',        function() { throw new Error('WalletLedger is append-only'); });
 walletLedgerSchema.pre('updateMany',       function() { throw new Error('WalletLedger is append-only'); });
+// Hybrid money DB (plan step 2): mirror every ledger row to Postgres.
+// Fire-and-forget — a PG failure can never break the money path (see
+// postgres/dualWrite.js); reconcile.js repairs any drift.
+import { mirrorWalletLedger } from '../../postgres/dualWrite.js';
+walletLedgerSchema.post('save', (doc) => { mirrorWalletLedger(doc); });
+
 export const WalletLedger = mongoose.model('WalletLedger', walletLedgerSchema);
 
 // ===========================================================================

@@ -333,7 +333,11 @@ server.listen(PORT, '0.0.0.0', () => {
 
 Promise.allSettled([
   connectMongoDB().then(() => seedAdminAccount()).then(() => seedGameRegistry()),
-  connectRedis().then(r => { global.redis = r; })
+  connectRedis().then(r => { global.redis = r; }),
+  // Hybrid money DB (plan step 1): apply the Postgres schema when
+  // DATABASE_URL is set; silent no-op otherwise. Dual-write hooks in the
+  // money models activate on the same signal.
+  import('./postgres/pgClient.js').then(m => m.applySchema()).catch(e => console.error('[pg] schema apply failed:', e.message)),
 ]).then(() => {
   console.log('✅ DB services initialized');
   registerCronJobs(rebuildLeaderboard);
@@ -346,6 +350,8 @@ const _shutdown = (sig) => {
   try { if (global.cycleGenerator) global.cycleGenerator.stop(); } catch (_) {}
   // Items 17+56: let in-flight queue jobs finish before exit.
   import('./services/jobQueue.service.js').then(m => m.closeJobQueue()).catch(() => {});
+  // Hybrid money DB: drain the PG pool.
+  import('./postgres/pgClient.js').then(m => m.closePg()).catch(() => {});
   setTimeout(() => process.exit(0), 10000);
 };
 process.on('SIGTERM', () => _shutdown('SIGTERM'));

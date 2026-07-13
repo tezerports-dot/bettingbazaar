@@ -56,4 +56,8 @@ const transactionSchema = new mongoose.Schema({
 // 🏪 MERCHANT SCHEMA
 // ════════════════════════════════════════════════════════════════════════════
 
+// Hybrid money DB (plan step 2): mirror every money-movement event to Postgres.
+import { mirrorTransaction } from '../postgres/dualWrite.js';
+transactionSchema.post('save', (doc) => { mirrorTransaction(doc); });
+
 export const Transaction = mongoose.model('Transaction', transactionSchema);

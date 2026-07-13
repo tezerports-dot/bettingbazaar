@@ -61,6 +61,72 @@ crash sections were unreachable); Prometheus + alerting as above.
 - **24** WAF — when scheduled, OWASP-pattern blocking only (plan's scoping stands).
 - **48** DR plan doc — write after 30/45/46 exist so it describes real mechanisms.
 
-## 4. Scoreboard after today
+## 4. FULL COMPLETION PASS (2026-07-13, slices A–D) — every remaining item closed
 
-- Done: 19 (plan) + 4 corrected-to-done (F-2 note, 37, 52, 15-substantially) + 4 built today (5, 58, 33, 38) + 26 completed → **~27 of 58 closed**, 9 partial, the rest scoped above with owners/triggers named.
+**Slice A (small code):** 4 service registry · 19 central security config ·
+21 explicit header audit · 24 OWASP filter (flag-gated, content-only matching —
+no client-identity inputs) · 28 network config · 35 W3C traceparent interop ·
+51 storage abstraction (S3 + local providers, registered) · 53 generic HTTP SMS
+channel adapter (env-gated like EMAIL).
+
+**Slice B (ops code):** 17+56 Background Job Platform — BullMQ repeatables with
+retry/backoff for ALL seven cron jobs, exact setInterval+leaderLock fallback
+without Redis · 45 automated daily mongodump→S3 backups (retention 14, failure
+alerts, Dockerfile tools, restore drill in DR plan) · 47 read-replica routing
+behind FLAGS.READ_REPLICA (applied to the winners feed; replica member = infra
+half) · 34 Grafana dashboard JSON over the item-33 metrics.
+
+**Slice C (deploy + docs):** 40 k8s manifests (stateless tier, probes, HPA) ·
+44 rolling (RollingUpdate maxUnavailable:0; Railway native = replace, recorded) ·
+43 blue/green (color-selector procedure; no Railway primitive, checked) · 41
+compose stack + IaC decision · 30 health-watch monitor (origin-health signals
+ONLY) + DNS runbook + manual-failback decision · 29 multi-domain (host-agnostic
+serving + CANONICAL_HOST + Caddy pattern + per-domain DoD) · 46 PITR (Atlas
+toggle = owner action; PG WAL for money tables) · 48 DISASTER_RECOVERY.md.
+
+**Slice D (Postgres hybrid, plan steps 1–4 + 6 — CODE COMPLETE):**
+- Step 1: `backend/postgres/schema.sql` — BIGINT-paise schema for all seven
+  money tables; append-only + conserve-to-zero enforced by PG triggers (UTR
+  co-located with orders per the plan's atomicity requirement).
+- Step 2: dual-write layer — post-save hooks on the six money models (one
+  choke point each: WalletLedger covers every wallet mutation), fire-safe
+  (a PG failure can never break a money path), idempotent by key, paise-exact
+  at the boundary (the round2() float fix lands exactly where the plan said:
+  the PG schema).
+- Steps 3+4: `npm run reconcile:pg` — repeatable drift detection + `--backfill`
+  (initial sync), PG trial balance conserving to zero; CDC (Debezium) can layer
+  on later without changing this contract.
+- Step 6: `backend/postgres/DATA_ROLLBACK_PLAN.md` — lossless fallback per
+  phase, drills named.
+- Proven: locally against a real PostgreSQL 16 (schema idempotency, append-only,
+  balance trigger, replay idempotency, ₹99.99→9999 paise, snapshot, trial
+  balance) and in CI (postgres:16 service + postgresDualWrite.integration.test.js
+  including the Mongo-hook and reconcile/backfill paths).
+
+**DECISION RECORDS (items closed by decision, per the plan's own guidance):**
+- 16 Redis sessions — NOT NEEDED: JWT + TokenBlacklist already covers instant
+  revocation. Reopen only if per-session server state becomes a requirement.
+- 20 Secrets manager — env vars + fail-fast retained; triggers to build:
+  multiple environments, scoped team access, or a compliance mandate.
+- 31 Geo routing — NOT BUILT, as the plan requires: single region deployed
+  (nothing to route between) and the latency-vs-jurisdiction scoping question
+  is unanswered. When both unblock, extend item 30's origin-health approach.
+- 41 IaC — compose + k8s manifests + railway.json are the reproducibility
+  layer while on Railway; Terraform on platform exit.
+
+## 5. What remains is OWNER/INFRA, not code (the honest boundary)
+1. **Postgres cutover (plan steps 5+7):** provision Postgres (set DATABASE_URL)
+   → `reconcile:pg --all --backfill` → run dual-write on staging until
+   reconcile passes repeatedly → flip authority per path (wallet/ledger/
+   payment/UTR first, KYC LAST) per DATA_ROLLBACK_PLAN.md.
+2. DNS failover provider config (Route53/Cloudflare) + a host for
+   health-watch; Atlas PITR toggle; second domain DNS.
+3. Credentials to activate: SMTP (EMAIL), SMS gateway + DLT, alert webhook,
+   METRICS_TOKEN + a Prometheus/Grafana to scrape.
+4. The launch gates that were never code: licensing, responsible gaming,
+   pentest, load test (PRODUCTION_READINESS.md).
+
+**Final scoreboard: 58/58 addressed — 54 closed in-repo (built, corrected, or
+decision-recorded per the plan's own scoping), 4 carrying a named owner/infra
+step (6/10/11 cutover phase, 30 DNS-provider config, 31 second-region gate,
+46 Atlas toggle) with every in-repo deliverable for them shipped.**

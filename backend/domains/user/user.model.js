@@ -156,4 +156,14 @@ userSchema.index({ kycStatus: 1 });
 userSchema.index({ username: 1 });
 userSchema.index({ createdAt: -1 });
 
+// Hybrid money DB (plan step 2 + step 7): KYC fields mirror to Postgres
+// user_kyc from day one; KYC becomes AUTHORITATIVE there LAST, after wallet/
+// ledger/payment/UTR are proven (plan's cutover order). Only KYC-touching
+// saves mirror — profile/balance saves don't.
+userSchema.pre('save', function () {
+  this.$locals.kycTouched = this.isNew || this.isModified('kycStatus') || this.isModified('kycData');
+});
+import { mirrorUserKyc } from '../../postgres/dualWrite.js';
+userSchema.post('save', (doc) => { if (doc.$locals?.kycTouched) mirrorUserKyc(doc); });
+
 export const User = mongoose.model('User', userSchema);
