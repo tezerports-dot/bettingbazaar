@@ -55,6 +55,9 @@ import { httpMetrics, metricsHandler } from './services/metrics.service.js';
 import { HELMET_OPTIONS, CORS_SHAPE, RATE_LIMIT_TIERS } from './config/security.config.js';
 import { network, canonicalRedirect } from './config/network.config.js';
 import { owaspFilter } from './middleware/owaspFilter.js';
+// Item 9 (2026-07-13): bounded concurrency / load shedding — one instance's
+// safety valve (503 the excess past the admin-configured ceiling).
+import { loadShed, startLoadShedConfigRefresh } from './middleware/loadShed.js';
 import { registerService } from './services/serviceRegistry.js';
 import { providerRegistry } from './providers/registry.js';
 import { S3StorageProvider } from './providers/storage/S3StorageProvider.js';
@@ -124,6 +127,12 @@ app.use(cookieParser());
 app.use(requestContext); // X-6: correlation id (before the logger, so it's logged)
 app.use(requestLogger);
 app.use(httpMetrics);    // item 33: Prometheus HTTP duration/count (bounded route labels)
+// Item 9: bound in-flight work at the edge — 503 the excess so overload can't
+// starve the event loop mid-transaction. Mounted BEFORE routers so rejection is
+// cheap; health/metrics/SSE are exempt (see loadShed.js). Config refresh is
+// started here (reads SystemConfig.loadShedding every 30s; env is the fallback).
+app.use(loadShed);
+startLoadShedConfigRefresh();
 
 // GET /metrics — Prometheus scrape endpoint (item 33). If METRICS_TOKEN is set,
 // require it as a Bearer token so the endpoint isn't public; unset = open

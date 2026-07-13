@@ -55,6 +55,17 @@ export const alertsSent = new client.Counter({
   registers: [registry],
 });
 
+// Item 9 (2026-07-13): requests rejected by the load-shed edge (503). A rising
+// rate here means the instance hit its concurrency/lag ceiling — scale out or
+// raise the admin-configured cap. Labelled by reason so overload (in-flight)
+// vs saturation (event-loop lag) are distinguishable on the dashboard.
+export const requestsShed = new client.Counter({
+  name: 'bb_requests_shed_total',
+  help: 'Requests shed with 503 by the bounded load-shedder',
+  labelNames: ['reason'], // inflight | eventloop
+  registers: [registry],
+});
+
 /** GET /metrics handler. */
 export async function metricsHandler(req, res) {
   try {

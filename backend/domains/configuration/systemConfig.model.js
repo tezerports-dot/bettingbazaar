@@ -153,6 +153,20 @@ const systemConfigSchema = new mongoose.Schema({
   // bootstrap fallback. Empty = alerting off. Read by services/alerting.service.js.
   alertWebhookUrl: { type: String, default: '' },
 
+  // ── LOAD SHEDDING (plan item 9, 2026-07-13) ───────────────────────────────
+  // The bound on ONE instance's in-flight work: past the ceiling the edge sheds
+  // excess with 503 + Retry-After instead of queueing work the single event loop
+  // can't finish (which would starve in-flight money paths). Admin-editable so
+  // the cap can be tuned to instance size without redeploy; env fallbacks
+  // LOAD_SHED_MAX_INFLIGHT / LOAD_SHED_MAX_LAG_MS / LOAD_SHED_ENABLED bootstrap
+  // it. Defaults trip ONLY under genuine overload — normal traffic never 503s.
+  // Read (cached, 30s) by middleware/loadShed.js. maxInFlight 0 = unbounded (off).
+  loadShedding: {
+    enabled:           { type: Boolean, default: true },
+    maxInFlight:       { type: Number, default: 300, min: 0 },
+    maxEventLoopLagMs: { type: Number, default: 0, min: 0 }, // 0 = lag shedding off
+  },
+
   // ── FEATURE FLAGS ─────────────────────────────────────────────────────────
   kycRequired:         { type: Boolean, default: true },
   registrationEnabled: { type: Boolean, default: true },
