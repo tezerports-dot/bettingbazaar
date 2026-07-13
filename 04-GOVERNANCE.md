@@ -370,6 +370,33 @@ drift when GOVERNANCE.md is not in the prompt.
 
 ---
 
+## 16. Platform Currency & Reproducibility Rules (owner-approved 2026-07-13)
+
+Adopted from ARCHITECTURE_AUDIT_2026.md §7 (proposals P-1…P-4), all four approved
+by the owner on 2026-07-13. Enforcement items are queued as AQ-5/AQ-7 in that audit.
+
+1. **Runtime currency (P-1).** Production runs only supported LTS runtimes and
+   supported major versions of security-load-bearing dependencies (web framework,
+   auth libraries, database drivers). An EOL runtime or framework in production is
+   a launch/operate **blocker**, not a backlog item. CI must pin and prove the same
+   versions production runs — a CI matrix that tests a version production doesn't
+   use satisfies nothing.
+2. **Reproducible deploys (P-2).** Production builds install from the committed
+   lockfile (`npm ci`). A deploy pipeline that resolves dependency ranges at build
+   time (`npm install` against semver ranges) is invalid — production must run
+   exactly what CI tested.
+3. **Audit cadence (P-3).** The subsystem-by-subsystem comparison in
+   ARCHITECTURE_AUDIT_2026.md is re-run quarterly, or immediately upon any
+   major-version EOL announcement affecting the stack. Findings are appended to
+   that file's changelog; the A–F verdict framework in its header is the method.
+4. **Research artifacts are committed (P-4).** Any research, plan, or numbered
+   queue that gates implementation work is committed to the repository in the same
+   session that produces it. Conversation context and session containers are
+   ephemeral; the repo is the only durable medium. (Adopted after a prior session's
+   implementation list was lost with its container — only its commits survived.)
+
+---
+
 ## Appendix: Issue Resolution Log
 
 | Issue | Status | Fix |

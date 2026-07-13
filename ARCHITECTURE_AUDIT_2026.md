@@ -206,14 +206,14 @@ Estimated total: Session 1 ≈ 4h, Session 2 ≈ 4–5h, Session 3 ≈ 4h.
 
 ---
 
-## 6. Owner decisions (pick before/while Opus runs)
+## 6. Owner decisions — ALL DECIDED 2026-07-13 (owner, via decision prompt)
 
-- **D‑1 Express 5 now vs hold.** Recommend: **migrate now** (AQ‑6) — v4 EOL target is ~Oct 2026 and the test net is strong today. Hold = document acceptance + calendar re-review at EOL announcement.
-- **D‑2 Postgres version for the money DB.** Recommend: **18** (nothing provisioned yet — the upgrade is free now; async I/O + long runway; schema needs only ≥14). Conservative alternative: 17. CI image follows the choice.
-- **D‑3 OpenTelemetry now vs trigger.** Recommend: **keep correlation-ID + Prometheus posture, adopt OTel at the recorded trigger** (second service / synchronous provider integration). Adopting now is defensible if you want vendor-neutral traces from day one — it costs a dependency set + an OTLP backend to run.
-- **D‑4 JWT lifetime.** Recommend: **24h expiry + keep per-request blacklist** (instant revocation retained, bounded token exposure, no refresh-token build). Alternatives: keep 7d (status quo; weakest), or full 1h+refresh rotation (most work, standard for public APIs).
+- **D‑1 Express 5: MIGRATE NOW.** AQ‑6 proceeds as a dedicated session.
+- **D‑2 Postgres version: 18.** Provision PostgreSQL 18 for the money cutover; AQ‑7 bumps the CI service image to `postgres:18`.
+- **D‑3 OpenTelemetry: keep current posture, adopt at the recorded trigger** (second deployable service or a synchronous-critical provider integration). Default recommendation accepted; owner may reopen anytime.
+- **D‑4 JWT lifetime: 24 hours** + keep the per-request TokenBlacklist. AQ‑2 sets `JWT_EXPIRES_IN` default to `24h` (env still overrides); document the re-login behavior change.
 
-## 7. Governance update proposals (NOT applied — you choose; see decisions)
+## 7. Governance update proposals — ALL FOUR APPROVED 2026-07-13, applied as 04-GOVERNANCE.md §16
 
 - **P‑1 Runtime currency rule (04‑GOVERNANCE §-new):** "Production runs only supported LTS runtimes and supported major versions of security-load-bearing dependencies (framework, auth, DB drivers). An EOL runtime/framework in production is a launch/operate blocker. CI pins and proves the same versions production runs."
 - **P‑2 Reproducible deploys rule:** "Production builds install from the committed lockfile (`npm ci`). A deploy that resolves dependency ranges at build time is invalid."
