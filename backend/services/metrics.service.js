@@ -86,6 +86,27 @@ export const pgReconcileErrors = new client.Counter({
   registers: [registry],
 });
 
+// Connection-pool monitoring (2026 DB hygiene). A Gauge with an async collect()
+// samples the live pool on each scrape — no interval, no state. `waiting > 0`
+// sustained = pool exhaustion (raise PG_POOL_SIZE or scale the DB). Dormant
+// (emits nothing) until Postgres is configured and the pool has opened.
+export const pgPoolConnections = new client.Gauge({
+  name: 'bb_pg_pool_connections',
+  help: 'Postgres connection pool state by bucket (total|idle|waiting)',
+  labelNames: ['state'],
+  registers: [registry],
+  async collect() {
+    try {
+      const { getPoolStats } = await import('../postgres/pgClient.js');
+      const s = getPoolStats();
+      if (!s) return;
+      this.set({ state: 'total' }, s.total);
+      this.set({ state: 'idle' }, s.idle);
+      this.set({ state: 'waiting' }, s.waiting);
+    } catch { /* pool unavailable — emit nothing */ }
+  },
+});
+
 /** GET /metrics handler. */
 export async function metricsHandler(req, res) {
   try {

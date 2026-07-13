@@ -82,5 +82,16 @@ export async function closePg() {
   pool = null;
 }
 
+/**
+ * Current pool saturation, for /metrics (connection-pool monitoring). Returns
+ * null when Postgres isn't configured or the pool hasn't opened yet. `waiting`
+ * climbing above 0 means requests are queued for a connection — the signal to
+ * raise PG_POOL_SIZE or scale the DB.
+ */
+export function getPoolStats() {
+  if (!pool) return null;
+  return { total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount };
+}
+
 /** Rupees(float) → integer paise at the Postgres boundary. THE money unit. */
 export function paise(rupees) { return Math.round((Number(rupees) || 0) * 100); }

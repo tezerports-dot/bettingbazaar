@@ -11,6 +11,20 @@
 --
 -- Applied idempotently by pgClient.applySchema() at boot when DATABASE_URL is
 -- set (every statement is IF NOT EXISTS / OR REPLACE).
+--
+-- PARTITIONING STRATEGY (capability 16 — apply WHEN VOLUME WARRANTS, not now):
+-- The two unbounded append-only tables (wallet_ledger, accounting_events) are
+-- the partitioning candidates — RANGE partition by created_at, one partition per
+-- month, so old months can be detached/archived cheaply and index scans stay
+-- warm. This is deliberately NOT pre-applied because it interacts with the
+-- idempotency contract: PostgreSQL requires a partitioned table's UNIQUE/PRIMARY
+-- KEY to INCLUDE the partition key, so `tx_id` / `idempotency_key` uniqueness
+-- would have to become UNIQUE(idempotency_key, created_at) — which no longer
+-- prevents the same key reappearing in a different month. Preserve the gate by
+-- pairing partitioning with an EXCLUDE/global-uniqueness mechanism (e.g. a
+-- separate unpartitioned unique index table, or app-level dedup on the key) at
+-- the time it is introduced. Until row counts justify it (millions/month), a
+-- single table with the btree indexes below outperforms partition overhead.
 
 -- ── USER WALLET LEDGER (mirrors WalletLedger — every balance mutation) ───────
 CREATE TABLE IF NOT EXISTS wallet_ledger (
