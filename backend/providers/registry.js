@@ -40,4 +40,9 @@ export const providerRegistry = {
   payment:    makeRegistry('Payment'),
   casino:     makeRegistry('Casino'),
   sportsbook: makeRegistry('Sportsbook'),
+  // Storage Abstraction (plan item 51, 2026-07-13) — object storage behind the
+  // same interface pattern; implementations in providers/storage/, registered
+  // at boot by server.js's registerCoreServices (S3 when configured, local
+  // disk fallback otherwise).
+  storage:    makeRegistry('Storage'),
 };

@@ -20,9 +20,23 @@ const als = new AsyncLocalStorage();
 // Accept a client/gateway id only if it's a sane token; otherwise generate.
 const SAFE_ID = /^[A-Za-z0-9_.-]{1,64}$/;
 
+// Plan item 35 (2026-07-13): W3C Trace Context interop. When a gateway/mesh
+// sends a standard `traceparent` header (00-<32hex traceid>-<16hex spanid>-
+// <2hex flags>), we adopt its TRACE ID as the correlation id, so our logs
+// join the caller's distributed trace by id without an APM dependency. This
+// deliberately layers ON TOP of the AsyncLocalStorage design (per the plan:
+// don't replace it) — a full OpenTelemetry SDK slots in later by reusing
+// these ids when an OTLP collector exists (env OTEL_EXPORTER_OTLP_ENDPOINT
+// is its activation trigger; see PLAN_STATUS_AUDIT.md).
+const TRACEPARENT = /^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/;
+
 export function requestContext(req, res, next) {
   const incoming = req.get('x-request-id');
-  const reqId = incoming && SAFE_ID.test(incoming) ? incoming : crypto.randomUUID();
+  const tp = TRACEPARENT.exec(req.get('traceparent') || '');
+  const reqId =
+    (incoming && SAFE_ID.test(incoming) && incoming) ||
+    (tp && tp[1] !== '0'.repeat(32) && tp[1]) ||
+    crypto.randomUUID();
   req.id = reqId;
   res.setHeader('X-Request-Id', reqId);
   als.run({ reqId, userId: undefined }, () => next());

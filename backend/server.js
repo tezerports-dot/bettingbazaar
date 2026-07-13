@@ -50,6 +50,15 @@ import gameProviderRoutes from './domains/casino/gameProvider.routes.js';
 import gameRegistryRoutes from './domains/gameRegistry/gameRegistry.routes.js';
 import { seedGameRegistry } from './domains/gameRegistry/gameRegistry.seed.js';
 import { httpMetrics, metricsHandler } from './services/metrics.service.js';
+// Plan items 19/21/28/24/4/51 (2026-07-13): central security + network config,
+// OWASP filter, service registry, storage abstraction.
+import { HELMET_OPTIONS, CORS_SHAPE, RATE_LIMIT_TIERS } from './config/security.config.js';
+import { network, canonicalRedirect } from './config/network.config.js';
+import { owaspFilter } from './middleware/owaspFilter.js';
+import { registerService } from './services/serviceRegistry.js';
+import { providerRegistry } from './providers/registry.js';
+import { S3StorageProvider } from './providers/storage/S3StorageProvider.js';
+import { LocalDiskStorageProvider } from './providers/storage/LocalDiskStorageProvider.js';
 import recoveryRoutes     from './routes/account-recovery.routes.js';
 import winnersRoutes      from './routes/winners.routes.js';
 
@@ -94,30 +103,18 @@ global.io = io;
 //   - Admin room events (admin_bet_placed)
 
 
-const PORT = process.env.PORT || 8080;
+const PORT = network.port; // item 28: single parse point in config/network.config.js
 
 // ─── GLOBAL MIDDLEWARE ────────────────────────────────────────────────────────
+// Security policy lives in config/security.config.js (item 19) — values are
+// identical to what was inline here before; edit THAT file to change policy.
 app.use(compression());
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"], scriptSrc: ["'self'"],
-      styleSrc:   ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-      fontSrc:    ["'self'", "https://fonts.gstatic.com", "data:"],
-      imgSrc:     ["'self'", 'data:', 'https:'],
-      connectSrc: ["'self'", 'wss:', 'ws:', 'https:'],
-      objectSrc:  ["'none'"], manifestSrc: ["'self'"],
-    }
-  },
-  crossOriginEmbedderPolicy: false
-}));
+app.use(helmet(HELMET_OPTIONS));
+// Item 29: optional canonical-host 301 (only when CANONICAL_HOST is set; keys
+// on the requested Host only — see network.config.js).
+app.use(canonicalRedirect);
 
-const corsOptions = {
-  origin: corsOriginCheck, credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  optionsSuccessStatus: 200
-};
+const corsOptions = { origin: corsOriginCheck, ...CORS_SHAPE };
 app.options('*', cors(corsOptions));
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
@@ -140,14 +137,31 @@ app.get('/metrics', (req, res) => {
   return metricsHandler(req, res);
 });
 app.use('/api/', rateLimit({
-  windowMs: 15 * 60 * 1000, max: 1000, standardHeaders: true, legacyHeaders: false,
+  ...RATE_LIMIT_TIERS.global, standardHeaders: true, legacyHeaders: false,
   message: { success: false, message: 'Too many requests. Please try again later.' }
 }));
+// Item 24: OWASP-pattern request filter — flag-gated (FLAGS.WAF_FILTER,
+// default OFF). Mounted after body parsing so it can scan JSON bodies.
+app.use('/api/', owaspFilter);
 
 // ─── STATIC FILES ─────────────────────────────────────────────────────────────
 const appAssetsDir = path.join(__dirname, 'app-assets');
 fs.mkdirSync(appAssetsDir, { recursive: true });
 app.use('/app-assets', express.static(appAssetsDir, { maxAge: '1h' }));
+// Item 51: local-disk StorageProvider serves from backend/storage/ (S3 deploys
+// never write here — the S3 provider returns CDN/S3 URLs instead).
+app.use('/storage', express.static(path.join(__dirname, 'storage'), { maxAge: '1h' }));
+
+// ─── SERVICE + PROVIDER REGISTRATION (items 4 + 51) ──────────────────────────
+// Storage: S3 when configured (multi-instance-safe), local disk otherwise.
+const _s3Store = new S3StorageProvider();
+const _localStore = new LocalDiskStorageProvider();
+providerRegistry.storage.register(_s3Store);
+providerRegistry.storage.register(_localStore);
+registerService('storage', _s3Store.isAvailable() ? _s3Store : _localStore);
+// Cross-cutting services — look up by name where hard-coupling is undesirable.
+registerService('metrics',  { handler: metricsHandler });
+registerService('alerting', { send: (...a) => import('./services/alerting.service.js').then(m => m.sendAlert(...a)) });
 // §14 GOVERNANCE: user panel static must NOT bleed into /admin or /merchant.
 // Serving dist/ at root '/' caused user panel index.css (which @imports
 // glassmorphism.css with .glass-overlay { position:fixed; inset:0 }) to load

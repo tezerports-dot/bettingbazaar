@@ -4,6 +4,9 @@ import { AuditLog } from '../models/index.js';
 // F-3 (2026-07-10): counters shared across instances via Redis; graceful
 // per-instance fallback when Redis is absent/unreachable.
 import { createRateLimitStore } from './redisRateLimitStore.js';
+// Item 19 (2026-07-13): windows/limits live in config/security.config.js —
+// values unchanged; edit the config to change policy.
+import { RATE_LIMIT_TIERS } from '../config/security.config.js';
 
 // ==================== AUTHENTICATION RATE LIMITERS ====================
 
@@ -11,8 +14,7 @@ import { createRateLimitStore } from './redisRateLimitStore.js';
 // Prevents brute force password attacks
 export const authLimiter = rateLimit({
     store: createRateLimitStore('rl:auth:'),
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 5, // ✅ IMPROVED: Limit to 5 attempts per 15 minutes (was 10)
+    ...RATE_LIMIT_TIERS.auth, // 5 / 15 min
     message: { 
         success: false,
         message: "Too many authentication attempts. Please try again after 15 minutes.",
@@ -53,8 +55,7 @@ export const authLimiter = rateLimit({
 // Admins need extra protection
 export const adminAuthLimiter = rateLimit({
     store: createRateLimitStore('rl:adminauth:'),
-    windowMs: 30 * 60 * 1000, // 30 minutes
-    max: 3, // Only 3 attempts per 30 minutes for admin
+    ...RATE_LIMIT_TIERS.adminAuth, // 3 / 30 min
     message: { 
         success: false,
         message: "Too many admin login attempts. Please try again after 30 minutes.",
@@ -92,8 +93,7 @@ export const adminAuthLimiter = rateLimit({
 // Prevents rapid-fire betting and potential abuse
 export const betLimiter = rateLimit({
     store: createRateLimitStore('rl:bet:'),
-    windowMs: 1 * 60 * 1000, // 1 minute
-    max: 30, // ✅ IMPROVED: 30 bets per minute max (was 60)
+    ...RATE_LIMIT_TIERS.bet, // 30 / min
     message: { 
         success: false,
         message: "Slow down! You are placing bets too quickly. Please wait a moment."
@@ -110,8 +110,7 @@ export const betLimiter = rateLimit({
 // Prevents rapid withdrawal attempts
 export const withdrawalLimiter = rateLimit({
     store: createRateLimitStore('rl:withdraw:'),
-    windowMs: 60 * 60 * 1000, // 1 hour
-    max: 5, // Max 5 withdrawal requests per hour
+    ...RATE_LIMIT_TIERS.withdrawal, // 5 / hour
     message: { 
         success: false,
         message: "Too many withdrawal requests. Please wait before trying again."
@@ -126,8 +125,7 @@ export const withdrawalLimiter = rateLimit({
 // General API rate limiter for all other endpoints
 export const apiLimiter = rateLimit({
     store: createRateLimitStore('rl:api:'),
-    windowMs: 1 * 60 * 1000, // 1 minute
-    max: 100, // 100 requests per minute
+    ...RATE_LIMIT_TIERS.api, // 100 / min
     message: { 
         success: false,
         message: "Too many requests. Please slow down."

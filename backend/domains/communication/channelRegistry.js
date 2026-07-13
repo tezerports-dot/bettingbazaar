@@ -91,7 +91,63 @@ const inactive = (code, label) => ({
   async send() { throw new Error(`${label} channel is not configured.`); },
 });
 
-const sms   = inactive('SMS', 'SMS');
+// ── SMS — generic HTTP gateway adapter (plan item 53, 2026-07-13),
+// ACTIVATION-GATED on env exactly like EMAIL. No provider is hardcoded: any
+// REST SMS gateway (MSG91, Kaleyra, Twilio-style, ...) works via config:
+//   SMS_API_URL       required — endpoint; may contain {mobile} and {message}
+//                     placeholders (URL-encoded) for GET-style gateways
+//   SMS_API_METHOD    default POST
+//   SMS_API_HEADERS   optional JSON, e.g. {"authkey":"...","Content-Type":"application/json"}
+//   SMS_BODY_TEMPLATE optional JSON body template with {mobile}/{message}
+//                     placeholders, e.g. {"to":"{mobile}","text":"{message}"}
+// DLT template registration (India) is a legal prerequisite — owner action,
+// documented in PRODUCTION_READINESS.md §B2. Unset SMS_API_URL = declared
+// channel, inactive, exactly as before.
+function smsConfigured() { return !!process.env.SMS_API_URL; }
+
+const sms = {
+  code: 'SMS',
+  label: 'SMS',
+  get active() { return smsConfigured(); },
+  async send({ userId, title, message }) {
+    if (!smsConfigured()) {
+      return { delivered: false, reason: 'SMS gateway not configured (SMS_API_URL env).' };
+    }
+    const User = mongoose.model('User');
+    const user = await User.findById(userId).select('mobile').lean();
+    if (!user?.mobile) return { delivered: false, reason: 'User has no mobile on file.' };
+
+    const text = [title, message].filter(Boolean).join(': ').slice(0, 480);
+    const fill = (s) => s.replaceAll('{mobile}', encodeURIComponent(user.mobile))
+                        .replaceAll('{message}', encodeURIComponent(text));
+
+    const url    = fill(process.env.SMS_API_URL);
+    const method = (process.env.SMS_API_METHOD || 'POST').toUpperCase();
+    let headers  = { 'Content-Type': 'application/json' };
+    try { if (process.env.SMS_API_HEADERS) headers = { ...headers, ...JSON.parse(process.env.SMS_API_HEADERS) }; }
+    catch { /* malformed header JSON — proceed with defaults */ }
+
+    let body;
+    if (method !== 'GET' && process.env.SMS_BODY_TEMPLATE) {
+      // Placeholders inside the JSON template are raw (not URL-encoded).
+      body = process.env.SMS_BODY_TEMPLATE
+        .replaceAll('{mobile}', user.mobile)
+        .replaceAll('{message}', text.replaceAll('"', '\\"'));
+    }
+
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    try {
+      const resp = await fetch(url, { method, headers, body, signal: ctrl.signal });
+      return resp.ok
+        ? { delivered: true, id: `sms-${Date.now()}` }
+        : { delivered: false, reason: `Gateway HTTP ${resp.status}` };
+    } catch (e) {
+      return { delivered: false, reason: `Gateway error: ${e.message}` };
+    } finally { clearTimeout(t); }
+  },
+};
+
 const push  = inactive('PUSH', 'Web/App push');
 
 const CHANNELS = Object.freeze({
