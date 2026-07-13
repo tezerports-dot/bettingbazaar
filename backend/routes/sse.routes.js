@@ -23,9 +23,12 @@
  */
 
 import express from 'express';
-import jwt     from 'jsonwebtoken';
-
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret';
+// AQ-1/AQ-2: verify via the single JWT authority. This replaces a
+// `process.env.JWT_SECRET || 'fallback-secret'` default that verified user and
+// admin SSE tokens against a PUBLIC string whenever the env var was unset —
+// anyone could have forged a token and opened these streams. verifyJwt pins
+// HS256 and uses the fail-fast secret.
+import { verifyJwt } from '../domains/identity/jwt.util.js';
 
 /** Apply the required SSE headers and flush immediately. */
 function initSSEResponse(res) {
@@ -111,7 +114,7 @@ export function initSSERoutes(sseManager, cycleGenerator) {
 
         let decoded;
         try {
-            decoded = jwt.verify(token, JWT_SECRET);
+            decoded = verifyJwt(token);
         } catch {
             return res.status(401).json({ success: false, message: 'Invalid or expired token' });
         }
@@ -176,7 +179,7 @@ export function initSSERoutes(sseManager, cycleGenerator) {
 
         let decoded;
         try {
-            decoded = jwt.verify(token, JWT_SECRET);
+            decoded = verifyJwt(token);
         } catch {
             return res.status(401).json({ success: false, message: 'Invalid or expired token' });
         }

@@ -7,7 +7,8 @@ import express   from 'express';
 import { creditDeposit, creditReserve, refundOrder, creditWinnings, debitWinningsForWithdrawal } from '../wallet/walletAuthority.service.js';
 import mongoose  from 'mongoose';
 import bcrypt    from 'bcryptjs';
-import jwt       from 'jsonwebtoken';
+// AQ-2: sign via the single JWT authority (HS256 pinned, iss/aud stamped).
+import { signToken } from '../identity/jwt.util.js';
 import { merchantAuth } from '../../middleware/merchantAuth.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
 import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
@@ -17,8 +18,9 @@ import { publish as publishDomainEvent, EVENTS as DOMAIN_EVENTS } from '../../se
 import { getRiskRules } from '../risk/riskValidation.service.js';
 
 const router     = express.Router();
-const JWT_SECRET  = process.env.JWT_SECRET  || 'fallback-secret';
-const JWT_EXPIRES = process.env.JWT_EXPIRES_IN || '7d'; // HIGH-05 fix: standardised to JWT_EXPIRES_IN
+// JWT secret + expiry owned by jwt.util.js — removed a '|| fallback-secret'
+// default here (AQ-1): a missing secret must fail-fast, never sign with a
+// public string that would let anyone forge merchant tokens.
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
@@ -165,9 +167,8 @@ router.post('/auth/login', async (req, res) => {
                 message: msgs[merchant.status] || msgs[merchant.merchantApprovalStatus] || 'Account not active.' });
         }
 
-        const token = jwt.sign(
-            { merchantId: merchant._id, userId: merchant.userId, mobile: merchant.mobile, isMerchant: true, isAdmin: false },
-            JWT_SECRET, { expiresIn: JWT_EXPIRES }
+        const token = signToken(
+            { merchantId: merchant._id, userId: merchant.userId, mobile: merchant.mobile, isMerchant: true, isAdmin: false }
         );
 
         res.json({

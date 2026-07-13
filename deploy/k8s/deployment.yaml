@@ -32,12 +32,19 @@ spec:
           image: bettingbazaar:latest   # replace with your registry tag
           ports: [{ containerPort: 8080 }]
           envFrom: [{ secretRef: { name: bb-env } }]
+          # AQ-4: probes are split. Readiness (deps + drain aware) gates traffic;
+          # liveness is process-only so a MongoDB outage can't trigger a
+          # cluster-wide restart storm. A startupProbe protects slow first boots.
+          startupProbe:
+            httpGet: { path: /health/live, port: 8080 }
+            failureThreshold: 30
+            periodSeconds: 5
           readinessProbe:
-            httpGet: { path: /health, port: 8080 }
-            initialDelaySeconds: 15
+            httpGet: { path: /health/ready, port: 8080 }
+            initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
-            httpGet: { path: /health, port: 8080 }
+            httpGet: { path: /health/live, port: 8080 }
             initialDelaySeconds: 40
             periodSeconds: 30
           resources:

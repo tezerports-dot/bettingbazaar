@@ -5,7 +5,8 @@
     "buildCommand": "npm install --legacy-peer-deps && ./node_modules/.bin/vite build && cd admin-panel && npm install --legacy-peer-deps && ./node_modules/.bin/vite build && cd ../merchant-panel && npm install --legacy-peer-deps && ./node_modules/.bin/vite build",
     "nixpacksPlan": {
       "variables": {
-        "NIXPACKS_NO_CACHE": "1"
+        "NIXPACKS_NO_CACHE": "1",
+        "NIXPACKS_NODE_VERSION": "22"
       }
     }
   },

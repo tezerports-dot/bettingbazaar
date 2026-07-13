@@ -16,6 +16,38 @@ let pool = null;
 
 export function pgConfigured() { return !!process.env.DATABASE_URL; }
 
+/**
+ * Resolve the TLS config for the money database (AQ-3). The money DB is the most
+ * sensitive connection in the platform, so the DEFAULT is verified TLS — the
+ * previous `{ rejectUnauthorized: false }` accepted ANY certificate, meaning a
+ * network attacker who could redirect the connection (a hostile hop, a spoofed
+ * managed-DB endpoint) could read and rewrite ledger traffic undetected.
+ *
+ * Precedence (first match wins):
+ *   PG_SSL=false            → no TLS. Only for local/plaintext Postgres.
+ *   localhost / 127.0.0.1   → no TLS (implicit local convenience).
+ *   PG_SSL=no-verify        → TLS but certificate NOT verified. Escape hatch for
+ *                             a provider with a self-signed cert you can't pin;
+ *                             loudly warned every boot so it can't hide.
+ *   PG_CA_CERT (inline PEM)  → verified TLS pinned to that CA (the right answer
+ *                             for managed providers that publish a CA bundle).
+ *   default                 → verified TLS against the system trust store.
+ */
+export function resolvePgSsl(env = process.env) {
+  const url = env.DATABASE_URL || '';
+  if (env.PG_SSL === 'false') return false;
+  if (url.includes('localhost') || url.includes('127.0.0.1')) return false;
+  if (env.PG_SSL === 'no-verify') {
+    console.warn('⚠️  [pg] PG_SSL=no-verify — money-DB TLS certificate is NOT being verified. ' +
+      'Use PG_CA_CERT to pin the provider CA in production.');
+    return { rejectUnauthorized: false };
+  }
+  if (env.PG_CA_CERT && env.PG_CA_CERT.trim()) {
+    return { rejectUnauthorized: true, ca: env.PG_CA_CERT };
+  }
+  return { rejectUnauthorized: true };
+}
+
 export async function getPool() {
   if (!pgConfigured()) return null;
   if (pool) return pool;
@@ -23,8 +55,7 @@ export async function getPool() {
   pool = new pg.Pool({
     connectionString: process.env.DATABASE_URL,
     max: Number(process.env.PG_POOL_SIZE || 10),
-    // Managed providers commonly require TLS; PG_SSL=false opts out for local.
-    ssl: process.env.PG_SSL === 'false' ? false : (process.env.DATABASE_URL.includes('localhost') || process.env.DATABASE_URL.includes('127.0.0.1') ? false : { rejectUnauthorized: false }),
+    ssl: resolvePgSsl(),
   });
   pool.on('error', (e) => console.error('[pg] pool error:', e.message));
   return pool;

@@ -19,10 +19,15 @@ import cookieParser from 'cookie-parser';
 
 dotenv.config();
 
+// AQ-1: refuse to boot in production without the secrets/URIs that keep the
+// platform safe (missing any is fatal in prod; a loud warning otherwise).
+validateEnv();
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
 // ─── STARTUP MODULES ──────────────────────────────────────────────────────────
+import { validateEnv }        from './startup/validateEnv.js'; // AQ-1: fail-fast env gate
 import { connectMongoDB }     from './startup/mongoConnect.js';
 import { connectRedis }       from './startup/redisConnect.js';
 import { seedAdminAccount }   from './startup/seedAdmin.js';
@@ -210,23 +215,47 @@ if (fs.existsSync(merchantDistPath)) {
   app.use('/merchant', express.static(merchantDistPath, { index: false }));
 }
 
-// ─── HEALTH ───────────────────────────────────────────────────────────────────
-app.get('/health', (req, res) => {
-  const mongoStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
-  const redisStatus = global.redis ? 'connected' : 'unavailable';
-  if (mongoStatus === 'disconnected') {
-    return res.status(503).json({ status: 'unhealthy', timestamp: new Date().toISOString(), mongodb: mongoStatus, redis: redisStatus });
-  }
-  res.json({ status: 'healthy', timestamp: new Date().toISOString(), mongodb: mongoStatus, redis: redisStatus, uptime: process.uptime() });
+// ─── HEALTH / PROBES (AQ-4) ─────────────────────────────────────────────────
+// Kubernetes-correct probe split (also drives Railway/Docker healthchecks):
+//   LIVENESS  = "is the process alive?" — NEVER depends on external deps. A
+//               Mongo outage must NOT make the orchestrator kill and restart
+//               every pod (that turns a dependency blip into a full outage).
+//   READINESS = "should this instance receive traffic?" — deps up AND not
+//               draining. Flipping this to 503 on SIGTERM is how we bleed
+//               traffic off an instance before it stops accepting connections.
+let shuttingDown = false;
+
+function readinessState() {
+  const mongoUp = mongoose.connection.readyState === 1;
+  return {
+    ready: mongoUp && !shuttingDown,
+    mongodb: mongoUp ? 'connected' : 'disconnected',
+    redis: global.redis ? 'connected' : 'unavailable',
+    draining: shuttingDown,
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+  };
+}
+
+// Liveness — process-only, dependency-free. 503 only while draining so the
+// orchestrator stops restarting a pod we're deliberately shutting down.
+app.get('/health/live', (req, res) => {
+  res.status(shuttingDown ? 503 : 200).json({ status: shuttingDown ? 'draining' : 'alive', uptime: process.uptime() });
 });
-app.get('/api/v1/health', (req, res) => {
-  const mongoStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
-  const redisStatus = global.redis ? 'connected' : 'unavailable';
-  res.status(mongoStatus === 'connected' ? 200 : 503).json({
-    status: mongoStatus === 'connected' ? 'healthy' : 'unhealthy',
-    timestamp: new Date().toISOString(), mongodb: mongoStatus, redis: redisStatus, uptime: process.uptime()
-  });
+// Readiness — deps + drain aware.
+app.get('/health/ready', (req, res) => {
+  const s = readinessState();
+  res.status(s.ready ? 200 : 503).json({ status: s.ready ? 'ready' : 'not-ready', ...s });
 });
+// Back-compat: /health and /api/v1/health keep readiness semantics (Railway's
+// healthcheckPath and the Docker HEALTHCHECK point here). Now also 503 while
+// draining so deploys route away from an instance that's shutting down.
+function legacyHealth(req, res) {
+  const s = readinessState();
+  res.status(s.ready ? 200 : 503).json({ status: s.ready ? 'healthy' : 'unhealthy', ...s });
+}
+app.get('/health', legacyHealth);
+app.get('/api/v1/health', legacyHealth);
 
 // ─── API ROUTES ───────────────────────────────────────────────────────────────
 // Item 12: chain order is per-IP → per-subnet → (optional) global surge, then
@@ -361,17 +390,58 @@ Promise.allSettled([
   registerFundingEventSubscribers(); // Funding Platform (Phase 009) — eventBus wiring
 });
 
+// AQ-4: real graceful drain. Order matters — fail readiness FIRST so the load
+// balancer stops sending new work, wait a beat for it to notice, THEN stop
+// accepting connections and let in-flight requests finish before closing the
+// datastores. The previous version never called server.close(), so the listener
+// kept accepting new requests through the whole grace window and then killed
+// them mid-flight on process.exit — rolling deploys dropped requests.
+async function closeResources() {
+  await Promise.allSettled([
+    import('./services/jobQueue.service.js').then(m => m.closeJobQueue()),      // 17+56: finish/close queue
+    import('./postgres/pgClient.js').then(m => m.closePg()),                    // hybrid money DB: drain PG pool
+    import('./services/workerPool.service.js').then(m => m.closeWorkerPool()),  // item 5: terminate CPU threads
+  ]);
+  try { await mongoose.connection.close(false); } catch (_) {}
+  try { global.redis?.disconnect?.(); } catch (_) {}
+}
+
+let _shuttingDownStarted = false;
 const _shutdown = (sig) => {
-  console.log(`[${sig}] Shutting down gracefully...`);
-  try { if (global.gameEngine)     global.gameEngine.stop();     } catch (_) {}
-  try { if (global.cycleGenerator) global.cycleGenerator.stop(); } catch (_) {}
-  // Items 17+56: let in-flight queue jobs finish before exit.
-  import('./services/jobQueue.service.js').then(m => m.closeJobQueue()).catch(() => {});
-  // Hybrid money DB: drain the PG pool.
-  import('./postgres/pgClient.js').then(m => m.closePg()).catch(() => {});
-  // Item 5: terminate CPU worker threads so the process can exit cleanly.
-  import('./services/workerPool.service.js').then(m => m.closeWorkerPool()).catch(() => {});
-  setTimeout(() => process.exit(0), 10000);
+  if (_shuttingDownStarted) return;
+  _shuttingDownStarted = true;
+  shuttingDown = true; // readiness now returns 503 → LBs drain this instance
+  console.log(`[${sig}] Graceful shutdown — readiness failing; stopping producers.`);
+
+  // Stop background producers immediately (no new cycles/settlement work).
+  try { gameEngine?.stop(); } catch (_) {}
+  try { cycleGenerator?.stop(); } catch (_) {}
+
+  const DRAIN_DELAY_MS = Number(process.env.SHUTDOWN_DRAIN_MS || 5000);
+  const DEADLINE_MS    = Number(process.env.SHUTDOWN_DEADLINE_MS || 25000);
+
+  // Absolute backstop: long-lived connections (SSE) never end on their own, so
+  // guarantee the process exits even if drain can't complete.
+  const hardExit = setTimeout(() => {
+    console.error('[shutdown] hard deadline reached — forcing exit.');
+    try { server.closeAllConnections?.(); } catch (_) {}
+    process.exit(0);
+  }, DEADLINE_MS);
+  hardExit.unref?.();
+
+  // Give the LB DRAIN_DELAY_MS to observe readiness=503 before we stop accepting.
+  setTimeout(() => {
+    try { server.closeIdleConnections?.(); } catch (_) {} // release idle keep-alives now
+    server.close(async () => {
+      console.log('[shutdown] listener closed; in-flight drained — closing datastores.');
+      await closeResources();
+      clearTimeout(hardExit);
+      console.log('[shutdown] complete.');
+      process.exit(0);
+    });
+    // Nudge lingering long-lived connections (e.g. SSE) toward closing.
+    setTimeout(() => { try { server.closeAllConnections?.(); } catch (_) {} }, Math.max(0, DEADLINE_MS - DRAIN_DELAY_MS - 2000)).unref?.();
+  }, DRAIN_DELAY_MS);
 };
 process.on('SIGTERM', () => _shutdown('SIGTERM'));
 process.on('SIGINT',  () => _shutdown('SIGINT'));

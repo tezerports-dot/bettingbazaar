@@ -21,21 +21,15 @@
  * @requires ../models
  */
 
-import jwt from 'jsonwebtoken';
 import { User } from '../../models/index.js';
 import { setContextUser } from '../../middleware/requestContext.js'; // X-6
+// AQ-2 (2026-07-13): every sign/verify goes through the single JWT authority —
+// HS256 pinned on verify, iss/aud stamped on sign. No jwt.* calls remain here.
+import { signToken, verifyJwt, JWT_SECRET, JWT_EXPIRES_IN } from './jwt.util.js';
 
-/**
- * JWT Secret (should be in environment variables)
- * In production, use: process.env.JWT_SECRET
- */
-// ✅ FIX: Never fall back to a hardcoded string — that lets anyone forge tokens.
-// If JWT_SECRET is missing, crash loudly at startup rather than silently accept forgeries.
-const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET) {
-  throw new Error('FATAL: JWT_SECRET environment variable is not set. Refusing to start.');
-}
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
+// JWT_SECRET / JWT_EXPIRES_IN now come from jwt.util.js (imported above), which
+// fail-fasts on a missing secret and owns the 24h default. Re-exported at the
+// bottom of this file for backward compatibility with any importer.
 
 /**
  * ════════════════════════════════════════════════════════════════════════════
@@ -75,7 +69,7 @@ const authenticate = async (req, res, next) => {
     // Verify JWT token
     let decoded;
     try {
-      decoded = jwt.verify(token, JWT_SECRET);
+      decoded = verifyJwt(token);
     } catch (jwtError) {
       if (jwtError.name === 'TokenExpiredError') {
         return res.status(401).json({ 
@@ -402,7 +396,7 @@ const authenticateMerchant = async (req, res, next) => {
     // Verify token
     let decoded;
     try {
-      decoded = jwt.verify(token, JWT_SECRET);
+      decoded = verifyJwt(token);
     } catch (jwtError) {
       return res.status(401).json({ 
         success: false,
@@ -479,7 +473,7 @@ const generateToken = (user, options = {}) => {
     expiresIn: options.expiresIn || JWT_EXPIRES_IN
   };
 
-  return jwt.sign(payload, JWT_SECRET, tokenOptions);
+  return signToken(payload, tokenOptions);
 };
 
 /**
@@ -501,7 +495,7 @@ const generateMerchantToken = (merchant, options = {}) => {
     expiresIn: options.expiresIn || JWT_EXPIRES_IN
   };
 
-  return jwt.sign(payload, JWT_SECRET, tokenOptions);
+  return signToken(payload, tokenOptions);
 };
 
 /**
@@ -512,7 +506,7 @@ const generateMerchantToken = (merchant, options = {}) => {
  */
 const verifyToken = (token) => {
   try {
-    return jwt.verify(token, JWT_SECRET);
+    return verifyJwt(token);
   } catch (error) {
     return null;
   }
@@ -539,7 +533,7 @@ const optionalAuth = async (req, res, next) => {
     const token = authHeader.substring(7);
     
     try {
-      const decoded = jwt.verify(token, JWT_SECRET);
+      const decoded = verifyJwt(token);
       const user = await User.findById(decoded.userId);
       
       if (user && !user.isBlocked) {

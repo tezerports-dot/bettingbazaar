@@ -220,6 +220,33 @@ Estimated total: Session 1 ≈ 4h, Session 2 ≈ 4–5h, Session 3 ≈ 4h.
 - **P‑3 Audit cadence:** "Re-run the §3 subsystem comparison quarterly or on any major-version EOL announcement affecting the stack; findings land in this file's changelog."
 - **P‑4 Research artifacts rule:** "Research/plans that gate implementation are committed to the repo in the same session they're produced (this audit exists because a prior session's list died with its container)."
 
+## 7a. Changelog — implementation progress
+
+**2026-07-13 · SESSION 1 SHIPPED (AQ-1…AQ-5, P0 go-live blockers).** Opus 4.8.
+- **AQ-1** `startup/validateEnv.js` — production boot refuses without JWT_SECRET /
+  ORDER_HMAC_SECRET / MONGODB_URI; advised-var warnings. Wired in server.js.
+  Removed a SECOND `|| 'fallback-secret'` found during implementation
+  (`merchant.routes.js:20`, beyond the SSE one the audit flagged). 6 unit tests.
+- **AQ-2** `domains/identity/jwt.util.js` — the single sign/verify authority:
+  HS256 pinned on verify (algorithm-confusion rejected), iss/aud stamped, 24h
+  default (D-4), legacy-token compat window (JWT_ENFORCE_CLAIMS flag). All 5
+  sign sites + 11 verify sites across 6 files rerouted; zero `jwt.*` calls remain
+  outside the authority. 8 unit tests incl. an alg:none forgery rejection.
+- **AQ-3** `pgClient.resolvePgSsl()` — money-DB TLS now defaults to VERIFIED
+  (was `rejectUnauthorized:false` = any cert accepted); PG_CA_CERT pinning +
+  explicit `PG_SSL=no-verify` escape hatch. 6 unit tests.
+- **AQ-4** Probe split + real drain in server.js: `/health/live` (process-only),
+  `/health/ready` (deps + drain aware), legacy `/health` kept as readiness.
+  SIGTERM now fails readiness → `server.close()` → drain in-flight → close
+  Mongo/Redis/PG/queue/worker → exit, with a hard-deadline backstop for SSE.
+  k8s probes + Dockerfile HEALTHCHECK repointed. Live smoke-tested (live=200,
+  ready=503 on Mongo-down, clean SIGTERM exit).
+- **AQ-5** Node 22 LTS everywhere (engines both package.json, NIXPACKS_NODE_VERSION,
+  `node:22-slim`); Dockerfile now multi-stage + non-root `USER node` + writable
+  dirs provisioned. Node 20 was EOL (2026-04-30).
+- Result: 125 unit tests green (20 new). Full integration suite + panel builds
+  run in CI. **Remaining: AQ-6 (Express 5, its own session), AQ-7…14.**
+
 ## 8. Sources (July 2026)
 
 - Node.js EOL/LTS: [endoflife.date/nodejs](https://endoflife.date/nodejs), [nodejs.org releases](https://nodejs.org/en/about/previous-releases), [HeroDevs July-2026 reference](https://www.herodevs.com/blog-posts/node-js-end-of-life-dates-you-should-be-aware-of)

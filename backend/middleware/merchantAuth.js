@@ -17,7 +17,8 @@
  * @module merchantAuth
  */
 
-import jwt from 'jsonwebtoken';
+// AQ-2: verify via the single JWT authority (HS256 pinned, iss/aud stamped).
+import { verifyJwt } from '../domains/identity/jwt.util.js';
 import mongoose from 'mongoose';
 
 /**
@@ -38,12 +39,9 @@ export const merchantAuth = async (req, res, next) => {
       return res.status(401).json({ success: false, message: 'Authentication required.' });
 
     const token = authHeader.replace('Bearer ', '');
-    const JWT_SECRET = process.env.JWT_SECRET;
-    if (!JWT_SECRET)
-      return res.status(500).json({ success: false, message: 'Server configuration error' });
 
     let decoded;
-    try { decoded = jwt.verify(token, JWT_SECRET); }
+    try { decoded = verifyJwt(token); }
     catch (e) {
       return res.status(401).json({ success: false,
         message: e.name === 'TokenExpiredError' ? 'Token expired. Please login again.' : 'Invalid token.' });
