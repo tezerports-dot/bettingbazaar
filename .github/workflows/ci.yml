@@ -15,17 +15,17 @@ jobs:
     runs-on: ubuntu-latest
     services:
       # F-3: real Redis so the rate-limit store's cross-instance counter
-      # sharing is proven, not assumed (rateLimitStore.integration.test.js).
+      # sharing is proven, not assumed. AQ-7: Redis 8 (current major).
       redis:
-        image: redis:7
+        image: redis:8
         ports:
           - 6379:6379
       # Hybrid money DB (plan steps 1-4): real Postgres so the BIGINT-paise
       # schema, append-only + conserve-to-zero triggers, dual-write hooks, and
-      # the reconcile/backfill loop are PROVEN in CI, not assumed
-      # (postgresDualWrite.integration.test.js).
+      # the reconcile/backfill loop are PROVEN in CI. AQ-7 + decision D-2:
+      # PostgreSQL 18 (the version the money cutover will provision).
       postgres:
-        image: postgres:16
+        image: postgres:18
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -43,8 +43,11 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-      - name: Install dependencies
-        run: npm ci || npm install
+      # AQ-7 / governance §16 P-2: reproducible install from the committed
+      # lockfile. `npm ci` fails (rather than silently resolving ranges) if
+      # package.json and the lockfile disagree — production runs exactly this.
+      - name: Install dependencies (reproducible)
+        run: npm ci --legacy-peer-deps
       - name: Unit tests (money math — no DB)
         run: npm run test:unit
       - name: Integration tests (real in-memory MongoDB + real Redis + real Postgres)
@@ -55,6 +58,33 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bb_test
           PG_SSL: 'false'
 
+  # AQ-7: dependency vulnerability gate. Blocking at HIGH — the tree is clean
+  # today (npm audit fix cleared the ws/socket.io chain), so any NEW high/critical
+  # advisory fails the build and forces a triage instead of shipping silently.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: npm }
+      - run: npm ci --legacy-peer-deps
+      - name: npm audit (fail on high/critical)
+        run: npm audit --audit-level=high
+
+  # AQ-7: secret scan. Reports leaked credentials in the diff/history. Starts
+  # non-blocking (report-only) so a placeholder in .env.example can't wedge the
+  # pipeline; promote to required once the baseline is confirmed clean.
+  secret-scan:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   typecheck-build:
     runs-on: ubuntu-latest
     steps:
@@ -63,7 +93,8 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-      - run: npm install
+      - name: Install dependencies (reproducible)
+        run: npm ci --legacy-peer-deps
       - name: Backend syntax check
         run: node --check backend/server.js
       # Items 5+58: architecture validation — circular imports and governance

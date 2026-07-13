@@ -270,7 +270,22 @@ Estimated total: Session 1 ≈ 4h, Session 2 ≈ 4–5h, Session 3 ≈ 4h.
   login handlers upgrade bcrypt→argon2id in place on next login. All 8 hash
   sites + 3 verify sites rerouted; bcryptjs retained only as verify-fallback.
   argon2 native prebuild confirmed clean on Node 22 (Docker/CI safe). 134 unit
-  tests green (6 new). **Remaining: AQ-6 (Express 5, dedicated), AQ-7, AQ-9.**
+  tests green (6 new).
+
+**2026-07-13 · BATCH 4 SHIPPED (AQ-7 CI supply chain).** Opus 4.8.
+- Reproducible installs: CI `npm ci --legacy-peer-deps` (was `npm ci || npm
+  install`) — production runs exactly the committed lockfile (governance §16 P-2).
+- Dependency remediation: `npm audit fix` cleared ALL 13 vulnerabilities
+  (including the high-severity ws/socket.io/engine.io chain, GHSA-96hv-2xvq-fx4p)
+  with ZERO package.json changes — transitive lockfile bumps only (ws→8.21.0).
+  134 unit tests + socket.io boot re-verified after the bump.
+- New CI gates: blocking `npm audit --audit-level=high` job (clean today, fails
+  on any new high/critical); CodeQL SAST workflow (security-and-quality, weekly
+  + PR); gitleaks secret scan (report-only initially); CI service images bumped
+  to redis:8 + postgres:18 (matches decision D-2). `.github/dependabot.yml`
+  (grouped weekly updates across root + both panels + Actions).
+- **Remaining: AQ-6 (Express 5, dedicated session — highest risk), AQ-9
+  (continuous PG reconciliation — activates once Postgres is provisioned).**
 
 ## 8. Sources (July 2026)
 

@@ -1,0 +1,33 @@
+# AQ-7 / governance §16 P-1+P-3: automated dependency currency. Dependabot opens
+# grouped PRs for security and version updates so the stack stays on supported,
+# patched majors without a manual sweep. npm ecosystem across the root app and
+# the two panels, plus the GitHub Actions we pin.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: "/admin-panel"
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 3
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: "/merchant-panel"
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 3
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: { interval: weekly }
