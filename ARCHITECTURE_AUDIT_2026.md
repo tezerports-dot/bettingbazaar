@@ -298,11 +298,28 @@ Estimated total: Session 1 ≈ 4h, Session 2 ≈ 4–5h, Session 3 ≈ 4h.
   and alerts the webhook on drift. 134 unit tests green; dormant until PG is
   provisioned.
 
-- **Remaining: AQ-6 (Express 5 migration) — the single item left. Highest risk
-  (framework breaking-changes: route wildcards, express-mongo-sanitize vs
-  read-only req.query, helmet 8, express-rate-limit 8 store contract), so it is
-  isolated to its own branch/PR per the audit's own guidance and validated
-  against the full CI integration suite + 3 panel builds.**
+**2026-07-13 · AQ-6 SHIPPED (Express 5.2 migration) — QUEUE COMPLETE.** Opus 4.8.
+On its own branch off the merged main (per the audit's isolation guidance).
+- express ^4.18 → ^5.2.1, helmet ^7 → ^8.3, express-rate-limit ^7 → ^8.5.
+- Route wildcards → path-to-regexp 8 named form: `app.options('*')` →
+  `'/{*splat}'`, `/admin/*` → `/admin/*splat`, `/merchant/*` → `/merchant/*splat`,
+  catch-all `'*'` → `'/{*splat}'`. (Full-repo sweep: these 4 in server.js were
+  the only wildcard/optional/regex route patterns — no others to change.)
+- express-mongo-sanitize (reassigns the now read-only Express-5 req.query and
+  throws every request) replaced by `middleware/mongoSanitize.js` — an in-place
+  deep sanitizer (strips `$`/`.` keys) that behaves identically on Express 4/5;
+  the dependency is dropped entirely.
+- express-rate-limit v8 IPv6 safety: custom keyGenerators now use v8's
+  `ipKeyGenerator` (normalizes IPv6 to /56) — closes a real bypass where a v6
+  user could rotate within their block; the subnet limiter (already collapses to
+  /64) opts out of the redundant validator. Zero ValidationErrors at boot.
+- Verified: boots clean under Express 5 (routes, preflight, SPA fallback,
+  sanitizer all exercised via live smoke); 142 unit tests green (7 new); npm audit
+  still 0 vulns; npm ci reproducible. Full integration suite (auth/bet/SSE/rate-
+  limit-store) + 3 panel builds validated in CI.
+
+**ALL 14 QUEUE ITEMS (AQ-1…AQ-14) COMPLETE. AQ-1..5,7..14 merged to main (PR #2);
+AQ-6 on this follow-up branch/PR.**
 
 ## 8. Sources (July 2026)
 

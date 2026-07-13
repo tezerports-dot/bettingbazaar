@@ -10,7 +10,10 @@ import cors         from 'cors';
 import helmet       from 'helmet';
 import compression  from 'compression';
 import rateLimit    from 'express-rate-limit';
-import mongoSanitize from 'express-mongo-sanitize';
+// AQ-6 (Express 5): express-mongo-sanitize@2 reassigns the now read-only
+// req.query and throws on every request under Express 5 — replaced with an
+// in-place sanitizer that behaves identically on Express 4 and 5.
+import { mongoSanitize } from './middleware/mongoSanitize.js';
 import dotenv       from 'dotenv';
 import path         from 'path';
 import fs           from 'fs';
@@ -126,7 +129,11 @@ app.use(helmet(HELMET_OPTIONS));
 app.use(canonicalRedirect);
 
 const corsOptions = { origin: corsOriginCheck, ...CORS_SHAPE };
-app.options('*', cors(corsOptions));
+// AQ-6 (Express 5 / path-to-regexp 8): bare '*' is no longer a valid route
+// pattern — a catch-all wildcard must be named. '/{*splat}' matches every path
+// including the root. (app.use(cors) already answers preflights; this is the
+// explicit belt-and-suspenders preflight handler, kept for parity.)
+app.options('/{*splat}', cors(corsOptions));
 app.use(cors(corsOptions));
 // AQ-10: tighten the request-body limit. It was 10mb on EVERY route — a large
 // DoS surface (each request could pin 10mb of memory + parse time). Uploads in
@@ -139,7 +146,7 @@ const _assetJson = express.json({ limit: process.env.ASSET_JSON_LIMIT || '8mb' }
 const _ASSET_UPLOAD_PATHS = new Set(['/api/admin/app-assets/upload']);
 app.use((req, res, next) => (_ASSET_UPLOAD_PATHS.has(req.path) ? _assetJson : _tightJson)(req, res, next));
 app.use(express.urlencoded({ extended: true, limit: JSON_LIMIT }));
-app.use(mongoSanitize());
+app.use(mongoSanitize);
 app.use(cookieParser());
 app.use(requestContext); // X-6: correlation id (before the logger, so it's logged)
 app.use(requestLogger);
@@ -359,17 +366,19 @@ attachSocketHandlers(io, cycleGenerator, gameEngine);
 initRealtimeBridge(io, sseManager);
 
 // ─── SPA FALLBACKS ───────────────────────────────────────────────────────────
-app.get('/admin/*', (req, res, next) => {
+// AQ-6 (Express 5): named wildcards ('/admin/*splat') — '/admin/*' is invalid
+// under path-to-regexp 8. '/{*splat}' matches all remaining paths incl. root.
+app.get('/admin/*splat', (req, res, next) => {
   if (req.path.startsWith('/api') || path.extname(req.path)) return next();
   const p = path.join(__dirname, '../admin-panel/dist/index.html');
   fs.existsSync(p) ? res.sendFile(p) : res.status(503).send('<h1>Admin Panel Not Built</h1>');
 });
-app.get('/merchant/*', (req, res, next) => {
+app.get('/merchant/*splat', (req, res, next) => {
   if (req.path.startsWith('/api') || path.extname(req.path)) return next();
   const p = path.join(__dirname, '../merchant-panel/dist/index.html');
   fs.existsSync(p) ? res.sendFile(p) : res.status(503).send('<h1>Merchant Panel Not Built</h1>');
 });
-app.get('*', (req, res, next) => {
+app.get('/{*splat}', (req, res, next) => {
   if (req.path.startsWith('/api') || path.extname(req.path)) return next();
   const p = path.join(__dirname, '../dist/index.html');
   fs.existsSync(p) ? res.sendFile(p) : res.status(200).json({ success: true, message: 'API running.' });

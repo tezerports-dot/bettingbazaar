@@ -1,5 +1,5 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-import { rateLimit } from 'express-rate-limit';
+import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
 import { AuditLog } from '../models/index.js';
 // F-3 (2026-07-10): counters shared across instances via Redis; graceful
 // per-instance fallback when Redis is absent/unreachable.
@@ -22,8 +22,9 @@ export const authLimiter = rateLimit({
     },
     standardHeaders: true,
     legacyHeaders: false,
-    // Track by IP address
-    keyGenerator: (req) => req.ip,
+    // Track by IP address (ipKeyGenerator normalizes IPv6 to a /56 so a single
+    // v6 user can't rotate addresses within their block to bypass the limit — AQ-6).
+    keyGenerator: (req) => ipKeyGenerator(req.ip),
     // Skip successful requests
     skipSuccessfulRequests: true,
     // Custom handler for rate limit exceeded
@@ -101,7 +102,7 @@ export const betLimiter = rateLimit({
     standardHeaders: true,
     legacyHeaders: false,
     // Track per user, not per IP (users may share IPs)
-    keyGenerator: (req) => req.user?.id || req.ip
+    keyGenerator: (req) => req.user?.id || ipKeyGenerator(req.ip)
 });
 
 // ==================== WITHDRAWAL RATE LIMITERS ====================
@@ -117,7 +118,7 @@ export const withdrawalLimiter = rateLimit({
     },
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req) => req.user?.id || req.ip
+    keyGenerator: (req) => req.user?.id || ipKeyGenerator(req.ip)
 });
 
 // ==================== GENERAL API RATE LIMITER ====================

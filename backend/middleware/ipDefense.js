@@ -113,6 +113,11 @@ export function createSubnetLimiter(tierName) {
     max: () => (cfg.enabled ? Math.max(1, Math.round(tier.max * cfg.subnetMultiplier)) : 1e9),
     standardHeaders: true,
     legacyHeaders: false,
+    // AQ-6: subnetKey() intentionally collapses the IP to its block prefix
+    // (/24 IPv4, /64 IPv6) — that IS the IPv6 normalization, so disable
+    // express-rate-limit v8's ipKeyGenerator check (it can't see through the
+    // custom key function and would warn spuriously).
+    validate: { keyGeneratorIpFallback: false },
     keyGenerator: (req) => subnetKey(req.ip, { ipv6Hextets: cfg.ipv6Hextets }),
     message: { success: false, message: 'Too many attempts from your network. Please try again later.' },
     handler: (req, res) => {
