@@ -9,6 +9,9 @@ import express from 'express';
 import mongoose from 'mongoose';
 import crypto   from 'crypto';
 import { authenticate, isAdmin, isAdminOrSubAdmin } from '../domains/identity/auth.middleware.js';
+// Item 47 (2026-07-13): the public winners feed is analytics-class (staleness
+// fine) — routes to a secondary when FLAGS.READ_REPLICA is enabled.
+import { preferReplica } from '../services/readPreference.service.js';
 
 const router = express.Router();
 
@@ -37,20 +40,20 @@ router.get('/v1/winners', async (req, res) => {
     // 1. Admin-curated winners — filter by displayTime within the period window
     const curatedQuery = { isPublic: true };
     curatedQuery.displayTime = { $gte: since };
-    const curated = await FakeWinner.find(curatedQuery)
+    const curated = await preferReplica(FakeWinner.find(curatedQuery)
       .sort({ sortOrder: 1, displayTime: -1 })
       .limit(Number(limit))
       .skip(skip)
-      .lean();
+      .lean());
 
     // 2. Real recent winners — actual settled winning bets in the window.
     // FIXED 2026-07-10: this queried isWinner/winAmount, fields that have
     // NEVER existed on the Bet schema (it's status:'WON' + payout), so real
     // winners never appeared — only curated entries. Now cycle-based real
     // wins show with their true NET payout (2x minus the winnings fee).
-    const realWins = await Bet.find({
+    const realWins = await preferReplica(Bet.find({
       status: 'WON', isPhantom: false, settledAt: { $gte: since }
-    }).sort({ payout: -1 }).limit(20).lean();
+    }).sort({ payout: -1 }).limit(20).lean());
 
     const realUserIds = [...new Set(realWins.map(b => b.userId))];
     const users = await User.find({ _id: { $in: realUserIds } })

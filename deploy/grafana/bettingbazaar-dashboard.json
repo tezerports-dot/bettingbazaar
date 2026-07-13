@@ -1,0 +1,55 @@
+{
+  "__comment": "BettingBazaar ops dashboard (plan item 34, 2026-07-13). Import into Grafana (Dashboards → Import), pick your Prometheus datasource. Prometheus must scrape GET /metrics on the app (add Authorization: Bearer <METRICS_TOKEN> to the scrape config if the endpoint is token-gated). Panels map 1:1 to backend/services/metrics.service.js.",
+  "title": "BettingBazaar — Ops",
+  "uid": "bettingbazaar-ops",
+  "schemaVersion": 39,
+  "editable": true,
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1, "type": "timeseries", "title": "HTTP request rate (req/s)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [{ "expr": "sum(rate(http_request_duration_seconds_count[5m]))", "legendFormat": "total" }]
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "HTTP p95 latency (s)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [{ "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p95" }]
+    },
+    {
+      "id": 3, "type": "timeseries", "title": "HTTP 5xx error rate (req/s)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [{ "expr": "sum(rate(http_request_duration_seconds_count{status=~\"5..\"}[5m]))", "legendFormat": "5xx" }]
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "Settlement runs by outcome (money-critical)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "expr": "increase(bb_settlement_runs_total{outcome=\"success\"}[1h])", "legendFormat": "success/h" },
+        { "expr": "increase(bb_settlement_runs_total{outcome=\"error\"}[1h])", "legendFormat": "error/h" }
+      ]
+    },
+    {
+      "id": 5, "type": "stat", "title": "Ledger reconcile errors (24h) — MUST be 0",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 16 },
+      "targets": [{ "expr": "increase(bb_ledger_reconcile_errors_total[24h])" }],
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] }
+    },
+    {
+      "id": 6, "type": "stat", "title": "Alerts sent (24h)",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 16 },
+      "targets": [{ "expr": "sum(increase(bb_alerts_sent_total[24h]))" }]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Process memory (RSS, bytes)",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 16 },
+      "targets": [{ "expr": "process_resident_memory_bytes", "legendFormat": "rss" }]
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "Event loop lag p99 (s)",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 16 },
+      "targets": [{ "expr": "nodejs_eventloop_lag_p99_seconds", "legendFormat": "lag p99" }]
+    }
+  ]
+}

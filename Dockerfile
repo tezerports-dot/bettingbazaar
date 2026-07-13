@@ -13,6 +13,16 @@ FROM node:20-slim
 WORKDIR /app
 ENV NODE_ENV=production
 
+# Plan item 45 (2026-07-13): mongodb-database-tools provides `mongodump` for the
+# daily automated backup job (services/backup.service.js). Official MongoDB apt
+# repo (node:20-slim = Debian bookworm). If this layer is ever removed, the
+# backup job degrades to a logged+alerted skip — it never crashes the app.
+RUN apt-get update && apt-get install -y --no-install-recommends wget gnupg ca-certificates \
+ && wget -qO- https://pgp.mongodb.com/server-7.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb.gpg \
+ && echo "deb [signed-by=/usr/share/keyrings/mongodb.gpg] http://repo.mongodb.org/apt/debian bookworm/mongodb-org/7.0 main" > /etc/apt/sources.list.d/mongodb.list \
+ && apt-get update && apt-get install -y --no-install-recommends mongodb-database-tools \
+ && apt-get purge -y wget gnupg && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+
 # Copy the whole repo (single-service deploy: backend serves the built panels).
 COPY . .
 

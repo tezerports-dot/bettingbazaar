@@ -344,6 +344,8 @@ const _shutdown = (sig) => {
   console.log(`[${sig}] Shutting down gracefully...`);
   try { if (global.gameEngine)     global.gameEngine.stop();     } catch (_) {}
   try { if (global.cycleGenerator) global.cycleGenerator.stop(); } catch (_) {}
+  // Items 17+56: let in-flight queue jobs finish before exit.
+  import('./services/jobQueue.service.js').then(m => m.closeJobQueue()).catch(() => {});
   setTimeout(() => process.exit(0), 10000);
 };
 process.on('SIGTERM', () => _shutdown('SIGTERM'));

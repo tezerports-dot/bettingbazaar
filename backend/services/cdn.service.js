@@ -29,7 +29,7 @@
  * @author Anonymous
  */
 
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import crypto from 'crypto';
 
@@ -293,6 +293,31 @@ export async function uploadBufferToS3(fileKey, buffer, contentType) {
   if (CDN_URL) return `${CDN_URL}/${fileKey}`;
   const ep = process.env.S3_ENDPOINT.startsWith('http') ? process.env.S3_ENDPOINT : 'https://' + process.env.S3_ENDPOINT;
   return `${ep}/${BUCKET_NAME}/${fileKey}`; // path-style (forcePathStyle S3)
+}
+
+/**
+ * uploadStreamToS3 — multipart streaming upload for LARGE objects (database
+ * backups, exports) where buffering in memory is not acceptable. Same
+ * deterministic-key semantics as uploadBufferToS3. (Plan item 45, 2026-07-13.)
+ */
+export async function uploadStreamToS3(fileKey, stream, contentType = 'application/octet-stream') {
+  if (!isS3Configured()) throw new Error('S3 is not configured');
+  const { Upload } = await import('@aws-sdk/lib-storage');
+  const up = new Upload({
+    client: s3Client,
+    params: { Bucket: BUCKET_NAME, Key: fileKey, Body: stream, ContentType: contentType },
+  });
+  await up.done();
+  if (CDN_URL) return `${CDN_URL}/${fileKey}`;
+  const ep = process.env.S3_ENDPOINT.startsWith('http') ? process.env.S3_ENDPOINT : 'https://' + process.env.S3_ENDPOINT;
+  return `${ep}/${BUCKET_NAME}/${fileKey}`;
+}
+
+/** listFiles — keys under a prefix (used by backup retention pruning). */
+export async function listFiles(prefix) {
+  if (!isS3Configured()) return [];
+  const out = await s3Client.send(new ListObjectsV2Command({ Bucket: BUCKET_NAME, Prefix: prefix, MaxKeys: 1000 }));
+  return (out.Contents || []).map(o => ({ key: o.Key, size: o.Size, lastModified: o.LastModified }));
 }
 
 /**
