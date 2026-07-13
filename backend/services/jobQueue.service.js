@@ -73,7 +73,10 @@ export async function registerRecurring(name, everyMs, fn) {
         repeat: { every: everyMs },
         jobId: `recurring:${name}`,
         attempts: 3,
-        backoff: { type: 'exponential', delay: 30 * 1000 },
+        // Item 3 (2026-07-13): jitter:1 = FULL jitter — a failed dependency
+        // makes every instance's retry land at a RANDOM point in [0, 2^n·30s)
+        // instead of all firing at 30s/60s/120s together (thundering herd).
+        backoff: { type: 'exponential', delay: 30 * 1000, jitter: 1 },
         removeOnComplete: 100,
         removeOnFail: 500,
       });
@@ -96,7 +99,7 @@ export async function enqueue(name, data = {}, opts = {}) {
   if (redisConfigured()) {
     try {
       const q = await ensureQueue();
-      return await q.add(name, data, { attempts: 3, backoff: { type: 'exponential', delay: 10 * 1000 }, removeOnComplete: 200, ...opts });
+      return await q.add(name, data, { attempts: 3, backoff: { type: 'exponential', delay: 10 * 1000, jitter: 1 }, removeOnComplete: 200, ...opts });
     } catch (e) {
       console.warn(`[jobQueue] enqueue '${name}' fell back inline:`, e.message);
     }

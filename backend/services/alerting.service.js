@@ -9,6 +9,10 @@
 // failure must NEVER break the money path that raised it. Per-key cooldown
 // stops a crash-looping job from flooding the channel.
 import mongoose from 'mongoose';
+// Item 3 (2026-07-13): transient webhook failures (429/503, network blips) get
+// a couple of JITTERED retries so a briefly-flaky collector still receives the
+// page — full jitter so many instances alerting at once don't retry in lockstep.
+import { fetchWithRetry } from '../utils/retry.js';
 
 const COOLDOWN_MS = 10 * 60 * 1000; // same alert key at most once per 10 min
 const lastSent = new Map();         // key -> ts (per-instance; duplicates across instances are acceptable for v1)
@@ -37,15 +41,15 @@ export async function sendAlert(key, title, details = {}) {
 
     lastSent.set(key, now);
     const text = `🚨 [BettingBazaar] ${title}`;
-    // 5s timeout — never let a slow webhook hold a money path open.
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 5000);
-    await fetch(url, {
+    // 5s per-attempt timeout — never let a slow webhook hold anything open —
+    // plus up to 2 jittered retries (full jitter, tight cap) for transient
+    // failures. Bounded worst case ~ 3×5s + a few seconds of jitter; this runs
+    // in a background/fire-and-forget context, never on a synchronous money path.
+    await fetchWithRetry(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, key, title, details, ts: new Date().toISOString() }),
-      signal: ctrl.signal,
-    }).finally(() => clearTimeout(t));
+    }, { timeoutMs: 5000, retries: 2, baseMs: 250, capMs: 2000, jitter: 'full' });
     try {
       const { alertsSent } = await import('./metrics.service.js');
       alertsSent.inc({ key });
