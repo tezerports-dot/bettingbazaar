@@ -92,7 +92,16 @@ budget when adding instances.
   window (nothing reads it since the 1:1 flattening).
 - Set up uptime monitoring + log-based alerting on: `Ledger integrity`
   (revenue summary `integrityOk:false`), settlement errors, Redis
-  disconnects (rate-limit fallback warnings).
+  disconnects (rate-limit fallback warnings), and the AQ-9 hybrid-DB drift
+  metric `bb_pg_drift_rows > 0` once Postgres is provisioned.
+
+### A6. Enable CodeQL code scanning (AQ-7, one-time)
+GitHub → repo **Settings → Code security → Code scanning → Default setup →
+Enable**. This turns on GitHub-managed CodeQL SAST (JS/TS) on every PR and on a
+schedule, with results in the Security tab — no workflow file to maintain. (A
+manual CodeQL workflow can't run until this repo setting is on, which is why the
+CI pipeline relies on default setup for SAST plus the in-CI `npm audit` and
+gitleaks jobs.)
 
 ---
 

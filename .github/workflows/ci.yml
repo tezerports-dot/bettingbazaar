@@ -58,6 +58,11 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bb_test
           PG_SSL: 'false'
 
+  # AQ-7 note: SAST is provided by CodeQL "default setup" — enabled once by the
+  # owner in Settings -> Code security -> Code scanning (GitHub-managed, needs no
+  # workflow file; a manual workflow requires that same repo setting to be on AND
+  # conflicts with default setup). See PRODUCTION_READINESS.md.
+
   # AQ-7: dependency vulnerability gate. Blocking at HIGH — the tree is clean
   # today (npm audit fix cleared the ws/socket.io chain), so any NEW high/critical
   # advisory fails the build and forces a triage instead of shipping silently.

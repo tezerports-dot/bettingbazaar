@@ -280,10 +280,15 @@ Estimated total: Session 1 ≈ 4h, Session 2 ≈ 4–5h, Session 3 ≈ 4h.
   with ZERO package.json changes — transitive lockfile bumps only (ws→8.21.0).
   134 unit tests + socket.io boot re-verified after the bump.
 - New CI gates: blocking `npm audit --audit-level=high` job (clean today, fails
-  on any new high/critical); CodeQL SAST workflow (security-and-quality, weekly
-  + PR); gitleaks secret scan (report-only initially); CI service images bumped
-  to redis:8 + postgres:18 (matches decision D-2). `.github/dependabot.yml`
-  (grouped weekly updates across root + both panels + Actions).
+  on any new high/critical); gitleaks secret scan (report-only); CI service
+  images bumped to redis:8 + postgres:18 (matches decision D-2).
+  `.github/dependabot.yml` (grouped weekly updates across root + both panels +
+  Actions).
+- SAST: a manual CodeQL workflow was tried but CodeQL requires "code scanning"
+  enabled in repo settings (owner-only toggle) and hard-fails without it, so it
+  was removed in favor of GitHub's **default setup** (Settings → Code security →
+  Code scanning → Default setup): one click, GitHub-managed, auto-updating, no
+  workflow file. Recorded as an owner action in PRODUCTION_READINESS.md.
 **2026-07-13 · AQ-9 SHIPPED (continuous PG reconciliation).** Opus 4.8.
 - New `pg-reconcile` cron (5-min, leader-locked) that no-ops until DATABASE_URL
   is set, then runs the reconcile core each pass while dual-write is live —
