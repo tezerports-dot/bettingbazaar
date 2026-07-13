@@ -144,6 +144,8 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
         withdrawalMethods:     config.withdrawalMethods     || ['UPI', 'BANK_TRANSFER'],
         // Footer navigation (2026-07-13) — schema default: the historical five tabs
         footerPages:           config.footerPages?.length ? config.footerPages : ['home', 'results', 'winners', 'promo', 'profile'],
+        // Operational alert webhook (2026-07-13) — '' = alerting off
+        alertWebhookUrl:       config.alertWebhookUrl || '',
         webUrl:        config.webUrl        || '',
         androidUrl:    config.androidUrl    || '',
         iosUrl:        config.iosUrl        || '',
@@ -172,7 +174,7 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
       payoutFeePercent, riskRules, betReservePercent, winningsFeePercent,
       cycleDurationMinutes, retentionMonths,
       payoutMultiplier, orderExpiryMinutes, cyclePhases,
-      footerPages,
+      footerPages, alertWebhookUrl,
     } = req.body;
 
     if (cycleDurationMinutes !== undefined &&
@@ -236,6 +238,11 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
         return res.status(400).json({ success: false, message: 'footerPages must not contain duplicates.' });
       }
     }
+    if (alertWebhookUrl !== undefined &&
+        (typeof alertWebhookUrl !== 'string' ||
+         (alertWebhookUrl !== '' && !/^https:\/\/.+/.test(alertWebhookUrl)))) {
+      return res.status(400).json({ success: false, message: 'alertWebhookUrl must be an https:// URL, or empty to disable alerting.' });
+    }
 
     const fieldWrites = [];
     if (minBet          !== undefined) fieldWrites.push(['SystemConfig', 'betLimits.thirtyMin.min', minBet]);
@@ -297,6 +304,8 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     }]);
     // Footer navigation (2026-07-13) — consumed by the user panel Footer via system_config
     if (footerPages !== undefined) fieldWrites.push(['SystemConfig', 'footerPages', footerPages]);
+    // Operational alert webhook (2026-07-13) — consumed by services/alerting.service.js
+    if (alertWebhookUrl !== undefined) fieldWrites.push(['SystemConfig', 'alertWebhookUrl', alertWebhookUrl]);
 
     for (const [modelName, path, value] of fieldWrites) {
       await setConfigField(modelName, path, value, actor, {

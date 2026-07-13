@@ -44,6 +44,8 @@ export const SystemSettings: React.FC = () => {
     },
     // Footer navigation (2026-07-13) — schema default: the historical five tabs
     footerPages: ['home', 'results', 'winners', 'promo', 'profile'],
+    // Operational alert webhook (2026-07-13) — '' = alerting off
+    alertWebhookUrl: '',
     // App distribution
     webUrl:        '',
     androidUrl:    '',
@@ -98,6 +100,7 @@ export const SystemSettings: React.FC = () => {
             maxWarnings:              response.data.riskRules?.maxWarnings              ?? 3,
           },
           footerPages: response.data.footerPages?.length ? response.data.footerPages : ['home', 'results', 'winners', 'promo', 'profile'],
+          alertWebhookUrl: response.data.alertWebhookUrl || '',
           webUrl:        response.data.webUrl        || '',
           androidUrl:    response.data.androidUrl    || '',
           iosUrl:        response.data.iosUrl        || '',
@@ -616,6 +619,28 @@ export const SystemSettings: React.FC = () => {
         <p className="text-xs text-gray-500 mt-2">
           At least 2 tabs required; duplicates are disabled. Provider pages
           (Casino/Crash/Sports) still only show when that provider is enabled.
+        </p>
+      </div>
+
+      {/* ── OPERATIONAL ALERTS (plan item 38, 2026-07-13) ── */}
+      <div className="card">
+        <h3 className="text-lg font-semibold mb-1">Operational Alerts</h3>
+        <p className="text-xs text-gray-400 mb-4">
+          Money-critical failures (ledger reconciliation errors, settlement
+          failures) POST a JSON alert to this webhook. Slack incoming-webhook
+          format — Slack, Discord (with /slack suffix), Mattermost, or any HTTP
+          collector works. Leave empty to disable.
+        </p>
+        <label className="label">Alert Webhook URL</label>
+        <input
+          type="url"
+          value={formData.alertWebhookUrl}
+          onChange={(e) => setFormData({ ...formData, alertWebhookUrl: e.target.value.trim() })}
+          placeholder="https://hooks.slack.com/services/…"
+          className="input"
+        />
+        <p className="text-xs text-gray-500 mt-1">
+          Must be https. Same alert fires at most once per 10 minutes (anti-flood).
         </p>
       </div>
 

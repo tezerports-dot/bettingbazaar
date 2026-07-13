@@ -7,6 +7,10 @@ import { unlockLostBet, executeSettlementBatch } from '../settlement/settlementS
 // Risk Platform (Phase A, 2026-07-10): payout arithmetic authority — winners
 // are paid gross 2x minus the admin-editable winnings platform fee.
 import { getRiskRules, computeWinningsPayout } from '../risk/riskValidation.service.js';
+// Items 33/38 (2026-07-13): settlement outcomes feed /metrics; a settlement
+// failure on a declared cycle pages the admin-configured alert webhook.
+import { sendAlert } from '../../services/alerting.service.js';
+import { settlementRuns } from '../../services/metrics.service.js';
 // unlockLostBet and executeSettlementBatch moved to domains/settlement/ on 2026-07-03.
 // processPayoutsOptimized stays here as the orchestrator -- see domains/settlement/README.md.
 
@@ -118,10 +122,13 @@ class GameEngine {
             if (cyclesToSettle.length > 0) {
                 await this.processPayoutsOptimized(cyclesToSettle[0]);
                 await this.loadCurrentCycle();
+                settlementRuns.inc({ outcome: 'success' });
             }
 
         } catch (e) {
             console.error("GameEngine Tick Error:", e);
+            settlementRuns.inc({ outcome: 'error' });
+            sendAlert('settlement-error', 'Cycle settlement tick failed', { error: e.message });
         } finally {
             this.isProcessing = false;
         }

@@ -49,6 +49,7 @@ import retentionRoutes, { rebuildLeaderboard } from './routes/retention.routes.j
 import gameProviderRoutes from './domains/casino/gameProvider.routes.js';
 import gameRegistryRoutes from './domains/gameRegistry/gameRegistry.routes.js';
 import { seedGameRegistry } from './domains/gameRegistry/gameRegistry.seed.js';
+import { httpMetrics, metricsHandler } from './services/metrics.service.js';
 import recoveryRoutes     from './routes/account-recovery.routes.js';
 import winnersRoutes      from './routes/winners.routes.js';
 
@@ -125,6 +126,19 @@ app.use(mongoSanitize());
 app.use(cookieParser());
 app.use(requestContext); // X-6: correlation id (before the logger, so it's logged)
 app.use(requestLogger);
+app.use(httpMetrics);    // item 33: Prometheus HTTP duration/count (bounded route labels)
+
+// GET /metrics — Prometheus scrape endpoint (item 33). If METRICS_TOKEN is set,
+// require it as a Bearer token so the endpoint isn't public; unset = open
+// (single-service/dev). Registered BEFORE the API rate limiter — scrapers poll
+// frequently and must not consume the user budget.
+app.get('/metrics', (req, res) => {
+  const token = process.env.METRICS_TOKEN;
+  if (token && req.headers.authorization !== `Bearer ${token}`) {
+    return res.status(401).end('unauthorized');
+  }
+  return metricsHandler(req, res);
+});
 app.use('/api/', rateLimit({
   windowMs: 15 * 60 * 1000, max: 1000, standardHeaders: true, legacyHeaders: false,
   message: { success: false, message: 'Too many requests. Please try again later.' }

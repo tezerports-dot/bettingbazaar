@@ -47,6 +47,11 @@ jobs:
       - run: npm install
       - name: Backend syntax check
         run: node --check backend/server.js
+      # Items 5+58: architecture validation — circular imports and governance
+      # boundary violations (domain core importing routes, wallet importing
+      # products) fail the build instead of waiting for human review.
+      - name: Architecture validation (dependency-cruiser)
+        run: npm run check:deps
       - name: User panel build
         run: npx vite build
       - name: Admin panel typecheck + build

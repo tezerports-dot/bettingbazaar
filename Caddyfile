@@ -14,6 +14,11 @@
 
 :{$PORT}
 
+# Item 26 (2026-07-13): proxy-level response compression. zstd preferred,
+# gzip fallback — cuts JS/CSS payloads ~70% for panel loads. HTTP/2+3 are on
+# by default in Caddy; verify post-deploy with `curl -I --http2 <url>`.
+encode zstd gzip
+
 # ── Admin Panel ──────────────────────────────────────────────────────────────
 handle /admin* {
     uri strip_prefix /admin

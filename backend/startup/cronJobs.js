@@ -10,6 +10,10 @@ import { emitOrderUpdate, emitAdminUpdate } from '../domains/notification/realti
 // Phase X fix X-4: leader election so a >1-instance deploy runs each job on
 // at most one instance per tick (instead of every replica running everything).
 import { withLeaderLock } from './cronLock.js';
+// Item 38 (2026-07-13): money-critical failures page a human via the
+// admin-configured webhook; item 33: reconcile failures are counted for /metrics.
+import { sendAlert } from '../services/alerting.service.js';
+import { ledgerReconcileErrors } from '../services/metrics.service.js';
 
 export function registerCronJobs(rebuildLeaderboard) {
 
@@ -98,9 +102,20 @@ export function registerCronJobs(rebuildLeaderboard) {
         if (r.error) console.error(`[ledger-reconcile] Cycle ${r.refId} failed:`, r.error);
       }
 
+      const failures = [...orderResults, ...cycleResults].filter(r => r.error);
+      if (failures.length > 0) {
+        ledgerReconcileErrors.inc(failures.length);
+        sendAlert('ledger-reconcile-item', `${failures.length} ledger reconciliation item(s) failed`, {
+          sample: failures.slice(0, 5).map(r => ({ refId: r.refId, error: String(r.error).slice(0, 200) })),
+        });
+      }
+
       const recorded = [...orderResults, ...cycleResults].filter(r => r.recorded).length;
       if (recorded > 0) console.log(`[ledger-reconcile] Recorded ${recorded} accounting event(s)`);
-    } catch (e) { console.error('[ledger-reconcile] cron error:', e.message); }
+    } catch (e) {
+      console.error('[ledger-reconcile] cron error:', e.message);
+      sendAlert('ledger-reconcile-cron', 'Ledger reconciliation cron crashed', { error: e.message });
+    }
   }), 60 * 1000);
 
   // ── Merchant Performance Bonus engine — runs every 10 minutes ───────────────

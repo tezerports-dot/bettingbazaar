@@ -146,6 +146,13 @@ const systemConfigSchema = new mongoose.Schema({
     default: ['home', 'results', 'winners', 'promo', 'profile'],
   },
 
+  // ── OPERATIONAL ALERT WEBHOOK (plan item 38, 2026-07-13) ──────────────────
+  // Where money-critical failure alerts POST (Slack-compatible {text} JSON):
+  // ledger reconciliation failures, settlement errors. Admin-editable so the
+  // channel can be rotated without redeploy; env ALERT_WEBHOOK_URL is the
+  // bootstrap fallback. Empty = alerting off. Read by services/alerting.service.js.
+  alertWebhookUrl: { type: String, default: '' },
+
   // ── FEATURE FLAGS ─────────────────────────────────────────────────────────
   kycRequired:         { type: Boolean, default: true },
   registrationEnabled: { type: Boolean, default: true },
