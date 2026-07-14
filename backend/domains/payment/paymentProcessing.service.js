@@ -119,11 +119,14 @@ async function tryAssignMerchant(order) {
   return true;
 }
 
-// ─── Start 5-minute retry loop when no merchant available ────────────────────
-// Retries every 30 seconds for up to 5 minutes, then sets EXPIRED.
-// Uses setTimeout chain — NOT a cron job (per spec Section 1).
+// ─── Short merchant-search retry loop when no merchant available ─────────────
+// Owner directive (2026-07-14): retry at most TWICE (30s apart); if no merchant
+// is found after those 2 attempts, FAIL the order (CANCELLED/EXPIRED) instead of
+// keeping the user waiting for minutes. Uses a setTimeout chain — NOT a cron job.
+// NOTE: an initial assignment was already attempted synchronously at order
+// creation; this loop is the fallback, capped at 2 tries (~60s) then fail.
 function startPendingRetryLoop(orderId) {
-  const MAX_RETRIES = 10; // 10 × 30s = 5 min
+  const MAX_RETRIES = 2; // 2 × 30s ≈ 1 min, then fail (was 10 = 5 min)
   let attempts = 0;
 
   async function attempt() {

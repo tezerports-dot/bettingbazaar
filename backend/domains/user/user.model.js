@@ -47,6 +47,16 @@ const userSchema = new mongoose.Schema({
     min: 0,
   },
 
+  // ✅ PAYMENT-COMPLAINT FLAG (owner directive 2026-07-14)
+  // Set true the moment a merchant complains a claimed payment failed / wasn't
+  // received (merchant reject of a PAID/PROCESSING order). Distinct from the
+  // hidden warningCount: this is an EXPLICIT, queryable flag support/admin can
+  // see and filter on. Cleared by an admin on unblock/clear-flags.
+  paymentFlagged:    { type: Boolean, default: false },
+  paymentFlagReason: { type: String,  default: '' },
+  paymentFlaggedAt:  { type: Date,    default: null },
+  paymentFlagCount:  { type: Number,  default: 0, min: 0 },
+
   
   
   walletAddress: { type: String, unique: true, sparse: true }, 
