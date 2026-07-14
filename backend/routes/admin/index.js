@@ -29,6 +29,7 @@ import merchantPlatformRoutes from '../../domains/merchant/merchantPlatform.admi
 import communicationRoutes from '../../domains/communication/communication.admin.routes.js';
 import operationsRoutes from '../../domains/operations/operations.admin.routes.js';
 import reportingRoutes from '../../domains/reporting/reporting.admin.routes.js';
+import supportAdminRoutes from '../../domains/support/support.admin.routes.js'; // CAP-71: RAG support assistant
 
 const router = express.Router();
 
@@ -53,5 +54,6 @@ router.use('/', merchantPlatformRoutes);
 router.use('/', communicationRoutes);
 router.use('/', operationsRoutes);
 router.use('/', reportingRoutes);
+router.use('/', supportAdminRoutes);
 
 export default router;

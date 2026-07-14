@@ -562,3 +562,54 @@ capabilities:
     activation_status: infra-gated
     dependencies: [CAP-50]
     docs: [CAPABILITY_MATRIX_2026.md]
+
+  # ── H. Hybrid architecture (modular monolith → microservices, 1M DAU) ───────
+  # Seams built now, dormant until an env var flips them (HYBRID_ARCHITECTURE.md).
+  - id: CAP-71
+    name: RAG Support Assistant
+    bucket: B
+    owner: app
+    implementation_status: full
+    activation_status: dormant
+    dependencies: [CAP-07]
+    evidence:
+      - backend/domains/support/ragService.js
+      - backend/domains/support/ragStore.js
+      - backend/domains/support/embeddings.js
+      - backend/domains/support/chunk.js
+      - backend/domains/support/support.routes.js
+      - backend/domains/support/support.admin.routes.js
+      - backend/domains/support/knowledge
+    verification: { test: backend/tests/unit/rag.test.js }
+    docs: [HYBRID_ARCHITECTURE.md, backend/domains/support/README.md]
+  - id: CAP-72
+    name: Hybrid Service Topology + Consistent Hashing
+    bucket: B
+    owner: app
+    implementation_status: architecture-ready
+    activation_status: dormant
+    evidence: [backend/gateway/serviceTopology.js, backend/gateway/consistentHash.js]
+    verification: { test: backend/tests/unit/consistentHash.test.js }
+    docs: [HYBRID_ARCHITECTURE.md]
+  - id: CAP-73
+    name: Inter-Service Authentication
+    bucket: B
+    owner: app
+    implementation_status: architecture-ready
+    activation_status: dormant
+    dependencies: [CAP-72]
+    evidence: [backend/gateway/serviceAuth.js]
+    verification: { test: backend/tests/unit/serviceAuth.test.js }
+    docs: [HYBRID_ARCHITECTURE.md]
+  - id: CAP-74
+    name: Event Backbone (Kafka-ready)
+    bucket: B
+    owner: app
+    implementation_status: architecture-ready
+    activation_status: dormant
+    evidence:
+      - backend/services/eventBackbone.js
+      - backend/services/backbone/kafkaDriver.js
+      - backend/services/eventBus.service.js
+    verification: { test: backend/tests/unit/eventBackbone.test.js }
+    docs: [HYBRID_ARCHITECTURE.md]

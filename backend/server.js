@@ -49,6 +49,7 @@ import betRoutes          from './domains/markets/bet.routes.js';
 import userRoutes         from './domains/user/user.routes.js';
 import merchantRoutes     from './domains/merchant/merchant.routes.js';
 import paymentRoutes      from './domains/payment/payment.routes.js';
+import supportRoutes      from './domains/support/support.routes.js'; // CAP-71: RAG support assistant
 import uploadRoutes       from './routes/upload.routes.js';
 import referralRoutes     from './routes/referral.routes.js';
 import paymentCfgRoutes   from './routes/payment-config.routes.js';
@@ -340,6 +341,7 @@ app.use('/api/bet',       betRoutes);
 app.use('/api',           userRoutes);
 app.use('/api/merchant',  merchantRoutes);
 app.use('/api/payment', paymentRoutes);
+app.use('/api/support',   supportRoutes); // CAP-71: RAG support assistant (dormant until keys set)
 app.use('/api',           uploadRoutes);
 app.use('/api/referral',  referralRoutes);
 app.use('/api/giftcode',  giftCodeRoutes);
@@ -402,6 +404,15 @@ Promise.allSettled([
   // DATABASE_URL is set; silent no-op otherwise. Dual-write hooks in the
   // money models activate on the same signal.
   import('./postgres/pgClient.js').then(m => m.applySchema()).catch(e => console.error('[pg] schema apply failed:', e.message)),
+  // CAP-71: RAG vector store. Apply the pgvector schema ONLY when RAG retrieval
+  // is actually configured (DATABASE_URL + embedding provider key) — so a
+  // money-only Postgres without the pgvector extension is never touched.
+  import('./domains/support/ragService.js')
+    .then(m => (m.retrievalReady() ? import('./domains/support/ragStore.js').then(s => s.initSchema()) : null))
+    .catch(e => console.error('[rag] schema init skipped:', e.message)),
+  // CAP-74: attach the external event backbone (Kafka) when KAFKA_BROKERS is set.
+  // No-op otherwise — the monolith keeps using the in-process bus only.
+  import('./services/eventBackbone.js').then(m => m.configureFromEnv()).catch(e => console.error('[backbone] configure failed:', e.message)),
 ]).then(() => {
   console.log('✅ DB services initialized');
   registerCronJobs(rebuildLeaderboard);
@@ -417,6 +428,7 @@ Promise.allSettled([
 async function closeResources() {
   await Promise.allSettled([
     import('./services/jobQueue.service.js').then(m => m.closeJobQueue()),      // 17+56: finish/close queue
+    import('./services/eventBackbone.js').then(m => m.resetBackbone()),         // CAP-74: disconnect Kafka producer
     import('./postgres/pgClient.js').then(m => m.closePg()),                    // hybrid money DB: drain PG pool
     import('./services/workerPool.service.js').then(m => m.closeWorkerPool()),  // item 5: terminate CPU threads
   ]);

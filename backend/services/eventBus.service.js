@@ -30,6 +30,10 @@
  */
 
 import { EventEmitter } from 'events';
+// CAP-74: external event-backbone seam. forward() is a no-op unless a driver
+// (e.g. Kafka) is attached via KAFKA_BROKERS — so this import costs nothing in
+// the monolith and never affects in-process delivery.
+import { forward as forwardToBackbone } from './eventBackbone.js';
 
 const _bus = new EventEmitter();
 _bus.setMaxListeners(200); // allow many subscribers across domains
@@ -94,6 +98,9 @@ export function publish(event, payload) {
   _bus.emit(event, envelope);
   // Also emit wildcard for logging / audit subscribers
   _bus.emit('*', envelope);
+  // CAP-74: fan out to the external backbone (Kafka/etc.). No-op unless a driver
+  // is attached; guarded internally so a backbone outage can't break publishing.
+  forwardToBackbone(envelope);
 }
 
 /**
