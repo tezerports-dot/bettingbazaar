@@ -1386,13 +1386,26 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
         order.updatedAt    = new Date();
         await order.save();
 
-        // ── Warning engine (Section 13.2) ──────────────────────────────────────
-        // Auto-block threshold is admin-owned (SystemConfig.riskRules.maxWarnings,
-        // was hardcoded 3). 0 = never auto-block. Business Config Audit 2026-07-11.
+        // ── Warning engine + payment-complaint flag (Section 13.2; owner
+        //    directive 2026-07-14) ──────────────────────────────────────────────
+        // A merchant rejecting a PAID/PROCESSING order IS "the merchant complains
+        // the payment failed / wasn't received". Beyond the hidden warningCount,
+        // set an EXPLICIT paymentFlagged marker so support/admin can see and filter
+        // the user immediately. Auto-block threshold stays admin-owned
+        // (SystemConfig.riskRules.maxWarnings; 0 = never). Both mutations are one
+        // atomic $inc/$set so a flag can never be lost between two writes.
         const { maxWarnings } = await getRiskRules();
+        const flagReason = (reason && reason.trim()) || 'Merchant reported payment not received / failed';
         const updatedUser = await User.findOneAndUpdate(
             { _id: order.userId },
-            { $inc: { warningCount: 1 } },
+            {
+                $inc: { warningCount: 1, paymentFlagCount: 1 },
+                $set: {
+                    paymentFlagged:    true,
+                    paymentFlagReason: flagReason,
+                    paymentFlaggedAt:  new Date(),
+                },
+            },
             { new: true }
         );
 
@@ -1420,11 +1433,22 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
             server_ts:    Date.now(),
         });
         emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'CANCELLED', server_ts: Date.now() });
+        // Explicit flag event so the admin console can surface the flagged user.
+        emitAdminUpdate('user_flagged', {
+            userId:          order.userId,
+            orderId:         order._id,
+            reason:          flagReason,
+            warningCount:    newCount,
+            paymentFlagCount: updatedUser?.paymentFlagCount || 0,
+            autoBlocked:     hitThreshold,
+            server_ts:       Date.now(),
+        });
 
         res.json({
             success: true,
             message: 'Order rejected.',
             warningCount: newCount,
+            paymentFlagged: true,
             autoBlocked:  hitThreshold,
         });
     } catch (error) {

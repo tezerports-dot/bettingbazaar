@@ -187,6 +187,11 @@ router.put('/users/:userId/unblock', authenticate, isAdmin, async (req, res) => 
     user.blockedBy   = null;
     if (resetWarnings) {
       user.warningCount = 0;
+      // Clear the explicit payment-complaint flag too (owner directive 2026-07-14):
+      // resetting warnings is the admin saying "this user is cleared".
+      user.paymentFlagged    = false;
+      user.paymentFlagReason = '';
+      user.paymentFlaggedAt  = null;
     }
     await user.save();
 
