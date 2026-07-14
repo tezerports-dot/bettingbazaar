@@ -1,5 +1,41 @@
 # Capability Matrix 2026 — 58-point Enterprise Verification
 
+> **Addendum 2026-07-13 — A/B/C bucket model adopted + machine-readable registry.**
+> Per owner direction, capabilities are now bucketed: **A** = build fully now ·
+> **B** = architecture built + configurable, *activated when infra exists* · **C**
+> = infrastructure/ops-owned (the app provides integration points only) ·
+> *decision* = recorded architecture decision. The narrative tables below remain
+> the human-readable analysis; the authoritative, CI-verified source of truth is
+> **`platform/capabilities.yaml`** (70 capabilities, each with id / bucket / owner
+> / implementation + activation status / dependencies / evidence / verification /
+> docs), checked on every build by `scripts/verify-capabilities.mjs`
+> (`npm run verify:capabilities`) so a claimed capability can't rot while the
+> registry still asserts it — this operationalizes capability #6 (drift detection)
+> and keeps docs synced to code.
+>
+> **Built this pass (all Bucket A/B, minimal disruption):**
+> - **Integer Money Engine** (`backend/shared/money.js`, CAP-09) — paise-native
+>   helpers with integer/finite/overflow invariants + conservation tests; the PG
+>   paise boundary delegates to it. At-rest float→paise conversion remains the PG
+>   cutover step (no dual money representation mid-migration).
+> - **JWT secret-rotation keyring** (CAP-60, Bucket B activation-ready) — sign with
+>   `JWT_SECRET`, verify against it + `JWT_PREVIOUS_SECRETS`; zero-downtime
+>   rotation, backward-compatible default.
+> - **Partitioning migration framework** (CAP-16, Bucket A) — opt-in
+>   `npm run pg:migrate:partition` (RANGE-by-month) that *preserves* the
+>   idempotency-key uniqueness via a separate global-unique table; not auto-applied.
+> - **Platform Capability Registry + CI verifier** (CAP-59) — the new capability
+>   the owner asked for.
+>
+> **Bucket B items coded to activation-ready (dormant until infra):** PostgreSQL
+> SoR (CAP-07), dual-write (CAP-12), read-replica routing (CAP-18), Redis HA
+> client (CAP-27), OTel context propagation (CAP-46), secret rotation (CAP-60).
+> **Bucket C (app integrates, does not implement):** PITR, WAF, DNS failover,
+> autovacuum, artifact signing/SLSA, Helm, policy-as-code — each carries an
+> `owner` and activation path in the registry.
+
+
+
 **Method:** the 58-capability checklist (+ the owner's 2026 additions) treated as
 the target architecture. Every row is graded against the **actual repo**, not
 progress notes, and against current (2026) enterprise guidance. A capability is

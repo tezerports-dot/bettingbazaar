@@ -11,6 +11,7 @@
  */
 import fs from 'fs';
 import path from 'path';
+import { rupeesToPaise } from '../shared/money.js'; // Integer Money Engine (cap #9)
 
 let pool = null;
 
@@ -93,5 +94,11 @@ export function getPoolStats() {
   return { total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount };
 }
 
-/** Rupees(float) → integer paise at the Postgres boundary. THE money unit. */
-export function paise(rupees) { return Math.round((Number(rupees) || 0) * 100); }
+/** Rupees(float) → integer paise at the Postgres boundary. THE money unit.
+ *  Delegates to the Integer Money Engine (shared/money.js) for the canonical
+ *  conversion + overflow guard; tolerates null/undefined/NaN as 0 (the PG
+ *  boundary is fed by optional Mongo fields). */
+export function paise(rupees) {
+  const n = Number(rupees);
+  return rupeesToPaise(Number.isFinite(n) ? n : 0);
+}

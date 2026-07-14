@@ -1,0 +1,564 @@
+# GOVERNANCE: Read 04-GOVERNANCE.md before editing this file.
+# ══════════════════════════════════════════════════════════════════════════════
+# PLATFORM CAPABILITY REGISTRY — machine-readable source of truth
+# ══════════════════════════════════════════════════════════════════════════════
+# Verified in CI by scripts/verify-capabilities.mjs (npm run verify:capabilities):
+# every `evidence`, `verification.test`, and `docs` path MUST exist on disk, so a
+# capability cannot silently rot while the registry claims it works.
+#
+# Buckets (owner's A/B/C model):
+#   A        = build fully now (code-centric, valuable pre-prod)
+#   B        = architecture built + configurable, ACTIVATED when infra exists
+#   C        = infrastructure/ops owned; the app provides integration points only
+#   decision = recorded architecture decision (intentionally not built)
+#
+# implementation_status: full | partial | architecture-ready | absent | decision
+# activation_status:     active | dormant | infra-gated | volume-gated | n/a
+# ══════════════════════════════════════════════════════════════════════════════
+schema_version: 1
+capabilities:
+
+  # ── A. Architecture & Governance ───────────────────────────────────────────
+  - id: CAP-01
+    name: Enterprise Architecture Layer
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/domains, backend/shared, backend/config, backend/providers]
+    docs: [ENTERPRISE_DECISIONS.md]
+  - id: CAP-02
+    name: Governance Framework
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: ['04-GOVERNANCE.md', ENTERPRISE_DECISIONS.md]
+    docs: ['04-GOVERNANCE.md']
+  - id: CAP-03
+    name: Domain-Driven Module Boundaries
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/domains/wallet, backend/domains/payment, backend/domains/merchant, .dependency-cruiser.cjs]
+    verification: { command: 'npm run check:deps' }
+  - id: CAP-04
+    name: Centralized Configuration Platform
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/domains/configuration, backend/config/security.config.js, backend/config/network.config.js]
+  - id: CAP-05
+    name: Dependency Validation
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [.dependency-cruiser.cjs, .github/workflows/ci.yml]
+    verification: { command: 'npm run check:deps' }
+  - id: CAP-06
+    name: Architecture Drift Detection
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    dependencies: [CAP-05, CAP-59]
+    evidence: [.dependency-cruiser.cjs, scripts/verify-capabilities.mjs]
+    verification: { command: 'npm run verify:capabilities' }
+
+  # ── B. Financial Platform ──────────────────────────────────────────────────
+  - id: CAP-07
+    name: PostgreSQL as Financial Source of Truth
+    bucket: B
+    owner: app
+    implementation_status: architecture-ready
+    activation_status: infra-gated
+    dependencies: [CAP-09, CAP-12, CAP-13, CAP-14]
+    evidence: [backend/postgres/schema.sql, backend/postgres/pgClient.js, backend/postgres/dualWrite.js]
+    docs: [backend/postgres/DATA_ROLLBACK_PLAN.md]
+  - id: CAP-08
+    name: Append-Only Ledger
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/domains/revenue, backend/postgres/schema.sql]
+  - id: CAP-09
+    name: Integer Money Engine
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/shared/money.js, backend/postgres/pgClient.js]
+    verification: { test: backend/tests/unit/money.test.js }
+  - id: CAP-10
+    name: Database Transactions
+    bucket: A
+    owner: app
+    implementation_status: partial
+    activation_status: active
+    evidence: [backend/domains/wallet/walletAuthority.service.js, backend/postgres/dualWrite.js]
+    docs: [PHASE_STATUS.md]
+  - id: CAP-11
+    name: CDC Migration
+    bucket: decision
+    owner: app
+    implementation_status: decision
+    activation_status: 'n/a'
+    docs: [CAPABILITY_MATRIX_2026.md]
+  - id: CAP-12
+    name: Dual-Write Migration
+    bucket: B
+    owner: app
+    implementation_status: full
+    activation_status: dormant
+    evidence: [backend/postgres/dualWrite.js]
+    verification: { test: backend/tests/integration/postgresDualWrite.integration.test.js }
+  - id: CAP-13
+    name: Reconciliation Engine
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/postgres/reconcile.js, backend/startup/cronJobs.js, backend/services/metrics.service.js]
+  - id: CAP-14
+    name: Rollback Strategy
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    docs: [backend/postgres/DATA_ROLLBACK_PLAN.md]
+    evidence: [backend/postgres/DATA_ROLLBACK_PLAN.md]
+
+  # ── C. PostgreSQL Platform ─────────────────────────────────────────────────
+  - id: CAP-15
+    name: Connection Pooling
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/postgres/pgClient.js, backend/startup/mongoConnect.js, backend/services/metrics.service.js]
+  - id: CAP-16
+    name: Partitioning Strategy
+    bucket: A
+    owner: app
+    implementation_status: architecture-ready
+    activation_status: volume-gated
+    evidence: [backend/postgres/migrations/001_partition_ledger.sql, backend/postgres/migratePartitions.js]
+    verification: { command: 'npm run pg:migrate:partition' }
+  - id: CAP-17
+    name: Point-in-Time Recovery
+    bucket: C
+    owner: database-platform
+    implementation_status: partial
+    activation_status: infra-gated
+    evidence: [backend/services/backup.service.js]
+    docs: [DISASTER_RECOVERY.md, PRODUCTION_READINESS.md]
+  - id: CAP-18
+    name: Read Replicas
+    bucket: B
+    owner: app
+    implementation_status: architecture-ready
+    activation_status: infra-gated
+    evidence: [backend/services/readPreference.service.js]
+  - id: CAP-19
+    name: Backup Verification
+    bucket: B
+    owner: app
+    implementation_status: partial
+    activation_status: infra-gated
+    evidence: [backend/services/backup.service.js]
+    docs: [DISASTER_RECOVERY.md]
+  - id: CAP-20
+    name: Autovacuum / Performance Tuning
+    bucket: C
+    owner: database-platform
+    implementation_status: partial
+    activation_status: infra-gated
+    evidence: [backend/postgres/schema.sql]
+
+  # ── D. Redis Platform ──────────────────────────────────────────────────────
+  - id: CAP-21
+    name: Redis Cache
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/services/cache.service.js]
+  - id: CAP-22
+    name: Distributed Locks
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/startup/cronLock.js]
+    verification: { test: backend/tests/integration/cronLock.integration.test.js }
+  - id: CAP-23
+    name: Redis Sessions
+    bucket: decision
+    owner: app
+    implementation_status: decision
+    activation_status: 'n/a'
+    docs: [CAPABILITY_MATRIX_2026.md]
+  - id: CAP-24
+    name: Queue Coordination
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/services/jobQueue.service.js]
+  - id: CAP-25
+    name: Distributed Rate Limiting
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/middleware/redisRateLimitStore.js]
+    verification: { test: backend/tests/integration/rateLimitStore.integration.test.js }
+  - id: CAP-26
+    name: Cache Strategy (TTL/Invalidation)
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/services/cache.service.js]
+  - id: CAP-27
+    name: Redis High Availability
+    bucket: B
+    owner: redis-platform
+    implementation_status: architecture-ready
+    activation_status: infra-gated
+    evidence: [backend/startup/redisConnect.js]
+
+  # ── E. Security Platform ───────────────────────────────────────────────────
+  - id: CAP-28
+    name: Central Security Configuration
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/config/security.config.js]
+  - id: CAP-29
+    name: Secret Management
+    bucket: B
+    owner: secrets-platform
+    implementation_status: partial
+    activation_status: infra-gated
+    dependencies: [CAP-60]
+    evidence: [backend/startup/validateEnv.js]
+    verification: { test: backend/tests/unit/validateEnv.test.js }
+  - id: CAP-30
+    name: Security Headers
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/config/security.config.js, backend/server.js]
+  - id: CAP-31
+    name: Secure Cookies
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/routes.js]
+  - id: CAP-32
+    name: CSP & HSTS
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/config/security.config.js, Caddyfile]
+  - id: CAP-33
+    name: WAF Integration
+    bucket: C
+    owner: edge-platform
+    implementation_status: partial
+    activation_status: infra-gated
+    evidence: [backend/middleware/owaspFilter.js]
+  - id: CAP-34
+    name: Authorization Matrix
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/domains/identity/auth.middleware.js, AUTHORIZATION_MATRIX.md]
+    docs: [AUTHORIZATION_MATRIX.md]
+  - id: CAP-35
+    name: Audit Logging
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/services/admin.service.js]
+
+  # ── F. Networking & Edge ───────────────────────────────────────────────────
+  - id: CAP-36
+    name: Caddy Hardening
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [Caddyfile]
+  - id: CAP-37
+    name: Reverse Proxy Platform
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [Caddyfile, deploy/README.md]
+  - id: CAP-38
+    name: Central Network Configuration
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/config/network.config.js]
+  - id: CAP-39
+    name: Multi-Domain Architecture
+    bucket: B
+    owner: app
+    implementation_status: partial
+    activation_status: infra-gated
+    evidence: [backend/config/network.config.js, Caddyfile]
+  - id: CAP-40
+    name: DNS Failover
+    bucket: C
+    owner: dns-provider
+    implementation_status: partial
+    activation_status: infra-gated
+    evidence: [deploy/README.md]
+    docs: [DISASTER_RECOVERY.md]
+  - id: CAP-41
+    name: Geo-Routing
+    bucket: decision
+    owner: edge-platform
+    implementation_status: decision
+    activation_status: 'n/a'
+    docs: [CAPABILITY_MATRIX_2026.md]
+  - id: CAP-42
+    name: Load Balancing
+    bucket: C
+    owner: infra
+    implementation_status: full
+    activation_status: active
+    evidence: [deploy/k8s/deployment.yaml]
+
+  # ── G. Observability ───────────────────────────────────────────────────────
+  - id: CAP-43
+    name: Health Endpoints
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/server.js, deploy/k8s/deployment.yaml]
+  - id: CAP-44
+    name: Prometheus Metrics
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/services/metrics.service.js]
+  - id: CAP-45
+    name: Grafana Dashboards
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [deploy/grafana/bettingbazaar-dashboard.json]
+  - id: CAP-46
+    name: OpenTelemetry
+    bucket: B
+    owner: app
+    implementation_status: architecture-ready
+    activation_status: infra-gated
+    evidence: [backend/middleware/requestContext.js]
+    docs: [CAPABILITY_MATRIX_2026.md]
+  - id: CAP-47
+    name: Correlation IDs
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/middleware/requestContext.js]
+    verification: { test: backend/tests/unit/logger.test.js }
+  - id: CAP-48
+    name: Structured Logging & Alerting
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/services/logger.js, backend/services/alerting.service.js]
+    verification: { test: backend/tests/unit/logger.test.js }
+
+  # ── H. Platform & Deployment ───────────────────────────────────────────────
+  - id: CAP-49
+    name: Docker Standardization
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [Dockerfile, .dockerignore]
+  - id: CAP-50
+    name: Kubernetes Readiness
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [deploy/k8s/deployment.yaml]
+  - id: CAP-51
+    name: Infrastructure as Code
+    bucket: B
+    owner: infra
+    implementation_status: partial
+    activation_status: infra-gated
+    evidence: [deploy/docker-compose.yml, deploy/k8s/deployment.yaml, railway.json]
+  - id: CAP-52
+    name: CI/CD Platform
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [.github/workflows/ci.yml, .github/dependabot.yml]
+  - id: CAP-53
+    name: Blue/Green & Rolling Deployments
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [deploy/k8s/deployment.yaml, deploy/README.md]
+  - id: CAP-54
+    name: Disaster Recovery Platform
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    docs: [DISASTER_RECOVERY.md, SRE.md]
+    evidence: [DISASTER_RECOVERY.md, SRE.md]
+  - id: CAP-55
+    name: Cloud-Agnostic Provider Layer
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/providers/registry.js, backend/providers/storage/S3StorageProvider.js]
+  - id: CAP-56
+    name: Storage / Email / SMS Provider Abstraction
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/providers/storage/S3StorageProvider.js, backend/domains/communication/channelRegistry.js]
+  - id: CAP-57
+    name: Feature Flag Platform
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/services/featureFlags.service.js]
+  - id: CAP-58
+    name: Background Job Platform
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [backend/services/jobQueue.service.js]
+
+  # ── 2026 additions ─────────────────────────────────────────────────────────
+  - id: CAP-59
+    name: Platform Capability Registry
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [platform/capabilities.yaml, scripts/verify-capabilities.mjs, .github/workflows/ci.yml]
+    verification: { command: 'npm run verify:capabilities' }
+  - id: CAP-60
+    name: Secret Rotation (JWT keyring)
+    bucket: B
+    owner: app
+    implementation_status: architecture-ready
+    activation_status: dormant
+    dependencies: [CAP-29]
+    evidence: [backend/domains/identity/jwt.util.js]
+    verification: { test: backend/tests/unit/jwtRotation.test.js }
+  - id: CAP-61
+    name: SBOM (CycloneDX)
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [.github/workflows/ci.yml]
+  - id: CAP-62
+    name: Artifact Signing / SLSA Provenance
+    bucket: C
+    owner: infra
+    implementation_status: absent
+    activation_status: infra-gated
+    dependencies: [CAP-61]
+    docs: [CAPABILITY_MATRIX_2026.md]
+  - id: CAP-63
+    name: SRE Runbooks / SLOs / Error Budgets
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    docs: [SRE.md]
+    evidence: [SRE.md]
+  - id: CAP-64
+    name: Connection-Pool Monitoring
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    dependencies: [CAP-15, CAP-44]
+    evidence: [backend/services/metrics.service.js, backend/postgres/pgClient.js]
+  - id: CAP-65
+    name: Continuous Reconciliation Metrics
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    dependencies: [CAP-13, CAP-44]
+    evidence: [backend/startup/cronJobs.js, backend/services/metrics.service.js]
+  - id: CAP-66
+    name: Replica Lag Monitoring
+    bucket: B
+    owner: app
+    implementation_status: absent
+    activation_status: infra-gated
+    dependencies: [CAP-18]
+    docs: [CAPABILITY_MATRIX_2026.md]
+  - id: CAP-67
+    name: Backup Restore Testing
+    bucket: B
+    owner: app
+    implementation_status: partial
+    activation_status: infra-gated
+    dependencies: [CAP-19]
+    evidence: [backend/services/backup.service.js]
+    docs: [DISASTER_RECOVERY.md]
+  - id: CAP-68
+    name: Dashboard-as-Code
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    evidence: [deploy/grafana/bettingbazaar-dashboard.json]
+  - id: CAP-69
+    name: Helm Charts
+    bucket: C
+    owner: infra
+    implementation_status: absent
+    activation_status: infra-gated
+    dependencies: [CAP-50]
+    docs: [CAPABILITY_MATRIX_2026.md]
+  - id: CAP-70
+    name: Policy-as-Code (OPA/Kyverno)
+    bucket: C
+    owner: infra
+    implementation_status: absent
+    activation_status: infra-gated
+    dependencies: [CAP-50]
+    docs: [CAPABILITY_MATRIX_2026.md]
