@@ -23,6 +23,7 @@
     "verify:capabilities": "node scripts/verify-capabilities.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.111.0",
     "@aws-sdk/client-s3": "^3.621.0",
     "@aws-sdk/lib-storage": "^3.1085.0",
     "@aws-sdk/s3-request-presigner": "^3.621.0",
@@ -43,6 +44,7 @@
     "helmet": "^8.3.0",
     "ioredis": "^5.3.2",
     "jsonwebtoken": "^9.0.2",
+    "kafkajs": "^2.2.4",
     "lucide-react": "^0.408.0",
     "mongoose": "^8.0.3",
     "nodemailer": "^9.0.3",
