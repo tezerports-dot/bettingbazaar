@@ -31,6 +31,17 @@ if (!JWT_SECRET) {
   throw new Error('FATAL: JWT_SECRET environment variable is not set. Refusing to start.');
 }
 
+// SECRET ROTATION (Bucket B — activation-ready). Zero-downtime key rotation:
+// tokens are SIGNED with JWT_SECRET (the current key) but VERIFIED against the
+// current key PLUS any keys in JWT_PREVIOUS_SECRETS (comma-separated). To rotate
+// without logging everyone out: set JWT_PREVIOUS_SECRETS=<old>, JWT_SECRET=<new>,
+// deploy; sessions minted with <old> keep verifying until they expire, then drop
+// <old> from JWT_PREVIOUS_SECRETS. With no previous keys set (the default), this
+// is byte-for-byte the single-key behavior — nothing changes until you rotate.
+const JWT_PREVIOUS_SECRETS = (process.env.JWT_PREVIOUS_SECRETS || '')
+  .split(',').map((s) => s.trim()).filter(Boolean);
+const JWT_VERIFY_KEYS = [JWT_SECRET, ...JWT_PREVIOUS_SECRETS];
+
 // D-4 (owner decision 2026-07-13): default access-token lifetime is 24h (was 7d).
 // Instant revocation is retained via the per-request TokenBlacklist check, so a
 // stolen token is both time-bounded AND killable. Env still overrides.
@@ -66,7 +77,21 @@ export function verifyJwt(token) {
     opts.issuer   = JWT_ISSUER;
     opts.audience = JWT_AUDIENCE;
   }
-  return jwt.verify(token, JWT_SECRET, opts);
+  // Try the current key first, then any rotation keys. A signature mismatch on
+  // one key falls through to the next; a non-signature failure (expired, bad
+  // claims) is final and re-thrown as-is so callers see the real reason.
+  let lastErr;
+  for (const key of JWT_VERIFY_KEYS) {
+    try {
+      return jwt.verify(token, key, opts);
+    } catch (err) {
+      lastErr = err;
+      // Only a signature/format problem is worth trying another key for; an
+      // expired or claim-invalid token would fail identically under every key.
+      if (err.name !== 'JsonWebTokenError') throw err;
+    }
+  }
+  throw lastErr;
 }
 
 /**

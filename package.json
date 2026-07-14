@@ -18,7 +18,9 @@
     "test:watch": "vitest --config vitest.config.ts",
     "check:deps": "depcruise backend --config .dependency-cruiser.cjs",
     "reconcile:pg": "node backend/postgres/reconcile.js",
-    "sync:indexes": "node backend/scripts/sync-indexes.mjs"
+    "sync:indexes": "node backend/scripts/sync-indexes.mjs",
+    "pg:migrate:partition": "node backend/postgres/migratePartitions.js",
+    "verify:capabilities": "node scripts/verify-capabilities.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.621.0",

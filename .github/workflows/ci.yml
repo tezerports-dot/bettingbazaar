@@ -132,6 +132,10 @@ jobs:
       # products) fail the build instead of waiting for human review.
       - name: Architecture validation (dependency-cruiser)
         run: npm run check:deps
+      # Capability registry drift check (CAP-06/CAP-59): every capability the
+      # registry claims must have its evidence/docs/tests present on disk.
+      - name: Capability registry verification
+        run: npm run verify:capabilities
       - name: User panel build
         run: npx vite build
       - name: Admin panel typecheck + build
