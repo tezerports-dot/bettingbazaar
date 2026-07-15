@@ -44,7 +44,7 @@ export const FLAGS = Object.freeze({
   // Operations
   MAINTENANCE_MODE:     'MAINTENANCE_MODE',
   // Security (plan item 24, 2026-07-13) — OWASP-pattern request filter,
-  // opt-in (enable with FEATURE_WAF_FILTER=true after watching logs for FPs)
+  // default-on in production; set FEATURE_WAF_FILTER=false only for emergency false-positive rollback
   WAF_FILTER:           'WAF_FILTER',
 });
 
@@ -65,7 +65,7 @@ const DEFAULTS = {
   [FLAGS.READ_REPLICA]:          false,
   [FLAGS.MULTI_TENANT]:          false,
   [FLAGS.MAINTENANCE_MODE]:      false,
-  [FLAGS.WAF_FILTER]:            false,
+  [FLAGS.WAF_FILTER]:            true,
 };
 
 const _overrides = new Map();

@@ -165,7 +165,10 @@ startLoadShedConfigRefresh();
 // frequently and must not consume the user budget.
 app.get('/metrics', (req, res) => {
   const token = process.env.METRICS_TOKEN;
-  if (token && req.headers.authorization !== `Bearer ${token}`) {
+  if (!token && process.env.NODE_ENV === 'production') {
+    return res.status(503).end('metrics token not configured');
+  }
+  if (!token || req.headers.authorization !== `Bearer ${token}`) {
     return res.status(401).end('unauthorized');
   }
   return metricsHandler(req, res);

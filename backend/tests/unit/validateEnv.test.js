@@ -5,7 +5,7 @@ import { validateEnv } from '../../startup/validateEnv.js';
 
 const full = {
   JWT_SECRET: 's', ORDER_HMAC_SECRET: 'h', MONGODB_URI: 'mongodb://x',
-  REDIS_URL: 'r', ALLOWED_ORIGINS: 'o', S3_BUCKET_NAME: 'b',
+  REDIS_URL: 'r', ALLOWED_ORIGINS: 'o', S3_BUCKET_NAME: 'b', METRICS_TOKEN: 'mt',
 };
 
 describe('validateEnv', () => {
@@ -25,11 +25,9 @@ describe('validateEnv', () => {
       .toThrow(/JWT_SECRET[\s\S]*MONGODB_URI/);
   });
 
-  it('does NOT require ORDER_HMAC_SECRET (it falls back to JWT_SECRET in code)', () => {
-    // JWT_SECRET + MONGODB_URI present, ORDER_HMAC_SECRET absent → must NOT throw.
-    const r = validateEnv({ JWT_SECRET: 's', MONGODB_URI: 'm', NODE_ENV: 'production' }, true);
-    expect(r.ok).toBe(true);
-    expect(r.advisedMissing).toContain('ORDER_HMAC_SECRET');
+  it('requires production hardening vars instead of silently falling back', () => {
+    expect(() => validateEnv({ JWT_SECRET: 's', MONGODB_URI: 'm', NODE_ENV: 'production' }, true))
+      .toThrow(/ORDER_HMAC_SECRET[\s\S]*REDIS_URL[\s\S]*ALLOWED_ORIGINS[\s\S]*S3_BUCKET_NAME[\s\S]*METRICS_TOKEN/);
   });
 
   it('does NOT throw outside production, but reports what is missing', () => {
@@ -43,10 +41,9 @@ describe('validateEnv', () => {
       .toThrow(/JWT_SECRET/);
   });
 
-  it('reports advised-but-missing vars without failing', () => {
-    const required = { JWT_SECRET: 's', MONGODB_URI: 'm' };
-    const r = validateEnv({ ...required, NODE_ENV: 'production' }, true);
+  it('has no advisory production security gaps left', () => {
+    const r = validateEnv({ ...full, NODE_ENV: 'production' }, true);
     expect(r.ok).toBe(true);
-    expect(r.advisedMissing).toEqual(expect.arrayContaining(['REDIS_URL', 'S3_BUCKET_NAME', 'ORDER_HMAC_SECRET']));
+    expect(r.advisedMissing).toEqual([]);
   });
 });

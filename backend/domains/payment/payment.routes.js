@@ -4,6 +4,8 @@
 import express   from 'express';
 import mongoose  from 'mongoose';
 import { authenticate } from '../identity/auth.middleware.js';
+import { tryVerifyJwt } from '../identity/jwt.util.js';
+import { merchantAuth } from '../../middleware/merchantAuth.js';
 import { withdrawalLimiter } from '../../middleware/security.js';
 // Item 12: per-subnet backstop against IP rotation on withdrawal creation.
 import { createSubnetLimiter, globalSurgeBreaker } from '../../middleware/ipDefense.js';
@@ -16,6 +18,17 @@ import { releaseUTR } from '../../middleware/utrValidation.js';
 import { emitWalletUpdate, emitAdminUpdate, emitOrderUpdate } from '../notification/realtimeEmitters.js';
 
 const router = express.Router();
+
+function extractBearer(req) {
+  const h = req.headers.authorization || '';
+  return h.startsWith('Bearer ') ? h.slice(7) : null;
+}
+
+function paymentActorAuth(req, res, next) {
+  const decoded = tryVerifyJwt(extractBearer(req) || req.cookies?.auth_token || '');
+  if (decoded?.isMerchant) return merchantAuth(req, res, next);
+  return authenticate(req, res, next);
+}
 
 async function safeSession() {
   try { const s = await mongoose.startSession(); s.startTransaction(); return s; } catch { return null; }
@@ -48,14 +61,17 @@ router.post('/order/:orderId/mark-paid', authenticate, async (req, res) => {
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code, originalOrderId: err.originalOrderId }); }
 });
 
-router.post('/deposit/:orderId/confirm', authenticate, async (req, res) => {
-  if (!req.user.isMerchant && !req.user.isAdmin) return res.status(403).json({ success: false, message: 'Only merchants can confirm deposits' });
+router.post('/deposit/:orderId/confirm', paymentActorAuth, async (req, res) => {
+  const isMerchantActor = Boolean(req.merchantId);
+  const isAdminActor = Boolean(req.user?.isAdmin);
+  if (!isMerchantActor && !isAdminActor) return res.status(403).json({ success: false, message: 'Only merchants or admins can confirm deposits' });
   const session = await safeSession();
   try {
     const PaymentOrder = mongoose.model('PaymentOrder');
     const order = await PaymentOrder.findOne({ orderId: req.params.orderId }, null, withSession(session));
     if (!order || order.type !== 'DEPOSIT') { await abortOrEnd(session); return res.status(404).json({ success: false, message: 'Order not found' }); }
     if (!['PAID','PROCESSING'].includes(order.status)) { await abortOrEnd(session); return res.status(400).json({ success: false, message: `Cannot confirm in ${order.status} status` }); }
+    if (isMerchantActor && order.merchantId?.toString() !== req.merchantId.toString()) { await abortOrEnd(session); return res.status(403).json({ success: false, message: 'This order is not assigned to you' }); }
     const depositTokens = order.depositAllocation || order.tokenAmount;
     // GOVERNANCE §1: via merchantWallet.service.js (sole tokenBalance writer);
     // canonical txId shared with every other deposit-deduction path.

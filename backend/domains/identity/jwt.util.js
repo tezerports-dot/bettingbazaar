@@ -11,14 +11,12 @@
  *      attacker-supplied asymmetric alg, is rejected outright. Plain
  *      jwt.verify(token, secret) accepts whatever alg the token header claims.
  *   2. issuer + audience claims are STAMPED on every token we sign.
- *   3. issuer + audience are ENFORCED on verify once JWT_ENFORCE_CLAIMS=true.
+ *   3. issuer + audience are ENFORCED in production by default; non-production keeps legacy-test compatibility unless JWT_ENFORCE_CLAIMS=true.
  *
- * Compatibility window (default): claims are stamped but NOT required on verify,
- * so tokens issued before this shipped — which carry no iss/aud — keep working
- * until they naturally expire. With the D-4 lifetime of 24h, every legacy token
- * ages out within a day (7d at most for any still-valid old token). Flip
- * JWT_ENFORCE_CLAIMS=true after that window to require the claims. The switch is
- * env-only; no code change and no redeploy of this module.
+ * Compatibility rollback: production requires claims unless JWT_ENFORCE_CLAIMS=false
+ * is set for an emergency legacy-token migration window. Test/development can keep
+ * existing unsigned helper tokens working unless JWT_ENFORCE_CLAIMS=true is set.
+ * The switch is env-only; no code change and no redeploy of this module.
  *
  * No fallback secret, ever: a missing JWT_SECRET is fatal at import time — the
  * same fail-fast posture as startup/validateEnv.js, enforced here because this
@@ -48,7 +46,9 @@ const JWT_VERIFY_KEYS = [JWT_SECRET, ...JWT_PREVIOUS_SECRETS];
 export const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
 export const JWT_ISSUER     = process.env.JWT_ISSUER     || 'bettingbazaar';
 export const JWT_AUDIENCE   = process.env.JWT_AUDIENCE   || 'bettingbazaar';
-const ENFORCE_CLAIMS = process.env.JWT_ENFORCE_CLAIMS === 'true';
+const ENFORCE_CLAIMS = process.env.JWT_ENFORCE_CLAIMS === undefined
+  ? process.env.NODE_ENV === 'production'
+  : process.env.JWT_ENFORCE_CLAIMS !== 'false';
 
 /**
  * Sign a token. Stamps HS256 + issuer + audience + expiry.

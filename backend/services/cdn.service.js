@@ -29,7 +29,7 @@
  * @author Anonymous
  */
 
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import crypto from 'crypto';
 
@@ -341,6 +341,20 @@ export async function deleteFile(fileKey) {
   }
 }
 
+export async function verifyUploadedObject({ fileKey, cdnUrl, expectedUserId, expectedOrderId = null, expectedCategory = null }) {
+  if (!fileKey || typeof fileKey !== 'string') throw new Error('fileKey is required');
+  if (fileKey.includes('..') || fileKey.startsWith('/') || /\\/.test(fileKey)) throw new Error('Invalid file key');
+  if (expectedCategory && !fileKey.startsWith(`${expectedCategory}/`)) throw new Error('File key category mismatch');
+  const expectedUrl = `${CDN_URL}/${fileKey}`;
+  if (cdnUrl && cdnUrl !== expectedUrl) throw new Error('CDN URL does not match file key');
+
+  const head = await s3Client.send(new HeadObjectCommand({ Bucket: BUCKET_NAME, Key: fileKey }));
+  const meta = head.Metadata || {};
+  if (expectedUserId && meta.userid !== String(expectedUserId)) throw new Error('Uploaded object owner mismatch');
+  if (expectedOrderId && meta.orderid !== String(expectedOrderId)) throw new Error('Uploaded object order mismatch');
+  return { fileKey, cdnUrl: expectedUrl, contentType: head.ContentType, contentLength: head.ContentLength, metadata: meta };
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // CATEGORY-SPECIFIC HELPERS
 // ═══════════════════════════════════════════════════════════════════════
@@ -455,6 +469,7 @@ export default {
   generatePresignedUploadUrl,
   generatePresignedDownloadUrl,
   deleteFile,
+  verifyUploadedObject,
   generateChatUploadUrl,
   generateKYCUploadUrl,
   generatePaymentProofUploadUrl,

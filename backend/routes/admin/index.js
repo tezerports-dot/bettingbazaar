@@ -30,8 +30,13 @@ import communicationRoutes from '../../domains/communication/communication.admin
 import operationsRoutes from '../../domains/operations/operations.admin.routes.js';
 import reportingRoutes from '../../domains/reporting/reporting.admin.routes.js';
 import supportAdminRoutes from '../../domains/support/support.admin.routes.js'; // CAP-71: RAG support assistant
+import { authenticate } from '../../domains/identity/auth.middleware.js';
 
 const router = express.Router();
+
+// Defense-in-depth: every /api/admin sub-router is private by default.
+// Individual sub-routes still enforce admin/sub-admin permissions as needed.
+router.use(authenticate);
 
 router.use('/', analyticsRoutes);
 router.use('/', usersRoutes);
