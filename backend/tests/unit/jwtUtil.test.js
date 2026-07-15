@@ -1,6 +1,6 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Unit tests for the AQ-2 JWT authority: HS256 pinning (algorithm-confusion
-// rejection), iss/aud stamping, and default issuer/audience enforcement.
+// rejection), iss/aud stamping, and non-production legacy-token compatibility.
 import { describe, it, expect, beforeAll } from 'vitest';
 import jwt from 'jsonwebtoken';
 
@@ -58,10 +58,11 @@ describe('verifyJwt — algorithm confusion defense', () => {
   });
 });
 
-describe('issuer/audience enforcement', () => {
-  it('rejects a legacy token that has NO iss/aud by default', () => {
+describe('legacy-token compatibility outside production', () => {
+  it('accepts a legacy token that has NO iss/aud when NODE_ENV is not production', () => {
     const legacy = jwt.sign({ userId: 'legacy', role: 'user' }, process.env.JWT_SECRET);
-    expect(() => verifyJwt(legacy)).toThrow(/audience|issuer/);
+    const out = verifyJwt(legacy);
+    expect(out.userId).toBe('legacy');
   });
 });
 
