@@ -77,13 +77,17 @@ router.post('/user/chat/:orderId/confirm-upload', authenticate, async (req, res)
       return res.status(403).json({ success: false, message: 'Not authorized' });
     }
 
+    const verified = await cdnService.verifyUploadedObject({
+      fileKey, cdnUrl, expectedUserId: req.user._id.toString(), expectedOrderId: orderId, expectedCategory: 'chat'
+    });
+
     const chatMsg = await ChatMessage.create({
       orderId:       order._id,
       senderId:      req.user._id,
       senderType:    'USER',
       message:       message || '📎 Attachment',
-      attachmentUrl: cdnUrl,
-      attachmentKey: fileKey,
+      attachmentUrl: verified.cdnUrl,
+      attachmentKey: verified.fileKey,
       isSystem:      false,
     });
 
@@ -162,13 +166,17 @@ router.post('/merchant/chat/:orderId/confirm-upload', merchantAuth, async (req, 
       return res.status(403).json({ success: false, message: 'Not authorized' });
     }
 
+    const verified = await cdnService.verifyUploadedObject({
+      fileKey, cdnUrl, expectedUserId: req.merchant._id.toString(), expectedOrderId: orderId, expectedCategory: 'chat'
+    });
+
     const chatMsg = await ChatMessage.create({
       orderId:       order._id,
       senderId:      req.merchant._id,
       senderType:    'MERCHANT',
       message:       message || '📎 Attachment',
-      attachmentUrl: cdnUrl,
-      attachmentKey: fileKey,
+      attachmentUrl: verified.cdnUrl,
+      attachmentKey: verified.fileKey,
       isSystem:      false,
     });
 
@@ -251,11 +259,15 @@ router.post('/user/payment-proof/:orderId/confirm-upload', authenticate, async (
       return res.status(403).json({ success: false, message: 'Not your order' });
     }
 
-    order.proofScreenshot = cdnUrl;
+    const verified = await cdnService.verifyUploadedObject({
+      fileKey, cdnUrl, expectedUserId: req.user._id.toString(), expectedOrderId: orderId, expectedCategory: 'payment-proof'
+    });
+
+    order.proofScreenshot = verified.cdnUrl;
     order.updatedAt = new Date();
     await order.save();
 
-    res.json({ success: true, message: 'Payment proof saved', proofScreenshot: cdnUrl });
+    res.json({ success: true, message: 'Payment proof saved', proofScreenshot: verified.cdnUrl });
   } catch (error) {
     console.error('❌ Payment proof confirm-upload error:', error);
     res.status(500).json({ success: false, message: error.message || 'Failed to confirm upload' });

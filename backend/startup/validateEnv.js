@@ -23,18 +23,15 @@
 const REQUIRED = [
   ['JWT_SECRET',  'signs/verifies every auth token — a fallback would let anyone forge sessions'],
   ['MONGODB_URI', 'primary datastore — unset silently connects to localhost'],
+  ['ORDER_HMAC_SECRET', 'dedicated payment-order HMAC secret; prevents JWT key reuse for order signing'],
+  ['REDIS_URL',         'cross-instance rate limits, realtime fan-out, and job queue need Redis at >1 replica'],
+  ['ALLOWED_ORIGINS',   'CORS allow-list; production must explicitly name trusted origins'],
+  ['S3_BUCKET_NAME',    'durable asset/upload storage; local disk is not safe for production'],
+  ['METRICS_TOKEN',     'protects Prometheus metrics from public disclosure'],
 ];
 
 // Only meaningful in a real deployment; absence is a warning, not a failure.
-// NOTE: ORDER_HMAC_SECRET is ADVISED (not required) on purpose — the order-signing
-// code falls back to JWT_SECRET when it's unset, so making it fatal would refuse
-// to boot an existing production that relies on that fallback. It's strongly
-// recommended (key separation) but must not turn a deploy into an outage.
 const ADVISED = [
-  ['ORDER_HMAC_SECRET', 'dedicated payment-order HMAC secret; falls back to JWT_SECRET if unset — set a distinct value for key separation'],
-  ['REDIS_URL',         'cross-instance rate limits, realtime fan-out, and job queue need Redis at >1 replica'],
-  ['ALLOWED_ORIGINS',   'CORS allow-list; without it, production falls back to localhost origins only'],
-  ['S3_BUCKET_NAME',    'asset/upload storage; without S3 the app uses ephemeral local disk (lost on redeploy)'],
 ];
 
 /**

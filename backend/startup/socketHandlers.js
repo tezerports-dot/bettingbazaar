@@ -141,40 +141,58 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
       socket.emit('game_state', gameState);
     });
 
-    socket.on('join_user_room', (userId) => {
+    const socketToken = () => {
       const cookieHeader = socket.handshake.headers?.cookie || '';
       const cookieToken  = cookieHeader.split(';').map(s => s.trim())
         .find(s => s.startsWith('auth_token='))?.split('=')[1];
-      const token = cookieToken || socket.handshake.auth?.token;
+      return cookieToken || socket.handshake.auth?.token;
+    };
+
+    const loadActiveUser = async (decoded) => {
+      if (!decoded?.userId) return null;
+      const User = mongoose.model('User');
+      const user = await User.findById(decoded.userId).select('isAdmin isSubAdmin isBlocked status isAccountLocked').lean();
+      if (!user || user.isBlocked || user.status === 'BLOCKED' || user.isAccountLocked) return null;
+      return user;
+    };
+
+    socket.on('join_user_room', async (userId) => {
+      const token = socketToken();
       if (!token) return;
       try {
         const decoded = verifyJwt(token);
-        if (decoded.userId?.toString() === userId?.toString() || decoded.isAdmin) {
+        if (decoded.userId?.toString() === userId?.toString()) {
           socket.join(`user-${userId}`);
+          return;
         }
+        const user = await loadActiveUser(decoded);
+        if (user?.isAdmin) socket.join(`user-${userId}`);
       } catch { /* invalid token — silently reject */ }
     });
 
-    socket.on('join_merchant_room', (merchantId) => {
-      const cookieHeader = socket.handshake.headers?.cookie || '';
-      const cookieToken  = cookieHeader.split(';').map(s => s.trim())
-        .find(s => s.startsWith('auth_token='))?.split('=')[1];
-      const token = cookieToken || socket.handshake.auth?.token;
+    socket.on('join_merchant_room', async (merchantId) => {
+      const token = socketToken();
       if (!token) return;
       try {
         const decoded = verifyJwt(token);
-        if (decoded.isMerchant || decoded.isAdmin) {
-          socket.join(`merchant-${merchantId}`);
+        if (decoded.isMerchant && decoded.merchantId?.toString() === merchantId?.toString()) {
+          const Merchant = mongoose.model('Merchant');
+          const merchant = await Merchant.findById(decoded.merchantId).select('status merchantApprovalStatus').lean();
+          if (merchant?.status === 'ACTIVE' && merchant?.merchantApprovalStatus === 'APPROVED') socket.join(`merchant-${merchantId}`);
+          return;
         }
+        const user = await loadActiveUser(decoded);
+        if (user?.isAdmin) socket.join(`merchant-${merchantId}`);
       } catch { /* invalid token — silently reject */ }
     });
 
     socket.on('join_admin_room', async (data) => {
       try {
-        const token = data?.token;
+        const token = data?.token || socketToken();
         if (!token) return;
         const decoded = verifyJwt(token);
-        if (decoded.isAdmin || decoded.isSubAdmin) {
+        const user = await loadActiveUser(decoded);
+        if (user?.isAdmin || user?.isSubAdmin) {
           socket.join('admin-room');
           socket.emit('joined_admin_room', { success: true });
         }
