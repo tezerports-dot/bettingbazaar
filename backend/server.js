@@ -193,6 +193,9 @@ app.use('/storage', express.static(path.join(__dirname, 'storage'), { maxAge: '1
 // Storage: S3 when configured (multi-instance-safe), local disk otherwise.
 const _s3Store = new S3StorageProvider();
 const _localStore = new LocalDiskStorageProvider();
+if (process.env.NODE_ENV === 'production' && !_s3Store.isAvailable()) {
+  throw new Error('FATAL: production storage requires a fully configured S3-compatible provider; refusing local-disk fallback.');
+}
 providerRegistry.storage.register(_s3Store);
 providerRegistry.storage.register(_localStore);
 registerService('storage', _s3Store.isAvailable() ? _s3Store : _localStore);

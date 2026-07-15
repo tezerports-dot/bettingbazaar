@@ -19,6 +19,7 @@
 
 // AQ-2: verify via the single JWT authority (HS256 pinned, iss/aud stamped).
 import { verifyJwt } from '../domains/identity/jwt.util.js';
+import { isTokenRevoked } from '../domains/identity/auth.middleware.js';
 import mongoose from 'mongoose';
 
 /**
@@ -45,6 +46,9 @@ export const merchantAuth = async (req, res, next) => {
     catch (e) {
       return res.status(401).json({ success: false,
         message: e.name === 'TokenExpiredError' ? 'Token expired. Please login again.' : 'Invalid token.' });
+    }
+    if (await isTokenRevoked(token)) {
+      return res.status(401).json({ success: false, message: 'Token has been invalidated. Please login again.' });
     }
 
     if (!decoded.isMerchant || !decoded.merchantId)

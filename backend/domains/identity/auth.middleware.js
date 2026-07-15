@@ -52,6 +52,18 @@ import { signToken, verifyJwt, JWT_SECRET, JWT_EXPIRES_IN } from './jwt.util.js'
  * @param {Function} next - Express next middleware function
  * @returns {void}
  */
+export async function isTokenRevoked(token) {
+  try {
+    const TokenBlacklist = (await import('mongoose')).default.model('TokenBlacklist');
+    return Boolean(await TokenBlacklist.findOne({ token }).lean());
+  } catch {
+    // Model may not be registered during early tests/bootstraps; fail open for
+    // compatibility with the existing auth path, but all production boot paths
+    // import models/index.js before serving traffic.
+    return false;
+  }
+}
+
 const authenticate = async (req, res, next) => {
   try {
     // Accept token from httpOnly cookie (user panel) OR Authorization header (admin/merchant panels)
@@ -87,13 +99,9 @@ const authenticate = async (req, res, next) => {
     }
 
     // Check token blacklist (logout invalidation)
-    try {
-      const TokenBlacklist = (await import('mongoose')).default.model('TokenBlacklist');
-      const blacklisted = await TokenBlacklist.findOne({ token }).lean();
-      if (blacklisted) {
-        return res.status(401).json({ success: false, message: 'Token has been invalidated. Please login again.' });
-      }
-    } catch { /* model may not exist yet on first boot — skip silently */ }
+    if (await isTokenRevoked(token)) {
+      return res.status(401).json({ success: false, message: 'Token has been invalidated. Please login again.' });
+    }
 
     // Fetch user from database
     const user = await User.findById(decoded.userId).select('+twoFactorSecret +twoFactorEnabled');

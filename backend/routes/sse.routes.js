@@ -29,6 +29,26 @@ import express from 'express';
 // anyone could have forged a token and opened these streams. verifyJwt pins
 // HS256 and uses the fail-fast secret.
 import { verifyJwt } from '../domains/identity/jwt.util.js';
+import { isTokenRevoked } from '../domains/identity/auth.middleware.js';
+
+const PUBLIC_SYSTEM_CONFIG_FIELDS = [
+    'minBetAmount',
+    'maxBetAmount',
+    'bettingEnabled',
+    'maintenanceMode',
+    'supportMessage',
+    'appVersion',
+    'downloadLinks',
+    'publicAnnouncements',
+];
+
+function toPublicSystemConfig(config) {
+    const source = typeof config?.toObject === 'function' ? config.toObject() : (config || {});
+    return PUBLIC_SYSTEM_CONFIG_FIELDS.reduce((safe, key) => {
+        if (Object.prototype.hasOwnProperty.call(source, key)) safe[key] = source[key];
+        return safe;
+    }, {});
+}
 
 /** Apply the required SSE headers and flush immediately. */
 function initSSEResponse(res) {
@@ -64,7 +84,7 @@ export function initSSERoutes(sseManager, cycleGenerator) {
 
         // 2. System config
         if (global.cachedSystemConfig) {
-            sseManager.sendToClient(clientId, 'system_config', global.cachedSystemConfig);
+            sseManager.sendToClient(clientId, 'system_config', toPublicSystemConfig(global.cachedSystemConfig));
         }
 
         // 3. Branding
@@ -117,6 +137,9 @@ export function initSSERoutes(sseManager, cycleGenerator) {
             decoded = verifyJwt(token);
         } catch {
             return res.status(401).json({ success: false, message: 'Invalid or expired token' });
+        }
+        if (await isTokenRevoked(token)) {
+            return res.status(401).json({ success: false, message: 'Token has been invalidated' });
         }
 
         if (!decoded.isMerchant || !decoded.merchantId) {
@@ -183,8 +206,15 @@ export function initSSERoutes(sseManager, cycleGenerator) {
         } catch {
             return res.status(401).json({ success: false, message: 'Invalid or expired token' });
         }
+        if (await isTokenRevoked(token)) {
+            return res.status(401).json({ success: false, message: 'Token has been invalidated' });
+        }
 
-        if (!decoded.isAdmin && !decoded.isSubAdmin && !decoded.isQueueManager) {
+        const mongoose = await import('mongoose');
+        const User = mongoose.default.model('User');
+        const adminUser = await User.findById(decoded.userId).select('isAdmin isSubAdmin isQueueManager isBlocked isAccountLocked subAdminPermissions').lean();
+        if (!adminUser || adminUser.isBlocked || adminUser.isAccountLocked ||
+            (!adminUser.isAdmin && !adminUser.isSubAdmin && !adminUser.isQueueManager)) {
             return res.status(403).json({ success: false, message: 'Admin access required' });
         }
 
@@ -193,7 +223,6 @@ export function initSSERoutes(sseManager, cycleGenerator) {
 
         // Push queue snapshot immediately on connect
         try {
-            const mongoose = await import('mongoose');
             const PaymentOrder = mongoose.default.model('PaymentOrder');
             const pendingOrders = await PaymentOrder.find({ status: 'PENDING_QUEUE' })
                 .populate('userId', 'username mobile')
