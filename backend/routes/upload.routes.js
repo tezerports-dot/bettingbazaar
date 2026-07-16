@@ -26,14 +26,10 @@ router.post('/user/chat/:orderId/upload-url', authenticate, async (req, res) => 
       return res.status(400).json({ success: false, message: 'fileName, contentType and fileSize are required' });
     }
 
-    const CHAT_ALLOWED = [
-      'image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif',
-      'video/mp4', 'video/quicktime', 'video/webm',
-      'application/pdf',
-    ];
+    const CHAT_ALLOWED = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
     const cleanMime = (contentType || '').toLowerCase().split(';')[0].trim();
     if (!CHAT_ALLOWED.includes(cleanMime)) {
-      return res.status(400).json({ success: false, message: 'Only JPEG, PNG, WebP, GIF, MP4, MOV, WebM and PDF are allowed' });
+      return res.status(400).json({ success: false, message: 'Only JPEG, PNG, WebP, and GIF images are allowed' });
     }
 
     if (fileSize > 20 * 1024 * 1024) {
@@ -115,14 +111,10 @@ router.post('/merchant/chat/:orderId/upload-url', merchantAuth, async (req, res)
       return res.status(400).json({ success: false, message: 'fileName, contentType and fileSize are required' });
     }
 
-    const CHAT_ALLOWED = [
-      'image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif',
-      'video/mp4', 'video/quicktime', 'video/webm',
-      'application/pdf',
-    ];
+    const CHAT_ALLOWED = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
     const cleanMime = (contentType || '').toLowerCase().split(';')[0].trim();
     if (!CHAT_ALLOWED.includes(cleanMime)) {
-      return res.status(400).json({ success: false, message: 'Only JPEG, PNG, WebP, GIF, MP4, MOV, WebM and PDF are allowed' });
+      return res.status(400).json({ success: false, message: 'Only JPEG, PNG, WebP, and GIF images are allowed' });
     }
 
     if (fileSize > 20 * 1024 * 1024) {
@@ -205,11 +197,11 @@ router.post('/user/payment-proof/:orderId/upload-url', authenticate, async (req,
       return res.status(400).json({ success: false, message: 'fileName, contentType, and fileSize are required' });
     }
 
-    // Images and PDFs only — strict exact MIME match (normalise before compare)
-    const PROOF_ALLOWED = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
+    // Images only — strict exact MIME match (normalise before compare)
+    const PROOF_ALLOWED = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
     const cleanProofMime = (contentType || '').toLowerCase().split(';')[0].trim();
     if (!PROOF_ALLOWED.includes(cleanProofMime)) {
-      return res.status(400).json({ success: false, message: 'Only JPEG, PNG, WebP, GIF, and PDF files are supported' });
+      return res.status(400).json({ success: false, message: 'Only JPEG, PNG, WebP, and GIF image files are supported' });
     }
 
     if (fileSize > 10 * 1024 * 1024) {
@@ -301,10 +293,10 @@ router.post('/user/profile/picture/upload-url', authenticate, async (req, res) =
     const { fileName, contentType, fileSize } = req.body;
     if (!fileName || !contentType || !fileSize)
       return res.status(400).json({ success: false, message: 'fileName, contentType and fileSize required' });
-    const PIC_ALLOWED = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'application/pdf'];
+    const PIC_ALLOWED = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
     const cleanPicMime = (contentType || '').toLowerCase().split(';')[0].trim();
     if (!PIC_ALLOWED.includes(cleanPicMime))
-      return res.status(400).json({ success: false, message: 'Only JPG, PNG, WebP, PDF allowed' });
+      return res.status(400).json({ success: false, message: 'Only JPG, PNG, WebP images allowed' });
     if (Number(fileSize) > 10 * 1024 * 1024)
       return res.status(400).json({ success: false, message: 'Max file size is 10 MB' });
     const uploadData = await cdnService.generatePresignedUploadUrl({

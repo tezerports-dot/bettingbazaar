@@ -58,14 +58,25 @@ const CDN_URL = process.env.CDN_URL; // e.g., https://yourzone.b-cdn.net
 // BOTH the MIME type AND the file extension must match.
 // An attacker who sends contentType:'image/jpeg' with file='shell.php'
 // will be rejected by the extension cross-check below.
-const ALLOWED_MIME_TYPES = {
-  'image/jpeg':       { exts: ['.jpg', '.jpeg'], maxSize: 10 * 1024 * 1024 },
-  'image/jpg':        { exts: ['.jpg', '.jpeg'], maxSize: 10 * 1024 * 1024 },
-  'image/png':        { exts: ['.png'],          maxSize: 10 * 1024 * 1024 },
-  'image/webp':       { exts: ['.webp'],         maxSize: 10 * 1024 * 1024 },
-  'image/gif':        { exts: ['.gif'],          maxSize:  5 * 1024 * 1024 },
-  'application/pdf':  { exts: ['.pdf'],          maxSize: 20 * 1024 * 1024 },
+const IMAGE_MIME_TYPES = {
+  'image/jpeg': { exts: ['.jpg', '.jpeg'], maxSize: 10 * 1024 * 1024 },
+  'image/jpg':  { exts: ['.jpg', '.jpeg'], maxSize: 10 * 1024 * 1024 },
+  'image/png':  { exts: ['.png'],          maxSize: 10 * 1024 * 1024 },
+  'image/webp': { exts: ['.webp'],         maxSize: 10 * 1024 * 1024 },
+  'image/gif':  { exts: ['.gif'],          maxSize:  5 * 1024 * 1024 },
 };
+
+const DISPUTE_EXTRA_MIME_TYPES = {
+  'application/pdf': { exts: ['.pdf'],  maxSize: 20 * 1024 * 1024 },
+  'video/mp4':       { exts: ['.mp4'],  maxSize: 50 * 1024 * 1024 },
+  'video/quicktime': { exts: ['.mov'],  maxSize: 50 * 1024 * 1024 },
+  'video/webm':      { exts: ['.webm'], maxSize: 50 * 1024 * 1024 },
+};
+
+function mimeRulesForCategory(category = '') {
+  const key = String(category).toLowerCase();
+  return key.startsWith('dispute') ? { ...IMAGE_MIME_TYPES, ...DISPUTE_EXTRA_MIME_TYPES } : IMAGE_MIME_TYPES;
+}
 
 // Dangerous extensions that must NEVER reach S3 regardless of MIME claim.
 // Belt-and-suspenders: even if a future MIME entry accidentally allowed one,
@@ -91,15 +102,15 @@ const BLOCKED_EXTENSIONS = new Set([
  *  4. File size is within the per-MIME limit
  *  5. Filename contains no path-traversal sequences
  */
-function validateUpload(fileName, contentType, fileSize) {
+function validateUpload(fileName, contentType, fileSize, category = '') {
   // ── 1. Normalise and check MIME type ─────────────────────────────────────
   // Lowercase and strip any parameters (e.g. "image/jpeg; charset=utf-8")
   const mime = (contentType || '').toLowerCase().split(';')[0].trim();
-  const mimeRule = ALLOWED_MIME_TYPES[mime];
+  const mimeRule = mimeRulesForCategory(category)[mime];
   if (!mimeRule) {
     throw new Error(
       `File type "${mime}" is not allowed. ` +
-      `Allowed: JPEG, PNG, WebP, GIF, PDF`
+      `Allowed: JPEG, PNG, WebP, GIF; PDF/video only for dispute evidence`
     );
   }
 
@@ -156,7 +167,7 @@ function generateSecureFileName(originalName, contentType, category) {
   const randomString = crypto.randomBytes(16).toString('hex');
   // Use the first allowed extension for this MIME — never trust the raw extension
   const mime = (contentType || '').toLowerCase().split(';')[0].trim();
-  const safeExt = (ALLOWED_MIME_TYPES[mime]?.exts[0]) || '.bin';
+  const safeExt = (mimeRulesForCategory(category)[mime]?.exts[0]) || '.bin';
   return `${category}/${timestamp}-${randomString}${safeExt}`;
 }
 
@@ -175,7 +186,7 @@ export async function generatePresignedUploadUrl({
 }) {
   try {
     // Validate: MIME + extension cross-check + size + filename safety
-    validateUpload(fileName, contentType, fileSize);
+    validateUpload(fileName, contentType, fileSize, category);
 
     // Generate secure file key — extension derived from MIME, not raw filename
     const fileKey = generateSecureFileName(fileName, contentType, category);
@@ -360,6 +371,12 @@ export async function verifyUploadedObject({ fileKey, cdnUrl, expectedUserId, ex
 // ═══════════════════════════════════════════════════════════════════════
 
 
+export async function generateDisputeUploadUrl(fileName, contentType, fileSize, userId, disputeId) {
+  return generatePresignedUploadUrl({
+    fileName, contentType, fileSize, category: 'disputes/evidence', userId, orderId: disputeId,
+  });
+}
+
 export async function generateChatUploadUrl(fileName, contentType, fileSize, userId, orderId) {
   return generatePresignedUploadUrl({
     fileName,
@@ -470,6 +487,7 @@ export default {
   generatePresignedDownloadUrl,
   deleteFile,
   verifyUploadedObject,
+  generateDisputeUploadUrl,
   generateChatUploadUrl,
   generateKYCUploadUrl,
   generatePaymentProofUploadUrl,
