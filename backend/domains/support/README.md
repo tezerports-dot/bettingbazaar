@@ -9,7 +9,7 @@ citations, not free-form generation.
 
 ```
 ingest:  document → chunk.js → embeddings.js (Voyage) → ragStore.js (pgvector)
-ask:     query → embed → ragStore.retrieve (cosine top-K) → ragService (Claude) → answer + citations
+ask:     query → embed → ragStore.retrieve (cosine top-K) → ragService (provider adapter) → answer + citations
 ```
 
 | File | Role |
@@ -17,7 +17,7 @@ ask:     query → embed → ragStore.retrieve (cosine top-K) → ragService (Cl
 | `chunk.js` | Deterministic, paragraph-aware text chunker (pure) |
 | `embeddings.js` | Pluggable embedding provider adapter (Voyage default, via `fetch`) |
 | `ragStore.js` | pgvector schema + upsert + cosine top-K retrieval (on the hybrid-DB Postgres) |
-| `ragService.js` | Orchestrator: ingest + grounded answer generation (Claude via `@anthropic-ai/sdk`) |
+| `ragService.js` | Orchestrator: ingest + grounded answer generation (Anthropic SDK by default, or OpenAI-compatible chat via `fetch`) |
 | `support.routes.js` | `GET /api/support/status`, `POST /api/support/ask` (auth + per-user rate limit) |
 | `support.admin.routes.js` | `/api/admin/support/*` — ingest KB / ingest doc / list / delete |
 | `knowledge/*.md` | Curated, user-facing help content grounded in real platform behavior |
@@ -28,7 +28,7 @@ Two independent gates, reported by `GET /api/support/status`:
 
 - **Retrieval** — needs `DATABASE_URL` (Postgres with the **pgvector** extension)
   **and** an embedding key (`VOYAGE_API_KEY`).
-- **Generation** — needs `ANTHROPIC_API_KEY`.
+- **Generation** — defaults to Anthropic and needs `ANTHROPIC_API_KEY`; set `RAG_GENERATION_PROVIDER=openai-compatible` with `RAG_CHAT_API_KEY`/`OPENAI_API_KEY` and optional `RAG_CHAT_BASE_URL` for any OpenAI-compatible chat provider.
 
 With any gate unmet the routes return `503` and the feature is a documented
 no-op — the platform's standard env-gated dormancy (like the money DB, S3, USDT).
@@ -57,8 +57,11 @@ deliberate for a money/betting platform.
 
 | Var | Default | Meaning |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | — | enables generation |
-| `RAG_MODEL` | `claude-opus-4-8` | generation model |
+| `RAG_GENERATION_PROVIDER` | `anthropic` | `anthropic`, `openai`, `openai-compatible`, or `custom` |
+| `ANTHROPIC_API_KEY` | — | enables Anthropic generation |
+| `RAG_CHAT_API_KEY` / `OPENAI_API_KEY` | — | enables OpenAI-compatible generation |
+| `RAG_CHAT_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible base URL for non-Anthropic providers |
+| `RAG_MODEL` | `claude-opus-4-8` / `gpt-4.1-mini` | generation model |
 | `RAG_MAX_TOKENS` | `1024` | answer length cap |
 | `VOYAGE_API_KEY` | — | enables embeddings |
 | `RAG_EMBEDDING_PROVIDER` | `voyage` | embedding adapter |
