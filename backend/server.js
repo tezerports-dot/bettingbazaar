@@ -78,6 +78,7 @@ import winnersRoutes      from './routes/winners.routes.js';
 import { requestLogger }  from './middleware/requestLogger.js';
 import { errorHandler }   from './middleware/errorHandler.js';
 import { requestContext } from './middleware/requestContext.js'; // X-6: correlation ids
+import { tlsFingerprintDefense, startTlsFingerprintDefenseConfigRefresh } from './middleware/tlsFingerprintDefense.js';
 import { authLimiter, adminAuthLimiter, betLimiter } from './middleware/security.js';
 // Item 12 (2026-07-13): IP-rotation defense — per-subnet backstop + optional
 // global surge breaker on sensitive endpoints, on top of the per-IP limiters.
@@ -149,6 +150,8 @@ app.use(express.urlencoded({ extended: true, limit: JSON_LIMIT }));
 app.use(mongoSanitize);
 app.use(cookieParser());
 app.use(requestContext); // X-6: correlation id (before the logger, so it's logged)
+app.use(tlsFingerprintDefense); // JA3/TLS fingerprint policy from admin-managed SystemConfig
+startTlsFingerprintDefenseConfigRefresh();
 app.use(requestLogger);
 app.use(httpMetrics);    // item 33: Prometheus HTTP duration/count (bounded route labels)
 // Item 9: bound in-flight work at the edge — 503 the excess so overload can't

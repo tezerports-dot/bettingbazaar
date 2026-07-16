@@ -136,6 +136,12 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
           maxFundingOrdersPerHour:  config.riskRules?.maxFundingOrdersPerHour  ?? 0,     // schema default: 0
           maxWarnings:              config.riskRules?.maxWarnings              ?? 3,     // schema default: 3 (0 = never)
         },
+        tlsFingerprintDefense: {
+          enabled:        config.tlsFingerprintDefense?.enabled        ?? true,
+          logOnly:        config.tlsFingerprintDefense?.logOnly        ?? true,
+          requireJa3Hash: config.tlsFingerprintDefense?.requireJa3Hash ?? false,
+          blockJa3Hashes: config.tlsFingerprintDefense?.blockJa3Hashes || [],
+        },
         kycRequired:           config.kycRequired           !== false,
         registrationEnabled:   config.registrationEnabled   !== false,
         maintenanceMode:       config.maintenanceMode       || false,
@@ -174,7 +180,7 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
       payoutFeePercent, riskRules, betReservePercent, winningsFeePercent,
       cycleDurationMinutes, retentionMonths,
       payoutMultiplier, orderExpiryMinutes, cyclePhases,
-      footerPages, alertWebhookUrl,
+      footerPages, alertWebhookUrl, tlsFingerprintDefense,
     } = req.body;
 
     if (cycleDurationMinutes !== undefined &&
@@ -244,6 +250,13 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
       return res.status(400).json({ success: false, message: 'alertWebhookUrl must be an https:// URL, or empty to disable alerting.' });
     }
 
+    if (tlsFingerprintDefense !== undefined) {
+      const hashes = tlsFingerprintDefense.blockJa3Hashes;
+      if (hashes !== undefined && (!Array.isArray(hashes) || hashes.some(h => !/^[a-f0-9]{32}$/i.test(String(h || '').trim())))) {
+        return res.status(400).json({ success: false, message: 'tlsFingerprintDefense.blockJa3Hashes must contain only 32-character hex JA3 hashes.' });
+      }
+    }
+
     const fieldWrites = [];
     if (minBet          !== undefined) fieldWrites.push(['SystemConfig', 'betLimits.thirtyMin.min', minBet]);
     if (maxBet          !== undefined) fieldWrites.push(['SystemConfig', 'betLimits.thirtyMin.max', maxBet]);
@@ -306,6 +319,10 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     if (footerPages !== undefined) fieldWrites.push(['SystemConfig', 'footerPages', footerPages]);
     // Operational alert webhook (2026-07-13) — consumed by services/alerting.service.js
     if (alertWebhookUrl !== undefined) fieldWrites.push(['SystemConfig', 'alertWebhookUrl', alertWebhookUrl]);
+    if (tlsFingerprintDefense?.enabled !== undefined) fieldWrites.push(['SystemConfig', 'tlsFingerprintDefense.enabled', !!tlsFingerprintDefense.enabled]);
+    if (tlsFingerprintDefense?.logOnly !== undefined) fieldWrites.push(['SystemConfig', 'tlsFingerprintDefense.logOnly', !!tlsFingerprintDefense.logOnly]);
+    if (tlsFingerprintDefense?.requireJa3Hash !== undefined) fieldWrites.push(['SystemConfig', 'tlsFingerprintDefense.requireJa3Hash', !!tlsFingerprintDefense.requireJa3Hash]);
+    if (tlsFingerprintDefense?.blockJa3Hashes !== undefined) fieldWrites.push(['SystemConfig', 'tlsFingerprintDefense.blockJa3Hashes', [...new Set(tlsFingerprintDefense.blockJa3Hashes.map(h => String(h).trim().toLowerCase()))]]);
 
     for (const [modelName, path, value] of fieldWrites) {
       await setConfigField(modelName, path, value, actor, {

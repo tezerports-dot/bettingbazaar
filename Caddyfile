@@ -2,15 +2,16 @@
 # UNIFIED CADDYFILE — optional edge: static panels + reverse-proxied backend
 # ══════════════════════════════════════════════════════════════════════════════
 #
-# NOTE ON DEPLOY PATHS: the Railway/Dockerfile path does NOT use Caddy — the Node
-# process serves the API and the built panels itself (railway.json / Dockerfile
-# CMD = `node backend/server.js`). This Caddyfile is for a SELF-HOSTED edge where
-# Caddy terminates TLS (HTTP/2 + HTTP/3 on by default), serves the static panel
-# bundles, and reverse-proxies everything dynamic to the Node backend.
+# This is the safe hybrid TLS setup for this Node app:
+#   Caddy terminates TLS and proxies to Node, while Node enforces the
+#   admin-managed JA3 policy from System Settings.
 #
-# AQ-12 (2026-07-13) FIX: the previous version served only static files and had
-# NO reverse_proxy — used as written, /api, realtime, health and uploads were
-# all unreachable. It now proxies them to the backend upstream.
+# Stock Caddy does not randomize client JA3 and does not expose a built-in JA3
+# placeholder. If you need inbound JA3 enforcement, run a trusted edge component
+# that computes the client fingerprint and forwards X-TLS-JA3-Hash / X-TLS-JA3,
+# then set TLS_FINGERPRINT_EDGE_SECRET in both Caddy and Node so clients cannot
+# spoof those headers. Do NOT use residential/anti-detect proxy rotation here;
+# this edge is for defensive observation and policy enforcement.
 #
 # Routing:
 #   /api/*, /socket.io/*, /health*, /metrics, /app-assets/*, /storage/*
@@ -22,11 +23,8 @@
 
 :{$PORT}
 
-# Proxy-level response compression. zstd preferred, gzip fallback.
 encode zstd gzip
 
-# Edge-terminated security headers. HSTS belongs here (TLS terminates at Caddy);
-# the app sets its own CSP/helmet headers on API responses.
 header {
     Strict-Transport-Security "max-age=31536000; includeSubDomains"
     X-Content-Type-Options "nosniff"
@@ -34,19 +32,23 @@ header {
     -Server
 }
 
-# Item 29 (multi-domain): this block is HOST-AGNOSTIC (:{$PORT}); every custom
-# domain attached to the service serves identical content. Canonical-URL
-# normalization is app-side via CANONICAL_HOST (network.config.js).
-
-# ── Dynamic → Node backend (API, realtime, health, metrics, app-managed assets)
-# Caddy v2 proxies WebSockets (socket.io) and SSE (/api/sse) transparently —
-# it auto-detects the Upgrade header and streams event-stream responses.
 @backend path /api/* /socket.io/* /health* /metrics /app-assets/* /storage/*
 handle @backend {
-    reverse_proxy {$BACKEND_UPSTREAM:localhost:8080}
+    reverse_proxy {$BACKEND_UPSTREAM:localhost:8080} {
+        # Trust gate for TLS fingerprint headers. Node only accepts forwarded
+        # JA3 headers when this secret matches TLS_FINGERPRINT_EDGE_SECRET.
+        header_up X-Edge-Fingerprint-Secret {$TLS_FINGERPRINT_EDGE_SECRET:}
+
+        # Never pass client-supplied fingerprint headers through as-is. If you
+        # install a trusted JA3-capable Caddy module/sidecar, set these headers
+        # from that component after stripping inbound values.
+        header_up -X-TLS-JA3-Hash
+        header_up -X-TLS-JA3
+        header_up -X-JA3-Hash
+        header_up -X-JA3
+    }
 }
 
-# ── Admin Panel (static SPA) ─────────────────────────────────────────────────
 handle /admin* {
     uri strip_prefix /admin
     root * /app/admin-panel/dist
@@ -54,7 +56,6 @@ handle /admin* {
     try_files {path} /index.html
 }
 
-# ── Merchant Panel (static SPA) ──────────────────────────────────────────────
 handle /merchant* {
     uri strip_prefix /merchant
     root * /app/merchant-panel/dist
@@ -62,7 +63,6 @@ handle /merchant* {
     try_files {path} /index.html
 }
 
-# ── User Panel (static SPA, catch-all) ───────────────────────────────────────
 handle {
     root * /app/dist
     file_server

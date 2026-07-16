@@ -13,7 +13,7 @@
  * Level is controlled by LOG_LEVEL (error|warn|info|debug); default info in
  * production, debug otherwise.
  */
-import { getRequestId, getContextUser } from '../middleware/requestContext.js';
+import { getRequestId, getContextUser, getTlsFingerprint } from '../middleware/requestContext.js';
 
 const LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
 const THRESHOLD = LEVELS[process.env.LOG_LEVEL] ??
@@ -49,6 +49,7 @@ function emit(level, msg, meta) {
   if (LEVELS[level] > THRESHOLD) return;
   const reqId = getRequestId();
   const userId = getContextUser();
+  const tlsFingerprint = getTlsFingerprint();
   const safeMeta = meta && typeof meta === 'object' ? redact(meta) : meta;
 
   if (process.env.NODE_ENV === 'production') {
@@ -58,11 +59,12 @@ function emit(level, msg, meta) {
       msg: String(msg),
       ...(reqId ? { reqId } : {}),
       ...(userId ? { userId } : {}),
+      ...(tlsFingerprint?.ja3Hash ? { ja3Hash: tlsFingerprint.ja3Hash } : {}),
       ...(safeMeta && typeof safeMeta === 'object' ? safeMeta : {}),
     };
     (level === 'error' ? console.error : console.log)(JSON.stringify(rec));
   } else {
-    const tag = reqId ? ` (${String(reqId).slice(0, 8)})` : '';
+    const tag = reqId ? ` (${String(reqId).slice(0, 8)}${tlsFingerprint?.ja3Hash ? '/' + tlsFingerprint.ja3Hash.slice(0, 8) : ''})` : '';
     const extra = safeMeta && Object.keys(safeMeta).length ? safeMeta : '';
     (level === 'error' ? console.error : console.log)(
       `${COLOR[level]}[${level}]${RESET}${tag} ${msg}`, extra);

@@ -201,6 +201,18 @@ const systemConfigSchema = new mongoose.Schema({
     },
   },
 
+
+  // ── TLS FINGERPRINT / JA3 DEFENSE ─────────────────────────────────────────
+  // JA3 must be computed by the TLS edge and forwarded as x-ja3-hash or
+  // x-tls-ja3-hash. Admins can first observe in logOnly mode, then enforce a
+  // missing-header requirement or block known-bad JA3 hashes without redeploying.
+  tlsFingerprintDefense: {
+    enabled:        { type: Boolean, default: true },
+    logOnly:        { type: Boolean, default: true },
+    requireJa3Hash: { type: Boolean, default: false },
+    blockJa3Hashes: { type: [String], default: [] },
+  },
+
   // ── FEATURE FLAGS ─────────────────────────────────────────────────────────
   kycRequired:         { type: Boolean, default: true },
   registrationEnabled: { type: Boolean, default: true },

@@ -46,6 +46,12 @@ export const SystemSettings: React.FC = () => {
     footerPages: ['home', 'results', 'winners', 'promo', 'profile'],
     // Operational alert webhook (2026-07-13) — '' = alerting off
     alertWebhookUrl: '',
+    tlsFingerprintDefense: {
+      enabled: true,
+      logOnly: true,
+      requireJa3Hash: false,
+      blockJa3Hashes: [] as string[],
+    },
     // App distribution
     webUrl:        '',
     androidUrl:    '',
@@ -101,6 +107,12 @@ export const SystemSettings: React.FC = () => {
           },
           footerPages: response.data.footerPages?.length ? response.data.footerPages : ['home', 'results', 'winners', 'promo', 'profile'],
           alertWebhookUrl: response.data.alertWebhookUrl || '',
+          tlsFingerprintDefense: {
+            enabled: response.data.tlsFingerprintDefense?.enabled ?? true,
+            logOnly: response.data.tlsFingerprintDefense?.logOnly ?? true,
+            requireJa3Hash: response.data.tlsFingerprintDefense?.requireJa3Hash ?? false,
+            blockJa3Hashes: response.data.tlsFingerprintDefense?.blockJa3Hashes || [],
+          },
           webUrl:        response.data.webUrl        || '',
           androidUrl:    response.data.androidUrl    || '',
           iosUrl:        response.data.iosUrl        || '',
@@ -642,6 +654,63 @@ export const SystemSettings: React.FC = () => {
         <p className="text-xs text-gray-500 mt-1">
           Must be https. Same alert fires at most once per 10 minutes (anti-flood).
         </p>
+      </div>
+
+
+      {/* ── TLS / JA3 FINGERPRINT DEFENSE ─────────────────────────────────── */}
+      <div className="card">
+        <h3 className="text-lg font-semibold mb-1">TLS / JA3 Fingerprint Defense</h3>
+        <p className="text-xs text-gray-400 mb-4">
+          JA3 is calculated from the client TLS handshake by your edge proxy/CDN, then
+          forwarded to the app as <code>x-ja3-hash</code> or <code>x-tls-ja3-hash</code>.
+          The app cannot randomize a user's browser handshake; this panel controls
+          logging and enforcement for the JA3 signal on every request.
+        </p>
+        <div className="space-y-4">
+          {([
+            ['enabled', 'Enable JA3 Policy', 'Reads JA3 headers on every request and applies the rules below.'],
+            ['logOnly', 'Log Only Mode', 'When on, violations are logged but not blocked. Turn off only after your TLS edge forwards JA3 reliably.'],
+            ['requireJa3Hash', 'Require JA3 Hash', 'Blocks requests missing a JA3 hash when Log Only Mode is off.'],
+          ] as const).map(([field, label, help]) => (
+            <div key={field} className="flex items-center justify-between">
+              <div className="pr-4">
+                <p className="font-medium">{label}</p>
+                <p className="text-xs text-gray-500">{help}</p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={formData.tlsFingerprintDefense[field]}
+                  onChange={(e) => setFormData({
+                    ...formData,
+                    tlsFingerprintDefense: { ...formData.tlsFingerprintDefense, [field]: e.target.checked },
+                  })}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-gray-700 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gold-500"></div>
+              </label>
+            </div>
+          ))}
+
+          <div>
+            <label className="label">Blocked JA3 Hashes</label>
+            <textarea
+              value={formData.tlsFingerprintDefense.blockJa3Hashes.join('\n')}
+              onChange={(e) => setFormData({
+                ...formData,
+                tlsFingerprintDefense: {
+                  ...formData.tlsFingerprintDefense,
+                  blockJa3Hashes: e.target.value.split(/[\n,\s]+/).map(v => v.trim().toLowerCase()).filter(Boolean),
+                },
+              })}
+              className="input min-h-[96px] font-mono text-xs"
+              placeholder="32-char JA3 MD5 hash, one per line"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Known-bad JA3 hashes are denied when Log Only Mode is off. Keep Log Only on until you verify your edge forwards JA3 for all traffic.
+            </p>
+          </div>
+        </div>
       </div>
 
       {/* App Distribution */}

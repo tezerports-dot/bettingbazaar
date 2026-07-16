@@ -133,9 +133,7 @@ const App: React.FC = () => {
   useEffect(() => {
     if (isAuthenticated) {
       sseService.connect();
-      sseService.connect();   // public broadcast stream — new_cycle, cycle_result, system_config…
       return () => {
-        sseService.disconnect();
         sseService.disconnect();
       };
     }
