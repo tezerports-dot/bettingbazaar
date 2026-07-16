@@ -1,10 +1,10 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** kyc.admin.routes.js — KYC queue, approve, reject */
-import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from './_adminShared.js';
+import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, hasPermission, getModels } from './_adminShared.js';
 
 const router = express.Router();
 
-router.get('/kyc/queue', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/kyc/queue', authenticate, hasPermission('canVerifyKYC'), async (req, res) => {
   try {
     const { User } = getModels();
     
@@ -25,7 +25,7 @@ router.get('/kyc/queue', authenticate, isAdminOrSubAdmin, async (req, res) => {
 });
 
 // Approve KYC
-router.post('/kyc/:userId/approve', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.post('/kyc/:userId/approve', authenticate, hasPermission('canVerifyKYC'), async (req, res) => {
   try {
     const { User } = getModels();
     
@@ -81,7 +81,7 @@ router.post('/kyc/:userId/approve', authenticate, isAdminOrSubAdmin, async (req,
 });
 
 // Reject KYC
-router.post('/kyc/:userId/reject', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.post('/kyc/:userId/reject', authenticate, hasPermission('canVerifyKYC'), async (req, res) => {
   try {
     const { User } = getModels();
     const { reason } = req.body;

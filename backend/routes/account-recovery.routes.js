@@ -45,6 +45,11 @@ function isValidPAN(pan) {
   return /^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan.toUpperCase().replace(/\s/g, ''));
 }
 
+function generateTemporaryPassword(length = 16) {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%^&*';
+  return Array.from({ length }, () => chars[crypto.randomInt(0, chars.length)]).join('');
+}
+
 // In-memory rate limiter for recovery attempts (mobile → [{ts}])
 const recoveryAttempts = new Map();
 function checkRecoveryRateLimit(mobile) {
@@ -226,9 +231,9 @@ router.post('/admin/account-recovery/:id/approve', authenticate, isAdmin, async 
     if (!recovery) return res.status(404).json({ success: false, message: 'Request not found' });
     if (recovery.status !== 'pending') return res.status(400).json({ success: false, message: 'Request is not pending' });
 
-    // Generate temporary password: 8 chars, mixed
-    const chars   = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
-    const tempPw  = Array.from({ length: 10 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+    // Generate a high-entropy temporary password with CSPRNG only. Math.random()
+    // is not suitable for account-recovery credentials.
+    const tempPw  = generateTemporaryPassword();
     const hashed  = await hashPassword(tempPw);
 
     // Update user: reset password, unlock account, set flag to force password change

@@ -5,7 +5,7 @@
 // Split out of the old backend/routes/admin/queue.admin.routes.js on 2026-07-01 as part
 // of the Merchant+Payment domain migration (BBEPS Phase 004). See backend/domains/README.md.
 
-import { express, mongoose, authenticate, isAdminOrSubAdmin, getModels } from '../../routes/admin/_adminShared.js';
+import { express, mongoose, authenticate, hasPermission, getModels } from '../../routes/admin/_adminShared.js';
 import { creditDeposit, creditWinnings } from '../wallet/walletAuthority.service.js';
 import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
 import { emitAdminUpdate, emitOrderUpdate, emitWalletUpdate } from '../notification/realtimeEmitters.js';
@@ -13,7 +13,7 @@ import { emitAdminUpdate, emitOrderUpdate, emitWalletUpdate } from '../notificat
 const router = express.Router();
 
 // ─── GET /api/admin/payment-queue ─────────────────────────────────────────────────
-router.get('/payment-queue', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/payment-queue', authenticate, hasPermission('canViewTransactions'), async (req, res) => {
   try {
     const { status } = req.query;
     const { PaymentOrder } = getModels();
@@ -52,7 +52,7 @@ router.get('/payment-queue', authenticate, isAdminOrSubAdmin, async (req, res) =
 });
 
 // ─── POST /api/admin/payment-orders/:orderId/action ───────────────────────────────
-router.post('/payment-orders/:orderId/action', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.post('/payment-orders/:orderId/action', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
   try {
     const { orderId } = req.params;
     const { action, reason } = req.body;
@@ -97,7 +97,7 @@ router.post('/payment-orders/:orderId/action', authenticate, isAdminOrSubAdmin, 
 // Body: { resolution: 'release' | 'refund', reason: string }
 // release: complete the order, credit/debit tokens, mark merchant stats as success
 // refund:  cancel order, refund escrow, mark merchant stats as failure
-router.post('/payment-orders/:orderId/resolve', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
   try {
     const { orderId } = req.params;
     const { resolution, reason } = req.body;

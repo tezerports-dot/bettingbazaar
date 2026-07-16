@@ -1,12 +1,12 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 
-import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from '../../routes/admin/_adminShared.js';
+import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, hasPermission, getModels } from '../../routes/admin/_adminShared.js';
 import { creditDeposit, creditWinnings } from '../wallet/walletAuthority.service.js';
 
 const router = express.Router();
 
 
-router.get('/dispute-orders', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/dispute-orders', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
   try {
     const { PaymentOrder } = getModels();
     const { status = 'DISPUTED', page = 1, limit = 50 } = req.query;
@@ -57,7 +57,7 @@ router.get('/dispute-orders', authenticate, isAdminOrSubAdmin, async (req, res) 
 });
 
 // ── GET /api/admin/dispute-orders/:orderId — single dispute detail ────────────
-router.get('/dispute-orders/:orderId', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/dispute-orders/:orderId', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
   try {
     const { PaymentOrder } = getModels();
     const order = await PaymentOrder.findById(req.params.orderId)
@@ -72,7 +72,7 @@ router.get('/dispute-orders/:orderId', authenticate, isAdminOrSubAdmin, async (r
 });
 
 
-router.get('/dispute-orders/:orderId/chat', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/dispute-orders/:orderId/chat', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
   try {
     const ChatMessage = mongoose.model('ChatMessage');
     const messages = await ChatMessage.find({ orderId: req.params.orderId })
@@ -85,7 +85,7 @@ router.get('/dispute-orders/:orderId/chat', authenticate, isAdminOrSubAdmin, asy
 });
 
 
-router.post('/dispute-orders/:orderId/chat', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.post('/dispute-orders/:orderId/chat', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
   try {
     const { message } = req.body;
     if (!message?.trim()) return res.status(400).json({ success: false, message: 'Message required' });
@@ -232,7 +232,7 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, isAdmin, async (re
 });
 
 // ── POST /api/admin/dispute-orders/:orderId/escalate ─────────────────────────
-router.post('/dispute-orders/:orderId/escalate', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.post('/dispute-orders/:orderId/escalate', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
   try {
     const { notes } = req.body;
     const { PaymentOrder } = getModels();
