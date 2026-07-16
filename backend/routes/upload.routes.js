@@ -192,9 +192,8 @@ router.post('/merchant/chat/:orderId/confirm-upload', merchantAuth, async (req, 
 // ═══════════════════════════════════════════════════════════════════════
 // 📸 PAYMENT PROOF — USER
 // User uploads a payment screenshot as a file (not a pasted URL).
-// The CDN URL is returned and stored on the PaymentOrder as proofScreenshot.
-// WalletModal uses this when the user taps "Upload Screenshot" instead
-// of pasting a link.
+// A presigned upload returns fileKey + cdnUrl; later routes must verify the
+// object exists before storing the CDN URL. Users cannot submit arbitrary URLs.
 // ═══════════════════════════════════════════════════════════════════════
 
 router.post('/user/payment-proof/:orderId/upload-url', authenticate, async (req, res) => {
@@ -242,7 +241,7 @@ router.post('/user/payment-proof/:orderId/upload-url', authenticate, async (req,
 /**
  * POST /api/user/payment-proof/:orderId/confirm-upload
  * Save the uploaded CDN URL onto the PaymentOrder as proofScreenshot.
- * Optional — WalletModal can also pass the URL directly in the PAID status update.
+ * The object is verified before the CDN URL is stored.
  */
 router.post('/user/payment-proof/:orderId/confirm-upload', authenticate, async (req, res) => {
   try {
@@ -274,7 +273,29 @@ router.post('/user/payment-proof/:orderId/confirm-upload', authenticate, async (
   }
 });
 
-// ── Profile picture & KYC doc upload (used by KYC modal + profile page) ────────
+
+// ── KYC document upload URLs — user files only, no arbitrary document URLs ────
+router.post('/user/kyc/:docType/upload-url', authenticate, async (req, res) => {
+  try {
+    const { docType } = req.params;
+    if (!['id-proof', 'selfie'].includes(docType)) {
+      return res.status(400).json({ success: false, message: 'Invalid KYC document type' });
+    }
+    const { fileName, contentType, fileSize } = req.body;
+    if (!fileName || !contentType || !fileSize)
+      return res.status(400).json({ success: false, message: 'fileName, contentType and fileSize required' });
+    const uploadData = await cdnService.generatePresignedUploadUrl({
+      fileName, contentType, fileSize: Number(fileSize),
+      category: `kyc/${docType}`, userId: req.user._id.toString()
+    });
+    res.json({ success: true, ...uploadData });
+  } catch (err) {
+    console.error('KYC upload-url error:', err.message);
+    res.status(503).json({ success: false, message: err.message || 'Failed to generate upload URL' });
+  }
+});
+
+// ── Profile picture upload (used by profile page) ────────────────────────────
 router.post('/user/profile/picture/upload-url', authenticate, async (req, res) => {
   try {
     const { fileName, contentType, fileSize } = req.body;
@@ -288,23 +309,25 @@ router.post('/user/profile/picture/upload-url', authenticate, async (req, res) =
       return res.status(400).json({ success: false, message: 'Max file size is 10 MB' });
     const uploadData = await cdnService.generatePresignedUploadUrl({
       fileName, contentType, fileSize: Number(fileSize),
-      category: 'kyc', userId: req.user._id.toString()
+      category: 'profile', userId: req.user._id.toString()
     });
     res.json({ success: true, ...uploadData });
   } catch (err) {
-    // If S3 not configured, tell client to use base64 fallback
     console.error('Profile picture upload-url error:', err.message);
-    res.status(503).json({ success: false, message: 'CDN not configured — use direct upload', fallback: true });
+    res.status(503).json({ success: false, message: 'CDN storage is not configured. File upload is unavailable.' });
   }
 });
 
 router.post('/user/profile/picture/confirm-upload', authenticate, async (req, res) => {
   try {
-    const { cdnUrl } = req.body;
-    if (!cdnUrl) return res.status(400).json({ success: false, message: 'cdnUrl required' });
+    const { fileKey, cdnUrl } = req.body;
+    if (!fileKey || !cdnUrl) return res.status(400).json({ success: false, message: 'fileKey and cdnUrl are required' });
+    const verified = await cdnService.verifyUploadedObject({
+      fileKey, cdnUrl, expectedUserId: req.user._id.toString(), expectedCategory: 'profile'
+    });
     const User = mongoose.model('User');
-    await User.findByIdAndUpdate(req.user._id, { profilePic: cdnUrl });
-    res.json({ success: true, cdnUrl });
+    await User.findByIdAndUpdate(req.user._id, { profilePic: verified.cdnUrl });
+    res.json({ success: true, cdnUrl: verified.cdnUrl });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -332,7 +355,7 @@ router.post('/merchant/qr/upload-url', merchantAuth, async (req, res) => {
     res.json({ success: true, ...uploadData });
   } catch (err) {
     console.error('Merchant QR upload-url error:', err.message);
-    res.status(503).json({ success: false, message: 'CDN not configured — use direct upload', fallback: true });
+    res.status(503).json({ success: false, message: 'CDN storage is not configured. File upload is unavailable.' });
   }
 });
 

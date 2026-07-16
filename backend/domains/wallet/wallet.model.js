@@ -14,7 +14,7 @@ const walletLedgerSchema = new mongoose.Schema({
   balanceAfter:  { type: Number, required: true },
   reason:        { type: String, required: true },
   // What caused this entry
-  refModel:      { type: String, enum: ['Bet', 'PaymentOrder', 'GiftCode', 'CheckIn', 'SpinWheel', 'Commission', 'AdminAdjustment', 'GameTransaction', 'Referral', 'VIP', 'Other'] },
+  refModel:      { type: String, enum: ['Bet', 'PaymentOrder', 'GiftCode', 'CheckIn', 'Commission', 'AdminAdjustment', 'GameTransaction', 'Referral', 'VIP', 'Other'] },
   refId:         { type: mongoose.Schema.Types.ObjectId },
   txId:          { type: String }, // uniqueness handled by schema.index({ txId:1 }) below
   createdAt:     { type: Date, default: Date.now, index: true },

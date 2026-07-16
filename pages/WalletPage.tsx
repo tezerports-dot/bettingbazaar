@@ -132,7 +132,7 @@ function BuyPaymentUI({
 }) {
   const snap = order.merchantSnapshot;
   const [utr, setUtr] = useState('');
-  const [screenshot, setScreenshot] = useState('');
+  const [screenshot, setScreenshot] = useState<{ cdnUrl: string; fileKey: string } | null>(null);
   const [uploading, setUploading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -158,11 +158,12 @@ function BuyPaymentUI({
     setUploading(true);
     setError('');
     try {
-      const urlRes: any = await apiClient.post('/api/upload/user/payment-proof/upload-url', {
-        orderId: order._id, fileName: file.name, contentType: file.type, fileSize: file.size,
+      const urlRes: any = await apiClient.post(`/api/upload/user/payment-proof/${order.orderId}/upload-url`, {
+        fileName: file.name, contentType: file.type, fileSize: file.size,
       });
       await fetch(urlRes.uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type } });
-      setScreenshot(urlRes.cdnUrl || urlRes.fileUrl || '');
+      if (!urlRes.fileKey || !urlRes.cdnUrl) throw new Error('Upload response missing file key');
+      setScreenshot({ cdnUrl: urlRes.cdnUrl, fileKey: urlRes.fileKey });
     } catch (err: any) {
       setError(err?.message || 'Upload failed. Try again.');
     } finally {
@@ -177,7 +178,7 @@ function BuyPaymentUI({
     setError('');
     try {
       await apiClient.post(`/api/payment/order/${order.orderId}/mark-paid`, {
-        utrNumber: utr.trim(), proofScreenshot: screenshot,
+        utrNumber: utr.trim(), proofFileKey: screenshot.fileKey, proofCdnUrl: screenshot.cdnUrl,
       });
       onPaid();
     } catch (err: any) {
@@ -269,10 +270,10 @@ function BuyPaymentUI({
         <label className="text-xs text-gray-400 block mb-1">Payment Screenshot</label>
         {screenshot ? (
           <div className="flex items-center gap-2 bg-green-500/10 rounded-xl p-3 border border-green-500/30">
-            <img src={screenshot} alt="proof" className="w-12 h-12 object-cover rounded" />
+            <img src={screenshot.cdnUrl} alt="proof" className="w-12 h-12 object-cover rounded" />
             <div className="flex-1">
               <p className="text-xs text-green-300">✅ Uploaded</p>
-              <button onClick={() => setScreenshot('')} className="text-xs text-red-400 hover:text-red-300">Remove</button>
+              <button onClick={() => setScreenshot(null)} className="text-xs text-red-400 hover:text-red-300">Remove</button>
             </div>
           </div>
         ) : (

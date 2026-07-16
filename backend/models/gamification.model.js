@@ -67,7 +67,7 @@ export const GiftCodeRedemption = mongoose.model('GiftCodeRedemption', giftCodeR
 // ---------------------------------------------------------------------------
 const bonusRecordSchema = new mongoose.Schema({
   userId:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-  type:        { type: String, enum: ['CHECK_IN', 'GIFT_CODE', 'REFERRAL_COMMISSION', 'ADMIN_CREDIT', 'SPIN_WHEEL', 'LEVEL_UP', 'FIRST_DEPOSIT', 'MANUAL'], required: true },
+  type:        { type: String, enum: ['CHECK_IN', 'GIFT_CODE', 'REFERRAL_COMMISSION', 'ADMIN_CREDIT', 'LEVEL_UP', 'FIRST_DEPOSIT', 'MANUAL'], required: true },
   amount:      { type: Number, required: true },
   description: { type: String, default: '' },
   refId:       { type: String },  // reference ID (gift code, betId, etc.)
@@ -84,31 +84,6 @@ export const BonusRecord = mongoose.model('BonusRecord', bonusRecordSchema);
 
 // ---------------------------------------------------------------------------
 // ANNOUNCEMENT — admin pushes site-wide notices to user panel
-// SPIN WHEEL — daily lucky spin for bonus
-// ---------------------------------------------------------------------------
-const spinWheelConfigSchema = new mongoose.Schema({
-  key:     { type: String, default: 'main', unique: true },
-  enabled: { type: Boolean, default: true },
-  cooldownHours: { type: Number, default: 24 },
-  segments: [{
-    label:       { type: String, required: true },   // "₹5", "₹50", "Try Again"
-    amount:      { type: Number, default: 0 },        // 0 = no win
-    probability: { type: Number, required: true },    // 0-1, must sum to 1
-    color:       { type: String, default: '#888' },
-  }],
-  updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  updatedAt: { type: Date, default: Date.now },
-});
-export const SpinWheelConfig = mongoose.model('SpinWheelConfig', spinWheelConfigSchema);
-
-const spinRecordSchema = new mongoose.Schema({
-  userId:   { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-  segment:  { type: String, required: true },
-  amount:   { type: Number, default: 0 },
-  spunAt:   { type: Date, default: Date.now, index: true },
-});
-export const SpinRecord = mongoose.model('SpinRecord', spinRecordSchema);
-
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 const leaderboardCacheSchema = new mongoose.Schema({

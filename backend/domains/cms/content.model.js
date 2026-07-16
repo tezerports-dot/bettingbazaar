@@ -159,10 +159,6 @@ const announcementSchema = new mongoose.Schema({
 });
 export const Announcement = mongoose.model('Announcement', announcementSchema);
 
-// ---------------------------------------------------------------------------
-// SPIN WHEEL — daily lucky spin for bonus
-// ---------------------------------------------------------------------------
-
 export const PromoContent  = mongoose.model('PromoContent',  promoContentSchema);
 export const Branding      = mongoose.model('Branding',      brandingSchema);
 export const CDNImage      = mongoose.model('CDNImage',      cdnImageSchema);

@@ -159,7 +159,7 @@ export async function debitWinningsForWithdrawal(userId, amount, orderId, extSes
 // ── CREDIT winnings ───────────────────────────────────────────────────────────
 /**
  * creditWinnings — credit `amount` to winningsBalance.
- * Used for: bet wins, referral commission, spin wheel, check-in, gift code bonuses.
+ * Used for: bet wins, referral commission, check-in, gift code bonuses.
  */
 export async function creditWinnings(userId, amount, reason, refModel, refId, txId, extSession) {
   amount = round2(amount);

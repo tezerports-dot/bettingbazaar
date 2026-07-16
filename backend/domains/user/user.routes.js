@@ -44,6 +44,7 @@ import { withdrawalLimiter } from '../../middleware/security.js';
 import { createSubnetLimiter, globalSurgeBreaker } from '../../middleware/ipDefense.js';
 import { authenticate } from '../identity/auth.middleware.js';
 import { lockWithdrawal, getUserLedger } from '../wallet/walletAuthority.service.js';
+import cdnService from '../../services/cdn.service.js';
 
 const router = express.Router();
 
@@ -378,11 +379,10 @@ router.put('/user/:userId/profile', authenticate, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
 
-    const { username, profilePic, email } = req.body;
+    const { username, email } = req.body;
     const User    = mongoose.model('User');
     const updates = {};
     if (username)   updates.username   = username.trim();
-    if (profilePic) updates.profilePic = profilePic;
     // Optional contact email (Phase E) — the EMAIL notification channel delivers
     // only to users who set one. Accept a valid address, or '' to clear it.
     if (email !== undefined) {
@@ -407,7 +407,7 @@ router.put('/user/:userId/profile', authenticate, async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/user/:userId/kyc  (auth required, atomic)
-// BUG-U7 FIX: Expects real URLs (from /content/upload) not placeholder strings.
+// Requires verified upload file keys; user-supplied document URLs are rejected.
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/user/:userId/kyc', authenticate, async (req, res) => {
   const session = await safeSession();
@@ -418,16 +418,22 @@ router.post('/user/:userId/kyc', authenticate, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
 
-    const { nameOnPAN, panNumber, idProofUrl, photoUrl } = req.body;
-    if (!nameOnPAN || !panNumber || !idProofUrl || !photoUrl) {
+    const { nameOnPAN, panNumber, idProofKey, idProofCdnUrl, photoKey, photoCdnUrl } = req.body;
+    if (!nameOnPAN || !panNumber || !idProofKey || !photoKey) {
       await abortOrEnd(session);
-      return res.status(400).json({ success: false, message: 'All KYC fields and document URLs are required' });
+      return res.status(400).json({ success: false, message: 'All KYC fields and uploaded document file keys are required' });
     }
-    // Guard against placeholder submissions (BUG-U7 root cause)
-    if (idProofUrl.includes('pending_upload') || photoUrl.includes('pending_upload')) {
-      await abortOrEnd(session);
-      return res.status(400).json({ success: false, message: 'Document upload required before submission' });
-    }
+
+    const [idProof, photo] = await Promise.all([
+      cdnService.verifyUploadedObject({
+        fileKey: idProofKey, cdnUrl: idProofCdnUrl || undefined,
+        expectedUserId: req.user._id.toString(), expectedCategory: 'kyc/id-proof'
+      }),
+      cdnService.verifyUploadedObject({
+        fileKey: photoKey, cdnUrl: photoCdnUrl || undefined,
+        expectedUserId: req.user._id.toString(), expectedCategory: 'kyc/selfie'
+      }),
+    ]);
 
     const User = mongoose.model('User');
     const updatedUser = await User.findByIdAndUpdate(
@@ -437,8 +443,8 @@ router.post('/user/:userId/kyc', authenticate, async (req, res) => {
         kycData: {
           nameOnPAN: nameOnPAN.trim().toUpperCase(),
           panNumber: panNumber.toUpperCase(),
-          idProofUrl,
-          photoUrl,
+          idProofUrl: idProof.cdnUrl,
+          photoUrl: photo.cdnUrl,
           submittedAt: new Date(),
           rejectionReason: ''
         }
