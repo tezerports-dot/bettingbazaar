@@ -105,5 +105,11 @@
     "minimatch": "^10.2.5",
     "uuid": "^14.0.1",
     "ws": "^8.21.1"
+  },
+  "allowScripts": {
+    "argon2@0.44.0": true,
+    "mongodb-memory-server@11.2.0": true,
+    "msgpackr-extract@3.0.4": true,
+    "esbuild@0.28.1": true
   }
 }
