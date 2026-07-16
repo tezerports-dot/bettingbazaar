@@ -102,7 +102,7 @@ export async function creditCommission(referrerId, amount, fromUserId, cycleId) 
  * Atomically moves amount from winningsBalance → lockedBalance.
  * Writes WalletLedger. Safe to retry (idempotent via withdrawalId).
  */
-export async function lockWithdrawal(userId, amount, withdrawalId) {
+export async function lockWithdrawal(userId, amount, withdrawalId, extSession) {
   const txId = `wd_lock_${withdrawalId}`;
   const User         = mongoose.model('User');
   const WalletLedger = mongoose.model('WalletLedger');
@@ -112,10 +112,9 @@ export async function lockWithdrawal(userId, amount, withdrawalId) {
     return { idempotent: true, txId };
   }
 
-  const session = await mongoose.startSession();
-  try {
+  const run = async (session) => {
     let result;
-    await session.withTransaction(async () => {
+    const work = async () => {
       const user = await User.findById(userId).session(session);
       if (!user) throw new Error('User not found');
 
@@ -139,18 +138,23 @@ export async function lockWithdrawal(userId, amount, withdrawalId) {
       );
 
       result = { winningsBefore: winBal, winningsAfter: newWinnings, lockedAfter: newLocked, txId };
-    });
+    };
+    if (extSession) await work();
+    else await session.withTransaction(work);
     return result;
-  } finally {
-    await session.endSession();
-  }
+  };
+
+  if (extSession) return run(extSession);
+  const session = await mongoose.startSession();
+  try { return await run(session); }
+  finally { await session.endSession(); }
 }
 
 /**
  * Approve withdrawal — burn lockedBalance (money leaves platform).
  * Writes WalletLedger entry. Idempotent.
  */
-export async function releaseWithdrawal(userId, amount, withdrawalId) {
+export async function releaseWithdrawal(userId, amount, withdrawalId, extSession) {
   const txId = `wd_release_${withdrawalId}`;
   const User         = mongoose.model('User');
   const WalletLedger = mongoose.model('WalletLedger');
@@ -159,10 +163,9 @@ export async function releaseWithdrawal(userId, amount, withdrawalId) {
     return { idempotent: true, txId };
   }
 
-  const session = await mongoose.startSession();
-  try {
+  const run = async (session) => {
     let result;
-    await session.withTransaction(async () => {
+    const work = async () => {
       const user = await User.findById(userId).session(session);
       if (!user) throw new Error('User not found');
 
@@ -184,11 +187,16 @@ export async function releaseWithdrawal(userId, amount, withdrawalId) {
       );
 
       result = { lockedBefore: lockedBal, lockedAfter: newLocked, txId };
-    });
+    };
+    if (extSession) await work();
+    else await session.withTransaction(work);
     return result;
-  } finally {
-    await session.endSession();
-  }
+  };
+
+  if (extSession) return run(extSession);
+  const session = await mongoose.startSession();
+  try { return await run(session); }
+  finally { await session.endSession(); }
 }
 
 /**
@@ -203,7 +211,7 @@ export async function releaseWithdrawal(userId, amount, withdrawalId) {
  * −amount, one ledger entry. txId format `refund_<id>` is kept identical to
  * the old delegation so historical idempotency continuity holds.
  */
-export async function refundWithdrawal(userId, amount, withdrawalId) {
+export async function refundWithdrawal(userId, amount, withdrawalId, extSession) {
   const txId = `refund_${withdrawalId}`;
   const User         = mongoose.model('User');
   const WalletLedger = mongoose.model('WalletLedger');
@@ -212,10 +220,9 @@ export async function refundWithdrawal(userId, amount, withdrawalId) {
     return { idempotent: true, txId };
   }
 
-  const session = await mongoose.startSession();
-  try {
+  const run = async (session) => {
     let result;
-    await session.withTransaction(async () => {
+    const work = async () => {
       const user = await User.findById(userId).session(session);
       if (!user) throw new Error('User not found');
 
@@ -240,15 +247,22 @@ export async function refundWithdrawal(userId, amount, withdrawalId) {
       );
 
       result = { winningsBefore: winBefore, winningsAfter: winAfter, lockedAfter, txId };
-    });
+    };
+    if (extSession) await work();
+    else await session.withTransaction(work);
     return result;
+  };
+
+  try {
+    if (extSession) return await run(extSession);
+    const session = await mongoose.startSession();
+    try { return await run(session); }
+    finally { await session.endSession(); }
   } catch (err) {
     if (err?.code === 11000 || /duplicate key/i.test(err?.message || '')) {
       return { idempotent: true, txId };
     }
     throw err;
-  } finally {
-    await session.endSession();
   }
 }
 

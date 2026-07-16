@@ -1,6 +1,7 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import { Cycle } from '../../models/index.js';
 import mongoose from 'mongoose';
+import crypto from 'crypto';
 
 // ── CYCLE PHASE OFFSETS (Business Config Audit, 2026-07-11) ───────────────────
 // Seconds BEFORE a cycle's endTime that each phase fires. Previously hardcoded
@@ -304,7 +305,7 @@ class CycleGenerator {
             } else if (realBombay > realDelhi) {
                 winner = 'DELHI';
             } else {
-                winner = Math.random() < 0.5 ? 'DELHI' : 'BOMBAY';
+                winner = crypto.randomInt(2) === 0 ? 'DELHI' : 'BOMBAY';
             }
 
             await Cycle.updateOne(

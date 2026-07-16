@@ -74,7 +74,7 @@ router.get('/announcements', async (req, res) => {
 router.get('/admin/announcements', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
     const Announcement = mongoose.model('Announcement');
-    const items = await Announcement.find().sort({ createdAt: -1 }).lean();
+    const items = await Announcement.find().sort({ createdAt: -1 }).limit(100).lean();
     res.json({ success: true, announcements: items });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
@@ -92,7 +92,14 @@ router.post('/admin/announcements', authenticate, isAdmin, async (req, res) => {
 router.put('/admin/announcements/:id', authenticate, isAdmin, async (req, res) => {
   try {
     const Announcement = mongoose.model('Announcement');
-    const item = await Announcement.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    const allowed = ['title', 'body', 'type', 'priority', 'expiresAt', 'isActive'];
+    const update = {};
+    for (const field of allowed) {
+      if (req.body[field] !== undefined) update[field] = req.body[field];
+    }
+    if (update.expiresAt) update.expiresAt = new Date(update.expiresAt);
+    const item = await Announcement.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true });
+    if (!item) return res.status(404).json({ success: false, message: 'Announcement not found' });
     res.json({ success: true, announcement: item });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });

@@ -2,7 +2,7 @@
 // Integration tests (real DB): the two remaining un-covered money flows —
 // the withdrawal lock lifecycle (walletAuthority) and the Merchant
 // Performance Bonus accounting rules (Revenue & Settlement).
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import mongoose from 'mongoose';
 import '../../models/index.js';
 import {
@@ -14,6 +14,7 @@ import {
   getAccountBalanceMinor,
 } from '../../domains/revenue/revenueSettlement.service.js';
 import { creditMerchantTokens } from '../../domains/merchant/merchantWallet.service.js';
+import { createWithdrawalOrder, cancelOrder } from '../../domains/payment/paymentProcessing.service.js';
 import { ACCOUNTS, EVENT_TYPES } from '../../domains/revenue/chartOfAccounts.js';
 
 const User = () => mongoose.model('User');
@@ -60,6 +61,41 @@ describe('withdrawal lock lifecycle (walletAuthority)', () => {
     const fresh = await User().findById(u._id).lean();
     expect(fresh.winningsBalance).toBe(500); // fully restored
     expect(fresh.lockedBalance).toBe(0);
+  });
+
+
+
+  it('payment withdrawal creation locks escrow and cancellation releases it without desync', async () => {
+    const timeoutSpy = vi.spyOn(global, 'setTimeout').mockReturnValue(0);
+    try {
+      const u = await User().create({
+        username: 'wduser4',
+        mobile: '9300000005',
+        winningsBalance: 1000,
+        depositBalance: 250,
+        kycStatus: 'APPROVED',
+        bankDetails: {
+          accountNumber: '1234567890',
+          ifscCode: 'TEST0001234',
+          bankName: 'Test Bank',
+          accountHolderName: 'WD User',
+        },
+      });
+
+      const created = await createWithdrawalOrder(String(u._id), 500);
+      expect(created.order.status).toBe('PENDING_QUEUE');
+
+      let fresh = await User().findById(u._id).lean();
+      expect(fresh.winningsBalance).toBe(500);
+      expect(fresh.lockedBalance).toBe(500);
+
+      await cancelOrder(String(u._id), false, created.order.orderId);
+      fresh = await User().findById(u._id).lean();
+      expect(fresh.winningsBalance).toBe(1000);
+      expect(fresh.lockedBalance).toBe(0);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
   });
 
   it('refuses to lock more than the withdrawable winnings balance', async () => {

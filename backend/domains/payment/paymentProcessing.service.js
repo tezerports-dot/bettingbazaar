@@ -9,7 +9,7 @@
 
 import mongoose from 'mongoose';
 import crypto   from 'crypto';
-import { debitWinningsForWithdrawal, creditDeposit, creditWinnings, refundOrder, lockWithdrawal, releaseWithdrawal } from '../wallet/walletAuthority.service.js';
+import { creditDeposit, lockWithdrawal, refundWithdrawal } from '../wallet/walletAuthority.service.js';
 import { selectBestMerchant } from '../merchant/merchantScoring.service.js';
 import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
 // Risk Platform (Phase 010): the single validation authority for funding orders.
@@ -153,11 +153,8 @@ function startPendingRetryLoop(orderId) {
 
         // Release escrow if WITHDRAWAL
         if (order.type === 'WITHDRAWAL' && order.escrowLocked) {
-          await creditWinnings(
-            order.userId, order.tokenAmount,
-            `Expired withdrawal escrow release: ${order.orderId}`,
-            'PaymentOrder', order._id, `expiry_refund_${order._id}`
-          ).catch(e => console.error('[startPendingRetryLoop] escrow release failed:', e.message));
+          await refundWithdrawal(order.userId, order.tokenAmount, order._id.toString())
+            .catch(e => console.error('[startPendingRetryLoop] escrow release failed:', e.message));
         }
 
         emitOrderUpdate(order.userId.toString(), 'order_expired', {
@@ -354,7 +351,7 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
 
     // Escrow: lock tokens from winningsBalance into lockedBalance via wallet authority
     // GOVERNANCE §7: all balance mutations go through walletAuthority.service.js
-    const debitResult = await debitWinningsForWithdrawal(String(user._id), tokenAmount, order._id.toString(), session);
+    const lockResult = await lockWithdrawal(String(user._id), tokenAmount, order._id.toString(), session);
 
     await order.save(withSession(session));
     await commitOrEnd(session);
@@ -384,8 +381,8 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
       },
       remainingBalance: {
         deposit:  user.depositBalance,
-        winnings: debitResult.winningsAfter ?? (user.winningsBalance - tokenAmount),
-        total:    user.depositBalance + (debitResult.winningsAfter ?? (user.winningsBalance - tokenAmount)),
+        winnings: lockResult.winningsAfter ?? (user.winningsBalance - tokenAmount),
+        total:    user.depositBalance + (lockResult.winningsAfter ?? (user.winningsBalance - tokenAmount)),
       },
       note: `You will receive ₹${fiatAmount.toLocaleString()} from merchant`,
     };
@@ -582,10 +579,7 @@ export async function cancelOrder(actorId, isAdmin, orderId) {
     throw Object.assign(new Error('Order cannot be cancelled at this stage'), { status: 400 });
 
   if (order.type === 'WITHDRAWAL' && order.escrowLocked) {
-    await creditWinnings(order.userId, order.tokenAmount,
-      `Withdrawal refund ${order.orderId}`, 'PaymentOrder', order._id,
-      `wd_refund_${order._id}`
-    );
+    await refundWithdrawal(order.userId, order.tokenAmount, order._id.toString());
     order.escrowLocked = false;
   }
 
@@ -621,11 +615,8 @@ export async function expireOrders() {
 
       // Release escrow if WITHDRAWAL
       if (order.type === 'WITHDRAWAL' && order.escrowLocked) {
-        await creditWinnings(
-          order.userId, order.tokenAmount,
-          `Expired withdrawal escrow release: ${order.orderId}`,
-          'PaymentOrder', order._id, `expiry_refund_${order._id}`
-        ).catch(e => console.error('[expireOrders] escrow release failed:', e.message));
+        await refundWithdrawal(order.userId, order.tokenAmount, order._id.toString())
+          .catch(e => console.error('[expireOrders] escrow release failed:', e.message));
       }
 
       // Update merchant scoring (failure)

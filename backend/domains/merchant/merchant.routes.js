@@ -4,7 +4,7 @@
 
 
 import express   from 'express';
-import { creditDeposit, creditReserve, refundOrder, creditWinnings, debitWinningsForWithdrawal } from '../wallet/walletAuthority.service.js';
+import { creditDeposit, creditReserve, refundWithdrawal, releaseWithdrawal } from '../wallet/walletAuthority.service.js';
 import mongoose  from 'mongoose';
 // AQ-2/AQ-8: sign via the single JWT authority; hash via the password authority
 // (argon2id + bcrypt verify-fallback). No direct bcrypt use remains here.
@@ -532,12 +532,11 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             order.status      = 'COMPLETED';
             order.completedAt = new Date();
         } else {
-            // WITHDRAWAL confirm: merchant paid out fiat → auto-complete
-            // GOVERNANCE §7: debitWinningsForWithdrawal is wallet authority
-            // Note: tokens were already locked (escrowed) on order creation.
-            // The escrow debit was already done by debitWinningsForWithdrawal at order creation.
-            // No additional debit needed — winnings already moved to lockedBalance.
-            // We just need to mark the order complete and clear the lock.
+            // WITHDRAWAL confirm: merchant paid out fiat → auto-complete.
+            // Burn the locked escrow through walletAuthority before clearing
+            // escrowLocked so retries cannot leave stranded or double-spent funds.
+            await releaseWithdrawal(order.userId, order.tokenAmount, order._id.toString());
+
             // Merchant receives tokens (their balance increases)
             // GOVERNANCE §1: via merchantWallet.service.js (sole tokenBalance writer)
             await creditMerchantTokens({
@@ -635,7 +634,7 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
         // Release escrow if WITHDRAWAL
         if (order.type === 'WITHDRAWAL' && order.escrowLocked) {
             try {
-                await refundOrder(order.userId, order.tokenAmount, order._id.toString(), 'winningsBalance');
+                await refundWithdrawal(order.userId, order.tokenAmount, order._id.toString());
                 order.escrowLocked = false;
             } catch (refundErr) {
                 console.error('[merchant reject] winnings refund failed:', refundErr.message);

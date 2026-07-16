@@ -1,6 +1,8 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Regression coverage for the 2026-07-16 security review fixes.
 import { describe, it, expect } from 'vitest';
+import fs from 'fs';
+import path from 'path';
 import { sanitizeInPlace } from '../../middleware/mongoSanitize.js';
 import { parseTrustProxy } from '../../config/network.config.js';
 
@@ -33,4 +35,27 @@ describe('security review regressions', () => {
     expect(parseTrustProxy('1')).toBe(1);
     expect(parseTrustProxy('10.0.0.0/8')).toBe('10.0.0.0/8');
   });
+
+  it('uses a CSPRNG for tied game-cycle winner selection', () => {
+    const source = fs.readFileSync(
+      path.resolve('backend/domains/markets/cycleGenerator.service.js'),
+      'utf8'
+    );
+
+    expect(source).toContain('crypto.randomInt(2)');
+    expect(source).not.toContain('Math.random() < 0.5');
+  });
+
+  it('allowlists announcement updates and bounds admin listing', () => {
+    const source = fs.readFileSync(
+      path.resolve('backend/routes/retention.routes.js'),
+      'utf8'
+    );
+
+    expect(source).toContain("const allowed = ['title', 'body', 'type', 'priority', 'expiresAt', 'isActive']");
+    expect(source).toContain('.limit(100)');
+    expect(source).not.toContain('findByIdAndUpdate(req.params.id, req.body');
+  });
+
+
 });
