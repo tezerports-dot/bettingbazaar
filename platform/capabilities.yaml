@@ -113,7 +113,7 @@ capabilities:
     bucket: B
     owner: app
     implementation_status: full
-    activation_status: dormant
+    activation_status: active
     evidence: [backend/postgres/dualWrite.js]
     verification: { test: backend/tests/integration/postgresDualWrite.integration.test.js }
   - id: CAP-13

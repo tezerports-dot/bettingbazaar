@@ -5,9 +5,9 @@
  *
  * PERMANENT architecture, not a shim (plan directive): this module, the
  * dual-write layer, and the reconciliation script are maintained core systems.
- * Activation is env-gated: DATABASE_URL unset (every current deploy) = the
- * whole Postgres layer is a documented no-op and the app behaves exactly as
- * before; set = pool opens and applySchema() runs idempotently at boot.
+ * Activation is production-required for the hybrid MongoDB + PostgreSQL money
+ * layer: DATABASE_URL opens the pool and applySchema() runs idempotently at boot.
+ * Non-production can still omit it for local Mongo-only development/tests.
  */
 import fs from 'fs';
 import path from 'path';
