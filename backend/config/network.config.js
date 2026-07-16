@@ -23,6 +23,15 @@ function parseList(v) {
   return String(v || '').split(',').map(s => s.trim()).filter(Boolean);
 }
 
+function parseTrustProxy(value) {
+  const raw = String(value ?? '').trim().toLowerCase();
+  if (!raw || raw === 'false' || raw === '0' || raw === 'none' || raw === 'direct') return false;
+  if (raw === 'true') return true;
+  const n = Number(raw);
+  if (Number.isInteger(n) && n >= 0) return n;
+  return value;
+}
+
 export const network = {
   // Port the app listens on (platform-injected on PaaS).
   port: Number(process.env.PORT || 8080),
@@ -42,6 +51,10 @@ export const network = {
 
   // CORS allowlist (unchanged semantics — server.js consumes).
   allowedOrigins: parseList(process.env.ALLOWED_ORIGINS),
+
+  // Fail closed for portability: direct/self-hosted deployments do not trust
+  // X-Forwarded-* unless TRUST_PROXY is explicitly configured (e.g. 1 behind Caddy).
+  trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
 };
 
 /**

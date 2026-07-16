@@ -15,7 +15,8 @@
  * arrays. Values are never altered — only offending keys are dropped.
  */
 
-const isForbiddenKey = (k) => k.startsWith('$') || k.includes('.');
+const PROTOTYPE_POLLUTION_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+const isForbiddenKey = (k) => k.startsWith('$') || k.includes('.') || PROTOTYPE_POLLUTION_KEYS.has(k);
 
 export function sanitizeInPlace(value, depth = 0) {
   if (value == null || typeof value !== 'object' || depth > 20) return value;

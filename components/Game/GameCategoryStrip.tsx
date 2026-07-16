@@ -46,7 +46,7 @@ const BASE_CARDS: Card[] = [
     path:    '/casino',
     title:   'CASINO',
     sub:     'Any time, any where',
-    tagline: 'Spin to win big!',
+    tagline: 'Play to win big!',
     icon:    '🃏',
     grad:    ['#1a0a1a', '#2d0d2d'],
     accent:  '#a78bfa',

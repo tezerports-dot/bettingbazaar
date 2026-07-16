@@ -53,10 +53,10 @@ router.post('/withdrawal/create', authenticate, withdrawalLimiter, createSubnetL
 
 router.post('/order/:orderId/mark-paid', authenticate, async (req, res) => {
   try {
-    const { utrNumber, proofScreenshot } = req.body;
+    const { utrNumber, proofFileKey, proofCdnUrl } = req.body;
     if (!utrNumber?.trim()) return res.status(400).json({ success: false, message: 'utrNumber is required' });
-    if (!proofScreenshot?.trim()) return res.status(400).json({ success: false, message: 'proofScreenshot (CDN URL) is required' });
-    const order = await markOrderPaid(req.user._id, req.params.orderId, utrNumber, proofScreenshot);
+    if (!proofFileKey?.trim()) return res.status(400).json({ success: false, message: 'proofFileKey is required. Upload a payment screenshot file first.' });
+    const order = await markOrderPaid(req.user._id, req.params.orderId, utrNumber, proofFileKey, proofCdnUrl);
     res.json({ success: true, message: 'Payment marked. Awaiting merchant review.', order });
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code, originalOrderId: err.originalOrderId }); }
 });
@@ -202,13 +202,20 @@ router.post('/order/:orderId/dispute', authenticate, async (req, res) => {
 
 router.post('/order/:orderId/status', authenticate, async (req, res) => {
   try {
-    const { status } = req.body;
+    const { status, reason = 'User requested dispute' } = req.body;
+    if (status !== 'DISPUTED') return res.status(400).json({ success: false, message: 'Only DISPUTED transition is supported here' });
     const PaymentOrder = mongoose.model('PaymentOrder');
-    const order = await PaymentOrder.findOne({ $or: [{ orderId: req.params.orderId }, { _id: req.params.orderId }] });
+    const order = await PaymentOrder.findOne({
+      $or: [{ orderId: req.params.orderId }, { _id: req.params.orderId.match(/^[0-9a-fA-F]{24}$/) ? req.params.orderId : null }],
+      userId: req.user._id,
+    });
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    const VALID = { PAID: ['DISPUTED'] };
-    if (!(VALID[order.status] || []).includes(status)) return res.status(400).json({ success: false, message: `Cannot transition ${order.status} → ${status}` });
-    order.status = status; order.updatedAt = new Date();
+    if (order.status !== 'PAID') return res.status(400).json({ success: false, message: `Cannot transition ${order.status} → ${status}` });
+    order.status = 'DISPUTED';
+    order.disputeReason = String(reason).trim().slice(0, 1000);
+    order.disputeRaisedAt = new Date();
+    order.disputeRaisedBy = 'user';
+    order.updatedAt = new Date();
     await order.save();
     emitAdminUpdate('queue_order_update', { orderId: order._id, status: order.status });
     res.json({ success: true, order });

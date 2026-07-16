@@ -39,11 +39,6 @@ const ProfilePage: React.FC = () => {
   const [formData, setFormData] = useState({ username: '', mobile: '', email: '', newPassword: '', confirmPassword: '' });
   const [bankData, setBankData] = useState({ accountHolderName: '', accountNumber: '', ifscCode: '', bankName: '' });
 
-  useEffect(() => {
-    const stored = localStorage.getItem(`device_user_img_${user?.id}`);
-    if (stored) setLocalProfilePic(stored);
-  }, [user?.id]);
-
   // BUG-U23 fix: use b.payout (real server payout amount) not hardcoded b.amount * 2
   const settledBets   = userBets.filter(b => b.status === 'WON' || b.status === 'LOST');
   const totalInvested = settledBets.reduce((acc, b) => acc + (b.amount || 0), 0);
@@ -129,16 +124,13 @@ const ProfilePage: React.FC = () => {
       reader.onloadend = () => setLocalProfilePic(reader.result as string);
       reader.readAsDataURL(file);
 
-      // Upload to S3/CDN
+      // Upload to S3/CDN. The backend confirm-upload route verifies the object
+      // and persists the CDN URL; users cannot submit arbitrary image URLs.
       const cdnUrl = await backend.uploadFile(file);
       setLocalProfilePic(cdnUrl);
-      // Save CDN URL to server profile (persists across devices)
-      await backend.updateUserProfile(user.id, { profilePic: cdnUrl });
-      // Also cache locally for instant display
-      localStorage.setItem(`device_user_img_${user.id}`, cdnUrl);
     } catch (err: any) {
-      // S3 not configured — keep base64 fallback in localStorage only
-      console.warn('S3 upload failed, using local cache:', err.message);
+      setLocalProfilePic(user?.profilePic || '');
+      alert(err?.message || 'Upload failed. Please try again.');
     } finally {
       setUploadingPic(false);
     }

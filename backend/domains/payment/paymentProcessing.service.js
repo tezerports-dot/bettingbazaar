@@ -16,6 +16,7 @@ import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
 import { assessFundingOrder, getRiskRules, computePayoutFeeMinor } from '../risk/riskValidation.service.js';
 import { markUTRAsUsed, releaseUTR }   from '../../middleware/utrValidation.js';
 import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
+import cdnService from '../../services/cdn.service.js';
 
 // ─── Session helpers (graceful degradation on standalone MongoDB) ─────────────
 async function safeSession() {
@@ -397,7 +398,7 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
 // ═════════════════════════════════════════════════════════════════════════════
 // markOrderPaid  — user submits UTR + screenshot (DEPOSIT only)
 // ═════════════════════════════════════════════════════════════════════════════
-export async function markOrderPaid(userId, orderId, utrNumber, proofScreenshot) {
+export async function markOrderPaid(userId, orderId, utrNumber, proofFileKey, proofCdnUrl = null) {
   const PaymentOrder = mongoose.model('PaymentOrder');
   const order = await PaymentOrder.findOne({ $or: [{ orderId }, { _id: orderId }] });
   if (!order) throw Object.assign(new Error('Order not found'), { status: 404 });
@@ -412,6 +413,14 @@ export async function markOrderPaid(userId, orderId, utrNumber, proofScreenshot)
   const normalizedUTR = utrNumber.toUpperCase().replace(/\s+/g, '');
   if (normalizedUTR.length < 12)
     throw Object.assign(new Error('UTR must be at least 12 characters'), { status: 400 });
+
+  const verifiedProof = await cdnService.verifyUploadedObject({
+    fileKey: proofFileKey.trim(),
+    cdnUrl: proofCdnUrl || undefined,
+    expectedUserId: userId.toString(),
+    expectedOrderId: order.orderId,
+    expectedCategory: 'payment-proof',
+  });
 
   try {
     await markUTRAsUsed(normalizedUTR, order._id, order.userId, order.fiatAmount);
@@ -431,7 +440,7 @@ export async function markOrderPaid(userId, orderId, utrNumber, proofScreenshot)
 
   order.status          = 'PAID';
   order.utrNumber       = normalizedUTR;
-  order.proofScreenshot = proofScreenshot.trim();
+  order.proofScreenshot = verifiedProof.cdnUrl;
   order.paidAt          = new Date();
   order.updatedAt       = new Date();
   await order.save();

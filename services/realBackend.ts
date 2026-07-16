@@ -699,8 +699,8 @@ export class RealBackend implements Backend {
   // Uses S3 presigned URL flow (IDrive E2 S3 + BunnyCDN delivery):
   //   1. POST /user/profile/picture/upload-url -> presigned S3 PUT URL (5 min expiry)
   //   2. PUT file directly to S3 from browser (no backend bandwidth)
-  //   3. POST /user/profile/picture/confirm-upload -> store CDN URL in User.profilePicture
-  // Falls back to base64 data URL only when S3 is not configured.
+  //   3. POST /user/profile/picture/confirm-upload -> verify object and store CDN URL in User.profilePic
+  // No URL/base64 fallback is allowed for persisted user images.
   async uploadImage(file: File) {
     const url = await this.uploadFile(file);
     return { url, imageUrl: url };
@@ -733,18 +733,8 @@ export class RealBackend implements Backend {
       });
       return urlRes.cdnUrl; // BunnyCDN URL -- globally accessible
     } catch (err: any) {
-      console.warn('S3 upload unavailable, using base64 fallback:', err.message);
-      return this._fileToDataUrl(file);
+      throw new Error(err?.message || 'Upload failed');
     }
-  }
-
-  private _fileToDataUrl(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result as string);
-      reader.onerror  = () => reject(new Error('File read failed'));
-      reader.readAsDataURL(file);
-    });
   }
 
   // -- SERVER TIME --------------------------------------------------------------

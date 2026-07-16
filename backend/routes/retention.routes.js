@@ -1,12 +1,11 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-import { creditWinnings, adminAdjustment } from '../domains/wallet/walletAuthority.service.js';
+import { adminAdjustment } from '../domains/wallet/walletAuthority.service.js';
 /**
- * retention.routes.js — Leaderboard, Spin Wheel, Announcements,
- * Bonus history, Balance Adjustment, VIP, Recharge requests
+ * retention.routes.js — Leaderboard, Announcements, Bonus history,
+ * Balance Adjustment, VIP, Recharge requests
  */
 import express from 'express';
 import mongoose from 'mongoose';
-import crypto from 'crypto';
 import { authenticate, isAdmin, isAdminOrSubAdmin } from '../domains/identity/auth.middleware.js';
 const router = express.Router();
 
@@ -61,68 +60,6 @@ export async function rebuildLeaderboard() {
     await LeaderboardCache.findOneAndUpdate({ period }, { entries, generatedAt: new Date() }, { upsert: true });
   }
 }
-
-// ── SPIN WHEEL ────────────────────────────────────────────────────────────────
-router.get('/spin/config', async (req, res) => {
-  try {
-    const SpinWheelConfig = mongoose.model('SpinWheelConfig');
-    let cfg = await SpinWheelConfig.findOne({ key: 'main' }).lean();
-    if (!cfg) cfg = { enabled: true, cooldownHours: 24, segments: [
-      { label:'₹5',  amount:5,   probability:0.30, color:'#F59E0B' },
-      { label:'₹10', amount:10,  probability:0.25, color:'#10B981' },
-      { label:'₹25', amount:25,  probability:0.15, color:'#3B82F6' },
-      { label:'₹50', amount:50,  probability:0.10, color:'#8B5CF6' },
-      { label:'₹100',amount:100, probability:0.05, color:'#EF4444' },
-      { label:'Try Again',amount:0,probability:0.15,color:'#6B7280' },
-    ]};
-    res.json({ success: true, config: cfg });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
-});
-
-router.post('/spin/spin', authenticate, async (req, res) => {
-  try {
-    const SpinWheelConfig = mongoose.model('SpinWheelConfig');
-    const SpinRecord = mongoose.model('SpinRecord');
-    const BonusRecord = mongoose.model('BonusRecord');
-    const User = mongoose.model('User');
-
-    const cfg = await SpinWheelConfig.findOne({ key: 'main' });
-    if (cfg?.enabled === false) return res.status(400).json({ success: false, message: 'Spin wheel is disabled' });
-
-    const hours = cfg?.cooldownHours || 24;
-    const lastSpin = await SpinRecord.findOne({ userId: req.user._id }).sort({ spunAt: -1 });
-    if (lastSpin && (Date.now() - lastSpin.spunAt.getTime()) < hours * 3600000) {
-      const nextSpin = new Date(lastSpin.spunAt.getTime() + hours * 3600000);
-      return res.status(400).json({ success: false, message: 'Already spun today', nextSpinAt: nextSpin });
-    }
-
-    const segments = cfg?.segments || [];
-    const rand = Math.random();
-    let cumulative = 0;
-    let winner = segments[segments.length - 1];
-    for (const seg of segments) { cumulative += seg.probability; if (rand <= cumulative) { winner = seg; break; } }
-
-    if (winner.amount > 0) {
-      // Spin winnings go to winningsBalance (withdrawable)
-      await creditWinnings(req.user._id, winner.amount, `Spin wheel: \${winner.label}`, 'SpinWheel', null, `spin_\${req.user._id}_\${Date.now()}`);
-      await BonusRecord.create({ userId: req.user._id, type: 'SPIN_WHEEL', amount: winner.amount, description: `Spin wheel: ${winner.label}` });
-    }
-    await SpinRecord.create({ userId: req.user._id, segment: winner.label, amount: winner.amount });
-
-    res.json({ success: true, result: winner, message: winner.amount > 0 ? `🎉 You won ${winner.label}!` : 'Better luck next time!' });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
-});
-
-router.put('/admin/spin/config', authenticate, isAdmin, async (req, res) => {
-  try {
-    const SpinWheelConfig = mongoose.model('SpinWheelConfig');
-    const { segments, cooldownHours, enabled } = req.body;
-    const total = segments?.reduce((s, seg) => s + seg.probability, 0) || 0;
-    if (segments && Math.abs(total - 1) > 0.01) return res.status(400).json({ success: false, message: 'Probabilities must sum to 1.0' });
-    const cfg = await SpinWheelConfig.findOneAndUpdate({ key: 'main' }, { segments, cooldownHours, enabled, updatedBy: req.user._id, updatedAt: new Date() }, { upsert: true, new: true });
-    res.json({ success: true, config: cfg });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
-});
 
 // ── ANNOUNCEMENTS ─────────────────────────────────────────────────────────────
 router.get('/announcements', async (req, res) => {

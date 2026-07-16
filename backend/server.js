@@ -90,7 +90,7 @@ import { initSSERoutes }  from './routes/sse.routes.js';
 
 // ─── APP SETUP ────────────────────────────────────────────────────────────────
 const app = express();
-app.set('trust proxy', 1);
+app.set('trust proxy', network.trustProxy);
 
 const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())

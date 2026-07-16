@@ -13,29 +13,45 @@ router.post('/redeem', authenticate, async (req, res) => {
     const GiftCode = mongoose.model('GiftCode');
     const GiftCodeRedemption = mongoose.model('GiftCodeRedemption');
     const BonusRecord = mongoose.model('BonusRecord');
-    const User = mongoose.model('User');
-
-    const gc = await GiftCode.findOne({ code: code.toUpperCase().trim() });
-    if (!gc || !gc.isActive) return res.status(404).json({ success: false, message: 'Invalid or expired code' });
-    if (gc.expiresAt && gc.expiresAt < new Date()) return res.status(400).json({ success: false, message: 'This code has expired' });
-    if (gc.usedCount >= gc.maxUses) return res.status(400).json({ success: false, message: 'This code has been fully redeemed' });
-
-    const alreadyUsed = await GiftCodeRedemption.findOne({ codeId: gc._id, userId: req.user._id });
+    const normalizedCode = code.toUpperCase().trim();
+    const alreadyUsed = await GiftCodeRedemption.findOne({ code: normalizedCode, userId: req.user._id });
     if (alreadyUsed) return res.status(400).json({ success: false, message: 'You have already used this code' });
 
-    await GiftCode.findByIdAndUpdate(gc._id, { $inc: { usedCount: 1 } });
-    await GiftCodeRedemption.create({ codeId: gc._id, code: gc.code, userId: req.user._id, amount: gc.amount });
+    const now = new Date();
+    const consumed = await GiftCode.findOneAndUpdate(
+      {
+        code: normalizedCode,
+        isActive: true,
+        $expr: { $lt: ['$usedCount', '$maxUses'] },
+        $or: [{ expiresAt: { $exists: false } }, { expiresAt: null }, { expiresAt: { $gt: now } }],
+      },
+      { $inc: { usedCount: 1 } },
+      { new: true }
+    );
+    if (!consumed) return res.status(400).json({ success: false, message: 'Invalid, expired, or fully redeemed code' });
+
+    try {
+      await GiftCodeRedemption.create({ codeId: consumed._id, code: consumed.code, userId: req.user._id, amount: consumed.amount });
+    } catch (err) {
+      if (err.code === 11000) {
+        await GiftCode.findByIdAndUpdate(consumed._id, { $inc: { usedCount: -1 } }).catch(() => {});
+        return res.status(400).json({ success: false, message: 'You have already used this code' });
+      }
+      await GiftCode.findByIdAndUpdate(consumed._id, { $inc: { usedCount: -1 } }).catch(() => {});
+      throw err;
+    }
+
     // Gift code credits: WINNINGS_BALANCE → creditWinnings, others → depositBalance
     // NOTE: Only winningsBalance is withdrawable; DEPOSIT type goes to non-withdrawable deposit balance
-    const txId = `giftcode_\${gc.code}_\${req.user._id}`;
-    if (gc.bonusType === 'WINNINGS_BALANCE' || gc.bonusType === 'TOKENS') {
-      await creditWinnings(req.user._id, gc.amount, `Gift code: \${gc.code}`, 'GiftCode', gc._id, txId);
+    const txId = `giftcode_${consumed.code}_${req.user._id}`;
+    if (consumed.bonusType === 'WINNINGS_BALANCE' || consumed.bonusType === 'TOKENS') {
+      await creditWinnings(req.user._id, consumed.amount, `Gift code: ${consumed.code}`, 'GiftCode', consumed._id, txId);
     } else {
-      await creditDeposit(req.user._id, gc.amount, txId);
+      await creditDeposit(req.user._id, consumed.amount, txId);
     }
-    await BonusRecord.create({ userId: req.user._id, type: 'GIFT_CODE', amount: gc.amount, description: `Gift code: ${gc.code}`, refId: gc.code });
+    await BonusRecord.create({ userId: req.user._id, type: 'GIFT_CODE', amount: consumed.amount, description: `Gift code: ${consumed.code}`, refId: consumed.code });
 
-    res.json({ success: true, amount: gc.amount, message: `🎁 ₹${gc.amount} credited to your account!` });
+    res.json({ success: true, amount: consumed.amount, message: `🎁 ₹${consumed.amount} credited to your account!` });
   } catch (err) {
     if (err.code === 11000) return res.status(400).json({ success: false, message: 'You have already used this code' });
     res.status(500).json({ success: false, message: err.message });

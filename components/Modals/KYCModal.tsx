@@ -1,15 +1,15 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
  * KYCModal.tsx  v4.3.0
- * BUG-U7 FIX: Uploads files to /content/upload FIRST to get real URLs,
- * then submits those URLs to /user/:id/kyc.
- * Previously hardcoded placeholder strings were sent → backend now rejects them.
+ * KYC files use presigned uploads and submit file keys.
+ * The backend verifies object existence/ownership before storing CDN URLs.
  */
 import React, { useState } from 'react';
 import Modal from '../ui/Modal';
 import { useGame } from '../../services/GameContext';
 import { getBackend } from '../../services/backend.service';
 import { Show } from '../ui/Show';
+import { apiClient } from '../../services/apiClient';
 
 const backend = getBackend();
 
@@ -49,24 +49,29 @@ const KYCModal: React.FC<KYCModalProps> = ({ onClose }) => {
     setUploadProgress('uploading');
 
     try {
-      // BUG-U7 FIX: Upload files FIRST to get real CDN URLs
-      const [idProofUrl, photoUrl] = await Promise.all([
-        backend.uploadFile(files.idProof),
-        backend.uploadFile(files.photo)
-      ]);
+      const uploadKycFile = async (docType: 'id-proof' | 'selfie', file: File) => {
+        const urlRes: any = await apiClient.post(`/api/upload/user/kyc/${docType}/upload-url`, {
+          fileName: file.name, contentType: file.type, fileSize: file.size,
+        });
+        await fetch(urlRes.uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type } });
+        if (!urlRes.fileKey || !urlRes.cdnUrl) throw new Error('Upload response missing file key');
+        return { fileKey: urlRes.fileKey, cdnUrl: urlRes.cdnUrl };
+      };
 
-      if (!idProofUrl || !photoUrl) {
-        throw new Error('File upload failed — please try again');
-      }
+      const [idProof, photo] = await Promise.all([
+        uploadKycFile('id-proof', files.idProof),
+        uploadKycFile('selfie', files.photo),
+      ]);
 
       setUploadProgress('done');
 
-      // Now submit with real URLs (not placeholder strings)
       await backend.uploadKYC(user.id, {
         nameOnPAN: kycData.nameOnPAN.trim().toUpperCase(),
         panNumber: kycData.panNumber.trim().toUpperCase(),
-        idProofUrl,
-        photoUrl
+        idProofKey: idProof.fileKey,
+        idProofCdnUrl: idProof.cdnUrl,
+        photoKey: photo.fileKey,
+        photoCdnUrl: photo.cdnUrl,
       });
 
       alert('✅ KYC Documents Submitted Successfully.\n\nOur compliance team will review your application within 24 hours.');
