@@ -51,6 +51,8 @@ function emit(level, msg, meta) {
   const userId = getContextUser();
   const tlsFingerprint = getTlsFingerprint();
   const safeMeta = meta && typeof meta === 'object' ? redact(meta) : meta;
+  const { ja3Hash: _metaJa3Hash, ...metaWithoutReservedFields } =
+    safeMeta && typeof safeMeta === 'object' ? safeMeta : {};
 
   if (process.env.NODE_ENV === 'production') {
     const rec = {
@@ -59,8 +61,8 @@ function emit(level, msg, meta) {
       msg: String(msg),
       ...(reqId ? { reqId } : {}),
       ...(userId ? { userId } : {}),
-      ...(tlsFingerprint?.ja3Hash ? { ja3Hash: tlsFingerprint.ja3Hash } : {}),
-      ...(safeMeta && typeof safeMeta === 'object' ? safeMeta : {}),
+      ...(tlsFingerprint?.trusted && tlsFingerprint.ja3Hash ? { ja3Hash: tlsFingerprint.ja3Hash } : {}),
+      ...metaWithoutReservedFields,
     };
     (level === 'error' ? console.error : console.log)(JSON.stringify(rec));
   } else {

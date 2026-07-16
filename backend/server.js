@@ -151,7 +151,6 @@ app.use(mongoSanitize);
 app.use(cookieParser());
 app.use(requestContext); // X-6: correlation id (before the logger, so it's logged)
 app.use(tlsFingerprintDefense); // JA3/TLS fingerprint policy from admin-managed SystemConfig
-startTlsFingerprintDefenseConfigRefresh();
 app.use(requestLogger);
 app.use(httpMetrics);    // item 33: Prometheus HTTP duration/count (bounded route labels)
 // Item 9: bound in-flight work at the edge — 503 the excess so overload can't
@@ -403,12 +402,13 @@ app.use(errorHandler);
 app.set('io', io);
 
 // ─── START ────────────────────────────────────────────────────────────────────
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ Server listening on port ${PORT}`);
-});
-
 Promise.allSettled([
-  connectMongoDB().then(() => seedAdminAccount()).then(() => seedGameRegistry()),
+  // Load the TLS policy before opening the listener. A failed initial read must
+  // fail startup rather than serving requests with the log-only defaults.
+  connectMongoDB()
+    .then(() => seedAdminAccount())
+    .then(() => seedGameRegistry())
+    .then(() => startTlsFingerprintDefenseConfigRefresh()),
   connectRedis().then(r => { global.redis = r; }),
   // Hybrid money DB (plan step 1): apply the Postgres schema when
   // DATABASE_URL is set; silent no-op otherwise. Dual-write hooks in the
@@ -423,10 +423,18 @@ Promise.allSettled([
   // CAP-74: attach the external event backbone (Kafka) when KAFKA_BROKERS is set.
   // No-op otherwise — the monolith keeps using the in-process bus only.
   import('./services/eventBackbone.js').then(m => m.configureFromEnv()).catch(e => console.error('[backbone] configure failed:', e.message)),
-]).then(() => {
+]).then((results) => {
+  if (results[0].status === 'rejected') {
+    console.error('❌ Startup failed while loading TLS fingerprint policy:', results[0].reason);
+    process.exitCode = 1;
+    return;
+  }
   console.log('✅ DB services initialized');
   registerCronJobs(rebuildLeaderboard);
   registerFundingEventSubscribers(); // Funding Platform (Phase 009) — eventBus wiring
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`✅ Server listening on port ${PORT}`);
+  });
 });
 
 // AQ-4: real graceful drain. Order matters — fail readiness FIRST so the load

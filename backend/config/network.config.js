@@ -23,6 +23,11 @@ function parseList(v) {
   return String(v || '').split(',').map(s => s.trim()).filter(Boolean);
 }
 
+function positiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 export function parseTrustProxy(value) {
   const raw = String(value ?? '').trim().toLowerCase();
   if (!raw || raw === 'false' || raw === '0' || raw === 'none' || raw === 'direct') return false;
@@ -55,6 +60,12 @@ export const network = {
   // Fail closed for portability: direct/self-hosted deployments do not trust
   // X-Forwarded-* unless TRUST_PROXY is explicitly configured (e.g. 1 behind Caddy).
   trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
+
+  // Outbound requests use the standard Node connection pool only. This is the
+  // central configuration point for service-to-service HTTP, not a proxy or
+  // fingerprint-routing mechanism.
+  outboundRequestTimeoutMs: positiveInteger(process.env.OUTBOUND_HTTP_TIMEOUT_MS, 10_000),
+  outboundUserAgent: (process.env.OUTBOUND_HTTP_USER_AGENT || 'BettingBazaar/1.0').trim(),
 };
 
 /**

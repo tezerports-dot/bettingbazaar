@@ -29,3 +29,6 @@ coverage/
 .nyc_output/
 uploads/
 tmp/
+
+user-panel/dist/
+user-panel/node_modules/

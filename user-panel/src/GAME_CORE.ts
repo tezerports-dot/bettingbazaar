@@ -10,7 +10,7 @@
  * ║                                                                          ║
  * ║  HOW TO USE                                                              ║
  * ║  ──────────                                                              ║
- * ║  Place this file at: src/GAME_CORE.ts  (root of your source tree)      ║
+ * ║  Place this file at: user-panel/src/GAME_CORE.ts      ║
  * ║                                                                          ║
  * ║  Then import in every file that needs it:                               ║
  * ║    import { PHASE, WINNER, PAYOUT, CELEBRATION } from '../GAME_CORE';   ║

@@ -1,15 +1,9 @@
+// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** @type {import('tailwindcss').Config} */
 export default {
   content: [
-    "./index.html",
-    "./merchant.html",
-    "./components/**/*.{js,ts,jsx,tsx}",
-    "./pages/**/*.{js,ts,jsx,tsx}",
-    "./services/**/*.{js,ts,jsx,tsx}",
-    "./App.tsx",
-    "./index.tsx",
-    "./MerchantApp.tsx",
-    "./merchant.tsx"
+    './index.html',
+    './src/**/*.{js,ts,jsx,tsx}',
   ],
   darkMode: 'class',
   theme: {

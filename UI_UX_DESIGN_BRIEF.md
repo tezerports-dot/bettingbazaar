@@ -230,7 +230,7 @@ BC.Game's vibrant discovery for games.
 stack is already React 18 + TypeScript + Vite 7 + Tailwind 3.4 + framer-motion 11.
 
 **Three front-ends live here:**
-- **User panel** (primary for this brief) — at the **repo root**: `App.tsx`,
+- **User panel** (primary for this brief) — in **`user-panel/src/`**: `App.tsx`,
   `pages/*.tsx`, `components/**`, `services/**`.
 - **Admin panel** — `admin-panel/src/**` (reuse the design system/tokens).
 - **Merchant panel** — `merchant-panel/src/**`.

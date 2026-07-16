@@ -1,3 +1,4 @@
+// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import { defineConfig } from 'vite';
 import { readFileSync, writeFileSync } from 'fs';
 import react from '@vitejs/plugin-react';

@@ -10,6 +10,7 @@
 //     actionLabel, relatedId, relatedType, expiresAt }) → per-channel result }
 
 import mongoose from 'mongoose';
+import { networkClient } from '../../services/networkClient.js';
 
 // ── IN_APP — live: persists a Notification document (the existing bell-icon
 // inbox all three panels already read). The Notification model/collection is
@@ -138,7 +139,7 @@ const sms = {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 8000);
     try {
-      const resp = await fetch(url, { method, headers, body, signal: ctrl.signal });
+      const resp = await networkClient.request(url, { method, headers, body, signal: ctrl.signal });
       return resp.ok
         ? { delivered: true, id: `sms-${Date.now()}` }
         : { delivered: false, reason: `Gateway HTTP ${resp.status}` };

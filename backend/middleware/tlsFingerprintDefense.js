@@ -27,7 +27,7 @@ function normalizeHashes(values) {
     .filter((v) => /^[a-f0-9]{32}$/.test(v)) )];
 }
 
-async function refreshConfig() {
+async function refreshConfig({ throwOnError = false } = {}) {
   try {
     const SystemConfig = mongoose.model('SystemConfig');
     const doc = await SystemConfig.findOne({ key: 'main' }).select('tlsFingerprintDefense').lean();
@@ -38,14 +38,17 @@ async function refreshConfig() {
       requireJa3Hash: !!s.requireJa3Hash,
       blockJa3Hashes: normalizeHashes(s.blockJa3Hashes),
     };
-  } catch {
-    // DB/model may not be ready during boot; keep defaults/env-safe behavior.
+  } catch (error) {
+    if (throwOnError) throw error;
+    logger.error('TLS fingerprint policy config refresh failed', { error });
   }
 }
 
-export function startTlsFingerprintDefenseConfigRefresh(everyMs = 30_000) {
+export async function startTlsFingerprintDefenseConfigRefresh(everyMs = 30_000) {
   if (refreshTimer) return;
-  refreshConfig();
+  // Do not serve with the permissive log-only defaults if the initial DB load
+  // fails; the server startup path awaits this call and fails closed.
+  await refreshConfig({ throwOnError: true });
   refreshTimer = setInterval(refreshConfig, everyMs);
   if (refreshTimer.unref) refreshTimer.unref();
 }

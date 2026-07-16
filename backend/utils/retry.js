@@ -22,6 +22,8 @@
  * default sensibly and are overridable per call; where a caller's retry budget is
  * a business decision, it passes values sourced from admin config (see callers).
  */
+import { networkClient } from '../services/networkClient.js';
+
 
 /** Sleep that resolves early (rejecting) if an AbortSignal fires. */
 export function sleep(ms, signal = null) {
@@ -105,7 +107,7 @@ export async function fetchWithRetry(url, init = {}, opts = {}) {
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
     let res;
     try {
-      res = await fetch(url, { ...init, signal: ctrl.signal });
+      res = await networkClient.request(url, { ...init, signal: ctrl.signal });
     } finally { clearTimeout(t); }
     if (RETRYABLE_STATUS.has(res.status)) {
       const e = new Error(`HTTP ${res.status}`);

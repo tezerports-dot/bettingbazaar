@@ -39,13 +39,19 @@ handle @backend {
         # JA3 headers when this secret matches TLS_FINGERPRINT_EDGE_SECRET.
         header_up X-Edge-Fingerprint-Secret {$TLS_FINGERPRINT_EDGE_SECRET:}
 
-        # Never pass client-supplied fingerprint headers through as-is. If you
-        # install a trusted JA3-capable Caddy module/sidecar, set these headers
-        # from that component after stripping inbound values.
+        # Never pass client-supplied fingerprint headers through as-is. A
+        # trusted JA3-capable Caddy module/sidecar must set
+        # {http.vars.trusted_ja3_hash} from the TLS ClientHello; this variable
+        # is the only JA3 source forwarded to Node.
         header_up -X-TLS-JA3-Hash
         header_up -X-TLS-JA3
         header_up -X-JA3-Hash
         header_up -X-JA3
+        header_up X-JA3-Hash {http.vars.trusted_ja3_hash}
+
+        # Static internal routing classification for upstream observability.
+        # This is not client-controlled and does not alter TLS or HTTP/2.
+        header_up X-Routing-Tier "default-defensive"
     }
 }
 

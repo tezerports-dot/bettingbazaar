@@ -15,11 +15,10 @@ FROM node:22-slim AS builder
 WORKDIR /app
 ENV NODE_ENV=production
 COPY . .
-RUN npm install --legacy-peer-deps \
- && ./node_modules/.bin/vite build \
- && (node scripts/inject-build-id.cjs || true) \
- && (cd admin-panel    && npm install --legacy-peer-deps && ./node_modules/.bin/vite build) \
- && (cd merchant-panel && npm install --legacy-peer-deps && ./node_modules/.bin/vite build)
+RUN npm ci --include=dev --legacy-peer-deps \
+ && (cd user-panel     && npm ci --include=dev --legacy-peer-deps && npm run build) \
+ && (cd admin-panel    && npm ci --include=dev --legacy-peer-deps && npm run build) \
+ && (cd merchant-panel && npm ci --include=dev --legacy-peer-deps && npm run build)
 
 # ── Stage 2: lean runtime — prod deps + backend + built dist only ─────────────
 FROM node:22-slim AS runtime
@@ -38,13 +37,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends wget gnupg ca-c
 
 # Production dependencies only — no vite/tsc/vitest/tailwind in the runtime image.
 COPY package.json package-lock.json* ./
-RUN npm install --omit=dev --legacy-peer-deps && npm cache clean --force
+RUN npm ci --omit=dev --legacy-peer-deps && npm cache clean --force
 
 # App source + built frontends (server.js serves ../dist, ../admin-panel/dist,
 # ../merchant-panel/dist relative to backend/).
 COPY backend ./backend
 COPY scripts ./scripts
-COPY --from=builder /app/dist                 ./dist
+COPY --from=builder /app/user-panel/dist      ./dist
 COPY --from=builder /app/admin-panel/dist     ./admin-panel/dist
 COPY --from=builder /app/merchant-panel/dist  ./merchant-panel/dist
 
