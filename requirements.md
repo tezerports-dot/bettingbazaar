@@ -240,7 +240,7 @@ interface TokenRates {
 4.  **Audit Logs**: All Admin actions are logged to `AuditLog` table with Timestamp, AdminID, Action, and Details.
 
 ## 7. Deployment Checklist
-1.  Ensure `React.StrictMode` is enabled in `index.tsx`.
+1.  Ensure `React.StrictMode` is enabled in `user-panel/src/index.tsx`.
 2.  Verify `metadata.json` permissions list is empty (unless camera needed for future KYC).
 3.  Ensure `mockBackend` persistence is cleared or seeded correctly for first run.
 4.  Verify Error Boundary catches simulated crashes.

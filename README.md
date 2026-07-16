@@ -23,15 +23,17 @@ The premier high-frequency prediction platform. Bet on Delhi vs Bombay in real-t
 ### 3. Local Development
 1. Open your Chromebook Terminal.
 2. `cd betting-bazaar`
-3. `npm install`
-4. `npm run dev` (Front-end preview)
-5. `npm run server` (Back-end start)
+3. `npm ci --legacy-peer-deps`
+4. `npm run install:panels`
+5. `npm run dev` (user-panel preview)
+6. `npm run build:user` (user-panel production build)
+7. `npm run start:local` (backend start)
 
 ## 📁 Project Structure
-* `/server`: Node.js/Express backend engine.
-* `/components`: Reusable React UI components.
-* `/pages`: Main application screens.
-* `/services`: Logic for connecting to the API and managing state.
+* `/user-panel`: Customer-facing React/Vite application.
+* `/admin-panel`: Admin React/Vite application.
+* `/merchant-panel`: Merchant React/Vite application.
+* `/backend`: Node.js/Express API and domain services.
 
 ## 🛡️ Security
 This app includes:

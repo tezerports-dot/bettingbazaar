@@ -164,7 +164,7 @@ compute, or default this value independently.
 ## 8. Route Ownership Rules
 
 - Each frontend has exactly one route-constants module:
-  - User panel: `constants.ts` → add `ROUTES` export as needed
+  - User panel: `user-panel/src/constants.ts` → add `ROUTES` export as needed
   - Admin panel: `admin-panel/src/utils/constants.ts` → `ADMIN_ROUTES` object (L-02)
   - Merchant panel: `merchant-panel/src/constants.ts` → `ROUTES` object
 - All `<Route>` tables, nav menus, and route guards import path strings from it.
@@ -312,7 +312,7 @@ Applied to this patch:
 
 ## 14. Monorepo Structure and Future Split Readiness (GAP-2)
 
-This is currently a monorepo with three frontends (`/` for user panel, `admin-panel/`, `merchant-panel/`)
+This is currently a monorepo with three frontends (`user-panel/`, `admin-panel/`, `merchant-panel/`)
 and one backend (`backend/`). The governance below ensures any future separation into three
 independent deployable repos is achievable without re-architecting.
 

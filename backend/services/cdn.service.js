@@ -73,7 +73,7 @@ const DISPUTE_EXTRA_MIME_TYPES = {
   'video/webm':      { exts: ['.webm'], maxSize: 50 * 1024 * 1024 },
 };
 
-function mimeRulesForCategory(category = '') {
+export function mimeRulesForCategory(category = '') {
   const key = String(category).toLowerCase();
   return key.startsWith('dispute') ? { ...IMAGE_MIME_TYPES, ...DISPUTE_EXTRA_MIME_TYPES } : IMAGE_MIME_TYPES;
 }
@@ -106,11 +106,13 @@ function validateUpload(fileName, contentType, fileSize, category = '') {
   // ── 1. Normalise and check MIME type ─────────────────────────────────────
   // Lowercase and strip any parameters (e.g. "image/jpeg; charset=utf-8")
   const mime = (contentType || '').toLowerCase().split(';')[0].trim();
-  const mimeRule = mimeRulesForCategory(category)[mime];
+  const mimeRules = mimeRulesForCategory(category);
+  const mimeRule = mimeRules[mime];
   if (!mimeRule) {
+    const allowedTypes = Object.keys(mimeRules).map((allowedMime) => allowedMime.replace('image/', '').toUpperCase()).join(', ');
     throw new Error(
       `File type "${mime}" is not allowed. ` +
-      `Allowed: JPEG, PNG, WebP, GIF; PDF/video only for dispute evidence`
+      `Allowed: ${allowedTypes}`
     );
   }
 
@@ -352,6 +354,34 @@ export async function deleteFile(fileKey) {
   }
 }
 
+export function matchesMagicBytes(contentType, bytes) {
+  const data = Buffer.from(bytes);
+  const startsWith = (signature) => data.subarray(0, signature.length).equals(Buffer.from(signature));
+  const isIsoMedia = () => data.length >= 12 && data.subarray(4, 8).equals(Buffer.from('ftyp'));
+
+  switch (contentType) {
+    case 'image/jpeg':
+    case 'image/jpg':
+      return startsWith([0xff, 0xd8, 0xff]);
+    case 'image/png':
+      return startsWith([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    case 'image/gif':
+      return startsWith('GIF87a') || startsWith('GIF89a');
+    case 'image/webp':
+      return data.length >= 12 && startsWith('RIFF') && data.subarray(8, 12).equals(Buffer.from('WEBP'));
+    case 'application/pdf':
+      return startsWith('%PDF-');
+    case 'video/mp4':
+      return isIsoMedia();
+    case 'video/quicktime':
+      return isIsoMedia() && data.subarray(8, 12).equals(Buffer.from('qt  '));
+    case 'video/webm':
+      return startsWith([0x1a, 0x45, 0xdf, 0xa3]);
+    default:
+      return false;
+  }
+}
+
 export async function verifyUploadedObject({ fileKey, cdnUrl, expectedUserId, expectedOrderId = null, expectedCategory = null }) {
   if (!fileKey || typeof fileKey !== 'string') throw new Error('fileKey is required');
   if (fileKey.includes('..') || fileKey.startsWith('/') || /\\/.test(fileKey)) throw new Error('Invalid file key');
@@ -363,6 +393,13 @@ export async function verifyUploadedObject({ fileKey, cdnUrl, expectedUserId, ex
   const meta = head.Metadata || {};
   if (expectedUserId && meta.userid !== String(expectedUserId)) throw new Error('Uploaded object owner mismatch');
   if (expectedOrderId && meta.orderid !== String(expectedOrderId)) throw new Error('Uploaded object order mismatch');
+  const contentType = (head.ContentType || '').toLowerCase().split(';')[0].trim();
+  const object = await s3Client.send(new GetObjectCommand({ Bucket: BUCKET_NAME, Key: fileKey, Range: 'bytes=0-8191' }));
+  if (!object.Body) throw new Error('Uploaded file content could not be read');
+  const bytes = await object.Body.transformToByteArray();
+  if (!matchesMagicBytes(contentType, bytes)) {
+    throw new Error('Uploaded file content does not match its declared type');
+  }
   return { fileKey, cdnUrl: expectedUrl, contentType: head.ContentType, contentLength: head.ContentLength, metadata: meta };
 }
 
@@ -494,5 +531,7 @@ export default {
   generateProfilePictureUploadUrl,
   generateBrandingUploadUrl,
   generatePromoUploadUrl,
+  mimeRulesForCategory,
+  matchesMagicBytes,
   testS3Connection,
 };

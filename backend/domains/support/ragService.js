@@ -29,6 +29,7 @@ import { chunkDocument } from './chunk.js';
 import { embedDocuments, embedQuery, embeddingsConfigured, embeddingInfo } from './embeddings.js';
 import { replaceDocument, retrieve, listDocuments, deleteDocument, stats } from './ragStore.js';
 import { pgConfigured } from '../../postgres/pgClient.js';
+import { networkClient } from '../../services/networkClient.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const KNOWLEDGE_DIR = path.join(__dirname, 'knowledge');
@@ -81,7 +82,7 @@ async function createAnthropicMessage({ model, maxTokens, system, userContent })
 
 async function createOpenAICompatibleMessage({ model, maxTokens, system, userContent }) {
   const baseUrl = (process.env.RAG_CHAT_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
-  const response = await fetch(`${baseUrl}/chat/completions`, {
+  const response = await networkClient.request(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',

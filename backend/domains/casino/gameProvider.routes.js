@@ -18,6 +18,7 @@ import { debitForGameProviderBet, creditWinnings, refundOrder } from '../wallet/
 import mongoose from 'mongoose';
 import crypto from 'crypto';
 import { authenticate, isAdmin, isAdminOrSubAdmin } from '../identity/auth.middleware.js';
+import { networkClient } from '../../services/networkClient.js';
 
 const router = express.Router();
 
@@ -145,7 +146,7 @@ router.post('/launch', authenticate, async (req, res) => {
             brand:    { id: provider.merchantId },
           },
         };
-        const resp = await fetch(`${provider.apiUrl}/api/ecashier/ams/v1/auth`, {
+        const resp = await networkClient.request(`${provider.apiUrl}/api/ecashier/ams/v1/auth`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -343,7 +344,7 @@ router.post('/admin/game-providers/:key/test', authenticate, isAdmin, async (req
     try {
       const ctrl = new AbortController();
       const timeout = setTimeout(() => ctrl.abort(), 5000);
-      await fetch(provider.apiUrl, { method: 'HEAD', signal: ctrl.signal });
+      await networkClient.request(provider.apiUrl, { method: 'HEAD', signal: ctrl.signal });
       clearTimeout(timeout);
       res.json({ success: true, message: `✓ ${provider.name} endpoint is reachable` });
     } catch (e) {

@@ -9,6 +9,12 @@ import { merchantAuth } from '../middleware/merchantAuth.js';
 
 const router = express.Router();
 
+function hasValidUploadInput(fileName, contentType, fileSize) {
+  return typeof fileName === 'string' && fileName.trim() &&
+    typeof contentType === 'string' && contentType.trim() &&
+    Number.isFinite(fileSize) && fileSize > 0;
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 
 
@@ -22,18 +28,19 @@ router.post('/user/chat/:orderId/upload-url', authenticate, async (req, res) => 
     const { orderId } = req.params;
     const { fileName, contentType, fileSize } = req.body;
 
-    if (!fileName || !contentType || !fileSize) {
+    if (!hasValidUploadInput(fileName, contentType, fileSize)) {
       return res.status(400).json({ success: false, message: 'fileName, contentType and fileSize are required' });
     }
 
     const CHAT_ALLOWED = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
-    const cleanMime = (contentType || '').toLowerCase().split(';')[0].trim();
+    const cleanMime = contentType.toLowerCase().split(';')[0].trim();
     if (!CHAT_ALLOWED.includes(cleanMime)) {
       return res.status(400).json({ success: false, message: 'Only JPEG, PNG, WebP, and GIF images are allowed' });
     }
 
-    if (fileSize > 20 * 1024 * 1024) {
-      return res.status(400).json({ success: false, message: 'Max file size is 20 MB' });
+    const chatMimeRule = cdnService.mimeRulesForCategory('chat')[cleanMime];
+    if (fileSize > chatMimeRule.maxSize) {
+      return res.status(400).json({ success: false, message: `Max file size is ${chatMimeRule.maxSize / (1024 * 1024)} MB` });
     }
 
     const PaymentOrder = mongoose.model('PaymentOrder');
@@ -107,18 +114,19 @@ router.post('/merchant/chat/:orderId/upload-url', merchantAuth, async (req, res)
     const { orderId } = req.params;
     const { fileName, contentType, fileSize } = req.body;
 
-    if (!fileName || !contentType || !fileSize) {
+    if (!hasValidUploadInput(fileName, contentType, fileSize)) {
       return res.status(400).json({ success: false, message: 'fileName, contentType and fileSize are required' });
     }
 
     const CHAT_ALLOWED = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
-    const cleanMime = (contentType || '').toLowerCase().split(';')[0].trim();
+    const cleanMime = contentType.toLowerCase().split(';')[0].trim();
     if (!CHAT_ALLOWED.includes(cleanMime)) {
       return res.status(400).json({ success: false, message: 'Only JPEG, PNG, WebP, and GIF images are allowed' });
     }
 
-    if (fileSize > 20 * 1024 * 1024) {
-      return res.status(400).json({ success: false, message: 'Max file size is 20 MB' });
+    const chatMimeRule = cdnService.mimeRulesForCategory('chat')[cleanMime];
+    if (fileSize > chatMimeRule.maxSize) {
+      return res.status(400).json({ success: false, message: `Max file size is ${chatMimeRule.maxSize / (1024 * 1024)} MB` });
     }
 
     const PaymentOrder = mongoose.model('PaymentOrder');
@@ -193,13 +201,13 @@ router.post('/user/payment-proof/:orderId/upload-url', authenticate, async (req,
     const { orderId } = req.params;
     const { fileName, contentType, fileSize } = req.body;
 
-    if (!fileName || !contentType || !fileSize) {
+    if (!hasValidUploadInput(fileName, contentType, fileSize)) {
       return res.status(400).json({ success: false, message: 'fileName, contentType, and fileSize are required' });
     }
 
     // Images only — strict exact MIME match (normalise before compare)
     const PROOF_ALLOWED = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
-    const cleanProofMime = (contentType || '').toLowerCase().split(';')[0].trim();
+    const cleanProofMime = contentType.toLowerCase().split(';')[0].trim();
     if (!PROOF_ALLOWED.includes(cleanProofMime)) {
       return res.status(400).json({ success: false, message: 'Only JPEG, PNG, WebP, and GIF image files are supported' });
     }
@@ -274,10 +282,10 @@ router.post('/user/kyc/:docType/upload-url', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid KYC document type' });
     }
     const { fileName, contentType, fileSize } = req.body;
-    if (!fileName || !contentType || !fileSize)
+    if (!hasValidUploadInput(fileName, contentType, fileSize))
       return res.status(400).json({ success: false, message: 'fileName, contentType and fileSize required' });
     const uploadData = await cdnService.generatePresignedUploadUrl({
-      fileName, contentType, fileSize: Number(fileSize),
+      fileName, contentType, fileSize,
       category: `kyc/${docType}`, userId: req.user._id.toString()
     });
     res.json({ success: true, ...uploadData });
@@ -291,16 +299,16 @@ router.post('/user/kyc/:docType/upload-url', authenticate, async (req, res) => {
 router.post('/user/profile/picture/upload-url', authenticate, async (req, res) => {
   try {
     const { fileName, contentType, fileSize } = req.body;
-    if (!fileName || !contentType || !fileSize)
+    if (!hasValidUploadInput(fileName, contentType, fileSize))
       return res.status(400).json({ success: false, message: 'fileName, contentType and fileSize required' });
     const PIC_ALLOWED = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
-    const cleanPicMime = (contentType || '').toLowerCase().split(';')[0].trim();
+    const cleanPicMime = contentType.toLowerCase().split(';')[0].trim();
     if (!PIC_ALLOWED.includes(cleanPicMime))
       return res.status(400).json({ success: false, message: 'Only JPG, PNG, WebP images allowed' });
-    if (Number(fileSize) > 10 * 1024 * 1024)
+    if (fileSize > 10 * 1024 * 1024)
       return res.status(400).json({ success: false, message: 'Max file size is 10 MB' });
     const uploadData = await cdnService.generatePresignedUploadUrl({
-      fileName, contentType, fileSize: Number(fileSize),
+      fileName, contentType, fileSize,
       category: 'profile', userId: req.user._id.toString()
     });
     res.json({ success: true, ...uploadData });
@@ -331,17 +339,17 @@ router.post('/user/profile/picture/confirm-upload', authenticate, async (req, re
 router.post('/merchant/qr/upload-url', merchantAuth, async (req, res) => {
   try {
     const { fileName, contentType, fileSize } = req.body;
-    if (!fileName || !contentType) return res.status(400).json({ success: false, message: 'fileName and contentType are required' });
+    if (!hasValidUploadInput(fileName, contentType, fileSize)) return res.status(400).json({ success: false, message: 'fileName and contentType are required' });
 
     const QR_ALLOWED = ['image/jpeg', 'image/png', 'image/webp'];
-    const cleanMime  = (contentType || '').toLowerCase().split(';')[0].trim();
+    const cleanMime  = contentType.toLowerCase().split(';')[0].trim();
     if (!QR_ALLOWED.includes(cleanMime))
       return res.status(400).json({ success: false, message: 'Only JPG, PNG, WebP allowed for QR code images' });
-    if (Number(fileSize) > 5 * 1024 * 1024)
+    if (fileSize > 5 * 1024 * 1024)
       return res.status(400).json({ success: false, message: 'Max file size is 5 MB' });
 
     const uploadData = await cdnService.generatePresignedUploadUrl({
-      fileName, contentType, fileSize: Number(fileSize),
+      fileName, contentType, fileSize,
       category: 'merchant-qr', userId: req.merchantId.toString(),
     });
     res.json({ success: true, ...uploadData });

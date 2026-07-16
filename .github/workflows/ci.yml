@@ -137,10 +137,11 @@ jobs:
       - name: Capability registry verification
         run: npm run verify:capabilities
       - name: User panel build
-        run: npx vite build
+        working-directory: user-panel
+        run: npm ci --legacy-peer-deps && npm run build
       - name: Admin panel typecheck + build
         working-directory: admin-panel
-        run: npm install && npx tsc --noEmit && npx vite build
+        run: npm ci --legacy-peer-deps && npx tsc --noEmit && npx vite build
       - name: Merchant panel typecheck + build
         working-directory: merchant-panel
-        run: npm install && npx tsc --noEmit && npx vite build
+        run: npm ci --legacy-peer-deps && npx tsc --noEmit && npx vite build
