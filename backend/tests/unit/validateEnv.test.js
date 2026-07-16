@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest';
 import { validateEnv } from '../../startup/validateEnv.js';
 
 const full = {
-  JWT_SECRET: 's', ORDER_HMAC_SECRET: 'h', MONGODB_URI: 'mongodb://x',
+  JWT_SECRET: 's', ORDER_HMAC_SECRET: 'h', MONGODB_URI: 'mongodb://x', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb',
   REDIS_URL: 'r', ALLOWED_ORIGINS: 'o', S3_BUCKET_NAME: 'b', METRICS_TOKEN: 'mt',
 };
 
@@ -22,11 +22,11 @@ describe('validateEnv', () => {
 
   it('lists every missing required var in the thrown message', () => {
     expect(() => validateEnv({ NODE_ENV: 'production' }, true))
-      .toThrow(/JWT_SECRET[\s\S]*MONGODB_URI/);
+      .toThrow(/JWT_SECRET[\s\S]*MONGODB_URI[\s\S]*DATABASE_URL/);
   });
 
   it('requires production hardening vars instead of silently falling back', () => {
-    expect(() => validateEnv({ JWT_SECRET: 's', MONGODB_URI: 'm', NODE_ENV: 'production' }, true))
+    expect(() => validateEnv({ JWT_SECRET: 's', MONGODB_URI: 'm', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb', NODE_ENV: 'production' }, true))
       .toThrow(/ORDER_HMAC_SECRET[\s\S]*REDIS_URL[\s\S]*ALLOWED_ORIGINS[\s\S]*S3_BUCKET_NAME[\s\S]*METRICS_TOKEN/);
   });
 

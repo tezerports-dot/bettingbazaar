@@ -23,7 +23,7 @@ function parseList(v) {
   return String(v || '').split(',').map(s => s.trim()).filter(Boolean);
 }
 
-function parseTrustProxy(value) {
+export function parseTrustProxy(value) {
   const raw = String(value ?? '').trim().toLowerCase();
   if (!raw || raw === 'false' || raw === '0' || raw === 'none' || raw === 'direct') return false;
   if (raw === 'true') return true;

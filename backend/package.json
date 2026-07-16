@@ -21,13 +21,18 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.0.3",
     "qrcode": "^1.5.3",
-    "socket.io": "^4.6.1",
-    "socket.io-client": "^4.6.1",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3",
     "tweetnacl": "^1.0.3",
     "tweetnacl-util": "^0.15.1",
-    "uuid": "^10.0.0"
+    "uuid": "^11.1.1"
   },
   "engines": {
     "node": ">=22.0.0"
+  },
+  "overrides": {
+    "fast-xml-parser": "^5.10.0",
+    "ws": "^8.21.0",
+    "qs": "^6.15.3"
   }
 }
