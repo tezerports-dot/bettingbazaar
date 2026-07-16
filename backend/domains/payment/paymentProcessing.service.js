@@ -9,7 +9,7 @@
 
 import mongoose from 'mongoose';
 import crypto   from 'crypto';
-import { debitWinningsForWithdrawal, creditDeposit, creditWinnings, refundOrder, lockWithdrawal, releaseWithdrawal } from '../wallet/walletAuthority.service.js';
+import { debitWinningsForWithdrawal, creditDeposit, creditReserve, refundWithdrawal } from '../wallet/walletAuthority.service.js';
 import { selectBestMerchant } from '../merchant/merchantScoring.service.js';
 import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
 // Risk Platform (Phase 010): the single validation authority for funding orders.
@@ -153,10 +153,8 @@ function startPendingRetryLoop(orderId) {
 
         // Release escrow if WITHDRAWAL
         if (order.type === 'WITHDRAWAL' && order.escrowLocked) {
-          await creditWinnings(
-            order.userId, order.tokenAmount,
-            `Expired withdrawal escrow release: ${order.orderId}`,
-            'PaymentOrder', order._id, `expiry_refund_${order._id}`
+          await refundWithdrawal(
+            order.userId, order.tokenAmount, order._id.toString()
           ).catch(e => console.error('[startPendingRetryLoop] escrow release failed:', e.message));
         }
 
@@ -364,10 +362,13 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
 
     // Auto-assign merchant immediately
     const assigned = await tryAssignMerchant(order);
-    if (!assigned) {
-      startPendingRetryLoop(order._id.toString());
-    } else {
+    if (assigned) {
       emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'ASSIGNED', server_ts: Date.now() });
+    } else {
+      // Sell orders become an open merchant pool item immediately. They do not
+      // consume the deposit retry loop because any eligible merchant may accept
+      // them later as their sell capacity opens up.
+      emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'PENDING_QUEUE', pool: 'SELL_OPEN_POOL', server_ts: Date.now() });
     }
 
     return {
@@ -582,10 +583,7 @@ export async function cancelOrder(actorId, isAdmin, orderId) {
     throw Object.assign(new Error('Order cannot be cancelled at this stage'), { status: 400 });
 
   if (order.type === 'WITHDRAWAL' && order.escrowLocked) {
-    await creditWinnings(order.userId, order.tokenAmount,
-      `Withdrawal refund ${order.orderId}`, 'PaymentOrder', order._id,
-      `wd_refund_${order._id}`
-    );
+    await refundWithdrawal(order.userId, order.tokenAmount, order._id.toString());
     order.escrowLocked = false;
   }
 
@@ -621,10 +619,8 @@ export async function expireOrders() {
 
       // Release escrow if WITHDRAWAL
       if (order.type === 'WITHDRAWAL' && order.escrowLocked) {
-        await creditWinnings(
-          order.userId, order.tokenAmount,
-          `Expired withdrawal escrow release: ${order.orderId}`,
-          'PaymentOrder', order._id, `expiry_refund_${order._id}`
+        await refundWithdrawal(
+          order.userId, order.tokenAmount, order._id.toString()
         ).catch(e => console.error('[expireOrders] escrow release failed:', e.message));
       }
 

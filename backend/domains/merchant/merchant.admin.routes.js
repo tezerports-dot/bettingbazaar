@@ -7,6 +7,32 @@ import { creditMerchantTokens, debitMerchantTokens } from './merchantWallet.serv
 
 const router = express.Router();
 
+async function reserveAdminMint(amount) {
+  const SystemConfig = mongoose.model('SystemConfig');
+  const inc = Number(amount);
+  const cfg = await SystemConfig.findOneAndUpdate(
+    {
+      key: 'main',
+      $expr: { $lte: [{ $add: [{ $ifNull: ['$adminTokenSupply.minted', 0] }, inc] }, { $ifNull: ['$adminTokenSupply.cap', 10000000000] }] },
+    },
+    {
+      $setOnInsert: { key: 'main', 'adminTokenSupply.cap': 10000000000 },
+      $inc: { 'adminTokenSupply.minted': inc },
+    },
+    { upsert: true, new: true }
+  ).lean();
+  if (!cfg) throw Object.assign(new Error('Admin token supply cap exceeded'), { status: 400 });
+  return cfg.adminTokenSupply;
+}
+
+async function rollbackAdminMint(amount) {
+  await mongoose.model('SystemConfig').findOneAndUpdate(
+    { key: 'main' },
+    { $inc: { 'adminTokenSupply.minted': -Number(amount) } }
+  ).catch(() => {});
+}
+
+
 router.get('/merchants', authenticate, isAdmin, async (req, res) => {
   try {
     const { User } = getModels();
@@ -452,24 +478,33 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
   try {
     const { merchantId }  = req.params;
     const { tokenAmount, note } = req.body;
+    const tokenAmountNum = Number(tokenAmount);
 
-    if (!tokenAmount || tokenAmount <= 0 || !Number.isFinite(tokenAmount)) {
+    if (!(tokenAmountNum > 0) || !Number.isFinite(tokenAmountNum)) {
       return res.status(400).json({ success: false, message: 'tokenAmount must be a positive number' });
     }
 
     const Merchant    = mongoose.model('Merchant');
     const Transaction = mongoose.model('Transaction');
 
-    // merchantId = Merchant._id
-    // GOVERNANCE §1: via merchantWallet.service.js (sole tokenBalance writer).
-    // Admin top-ups have no natural idempotency key — each request is a new
-    // funding action, so a fresh ObjectId is used (same semantics as before).
-    const { merchant } = await creditMerchantTokens({
-      merchantId, amount: tokenAmount,
-      reason: `Admin wallet top-up${note ? ` — ${note}` : ''}`,
-      refModel: 'Merchant', refId: String(merchantId),
-      txId: `mw_topup_${new mongoose.Types.ObjectId().toString()}`,
-    });
+    // merchantId = Merchant._id. Admin top-ups mint from the fixed 10B
+    // treasury cap before crediting the merchant wallet. Roll back the supply
+    // reservation if the wallet write fails.
+    let supply;
+    let creditResult;
+    try {
+      supply = await reserveAdminMint(tokenAmountNum);
+      creditResult = await creditMerchantTokens({
+        merchantId, amount: tokenAmountNum,
+        reason: `Admin wallet top-up${note ? ` — ${note}` : ''}`,
+        refModel: 'Merchant', refId: String(merchantId),
+        txId: `mw_topup_${new mongoose.Types.ObjectId().toString()}`,
+      });
+    } catch (mintErr) {
+      if (supply) await rollbackAdminMint(tokenAmountNum);
+      throw mintErr;
+    }
+    const { merchant } = creditResult;
 
     if (!merchant) {
       return res.status(404).json({ success: false, message: 'Merchant not found' });
@@ -479,27 +514,92 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
     await Transaction.create([{
       userId:      merchant.userId,
       type:        'DEPOSIT',
-      amount:      tokenAmount,
+      amount:      tokenAmountNum,
       balanceType: 'DEPOSIT',
       status:      'SUCCESS',
-      description: `Admin wallet top-up: +${tokenAmount} tokens` + (note ? ` — ${note}` : ''),
+      description: `Admin wallet top-up: +${tokenAmountNum} tokens` + (note ? ` — ${note}` : ''),
       referenceId: req.user._id.toString(),
       timestamp:   new Date()
     }]);
 
-    console.log(`💳 Admin ${req.user._id} funded merchant (userId:${merchantId}) +${tokenAmount} tokens → balance: ${merchant.tokenBalance}`);
+    console.log(`💳 Admin ${req.user._id} funded merchant (userId:${merchantId}) +${tokenAmountNum} tokens → balance: ${merchant.tokenBalance}`);
 
     res.json({
       success:          true,
-      message:          `Merchant wallet credited with ${tokenAmount} tokens`,
+      message:          `Merchant wallet credited with ${tokenAmountNum} tokens`,
       merchantUserId:   merchantId,
-      tokenAmountAdded: tokenAmount,
+      tokenAmountAdded: tokenAmountNum,
       newTokenBalance:  merchant.tokenBalance
     });
 
   } catch (error) {
     console.error('❌ Admin fund merchant error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fund merchant wallet' });
+    res.status(error.status || 500).json({ success: false, message: error.message || 'Failed to fund merchant wallet' });
+  }
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Merchant admin-token purchase workflow: merchant requests once/day with USDT
+// proof; admin approval mints from the fixed supply cap into merchant wallet.
+router.get('/merchant-token-orders', authenticate, isAdmin, async (req, res) => {
+  try {
+    const MerchantAdminTokenOrder = mongoose.model('MerchantAdminTokenOrder');
+    const { status } = req.query;
+    const query = status ? { status } : {};
+    const orders = await MerchantAdminTokenOrder.find(query).sort({ requestedAt: -1 }).populate('merchantId', 'name username mobile tokenBalance adminUsdtRate').lean();
+    res.json({ success: true, orders });
+  } catch (error) {
+    console.error('GET /admin/merchant-token-orders error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch merchant token orders' });
+  }
+});
+
+router.post('/merchant-token-orders/:orderId/approve', authenticate, isAdmin, async (req, res) => {
+  try {
+    const MerchantAdminTokenOrder = mongoose.model('MerchantAdminTokenOrder');
+    const order = await MerchantAdminTokenOrder.findOneAndUpdate(
+      { _id: req.params.orderId, status: 'PENDING' },
+      { $set: { status: 'APPROVED', reviewedAt: new Date(), reviewedBy: req.user._id, reviewNote: req.body.note || '' } },
+      { new: true }
+    );
+    if (!order) return res.status(404).json({ success: false, message: 'Pending merchant token order not found' });
+    let supply;
+    try {
+      supply = await reserveAdminMint(order.tokenAmount);
+      const { merchant } = await creditMerchantTokens({
+        merchantId: order.merchantId,
+        amount: order.tokenAmount,
+        reason: `Admin token purchase approved: ${order.orderId}`,
+        refModel: 'MerchantAdminTokenOrder',
+        refId: String(order._id),
+        txId: `mw_admin_purchase_${order._id}`,
+      });
+      return res.json({ success: true, order, merchant, supply });
+    } catch (err) {
+      if (supply) await rollbackAdminMint(order.tokenAmount);
+      await MerchantAdminTokenOrder.findByIdAndUpdate(order._id, { $set: { status: 'PENDING', reviewedAt: null, reviewedBy: null, reviewNote: '' } });
+      throw err;
+    }
+  } catch (error) {
+    console.error('POST /admin/merchant-token-orders/:orderId/approve error:', error);
+    res.status(error.status || 500).json({ success: false, message: error.message || 'Failed to approve merchant token order' });
+  }
+});
+
+router.post('/merchant-token-orders/:orderId/reject', authenticate, isAdmin, async (req, res) => {
+  try {
+    const MerchantAdminTokenOrder = mongoose.model('MerchantAdminTokenOrder');
+    const order = await MerchantAdminTokenOrder.findOneAndUpdate(
+      { _id: req.params.orderId, status: 'PENDING' },
+      { $set: { status: 'REJECTED', reviewedAt: new Date(), reviewedBy: req.user._id, reviewNote: req.body.reason || 'Rejected by admin' } },
+      { new: true }
+    );
+    if (!order) return res.status(404).json({ success: false, message: 'Pending merchant token order not found' });
+    res.json({ success: true, order });
+  } catch (error) {
+    console.error('POST /admin/merchant-token-orders/:orderId/reject error:', error);
+    res.status(500).json({ success: false, message: 'Failed to reject merchant token order' });
   }
 });
 
@@ -552,7 +652,7 @@ router.post('/merchants/:merchantId/deduct', authenticate, isAdmin, async (req, 
     await Transaction.create([{
       userId:      merchant.userId,
       type:        'WITHDRAWAL',
-      amount:      tokenAmount,
+      amount:      tokenAmountNum,
       balanceType: 'DEPOSIT',
       status:      'SUCCESS',
       description: `Admin wallet deduction: -${tokenAmount} tokens — ${String(reason).trim()}`,

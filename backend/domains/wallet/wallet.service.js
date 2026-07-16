@@ -133,7 +133,7 @@ export async function debitWinningsForWithdrawal(userId, amount, orderId, extSes
 
     const newWinnings = round2(winBal - amount);
     await User.findByIdAndUpdate(userId,
-      { $inc: { winningsBalance: -amount } }, { session });
+      { $inc: { winningsBalance: -amount, lockedBalance: amount } }, { session });
 
     await WalletLedger.create([{
       userId, type: 'DEBIT', field: 'winningsBalance',
@@ -142,8 +142,9 @@ export async function debitWinningsForWithdrawal(userId, amount, orderId, extSes
       refModel: 'PaymentOrder', refId: orderId, txId: tid,
     }], { session });
 
+    const newLocked = round2((user.lockedBalance || 0) + amount);
     sseBalancePush(userId, user.depositBalance || 0, newWinnings);
-    return { winningsBefore: winBal, winningsAfter: newWinnings, txId: tid };
+    return { winningsBefore: winBal, winningsAfter: newWinnings, lockedAfter: newLocked, txId: tid };
   };
 
   if (extSession) return run(extSession);

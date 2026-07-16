@@ -66,10 +66,16 @@ export async function debitForBet(userId, amount, betId, cycleId, session) {
  *   creditWinnings(userId, amount, reason, refId, txId)          ← gameEngine / settlement
  *   creditWinnings(userId, amount, reason, refModel, refId, txId) ← direct calls
  */
-export async function creditWinnings(userId, amount, reason, refIdOrModel, txIdOrRefId, maybeTxId) {
+export async function creditWinnings(userId, amount, reason, refIdOrModel, txIdOrRefId, maybeTxId, maybeSession) {
   // Detect which overload was used
-  let refModel, refId, txId;
-  if (maybeTxId !== undefined) {
+  let refModel, refId, txId, session;
+  if (maybeSession !== undefined) {
+    // 7-arg: (userId, amount, reason, refModel, refId, txId, session)
+    refModel  = refIdOrModel;
+    refId     = txIdOrRefId;
+    txId      = maybeTxId;
+    session   = maybeSession;
+  } else if (maybeTxId !== undefined) {
     // 6-arg: (userId, amount, reason, refModel, refId, txId)
     refModel  = refIdOrModel;
     refId     = txIdOrRefId;
@@ -80,7 +86,7 @@ export async function creditWinnings(userId, amount, reason, refIdOrModel, txIdO
     refId     = refIdOrModel;
     txId      = txIdOrRefId;
   }
-  return _creditWinnings(userId, amount, reason || 'Bet win payout', refModel, refId, txId);
+  return _creditWinnings(userId, amount, reason || 'Bet win payout', refModel, refId, txId, session);
 }
 
 /**
