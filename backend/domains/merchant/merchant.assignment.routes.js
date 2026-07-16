@@ -36,44 +36,11 @@ function buildSnapshot(merchantDoc, expiresAt) {
   };
 }
 
-// ─── GET /api/admin/payment-queue ─────────────────────────────────────────────────
-router.get('/payment-queue', authenticate, isAdminOrSubAdmin, async (req, res) => {
-  try {
-    const { status } = req.query;
-    const { PaymentOrder } = getModels();
-    const query = {};
-    if (status && status !== 'all') query.status = status;
-    const orders = await PaymentOrder.find(query)
-      .populate('userId',     'username mobile kycStatus')
-      .populate('merchantId', 'username mobile')
-      .sort({ createdAt: -1 })
-      .limit(200)
-      .lean();
-    const grouped = {
-      pending:    orders.filter(o => o.status === 'PENDING_QUEUE'),
-      assigned:   orders.filter(o => o.status === 'ASSIGNED'),
-      processing: orders.filter(o => o.status === 'PROCESSING'),
-      paid:       orders.filter(o => o.status === 'PAID'),
-      disputed:   orders.filter(o => o.status === 'DISPUTED'),
-      completed:  orders.filter(o => o.status === 'COMPLETED'),
-    };
-    res.json({
-      success: true, orders, grouped,
-      stats: {
-        pending:    grouped.pending.length,
-        assigned:   grouped.assigned.length,
-        processing: grouped.processing.length,
-        paid:       grouped.paid.length,
-        disputed:   grouped.disputed.length,
-        completed:  grouped.completed.length,
-        total:      orders.length,
-      },
-    });
-  } catch (error) {
-    console.error('GET /payment-queue error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch Payment queue' });
-  }
-});
+// NOTE: GET /payment-queue is intentionally not registered in the Merchant
+// domain. The canonical queue listing lives in the Payment domain
+// (domains/payment/paymentOrder.routes.js), where it enforces the granular
+// canViewTransactions permission. Keeping this route here shadowed the Payment
+// route because merchant.assignment.routes.js is mounted first.
 
 // ─── POST /api/admin/payment-orders/:id/assign ───────────────────────────────────
 // Dedicated assign endpoint. Creates merchantSnapshot + 10-min timer.

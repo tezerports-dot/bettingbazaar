@@ -75,7 +75,6 @@ import recoveryRoutes     from './routes/account-recovery.routes.js';
 import winnersRoutes      from './routes/winners.routes.js';
 
 
-import vipRoutes          from './routes/vip.routes.js';
 import { requestLogger }  from './middleware/requestLogger.js';
 import { errorHandler }   from './middleware/errorHandler.js';
 import { requestContext } from './middleware/requestContext.js'; // X-6: correlation ids
@@ -353,7 +352,9 @@ app.use('/api/referral',  referralRoutes);
 app.use('/api/giftcode',  giftCodeRoutes);
 app.use('/api/payment',   paymentCfgRoutes);
 app.use('/api',           retentionRoutes);
-app.use('/api/vip',       vipRoutes);
+// /api/vip routes are provided by retentionRoutes above. The legacy
+// vip router was removed to avoid shadowed, schema-incompatible duplicates
+// for /api/vip/config and /api/vip/my.
 
 // ─── GAME ENGINE + SSE ───────────────────────────────────────────────────────
 const sseManager     = new SSEManager();

@@ -7,7 +7,7 @@
  * in retrieved content, NOT free-form generation.
  *
  * Flow:  ingest → chunk → embed (Voyage) → store (pgvector)
- *        ask    → embed query → cosine top-K retrieve → generate (Claude)
+ *        ask    → embed query → cosine top-K retrieve → generate (provider adapter)
  *
  * Two independent activation gates, reported separately by ragStatus() so an
  * operator can see exactly what is missing:
@@ -36,10 +36,90 @@ const MAX_CONTEXT_CHARS = 8000;
 
 // ── Activation gates ──────────────────────────────────────────────────────────
 export function retrievalReady()  { return pgConfigured() && embeddingsConfigured(); }
-export function generationReady()  { return !!(process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.trim()); }
+
+function generationProvider() {
+  return (process.env.RAG_GENERATION_PROVIDER || 'anthropic').trim().toLowerCase();
+}
+
+function openAICompatibleKey() {
+  return process.env.RAG_CHAT_API_KEY || process.env.OPENAI_API_KEY || '';
+}
+
+export function generationReady()  {
+  switch (generationProvider()) {
+    case 'openai':
+    case 'openai-compatible':
+    case 'custom':
+      return !!openAICompatibleKey().trim();
+    case 'anthropic':
+    default:
+      return !!(process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.trim());
+  }
+}
 export function ragEnabled()       { return retrievalReady() && generationReady(); }
 
-function generationModel() { return process.env.RAG_MODEL || 'claude-opus-4-8'; }
+function generationModel() {
+  if (generationProvider() === 'anthropic') return process.env.RAG_MODEL || 'claude-opus-4-8';
+  return process.env.RAG_MODEL || process.env.RAG_CHAT_MODEL || 'gpt-4.1-mini';
+}
+
+async function createAnthropicMessage({ model, maxTokens, system, userContent }) {
+  const { default: Anthropic } = await import('@anthropic-ai/sdk');
+  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const msg = await client.messages.create({
+    model,
+    max_tokens: maxTokens,
+    system,
+    messages: [{ role: 'user', content: userContent }],
+  });
+  return (msg.content || [])
+    .filter((b) => b.type === 'text')
+    .map((b) => b.text)
+    .join('\n')
+    .trim();
+}
+
+async function createOpenAICompatibleMessage({ model, maxTokens, system, userContent }) {
+  const baseUrl = (process.env.RAG_CHAT_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${openAICompatibleKey()}`,
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: maxTokens,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: userContent },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    let detail = '';
+    try { detail = JSON.stringify(await response.json()); } catch { detail = await response.text().catch(() => ''); }
+    throw new Error(`OpenAI-compatible chat API failed (${response.status}): ${detail || response.statusText}`);
+  }
+
+  const data = await response.json();
+  return String(data.choices?.[0]?.message?.content || '').trim();
+}
+
+async function generateGroundedAnswer({ system, userContent }) {
+  const model = generationModel();
+  const maxTokens = Number(process.env.RAG_MAX_TOKENS || 1024);
+  switch (generationProvider()) {
+    case 'openai':
+    case 'openai-compatible':
+    case 'custom':
+      return { answerText: await createOpenAICompatibleMessage({ model, maxTokens, system, userContent }), model };
+    case 'anthropic':
+    default:
+      return { answerText: await createAnthropicMessage({ model, maxTokens, system, userContent }), model };
+  }
+}
 
 export async function ragStatus() {
   const store = await stats().catch(() => ({ configured: pgConfigured(), documents: 0, chunks: 0 }));
@@ -47,6 +127,7 @@ export async function ragStatus() {
     enabled: ragEnabled(),
     retrievalReady: retrievalReady(),
     generationReady: generationReady(),
+    generationProvider: generationProvider(),
     embedding: embeddingInfo(),
     generationModel: generationModel(),
     store,
@@ -148,7 +229,7 @@ export async function answer({ query, category = null, topK = 5 }) {
   const q = String(query || '').trim();
   if (!q) throw Object.assign(new Error('query is required'), { status: 400 });
   if (!retrievalReady())  throw Object.assign(new Error('RAG retrieval not configured.'),  { status: 503 });
-  if (!generationReady()) throw Object.assign(new Error('RAG generation not configured (ANTHROPIC_API_KEY unset).'), { status: 503 });
+  if (!generationReady()) throw Object.assign(new Error('RAG generation not configured for selected provider.'), { status: 503 });
 
   const queryVec = await embedQuery(q);
   const rows = await retrieve(queryVec, { topK, category, minScore: 0.2 });
@@ -171,21 +252,10 @@ export async function answer({ query, category = null, topK = 5 }) {
     'Answer using only the context above. Cite passages as [n]. If the context does ' +
     "not answer the question, say so and suggest contacting support.";
 
-  // Lazy-import the SDK so importing this module (app boot, unit tests) never
-  // requires ANTHROPIC_API_KEY — mirrors the pg dynamic-import dormancy pattern.
-  const { default: Anthropic } = await import('@anthropic-ai/sdk');
-  const client = new Anthropic();
-  const msg = await client.messages.create({
-    model: generationModel(),
-    max_tokens: Number(process.env.RAG_MAX_TOKENS || 1024),
+  const { answerText, model } = await generateGroundedAnswer({
     system: SYSTEM_PROMPT,
-    messages: [{ role: 'user', content: userContent }],
+    userContent,
   });
-  const answerText = (msg.content || [])
-    .filter((b) => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n')
-    .trim();
 
   // Citations = the passages actually placed in context, deduped by document.
   const seen = new Set();
@@ -197,5 +267,5 @@ export async function answer({ query, category = null, topK = 5 }) {
     citations.push({ marker: r.marker, title: r.title || r.doc_id, source: r.source, category: r.category, score: Math.round(r.score * 1000) / 1000 });
   }
 
-  return { answer: answerText, citations, model: generationModel(), grounded: true, contextChunks: used.length };
+  return { answer: answerText, citations, model, grounded: true, contextChunks: used.length };
 }

@@ -444,22 +444,11 @@ router.post('/withdrawal-requests/:id/reject', authenticate, isAdmin, async (req
 });
 
 
-/**
- * ════════════════════════════════════════════════════════════════════════════
- * 📊 FIX (Audit #26) — STATS ALIAS
- * Frontend calls: GET /api/admin/stats
- * Real route: GET /api/admin/analytics/dashboard
- * ════════════════════════════════════════════════════════════════════════════
- */
-router.get('/stats', authenticate, isAdminOrSubAdmin, async (req, res) => {
-  try {
-    const { getDashboardStats } = await import('../../services/admin.service.js');
-    const stats = await getDashboardStats();
-    res.json({ success: true, ...stats });
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'Failed to fetch stats' });
-  }
-});
+// NOTE: GET /stats is intentionally not registered here. The canonical
+// admin stats endpoint is owned by domains/analytics/analytics.admin.routes.js
+// and is mounted before this router. The previous system alias imported a
+// non-exported getDashboardStats helper, so keeping it here created a latent
+// runtime failure if route order changed.
 
 router.get('/error-reports', authenticate, isAdmin, async (req, res) => {
   try {
