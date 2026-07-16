@@ -42,5 +42,10 @@
     "tailwindcss": "^3.3.6",
     "typescript": "^5.2.2",
     "vite": "^8.1.4"
+  },
+  "overrides": {
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "3.1.4"
+    }
   }
 }
