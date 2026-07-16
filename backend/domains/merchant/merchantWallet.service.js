@@ -26,11 +26,34 @@ async function alreadyApplied(txId, session) {
   return MerchantWalletLedger.findOne({ txId }, null, sessOpts(session)).lean();
 }
 
-async function writeLedger({ merchantId, type, amount, balanceAfter, reason, refModel, refId, txId }, session) {
-  await MerchantWalletLedger.create(
-    [{ merchantId, type, amount, balanceAfter, reason, refModel, refId, txId }],
-    sessOpts(session)
-  );
+async function reserveLedger({ merchantId, type, amount, reason, refModel, refId, txId }, session) {
+  try {
+    const [ledger] = await MerchantWalletLedger.create(
+      [{ merchantId, type, amount, balanceAfter: null, reason, refModel, refId, txId }],
+      sessOpts(session)
+    );
+    return { ledger, reserved: true };
+  } catch (err) {
+    if (err?.code !== 11000) throw err;
+    return { ledger: await alreadyApplied(txId, session), reserved: false };
+  }
+}
+
+async function completeLedger(txId, balanceAfter, session) {
+  await MerchantWalletLedger.updateOne({ txId }, { $set: { balanceAfter } }, sessOpts(session));
+}
+
+async function releaseLedgerReservation(txId, session) {
+  await MerchantWalletLedger.deleteOne({ txId, balanceAfter: null }, sessOpts(session));
+}
+
+async function waitForReservedLedger(txId, session) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const prior = await alreadyApplied(txId, session);
+    if (!prior || prior.balanceAfter !== null) return prior;
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  throw new Error(`merchant wallet txId ${txId} is still pending; retry shortly`);
 }
 
 /**
@@ -44,8 +67,14 @@ export async function debitMerchantTokens({
   if (!(amount > 0)) throw new Error(`debitMerchantTokens: amount must be positive, got ${amount}`);
   if (!txId) throw new Error('debitMerchantTokens: txId is required (idempotency).');
 
-  const prior = await alreadyApplied(txId, session);
-  if (prior) {
+  const reservation = await reserveLedger({
+    merchantId, type: 'DEBIT', amount, reason, refModel, refId, txId,
+  }, session);
+  if (!reservation.reserved) {
+    const prior = await waitForReservedLedger(txId, session);
+    if (!prior) return debitMerchantTokens({
+      merchantId, amount, reason, refModel, refId, txId, session, allowOverdraft,
+    });
     const merchant = await mongoose.model('Merchant').findById(merchantId, null, sessOpts(session));
     return { merchant, idempotent: true };
   }
@@ -60,12 +89,12 @@ export async function debitMerchantTokens({
     { $inc: { tokenBalance: -amount } },
     { ...sessOpts(session), new: true }
   );
-  if (!merchant) return { merchant: null, idempotent: false };
+  if (!merchant) {
+    await releaseLedgerReservation(txId, session);
+    return { merchant: null, idempotent: false };
+  }
 
-  await writeLedger({
-    merchantId, type: 'DEBIT', amount, balanceAfter: merchant.tokenBalance,
-    reason, refModel, refId, txId,
-  }, session);
+  await completeLedger(txId, merchant.tokenBalance, session);
 
   return { merchant, idempotent: false };
 }
@@ -77,8 +106,14 @@ export async function creditMerchantTokens({
   if (!(amount > 0)) throw new Error(`creditMerchantTokens: amount must be positive, got ${amount}`);
   if (!txId) throw new Error('creditMerchantTokens: txId is required (idempotency).');
 
-  const prior = await alreadyApplied(txId, session);
-  if (prior) {
+  const reservation = await reserveLedger({
+    merchantId, type: 'CREDIT', amount, reason, refModel, refId, txId,
+  }, session);
+  if (!reservation.reserved) {
+    const prior = await waitForReservedLedger(txId, session);
+    if (!prior) return creditMerchantTokens({
+      merchantId, amount, reason, refModel, refId, txId, session,
+    });
     const merchant = await mongoose.model('Merchant').findById(merchantId, null, sessOpts(session));
     return { merchant, idempotent: true };
   }
@@ -89,12 +124,12 @@ export async function creditMerchantTokens({
     { $inc: { tokenBalance: amount } },
     { ...sessOpts(session), new: true }
   );
-  if (!merchant) return { merchant: null, idempotent: false };
+  if (!merchant) {
+    await releaseLedgerReservation(txId, session);
+    return { merchant: null, idempotent: false };
+  }
 
-  await writeLedger({
-    merchantId, type: 'CREDIT', amount, balanceAfter: merchant.tokenBalance,
-    reason, refModel, refId, txId,
-  }, session);
+  await completeLedger(txId, merchant.tokenBalance, session);
 
   return { merchant, idempotent: false };
 }

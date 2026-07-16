@@ -48,6 +48,21 @@ describe('merchant wallet transfer safety (F-1)', () => {
     expect(fresh.tokenBalance).toBe(400); // not 300
   });
 
+
+  it('concurrent debit retries with the same txId apply only one balance mutation', async () => {
+    const m = await Merchant().create({ name: 'M Five', username: 'm5', mobile: '9000001005', tokenBalance: 500 });
+    const attempts = await Promise.all(Array.from({ length: 8 }, () => debitMerchantTokens({
+      merchantId: m._id, amount: 100, reason: 'concurrent retry', refModel: 'PaymentOrder',
+      refId: 'o5', txId: 'mw_test_concurrent_5',
+    })));
+
+    expect(attempts.filter(result => !result.idempotent)).toHaveLength(1);
+    expect(attempts.filter(result => result.idempotent)).toHaveLength(7);
+    const fresh = await Merchant().findById(m._id).lean();
+    expect(fresh.tokenBalance).toBe(400);
+    expect(await Ledger().countDocuments({ txId: 'mw_test_concurrent_5' })).toBe(1);
+  });
+
   it('compensating refund restores the merchant (F-1 rollback path)', async () => {
     const m = await Merchant().create({ name: 'M Four', username: 'm4', mobile: '9000001004', tokenBalance: 500 });
     await debitMerchantTokens({ merchantId: m._id, amount: 100, reason: 't', refModel: 'PaymentOrder', refId: 'o4', txId: 'mw_dep_deduct_o4' });
