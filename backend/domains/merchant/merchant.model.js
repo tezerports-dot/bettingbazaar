@@ -26,6 +26,8 @@ const merchantSchema = new mongoose.Schema({
     accountNo: String,
     ifsc: String
   },
+  usdtWalletAddress: { type: String, trim: true, uppercase: true },
+  adminUsdtRate: { type: Number, default: 1, min: 0 },
   qrCodeUrl: String,
   limits: {
     minDeposit: { type: Number, default: 500 },
@@ -77,7 +79,9 @@ const merchantSchema = new mongoose.Schema({
   avgResponseMinutes:   { type: Number, default: 2 },       // rolling avg ASSIGNED→PROCESSING
   disputeRate:          { type: Number, default: 0 },       // disputed/total ratio
   activeOrderCount:     { type: Number, default: 0 },       // increment on assign, decrement on finish
-  maxConcurrentOrders:  { type: Number, default: 3 },       // admin-configurable per merchant
+  maxConcurrentOrders:  { type: Number, default: 3 },       // total safety cap
+  maxConcurrentDepositOrders:    { type: Number, default: null, min: 1, max: 10 }, // null => SystemConfig.merchantOrderLimits default
+  maxConcurrentWithdrawalOrders: { type: Number, default: null, min: 1, max: 10 }, // null => SystemConfig.merchantOrderLimits default
   totalOrdersCompleted: { type: Number, default: 0 },       // lifetime completed counter
   totalOrdersAll:       { type: Number, default: 0 },       // lifetime counter for rate calculation
 
@@ -87,5 +91,9 @@ const merchantSchema = new mongoose.Schema({
 // ════════════════════════════════════════════════════════════════════════════
 
 // ════════════════════════════════════════════════════════════════════════════
+
+merchantSchema.index({ 'bankDetails.upiId': 1 }, { unique: true, sparse: true });
+merchantSchema.index({ 'bankDetails.accountNo': 1, 'bankDetails.ifsc': 1 }, { unique: true, sparse: true });
+merchantSchema.index({ usdtWalletAddress: 1 }, { unique: true, sparse: true });
 
 export const Merchant = mongoose.model('Merchant', merchantSchema);

@@ -506,16 +506,22 @@ router.post('/queue/assign/:orderId', authenticate, isAdminOrSubAdminOrQueueMana
 // ─── PUT /api/admin/merchants/:merchantId/scoring — admin sets maxConcurrentOrders ──
 router.put('/merchants/:merchantId/scoring', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
-    const { maxConcurrentOrders } = req.body;
-    if (maxConcurrentOrders !== undefined) {
-      const val = Number(maxConcurrentOrders);
-      if (isNaN(val) || val < 1 || val > 10)
-        return res.status(400).json({ success: false, message: 'maxConcurrentOrders must be 1–10' });
+    const { maxConcurrentOrders, maxConcurrentDepositOrders, maxConcurrentWithdrawalOrders, adminUsdtRate } = req.body;
+    for (const [key, value] of Object.entries({ maxConcurrentOrders, maxConcurrentDepositOrders, maxConcurrentWithdrawalOrders })) {
+      if (value === undefined || value === null || value === '') continue;
+      const val = Number(value);
+      if (isNaN(val) || val < 1 || val > 10) return res.status(400).json({ success: false, message: `${key} must be 1–10` });
+    }
+    if (adminUsdtRate !== undefined && (!(Number(adminUsdtRate) > 0))) {
+      return res.status(400).json({ success: false, message: 'adminUsdtRate must be positive' });
     }
 
     const Merchant = mongoose.model('Merchant');
     const update = {};
     if (maxConcurrentOrders !== undefined) update.maxConcurrentOrders = Number(maxConcurrentOrders);
+    if (maxConcurrentDepositOrders !== undefined) update.maxConcurrentDepositOrders = Number(maxConcurrentDepositOrders);
+    if (maxConcurrentWithdrawalOrders !== undefined) update.maxConcurrentWithdrawalOrders = Number(maxConcurrentWithdrawalOrders);
+    if (adminUsdtRate !== undefined) update.adminUsdtRate = Number(adminUsdtRate);
 
     const merchant = await Merchant.findByIdAndUpdate(
       req.params.merchantId, { $set: update }, { new: true }

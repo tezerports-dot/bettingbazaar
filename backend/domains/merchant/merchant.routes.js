@@ -4,7 +4,7 @@
 
 
 import express   from 'express';
-import { creditDeposit, creditReserve, refundOrder, creditWinnings, debitWinningsForWithdrawal } from '../wallet/walletAuthority.service.js';
+import { creditDeposit, creditReserve, refundWithdrawal, releaseWithdrawal } from '../wallet/walletAuthority.service.js';
 import mongoose  from 'mongoose';
 // AQ-2/AQ-8: sign via the single JWT authority; hash via the password authority
 // (argon2id + bcrypt verify-fallback). No direct bcrypt use remains here.
@@ -324,6 +324,57 @@ router.put('/limits', merchantAuth, async (req, res) => {
         res.status(500).json({ success: false, message: 'Failed to update limits.' });
     }
 });
+
+// ─── MERCHANT → ADMIN TOKEN PURCHASE ORDERS ─────────────────────────────────
+router.get('/admin-token-orders', merchantAuth, async (req, res) => {
+    try {
+        const MerchantAdminTokenOrder = mongoose.model('MerchantAdminTokenOrder');
+        const orders = await MerchantAdminTokenOrder.find({ merchantId: req.merchantId }).sort({ requestedAt: -1 }).limit(30).lean();
+        res.json({ success: true, orders });
+    } catch (err) {
+        console.error('GET /merchant/admin-token-orders error:', err);
+        res.status(500).json({ success: false, message: 'Failed to fetch admin token orders.' });
+    }
+});
+
+router.post('/admin-token-orders', merchantAuth, async (req, res) => {
+    try {
+        const tokenAmount = Number(req.body.tokenAmount);
+        const usdtTxHash = String(req.body.usdtTxHash || '').trim();
+        const SystemConfig = mongoose.model('SystemConfig');
+        const Merchant = mongoose.model('Merchant');
+        const MerchantAdminTokenOrder = mongoose.model('MerchantAdminTokenOrder');
+        const [cfg, merchant] = await Promise.all([
+            SystemConfig.findOne({ key: 'main' }).lean(),
+            Merchant.findById(req.merchantId).lean(),
+        ]);
+        if (!merchant || merchant.status !== 'ACTIVE' || merchant.merchantApprovalStatus !== 'APPROVED') {
+            return res.status(403).json({ success: false, message: 'Only approved active merchants can buy admin tokens.' });
+        }
+        const minPurchase = cfg?.merchantOrderLimits?.minAdminTokenPurchase ?? 50000; // schema default: 50000
+        if (!(tokenAmount >= minPurchase)) {
+            return res.status(400).json({ success: false, message: `Minimum admin token purchase is ${minPurchase} tokens.` });
+        }
+        const startOfDay = new Date();
+        startOfDay.setHours(0, 0, 0, 0);
+        const existingToday = await MerchantAdminTokenOrder.findOne({ merchantId: req.merchantId, requestedAt: { $gte: startOfDay } }).lean();
+        if (existingToday) return res.status(429).json({ success: false, message: 'Only one admin token purchase request is allowed per day.' });
+        const usdtRate = merchant.adminUsdtRate ?? 1; // schema default: 1
+        const order = await MerchantAdminTokenOrder.create({
+            orderId: `MAT_${new mongoose.Types.ObjectId().toString()}`,
+            merchantId: req.merchantId,
+            tokenAmount,
+            usdtRate,
+            usdtAmount: Math.round((tokenAmount / usdtRate) * 100) / 100,
+            usdtTxHash,
+        });
+        res.json({ success: true, order });
+    } catch (err) {
+        console.error('POST /merchant/admin-token-orders error:', err);
+        res.status(500).json({ success: false, message: 'Failed to create admin token order.' });
+    }
+});
+
 // ─── ORDERS ──────────────────────────────────────────────────────────────────
 
 router.get('/orders', merchantAuth, async (req, res) => {
@@ -332,7 +383,11 @@ router.get('/orders', merchantAuth, async (req, res) => {
         const parsedLimit = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
         const parsedSkip  = Math.max(parseInt(skip)  || 0, 0);
 
-        const query = { merchantId: req.merchantId };
+        const query = { $or: [
+            { merchantId: req.merchantId },
+            { type: 'WITHDRAWAL', status: 'PENDING_QUEUE', merchantId: null },
+            { type: 'WITHDRAWAL', status: 'PENDING_QUEUE', merchantId: { $exists: false } },
+        ] };
         if (status) query.status = status;
         if (type)   query.type   = type;
 
@@ -367,12 +422,32 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         const merchant = await Merchant.findById(req.merchantId);
         if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found.' });
 
+        if (order.type === 'DEPOSIT') {
+            if (merchant.acceptsDeposits === false || (merchant.tokenBalance || 0) < order.tokenAmount) {
+                return res.status(400).json({ success: false, message: 'Merchant has insufficient token balance or deposit capability for this buy order.' });
+            }
+        } else if (merchant.acceptsWithdrawals === false) {
+            return res.status(400).json({ success: false, message: 'Merchant is not enabled for sell orders.' });
+        }
+
+        const SystemConfig = mongoose.model('SystemConfig');
+        const cfg = await SystemConfig.findOne({ key: 'main' }).lean();
+        const typeLimit = order.type === 'DEPOSIT'
+            ? (merchant.maxConcurrentDepositOrders ?? cfg?.merchantOrderLimits?.maxConcurrentDepositOrders ?? 1)
+            : (merchant.maxConcurrentWithdrawalOrders ?? cfg?.merchantOrderLimits?.maxConcurrentWithdrawalOrders ?? 1);
+        const activeForType = await PaymentOrder.countDocuments({ merchantId: req.merchantId, type: order.type, status: { $in: ['ASSIGNED', 'PROCESSING', 'PAID'] } });
+        if (activeForType >= typeLimit) {
+            return res.status(400).json({ success: false, message: `Merchant has reached ${order.type} active order limit (${typeLimit}).` });
+        }
+
+        const wasAssigned = Boolean(order.assignedAt);
         const now        = new Date();
         const expiresAt  = new Date(now.getTime() + 15 * 60 * 1000); // 15-min window starts on accept
 
         // Build full immutable merchantSnapshot (GOVERNANCE §1: assigned at accept)
         order.merchantId      = req.merchantId;
         order.status          = 'PROCESSING';
+        order.assignedAt      = order.assignedAt || now;
         order.processingAt    = now;
         order.expiresAt       = expiresAt;
         order.merchantSnapshot = {
@@ -398,6 +473,7 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         }
 
         await order.save();
+        if (!wasAssigned) await Merchant.findByIdAndUpdate(req.merchantId, { $inc: { activeOrderCount: 1 } });
 
         const io = global.io;
         const oid = order._id;
@@ -537,9 +613,11 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             // Note: tokens were already locked (escrowed) on order creation.
             // The escrow debit was already done by debitWinningsForWithdrawal at order creation.
             // No additional debit needed — winnings already moved to lockedBalance.
-            // We just need to mark the order complete and clear the lock.
+            // Release the locked balance now that the merchant has paid out.
             // Merchant receives tokens (their balance increases)
             // GOVERNANCE §1: via merchantWallet.service.js (sole tokenBalance writer)
+            await releaseWithdrawal(order.userId, order.tokenAmount, order._id.toString());
+
             await creditMerchantTokens({
                 merchantId: req.merchantId, amount: order.tokenAmount,
                 reason: `Withdrawal ${order.orderId} confirmed — tokens received from user`,
@@ -635,7 +713,7 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
         // Release escrow if WITHDRAWAL
         if (order.type === 'WITHDRAWAL' && order.escrowLocked) {
             try {
-                await refundOrder(order.userId, order.tokenAmount, order._id.toString(), 'winningsBalance');
+                await refundWithdrawal(order.userId, order.tokenAmount, order._id.toString());
                 order.escrowLocked = false;
             } catch (refundErr) {
                 console.error('[merchant reject] winnings refund failed:', refundErr.message);

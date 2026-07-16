@@ -16,6 +16,7 @@ export * from './transaction.model.js';
 export * from '../domains/merchant/merchant.model.js';
 // Merchant Platform (BBEPS Phase 008) — merchant wallet audit ledger
 export * from '../domains/merchant/merchantWallet.model.js';
+export * from '../domains/merchant/merchantAdminTokenOrder.model.js';
 export * from '../domains/payment/paymentOrder.model.js';
 export * from './audit.model.js';
 export * from '../domains/identity/auth.model.js';

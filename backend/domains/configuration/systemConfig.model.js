@@ -46,6 +46,18 @@ const systemConfigSchema = new mongoose.Schema({
   minWithdrawal:         { type: Number, default: 500 },
   maxWithdrawal:         { type: Number, default: 50000 },
   maxWinningsWithdrawal: { type: Number, default: 500000 },
+  // Admin token treasury. Minted merchant inventory may never exceed cap.
+  adminTokenSupply: {
+    cap:    { type: Number, default: 10000000000, min: 0 }, // 10 Billion tokens
+    minted: { type: Number, default: 0, min: 0 },
+  },
+  // Global defaults for per-type merchant concurrency; individual Merchant
+  // overrides live on maxConcurrentDepositOrders/maxConcurrentWithdrawalOrders.
+  merchantOrderLimits: {
+    maxConcurrentDepositOrders:    { type: Number, default: 1, min: 1, max: 10 },
+    maxConcurrentWithdrawalOrders: { type: Number, default: 1, min: 1, max: 10 },
+    minAdminTokenPurchase:         { type: Number, default: 50000, min: 1 },
+  },
   // ── RISK PLATFORM RULES (BBEPS Phase 010) ─────────────────────────────────
   // Business Policy owns these numbers/toggles; domains/risk/
   // riskValidation.service.js is the enforcement authority that reads them.

@@ -62,6 +62,33 @@ export async function rebuildLeaderboard() {
 }
 
 // ── ANNOUNCEMENTS ─────────────────────────────────────────────────────────────
+const ANNOUNCEMENT_TYPES = new Set(['INFO', 'WARNING', 'PROMO', 'MAINTENANCE']);
+const ANNOUNCEMENT_UPDATE_FIELDS = new Set(['title', 'body', 'type', 'priority', 'isActive', 'expiresAt']);
+
+function normalizeAnnouncementBody(body, { partial = false } = {}) {
+  const out = {};
+  for (const [key, value] of Object.entries(body || {})) {
+    if (!ANNOUNCEMENT_UPDATE_FIELDS.has(key)) continue;
+    if (key === 'type') {
+      const type = String(value || '').toUpperCase();
+      if (!ANNOUNCEMENT_TYPES.has(type)) throw Object.assign(new Error('Invalid announcement type'), { status: 400 });
+      out.type = type;
+    } else if (key === 'priority') {
+      const priority = Number(value);
+      if (!Number.isFinite(priority)) throw Object.assign(new Error('Invalid announcement priority'), { status: 400 });
+      out.priority = priority;
+    } else if (key === 'expiresAt') {
+      out.expiresAt = value ? new Date(value) : null;
+      if (out.expiresAt && Number.isNaN(out.expiresAt.getTime())) throw Object.assign(new Error('Invalid announcement expiry'), { status: 400 });
+    } else if (key === 'isActive') {
+      out.isActive = Boolean(value);
+    } else {
+      out[key] = value;
+    }
+  }
+  if (!partial && (!out.title || !out.body)) throw Object.assign(new Error('Title and body required'), { status: 400 });
+  return out;
+}
 router.get('/announcements', async (req, res) => {
   try {
     const Announcement = mongoose.model('Announcement');
@@ -82,19 +109,25 @@ router.get('/admin/announcements', authenticate, isAdminOrSubAdmin, async (req, 
 router.post('/admin/announcements', authenticate, isAdmin, async (req, res) => {
   try {
     const Announcement = mongoose.model('Announcement');
-    const { title, body, type, priority, expiresAt } = req.body;
-    if (!title || !body) return res.status(400).json({ success: false, message: 'Title and body required' });
-    const item = await Announcement.create({ title, body, type: type||'INFO', priority: priority||0, expiresAt: expiresAt ? new Date(expiresAt) : undefined, createdBy: req.user._id });
+    const item = await Announcement.create({
+      ...normalizeAnnouncementBody(req.body),
+      createdBy: req.user._id,
+    });
     res.json({ success: true, announcement: item });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+  } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message }); }
 });
 
 router.put('/admin/announcements/:id', authenticate, isAdmin, async (req, res) => {
   try {
     const Announcement = mongoose.model('Announcement');
-    const item = await Announcement.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    const item = await Announcement.findByIdAndUpdate(
+      req.params.id,
+      { $set: normalizeAnnouncementBody(req.body, { partial: true }) },
+      { new: true, runValidators: true }
+    );
+    if (!item) return res.status(404).json({ success: false, message: 'Announcement not found' });
     res.json({ success: true, announcement: item });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+  } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message }); }
 });
 
 router.delete('/admin/announcements/:id', authenticate, isAdmin, async (req, res) => {
