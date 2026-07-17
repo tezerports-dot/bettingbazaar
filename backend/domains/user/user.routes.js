@@ -48,6 +48,18 @@ import cdnService from '../../services/cdn.service.js';
 
 const router = express.Router();
 
+
+function normalizeAadhaarNumber(aadhaarNumber) {
+  const raw = String(aadhaarNumber || '').trim();
+  if (!/^[0-9 -]+$/.test(raw)) return null;
+  const normalized = raw.replace(/[ -]/g, '');
+  return /^\d{12}$/.test(normalized) ? normalized : null;
+}
+
+function hashAadhaarNumber(aadhaarNumber) {
+  return crypto.createHash('sha256').update(aadhaarNumber).digest('hex');
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // safeSession — works on both standalone MongoDB and Replica Sets.
 // On Railway/VPS without a Replica Set, startTransaction() throws.
@@ -424,6 +436,12 @@ router.post('/user/:userId/kyc', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, message: 'All KYC fields and uploaded document file keys are required' });
     }
 
+    const normalizedAadhaarNumber = normalizeAadhaarNumber(aadhaarNumber);
+    if (!normalizedAadhaarNumber) {
+      await abortOrEnd(session);
+      return res.status(400).json({ success: false, message: 'Invalid Aadhaar format (expected 12 digits; spaces and hyphens only)' });
+    }
+
     const [idProof, photo] = await Promise.all([
       cdnService.verifyUploadedObject({
         fileKey: idProofKey, cdnUrl: idProofCdnUrl || undefined,
@@ -442,12 +460,13 @@ router.post('/user/:userId/kyc', authenticate, async (req, res) => {
         kycStatus: 'PENDING_APPROVAL',
         kycData: {
           nameOnAadhaar: nameOnAadhaar.trim().toUpperCase(),
-          aadhaarNumber: String(aadhaarNumber).replace(/\D/g, ''),
+          aadhaarNumber: normalizedAadhaarNumber,
           idProofUrl: idProof.cdnUrl,
           photoUrl: photo.cdnUrl,
           submittedAt: new Date(),
           rejectionReason: ''
-        }
+        },
+        aadhaarHash: hashAadhaarNumber(normalizedAadhaarNumber)
       },
       { new: true, session }
     ).lean();

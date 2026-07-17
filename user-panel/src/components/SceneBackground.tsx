@@ -7,7 +7,6 @@
  */
 import React, { useRef, useMemo, useEffect, useState, useCallback } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { Float, MeshTransmissionMaterial } from '@react-three/drei';
 import * as THREE from 'three';
 
 function useReducedMotion(): boolean {
@@ -63,7 +62,12 @@ function FloatingInsts({insts}:{insts:GeoInst[]}){
     });
     if(grp.current){grp.current.rotation.y=THREE.MathUtils.lerp(grp.current.rotation.y,m.x*0.06,0.02);grp.current.rotation.x=THREE.MathUtils.lerp(grp.current.rotation.x,-m.y*0.04,0.02);}
   });
-  return<group ref={grp}>{insts.map((inst,i)=><Float key={i} speed={inst.speed*1.4} rotationIntensity={0} floatIntensity={0}><mesh ref={el=>{refs.current[i]=el;}} position={inst.position} rotation={inst.rotation} scale={inst.scale}><GeoMesh type={GTS[i%GTS.length]}/><MeshTransmissionMaterial color={GOLD} emissive={GOLD_E} emissiveIntensity={0.12} roughness={0.05} metalness={0.7} transmission={0.45} thickness={0.6} chromaticAberration={0.02} anisotropy={0.15} distortion={0.08} temporalDistortion={0.01} transparent opacity={0.55} side={THREE.DoubleSide}/></mesh></Float>)}</group>;
+  return <group ref={grp}>{insts.map((inst, i) => (
+    <mesh ref={el => { refs.current[i] = el; }} key={i} position={inst.position} rotation={inst.rotation} scale={inst.scale}>
+      <GeoMesh type={GTS[i % GTS.length]} />
+      <meshPhysicalMaterial color={GOLD} emissive={GOLD_E} emissiveIntensity={0.12} roughness={0.05} metalness={0.7} transmission={0.45} thickness={0.6} transparent opacity={0.55} side={THREE.DoubleSide} />
+    </mesh>
+  ))}</group>;
 }
 
 function Dust(){

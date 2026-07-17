@@ -5,8 +5,8 @@ import { ConfirmDialog } from '../../components/ConfirmDialog';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
 
-// C-05 fix: tokenBuyRate/tokenSellRate removed from SystemSettings — use /token-rates page.
-// GOVERNANCE §2: TokenRates page is the sole write path for token exchange rates.
+// C-05 fix: tokenBuyRate/tokenSellRate removed from SystemSettings.
+// Token conversion is fixed 1:1; the old TokenRates admin page/model is retired.
 export const SystemSettings: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);

@@ -68,20 +68,22 @@ product is the cycle/crash engine (`domains/game/`), not a sportsbook.
 Commission · Wallet · Reserve · Deposit · Withdrawal · Merchant · Settlement ·
 USDT · Bonus · VIP · Betting Policies
 
-**Confirmed state:** data model exists (`domains/configuration/` — SystemConfig,
-TokenRates). The actual platform (versioning, approval workflow, effective dates,
-rollback, admin UI with explanations/simulations/audit history) does not exist —
-this is the current active phase, see `PHASE_STATUS.md`.
+**Confirmed state:** `domains/configuration/` owns `SystemConfig` and related
+business-policy models. Token conversion is no longer configurable: `TokenRates`
+was removed on 2026-07-08 after buy/sell rates were flattened to fixed 1:1.
+Policy versioning exists for `SystemConfig`; broader approval workflows,
+effective-date simulation, rollback UX, and richer admin explanations remain
+tracked through the roadmap and execution queue.
 
 ## Algorithm Registry
 Merchant Assignment · Settlement · Odds Calculation · Exposure · Commission ·
 Reserve Wallet · Risk Score · Bonus Engine · VIP Progression
 
 **Confirmed state:** merchant scoring (`domains/merchant/merchantScoring.service.js`)
-has real documentation after the maxConcurrentOrders bug fix, but no formal
-registry (versioning, parameter/input separation, simulation) exists. This is
-BBEPS Phase 011, unchanged by the platform reorganization — it reinforces this
-phase rather than replacing it.
+and settlement/risk algorithms exist in their owning domains, with local tests and
+documentation where implemented. A cross-domain algorithm registry (versioning,
+parameter/input separation, simulation, rollout metadata) is still not formalized;
+keep domain-specific algorithms where they are until that registry is designed.
 
 ## Operations Platform (replaces "Admin Panel" as a concept)
 Configuration · Workflow · Algorithms · Providers · Users · Finance · Marketing ·

@@ -1,8 +1,8 @@
 # Enterprise Decisions — Decision Log
 
 **Purpose:** a running log of architecture decisions that aren't obvious from
-the code alone — the "why," not the "what" (the code + PHASE_STATUS.md cover
-the "what"). Newest first. This file didn't exist before 2026-07-07; created
+the code alone — the "why," not the "what" (the code and
+current handoff docs cover the "what"). Newest first. This file didn't exist before 2026-07-07; created
 as part of the DepositPolicy migration since decisions made in that session
 need a durable home.
 
@@ -400,7 +400,7 @@ behavior.
 
 **Safe to remove outright (not deprecate):** no `DepositPolicy` document has
 ever been created in the live database (bootstrap fallback state, unchanged
-since 2026-07-07 — see PHASE_STATUS.md). There is no data migration, no
+since 2026-07-07). There is no data migration, no
 in-flight order referencing the removed snapshot fields, and no consumer
 code to update elsewhere.
 
@@ -554,8 +554,7 @@ above). Building a real payout mechanism means new `Transaction` types,
 ledger entries routed through `walletAuthority.service.js`, and a timing
 decision (per-order vs. batched settlement) — a financial-flow design
 decision in its own right, not something to bundle silently into a
-policy-modeling task. Flagged in PHASE_STATUS.md as an open next-step choice
-rather than decided unilaterally.
+policy-modeling task. Tracked as an open next-step choice rather than decided unilaterally.
 
 ---
 
@@ -581,4 +580,4 @@ real effect.
 **Not fixed (separate decision):** `merchant.routes.js`'s wallet-balance
 writes still use raw `$inc` rather than `walletAuthority.service.js` — a
 pre-existing §7 violation, left alone because rerouting it is a larger,
-separate change (see PHASE_STATUS.md Known Open Items #6).
+separate change (see EXECUTION_QUEUE.md known open items).

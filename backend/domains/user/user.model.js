@@ -70,6 +70,7 @@ const userSchema = new mongoose.Schema({
   status: { type: String, enum: ['ACTIVE', 'BLOCKED', 'SUSPENDED', 'PENDING_KYC', 'DELETED'], default: 'ACTIVE', index: true },
   
   kycStatus: { type: String, enum: ['PENDING_SUBMISSION', 'PENDING_APPROVAL', 'APPROVED', 'REJECTED'], default: 'PENDING_SUBMISSION' },
+  aadhaarHash: { type: String, index: true, sparse: true },
   kycData: {
     nameOnAadhaar: String,   
     aadhaarNumber: String,   

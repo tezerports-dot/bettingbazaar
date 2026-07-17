@@ -3,7 +3,7 @@
 //
 // This is the intended write path for every future admin-editable business
 // parameter (merchant commission, reserve ratio, deposit split, withdrawal
-// rules, betting limits, etc.) — see PHASE_STATUS.md "Current Active Phase."
+// rules, betting limits, etc.) — see PROJECT_HANDOFF.md / EXECUTION_QUEUE.md.
 //
 // SCOPE NOTE: this does NOT retrofit existing direct writes to SystemConfig
 // (e.g. the Merchant Pool feature's PUT /queue/merchant-pool, which writes

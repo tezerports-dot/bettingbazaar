@@ -423,7 +423,7 @@ Operations Platform (orchestration-only) slots later. See ENTERPRISE_DECISIONS.m
 
 ---
 
-## KNOWN OPEN ITEMS (not urgent, not forgotten — see PHASE_STATUS.md for full detail)
+## KNOWN OPEN ITEMS (not urgent, not forgotten)
 
 - [ ] Reroute `merchant.routes.js` wallet-balance writes through
       `walletAuthority.service.js` (currently raw `$inc` — pre-existing

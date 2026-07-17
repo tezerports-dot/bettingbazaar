@@ -2,12 +2,11 @@
 
 **Purpose:** the single source of context for any new Claude Code session.
 Read this first; it replaces re-explaining the project. Written 2026-07-09.
-Updated 2026-07-10 (Phase A complete — see §5/§8/§15 and the checkpoint docs).
+Updated 2026-07-10 (Phase A complete — see §5/§8/§15 and checkpoint docs).
 This document was created as a context handoff — it changes no code.
 
 Companion docs to read after this: `04-GOVERNANCE.md` (binding rules),
-`PHASE_STATUS.md`, `EXECUTION_QUEUE.md`, `ENTERPRISE_DECISIONS.md`,
-`AUDIT_FINDINGS.md`.
+`EXECUTION_QUEUE.md`, `ENTERPRISE_DECISIONS.md`, `AUDIT_FINDINGS.md`.
 
 ---
 
@@ -419,7 +418,6 @@ what actually separate a hobby build from a live operator.
 
 - `04-GOVERNANCE.md` — binding ruleset; §0 checklist, §1 authorities, §2
   forbidden patterns, §7 wallet, §11 events. **Read before any edit.**
-- `PHASE_STATUS.md` — phase table + current active phase.
 - `EXECUTION_QUEUE.md` — ordered next tasks + deferred items (recent history).
 - `ENTERPRISE_DECISIONS.md` — the "why" behind non-obvious decisions.
 - `AUDIT_FINDINGS.md` — the security/workflow audit (F-1 fixed, F-2/F-3 open).
@@ -501,8 +499,8 @@ then Phase B (F-2/F-3 + integration tests), then Phase C (admin UI).
 
 Before any change:
 1. **Read `04-GOVERNANCE.md` §0 checklist** and the section governing your change.
-2. **Understand the architecture first** (this doc + PHASE_STATUS + the relevant
-   domain README). Never randomly edit files.
+2. **Understand the architecture first** (this doc + the relevant domain
+   README). Never randomly edit files.
 3. **Trace dependencies and runtime impact** — who imports/consumes this? What
    fires at runtime? Check dynamic imports and event/SSE hops, not just static.
 4. **Validate against governance** (single-writer authorities, no dead admin
@@ -515,15 +513,15 @@ Before any change:
 8. **Verify before claiming done:** `node --check`, unit tests, and the
    relevant build. State honestly what was and wasn't verified.
 9. **Do not commit secrets; do not connect the sandbox to the prod DB.**
-10. **Update the three checkpoint docs** (PHASE_STATUS / EXECUTION_QUEUE /
-    ENTERPRISE_DECISIONS) after each slice, and commit small vertical slices.
+10. **Update checkpoint docs** (EXECUTION_QUEUE / ENTERPRISE_DECISIONS) after
+    each slice, and commit small vertical slices.
 
 ---
 
 ## 15. QUICK-START FOR THE NEXT SESSION
 
-**Phases A–F are ALL DONE in-repo (2026-07-10)** — see §5, PHASE_STATUS.md,
-and EXECUTION_QUEUE.md "DONE — 2026-07-10". CI green throughout: 72 unit
+**Phases A–F are ALL DONE in-repo (2026-07-10)** — see §5 and
+EXECUTION_QUEUE.md "DONE — 2026-07-10". CI green throughout: 72 unit
 tests + 9 integration suites (real Mongo replica set + real Redis).
 
 **What's left is owner-gated or queued polish:**

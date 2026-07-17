@@ -30,7 +30,7 @@ never through another domain's internal state.
 | `analytics/` | PLACEHOLDER | `routes/admin/analytics.admin.routes.js` |
 | `notification/` | PLACEHOLDER | `services/realtimeEmitters.js`, `services/sseManager.service.js`, `models/notification.model.js` |
 | `cms/` | PLACEHOLDER | `services/content.service.js`, `models/content.model.js` |
-| `configuration/` | PLACEHOLDER | `models/systemConfig.model.js` (exports both `SystemConfig` and `TokenRates`) |
+| `configuration/` | **MIGRATED** | `domains/configuration/` owns `SystemConfig` and related business-policy models; `TokenRates` was removed after fixed 1:1 token conversion. |
 | `risk/` | PLACEHOLDER | `models/utrRegistry.model.js` — currently only a duplicate-UTR check, not real fraud/risk scoring. Mostly unbuilt per BBEPS's own "NEW domain" classification. |
 | `responsible-gaming/` | PLACEHOLDER | Not built. Forward-looking domain (self-exclusion, limits — BBEPS Phase 006 §6.5 Category D). |
 
