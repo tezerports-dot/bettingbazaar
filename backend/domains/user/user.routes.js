@@ -37,7 +37,6 @@
  */
 
 import express from 'express';
-import crypto  from 'crypto';
 import mongoose from 'mongoose';
 import { withdrawalLimiter } from '../../middleware/security.js';
 // Item 12: per-subnet backstop against IP rotation on withdrawal creation.
@@ -45,8 +44,20 @@ import { createSubnetLimiter, globalSurgeBreaker } from '../../middleware/ipDefe
 import { authenticate } from '../identity/auth.middleware.js';
 import { lockWithdrawal, getUserLedger } from '../wallet/walletAuthority.service.js';
 import cdnService from '../../services/cdn.service.js';
+import { hashAadhaar, hashAadhaarCandidates } from '../identity/aadhaarHash.util.js';
 
 const router = express.Router();
+
+function normalizeSubmittedAadhaar(raw) {
+  const value = String(raw || '').trim();
+  if (!/^[\d -]+$/.test(value)) return null;
+  const normalized = value.replace(/[ -]/g, '');
+  return /^\d{12}$/.test(normalized) ? normalized : null;
+}
+
+function maskAadhaar(normalized) {
+  return `XXXX-XXXX-${normalized.slice(-4)}`;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // safeSession — works on both standalone MongoDB and Replica Sets.
@@ -420,8 +431,8 @@ router.post('/user/:userId/kyc', authenticate, async (req, res) => {
 
     const { nameOnAadhaar, aadhaarNumber, idProofKey, idProofCdnUrl, photoKey, photoCdnUrl } = req.body;
     const normalizedNameOnAadhaar = String(nameOnAadhaar || '').trim().toUpperCase();
-    const normalizedAadhaarNumber = String(aadhaarNumber || '').replace(/\D/g, '');
-    if (!normalizedNameOnAadhaar || normalizedAadhaarNumber.length !== 12 || !idProofKey || !photoKey) {
+    const normalizedAadhaarNumber = normalizeSubmittedAadhaar(aadhaarNumber);
+    if (!normalizedNameOnAadhaar || !normalizedAadhaarNumber || !idProofKey || !photoKey) {
       await abortOrEnd(session);
       return res.status(400).json({ success: false, message: 'All KYC fields and uploaded document file keys are required' });
     }
@@ -438,18 +449,29 @@ router.post('/user/:userId/kyc', authenticate, async (req, res) => {
     ]);
 
     const User = mongoose.model('User');
+    const aadhaarHash = hashAadhaar(normalizedAadhaarNumber);
+    const existingAadhaar = await User.findOne({
+      _id: { $ne: userId },
+      aadhaarHash: { $in: hashAadhaarCandidates(normalizedAadhaarNumber) }
+    }).session(session).select('_id').lean();
+    if (existingAadhaar) {
+      await abortOrEnd(session);
+      return res.status(409).json({ success: false, message: 'Aadhaar already linked to another account' });
+    }
+
     const updatedUser = await User.findByIdAndUpdate(
       userId,
       {
         kycStatus: 'PENDING_APPROVAL',
         kycData: {
           nameOnAadhaar: normalizedNameOnAadhaar,
-          aadhaarNumber: normalizedAadhaarNumber,
+          aadhaarNumber: maskAadhaar(normalizedAadhaarNumber),
           idProofUrl: idProof.cdnUrl,
           photoUrl: photo.cdnUrl,
           submittedAt: new Date(),
           rejectionReason: ''
-        }
+        },
+        aadhaarHash
       },
       { new: true, session }
     ).lean();

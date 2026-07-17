@@ -86,8 +86,10 @@ Systematic architectural audit (not feature work). Findings, highest value first
 **FIXED 2026-07-10 (same session):** X-1/X-2/X-3 (reserve now funded on both
 deposit paths via the wallet authority; approve rerouted off raw $inc — Known
 Open #6 closed), X-4 (cron leader election), X-5 (cycle duration configurable),
-X-9 (assignment-race test). Remaining open: X-6 observability, X-7 data
-lifecycle, X-8 authz matrix. See AUDIT_PHASE_X.md for the fix commits.
+X-9 (assignment-race test). Remaining open after current repo verification:
+X-8 authz matrix. X-6 observability and X-7 data lifecycle now have
+in-repo implementations; see requestContext/logger/metrics and
+operations/retention.service.js.
 
 - [x] **X-1/X-2 (🔴) Two divergent deposit-completion endpoints. — FIXED**
       `/merchant/confirm/:id` credits full tokenAmount to deposit (NO reserve
@@ -98,27 +100,22 @@ lifecycle, X-8 authz matrix. See AUDIT_PHASE_X.md for the fix commits.
       posts the reserve allocation from the order) disagrees with the actual
       wallet. NEEDS A PRODUCT DECISION on the canonical path, then align/remove
       the other + integration test that a completed deposit funds reserve.
-- [ ] **X-3 (🟠) approve path credits user via raw $inc.** Bypasses
-      walletAuthority.creditDeposit/creditReserve (§7 + Known Open #6): no
-      idempotency key backstop (only the status guard prevents double-credit),
-      and safeSession() degrades non-atomic on standalone Mongo → crash mid-way
-      leaves order COMPLETED but user un-credited, unrecoverable. Fix: reroute
-      through the authorities with the route session; test double-approve.
-- [ ] **X-4 (🟠) cron jobs have no leader election.** All setInterval in
-      cronJobs.js; every replica runs every job. Safe today only via per-job
-      idempotency. Needs a Mongo/Redis leader lock before >1 instance (same
-      cluster as the SSE-bridge item).
-- [ ] **X-5 (🟡) cycle duration hardcoded** (30*60*1000, cycleGenerator:424) —
-      move to SystemConfig, read in generator + GAME_CORE mirror, add to catalog.
-- [ ] **X-6 (🟡) observability** — request/correlation IDs, structured logging,
-      metrics/alerting (owner: alert on ledger integrityOk:false).
-- [ ] **X-7 (🟡) data lifecycle** — retention/archival plan per unbounded
-      collection (AccountingEvent/WalletLedger/Bet/Transaction/audit), soft-delete
-      convention.
+- [x] **X-3 (🟠) approve path credits user via raw $inc. — DONE** Live merchant
+      approval/confirm paths now use walletAuthority.creditDeposit/creditReserve
+      with idempotency keys instead of raw balance writes.
+- [x] **X-4 (🟠) cron jobs have no leader election. — DONE** Cron jobs are
+      registered through the leader-aware recurring-job wrapper in cronJobs.js.
+- [x] **X-5 (🟡) cycle duration hardcoded — DONE** Cycle duration is now
+      SystemConfig-backed and surfaced through the config catalog.
+- [x] **X-6 (🟡) observability — DONE** request/correlation IDs, structured
+      logging, Prometheus metrics, and ledger-integrity alerting are implemented.
+- [x] **X-7 (🟡) data lifecycle — DONE** retention policy/service, admin run
+      endpoint, daily cron, and soft-delete convention are in place; financial,
+      audit, and user ledgers are explicitly kept forever.
 - [ ] **X-8 (verify) authz matrix** — build the full endpoint×role×ownership
       table (per-route auth confirmed present at spot-checks; no hole asserted).
-- [ ] **X-9 (verify) merchant-assignment concurrency test** — prove the
-      two-merchants-same-order loser is rejected (settlement race already proven).
+- [x] **X-9 (verify) merchant-assignment concurrency test — DONE** concurrent
+      assignment coverage proves only one merchant wins an order.
 
 ### Discovered during Phases B–F (queued)
 
@@ -183,10 +180,8 @@ lifecycle, X-8 authz matrix. See AUDIT_PHASE_X.md for the fix commits.
       `totalPlatformFees` would reflect only the tail of the payout (wallet
       credits themselves are idempotent and safe). Fold into the F-2
       settle-under-concurrency integration work.
-- [ ] `backend/migrations/002-fix-everything.js` still computes `bet.amount*2`
-      — marked-applied migration that §13 says should be deleted after prod
-      confirm; now also stale vs the fee logic. Delete with the other applied
-      migrations.
+- [x] `backend/migrations/002-fix-everything.js` removed; no stale
+      `bet.amount*2` migration remains.
 - [ ] Frontend surfaces that display payouts as flat 2x (user-panel copy,
       admin winner board) need the net-of-fee numbers — fold into Phase C/D
       UI work (backend payloads already carry the real values).
@@ -425,23 +420,18 @@ Operations Platform (orchestration-only) slots later. See ENTERPRISE_DECISIONS.m
 
 ## KNOWN OPEN ITEMS (not urgent, not forgotten — see PHASE_STATUS.md for full detail)
 
-- [ ] Reroute `merchant.routes.js` wallet-balance writes through
-      `walletAuthority.service.js` (currently raw `$inc` — pre-existing
-      §7 violation, not introduced by or fixed in this migration).
-- [ ] Remove or repurpose `paymentProcessing.service.js`'s orphaned
-      `approveDeposit()` (dead code, never called).
+- [x] Rerouted `merchant.routes.js` wallet-balance writes through
+      `walletAuthority.service.js`; no live raw user wallet `$inc` remains in
+      the merchant deposit completion paths.
+- [x] Removed `paymentProcessing.service.js`'s orphaned
+      `approveDeposit()` dead code (no imports/call sites existed).
 - [ ] Merchant `maxConcurrentOrders` production backfill confirmation.
 - [ ] `PaymentGatewayConfig` — confirmed intentional future scaffolding, not
       yet wired in.
-- [ ] `backend/debug-merchant-query.mjs` / `check-merchants.mjs` — stray,
-      unimported debug scripts, safe to delete.
-- [ ] `deposit-policy-migration.patch` (repo root) — a stale, committed patch
-      file describing the now-removed `merchantCommissionPercent`/
-      `commissionFundingSource` fields. Violates 04-GOVERNANCE.md §13 ("no
-      committed artifact may describe a pending fix that is not yet
-      applied" / patch files must not live in the repo root). Not deleted
-      here — out of scope for this task, flagged instead per the "never
-      silently fix out-of-scope issues" rule.
+- [x] `backend/debug-merchant-query.mjs` / `check-merchants.mjs` — already
+      absent; no debug scripts remain to delete.
+- [x] `deposit-policy-migration.patch` (repo root) — already absent; stale
+      patch file no longer exists.
 - [ ] **Discovered 2026-07-08:** merchant-panel `npm run build` is broken in
       the pristine repo — its build script is `tsc && vite build` and `tsc`
       fails with 20 pre-existing errors (OrderCard null-safety, unused
@@ -470,14 +460,11 @@ Operations Platform (orchestration-only) slots later. See ENTERPRISE_DECISIONS.m
       createdAt) — were full-scanning.
 
 ### AUDIT — still open (tracked, not silently skipped)
-- [ ] settlementService.js raw $inc on lockedBalance/lockedDepositAmount/
-      lockedWinningsAmount (lines ~12, ~27) — the settlement hot path.
-      Delicate; should be rerouted through a walletAuthority unlock method
-      WITH an integration test that runs the full settle flow under
-      concurrency, not changed blind. Highest-priority remaining money fix.
-- [ ] Redis-backed rate limiting: current limiter is in-memory, so it does
-      nothing across horizontally-scaled replicas (REDIS_RATE_LIMITER flag
-      is off). Required before running >1 backend instance.
+- [x] settlementService.js raw $inc on lockedBalance/lockedDepositAmount/
+      lockedWinningsAmount — DONE via walletAuthority.releaseLockedStake() and
+      settlement concurrency/crash-resume integration coverage.
+- [x] Redis-backed rate limiting — DONE; middleware/redisRateLimitStore.js
+      provides shared counters with memory fallback.
 - [ ] Full auth/authz line-by-line audit + dependency audit (npm audit
       reports 13 vulns in the newly added dev tooling — review prod deps).
 - [ ] admin-panel / merchant-panel tsc build breakage (pre-existing) blocks

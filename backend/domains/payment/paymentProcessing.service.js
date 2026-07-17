@@ -9,12 +9,11 @@
 
 import mongoose from 'mongoose';
 import crypto   from 'crypto';
-import { debitWinningsForWithdrawal, creditDeposit, creditReserve, refundWithdrawal } from '../wallet/walletAuthority.service.js';
+import { debitWinningsForWithdrawal, refundWithdrawal } from '../wallet/walletAuthority.service.js';
 import { selectBestMerchant } from '../merchant/merchantScoring.service.js';
-import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
 // Risk Platform (Phase 010): the single validation authority for funding orders.
 import { assessFundingOrder, getRiskRules, computePayoutFeeMinor } from '../risk/riskValidation.service.js';
-import { markUTRAsUsed, releaseUTR }   from '../../middleware/utrValidation.js';
+import { markUTRAsUsed }   from '../../middleware/utrValidation.js';
 import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import cdnService from '../../services/cdn.service.js';
 
@@ -285,7 +284,7 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
     // min/max, velocity — the single validation authority.
     await assessFundingOrder({ userId, tokenAmount, type: 'WITHDRAWAL', min: minWithdraw, max: maxWithdraw });
 
-    const user = await User.findById(userId, null, withSession(session));
+    const user = await User.findById(userId, null, withSession(session)).select('+kycData.aadhaarNumber');
     if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
     if (user.isBlocked)
       throw Object.assign(new Error('Your account has been suspended due to payment violations. Contact support.'), { status: 403, code: 'USER_BLOCKED' });
@@ -336,7 +335,7 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
       escrowLocked:    true,
       escrowAmount:    tokenAmount,
       userKycSnapshot: {
-        aadhaar: user.kycData?.aadhaarNumber ? `XXXX-${user.kycData.aadhaarNumber.slice(-4)}` : '',
+        aadhaar: user.kycData?.aadhaarNumber ? `XXXX-XXXX-${String(user.kycData.aadhaarNumber).slice(-4)}` : '',
         pan: user.kycData?.panNumber || '',
         name: user.kycData?.nameOnAadhaar || user.kycData?.nameOnPAN || user.username || '',
       },
@@ -461,90 +460,6 @@ export async function markOrderPaid(userId, orderId, utrNumber, proofFileKey, pr
     });
   }
   emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'PAID', server_ts: Date.now() });
-
-  return order;
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// approveDeposit  — merchant confirms payment received (DEPOSIT)
-//   NOTE: this function is not currently called anywhere in the codebase.
-//   The live approval path is merchant.routes.js POST /orders/:id/approve.
-//   Left in place (not deleted) pending a decision — see EXECUTION_QUEUE.md.
-//   Split percentages come from order.depositAllocation/reserveAllocation,
-//   set once at order creation from the active DepositPolicy — not hardcoded
-//   here (this function already did it the right way).
-// ═════════════════════════════════════════════════════════════════════════════
-export async function approveDeposit(actorId, orderId, session) {
-  const PaymentOrder = mongoose.model('PaymentOrder');
-  const Transaction  = mongoose.model('Transaction');
-  const Merchant     = mongoose.model('Merchant');
-
-  const order = await PaymentOrder.findOne({ orderId }, null, withSession(session));
-  if (!order || order.type !== 'DEPOSIT')
-    throw Object.assign(new Error('Order not found'), { status: 404 });
-  if (order.status !== 'PAID')
-    throw Object.assign(new Error(`Cannot approve order in ${order.status} status`), { status: 400 });
-
-  // Deduct from merchant token balance
-  // GOVERNANCE §1: via merchantWallet.service.js (sole tokenBalance writer)
-  const { merchant: updatedMerchant } = await debitMerchantTokens({
-    merchantId: order.merchantId, amount: order.depositAllocation || order.tokenAmount,
-    reason: `Deposit ${order.orderId} approved — tokens dispensed to user`,
-    refModel: 'PaymentOrder', refId: order._id.toString(),
-    txId: `mw_dep_deduct_${order._id}`, session,
-  });
-  if (!updatedMerchant)
-    throw Object.assign(new Error('Merchant has insufficient token balance'), { status: 400 });
-
-  // Deposit-allocation share to user depositBalance (order.depositAllocation, DepositPolicy-derived)
-  await creditDeposit(order.userId, order.depositAllocation || order.tokenAmount, order._id.toString(), session);
-
-  // Reserve-allocation share to platform reserve (order.reserveAllocation,
-  // DepositPolicy-derived). GOVERNANCE §7: via walletAuthority (was raw $inc).
-  if (order.reserveAllocation > 0) {
-    await creditReserve(order.userId, order.reserveAllocation, order._id.toString(), session);
-  }
-
-  order.status      = 'COMPLETED';
-  order.completedAt = new Date();
-  order.approvedBy  = actorId;
-  order.approvedAt  = new Date();
-  order.updatedAt   = new Date();
-  await order.save(withSession(session));
-
-  await releaseUTR(order._id);
-
-  // Update merchant scoring stats
-  await updateMerchantStatsOnComplete(order.merchantId, true);
-
-  await Transaction.create([{
-    userId:      order.userId,
-    type:        'DEPOSIT',
-    amount:      order.tokenAmount,
-    balanceType: 'DEPOSIT',
-    status:      'SUCCESS',
-    referenceId: order._id.toString(),
-    description: `Deposit completed: ${order.tokenAmount} tokens (${order.depositAllocation} betting + ${order.reserveAllocation} reserve)`,
-    timestamp:   new Date(),
-  }], withSession(session));
-
-  await emitWalletUpdate(order.userId);
-  emitOrderUpdate(order.userId.toString(), 'order_completed', {
-    orderId:    order.orderId,
-    _id:        order._id,
-    status:     'COMPLETED',
-    server_ts:  Date.now(),
-  });
-  emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'COMPLETED' });
-
-  // Notify merchant of updated score (GOVERNANCE §11: merchant_score_update)
-  const freshMerchant = await Merchant.findById(order.merchantId).lean();
-  if (freshMerchant) {
-    emitMerchantUpdate(order.merchantId.toString(), 'merchant_score_update', {
-      successRate:  freshMerchant.successRate,
-      avgResponse:  freshMerchant.avgResponseMinutes,
-    });
-  }
 
   return order;
 }

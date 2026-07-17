@@ -4,6 +4,7 @@ import mongoose from 'mongoose';
 import { CacheService } from '../../services/cache.service.js';
 import { creditWinnings, creditCommission } from '../wallet/walletAuthority.service.js';
 import { unlockLostBet, executeSettlementBatch } from '../settlement/settlementService.js';
+import { emitPayoutSuccessBatch } from '../notification/realtimeEmitters.js';
 // Risk Platform (Phase A, 2026-07-10): payout arithmetic authority — winners
 // are paid gross 2x minus the admin-editable winnings platform fee.
 import { getRiskRules, computeWinningsPayout } from '../risk/riskValidation.service.js';
@@ -311,23 +312,17 @@ class GameEngine {
                     balanceMap[u._id.toString()] = u;
                 }
 
-                for (const wp of winnerPayouts) {
-                    const freshUser = balanceMap[wp.userId];
-                    if (!freshUser) continue;
-                    this.io.to(`user-${wp.userId}`).emit('payout_success', {
-                        type:            'PAYOUT_SUCCESS',
-                        cycleId:         cycle.cycleId,
-                        winner:          cycle.winner,
-                        amount:          wp.payout,
-                        betAmount:       wp.betAmount,
-                        // Fresh balances — frontend applies directly, no HTTP needed
-                        winningsBalance: freshUser.winningsBalance || 0,
-                        depositBalance:  freshUser.depositBalance  || 0,
-                        lockedBalance:   freshUser.lockedBalance   || 0,
-                        walletBalance:   (freshUser.depositBalance || 0) + (freshUser.winningsBalance || 0),
-                        timestamp:       Date.now(),
-                    });
-                }
+                // Fresh balances are embedded, so winners do not need to poll an API.
+                // Fan-out is chunked/yielding to keep very large settlements from
+                // monopolizing the event loop while preserving live per-user updates.
+                await emitPayoutSuccessBatch({
+                    io: this.io,
+                    payouts: winnerPayouts,
+                    balanceMap,
+                    cycleId: cycle.cycleId,
+                    winner: cycle.winner,
+                    batchSize: BATCH_SIZE,
+                });
             } catch (emitErr) {
                 // Non-critical — payouts were already written to DB
                 console.warn('[Engine] payout_success emit error:', emitErr.message);
