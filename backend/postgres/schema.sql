@@ -174,8 +174,6 @@ CREATE TABLE IF NOT EXISTS financial_ledger (
   created_at       TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT financial_ledger_amount_non_zero CHECK (amount <> 0),
   CONSTRAINT financial_ledger_running_balance_non_negative CHECK (running_balance >= 0),
-  CONSTRAINT financial_ledger_amount_finite CHECK (isfinite(amount)),
-  CONSTRAINT financial_ledger_running_balance_finite CHECK (isfinite(running_balance)),
   CONSTRAINT financial_ledger_amount_scale CHECK (scale(amount) <= 8),
   CONSTRAINT financial_ledger_running_balance_scale CHECK (scale(running_balance) <= 8),
   CONSTRAINT financial_ledger_amount_precision CHECK (abs(amount) < 1000000000000),
@@ -186,7 +184,11 @@ CREATE TABLE IF NOT EXISTS financial_ledger (
 ALTER TABLE financial_ledger ALTER COLUMN amount TYPE NUMERIC;
 ALTER TABLE financial_ledger ALTER COLUMN running_balance TYPE NUMERIC;
 ALTER TABLE financial_ledger ADD COLUMN IF NOT EXISTS currency VARCHAR(3);
-UPDATE financial_ledger SET currency = 'USD' WHERE currency IS NULL;
+UPDATE financial_ledger AS ledger
+   SET currency = wallet.currency
+  FROM user_wallets AS wallet
+ WHERE ledger.user_id = wallet.user_id
+   AND ledger.currency IS NULL;
 ALTER TABLE financial_ledger ALTER COLUMN currency SET NOT NULL;
 ALTER TABLE financial_ledger DROP CONSTRAINT IF EXISTS financial_ledger_amount_non_zero;
 ALTER TABLE financial_ledger DROP CONSTRAINT IF EXISTS financial_ledger_running_balance_non_negative;
@@ -199,8 +201,6 @@ ALTER TABLE financial_ledger DROP CONSTRAINT IF EXISTS financial_ledger_running_
 ALTER TABLE financial_ledger DROP CONSTRAINT IF EXISTS financial_ledger_currency_iso3;
 ALTER TABLE financial_ledger ADD CONSTRAINT financial_ledger_amount_non_zero CHECK (amount <> 0);
 ALTER TABLE financial_ledger ADD CONSTRAINT financial_ledger_running_balance_non_negative CHECK (running_balance >= 0);
-ALTER TABLE financial_ledger ADD CONSTRAINT financial_ledger_amount_finite CHECK (isfinite(amount));
-ALTER TABLE financial_ledger ADD CONSTRAINT financial_ledger_running_balance_finite CHECK (isfinite(running_balance));
 ALTER TABLE financial_ledger ADD CONSTRAINT financial_ledger_amount_scale CHECK (scale(amount) <= 8);
 ALTER TABLE financial_ledger ADD CONSTRAINT financial_ledger_running_balance_scale CHECK (scale(running_balance) <= 8);
 ALTER TABLE financial_ledger ADD CONSTRAINT financial_ledger_amount_precision CHECK (abs(amount) < 1000000000000);

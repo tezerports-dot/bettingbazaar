@@ -22,6 +22,24 @@ export function secureBetReference(prefix = 'tx_bet') {
   return `${prefix}_${Date.now()}_${crypto.randomUUID()}`;
 }
 
+async function runOperationalWrite(pool, { referenceId, runningBalance, operationalWrite }) {
+  try {
+    const operationalResult = await operationalWrite({ referenceId, runningBalance });
+    await pool.query(
+      `UPDATE operational_bet_outbox SET processed_at = CURRENT_TIMESTAMP, attempts = attempts + 1, last_error = NULL
+       WHERE reference_id = $1`, [referenceId],
+    );
+    return { success: true, referenceId, runningBalance, operationalResult };
+  } catch (error) {
+    await pool.query(
+      `UPDATE operational_bet_outbox SET attempts = attempts + 1, last_error = $2 WHERE reference_id = $1`,
+      [referenceId, String(error.message || error).slice(0, 1000)],
+    );
+    console.error('CRITICAL: secure bet operational write is pending retry:', error.message);
+    throw error;
+  }
+}
+
 export async function processSecureBetPlacement({ userId, betAmount, currency = 'USD', referenceId = secureBetReference(), operationalWrite }) {
   if (!pgConfigured()) throw new Error('Postgres not configured (DATABASE_URL unset)');
   if (typeof operationalWrite !== 'function') throw new Error('operationalWrite callback is required');
@@ -31,6 +49,17 @@ export async function processSecureBetPlacement({ userId, betAmount, currency = 
   if (!/^[A-Z]{3}$/.test(requestedCurrency)) throw new Error('INVALID_CURRENCY');
 
   const pool = await getPool();
+  const existing = await pool.query(
+    `SELECT reference_id, running_balance, processed_at FROM operational_bet_outbox WHERE reference_id = $1`,
+    [referenceId],
+  );
+  if (existing.rows.length) {
+    if (existing.rows[0].processed_at) {
+      return { success: true, referenceId, runningBalance: existing.rows[0].running_balance, alreadyProcessed: true };
+    }
+    return runOperationalWrite(pool, { referenceId, runningBalance: existing.rows[0].running_balance, operationalWrite });
+  }
+
   const client = await pool.connect();
   let runningBalance;
   try {
@@ -78,19 +107,5 @@ export async function processSecureBetPlacement({ userId, betAmount, currency = 
     client.release();
   }
 
-  try {
-    const operationalResult = await operationalWrite({ referenceId, runningBalance });
-    await pool.query(
-      `UPDATE operational_bet_outbox SET processed_at = CURRENT_TIMESTAMP, attempts = attempts + 1, last_error = NULL
-       WHERE reference_id = $1`, [referenceId],
-    );
-    return { success: true, referenceId, runningBalance, operationalResult };
-  } catch (error) {
-    await pool.query(
-      `UPDATE operational_bet_outbox SET attempts = attempts + 1, last_error = $2 WHERE reference_id = $1`,
-      [referenceId, String(error.message || error).slice(0, 1000)],
-    );
-    console.error('CRITICAL: secure bet operational write is pending retry:', error.message);
-    throw error;
-  }
+  return runOperationalWrite(pool, { referenceId, runningBalance, operationalWrite });
 }

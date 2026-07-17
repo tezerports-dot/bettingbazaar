@@ -84,7 +84,7 @@ Use a consistent chip system: `OPEN / ACTIVE` green; `PENDING / QUEUED` amber; `
 | `#/invite` | `InvitePage` | referral code, share/copy, team, commissions, referral application status | `/api/referral/me`, `/team`, `/commissions`, `/apply` |
 | `#/vip` | `VIPPage` | current tier/progress, benefits, VIP configuration disclosure | `/api/vip/config`, `/api/vip/my`, `/api/bonuses/my` |
 | `#/gift-code` | `GiftCodePage` | code input, redeem CTA, success summary, redemption error | `POST /api/giftcode/redeem` |
-| `#/recover-account` | `AccountRecoveryPage` | PAN check, recovery request, status polling, safe recovery explanation | `/api/auth/check-pan`, `/recover`, `/recover/status` |
+| `#/recover-account` | `AccountRecoveryPage` | masked PAN check with confirmation, generic anti-enumeration result, recovery request, status polling, safe recovery explanation; never log or retain raw PAN in client state beyond submission | `/api/auth/check-pan` must be unauthenticated but privacy-safe: strict rate limit, generic responses for match/no-match, no raw PAN logging/retention, masked PAN input confirmation; `/recover`, `/recover/status` follow the same anti-enumeration and rate-limit posture |
 | `#/profile` | `ProfilePage` | profile fields, avatar upload, bank/UPI details, KYC CTA/status, password/session actions where supported | profile, KYC, bank, upload endpoints |
 | `#/history` | `HistoryPage` | payment/order timeline, filters, order detail, proof/chat/dispute links | `/api/payment/orders`, `/api/payment/order/:id`, status endpoints |
 | `#/my-bets` | `MyBetsPage` | bet list, cycle/side/amount/status filters, reference IDs | `GET /api/user/:userId/bets` |
@@ -339,7 +339,7 @@ Show a subtle “Live” state, a reconnecting banner after disconnect, and a no
 - `backend/routes/admin/branding.admin.routes.js:248` — `router.post('/branding/upload-url', authenticate, isAdmin, async (req, res) => {`
 - `backend/routes/admin/branding.admin.routes.js:275` — `router.post('/branding/confirm-upload', authenticate, isAdmin, async (req, res) => {`
 - `backend/routes/admin/branding.admin.routes.js:319` — `router.get('/app-assets', authenticate, isAdmin, async (req, res) => {`
-- `backend/routes/admin/branding.admin.routes.js:361` — `router.post('/app-assets/upload',`
+- `backend/routes/admin/branding.admin.routes.js:361` — `router.post('/app-assets/upload', authenticate, isAdmin, express.json({ limit: '6mb' }), async (req, res) => { ... })`; accepts `{ slot, data }`, requires admin authorization, validates known slots and PNG/JPEG/WebP/GIF data URIs, rejects missing/unknown/oversized assets with 400 responses, writes S3 when configured or LOCAL otherwise, upserts `AppAsset`, returns `{ success, slot, url, size, storage }`, and returns a generic 500 `Failed to save asset` on unexpected storage failures.
 - `backend/routes/admin/branding.admin.routes.js:410` — `router.delete('/app-assets/:name', authenticate, isAdmin, async (req, res) => {`
 - `backend/routes/admin/system.admin.routes.js:49` — `router.get('/transactions', authenticate, isAdminOrSubAdmin, async (req, res) => {`
 - `backend/routes/admin/system.admin.routes.js:88` — `router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) => {`
@@ -568,12 +568,12 @@ Admin and merchant tables need column visibility, sortable columns where meaning
 11. `10 Backend capability gaps`
 
 ### Prototype links to build
-- Player: guest bet → login → wallet → deposit order → history; profile → KYC; invite → share; recovery.
+- Player: guest bet → login → wallet → deposit order → history; profile → KYC; invite → share; recovery with masked PAN confirmation, strict rate limits, generic anti-enumeration responses, and no raw PAN logging/retention.
 - Merchant: login → online → accept order → chat → confirm/reject/red-flag → history.
 - Admin: login → queue assignment → merchant/order detail → dispute resolution; branding edit → panel preview; policy edit → review → audit.
 
 ### Handoff acceptance checklist
-- [ ] Every route in Sections 3–5 has a frame and mobile/desktop breakpoint as applicable.
+- [ ] Every non-gap route in Sections 3–5 has a frame and mobile/desktop breakpoint as applicable; entries explicitly marked **GAP / DESIGN REQUIRED** are exempt only when they document a concrete decision of designed, intentionally hidden, or deferred.
 - [ ] Every modal/drawer in Sections 3.3 and 4.3 has all states.
 - [ ] Every destructive/financial CTA uses Section 5.3 confirmation pattern.
 - [ ] Every backend-only capability in Section 7 has a decision: designed, intentionally hidden, or deferred.

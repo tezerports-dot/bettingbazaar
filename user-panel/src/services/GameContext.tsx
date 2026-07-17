@@ -180,6 +180,8 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     [CycleType.THIRTY_MIN]: createNullCycle(CycleType.THIRTY_MIN),
     [CycleType.FULL_DAY]:   createNullCycle(CycleType.FULL_DAY),
   });
+  const cyclesRef = useRef(cycles);
+  useEffect(() => { cyclesRef.current = cycles; }, [cycles]);
 
   // ── CROSS-2: Fetch branding on init so getAssetUrl() works in production ──
   useEffect(() => {
@@ -410,24 +412,25 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
       pendingBetPlaced.clear();
       betPlacedFlushTimer = null;
       if (!updates.length) return;
-      const appliedUpdates: Array<{ cycleType: CycleType; stats: LiveStats }> = [];
-      setCycles(prev => {
-        const next = { ...prev };
-        for (const [cycleId, update] of updates) {
-          if (prev[update.cycleType].id !== cycleId) continue;
-          next[update.cycleType] = {
-            ...prev[update.cycleType],
-            totalDelhi: update.stats.totalDelhi,
-            totalBombay: update.stats.totalBombay,
-          };
-          appliedUpdates.push(update);
-        }
-        return next;
-      });
+      const currentCycles = cyclesRef.current;
+      const appliedUpdates = updates
+        .filter(([cycleId, update]) => currentCycles[update.cycleType].id === cycleId)
+        .map(([, update]) => update);
       for (const { cycleType, stats } of appliedUpdates) {
         liveStatsRef.current[cycleType] = stats;
         subscribersRef.current.forEach(sub => { if (sub.type === cycleType) sub.cb(stats); });
       }
+      setCycles(prev => {
+        const next = { ...prev };
+        for (const { cycleType, stats } of appliedUpdates) {
+          next[cycleType] = {
+            ...prev[cycleType],
+            totalDelhi: stats.totalDelhi,
+            totalBombay: stats.totalBombay,
+          };
+        }
+        return next;
+      });
     };
 
     const handleBetPlaced = (data: any) => {
