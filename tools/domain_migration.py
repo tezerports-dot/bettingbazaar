@@ -81,7 +81,7 @@ class MigrationState:
         self._data = self._load()
 
     def _load(self) -> dict:
-        """Load migration state from disk or return a default state."""
+        """Load migration state, returning {} if an existing state file cannot be parsed."""
         if self.path.exists():
             try:
                 return json.loads(self.path.read_text())
@@ -167,13 +167,13 @@ def read_file(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 def backup(path: Path, dry_run: bool):
-    """Create a .bak backup for a file unless running in dry-run mode."""
+    """Create a .bak backup unless dry-run is active or that backup already exists."""
     bak = path.with_suffix(path.suffix + ".bak")
     if not dry_run and not bak.exists():
         shutil.copy2(path, bak)
 
 def write_file(path: Path, content: str, dry_run: bool, label: str = ""):
-    """Write file content, creating parents and recording created or modified status."""
+    """Write content and parents only outside dry runs, while recording the planned action."""
     tag = label or str(path)
     if path.exists():
         if read_file(path) == content:

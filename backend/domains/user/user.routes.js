@@ -59,60 +59,6 @@ function maskAadhaar(normalized) {
   return `XXXX-XXXX-${normalized.slice(-4)}`;
 }
 
-async function backfillLegacyAadhaarForSubmittedNumber(User, normalizedAadhaarNumber, session, currentUserId) {
-  const submittedHash = hashAadhaar(normalizedAadhaarNumber);
-  const submittedLast4 = normalizedAadhaarNumber.slice(-4);
-  const legacyRecords = await User.find({
-    'kycData.aadhaarNumber': { $exists: true, $ne: '' },
-    $or: [{ aadhaarHash: { $exists: false } }, { aadhaarHash: null }]
-  })
-    .session(session)
-    .select('_id kycStatus kycData +kycData.aadhaarNumber +aadhaarHash')
-    .lean();
-
-  for (const legacy of legacyRecords) {
-    const storedAadhaar = legacy.kycData?.aadhaarNumber;
-    const recoverableAadhaar = normalizeSubmittedAadhaar(storedAadhaar);
-
-    if (recoverableAadhaar) {
-      const legacyHash = hashAadhaar(recoverableAadhaar);
-      await User.updateOne(
-        { _id: legacy._id },
-        {
-          $set: {
-            aadhaarHash: legacyHash,
-            'kycData.aadhaarNumber': maskAadhaar(recoverableAadhaar)
-          }
-        },
-        { session }
-      );
-      if (String(legacy._id) !== String(currentUserId) && legacyHash === submittedHash) {
-        return { duplicateUserId: legacy._id };
-      }
-      continue;
-    }
-
-    const maskedLast4 = String(storedAadhaar || '').match(/(\d{4})$/)?.[1];
-    if (maskedLast4 === submittedLast4 && String(legacy._id) !== String(currentUserId)) {
-      await User.updateOne(
-        { _id: legacy._id },
-        {
-          $set: {
-            kycStatus: 'PENDING_SUBMISSION',
-            'kycData.aadhaarNumber': '',
-            'kycData.rejectionReason': 'Legacy masked Aadhaar could not be reverified; please resubmit KYC.'
-          },
-          $unset: { aadhaarHash: '' }
-        },
-        { session }
-      );
-      return { requiresReverification: true };
-    }
-  }
-
-  return null;
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // safeSession — works on both standalone MongoDB and Replica Sets.
 // On Railway/VPS without a Replica Set, startTransaction() throws.
@@ -504,16 +450,6 @@ router.post('/user/:userId/kyc', authenticate, async (req, res) => {
 
     const User = mongoose.model('User');
     const aadhaarHash = hashAadhaar(normalizedAadhaarNumber);
-    const legacyAadhaarConflict = await backfillLegacyAadhaarForSubmittedNumber(User, normalizedAadhaarNumber, session, userId);
-    if (legacyAadhaarConflict?.duplicateUserId) {
-      await commitOrEnd(session);
-      return res.status(409).json({ success: false, message: 'Aadhaar already linked to another account' });
-    }
-    if (legacyAadhaarConflict?.requiresReverification) {
-      await commitOrEnd(session);
-      return res.status(409).json({ success: false, message: 'A legacy Aadhaar record must be reverified before this Aadhaar can be linked. Please contact support.' });
-    }
-
     const existingAadhaar = await User.findOne({
       _id: { $ne: userId },
       aadhaarHash: { $in: hashAadhaarCandidates(normalizedAadhaarNumber) }
