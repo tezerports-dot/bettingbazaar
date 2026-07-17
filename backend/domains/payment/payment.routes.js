@@ -40,6 +40,7 @@ function sanitizeOrderForMerchant(order) {
   const plain = typeof order?.toObject === 'function' ? order.toObject() : { ...(order || {}) };
   delete plain.userKycSnapshot;
   delete plain.userPhone;
+  delete plain.merchantSnapshot;
   delete plain.userBankDetails;
   delete plain.upiId;
   return plain;
