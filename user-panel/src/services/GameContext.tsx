@@ -353,6 +353,9 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
       const applySnapshotType = (rawType: string, ct: CycleType) => {
         const c = map[rawType];
         if (!c) return;
+        for (const [pendingCycleId, pending] of pendingBetPlaced) {
+          if (pending.cycleType === ct) pendingBetPlaced.delete(pendingCycleId);
+        }
         const totalDelhi  = c.totalDelhi  || c.delhiPool  || 0;
         const totalBombay = c.totalBombay || c.bombayPool || 0;
         liveStatsRef.current[ct] = { totalDelhi, totalBombay };
@@ -399,7 +402,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     // const/let are not hoisted like function declarations. Registering them with
     
 
-    const pendingBetPlaced = new Map<CycleType, LiveStats>();
+    const pendingBetPlaced = new Map<string, { cycleType: CycleType; stats: LiveStats }>();
     let betPlacedFlushTimer: number | null = null;
 
     const flushBetPlaced = () => {
@@ -407,24 +410,35 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
       pendingBetPlaced.clear();
       betPlacedFlushTimer = null;
       if (!updates.length) return;
+      const appliedUpdates: Array<{ cycleType: CycleType; stats: LiveStats }> = [];
       setCycles(prev => {
         const next = { ...prev };
-        for (const [ct, stats] of updates) {
-          next[ct] = { ...next[ct], totalDelhi: stats.totalDelhi, totalBombay: stats.totalBombay };
-          liveStatsRef.current[ct] = stats;
+        for (const [cycleId, update] of updates) {
+          if (prev[update.cycleType].id !== cycleId) continue;
+          next[update.cycleType] = {
+            ...prev[update.cycleType],
+            totalDelhi: update.stats.totalDelhi,
+            totalBombay: update.stats.totalBombay,
+          };
+          appliedUpdates.push(update);
         }
         return next;
       });
-      for (const [ct] of updates) {
-        subscribersRef.current.forEach(sub => { if (sub.type === ct) sub.cb(liveStatsRef.current[ct]); });
+      for (const { cycleType, stats } of appliedUpdates) {
+        liveStatsRef.current[cycleType] = stats;
+        subscribersRef.current.forEach(sub => { if (sub.type === cycleType) sub.cb(stats); });
       }
     };
 
     const handleBetPlaced = (data: any) => {
       const ct = data.cycleType === '30_MIN' ? CycleType.THIRTY_MIN : CycleType.FULL_DAY;
-      pendingBetPlaced.set(ct, {
-        totalDelhi:  data.newTotalDelhi  || 0,
-        totalBombay: data.newTotalBombay || 0,
+      if (typeof data.cycleId !== 'string' || !data.cycleId) return;
+      pendingBetPlaced.set(data.cycleId, {
+        cycleType: ct,
+        stats: {
+          totalDelhi:  data.newTotalDelhi  || 0,
+          totalBombay: data.newTotalBombay || 0,
+        },
       });
       if (betPlacedFlushTimer == null) {
         betPlacedFlushTimer = window.setTimeout(flushBetPlaced, 120);
@@ -438,6 +452,9 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
         : data.type === 'FULL_DAY'
           ? CycleType.FULL_DAY
           : data.cycleId?.includes('30MIN') ? CycleType.THIRTY_MIN : CycleType.FULL_DAY;
+      for (const [pendingCycleId, pending] of pendingBetPlaced) {
+        if (pending.cycleType === ct) pendingBetPlaced.delete(pendingCycleId);
+      }
       // BUG-DATE FIX: Always store ms timestamps.
       const parseMs = (v: any): number =>
         typeof v === 'number' ? v : v ? new Date(v).getTime() : 0;

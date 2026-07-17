@@ -1,0 +1,2 @@
+import React from 'react';
+export default function RealtimeStatus({ state='connected', latency=42, updated='2 sec ago' }) { const labels={connected:'🟢 Connected',reconnecting:'🟠 Reconnecting…',offline:'🔴 Offline'}; const color=state==='connected'?'var(--bb-success)':state==='reconnecting'?'var(--bb-warning)':'var(--bb-danger)'; return <span aria-live="polite" style={{display:'inline-flex',gap:7,alignItems:'center',fontSize:12,color}}><b>{labels[state]}</b><span style={{color:'var(--bb-text-muted)'}}>Updated {updated} · {latency}ms</span></span>; }

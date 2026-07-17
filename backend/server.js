@@ -106,7 +106,12 @@ function corsOriginCheck(origin, callback) {
   return callback(new Error(`CORS: origin not allowed — ${origin}`));
 }
 
-const backendMtlsEnabled = Boolean(process.env.BACKEND_MTLS_CERT && process.env.BACKEND_MTLS_KEY && process.env.BACKEND_MTLS_CA);
+const backendMtlsConfig = ['BACKEND_MTLS_CERT', 'BACKEND_MTLS_KEY', 'BACKEND_MTLS_CA'];
+const configuredMtlsValues = backendMtlsConfig.filter((key) => process.env[key]);
+if (configuredMtlsValues.length > 0 && configuredMtlsValues.length < backendMtlsConfig.length) {
+  throw new Error(`Incomplete backend mTLS configuration; set all of: ${backendMtlsConfig.join(', ')}`);
+}
+const backendMtlsEnabled = configuredMtlsValues.length === backendMtlsConfig.length;
 const server = backendMtlsEnabled
   ? https.createServer({
       cert: fs.readFileSync(process.env.BACKEND_MTLS_CERT),

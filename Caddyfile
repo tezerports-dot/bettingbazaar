@@ -34,15 +34,13 @@ header {
 
 @backend path /api/* /socket.io/* /health* /metrics /app-assets/* /storage/*
 handle @backend {
-    # Prefer an mTLS-only upstream such as https://backend.internal:8443.
-    # When BACKEND_UPSTREAM is https://..., enable the mTLS transport below with
-    # non-empty CADDY_BACKEND_CLIENT_CERT / CADDY_BACKEND_CLIENT_KEY / BACKEND_MTLS_CA_CERT.
-    # transport http {
-    #     tls_client_certificate {$CADDY_BACKEND_CLIENT_CERT} {$CADDY_BACKEND_CLIENT_KEY}
-    #     tls_trusted_ca_certs {$BACKEND_MTLS_CA_CERT}
-    #     tls_server_name {$BACKEND_MTLS_SERVER_NAME:backend.internal}
-    # }
     reverse_proxy {$BACKEND_UPSTREAM:localhost:8080} {
+        # For an https upstream, enable this transport with non-empty values.
+        # transport http {
+        #     tls_client_auth {$CADDY_BACKEND_CLIENT_CERT} {$CADDY_BACKEND_CLIENT_KEY}
+        #     tls_trust_pool file {$BACKEND_MTLS_CA_CERT}
+        #     tls_server_name {$BACKEND_MTLS_SERVER_NAME:backend.internal}
+        # }
         # Trust gate for TLS fingerprint headers. Node only accepts forwarded
         # JA3 headers when this secret matches TLS_FINGERPRINT_EDGE_SECRET.
         header_up X-Edge-Fingerprint-Secret {$TLS_FINGERPRINT_EDGE_SECRET:}

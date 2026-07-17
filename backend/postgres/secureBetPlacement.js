@@ -2,17 +2,20 @@
 /**
  * Serializable Postgres-first money block for bet placement.
  *
- * Postgres locks and deducts the financial wallet before the caller writes the
- * operational MongoDB bet/session record. If that operational write fails, the
- * SQL transaction rolls back completely, preventing a split-state "free bet".
+ * The debit, ledger entry, and operational-write intent commit atomically. The
+ * external operational write runs only after that commit and is keyed by the
+ * immutable referenceId, so a retry can safely complete a pending outbox item.
  */
 import crypto from 'crypto';
 import { getPool, pgConfigured } from './pgClient.js';
 
 function decimal8(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) throw new Error(`Invalid monetary amount: ${value}`);
-  return n.toFixed(8);
+  if (typeof value !== 'string') throw new Error(`Invalid monetary amount: ${value}`);
+  const decimal = value.trim();
+  if (!/^\d+(?:\.\d{1,8})?$/.test(decimal) || !/[1-9]/.test(decimal.replace('.', ''))) {
+    throw new Error(`Invalid monetary amount: ${value}`);
+  }
+  return decimal;
 }
 
 export function secureBetReference(prefix = 'tx_bet') {
@@ -22,51 +25,72 @@ export function secureBetReference(prefix = 'tx_bet') {
 export async function processSecureBetPlacement({ userId, betAmount, currency = 'USD', referenceId = secureBetReference(), operationalWrite }) {
   if (!pgConfigured()) throw new Error('Postgres not configured (DATABASE_URL unset)');
   if (typeof operationalWrite !== 'function') throw new Error('operationalWrite callback is required');
+  const amount = decimal8(betAmount);
+  const uid = String(userId);
+  const requestedCurrency = String(currency).trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(requestedCurrency)) throw new Error('INVALID_CURRENCY');
 
   const pool = await getPool();
   const client = await pool.connect();
-  const amount = decimal8(betAmount);
-  const uid = String(userId);
-
+  let runningBalance;
   try {
     await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
     await client.query(
       `INSERT INTO user_wallets (user_id, currency)
        VALUES ($1, $2)
        ON CONFLICT (user_id) DO NOTHING`,
-      [uid, currency],
+      [uid, requestedCurrency],
     );
 
     const locked = await client.query(
-      `SELECT balance FROM user_wallets WHERE user_id = $1 FOR UPDATE`,
+      `SELECT balance, currency FROM user_wallets WHERE user_id = $1 FOR UPDATE`,
       [uid],
     );
     if (!locked.rows.length) throw new Error('WALLET_NOT_FOUND');
+    if (locked.rows[0].currency !== requestedCurrency) throw new Error('CURRENCY_MISMATCH');
 
     const debited = await client.query(
       `UPDATE user_wallets
-         SET balance = balance - $1::NUMERIC(20,8), updated_at = CURRENT_TIMESTAMP
-       WHERE user_id = $2 AND balance >= $1::NUMERIC(20,8)
+         SET balance = balance - $1::NUMERIC, updated_at = CURRENT_TIMESTAMP
+       WHERE user_id = $2 AND balance >= $1::NUMERIC
        RETURNING balance`,
       [amount, uid],
     );
     if (!debited.rows.length) throw new Error('INSUFFICIENT_FUNDS');
 
-    const runningBalance = debited.rows[0].balance;
+    runningBalance = debited.rows[0].balance;
     await client.query(
-      `INSERT INTO financial_ledger (user_id, transaction_type, amount, running_balance, reference_id)
-       VALUES ($1, 'BET_PLACE', $2::NUMERIC(20,8), $3::NUMERIC(20,8), $4)`,
-      [uid, amount, runningBalance, referenceId],
+      `INSERT INTO financial_ledger (user_id, transaction_type, amount, running_balance, currency, reference_id)
+       VALUES ($1, 'BET_PLACE', $2::NUMERIC, $3::NUMERIC, $4, $5)`,
+      [uid, amount, runningBalance, requestedCurrency, referenceId],
     );
-
-    const operationalResult = await operationalWrite({ referenceId, runningBalance, pgClient: client });
+    await client.query(
+      `INSERT INTO operational_bet_outbox (reference_id, user_id, amount, running_balance, currency)
+       VALUES ($1, $2, $3::NUMERIC, $4::NUMERIC, $5)`,
+      [referenceId, uid, amount, runningBalance, requestedCurrency],
+    );
     await client.query('COMMIT');
-    return { success: true, referenceId, runningBalance, operationalResult };
   } catch (error) {
     try { await client.query('ROLLBACK'); } catch { /* ignore rollback errors */ }
     console.error('CRITICAL: secure bet execution rolled back cleanly:', error.message);
     throw error;
   } finally {
     client.release();
+  }
+
+  try {
+    const operationalResult = await operationalWrite({ referenceId, runningBalance });
+    await pool.query(
+      `UPDATE operational_bet_outbox SET processed_at = CURRENT_TIMESTAMP, attempts = attempts + 1, last_error = NULL
+       WHERE reference_id = $1`, [referenceId],
+    );
+    return { success: true, referenceId, runningBalance, operationalResult };
+  } catch (error) {
+    await pool.query(
+      `UPDATE operational_bet_outbox SET attempts = attempts + 1, last_error = $2 WHERE reference_id = $1`,
+      [referenceId, String(error.message || error).slice(0, 1000)],
+    );
+    console.error('CRITICAL: secure bet operational write is pending retry:', error.message);
+    throw error;
   }
 }

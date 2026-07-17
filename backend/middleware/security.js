@@ -106,6 +106,16 @@ export const ipBetLimiter = rateLimit({
     keyGenerator: (req) => req.user?.id || ipKeyGenerator(req.ip)
 });
 
+// This inexpensive IP-only guard deliberately runs before authentication on bet placement.
+export const unauthenticatedBetIpLimiter = rateLimit({
+    store: createRateLimitStore('rl:bet-unauth-ip:'),
+    ...RATE_LIMIT_TIERS.bet,
+    message: { success: false, message: 'Too many bet requests. Please wait a moment.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => ipKeyGenerator(req.ip)
+});
+
 export const betLimiter = [ipBetLimiter, betBehaviorLimiter];
 
 // ==================== WITHDRAWAL RATE LIMITERS ====================

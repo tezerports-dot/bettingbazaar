@@ -7,21 +7,18 @@
  * use the same licensed, jurisdiction-aware HTTPS origin as the web product.
  */
 import express from 'express';
+import { csv } from '../startup/validateEnv.js';
 
 const router = express.Router();
 
-function csv(value) {
-  return String(value || '').split(',').map((v) => v.trim()).filter(Boolean);
-}
-
 router.get('/bootstrap', (req, res) => {
-  const officialOrigin = process.env.PUBLIC_APP_ORIGIN || `${req.protocol}://${req.get('host')}`;
+  const officialOrigin = process.env.PUBLIC_APP_ORIGIN;
   res.json({
     success: true,
     app: {
       name: process.env.PUBLIC_APP_NAME || 'Betting Bazaar',
       officialOrigin,
-      allowedOrigins: csv(process.env.PUBLIC_APP_ALLOWED_ORIGINS || officialOrigin),
+      allowedOrigins: csv(process.env.PUBLIC_APP_ALLOWED_ORIGINS),
       androidPackage: process.env.ANDROID_PACKAGE_ID || null,
       iosBundleId: process.env.IOS_BUNDLE_ID || null,
       desktopAppId: process.env.DESKTOP_APP_ID || null,
