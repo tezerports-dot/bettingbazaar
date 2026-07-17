@@ -1,9 +1,15 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import mongoose from 'mongoose';
+import crypto from 'crypto';
+
+function generateMerchantPublicRef() {
+  return `M${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+}
 
 const merchantSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', unique: true },
   name: { type: String, required: true },
+  publicRef: { type: String, required: true, unique: true, default: generateMerchantPublicRef, immutable: true },
   // ✅ FIX #12/#13: Add missing auth + profile fields
   username: { type: String, index: true },
   mobile: { type: String, index: true },
@@ -91,6 +97,11 @@ const merchantSchema = new mongoose.Schema({
 // ════════════════════════════════════════════════════════════════════════════
 
 // ════════════════════════════════════════════════════════════════════════════
+
+merchantSchema.pre('validate', function ensurePublicRef(next) {
+  if (!this.publicRef) this.publicRef = generateMerchantPublicRef();
+  next();
+});
 
 merchantSchema.index({ 'bankDetails.upiId': 1 }, { unique: true, sparse: true });
 merchantSchema.index({ 'bankDetails.accountNo': 1, 'bankDetails.ifsc': 1 }, { unique: true, sparse: true });
