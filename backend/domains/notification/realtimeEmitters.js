@@ -51,6 +51,57 @@ export async function emitWalletUpdate(userId, balanceOverride = null) {
   }
 }
 
+
+function nextTick() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+// ─── PAYOUT SUCCESS BATCH ────────────────────────────────────────────────────
+/**
+ * emitPayoutSuccessBatch — send personalized winner payout updates in bounded
+ * chunks. Balances are preloaded by the settlement engine in one DB query; this
+ * helper only fans out realtime packets and yields between chunks so a huge
+ * winner set cannot monopolize the event loop.
+ *
+ * @param {object} params
+ * @param {object} params.io - Socket.IO server
+ * @param {Array<{userId:string,payout:number,betAmount:number}>} params.payouts
+ * @param {Object<string, object>} params.balanceMap - keyed by user id
+ * @param {string} params.cycleId
+ * @param {string} params.winner
+ * @param {number} [params.batchSize]
+ * @returns {Promise<number>} sent packet count
+ */
+export async function emitPayoutSuccessBatch({ io, payouts, balanceMap, cycleId, winner, batchSize = 500 }) {
+  if (!io || !Array.isArray(payouts) || payouts.length === 0) return 0;
+  const size = Math.max(1, Number(batchSize) || 500);
+  let sent = 0;
+
+  for (let i = 0; i < payouts.length; i += size) {
+    const batch = payouts.slice(i, i + size);
+    for (const wp of batch) {
+      const freshUser = balanceMap?.[wp.userId];
+      if (!freshUser) continue;
+      io.to(`user-${wp.userId}`).emit('payout_success', {
+        type:            'PAYOUT_SUCCESS',
+        cycleId,
+        winner,
+        amount:          wp.payout,
+        betAmount:       wp.betAmount,
+        winningsBalance: freshUser.winningsBalance || 0,
+        depositBalance:  freshUser.depositBalance  || 0,
+        lockedBalance:   freshUser.lockedBalance   || 0,
+        walletBalance:   (freshUser.depositBalance || 0) + (freshUser.winningsBalance || 0),
+        timestamp:       Date.now(),
+      });
+      sent += 1;
+    }
+    if (i + size < payouts.length) await nextTick();
+  }
+
+  return sent;
+}
+
 // ─── ORDER UPDATE ─────────────────────────────────────────────────────────────
 /**
  * emitOrderUpdate — Notify user of order status change via SSE.

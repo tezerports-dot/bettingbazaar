@@ -52,23 +52,13 @@ full architecture decision and reasoning.
    future third-party gateway scaffolding, not a bug, not yet wired in.
 3. No MongoDB transactions in the settlement flow — correctness relies on
    idempotency keys, not atomicity. Documented, not changed.
-4. `backend/debug-merchant-query.mjs` and `check-merchants.mjs` — stray debug
-   scripts, not imported anywhere, safe to delete, not yet removed.
+4. `backend/debug-merchant-query.mjs` and `check-merchants.mjs` — removed; no
+   stray debug scripts remain in the repo.
 5. Phase 002 "no orphaned functionality" — verified at capability level only.
-6. **Discovered 2026-07-07, not fixed (separate task):** `merchant.routes.js`
-   POST `/orders/:id/approve` writes `User.depositBalance`/`reserveBalance` via
-   raw `$inc` — a pre-existing 04-GOVERNANCE.md §7 violation ("all wallet
-   balance reads/writes go through `walletAuthority.service.js`"). Not touched
-   by the DepositPolicy migration (only the hardcoded ratio inside that same
-   route was fixed) — rerouting these writes through `walletAuthority.service.js`
-   is a bigger, separate change and deserves its own review.
-7. **Discovered 2026-07-07:** `paymentProcessing.service.js` exports
-   `approveDeposit()`, which duplicates the logic in `merchant.routes.js`'s
-   live `/orders/:id/approve` route but is never imported or called anywhere.
-   Comments clarified (it already read `order.depositAllocation`/
-   `reserveAllocation` correctly — no functional change). Still dead code;
-   left in place pending a decision — candidate for BBEPS §13 cleanup.
-8. **Corrected 2026-07-08 (was: "New with this migration" 2026-07-07):**
+6. **Closed after 2026-07-07 discovery:** live merchant deposit approval/confirm
+   paths now credit users through `walletAuthority.service.js`; the orphaned
+   `paymentProcessing.service.js` `approveDeposit()` helper has been removed.
+7. **Corrected 2026-07-08 (was: "New with this migration" 2026-07-07):**
    `DepositPolicy.merchantCommissionPercent` / `commissionFundingSource` have
    been **removed** — deposit creation and a completed buy+sell cycle are
    different trigger events, so merchant incentive pay cannot live on a
@@ -96,8 +86,7 @@ full architecture decision and reasoning.
 
 ## Current Active Phase
 
-**Phases A–F ALL COMPLETE in-repo (2026-07-10).** The implementation roadmap
-is done to the limit of what code can do:
+**Phases A–F implementation substantially complete in-repo (2026-07-10), with tracked follow-up work.** The roadmap details below record completed scope while leaving owner-action and queued engineering items as the authoritative remaining work:
 
 - **Phase B:** F-2 (settlement unlocks via walletAuthority, transactional +
   idempotent, concurrency/crash-resume proven in CI), F-3 (Redis-shared
@@ -114,9 +103,7 @@ is done to the limit of what code can do:
   activation steps (need owner credentials).
 - **Phase F:** bcrypt-12 standardization and an env-tunable Mongo pool.
 
-**Remaining work is owner-action or queued polish:** see
-EXECUTION_QUEUE.md "Discovered during Phases B–F" (notably: SSE/socket Redis
-bridge before >1 instance).
+**Remaining work is tracked follow-up:** see EXECUTION_QUEUE.md "Discovered during Phases B–F" for owner-action items, queued polish, and scale work such as the SSE/socket Redis bridge before >1 instance.
 
 ### Phase A record (same day)
 
@@ -140,12 +127,12 @@ Betting-logic correctness & admin-configurability:
   route → real engine → real ledger; balanced cycle where platform revenue
   equals exactly the retained fee).
 
-**NEXT — Phase B (remaining open money bugs & scale blockers):**
-F-2 settlementService raw `$inc` reroute WITH a settle-under-concurrency
-integration test (now feasible — the harness works); F-3 Redis-backed rate
-limiting; merchant token-deduction admin control; the settlement-recovery
-totals issue found during Phase A (EXECUTION_QUEUE.md). Then Phase C
-(admin UI build-out).
+**Phase B follow-up record (historical open items, now tracked in EXECUTION_QUEUE.md):**
+The Phase A handoff identified F-2 settlementService raw `$inc` reroute with a
+settle-under-concurrency integration test, F-3 Redis-backed rate limiting,
+merchant token-deduction admin control, and the settlement-recovery totals
+issue. Preserve this list as roadmap history; use the Current Active Phase
+summary and EXECUTION_QUEUE.md for present status.
 
 ### Prior active phase (007 — Revenue & Settlement Platform)
 
@@ -220,9 +207,9 @@ sync mid-change. New files, all in `domains/configuration/`:
     90/10 only if no policy has ever been configured (fresh-install bootstrap
     state).
   - `merchant.routes.js` POST `/orders/:id/approve` — **this is the route that
-    actually runs in production** (the alternate `approveDeposit()` in
-    `paymentProcessing.service.js` is dead code, never called — see Known Open
-    Items). It previously had its OWN independent hardcoded 90/10, silently
+    actually runs in production** (the old alternate `approveDeposit()` in
+    `paymentProcessing.service.js` has been removed). It previously had its OWN
+    independent hardcoded 90/10, silently
     ignoring the model's computed fields — a real 04-GOVERNANCE.md §2 violation
     ("no second write path to a value with a designated single-writer
     service") that predates this migration. Fixed to consume

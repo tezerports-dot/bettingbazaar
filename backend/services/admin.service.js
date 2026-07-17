@@ -285,7 +285,7 @@ class AdminService {
    */
   async approveKYC(userId, adminId) {
     try {
-      const user = await User.findById(userId);
+      const user = await User.findById(userId).select('+kycData.aadhaarNumber');
       if (!user) {
         throw new Error('User not found');
       }
@@ -394,7 +394,7 @@ class AdminService {
         kycStatus: 'PENDING_APPROVAL',
         'kycData.submittedAt': { $exists: true }
       })
-        .select('username mobile kycData profilePic joinedAt')
+        .select('username mobile kycData profilePic joinedAt +kycData.aadhaarNumber')
         .sort({ 'kycData.submittedAt': 1 })
         .limit(100);
 

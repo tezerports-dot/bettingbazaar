@@ -567,9 +567,9 @@ rather than decided unilaterally.
 consuming the order's already-computed `depositAllocation`/`reserveAllocation`.
 
 **Why:** tracing the actual call graph showed `merchant.routes.js`'s inline
-route handler — not `paymentProcessing.service.js`'s `approveDeposit()` — is
-the live, called code path. `approveDeposit()` is never imported or invoked
-anywhere; it's dead code that happened to already do the "right" thing
+route handler is the live, called code path. The old `approveDeposit()` helper
+was never imported or invoked and has now been removed; it was dead code that
+happened to already do the "right" thing
 (consume the stored fields). Fixing only the model's pre-save hook would have
 left the actual production behavior unchanged, since the live route
 recomputed its own ratio and ignored the stored fields entirely. This was a

@@ -72,7 +72,7 @@ const userSchema = new mongoose.Schema({
   kycStatus: { type: String, enum: ['PENDING_SUBMISSION', 'PENDING_APPROVAL', 'APPROVED', 'REJECTED'], default: 'PENDING_SUBMISSION' },
   kycData: {
     nameOnAadhaar: String,   
-    aadhaarNumber: String,   
+    aadhaarNumber: { type: String, select: false },   
     nameOnPAN: String,
     panNumber: String,
     idProofUrl: String,
