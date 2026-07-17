@@ -20,7 +20,6 @@ import Promotions from './user/Promotions';
 import Rules from './user/Rules';
 import Faq from './user/Faq';
 import Support from './user/Support';
-import OrderChat from './user/OrderChat';
 import MerchantLogin from './merchant/MerchantLogin';
 import MerchantDashboard from './merchant/MerchantDashboard';
 import MerchantOrders from './merchant/MerchantOrders';
@@ -73,7 +72,7 @@ export const UI_PAGE_REGISTRY = Object.freeze([
   { key: 'invite', path: '/invite', component: Invite, componentName: 'Invite', layout: UserPanelShell, layoutName: 'UserPanelShell', apiBinding: '/api/referral/me, /api/referral/team, /api/referral/commissions' },
   { key: 'vip', path: '/vip', component: Vip, componentName: 'Vip', layout: UserPanelShell, layoutName: 'UserPanelShell', apiBinding: '/api/vip/config, /api/vip/my' },
   { key: 'gift_code', path: '/gift-code', component: GiftCode, componentName: 'GiftCode', layout: UserPanelShell, layoutName: 'UserPanelShell', apiBinding: '/api/giftcode/redeem' },
-  { key: 'account_recovery', path: '/recover-account', component: AccountRecovery, componentName: 'AccountRecovery', layout: UserPanelShell, layoutName: 'UserPanelShell', apiBinding: '/api/auth/check-pan, /api/auth/recover' },
+  { key: 'account_recovery', path: '/recover-account', component: AccountRecovery, componentName: 'AccountRecovery', layout: UserPanelShell, layoutName: 'UserPanelShell', apiBinding: '/api/auth/check-aadhaar, /api/auth/recover' },
   { key: 'profile', path: '/profile', component: Profile, componentName: 'Profile', layout: UserPanelShell, layoutName: 'UserPanelShell', apiBinding: '/api/v1/user/profile, /api/user/:userId/kyc' },
   { key: 'transaction_history', path: '/history', component: TransactionHistory, componentName: 'TransactionHistory', layout: UserPanelShell, layoutName: 'UserPanelShell', apiBinding: '/api/payment/orders' },
   { key: 'my_bets', path: '/my-bets', component: MyBets, componentName: 'MyBets', layout: UserPanelShell, layoutName: 'UserPanelShell', apiBinding: '/api/user/:userId/bets' },
@@ -83,7 +82,6 @@ export const UI_PAGE_REGISTRY = Object.freeze([
   { key: 'rules', path: '/rules', component: Rules, componentName: 'Rules', layout: UserPanelShell, layoutName: 'UserPanelShell', apiBinding: '/api/v1/system/config' },
   { key: 'faq', path: '/faq', component: Faq, componentName: 'Faq', layout: UserPanelShell, layoutName: 'UserPanelShell', apiBinding: '/api/v1/content/faq' },
   { key: 'support', path: '/support', component: Support, componentName: 'Support', layout: UserPanelShell, layoutName: 'UserPanelShell', apiBinding: '/api/v1/content/support-links, /api/support/ask' },
-  { key: 'order_chat', path: '/chat', component: OrderChat, componentName: 'OrderChat', layout: UserPanelShell, layoutName: 'UserPanelShell', apiBinding: '/api/payment/order/:orderId, /api/user/chat/:orderId/upload-url' },
   { key: 'merchant_login', path: '/merchant', component: MerchantLogin, componentName: 'MerchantLogin', layout: MerchantPanelShell, layoutName: 'MerchantPanelShell', apiBinding: '/api/merchant/auth/login' },
   { key: 'merchant_dashboard', path: '/merchant/dashboard', component: MerchantDashboard, componentName: 'MerchantDashboard', layout: MerchantPanelShell, layoutName: 'MerchantPanelShell', apiBinding: '/api/merchant/stats, /api/merchant/earnings' },
   { key: 'merchant_orders', path: '/merchant/orders', component: MerchantOrders, componentName: 'MerchantOrders', layout: MerchantPanelShell, layoutName: 'MerchantPanelShell', apiBinding: '/api/merchant/orders' },

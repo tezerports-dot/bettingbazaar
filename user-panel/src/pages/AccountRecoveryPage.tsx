@@ -2,25 +2,25 @@
 /**
  * AccountRecoveryPage.tsx
  *
- * User-facing PAN card video KYC account recovery.
+ * User-facing Aadhaar card video KYC account recovery.
  * Flow:
- *  1. User enters their PAN number → system finds the locked/lost account
- *  2. User records a short video HOLDING their PAN card clearly in frame
- *  3. User fills their name (as on PAN) and DOB (as on PAN) + contact mobile
- *  4. Admin reviews the video — verifies face and PAN card details match
+ *  1. User enters their Aadhaar number → system finds the locked/lost account
+ *  2. User records a short video HOLDING their Aadhaar card clearly in frame
+ *  3. User fills their name (as on Aadhaar) and DOB (as on Aadhaar) + contact mobile
+ *  4. Admin reviews the video — verifies face and Aadhaar card details match
  *  5. If approved, admin gets a temp password to share with user
  */
 import React, { useState, useRef } from 'react';
 import { useNavigate } from 'react-router';
 
-type Step = 'pan_check' | 'record_video' | 'details' | 'submitted';
+type Step = 'aadhaar_check' | 'record_video' | 'details' | 'submitted';
 
 export default function AccountRecoveryPage() {
   const navigate = useNavigate();
-  const [step, setStep]           = useState<Step>('pan_check');
-  const [panNumber, setPanNumber] = useState('');
+  const [step, setStep]           = useState<Step>('aadhaar_check');
+  const [aadhaarNumber, setAadhaarNumber] = useState('');
   const [checking, setChecking]   = useState(false);
-  const [panError, setPanError]   = useState('');
+  const [aadhaarError, setAadhaarError]   = useState('');
   const [videoBlob, setVideoBlob] = useState<Blob|null>(null);
   const [videoUrl, setVideoUrl]   = useState('');
   const [videoS3Url, setVideoS3Url] = useState('');
@@ -36,27 +36,27 @@ export default function AccountRecoveryPage() {
   const videoElRef= useRef<HTMLVideoElement>(null);
   const chunksRef = useRef<Blob[]>([]);
 
-  // ── Step 1: Check PAN ────────────────────────────────────────────────────
-  const checkPAN = async () => {
-    const clean = panNumber.toUpperCase().replace(/\s/g, '');
-    if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(clean)) {
-      setPanError('Invalid PAN format. Example: ABCDE1234F'); return;
+  // ── Step 1: Check Aadhaar ────────────────────────────────────────────────────
+  const checkAadhaar = async () => {
+    const clean = aadhaarNumber.replace(/[\s-]/g, '');
+    if (!/^\d{12}$/.test(clean)) {
+      setAadhaarError('Invalid Aadhaar format. Enter 12 digits.'); return;
     }
-    setChecking(true); setPanError('');
+    setChecking(true); setAadhaarError('');
     try {
-      const r = await fetch('/api/auth/check-pan', {
+      const r = await fetch('/api/auth/check-aadhaar', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ panNumber: clean }),
+        body: JSON.stringify({ aadhaarNumber: clean }),
       });
       const d = await r.json();
       if (d.exists) {
         setStep('record_video');
       } else {
-        setPanError('No account found with this PAN card. If you are new, please register.');
+        setAadhaarError('No account found with this Aadhaar card. If you are new, please register.');
       }
-    } catch { setPanError('Network error. Please try again.'); }
+    } catch { setAadhaarError('Network error. Please try again.'); }
     finally { setChecking(false); }
   };
 
@@ -120,7 +120,7 @@ export default function AccountRecoveryPage() {
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
-          panNumber: panNumber.toUpperCase().replace(/\s/g,''),
+          aadhaarNumber: aadhaarNumber.replace(/[\s-]/g,''),
           mobile:    form.mobile,
           fullName:  form.fullName,
           dob:       form.dob,
@@ -144,13 +144,13 @@ export default function AccountRecoveryPage() {
       <div className="px-4 pt-4 pb-3 border-b border-dark-700">
         <button onClick={() => navigate(-1)} className="text-gray-500 text-xs mb-2 block">← Back to Login</button>
         <h1 className="text-lg font-bold">🔐 Account Recovery</h1>
-        <p className="text-gray-400 text-xs mt-0.5">Recover access using your PAN card and a short video</p>
+        <p className="text-gray-400 text-xs mt-0.5">Recover access using your Aadhaar card and a short video</p>
       </div>
 
       {/* Step indicator */}
       <div className="flex items-center px-4 py-3 gap-2">
         {['Pan Check','Record Video','Your Details','Submitted'].map((s,i) => {
-          const steps = ['pan_check','record_video','details','submitted'];
+          const steps = ['aadhaar_check','record_video','details','submitted'];
           const done  = steps.indexOf(step) > i;
           const cur   = steps[i] === step;
           return (
@@ -167,25 +167,25 @@ export default function AccountRecoveryPage() {
 
       <div className="flex-1 px-4 py-4 space-y-4">
 
-        {/* STEP 1: PAN CHECK */}
-        {step === 'pan_check' && (
+        {/* STEP 1: AADHAAR CHECK */}
+        {step === 'aadhaar_check' && (
           <div className="space-y-4">
             <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 text-xs text-gray-300 space-y-1.5">
               <p className="font-semibold text-white">Before you start</p>
-              <p>• Your PAN card must have been used for KYC on your account</p>
-              <p>• You will need to record a short video holding your PAN card</p>
-              <p>• Make sure the PAN number, your name, and your face are all clearly visible</p>
+              <p>• Your Aadhaar card must have been used for KYC on your account</p>
+              <p>• You will need to record a short video holding your Aadhaar card</p>
+              <p>• Make sure the Aadhaar number, your name, and your face are all clearly visible</p>
               <p>• Our team reviews all requests within 24 hours</p>
             </div>
             <div>
-              <label className="text-xs text-gray-400 mb-1.5 block">Enter your PAN Card Number</label>
-              <input value={panNumber} onChange={e => setPanNumber(e.target.value.toUpperCase())}
-                placeholder="ABCDE1234F"
-                maxLength={10}
+              <label className="text-xs text-gray-400 mb-1.5 block">Enter your Aadhaar Card Number</label>
+              <input value={aadhaarNumber} onChange={e => setAadhaarNumber(e.target.value.replace(/\D/g, '').slice(0, 12))}
+                placeholder="1234 5678 9012"
+                maxLength={12}
                 className="w-full bg-dark-800 border border-dark-600 focus:border-yellow-500/50 rounded-xl px-4 py-3.5 text-white font-mono text-lg tracking-[0.3em] outline-none text-center uppercase"/>
-              {panError && <p className="text-red-400 text-xs mt-2">{panError}</p>}
+              {aadhaarError && <p className="text-red-400 text-xs mt-2">{aadhaarError}</p>}
             </div>
-            <button onClick={checkPAN} disabled={checking || panNumber.length < 10}
+            <button onClick={checkAadhaar} disabled={checking || aadhaarNumber.replace(/\D/g, '').length < 12}
               className="w-full bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-black font-bold py-3.5 rounded-xl transition-all active:scale-95">
               {checking ? '⏳ Checking…' : 'Find My Account →'}
             </button>
@@ -197,9 +197,9 @@ export default function AccountRecoveryPage() {
           <div className="space-y-4">
             <div className="bg-green-500/10 border border-green-500/20 rounded-xl p-4 text-xs text-gray-300 space-y-1.5">
               <p className="font-semibold text-white">✅ Account found! Now record your verification video</p>
-              <p>Hold your PAN card in front of the camera and say:</p>
+              <p>Hold your Aadhaar card in front of the camera and say:</p>
               <p className="bg-dark-700 rounded-lg p-2 font-mono text-white text-center">"My name is [NAME], I am recovering my BettingBazaar account"</p>
-              <p>• PAN card must be clearly readable in the video</p>
+              <p>• Aadhaar card must be clearly readable in the video</p>
               <p>• Your face must be visible alongside the card</p>
               <p>• Minimum 5 seconds, maximum 30 seconds</p>
               <p>• Good lighting helps speed up verification</p>
@@ -247,11 +247,11 @@ export default function AccountRecoveryPage() {
         {step === 'details' && (
           <div className="space-y-4">
             <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-3 text-xs text-gray-300">
-              <p>✅ Video uploaded. Fill in your details exactly as they appear on your PAN card.</p>
+              <p>✅ Video uploaded. Fill in your details exactly as they appear on your Aadhaar card.</p>
             </div>
             {[
-              { label:'Full Name (as on PAN Card)', key:'fullName', type:'text', ph:'RAHUL KUMAR SHARMA' },
-              { label:'Date of Birth (as on PAN)',  key:'dob',      type:'date', ph:'' },
+              { label:'Full Name (as on Aadhaar Card)', key:'fullName', type:'text', ph:'RAHUL KUMAR SHARMA' },
+              { label:'Date of Birth (as on Aadhaar)',  key:'dob',      type:'date', ph:'' },
               { label:'Contact Mobile Number',      key:'mobile',   type:'tel',  ph:'9876543210' },
             ].map(f => (
               <div key={f.key}>
@@ -282,7 +282,7 @@ export default function AccountRecoveryPage() {
               <p className="text-gray-500">Save this ID to track your request status</p>
             </div>
             <div className="bg-dark-800 border border-dark-700 rounded-xl p-4 w-full text-left space-y-1.5 text-xs text-gray-400">
-              <p>📋 Our team will review your PAN card video within 24 hours</p>
+              <p>📋 Our team will review your Aadhaar card video within 24 hours</p>
               <p>📞 We will contact you on {form.mobile} with your new login details</p>
               <p>🔐 You will receive a temporary password — change it immediately</p>
             </div>

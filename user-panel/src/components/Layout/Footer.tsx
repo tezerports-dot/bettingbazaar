@@ -31,7 +31,6 @@ const PAGE_CATALOG: Record<string, { label: string; path: string; icon: string }
   'rules':     { label: 'Rules',     path: '/rules',      icon: '📖' },
   'faq':       { label: 'FAQ',       path: '/faq',        icon: '❓' },
   'support':   { label: 'Support',   path: '/support',    icon: '🛟' },
-  'chat':      { label: 'Chat',      path: '/chat',       icon: '💬' },
   'casino':    { label: 'Casino',    path: '/casino',     icon: '🎰' },
   'crash':     { label: 'Crash',     path: '/crash',      icon: '🚀' },
   'sports':    { label: 'Sports',    path: '/sports',     icon: '⚽' },
@@ -58,13 +57,6 @@ const Footer: React.FC = () => {
   return (
     <div className="mobile-sticky-footer flex-none relative z-40" style={{ background:"#0D1120", borderTop:"1px solid rgba(212,175,55,0.18)" }}>
       <div style={{ height:"1px", background:"linear-gradient(90deg,transparent,rgba(212,175,55,0.6) 38.2%,rgba(245,199,122,0.8) 61.8%,transparent)" }} />
-
-      {}
-      <button onClick={() => navigate("/chat")}
-        className="absolute -top-14 right-4 w-12 h-12 rounded-full flex items-center justify-center active:scale-90 transition-all"
-        style={{ background:"linear-gradient(135deg,#1a2235,#121826)", border:"1.5px solid rgba(212,175,55,0.5)", boxShadow:"0 4px 20px rgba(0,0,0,0.5),0 0 12px rgba(212,175,55,0.15)" }}>
-        <span className="text-xl leading-none">💬</span>
-      </button>
 
       <footer className="h-[56px] flex items-stretch">
         {nav.map(item => {

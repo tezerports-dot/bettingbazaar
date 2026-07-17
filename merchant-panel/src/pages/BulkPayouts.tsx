@@ -126,7 +126,7 @@ const BulkPayouts: React.FC = () => {
       // Build CSV
       const headers = [
         'S.No', 'Order ID', 'Beneficiary Name', 'Account Number', 'IFSC Code',
-        'Bank Name', 'Amount (Rs.)', 'Tokens', 'PAN', 'Mobile', 'Remark', 'Status',
+        'Bank Name', 'Amount (Rs.)', 'Tokens', 'Aadhaar', 'Mobile', 'Remark', 'Status',
       ];
       const rows = data.rows.map((r: any) => [
         r.sNo,
@@ -137,7 +137,7 @@ const BulkPayouts: React.FC = () => {
         r.bankName,
         r.amount,
         r.tokenAmount,
-        r.panNumber,
+        r.aadhaarNumber,
         r.userMobile,
         r.remark,
         r.status,

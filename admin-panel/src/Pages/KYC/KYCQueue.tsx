@@ -113,7 +113,7 @@ export const KYCQueue: React.FC = () => {
         <div className="text-sm">
           <p>{user.kycData?.nameOnAadhaar}</p>
           <p className="text-gray-400">Aadhaar: {user.kycData?.aadhaarNumber}</p>
-          <p className="text-gray-400">PAN: {user.kycData?.panNumber}</p>
+          <p className="text-gray-400">Aadhaar: {user.kycData?.aadhaarNumber}</p>
         </div>
       ),
     },
@@ -238,8 +238,8 @@ export const KYCQueue: React.FC = () => {
                 <p className="font-medium">{selectedUser.kycData.aadhaarNumber}</p>
               </div>
               <div>
-                <p className="text-sm text-gray-400 mb-1">PAN Number</p>
-                <p className="font-medium">{selectedUser.kycData.panNumber}</p>
+                <p className="text-sm text-gray-400 mb-1">Aadhaar Number</p>
+                <p className="font-medium">{selectedUser.kycData.aadhaarNumber}</p>
               </div>
               <div>
                 <p className="text-sm text-gray-400 mb-1">Submitted</p>

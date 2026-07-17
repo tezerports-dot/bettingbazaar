@@ -53,8 +53,8 @@ export const AccountRecoveryAdmin: React.FC = () => {
         <div>
           <h1 className="text-2xl font-bold">Account Recovery Queue</h1>
           <p className="text-gray-400 text-sm mt-1">
-            Review PAN card video KYC submissions. Watch the video — verify the user's face
-            AND the PAN card number/name match the registered account.
+            Review Aadhaar card video KYC submissions. Watch the video — verify the user's face
+            AND the Aadhaar card number/name match the registered account.
           </p>
         </div>
         <button onClick={load} className="btn-secondary flex items-center gap-2"><RefreshCw size={14}/>Refresh</button>
@@ -106,8 +106,8 @@ export const AccountRecoveryAdmin: React.FC = () => {
       {status === 'pending' && requests.length > 0 && (
         <div className="card border border-blue-500/20 bg-blue-500/5 text-xs text-gray-300 space-y-1">
           <p className="font-semibold text-white">How to review a recovery request:</p>
-          <p>1. Click "▶ Watch Video" — the user should be holding their PAN card clearly visible</p>
-          <p>2. Check: <strong>face visible</strong>, <strong>PAN number readable</strong>, <strong>name on PAN matches request</strong></p>
+          <p>1. Click "▶ Watch Video" — the user should be holding their Aadhaar card clearly visible</p>
+          <p>2. Check: <strong>face visible</strong>, <strong>Aadhaar number readable</strong>, <strong>name on Aadhaar matches request</strong></p>
           <p>3. If all three match → Approve. If suspicious → Reject with reason.</p>
           <p>4. After approval, you will see the temp password <strong>once only</strong> — share it immediately with the user.</p>
         </div>
@@ -131,7 +131,7 @@ export const AccountRecoveryAdmin: React.FC = () => {
                       </div>
                       <div className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-1 text-sm mt-2">
                         <div><p className="text-gray-500 text-xs">Claimant Name</p><p className="font-medium">{req.fullName}</p></div>
-                        <div><p className="text-gray-500 text-xs">DOB on PAN</p><p className="font-medium">{req.dob}</p></div>
+                        <div><p className="text-gray-500 text-xs">DOB on Aadhaar</p><p className="font-medium">{req.dob}</p></div>
                         <div><p className="text-gray-500 text-xs">Contact Mobile</p><p className="font-medium">{req.mobile}</p></div>
                         <div><p className="text-gray-500 text-xs">Registered Account</p><p className="font-medium">{req.userId?.username} · {req.userId?.mobile}</p></div>
                         <div><p className="text-gray-500 text-xs">Submitted</p><p className="font-medium">{new Date(req.createdAt).toLocaleString()}</p></div>
@@ -145,7 +145,7 @@ export const AccountRecoveryAdmin: React.FC = () => {
                   <div className="flex items-center gap-3">
                     <a href={req.videoKycUrl} target="_blank" rel="noreferrer"
                       className="flex items-center gap-2 bg-blue-500/10 text-blue-400 border border-blue-500/30 px-4 py-2 rounded-lg text-sm hover:bg-blue-500/20 transition-colors">
-                      <Video size={14}/> ▶ Watch PAN Card Video
+                      <Video size={14}/> ▶ Watch Aadhaar Card Video
                     </a>
                     {req.selfieUrl && (
                       <a href={req.selfieUrl} target="_blank" rel="noreferrer"

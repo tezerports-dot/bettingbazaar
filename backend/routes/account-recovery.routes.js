@@ -3,21 +3,21 @@
  * account-recovery.routes.js
  *
  * DUPLICATE ACCOUNT PREVENTION:
- *   PAN card numbers are hashed (SHA-256) on KYC approval.
- *   Any attempt to register a second account with the same PAN is blocked.
+ *   Aadhaar card numbers are hashed (SHA-256) on KYC approval.
+ *   Any attempt to register a second account with the same Aadhaar is blocked.
  *
  * ACCOUNT RECOVERY FLOW:
  *   1. User says "I lost access to my account"
- *   2. They record a short video HOLDING THEIR PAN CARD clearly visible
- *   3. They provide: full name (as on PAN), DOB, mobile
- *   4. Backend matches PAN hash to find their account
- *   5. Admin reviews video — verifies face AND PAN card details in the video
+ *   2. They record a short video HOLDING THEIR AADHAAR CARD clearly visible
+ *   3. They provide: full name (as on Aadhaar), DOB, mobile
+ *   4. Backend matches Aadhaar hash to find their account
+ *   5. Admin reviews video — verifies face AND Aadhaar card details in the video
  *   6. Admin approves → system generates a temp password shown ONCE to admin
  *   7. Admin shares temp password with user
  *   8. User logs in with temp password and must change it immediately
  *
  * SECURITY:
- *   - PAN and Aadhaar stored as SHA-256 only (one-way, can't be reversed)
+ *   - Aadhaar stored as SHA-256 only (one-way, can't be reversed)
  *   - temp password shown to admin ONCE then cleared from DB
  *   - Video KYC URL is required (prevents pure text-based impersonation)
  *   - Rate limited: max 3 recovery attempts per mobile per 24h
@@ -40,9 +40,9 @@ function hashDocument(raw) {
   return crypto.createHash('sha256').update(normalised).digest('hex');
 }
 
-// ── Validate PAN format: AAAAA9999A ─────────────────────────────────────────
-function isValidPAN(pan) {
-  return /^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan.toUpperCase().replace(/\s/g, ''));
+// ── Validate Aadhaar format: 12 digits ─────────────────────────────────────────
+function isValidAadhaar(aadhaar) {
+  return /^\d{12}$/.test(String(aadhaar || '').replace(/[\s-]/g, ''));
 }
 
 function generateTemporaryPassword(length = 16) {
@@ -67,42 +67,43 @@ function checkRecoveryRateLimit(mobile) {
 // ════════════════════════════════════════════════════════════════════════════
 
 /**
- * POST /api/auth/check-pan
- * Called during registration and KYC submission to detect duplicate PAN.
+ * POST /api/auth/check-aadhaar
+ * Called during registration and KYC submission to detect duplicate Aadhaar.
  * Returns { exists: bool, canRecover: bool } — never returns user data.
- * Body: { panNumber }
+ * Body: { aadhaarNumber }
  */
-router.post('/auth/check-pan', async (req, res) => {
+async function checkAadhaarRecovery(req, res) {
   try {
-    const { panNumber } = req.body;
-    if (!panNumber) return res.status(400).json({ success: false, message: 'PAN number required' });
-    if (!isValidPAN(panNumber)) return res.status(400).json({ success: false, message: 'Invalid PAN format (expected: AAAAA9999A)' });
+    const { aadhaarNumber } = req.body;
+    if (!aadhaarNumber) return res.status(400).json({ success: false, message: 'Aadhaar number required' });
+    if (!isValidAadhaar(aadhaarNumber)) return res.status(400).json({ success: false, message: 'Invalid Aadhaar format (expected: 12 digits)' });
 
     const User = mongoose.model('User');
-    const hash = hashDocument(panNumber);
-    const exists = await User.findOne({ panCardHash: hash }).select('_id status').lean();
+    const hash = hashDocument(aadhaarNumber);
+    const exists = await User.findOne({ aadhaarHash: hash }).select('_id status').lean();
 
     res.json({
       success: true,
       exists:     !!exists,
       canRecover: !!exists,
       message:    exists
-        ? 'This PAN is already registered. Use Account Recovery to regain access.'
-        : 'PAN is available.',
+        ? 'This Aadhaar is already registered. Use Account Recovery to regain access.'
+        : 'Aadhaar is available.',
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
-});
+}
+
+router.post('/auth/check-aadhaar', checkAadhaarRecovery);
 
 /**
  * POST /api/auth/recover
  * Submit an account recovery request.
  * Body: {
- *   panNumber,       -- to locate the account
+ *   aadhaarNumber,   -- to locate the account
  *   mobile,          -- recovery contact
  *   fullName,        -- as on Aadhaar
- *   aadhaarLast4,    -- last 4 digits of Aadhaar
  *   dob,             -- YYYY-MM-DD
  *   videoKycUrl,     -- S3 CDN URL of recorded video
  *   videoKycKey,     -- S3 key (optional)
@@ -111,13 +112,14 @@ router.post('/auth/check-pan', async (req, res) => {
  */
 router.post('/auth/recover', async (req, res) => {
   try {
-    const { panNumber, mobile, fullName, dob, videoKycUrl, videoKycKey, selfieUrl } = req.body;
+    const { aadhaarNumber } = req.body;
+    const { mobile, fullName, dob, videoKycUrl, videoKycKey, selfieUrl } = req.body;
 
     // Validate required fields
-    if (!panNumber || !mobile || !fullName || !dob || !videoKycUrl) {
-      return res.status(400).json({ success: false, message: 'All fields required: panNumber, mobile, fullName, dob, videoKycUrl' });
+    if (!aadhaarNumber || !mobile || !fullName || !dob || !videoKycUrl) {
+      return res.status(400).json({ success: false, message: 'All fields required: aadhaarNumber, mobile, fullName, dob, videoKycUrl' });
     }
-    if (!isValidPAN(panNumber)) return res.status(400).json({ success: false, message: 'Invalid PAN format (AAAAA9999A)' });
+    if (!isValidAadhaar(aadhaarNumber)) return res.status(400).json({ success: false, message: 'Invalid Aadhaar format (12 digits)' });
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dob)) return res.status(400).json({ success: false, message: 'dob must be YYYY-MM-DD' });
 
     // Rate limit: 3 attempts per mobile per 24h
@@ -128,11 +130,11 @@ router.post('/auth/recover', async (req, res) => {
     const User = mongoose.model('User');
     const AccountRecovery = mongoose.model('AccountRecovery');
 
-    // Find account via PAN hash
-    const panHash = hashDocument(panNumber);
-    const user = await User.findOne({ panCardHash: panHash }).select('_id mobile status').lean();
+    // Find account via Aadhaar hash
+    const aadhaarHash = hashDocument(aadhaarNumber);
+    const user = await User.findOne({ aadhaarHash }).select('_id mobile status').lean();
     if (!user) {
-      return res.status(404).json({ success: false, message: 'No account found with this PAN. If you have not completed KYC yet, your PAN may not be linked.' });
+      return res.status(404).json({ success: false, message: 'No account found with this Aadhaar. If you have not completed KYC yet, your Aadhaar may not be linked.' });
     }
 
     // Check for pending recovery request
@@ -160,7 +162,7 @@ router.post('/auth/recover', async (req, res) => {
     res.json({
       success: true,
       recoveryId,
-      message: 'Recovery request submitted. Our team will review your PAN card video within 24 hours. Make sure your PAN card was clearly visible in the video.',
+      message: 'Recovery request submitted. Our team will review your Aadhaar card video within 24 hours. Make sure your Aadhaar card was clearly visible in the video.',
     });
   } catch (err) {
     console.error('Account recovery submit error:', err);
@@ -315,38 +317,27 @@ router.post('/admin/account-recovery/:id/reject', authenticate, isAdmin, async (
 
 // ════════════════════════════════════════════════════════════════════════════
 // KYC INTEGRATION — called when admin approves a user's KYC
-// Hashes and stores PAN + Aadhaar for duplicate detection
+// Hashes and stores Aadhaar for duplicate detection
 // ════════════════════════════════════════════════════════════════════════════
 
 /**
  * POST /api/admin/kyc/link-documents
  * Called internally when admin approves KYC.
- * Hashes PAN and Aadhaar numbers and links to the user.
+ * Hashes Aadhaar numbers and links to the user.
  * Returns { duplicate: bool } if documents already linked to another account.
- * Body: { userId, panNumber, aadhaarNumber }
+ * Body: { userId, aadhaarNumber }
  */
 router.post('/admin/kyc/link-documents', authenticate, isAdmin, async (req, res) => {
   try {
-    const { userId, panNumber, aadhaarNumber } = req.body;
+    const { userId, aadhaarNumber } = req.body;
     if (!userId) return res.status(400).json({ success: false, message: 'userId required' });
 
     const User    = mongoose.model('User');
     const updates = {};
     const conflicts = [];
 
-    if (panNumber) {
-      if (!isValidPAN(panNumber)) return res.status(400).json({ success: false, message: 'Invalid PAN format' });
-      const panHash = hashDocument(panNumber);
-      // Check if another user already has this PAN
-      const existing = await User.findOne({ panCardHash: panHash, _id: { $ne: userId } }).select('_id username mobile').lean();
-      if (existing) {
-        conflicts.push({ type: 'PAN', existingUser: { id: existing._id, username: existing.username, mobile: existing.mobile?.slice(-4).padStart(10,'*') } });
-      } else {
-        updates.panCardHash = panHash;
-      }
-    }
-
     if (aadhaarNumber) {
+      if (!isValidAadhaar(aadhaarNumber)) return res.status(400).json({ success: false, message: 'Invalid Aadhaar format' });
       const aadhaarHash = hashDocument(aadhaarNumber);
       const existing = await User.findOne({ aadhaarHash, _id: { $ne: userId } }).select('_id username mobile').lean();
       if (existing) {

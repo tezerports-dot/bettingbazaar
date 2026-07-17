@@ -229,7 +229,7 @@ export const UsersList: React.FC = () => {
                   <div className="grid grid-cols-2 gap-2">
                     <div><p className="text-gray-400">Name</p><p>{selectedUser.kycData.nameOnAadhaar}</p></div>
                     <div><p className="text-gray-400">Aadhaar</p><p className="font-mono">XXXX-{selectedUser.kycData.aadhaarNumber?.slice(-4)}</p></div>
-                    <div><p className="text-gray-400">PAN</p><p className="font-mono">{selectedUser.kycData.panNumber}</p></div>
+                    <div><p className="text-gray-400">Aadhaar</p><p className="font-mono">{selectedUser.kycData.aadhaarNumber}</p></div>
                     <div><p className="text-gray-400">Submitted</p><p>{formatters.date(selectedUser.kycData.submittedAt)}</p></div>
                   </div>
                 </div>

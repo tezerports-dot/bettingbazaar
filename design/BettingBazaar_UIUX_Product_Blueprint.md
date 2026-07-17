@@ -1,6 +1,6 @@
 # Betting Bazaar — Complete UI/UX Product Blueprint
 
-> **Designer hand-off / AI design prompt source.** This is the single source file for redesigning the currently implemented **Player**, **Merchant**, and **Admin** panels. It is intentionally structured for direct upload/paste into Claude, FigJam, Figma Make, or another AI-assisted design workflow. A native `.fig` binary cannot be generated safely outside Figma; import this document as the product specification, or paste its sections into Figma Make to generate editable frames.  
+> **Designer hand-off / AI design prompt source.** This is the single source file for redesigning the currently implemented **Player**, **Merchant**, and **Admin** panels. It is intentionally structured for direct upload/paste into Claude, FigJam, Figma Make, or another AI-assisted design workflow. A native `.fig` binary cannot be generated safely outside Figma; import this document as the product specification, or paste its sections into Figma Make to generate editable frames.
 > **Scope:** actual repository state, not aspirational marketing copy. Every current page, shell, modal, realtime behavior, logo location, and backend route is mapped below. Every backend-supported capability below has an explicit UI/UX decision: visible designed surface, intentionally hidden/internal surface, or deferred behind a named capability flag with owner approval required before exposure.
 
 ---
@@ -16,7 +16,7 @@ Create three connected desktop + mobile design systems in one Figma project:
 For every frame, include **default, loading, empty, validation error, server error, success, disabled, permission denied, and offline/reconnecting** states. Link every CTA to the workflow listed in this file. Use semantic components/variants, not detached screenshots.
 
 ### Non-negotiable rules
-- Never expose secrets, auth tokens, PAN/bank details, KYC documents, or raw UTR values in a non-authorized view.
+- Never expose secrets, auth tokens, Aadhaar/bank details, KYC documents, or raw UTR values in a non-authorized view.
 - Financial actions need an explicit review/confirmation state and an immutable reference/order ID success state.
 - Account/device/auth and payment failures must explain the safe next action without leaking sensitive details.
 - Respect `prefers-reduced-motion`; motion must never hide status, countdown, error, or a required confirmation.
@@ -84,7 +84,7 @@ Use a consistent chip system: `OPEN / ACTIVE` green; `PENDING / QUEUED` amber; `
 | `#/invite` | `InvitePage` | referral code, share/copy, team, commissions, referral application status | `/api/referral/me`, `/team`, `/commissions`, `/apply` |
 | `#/vip` | `VIPPage` | current tier/progress, benefits, VIP configuration disclosure | `/api/vip/config`, `/api/vip/my`, `/api/bonuses/my` |
 | `#/gift-code` | `GiftCodePage` | code input, redeem CTA, success summary, redemption error | `POST /api/giftcode/redeem` |
-| `#/recover-account` | `AccountRecoveryPage` | masked PAN check with confirmation, generic anti-enumeration result, recovery request, status polling, safe recovery explanation; raw PAN is POST-body only, never placed in URLs, browser storage, analytics, error telemetry, request metadata, or logs, and must be cleared from component state immediately after submission | `/api/auth/check-pan`, `/recover`, and `/recover/status` must be privacy-safe: strict rate limit, generic responses where applicable, masked PAN input confirmation, no raw PAN in URLs/storage/analytics/telemetry/metadata/server logs, and immediate PAN clearing after each submit |
+| `#/recover-account` | `AccountRecoveryPage` | masked Aadhaar check with confirmation, generic anti-enumeration result, recovery request, status polling, safe recovery explanation; raw Aadhaar is POST-body only, never placed in URLs, browser storage, analytics, error telemetry, request metadata, or logs, and must be cleared from component state immediately after submission | `/api/auth/check-aadhaar`, `/recover`, and `/recover/status` must be privacy-safe: strict rate limit, generic responses where applicable, masked Aadhaar input confirmation, no raw Aadhaar in URLs/storage/analytics/telemetry/metadata/server logs, and immediate Aadhaar clearing after each submit |
 | `#/profile` | `ProfilePage` | profile fields, avatar upload, bank/UPI details, KYC CTA/status, password/session actions where supported | profile, KYC, bank, upload endpoints |
 | `#/history` | `HistoryPage` | payment/order timeline, filters, order detail, proof/chat/dispute links | `/api/payment/orders`, `/api/payment/order/:id`, status endpoints |
 | `#/my-bets` | `MyBetsPage` | bet list, cycle/side/amount/status filters, reference IDs | `GET /api/user/:userId/bets` |
@@ -94,7 +94,7 @@ Use a consistent chip system: `OPEN / ACTIVE` green; `PENDING / QUEUED` amber; `
 | `#/rules` | `RulesPage` | game/risk/responsible-gaming content, expandable sections | static/configured content |
 | `#/faq` | `FaqPage` | searchable accordion FAQ, support CTA | `/api/v1/content/faq` |
 | `#/support` | `SupportPage` | support links, AI support question flow, order support escalation | `/api/v1/content/support-links`, `/api/support/ask` |
-| `#/chat` | OrderChatPage | designed order-chat landing/drawer with order lookup, immutable order header, attachment timeline, payment-proof upload, upload progress/failure states, and safe empty state when no order is selected; player free-text transcript read/send is **deferred** until backend exposes authenticated player chat read/send endpoints | Implemented player contract is attachment-only: `POST /api/user/chat/:orderId/upload-url` and `POST /api/user/chat/:orderId/confirm-upload`, both require `authenticate` and verify the authenticated user owns the order; merchant transcript/text uses `GET/POST /api/merchant/chat/:id` with `merchantAuth`; no implementable player transcript/message flow is promised until matching player endpoints exist |
+| `#/chat` | intentionally removed | No merchant↔user chat page or direct user-merchant transcript is exposed. Support chat/live support and Dispute Manager are the only chat-style surfaces; payment-proof upload remains a non-chat attachment workflow. | No player chat read/send contract is promised. Existing user/merchant order-chat endpoints are not navigation targets; any future conversation must route through Support or Dispute Manager authorization. |
 
 ### 3.3 Player modal specifications
 | Modal | Trigger | States / fields | Actions / API |
@@ -112,7 +112,7 @@ Use a consistent chip system: `OPEN / ACTIVE` green; `PENDING / QUEUED` amber; `
 1. **Guest → authenticated player → first bet:** choose side → auth modal → successful login → return to original cycle/side/amount → optional wallet funding → review bet → submit → optimistic *pending* only → server confirmation → live pool updates.
 2. **Add funds:** Wallet → Add Funds → amount → create payment order → queued → merchant assigned/accepted → chat/proof as available → completed → balance refresh and receipt.
 3. **Withdraw winnings:** Wallet → Withdraw → validate saved bank details and winnings balance → review → create withdrawal → queued/processing → completion or rejected explanation.
-4. **Account recovery:** auth modal link → PAN check → recovery form → submitted → status screen → approved/rejected communication.
+4. **Account recovery:** auth modal link → Aadhaar check → recovery form → submitted → status screen → approved/rejected communication.
 5. **KYC:** profile/wallet eligibility prompt → consent + document selection → upload → submission receipt → review status → resolve rejection with actionable reason.
 
 ---
@@ -208,11 +208,11 @@ Every approve, reject, delete, fund, deduct, balance-adjust, block, suspend, equ
 ## 6. Cross-panel connected workflows
 
 ### Payment order lifecycle
-`PLAYER wallet` → create deposit/withdrawal order → `ADMIN queue` optionally assigns/reassigns → `MERCHANT orders` accepts → user/merchant chat and proof upload → merchant confirms or rejects → user sees status/balance → admin resolves dispute if needed.  
+`PLAYER wallet` → create deposit/withdrawal order → `ADMIN queue` optionally assigns/reassigns → `MERCHANT orders` accepts → user/merchant chat and proof upload → merchant confirms or rejects → user sees status/balance → admin resolves dispute if needed.
 Design the same status labels, order ID, amount, expiry, participants, audit timeline, and evidence list in every participant’s view. Each role sees only authorized PII/actions.
 
 ### Branding lifecycle
-`ADMIN Branding/App Assets` → upload URL or asset upload → confirmation → updated branding event → Player, Merchant, and Admin apply colors/names/logo.  
+`ADMIN Branding/App Assets` → upload URL or asset upload → confirmation → updated branding event → Player, Merchant, and Admin apply colors/names/logo.
 Design a three-panel preview in Admin Branding and a safe fallback brand state when an asset fails to load.
 
 ### Realtime lifecycle
@@ -230,7 +230,7 @@ Show a subtle “Live” state, a reconnecting banner after disconnect, and a no
 | Public bootstrap `/api/app/bootstrap` | Player “App & safety”/About surface plus silent bootstrap initialization | Designed visible safety/about view documents official origin, app links, version, maintenance and support metadata without exposing unsafe fallbacks. |
 | Game launch/provider wallet | Casino page exists | Ensure launch loading/error/return-to-lobby and provider wallet status are designed. |
 | Crash and sports | Crash and Sports pages with provider-contract gating | Designed contract-specific bet-slip/round states, loading/error/disabled states, and provider-verification gate before live production interaction. |
-| Player order chat and uploads | `#/chat` OrderChatPage plus wallet/order deep links | Designed page/drawer includes order selection, transcript, attachment upload progress, retry/failure states, and payment-proof confirmation. |
+| Payment-proof uploads and support/dispute chat | No `#/chat` page; wallet/order deep links route to proof upload, Support, or Dispute Manager | Direct merchant-user chat is intentionally not exposed. Attachment upload remains a non-chat proof workflow; all conversations must use Support/live chat or Dispute Manager with their role authorization. |
 | Support knowledge base / admin documents | Admin SupportOperations workspace | Designed ingestion/document-management UI with status, delete confirmation, permission denial, empty/loading/error, and audit detail states. |
 | Referral admin configuration/stats | Admin → Promotions → Referrals | Designed configuration, stats, commissions, fraud review, save confirmation, and permission denial states. |
 | VIP admin configuration | Admin → Promotions → VIP configuration | Designed tier config, benefit preview, eligibility simulation, save confirmation, audit note, and rollback states. |
@@ -256,7 +256,7 @@ Show a subtle “Live” state, a reconnecting banner after disconnect, and a no
 - `backend/routes/winners.routes.js:103` — `router.post('/admin/fake-winners', authenticate, isAdmin, async (req, res) => {`
 - `backend/routes/winners.routes.js:121` — `router.put('/admin/fake-winners/:id', authenticate, isAdmin, async (req, res) => {`
 - `backend/routes/winners.routes.js:136` — `router.delete('/admin/fake-winners/:id', authenticate, isAdmin, async (req, res) => {`
-- `backend/routes/account-recovery.routes.js:75` — `router.post('/auth/check-pan', async (req, res) => {`
+- `backend/routes/account-recovery.routes.js:75` — `router.post('/auth/check-aadhaar', async (req, res) => {`
 - `backend/routes/account-recovery.routes.js:112` — `router.post('/auth/recover', async (req, res) => {`
 - `backend/routes/account-recovery.routes.js:175` — `router.get('/auth/recover/status', async (req, res) => {`
 - `backend/routes/account-recovery.routes.js:198` — `router.get('/admin/account-recovery', authenticate, isAdminOrSubAdmin, async (req, res) => {`
@@ -340,7 +340,7 @@ Show a subtle “Live” state, a reconnecting banner after disconnect, and a no
 - `backend/routes/admin/branding.admin.routes.js:248` — `router.post('/branding/upload-url', authenticate, isAdmin, async (req, res) => {`
 - `backend/routes/admin/branding.admin.routes.js:275` — `router.post('/branding/confirm-upload', authenticate, isAdmin, async (req, res) => {`
 - `backend/routes/admin/branding.admin.routes.js:319` — `router.get('/app-assets', authenticate, isAdmin, async (req, res) => {`
-- `backend/routes/admin/branding.admin.routes.js:361` — `router.post('/app-assets/upload', authenticate, isAdmin, express.json({ limit: '6mb' }), async (req, res) => { ... })`; accepts `{ slot, data }`, where `slot` must be one of `logo.png`, `logo-header.png`, `icon-192.png`, `icon-512.png`, `icon-apple-180.png`, `favicon-32.png`, or `splash.png`; `data` must match `data:(image/png|image/jpeg|image/webp|image/gif);base64,<payload>` per the route's `image/[a-z+]+` data-URI parser plus MIME allow-list; decoded `Buffer.from(payload, 'base64')` size must be <= 5,242,880 bytes (5 MiB). Requires admin authorization, rejects missing slot/data, unknown slots, malformed data URIs, disallowed MIME types, and oversized decoded assets with 400 responses, writes S3 when configured or LOCAL otherwise, upserts `AppAsset`, returns `{ success, slot, url, size, storage }`, and returns a generic 500 `Failed to save asset` on unexpected storage failures.
+- `backend/routes/admin/branding.admin.routes.js:361` — `router.post('/app-assets/upload', authenticate, isAdmin, express.json({ limit: '6mb' }), async (req, res) => { ... })`; accepts `{ slot, data }`, where `slot` must be one of `logo.png`, `logo-header.png`, `icon-192.png`, `icon-512.png`, `icon-apple-180.png`, `favicon-32.png`, or `splash.png`; `data` must be a base64 data URI carrying PNG/JPEG/WebP/GIF bytes; the server treats the declared type as untrusted and validates `Buffer.from(payload, 'base64')` by byte signature. Decoded byte length must be <= 5,242,880 bytes (5 MiB). Requires admin authorization, rejects missing slot/data, unknown slots, malformed data URIs, unrecognized image byte signatures, and oversized decoded assets with 400 responses, writes S3 when configured or LOCAL otherwise, upserts `AppAsset`, returns `{ success, slot, url, size, storage }`, and returns a generic 500 `Failed to save asset` on unexpected storage failures.
 - `backend/routes/admin/branding.admin.routes.js:410` — `router.delete('/app-assets/:name', authenticate, isAdmin, async (req, res) => {`
 - `backend/routes/admin/system.admin.routes.js:49` — `router.get('/transactions', authenticate, isAdminOrSubAdmin, async (req, res) => {`
 - `backend/routes/admin/system.admin.routes.js:88` — `router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) => {`
@@ -569,7 +569,7 @@ Admin and merchant tables need column visibility, sortable columns where meaning
 11. `10 Backend capability coverage decisions`
 
 ### Prototype links to build
-- Player: guest bet → login → wallet → deposit order → history; profile → KYC; invite → share; recovery with masked PAN confirmation, strict rate limits, generic anti-enumeration responses, no raw PAN in URLs/storage/analytics/telemetry/metadata/logs, and immediate PAN clearing after submit.
+- Player: guest bet → login → wallet → deposit order → history; profile → KYC; invite → share; recovery with masked Aadhaar confirmation, strict rate limits, generic anti-enumeration responses, no raw Aadhaar in URLs/storage/analytics/telemetry/metadata/logs, and immediate Aadhaar clearing after submit.
 - Merchant: login → online → accept order → chat → confirm/reject/red-flag → history.
 - Admin: login → queue assignment → merchant/order detail → dispute resolution; branding edit → panel preview; policy edit → review → audit.
 

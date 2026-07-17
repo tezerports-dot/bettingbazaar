@@ -37,7 +37,7 @@ function validateCyclePhaseSet(label, p, maxMerge) {
 // owns route strings/icons (display), this list owns what's selectable.
 const FOOTER_PAGE_KEYS = [
   'home', 'results', 'winners', 'promo', 'profile', 'wallet', 'invite', 'vip',
-  'gift-code', 'my-bets', 'history', 'rules', 'faq', 'support', 'chat',
+  'gift-code', 'my-bets', 'history', 'rules', 'faq', 'support',
   'casino', 'crash', 'sports',
 ];
 

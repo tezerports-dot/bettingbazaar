@@ -118,7 +118,7 @@ const OrderDetailPanel: React.FC<OrderDetailPanelProps> = ({
             <div className="bg-gray-50 rounded-xl px-4 py-1">
               <Row label="Name"   value={kyc?.name || userName} />
               <Row label="Mobile" value={userPhone} mono copyable />
-              {kyc?.pan && <Row label="PAN" value={kyc.pan} mono />}
+              {kyc?.pan && <Row label="Aadhaar" value={kyc.pan} mono />}
             </div>
           </div>
 
