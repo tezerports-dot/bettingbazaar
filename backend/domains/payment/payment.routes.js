@@ -36,6 +36,14 @@ async function safeSession() {
 async function commitOrEnd(s) { if (!s) return; try { await s.commitTransaction(); } finally { s.endSession(); } }
 async function abortOrEnd(s)  { if (!s) return; try { await s.abortTransaction(); }  finally { s.endSession(); } }
 function withSession(s) { return s ? { session: s } : {}; }
+function sanitizeOrderForMerchant(order) {
+  const plain = typeof order?.toObject === 'function' ? order.toObject() : { ...(order || {}) };
+  delete plain.userKycSnapshot;
+  delete plain.userPhone;
+  delete plain.userBankDetails;
+  delete plain.upiId;
+  return plain;
+}
 
 router.post('/deposit/create', authenticate, async (req, res) => {
   try {
@@ -92,7 +100,7 @@ router.post('/deposit/:orderId/confirm', paymentActorAuth, async (req, res) => {
     await mongoose.model('Transaction').create([{ userId: order.userId, type: 'DEPOSIT', amount: order.tokenAmount, balanceType: 'DEPOSIT', status: 'SUCCESS', referenceId: order._id.toString(), description: `Deposit completed: ${order.tokenAmount} tokens`, timestamp: new Date() }], withSession(session));
     await commitOrEnd(session);
     await emitWalletUpdate(order.userId);
-    res.json({ success: true, message: 'Deposit completed', order });
+    res.json({ success: true, message: 'Deposit completed', order: isMerchantActor ? sanitizeOrderForMerchant(order) : order });
   } catch (err) { await abortOrEnd(session); res.status(500).json({ success: false, message: 'Failed to confirm deposit' }); }
 });
 

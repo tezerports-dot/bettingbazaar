@@ -31,6 +31,26 @@ async function requireBulkPayoutsEnabled(req, res, next) {
     return res.status(403).json({ success: false, message: 'Merchant bulk payouts are not enabled.' });
 }
 
+
+function merchantDisplayRef(merchant) {
+    return `Merchant #${String(merchant._id).slice(-4).toUpperCase()}`;
+}
+
+function sanitizeMerchantOrder(order) {
+    const plain = typeof order?.toObject === 'function' ? order.toObject() : { ...(order || {}) };
+    delete plain.userKycSnapshot;
+    delete plain.userPhone;
+    if (plain.type === 'DEPOSIT') {
+        delete plain.userBankDetails;
+        delete plain.upiId;
+    }
+    return plain;
+}
+
+function sanitizeMerchantOrders(orders) {
+    return orders.map((order) => sanitizeMerchantOrder(order));
+}
+
 const formatMerchant = (merchant, user = null) => ({
     id:                   merchant._id,
     _id:                  merchant._id,
@@ -403,7 +423,7 @@ router.get('/orders', merchantAuth, async (req, res) => {
             PaymentOrder.countDocuments(query),
         ]);
 
-        res.json({ success: true, orders, pagination: { total, limit: parsedLimit, skip: parsedSkip } });
+        res.json({ success: true, orders: sanitizeMerchantOrders(orders), pagination: { total, limit: parsedLimit, skip: parsedSkip } });
     } catch (err) {
         console.error('GET /merchant/orders error:', err);
         res.status(500).json({ success: false, message: 'Failed to fetch orders.' });
@@ -458,7 +478,7 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         order.expiresAt       = expiresAt;
         order.merchantSnapshot = {
             merchantId:    merchant._id,
-            merchantName:  merchant.name || merchant.username || '',
+            merchantName:  merchantDisplayRef(merchant),
             upiId:         merchant.bankDetails?.upiId             || '',
             qrCodeUrl:     merchant.qrCodeUrl                      || '',
             bankName:      merchant.bankDetails?.bankName           || '',
@@ -484,17 +504,14 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         const io = global.io;
         const oid = order._id;
         const isDeposit = order.type === 'DEPOSIT';
-        const kyc  = order.userKycSnapshot  || {};
         const bank = order.userBankDetails  || {};
-        const kycLine = kyc.name ? `\n👤 User: ${kyc.name}  |  ${kyc.aadhaar ? 'Aadhaar' : kyc.pan ? 'PAN' : 'ID'}: ${kyc.aadhaar || kyc.pan || 'N/A'}` : '';
 
         if (isDeposit) {
             await sendSystemMessage(oid,
                 `✅ Order Accepted by Merchant\n` +
                 `📋 Order: ${order.orderId}\n` +
                 `💰 User must pay ₹${order.fiatAmount} to merchant UPI: ${merchant.bankDetails?.upiId || 'See payment details'}\n` +
-                `⏱ Payment window: 15 minutes` +
-                kycLine,
+                `⏱ Payment window: 15 minutes`,
                 io
             );
         } else {
@@ -503,9 +520,8 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
                 `📋 Order: ${order.orderId}\n` +
                 `💸 Merchant must send ₹${order.fiatAmount} to user's bank:\n` +
                 `   🏦 ${bank.bankName || ''} | AC: ${bank.accountNumber || 'N/A'} | IFSC: ${bank.ifscCode || 'N/A'}\n` +
-                `   Account Holder: ${bank.accountHolderName || kyc.name || 'N/A'}\n` +
-                `   UPI ID: ${order.upiId || 'N/A'}` +
-                kycLine,
+                `   Account Holder: ${bank.accountHolderName || 'N/A'}\n` +
+                `   UPI ID: ${order.upiId || 'N/A'}`,
                 io
             );
         }
@@ -521,7 +537,7 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         });
         emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'PROCESSING', server_ts: Date.now() });
 
-        res.json({ success: true, order });
+        res.json({ success: true, order: sanitizeMerchantOrder(order) });
     } catch (err) {
         console.error('POST /merchant/accept/:id error:', err);
         res.status(500).json({ success: false, message: 'Failed to accept order.' });
@@ -688,7 +704,7 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         });
         emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'COMPLETED', server_ts: Date.now() });
 
-        res.json({ success: true, order });
+        res.json({ success: true, order: sanitizeMerchantOrder(order) });
     } catch (err) {
         console.error('POST /merchant/confirm/:id error:', err);
         res.status(500).json({ success: false, message: 'Failed to confirm payment.' });
@@ -746,7 +762,7 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
                 expiresAt:        order.expiresAt,
                 server_ts:        Date.now(),
             });
-            res.json({ success: true, message: 'Order rejected and re-assigned to another merchant.', order });
+            res.json({ success: true, message: 'Order rejected and re-assigned to another merchant.', order: sanitizeMerchantOrder(order) });
         } else {
             order.rejectedReason = reason;
             await order.save();
@@ -758,7 +774,7 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
                 server_ts: Date.now(),
             });
             emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'PENDING_QUEUE', server_ts: Date.now() });
-            res.json({ success: true, message: 'Order rejected. Searching for next available merchant.', order });
+            res.json({ success: true, message: 'Order rejected. Searching for next available merchant.', order: sanitizeMerchantOrder(order) });
         }
 
         try {
@@ -815,7 +831,7 @@ router.post('/order/:id/dispute', merchantAuth, async (req, res) => {
             server_ts: Date.now(),
         });
 
-        res.json({ success: true, message: 'Dispute raised. Admin will review.', order });
+        res.json({ success: true, message: 'Dispute raised. Admin will review.', order: sanitizeMerchantOrder(order) });
     } catch (err) {
         console.error('POST /merchant/order/:id/dispute error:', err);
         res.status(500).json({ success: false, message: 'Failed to raise dispute.' });
@@ -861,7 +877,7 @@ router.get('/chat/:id', merchantAuth, async (req, res) => {
                 id:            m._id.toString(),
                 orderId:       order.orderId || order._id.toString(),
                 senderId:      m.senderId?._id?.toString() || m.senderId?.toString() || '',
-                senderName:    m.senderId?.username || m.senderId?.mobile || (m.senderType === 'MERCHANT' ? 'Merchant' : m.senderType === 'SYSTEM' ? 'System' : 'User'),
+                senderName:    m.senderType === 'MERCHANT' ? 'Merchant' : m.senderType === 'SYSTEM' ? 'System' : 'User',
                 senderType:    m.senderType,
                 text:          m.message,
                 message:       m.message,
@@ -910,7 +926,7 @@ router.post('/chat/:id', merchantAuth, async (req, res) => {
         });
 
         
-        const merchantName = req.merchant?.username || req.merchant?.mobile || 'Merchant';
+        const merchantName = 'Merchant';
         const chatPayload = {
             id:            chat._id.toString(),
             orderId:       order.orderId || order._id.toString(),
@@ -999,7 +1015,7 @@ router.post('/orders/:id/red-flag', merchantAuth, async (req, res) => {
             });
         }
 
-        res.json({ success: true, message: 'Order has been red-flagged and escalated to admin.', order });
+        res.json({ success: true, message: 'Order has been red-flagged and escalated to admin.', order: sanitizeMerchantOrder(order) });
     } catch (err) {
         console.error('POST /merchant/orders/:id/red-flag error:', err);
         res.status(500).json({ success: false, message: 'Failed to red-flag order.' });
@@ -1043,7 +1059,7 @@ router.get('/bulk-payouts', merchantAuth, requireBulkPayoutsEnabled, async (req,
         res.json({
             success: true,
             date:    targetDate.toISOString().split('T')[0],
-            orders,
+            orders: sanitizeMerchantOrders(orders),
             summary: {
                 count:       orders.length,
                 totalFiat,
@@ -1085,14 +1101,12 @@ router.get('/bulk-payouts/export', merchantAuth, requireBulkPayoutsEnabled, asyn
         const rows = orders.map((o, idx) => ({
             sNo:                idx + 1,
             orderId:            o.orderId,
-            beneficiaryName:    o.userBankDetails?.accountHolderName || o.userKycSnapshot?.name || '',
+            beneficiaryName:    o.userBankDetails?.accountHolderName || '',
             accountNumber:      o.userBankDetails?.accountNumber || '',
             ifscCode:           o.userBankDetails?.ifscCode || '',
             bankName:           o.userBankDetails?.bankName || '',
             amount:             o.fiatAmount || 0,
             tokenAmount:        o.tokenAmount || 0,
-            aadhaarNumber:      o.userKycSnapshot?.aadhaar || o.userKycSnapshot?.pan || '',
-            userMobile:         o.userPhone || '',
             remark:             `BB Token Sale ${o.orderId}`,
             status:             o.status,
             createdAt:          o.createdAt,
@@ -1425,7 +1439,7 @@ router.post('/orders/:id/approve', merchantAuth, async (req, res) => {
             message: 'Order approved. Tokens credited to user.',
             creditedDeposit:  depositCredit,
             creditedReserve:  reserveCredit,
-            order,
+            order: sanitizeMerchantOrder(order),
         });
     } catch (error) {
         await abortOrEnd(session);

@@ -70,7 +70,7 @@ full architecture decision and reasoning.
    triggered by completed buy+sell cycles, platform-funded — is not yet
    modeled anywhere; see ENTERPRISE_DECISIONS.md 2026-07-08 and
    EXECUTION_QUEUE.md.
-9. **Found and fixed while verifying runtime consumers (2026-07-07):** a
+8. **Found and fixed while verifying runtime consumers (2026-07-07):** a
    third independent hardcoded 90/10, in `paymentProcessing.service.js`'s
    `createDepositOrder()` — it computed `depositAllocation`/`reserveAllocation`
    locally (redundant with, and silently overwritten by, the model's pre-save
@@ -172,7 +172,7 @@ sync mid-change. New files, all in `domains/configuration/`:
     `reserveAllocationPercent` (validated to sum to 100), `reserveUsageRules`
     (typed, not Mixed), plus the same approval/scheduling/rollback lifecycle
     fields as `ConfigVersion`. (`merchantCommissionPercent` /
-    `commissionFundingSource` were removed 2026-07-08 — see Known Open Items #8.)
+    `commissionFundingSource` were removed 2026-07-08 — see Known Open Items #7.)
   - `depositPolicy.service.js` — sole writer. `createPolicyVersion` (immediate /
     scheduled / approval-gated, mirrors `setConfigField`'s status logic but also
     supersedes the prior ACTIVE version for that currency), `approvePolicyVersion`,
@@ -244,7 +244,8 @@ payment providers) a natural home without another structural migration.
   Revenue & Settlement Platform-scoped work — see EXECUTION_QUEUE.md and
   ENTERPRISE_DECISIONS.md 2026-07-08).
 - The pre-existing `merchant.routes.js` raw-`$inc` wallet writes (§7
-  violation) were not rerouted through `walletAuthority.service.js`.
+  violation) have since been rerouted through `walletAuthority.service.js`
+  (`creditDeposit`/`creditReserve`) on the live approval/confirm paths.
 - `SUPPORTED_CURRENCIES` includes `'USDT'` but no USDT deposit flow exists
   yet to actually create an order with that currency.
 - **Operational note, not a code gap:** no `DepositPolicy` version has been
