@@ -1,0 +1,6 @@
+import React from 'react';
+import '../design-system/variables.css';
+export default function MerchantPanelShell({ children, title = 'Merchant Workspace' }) {
+  return <div style={{ minHeight:'100dvh', background:'var(--bb-navy-950)', color:'var(--bb-text)' }}><header style={{ height:64, display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 20px', borderBottom:'1px solid var(--bb-border)', background:'var(--bb-navy-900)' }}><b>BB MERCHANT</b><span style={{ color:'var(--bb-success)' }}>● Online</span></header><div style={{ display:'grid', gridTemplateColumns:'220px minmax(0,1fr)', minHeight:'calc(100dvh - 64px)' }}><nav aria-label="Merchant navigation" style={{ padding:16, borderRight:'1px solid var(--bb-border)' }}>{['Dashboard','Orders','History','Payouts','Profile'].map(x=><button className="bb-focus" key={x} style={merchantNav}>{x}</button>)}</nav><main style={{ minWidth:0, overflow:'auto', padding:'clamp(16px,3vw,32px)' }}><h1>{title}</h1>{children}</main></div><style>{`@media(max-width:700px){div[style*="220px"]{grid-template-columns:1fr!important}div[style*="220px"]>nav{display:none}}`}</style></div>;
+}
+const merchantNav={display:'block',width:'100%',border:0,borderRadius:8,padding:12,marginBottom:4,textAlign:'left',background:'transparent',color:'var(--bb-text-muted)',cursor:'pointer'};
