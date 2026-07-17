@@ -7,6 +7,7 @@ import { vi } from 'vitest';
 // backend/routes.js throws at import time if JWT_SECRET is missing.
 process.env.NODE_ENV ||= 'test';
 process.env.JWT_SECRET ||= 'test-only-jwt-secret';
+process.env.AADHAAR_HMAC_SECRET ||= 'test-only-aadhaar-hmac-secret';
 
 let replset;
 // Captured in beforeAll when DATABASE_URL is set, so beforeEach can keep the PG

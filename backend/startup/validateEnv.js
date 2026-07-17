@@ -25,6 +25,7 @@ const REQUIRED = [
   ['MONGODB_URI', 'primary datastore — unset silently connects to localhost'],
   ['DATABASE_URL', 'PostgreSQL money datastore — required for active MongoDB + Postgres hybrid dual-write'],
   ['ORDER_HMAC_SECRET', 'dedicated payment-order HMAC secret; prevents JWT key reuse for order signing'],
+  ['AADHAAR_HMAC_SECRET', 'dedicated Aadhaar HMAC secret; prevents reversible duplicate-document hashes'],
   ['REDIS_URL',         'cross-instance rate limits, realtime fan-out, and job queue need Redis at >1 replica'],
   ['ALLOWED_ORIGINS',   'CORS allow-list; production must explicitly name trusted origins'],
   ['S3_BUCKET_NAME',    'durable asset/upload storage; local disk is not safe for production'],

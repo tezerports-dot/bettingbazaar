@@ -80,6 +80,8 @@ const userSchema = new mongoose.Schema({
     submittedAt: Date,
     rejectionReason: String
   },
+  // Keyed HMAC-SHA-256 of normalized Aadhaar; never store plaintext outside KYC data.
+  aadhaarHash: { type: String, unique: true, sparse: true, select: false },
 
   bankDetails: {
     accountHolderName: String,

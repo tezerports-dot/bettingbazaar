@@ -17,6 +17,7 @@ import { tryAssignMerchant, buildMerchantSnapshot, updateMerchantStatsOnComplete
 import { debitMerchantTokens, creditMerchantTokens } from './merchantWallet.service.js';
 import { publish as publishDomainEvent, EVENTS as DOMAIN_EVENTS } from '../../services/eventBus.service.js';
 import { getRiskRules } from '../risk/riskValidation.service.js';
+import { FLAGS, isEnabled } from '../../services/featureFlags.service.js';
 
 const router     = express.Router();
 // JWT secret + expiry owned by jwt.util.js — removed a '|| fallback-secret'
@@ -24,6 +25,11 @@ const router     = express.Router();
 // public string that would let anyone forge merchant tokens.
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
+
+async function requireBulkPayoutsEnabled(req, res, next) {
+    if (await isEnabled(FLAGS.MERCHANT_BULK_PAYOUTS)) return next();
+    return res.status(403).json({ success: false, message: 'Merchant bulk payouts are not enabled.' });
+}
 
 const formatMerchant = (merchant, user = null) => ({
     id:                   merchant._id,
@@ -1008,7 +1014,7 @@ router.post('/orders/:id/red-flag', merchantAuth, async (req, res) => {
 
 // GET /api/merchant/bulk-payouts?date=YYYY-MM-DD
 // Returns all WITHDRAWAL orders for a given day's bulk payout batch.
-router.get('/bulk-payouts', merchantAuth, async (req, res) => {
+router.get('/bulk-payouts', merchantAuth, requireBulkPayoutsEnabled, async (req, res) => {
     try {
         const { date } = req.query;
         const PaymentOrder = mongoose.model('PaymentOrder');
@@ -1052,7 +1058,7 @@ router.get('/bulk-payouts', merchantAuth, async (req, res) => {
 
 // GET /api/merchant/bulk-payouts/export?date=YYYY-MM-DD
 // Returns CSV-formatted JSON rows for bank upload (NEFT/IMPS/RTGS batch file).
-router.get('/bulk-payouts/export', merchantAuth, async (req, res) => {
+router.get('/bulk-payouts/export', merchantAuth, requireBulkPayoutsEnabled, async (req, res) => {
     try {
         const { date } = req.query;
         const PaymentOrder = mongoose.model('PaymentOrder');
@@ -1116,7 +1122,7 @@ router.get('/bulk-payouts/export', merchantAuth, async (req, res) => {
 // POST /api/merchant/bulk-payouts/mark-paid
 // Mark a batch of withdrawal orders as bulk-paid.
 // Body: { orderIds: string[], batchRef?: string }
-router.post('/bulk-payouts/mark-paid', merchantAuth, async (req, res) => {
+router.post('/bulk-payouts/mark-paid', merchantAuth, requireBulkPayoutsEnabled, async (req, res) => {
     try {
         const { orderIds, batchRef } = req.body;
         if (!Array.isArray(orderIds) || orderIds.length === 0) {

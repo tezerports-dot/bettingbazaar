@@ -3,7 +3,7 @@
  * account-recovery.routes.js
  *
  * DUPLICATE ACCOUNT PREVENTION:
- *   Aadhaar card numbers are hashed (SHA-256) on KYC approval.
+ *   Aadhaar card numbers are keyed HMAC-SHA-256 hashes on KYC approval.
  *   Any attempt to register a second account with the same Aadhaar is blocked.
  *
  * ACCOUNT RECOVERY FLOW:
@@ -17,7 +17,7 @@
  *   8. User logs in with temp password and must change it immediately
  *
  * SECURITY:
- *   - Aadhaar stored as SHA-256 only (one-way, can't be reversed)
+ *   - Aadhaar stored as HMAC-SHA-256 only (one-way, can't be reversed)
  *   - temp password shown to admin ONCE then cleared from DB
  *   - Video KYC URL is required (prevents pure text-based impersonation)
  *   - Rate limited: max 3 recovery attempts per mobile per 24h
@@ -26,18 +26,16 @@
 import express   from 'express';
 import mongoose  from 'mongoose';
 import crypto    from 'crypto';
+import { hashAadhaar, hashAadhaarCandidates } from '../domains/identity/aadhaarHash.util.js';
 // AQ-8: hash via the password authority (argon2id).
 import { hashPassword } from '../domains/identity/password.util.js';
 import { authenticate, isAdmin, isAdminOrSubAdmin } from '../domains/identity/auth.middleware.js';
 
 const router = express.Router();
 
-// ── Helper: SHA-256 hash of a document number ───────────────────────────────
+// ── Helper: keyed HMAC-SHA-256 hash of a document number ─────────────────────
 function hashDocument(raw) {
-  if (!raw || typeof raw !== 'string') return null;
-  // Normalise: uppercase, remove spaces/hyphens
-  const normalised = raw.toUpperCase().replace(/[\s\-]/g, '');
-  return crypto.createHash('sha256').update(normalised).digest('hex');
+  return hashAadhaar(raw);
 }
 
 // ── Validate Aadhaar format: 12 digits ─────────────────────────────────────────
@@ -130,8 +128,8 @@ router.post('/auth/recover', async (req, res) => {
     const AccountRecovery = mongoose.model('AccountRecovery');
 
     // Find account via Aadhaar hash
-    const aadhaarHash = hashDocument(aadhaarNumber);
-    const user = await User.findOne({ aadhaarHash }).select('_id mobile status').lean();
+    const aadhaarHashes = hashAadhaarCandidates(aadhaarNumber);
+    const user = await User.findOne({ aadhaarHash: { $in: aadhaarHashes } }).select('_id mobile status').lean();
     if (!user) {
       return res.status(404).json({ success: false, message: 'No account found with this Aadhaar. If you have not completed KYC yet, your Aadhaar may not be linked.' });
     }
@@ -335,15 +333,16 @@ router.post('/admin/kyc/link-documents', authenticate, isAdmin, async (req, res)
     const updates = {};
     const conflicts = [];
 
-    if (aadhaarNumber) {
-      if (!isValidAadhaar(aadhaarNumber)) return res.status(400).json({ success: false, message: 'Invalid Aadhaar format' });
-      const aadhaarHash = hashDocument(aadhaarNumber);
-      const existing = await User.findOne({ aadhaarHash, _id: { $ne: userId } }).select('_id username mobile').lean();
-      if (existing) {
-        conflicts.push({ type: 'AADHAAR', existingUser: { id: existing._id, username: existing.username, mobile: existing.mobile?.slice(-4).padStart(10,'*') } });
-      } else {
-        updates.aadhaarHash = aadhaarHash;
-      }
+    if (!aadhaarNumber || !String(aadhaarNumber).trim()) {
+      return res.status(400).json({ success: false, message: 'aadhaarNumber required' });
+    }
+    if (!isValidAadhaar(aadhaarNumber)) return res.status(400).json({ success: false, message: 'Invalid Aadhaar format' });
+    const aadhaarHash = hashDocument(aadhaarNumber);
+    const existing = await User.findOne({ aadhaarHash: { $in: hashAadhaarCandidates(aadhaarNumber) }, _id: { $ne: userId } }).select('_id username mobile').lean();
+    if (existing) {
+      conflicts.push({ type: 'AADHAAR', existingUser: { id: existing._id, username: existing.username, mobile: existing.mobile?.slice(-4).padStart(10,'*') } });
+    } else {
+      updates.aadhaarHash = aadhaarHash;
     }
 
     if (conflicts.length > 0) {

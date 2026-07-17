@@ -419,7 +419,9 @@ router.post('/user/:userId/kyc', authenticate, async (req, res) => {
     }
 
     const { nameOnAadhaar, aadhaarNumber, idProofKey, idProofCdnUrl, photoKey, photoCdnUrl } = req.body;
-    if (!nameOnAadhaar || !aadhaarNumber || !idProofKey || !photoKey) {
+    const normalizedNameOnAadhaar = String(nameOnAadhaar || '').trim().toUpperCase();
+    const normalizedAadhaarNumber = String(aadhaarNumber || '').replace(/\D/g, '');
+    if (!normalizedNameOnAadhaar || normalizedAadhaarNumber.length !== 12 || !idProofKey || !photoKey) {
       await abortOrEnd(session);
       return res.status(400).json({ success: false, message: 'All KYC fields and uploaded document file keys are required' });
     }
@@ -441,8 +443,8 @@ router.post('/user/:userId/kyc', authenticate, async (req, res) => {
       {
         kycStatus: 'PENDING_APPROVAL',
         kycData: {
-          nameOnAadhaar: nameOnAadhaar.trim().toUpperCase(),
-          aadhaarNumber: String(aadhaarNumber).replace(/\D/g, ''),
+          nameOnAadhaar: normalizedNameOnAadhaar,
+          aadhaarNumber: normalizedAadhaarNumber,
           idProofUrl: idProof.cdnUrl,
           photoUrl: photo.cdnUrl,
           submittedAt: new Date(),

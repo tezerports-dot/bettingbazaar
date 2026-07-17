@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest';
 import { validateEnv } from '../../startup/validateEnv.js';
 
 const full = {
-  JWT_SECRET: 's', ORDER_HMAC_SECRET: 'h', MONGODB_URI: 'mongodb://x', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb',
+  JWT_SECRET: 's', ORDER_HMAC_SECRET: 'h', AADHAAR_HMAC_SECRET: 'a', MONGODB_URI: 'mongodb://x', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb',
   REDIS_URL: 'r', ALLOWED_ORIGINS: 'o', S3_BUCKET_NAME: 'b', METRICS_TOKEN: 'mt',
   PUBLIC_APP_ORIGIN: 'https://app.example.test', PUBLIC_APP_ALLOWED_ORIGINS: 'https://app.example.test',
 };
