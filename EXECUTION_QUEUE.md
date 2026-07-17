@@ -73,10 +73,10 @@ deleted, so this file also works as a short-form recent-history log.
 - [x] **Phase E:** real SMTP EMAIL channel adapter, activation-gated on env
       (SMTP_HOST/PORT/USER/PASS/FROM) — no fake code, no hardcoded provider;
       optional User.email field. SMS/PUSH/USDT/gateway/Telegram documented
-      with exact activation steps in PRODUCTION_READINESS.md.
+      with documented activation steps.
 - [x] **Phase F (in-repo):** bcrypt cost 10→12 standardized (M-2 — admin
       service + sub-admin route), Mongo pool sizing via env, and
-      PRODUCTION_READINESS.md (owner checklist: secret rotation, licensing,
+      the deployment checklist (secret rotation, licensing,
       pentest, load test, backups + per-integration activation guides).
 
 ## PHASE X — Enterprise Validation & Hidden Workflow Audit (2026-07-10) — see AUDIT_PHASE_X.md

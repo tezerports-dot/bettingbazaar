@@ -2,8 +2,7 @@
 /**
  * audit/verify-merchant-status-integrity.mjs
  *
- * READ-ONLY. Makes zero writes. Verifies F1 from
- * audit/PHASE0_BASELINE_AND_FINDINGS.md: are there merchants approved
+ * READ-ONLY. Makes zero writes. Verifies whether there are merchants approved
  * (merchantApprovalStatus: 'APPROVED') but never activated (status !== 'ACTIVE')?
  *
  * That state is what would cause auto-assignment (merchantScoring.service.js) to

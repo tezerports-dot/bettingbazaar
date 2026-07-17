@@ -96,8 +96,8 @@ full architecture decision and reasoning.
 
 ## Current Active Phase
 
-**Phases A–F ALL COMPLETE in-repo (2026-07-10).** The PROJECT_HANDOFF.md
-roadmap letters are done to the limit of what code can do:
+**Phases A–F ALL COMPLETE in-repo (2026-07-10).** The implementation roadmap
+is done to the limit of what code can do:
 
 - **Phase B:** F-2 (settlement unlocks via walletAuthority, transactional +
   idempotent, concurrency/crash-resume proven in CI), F-3 (Redis-shared
@@ -111,14 +111,12 @@ roadmap letters are done to the limit of what code can do:
   (12-15/screen), sticky game header.
 - **Phase E:** real env-gated SMTP EMAIL adapter (active the moment
   SMTP_* env vars are set); SMS/PUSH/USDT/gateway documented with
-  activation steps (need owner credentials — PRODUCTION_READINESS.md §B).
-- **Phase F:** bcrypt-12 standardization, env-tunable Mongo pool, and
-  PRODUCTION_READINESS.md (owner checklist: rotate secrets, licensing,
-  pentest, load test, backups).
+  activation steps (need owner credentials).
+- **Phase F:** bcrypt-12 standardization and an env-tunable Mongo pool.
 
 **Remaining work is owner-action or queued polish:** see
-PRODUCTION_READINESS.md §A (blocking) and EXECUTION_QUEUE.md "Discovered
-during Phases B–F" (notably: SSE/socket Redis bridge before >1 instance).
+EXECUTION_QUEUE.md "Discovered during Phases B–F" (notably: SSE/socket Redis
+bridge before >1 instance).
 
 ### Phase A record (same day)
 

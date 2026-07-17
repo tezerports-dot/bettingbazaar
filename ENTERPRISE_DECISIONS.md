@@ -32,7 +32,7 @@ is computed from env (SMTP_HOST/SMTP_FROM) — zero behavior until the owner
 sets credentials, real delivery the moment they exist, no provider
 hardcoded. SMS/PUSH/USDT/payment-gateway stay declared-inactive because
 each requires a provider DECISION, not just keys — activation recipes live
-in PRODUCTION_READINESS.md. `User.email` added as an optional field
+in the deployment checklist. `User.email` added as an optional field
 (mobile remains the identity; the adapter skips users without it).
 
 ---

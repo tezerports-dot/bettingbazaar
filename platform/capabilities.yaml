@@ -155,7 +155,7 @@ capabilities:
     implementation_status: partial
     activation_status: infra-gated
     evidence: [backend/services/backup.service.js]
-    docs: [DISASTER_RECOVERY.md, PRODUCTION_READINESS.md]
+    docs: [DISASTER_RECOVERY.md]
   - id: CAP-18
     name: Read Replicas
     bucket: B

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # audit/cleanup-dead-artifacts.sh
 #
-# Removes artifacts confirmed dead in audit/PHASE0_BASELINE_AND_FINDINGS.md (F3).
+# Removes explicitly listed dead artifacts after confirming no live references.
 # Every target was verified via grep to have zero importers/references before
 # being added to this list. Safe to re-run (idempotent — skips anything already gone).
 #
@@ -57,7 +57,7 @@ for target in "${TARGETS[@]}"; do
 
   # Re-verify zero references right before acting, in case the repo changed since the audit.
   refs=$(grep -rl "$(basename "$target")" --include="*.js" --include="*.ts" --include="*.tsx" --include="*.json" . 2>/dev/null \
-    | grep -v "^\./$target" | grep -v node_modules | grep -v "audit/PHASE0_BASELINE_AND_FINDINGS.md" | grep -v "audit/cleanup-dead-artifacts.sh" || true)
+    | grep -v "^\./$target" | grep -v node_modules | grep -v "audit/cleanup-dead-artifacts.sh" || true)
 
   if [ -n "$refs" ]; then
     echo -e "${YELLOW}[BLOCKED]${RESET} $target — found references, refusing to delete:"

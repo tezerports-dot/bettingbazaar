@@ -38,7 +38,7 @@ function trustedTlsFingerprintHeaders(req) {
 // deliberately layers ON TOP of the AsyncLocalStorage design (per the plan:
 // don't replace it) — a full OpenTelemetry SDK slots in later by reusing
 // these ids when an OTLP collector exists (env OTEL_EXPORTER_OTLP_ENDPOINT
-// is its activation trigger; see PLAN_STATUS_AUDIT.md).
+// is its activation trigger).
 const TRACEPARENT = /^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/;
 
 export function requestContext(req, res, next) {
