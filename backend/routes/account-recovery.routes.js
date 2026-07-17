@@ -78,17 +78,16 @@ async function checkAadhaarRecovery(req, res) {
     if (!aadhaarNumber) return res.status(400).json({ success: false, message: 'Aadhaar number required' });
     if (!isValidAadhaar(aadhaarNumber)) return res.status(400).json({ success: false, message: 'Invalid Aadhaar format (expected: 12 digits)' });
 
-    const User = mongoose.model('User');
-    const hash = hashDocument(aadhaarNumber);
-    const exists = await User.findOne({ aadhaarHash: hash }).select('_id status').lean();
+    // Rate limit check
+    const clientIp = req.ip || req.connection?.remoteAddress || 'unknown';
+    if (!checkRecoveryRateLimit(clientIp)) {
+      return res.status(429).json({ success: false, message: 'Too many attempts. Please try again later.' });
+    }
 
+    // Return neutral response regardless of account existence
     res.json({
       success: true,
-      exists:     !!exists,
-      canRecover: !!exists,
-      message:    exists
-        ? 'This Aadhaar is already registered. Use Account Recovery to regain access.'
-        : 'Aadhaar is available.',
+      message: 'Please proceed to record your identity verification video.',
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

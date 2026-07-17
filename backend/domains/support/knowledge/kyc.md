@@ -6,7 +6,6 @@ before you can **withdraw** funds.
 ## What you submit
 
 - **Aadhaar**: the name as printed on your Aadhaar and your Aadhaar number.
-- **Aadhaar**: the name as printed on your Aadhaar and your Aadhaar number.
 - An **ID proof image** and a **photo**, as prompted in the app.
 
 Enter details exactly as they appear on the documents. Mismatched names are the

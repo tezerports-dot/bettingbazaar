@@ -323,7 +323,6 @@ export const MerchantDashboard = () => {
                                     </div>
                                     <div className="text-xs font-bold text-[#D4AF37] uppercase bg-black/30 px-3 py-1 rounded-full border border-white/5">{order.status}</div>
                                     <div className="flex gap-2 w-full lg:w-auto">
-                                        <button disabled title="Merchant-user chat is disabled; use Support or Dispute Manager." className="flex-1 lg:flex-none px-4 py-2 bg-slate-700/50 text-slate-400 rounded text-xs font-bold cursor-not-allowed">Support only</button>
                                         {order.status === 'ASSIGNED' || order.status === 'PAID' ? (
                                             <>
                                                 <button onClick={() => handleAction(order.id, 'REJECT')} className="flex-1 lg:flex-none px-4 py-2 bg-red-900/50 border border-red-500/30 text-red-400 hover:bg-red-600 hover:text-white rounded text-xs font-bold transition-all">Reject</button>
@@ -453,8 +452,9 @@ export const QueueManagerDashboard = () => {
     const handleAssign = async (orderId: string, merchantId: string) => {
         try {
             await backend.assignOrderToMerchant(orderId, merchantId, user?.id || 'staff');
+            // Remove from queue after successful assignment - order moves to merchant's active orders
             setQueue(prev => prev.filter(o => o.id !== orderId));
-            
+
             return;
         } catch(e: any) {
             alert("Assignment Failed: " + e.message);

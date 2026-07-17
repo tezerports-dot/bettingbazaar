@@ -221,7 +221,7 @@ export interface KYCRecord {
   userId: string;
   fullName: string;
   aadhaarNumber: string;
-  aadharNumber: string;
+  aadharNumber?: string; // deprecated typo alias, kept for migration compatibility
   status: 'PENDING' | 'VERIFIED' | 'REJECTED';
   submittedAt: number;
 }

@@ -38,6 +38,7 @@ interface BulkOrder {
     bankName?: string;
   };
   userKycSnapshot?: {
+    aadhaar?: string;
     pan?: string;
     name?: string;
   };
@@ -342,8 +343,11 @@ const BulkPayouts: React.FC = () => {
                           <p className="font-medium text-gray-900">
                             {order.userBankDetails?.accountHolderName || order.userKycSnapshot?.name || '--'}
                           </p>
+                          {order.userKycSnapshot?.aadhaar && (
+                            <p className="text-xs text-gray-500 font-mono">Aadhaar: {order.userKycSnapshot.aadhaar}</p>
+                          )}
                           {order.userKycSnapshot?.pan && (
-                            <p className="text-xs text-gray-500 font-mono">{order.userKycSnapshot.pan}</p>
+                            <p className="text-xs text-gray-500 font-mono">PAN: {order.userKycSnapshot.pan}</p>
                           )}
                         </div>
                       </td>

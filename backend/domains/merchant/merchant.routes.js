@@ -480,7 +480,7 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         const isDeposit = order.type === 'DEPOSIT';
         const kyc  = order.userKycSnapshot  || {};
         const bank = order.userBankDetails  || {};
-        const kycLine = kyc.name ? `\n👤 User: ${kyc.name}  |  Aadhaar: ${kyc.aadhaar || kyc.pan || 'N/A'}` : '';
+        const kycLine = kyc.name ? `\n👤 User: ${kyc.name}  |  ${kyc.aadhaar ? 'Aadhaar' : kyc.pan ? 'PAN' : 'ID'}: ${kyc.aadhaar || kyc.pan || 'N/A'}` : '';
 
         if (isDeposit) {
             await sendSystemMessage(oid,

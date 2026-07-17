@@ -51,10 +51,11 @@ export default function AccountRecoveryPage() {
         body: JSON.stringify({ aadhaarNumber: clean }),
       });
       const d = await r.json();
-      if (d.exists) {
+      if (d.success) {
+        // Always proceed to video step - account existence is verified during admin review
         setStep('record_video');
       } else {
-        setAadhaarError('No account found with this Aadhaar card. If you are new, please register.');
+        setAadhaarError(d.message || 'Unable to process request. Please try again.');
       }
     } catch { setAadhaarError('Network error. Please try again.'); }
     finally { setChecking(false); }
@@ -149,7 +150,7 @@ export default function AccountRecoveryPage() {
 
       {/* Step indicator */}
       <div className="flex items-center px-4 py-3 gap-2">
-        {['Pan Check','Record Video','Your Details','Submitted'].map((s,i) => {
+        {['Aadhaar Check','Record Video','Your Details','Submitted'].map((s,i) => {
           const steps = ['aadhaar_check','record_video','details','submitted'];
           const done  = steps.indexOf(step) > i;
           const cur   = steps[i] === step;

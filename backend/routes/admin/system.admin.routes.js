@@ -149,7 +149,12 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
         depositMethods:        config.depositMethods        || ['UPI', 'BANK_TRANSFER'],
         withdrawalMethods:     config.withdrawalMethods     || ['UPI', 'BANK_TRANSFER'],
         // Footer navigation (2026-07-13) — schema default: the historical five tabs
-        footerPages:           config.footerPages?.length ? config.footerPages : ['home', 'results', 'winners', 'promo', 'profile'],
+        // Normalize legacy "chat" entries before sending to frontend
+        footerPages:           (() => {
+          const raw = config.footerPages?.length ? config.footerPages : ['home', 'results', 'winners', 'promo', 'profile'];
+          const normalized = raw.filter(k => FOOTER_PAGE_KEYS.includes(k));
+          return normalized.length >= 2 ? normalized : ['home', 'results', 'winners', 'promo', 'profile'];
+        })(),
         // Operational alert webhook (2026-07-13) — '' = alerting off
         alertWebhookUrl:       config.alertWebhookUrl || '',
         webUrl:        config.webUrl        || '',
@@ -238,9 +243,12 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
       if (!Array.isArray(footerPages) || footerPages.length < 2 || footerPages.length > 5) {
         return res.status(400).json({ success: false, message: 'footerPages must be an array of 2 to 5 page keys.' });
       }
-      const bad = footerPages.find(k => !FOOTER_PAGE_KEYS.includes(k));
-      if (bad) return res.status(400).json({ success: false, message: `Unknown footer page key: "${bad}". Allowed: ${FOOTER_PAGE_KEYS.join(', ')}` });
-      if (new Set(footerPages).size !== footerPages.length) {
+      // Normalize legacy "chat" entries before validation
+      const normalized = footerPages.filter(k => FOOTER_PAGE_KEYS.includes(k));
+      if (normalized.length < 2) {
+        return res.status(400).json({ success: false, message: 'footerPages must contain at least 2 valid page keys after removing unsupported entries.' });
+      }
+      if (new Set(normalized).size !== normalized.length) {
         return res.status(400).json({ success: false, message: 'footerPages must not contain duplicates.' });
       }
     }
@@ -316,7 +324,11 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
       celebrateBeforeEndSec: cyclePhases.fullDay.celebrateBeforeEndSec,
     }]);
     // Footer navigation (2026-07-13) — consumed by the user panel Footer via system_config
-    if (footerPages !== undefined) fieldWrites.push(['SystemConfig', 'footerPages', footerPages]);
+    if (footerPages !== undefined) {
+      // Normalize legacy "chat" entries before persisting
+      const normalized = footerPages.filter(k => FOOTER_PAGE_KEYS.includes(k));
+      fieldWrites.push(['SystemConfig', 'footerPages', normalized.length >= 2 ? normalized : ['home', 'results', 'winners', 'promo', 'profile']]);
+    }
     // Operational alert webhook (2026-07-13) — consumed by services/alerting.service.js
     if (alertWebhookUrl !== undefined) fieldWrites.push(['SystemConfig', 'alertWebhookUrl', alertWebhookUrl]);
     if (tlsFingerprintDefense?.enabled !== undefined) fieldWrites.push(['SystemConfig', 'tlsFingerprintDefense.enabled', !!tlsFingerprintDefense.enabled]);
@@ -342,7 +354,11 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
         maxWithdrawal:   updatedConfig.maxWithdrawal         || 50000,
         maintenanceMode: updatedConfig.maintenanceMode       || false,
         maintenanceMessage: updatedConfig.maintenanceMessage || '',
-        footerPages:     updatedConfig.footerPages?.length ? updatedConfig.footerPages : ['home', 'results', 'winners', 'promo', 'profile'],
+        footerPages:     (() => {
+          const raw = updatedConfig.footerPages?.length ? updatedConfig.footerPages : ['home', 'results', 'winners', 'promo', 'profile'];
+          const normalized = raw.filter(k => FOOTER_PAGE_KEYS.includes(k));
+          return normalized.length >= 2 ? normalized : ['home', 'results', 'winners', 'promo', 'profile'];
+        })(),
         tokenBuyRate:    1, // fixed 1:1 conversion (Phase 006 flattening, 2026-07-08)
         tokenSellRate:   1, // fixed 1:1 conversion
         webUrl:        updatedConfig.webUrl        || '',

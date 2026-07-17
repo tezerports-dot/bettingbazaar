@@ -336,7 +336,8 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
       escrowLocked:    true,
       escrowAmount:    tokenAmount,
       userKycSnapshot: {
-        aadhaar: user.kycData?.aadhaarNumber || user.kycData?.panNumber || '',
+        aadhaar: user.kycData?.aadhaarNumber ? `XXXX-${user.kycData.aadhaarNumber.slice(-4)}` : '',
+        pan: user.kycData?.panNumber || '',
         name: user.kycData?.nameOnAadhaar || user.kycData?.nameOnPAN || user.username || '',
       },
       userBankDetails: {
