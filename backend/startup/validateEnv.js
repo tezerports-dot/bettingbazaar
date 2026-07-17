@@ -38,6 +38,16 @@ const REQUIRED = [
 const ADVISED = [
 ];
 
+const AADHAAR_HMAC_PLACEHOLDERS = new Set([
+  'change-this-to-a-dedicated-random-string',
+  'change-this-to-a-random-string',
+]);
+
+function hasWeakAadhaarHmacSecret(value) {
+  const secret = String(value || '').trim();
+  return secret.length < 32 || AADHAAR_HMAC_PLACEHOLDERS.has(secret.toLowerCase());
+}
+
 export function csv(value) {
   return String(value || '').split(',').map((entry) => entry.trim()).filter(Boolean);
 }
@@ -59,6 +69,7 @@ function isOrigin(value, { requireHttps = false } = {}) {
  */
 export function validateEnv(env = process.env, isProd = env.NODE_ENV === 'production') {
   const missing = REQUIRED.filter(([k]) => !env[k] || String(env[k]).trim() === '').map(([k]) => k);
+  const weakAadhaarHmacSecret = hasWeakAadhaarHmacSecret(env.AADHAAR_HMAC_SECRET);
   const invalidOrigins = ['PUBLIC_APP_ORIGIN', 'PUBLIC_APP_ALLOWED_ORIGINS'].filter((key) => {
     const origins = csv(env[key]);
     return env[key] && (!origins.length || !origins.every((origin) => isOrigin(origin, { requireHttps: isProd })));
@@ -66,6 +77,9 @@ export function validateEnv(env = process.env, isProd = env.NODE_ENV === 'produc
   const advisedMissing = ADVISED.filter(([k]) => !env[k] || String(env[k]).trim() === '').map(([k]) => k);
 
   if (invalidOrigins.length && isProd) throw new Error(`FATAL: invalid public application origin configuration: ${invalidOrigins.join(', ')}`);
+  if (weakAadhaarHmacSecret && !missing.includes('AADHAAR_HMAC_SECRET') && isProd) {
+    throw new Error('FATAL: AADHAAR_HMAC_SECRET must be a non-placeholder secret of at least 32 characters');
+  }
 
   if (missing.length) {
     const detail = REQUIRED.filter(([k]) => missing.includes(k))

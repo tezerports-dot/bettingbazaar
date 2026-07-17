@@ -6,8 +6,10 @@ const originalCurrent = process.env.AADHAAR_HMAC_SECRET;
 const originalPrevious = process.env.AADHAAR_HMAC_PREVIOUS_SECRETS;
 
 afterEach(() => {
-  process.env.AADHAAR_HMAC_SECRET = originalCurrent;
-  process.env.AADHAAR_HMAC_PREVIOUS_SECRETS = originalPrevious;
+  if (originalCurrent === undefined) delete process.env.AADHAAR_HMAC_SECRET;
+  else process.env.AADHAAR_HMAC_SECRET = originalCurrent;
+  if (originalPrevious === undefined) delete process.env.AADHAAR_HMAC_PREVIOUS_SECRETS;
+  else process.env.AADHAAR_HMAC_PREVIOUS_SECRETS = originalPrevious;
 });
 
 describe('Aadhaar HMAC hashing', () => {

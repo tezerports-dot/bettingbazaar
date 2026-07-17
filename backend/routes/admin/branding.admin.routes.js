@@ -22,6 +22,7 @@ const ASSET_SLOTS = {
   'favicon-32.png':     { label: 'Favicon 32x32',                w: 32,   h: 32,   hint: 'Square PNG. Browser tab.' },
   'splash.png':         { label: 'PWA Splash Screen',            w: 1242, h: 2688, hint: 'Portrait PNG. PWA loading splash.' },
 };
+const isSafeAppAssetSlot = (slot) => /^[a-z0-9][a-z0-9-]*\.png$/.test(slot);
 
 // Local-disk fallback dir (used only when S3 isn't configured). Served by
 // server.js at GET /app-assets via express.static.
@@ -372,7 +373,7 @@ router.post('/app-assets/upload',
     try {
       const { slot, data } = req.body;
       if (!slot || !data) return res.status(400).json({ success: false, message: 'slot and data required' });
-      if (!ASSET_SLOTS[slot]) return res.status(400).json({ success: false, message: `Unknown slot: ${slot}` });
+      if (!isSafeAppAssetSlot(slot) || !ASSET_SLOTS[slot]) return res.status(400).json({ success: false, message: `Unknown slot: ${slot}` });
       const match = data.match(/^data:(image\/[a-z+]+);base64,(.+)$/);
       if (!match) return res.status(400).json({ success: false, message: 'data must be a base64 data URI' });
       const buffer = Buffer.from(match[2], 'base64');

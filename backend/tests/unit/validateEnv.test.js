@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest';
 import { validateEnv } from '../../startup/validateEnv.js';
 
 const full = {
-  JWT_SECRET: 's', ORDER_HMAC_SECRET: 'h', AADHAAR_HMAC_SECRET: 'a', MONGODB_URI: 'mongodb://x', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb',
+  JWT_SECRET: 's', ORDER_HMAC_SECRET: 'h', AADHAAR_HMAC_SECRET: 'a-secure-aadhaar-hmac-secret-value', MONGODB_URI: 'mongodb://x', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb',
   REDIS_URL: 'r', ALLOWED_ORIGINS: 'o', S3_BUCKET_NAME: 'b', METRICS_TOKEN: 'mt',
   PUBLIC_APP_ORIGIN: 'https://app.example.test', PUBLIC_APP_ALLOWED_ORIGINS: 'https://app.example.test',
 };
@@ -19,6 +19,16 @@ describe('validateEnv', () => {
   it('THROWS in production when a required var is missing', () => {
     const { JWT_SECRET, ...noJwt } = full;
     expect(() => validateEnv({ ...noJwt, NODE_ENV: 'production' }, true)).toThrow(/JWT_SECRET/);
+  });
+
+  it('requires AADHAAR_HMAC_SECRET in production', () => {
+    const { AADHAAR_HMAC_SECRET, ...withoutAadhaarSecret } = full;
+    expect(() => validateEnv({ ...withoutAadhaarSecret, NODE_ENV: 'production' }, true)).toThrow(/AADHAAR_HMAC_SECRET/);
+  });
+
+  it('rejects weak or placeholder Aadhaar HMAC secrets in production', () => {
+    expect(() => validateEnv({ ...full, AADHAAR_HMAC_SECRET: 'change-this-to-a-dedicated-random-string', NODE_ENV: 'production' }, true))
+      .toThrow(/AADHAAR_HMAC_SECRET/);
   });
 
   it('lists every missing required var in the thrown message', () => {
