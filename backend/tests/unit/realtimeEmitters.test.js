@@ -1,5 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { emitPayoutSuccessBatch } from '../../domains/notification/realtimeEmitters.js';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('emitPayoutSuccessBatch', () => {
   it('fans out personalized payout updates in chunks', async () => {
@@ -12,10 +16,13 @@ describe('emitPayoutSuccessBatch', () => {
       u2: { depositBalance: 5, winningsBalance: 6, lockedBalance: 0 },
     };
 
+    const setImmediateSpy = vi.spyOn(globalThis, 'setImmediate');
+
     const sent = await emitPayoutSuccessBatch({ io: { to }, payouts, balanceMap, cycleId: 'c1', winner: 'DELHI', batchSize: 2 });
 
     expect(sent).toBe(3);
     expect(to).toHaveBeenCalledTimes(3);
+    expect(setImmediateSpy).toHaveBeenCalledTimes(1);
     expect(to).toHaveBeenNthCalledWith(1, 'user-u0');
     expect(emit).toHaveBeenCalledWith('payout_success', expect.objectContaining({
       type: 'PAYOUT_SUCCESS',

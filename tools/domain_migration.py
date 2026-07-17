@@ -40,14 +40,30 @@ CYAN   = "\033[36m"
 BOLD   = "\033[1m"
 RESET  = "\033[0m"
 
-def log_info(msg):    print(f"{CYAN}[INFO]{RESET}  {msg}")
-def log_ok(msg):      print(f"{GREEN}[OK]{RESET}    {msg}")
-def log_warn(msg):    print(f"{YELLOW}[WARN]{RESET}  {msg}")
-def log_error(msg):   print(f"{RED}[ERROR]{RESET} {msg}", file=sys.stderr)
-def log_create(msg):  print(f"{GREEN}[CREATE]{RESET} {msg}")
-def log_modify(msg):  print(f"{YELLOW}[MODIFY]{RESET} {msg}")
-def log_delete(msg):  print(f"{RED}[DELETE]{RESET} {msg}")
-def log_skip(msg):    print(f"{CYAN}[SKIP]{RESET}   {msg}")
+def log_info(msg):
+    """Print an informational migration message."""
+    print(f"{CYAN}[INFO]{RESET}  {msg}")
+def log_ok(msg):
+    """Print a successful migration message."""
+    print(f"{GREEN}[OK]{RESET}    {msg}")
+def log_warn(msg):
+    """Print a warning migration message."""
+    print(f"{YELLOW}[WARN]{RESET}  {msg}")
+def log_error(msg):
+    """Print an error migration message to stderr."""
+    print(f"{RED}[ERROR]{RESET} {msg}", file=sys.stderr)
+def log_create(msg):
+    """Print a file creation migration message."""
+    print(f"{GREEN}[CREATE]{RESET} {msg}")
+def log_modify(msg):
+    """Print a file modification migration message."""
+    print(f"{YELLOW}[MODIFY]{RESET} {msg}")
+def log_delete(msg):
+    """Print a file deletion migration message."""
+    print(f"{RED}[DELETE]{RESET} {msg}")
+def log_skip(msg):
+    """Print a skipped migration step message."""
+    print(f"{CYAN}[SKIP]{RESET}   {msg}")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -60,10 +76,12 @@ class MigrationState:
     """Persistent state for resumable migrations."""
 
     def __init__(self, path: Path):
+        """Initialize the migration state store from a JSON path."""
         self.path = path
         self._data = self._load()
 
     def _load(self) -> dict:
+        """Load migration state from disk or return a default state."""
         if self.path.exists():
             try:
                 return json.loads(self.path.read_text())
@@ -72,14 +90,17 @@ class MigrationState:
         return {"schema": 2, "completed": [], "failed": {}, "created": datetime.now().isoformat()}
 
     def _save(self):
+        """Persist migration state to disk with a last-run timestamp."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._data["last_run"] = datetime.now().isoformat()
         self.path.write_text(json.dumps(self._data, indent=2))
 
     def is_done(self, name: str) -> bool:
+        """Return whether a migration step has already completed."""
         return name in self._data.get("completed", [])
 
     def mark_done(self, name: str):
+        """Mark a migration step complete and clear previous failures."""
         lst = self._data.setdefault("completed", [])
         if name not in lst:
             lst.append(name)
@@ -88,19 +109,23 @@ class MigrationState:
         self._save()
 
     def mark_failed(self, name: str, error: str):
+        """Record a migration step failure with timestamped details."""
         self._data.setdefault("failed", {})[name] = {"error": error, "at": datetime.now().isoformat()}
         self._save()
 
     def reset(self):
+        """Reset migration state to an empty schema."""
         self._data = {"schema": 2, "completed": [], "failed": {}, "created": datetime.now().isoformat()}
         self._save()
 
     def summary(self) -> str:
+        """Return a human-readable migration state summary."""
         done = len(self._data.get("completed", []))
         fail = len(self._data.get("failed", {}))
         return f"{done} completed, {fail} failed"
 
     def completed_steps(self) -> list:
+        """Return the list of completed migration step names."""
         return list(self._data.get("completed", []))
 
 
@@ -112,6 +137,7 @@ _STATE: MigrationState | None = None
 SUMMARY = {"modified": [], "deleted": [], "created": [], "skipped": []}
 
 def record(action, path):
+    """Record a file or step action in the migration summary."""
     key = str(path)
     if key not in SUMMARY[action]:
         SUMMARY[action].append(key)
@@ -137,14 +163,17 @@ def run_step(fn, root: Path, dry_run: bool, force: bool = False):
 
 # ─── File helpers ─────────────────────────────────────────────────────────────
 def read_file(path: Path) -> str:
+    """Read a UTF-8 text file from disk."""
     return path.read_text(encoding="utf-8", errors="replace")
 
 def backup(path: Path, dry_run: bool):
+    """Create a .bak backup for a file unless running in dry-run mode."""
     bak = path.with_suffix(path.suffix + ".bak")
     if not dry_run and not bak.exists():
         shutil.copy2(path, bak)
 
 def write_file(path: Path, content: str, dry_run: bool, label: str = ""):
+    """Write file content, creating parents and recording created or modified status."""
     tag = label or str(path)
     if path.exists():
         if read_file(path) == content:
@@ -162,6 +191,7 @@ def write_file(path: Path, content: str, dry_run: bool, label: str = ""):
         record("created", path)
 
 def delete_file(path: Path, dry_run: bool):
+    """Delete a file when it exists and record the deletion."""
     if not path.exists():
         return
     backup(path, dry_run)
@@ -171,6 +201,7 @@ def delete_file(path: Path, dry_run: bool):
     record("deleted", path)
 
 def patch_file(path: Path, replacements: list, dry_run: bool):
+    """Apply literal text replacements to a file if it exists."""
     if not path.exists():
         log_warn(f"patch_file: {path} not found — skip")
         return
@@ -182,6 +213,7 @@ def patch_file(path: Path, replacements: list, dry_run: bool):
         write_file(path, content, dry_run)
 
 def regex_patch_file(path: Path, replacements: list, dry_run: bool):
+    """Apply regular-expression replacements to a file if it exists."""
     if not path.exists():
         log_warn(f"regex_patch: {path} not found — skip")
         return
@@ -209,11 +241,13 @@ P2P_ONLY_FILES = [
 ]
 
 def step_delete_p2p_files(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-01 — Deleting pure P2P-only files")
     for rel in P2P_ONLY_FILES:
         delete_file(root / rel, dry_run)
 
 def step_create_payment_order_model(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-02 — Creating paymentOrder.model.js")
     dest = root / "backend/models/paymentOrder.model.js"
     if dest.exists():
@@ -222,6 +256,7 @@ def step_create_payment_order_model(root: Path, dry_run: bool):
     write_file(dest, _PAYMENT_ORDER_MODEL, dry_run)
 
 def step_create_payment_service(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-03 — Creating paymentProcessing.service.js")
     dest = root / "backend/services/paymentProcessing.service.js"
     if dest.exists():
@@ -230,6 +265,7 @@ def step_create_payment_service(root: Path, dry_run: bool):
     write_file(dest, _PAYMENT_SERVICE, dry_run)
 
 def step_create_payment_routes(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-04 — Creating payment.routes.js")
     dest = root / "backend/routes/payment.routes.js"
     if dest.exists():
@@ -238,6 +274,7 @@ def step_create_payment_routes(root: Path, dry_run: bool):
     write_file(dest, _PAYMENT_ROUTES, dry_run)
 
 def step_patch_models_index(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-05 — Patching models/index.js")
     path = root / "backend/models/index.js"
     patch_file(path, [
@@ -255,6 +292,7 @@ def step_patch_models_index(root: Path, dry_run: bool):
                 write_file(path, new_content, dry_run)
 
 def step_patch_server_js(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-06 — Patching server.js")
     path = root / "backend/server.js"
     patch_file(path, [
@@ -267,6 +305,7 @@ def step_patch_server_js(root: Path, dry_run: bool):
     ], dry_run)
 
 def step_patch_cron_jobs(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-07 — Patching cronJobs.js")
     path = root / "backend/startup/cronJobs.js"
     if not path.exists():
@@ -277,6 +316,7 @@ def step_patch_cron_jobs(root: Path, dry_run: bool):
     ], dry_run)
 
 def step_patch_admin_routes(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-08 — Patching admin routes (P2POrder → PaymentOrder)")
     files = [
         "backend/routes/admin/queue.admin.routes.js",
@@ -325,6 +365,7 @@ def step_patch_admin_routes(root: Path, dry_run: bool):
         ], dry_run)
 
 def step_patch_merchant_routes(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-09 — Patching merchant.routes.js")
     patch_file(root / "backend/routes/merchant.routes.js", [
         ("mongoose.model('P2POrder')", "mongoose.model('PaymentOrder')"),
@@ -336,6 +377,7 @@ def step_patch_merchant_routes(root: Path, dry_run: bool):
     ], dry_run)
 
 def step_patch_frontend_types(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-10 — Patching types.ts")
     path = root / "types.ts"
     if not path.exists():
@@ -349,6 +391,7 @@ def step_patch_frontend_types(root: Path, dry_run: bool):
     write_file(path, content, dry_run)
 
 def step_create_payment_state_machine(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-11 — Creating paymentStateMachine.ts")
     dest = root / "services/paymentStateMachine.ts"
     if dest.exists():
@@ -357,6 +400,7 @@ def step_create_payment_state_machine(root: Path, dry_run: bool):
     write_file(dest, _PAYMENT_STATE_MACHINE, dry_run)
 
 def step_patch_wallet_modal(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-12 — Patching WalletModal.tsx")
     path = root / "components/Modals/WalletModal.tsx"
     patch_file(path, [
@@ -372,6 +416,7 @@ def step_patch_wallet_modal(root: Path, dry_run: bool):
     ], dry_run)
 
 def step_patch_frontend_files(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-13 — Patching frontend files (API paths + type refs)")
     files = [
         "services/realBackend.ts",
@@ -428,6 +473,7 @@ def step_patch_frontend_files(root: Path, dry_run: bool):
         write_file(admin_types, content, dry_run)
 
 def step_patch_backend_interface(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-14 — Patching backend.interface.ts")
     patch_file(root / "services/backend.interface.ts", [
         ("createP2POrder(",          "createPaymentOrder("),
@@ -442,6 +488,7 @@ def step_patch_backend_interface(root: Path, dry_run: bool):
     ], dry_run)
 
 def step_patch_real_backend(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-15 — Patching realBackend.ts")
     patch_file(root / "services/realBackend.ts", [
         ("/api/p2p/",         "/api/payment/"),
@@ -453,6 +500,7 @@ def step_patch_real_backend(root: Path, dry_run: bool):
     ], dry_run)
 
 def step_patch_wallet_dto(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-16 — Patching walletTransactionDTO.ts")
     patch_file(root / "services/walletTransactionDTO.ts", [
         ("P2POrder", "PaymentOrder"),
@@ -460,6 +508,7 @@ def step_patch_wallet_dto(root: Path, dry_run: bool):
     ], dry_run)
 
 def step_patch_merchant_panel(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-17 — Patching merchant panel")
     files = [
         "merchant-panel/src/constants.ts",
@@ -480,6 +529,7 @@ def step_patch_merchant_panel(root: Path, dry_run: bool):
             patch_file(p, replacements, dry_run)
 
 def step_patch_admin_queue_dashboard(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-18 — Patching admin queue dashboard")
     patch_file(root / "admin-panel/src/Pages/QueueManager/QueueDashboard.tsx", [
         ("/api/admin/p2p-queue",   "/api/admin/payment-queue"),
@@ -507,6 +557,7 @@ def step_patch_admin_queue_dashboard(root: Path, dry_run: bool):
     ], dry_run)
 
 def step_patch_upload_routes(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-19 — Patching upload.routes.js")
     patch_file(root / "backend/routes/upload.routes.js", [
         ("mongoose.model('P2POrder')", "mongoose.model('PaymentOrder')"),
@@ -514,6 +565,7 @@ def step_patch_upload_routes(root: Path, dry_run: bool):
     ], dry_run)
 
 def step_patch_sse_routes(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-20 — Patching sse.routes.js")
     patch_file(root / "backend/routes/sse.routes.js", [
         ("P2POrder", "PaymentOrder"),
@@ -522,6 +574,7 @@ def step_patch_sse_routes(root: Path, dry_run: bool):
     ], dry_run)
 
 def step_patch_socket_handlers(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-21 — Patching socketHandlers.js (remove P2P chat handlers)")
     path = root / "backend/startup/socketHandlers.js"
     if not path.exists():
@@ -540,6 +593,7 @@ def step_patch_socket_handlers(root: Path, dry_run: bool):
         write_file(path, content, dry_run)
 
 def step_patch_dispute_routes(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-22 — Patching disputeResolution.admin.routes.js")
     patch_file(root / "backend/routes/admin/disputeResolution.admin.routes.js", [
         ("mongoose.model('P2POrder')", "mongoose.model('PaymentOrder')"),
@@ -553,6 +607,7 @@ def step_patch_dispute_routes(root: Path, dry_run: bool):
     ], dry_run)
 
 def step_patch_wallet_services(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-23 — Patching wallet services")
     for rel in ["backend/services/wallet.service.js", "backend/services/walletAuthority.service.js"]:
         patch_file(root / rel, [
@@ -562,6 +617,7 @@ def step_patch_wallet_services(root: Path, dry_run: bool):
         ], dry_run)
 
 def step_patch_auth_middleware(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-24 — Patching auth.middleware.js")
     patch_file(root / "backend/middleware/auth.middleware.js", [
         ("mongoose.model('P2POrder')", "mongoose.model('PaymentOrder')"),
@@ -569,6 +625,7 @@ def step_patch_auth_middleware(root: Path, dry_run: bool):
     ], dry_run)
 
 def step_ensure_governance_headers(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-25 — Ensuring governance headers on new backend files")
     for rel in [
         "backend/models/paymentOrder.model.js",
@@ -590,6 +647,7 @@ _MUST_REPLACE = [
 ]
 
 def step_safety_sweep(root: Path, dry_run: bool):
+    """Run the migration step associated with this function name."""
     log_info("P0-26 — Safety sweep: remaining P2P references")
     extensions = {".js", ".ts", ".tsx", ".jsx"}
     skip_dirs  = {"node_modules", ".git", "dist", "build", "tools"}
@@ -1340,30 +1398,37 @@ export interface SSEEnvelope<T = unknown> {
 '''
 
 def p2_01_create_payment_provider_interface(root: Path, dry_run: bool):
+    """Run the Phase 2 architecture migration step associated with this function name."""
     log_info("P2-01 — Creating PaymentProvider.interface.js")
     write_file(root / "backend/providers/payment/PaymentProvider.interface.js", _PAYMENT_PROVIDER_INTERFACE, dry_run)
 
 def p2_02_create_casino_provider_interface(root: Path, dry_run: bool):
+    """Run the Phase 2 architecture migration step associated with this function name."""
     log_info("P2-02 — Creating CasinoProvider.interface.js")
     write_file(root / "backend/providers/casino/CasinoProvider.interface.js", _CASINO_PROVIDER_INTERFACE, dry_run)
 
 def p2_03_create_sportsbook_provider_interface(root: Path, dry_run: bool):
+    """Run the Phase 2 architecture migration step associated with this function name."""
     log_info("P2-03 — Creating SportsbookProvider.interface.js")
     write_file(root / "backend/providers/sportsbook/SportsbookProvider.interface.js", _SPORTSBOOK_PROVIDER_INTERFACE, dry_run)
 
 def p2_04_create_provider_registry(root: Path, dry_run: bool):
+    """Run the Phase 2 architecture migration step associated with this function name."""
     log_info("P2-04 — Creating provider registry.js")
     write_file(root / "backend/providers/registry.js", _PROVIDER_REGISTRY, dry_run)
 
 def p2_05_create_event_bus(root: Path, dry_run: bool):
+    """Run the Phase 2 architecture migration step associated with this function name."""
     log_info("P2-05 — Creating eventBus.service.js")
     write_file(root / "backend/services/eventBus.service.js", _EVENT_BUS_SERVICE, dry_run)
 
 def p2_06_create_feature_flags(root: Path, dry_run: bool):
+    """Run the Phase 2 architecture migration step associated with this function name."""
     log_info("P2-06 — Creating featureFlags.service.js")
     write_file(root / "backend/services/featureFlags.service.js", _FEATURE_FLAGS_SERVICE, dry_run)
 
 def p2_07_create_sse_event_types(root: Path, dry_run: bool):
+    """Run the Phase 2 architecture migration step associated with this function name."""
     log_info("P2-07 — Creating sseEvents.types.ts")
     write_file(root / "services/sseEvents.types.ts", _SSE_EVENT_TYPES, dry_run)
 
@@ -1968,6 +2033,7 @@ export const paymentDetailsPanelVisible = (s: PaymentOrderState) => ['ASSIGNED',
 # ═════════════════════════════════════════════════════════════════════════════
 
 def print_summary():
+    """Print the migration summary and persisted state summary."""
     print()
     print(f"{BOLD}{'═' * 62}{RESET}")
     print(f"{BOLD}MIGRATION SUMMARY{RESET}")
@@ -1988,6 +2054,7 @@ def print_summary():
 
 
 def detect_repo_root(start: Path) -> Path:
+    """Locate the repository root by walking upward from a starting path."""
     candidate = start.resolve()
     for _ in range(6):
         if (candidate / "backend").is_dir() and (candidate / "package.json").is_file():
@@ -1997,6 +2064,7 @@ def detect_repo_root(start: Path) -> Path:
 
 
 def main():
+    """Parse CLI options and execute the selected migration phases."""
     global _STATE
 
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)

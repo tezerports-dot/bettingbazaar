@@ -578,7 +578,8 @@ value) that predates this migration; it was in scope to fix because it's the
 same runtime-consumption endpoint DepositPolicy needed to reach to have any
 real effect.
 
-**Not fixed (separate decision):** `merchant.routes.js`'s wallet-balance
-writes still use raw `$inc` rather than `walletAuthority.service.js` — a
-pre-existing §7 violation, left alone because rerouting it is a larger,
-separate change (see PHASE_STATUS.md Known Open Items #6).
+**Follow-up completed 2026-07-10:** `merchant.routes.js`'s wallet-balance
+writes now route through `walletAuthority.service.js` (`creditDeposit` and
+`creditReserve`) rather than raw user-wallet `$inc` mutations on the live
+approval/confirm paths. The historical raw-`$inc` note is retained here only
+to explain why this was tracked as a separate §7 cleanup item.

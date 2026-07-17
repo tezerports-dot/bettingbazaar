@@ -98,8 +98,8 @@ operations/retention.service.js.
       wallet is never funded → DepositPolicy + Phase A betReservePercent are
       effectively dead for real deposits, and the derived ledger (which always
       posts the reserve allocation from the order) disagrees with the actual
-      wallet. NEEDS A PRODUCT DECISION on the canonical path, then align/remove
-      the other + integration test that a completed deposit funds reserve.
+      wallet. Resolved 2026-07-10: both live completion paths now route through
+      walletAuthority.creditDeposit/creditReserve, so this audit item is closed.
 - [x] **X-3 (🟠) approve path credits user via raw $inc. — DONE** Live merchant
       approval/confirm paths now use walletAuthority.creditDeposit/creditReserve
       with idempotency keys instead of raw balance writes.
