@@ -5,6 +5,7 @@
 import express      from 'express';
 import mongoose     from 'mongoose';
 import http         from 'http';
+import https        from 'https';
 import { Server as SocketIOServer } from 'socket.io';
 import cors         from 'cors';
 import helmet       from 'helmet';
@@ -73,12 +74,14 @@ import { S3StorageProvider } from './providers/storage/S3StorageProvider.js';
 import { LocalDiskStorageProvider } from './providers/storage/LocalDiskStorageProvider.js';
 import recoveryRoutes     from './routes/account-recovery.routes.js';
 import winnersRoutes      from './routes/winners.routes.js';
+import appBootstrapRoutes from './routes/app-bootstrap.routes.js';
 
 
 import { requestLogger }  from './middleware/requestLogger.js';
 import { errorHandler }   from './middleware/errorHandler.js';
 import { requestContext } from './middleware/requestContext.js'; // X-6: correlation ids
 import { tlsFingerprintDefense, startTlsFingerprintDefenseConfigRefresh } from './middleware/tlsFingerprintDefense.js';
+import { rejectAmbiguousFraming } from './middleware/headerNormalization.js';
 import { authLimiter, adminAuthLimiter, betLimiter } from './middleware/security.js';
 // Item 12 (2026-07-13): IP-rotation defense — per-subnet backstop + optional
 // global surge breaker on sensitive endpoints, on top of the per-IP limiters.
@@ -103,7 +106,16 @@ function corsOriginCheck(origin, callback) {
   return callback(new Error(`CORS: origin not allowed — ${origin}`));
 }
 
-const server = http.createServer(app);
+const backendMtlsEnabled = Boolean(process.env.BACKEND_MTLS_CERT && process.env.BACKEND_MTLS_KEY && process.env.BACKEND_MTLS_CA);
+const server = backendMtlsEnabled
+  ? https.createServer({
+      cert: fs.readFileSync(process.env.BACKEND_MTLS_CERT),
+      key: fs.readFileSync(process.env.BACKEND_MTLS_KEY),
+      ca: fs.readFileSync(process.env.BACKEND_MTLS_CA),
+      requestCert: true,
+      rejectUnauthorized: true,
+    }, app)
+  : http.createServer(app);
 const io = new SocketIOServer(server, {
   cors: { origin: corsOriginCheck, methods: ['GET', 'POST'], credentials: false },
   transports: ['websocket'], allowUpgrades: false, perMessageDeflate: false,
@@ -123,6 +135,7 @@ const PORT = network.port; // item 28: single parse point in config/network.conf
 // ─── GLOBAL MIDDLEWARE ────────────────────────────────────────────────────────
 // Security policy lives in config/security.config.js (item 19) — values are
 // identical to what was inline here before; edit THAT file to change policy.
+app.use(rejectAmbiguousFraming);
 app.use(compression());
 app.use(helmet(HELMET_OPTIONS));
 // Item 29: optional canonical-host 301 (only when CANONICAL_HOST is set; keys
@@ -292,6 +305,7 @@ app.use('/api/v1/auth', authLimiter, createSubnetLimiter('auth'), globalSurgeBre
 // allowing 2× brute-force attempts. All clients should use /api/v1/auth/*.
 app.use('/api', recoveryRoutes);
 app.use('/api', winnersRoutes);
+app.use('/api/app', appBootstrapRoutes);
 
 app.post('/api/admin/login', adminAuthLimiter, createSubnetLimiter('adminAuth'), (req, res, next) => {
   req.body = { ...req.body, loginType: req.body.loginType || 'admin' };

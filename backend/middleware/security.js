@@ -7,6 +7,7 @@ import { createRateLimitStore } from './redisRateLimitStore.js';
 // Item 19 (2026-07-13): windows/limits live in config/security.config.js —
 // values unchanged; edit the config to change policy.
 import { RATE_LIMIT_TIERS } from '../config/security.config.js';
+import { betBehaviorLimiter } from './behavioralRateLimit.js';
 
 // ==================== AUTHENTICATION RATE LIMITERS ====================
 
@@ -92,7 +93,7 @@ export const adminAuthLimiter = rateLimit({
 
 // Rate limiter for bet placement
 // Prevents rapid-fire betting and potential abuse
-export const betLimiter = rateLimit({
+export const ipBetLimiter = rateLimit({
     store: createRateLimitStore('rl:bet:'),
     ...RATE_LIMIT_TIERS.bet, // 30 / min
     message: { 
@@ -104,6 +105,8 @@ export const betLimiter = rateLimit({
     // Track per user, not per IP (users may share IPs)
     keyGenerator: (req) => req.user?.id || ipKeyGenerator(req.ip)
 });
+
+export const betLimiter = [ipBetLimiter, betBehaviorLimiter];
 
 // ==================== WITHDRAWAL RATE LIMITERS ====================
 

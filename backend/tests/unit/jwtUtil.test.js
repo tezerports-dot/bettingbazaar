@@ -1,30 +1,28 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-// Unit tests for the AQ-2 JWT authority: HS256 pinning (algorithm-confusion
-// rejection), iss/aud stamping, and non-production legacy-token compatibility.
+// Unit tests for the token authority: JWT compatibility names now issue and
+// verify PASETO v2.public tokens with Ed25519 signatures and no alg header.
 import { describe, it, expect, beforeAll } from 'vitest';
-import jwt from 'jsonwebtoken';
 
-// jwt.util reads JWT_SECRET at import — set before importing.
-process.env.JWT_SECRET ||= 'test-only-jwt-secret';
+process.env.JWT_SECRET ||= 'test-only-paseto-seed';
 
-let signToken, verifyJwt, tryVerifyJwt, JWT_ISSUER, JWT_AUDIENCE;
+let signToken, verifyJwt, tryVerifyJwt, decodeTokenClaims, JWT_ISSUER, JWT_AUDIENCE;
 beforeAll(async () => {
   const m = await import('../../domains/identity/jwt.util.js');
-  ({ signToken, verifyJwt, tryVerifyJwt, JWT_ISSUER, JWT_AUDIENCE } = m);
+  ({ signToken, verifyJwt, tryVerifyJwt, decodeTokenClaims, JWT_ISSUER, JWT_AUDIENCE } = m);
 });
 
 describe('signToken', () => {
-  it('stamps issuer + audience and HS256', () => {
+  it('issues PASETO and stamps issuer + audience', () => {
     const token = signToken({ userId: 'u1' });
-    const decoded = jwt.decode(token, { complete: true });
-    expect(decoded.header.alg).toBe('HS256');
-    expect(decoded.payload.iss).toBe(JWT_ISSUER);
-    expect(decoded.payload.aud).toBe(JWT_AUDIENCE);
-    expect(decoded.payload.userId).toBe('u1');
-    expect(decoded.payload.exp).toBeGreaterThan(0);
+    expect(token.startsWith('v2.public.')).toBe(true);
+    const decoded = decodeTokenClaims(token);
+    expect(decoded.iss).toBe(JWT_ISSUER);
+    expect(decoded.aud).toBe(JWT_AUDIENCE);
+    expect(decoded.userId).toBe('u1');
+    expect(Date.parse(decoded.exp)).toBeGreaterThan(Date.now());
   });
 
-  it('round-trips through verifyJwt', () => {
+  it('round-trips through verifyJwt compatibility export', () => {
     const token = signToken({ userId: 'u2', roles: ['user'] });
     const out = verifyJwt(token);
     expect(out.userId).toBe('u2');
@@ -33,36 +31,28 @@ describe('signToken', () => {
 
   it('honors an explicit expiresIn override', () => {
     const token = signToken({ userId: 'u3' }, { expiresIn: '1s' });
-    const { iat, exp } = jwt.decode(token);
-    expect(exp - iat).toBe(1);
+    const { iat, exp } = decodeTokenClaims(token);
+    expect(Date.parse(exp) - Date.parse(iat)).toBe(1000);
   });
 });
 
 describe('verifyJwt — algorithm confusion defense', () => {
-  it('rejects a token signed with alg:none', () => {
-    // Forge an unsigned token claiming alg:none (classic bypass attempt).
-    const forged = jwt.sign({ userId: 'attacker' }, '', { algorithm: 'none' });
+  it('rejects JWT alg:none because only PASETO format is accepted', () => {
+    const forged = 'eyJhbGciOiJub25lIn0.eyJ1c2VySWQiOiJhdHRhY2tlciJ9.';
     expect(() => verifyJwt(forged)).toThrow();
   });
 
-  it('rejects a token whose signature does not match the secret', () => {
-    const bad = jwt.sign({ userId: 'x' }, 'a-different-secret', { algorithm: 'HS256' });
+  it('rejects tampered PASETO payloads', () => {
+    const good = signToken({ userId: 'x' });
+    const bad = `${good.slice(0, -2)}aa`;
     expect(() => verifyJwt(bad)).toThrow();
   });
 
   it('rejects an expired token with TokenExpiredError', () => {
-    const token = signToken({ userId: 'u4' }, { expiresIn: -10 }); // already expired
+    const token = signToken({ userId: 'u4' }, { expiresIn: -10 });
     let err;
     try { verifyJwt(token); } catch (e) { err = e; }
     expect(err?.name).toBe('TokenExpiredError');
-  });
-});
-
-describe('legacy-token compatibility outside production', () => {
-  it('accepts a legacy token that has NO iss/aud when NODE_ENV is not production', () => {
-    const legacy = jwt.sign({ userId: 'legacy', role: 'user' }, process.env.JWT_SECRET);
-    const out = verifyJwt(legacy);
-    expect(out.userId).toBe('legacy');
   });
 });
 

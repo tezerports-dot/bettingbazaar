@@ -5,10 +5,10 @@
  * ════════════════════════════════════════════════════════════════════════════
  * 
  * Complete authentication and authorization middleware for the betting platform.
- * Handles JWT verification, role-based access control, and permission checks.
+ * Handles PASETO verification, role-based access control, and permission checks.
  * 
  * Features:
- * - JWT token verification with expiry checks
+ * - PASETO token verification with expiry checks
  * - User activation status verification
  * - Admin and sub-admin role checks
  * - Granular permission system
@@ -17,14 +17,14 @@
  * - Audit logging hooks
  * 
  * @module auth.middleware
- * @requires jsonwebtoken
+ * @requires ./paseto.util.js
  * @requires ../models
  */
 
 import { User } from '../../models/index.js';
 import { setContextUser } from '../../middleware/requestContext.js'; // X-6
-// AQ-2 (2026-07-13): every sign/verify goes through the single JWT authority —
-// HS256 pinned on verify, iss/aud stamped on sign. No jwt.* calls remain here.
+// AQ-2 (2026-07-13): every sign/verify goes through the single PASETO authority —
+// Ed25519 signature verification, iss/aud stamped on sign. No raw token-library calls remain here.
 import { signToken, verifyJwt, JWT_SECRET, JWT_EXPIRES_IN } from './jwt.util.js';
 
 // JWT_SECRET / JWT_EXPIRES_IN now come from jwt.util.js (imported above), which
@@ -38,10 +38,10 @@ import { signToken, verifyJwt, JWT_SECRET, JWT_EXPIRES_IN } from './jwt.util.js'
  */
 
 /**
- * Main authentication middleware - Verifies JWT token and attaches user to request
+ * Main authentication middleware - Verifies PASETO token and attaches user to request
  * 
  * This middleware:
- * 1. Extracts JWT from Authorization header
+ * 1. Extracts PASETO from Authorization header
  * 2. Verifies token signature and expiry
  * 3. Fetches user from database
  * 4. Checks if user account is active
@@ -78,7 +78,7 @@ const authenticate = async (req, res, next) => {
       return res.status(401).json({ success: false, message: 'No authorization token provided' });
     }
 
-    // Verify JWT token
+    // Verify PASETO token
     let decoded;
     try {
       decoded = verifyJwt(token);
@@ -89,7 +89,7 @@ const authenticate = async (req, res, next) => {
           message: 'Token has expired. Please login again.' 
         });
       }
-      if (jwtError.name === 'JsonWebTokenError') {
+      if (jwtError.name === 'JsonWebTokenError' || jwtError.name === 'PasetoError') {
         return res.status(401).json({ 
           success: false,
           message: 'Invalid token signature' 
@@ -120,7 +120,7 @@ const authenticate = async (req, res, next) => {
         message: 'Your account has been blocked. Please contact support.' 
       });
     }
-    // HIGH-06 FIX: also check isAccountLocked — a locked user with a valid JWT
+    // HIGH-06 FIX: also check isAccountLocked — a locked user with a valid PASETO
     // could bypass the login-time check without this middleware guard.
     if (user.isAccountLocked) {
       return res.status(403).json({
@@ -137,9 +137,9 @@ const authenticate = async (req, res, next) => {
     try { setContextUser(user._id); } catch { /* context is best-effort */ }
 
     
-    // Merchant JWT contains { merchantId, isMerchant: true } — set by domains/merchant/merchant.routes.js /auth/login.
-    // isMerchant is a JWT claim, NOT a User schema field. merchantAuth middleware handles Merchant JWTs.
-    // This authenticate middleware is for User JWTs only (players, admin, sub-admin, queue manager).
+    // Merchant PASETO contains { merchantId, isMerchant: true } — set by domains/merchant/merchant.routes.js /auth/login.
+    // isMerchant is a PASETO claim, NOT a User schema field. merchantAuth middleware handles Merchant PASETOs.
+    // This authenticate middleware is for User PASETOs only (players, admin, sub-admin, queue manager).
     
     
     if (decoded.merchantId) {
@@ -462,11 +462,11 @@ const authenticateMerchant = async (req, res, next) => {
  */
 
 /**
- * Generate JWT token for user
+ * Generate PASETO token for user
  * 
  * @param {Object} user - User object from database
  * @param {Object} options - Additional options (expiresIn, etc.)
- * @returns {string} JWT token
+ * @returns {string} PASETO token
  */
 const generateToken = (user, options = {}) => {
   const payload = {
@@ -485,11 +485,11 @@ const generateToken = (user, options = {}) => {
 };
 
 /**
- * Generate JWT token for merchant
+ * Generate PASETO token for merchant
  * 
  * @param {Object} merchant - Merchant object from database
  * @param {Object} options - Additional options
- * @returns {string} JWT token
+ * @returns {string} PASETO token
  */
 const generateMerchantToken = (merchant, options = {}) => {
   const payload = {
@@ -509,7 +509,7 @@ const generateMerchantToken = (merchant, options = {}) => {
 /**
  * Verify token without attaching to request (useful for API calls)
  * 
- * @param {string} token - JWT token string
+ * @param {string} token - PASETO token string
  * @returns {Object|null} Decoded token payload or null if invalid
  */
 const verifyToken = (token) => {
@@ -646,11 +646,11 @@ export const checkResourcePermission = (resource, action) => {
 /**
 /**
  * isMerchantApproved — guards routes that require a confirmed merchant session.
- * Must be used AFTER merchantAuth (which already verifies the Merchant JWT and
+ * Must be used AFTER merchantAuth (which already verifies the Merchant PASETO and
  * checks merchantApprovalStatus === 'APPROVED'). This is therefore just a
  * safety check that merchantAuth ran first.
  *
- * NOTE: isMerchant is a JWT *claim* in the Merchant JWT, NOT a User schema field.
+ * NOTE: isMerchant is a PASETO *claim* in the Merchant PASETO, NOT a User schema field.
  * Never read req.user.isMerchant — the User model has no such field.
  */
 export const isMerchantApproved = async (req, res, next) => {

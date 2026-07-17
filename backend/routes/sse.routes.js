@@ -8,11 +8,11 @@
  *
  * THREE ENDPOINTS:
  *   GET /api/sse/events                — Public: cycles, branding, system_config
- *   GET /api/sse/merchant/events       — Private: merchant order events (JWT auth)
- *   GET /api/sse/admin/events          — Private: admin queue/KYC/cycle events (JWT auth)
+ *   GET /api/sse/merchant/events       — Private: merchant order events (PASETO auth)
+ *   GET /api/sse/admin/events          — Private: admin queue/KYC/cycle events (PASETO auth)
  *
  * PRIVATE CHANNEL AUTH:
- *   Pass JWT as ?token=... query param (EventSource doesn't support headers).
+ *   Pass PASETO as ?token=... query param (EventSource doesn't support headers).
  *   Token is verified before registering the SSE client.
  *
  * CRITICAL HEADERS (required for SSE through Railway nginx):
@@ -23,7 +23,7 @@
  */
 
 import express from 'express';
-// AQ-1/AQ-2: verify via the single JWT authority. This replaces a
+// AQ-1/AQ-2: verify via the single PASETO authority. This replaces a
 // `process.env.JWT_SECRET || 'fallback-secret'` default that verified user and
 // admin SSE tokens against a PUBLIC string whenever the env var was unset —
 // anyone could have forged a token and opened these streams. verifyJwt pins
@@ -119,7 +119,7 @@ export function initSSERoutes(sseManager, cycleGenerator) {
     // ── GET /api/sse/merchant/events ── PRIVATE ───────────────────────────────
     //
     
-    // Query param: ?token=<merchant JWT>
+    // Query param: ?token=<merchant PASETO>
     // Events emitted to this stream:
     //   new_order       — new order assigned to this merchant
     //   order_update    — status change on an existing order
@@ -184,7 +184,7 @@ export function initSSERoutes(sseManager, cycleGenerator) {
     // ── GET /api/sse/admin/events ── PRIVATE ──────────────────────────────────
     //
     
-    // Query param: ?token=<admin JWT>
+    // Query param: ?token=<admin PASETO>
     // Events emitted to this stream:
     //   new_order           — new order in the PENDING_QUEUE
     //   queue_order_update  — any order status change
