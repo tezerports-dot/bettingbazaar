@@ -52,10 +52,14 @@ function adminOrderPayload(order, user) {
 }
 
 // ─── Build merchantSnapshot from a Merchant doc ───────────────────────────────
+function merchantDisplayRef(merchantDoc) {
+  return `Merchant #${String(merchantDoc._id).slice(-4).toUpperCase()}`;
+}
+
 function buildMerchantSnapshot(merchantDoc, expiresAt) {
   return {
     merchantId:    merchantDoc._id,
-    merchantName:  merchantDoc.name || merchantDoc.username || '',
+    merchantName:  merchantDisplayRef(merchantDoc),
     upiId:         merchantDoc.bankDetails?.upiId             || '',
     qrCodeUrl:     merchantDoc.qrCodeUrl                      || '',
     bankName:      merchantDoc.bankDetails?.bankName           || '',
