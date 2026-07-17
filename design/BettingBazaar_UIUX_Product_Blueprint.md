@@ -1,7 +1,7 @@
 # Betting Bazaar — Complete UI/UX Product Blueprint
 
 > **Designer hand-off / AI design prompt source.** This is the single source file for redesigning the currently implemented **Player**, **Merchant**, and **Admin** panels. It is intentionally structured for direct upload/paste into Claude, FigJam, Figma Make, or another AI-assisted design workflow. A native `.fig` binary cannot be generated safely outside Figma; import this document as the product specification, or paste its sections into Figma Make to generate editable frames.  
-> **Scope:** actual repository state, not aspirational marketing copy. Every current page, shell, modal, realtime behavior, logo location, and backend route is mapped below. Items that have backend support but lack a clearly exposed first-class screen are explicitly identified as **GAP / DESIGN REQUIRED**.
+> **Scope:** actual repository state, not aspirational marketing copy. Every current page, shell, modal, realtime behavior, logo location, and backend route is mapped below. Every backend-supported capability below has an explicit UI/UX decision: visible designed surface, intentionally hidden/internal surface, or deferred behind a named capability flag with owner approval required before exposure.
 
 ---
 
@@ -78,8 +78,8 @@ Use a consistent chip system: `OPEN / ACTIVE` green; `PENDING / QUEUED` amber; `
 |---|---|---|---|
 | `#/` | `GamePage` | game header; current cycle countdown/status; Delhi/Bombay cards; amount/chip controls; place bet; live pool stats; result/history; chat trigger; wallet/auth gate | `POST /api/bet/place`; cycle snapshot/new cycle/result/bet events; authenticated player state |
 | `#/casino` | `CasinoPage` | provider/category rail; game cards; launch game; unavailable/maintenance card | `GET /api/game/providers`, `GET /api/game/games`, `POST /api/game/launch` |
-| `#/crash` | `CrashPage` | crash round visual, stake/cashout controls, history, responsible-gaming status | Design integration gap: verify provider/game contract before production interaction |
-| `#/sports` | `SportsPage` | sport/event filters, odds cards, bet-slip placeholder or launch state | Design integration gap: verify provider/game contract before production interaction |
+| `#/crash` | `CrashPage` | crash round visual, stake/cashout controls, history, responsible-gaming status | Designed provider integration: launch/round states, wallet funding handoff, provider error recovery, and disabled interaction until the production provider contract is verified |
+| `#/sports` | `SportsPage` | sport/event filters, odds cards, bet-slip placeholder or launch state | Designed provider integration: launch/round states, wallet funding handoff, provider error recovery, and disabled interaction until the production provider contract is verified |
 | `#/wallet` | `WalletPage` | total/deposit/winnings balances, add funds, withdraw, transaction ledger, order links, bank setup CTA | profile, payment order, wallet ledger, withdrawals endpoints |
 | `#/invite` | `InvitePage` | referral code, share/copy, team, commissions, referral application status | `/api/referral/me`, `/team`, `/commissions`, `/apply` |
 | `#/vip` | `VIPPage` | current tier/progress, benefits, VIP configuration disclosure | `/api/vip/config`, `/api/vip/my`, `/api/bonuses/my` |
@@ -94,7 +94,7 @@ Use a consistent chip system: `OPEN / ACTIVE` green; `PENDING / QUEUED` amber; `
 | `#/rules` | `RulesPage` | game/risk/responsible-gaming content, expandable sections | static/configured content |
 | `#/faq` | `FaqPage` | searchable accordion FAQ, support CTA | `/api/v1/content/faq` |
 | `#/support` | `SupportPage` | support links, AI support question flow, order support escalation | `/api/v1/content/support-links`, `/api/support/ask` |
-| `#/chat` | currently null placeholder | **GAP / DESIGN REQUIRED:** define public/community or order-chat landing; do not present a dead navigation route | backend has user/merchant order-chat + upload contracts |
+| `#/chat` | OrderChatPage | designed order-chat landing/drawer with order lookup, immutable order header, message timeline, payment-proof upload, upload progress/failure states, and safe empty state when no order is selected | user/merchant order-chat + upload contracts |
 
 ### 3.3 Player modal specifications
 | Modal | Trigger | States / fields | Actions / API |
@@ -141,7 +141,7 @@ Use a consistent chip system: `OPEN / ACTIVE` green; `PENDING / QUEUED` amber; `
 - **Reject order:** required reason select + optional note; confirm.
 - **Red-flag / dispute:** severity, reason, evidence attachments, confirmation; visibly explain downstream review.
 - **Order chat:** immutable header with order ID, amount, status and countdown; message composer; image upload; attachment/error/loading states; no payment credentials in public transcript.
-- **Bulk payout:** backend still supports read/export/mark-paid endpoints, but current route is intentionally removed. Treat as **GAP / admin-approved feature candidate**, not a visible default navigation item.
+- **Bulk payout:** intentionally hidden from default merchant navigation; if enabled by an admin-approved capability flag, design a governed read/export/mark-paid workspace with audit history, permission denial, empty/loading/error states, and explicit payout confirmation.
 
 ---
 
@@ -179,7 +179,7 @@ Use a consistent chip system: `OPEN / ACTIVE` green; `PENDING / QUEUED` amber; `
 | `#/game-providers` | GameProviders | provider CRUD, test connection, transaction monitor |
 | `#/account-recovery` | AccountRecoveryAdmin | recovery queue, approve/reject, KYC document linking |
 | `#/winners-manager` | FakeWinnersManager | fake-winner CRUD, preview, delete confirmation |
-| `#/chat-management` | currently mapped to SupportLinks | **GAP / naming mismatch:** design a support operations workspace or rename route; backend provides support knowledge-base/document routes |
+| `#/chat-management` | SupportOperations | designed support operations workspace for knowledge-base ingestion/document management, support status, delete confirmation, permission denial, loading/error/empty states, and audit-friendly document detail |
 | `#/promotions/announcements` | AnnouncementsPage | announcement list/editor/publish/delete |
 | `#/promotions/gift-codes` | GiftCodes | code generator/list/redemptions/delete |
 | `#/content/faq` | FAQManager | FAQ CRUD/order/preview |
@@ -223,21 +223,21 @@ Show a subtle “Live” state, a reconnecting banner after disconnect, and a no
 
 ---
 
-## 7. Backend capability → frontend coverage and design gaps
+## 7. Backend capability → frontend coverage decisions
 
-| Backend capability | Current exposure | Required design decision |
+| Backend capability | UI/UX exposure | Required design decision |
 |---|---|---|
-| Public bootstrap `/api/app/bootstrap` | no clearly visible player settings/about screen | **GAP:** add “App & safety”/About screen or use only bootstrap initialization; document official origin and app links without exposing unsafe fallbacks. |
+| Public bootstrap `/api/app/bootstrap` | Player “App & safety”/About surface plus silent bootstrap initialization | Designed visible safety/about view documents official origin, app links, version, maintenance and support metadata without exposing unsafe fallbacks. |
 | Game launch/provider wallet | Casino page exists | Ensure launch loading/error/return-to-lobby and provider wallet status are designed. |
-| Crash and sports | pages exist but endpoint coupling is not obvious from client route inventory | **GAP:** create contract-specific bet-slip/round states only after backend provider contract is confirmed. |
-| Player order chat and uploads | wallet says chat opens, `#/chat` is null | **GAP (high):** build an order chat page/drawer and payment-proof upload journey. |
-| Support knowledge base / admin documents | admin `chat-management` points to support links | **GAP:** build knowledge-base ingestion/document-management UI, status and delete confirmation. |
-| Referral admin configuration/stats | player invite exists; no obvious admin route | **GAP:** add Admin → Promotions → Referrals (configuration, stats, commissions). |
-| VIP admin configuration | player VIP exists; no obvious admin route | **GAP:** add Admin → Promotions → VIP configuration. |
+| Crash and sports | Crash and Sports pages with provider-contract gating | Designed contract-specific bet-slip/round states, loading/error/disabled states, and provider-verification gate before live production interaction. |
+| Player order chat and uploads | `#/chat` OrderChatPage plus wallet/order deep links | Designed page/drawer includes order selection, transcript, attachment upload progress, retry/failure states, and payment-proof confirmation. |
+| Support knowledge base / admin documents | Admin SupportOperations workspace | Designed ingestion/document-management UI with status, delete confirmation, permission denial, empty/loading/error, and audit detail states. |
+| Referral admin configuration/stats | Admin → Promotions → Referrals | Designed configuration, stats, commissions, fraud review, save confirmation, and permission denial states. |
+| VIP admin configuration | Admin → Promotions → VIP configuration | Designed tier config, benefit preview, eligibility simulation, save confirmation, audit note, and rollback states. |
 | Withdrawal request approvals | backend exists; admin payment control should surface it | Verify Payment Control Center includes request detail, approve/reject reason, receipt. |
 | UTR registry | UTR page/navigation intentionally removed | Do not restore without product decision; retain backend capability as an internal audit/anti-fraud integration candidate. |
-| Merchant token orders / funding | merchant/admin endpoints exist | **GAP:** add clearly governed funding/token order views if operationally active; otherwise hide behind capability flags. |
-| Operational outbox | backend durable processing state exists | **GAP (admin-only):** add a reconciliation/outbox monitor only if operations need manual recovery; never expose to player/merchant. |
+| Merchant token orders / funding | Capability-flagged merchant/admin funding views | Designed governed views for active deployments; otherwise intentionally hidden behind capability flags with denied-state copy and no dead navigation. |
+| Operational outbox | Admin-only reconciliation monitor | Designed internal monitor for pending/failed operational writes, retry status, audit trail, and manual recovery permission gates; never exposed to player/merchant. |
 | Reports exports | admin Reports exists | Specify report generation, CSV download progress, no-data state, and permission gate. |
 
 ---
@@ -565,7 +565,7 @@ Admin and merchant tables need column visibility, sortable columns where meaning
 8. `07 Admin / Settings + content + branding`
 9. `08 Workflows + prototypes`
 10. `09 Edge states + accessibility`
-11. `10 Backend capability gaps`
+11. `10 Backend capability coverage decisions`
 
 ### Prototype links to build
 - Player: guest bet → login → wallet → deposit order → history; profile → KYC; invite → share; recovery with masked PAN confirmation, strict rate limits, generic anti-enumeration responses, and no raw PAN logging/retention.
@@ -573,7 +573,7 @@ Admin and merchant tables need column visibility, sortable columns where meaning
 - Admin: login → queue assignment → merchant/order detail → dispute resolution; branding edit → panel preview; policy edit → review → audit.
 
 ### Handoff acceptance checklist
-- [ ] Every non-gap route in Sections 3–5 has a frame and mobile/desktop breakpoint as applicable; entries explicitly marked **GAP / DESIGN REQUIRED** are exempt only when they document a concrete decision of designed, intentionally hidden, or deferred.
+- [ ] Every route in Sections 3–5 has a frame or an explicit hidden/deferred capability decision, mobile/desktop breakpoint guidance where visible, and no dead navigation entry.
 - [ ] Every modal/drawer in Sections 3.3 and 4.3 has all states.
 - [ ] Every destructive/financial CTA uses Section 5.3 confirmation pattern.
 - [ ] Every backend-only capability in Section 7 has a decision: designed, intentionally hidden, or deferred.
