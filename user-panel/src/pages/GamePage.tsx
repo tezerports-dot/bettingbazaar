@@ -1,6 +1,8 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import React, { useState, useEffect } from 'react';
 import { useGame } from '../services/GameContext';
+import Header from '../components/Layout/Header';
+import Footer from '../components/Layout/Footer';
 import CycleControl from '../components/Game/CycleControl';
 import BettingCard from '../components/Game/BettingCard';
 import BetControls from '../components/Game/BetControls';
@@ -12,6 +14,7 @@ import ResultsPanel from '../components/Game/ResultsPanel';
 import { BettingSide, GameState, PromoContent } from '../types';
 // Fix: Import useNavigate from 'react-router'
 import { useNavigate, useLocation } from 'react-router';
+import GameCategoryStrip from '../components/Game/GameCategoryStrip';
 // MIN_BET removed — GamePage now reads live sysConfig.minBet from GameContext (C-3 fix)
 import { getBackend, getAssetUrl } from '../services/backend.service'; 
 import Modal from '../components/ui/Modal';
@@ -102,7 +105,10 @@ const GamePage: React.FC = () => {
   const showMerged = gameState === GameState.MERGED || gameState === GameState.CLOSED;
 
   return (
-    <div className={`casino-screen-layout bg-[#0f212e] relative ${isGhostMode ? 'border-4 border-purple-900/50' : ''}`}>
+    <div className={`casino-screen-layout bg-gradient-to-b from-[#0B0E14] to-[#121826] relative ${isGhostMode ? 'border-4 border-purple-900/50' : ''}`}>
+      <Header onAuthRequired={() => setShowAuthModal(true)} />
+      <GameCategoryStrip />
+
       {/* AUTH MODAL - Only show when explicitly requested */}
       {showAuthModal && !isAuthenticated ? (
           <AuthModal onClose={() => setShowAuthModal(false)} />
@@ -127,6 +133,7 @@ const GamePage: React.FC = () => {
       <ResultsPanel />
 
       <BetControls onAmountChange={setBetAmount} currentAmount={betAmount} />
+      <Footer />
       
       
 
