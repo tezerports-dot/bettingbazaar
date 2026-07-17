@@ -42,7 +42,7 @@ async function abortOrEnd(session) {
 // POST /api/bet/place
 // Places a real bet. Deducts from winnings first, then deposits.
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/place', betLimiter, authenticate, async (req, res) => {
+router.post('/place', authenticate, betLimiter, async (req, res) => {
   // NOTE: No session opened here — the critical balance step is a single atomic
   // findOneAndUpdate (see FIX B). Remaining writes (Bet, Cycle pool, Transaction)
   // are idempotent/append-only and do not need a multi-document transaction.

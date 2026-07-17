@@ -32,6 +32,20 @@ end
 return {hits, ttl}
 `;
 
+
+const LUA_SLIDING_WINDOW = `
+local window_start = tonumber(ARGV[1]) - tonumber(ARGV[2])
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', window_start)
+local current_requests = redis.call('ZCARD', KEYS[1])
+if current_requests < tonumber(ARGV[3]) then
+  redis.call('ZADD', KEYS[1], ARGV[1], ARGV[4] or ARGV[1])
+  redis.call('PEXPIRE', KEYS[1], ARGV[2])
+  return {1, current_requests + 1}
+else
+  return {0, current_requests}
+end
+`;
+
 let sharedClient = null;
 let loggedDown = false;
 
@@ -46,6 +60,7 @@ function getClient() {
     retryStrategy: (times) => Math.min(times * 200, 5000), // keep reconnecting forever
   });
   sharedClient.defineCommand('rlIncr', { numberOfKeys: 1, lua: LUA_INCR });
+  sharedClient.defineCommand('rlSlidingWindow', { numberOfKeys: 1, lua: LUA_SLIDING_WINDOW });
   sharedClient.on('ready', () => {
     loggedDown = false;
     console.log('✅ Rate-limit Redis store connected (shared counters across instances)');
@@ -156,4 +171,21 @@ export function awaitRateLimitRedisReady(timeoutMs = 5000) {
     const timer = setTimeout(() => resolve(client.status === 'ready'), timeoutMs);
     client.once('ready', () => { clearTimeout(timer); resolve(true); });
   });
+}
+
+
+/**
+ * Atomic Redis sliding-window log limiter for compound non-IP identifiers.
+ * Returns null when Redis is unavailable so callers can apply their memory
+ * fallback without turning Redis outages into production request failures.
+ */
+export async function redisSlidingWindowAllow(key, { windowMs, max, now = Date.now(), member } = {}) {
+  const client = getClient();
+  if (!client || client.status !== 'ready') return null;
+  try {
+    const [allowed, count] = await client.rlSlidingWindow(key, now, windowMs, max, member || `${now}:${Math.random()}`);
+    return { allowed: Number(allowed) === 1, count: Number(count) };
+  } catch {
+    return null;
+  }
 }

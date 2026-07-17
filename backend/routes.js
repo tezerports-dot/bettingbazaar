@@ -1,11 +1,10 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import express     from 'express';
-// AQ-2: sign/verify via the single JWT authority (HS256 pinned, iss/aud stamped).
-import { signToken, verifyJwt } from './domains/identity/jwt.util.js';
+// AQ-2: sign/verify via the single PASETO authority (PASETO/Ed25519, iss/aud stamped).
+import { signToken, verifyJwt, decodeTokenClaims } from './domains/identity/jwt.util.js';
 // AQ-8: password hashing authority (argon2id + bcrypt verify-fallback).
 import { hashPassword, verifyPassword } from './domains/identity/password.util.js';
 import mongoose    from 'mongoose';
-import jwt         from 'jsonwebtoken';
 import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
 // F-3 (2026-07-10): Redis-shared counters with per-instance fallback.
 import { createRateLimitStore } from './middleware/redisRateLimitStore.js';
@@ -20,7 +19,7 @@ const registerLimiter = rateLimit({
   keyGenerator: (req) => ipKeyGenerator(req.ip), // AQ-6: IPv6-safe key (v8)
 });
 
-// JWT secret + expiry are owned by jwt.util.js (imported above); importing it
+// PASETO secret + expiry are owned by paseto.util.js (imported above); importing it
 // already fail-fasts on a missing secret, so no local re-declaration is needed.
 
 // httpOnly cookie options — secure in production, lax in dev
@@ -220,7 +219,7 @@ router.post('/logout', async (req, res) => {
     if (token) {
       try {
         const TokenBlacklist = mongoose.model('TokenBlacklist');
-        const decoded = jwt.decode(token);
+        const decoded = decodeTokenClaims(token);
         const exp = decoded?.exp ? new Date(decoded.exp * 1000) : new Date(Date.now() + 7 * 86400000);
         await TokenBlacklist.create({ token, expiresAt: exp }).catch(() => {});
       } catch { /* ignore */ }

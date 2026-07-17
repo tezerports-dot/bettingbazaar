@@ -105,7 +105,7 @@ const GamePage: React.FC = () => {
   const showMerged = gameState === GameState.MERGED || gameState === GameState.CLOSED;
 
   return (
-    <div className={`h-full w-full flex flex-col bg-gradient-to-b from-[#0B0E14] to-[#121826] relative ${isGhostMode ? 'border-4 border-purple-900/50' : ''}`}>
+    <div className={`casino-screen-layout bg-gradient-to-b from-[#0B0E14] to-[#121826] relative ${isGhostMode ? 'border-4 border-purple-900/50' : ''}`}>
       <Header onAuthRequired={() => setShowAuthModal(true)} />
       <GameCategoryStrip />
 
@@ -123,7 +123,11 @@ const GamePage: React.FC = () => {
         <LivePoolStats showMerged={showMerged} />
       </div>
 
-      <BettingCard onPlaceBet={handlePlaceBet} selectedAmount={betAmount} isMerged={showMerged} />
+      <main className="casino-main-stage">
+        <div className="game-viewport-container">
+          <BettingCard onPlaceBet={handlePlaceBet} selectedAmount={betAmount} isMerged={showMerged} />
+        </div>
+      </main>
 
       {/* -- RESULT STRIP + expandable mini results box (ResultsPanel) -- */}
       <ResultsPanel />

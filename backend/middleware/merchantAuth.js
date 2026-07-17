@@ -5,7 +5,7 @@
  * ═══════════════════════════════════════════════════════════════════════
  * 
  * Verifies:
- * 1. Valid JWT token exists
+ * 1. Valid PASETO token exists
  * 2. User has merchant role
  * 3. Merchant account is active
  * 4. Merchant is not suspended/blocked
@@ -17,7 +17,7 @@
  * @module merchantAuth
  */
 
-// AQ-2: verify via the single JWT authority (HS256 pinned, iss/aud stamped).
+// AQ-2: verify via the single PASETO authority (Ed25519 signature + iss/aud stamped).
 import { verifyJwt } from '../domains/identity/jwt.util.js';
 import { isTokenRevoked } from '../domains/identity/auth.middleware.js';
 import mongoose from 'mongoose';

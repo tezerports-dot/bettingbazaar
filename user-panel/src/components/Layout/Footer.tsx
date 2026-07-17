@@ -56,7 +56,7 @@ const Footer: React.FC = () => {
   const nav = (keys.length >= 2 ? keys : DEFAULT_KEYS).map(k => ({ key: k, ...PAGE_CATALOG[k] }));
 
   return (
-    <div className="flex-none relative z-40" style={{ background:"#0D1120", borderTop:"1px solid rgba(212,175,55,0.18)" }}>
+    <div className="mobile-sticky-footer flex-none relative z-40" style={{ background:"#0D1120", borderTop:"1px solid rgba(212,175,55,0.18)" }}>
       <div style={{ height:"1px", background:"linear-gradient(90deg,transparent,rgba(212,175,55,0.6) 38.2%,rgba(245,199,122,0.8) 61.8%,transparent)" }} />
 
       {}

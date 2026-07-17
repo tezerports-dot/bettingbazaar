@@ -399,13 +399,36 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     // const/let are not hoisted like function declarations. Registering them with
     
 
+    const pendingBetPlaced = new Map<CycleType, LiveStats>();
+    let betPlacedFlushTimer: number | null = null;
+
+    const flushBetPlaced = () => {
+      const updates = Array.from(pendingBetPlaced.entries());
+      pendingBetPlaced.clear();
+      betPlacedFlushTimer = null;
+      if (!updates.length) return;
+      setCycles(prev => {
+        const next = { ...prev };
+        for (const [ct, stats] of updates) {
+          next[ct] = { ...next[ct], totalDelhi: stats.totalDelhi, totalBombay: stats.totalBombay };
+          liveStatsRef.current[ct] = stats;
+        }
+        return next;
+      });
+      for (const [ct] of updates) {
+        subscribersRef.current.forEach(sub => { if (sub.type === ct) sub.cb(liveStatsRef.current[ct]); });
+      }
+    };
+
     const handleBetPlaced = (data: any) => {
       const ct = data.cycleType === '30_MIN' ? CycleType.THIRTY_MIN : CycleType.FULL_DAY;
-      const totalDelhi  = data.newTotalDelhi  || 0;
-      const totalBombay = data.newTotalBombay || 0;
-      setCycles(prev => ({ ...prev, [ct]: { ...prev[ct], totalDelhi, totalBombay } }));
-      liveStatsRef.current[ct] = { totalDelhi, totalBombay };
-      subscribersRef.current.forEach(sub => { if (sub.type === ct) sub.cb(liveStatsRef.current[ct]); });
+      pendingBetPlaced.set(ct, {
+        totalDelhi:  data.newTotalDelhi  || 0,
+        totalBombay: data.newTotalBombay || 0,
+      });
+      if (betPlacedFlushTimer == null) {
+        betPlacedFlushTimer = window.setTimeout(flushBetPlaced, 120);
+      }
     };
 
     const handleNewCycle = (data: any) => {
@@ -569,9 +592,10 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
 
     
     if (!socket) return () => {
+      if (betPlacedFlushTimer != null) window.clearTimeout(betPlacedFlushTimer);
       unsubSSESnapshot(); unsubSSEBetPlaced(); unsubSSENewCycle();
       unsubSSEResult(); unsubSSEPhase(); unsubSSEFireworks();
-      unsubSSECelebration(); unsubSSEBranding();
+      unsubSSECelebration(); unsubSSEBranding(); unsubSSESysConfig();
     };
 
     // WS: private per-user events + public fallback
@@ -591,6 +615,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     socket.on('system_config',       handleSystemConfig);
 
     return () => {
+      if (betPlacedFlushTimer != null) window.clearTimeout(betPlacedFlushTimer);
       unsubSSESnapshot(); unsubSSEBetPlaced(); unsubSSENewCycle();
       unsubSSEResult(); unsubSSEPhase(); unsubSSEFireworks();
       unsubSSECelebration(); unsubSSEBranding(); unsubSSESysConfig();
