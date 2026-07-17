@@ -592,3 +592,61 @@ Admin and merchant tables need column visibility, sortable columns where meaning
 - API mounting and realtime: `backend/server.js`, `backend/routes/sse.routes.js`.
 - API route contracts: all `backend/**/*.routes.js` and `backend/routes.js` entries listed in Section 8.
 - Brand assets: `backend/app-assets/logo.png`, `backend/app-assets/logo-header.png`.
+
+---
+
+## 12. Premium Operations & Experience Layer (mandatory for all new frames)
+
+### Global command palette and search
+Every shell exposes **⌘K / Ctrl+K** plus a visible Search button. The palette searches pages, users, orders, transactions, games, merchants, settings, reports, and recent/favorite locations. It includes instant results, recent searches, saved searches, suggestions, keyboard arrows, Enter to open, Escape to close, and a personalized no-results recovery state. Admin operators must be able to open any permitted operational page without menu navigation.
+
+### Notification center
+Every shell has a persistent notification inbox with unread badge, `Today`, `Yesterday`, `This week`, and `Support` filters, **Mark all read**, deep-link CTA, and a read/unread visual state. Player notifications cover winnings, deposits, withdrawals and promotions; merchant notifications cover new orders, timeouts and disputes; admin notifications cover failures, merchant offline, queue spikes and alert thresholds.
+
+### Realtime contract
+Replace a generic Live label with one of: `🟢 Connected · Updated 2 sec ago · 42ms`, `🟠 Reconnecting… · Last update 1m ago`, or `🔴 Offline · Data may be delayed`. Display it near every live operational surface. Use latency only as an informational indicator; do not imply a failed financial action solely from high latency.
+
+### Search, loading, empty, and error recovery
+- Large collections require instant search, suggestion/recent/saved search choices, keyboard navigation, and a designed no-results state.
+- Never use a spinner as the primary page-loading state. Use layout-matching skeletons, shimmer cards, placeholder tables, and chart shells.
+- Every empty state must include illustration, headline, explanatory sentence, and a primary CTA. Example Wallet: **“No transactions yet”** / “Deposit funds to start playing.” / **Deposit**.
+- Every error must state what happened, likely reason, whether retry is appropriate, whether to wait, and when to contact support. Preserve safe form input on recoverable errors.
+
+### Information architecture normalization
+| Current wording | Product navigation wording |
+|---|---|
+| GamePage | Home / Live Game |
+| History + My Bets + Results | Activity (tabs: Transactions, Bets, Results) |
+| Promo | Promotions |
+| Support + FAQ + Rules | Help Center |
+| Wallet + History | Wallet (Transactions tab) |
+| Chat Management | Support Operations |
+| Winners Manager | Leaderboard Manager |
+| Merchant Platform | Merchant Insights |
+| Payment Control Center | Payments Hub |
+
+Keep legacy paths for compatibility; normalize labels and group related destinations in navigation.
+
+### Financial and account experience
+Wallet must separately show **Available balance**, **Pending balance**, **Locked funds**, **Bonus balance**, **Withdrawal eligibility**, deposit order progress, and a transaction timeline. Profiles expose an Activity Timeline (login, deposit, withdrawal, bet, KYC, dispute and messages). Player session controls show current device, other devices, and Logout Other Sessions. Merchant/Admin sessions show recent login time, masked IP, browser, country, device and terminate action.
+
+### Player progression and premium content
+VIP is a premium experience with tier-progress animation that respects reduced motion, benefit comparison, rewards, upcoming unlocks, VIP history, and exclusive events. Referral shows the funnel **Invited → Registered → Deposited → Playing → Commission earned**. Optional gamification includes daily streak, achievement badges, mission/season progress and personal statistics; it must never obscure a wager, balance, risk notice, or financial workflow.
+
+### Merchant mobile workflow
+At mobile widths the merchant console prioritizes a sticky, thumb-friendly action bar: **Accept**, **Reject**, **Chat**, **Upload proof**, **Complete**. Order cards prioritize countdown/timeout risk, amount, state, and assigned player context. Include pinned orders, notes, priority timers, quick approve/reject with confirmation, bulk-safe actions, and documented keyboard shortcuts on desktop.
+
+### Admin productivity and charts
+Admin supports command palette, favorites, recent pages, saved dashboards, custom/resizable widgets, quick filters, split-view list/detail workflows, bulk editing, and saved searches. Specify chart usage: area for balance/revenue trends; bars for category comparisons; lines for time-series; heatmaps for operational density; donut for state distribution; leaderboard for rank; realtime sparkline for live metrics; calendar heatmap for daily behavior.
+
+### Activity, order, and chat timeline patterns
+Order tracking follows **Created → Assigned → Merchant Accepted → Proof Uploaded → Confirmed → Completed**, with timestamps and exceptions. Chat requires typing indicator, delivery/read receipts, grouped messages, attachment/image preview, upload progress, quick replies, pinned notices, and an immutable order header. All profile views use the same activity timeline grammar.
+
+### Responsive, accessibility, and brand rules
+- Desktop: persistent sidebars, dense tables, inline filters, detailed charts. Tablet: rail/sidebar collapse, 2-column cards, simplified charts. Mobile: tables become cards, filters move to drawers, sticky bottom actions appear for high-frequency tasks, and no critical CTA is below a browser/WebView safe area.
+- Test the semantic color set in color-blind, high-contrast, large-text, reduced-motion, and reduced-transparency modes. Publish shortcut documentation in every command palette/help surface.
+- Design-system documentation must include component anatomy, Do/Don’t examples, spacing rules, animation rules, elevation/border/blur usage, voice and tone, icon guidelines, and illustration guidelines.
+- Brand identity extends beyond logo/color: use geometric deep-navy background patterns, restrained 3D/glass objects, clear motion hierarchy, inclusive non-stock photography guidance, and optional mascot usage only in promotional/onboarding contexts.
+
+### Onboarding checklists
+Player: Welcome → Verify → Deposit → Place first bet → Claim bonus. Merchant: Complete profile → Upload QR → Go online → Accept first order. Admin: guided setup checklist for branding, payment configuration, merchant capacity, roles, and monitoring. Each checklist is dismissible, resumable, and does not block regulated actions.
