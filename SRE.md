@@ -88,7 +88,7 @@ design). Restore Redis; no data loss (money is in Mongo/PG).
   + `PG_POOL_SIZE` (10). Keep `instances × pool ≤` the DB tier's connection
   budget (Atlas/managed-PG cap). This is the first ceiling hit when scaling out.
 - **Cadence:** review headroom monthly and before any campaign/traffic event;
-  load-test (`PRODUCTION_READINESS.md` §A4) before raising the instance ceiling.
+  load-test before raising the instance ceiling.
 
 ## 6. Rollback
 

@@ -3,8 +3,7 @@
  * DepositPolicy.tsx — Business Policy Platform (BBEPS Phase 006).
  *
  * Admin UI for backend/domains/configuration/depositPolicy.{model,service,admin.routes}.js.
- * This is the first page in what FUTURE_CAPABILITIES.md calls the "Business
- * Policy Platform" — deposit/reserve split and reserve usage rules are
+ * This is the first page in the Business Policy Platform — deposit/reserve split and reserve usage rules are
  * versioned together as ONE policy per currency because they describe a
  * single coherent business decision, not independent settings. This page
  * governs ONLY the deposit/reserve split and reserve usage rules — merchant

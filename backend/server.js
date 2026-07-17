@@ -211,6 +211,28 @@ app.use('/api/', owaspFilter);
 // ─── STATIC FILES ─────────────────────────────────────────────────────────────
 const appAssetsDir = path.join(__dirname, 'app-assets');
 fs.mkdirSync(appAssetsDir, { recursive: true });
+const isSafeAppAssetSlot = (slot) => /^[a-z0-9][a-z0-9-]*\.png$/.test(slot);
+// Slots retain .png names for stable PWA URLs, but uploads may be JPEG, WebP,
+// or GIF. Serve the stored, byte-detected AppAsset content type rather than
+// allowing the filename extension to select an incorrect MIME type.
+app.get('/app-assets/:name', async (req, res, next) => {
+  try {
+    if (!isSafeAppAssetSlot(req.params.name)) return res.sendStatus(404);
+    const asset = await mongoose.model('AppAsset').findOne({
+      slot: req.params.name,
+      storage: 'LOCAL',
+    }).select('contentType').lean();
+    const filePath = path.join(appAssetsDir, req.params.name);
+    if (!asset || !asset.contentType) return next();
+    res.type(asset.contentType);
+    return res.sendFile(filePath, (error) => {
+      if (error?.code === 'ENOENT') return next();
+      if (error) return next(error);
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
 app.use('/app-assets', express.static(appAssetsDir, { maxAge: '1h' }));
 // Item 51: local-disk StorageProvider serves from backend/storage/ (S3 deploys
 // never write here — the S3 provider returns CDN/S3 URLs instead).

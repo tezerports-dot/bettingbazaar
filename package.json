@@ -20,6 +20,7 @@
     "check:deps": "depcruise backend --config .dependency-cruiser.cjs",
     "reconcile:pg": "node backend/postgres/reconcile.js",
     "sync:indexes": "node backend/scripts/sync-indexes.mjs",
+    "migrate:aadhaar-hashes": "node backend/scripts/migrate-aadhaar-hashes.js",
     "pg:migrate:partition": "node backend/postgres/migratePartitions.js",
     "verify:capabilities": "node scripts/verify-capabilities.mjs"
   },

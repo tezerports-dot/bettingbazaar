@@ -141,7 +141,7 @@ Use a consistent chip system: `OPEN / ACTIVE` green; `PENDING / QUEUED` amber; `
 - **Reject order:** required reason select + optional note; confirm.
 - **Red-flag / dispute:** severity, reason, evidence attachments, confirmation; visibly explain downstream review.
 - **Order chat:** immutable header with order ID, amount, status and countdown; message composer; image upload; attachment/error/loading states; no payment credentials in public transcript.
-- **Bulk payout:** intentionally hidden from default merchant navigation until `FEATURE_MERCHANT_BULK_PAYOUTS` is approved by Payments Operations. Backend access is currently enforced by `merchantAuth` on `/api/merchant/bulk-payouts`, `/export`, and `/mark-paid`; enabling visible navigation must also add an `isEnabled('MERCHANT_BULK_PAYOUTS')` gate before exposure. If enabled, design a governed read/export/mark-paid workspace with audit history, permission denial, empty/loading/error states, and explicit payout confirmation.
+- **Bulk payout:** intentionally hidden from default merchant navigation until `FEATURE_MERCHANT_BULK_PAYOUTS` is approved by Payments Operations. Backend access on `/api/merchant/bulk-payouts`, `/export`, and `/mark-paid` requires both `merchantAuth` and `isEnabled('MERCHANT_BULK_PAYOUTS')`; direct API calls are denied while the rollout is disabled. If enabled, design a governed read/export/mark-paid workspace with audit history, permission denial, empty/loading/error states, and explicit payout confirmation.
 
 ---
 
@@ -236,7 +236,7 @@ Show a subtle “Live” state, a reconnecting banner after disconnect, and a no
 | VIP admin configuration | Admin → Promotions → VIP configuration | Designed tier config, benefit preview, eligibility simulation, save confirmation, audit note, and rollback states. |
 | Withdrawal request approvals | backend exists; admin payment control should surface it | Verify Payment Control Center includes request detail, approve/reject reason, receipt. |
 | UTR registry | UTR page/navigation intentionally removed | Do not restore without product decision; retain backend capability as an internal audit/anti-fraud integration candidate. |
-| Merchant bulk payouts | Hidden from merchant default navigation unless `FEATURE_MERCHANT_BULK_PAYOUTS` is enabled | Flag owner: Payments Operations. Backend authorization source: `merchantAuth` on `/api/merchant/bulk-payouts`, `/api/merchant/bulk-payouts/export`, and `/api/merchant/bulk-payouts/mark-paid`; UI exposure must add `isEnabled('MERCHANT_BULK_PAYOUTS')` gating before navigation, preserve permission denial, and record mark-paid audit context. |
+| Merchant bulk payouts | Hidden from merchant default navigation unless `FEATURE_MERCHANT_BULK_PAYOUTS` is enabled | Flag owner: Payments Operations. Backend authorization requires `merchantAuth` + `isEnabled('MERCHANT_BULK_PAYOUTS')` on `/api/merchant/bulk-payouts`, `/api/merchant/bulk-payouts/export`, and `/api/merchant/bulk-payouts/mark-paid`; UI exposure must use the same gate, preserve permission denial, and record mark-paid audit context. |
 | Merchant token orders / funding | Capability-flagged merchant/admin funding views | Use `FEATURE_MERCHANT_TOKEN_FUNDING`, owned by Treasury Operations; backend authority is `authenticate` + `isAdmin` for admin funding/token-order approvals and `merchantAuth` for merchant token-order requests. Design governed views for active deployments; otherwise hide behind the flag with denied-state copy and no dead navigation. |
 | Operational outbox | Admin-only reconciliation monitor | Designed internal monitor for pending/failed operational writes, retry status, audit trail, and manual recovery permission gates; never exposed to player/merchant. |
 | Reports exports | admin Reports exists | Specify report generation, CSV download progress, no-data state, and permission gate. |
@@ -417,9 +417,7 @@ Show a subtle “Live” state, a reconnecting banner after disconnect, and a no
 - `backend/domains/merchant/merchant.routes.js:826` — `router.get('/chat/:id', merchantAuth, async (req, res) => {`
 - `backend/domains/merchant/merchant.routes.js:873` — `router.post('/chat/:id', merchantAuth, async (req, res) => {`
 - `backend/domains/merchant/merchant.routes.js:946` — `router.post('/orders/:id/red-flag', merchantAuth, async (req, res) => {`
-- `backend/domains/merchant/merchant.routes.js:1011` — `router.get('/bulk-payouts', merchantAuth, async (req, res) => {`
-- `backend/domains/merchant/merchant.routes.js:1055` — `router.get('/bulk-payouts/export', merchantAuth, async (req, res) => {`
-- `backend/domains/merchant/merchant.routes.js:1119` — `router.post('/bulk-payouts/mark-paid', merchantAuth, async (req, res) => {`
+- `backend/domains/merchant/merchant.routes.js` — bulk-payout routes require `merchantAuth` + `requireBulkPayoutsEnabled`.
 - `backend/domains/merchant/merchant.routes.js:1171` — `router.get('/earnings', merchantAuth, async (req, res) => {`
 - `backend/domains/merchant/merchant.routes.js:1223` — `router.get('/earnings/weekly', merchantAuth, async (req, res) => {`
 - `backend/domains/merchant/merchant.routes.js:1275` — `router.get('/stats', merchantAuth, async (req, res) => {`

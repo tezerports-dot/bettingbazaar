@@ -119,7 +119,7 @@ export function computePayoutFeeMinor(tokenAmount, payoutFeePercent) {
  * intended 9.7/0.3 of a ₹10 bet to 10/0, and (c) could over-deduct — a ₹50
  * bet rounded to 49 + 2 = ₹51 taken for a ₹50 stake.
  *
- * Rules implemented (owner spec §6, PROJECT_HANDOFF.md):
+ * Rules implemented (owner specification §6):
  *   - reservePercent of the stake comes from reserveBalance; the remainder
  *     ("main") from depositBalance first, then winningsBalance as overflow.
  *   - Fallbacks: reserve short → shortfall shifts to main (Spec 5.2C);

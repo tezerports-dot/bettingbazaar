@@ -36,7 +36,7 @@ behind your DNS. On k8s it's first-class with these manifests:
 `docker compose -f deploy/docker-compose.yml up` stands up app + MongoDB
 (single-node replica set, required for transactions) + Redis from scratch —
 the version-controlled, reproducible environment definition. DECISION (recorded
-in PLAN_STATUS_AUDIT.md): full Terraform/Pulumi only becomes worthwhile when
+in the deployment strategy): full Terraform/Pulumi only becomes worthwhile when
 leaving Railway or provisioning multiple environments; `railway.json` +
 this compose file + the k8s manifests cover reproducibility until then.
 

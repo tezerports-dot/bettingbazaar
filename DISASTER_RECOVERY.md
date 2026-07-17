@@ -41,7 +41,7 @@ this once now, then quarterly.
   in the window; restores happen from the Atlas UI to a new cluster, then point
   `MONGODB_URI` at it (§2 steps 1+4 still apply). In-repo daily dumps remain
   the provider-independent floor.
-- **Postgres (once the hybrid money DB from PLAN_STATUS_AUDIT.md lands):**
+- **Postgres (once the hybrid money DB lands):**
   native WAL archiving gives PITR for the ledger — prioritized there because
   restoring MONEY tables to the exact moment before an incident matters most.
 
@@ -67,7 +67,7 @@ a low-traffic window, because flapping between origins is worse than running
 on the standby. health-watch announces recovery but does not act.
 
 ## 5. Secret compromise
-Rotate per PRODUCTION_READINESS.md §A1 (JWT_SECRET rotation logs everyone out —
+Rotate per the deployment secret-rotation procedure (JWT_SECRET rotation logs everyone out —
 use a maintenance window). Alert webhook + METRICS_TOKEN rotate from System
 Settings / env without redeploy.
 

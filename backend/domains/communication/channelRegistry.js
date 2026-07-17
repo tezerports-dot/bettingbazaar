@@ -102,7 +102,7 @@ const inactive = (code, label) => ({
 //   SMS_BODY_TEMPLATE optional JSON body template with {mobile}/{message}
 //                     placeholders, e.g. {"to":"{mobile}","text":"{message}"}
 // DLT template registration (India) is a legal prerequisite — owner action,
-// documented in PRODUCTION_READINESS.md §B2. Unset SMS_API_URL = declared
+// documented in the deployment configuration. Unset SMS_API_URL = declared
 // channel, inactive, exactly as before.
 function smsConfigured() { return !!process.env.SMS_API_URL; }
 
