@@ -47,7 +47,7 @@ export interface User {
   rating?: number;
   totalOrders?: number;
   realName?: string;
-  panNumber?: string;
+  aadhaarNumber?: string;
   kycDocumentUrl?: string;
   bankDetails?: BankDetails;
   status?: string;

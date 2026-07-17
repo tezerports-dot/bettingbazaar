@@ -41,8 +41,13 @@ export function csv(value) {
   return String(value || '').split(',').map((entry) => entry.trim()).filter(Boolean);
 }
 
-function isOrigin(value) {
-  try { return new URL(value).origin === value; } catch { return false; }
+function isOrigin(value, { requireHttps = false } = {}) {
+  try {
+    const parsed = new URL(value);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+    if (requireHttps && parsed.protocol !== 'https:') return false;
+    return parsed.origin === value;
+  } catch { return false; }
 }
 
 /**
@@ -55,7 +60,7 @@ export function validateEnv(env = process.env, isProd = env.NODE_ENV === 'produc
   const missing = REQUIRED.filter(([k]) => !env[k] || String(env[k]).trim() === '').map(([k]) => k);
   const invalidOrigins = ['PUBLIC_APP_ORIGIN', 'PUBLIC_APP_ALLOWED_ORIGINS'].filter((key) => {
     const origins = csv(env[key]);
-    return env[key] && (!origins.length || !origins.every(isOrigin));
+    return env[key] && (!origins.length || !origins.every((origin) => isOrigin(origin, { requireHttps: isProd })));
   });
   const advisedMissing = ADVISED.filter(([k]) => !env[k] || String(env[k]).trim() === '').map(([k]) => k);
 

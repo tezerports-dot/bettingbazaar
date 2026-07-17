@@ -10,11 +10,23 @@ function keyPart(value) {
   return String(value || '').trim().slice(0, 128) || 'unknown';
 }
 
-function memoryAllow(k, { now, windowMs, max }) {
-  const ttlMs = Math.min(windowMs, MEMORY_BUCKET_MAX_TTL_MS);
+let nextMemorySweepAt = 0;
+const MEMORY_SWEEP_INTERVAL_MS = 30_000;
+const MEMORY_SWEEP_MAX_ENTRIES = 250;
+
+function sweepExpiredBuckets(now, ttlMs) {
+  if (now < nextMemorySweepAt) return;
+  nextMemorySweepAt = now + MEMORY_SWEEP_INTERVAL_MS;
+  let scanned = 0;
   for (const [key, bucket] of buckets) {
     if (now - bucket.lastAccess >= ttlMs) buckets.delete(key);
+    if (++scanned >= MEMORY_SWEEP_MAX_ENTRIES) break;
   }
+}
+
+function memoryAllow(k, { now, windowMs, max }) {
+  const ttlMs = Math.min(windowMs, MEMORY_BUCKET_MAX_TTL_MS);
+  sweepExpiredBuckets(now, ttlMs);
 
   const existing = buckets.get(k);
   if (existing) buckets.delete(k); // refresh this key's LRU recency on access

@@ -6,7 +6,6 @@ before you can **withdraw** funds.
 ## What you submit
 
 - **Aadhaar**: the name as printed on your Aadhaar and your Aadhaar number.
-- **PAN**: the name as printed on your PAN and your PAN number.
 - An **ID proof image** and a **photo**, as prompted in the app.
 
 Enter details exactly as they appear on the documents. Mismatched names are the
@@ -27,5 +26,5 @@ most common reason a submission is rejected.
   KYC identity.
 - KYC review is done by the platform's team; approval is not instant.
 
-Your KYC documents are handled as sensitive data. Never share your Aadhaar, PAN,
+Your KYC documents are handled as sensitive data. Never share your Aadhaar, Aadhaar,
 OTP, or password with anyone — support will never ask for your password or OTP.

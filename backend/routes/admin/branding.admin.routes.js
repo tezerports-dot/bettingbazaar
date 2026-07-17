@@ -28,9 +28,16 @@ const ASSET_SLOTS = {
 const appAssetsDir_r = path_node.join(path_node.dirname(new URL(import.meta.url).pathname), '../../app-assets');
 fs_node.mkdirSync(appAssetsDir_r, { recursive: true });
 
-// App-asset uploads accept only safe raster image types — never SVG (XSS via
-// CDN) or anything executable.
-const APP_ASSET_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+// App-asset uploads accept only safe raster image byte signatures — never SVG
+// (XSS via CDN) or anything executable. The declared data-URI type is not trusted.
+function detectAppAssetMime(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 4) return null;
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]))) return 'image/png';
+  if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) return 'image/jpeg';
+  if (buffer.length >= 12 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
+  if (buffer.length >= 6 && ['GIF87a', 'GIF89a'].includes(buffer.toString('ascii', 0, 6))) return 'image/gif';
+  return null;
+}
 
 // Append a cache-busting token so a re-uploaded slot (same URL) refreshes.
 function bust(url, ts) {
@@ -368,12 +375,12 @@ router.post('/app-assets/upload',
       if (!ASSET_SLOTS[slot]) return res.status(400).json({ success: false, message: `Unknown slot: ${slot}` });
       const match = data.match(/^data:(image\/[a-z+]+);base64,(.+)$/);
       if (!match) return res.status(400).json({ success: false, message: 'data must be a base64 data URI' });
-      const mime = match[1].toLowerCase();
-      if (!APP_ASSET_MIMES.has(mime)) {
-        return res.status(400).json({ success: false, message: 'Only PNG, JPEG, WebP or GIF images are allowed.' });
-      }
       const buffer = Buffer.from(match[2], 'base64');
       if (buffer.length > 5 * 1024 * 1024) return res.status(400).json({ success: false, message: 'Max 5 MB' });
+      const detectedContentType = detectAppAssetMime(buffer);
+      if (!detectedContentType) {
+        return res.status(400).json({ success: false, message: 'Only PNG, JPEG, WebP or GIF image bytes are allowed.' });
+      }
 
       const AppAsset = mongoose.model('AppAsset');
       let url, storage, fileKey = '';
@@ -381,7 +388,7 @@ router.post('/app-assets/upload',
       if (isS3Configured()) {
         // Deterministic key so the public URL stays stable across re-uploads.
         fileKey = `app-assets/${slot}`;
-        url     = await uploadBufferToS3(fileKey, buffer, mime);
+        url     = await uploadBufferToS3(fileKey, buffer, detectedContentType);
         storage = 'S3';
         // Best-effort: drop any stale local copy so GET doesn't prefer it.
         try { fs_node.unlinkSync(path_node.join(appAssetsDir_r, slot)); } catch { /* none */ }
@@ -395,7 +402,7 @@ router.post('/app-assets/upload',
       const now = new Date();
       await AppAsset.findOneAndUpdate(
         { slot },
-        { slot, url, storage, fileKey, size: buffer.length, contentType: mime, updatedAt: now, updatedBy: req.user._id },
+        { slot, url, storage, fileKey, size: buffer.length, contentType: detectedContentType, updatedAt: now, updatedBy: req.user._id },
         { upsert: true, new: true }
       );
 

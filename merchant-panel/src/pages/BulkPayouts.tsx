@@ -38,6 +38,7 @@ interface BulkOrder {
     bankName?: string;
   };
   userKycSnapshot?: {
+    aadhaar?: string;
     pan?: string;
     name?: string;
   };
@@ -126,7 +127,7 @@ const BulkPayouts: React.FC = () => {
       // Build CSV
       const headers = [
         'S.No', 'Order ID', 'Beneficiary Name', 'Account Number', 'IFSC Code',
-        'Bank Name', 'Amount (Rs.)', 'Tokens', 'PAN', 'Mobile', 'Remark', 'Status',
+        'Bank Name', 'Amount (Rs.)', 'Tokens', 'Aadhaar', 'Mobile', 'Remark', 'Status',
       ];
       const rows = data.rows.map((r: any) => [
         r.sNo,
@@ -137,7 +138,7 @@ const BulkPayouts: React.FC = () => {
         r.bankName,
         r.amount,
         r.tokenAmount,
-        r.panNumber,
+        r.aadhaarNumber,
         r.userMobile,
         r.remark,
         r.status,
@@ -342,8 +343,11 @@ const BulkPayouts: React.FC = () => {
                           <p className="font-medium text-gray-900">
                             {order.userBankDetails?.accountHolderName || order.userKycSnapshot?.name || '--'}
                           </p>
+                          {order.userKycSnapshot?.aadhaar && (
+                            <p className="text-xs text-gray-500 font-mono">Aadhaar: {order.userKycSnapshot.aadhaar}</p>
+                          )}
                           {order.userKycSnapshot?.pan && (
-                            <p className="text-xs text-gray-500 font-mono">{order.userKycSnapshot.pan}</p>
+                            <p className="text-xs text-gray-500 font-mono">PAN: {order.userKycSnapshot.pan}</p>
                           )}
                         </div>
                       </td>

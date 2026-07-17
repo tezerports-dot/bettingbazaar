@@ -480,7 +480,7 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         const isDeposit = order.type === 'DEPOSIT';
         const kyc  = order.userKycSnapshot  || {};
         const bank = order.userBankDetails  || {};
-        const kycLine = kyc.name ? `\n👤 User: ${kyc.name}  |  PAN: ${kyc.pan || 'N/A'}` : '';
+        const kycLine = kyc.name ? `\n👤 User: ${kyc.name}  |  ${kyc.aadhaar ? 'Aadhaar' : kyc.pan ? 'PAN' : 'ID'}: ${kyc.aadhaar || kyc.pan || 'N/A'}` : '';
 
         if (isDeposit) {
             await sendSystemMessage(oid,
@@ -1085,7 +1085,7 @@ router.get('/bulk-payouts/export', merchantAuth, async (req, res) => {
             bankName:           o.userBankDetails?.bankName || '',
             amount:             o.fiatAmount || 0,
             tokenAmount:        o.tokenAmount || 0,
-            panNumber:          o.userKycSnapshot?.pan || '',
+            aadhaarNumber:      o.userKycSnapshot?.aadhaar || o.userKycSnapshot?.pan || '',
             userMobile:         o.userPhone || '',
             remark:             `BB Token Sale ${o.orderId}`,
             status:             o.status,

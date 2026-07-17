@@ -68,7 +68,6 @@ export interface User {
   kycData?: {
     nameOnAadhaar: string;
     aadhaarNumber: string;
-    panNumber: string;
     idProofUrl: string;
     photoUrl: string;
     submittedAt: string;

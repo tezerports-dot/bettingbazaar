@@ -338,7 +338,6 @@ const App: React.FC = () => (
                     <Route path="/gift-code" element={<AppShell><Suspense fallback={<PageSkeleton />}><GiftCodePage /></Suspense></AppShell>} />
 
                     {/* Community */}
-                    <Route path="/chat"             element={<AppShell><Suspense fallback={<PageSkeleton />}>{}</Suspense></AppShell>} />
                     <Route path="/recover-account"  element={<AppShell><Suspense fallback={<PageSkeleton />}><AccountRecoveryPage /></Suspense></AppShell>} />
 
                     {/* Account */}

@@ -112,6 +112,14 @@ if (configuredMtlsValues.length > 0 && configuredMtlsValues.length < backendMtls
   throw new Error(`Incomplete backend mTLS configuration; set all of: ${backendMtlsConfig.join(', ')}`);
 }
 const backendMtlsEnabled = configuredMtlsValues.length === backendMtlsConfig.length;
+const caddyBackendMtlsConfig = ['CADDY_BACKEND_CLIENT_CERT', 'CADDY_BACKEND_CLIENT_KEY', 'BACKEND_MTLS_CA_CERT'];
+const configuredCaddyMtlsValues = caddyBackendMtlsConfig.filter((key) => process.env[key]);
+if (backendMtlsEnabled && configuredCaddyMtlsValues.length !== caddyBackendMtlsConfig.length) {
+  throw new Error(`Backend mTLS is enabled but Caddy upstream mTLS is incomplete; set all of: ${caddyBackendMtlsConfig.join(', ')}`);
+}
+if (!backendMtlsEnabled && configuredCaddyMtlsValues.length > 0) {
+  throw new Error('Caddy backend mTLS variables are set while backend mTLS is disabled; set BACKEND_MTLS_CERT, BACKEND_MTLS_KEY, and BACKEND_MTLS_CA or clear Caddy mTLS variables.');
+}
 const server = backendMtlsEnabled
   ? https.createServer({
       cert: fs.readFileSync(process.env.BACKEND_MTLS_CERT),

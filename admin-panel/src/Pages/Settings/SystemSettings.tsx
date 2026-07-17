@@ -603,7 +603,7 @@ export const SystemSettings: React.FC = () => {
               ['promo', '💡 Pro Tips'], ['profile', '👤 Profile'], ['wallet', '💰 Wallet'],
               ['invite', '🤝 Invite'], ['vip', '👑 VIP'], ['gift-code', '🎁 Gifts'],
               ['my-bets', '📜 My Bets'], ['history', '🕘 History'], ['rules', '📖 Rules'],
-              ['faq', '❓ FAQ'], ['support', '🛟 Support'], ['chat', '💬 Chat'],
+              ['faq', '❓ FAQ'], ['support', '🛟 Support'],
               ['casino', '🎰 Casino'], ['crash', '🚀 Crash'], ['sports', '⚽ Sports'],
             ];
             const current = formData.footerPages[i] || '';

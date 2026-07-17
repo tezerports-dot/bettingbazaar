@@ -46,7 +46,7 @@ const menuSections = [
   {
     title: 'COMMUNITY',
     items: [
-      { label: 'Public Chat',    icon: '💬', path: '/chat' },
+      { label: 'Support',        icon: '🛟', path: '/support' },
       { label: 'Pro Tips',       icon: '💡', path: '/promo' },
     ],
   },

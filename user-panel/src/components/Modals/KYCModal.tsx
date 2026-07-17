@@ -19,7 +19,7 @@ interface KYCModalProps {
 
 const KYCModal: React.FC<KYCModalProps> = ({ onClose }) => {
   const { user } = useGame();
-  const [kycData, setKycData] = useState({ nameOnPAN: '', panNumber: '' });
+  const [kycData, setKycData] = useState({ nameOnAadhaar: '', aadhaarNumber: '' });
   const [files, setFiles] = useState<{ idProof: File | null, photo: File | null }>({ idProof: null, photo: null });
   const [uploadProgress, setUploadProgress] = useState<'idle' | 'uploading' | 'done'>('idle');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -38,10 +38,10 @@ const KYCModal: React.FC<KYCModalProps> = ({ onClose }) => {
 
   const submitKYC = async () => {
     setError('');
-    if (!kycData.nameOnPAN.trim()) return setError('Please enter your name as on PAN card');
-    if (!kycData.panNumber.trim() || !/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(kycData.panNumber))
-      return setError('Please enter a valid PAN number (e.g. ABCDE1234F)');
-    if (!files.idProof) return setError('Please upload your PAN card image');
+    if (!kycData.nameOnAadhaar.trim()) return setError('Please enter your name as on Aadhaar card');
+    if (!kycData.aadhaarNumber.trim() || !/^\d{12}$/.test(kycData.aadhaarNumber))
+      return setError('Please enter a valid 12-digit Aadhaar number');
+    if (!files.idProof) return setError('Please upload your Aadhaar card image');
     if (!files.photo) return setError('Please upload your selfie');
     if (!user) return setError('Not logged in');
 
@@ -66,8 +66,8 @@ const KYCModal: React.FC<KYCModalProps> = ({ onClose }) => {
       setUploadProgress('done');
 
       await backend.uploadKYC(user.id, {
-        nameOnPAN: kycData.nameOnPAN.trim().toUpperCase(),
-        panNumber: kycData.panNumber.trim().toUpperCase(),
+        nameOnAadhaar: kycData.nameOnAadhaar.trim().toUpperCase(),
+        aadhaarNumber: kycData.aadhaarNumber.trim(),
         idProofKey: idProof.fileKey,
         idProofCdnUrl: idProof.cdnUrl,
         photoKey: photo.fileKey,
@@ -104,27 +104,27 @@ const KYCModal: React.FC<KYCModalProps> = ({ onClose }) => {
         </div>
 
         <div>
-          <label className="text-xs font-bold text-slate-400 uppercase">Name on PAN Card <span className="text-red-500">*</span></label>
+          <label className="text-xs font-bold text-slate-400 uppercase">Name on Aadhaar Card <span className="text-red-500">*</span></label>
           <input
             type="text"
             placeholder="e.g. RAHUL SHARMA"
-            value={kycData.nameOnPAN}
-            onChange={e => setKycData({ ...kycData, nameOnPAN: e.target.value.toUpperCase() })}
+            value={kycData.nameOnAadhaar}
+            onChange={e => setKycData({ ...kycData, nameOnAadhaar: e.target.value.toUpperCase() })}
             className={inp}
           />
         </div>
 
         <div>
-          <label className="text-xs font-bold text-slate-400 uppercase">PAN Number <span className="text-red-500">*</span></label>
+          <label className="text-xs font-bold text-slate-400 uppercase">Aadhaar Number <span className="text-red-500">*</span></label>
           <input
             type="text"
-            placeholder="ABCDE1234F"
-            maxLength={10}
-            value={kycData.panNumber}
+            placeholder="123456789012"
+            maxLength={12}
+            value={kycData.aadhaarNumber}
             onChange={e => {
-              // PAN format: 5 letters + 4 digits + 1 letter (e.g. ABCDE1234F)
-              const raw = e.target.value.replace(/[^A-Za-z0-9]/g, '').slice(0, 10).toUpperCase();
-              setKycData({ ...kycData, panNumber: raw });
+              // Aadhaar format: 12 digits
+              const raw = e.target.value.replace(/\D/g, '').slice(0, 12);
+              setKycData({ ...kycData, aadhaarNumber: raw });
             }}
             className={`${inp} font-mono tracking-widest`}
           />
@@ -136,7 +136,7 @@ const KYCModal: React.FC<KYCModalProps> = ({ onClose }) => {
             <input type="file" className="hidden" accept="image/*,.pdf" onChange={(e) => handleFileChange('idProof', e)} />
             <span className="text-2xl block mb-1">{files.idProof ? '✅' : '📄'}</span>
             <span className={`text-[10px] font-bold uppercase block ${files.idProof ? 'text-green-400' : 'text-slate-400'}`}>
-              {files.idProof ? files.idProof.name.substring(0, 14) + '…' : 'PAN Card Front'}
+              {files.idProof ? files.idProof.name.substring(0, 14) + '…' : 'Aadhaar Card Front'}
             </span>
             <span className="text-[9px] text-slate-600 block mt-0.5">JPG / PNG / PDF</span>
           </label>
@@ -172,7 +172,7 @@ const KYCModal: React.FC<KYCModalProps> = ({ onClose }) => {
 
         <button
           onClick={submitKYC}
-          disabled={isProcessing || !files.idProof || !files.photo || !kycData.nameOnPAN || !kycData.panNumber}
+          disabled={isProcessing || !files.idProof || !files.photo || !kycData.nameOnAadhaar || !kycData.aadhaarNumber}
           className="w-full bg-[#D4AF37] hover:bg-[#B8860B] text-black font-bold py-3 rounded-xl transition-all disabled:opacity-50 active:scale-95 shadow-lg mt-2"
         >
           {isProcessing ? 'Uploading & Submitting…' : 'Submit Verification'}

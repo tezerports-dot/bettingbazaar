@@ -48,7 +48,6 @@ export interface User {
   kycData?: {
     nameOnAadhaar: string;
     aadhaarNumber: string;
-    panNumber?: string;
     idProofUrl: string;
     photoUrl: string;
     submittedAt: number;
@@ -221,8 +220,8 @@ export interface ChatMessage {
 export interface KYCRecord {
   userId: string;
   fullName: string;
-  panNumber: string;
-  aadharNumber: string;
+  aadhaarNumber: string;
+  aadharNumber?: string; // deprecated typo alias, kept for migration compatibility
   status: 'PENDING' | 'VERIFIED' | 'REJECTED';
   submittedAt: number;
 }
