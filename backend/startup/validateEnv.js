@@ -29,11 +29,21 @@ const REQUIRED = [
   ['ALLOWED_ORIGINS',   'CORS allow-list; production must explicitly name trusted origins'],
   ['S3_BUCKET_NAME',    'durable asset/upload storage; local disk is not safe for production'],
   ['METRICS_TOKEN',     'protects Prometheus metrics from public disclosure'],
+  ['PUBLIC_APP_ORIGIN', 'official public application origin advertised to native clients'],
+  ['PUBLIC_APP_ALLOWED_ORIGINS', 'explicit public application origin allow-list advertised to native clients'],
 ];
 
 // Only meaningful in a real deployment; absence is a warning, not a failure.
 const ADVISED = [
 ];
+
+export function csv(value) {
+  return String(value || '').split(',').map((entry) => entry.trim()).filter(Boolean);
+}
+
+function isOrigin(value) {
+  try { return new URL(value).origin === value; } catch { return false; }
+}
 
 /**
  * @param {object} [env=process.env]
@@ -43,7 +53,13 @@ const ADVISED = [
  */
 export function validateEnv(env = process.env, isProd = env.NODE_ENV === 'production') {
   const missing = REQUIRED.filter(([k]) => !env[k] || String(env[k]).trim() === '').map(([k]) => k);
+  const invalidOrigins = ['PUBLIC_APP_ORIGIN', 'PUBLIC_APP_ALLOWED_ORIGINS'].filter((key) => {
+    const origins = csv(env[key]);
+    return env[key] && (!origins.length || !origins.every(isOrigin));
+  });
   const advisedMissing = ADVISED.filter(([k]) => !env[k] || String(env[k]).trim() === '').map(([k]) => k);
+
+  if (invalidOrigins.length && isProd) throw new Error(`FATAL: invalid public application origin configuration: ${invalidOrigins.join(', ')}`);
 
   if (missing.length) {
     const detail = REQUIRED.filter(([k]) => missing.includes(k))

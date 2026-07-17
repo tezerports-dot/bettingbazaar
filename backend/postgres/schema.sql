@@ -152,9 +152,8 @@ CREATE OR REPLACE TRIGGER merchant_wallet_ledger_append_only
 
 
 -- ── STRICT NUMERIC WALLET LEDGER (authoritative financial block) ───────────
--- These tables are intentionally NUMERIC(20,8), not FLOAT/REAL/DOUBLE. They
--- support satoshi-level precision and database-level non-negative constraints
--- for money paths that need arbitrary precision arithmetic at the SQL layer.
+-- Wallets use fixed NUMERIC(20,8); ledger values remain unconstrained NUMERIC
+-- so explicit constraints validate submitted precision before any typmod coercion.
 CREATE TABLE IF NOT EXISTS user_wallets (
   user_id    VARCHAR(255) PRIMARY KEY,
   balance    NUMERIC(20, 8) NOT NULL DEFAULT 0.00000000,
@@ -168,15 +167,59 @@ CREATE TABLE IF NOT EXISTS financial_ledger (
   id               BIGSERIAL PRIMARY KEY,
   user_id          VARCHAR(255) NOT NULL REFERENCES user_wallets(user_id),
   transaction_type VARCHAR(50) NOT NULL,
-  amount           NUMERIC(20, 8) NOT NULL,
-  running_balance  NUMERIC(20, 8) NOT NULL,
+  amount           NUMERIC NOT NULL,
+  running_balance  NUMERIC NOT NULL,
+  currency         VARCHAR(3) NOT NULL,
   reference_id     VARCHAR(255) UNIQUE NOT NULL,
   created_at       TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT financial_ledger_amount_non_zero CHECK (amount <> 0.00000000),
-  CONSTRAINT financial_ledger_running_balance_non_negative CHECK (running_balance >= 0.00000000),
-  CONSTRAINT financial_ledger_amount_scale CHECK (amount = ROUND(amount, 8)),
-  CONSTRAINT financial_ledger_running_balance_scale CHECK (running_balance = ROUND(running_balance, 8))
+  CONSTRAINT financial_ledger_amount_non_zero CHECK (amount <> 0),
+  CONSTRAINT financial_ledger_running_balance_non_negative CHECK (running_balance >= 0),
+  CONSTRAINT financial_ledger_amount_finite CHECK (isfinite(amount)),
+  CONSTRAINT financial_ledger_running_balance_finite CHECK (isfinite(running_balance)),
+  CONSTRAINT financial_ledger_amount_scale CHECK (scale(amount) <= 8),
+  CONSTRAINT financial_ledger_running_balance_scale CHECK (scale(running_balance) <= 8),
+  CONSTRAINT financial_ledger_amount_precision CHECK (abs(amount) < 1000000000000),
+  CONSTRAINT financial_ledger_running_balance_precision CHECK (abs(running_balance) < 1000000000000),
+  CONSTRAINT financial_ledger_currency_iso3 CHECK (currency ~ '^[A-Z]{3}$')
 );
+-- Migrate pre-existing deployments from NUMERIC(20,8) and backfill the ledger currency.
+ALTER TABLE financial_ledger ALTER COLUMN amount TYPE NUMERIC;
+ALTER TABLE financial_ledger ALTER COLUMN running_balance TYPE NUMERIC;
+ALTER TABLE financial_ledger ADD COLUMN IF NOT EXISTS currency VARCHAR(3);
+UPDATE financial_ledger SET currency = 'USD' WHERE currency IS NULL;
+ALTER TABLE financial_ledger ALTER COLUMN currency SET NOT NULL;
+ALTER TABLE financial_ledger DROP CONSTRAINT IF EXISTS financial_ledger_amount_non_zero;
+ALTER TABLE financial_ledger DROP CONSTRAINT IF EXISTS financial_ledger_running_balance_non_negative;
+ALTER TABLE financial_ledger DROP CONSTRAINT IF EXISTS financial_ledger_amount_scale;
+ALTER TABLE financial_ledger DROP CONSTRAINT IF EXISTS financial_ledger_running_balance_scale;
+ALTER TABLE financial_ledger DROP CONSTRAINT IF EXISTS financial_ledger_amount_finite;
+ALTER TABLE financial_ledger DROP CONSTRAINT IF EXISTS financial_ledger_running_balance_finite;
+ALTER TABLE financial_ledger DROP CONSTRAINT IF EXISTS financial_ledger_amount_precision;
+ALTER TABLE financial_ledger DROP CONSTRAINT IF EXISTS financial_ledger_running_balance_precision;
+ALTER TABLE financial_ledger DROP CONSTRAINT IF EXISTS financial_ledger_currency_iso3;
+ALTER TABLE financial_ledger ADD CONSTRAINT financial_ledger_amount_non_zero CHECK (amount <> 0);
+ALTER TABLE financial_ledger ADD CONSTRAINT financial_ledger_running_balance_non_negative CHECK (running_balance >= 0);
+ALTER TABLE financial_ledger ADD CONSTRAINT financial_ledger_amount_finite CHECK (isfinite(amount));
+ALTER TABLE financial_ledger ADD CONSTRAINT financial_ledger_running_balance_finite CHECK (isfinite(running_balance));
+ALTER TABLE financial_ledger ADD CONSTRAINT financial_ledger_amount_scale CHECK (scale(amount) <= 8);
+ALTER TABLE financial_ledger ADD CONSTRAINT financial_ledger_running_balance_scale CHECK (scale(running_balance) <= 8);
+ALTER TABLE financial_ledger ADD CONSTRAINT financial_ledger_amount_precision CHECK (abs(amount) < 1000000000000);
+ALTER TABLE financial_ledger ADD CONSTRAINT financial_ledger_running_balance_precision CHECK (abs(running_balance) < 1000000000000);
+ALTER TABLE financial_ledger ADD CONSTRAINT financial_ledger_currency_iso3 CHECK (currency ~ '^[A-Z]{3}$');
+
+CREATE TABLE IF NOT EXISTS operational_bet_outbox (
+  reference_id    VARCHAR(255) PRIMARY KEY REFERENCES financial_ledger(reference_id),
+  user_id         VARCHAR(255) NOT NULL,
+  amount          NUMERIC NOT NULL,
+  running_balance NUMERIC NOT NULL,
+  currency        VARCHAR(3) NOT NULL,
+  attempts        INTEGER NOT NULL DEFAULT 0,
+  last_error      TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  processed_at    TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS operational_bet_outbox_pending_idx ON operational_bet_outbox (created_at) WHERE processed_at IS NULL;
+
 CREATE INDEX IF NOT EXISTS financial_ledger_user_idx ON financial_ledger (user_id, created_at DESC);
 CREATE OR REPLACE TRIGGER financial_ledger_append_only
   BEFORE UPDATE OR DELETE ON financial_ledger FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();

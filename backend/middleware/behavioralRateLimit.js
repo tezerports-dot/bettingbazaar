@@ -3,19 +3,33 @@
 import { redisSlidingWindowAllow } from './redisRateLimitStore.js';
 
 const buckets = new Map();
+const MEMORY_BUCKET_MAX_ENTRIES = 10_000;
+const MEMORY_BUCKET_MAX_TTL_MS = 60 * 60 * 1000;
 
 function keyPart(value) {
   return String(value || '').trim().slice(0, 128) || 'unknown';
 }
 
 function memoryAllow(k, { now, windowMs, max }) {
-  const hits = (buckets.get(k) || []).filter((t) => now - t < windowMs);
+  const ttlMs = Math.min(windowMs, MEMORY_BUCKET_MAX_TTL_MS);
+  for (const [key, bucket] of buckets) {
+    if (now - bucket.lastAccess >= ttlMs) buckets.delete(key);
+  }
+
+  const existing = buckets.get(k);
+  if (existing) buckets.delete(k); // refresh this key's LRU recency on access
+  const hits = (existing?.hits || []).filter((t) => now - t < windowMs);
   if (hits.length >= max) {
-    buckets.set(k, hits);
+    buckets.set(k, { hits, lastAccess: now });
     return { allowed: false, retryAfter: Math.ceil((windowMs - (now - hits[0])) / 1000) };
   }
+  while (buckets.size >= MEMORY_BUCKET_MAX_ENTRIES) {
+    const oldestKey = buckets.keys().next().value;
+    if (oldestKey === undefined) break;
+    buckets.delete(oldestKey);
+  }
   hits.push(now);
-  buckets.set(k, hits);
+  buckets.set(k, { hits, lastAccess: now });
   return { allowed: true };
 }
 

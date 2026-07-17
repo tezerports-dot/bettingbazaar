@@ -111,7 +111,11 @@ export function decodeTokenClaims(token) {
   if (typeof token !== 'string' || !token.startsWith(HEADER)) return null;
   const decoded = unb64url(token.slice(HEADER.length));
   if (decoded.length <= 64) return null;
-  return JSON.parse(encodeUTF8(decoded.slice(0, decoded.length - 64)));
+  try {
+    return JSON.parse(encodeUTF8(decoded.slice(0, decoded.length - 64)));
+  } catch {
+    return null;
+  }
 }
 
 export const PASETO_PUBLIC_KEY = b64url(keyPair.publicKey);
