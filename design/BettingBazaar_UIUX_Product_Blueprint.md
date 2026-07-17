@@ -84,7 +84,7 @@ Use a consistent chip system: `OPEN / ACTIVE` green; `PENDING / QUEUED` amber; `
 | `#/invite` | `InvitePage` | referral code, share/copy, team, commissions, referral application status | `/api/referral/me`, `/team`, `/commissions`, `/apply` |
 | `#/vip` | `VIPPage` | current tier/progress, benefits, VIP configuration disclosure | `/api/vip/config`, `/api/vip/my`, `/api/bonuses/my` |
 | `#/gift-code` | `GiftCodePage` | code input, redeem CTA, success summary, redemption error | `POST /api/giftcode/redeem` |
-| `#/recover-account` | `AccountRecoveryPage` | masked PAN check with confirmation, generic anti-enumeration result, recovery request, status polling, safe recovery explanation; never log or retain raw PAN in client state beyond submission | `/api/auth/check-pan` must be unauthenticated but privacy-safe: strict rate limit, generic responses for match/no-match, no raw PAN logging/retention, masked PAN input confirmation; `/recover`, `/recover/status` follow the same anti-enumeration and rate-limit posture |
+| `#/recover-account` | `AccountRecoveryPage` | masked PAN check with confirmation, generic anti-enumeration result, recovery request, status polling, safe recovery explanation; raw PAN is POST-body only, never placed in URLs, browser storage, analytics, error telemetry, request metadata, or logs, and must be cleared from component state immediately after submission | `/api/auth/check-pan`, `/recover`, and `/recover/status` must be privacy-safe: strict rate limit, generic responses where applicable, masked PAN input confirmation, no raw PAN in URLs/storage/analytics/telemetry/metadata/server logs, and immediate PAN clearing after each submit |
 | `#/profile` | `ProfilePage` | profile fields, avatar upload, bank/UPI details, KYC CTA/status, password/session actions where supported | profile, KYC, bank, upload endpoints |
 | `#/history` | `HistoryPage` | payment/order timeline, filters, order detail, proof/chat/dispute links | `/api/payment/orders`, `/api/payment/order/:id`, status endpoints |
 | `#/my-bets` | `MyBetsPage` | bet list, cycle/side/amount/status filters, reference IDs | `GET /api/user/:userId/bets` |
@@ -94,7 +94,7 @@ Use a consistent chip system: `OPEN / ACTIVE` green; `PENDING / QUEUED` amber; `
 | `#/rules` | `RulesPage` | game/risk/responsible-gaming content, expandable sections | static/configured content |
 | `#/faq` | `FaqPage` | searchable accordion FAQ, support CTA | `/api/v1/content/faq` |
 | `#/support` | `SupportPage` | support links, AI support question flow, order support escalation | `/api/v1/content/support-links`, `/api/support/ask` |
-| `#/chat` | OrderChatPage | designed order-chat landing/drawer with order lookup, immutable order header, message timeline, payment-proof upload, upload progress/failure states, and safe empty state when no order is selected | user/merchant order-chat + upload contracts |
+| `#/chat` | OrderChatPage | designed order-chat landing/drawer with order lookup, immutable order header, attachment timeline, payment-proof upload, upload progress/failure states, and safe empty state when no order is selected; player free-text transcript read/send is **deferred** until backend exposes authenticated player chat read/send endpoints | Implemented player contract is attachment-only: `POST /api/user/chat/:orderId/upload-url` and `POST /api/user/chat/:orderId/confirm-upload`, both require `authenticate` and verify the authenticated user owns the order; merchant transcript/text uses `GET/POST /api/merchant/chat/:id` with `merchantAuth`; no implementable player transcript/message flow is promised until matching player endpoints exist |
 
 ### 3.3 Player modal specifications
 | Modal | Trigger | States / fields | Actions / API |
@@ -141,7 +141,7 @@ Use a consistent chip system: `OPEN / ACTIVE` green; `PENDING / QUEUED` amber; `
 - **Reject order:** required reason select + optional note; confirm.
 - **Red-flag / dispute:** severity, reason, evidence attachments, confirmation; visibly explain downstream review.
 - **Order chat:** immutable header with order ID, amount, status and countdown; message composer; image upload; attachment/error/loading states; no payment credentials in public transcript.
-- **Bulk payout:** intentionally hidden from default merchant navigation; if enabled by an admin-approved capability flag, design a governed read/export/mark-paid workspace with audit history, permission denial, empty/loading/error states, and explicit payout confirmation.
+- **Bulk payout:** intentionally hidden from default merchant navigation until `FEATURE_MERCHANT_BULK_PAYOUTS` is approved by Payments Operations. Backend access is currently enforced by `merchantAuth` on `/api/merchant/bulk-payouts`, `/export`, and `/mark-paid`; enabling visible navigation must also add an `isEnabled('MERCHANT_BULK_PAYOUTS')` gate before exposure. If enabled, design a governed read/export/mark-paid workspace with audit history, permission denial, empty/loading/error states, and explicit payout confirmation.
 
 ---
 
@@ -236,7 +236,8 @@ Show a subtle “Live” state, a reconnecting banner after disconnect, and a no
 | VIP admin configuration | Admin → Promotions → VIP configuration | Designed tier config, benefit preview, eligibility simulation, save confirmation, audit note, and rollback states. |
 | Withdrawal request approvals | backend exists; admin payment control should surface it | Verify Payment Control Center includes request detail, approve/reject reason, receipt. |
 | UTR registry | UTR page/navigation intentionally removed | Do not restore without product decision; retain backend capability as an internal audit/anti-fraud integration candidate. |
-| Merchant token orders / funding | Capability-flagged merchant/admin funding views | Designed governed views for active deployments; otherwise intentionally hidden behind capability flags with denied-state copy and no dead navigation. |
+| Merchant bulk payouts | Hidden from merchant default navigation unless `FEATURE_MERCHANT_BULK_PAYOUTS` is enabled | Flag owner: Payments Operations. Backend authorization source: `merchantAuth` on `/api/merchant/bulk-payouts`, `/api/merchant/bulk-payouts/export`, and `/api/merchant/bulk-payouts/mark-paid`; UI exposure must add `isEnabled('MERCHANT_BULK_PAYOUTS')` gating before navigation, preserve permission denial, and record mark-paid audit context. |
+| Merchant token orders / funding | Capability-flagged merchant/admin funding views | Use `FEATURE_MERCHANT_TOKEN_FUNDING`, owned by Treasury Operations; backend authority is `authenticate` + `isAdmin` for admin funding/token-order approvals and `merchantAuth` for merchant token-order requests. Design governed views for active deployments; otherwise hide behind the flag with denied-state copy and no dead navigation. |
 | Operational outbox | Admin-only reconciliation monitor | Designed internal monitor for pending/failed operational writes, retry status, audit trail, and manual recovery permission gates; never exposed to player/merchant. |
 | Reports exports | admin Reports exists | Specify report generation, CSV download progress, no-data state, and permission gate. |
 
@@ -339,7 +340,7 @@ Show a subtle “Live” state, a reconnecting banner after disconnect, and a no
 - `backend/routes/admin/branding.admin.routes.js:248` — `router.post('/branding/upload-url', authenticate, isAdmin, async (req, res) => {`
 - `backend/routes/admin/branding.admin.routes.js:275` — `router.post('/branding/confirm-upload', authenticate, isAdmin, async (req, res) => {`
 - `backend/routes/admin/branding.admin.routes.js:319` — `router.get('/app-assets', authenticate, isAdmin, async (req, res) => {`
-- `backend/routes/admin/branding.admin.routes.js:361` — `router.post('/app-assets/upload', authenticate, isAdmin, express.json({ limit: '6mb' }), async (req, res) => { ... })`; accepts `{ slot, data }`, requires admin authorization, validates known slots and PNG/JPEG/WebP/GIF data URIs, rejects missing/unknown/oversized assets with 400 responses, writes S3 when configured or LOCAL otherwise, upserts `AppAsset`, returns `{ success, slot, url, size, storage }`, and returns a generic 500 `Failed to save asset` on unexpected storage failures.
+- `backend/routes/admin/branding.admin.routes.js:361` — `router.post('/app-assets/upload', authenticate, isAdmin, express.json({ limit: '6mb' }), async (req, res) => { ... })`; accepts `{ slot, data }`, where `slot` must be one of `logo.png`, `logo-header.png`, `icon-192.png`, `icon-512.png`, `icon-apple-180.png`, `favicon-32.png`, or `splash.png`; `data` must match `data:(image/png|image/jpeg|image/webp|image/gif);base64,<payload>` per the route's `image/[a-z+]+` data-URI parser plus MIME allow-list; decoded `Buffer.from(payload, 'base64')` size must be <= 5,242,880 bytes (5 MiB). Requires admin authorization, rejects missing slot/data, unknown slots, malformed data URIs, disallowed MIME types, and oversized decoded assets with 400 responses, writes S3 when configured or LOCAL otherwise, upserts `AppAsset`, returns `{ success, slot, url, size, storage }`, and returns a generic 500 `Failed to save asset` on unexpected storage failures.
 - `backend/routes/admin/branding.admin.routes.js:410` — `router.delete('/app-assets/:name', authenticate, isAdmin, async (req, res) => {`
 - `backend/routes/admin/system.admin.routes.js:49` — `router.get('/transactions', authenticate, isAdminOrSubAdmin, async (req, res) => {`
 - `backend/routes/admin/system.admin.routes.js:88` — `router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) => {`
@@ -568,7 +569,7 @@ Admin and merchant tables need column visibility, sortable columns where meaning
 11. `10 Backend capability coverage decisions`
 
 ### Prototype links to build
-- Player: guest bet → login → wallet → deposit order → history; profile → KYC; invite → share; recovery with masked PAN confirmation, strict rate limits, generic anti-enumeration responses, and no raw PAN logging/retention.
+- Player: guest bet → login → wallet → deposit order → history; profile → KYC; invite → share; recovery with masked PAN confirmation, strict rate limits, generic anti-enumeration responses, no raw PAN in URLs/storage/analytics/telemetry/metadata/logs, and immediate PAN clearing after submit.
 - Merchant: login → online → accept order → chat → confirm/reject/red-flag → history.
 - Admin: login → queue assignment → merchant/order detail → dispute resolution; branding edit → panel preview; policy edit → review → audit.
 
