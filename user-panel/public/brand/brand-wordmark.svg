@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 190" role="img" aria-label="Betting-Bazaar.com">
+  <defs>
+    <linearGradient id="gold" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#fff6a8"/><stop offset="0.32" stop-color="#ffd448"/><stop offset="0.68" stop-color="#d99300"/><stop offset="1" stop-color="#7a4300"/></linearGradient>
+    <linearGradient id="silver" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="0.5" stop-color="#dce5f4"/><stop offset="1" stop-color="#69758a"/></linearGradient>
+    <linearGradient id="ribbon" x1="0" x2="1"><stop offset="0" stop-color="#08122c"/><stop offset="0.5" stop-color="#102d67"/><stop offset="1" stop-color="#050b1e"/></linearGradient>
+    <filter id="shadow" x="-8%" y="-35%" width="116%" height="170%"><feDropShadow dx="0" dy="8" stdDeviation="7" flood-color="#000" flood-opacity="0.65"/><feDropShadow dx="0" dy="0" stdDeviation="3" flood-color="#ffd45b" flood-opacity="0.35"/></filter>
+    <filter id="glow"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <rect width="1000" height="190" fill="none"/>
+  <g filter="url(#shadow)">
+    <path d="M28 84 C235 48 770 48 972 84 L946 144 C730 111 255 111 54 144 Z" fill="url(#ribbon)" stroke="#e6ad20" stroke-width="5"/>
+    <path d="M32 68 C255 27 748 27 966 68" fill="none" stroke="#ffd76a" stroke-width="8" stroke-linecap="round"/>
+    <path d="M45 154 C266 126 735 126 955 154" fill="none" stroke="#f4b218" stroke-width="9" stroke-linecap="round"/>
+  </g>
+  <g font-family="Impact, Haettenschweiler, 'Arial Black', sans-serif" font-weight="900" letter-spacing="-7" filter="url(#shadow)">
+    <text x="56" y="127" font-size="101" fill="#141414" stroke="#141414" stroke-width="10">BETTING-</text>
+    <text x="56" y="127" font-size="101" fill="url(#gold)" stroke="#fff1a0" stroke-width="1.5">BETTING-</text>
+    <text x="463" y="127" font-size="101" fill="#111827" stroke="#111827" stroke-width="10">BAZAAR.COM</text>
+    <text x="463" y="127" font-size="101" fill="url(#silver)" stroke="#ffffff" stroke-width="1.3">BAZAAR.COM</text>
+  </g>
+  <g filter="url(#glow)">
+    <path d="M870 148 l10 20 22 4-20 9-4 22-10-20-22-4 20-9z" fill="#ffd76a" opacity=".95"/>
+    <circle cx="126" cy="42" r="5" fill="#ffd76a"/><circle cx="914" cy="54" r="4" fill="#fff1a0"/><circle cx="398" cy="35" r="3" fill="#ffd76a"/>
+  </g>
+</svg>
