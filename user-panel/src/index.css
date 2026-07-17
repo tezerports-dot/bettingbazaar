@@ -282,3 +282,50 @@ button {
     will-change: auto;
   }
 }
+
+/* ── Stake/BC.Game-inspired enterprise shell theme ─────────────────────── */
+:root {
+  --bb-bg: #0f212e;
+  --bb-card: #1a2c38;
+  --bb-control: #213743;
+  --bb-action: #2de370;
+  --bb-muted: #b1b6bb;
+}
+
+html, body, #root {
+  height: 100%;
+  background: var(--bb-bg);
+}
+
+body {
+  overflow: hidden;
+}
+
+.enterprise-shell {
+  background:
+    radial-gradient(900px 480px at 50% -10%, rgba(45, 227, 112, 0.10), transparent 58%),
+    radial-gradient(720px 420px at 100% 105%, rgba(30, 136, 229, 0.08), transparent 62%),
+    var(--bb-bg);
+  contain: layout paint;
+}
+
+.central-stage-render-target {
+  transform: translateZ(0);
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.mobile-sticky-footer {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+@media (min-width: 1024px) {
+  .mobile-sticky-footer { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .enterprise-shell *, .central-stage-render-target * {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

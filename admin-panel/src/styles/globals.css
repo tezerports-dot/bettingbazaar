@@ -96,3 +96,49 @@
 .animate-spin {
   animation: spin 1s linear infinite;
 }
+
+/* Enterprise casino-ops surface refresh */
+:root {
+  --bb-bg: #0f212e;
+  --bb-card: #1a2c38;
+  --bb-control: #213743;
+  --bb-action: #2de370;
+  --bb-muted: #b1b6bb;
+}
+
+html, body, #root { height: 100%; background: var(--bb-bg); }
+body { overflow: hidden; }
+
+.admin-shell {
+  background:
+    radial-gradient(960px 520px at 40% -10%, rgba(45, 227, 112, 0.10), transparent 60%),
+    radial-gradient(760px 480px at 100% 110%, rgba(30, 136, 229, 0.08), transparent 62%),
+    var(--bb-bg);
+}
+
+.admin-render-target {
+  transform: translateZ(0);
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: calc(1.5rem + env(safe-area-inset-bottom));
+}
+
+.card, .modal-panel, [role="dialog"] > div {
+  background: rgba(26, 44, 56, 0.96) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+}
+
+.input, input, select, textarea {
+  background-color: #213743;
+  border-color: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+button, a { -webkit-tap-highlight-color: transparent; }
+
+@media (prefers-reduced-motion: reduce) {
+  .admin-shell *, .admin-render-target * {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

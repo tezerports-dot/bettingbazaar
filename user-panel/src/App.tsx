@@ -18,23 +18,14 @@
  */
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import React, { Suspense, useEffect, useState } from 'react';
-import { Routes, Route, Navigate, useLocation } from 'react-router';
+import { Routes, Route, Navigate } from 'react-router';
 import { HashRouter } from 'react-router-dom';
-import { motion, MotionConfig } from 'framer-motion';
+import { MotionConfig } from 'framer-motion';
 import { GameProvider } from './services/GameContext';
 import { ToastProvider } from './components/ui/Toast';
-import GamePage    from './pages/GamePage';
 import { GameProviderProvider } from './services/GameProviderContext';
-import ProfilePage from './pages/ProfilePage';
-import HistoryPage from './pages/HistoryPage';
 // WinnersPage RESTORED — live data now served by /api/v1/winners + leaderboard APIs
 // (import is already present below or will be added)
-import ResultsPage from './pages/ResultsPage';
-import PromoPage   from './pages/PromoPage';
-import RulesPage   from './pages/RulesPage';
-import FaqPage     from './pages/FaqPage';
-import MyBetsPage  from './pages/MyBetsPage';
-import SupportPage from './pages/SupportPage';
 // ── 3D BACKGROUND — lazy + capability-gated (perf 2026-07-11) ────────────────
 // The WebGL scene pulls an ~832 KB three.js chunk and runs continuous GPU work
 // behind every page. It is now LAZY (chunk fetched only if actually rendered)
@@ -60,22 +51,10 @@ const BACKDROP_GRADIENT =
   'radial-gradient(1200px 600px at 50% -10%, rgba(212,175,55,0.06), transparent 60%),' +
   'radial-gradient(900px 500px at 100% 100%, rgba(30,136,229,0.05), transparent 55%),' +
   'linear-gradient(180deg, #0B0E14 0%, #090C12 100%)';
-// ── LAZY GAME SECTIONS ────────────────────────────────────────────────────────
-const CasinoPage          = React.lazy(() => import('./pages/CasinoPage'));
-const CrashPage           = React.lazy(() => import('./pages/CrashPage'));
-const SportsPage          = React.lazy(() => import('./pages/SportsPage'));
-const WinnersPage         = React.lazy(() => import('./pages/WinnersPage'));
-const WalletPage          = React.lazy(() => import('./pages/WalletPage'));
-const InvitePage          = React.lazy(() => import('./pages/InvitePage'));
-const VIPPage             = React.lazy(() => import('./pages/VIPPage'));
-const GiftCodePage        = React.lazy(() => import('./pages/GiftCodePage'));
-const PublicChatPage      = React.lazy(() => Promise.resolve({ default: () => null }));
-const AccountRecoveryPage = React.lazy(() => import('./pages/AccountRecoveryPage'));
 import ErrorBoundary from './components/ui/ErrorBoundary';
-import Header from './components/Layout/Header';
-import GameCategoryStrip from './components/Game/GameCategoryStrip';
-import Footer from './components/Layout/Footer';
-import MerchantApp from './MerchantApp';
+import EnterpriseShell from './components/Shell/EnterpriseShell';
+import { UI_PAGE_REGISTRY } from './UI_PAGE_REGISTRY';
+import AuthModal from './components/Modals/AuthModal';
 import { getBackend } from './services/backend.service';
 const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? '0.0.0';
 
@@ -137,29 +116,11 @@ useEffect(() => { window.location.href = '/merchant'; }, []); return null; };
 
 const AppShell: React.FC<{ children: React.ReactNode; isGame?: boolean }> = ({ children, isGame }) => {
   const [showAuth, setShowAuth] = useState(false);
-  const location = useLocation();
-  if (isGame) {
-    // GamePage manages its own Header + CycleControl + Footer internally
-    return <>{children}</>;
-  }
   return (
-    <div className="h-full flex flex-col">
-      <Header onAuthRequired={() => setShowAuth(true)} />
-      <GameCategoryStrip />
-      {/* Quick opacity fade on navigation — compositor-only (no layout/transform),
-          so it's smooth and cannot shift or clip page content. MotionConfig makes
-          it collapse to instant under prefers-reduced-motion. */}
-      <motion.div
-        key={location.pathname}
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.16, ease: 'easeOut' }}
-        className="flex-1 overflow-y-auto min-h-0"
-      >
-        {children}
-      </motion.div>
-      <Footer />
-    </div>
+    <EnterpriseShell isGame={isGame} onAuthRequired={() => setShowAuth(true)}>
+      {children}
+      {showAuth && <AuthModal onClose={() => setShowAuth(false)} />}
+    </EnterpriseShell>
   );
 };
 
@@ -183,11 +144,11 @@ const PageSkeleton: React.FC = () => (
 const LoadingScreen = () => (
   <div className="flex flex-col items-center justify-center h-full bg-[#0B0E14] text-[#D4AF37]">
     <img
-      src="/app-assets/logo.png"
+      src="/brand/brand-splash.svg"
       alt="Betting Bazaar"
       className="h-44 w-auto object-contain mb-6"
-      onError={(e) => { (e.target as HTMLImageElement).src = '/logo.png'; }}
-      style={{ filter: 'drop-shadow(0 4px 24px rgba(212,175,55,0.45))' }}
+      onError={(e) => { (e.target as HTMLImageElement).src = '/app-assets/logo.png'; }}
+      style={{ filter: 'drop-shadow(0 8px 32px rgba(45,227,112,0.22))' }}
     />
     <div className="w-10 h-10 border-4 border-[#D4AF37]/20 border-t-[#D4AF37] rounded-full animate-spin mb-4" />
     <div className="text-[10px] font-black tracking-[0.3em] uppercase opacity-70">Synchronizing...</div>
@@ -208,11 +169,11 @@ const MaintenanceScreen = ({ message }: { message?: string }) => (
 const UpdateRequiredScreen = ({ latest }: { latest: string }) => (
   <div className="flex flex-col items-center justify-center h-full bg-[#0B0E14] p-8 text-center">
     <img
-      src="/app-assets/logo.png"
+      src="/brand/brand-splash.svg"
       alt="Betting Bazaar"
       className="h-40 w-auto object-contain mb-6"
-      onError={(e) => { (e.target as HTMLImageElement).src = '/logo.png'; }}
-      style={{ filter: 'drop-shadow(0 4px 24px rgba(212,175,55,0.4))' }}
+      onError={(e) => { (e.target as HTMLImageElement).src = '/app-assets/logo.png'; }}
+      style={{ filter: 'drop-shadow(0 8px 32px rgba(45,227,112,0.22))' }}
     />
     <div className="w-20 h-20 bg-[#D4AF37]/10 rounded-3xl flex items-center justify-center text-4xl mb-6 border border-[#D4AF37]/20 animate-bounce">🚀</div>
     <h1 className="text-2xl font-black text-white uppercase tracking-tighter mb-2">Update Available</h1>
@@ -325,35 +286,17 @@ const App: React.FC = () => (
               <Layout>
                 <ErrorBoundary panel="user">
                   <Routes>
-                    {/* GamePage manages its own Header/CycleControl/Footer */}
-                    <Route path="/"       element={<AppShell isGame><GamePage /></AppShell>} />
-                    <Route path="/casino" element={<AppShell><Suspense fallback={<PageSkeleton />}><CasinoPage /></Suspense></AppShell>} />
-                    <Route path="/crash"  element={<AppShell><Suspense fallback={<PageSkeleton />}><CrashPage /></Suspense></AppShell>} />
-                    <Route path="/sports" element={<AppShell><Suspense fallback={<PageSkeleton />}><SportsPage /></Suspense></AppShell>} />
-
-                    {/* Finance */}
-                    <Route path="/wallet"    element={<AppShell><Suspense fallback={<PageSkeleton />}><WalletPage /></Suspense></AppShell>} />
-                    <Route path="/invite"    element={<AppShell><Suspense fallback={<PageSkeleton />}><InvitePage /></Suspense></AppShell>} />
-                    <Route path="/vip"       element={<AppShell><Suspense fallback={<PageSkeleton />}><VIPPage /></Suspense></AppShell>} />
-                    <Route path="/gift-code" element={<AppShell><Suspense fallback={<PageSkeleton />}><GiftCodePage /></Suspense></AppShell>} />
-
-                    {/* Community */}
-                    <Route path="/chat"             element={<AppShell><Suspense fallback={<PageSkeleton />}>{}</Suspense></AppShell>} />
-                    <Route path="/recover-account"  element={<AppShell><Suspense fallback={<PageSkeleton />}><AccountRecoveryPage /></Suspense></AppShell>} />
-
-                    {/* Account */}
-                    <Route path="/profile"  element={<AppShell><ProfilePage /></AppShell>} />
-                    <Route path="/history"  element={<AppShell><HistoryPage /></AppShell>} />
-                    <Route path="/my-bets"  element={<AppShell><MyBetsPage /></AppShell>} />
-
-                    {/* Info */}
-                    <Route path="/results"  element={<AppShell><ResultsPage /></AppShell>} />
-                    <Route path="/promo"    element={<AppShell><PromoPage /></AppShell>} />
-                    <Route path="/rules"    element={<AppShell><RulesPage /></AppShell>} />
-                    <Route path="/faq"      element={<AppShell><FaqPage /></AppShell>} />
-                    <Route path="/support"  element={<AppShell><SupportPage /></AppShell>} />
-
-                    <Route path="/winners" element={<AppShell><Suspense fallback={<PageSkeleton />}><WinnersPage /></Suspense></AppShell>} />
+                    {UI_PAGE_REGISTRY.map(page => (
+                      <Route
+                        key={page.path}
+                        path={page.path}
+                        element={(
+                          <AppShell isGame={page.shellMode === 'game'}>
+                            <Suspense fallback={<PageSkeleton />}>{page.element}</Suspense>
+                          </AppShell>
+                        )}
+                      />
+                    ))}
 
                     {/* Panel redirects */}
                     <Route path="/merchant/*" element={<MerchantRedirect />} />
