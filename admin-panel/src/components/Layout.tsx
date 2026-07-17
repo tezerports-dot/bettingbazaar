@@ -90,7 +90,7 @@ const ALL_MENU_ITEMS: MenuItem[] = [
 ];
 
 export const Layout: React.FC<LayoutProps> = ({ children }) => {
-  const [sidebarOpen, setSidebarOpen] = useState(() => typeof window === 'undefined' ? true : window.innerWidth >= 768);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const location  = useLocation();
   const navigate  = useNavigate();
   const { admin, logout } = useAuthStore();
@@ -131,17 +131,20 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   };
 
   return (
-    <div className="admin-shell flex h-[100dvh] overflow-hidden bg-[#0f212e] text-white">
+    <div className="flex h-screen bg-dark-900">
       {/* Sidebar */}
-      <aside className={`${sidebarOpen ? 'w-72' : 'w-20'} hidden md:flex bg-[#1a2c38]/95 border-r border-white/5 backdrop-blur-xl transition-all duration-300 flex-col overflow-hidden`}>
+      <aside className={`${sidebarOpen ? 'w-64' : 'w-20'} bg-dark-800 border-r border-dark-700 transition-all duration-300 flex flex-col overflow-hidden`}>
         {/* Logo */}
-        <div className="h-16 flex items-center justify-between px-4 border-b border-white/5 flex-shrink-0">
+        <div className="h-16 flex items-center justify-between px-4 border-b border-dark-700 flex-shrink-0">
           {sidebarOpen ? (
-            <img src="/brand/brand-wordmark.svg" alt="Betting-Bazaar.com" className="h-10 w-52 object-contain object-left" />
+            <h1 className="text-xl font-bold bg-gradient-to-r from-gold-400 to-gold-600 bg-clip-text text-transparent">
+              {/* C-02: admin panel name from branding — GOVERNANCE §3 */}
+              {(() => { try { return JSON.parse(localStorage.getItem('app_branding') || '{}').adminPanelName || 'Betting Bazaar'; } catch { return 'Betting Bazaar'; } })()}
+            </h1>
           ) : (
-            <div className="w-8 h-8 bg-gradient-to-br from-[#2de370] to-[#86f7ae] rounded-lg" />
+            <div className="w-8 h-8 bg-gradient-to-br from-gold-400 to-gold-600 rounded-lg" />
           )}
-          <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-2 hover:bg-[#213743] rounded-lg transition-colors">
+          <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-2 hover:bg-dark-700 rounded-lg transition-colors">
             {sidebarOpen ? <X size={20} /> : <Menu size={20} />}
           </button>
         </div>
@@ -166,7 +169,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                 <React.Fragment key={item.path}>
                   {showGroupHeader && (
                     <div className="px-4 pt-4 pb-1">
-                      <p className="text-[10px] font-semibold uppercase tracking-widest text-[#b1b6bb]/60">
+                      <p className="text-[10px] font-semibold uppercase tracking-widest text-gray-600">
                         {groupLabels[item.group!] || item.group}
                       </p>
                     </div>
@@ -174,10 +177,10 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                   <Link
                     key={item.path}
                 to={item.path}
-                className={`flex items-center px-4 py-3 mx-2 rounded-xl mb-1 transition-all active:scale-[0.98] ${
+                className={`flex items-center px-4 py-3 mx-2 rounded-lg mb-1 transition-colors ${
                   isActive
-                    ? 'bg-[#2de370] text-[#07130d] shadow-[0_0_22px_rgba(45,227,112,0.22)]'
-                    : 'text-[#b1b6bb] hover:bg-[#213743] hover:text-white'
+                    ? 'bg-gold-500 text-dark-900'
+                    : 'text-gray-300 hover:bg-dark-700'
                 }`}
                 title={!sidebarOpen ? item.label : undefined}
               >
@@ -191,17 +194,17 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
         </nav>
 
         {/* User Info & Logout */}
-        <div className="p-4 border-t border-white/5 flex-shrink-0">
+        <div className="p-4 border-t border-dark-700 flex-shrink-0">
           {sidebarOpen && (
             <div className="mb-3">
               <p className="text-sm font-medium text-gray-100 truncate">{admin?.username || 'User'}</p>
-              <p className="text-xs text-[#b1b6bb] truncate">{admin?.mobile || ''}</p>
+              <p className="text-xs text-gray-400 truncate">{admin?.mobile || ''}</p>
               {roleBadge()}
             </div>
           )}
           <button
             onClick={handleLogout}
-            className="w-full flex items-center justify-center px-4 py-2 bg-red-500/15 hover:bg-red-500/25 border border-red-500/20 rounded-xl transition-colors text-white font-medium"
+            className="w-full flex items-center justify-center px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg transition-colors text-white font-medium"
             title={!sidebarOpen ? 'Logout' : undefined}
           >
             <LogOut size={20} />
@@ -210,44 +213,29 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
         </div>
       </aside>
 
-      {sidebarOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm md:hidden" onClick={() => setSidebarOpen(false)}>
-          <aside className="h-full w-[280px] bg-[#1a2c38] pb-[env(safe-area-inset-bottom)]" onClick={(e) => e.stopPropagation()}>
-            <div className="h-16 flex items-center justify-between px-4 border-b border-white/5"><span className="font-black">Admin Console</span><button onClick={() => setSidebarOpen(false)}><X size={20} /></button></div>
-            <nav className="overflow-y-auto py-4 max-h-[calc(100dvh-4rem)]">
-              {visibleItems.map((item) => {
-                const Icon = item.icon;
-                const isActive = location.pathname === item.path;
-                return <Link key={item.path} to={item.path} onClick={() => setSidebarOpen(false)} className={`flex items-center px-4 py-3 mx-2 rounded-xl mb-1 transition-all ${isActive ? 'bg-[#2de370] text-[#07130d]' : 'text-[#b1b6bb] hover:bg-[#213743] hover:text-white'}`}><Icon size={20} /><span className="ml-3 font-medium">{item.label}</span></Link>;
-              })}
-            </nav>
-          </aside>
-        </div>
-      )}
-
-
       {/* Main Content */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Header */}
-        <header className="h-16 bg-[#1a2c38]/90 border-b border-white/5 backdrop-blur-xl flex items-center justify-between px-4 sm:px-6 flex-shrink-0">
-          <button onClick={() => setSidebarOpen(!sidebarOpen)} className="mr-3 grid h-10 w-10 place-items-center rounded-xl bg-[#213743] text-[#b1b6bb] md:hidden">{sidebarOpen ? <X size={18} /> : <Menu size={18} />}</button>
-          <div className="min-w-0"><img src="/brand/brand-wordmark.svg" alt="Betting-Bazaar.com" className="h-10 w-[min(44vw,280px)] object-contain object-left" /><p className="hidden text-[10px] uppercase tracking-[0.2em] text-[#b1b6bb] sm:block">{ALL_MENU_ITEMS.find((item) => item.path === location.pathname)?.label || 'Admin Panel'}</p></div>
-          <div className="hidden sm:flex items-center space-x-4">
-            <div className="text-sm text-[#b1b6bb]">
+        <header className="h-16 bg-dark-800 border-b border-dark-700 flex items-center justify-between px-6 flex-shrink-0">
+          <h2 className="text-xl font-semibold text-gray-100">
+            {ALL_MENU_ITEMS.find((item) => item.path === location.pathname)?.label || 'Admin Panel'}
+          </h2>
+          <div className="flex items-center space-x-4">
+            <div className="text-sm text-gray-400">
               {new Date().toLocaleDateString('en-US', {
                 weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
               })}
             </div>
-            <div className="w-px h-6 bg-white/10" />
+            <div className="w-px h-6 bg-dark-700" />
             <div className="flex items-center space-x-2">
               <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-              <span className="text-sm text-[#b1b6bb]">System Online</span>
+              <span className="text-sm text-gray-400">System Online</span>
             </div>
           </div>
         </header>
 
         {/* Page Content */}
-        <main className="admin-render-target flex-1 overflow-y-auto p-4 sm:p-6 bg-[#0f212e]"><div className="animate-slideIn">{children}</div></main>
+        <main className="flex-1 overflow-y-auto p-6 bg-dark-900">{children}</main>
       </div>
     </div>
   );

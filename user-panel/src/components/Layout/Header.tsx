@@ -91,7 +91,7 @@ const Header: React.FC<HeaderProps> = ({ onAuthRequired }) => {
         ? branding.logo
         : cdnBase.replace(/\/+$/, '') + '/' + branding.logo.replace(/^\/+/, ''))
     : '';
-  const logoSrc         = brandLogo || '/brand/brand-wordmark.svg';
+  const logoSrc         = brandLogo || '/app-assets/logo-header.png';
   // WL-003: recompute from source fields — never trust stored walletBalance (stale risk)
   const totalDisplay    = isAuthenticated ? ((user?.depositBalance ?? 0) + (user?.winningsBalance ?? 0)) : null;
   const depositDisplay  = user?.depositBalance  ?? 0;
@@ -139,9 +139,9 @@ const Header: React.FC<HeaderProps> = ({ onAuthRequired }) => {
         </div>
 
         {/* Center logo */}
-        <div className="absolute left-1/2 transform -translate-x-1/2 flex items-center justify-center cursor-pointer select-none" style={{ width: 'calc(100% - 156px)', maxWidth: '390px' }} onClick={() => navigate('/')}>
+        <div className="absolute left-1/2 transform -translate-x-1/2 flex items-center justify-center cursor-pointer select-none" style={{ width: 'calc(100% - 180px)', maxWidth: '340px' }} onClick={() => navigate('/')}>
           {!logoFailed
-            ? <img src={logoSrc} alt="Betting Bazaar" style={{ height: '54px', width: '100%', objectFit: 'contain', objectPosition: 'center', filter: 'drop-shadow(0 4px 18px rgba(0,0,0,0.55))' }} onError={() => setLogoFailed(true)} />
+            ? <img src={logoSrc} alt="Betting Bazaar" style={{ height: '48px', width: '100%', objectFit: 'contain', objectPosition: 'center' }} onError={() => setLogoFailed(true)} />
             : <span className="text-[#D4AF37] font-black text-sm tracking-widest uppercase" style={{ textShadow: '0 0 14px rgba(212,175,55,0.7)' }}>BB</span>
           }
         </div>
