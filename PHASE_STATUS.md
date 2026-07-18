@@ -50,9 +50,10 @@ full architecture decision and reasoning.
    production backfill confirmation was never closed out.
 2. `PaymentGatewayConfig` (backend/models/payment.model.js) — confirmed intentional
    future third-party gateway scaffolding, not a bug, not yet wired in.
-3. No MongoDB transactions in the settlement flow — correctness relies on
-   idempotency keys, not atomicity. Documented, not changed; this remains a
-   deployment-readiness hardening item before high-volume automated settlement.
+3. No MongoDB transactions in the settlement flow — idempotency keys reduce
+   duplicate retry effects, but partial settlement writes still require atomic
+   transaction boundaries or reconciliation. This remains an explicit
+   deployment-readiness gate before high-volume automated settlement.
 4. `backend/debug-merchant-query.mjs` and `check-merchants.mjs` — removed; no
    stray debug scripts remain in the repo.
 5. Phase 002 "no orphaned functionality" — verified at capability level only.

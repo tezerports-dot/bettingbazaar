@@ -69,12 +69,25 @@ L4-multiplexed SNI passthrough · End-to-end encryption (E2EE) · Transparent
 Proxy Protocol v2 client-IP preservation · Owned-service edge isolation ·
 Deployment-topology documentation
 
-**Future plan, not application code today:** this track is reserved for a legally
-registered software/company infrastructure workstream serving licensed operators.
+**Future edge topology, with backend support available now:** the opt-in backend
+PROXY protocol v2 parser and listener integration are already delivered for
+trusted deployments that enable them explicitly. The full HAProxy edge
+deployment topology remains future, undeployed infrastructure work reserved for
+a legally registered software/company workstream serving licensed operators.
 The safe target architecture is ordinary Layer-4 stream routing that selects an
 owned backend by TLS SNI before application decryption, preserves cryptographic
 integrity end-to-end, and forwards true client metadata to trusted downstream
 applications via PROXY protocol v2 without modifying encrypted payloads.
+No consumer-edge alternative transport is application code today. Any future
+edge-networking proposal for a legal software company must be documented as a
+licensed, provider-approved, jurisdiction-reviewed infrastructure workstream
+with operator sign-off before any implementation is considered.
+Future review-gate topics may include owned-domain lifecycle management,
+licensed-jurisdiction geo routing, CDN/WAF policy, bot-abuse signals, private
+origin/VPC isolation, authenticated edge-to-origin tunnels, state continuity
+during planned domain migrations, and multi-cloud availability. These topics
+are compliance and resilience review inputs only; they must not be framed or
+implemented as traffic disguise, scanner deception, or regulatory-block bypass.
 
 Before implementation, the workstream needs a written design covering licensed
 jurisdiction, provider contracts, DNS/domain ownership, audit logging,

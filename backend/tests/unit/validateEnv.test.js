@@ -5,7 +5,7 @@ import { validateEnv } from '../../startup/validateEnv.js';
 
 const full = {
   JWT_SECRET: 's', ORDER_HMAC_SECRET: 'h', AADHAAR_HMAC_SECRET: 'a-secure-aadhaar-hmac-secret-value', MONGODB_URI: 'mongodb://x', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb',
-  REDIS_URL: 'r', ALLOWED_ORIGINS: 'o', S3_BUCKET_NAME: 'b', METRICS_TOKEN: 'mt',
+  REDIS_URL: 'r', ALLOWED_ORIGINS: 'o', S3_BUCKET_NAME: 'b', METRICS_TOKEN: 'a-secure-random-metrics-token-value',
   PUBLIC_APP_ORIGIN: 'https://app.example.test', PUBLIC_APP_ALLOWED_ORIGINS: 'https://app.example.test',
 };
 
@@ -39,6 +39,11 @@ describe('validateEnv', () => {
   it('requires production hardening vars instead of silently falling back', () => {
     expect(() => validateEnv({ JWT_SECRET: 's', MONGODB_URI: 'm', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb', NODE_ENV: 'production' }, true))
       .toThrow(/ORDER_HMAC_SECRET[\s\S]*REDIS_URL[\s\S]*ALLOWED_ORIGINS[\s\S]*S3_BUCKET_NAME[\s\S]*METRICS_TOKEN/);
+  });
+
+  it('rejects weak or placeholder metrics tokens in production', () => {
+    expect(() => validateEnv({ ...full, METRICS_TOKEN: 'change-this-to-a-random-metrics-token', NODE_ENV: 'production' }, true))
+      .toThrow(/METRICS_TOKEN/);
   });
 
   it('rejects invalid public origins in production', () => {
