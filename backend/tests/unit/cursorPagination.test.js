@@ -1,4 +1,5 @@
 // GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+import mongoose from 'mongoose';
 import { describe, expect, it } from 'vitest';
 import {
   buildDescendingCursorFilter,
@@ -15,7 +16,7 @@ describe('cursor pagination utilities', () => {
   });
 
   it('builds a compound descending cursor filter', () => {
-    const doc = { _id: '64f000000000000000000001', createdAt: new Date('2026-07-18T12:00:00.000Z') };
+    const doc = { _id: new mongoose.Types.ObjectId('64f000000000000000000001'), createdAt: new Date('2026-07-18T12:00:00.000Z') };
     const cursor = encodeCompoundCursor(doc);
 
     expect(buildDescendingCursorFilter(cursor)).toEqual({

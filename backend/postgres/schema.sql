@@ -105,9 +105,11 @@ CREATE TABLE IF NOT EXISTS transactions (
   status       TEXT,
   amount_paise BIGINT NOT NULL DEFAULT 0,
   description  TEXT,
-  created_at   TIMESTAMPTZ
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS transactions_user_idx ON transactions (user_id, created_at DESC);
+UPDATE transactions SET created_at = now() WHERE created_at IS NULL;
+ALTER TABLE transactions ALTER COLUMN created_at SET DEFAULT now();
+ALTER TABLE transactions ALTER COLUMN created_at SET NOT NULL;
 CREATE INDEX IF NOT EXISTS transactions_user_cursor_idx ON transactions (user_id, created_at DESC, mongo_id DESC);
 
 -- ── PAYMENT ORDERS (mirrors PaymentOrder) ────────────────────────────────────
@@ -121,11 +123,12 @@ CREATE TABLE IF NOT EXISTS payment_orders (
   fiat_amount_paise  BIGINT NOT NULL DEFAULT 0,
   token_amount_paise BIGINT NOT NULL DEFAULT 0,
   utr                TEXT,
-  created_at         TIMESTAMPTZ,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS payment_orders_user_idx            ON payment_orders (user_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS payment_orders_status_idx          ON payment_orders (status);
+UPDATE payment_orders SET created_at = now() WHERE created_at IS NULL;
+ALTER TABLE payment_orders ALTER COLUMN created_at SET DEFAULT now();
+ALTER TABLE payment_orders ALTER COLUMN created_at SET NOT NULL;
 CREATE INDEX IF NOT EXISTS payment_orders_user_cursor_idx     ON payment_orders (user_id, created_at DESC, mongo_id DESC);
 CREATE INDEX IF NOT EXISTS payment_orders_status_cursor_idx   ON payment_orders (status, created_at DESC, mongo_id DESC);
 CREATE INDEX IF NOT EXISTS payment_orders_merchant_cursor_idx ON payment_orders (merchant_id, status, created_at DESC, mongo_id DESC);

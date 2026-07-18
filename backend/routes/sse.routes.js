@@ -182,7 +182,7 @@ export function initSSERoutes(sseManager, cycleGenerator) {
         const merchantId = decoded.merchantId.toString();
         sseManager.addMerchantClient(merchantId, res);
 
-        // Push current pending/assigned orders snapshot immediately on connect
+        // Push current active merchant orders snapshot immediately on connect.
         // ✅ FIXED BUG-6: PaymentOrder.merchantId now stores Merchant._id = decoded.merchantId
         // so this query now correctly returns the merchant's orders (was always empty before)
         try {
