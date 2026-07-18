@@ -51,6 +51,14 @@ describe('PROXY protocol v2 parsing', () => {
     expect(isTrustedProxyAddress('2001:db8:abce::1', subnets)).toBe(false);
   });
 
+  it('rejects malformed IPv6 CIDR suffixes instead of broadening trust', () => {
+    expect(parseTrustedSubnets('2001:db8::/')).toEqual([]);
+    expect(parseTrustedSubnets('2001:db8::/48/extra')).toEqual([]);
+    expect(parseTrustedSubnets('2001:db8::/not-a-prefix')).toEqual([]);
+    expect(parseTrustedSubnets('2001:db8::/0')).toHaveLength(1);
+    expect(parseTrustedSubnets('2001:db8::/128')).toHaveLength(1);
+  });
+
   it('overrides Express request IP with parsed source metadata', () => {
     const req = { socket: { proxyProtocol: { sourceAddress: '203.0.113.44' } } };
     let called = false;

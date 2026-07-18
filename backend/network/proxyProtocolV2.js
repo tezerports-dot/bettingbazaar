@@ -76,7 +76,10 @@ function ipv6MatchesCidr(addressBytes, subnetBytes, prefix) {
 function parseCidr(entry) {
   const raw = String(entry || '').trim();
   if (!raw) return null;
-  const [ip, prefixRaw] = raw.includes('/') ? raw.split('/') : [raw, null];
+  const parts = raw.split('/');
+  if (parts.length > 2) return null;
+  const [ip, prefixRaw = null] = parts;
+  if (prefixRaw != null && !/^\d+$/.test(prefixRaw)) return null;
   const version = net.isIP(normalizeIp(ip));
   if (!version) return null;
   if (version === 4) {
