@@ -2,14 +2,14 @@
 import mongoose from 'mongoose';
 import crypto from 'crypto';
 
-function generateMerchantPublicRef() {
-  return `M${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+export function generateMerchantPublicRef() {
+  return `M${crypto.randomBytes(8).toString('hex').toUpperCase()}`;
 }
 
 const merchantSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', unique: true },
   name: { type: String, required: true },
-  publicRef: { type: String, required: true, unique: true, default: generateMerchantPublicRef, immutable: true },
+  publicRef: { type: String, required: true, default: generateMerchantPublicRef, immutable: true },
   // ✅ FIX #12/#13: Add missing auth + profile fields
   username: { type: String, index: true },
   mobile: { type: String, index: true },
@@ -103,6 +103,7 @@ merchantSchema.pre('validate', function ensurePublicRef(next) {
   next();
 });
 
+merchantSchema.index({ publicRef: 1 }, { unique: true, name: 'publicRef_1' });
 merchantSchema.index({ 'bankDetails.upiId': 1 }, { unique: true, sparse: true });
 merchantSchema.index({ 'bankDetails.accountNo': 1, 'bankDetails.ifsc': 1 }, { unique: true, sparse: true });
 merchantSchema.index({ usdtWalletAddress: 1 }, { unique: true, sparse: true });
