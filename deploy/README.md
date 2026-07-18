@@ -58,6 +58,12 @@ domains serve and pass the smoke tests (definition of done from the plan):
 HTTP/2. Canonical URL decision: set `CANONICAL_HOST` env (network.config.js)
 to 301-normalize the non-canonical domains, or leave unset for equal peers.
 
+## Core Infrastructure Architecture — HAProxy L4 template
+`deploy/haproxy/core-infra-l4-passthrough.cfg` is a future licensed-operator
+starting template for owned-service Layer-4 SNI passthrough with PROXY protocol
+v2 client-IP preservation. It is not active in the default Railway deployment;
+see `deploy/haproxy/README.md` before adapting it for a production edge.
+
 ## Grafana (item 34) — `grafana/bettingbazaar-dashboard.json`
 Import into Grafana; point Prometheus at `GET /metrics` (Bearer METRICS_TOKEN
 if set).

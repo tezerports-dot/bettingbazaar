@@ -1,0 +1,161 @@
+// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+/**
+ * network/proxyProtocolV2.js — trusted PROXY protocol v2 TCP preface handling.
+ *
+ * HAProxy `send-proxy-v2` prepends a binary header before the first HTTP/TLS
+ * byte. Node's HTTP/HTTPS parsers cannot consume that header directly, so this
+ * optional listener wrapper validates the edge router source IP, strips the
+ * binary preface, stores the parsed client metadata on the socket, and then
+ * hands the original socket to the normal HTTP/HTTPS server.
+ *
+ * It is OFF by default. Enable only when the backend listener is directly
+ * behind an internal HAProxy/LB tier that sends PROXY v2:
+ *   PROXY_PROTOCOL_V2=true
+ *   PROXY_PROTOCOL_TRUSTED_SUBNETS=10.0.10.0/24,127.0.0.1/32
+ */
+import net from 'net';
+
+const SIGNATURE = Buffer.from([0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a]);
+const HEADER_LENGTH = 16;
+const MAX_PROXY_HEADER_BYTES = 512;
+
+function normalizeIp(ip) {
+  const value = String(ip || '').trim();
+  if (value.startsWith('::ffff:')) return value.slice(7);
+  return value;
+}
+
+function ipv4ToInt(ip) {
+  const parts = normalizeIp(ip).split('.').map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
+  return (((parts[0] << 24) >>> 0) + (parts[1] << 16) + (parts[2] << 8) + parts[3]) >>> 0;
+}
+
+function parseCidr(entry) {
+  const raw = String(entry || '').trim();
+  if (!raw) return null;
+  const [ip, prefixRaw] = raw.includes('/') ? raw.split('/') : [raw, null];
+  const version = net.isIP(normalizeIp(ip));
+  if (!version) return null;
+  if (version === 4) {
+    const prefix = prefixRaw == null ? 32 : Number(prefixRaw);
+    if (!Number.isInteger(prefix) || prefix < 0 || prefix > 32) return null;
+    return { version, base: ipv4ToInt(ip), prefix, raw };
+  }
+  // IPv6 exact-match support is enough for local/dev and avoids pulling a CIDR dependency.
+  if (prefixRaw != null && prefixRaw !== '128') return null;
+  return { version, base: normalizeIp(ip).toLowerCase(), prefix: 128, raw };
+}
+
+export function parseTrustedSubnets(value) {
+  return String(value || '')
+    .split(',')
+    .map(parseCidr)
+    .filter(Boolean);
+}
+
+export function isTrustedProxyAddress(remoteAddress, trustedSubnets) {
+  const ip = normalizeIp(remoteAddress);
+  const version = net.isIP(ip);
+  if (!version) return false;
+  if (!Array.isArray(trustedSubnets) || trustedSubnets.length === 0) return false;
+  if (version === 4) {
+    const asInt = ipv4ToInt(ip);
+    return trustedSubnets.some((subnet) => {
+      if (subnet.version !== 4 || asInt == null || subnet.base == null) return false;
+      const mask = subnet.prefix === 0 ? 0 : (0xffffffff << (32 - subnet.prefix)) >>> 0;
+      return (asInt & mask) === (subnet.base & mask);
+    });
+  }
+  return trustedSubnets.some((subnet) => subnet.version === 6 && subnet.base === ip.toLowerCase());
+}
+
+function parseAddressBlock(buffer, family, protocol, length) {
+  if (family === 0x10 && length >= 12) {
+    return {
+      protocol,
+      sourceAddress: `${buffer[16]}.${buffer[17]}.${buffer[18]}.${buffer[19]}`,
+      destinationAddress: `${buffer[20]}.${buffer[21]}.${buffer[22]}.${buffer[23]}`,
+      sourcePort: buffer.readUInt16BE(24),
+      destinationPort: buffer.readUInt16BE(26),
+    };
+  }
+  if (family === 0x20 && length >= 36) {
+    return {
+      protocol,
+      sourceAddress: buffer.subarray(16, 32).toString('hex').match(/.{1,4}/g)?.join(':') || '',
+      destinationAddress: buffer.subarray(32, 48).toString('hex').match(/.{1,4}/g)?.join(':') || '',
+      sourcePort: buffer.readUInt16BE(48),
+      destinationPort: buffer.readUInt16BE(50),
+    };
+  }
+  return { protocol, sourceAddress: '', destinationAddress: '', sourcePort: 0, destinationPort: 0 };
+}
+
+export function parseProxyProtocolV2(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < HEADER_LENGTH) return { complete: false };
+  if (!buffer.subarray(0, SIGNATURE.length).equals(SIGNATURE)) return { complete: true, proxy: null, headerLength: 0 };
+  const versionCommand = buffer[12];
+  if ((versionCommand & 0xf0) !== 0x20) throw new Error('invalid PROXY protocol v2 version');
+  const command = versionCommand & 0x0f;
+  const familyProtocol = buffer[13];
+  const family = familyProtocol & 0xf0;
+  const protocol = familyProtocol & 0x0f;
+  const length = buffer.readUInt16BE(14);
+  const totalLength = HEADER_LENGTH + length;
+  if (totalLength > MAX_PROXY_HEADER_BYTES) throw new Error('PROXY protocol v2 header too large');
+  if (buffer.length < totalLength) return { complete: false };
+  const proxy = command === 0x01 ? parseAddressBlock(buffer, family, protocol, length) : null;
+  return { complete: true, proxy, headerLength: totalLength };
+}
+
+export function attachProxyProtocolRequestMetadata(req, _res, next) {
+  if (req.socket?.proxyProtocol) {
+    req.proxyProtocol = req.socket.proxyProtocol;
+  }
+  next();
+}
+
+export function listenWithOptionalProxyProtocol(httpServer, { port, host = '0.0.0.0', enabled, trustedSubnets }) {
+  if (!enabled) {
+    return httpServer.listen(port, host);
+  }
+  const parsedTrustedSubnets = Array.isArray(trustedSubnets)
+    ? trustedSubnets.map((entry) => (typeof entry === 'string' ? parseCidr(entry) : entry)).filter(Boolean)
+    : parseTrustedSubnets(trustedSubnets);
+  if (parsedTrustedSubnets.length === 0) {
+    throw new Error('PROXY_PROTOCOL_V2 enabled but PROXY_PROTOCOL_TRUSTED_SUBNETS is empty');
+  }
+
+  const tcpServer = net.createServer((socket) => {
+    if (!isTrustedProxyAddress(socket.remoteAddress, parsedTrustedSubnets)) {
+      socket.destroy(new Error('untrusted PROXY protocol source'));
+      return;
+    }
+
+    let buffered = Buffer.alloc(0);
+    const onData = (chunk) => {
+      buffered = Buffer.concat([buffered, chunk]);
+      let parsed;
+      try {
+        parsed = parseProxyProtocolV2(buffered);
+      } catch (error) {
+        socket.destroy(error);
+        return;
+      }
+      if (!parsed.complete) return;
+      socket.removeListener('data', onData);
+      if (!parsed.proxy) {
+        socket.destroy(new Error('missing PROXY protocol v2 header'));
+        return;
+      }
+      socket.proxyProtocol = parsed.proxy;
+      const remaining = buffered.subarray(parsed.headerLength);
+      if (remaining.length) socket.unshift(remaining);
+      httpServer.emit('connection', socket);
+    };
+    socket.on('data', onData);
+  });
+
+  return tcpServer.listen(port, host);
+}
