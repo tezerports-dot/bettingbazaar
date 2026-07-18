@@ -27,7 +27,7 @@ The premier high-frequency prediction platform. Bet on Delhi vs Bombay in real-t
   * `ORDER_HMAC_SECRET`: Long random secret dedicated to payment-order HMACs.
   * `AADHAAR_HMAC_SECRET`: Long random secret dedicated to Aadhaar duplicate-detection HMACs.
   * `REDIS_URL`: Railway-managed Redis URL or another Redis connection string.
-  * `ALLOWED_ORIGINS`: Comma-separated trusted frontend origins, e.g. your Railway URL.
+  * `ALLOWED_ORIGINS`: Comma-separated trusted frontend origins, including schemes, for each deployed user/admin/merchant panel (for example `https://app.example.com,https://admin.example.com,https://merchant.example.com`). Do not use the backend/API URL unless it is also a browser frontend origin.
   * `DATABASE_URL`: PostgreSQL connection string for the hybrid money datastore.
   * `S3_BUCKET_NAME`: Durable upload bucket name.
   * `METRICS_TOKEN`: Bearer token required for Prometheus metrics.

@@ -4,6 +4,7 @@ import {
   isTrustedProxyAddress,
   parseProxyProtocolV2,
   parseTrustedSubnets,
+  attachProxyProtocolRequestMetadata,
 } from '../../network/proxyProtocolV2.js';
 
 const signature = Buffer.from([0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a]);
@@ -34,6 +35,40 @@ describe('PROXY protocol v2 parsing', () => {
       sourcePort: 54321,
       destinationPort: 443,
     });
+  });
+
+  it('normalizes equivalent IPv6 trusted proxy addresses before comparison', () => {
+    const subnets = parseTrustedSubnets('2001:db8::1/128');
+
+    expect(isTrustedProxyAddress('2001:0db8:0000:0000:0000:0000:0000:0001', subnets)).toBe(true);
+    expect(isTrustedProxyAddress('2001:db8::2', subnets)).toBe(false);
+  });
+
+  it('supports IPv6 trusted proxy CIDR ranges', () => {
+    const subnets = parseTrustedSubnets('2001:db8:abcd::/48');
+
+    expect(isTrustedProxyAddress('2001:db8:abcd::99', subnets)).toBe(true);
+    expect(isTrustedProxyAddress('2001:db8:abce::1', subnets)).toBe(false);
+  });
+
+  it('rejects malformed IPv6 CIDR suffixes instead of broadening trust', () => {
+    expect(parseTrustedSubnets('2001:db8::/')).toEqual([]);
+    expect(parseTrustedSubnets('2001:db8::/48/extra')).toEqual([]);
+    expect(parseTrustedSubnets('2001:db8::/not-a-prefix')).toEqual([]);
+    expect(parseTrustedSubnets('2001:db8::/0')).toHaveLength(1);
+    expect(parseTrustedSubnets('2001:db8::/128')).toHaveLength(1);
+  });
+
+  it('overrides Express request IP with parsed source metadata', () => {
+    const req = { socket: { proxyProtocol: { sourceAddress: '203.0.113.44' } } };
+    let called = false;
+
+    attachProxyProtocolRequestMetadata(req, {}, () => { called = true; });
+
+    expect(called).toBe(true);
+    expect(req.proxyProtocol.sourceAddress).toBe('203.0.113.44');
+    expect(req.ip).toBe('203.0.113.44');
+    expect(req.ips).toEqual(['203.0.113.44']);
   });
 
   it('requires trusted HAProxy source subnets before accepting metadata', () => {

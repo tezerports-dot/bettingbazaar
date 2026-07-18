@@ -25,16 +25,61 @@ function normalizeIp(ip) {
   return value;
 }
 
+/** Convert a normalized IPv4 address to an unsigned 32-bit integer. */
 function ipv4ToInt(ip) {
   const parts = normalizeIp(ip).split('.').map((part) => Number(part));
   if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
   return (((parts[0] << 24) >>> 0) + (parts[1] << 16) + (parts[2] << 8) + parts[3]) >>> 0;
 }
 
+function ipv6ToBytes(ip) {
+  const normalized = normalizeIp(ip).toLowerCase();
+  if (!normalized || !net.isIPv6(normalized)) return null;
+
+  const expandIpv4Tail = (value) => {
+    const groups = value ? value.split(':') : [];
+    if (!groups.length || !groups.at(-1)?.includes('.')) return groups;
+    const asInt = ipv4ToInt(groups.at(-1));
+    if (asInt == null) return null;
+    return [...groups.slice(0, -1), ((asInt >>> 16) & 0xffff).toString(16), (asInt & 0xffff).toString(16)];
+  };
+
+  const halves = normalized.split('::');
+  if (halves.length > 2) return null;
+  const head = expandIpv4Tail(halves[0]);
+  const tail = expandIpv4Tail(halves[1] || '');
+  if (!head || !tail) return null;
+
+  const missing = halves.length === 2 ? 8 - head.length - tail.length : 0;
+  if (missing < 0) return null;
+  const groups = halves.length === 2 ? [...head, ...Array(missing).fill('0'), ...tail] : head;
+  if (groups.length !== 8) return null;
+
+  const bytes = Buffer.alloc(16);
+  for (let i = 0; i < groups.length; i += 1) {
+    if (!/^[0-9a-f]{1,4}$/.test(groups[i])) return null;
+    bytes.writeUInt16BE(parseInt(groups[i], 16), i * 2);
+  }
+  return bytes;
+}
+
+function ipv6MatchesCidr(addressBytes, subnetBytes, prefix) {
+  if (!Buffer.isBuffer(addressBytes) || !Buffer.isBuffer(subnetBytes)) return false;
+  const fullBytes = Math.floor(prefix / 8);
+  const remainingBits = prefix % 8;
+  if (!addressBytes.subarray(0, fullBytes).equals(subnetBytes.subarray(0, fullBytes))) return false;
+  if (remainingBits === 0) return true;
+  const mask = (0xff << (8 - remainingBits)) & 0xff;
+  return (addressBytes[fullBytes] & mask) === (subnetBytes[fullBytes] & mask);
+}
+
 function parseCidr(entry) {
   const raw = String(entry || '').trim();
   if (!raw) return null;
-  const [ip, prefixRaw] = raw.includes('/') ? raw.split('/') : [raw, null];
+  const parts = raw.split('/');
+  if (parts.length > 2) return null;
+  const [ip, prefixRaw = null] = parts;
+  if (prefixRaw != null && !/^\d+$/.test(prefixRaw)) return null;
   const version = net.isIP(normalizeIp(ip));
   if (!version) return null;
   if (version === 4) {
@@ -42,11 +87,12 @@ function parseCidr(entry) {
     if (!Number.isInteger(prefix) || prefix < 0 || prefix > 32) return null;
     return { version, base: ipv4ToInt(ip), prefix, raw };
   }
-  // IPv6 exact-match support is enough for local/dev and avoids pulling a CIDR dependency.
-  if (prefixRaw != null && prefixRaw !== '128') return null;
-  return { version, base: normalizeIp(ip).toLowerCase(), prefix: 128, raw };
+  const prefix = prefixRaw == null ? 128 : Number(prefixRaw);
+  if (!Number.isInteger(prefix) || prefix < 0 || prefix > 128) return null;
+  return { version, base: ipv6ToBytes(ip), prefix, raw };
 }
 
+/** Parse a comma-separated list of trusted IPv4 and IPv6 CIDR ranges. */
 export function parseTrustedSubnets(value) {
   return String(value || '')
     .split(',')
@@ -54,6 +100,7 @@ export function parseTrustedSubnets(value) {
     .filter(Boolean);
 }
 
+/** Return true when the TCP peer address belongs to the configured trusted proxy set. */
 export function isTrustedProxyAddress(remoteAddress, trustedSubnets) {
   const ip = normalizeIp(remoteAddress);
   const version = net.isIP(ip);
@@ -67,7 +114,8 @@ export function isTrustedProxyAddress(remoteAddress, trustedSubnets) {
       return (asInt & mask) === (subnet.base & mask);
     });
   }
-  return trustedSubnets.some((subnet) => subnet.version === 6 && subnet.base === ip.toLowerCase());
+  const bytes = ipv6ToBytes(ip);
+  return trustedSubnets.some((subnet) => subnet.version === 6 && ipv6MatchesCidr(bytes, subnet.base, subnet.prefix));
 }
 
 function parseAddressBlock(buffer, family, protocol, length) {
@@ -92,6 +140,7 @@ function parseAddressBlock(buffer, family, protocol, length) {
   return { protocol, sourceAddress: '', destinationAddress: '', sourcePort: 0, destinationPort: 0 };
 }
 
+/** Parse a complete or partial PROXY protocol v2 preface from a socket buffer. */
 export function parseProxyProtocolV2(buffer) {
   if (!Buffer.isBuffer(buffer) || buffer.length < HEADER_LENGTH) return { complete: false };
   if (!buffer.subarray(0, SIGNATURE.length).equals(SIGNATURE)) return { complete: true, proxy: null, headerLength: 0 };
@@ -109,13 +158,19 @@ export function parseProxyProtocolV2(buffer) {
   return { complete: true, proxy, headerLength: totalLength };
 }
 
+/** Attach parsed PROXY metadata and expose the verified client IP to Express middleware. */
 export function attachProxyProtocolRequestMetadata(req, _res, next) {
   if (req.socket?.proxyProtocol) {
     req.proxyProtocol = req.socket.proxyProtocol;
+    if (net.isIP(req.socket.proxyProtocol.sourceAddress)) {
+      Object.defineProperty(req, 'ip', { configurable: true, value: req.socket.proxyProtocol.sourceAddress });
+      Object.defineProperty(req, 'ips', { configurable: true, value: [req.socket.proxyProtocol.sourceAddress] });
+    }
   }
   next();
 }
 
+/** Start an HTTP server directly, or through a PROXY v2-stripping TCP wrapper. */
 export function listenWithOptionalProxyProtocol(httpServer, { port, host = '0.0.0.0', enabled, trustedSubnets }) {
   if (!enabled) {
     return httpServer.listen(port, host);
@@ -129,7 +184,7 @@ export function listenWithOptionalProxyProtocol(httpServer, { port, host = '0.0.
 
   const tcpServer = net.createServer((socket) => {
     if (!isTrustedProxyAddress(socket.remoteAddress, parsedTrustedSubnets)) {
-      socket.destroy(new Error('untrusted PROXY protocol source'));
+      socket.destroy();
       return;
     }
 
@@ -140,13 +195,13 @@ export function listenWithOptionalProxyProtocol(httpServer, { port, host = '0.0.
       try {
         parsed = parseProxyProtocolV2(buffered);
       } catch (error) {
-        socket.destroy(error);
+        socket.destroy();
         return;
       }
       if (!parsed.complete) return;
       socket.removeListener('data', onData);
       if (!parsed.proxy) {
-        socket.destroy(new Error('missing PROXY protocol v2 header'));
+        socket.destroy();
         return;
       }
       socket.proxyProtocol = parsed.proxy;
