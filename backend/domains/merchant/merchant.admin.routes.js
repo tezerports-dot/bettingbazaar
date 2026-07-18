@@ -4,8 +4,28 @@
  * on 2026-07-01 (BBEPS Phase 004 migration). */
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from '../../routes/admin/_adminShared.js';
 import { creditMerchantTokens, debitMerchantTokens } from './merchantWallet.service.js';
+import { generateMerchantPublicRef } from './merchant.model.js';
 
 const router = express.Router();
+
+
+function isPublicRefDuplicate(error) {
+  return error?.code === 11000 && (
+    error?.keyPattern?.publicRef || error?.keyValue?.publicRef || String(error?.message || '').includes('publicRef')
+  );
+}
+
+async function createMerchantWithPublicRefRetry(Merchant, payload, retries = 3) {
+  let nextPayload = payload;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await Merchant.create(nextPayload);
+    } catch (error) {
+      if (!isPublicRefDuplicate(error) || attempt === retries) throw error;
+      nextPayload = { ...payload, publicRef: generateMerchantPublicRef() };
+    }
+  }
+}
 
 async function reserveAdminMint(amount) {
   const SystemConfig = mongoose.model('SystemConfig');
@@ -416,7 +436,7 @@ router.post('/merchants/create', authenticate, isAdmin, async (req, res) => {
     if (existing) return res.status(409).json({ success: false, message: 'Mobile already registered' });
     const passwordHash = await hashPassword(password);
     const user = await User.create({ username, mobile, email, passwordHash, status: 'ACTIVE', roles: ['merchant'] });
-    const merchant = await Merchant.create({
+    const merchant = await createMerchantWithPublicRefRetry(Merchant, {
       userId: user._id, name: username, username, mobile, email: email || undefined,
       passwordHash, password: passwordHash,
       status: 'ACTIVE', merchantApprovalStatus: 'APPROVED', tokenBalance: 0, isOnline: false, // LOW-05 FIX: auto-approve admin-created merchants
