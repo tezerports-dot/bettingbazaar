@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS wallet_ledger (
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS wallet_ledger_user_idx ON wallet_ledger (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS wallet_ledger_user_cursor_idx ON wallet_ledger (user_id, created_at DESC, id DESC);
 
 -- Ledgers are append-only: corrections are new rows, never edits.
 CREATE OR REPLACE FUNCTION bb_forbid_change() RETURNS trigger AS $$
@@ -75,6 +76,7 @@ CREATE TABLE IF NOT EXISTS accounting_events (
 );
 CREATE INDEX IF NOT EXISTS accounting_events_ref_idx  ON accounting_events (ref_model, ref_id);
 CREATE INDEX IF NOT EXISTS accounting_events_type_idx ON accounting_events (event_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS accounting_events_type_cursor_idx ON accounting_events (event_type, created_at DESC, id DESC);
 
 -- Genuinely append-only, enforced by the DATABASE not the app (plan requirement).
 CREATE OR REPLACE TRIGGER accounting_events_append_only
@@ -106,6 +108,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   created_at   TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS transactions_user_idx ON transactions (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS transactions_user_cursor_idx ON transactions (user_id, created_at DESC, mongo_id DESC);
 
 -- ── PAYMENT ORDERS (mirrors PaymentOrder) ────────────────────────────────────
 CREATE TABLE IF NOT EXISTS payment_orders (
@@ -121,8 +124,11 @@ CREATE TABLE IF NOT EXISTS payment_orders (
   created_at         TIMESTAMPTZ,
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS payment_orders_user_idx   ON payment_orders (user_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS payment_orders_status_idx ON payment_orders (status);
+CREATE INDEX IF NOT EXISTS payment_orders_user_idx            ON payment_orders (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS payment_orders_status_idx          ON payment_orders (status);
+CREATE INDEX IF NOT EXISTS payment_orders_user_cursor_idx     ON payment_orders (user_id, created_at DESC, mongo_id DESC);
+CREATE INDEX IF NOT EXISTS payment_orders_status_cursor_idx   ON payment_orders (status, created_at DESC, mongo_id DESC);
+CREATE INDEX IF NOT EXISTS payment_orders_merchant_cursor_idx ON payment_orders (merchant_id, status, created_at DESC, mongo_id DESC);
 
 -- ── UTR REGISTRY — moves WITH payment_orders in the SAME database (plan:
 -- splitting these two across databases would race two atomicity guarantees).
@@ -146,6 +152,7 @@ CREATE TABLE IF NOT EXISTS merchant_wallet_ledger (
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS merchant_wallet_ledger_idx ON merchant_wallet_ledger (merchant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS merchant_wallet_ledger_cursor_idx ON merchant_wallet_ledger (merchant_id, created_at DESC, id DESC);
 CREATE OR REPLACE TRIGGER merchant_wallet_ledger_append_only
   BEFORE UPDATE OR DELETE ON merchant_wallet_ledger FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
 

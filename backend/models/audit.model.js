@@ -48,8 +48,8 @@ const enhancedAuditLogSchema = new mongoose.Schema({
   timestamp: { type: Date, default: Date.now, index: true }
 });
 
-enhancedAuditLogSchema.index({ performedBy: 1, timestamp: -1 });
-enhancedAuditLogSchema.index({ category: 1, action: 1, timestamp: -1 });
+enhancedAuditLogSchema.index({ performedBy: 1, timestamp: -1, _id: -1 });
+enhancedAuditLogSchema.index({ category: 1, action: 1, timestamp: -1, _id: -1 });
 
 // ════════════════════════════════════════════════════════════════════════════
 // 🔔 NOTIFICATION SCHEMA

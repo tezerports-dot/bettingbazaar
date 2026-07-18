@@ -20,7 +20,8 @@ class SSEManager {
         this.userClients = new Map();
 
         this.nextId  = 0;
-        this.stats   = { totalConnections: 0, totalMessages: 0 };
+        this.stats   = { totalConnections: 0, totalMessages: 0, droppedBackpressure: 0 };
+        this.maxBufferedBytes = Math.max(1024, Number(process.env.SSE_MAX_BUFFERED_BYTES || 1024 * 1024));
 
         // ── Horizontal-scale bridge (Phase X, 2026-07-10) ─────────────────────
         // SSE connections are pinned to one backend instance, but an event
@@ -76,6 +77,35 @@ class SSEManager {
         }
     }
 
+    // ── WRITE SAFETY / BACKPRESSURE ───────────────────────────────────────────
+
+    _writeOrDrop(res, payload, onDrop) {
+        if (!res || res.destroyed || res.writableEnded) {
+            onDrop?.();
+            return false;
+        }
+        if ((res.writableLength || 0) > this.maxBufferedBytes) {
+            this.stats.droppedBackpressure++;
+            try { res.end(); } catch { /* drop slow client */ }
+            onDrop?.();
+            return false;
+        }
+        try {
+            const accepted = res.write(payload);
+            this.stats.totalMessages++;
+            if (!accepted && (res.writableLength || 0) > this.maxBufferedBytes) {
+                this.stats.droppedBackpressure++;
+                try { res.end(); } catch { /* drop slow client */ }
+                onDrop?.();
+                return false;
+            }
+            return true;
+        } catch {
+            onDrop?.();
+            return false;
+        }
+    }
+
     // ── PUBLIC CHANNEL ────────────────────────────────────────────────────────
 
     /** Register a new public SSE client. Returns the assigned clientId. */
@@ -117,8 +147,7 @@ class SSEManager {
         const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
         const dead = [];
         for (const res of set) {
-            try { res.write(payload); this.stats.totalMessages++; }
-            catch { dead.push(res); }
+            this._writeOrDrop(res, payload, () => dead.push(res));
         }
         for (const res of dead) set.delete(res);
     }
@@ -134,8 +163,7 @@ class SSEManager {
         const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
         const dead = [];
         for (const [id, res] of this.clients) {
-            try { res.write(payload); this.stats.totalMessages++; }
-            catch { dead.push(id); }
+            this._writeOrDrop(res, payload, () => dead.push(id));
         }
         for (const id of dead) this.clients.delete(id);
     }
@@ -144,8 +172,7 @@ class SSEManager {
     sendToClient(clientId, event, data) {
         const res = this.clients.get(clientId);
         if (!res) return;
-        try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); }
-        catch { this.clients.delete(clientId); }
+        this._writeOrDrop(res, `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`, () => this.clients.delete(clientId));
     }
 
     // ── MERCHANT PRIVATE CHANNEL ──────────────────────────────────────────────
@@ -193,8 +220,7 @@ class SSEManager {
         const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
         const dead = [];
         for (const res of set) {
-            try { res.write(payload); this.stats.totalMessages++; }
-            catch { dead.push(res); }
+            this._writeOrDrop(res, payload, () => dead.push(res));
         }
         for (const res of dead) set.delete(res);
     }
@@ -229,8 +255,7 @@ class SSEManager {
         const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
         const dead = [];
         for (const res of this.adminClients) {
-            try { res.write(payload); this.stats.totalMessages++; }
-            catch { dead.push(res); }
+            this._writeOrDrop(res, payload, () => dead.push(res));
         }
         for (const res of dead) this.adminClients.delete(res);
     }
@@ -243,8 +268,7 @@ class SSEManager {
         // Public clients
         const deadPublic = [];
         for (const [id, res] of this.clients) {
-            try { res.write(ping); }
-            catch { deadPublic.push(id); }
+            this._writeOrDrop(res, ping, () => deadPublic.push(id));
         }
         for (const id of deadPublic) this.clients.delete(id);
 
@@ -252,8 +276,7 @@ class SSEManager {
         for (const [key, set] of this.merchantClients) {
             const dead = [];
             for (const res of set) {
-                try { res.write(ping); }
-                catch { dead.push(res); }
+                this._writeOrDrop(res, ping, () => dead.push(res));
             }
             for (const res of dead) set.delete(res);
             if (set.size === 0) this.merchantClients.delete(key);
@@ -262,8 +285,7 @@ class SSEManager {
         // Admin clients
         const deadAdmin = [];
         for (const res of this.adminClients) {
-            try { res.write(ping); }
-            catch { deadAdmin.push(res); }
+            this._writeOrDrop(res, ping, () => deadAdmin.push(res));
         }
         for (const res of deadAdmin) this.adminClients.delete(res);
     }
@@ -275,6 +297,8 @@ class SSEManager {
             activeAdmins:  this.adminClients.size,
             totalIn:       this.stats.totalConnections,
             totalOut:      this.stats.totalMessages,
+            droppedBackpressure: this.stats.droppedBackpressure,
+            maxBufferedBytes: this.maxBufferedBytes,
         };
     }
 
