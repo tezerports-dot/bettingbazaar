@@ -53,7 +53,7 @@ function adminOrderPayload(order, user) {
 
 // ─── Build merchantSnapshot from a Merchant doc ───────────────────────────────
 function merchantDisplayRef(merchantDoc) {
-  return `Merchant #${String(merchantDoc._id).slice(-4).toUpperCase()}`;
+  return `Merchant #${merchantDoc.publicRef}`;
 }
 
 function buildMerchantSnapshot(merchantDoc, expiresAt) {

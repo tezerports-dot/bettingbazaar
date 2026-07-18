@@ -18,6 +18,7 @@ import { debitMerchantTokens, creditMerchantTokens } from './merchantWallet.serv
 import { publish as publishDomainEvent, EVENTS as DOMAIN_EVENTS } from '../../services/eventBus.service.js';
 import { getRiskRules } from '../risk/riskValidation.service.js';
 import { FLAGS, isEnabled } from '../../services/featureFlags.service.js';
+import { buildBulkPayoutExportRows } from './bulkPayoutExport.js';
 
 const router     = express.Router();
 // JWT secret + expiry owned by jwt.util.js — removed a '|| fallback-secret'
@@ -33,13 +34,14 @@ async function requireBulkPayoutsEnabled(req, res, next) {
 
 
 function merchantDisplayRef(merchant) {
-    return `Merchant #${String(merchant._id).slice(-4).toUpperCase()}`;
+    return `Merchant #${merchant.publicRef}`;
 }
 
 function sanitizeMerchantOrder(order) {
     const plain = typeof order?.toObject === 'function' ? order.toObject() : { ...(order || {}) };
     delete plain.userKycSnapshot;
     delete plain.userPhone;
+    delete plain.merchantSnapshot;
     if (plain.type === 'DEPOSIT') {
         delete plain.userBankDetails;
         delete plain.upiId;
@@ -50,6 +52,7 @@ function sanitizeMerchantOrder(order) {
 function sanitizeMerchantOrders(orders) {
     return orders.map((order) => sanitizeMerchantOrder(order));
 }
+
 
 const formatMerchant = (merchant, user = null) => ({
     id:                   merchant._id,
@@ -1098,24 +1101,10 @@ router.get('/bulk-payouts/export', merchantAuth, requireBulkPayoutsEnabled, asyn
 
         // Format rows for bank CSV upload
         // Standard Indian bank bulk transfer format
-        const rows = orders.map((o, idx) => ({
-            sNo:                idx + 1,
-            orderId:            o.orderId,
-            beneficiaryName:    o.userBankDetails?.accountHolderName || '',
-            accountNumber:      o.userBankDetails?.accountNumber || '',
-            ifscCode:           o.userBankDetails?.ifscCode || '',
-            bankName:           o.userBankDetails?.bankName || '',
-            amount:             o.fiatAmount || 0,
-            tokenAmount:        o.tokenAmount || 0,
-            remark:             `BB Token Sale ${o.orderId}`,
-            status:             o.status,
-            createdAt:          o.createdAt,
-            bulkPayoutDate:     o.bulkPayoutDate,
-            bulkPaidAt:         o.bulkPaidAt || null,
-        }));
+        const rows = buildBulkPayoutExportRows(orders);
 
         const dateStr  = targetDate.toISOString().split('T')[0];
-        const totalAmt = orders.reduce((s, o) => s + (o.fiatAmount || 0), 0);
+        const totalAmt = orders.reduce((s, o) => s + (o.amount || 0), 0);
 
         res.json({
             success:   true,
