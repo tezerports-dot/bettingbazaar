@@ -65,6 +65,10 @@ import { httpMetrics, metricsHandler } from './services/metrics.service.js';
 // OWASP filter, service registry, storage abstraction.
 import { HELMET_OPTIONS, CORS_SHAPE, RATE_LIMIT_TIERS } from './config/security.config.js';
 import { network, canonicalRedirect } from './config/network.config.js';
+import {
+  attachProxyProtocolRequestMetadata,
+  listenWithOptionalProxyProtocol,
+} from './network/proxyProtocolV2.js';
 import { owaspFilter } from './middleware/owaspFilter.js';
 // Item 9 (2026-07-13): bounded concurrency / load shedding — one instance's
 // safety valve (503 the excess past the admin-configured ceiling).
@@ -139,6 +143,7 @@ const io = new SocketIOServer(server, {
   pingTimeout: 60000, pingInterval: 25000, connectTimeout: 45000, maxHttpBufferSize: 1e6,
 });
 global.io = io;
+let activeListener = server;
 
 
 
@@ -153,6 +158,7 @@ const PORT = network.port; // item 28: single parse point in config/network.conf
 // Security policy lives in config/security.config.js (item 19) — values are
 // identical to what was inline here before; edit THAT file to change policy.
 app.use(rejectAmbiguousFraming);
+app.use(attachProxyProtocolRequestMetadata);
 app.use(compression());
 app.use(helmet(HELMET_OPTIONS));
 // Item 29: optional canonical-host 301 (only when CANONICAL_HOST is set; keys
@@ -499,7 +505,12 @@ Promise.allSettled([
     console.log(`⏸️ Runtime role ${runtime.role}: cron jobs are not registered.`);
   }
   registerFundingEventSubscribers(); // Funding Platform (Phase 009) — eventBus wiring
-  server.listen(PORT, '0.0.0.0', () => {
+  activeListener = listenWithOptionalProxyProtocol(server, {
+    port: PORT,
+    host: '0.0.0.0',
+    enabled: network.proxyProtocolV2.enabled,
+    trustedSubnets: network.proxyProtocolV2.trustedSubnets,
+  }).on('listening', () => {
     console.log(`✅ Server listening on port ${PORT}`);
   });
 });
@@ -547,12 +558,16 @@ const _shutdown = (sig) => {
   // Give the LB DRAIN_DELAY_MS to observe readiness=503 before we stop accepting.
   setTimeout(() => {
     try { server.closeIdleConnections?.(); } catch (_) {} // release idle keep-alives now
-    server.close(async () => {
+    const finishShutdown = async () => {
       console.log('[shutdown] listener closed; in-flight drained — closing datastores.');
       await closeResources();
       clearTimeout(hardExit);
       console.log('[shutdown] complete.');
       process.exit(0);
+    };
+    activeListener.close(() => {
+      if (activeListener === server) return finishShutdown();
+      return server.close(finishShutdown);
     });
     // Nudge lingering long-lived connections (e.g. SSE) toward closing.
     setTimeout(() => { try { server.closeAllConnections?.(); } catch (_) {} }, Math.max(0, DEADLINE_MS - DRAIN_DELAY_MS - 2000)).unref?.();

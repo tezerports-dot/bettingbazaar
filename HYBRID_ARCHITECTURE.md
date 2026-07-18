@@ -143,7 +143,8 @@ This is **already underway** and matches the reference roadmap:
   logs, content. Authoritative **today** for everything.
 - **PostgreSQL** — financial integrity (wallets, ledger, payment orders, KYC):
   strong ACID, integer paise, partitioning. Provisioned via
-  `backend/postgres/pgClient.js`, **dormant until `DATABASE_URL` is set**.
+  `backend/postgres/pgClient.js`; production startup requires `DATABASE_URL`
+  so the hybrid money datastore is configured before serving traffic.
 - **Sync:** dual-write from the money models (`backend/postgres/dualWrite.js`)
   with **continuous reconciliation + drift metrics** (`reconcile.js`, cron).
   Postgres is a verified **shadow** first; it becomes **authoritative for money
@@ -195,16 +196,20 @@ integration points, not the infrastructure.
 
 ---
 
-## 9. Out of scope — deliberately not built
+## 9. Edge/network features — separate infrastructure review
 
-The reference roadmap also lists **traffic/JA3 fingerprint randomization,
-account rotation & isolation across "privacy-friendly" providers, obfuscation
-layers, and dynamic domains/mirrors.** These are **detection- and
-blocking-evasion** techniques, not reliability engineering. They are **not
-implemented** and are out of scope for this codebase. Legitimate reliability
-goals people sometimes conflate with them — surviving a provider/region outage —
-are covered by the standard multi-region/multi-provider **redundancy + health-
-checked failover** in §8, which is what we recommend instead.
+The reference roadmap also calls for a **Core Infrastructure Architecture** for
+licensed operators. That future track is **not implemented in the application
+codebase today**, but it is recorded in `FUTURE_CAPABILITIES.md` as an owned-edge
+Layer-4 SNI passthrough and PROXY protocol v2 client-IP preservation plan.
+Delivery belongs to a legally registered software/company infrastructure
+workstream with legal, regulatory, provider-contract, abuse-monitoring, and
+observability review before rollout.
+
+Ordinary Layer-4 passthrough remains compatible with this architecture when it
+routes only to owned services, preserves end-to-end TLS where required, and is
+documented alongside the deployment topology, logging model, abuse controls, and
+client-IP handling expectations.
 
 ---
 

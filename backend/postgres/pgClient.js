@@ -12,6 +12,7 @@
 import fs from 'fs';
 import path from 'path';
 import { rupeesToPaise } from '../shared/money.js'; // Integer Money Engine (cap #9)
+import { pgQueryDuration } from '../services/metrics.service.js';
 
 let pool = null;
 
@@ -62,10 +63,18 @@ export async function getPool() {
   return pool;
 }
 
-export async function pgQuery(text, params) {
-  const p = await getPool();
-  if (!p) throw new Error('Postgres not configured (DATABASE_URL unset)');
-  return p.query(text, params);
+export async function pgQuery(text, params, operation = 'query') {
+  const end = pgQueryDuration.startTimer({ operation: String(operation).slice(0, 48) || 'query' });
+  try {
+    const p = await getPool();
+    if (!p) throw new Error('Postgres not configured (DATABASE_URL unset)');
+    const result = await p.query(text, params);
+    end({ outcome: 'success' });
+    return result;
+  } catch (error) {
+    end({ outcome: 'error' });
+    throw error;
+  }
 }
 
 /** Apply schema.sql idempotently (every statement IF NOT EXISTS / OR REPLACE). */

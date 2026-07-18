@@ -64,6 +64,27 @@ above. `gameProvider.model.js`/`game-providers.routes.js` are third-party
 casino/game-provider integrations, not sports fixtures/odds. The actual core
 product is the cycle/crash engine (`domains/game/`), not a sportsbook.
 
+## Core Infrastructure Architecture
+L4-multiplexed SNI passthrough · End-to-end encryption (E2EE) · Transparent
+Proxy Protocol v2 client-IP preservation · Owned-service edge isolation ·
+Deployment-topology documentation
+
+**Future plan, not application code today:** this track is reserved for a legally
+registered software/company infrastructure workstream serving licensed operators.
+The safe target architecture is ordinary Layer-4 stream routing that selects an
+owned backend by TLS SNI before application decryption, preserves cryptographic
+integrity end-to-end, and forwards true client metadata to trusted downstream
+applications via PROXY protocol v2 without modifying encrypted payloads.
+
+Before implementation, the workstream needs a written design covering licensed
+jurisdiction, provider contracts, DNS/domain ownership, audit logging,
+abuse-monitoring signals, client-IP parsing, incident response, rollback,
+operator sign-off, and how downstream applications validate trusted proxy
+boundaries. Application-domain code should continue to expose normal
+owned-service contracts; edge routing must be documented as deployment topology
+rather than hidden inside product domains. The initial HAProxy template lives in
+`deploy/haproxy/core-infra-l4-passthrough.cfg` for software-company adaptation.
+
 ## Business Policy Platform
 Commission · Wallet · Reserve · Deposit · Withdrawal · Merchant · Settlement ·
 USDT · Bonus · VIP · Betting Policies

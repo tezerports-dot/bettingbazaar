@@ -51,14 +51,20 @@ full architecture decision and reasoning.
 2. `PaymentGatewayConfig` (backend/models/payment.model.js) — confirmed intentional
    future third-party gateway scaffolding, not a bug, not yet wired in.
 3. No MongoDB transactions in the settlement flow — correctness relies on
-   idempotency keys, not atomicity. Documented, not changed.
+   idempotency keys, not atomicity. Documented, not changed; this remains a
+   deployment-readiness hardening item before high-volume automated settlement.
 4. `backend/debug-merchant-query.mjs` and `check-merchants.mjs` — removed; no
    stray debug scripts remain in the repo.
 5. Phase 002 "no orphaned functionality" — verified at capability level only.
-6. **Closed after 2026-07-07 discovery:** live merchant deposit approval/confirm
+6. Core Infrastructure Architecture is planned as a future licensed-operator
+   infrastructure track: L4-multiplexed SNI passthrough, E2EE preservation, and
+   transparent PROXY protocol v2 client-IP preservation must be evaluated with
+   legal, regulatory, provider-contract, abuse-monitoring, observability, and
+   trusted-proxy validation review before rollout.
+7. **Closed after 2026-07-07 discovery:** live merchant deposit approval/confirm
    paths now credit users through `walletAuthority.service.js`; the orphaned
    `paymentProcessing.service.js` `approveDeposit()` helper has been removed.
-7. **Corrected 2026-07-08 (was: "New with this migration" 2026-07-07):**
+8. **Corrected 2026-07-08 (was: "New with this migration" 2026-07-07):**
    `DepositPolicy.merchantCommissionPercent` / `commissionFundingSource` have
    been **removed** — deposit creation and a completed buy+sell cycle are
    different trigger events, so merchant incentive pay cannot live on a
@@ -70,7 +76,7 @@ full architecture decision and reasoning.
    triggered by completed buy+sell cycles, platform-funded — is not yet
    modeled anywhere; see ENTERPRISE_DECISIONS.md 2026-07-08 and
    EXECUTION_QUEUE.md.
-8. **Found and fixed while verifying runtime consumers (2026-07-07):** a
+9. **Found and fixed while verifying runtime consumers (2026-07-07):** a
    third independent hardcoded 90/10, in `paymentProcessing.service.js`'s
    `createDepositOrder()` — it computed `depositAllocation`/`reserveAllocation`
    locally (redundant with, and silently overwritten by, the model's pre-save

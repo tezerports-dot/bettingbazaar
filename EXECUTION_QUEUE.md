@@ -432,16 +432,19 @@ Operations Platform (orchestration-only) slots later. See ENTERPRISE_DECISIONS.m
       absent; no debug scripts remain to delete.
 - [x] `deposit-policy-migration.patch` (repo root) — already absent; stale
       patch file no longer exists.
-- [ ] **Discovered 2026-07-08:** merchant-panel `npm run build` is broken in
-      the pristine repo — its build script is `tsc && vite build` and `tsc`
-      fails with 20 pre-existing errors (OrderCard null-safety, unused
-      imports, etc.). `vite build` alone succeeds. Not introduced by and not
-      fixed in the 1:1 flattening (verified identical error list before/
-      after); needs its own cleanup pass.
-- [ ] **Discovered 2026-07-08:** the user panel has ~95 pre-existing
-      `tsc --noEmit` errors (two of which — broken `TokenRates` type imports
-      — the 1:1 flattening incidentally fixed). Vite builds fine; type
-      cleanup is a separate task.
+- [x] **Re-verified 2026-07-18:** merchant-panel `npm run build` now passes
+      with its `tsc && vite build` gate. The older note about 20 pre-existing
+      merchant TypeScript errors is stale and must not be treated as a current
+      deployment blocker.
+- [ ] **Re-verified 2026-07-18:** user-panel `npm run build` passes, but its
+      build script is still `vite build && node inject-build-id.cjs`; it does
+      not run a TypeScript type gate. Add a dedicated user-panel typecheck pass
+      before making type safety a CI release gate.
+- [ ] **Claude Opus 4.8 handoff:** resolve the user-panel TypeScript debt,
+      add an explicit `tsc --noEmit`/equivalent release gate, and add a
+      merchant-panel route-level smoke pass that fails the pipeline on hidden
+      Vite/runtime exceptions before the Core Infrastructure Architecture edge
+      topology is enabled.
 - [ ] Old `tokenrates` Mongo collection still exists with historical data;
       nothing reads or writes it since the TokenRates model removal. Drop it
       during a scheduled DB maintenance window if desired (DB operation, not
@@ -467,5 +470,11 @@ Operations Platform (orchestration-only) slots later. See ENTERPRISE_DECISIONS.m
       provides shared counters with memory fallback.
 - [ ] Full auth/authz line-by-line audit + dependency audit (npm audit
       reports 13 vulns in the newly added dev tooling — review prod deps).
-- [ ] admin-panel / merchant-panel tsc build breakage (pre-existing) blocks
-      full CI build gating.
+- [x] admin-panel / merchant-panel `tsc && vite build` breakage is no longer
+      reproducible as of 2026-07-18; both panel builds pass. User-panel still
+      needs an explicit typecheck gate before full frontend CI can claim strict
+      TypeScript coverage.
+- [ ] Core Infrastructure Architecture DB monitoring: `bb_pg_query_duration_seconds`
+      and pool gauges now expose Postgres latency/pool pressure; add dashboard
+      alert thresholds for transaction timeout risk before routing money paths
+      through an L4 edge topology.

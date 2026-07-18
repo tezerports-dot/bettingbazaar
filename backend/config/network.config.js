@@ -66,6 +66,14 @@ export const network = {
   // fingerprint-routing mechanism.
   outboundRequestTimeoutMs: positiveInteger(process.env.OUTBOUND_HTTP_TIMEOUT_MS, 10_000),
   outboundUserAgent: (process.env.OUTBOUND_HTTP_USER_AGENT || 'BettingBazaar/1.0').trim(),
+
+  // Optional HAProxy PROXY protocol v2 listener mode for the Core Infrastructure
+  // Architecture L4 passthrough template. Enable only when this Node listener is
+  // directly behind trusted internal edge routers that prepend PROXY v2.
+  proxyProtocolV2: {
+    enabled: ['1', 'true', 'yes'].includes(String(process.env.PROXY_PROTOCOL_V2 || '').trim().toLowerCase()),
+    trustedSubnets: parseList(process.env.PROXY_PROTOCOL_TRUSTED_SUBNETS),
+  },
 };
 
 /**

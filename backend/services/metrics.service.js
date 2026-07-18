@@ -107,6 +107,18 @@ export const pgPoolConnections = new client.Gauge({
   },
 });
 
+// Core Infrastructure Architecture readiness: measure money-DB query latency so
+// operators can alert on pool/transaction pressure after adding an L4 edge path.
+// Labels are intentionally bounded: caller supplies a small operation name, not
+// raw SQL.
+export const pgQueryDuration = new client.Histogram({
+  name: 'bb_pg_query_duration_seconds',
+  help: 'Postgres query duration by bounded operation label',
+  labelNames: ['operation', 'outcome'], // success | error
+  buckets: [0.005, 0.02, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+  registers: [registry],
+});
+
 /** GET /metrics handler. */
 export async function metricsHandler(req, res) {
   try {
