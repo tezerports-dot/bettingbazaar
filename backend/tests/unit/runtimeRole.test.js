@@ -13,6 +13,15 @@ describe('runtimeRole', () => {
     });
   });
 
+  it('defaults blank role values to the legacy all-in-one monolith role', () => {
+    expect(runtimeRole({ BB_RUNTIME_ROLE: '' })).toBe('all');
+    expect(runtimeRole({ BB_RUNTIME_ROLE: '   ' })).toBe('all');
+  });
+
+  it('fails fast on invalid nonblank roles instead of silently running everything', () => {
+    expect(() => runtimeRole({ BB_RUNTIME_ROLE: 'not-a-role' })).toThrow(/Invalid BB_RUNTIME_ROLE/);
+  });
+
   it('keeps API pods away from long-lived realtime and scheduler work', () => {
     expect(runtimeProfile({ BB_RUNTIME_ROLE: 'api' })).toMatchObject({
       acceptsHttpApi: true,

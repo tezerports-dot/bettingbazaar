@@ -4,6 +4,15 @@
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 
+const DEFAULT_MAX_BUFFERED_BYTES = 1024 * 1024;
+
+function resolveMaxBufferedBytes(value) {
+    if (value == null || String(value).trim() === '') return DEFAULT_MAX_BUFFERED_BYTES;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return DEFAULT_MAX_BUFFERED_BYTES;
+    return Math.max(1024, parsed);
+}
+
 class SSEManager {
     constructor() {
         // Public broadcast clients  Map<clientId, response>
@@ -21,7 +30,7 @@ class SSEManager {
 
         this.nextId  = 0;
         this.stats   = { totalConnections: 0, totalMessages: 0, droppedBackpressure: 0 };
-        this.maxBufferedBytes = Math.max(1024, Number(process.env.SSE_MAX_BUFFERED_BYTES || 1024 * 1024));
+        this.maxBufferedBytes = resolveMaxBufferedBytes(process.env.SSE_MAX_BUFFERED_BYTES);
 
         // ── Horizontal-scale bridge (Phase X, 2026-07-10) ─────────────────────
         // SSE connections are pinned to one backend instance, but an event
@@ -84,7 +93,8 @@ class SSEManager {
             onDrop?.();
             return false;
         }
-        if ((res.writableLength || 0) > this.maxBufferedBytes) {
+        const projectedBytes = (res.writableLength || 0) + Buffer.byteLength(String(payload));
+        if (projectedBytes > this.maxBufferedBytes) {
             this.stats.droppedBackpressure++;
             try { res.end(); } catch { /* drop slow client */ }
             onDrop?.();
@@ -104,6 +114,10 @@ class SSEManager {
             onDrop?.();
             return false;
         }
+    }
+
+    writeEvent(res, event, data, onDrop) {
+        return this._writeOrDrop(res, `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`, onDrop);
     }
 
     // ── PUBLIC CHANNEL ────────────────────────────────────────────────────────
@@ -172,7 +186,7 @@ class SSEManager {
     sendToClient(clientId, event, data) {
         const res = this.clients.get(clientId);
         if (!res) return;
-        this._writeOrDrop(res, `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`, () => this.clients.delete(clientId));
+        this.writeEvent(res, event, data, () => this.clients.delete(clientId));
     }
 
     // ── MERCHANT PRIVATE CHANNEL ──────────────────────────────────────────────

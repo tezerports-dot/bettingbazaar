@@ -3,8 +3,11 @@
 const VALID_ROLES = new Set(['all', 'api', 'realtime', 'worker', 'scheduler']);
 
 export function runtimeRole(env = process.env) {
-  const role = String(env.BB_RUNTIME_ROLE || 'all').toLowerCase();
-  return VALID_ROLES.has(role) ? role : 'all';
+  const raw = env.BB_RUNTIME_ROLE;
+  if (raw == null || String(raw).trim() === '') return 'all';
+  const role = String(raw).trim().toLowerCase();
+  if (VALID_ROLES.has(role)) return role;
+  throw new Error(`Invalid BB_RUNTIME_ROLE '${raw}'. Expected one of: ${[...VALID_ROLES].join(', ')}`);
 }
 
 export function runtimeProfile(env = process.env) {

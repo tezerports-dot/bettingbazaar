@@ -9,9 +9,11 @@ class FakeResponse extends EventEmitter {
     this.writableLength = writableLength;
     this.writeResult = writeResult;
     this.ended = false;
+    this.writeCalls = 0;
   }
 
   write(payload) {
+    this.writeCalls++;
     this.lastPayload = payload;
     return this.writeResult;
   }
@@ -30,6 +32,15 @@ describe('SSEManager backpressure', () => {
     else process.env.SSE_MAX_BUFFERED_BYTES = previousMax;
   });
 
+
+  it('falls back to the default buffer cap for invalid configuration', () => {
+    process.env.SSE_MAX_BUFFERED_BYTES = 'Infinity';
+    const manager = new SSEManager();
+
+    expect(manager.getStats().maxBufferedBytes).toBe(1024 * 1024);
+    manager.destroy();
+  });
+
   it('drops a public client whose response buffer is already over the cap', () => {
     process.env.SSE_MAX_BUFFERED_BYTES = '1024';
     const manager = new SSEManager();
@@ -38,6 +49,22 @@ describe('SSEManager backpressure', () => {
 
     manager.sendToClient(id, 'snapshot', { ok: true });
 
+    expect(manager.clients.has(id)).toBe(false);
+    expect(res.ended).toBe(true);
+    expect(manager.getStats().droppedBackpressure).toBe(1);
+    manager.destroy();
+  });
+
+
+  it('drops an oversized payload before write is attempted', () => {
+    process.env.SSE_MAX_BUFFERED_BYTES = '1024';
+    const manager = new SSEManager();
+    const res = new FakeResponse({ writableLength: 0 });
+    const id = manager.addClient(res);
+
+    manager.sendToClient(id, 'snapshot', { text: 'x'.repeat(2048) });
+
+    expect(res.writeCalls).toBe(0);
     expect(manager.clients.has(id)).toBe(false);
     expect(res.ended).toBe(true);
     expect(manager.getStats().droppedBackpressure).toBe(1);

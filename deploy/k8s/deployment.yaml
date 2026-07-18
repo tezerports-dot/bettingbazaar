@@ -43,8 +43,12 @@ spec:
             - { name: PG_POOL_SIZE, value: "20" }
           securityContext:
             allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: false
+            readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: app-assets, mountPath: /app/backend/app-assets }
+            - { name: storage, mountPath: /app/backend/storage }
+            - { name: tmp, mountPath: /tmp }
           startupProbe:
             httpGet: { path: /health/live, port: 8080 }
             failureThreshold: 30
@@ -60,6 +64,10 @@ spec:
           resources:
             requests: { cpu: 500m, memory: 768Mi }
             limits:   { cpu: "2",  memory: 2Gi }
+      volumes:
+        - { name: app-assets, emptyDir: {} }
+        - { name: storage, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -99,8 +107,12 @@ spec:
             - { name: PG_POOL_SIZE, value: "10" }
           securityContext:
             allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: false
+            readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: app-assets, mountPath: /app/backend/app-assets }
+            - { name: storage, mountPath: /app/backend/storage }
+            - { name: tmp, mountPath: /tmp }
           startupProbe:
             httpGet: { path: /health/live, port: 8080 }
             failureThreshold: 30
@@ -116,6 +128,10 @@ spec:
           resources:
             requests: { cpu: 500m, memory: 1Gi }
             limits:   { cpu: "2",  memory: 3Gi }
+      volumes:
+        - { name: app-assets, emptyDir: {} }
+        - { name: storage, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -149,8 +165,12 @@ spec:
             - { name: PG_POOL_SIZE, value: "10" }
           securityContext:
             allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: false
+            readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: app-assets, mountPath: /app/backend/app-assets }
+            - { name: storage, mountPath: /app/backend/storage }
+            - { name: tmp, mountPath: /tmp }
           startupProbe:
             httpGet: { path: /health/live, port: 8080 }
             failureThreshold: 30
@@ -166,6 +186,10 @@ spec:
           resources:
             requests: { cpu: 250m, memory: 768Mi }
             limits:   { cpu: "1",  memory: 2Gi }
+      volumes:
+        - { name: app-assets, emptyDir: {} }
+        - { name: storage, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
 ---
 apiVersion: v1
 kind: Service

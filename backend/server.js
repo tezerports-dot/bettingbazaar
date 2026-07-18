@@ -338,6 +338,7 @@ app.get('/api/v1/health', legacyHealth);
 // the routes. Per-IP catches the single abuser fastest; the subnet limiter
 // catches an attacker rotating IPs within one block; the surge breaker (off
 // until an admin sets a ceiling) catches distributed rotation across subnets.
+if (runtime.acceptsHttpApi) {
 startIpDefenseConfigRefresh();
 app.use('/api/v1/auth', authLimiter, createSubnetLimiter('auth'), globalSurgeBreaker('auth'), authRoutes);
 // MED-04 FIX: removed /api/auth duplicate mount — it duplicated rate limit slots
@@ -410,6 +411,9 @@ app.use('/api',           retentionRoutes);
 // /api/vip routes are provided by retentionRoutes above. The legacy
 // vip router was removed to avoid shadowed, schema-incompatible duplicates
 // for /api/vip/config and /api/vip/my.
+} else {
+  app.use('/api', (_req, res) => res.status(404).json({ success: false, message: `API disabled on ${runtime.role} runtime role` }));
+}
 
 // ─── GAME ENGINE + SSE ───────────────────────────────────────────────────────
 const sseManager     = new SSEManager();

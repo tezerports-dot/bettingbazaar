@@ -32,6 +32,17 @@ import { verifyJwt } from '../domains/identity/jwt.util.js';
 import { isTokenRevoked } from '../domains/identity/auth.middleware.js';
 import { buildDescendingCursorFilter, normalizeLimit, paginatedResponse } from '../utils/cursorPagination.js';
 
+const ADMIN_QUEUE_SNAPSHOT_FIELDS = [
+    'orderId', 'userId', 'type', 'status',
+    'tokenAmount', 'fiatAmount', 'amount', 'rateUsed',
+    'merchantProfit', 'merchantFee', 'payoutFee',
+    'utrWarning', 'utrWarningMessage', 'requiresReview',
+    'redFlagged', 'redFlagReason',
+    'assignedAt', 'expiresAt', 'paidAt', 'completedAt',
+    'bulkPayoutDate', 'bulkPaidAt', 'bulkPayoutBatch',
+    'createdAt', 'updatedAt',
+].join(' ');
+
 const PUBLIC_SYSTEM_CONFIG_FIELDS = [
     'minBetAmount',
     'maxBetAmount',
@@ -186,7 +197,7 @@ export function initSSERoutes(sseManager, cycleGenerator) {
             }).sort({ createdAt: -1, _id: -1 }).limit(limit + 1).lean();
             const page = paginatedResponse(orders, limit);
 
-            res.write(`event: merchant_orders_snapshot\ndata: ${JSON.stringify({ orders: page.items, nextCursor: page.nextCursor, hasMore: page.hasMore, serverTime: page.serverTime, timestamp: Date.now() })}\n\n`);
+            sseManager.writeEvent(res, 'merchant_orders_snapshot', { orders: page.items, nextCursor: page.nextCursor, hasMore: page.hasMore, serverTime: page.serverTime, timestamp: Date.now() });
         } catch (e) {
             console.error('❌ SSE merchant snapshot error:', e.message);
         }
@@ -238,13 +249,14 @@ export function initSSERoutes(sseManager, cycleGenerator) {
             const limit = normalizeLimit(req.query.limit, 100, 250);
             const cursorFilter = buildDescendingCursorFilter(req.query.cursor);
             const pendingOrders = await PaymentOrder.find({ status: 'PENDING_QUEUE', ...cursorFilter })
+                .select(ADMIN_QUEUE_SNAPSHOT_FIELDS)
                 .populate('userId', 'username mobile')
                 .sort({ createdAt: -1, _id: -1 })
                 .limit(limit + 1)
                 .lean();
             const page = paginatedResponse(pendingOrders, limit);
 
-            res.write(`event: queue_snapshot\ndata: ${JSON.stringify({ orders: page.items, nextCursor: page.nextCursor, hasMore: page.hasMore, serverTime: page.serverTime, timestamp: Date.now() })}\n\n`);
+            sseManager.writeEvent(res, 'queue_snapshot', { orders: page.items, nextCursor: page.nextCursor, hasMore: page.hasMore, serverTime: page.serverTime, timestamp: Date.now() });
         } catch (e) {
             console.error('❌ SSE admin queue snapshot error:', e.message);
         }
