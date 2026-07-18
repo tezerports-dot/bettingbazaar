@@ -247,7 +247,9 @@ paymentOrderSchema.pre('save', async function (next) {
 
 // ── Indexes ───────────────────────────────────────────────────────────────────
 paymentOrderSchema.index({ status: 1, type: 1, createdAt: 1 });
-paymentOrderSchema.index({ merchantId: 1, status: 1 });
+paymentOrderSchema.index({ status: 1, createdAt: -1, _id: -1 });
+paymentOrderSchema.index({ merchantId: 1, status: 1, createdAt: -1, _id: -1 });
+paymentOrderSchema.index({ userId: 1, createdAt: -1, _id: -1 });
 paymentOrderSchema.index({ expiresAt: 1, status: 1 });
 paymentOrderSchema.index({ bulkPayoutDate: 1, type: 1, status: 1 });
 

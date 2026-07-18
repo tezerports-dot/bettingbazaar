@@ -1,59 +1,54 @@
 # GOVERNANCE: Read 04-GOVERNANCE.md before editing this file.
-# Kubernetes manifests (plan items 40 + 44, 2026-07-13). The app tier is
-# verified stateless (JWT auth, Redis-shared rate limits, cron leader election,
-# SSE/socket Redis bridge, S3 asset storage — see PORTABILITY.md), so it scales
-# horizontally with no session affinity.
+# Kubernetes manifests (plan items 40 + 44, 2026-07-18). Runtime behavior is
+# split by BB_RUNTIME_ROLE so API pods do short HTTP work, realtime pods own
+# SSE/WebSocket clients, and scheduler pods own cron/game-cycle producers.
 #
-# Item 44 (Rolling Deployment): the RollingUpdate strategy below IS rolling —
-# k8s shifts traffic pod-by-pod, maxUnavailable 0 means capacity never dips.
-# Item 43 (Blue/Green): see deploy/k8s/README.md — run a second Deployment
-# (color: green) and flip the Service selector; instant rollback = flip back.
-#
-# Prereqs: a MongoDB replica set + Redis reachable from the cluster; secrets
-# created from your env (kubectl create secret generic bb-env --from-env-file).
+# Prereqs: MongoDB Atlas/replica set or sharded cluster, Redis Cluster, optional
+# Kafka/Redpanda, managed Postgres, object storage/CDN, and bb-env secrets.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: bettingbazaar
-  labels: { app: bettingbazaar, color: blue }
+  name: bettingbazaar-api
+  labels: { app: bettingbazaar, tier: api, color: blue }
 spec:
-  replicas: 2
+  replicas: 3
   strategy:
     type: RollingUpdate
     rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
   selector:
-    matchLabels: { app: bettingbazaar, color: blue }
+    matchLabels: { app: bettingbazaar, tier: api, color: blue }
   template:
     metadata:
-      labels: { app: bettingbazaar, color: blue }
+      labels: { app: bettingbazaar, tier: api, color: blue }
     spec:
-      # AQ-11: pod-level hardening (CIS Kubernetes Benchmark). Matches the
-      # non-root Dockerfile (USER node = uid 1000). seccomp RuntimeDefault
-      # filters the syscall surface; the container drops all Linux capabilities.
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
         fsGroup: 1000
         seccompProfile: { type: RuntimeDefault }
-      # Spread replicas across nodes so a single node loss can't take the tier down.
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
-            matchLabels: { app: bettingbazaar }
+            matchLabels: { app: bettingbazaar, tier: api }
       containers:
-        - name: app
-          image: bettingbazaar:latest   # replace with your registry tag
+        - name: api
+          image: bettingbazaar:latest
           ports: [{ containerPort: 8080 }]
           envFrom: [{ secretRef: { name: bb-env } }]
+          env:
+            - { name: BB_RUNTIME_ROLE, value: api }
+            - { name: MONGO_POOL_SIZE, value: "50" }
+            - { name: PG_POOL_SIZE, value: "20" }
           securityContext:
             allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: false   # app writes app-assets/storage locally when S3 is off
+            readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
-          # AQ-4: probes are split. Readiness (deps + drain aware) gates traffic;
-          # liveness is process-only so a MongoDB outage can't trigger a
-          # cluster-wide restart storm. A startupProbe protects slow first boots.
+          volumeMounts:
+            - { name: app-assets, mountPath: /app/backend/app-assets }
+            - { name: storage, mountPath: /app/backend/storage }
+            - { name: tmp, mountPath: /tmp }
           startupProbe:
             httpGet: { path: /health/live, port: 8080 }
             failureThreshold: 30
@@ -67,37 +62,189 @@ spec:
             initialDelaySeconds: 40
             periodSeconds: 30
           resources:
-            requests: { cpu: 250m, memory: 512Mi }
-            limits:   { cpu: "1",  memory: 1Gi }
+            requests: { cpu: 500m, memory: 768Mi }
+            limits:   { cpu: "2",  memory: 2Gi }
+      volumes:
+        - { name: app-assets, emptyDir: {} }
+        - { name: storage, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bettingbazaar-realtime
+  labels: { app: bettingbazaar, tier: realtime, color: blue }
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  selector:
+    matchLabels: { app: bettingbazaar, tier: realtime, color: blue }
+  template:
+    metadata:
+      labels: { app: bettingbazaar, tier: realtime, color: blue }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: bettingbazaar, tier: realtime }
+      containers:
+        - name: realtime
+          image: bettingbazaar:latest
+          ports: [{ containerPort: 8080 }]
+          envFrom: [{ secretRef: { name: bb-env } }]
+          env:
+            - { name: BB_RUNTIME_ROLE, value: realtime }
+            - { name: MONGO_POOL_SIZE, value: "25" }
+            - { name: PG_POOL_SIZE, value: "10" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: app-assets, mountPath: /app/backend/app-assets }
+            - { name: storage, mountPath: /app/backend/storage }
+            - { name: tmp, mountPath: /tmp }
+          startupProbe:
+            httpGet: { path: /health/live, port: 8080 }
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health/live, port: 8080 }
+            initialDelaySeconds: 40
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 500m, memory: 1Gi }
+            limits:   { cpu: "2",  memory: 3Gi }
+      volumes:
+        - { name: app-assets, emptyDir: {} }
+        - { name: storage, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bettingbazaar-scheduler
+  labels: { app: bettingbazaar, tier: scheduler, color: blue }
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  selector:
+    matchLabels: { app: bettingbazaar, tier: scheduler, color: blue }
+  template:
+    metadata:
+      labels: { app: bettingbazaar, tier: scheduler, color: blue }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: scheduler
+          image: bettingbazaar:latest
+          ports: [{ containerPort: 8080 }]
+          envFrom: [{ secretRef: { name: bb-env } }]
+          env:
+            - { name: BB_RUNTIME_ROLE, value: scheduler }
+            - { name: MONGO_POOL_SIZE, value: "20" }
+            - { name: PG_POOL_SIZE, value: "10" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: app-assets, mountPath: /app/backend/app-assets }
+            - { name: storage, mountPath: /app/backend/storage }
+            - { name: tmp, mountPath: /tmp }
+          startupProbe:
+            httpGet: { path: /health/live, port: 8080 }
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health/live, port: 8080 }
+            initialDelaySeconds: 40
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 250m, memory: 768Mi }
+            limits:   { cpu: "1",  memory: 2Gi }
+      volumes:
+        - { name: app-assets, emptyDir: {} }
+        - { name: storage, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: bettingbazaar
+  name: bettingbazaar-api
 spec:
-  # Item 43: blue/green switch point — change `color` here to cut traffic over.
-  selector: { app: bettingbazaar, color: blue }
+  selector: { app: bettingbazaar, tier: api, color: blue }
+  ports: [{ port: 80, targetPort: 8080 }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bettingbazaar-realtime
+spec:
+  selector: { app: bettingbazaar, tier: realtime, color: blue }
   ports: [{ port: 80, targetPort: 8080 }]
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: bettingbazaar
+  name: bettingbazaar-api
 spec:
-  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: bettingbazaar }
-  minReplicas: 2
-  maxReplicas: 6
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: bettingbazaar-api }
+  minReplicas: 3
+  maxReplicas: 30
   metrics:
     - type: Resource
-      resource: { name: cpu, target: { type: Utilization, averageUtilization: 70 } }
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 65 } }
 ---
-# AQ-11: guarantee capacity during voluntary disruptions (node drains, rolling
-# upgrades) — the scheduler may never take the tier below 1 healthy pod.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: bettingbazaar-realtime
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: bettingbazaar-realtime }
+  minReplicas: 2
+  maxReplicas: 40
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 60 } }
+---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: bettingbazaar
+  name: bettingbazaar-api
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: { app: bettingbazaar, tier: api }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: bettingbazaar-realtime
 spec:
   minAvailable: 1
   selector:
-    matchLabels: { app: bettingbazaar }
+    matchLabels: { app: bettingbazaar, tier: realtime }

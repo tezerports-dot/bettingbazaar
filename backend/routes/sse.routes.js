@@ -30,6 +30,18 @@ import express from 'express';
 // HS256 and uses the fail-fast secret.
 import { verifyJwt } from '../domains/identity/jwt.util.js';
 import { isTokenRevoked } from '../domains/identity/auth.middleware.js';
+import { buildDescendingCursorFilter, normalizeLimit, paginatedResponse } from '../utils/cursorPagination.js';
+
+const ADMIN_QUEUE_SNAPSHOT_FIELDS = [
+    'orderId', 'userId', 'type', 'status',
+    'tokenAmount', 'fiatAmount', 'amount', 'rateUsed',
+    'merchantProfit', 'merchantFee', 'payoutFee',
+    'utrWarning', 'utrWarningMessage', 'requiresReview',
+    'redFlagged', 'redFlagReason',
+    'assignedAt', 'expiresAt', 'paidAt', 'completedAt',
+    'bulkPayoutDate', 'bulkPaidAt', 'bulkPayoutBatch',
+    'createdAt', 'updatedAt',
+].join(' ');
 
 const PUBLIC_SYSTEM_CONFIG_FIELDS = [
     'minBetAmount',
@@ -95,10 +107,13 @@ export function initSSERoutes(sseManager, cycleGenerator) {
         // 4. Cycle history
         try {
             const { Cycle } = await import('../models/index.js');
-            const cycles = await Cycle.find({ status: 'RESULT_DECLARED' })
-                .sort({ endTime: -1 }).limit(50).lean();
+            const limit = normalizeLimit(req.query.limit, 50, 100);
+            const cursorFilter = buildDescendingCursorFilter(req.query.cursor, 'endTime');
+            const cycles = await Cycle.find({ status: 'RESULT_DECLARED', ...cursorFilter })
+                .sort({ endTime: -1, _id: -1 }).limit(limit + 1).lean();
+            const page = paginatedResponse(cycles, limit, 'endTime');
             sseManager.sendToClient(clientId, 'cycle_history', {
-                cycles: cycles.map(c => {
+                cycles: page.items.map(c => {
                     const delhiPool  = c.totalDelhi  || 0;
                     const bombayPool = c.totalBombay || 0;
                     return {
@@ -109,7 +124,10 @@ export function initSSERoutes(sseManager, cycleGenerator) {
                         totalDelhi: delhiPool, totalBombay: bombayPool,
                         totalPool: delhiPool + bombayPool,
                     };
-                })
+                }),
+                nextCursor: page.nextCursor,
+                hasMore: page.hasMore,
+                serverTime: page.serverTime,
             });
         } catch (e) {
             console.error('❌ SSE initial cycle_history error:', e.message);
@@ -170,12 +188,16 @@ export function initSSERoutes(sseManager, cycleGenerator) {
         try {
             const mongoose = await import('mongoose');
             const PaymentOrder = mongoose.default.model('PaymentOrder');
+            const limit = normalizeLimit(req.query.limit, 50, 100);
+            const cursorFilter = buildDescendingCursorFilter(req.query.cursor);
             const orders = await PaymentOrder.find({
                 merchantId,
-                status: { $in: ['ASSIGNED', 'PROCESSING', 'PAID', 'PENDING_QUEUE'] }
-            }).sort({ createdAt: -1 }).limit(50).lean();
+                status: { $in: ['ASSIGNED', 'PROCESSING', 'PAID', 'PENDING_QUEUE'] },
+                ...cursorFilter,
+            }).sort({ createdAt: -1, _id: -1 }).limit(limit + 1).lean();
+            const page = paginatedResponse(orders, limit);
 
-            res.write(`event: merchant_orders_snapshot\ndata: ${JSON.stringify({ orders, timestamp: Date.now() })}\n\n`);
+            sseManager.writeEvent(res, 'merchant_orders_snapshot', { orders: page.items, nextCursor: page.nextCursor, hasMore: page.hasMore, serverTime: page.serverTime, timestamp: Date.now() });
         } catch (e) {
             console.error('❌ SSE merchant snapshot error:', e.message);
         }
@@ -224,13 +246,17 @@ export function initSSERoutes(sseManager, cycleGenerator) {
         // Push queue snapshot immediately on connect
         try {
             const PaymentOrder = mongoose.default.model('PaymentOrder');
-            const pendingOrders = await PaymentOrder.find({ status: 'PENDING_QUEUE' })
+            const limit = normalizeLimit(req.query.limit, 100, 250);
+            const cursorFilter = buildDescendingCursorFilter(req.query.cursor);
+            const pendingOrders = await PaymentOrder.find({ status: 'PENDING_QUEUE', ...cursorFilter })
+                .select(ADMIN_QUEUE_SNAPSHOT_FIELDS)
                 .populate('userId', 'username mobile')
-                .sort({ createdAt: 1 })
-                .limit(100)
+                .sort({ createdAt: -1, _id: -1 })
+                .limit(limit + 1)
                 .lean();
+            const page = paginatedResponse(pendingOrders, limit);
 
-            res.write(`event: queue_snapshot\ndata: ${JSON.stringify({ orders: pendingOrders, timestamp: Date.now() })}\n\n`);
+            sseManager.writeEvent(res, 'queue_snapshot', { orders: page.items, nextCursor: page.nextCursor, hasMore: page.hasMore, serverTime: page.serverTime, timestamp: Date.now() });
         } catch (e) {
             console.error('❌ SSE admin queue snapshot error:', e.message);
         }

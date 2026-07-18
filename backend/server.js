@@ -32,6 +32,7 @@ const __dirname  = path.dirname(__filename);
 
 // ─── STARTUP MODULES ──────────────────────────────────────────────────────────
 import { validateEnv }        from './startup/validateEnv.js'; // AQ-1: fail-fast env gate
+import { runtimeProfile }     from './startup/runtimeRole.js';
 import { connectMongoDB }     from './startup/mongoConnect.js';
 import { connectRedis }       from './startup/redisConnect.js';
 import { seedAdminAccount }   from './startup/seedAdmin.js';
@@ -92,6 +93,8 @@ import SSEManager         from './domains/notification/sseManager.service.js';
 import { initSSERoutes }  from './routes/sse.routes.js';
 
 // ─── APP SETUP ────────────────────────────────────────────────────────────────
+const runtime = runtimeProfile();
+console.log(`✅ Runtime role: ${runtime.role} (api=${runtime.acceptsHttpApi}, realtime=${runtime.acceptsRealtime}, schedulers=${runtime.runsSchedulers}, workers=${runtime.runsWorkers})`);
 const app = express();
 app.set('trust proxy', network.trustProxy);
 
@@ -130,6 +133,7 @@ const server = backendMtlsEnabled
     }, app)
   : http.createServer(app);
 const io = new SocketIOServer(server, {
+  allowRequest: (_req, callback) => callback(null, runtime.acceptsRealtime),
   cors: { origin: corsOriginCheck, methods: ['GET', 'POST'], credentials: false },
   transports: ['websocket'], allowUpgrades: false, perMessageDeflate: false,
   pingTimeout: 60000, pingInterval: 25000, connectTimeout: 45000, maxHttpBufferSize: 1e6,
@@ -334,6 +338,7 @@ app.get('/api/v1/health', legacyHealth);
 // the routes. Per-IP catches the single abuser fastest; the subnet limiter
 // catches an attacker rotating IPs within one block; the surge breaker (off
 // until an admin sets a ceiling) catches distributed rotation across subnets.
+if (runtime.acceptsHttpApi) {
 startIpDefenseConfigRefresh();
 app.use('/api/v1/auth', authLimiter, createSubnetLimiter('auth'), globalSurgeBreaker('auth'), authRoutes);
 // MED-04 FIX: removed /api/auth duplicate mount — it duplicated rate limit slots
@@ -406,24 +411,33 @@ app.use('/api',           retentionRoutes);
 // /api/vip routes are provided by retentionRoutes above. The legacy
 // vip router was removed to avoid shadowed, schema-incompatible duplicates
 // for /api/vip/config and /api/vip/my.
+} else {
+  app.use('/api', (_req, res) => res.status(404).json({ success: false, message: `API disabled on ${runtime.role} runtime role` }));
+}
 
 // ─── GAME ENGINE + SSE ───────────────────────────────────────────────────────
 const sseManager     = new SSEManager();
 const gameEngine     = new GameEngine(io);
 const cycleGenerator = new CycleGenerator(io, sseManager);
 
-gameEngine.start();
-cycleGenerator.start();
+if (runtime.runsSchedulers) {
+  gameEngine.start();
+  cycleGenerator.start();
+} else {
+  console.log(`⏸️ Runtime role ${runtime.role}: game engine and cycle scheduler are not started.`);
+}
 
 global.sseManager = sseManager;
-app.use('/api/sse', initSSERoutes(sseManager, cycleGenerator));
+if (runtime.acceptsRealtime) {
+  app.use('/api/sse', initSSERoutes(sseManager, cycleGenerator));
+  attachSocketHandlers(io, cycleGenerator, gameEngine);
 
-
-attachSocketHandlers(io, cycleGenerator, gameEngine);
-
-// Cross-instance real-time bridge (Phase X): fan out socket.io + SSE events
-// across all backend instances via Redis. No-op without REDIS_URL.
-initRealtimeBridge(io, sseManager);
+  // Cross-instance real-time bridge (Phase X): fan out socket.io + SSE events
+  // across all realtime instances via Redis. No-op without REDIS_URL.
+  initRealtimeBridge(io, sseManager);
+} else {
+  app.use('/api/sse', (_req, res) => res.status(404).json({ success: false, message: 'Realtime disabled on this API role' }));
+}
 
 // ─── SPA FALLBACKS ───────────────────────────────────────────────────────────
 // AQ-6 (Express 5): named wildcards ('/admin/*splat') — '/admin/*' is invalid
@@ -479,7 +493,11 @@ Promise.allSettled([
     return;
   }
   console.log('✅ DB services initialized');
-  registerCronJobs(rebuildLeaderboard);
+  if (runtime.runsSchedulers) {
+    registerCronJobs(rebuildLeaderboard);
+  } else {
+    console.log(`⏸️ Runtime role ${runtime.role}: cron jobs are not registered.`);
+  }
   registerFundingEventSubscribers(); // Funding Platform (Phase 009) — eventBus wiring
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ Server listening on port ${PORT}`);
