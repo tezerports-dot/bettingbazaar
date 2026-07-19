@@ -9,7 +9,7 @@ export const getBackend = (): Backend => {
   if (!backendInstance) {
     backendInstance = new RealBackend();
   }
-  return backendInstance;
+  return backendInstance!;
 };
 
 // ── MASTER ASSET RESOLVER ─────────────────────────────────────────────────────

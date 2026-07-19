@@ -25,7 +25,7 @@ function CardSVG({text,className,style}:{text:string;className?:string;style?:Re
 }
 
 export type SafeImageVariant='avatar'|'logo'|'card'|'auto';
-interface SafeImageProps extends React.ImgHTMLAttributes<HTMLImageElement>{src?:string|null;alt:string;fallbackText?:string;variant?:SafeImageVariant;fallbackSize?:number;}
+interface SafeImageProps extends Omit<React.ImgHTMLAttributes<HTMLImageElement>, 'src'>{src?:string|null;alt:string;fallbackText?:string;variant?:SafeImageVariant;fallbackSize?:number;}
 
 const SafeImage:React.FC<SafeImageProps>=({src,alt,fallbackText,variant='auto',fallbackSize=40,className='',style,...rest})=>{
   const [failed,setFailed]=useState(!src||src.trim()==='');

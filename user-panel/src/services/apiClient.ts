@@ -13,6 +13,10 @@
  *   ✓ Typed response helpers
  */
 
+declare global {
+  interface Window { __bbAuthToken__?: string | null; }
+}
+
 const BASE_URL = import.meta.env.VITE_API_URL || '';
 const MAX_RETRIES = 2;
 

@@ -679,7 +679,7 @@ export class RealBackend implements Backend {
   ): Promise<any> {
     return this.request(`/p2p/order/${orderId}/status`, {
       method: 'POST',
-      body: JSON.stringify({ status, actionBy, ...extra })
+      body: JSON.stringify({ status, actionBy })
     });
   }
 
@@ -687,7 +687,7 @@ export class RealBackend implements Backend {
   // FE 4.4 FIX: was sending POST to a GET route -> always 404
   async getAuditLogs(filters?: any) {
     const params = filters ? '?' + new URLSearchParams(
-      Object.fromEntries(Object.entries(filters).filter(([, v]) => v !== undefined && v !== ''))
+      Object.fromEntries(Object.entries(filters).filter(([, v]) => v !== undefined && v !== '').map(([k, v]) => [k, String(v)]))
     ).toString() : '';
     return this.request<AuditLog[]>(`/admin/audit-logs${params}`);  // GET
   }
