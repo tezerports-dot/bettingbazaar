@@ -60,6 +60,7 @@ export interface Backend {
 
   subscribeToTicker(callback: (data: { id: string, text: string, side: 'DELHI' | 'BOMBAY', amount: number }) => void): () => void;
   subscribeToUserUpdates(userId: string, callback: (data: any) => void): () => void;
+  subscribeToBranding(callback: (branding: any) => void): () => void;
 
 
   // Token conversion is fixed 1:1 (Phase 006 flattening, 2026-07-08) —

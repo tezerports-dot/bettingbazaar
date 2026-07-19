@@ -125,8 +125,7 @@ const MerchantRedirect = () => {
       const cached = localStorage.getItem('app_branding');
       if (cached) applyBranding(JSON.parse(cached));
     } catch { /* ignore */ }
-    (backend as any).on?.('branding', applyBranding);
-    (backend as any).on?.('branding_updated', (d: any) => applyBranding(d?.branding ?? d));
+    return backend.subscribeToBranding(applyBranding);
   }, []);
 
 useEffect(() => { window.location.href = '/merchant'; }, []); return null; };

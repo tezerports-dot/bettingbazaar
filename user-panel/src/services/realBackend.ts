@@ -362,6 +362,18 @@ export class RealBackend implements Backend {
     };
   }
 
+  subscribeToBranding(callback: (branding: any) => void) {
+    if (!this.socket) return () => {};
+    const brandingHandler = (data: any) => callback(data);
+    const updatedHandler = (data: any) => callback(data?.branding ?? data);
+    this.socket.on('branding', brandingHandler);
+    this.socket.on('branding_updated', updatedHandler);
+    return () => {
+      this.socket?.off('branding', brandingHandler);
+      this.socket?.off('branding_updated', updatedHandler);
+    };
+  }
+
   subscribeToAdminNotifications(callback: (data: any) => void) {
     if (!this.socket) return () => {};
     this.socket.on('admin_notification', callback);
