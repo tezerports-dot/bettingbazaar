@@ -174,9 +174,13 @@ export interface MerchantProfile {
   fiatBalance?: number;
   tokenBalance?: number;  // BB token wallet — funded by admin, shown on Dashboard
   
-  // Limits (REAL)
-  dailyLimit?: number;
-  dailyUsed?: number;
+  // Limits (REAL from backend Merchant.limits)
+  limits?: {
+    minDeposit?: number;
+    maxDeposit?: number;
+    minWithdraw?: number;
+    maxWithdraw?: number;
+  };
   
   // Settlement details
   settlementDetails?: {

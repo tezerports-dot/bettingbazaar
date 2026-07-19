@@ -136,9 +136,12 @@ const Dashboard: React.FC = () => {
   const successRate            = totalOrdersCount > 0
     ? (completedToday / (completedToday + activeOrders)) * 100
     : 0;
-  const dailyLimit             = merchant?.dailyLimit || 0;
-  const dailyUsed              = merchant?.dailyUsed || 0;
-  const dailyCapacityPercent   = dailyLimit > 0 ? Math.min(100, Math.round((dailyUsed / dailyLimit) * 100)) : 0;
+  const tokenBalance           = merchant?.tokenBalance ?? 0;
+  const minDepositLimit        = merchant?.limits?.minDeposit ?? 0;
+  const maxDepositLimit        = merchant?.limits?.maxDeposit ?? 0;
+  const minWithdrawLimit       = merchant?.limits?.minWithdraw ?? 0;
+  const maxWithdrawLimit       = merchant?.limits?.maxWithdraw ?? 0;
+  const walletCapacityPercent  = maxDepositLimit > 0 ? Math.min(100, Math.round((tokenBalance / maxDepositLimit) * 100)) : 0;
   const avgProfitPerOrder      = todayEarnings / (completedToday || 1);
   const serviceReadiness       = merchant?.isOnline && merchant?.acceptsDeposits !== false && merchant?.acceptsWithdrawals !== false;
   const erpCards = [
@@ -152,8 +155,8 @@ const Dashboard: React.FC = () => {
     {
       title: 'Settlement Wallet',
       icon: WalletCards,
-      value: `Rs.${(merchant?.tokenBalance ?? 0).toLocaleString('en-IN')}`,
-      label: `Daily usage ${dailyCapacityPercent}%`,
+      value: `Rs.${tokenBalance.toLocaleString('en-IN')}`,
+      label: `Wallet covers ${walletCapacityPercent}% of max deposit`,
       className: 'from-emerald-600 to-teal-700',
     },
     {
@@ -220,26 +223,30 @@ const Dashboard: React.FC = () => {
         <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-lg lg:col-span-2">
           <div className="mb-4 flex items-center justify-between">
             <div>
-              <h2 className="text-lg font-bold text-gray-900">Daily Capacity Plan</h2>
-              <p className="text-sm text-gray-500">Track how much of today’s assigned limit is already consumed.</p>
+              <h2 className="text-lg font-bold text-gray-900">Order Limits & Wallet Capacity</h2>
+              <p className="text-sm text-gray-500">Uses live merchant limits and wallet balance returned by the profile API.</p>
             </div>
-            <span className="rounded-full bg-blue-50 px-3 py-1 text-sm font-bold text-blue-700">{dailyCapacityPercent}% used</span>
+            <span className="rounded-full bg-blue-50 px-3 py-1 text-sm font-bold text-blue-700">{walletCapacityPercent}% wallet cover</span>
           </div>
           <div className="h-3 overflow-hidden rounded-full bg-gray-100">
-            <div className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-600" style={{ width: `${dailyCapacityPercent}%` }} />
+            <div className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-600" style={{ width: `${walletCapacityPercent}%` }} />
           </div>
-          <div className="mt-4 grid grid-cols-3 gap-3 text-sm">
+          <div className="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
             <div className="rounded-xl bg-gray-50 p-3">
-              <p className="text-gray-500">Daily Limit</p>
-              <p className="font-bold text-gray-900">Rs.{dailyLimit.toLocaleString('en-IN')}</p>
+              <p className="text-gray-500">Min Deposit</p>
+              <p className="font-bold text-gray-900">Rs.{minDepositLimit.toLocaleString('en-IN')}</p>
             </div>
             <div className="rounded-xl bg-gray-50 p-3">
-              <p className="text-gray-500">Used</p>
-              <p className="font-bold text-gray-900">Rs.{dailyUsed.toLocaleString('en-IN')}</p>
+              <p className="text-gray-500">Max Deposit</p>
+              <p className="font-bold text-gray-900">Rs.{maxDepositLimit.toLocaleString('en-IN')}</p>
             </div>
             <div className="rounded-xl bg-gray-50 p-3">
-              <p className="text-gray-500">Remaining</p>
-              <p className="font-bold text-gray-900">Rs.{Math.max(0, dailyLimit - dailyUsed).toLocaleString('en-IN')}</p>
+              <p className="text-gray-500">Min Withdraw</p>
+              <p className="font-bold text-gray-900">Rs.{minWithdrawLimit.toLocaleString('en-IN')}</p>
+            </div>
+            <div className="rounded-xl bg-gray-50 p-3">
+              <p className="text-gray-500">Max Withdraw</p>
+              <p className="font-bold text-gray-900">Rs.{maxWithdrawLimit.toLocaleString('en-IN')}</p>
             </div>
           </div>
         </div>
