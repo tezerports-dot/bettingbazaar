@@ -9,4 +9,4 @@ Core Enterprise tier. ORCHESTRATION-ONLY — owns NO data (locked 2026-07-03).
 | Policy management / merchant ops / monitoring surfaces | The owning platforms' admin routes (deposit-policy, merchant-bonus-policy, revenue, merchant-platform, communication) — Operations aggregates, never duplicates |
 
 The admin-panel UI for these endpoints is Enterprise UI/UX scope
-(docs/governance/EXECUTION_QUEUE.md).
+(docs/governance/CAPABILITY_MATRIX_2026.md).

@@ -20,7 +20,7 @@
 //   - opposite-side betting restriction (config-gated)
 //   - funding-order velocity limit (config-gated)
 // Declared Risk Platform capabilities NOT yet implemented (no fake
-// placeholders — see docs/governance/EXECUTION_QUEUE.md): AML screening, fraud-signal
+// placeholders — see docs/governance/CAPABILITY_MATRIX_2026.md): AML screening, fraud-signal
 // scoring, device risk, behaviour analysis, responsible-gaming limits.
 
 import mongoose from 'mongoose';

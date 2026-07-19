@@ -135,8 +135,8 @@ const Dashboard: React.FC = () => {
   const completedToday   = stats?.completedToday || 0;
 
   const currentMerchant        = dashboardMerchant ?? merchant;
-  const totalDepositsVolume    = earnings?.lifetime?.deposits?.totalAmount    || currentMerchant?.totalDepositsProcessed    || 0;
-  const totalWithdrawalsVolume = earnings?.lifetime?.withdrawals?.totalAmount || currentMerchant?.totalWithdrawalsProcessed || 0;
+  const totalDepositsVolume    = earnings?.lifetime?.deposits?.totalAmount    ?? currentMerchant?.totalDepositsProcessed    ?? 0;
+  const totalWithdrawalsVolume = earnings?.lifetime?.withdrawals?.totalAmount ?? currentMerchant?.totalWithdrawalsProcessed ?? 0;
   const totalVolume            = totalDepositsVolume + totalWithdrawalsVolume;
   const totalOrdersCount       = (earnings?.lifetime?.deposits?.count || 0) + (earnings?.lifetime?.withdrawals?.count || 0);
   const activeOrders           = pendingOrders + processingOrders;

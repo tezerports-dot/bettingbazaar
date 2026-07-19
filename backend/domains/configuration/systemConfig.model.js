@@ -84,7 +84,7 @@ const systemConfigSchema = new mongoose.Schema({
   // buy-only USDT flows and never define a USDT sell option.
   usdtPricing: {
     userMerchantBuyInr:  { type: Number, default: 0, min: 0 },
-    merchantAdminBuyInr: { type: Number, default: 1, min: 0 },
+    merchantAdminBuyInr: { type: Number, default: 1, min: 0.01 },
   },
 
   // ── CYCLE TIMING (Phase X X-5, 2026-07-10) ────────────────────────────────

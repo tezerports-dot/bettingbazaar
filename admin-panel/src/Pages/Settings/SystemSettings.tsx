@@ -450,7 +450,7 @@ export const SystemSettings: React.FC = () => {
             <input
               type="number" min={0} step={0.01}
               value={formData.usdtPricing.merchantAdminBuyInr}
-              onChange={(e) => setFormData({ ...formData, usdtPricing: { ...formData.usdtPricing, merchantAdminBuyInr: Math.max(0.01, Number(e.target.value) || 1) } })}
+              onChange={(e) => setFormData({ ...formData, usdtPricing: { ...formData.usdtPricing, merchantAdminBuyInr: Math.max(0.01, Number(e.target.value)) } })}
               className="input"
             />
             <p className="text-xs text-gray-500 mt-1">
