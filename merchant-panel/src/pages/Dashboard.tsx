@@ -17,7 +17,7 @@ import sseService from '../services/sse';
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../services/AuthContext';
 import { api } from '../services/api';
-import { DollarSign, TrendingUp, Package, CheckCircle, Users, Activity } from 'lucide-react';
+import { DollarSign, TrendingUp, Package, CheckCircle, Users, Activity, ClipboardList, Gauge, ShieldCheck, WalletCards } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { Earnings, Stats } from '../types';
@@ -136,25 +136,130 @@ const Dashboard: React.FC = () => {
   const successRate            = totalOrdersCount > 0
     ? (completedToday / (completedToday + activeOrders)) * 100
     : 0;
+  const dailyLimit             = merchant?.dailyLimit || 0;
+  const dailyUsed              = merchant?.dailyUsed || 0;
+  const dailyCapacityPercent   = dailyLimit > 0 ? Math.min(100, Math.round((dailyUsed / dailyLimit) * 100)) : 0;
+  const avgProfitPerOrder      = todayEarnings / (completedToday || 1);
+  const serviceReadiness       = merchant?.isOnline && merchant?.acceptsDeposits !== false && merchant?.acceptsWithdrawals !== false;
+  const erpCards = [
+    {
+      title: 'Order Control Tower',
+      icon: ClipboardList,
+      value: activeOrders.toLocaleString('en-IN'),
+      label: `${pendingOrders} pending · ${processingOrders} processing`,
+      className: 'from-blue-600 to-indigo-700',
+    },
+    {
+      title: 'Settlement Wallet',
+      icon: WalletCards,
+      value: `Rs.${(merchant?.tokenBalance ?? 0).toLocaleString('en-IN')}`,
+      label: `Daily usage ${dailyCapacityPercent}%`,
+      className: 'from-emerald-600 to-teal-700',
+    },
+    {
+      title: 'SLA Performance',
+      icon: Gauge,
+      value: `${successRate.toFixed(1)}%`,
+      label: `Avg profit/order Rs.${avgProfitPerOrder.toFixed(0)}`,
+      className: 'from-purple-600 to-fuchsia-700',
+    },
+    {
+      title: 'Compliance Readiness',
+      icon: ShieldCheck,
+      value: serviceReadiness ? 'Ready' : 'Review',
+      label: merchant?.status || 'ACTIVE',
+      className: serviceReadiness ? 'from-green-600 to-lime-700' : 'from-orange-600 to-amber-700',
+    },
+  ];
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
-          <p className="text-gray-600 mt-1">Welcome back, {merchant?.username}</p>
+      {/* ERP Header */}
+      <div className="overflow-hidden rounded-3xl bg-gradient-to-r from-slate-900 via-blue-950 to-indigo-950 p-6 text-white shadow-2xl">
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <p className="mb-3 inline-flex items-center rounded-full bg-white/10 px-3 py-1 text-xs font-bold uppercase tracking-widest text-blue-100">
+              Merchant ERP Workspace
+            </p>
+            <h1 className="text-3xl font-black">Settlement Operations Center</h1>
+            <p className="mt-2 max-w-3xl text-sm text-blue-100/80">
+              Welcome back, {merchant?.username}. Manage queue capacity, wallet exposure, service readiness and earnings from one command surface.
+            </p>
+          </div>
+          <button
+            onClick={handleToggleOnline}
+            className={`rounded-2xl px-6 py-4 text-left font-semibold shadow-xl transition-all hover:scale-[1.02] ${
+              merchant?.isOnline
+                ? 'bg-green-500 text-white hover:bg-green-400'
+                : 'bg-slate-700 text-white hover:bg-slate-600'
+            }`}
+          >
+            <span className="block text-xs uppercase tracking-widest opacity-80">Current availability</span>
+            <span className="mt-1 block text-lg">{merchant?.isOnline ? 'Online · Accepting Orders' : 'Offline · Not Accepting'}</span>
+          </button>
         </div>
-        <button
-          onClick={handleToggleOnline}
-          className={`px-6 py-3 rounded-lg font-medium transition-all transform hover:scale-105 ${
-            merchant?.isOnline
-              ? 'bg-green-600 text-white hover:bg-green-700 shadow-lg'
-              : 'bg-gray-600 text-white hover:bg-gray-700'
-          }`}
-        >
-          {merchant?.isOnline ? '[green] Online - Accepting Orders' : '[red] Offline - Not Accepting'}
-        </button>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {erpCards.map((card) => {
+          const Icon = card.icon;
+          return (
+            <div key={card.title} className={`rounded-2xl bg-gradient-to-br ${card.className} p-5 text-white shadow-xl`}>
+              <div className="mb-4 flex items-center justify-between">
+                <p className="text-sm font-semibold text-white/80">{card.title}</p>
+                <Icon className="h-7 w-7 text-white/80" />
+              </div>
+              <p className="text-3xl font-black">{card.value}</p>
+              <p className="mt-2 text-sm text-white/75">{card.label}</p>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-lg lg:col-span-2">
+          <div className="mb-4 flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-bold text-gray-900">Daily Capacity Plan</h2>
+              <p className="text-sm text-gray-500">Track how much of today’s assigned limit is already consumed.</p>
+            </div>
+            <span className="rounded-full bg-blue-50 px-3 py-1 text-sm font-bold text-blue-700">{dailyCapacityPercent}% used</span>
+          </div>
+          <div className="h-3 overflow-hidden rounded-full bg-gray-100">
+            <div className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-600" style={{ width: `${dailyCapacityPercent}%` }} />
+          </div>
+          <div className="mt-4 grid grid-cols-3 gap-3 text-sm">
+            <div className="rounded-xl bg-gray-50 p-3">
+              <p className="text-gray-500">Daily Limit</p>
+              <p className="font-bold text-gray-900">Rs.{dailyLimit.toLocaleString('en-IN')}</p>
+            </div>
+            <div className="rounded-xl bg-gray-50 p-3">
+              <p className="text-gray-500">Used</p>
+              <p className="font-bold text-gray-900">Rs.{dailyUsed.toLocaleString('en-IN')}</p>
+            </div>
+            <div className="rounded-xl bg-gray-50 p-3">
+              <p className="text-gray-500">Remaining</p>
+              <p className="font-bold text-gray-900">Rs.{Math.max(0, dailyLimit - dailyUsed).toLocaleString('en-IN')}</p>
+            </div>
+          </div>
+        </div>
+        <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-lg">
+          <h2 className="text-lg font-bold text-gray-900">Today’s Dispatch Priorities</h2>
+          <div className="mt-4 space-y-3">
+            <div className="flex items-center justify-between rounded-xl bg-yellow-50 p-3">
+              <span className="text-sm font-medium text-yellow-900">Clear pending queue</span>
+              <span className="font-black text-yellow-900">{pendingOrders}</span>
+            </div>
+            <div className="flex items-center justify-between rounded-xl bg-blue-50 p-3">
+              <span className="text-sm font-medium text-blue-900">Finish processing</span>
+              <span className="font-black text-blue-900">{processingOrders}</span>
+            </div>
+            <div className="flex items-center justify-between rounded-xl bg-green-50 p-3">
+              <span className="text-sm font-medium text-green-900">Completed today</span>
+              <span className="font-black text-green-900">{completedToday}</span>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Primary Stats */}
