@@ -27,16 +27,54 @@ function normalizeIp(ip) {
   return value;
 }
 
-/** Parse an IP address with IPv4-mapped IPv6 addresses normalized to IPv4. */
-function parseIpAddress(ip) {
-  try {
-    return ipaddr.process(normalizeIp(ip));
-  } catch {
-    return null;
-  }
+/** Convert a normalized IPv4 address to an unsigned 32-bit integer. */
+function ipv4ToInt(ip) {
+  const parts = normalizeIp(ip).split('.').map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
+  return (((parts[0] << 24) >>> 0) + (parts[1] << 16) + (parts[2] << 8) + parts[3]) >>> 0;
 }
 
-/** Parse a trusted proxy CIDR entry into a normalized ipaddr.js range object. */
+function ipv6ToBytes(ip) {
+  const normalized = normalizeIp(ip).toLowerCase();
+  if (!normalized || !net.isIPv6(normalized)) return null;
+
+  const expandIpv4Tail = (value) => {
+    const groups = value ? value.split(':') : [];
+    if (!groups.length || !groups.at(-1)?.includes('.')) return groups;
+    const asInt = ipv4ToInt(groups.at(-1));
+    if (asInt == null) return null;
+    return [...groups.slice(0, -1), ((asInt >>> 16) & 0xffff).toString(16), (asInt & 0xffff).toString(16)];
+  };
+
+  const halves = normalized.split('::');
+  if (halves.length > 2) return null;
+  const head = expandIpv4Tail(halves[0]);
+  const tail = expandIpv4Tail(halves[1] || '');
+  if (!head || !tail) return null;
+
+  const missing = halves.length === 2 ? 8 - head.length - tail.length : 0;
+  if (missing < 0) return null;
+  const groups = halves.length === 2 ? [...head, ...Array(missing).fill('0'), ...tail] : head;
+  if (groups.length !== 8) return null;
+
+  const bytes = Buffer.alloc(16);
+  for (let i = 0; i < groups.length; i += 1) {
+    if (!/^[0-9a-f]{1,4}$/.test(groups[i])) return null;
+    bytes.writeUInt16BE(parseInt(groups[i], 16), i * 2);
+  }
+  return bytes;
+}
+
+function ipv6MatchesCidr(addressBytes, subnetBytes, prefix) {
+  if (!Buffer.isBuffer(addressBytes) || !Buffer.isBuffer(subnetBytes)) return false;
+  const fullBytes = Math.floor(prefix / 8);
+  const remainingBits = prefix % 8;
+  if (!addressBytes.subarray(0, fullBytes).equals(subnetBytes.subarray(0, fullBytes))) return false;
+  if (remainingBits === 0) return true;
+  const mask = (0xff << (8 - remainingBits)) & 0xff;
+  return (addressBytes[fullBytes] & mask) === (subnetBytes[fullBytes] & mask);
+}
+
 function parseCidr(entry) {
   const raw = String(entry || '').trim();
   if (!raw) return null;
@@ -44,14 +82,16 @@ function parseCidr(entry) {
   if (parts.length > 2) return null;
   const [ip, prefixRaw = null] = parts;
   if (prefixRaw != null && !/^\d+$/.test(prefixRaw)) return null;
-
-  const base = parseIpAddress(ip);
-  if (!base) return null;
-  const version = base.kind() === 'ipv4' ? 4 : 6;
-  const maxPrefix = version === 4 ? 32 : 128;
-  const prefix = prefixRaw == null ? maxPrefix : Number(prefixRaw);
-  if (!Number.isInteger(prefix) || prefix < 0 || prefix > maxPrefix) return null;
-  return { version, base, prefix, raw };
+  const version = net.isIP(normalizeIp(ip));
+  if (!version) return null;
+  if (version === 4) {
+    const prefix = prefixRaw == null ? 32 : Number(prefixRaw);
+    if (!Number.isInteger(prefix) || prefix < 0 || prefix > 32) return null;
+    return { version, base: ipv4ToInt(ip), prefix, raw };
+  }
+  const prefix = prefixRaw == null ? 128 : Number(prefixRaw);
+  if (!Number.isInteger(prefix) || prefix < 0 || prefix > 128) return null;
+  return { version, base: ipv6ToBytes(ip), prefix, raw };
 }
 
 /** Parse a comma-separated list of trusted IPv4 and IPv6 CIDR ranges. */
@@ -67,11 +107,16 @@ export function isTrustedProxyAddress(remoteAddress, trustedSubnets) {
   const ip = parseIpAddress(remoteAddress);
   if (!ip) return false;
   if (!Array.isArray(trustedSubnets) || trustedSubnets.length === 0) return false;
-  const version = ip.kind() === 'ipv4' ? 4 : 6;
-  return trustedSubnets.some((subnet) => {
-    if (subnet.version !== version || !subnet.base || !Number.isInteger(subnet.prefix)) return false;
-    return ip.match(subnet.base, subnet.prefix);
-  });
+  if (version === 4) {
+    const asInt = ipv4ToInt(ip);
+    return trustedSubnets.some((subnet) => {
+      if (subnet.version !== 4 || asInt == null || subnet.base == null) return false;
+      const mask = subnet.prefix === 0 ? 0 : (0xffffffff << (32 - subnet.prefix)) >>> 0;
+      return (asInt & mask) === (subnet.base & mask);
+    });
+  }
+  const bytes = ipv6ToBytes(ip);
+  return trustedSubnets.some((subnet) => subnet.version === 6 && ipv6MatchesCidr(bytes, subnet.base, subnet.prefix));
 }
 
 /** Extract source and destination metadata from a validated PROXY v2 address block. */
