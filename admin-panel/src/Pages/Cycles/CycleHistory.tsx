@@ -43,8 +43,8 @@ export const CycleHistory: React.FC = () => {
     }
   };
 
-  // Net Revenue = loser bets - winner payouts
-  // = (realPool - 2 × winnerSideBets) = realPool - totalPaidOut = netProfit stored in DB
+  // Net Revenue = losing side stake − winning side stake + retained winnings fee
+  // = realPool - netPaidOut = netProfit stored in DB; netPaidOut is after fee
   // We also show the loser/winner split visually
   const getNetRevenue = (cycle: Cycle) => cycle.netProfit || 0;
 
@@ -141,7 +141,7 @@ export const CycleHistory: React.FC = () => {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold mb-2">Cycle History</h1>
-          <p className="text-gray-400">Past cycle results — Net Revenue = Loser Bets − Winner Payouts</p>
+          <p className="text-gray-400">Past cycle results — Net Revenue = losing-side stake − winning-side stake + retained winnings fee</p>
         </div>
         <button className="btn-secondary flex items-center">
           <Download size={16} className="mr-2" /> Export CSV
@@ -173,10 +173,10 @@ export const CycleHistory: React.FC = () => {
       <div className="bg-dark-800 border border-dark-600 rounded-lg p-4 text-sm">
         <p className="font-semibold text-gray-300 mb-1">How Net Revenue is calculated per cycle:</p>
         <p className="text-gray-400">
-          Net Revenue = <span className="text-red-400">Loser Side Real Bets</span> − <span className="text-blue-400">Winner Side Real Bets</span>{' '}
-          = Real Pool Total − Total Paid Out (2×)
+          Net Revenue = <span className="text-red-400">Loser Side Real Bets</span> − <span className="text-blue-400">Winner Side Real Bets</span> + retained winnings fee.
+          It is stored as Real Pool Total − Net Paid Out, where Net Paid Out is gross payout minus the winnings fee.
         </p>
-        <p className="text-gray-500 text-xs mt-1">Phantom bets are never counted. Phantom bets always lose and are excluded from payouts.</p>
+        <p className="text-gray-500 text-xs mt-1">Phantom bets, merchant wallet top-ups/security deposits, and user token buy/sell cash flow are not platform revenue.</p>
       </div>
 
       <div className="card">
@@ -250,8 +250,8 @@ export const CycleHistory: React.FC = () => {
                         <span className="text-green-400 font-medium">{formatters.currency(loserBets)}</span>
                       </div>
                       <div className="flex justify-between">
-                        <span className="text-gray-400">Winner Bets ({selectedCycle.winner}) × 2 paid out:</span>
-                        <span className="text-red-400 font-medium">− {formatters.currency(selectedCycle.totalPaidOut || winnerBets * 2)}</span>
+                        <span className="text-gray-400">Net Paid Out to Winners ({selectedCycle.winner}):</span>
+                        <span className="text-red-400 font-medium">− {formatters.currency(selectedCycle.totalPaidOut || 0)}</span>
                       </div>
                       <div className="flex justify-between pt-2 border-t border-dark-600">
                         <span className="font-semibold text-gray-200">Net Revenue:</span>

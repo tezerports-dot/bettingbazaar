@@ -1,6 +1,8 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import mongoose from 'mongoose';
 
+export const PUBLIC_CHAT_RETENTION_MS = 5 * 60 * 60 * 1000;
+
 const fakeWinnerSchema = new mongoose.Schema({
   // Display fields (all editable from admin)
   displayName: { type: String, required: true },
@@ -32,7 +34,7 @@ const chatRoomConfigSchema = new mongoose.Schema({
 
   // Access control
   minBalanceToChat:   { type: Number, default: 0 },   
-  requireKYC:        { type: Boolean, default: false },
+  requireKYC:        { type: Boolean, default: true },
 
   // Message rules
   maxMessageLength:  { type: Number, default: 200 },   // chars
@@ -82,7 +84,7 @@ const publicChatMsgSchema = new mongoose.Schema({
 
   createdAt:   { type: Date, default: Date.now, index: true },
   // TTL: auto-delete after 5 hours; support-ticket messages use SupportMsg and are retained separately.
-  expiresAt:   { type: Date, default: () => new Date(Date.now() + 5 * 3600000), index: { expireAfterSeconds: 0 } },
+  expiresAt:   { type: Date, default: () => new Date(Date.now() + PUBLIC_CHAT_RETENTION_MS), index: { expireAfterSeconds: 0 } },
 });
 publicChatMsgSchema.index({ status: 1, isDeleted: 1, createdAt: -1 });
 export const PublicChatMsg = mongoose.model('PublicChatMsg', publicChatMsgSchema);

@@ -5,8 +5,8 @@ import { ConfirmDialog } from '../../components/ConfirmDialog';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
 
-// C-05 fix: tokenBuyRate/tokenSellRate removed from SystemSettings — use /token-rates page.
-// GOVERNANCE §2: TokenRates page is the sole write path for token exchange rates.
+// BB token buy/sell rates remain removed: internal token conversion is fixed 1:1.
+// USDT pricing below is buy-only: no user or merchant USDT sell rail exists.
 export const SystemSettings: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -28,6 +28,7 @@ export const SystemSettings: React.FC = () => {
     betReservePercent: 3,      // schema default: 3
     winningsFeePercent: 1,     // schema default: 1
     payoutFeePercent: 0,       // schema default: 0
+    usdtPricing: { userMerchantBuyInr: 0, merchantAdminBuyInr: 1 },
     cycleDurationMinutes: 30,  // schema default: 30 (Phase X X-5)
     // Business Config Audit (2026-07-11) — formerly-hardcoded business values
     payoutMultiplier: 2,       // schema default: 2 (2x)
@@ -82,6 +83,10 @@ export const SystemSettings: React.FC = () => {
           betReservePercent:  response.data.betReservePercent  ?? 3, // schema default: 3
           winningsFeePercent: response.data.winningsFeePercent ?? 1, // schema default: 1
           payoutFeePercent:   response.data.payoutFeePercent   ?? 0, // schema default: 0
+          usdtPricing: {
+            userMerchantBuyInr:  response.data.usdtPricing?.userMerchantBuyInr  ?? 0, // schema default: 0
+            merchantAdminBuyInr: response.data.usdtPricing?.merchantAdminBuyInr ?? 1, // schema default: 1
+          },
           cycleDurationMinutes: response.data.cycleDurationMinutes ?? 30, // schema default: 30
           payoutMultiplier:   response.data.payoutMultiplier   ?? 2,  // schema default: 2
           orderExpiryMinutes: response.data.orderExpiryMinutes ?? 15, // schema default: 15
@@ -423,6 +428,34 @@ export const SystemSettings: React.FC = () => {
               ₹{(Math.floor(100 * formData.payoutMultiplier * 100 * Math.round(formData.winningsFeePercent * 100) / 10000) / 100).toFixed(2)} → user
               receives ₹{(100 * formData.payoutMultiplier - Math.floor(100 * formData.payoutMultiplier * 100 * Math.round(formData.winningsFeePercent * 100) / 10000) / 100).toFixed(2)} in
               the winnings wallet. The fee is rounded down — never against the user.
+            </p>
+          </div>
+
+          <div className="pt-4 border-t border-dark-700">
+            <label className="label">USDT Buy Price: User ↔ Merchant (INR)</label>
+            <input
+              type="number" min={0} step={0.01}
+              value={formData.usdtPricing.userMerchantBuyInr}
+              onChange={(e) => setFormData({ ...formData, usdtPricing: { ...formData.usdtPricing, userMerchantBuyInr: Math.max(0, Number(e.target.value) || 0) } })}
+              className="input"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Admin-owned INR price for one USDT on the future buy-only user/merchant USDT rail.
+              There is no USDT sell option for users or merchants; BB token conversion stays fixed at 1 token = ₹1.
+            </p>
+          </div>
+
+          <div className="pt-4 border-t border-dark-700">
+            <label className="label">USDT Buy Price: Merchant ↔ Admin (INR)</label>
+            <input
+              type="number" min={0} step={0.01}
+              value={formData.usdtPricing.merchantAdminBuyInr}
+              onChange={(e) => setFormData({ ...formData, usdtPricing: { ...formData.usdtPricing, merchantAdminBuyInr: Math.max(0.01, Number(e.target.value) || 1) } })}
+              className="input"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Admin-owned INR price for one USDT when merchants buy admin tokens with USDT.
+              This is also buy-only; merchant top-ups/security deposits remain cash flow, not platform revenue.
             </p>
           </div>
 

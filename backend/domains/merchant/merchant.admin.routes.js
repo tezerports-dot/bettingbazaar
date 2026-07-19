@@ -567,7 +567,7 @@ router.get('/merchant-token-orders', authenticate, isAdmin, async (req, res) => 
     const MerchantAdminTokenOrder = mongoose.model('MerchantAdminTokenOrder');
     const { status } = req.query;
     const query = status ? { status } : {};
-    const orders = await MerchantAdminTokenOrder.find(query).sort({ requestedAt: -1 }).populate('merchantId', 'name username mobile tokenBalance adminUsdtRate').lean();
+    const orders = await MerchantAdminTokenOrder.find(query).sort({ requestedAt: -1 }).populate('merchantId', 'name username mobile tokenBalance').lean();
     res.json({ success: true, orders });
   } catch (error) {
     console.error('GET /admin/merchant-token-orders error:', error);

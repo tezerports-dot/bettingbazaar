@@ -8,6 +8,7 @@ import mongoose    from 'mongoose';
 import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
 // F-3 (2026-07-10): Redis-shared counters with per-instance fallback.
 import { createRateLimitStore } from './middleware/redisRateLimitStore.js';
+import { buildPublicKycData } from './domains/user/kycPublicData.js';
 
 const router = express.Router();
 
@@ -94,7 +95,7 @@ export async function loginHandler(req, res) {
       isQueueManager: user.isQueueManager || false, permissions: user.subAdminPermissions || {},
       depositBalance: dep, winningsBalance: win, lockedBalance: user.lockedBalance || 0,
       walletBalance: dep + win, kycStatus: user.kycStatus,
-      kycData: user.kycStatus === 'REJECTED' && user.kycData?.rejectionReason ? { rejectionReason: user.kycData.rejectionReason } : null,
+      kycData: buildPublicKycData(user),
       bankDetails: user.bankDetails || null, profilePic: user.profilePic || '',
       status: user.status || 'ACTIVE', joinedAt: user.joinedAt || null,
       lastLogin: user.lastLogin, phantomAccess: user.phantomAccess || 'NONE',
@@ -144,7 +145,7 @@ router.get('/me', async (req, res) => {
         isQueueManager: user.isQueueManager || false, permissions: user.subAdminPermissions || {},
         depositBalance: dep, winningsBalance: win, lockedBalance: user.lockedBalance || 0,
         walletBalance: dep + win, kycStatus: user.kycStatus,
-        kycData: user.kycStatus === 'REJECTED' && user.kycData?.rejectionReason ? { rejectionReason: user.kycData.rejectionReason } : null,
+        kycData: buildPublicKycData(user),
         bankDetails: user.bankDetails || null, profilePic: user.profilePic || '',
         status: user.status || 'ACTIVE', joinedAt: user.joinedAt || null,
         lastLogin: user.lastLogin || null, phantomAccess: user.phantomAccess || 'NONE',

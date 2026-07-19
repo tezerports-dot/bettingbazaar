@@ -45,6 +45,7 @@ import { authenticate } from '../identity/auth.middleware.js';
 import { lockWithdrawal, getUserLedger } from '../wallet/walletAuthority.service.js';
 import cdnService from '../../services/cdn.service.js';
 import { hashAadhaar, hashAadhaarCandidates } from '../identity/aadhaarHash.util.js';
+import { buildPublicKycData } from './kycPublicData.js';
 
 const router = express.Router();
 
@@ -337,9 +338,7 @@ router.get('/v1/user/:id/data', authenticate, async (req, res) => {
     // history = last 20 cycle IDs the user bet in (for LiveTicker dots)
     const historyCycleIds = [...new Set(normalizedBets.map(b => b.cycleId))].slice(0, 20);
 
-    const publicKycData = user.kycStatus === 'REJECTED' && user.kycData?.rejectionReason
-      ? { rejectionReason: user.kycData.rejectionReason }
-      : null;
+    const publicKycData = buildPublicKycData(user);
 
     res.json({
       success: true,
@@ -467,8 +466,8 @@ router.post('/user/:userId/kyc', authenticate, async (req, res) => {
       return res.status(409).json({ success: false, message: 'Aadhaar already linked to another account' });
     }
 
-    const updatedUser = await User.findByIdAndUpdate(
-      userId,
+    const updatedUser = await User.findOneAndUpdate(
+      { _id: userId, kycStatus: { $ne: 'APPROVED' } },
       {
         kycStatus: 'PENDING_APPROVAL',
         kycData: {
@@ -483,6 +482,11 @@ router.post('/user/:userId/kyc', authenticate, async (req, res) => {
       },
       { new: true, session }
     ).lean();
+
+    if (!updatedUser) {
+      await abortOrEnd(session);
+      return res.status(409).json({ success: false, message: 'Approved KYC cannot be changed' });
+    }
 
     await commitOrEnd(session);
     res.json({ success: true, kycStatus: updatedUser.kycStatus });

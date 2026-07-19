@@ -158,6 +158,16 @@ const authenticate = async (req, res, next) => {
   }
 };
 
+
+export function requireApprovedKyc(req, res, next) {
+  if (req.user?.kycStatus === 'APPROVED') return next();
+  return res.status(403).json({
+    success: false,
+    message: 'Please complete KYC verification to use this action.',
+    code: 'KYC_REQUIRED',
+  });
+}
+
 /**
  * ════════════════════════════════════════════════════════════════════════════
  * 👑 ADMIN ACCESS CONTROL

@@ -267,7 +267,7 @@ paymentOrderSchema.statics.scrubExpiredProofs = async function(now = new Date())
   const fallbackCutoff = new Date(now.getTime() - PAYMENT_PROOF_RETENTION_MS);
   const [expired, legacyExpired] = await Promise.all([
     this.updateMany(
-      { proofScreenshot: { $exists: true, $ne: null }, proofExpiresAt: { $lte: now } },
+      { proofScreenshot: { $exists: true, $ne: null, $type: 'string' }, proofExpiresAt: { $lte: now } },
       { $unset: { proofScreenshot: '', proofExpiresAt: '' }, $set: { updatedAt: now } }
     ),
     this.updateMany(

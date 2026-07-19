@@ -20,7 +20,7 @@ import { api } from '../services/api';
 import { DollarSign, TrendingUp, Package, CheckCircle, Users, Activity } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { Earnings, Stats } from '../types';
+import { Earnings, MerchantProfile, Stats } from '../types';
 
 const Dashboard: React.FC = () => {
   const { merchant, refreshProfile } = useAuth();
@@ -28,8 +28,13 @@ const Dashboard: React.FC = () => {
   const [stats, setStats]         = useState<Stats | null>(null);
   const [loading, setLoading]     = useState(true);
   const [chartData, setChartData] = useState<any[]>([]);
+  const [dashboardMerchant, setDashboardMerchant] = useState<MerchantProfile | null>(merchant);
   // Token conversion is fixed 1:1 (Phase 006 flattening, 2026-07-08) — the
   // rates fetch/display was removed; there is no buy/sell spread anymore.
+
+  useEffect(() => {
+    setDashboardMerchant(merchant);
+  }, [merchant]);
 
   useEffect(() => {
     loadDashboardData();
@@ -67,6 +72,7 @@ const Dashboard: React.FC = () => {
       setStats(statsData);
 
       if (profileData) {
+        setDashboardMerchant(profileData);
         localStorage.setItem('merchantData', JSON.stringify(profileData));
       }
 
@@ -128,21 +134,22 @@ const Dashboard: React.FC = () => {
   const processingOrders = stats?.processing || 0;
   const completedToday   = stats?.completedToday || 0;
 
-  const totalDepositsVolume    = earnings?.lifetime?.deposits?.totalAmount    || merchant?.totalDepositsProcessed    || 0;
-  const totalWithdrawalsVolume = earnings?.lifetime?.withdrawals?.totalAmount || merchant?.totalWithdrawalsProcessed || 0;
+  const currentMerchant        = dashboardMerchant ?? merchant;
+  const totalDepositsVolume    = earnings?.lifetime?.deposits?.totalAmount    || currentMerchant?.totalDepositsProcessed    || 0;
+  const totalWithdrawalsVolume = earnings?.lifetime?.withdrawals?.totalAmount || currentMerchant?.totalWithdrawalsProcessed || 0;
   const totalVolume            = totalDepositsVolume + totalWithdrawalsVolume;
   const totalOrdersCount       = (earnings?.lifetime?.deposits?.count || 0) + (earnings?.lifetime?.withdrawals?.count || 0);
   const activeOrders           = pendingOrders + processingOrders;
   const successRate            = totalOrdersCount > 0
     ? (completedToday / (completedToday + activeOrders)) * 100
     : 0;
-  const tokenBalance           = merchant?.tokenBalance ?? 0;
-  const minDepositLimit        = merchant?.limits?.minDeposit ?? 0;
-  const maxDepositLimit        = merchant?.limits?.maxDeposit ?? 0;
-  const minWithdrawLimit       = merchant?.limits?.minWithdraw ?? 0;
-  const maxWithdrawLimit       = merchant?.limits?.maxWithdraw ?? 0;
+  const tokenBalance           = currentMerchant?.tokenBalance ?? 0;
+  const minDepositLimit        = currentMerchant?.limits?.minDeposit ?? 0;
+  const maxDepositLimit        = currentMerchant?.limits?.maxDeposit ?? 0;
+  const minWithdrawLimit       = currentMerchant?.limits?.minWithdraw ?? 0;
+  const maxWithdrawLimit       = currentMerchant?.limits?.maxWithdraw ?? 0;
   const walletCapacityPercent  = maxDepositLimit > 0 ? Math.min(100, Math.round((tokenBalance / maxDepositLimit) * 100)) : 0;
-  const avgProfitPerOrder      = todayEarnings / (completedToday || 1);
+  const avgProfitPerOrder      = completedToday > 0 ? todayEarnings / completedToday : 0;
 
   return (
     <div className="space-y-6">
@@ -272,7 +279,7 @@ const Dashboard: React.FC = () => {
             <div>
               <p className="text-sm text-emerald-700 font-medium">Wallet Balance</p>
               <p className="text-3xl font-bold text-emerald-900 mt-2">
-                Rs.{(merchant?.tokenBalance ?? 0).toLocaleString()}
+                Rs.{(currentMerchant?.tokenBalance ?? 0).toLocaleString()}
               </p>
               <p className="text-xs text-emerald-600 mt-1">Available token balance</p>
             </div>
