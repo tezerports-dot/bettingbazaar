@@ -156,13 +156,15 @@ router.get('/order/:orderId/status', authenticate, async (req, res) => {
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     if (order.userId.toString() !== req.user._id.toString() && !req.user.isAdmin)
       return res.status(403).json({ success: false, message: 'Access denied' });
+    const proofExpiresAt = order.proofExpiresAt || new Date(new Date(order.createdAt).getTime() + 48 * 60 * 60 * 1000);
+    const proofVisible = new Date(proofExpiresAt).getTime() > Date.now();
     res.json({
       success: true,
       status:           order.status,
       expiresAt:        order.expiresAt,
       merchantSnapshot: order.merchantSnapshot,
       utrNumber:        order.utrNumber,
-      proofScreenshot:  order.proofScreenshot,
+      proofScreenshot:  proofVisible ? order.proofScreenshot : null,
     });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });

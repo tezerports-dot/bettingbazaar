@@ -156,6 +156,20 @@ export function registerCronJobs(rebuildLeaderboard) {
     } catch (e) { console.error('[retention] cron error:', e.message); }
   });
 
+
+  // ── Payment proof retention — runs hourly ──────────────────────────────────
+  // Keeps PaymentOrder transaction records while removing high-volume proof
+  // image references after 48 hours. Mongo TTL cannot unset a single field, so
+  // this job scrubs proofScreenshot/proofExpiresAt without deleting the order.
+  registerRecurring('payment-proof-retention', 60 * 60 * 1000, async () => {
+    try {
+      const PaymentOrder = mongoose.model('PaymentOrder');
+      const result = await PaymentOrder.scrubExpiredProofs();
+      const modified = result.modifiedCount || 0;
+      if (modified > 0) console.log(`[retention] Scrubbed ${modified} expired payment proof(s)`);
+    } catch (e) { console.error('[retention] payment proof scrub error:', e.message); }
+  });
+
   // ── Automated database backup — runs daily (plan item 45) ───────────────────
   // mongodump → gzip archive → S3 (backups/), keep newest BACKUP_KEEP (14).
   // Skips loudly (log + alert) when mongodump or S3 is unavailable; a failed
