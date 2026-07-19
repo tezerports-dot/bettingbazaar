@@ -2,9 +2,11 @@
 
 **Scope:** ~270 mounted route handlers across the backend. This matrix
 documents, per role tier, the required authentication, the ownership rule, and
-the result of a systematic scan for missing guards. **Result: no authorization
+the result of a systematic scan for missing guards. **Result: no confirmed authorization
 holes were found** — every mutating endpoint enforces role + ownership; every
-public endpoint is read-only and intentional.
+public endpoint is read-only and intentional. The appendix scan is a heuristic
+and can report guarded `hasPermission(...)` routes if run without the documented
+exclusions.
 
 Method: enumerate every `router.<verb>` across `domains/**` + `routes/**`,
 classify by the middleware chain, and spot-verify ownership in the handler
@@ -20,7 +22,7 @@ bodies. Re-run the scan commands in the appendix after adding any route.
 | **User** | `authenticate` | `resource.userId === req.user._id` (or `isAdmin`) | user/payment/bet/wallet routes |
 | **Merchant** | `merchantAuth` | `order.merchantId === req.merchantId` | `domains/merchant/*` (23 routes) |
 | **Queue manager** | `authenticate` + `isQueueManager`/admin | assignment scoped to queue pool | queue admin routes |
-| **Sub-admin** | `authenticate` + `isAdminOrSubAdmin` + permission key | per-permission (`utils/permissions`) | admin read + delegated routes |
+| **Sub-admin** | `authenticate` + `isAdminOrSubAdmin` or `authenticate` + `hasPermission('<key>')` | per-permission (`utils/permissions`) | admin read + delegated routes |
 | **Admin** | `authenticate` + `isAdmin` | full | admin routes (121 total) |
 
 `req.merchantId`/`req.user` are set by the auth middleware only after JWT
@@ -32,10 +34,12 @@ verification + account-status checks (blocked/suspended/approved).
 
 1. **Every admin sub-router route carries a role guard.** Scanning all
    `routes/admin/*.js` + `domains/*/*.admin.routes.js` for an `authenticate`
-   without `isAdmin`/`isAdminOrSubAdmin`/`isSubAdmin`/`isQueueManager`: **0
-   findings.** (The one line the crude scan flagged — `branding
-   /app-assets/upload` — carries `authenticate, isAdmin` on the next line; it
-   is protected.)
+   without `isAdmin`/`isAdminOrSubAdmin`/`isSubAdmin`/`isQueueManager`/`hasPermission`: **0
+   confirmed holes.** If the older literal appendix command is run without
+   excluding `hasPermission`, it currently prints eight false positives: three
+   KYC routes, two payment-order routes, and three dispute-order routes. Those
+   lines are guarded because `hasPermission` permits admins or sub-admins with
+   the named permission.
 2. **Merchant routes enforce ownership.** 23 `merchantAuth` routes; 43
    in-handler `order.merchantId === req.merchantId` / `req.merchantId`
    ownership references. The deposit approve/confirm/reject paths each check
@@ -83,7 +87,7 @@ None expose another user's private data or accept a state mutation.
 # admin routes missing a role guard (expect: only false-positive multiline defs)
 for f in backend/routes/admin/*.js backend/domains/*/*.admin.routes.js; do
   grep -nE "router\.(get|post|put|delete|patch)\(" "$f" | grep authenticate \
-    | grep -vE "isAdmin|isAdminOrSubAdmin|isSubAdmin|isQueueManager" && echo "  ^ in $f"
+    | grep -vE "isAdmin|isAdminOrSubAdmin|isSubAdmin|isQueueManager|hasPermission" && echo "  ^ in $f"
 done
 # public (no-auth) route lines across public-facing routers — expect read-only only
 grep -rnE "router\.(get|post)\(" backend/routes.js backend/domains/user backend/routes/winners.routes.js \

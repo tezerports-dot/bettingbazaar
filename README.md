@@ -23,7 +23,7 @@ The premier high-frequency prediction platform. Bet on Delhi vs Bombay in real-t
   required values are present:
   * `NODE_ENV`: `production`
   * `MONGODB_URI`: Paste your MongoDB connection string here.
-  * `JWT_SECRET`: Long random secret used to sign auth tokens.
+  * `PASETO_SECRET_KEY`: Long random secret used as the PASETO v2.public token seed. `JWT_SECRET` is still accepted as a legacy fallback, but new deployments should set `PASETO_SECRET_KEY` explicitly.
   * `ORDER_HMAC_SECRET`: Long random secret dedicated to payment-order HMACs.
   * `AADHAAR_HMAC_SECRET`: Long random secret dedicated to Aadhaar duplicate-detection HMACs.
   * `REDIS_URL`: Railway-managed Redis URL or another Redis connection string.

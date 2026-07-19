@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest';
 import { validateEnv } from '../../startup/validateEnv.js';
 
 const full = {
-  JWT_SECRET: 's', ORDER_HMAC_SECRET: 'h', AADHAAR_HMAC_SECRET: 'a-secure-aadhaar-hmac-secret-value', MONGODB_URI: 'mongodb://x', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb',
+  PASETO_SECRET_KEY: 'paseto-secure-seed', ORDER_HMAC_SECRET: 'h', AADHAAR_HMAC_SECRET: 'a-secure-aadhaar-hmac-secret-value', MONGODB_URI: 'mongodb://x', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb',
   REDIS_URL: 'r', ALLOWED_ORIGINS: 'o', S3_BUCKET_NAME: 'b', METRICS_TOKEN: 'a-secure-random-metrics-token-value',
   PUBLIC_APP_ORIGIN: 'https://app.example.test', PUBLIC_APP_ALLOWED_ORIGINS: 'https://app.example.test',
 };
@@ -16,9 +16,15 @@ describe('validateEnv', () => {
     expect(r.missing).toEqual([]);
   });
 
-  it('THROWS in production when a required var is missing', () => {
-    const { JWT_SECRET, ...noJwt } = full;
-    expect(() => validateEnv({ ...noJwt, NODE_ENV: 'production' }, true)).toThrow(/JWT_SECRET/);
+  it('THROWS in production when no auth-token secret is configured', () => {
+    const { PASETO_SECRET_KEY, JWT_SECRET, ...noAuthSecret } = full;
+    expect(() => validateEnv({ ...noAuthSecret, NODE_ENV: 'production' }, true)).toThrow(/PASETO_SECRET_KEY or JWT_SECRET/);
+  });
+
+  it('accepts legacy JWT_SECRET as the PASETO seed fallback', () => {
+    const { PASETO_SECRET_KEY, ...legacyJwtOnly } = full;
+    const r = validateEnv({ ...legacyJwtOnly, JWT_SECRET: 'legacy-jwt-secret', NODE_ENV: 'production' }, true);
+    expect(r.ok).toBe(true);
   });
 
   it('requires AADHAAR_HMAC_SECRET in production', () => {
@@ -33,11 +39,11 @@ describe('validateEnv', () => {
 
   it('lists every missing required var in the thrown message', () => {
     expect(() => validateEnv({ NODE_ENV: 'production' }, true))
-      .toThrow(/JWT_SECRET[\s\S]*MONGODB_URI[\s\S]*DATABASE_URL/);
+      .toThrow(/PASETO_SECRET_KEY or JWT_SECRET[\s\S]*MONGODB_URI[\s\S]*DATABASE_URL/);
   });
 
   it('requires production hardening vars instead of silently falling back', () => {
-    expect(() => validateEnv({ JWT_SECRET: 's', MONGODB_URI: 'm', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb', NODE_ENV: 'production' }, true))
+    expect(() => validateEnv({ PASETO_SECRET_KEY: 'paseto-secure-seed', MONGODB_URI: 'm', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb', NODE_ENV: 'production' }, true))
       .toThrow(/ORDER_HMAC_SECRET[\s\S]*REDIS_URL[\s\S]*ALLOWED_ORIGINS[\s\S]*S3_BUCKET_NAME[\s\S]*METRICS_TOKEN/);
   });
 
@@ -54,12 +60,13 @@ describe('validateEnv', () => {
   it('does NOT throw outside production, but reports what is missing', () => {
     const r = validateEnv({ NODE_ENV: 'development' }, false);
     expect(r.ok).toBe(false);
-    expect(r.missing).toContain('JWT_SECRET');
+    expect(r.missing).toContain('PASETO_SECRET_KEY or JWT_SECRET');
   });
 
-  it('treats an empty string as missing (not merely undefined)', () => {
-    expect(() => validateEnv({ ...full, JWT_SECRET: '   ', NODE_ENV: 'production' }, true))
-      .toThrow(/JWT_SECRET/);
+  it('treats empty auth-token secrets as missing (not merely undefined)', () => {
+    const { PASETO_SECRET_KEY, ...withoutPaseto } = full;
+    expect(() => validateEnv({ ...withoutPaseto, JWT_SECRET: '   ', NODE_ENV: 'production' }, true))
+      .toThrow(/PASETO_SECRET_KEY or JWT_SECRET/);
   });
 
   it('has no advisory production security gaps left', () => {

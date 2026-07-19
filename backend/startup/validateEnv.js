@@ -21,7 +21,6 @@
  */
 
 const REQUIRED = [
-  ['JWT_SECRET',  'signs/verifies every auth token — a fallback would let anyone forge sessions'],
   ['MONGODB_URI', 'primary datastore — unset silently connects to localhost'],
   ['DATABASE_URL', 'PostgreSQL money datastore — required for active MongoDB + Postgres hybrid dual-write'],
   ['ORDER_HMAC_SECRET', 'dedicated payment-order HMAC secret; prevents JWT key reuse for order signing'],
@@ -80,6 +79,10 @@ function isOrigin(value, { requireHttps = false } = {}) {
  */
 export function validateEnv(env = process.env, isProd = env.NODE_ENV === 'production') {
   const missing = REQUIRED.filter(([k]) => !env[k] || String(env[k]).trim() === '').map(([k]) => k);
+  if ((!env.PASETO_SECRET_KEY || String(env.PASETO_SECRET_KEY).trim() === '')
+    && (!env.JWT_SECRET || String(env.JWT_SECRET).trim() === '')) {
+    missing.unshift('PASETO_SECRET_KEY or JWT_SECRET');
+  }
   const weakAadhaarHmacSecret = hasWeakAadhaarHmacSecret(env.AADHAAR_HMAC_SECRET);
   const weakMetricsToken = hasWeakMetricsToken(env.METRICS_TOKEN);
   const invalidOrigins = ['PUBLIC_APP_ORIGIN', 'PUBLIC_APP_ALLOWED_ORIGINS'].filter((key) => {
@@ -97,8 +100,13 @@ export function validateEnv(env = process.env, isProd = env.NODE_ENV === 'produc
   }
 
   if (missing.length) {
-    const detail = REQUIRED.filter(([k]) => missing.includes(k))
-      .map(([k, why]) => `  - ${k}: ${why}`).join('\n');
+    const detail = [
+      ...missing.includes('PASETO_SECRET_KEY or JWT_SECRET')
+        ? ['  - PASETO_SECRET_KEY or JWT_SECRET: signs/verifies every auth token; PASETO_SECRET_KEY is preferred, JWT_SECRET is the legacy fallback']
+        : [],
+      ...REQUIRED.filter(([k]) => missing.includes(k))
+        .map(([k, why]) => `  - ${k}: ${why}`),
+    ].join('\n');
     const msg = `FATAL: missing required environment variable(s):\n${detail}`;
     if (isProd) throw new Error(msg);
     // Non-prod: warn but let the process continue (dev/test provide their own).
