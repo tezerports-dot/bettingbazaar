@@ -14,11 +14,13 @@
  *   PROXY_PROTOCOL_TRUSTED_SUBNETS=10.0.10.0/24,127.0.0.1/32
  */
 import net from 'net';
+import ipaddr from 'ipaddr.js';
 
 const SIGNATURE = Buffer.from([0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a]);
 const HEADER_LENGTH = 16;
 const MAX_PROXY_HEADER_BYTES = 512;
 
+/** Normalize Node socket IP strings before parser validation. */
 function normalizeIp(ip) {
   const value = String(ip || '').trim();
   if (value.startsWith('::ffff:')) return value.slice(7);
@@ -102,9 +104,8 @@ export function parseTrustedSubnets(value) {
 
 /** Return true when the TCP peer address belongs to the configured trusted proxy set. */
 export function isTrustedProxyAddress(remoteAddress, trustedSubnets) {
-  const ip = normalizeIp(remoteAddress);
-  const version = net.isIP(ip);
-  if (!version) return false;
+  const ip = parseIpAddress(remoteAddress);
+  if (!ip) return false;
   if (!Array.isArray(trustedSubnets) || trustedSubnets.length === 0) return false;
   if (version === 4) {
     const asInt = ipv4ToInt(ip);
@@ -118,6 +119,7 @@ export function isTrustedProxyAddress(remoteAddress, trustedSubnets) {
   return trustedSubnets.some((subnet) => subnet.version === 6 && ipv6MatchesCidr(bytes, subnet.base, subnet.prefix));
 }
 
+/** Extract source and destination metadata from a validated PROXY v2 address block. */
 function parseAddressBlock(buffer, family, protocol, length) {
   if (family === 0x10 && length >= 12) {
     return {
@@ -183,6 +185,12 @@ export function listenWithOptionalProxyProtocol(httpServer, { port, host = '0.0.
   }
 
   const tcpServer = net.createServer((socket) => {
+    socket.on('error', (error) => {
+      if (error?.code && error.code !== 'ECONNRESET') {
+        console.warn('[proxy-protocol-v2] socket error:', error.code);
+      }
+    });
+
     if (!isTrustedProxyAddress(socket.remoteAddress, parsedTrustedSubnets)) {
       socket.destroy();
       return;

@@ -2,7 +2,7 @@
 import {
   User, Bet, GameCycle, BettingSide, CycleType, AdminUser, AuditLog,
   PromoContent, Transaction, PromoLocation, MerchantProfile, PaymentOrder,
-  GameState, PaymentOrder
+  GameState, SystemConfigData, ChatMessage
 } from '../types';
 
 export interface Backend {
@@ -31,22 +31,16 @@ export interface Backend {
   getAIAnalysis(): Promise<{ text: string, cached: boolean }>;
 
   // KYC & BANKING
-  uploadKYC(userId: string, data: any): Promise<User>;
+  uploadKYC(userId: string, data: any): Promise<{ success: boolean; kycStatus: string }>;
   approveKYC(adminId: string, userId: string, status: 'APPROVED' | 'REJECTED', reason?: string): Promise<void>;
   updateBankDetails(userId: string, details: User['bankDetails']): Promise<User>;
 
-  placeBet(userId: string, cycleId: string, amount: number, side: BettingSide): Promise<{ 
-    success: boolean; 
-    bet: Bet; 
-    newBalance: number; 
-    newLocked: number;
+  placeBet(userId: string, cycleId: string, amount: number, side: BettingSide): Promise<{
+    bet: Bet;
+    balance: { deposit: number; winnings: number; locked: number; total: number };
   }>;
 
-  placePhantomBet(userId: string, cycleId: string, amount: number, side: BettingSide): Promise<{ 
-    success: boolean; 
-    totalDelhi: number;
-    totalBombay: number;
-  }>;
+  placePhantomBet(userId: string, cycleId: string, amount: number, side: BettingSide): Promise<{ bet: Bet }>;
 
   getCycleState(type: CycleType, startTime: number): Promise<{
     totalDelhi: number;
@@ -60,13 +54,13 @@ export interface Backend {
   }>;
   
   getCycleHistory(): Promise<GameCycle[]>;
-  
-  settleCycle(cycleId: string, winner: BettingSide): void;
+  getBetHistory(userId: string): Promise<Bet[]>;
 
   // --- REAL-TIME SUBSCRIPTIONS ---
 
   subscribeToTicker(callback: (data: { id: string, text: string, side: 'DELHI' | 'BOMBAY', amount: number }) => void): () => void;
   subscribeToUserUpdates(userId: string, callback: (data: any) => void): () => void;
+  subscribeToBranding(callback: (branding: any) => void): () => void;
 
 
   // Token conversion is fixed 1:1 (Phase 006 flattening, 2026-07-08) —
@@ -80,8 +74,7 @@ export interface Backend {
   resetMerchantPassword(merchantId: string, adminId: string): Promise<string>;
   
   // Merchant App Specific
-  merchantLogin(id: string, password: string): Promise<{ success: boolean; merchant?: MerchantProfile; user?: User }>;
-  getMerchantProfile(merchantId: string): Promise<MerchantProfile>;
+  getMerchantProfile(merchantId?: string): Promise<MerchantProfile>;
   updateMerchantProfile(merchantId: string, updates: Partial<MerchantProfile>): Promise<MerchantProfile>;
   getMerchantList(): Promise<MerchantProfile[]>;
   
@@ -90,9 +83,10 @@ export interface Backend {
   getUserPaymentOrders(userId: string): Promise<PaymentOrder[]>;
   getAllPaymentOrders(): Promise<PaymentOrder[]>;
   
-  getMerchantPaymentOrders(merchantId: string): Promise<PaymentOrder[]>;
-  updatePaymentOrderStatus(orderId: string, status: PaymentOrder['status'], actionBy: string): Promise<PaymentOrder>;
-  assignPaymentOrderToMerchant(orderId: string, merchantId: string, adminId: string): Promise<PaymentOrder>;
+  getMerchantPaymentOrders(merchantId: string, type?: string): Promise<PaymentOrder[]>;
+  updateOrderStatus(orderId: string, status: string, actionBy: string): Promise<PaymentOrder>;
+  sendChatMessage(orderId: string, senderId: string, message: string, isSystem?: boolean, attachmentUrl?: string): Promise<ChatMessage>;
+  getOrderChat(orderId: string): Promise<any[]>;
   
   // Files
   
@@ -114,14 +108,10 @@ export interface Backend {
   
   logAudit(adminId: string, action: string, details: string, targetId?: string): Promise<void>;
 
-  generateUser2FA(userId: string): Promise<{ secret: string; otpauth_url: string }>;
-  enableUser2FA(userId: string, token: string): Promise<boolean>;
-  verifyUser2FA(userId: string, token: string): Promise<boolean>;
 
   getAdminDashboardData(): Promise<{
     users: User[];
     auditLogs: AuditLog[];
-    promos: PromoContent[];
     metrics: any;
   }>;
 
@@ -151,7 +141,6 @@ export interface Backend {
   
   setUserRole(adminId: string, userId: string, updates: Partial<User>): Promise<User>;
 
-  setPhantomAgent(adminId: string, userId: string, accessLevel: 'NONE' | '30_MIN' | 'FULL_DAY'): Promise<void>;
 
   manageCycle(adminId: string, action: string, payload: any): Promise<void>;
 }

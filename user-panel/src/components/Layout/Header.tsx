@@ -15,8 +15,10 @@ import { useNavigate } from 'react-router';
 import { Show } from '../ui/Show';
 
 interface HeaderProps { onAuthRequired?: () => void; }
+type MenuItem = { label: string; icon: string; path: string; requireAuth?: boolean };
+type MenuSection = { title: string; auth?: boolean; items: MenuItem[] };
 
-const menuSections = [
+const menuSections: MenuSection[] = [
   {
     title: 'PLAY',
     items: [

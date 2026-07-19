@@ -82,7 +82,7 @@ const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose, onOpenChat, 
           clearInterval(pollRef.current!);
           setStep('done');
         }
-      } catch (err) { console.error('[WalletModal] error:', err?.message); }
+      } catch (err: unknown) { console.error('[WalletModal] error:', err instanceof Error ? err.message : err); }
     }, 3000);
   }, [onClose, onOpenChat]);
 

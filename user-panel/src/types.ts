@@ -293,7 +293,3 @@ export interface PaymentOrder {
   paidAt?:            string;
   completedAt?:       string;
 }
-
-
-export type PaymentOrder = PaymentOrder;
-

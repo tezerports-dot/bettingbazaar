@@ -75,7 +75,6 @@ import ErrorBoundary from './components/ui/ErrorBoundary';
 import Header from './components/Layout/Header';
 import GameCategoryStrip from './components/Game/GameCategoryStrip';
 import Footer from './components/Layout/Footer';
-import MerchantApp from './MerchantApp';
 import { getBackend } from './services/backend.service';
 const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? '0.0.0';
 
@@ -111,7 +110,7 @@ const Layout: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
   );
 };
 
-const MerchantRedirect = () => { React.  
+const MerchantRedirect = () => {
   // GOVERNANCE §12: all panels subscribe to branding events and apply CSS vars.
   useEffect(() => {
     function applyBranding(b: any) {
@@ -126,11 +125,7 @@ const MerchantRedirect = () => { React.
       const cached = localStorage.getItem('app_branding');
       if (cached) applyBranding(JSON.parse(cached));
     } catch { /* ignore */ }
-    // Import wsService lazily to avoid circular dependency
-    import('./services/realBackend').then(({ default: backend }) => {
-      (backend as any).on?.('branding', applyBranding);
-      (backend as any).on?.('branding_updated', (d: any) => applyBranding(d?.branding ?? d));
-    });
+    return backend.subscribeToBranding(applyBranding);
   }, []);
 
 useEffect(() => { window.location.href = '/merchant'; }, []); return null; };
