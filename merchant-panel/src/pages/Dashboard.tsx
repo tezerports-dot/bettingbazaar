@@ -17,7 +17,7 @@ import sseService from '../services/sse';
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../services/AuthContext';
 import { api } from '../services/api';
-import { DollarSign, TrendingUp, Package, CheckCircle, Users, Activity, ClipboardList, Gauge, ShieldCheck, WalletCards } from 'lucide-react';
+import { DollarSign, TrendingUp, Package, CheckCircle, Users, Activity } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { Earnings, Stats } from '../types';
@@ -143,37 +143,6 @@ const Dashboard: React.FC = () => {
   const maxWithdrawLimit       = merchant?.limits?.maxWithdraw ?? 0;
   const walletCapacityPercent  = maxDepositLimit > 0 ? Math.min(100, Math.round((tokenBalance / maxDepositLimit) * 100)) : 0;
   const avgProfitPerOrder      = todayEarnings / (completedToday || 1);
-  const serviceReadiness       = merchant?.isOnline && merchant?.acceptsDeposits !== false && merchant?.acceptsWithdrawals !== false;
-  const erpCards = [
-    {
-      title: 'Order Control Tower',
-      icon: ClipboardList,
-      value: activeOrders.toLocaleString('en-IN'),
-      label: `${pendingOrders} pending · ${processingOrders} processing`,
-      className: 'from-blue-600 to-indigo-700',
-    },
-    {
-      title: 'Settlement Wallet',
-      icon: WalletCards,
-      value: `Rs.${tokenBalance.toLocaleString('en-IN')}`,
-      label: `Wallet covers ${walletCapacityPercent}% of max deposit`,
-      className: 'from-emerald-600 to-teal-700',
-    },
-    {
-      title: 'SLA Performance',
-      icon: Gauge,
-      value: `${successRate.toFixed(1)}%`,
-      label: `Avg profit/order Rs.${avgProfitPerOrder.toFixed(0)}`,
-      className: 'from-purple-600 to-fuchsia-700',
-    },
-    {
-      title: 'Compliance Readiness',
-      icon: ShieldCheck,
-      value: serviceReadiness ? 'Ready' : 'Review',
-      label: merchant?.status || 'ACTIVE',
-      className: serviceReadiness ? 'from-green-600 to-lime-700' : 'from-orange-600 to-amber-700',
-    },
-  ];
 
   return (
     <div className="space-y-6">
@@ -203,68 +172,33 @@ const Dashboard: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {erpCards.map((card) => {
-          const Icon = card.icon;
-          return (
-            <div key={card.title} className={`rounded-2xl bg-gradient-to-br ${card.className} p-5 text-white shadow-xl`}>
-              <div className="mb-4 flex items-center justify-between">
-                <p className="text-sm font-semibold text-white/80">{card.title}</p>
-                <Icon className="h-7 w-7 text-white/80" />
-              </div>
-              <p className="text-3xl font-black">{card.value}</p>
-              <p className="mt-2 text-sm text-white/75">{card.label}</p>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-lg lg:col-span-2">
-          <div className="mb-4 flex items-center justify-between">
-            <div>
-              <h2 className="text-lg font-bold text-gray-900">Order Limits & Wallet Capacity</h2>
-              <p className="text-sm text-gray-500">Uses live merchant limits and wallet balance returned by the profile API.</p>
-            </div>
-            <span className="rounded-full bg-blue-50 px-3 py-1 text-sm font-bold text-blue-700">{walletCapacityPercent}% wallet cover</span>
+      <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-lg">
+        <div className="mb-4 flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-bold text-gray-900">Order Limits & Wallet Capacity</h2>
+            <p className="text-sm text-gray-500">Uses live merchant limits and wallet balance returned by the profile API.</p>
           </div>
-          <div className="h-3 overflow-hidden rounded-full bg-gray-100">
-            <div className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-600" style={{ width: `${walletCapacityPercent}%` }} />
-          </div>
-          <div className="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
-            <div className="rounded-xl bg-gray-50 p-3">
-              <p className="text-gray-500">Min Deposit</p>
-              <p className="font-bold text-gray-900">Rs.{minDepositLimit.toLocaleString('en-IN')}</p>
-            </div>
-            <div className="rounded-xl bg-gray-50 p-3">
-              <p className="text-gray-500">Max Deposit</p>
-              <p className="font-bold text-gray-900">Rs.{maxDepositLimit.toLocaleString('en-IN')}</p>
-            </div>
-            <div className="rounded-xl bg-gray-50 p-3">
-              <p className="text-gray-500">Min Withdraw</p>
-              <p className="font-bold text-gray-900">Rs.{minWithdrawLimit.toLocaleString('en-IN')}</p>
-            </div>
-            <div className="rounded-xl bg-gray-50 p-3">
-              <p className="text-gray-500">Max Withdraw</p>
-              <p className="font-bold text-gray-900">Rs.{maxWithdrawLimit.toLocaleString('en-IN')}</p>
-            </div>
-          </div>
+          <span className="rounded-full bg-blue-50 px-3 py-1 text-sm font-bold text-blue-700">{walletCapacityPercent}% wallet cover</span>
         </div>
-        <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-lg">
-          <h2 className="text-lg font-bold text-gray-900">Today’s Dispatch Priorities</h2>
-          <div className="mt-4 space-y-3">
-            <div className="flex items-center justify-between rounded-xl bg-yellow-50 p-3">
-              <span className="text-sm font-medium text-yellow-900">Clear pending queue</span>
-              <span className="font-black text-yellow-900">{pendingOrders}</span>
-            </div>
-            <div className="flex items-center justify-between rounded-xl bg-blue-50 p-3">
-              <span className="text-sm font-medium text-blue-900">Finish processing</span>
-              <span className="font-black text-blue-900">{processingOrders}</span>
-            </div>
-            <div className="flex items-center justify-between rounded-xl bg-green-50 p-3">
-              <span className="text-sm font-medium text-green-900">Completed today</span>
-              <span className="font-black text-green-900">{completedToday}</span>
-            </div>
+        <div className="h-3 overflow-hidden rounded-full bg-gray-100">
+          <div className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-600" style={{ width: `${walletCapacityPercent}%` }} />
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
+          <div className="rounded-xl bg-gray-50 p-3">
+            <p className="text-gray-500">Min Deposit</p>
+            <p className="font-bold text-gray-900">Rs.{minDepositLimit.toLocaleString('en-IN')}</p>
+          </div>
+          <div className="rounded-xl bg-gray-50 p-3">
+            <p className="text-gray-500">Max Deposit</p>
+            <p className="font-bold text-gray-900">Rs.{maxDepositLimit.toLocaleString('en-IN')}</p>
+          </div>
+          <div className="rounded-xl bg-gray-50 p-3">
+            <p className="text-gray-500">Min Withdraw</p>
+            <p className="font-bold text-gray-900">Rs.{minWithdrawLimit.toLocaleString('en-IN')}</p>
+          </div>
+          <div className="rounded-xl bg-gray-50 p-3">
+            <p className="text-gray-500">Max Withdraw</p>
+            <p className="font-bold text-gray-900">Rs.{maxWithdrawLimit.toLocaleString('en-IN')}</p>
           </div>
         </div>
       </div>
@@ -444,7 +378,7 @@ const Dashboard: React.FC = () => {
           </div>
           <div>
             <p className="text-3xl font-bold text-green-600">
-              Rs.{(todayEarnings / (completedToday || 1)).toFixed(0)}
+              Rs.{avgProfitPerOrder.toFixed(0)}
             </p>
             <p className="text-sm text-gray-600 mt-1">Avg Profit/Order</p>
           </div>

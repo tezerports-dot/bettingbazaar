@@ -248,32 +248,32 @@ export const Dashboard: React.FC = () => {
           <div>
             <p className="text-sm text-gray-400 mb-1">Token Buy (Deposits)</p>
             <p className="text-xl font-bold text-green-500">
-              ₹{(stats.finance.tokenBuy ?? stats.finance.totalDeposits ?? 0).toLocaleString()}
+              {formatMoney(grossInflow)}
             </p>
           </div>
           <div>
             <p className="text-sm text-gray-400 mb-1">Token Sell (Withdrawals)</p>
             <p className="text-xl font-bold text-red-500">
-              ₹{(stats.finance.tokenSell ?? stats.finance.totalWithdrawals ?? 0).toLocaleString()}
+              {formatMoney(grossOutflow)}
             </p>
           </div>
           <div>
             <p className="text-sm text-gray-400 mb-1">Total Bets</p>
             <p className="text-xl font-bold text-blue-500">
-              ₹{stats.finance.totalBets.toLocaleString()}
+              {formatMoney(stats.finance.totalBets)}
             </p>
           </div>
           <div>
             <p className="text-sm text-gray-400 mb-1">Total Payouts</p>
             <p className="text-xl font-bold text-orange-400">
-              ₹{(stats.finance.totalPayouts ?? 0).toLocaleString()}
+              {formatMoney(stats.finance.totalPayouts)}
             </p>
           </div>
         </div>
         <div className="mt-4 p-3 rounded-xl" style={{ background:'rgba(212,175,55,0.07)', border:'1px solid rgba(212,175,55,0.2)' }}>
           <p className="text-sm text-gray-400 mb-0.5">Net Revenue</p>
           <p className="text-2xl font-black" style={{ color:'#D4AF37' }}>
-            ₹{stats.finance.netProfit.toLocaleString()}
+            {formatMoney(stats.finance.netProfit)}
           </p>
           <p className="text-xs text-gray-600 mt-0.5">Bets − Payouts − Affiliate commissions</p>
         </div>
