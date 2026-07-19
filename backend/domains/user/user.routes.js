@@ -337,6 +337,10 @@ router.get('/v1/user/:id/data', authenticate, async (req, res) => {
     // history = last 20 cycle IDs the user bet in (for LiveTicker dots)
     const historyCycleIds = [...new Set(normalizedBets.map(b => b.cycleId))].slice(0, 20);
 
+    const publicKycData = user.kycStatus === 'REJECTED' && user.kycData?.rejectionReason
+      ? { rejectionReason: user.kycData.rejectionReason }
+      : null;
+
     res.json({
       success: true,
       user: {
@@ -350,15 +354,9 @@ router.get('/v1/user/:id/data', authenticate, async (req, res) => {
         walletBalance,    // BUG-U6 fix — Header now shows real balance
         totalBalance:     walletBalance,
         kycStatus:        user.kycStatus,
-        // BUG-U15 fix — kycData with rejectionReason surfaced to UI
-        kycData: user.kycData ? {
-          nameOnPAN:       user.kycData.nameOnPAN       || user.kycData.nameOnAadhaar || '',
-          panNumber:       user.kycData.panNumber       || user.kycData.aadhaarNumber || '',
-          idProofUrl:      user.kycData.idProofUrl      || '',
-          photoUrl:        user.kycData.photoUrl        || '',
-          submittedAt:     user.kycData.submittedAt     || null,
-          rejectionReason: user.kycData.rejectionReason || ''
-        } : null,
+        // KYC documents/PII are admin-only after submission; users get status
+        // plus rejection reason only when they must resubmit.
+        kycData:          publicKycData,
         bankDetails: user.bankDetails || null,
         profilePic:       user.profilePic || '',
         joinedAt:         user.joinedAt,
@@ -437,6 +435,17 @@ router.post('/user/:userId/kyc', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, message: 'All KYC fields and uploaded document file keys are required' });
     }
 
+    const User = mongoose.model('User');
+    const currentUser = await User.findById(userId).session(session).select('kycStatus').lean();
+    if (!currentUser) {
+      await abortOrEnd(session);
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    if (currentUser.kycStatus === 'APPROVED') {
+      await abortOrEnd(session);
+      return res.status(409).json({ success: false, message: 'Approved KYC cannot be changed' });
+    }
+
     const [idProof, photo] = await Promise.all([
       cdnService.verifyUploadedObject({
         fileKey: idProofKey, cdnUrl: idProofCdnUrl || undefined,
@@ -448,7 +457,6 @@ router.post('/user/:userId/kyc', authenticate, async (req, res) => {
       }),
     ]);
 
-    const User = mongoose.model('User');
     const aadhaarHash = hashAadhaar(normalizedAadhaarNumber);
     const existingAadhaar = await User.findOne({
       _id: { $ne: userId },

@@ -8,6 +8,8 @@ import { getActivePolicy } from '../configuration/depositPolicy.service.js';
 // Risk Platform (Phase 010) owns the reserve-ratio rounding rule (Spec 4.4).
 import { computeReserveSplit } from '../risk/riskValidation.service.js';
 
+export const PAYMENT_PROOF_RETENTION_MS = 48 * 60 * 60 * 1000;
+
 const paymentOrderSchema = new mongoose.Schema({
   orderId:        { type: String, required: true, unique: true },
   userId:         { type: mongoose.Schema.Types.ObjectId, ref: 'User',     required: true, index: true },
@@ -87,6 +89,7 @@ const paymentOrderSchema = new mongoose.Schema({
   requiresVideoKYC: { type: Boolean, default: false },
   utrNumber:        String,
   proofScreenshot:  String,
+  proofExpiresAt:    { type: Date },
 
   // ── UTR Warning System ───────────────────────────────────────────────────
   utrWarning:        { type: String },              // 'DUPLICATE_UTR' | 'FRAUD_ALERT'
@@ -189,6 +192,12 @@ const paymentOrderSchema = new mongoose.Schema({
 
 // ── HMAC binding (cryptographic order integrity) ──────────────────────────────
 paymentOrderSchema.add({ orderHmac: { type: String, select: false } });
+paymentOrderSchema.pre('save', function(next) {
+  if (this.isModified('proofScreenshot')) {
+    this.proofExpiresAt = this.proofScreenshot ? new Date(Date.now() + PAYMENT_PROOF_RETENTION_MS) : undefined;
+  }
+  next();
+});
 paymentOrderSchema.pre('save', setOrderHmacHook);
 
 // ── Pre-save: keep amount alias in sync with fiatAmount ──────────────────────
@@ -252,6 +261,26 @@ paymentOrderSchema.index({ merchantId: 1, status: 1, createdAt: -1, _id: -1 });
 paymentOrderSchema.index({ userId: 1, createdAt: -1, _id: -1 });
 paymentOrderSchema.index({ expiresAt: 1, status: 1 });
 paymentOrderSchema.index({ bulkPayoutDate: 1, type: 1, status: 1 });
+paymentOrderSchema.index({ proofExpiresAt: 1 }, { partialFilterExpression: { proofScreenshot: { $type: 'string' } } });
+
+paymentOrderSchema.statics.scrubExpiredProofs = async function(now = new Date()) {
+  const fallbackCutoff = new Date(now.getTime() - PAYMENT_PROOF_RETENTION_MS);
+  const [expired, legacyExpired] = await Promise.all([
+    this.updateMany(
+      { proofScreenshot: { $exists: true, $ne: null }, proofExpiresAt: { $lte: now } },
+      { $unset: { proofScreenshot: '', proofExpiresAt: '' }, $set: { updatedAt: now } }
+    ),
+    this.updateMany(
+      {
+        proofScreenshot: { $exists: true, $ne: null },
+        proofExpiresAt: { $exists: false },
+        createdAt: { $lte: fallbackCutoff },
+      },
+      { $unset: { proofScreenshot: '' }, $set: { updatedAt: now } }
+    ),
+  ]);
+  return { modifiedCount: (expired.modifiedCount || 0) + (legacyExpired.modifiedCount || 0) };
+};
 
 // ── Exports ───────────────────────────────────────────────────────────────────
 // Hybrid money DB (plan step 2): mirror order lifecycle to Postgres.

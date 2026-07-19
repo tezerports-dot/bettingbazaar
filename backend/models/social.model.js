@@ -56,7 +56,7 @@ export const ChatRoomConfig = mongoose.model('ChatRoomConfig', chatRoomConfigSch
 
 // ---------------------------------------------------------------------------
 
-// TTL index auto-deletes messages older than 48 hours
+// TTL index auto-deletes non-support chat messages older than 5 hours
 // ---------------------------------------------------------------------------
 const publicChatMsgSchema = new mongoose.Schema({
   userId:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
@@ -81,8 +81,8 @@ const publicChatMsgSchema = new mongoose.Schema({
   reportCount: { type: Number, default: 0 },
 
   createdAt:   { type: Date, default: Date.now, index: true },
-  // TTL: auto-delete after 48 hours
-  expiresAt:   { type: Date, default: () => new Date(Date.now() + 48 * 3600000), index: { expireAfterSeconds: 0 } },
+  // TTL: auto-delete after 5 hours; support-ticket messages use SupportMsg and are retained separately.
+  expiresAt:   { type: Date, default: () => new Date(Date.now() + 5 * 3600000), index: { expireAfterSeconds: 0 } },
 });
 publicChatMsgSchema.index({ status: 1, isDeleted: 1, createdAt: -1 });
 export const PublicChatMsg = mongoose.model('PublicChatMsg', publicChatMsgSchema);

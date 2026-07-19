@@ -136,25 +136,71 @@ const Dashboard: React.FC = () => {
   const successRate            = totalOrdersCount > 0
     ? (completedToday / (completedToday + activeOrders)) * 100
     : 0;
+  const tokenBalance           = merchant?.tokenBalance ?? 0;
+  const minDepositLimit        = merchant?.limits?.minDeposit ?? 0;
+  const maxDepositLimit        = merchant?.limits?.maxDeposit ?? 0;
+  const minWithdrawLimit       = merchant?.limits?.minWithdraw ?? 0;
+  const maxWithdrawLimit       = merchant?.limits?.maxWithdraw ?? 0;
+  const walletCapacityPercent  = maxDepositLimit > 0 ? Math.min(100, Math.round((tokenBalance / maxDepositLimit) * 100)) : 0;
+  const avgProfitPerOrder      = todayEarnings / (completedToday || 1);
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
-          <p className="text-gray-600 mt-1">Welcome back, {merchant?.username}</p>
+      {/* ERP Header */}
+      <div className="overflow-hidden rounded-3xl bg-gradient-to-r from-slate-900 via-blue-950 to-indigo-950 p-6 text-white shadow-2xl">
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <p className="mb-3 inline-flex items-center rounded-full bg-white/10 px-3 py-1 text-xs font-bold uppercase tracking-widest text-blue-100">
+              Merchant ERP Workspace
+            </p>
+            <h1 className="text-3xl font-black">Settlement Operations Center</h1>
+            <p className="mt-2 max-w-3xl text-sm text-blue-100/80">
+              Welcome back, {merchant?.username}. Manage queue capacity, wallet exposure, service readiness and earnings from one command surface.
+            </p>
+          </div>
+          <button
+            onClick={handleToggleOnline}
+            className={`rounded-2xl px-6 py-4 text-left font-semibold shadow-xl transition-all hover:scale-[1.02] ${
+              merchant?.isOnline
+                ? 'bg-green-500 text-white hover:bg-green-400'
+                : 'bg-slate-700 text-white hover:bg-slate-600'
+            }`}
+          >
+            <span className="block text-xs uppercase tracking-widest opacity-80">Current availability</span>
+            <span className="mt-1 block text-lg">{merchant?.isOnline ? 'Online · Accepting Orders' : 'Offline · Not Accepting'}</span>
+          </button>
         </div>
-        <button
-          onClick={handleToggleOnline}
-          className={`px-6 py-3 rounded-lg font-medium transition-all transform hover:scale-105 ${
-            merchant?.isOnline
-              ? 'bg-green-600 text-white hover:bg-green-700 shadow-lg'
-              : 'bg-gray-600 text-white hover:bg-gray-700'
-          }`}
-        >
-          {merchant?.isOnline ? '[green] Online - Accepting Orders' : '[red] Offline - Not Accepting'}
-        </button>
+      </div>
+
+      <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-lg">
+        <div className="mb-4 flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-bold text-gray-900">Order Limits & Wallet Capacity</h2>
+            <p className="text-sm text-gray-500">Uses live merchant limits and wallet balance returned by the profile API.</p>
+          </div>
+          <span className="rounded-full bg-blue-50 px-3 py-1 text-sm font-bold text-blue-700">{walletCapacityPercent}% wallet cover</span>
+        </div>
+        <div className="h-3 overflow-hidden rounded-full bg-gray-100">
+          <div className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-600" style={{ width: `${walletCapacityPercent}%` }} />
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
+          <div className="rounded-xl bg-gray-50 p-3">
+            <p className="text-gray-500">Min Deposit</p>
+            <p className="font-bold text-gray-900">Rs.{minDepositLimit.toLocaleString('en-IN')}</p>
+          </div>
+          <div className="rounded-xl bg-gray-50 p-3">
+            <p className="text-gray-500">Max Deposit</p>
+            <p className="font-bold text-gray-900">Rs.{maxDepositLimit.toLocaleString('en-IN')}</p>
+          </div>
+          <div className="rounded-xl bg-gray-50 p-3">
+            <p className="text-gray-500">Min Withdraw</p>
+            <p className="font-bold text-gray-900">Rs.{minWithdrawLimit.toLocaleString('en-IN')}</p>
+          </div>
+          <div className="rounded-xl bg-gray-50 p-3">
+            <p className="text-gray-500">Max Withdraw</p>
+            <p className="font-bold text-gray-900">Rs.{maxWithdrawLimit.toLocaleString('en-IN')}</p>
+          </div>
+        </div>
       </div>
 
       {/* Primary Stats */}
@@ -332,7 +378,7 @@ const Dashboard: React.FC = () => {
           </div>
           <div>
             <p className="text-3xl font-bold text-green-600">
-              Rs.{(todayEarnings / (completedToday || 1)).toFixed(0)}
+              Rs.{avgProfitPerOrder.toFixed(0)}
             </p>
             <p className="text-sm text-gray-600 mt-1">Avg Profit/Order</p>
           </div>
