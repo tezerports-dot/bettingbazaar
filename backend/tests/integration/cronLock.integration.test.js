@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Integration test (real DB): the cron leader lock (Phase X fix X-4). Proves
 // the property that matters for horizontal scale — under concurrent acquire
 // attempts (simulating N replicas hitting the same tick) at most ONE wins,

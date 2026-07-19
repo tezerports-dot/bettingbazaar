@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
  * MerchantPlatform.tsx — Merchant Platform console (Phase 008 APIs, UI
  * shipped Phase C 2026-07-10). Bonus policy (Business Policy Platform),

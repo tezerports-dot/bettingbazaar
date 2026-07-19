@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Integration test (real Postgres service in CI): the hybrid money DB —
 // plan steps 1-4. Proves, against a REAL postgres:16:
 //   - the BIGINT-paise schema applies idempotently,

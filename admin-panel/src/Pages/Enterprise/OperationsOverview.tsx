@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
  * OperationsOverview.tsx — the Operations Platform console (Phase 012 APIs,
  * UI shipped Phase C 2026-07-10). Orchestration-only: every number is read

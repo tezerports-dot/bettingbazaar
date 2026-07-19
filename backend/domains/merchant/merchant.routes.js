@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Domain: Merchant (BBEPS Phase 003 §3.3) — player-facing merchant registration/auth.
 // Moved from backend/routes/merchant.routes.js on 2026-07-01 (BBEPS Phase 004 migration).
 
@@ -1368,7 +1368,7 @@ router.post('/orders/:id/approve', merchantAuth, async (req, res) => {
         // DepositPolicy — NOT recomputed here. This route previously had its
         // own independent hardcoded 90/10, a second write path to the same
         // value the model's pre-save hook already computes; removed per
-        // 04-GOVERNANCE.md §2 ("No second write path to a value with a
+        // docs/governance/04-GOVERNANCE.md §2 ("No second write path to a value with a
         // designated single-writer service"). depositAllocation already
         // includes the floor() remainder (Spec 4.4: remainder goes to
         // deposit, never reserve — see the pre-save hook).

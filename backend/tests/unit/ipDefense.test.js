@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Unit tests for the item-12 IP-rotation defense (pure parts: subnet keying +
 // config gate). The subnet key is the whole point — rotating the last octet
 // must collapse to the SAME key.

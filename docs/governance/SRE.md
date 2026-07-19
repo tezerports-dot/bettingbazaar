@@ -105,4 +105,4 @@ design). Restore Redis; no data loss (money is in Mongo/PG).
 - Scrape: `GET /metrics` (Bearer `METRICS_TOKEN` if set).
 - Health: `GET /health/live` (process), `GET /health/ready` (deps + drain).
 - Alert sink: `SystemConfig.alertWebhookUrl` (admin-editable) / `ALERT_WEBHOOK_URL`.
-- DR: `DISASTER_RECOVERY.md`. Money rollback: `backend/postgres/DATA_ROLLBACK_PLAN.md`.
+- DR: `docs/governance/DISASTER_RECOVERY.md`. Money rollback: `backend/postgres/DATA_ROLLBACK_PLAN.md`.

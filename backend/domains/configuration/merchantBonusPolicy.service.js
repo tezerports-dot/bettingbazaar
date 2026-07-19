@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Domain: Configuration / Business Policy Platform.
 //
 // Sole writer of MerchantBonusPolicy documents. Runtime consumer (read-only):
@@ -50,7 +50,7 @@ async function activate(doc) {
 
 /**
  * createBonusPolicyVersion — the write path. Immediate-apply only in v1
- * (no scheduling/approval-gating — see model header + EXECUTION_QUEUE.md).
+ * (no scheduling/approval-gating — see model header + docs/governance/EXECUTION_QUEUE.md).
  */
 export async function createBonusPolicyVersion(fields, actor, { justification } = {}) {
   if (!justification || !justification.trim()) {

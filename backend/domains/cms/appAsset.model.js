@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Domain: CMS / Branding. Metadata record for admin-uploaded app assets (PWA
 // icons, logos, splash) — one document per fixed slot. This is the multi-instance
 // source of truth for "which slots are uploaded and where they live", so app-asset

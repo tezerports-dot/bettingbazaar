@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Unit tests for the AQ-8 password authority. The load-bearing property: a
 // legacy bcrypt hash must still verify (nobody is locked out) AND report
 // needsRehash so the login handler can upgrade it to argon2id.

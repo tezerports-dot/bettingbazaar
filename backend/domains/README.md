@@ -1,7 +1,7 @@
 # backend/domains/ — Enterprise Domain Map
 
 Target architecture per BBEPS Phases 003–004, adapted to fit inside the existing
-single-Express-app `backend/` (no monorepo split — see audit/PHASE0_BASELINE_AND_FINDINGS.md
+single-Express-app `backend/` (no monorepo split — see docs/governance/audits/PHASE0_BASELINE_AND_FINDINGS.md
 §3 "middle road" and the 2026-07-01 approval). Each domain owns its models, services,
 and routes. Cross-domain access goes through a domain's exported service functions,
 never through another domain's internal state.

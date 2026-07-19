@@ -68,7 +68,7 @@ image/k8s, reproducible+scanned CI, and the dormant Postgres money layer.
 | # | Capability | Status | Evidence | Gap analysis | Recommended upgrade | Priority |
 |---|---|---|---|---|---|---|
 | 1 | Enterprise Architecture Layer | **FULL** | `backend/domains/` (13 bounded domains), `backend/shared/`, `backend/config/`, `backend/providers/` | Platform/infra/business/domain layers are real and separated | — | — |
-| 2 | Governance Framework | **FULL** | `04-GOVERNANCE.md` (§0–16, incl. currency + reproducibility rules), `ENTERPRISE_DECISIONS.md`, `ARCHITECTURE_AUDIT_2026.md` | ADRs are embedded in decision docs, not a formal `/adr` log | (Optional) extract an ADR index for discoverability | Low |
+| 2 | Governance Framework | **FULL** | `docs/governance/04-GOVERNANCE.md` (§0–16, incl. currency + reproducibility rules), `docs/governance/ENTERPRISE_DECISIONS.md`, `ARCHITECTURE_AUDIT_2026.md` | ADRs are embedded in decision docs, not a formal `/adr` log | (Optional) extract an ADR index for discoverability | Low |
 | 3 | Domain-Driven Module Boundaries | **FULL** | `domains/{wallet,payment,markets,merchant,revenue,identity,configuration,risk,funding,…}`, enforced by `.dependency-cruiser.cjs` | Wallet/Payment/Betting/Merchant/Settlement/KYC boundaries exist and are CI-enforced | — | — |
 | 4 | Centralized Configuration Platform | **FULL** | `SystemConfig` + `configVersioning.service.js` + `depositPolicy` + `operations/config-catalog` + `security.config.js` + `network.config.js` | Business config is one versioned `SystemConfig` doc (2026 addition suggests finer split — see PE row below) | Split only if a domain needs independent lifecycle; current catalog already enumerates ownership | Low |
 | 5 | Dependency Validation | **FULL** | `.dependency-cruiser.cjs` + CI `check:deps` (no-circular, domain-core-not-import-routes, wallet-purity) | — | — | — |
@@ -93,7 +93,7 @@ image/k8s, reproducible+scanned CI, and the dormant Postgres money layer.
 |---|---|---|---|---|---|---|
 | 15 | Connection Pooling | **FULL** | `pg.Pool` (`PG_POOL_SIZE`), Mongo `maxPoolSize`/`minPoolSize`; **[fixed this pass]** `bb_pg_pool_connections` gauge | — | — | — |
 | 16 | Partitioning Strategy | **PARTIAL** | **[fixed this pass]** strategy documented in `schema.sql` header | Not pre-applied — partitioning a table with unique idempotency keys requires the key to include the partition column, which would weaken the double-spend gate | Apply RANGE-by-month on `wallet_ledger`/`accounting_events` **with** a preserved global-uniqueness mechanism when row counts (millions/month) justify it | Medium (volume-gated) |
-| 17 | Point-in-Time Recovery | **PARTIAL** | `DISASTER_RECOVERY.md`; PG WAL / Atlas toggle | Enablement is an owner/provider action | Enable Atlas continuous backups / PG WAL archiving; test one restore | **High (owner)** |
+| 17 | Point-in-Time Recovery | **PARTIAL** | `docs/governance/DISASTER_RECOVERY.md`; PG WAL / Atlas toggle | Enablement is an owner/provider action | Enable Atlas continuous backups / PG WAL archiving; test one restore | **High (owner)** |
 | 18 | Read Replicas | **PARTIAL** | `readPreference.service.js` + `FLAGS.READ_REPLICA` (winners feed routes to replica) | Replica infra = owner; replica-lag metric absent | Provision a replica member + add a lag gauge (pairs with the pool metric) | Medium |
 | 19 | Backup Verification | **PARTIAL** | `backup.service.js` (daily mongodump→S3, retention, failure alert) + DR restore drill (manual) | Restore is documented, not automatically verified | Scheduled restore-to-scratch-DB check with a row-count assertion | Medium |
 | 20 | Autovacuum / Perf Tuning | **PARTIAL** | PG autovacuum on by default; schema btree indexes | No explicit tuning (fillfactor, autovacuum scale factors) yet | Tune once PG is live under real load; capture in a PG runbook | Low (post-provision) |
@@ -120,7 +120,7 @@ image/k8s, reproducible+scanned CI, and the dormant Postgres money layer.
 | 31 | Secure Cookies | **FULL** | `routes.js` `COOKIE_OPTS` (httpOnly, secure in prod, sameSite) | — | — | — |
 | 32 | CSP & HSTS | **FULL** | helmet CSP directives + HSTS (prod https); edge HSTS in Caddyfile | CSP allows `'unsafe-inline'` for styles (common for the panels) | Tighten style-src with nonces/hashes if the panels allow | Low |
 | 33 | WAF Integration | **PARTIAL✓(design)** | `middleware/owaspFilter.js` (flag-gated OWASP-pattern content filter) | Not a managed/volumetric WAF | Front with Cloudflare/AWS WAF for managed rulesets + L7 DDoS when public | Medium |
-| 34 | Authorization Matrix | **FULL** | `AUTHORIZATION_MATRIX.md` + `auth.middleware.js` role/permission guards (X-8 scan found no holes) | — | — | — |
+| 34 | Authorization Matrix | **FULL** | `docs/governance/AUTHORIZATION_MATRIX.md` + `auth.middleware.js` role/permission guards (X-8 scan found no holes) | — | — | — |
 | 35 | Audit Logging | **FULL** | `EnhancedAuditLog` / `AuditLog` on every admin/financial write | Mongo audit is app-append (not DB-immutable like the ledger) | (Optional) mirror critical audit into the append-only ledger store | Low |
 
 ## F. Networking & Edge
@@ -155,7 +155,7 @@ image/k8s, reproducible+scanned CI, and the dormant Postgres money layer.
 | 51 | Infrastructure as Code | **PARTIAL✓(design)** | `deploy/docker-compose.yml`, k8s manifests, `railway.json` | No Terraform/Pulumi (declarative manifests only) | Terraform/Pulumi on platform exit; manifests are the reproducibility layer on Railway | Low |
 | 52 | CI/CD Platform | **FULL** | `.github/workflows/ci.yml` (test on PG18/Redis8, `npm ci`, audit gate, secret scan, typecheck, 3 panel builds, **[fixed this pass]** SBOM) | — | — | — |
 | 53 | Blue/Green & Rolling | **FULL** | k8s `RollingUpdate` maxUnavailable:0 + blue/green color-selector procedure (`deploy/k8s/README.md`) | Railway is replace-style (documented) | — | — |
-| 54 | Disaster Recovery Platform | **FULL** | `DISASTER_RECOVERY.md` + **[fixed this pass]** `SRE.md` (SLOs, runbooks, capacity, rollback) | — | — | — |
+| 54 | Disaster Recovery Platform | **FULL** | `docs/governance/DISASTER_RECOVERY.md` + **[fixed this pass]** `SRE.md` (SLOs, runbooks, capacity, rollback) | — | — | — |
 | 55 | Cloud-Agnostic Provider Layer | **FULL** | `providers/registry.js` + storage/payment/casino/sportsbook provider interfaces | — | — | — |
 | 56 | Storage/Email/SMS Abstraction | **FULL** | `providers/storage/{S3,LocalDisk}` + `domains/communication/channelRegistry.js` (EMAIL live, SMS adapter, PUSH declared) | — | — | — |
 | 57 | Feature Flag Platform | **FULL** | `services/featureFlags.service.js` (`FLAGS`, env + config gated) | No per-user/%-rollout targeting | Add targeting rules if experimentation is needed | Low |

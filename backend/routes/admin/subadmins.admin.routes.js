@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** subadmins.admin.routes.js — Sub-admin CRUD and permissions */
 import { express, mongoose, authenticate, isAdmin, getModels } from './_adminShared.js';
 // AQ-8: hash via the password authority (argon2id).

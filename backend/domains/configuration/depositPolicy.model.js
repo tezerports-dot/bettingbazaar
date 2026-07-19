@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Domain: Configuration / Business Policy Platform (BBEPS Phase 006 §6.7-§6.10).
 //
 // SCOPE (corrected 2026-07-08): this policy governs ONLY the deposit/reserve
@@ -6,7 +6,7 @@
 // NOT govern merchant incentive pay. Deposit creation and a completed
 // buy+sell cycle are different trigger events — the merchant bonus is earned
 // on cycle completion, not on deposit approval, so it cannot live on a
-// deposit-triggered policy. See ENTERPRISE_DECISIONS.md 2026-07-08 for the
+// deposit-triggered policy. See docs/governance/ENTERPRISE_DECISIONS.md 2026-07-08 for the
 // correction and "Merchant Performance Bonus" as the platform-funded,
 // cycle-completion-triggered mechanism that replaces the fields formerly
 // modeled here (`merchantCommissionPercent`, `commissionFundingSource`).
@@ -33,7 +33,7 @@
 // VERSIONING MODEL: each document IS a version (whole-policy, not per-field).
 // Exactly one ACTIVE document per currency at a time — enforced in
 // depositPolicy.service.js (the only allowed writer of this model; see
-// 04-GOVERNANCE.md §2 "No second write path to a value with a designated
+// docs/governance/04-GOVERNANCE.md §2 "No second write path to a value with a designated
 // single-writer service" — added as a new §1 authority in this migration).
 
 import mongoose from 'mongoose';

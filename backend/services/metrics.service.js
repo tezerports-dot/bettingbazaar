@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Prometheus metrics (plan item 33, 2026-07-13). Exposes GET /metrics in the
 // standard text format any Prometheus-compatible scraper ingests (Prometheus,
 // Grafana Cloud, VictoriaMetrics, Datadog agent) — portable, no vendor agent,

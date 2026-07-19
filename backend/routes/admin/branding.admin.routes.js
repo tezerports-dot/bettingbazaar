@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** branding.admin.routes.js — Branding config, CDN images, app assets */
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from './_adminShared.js';
 import { generateBrandingUploadUrl, isS3Configured, uploadBufferToS3, deleteFile } from '../../services/cdn.service.js';
@@ -110,7 +110,7 @@ router.put('/branding', authenticate, isAdmin, async (req, res) => {
 });
 
 
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 function buildBrandingPayload(b) {
   const cdnBaseUrl = b.cdnBaseUrl || process.env.CDN_URL || '';
   return {

@@ -226,7 +226,7 @@ def regex_patch_file(path: Path, replacements: list, dry_run: bool):
 
 
 # ─── Governance header ────────────────────────────────────────────────────────
-GOV = "// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)\n"
+GOV = "// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)\n"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1278,7 +1278,7 @@ export async function getAllFlags(tenant = null) {
 '''
 
 _SSE_EVENT_TYPES = '''\
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file.
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
 /**
  * sseEvents.types.ts — Typed catalog of all SSE events.
  *
@@ -1991,7 +1991,7 @@ export interface TokenRates {
 '''
 
 _PAYMENT_STATE_MACHINE = '''\
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file.
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
 /** paymentStateMachine.ts — Merchant Payment Processing state machine v1.0.0 */
 
 export const PAYMENT_STATES = [

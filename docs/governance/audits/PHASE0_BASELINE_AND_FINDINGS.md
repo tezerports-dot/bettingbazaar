@@ -1,8 +1,8 @@
 # Phase 0 — Repository Baseline Assessment (Real Evidence)
 
 **Authority chain (per your direction):** BBEPS (Phases 0–012) is now the constitutional
-authority for this repository, superseding `04-GOVERNANCE.md` where they conflict.
-`04-GOVERNANCE.md` is NOT deleted — it is retained as the implementation-level ruleset
+authority for this repository, superseding `docs/governance/04-GOVERNANCE.md` where they conflict.
+`docs/governance/04-GOVERNANCE.md` is NOT deleted — it is retained as the implementation-level ruleset
 that enforces BBEPS against this specific 316-file repo (see §3, "middle road").
 
 **Method:** every claim below was checked against the actual uploaded repo
@@ -19,7 +19,7 @@ example assumptions don't hold here and are corrected below so they don't get ac
 | BBEPS assumption | Reality | Evidence |
 |---|---|---|
 | "Queue Manager removed by business, AI renamed it, queue remained conceptually alive" | **True, confirmed** — not hypothetical | `backend/routes/admin/queue.admin.routes.js` (manual `/queue/assign/:orderId`, role `isAdminOrSubAdminOrQueueManager`) ships *alongside* `merchantScoring.service.js` (the real auto-assignment algorithm). Frontend has a live `admin-panel/src/Pages/QueueManager/QueueDashboard.tsx`. |
-| "Legacy Token Rate logic no longer reflects the business model" (Phase 2.4, listed as REMOVE candidate) | **False — Token Rate is a live, intentional business mechanic**, not legacy | `04-GOVERNANCE.md` §1 names `TokenRates` model as the sole authority for buy/sell rates and states "Merchant earnings model: Buy/sell spread only. `Merchant.commissionRate` is retired." The spread *is* the commission model. Do not remove `TokenRates`. |
+| "Legacy Token Rate logic no longer reflects the business model" (Phase 2.4, listed as REMOVE candidate) | **False — Token Rate is a live, intentional business mechanic**, not legacy | `docs/governance/04-GOVERNANCE.md` §1 names `TokenRates` model as the sole authority for buy/sell rates and states "Merchant earnings model: Buy/sell spread only. `Merchant.commissionRate` is retired." The spread *is* the commission model. Do not remove `TokenRates`. |
 | Domain model assumes a sportsbook (Leagues/Fixtures/Odds feeds) | **Partially false** — core product is a proprietary cycle/crash prediction game | `backend/gameEngine.js`, `backend/services/cycleGenerator.service.js`, `backend/models/cycle.model.js`, `GAME_CORE.ts`. `SportsPage.tsx` exists but is peripheral, not the core loop. BBEPS's "Betting/Sports Domain" needs a sibling **Game/Cycle Domain** that isn't in the spec's generic list — see §2. |
 
 ---
@@ -65,7 +65,7 @@ justified by the actual gap found in §2.
 per capability, no direct cross-domain writes, no hardcoded business policy, every algorithm
 versioned and documented). They are enforced **on the existing folder structure**
 (`backend/services/*.service.js` = domain service, `backend/models/*.model.js` = domain
-aggregate, `backend/routes/**` = domain API), not on a new tree. `04-GOVERNANCE.md` will be
+aggregate, `backend/routes/**` = domain API), not on a new tree. `docs/governance/04-GOVERNANCE.md` will be
 revised (not deleted) to state explicitly that it implements BBEPS Phases 006/009/010/011
 (Configuration, Workflow, Event, Algorithm governance) for this repo, and that BBEPS is the
 senior document where the two ever disagree. I'll deliver that revision once you confirm
@@ -161,7 +161,7 @@ grep -rln "payment-migration" --include="*.js" --include="*.sh" --include="*.jso
 
 Both return empty. Cleanup script: `audit/cleanup-dead-artifacts.sh` (dry-run by default).
 
-### F4 — `04-GOVERNANCE.md` predates this audit's authority decision
+### F4 — `docs/governance/04-GOVERNANCE.md` predates this audit's authority decision
 
 Its header currently says it's binding and supersedes `ARCHITECTURE.md`. It doesn't yet say
 anything about BBEPS. Leaving that unstated risks a future session treating it as the top

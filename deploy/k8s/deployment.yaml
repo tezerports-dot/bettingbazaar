@@ -1,4 +1,4 @@
-# GOVERNANCE: Read 04-GOVERNANCE.md before editing this file.
+# GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
 # Kubernetes manifests (plan items 40 + 44, 2026-07-18). Runtime behavior is
 # split by BB_RUNTIME_ROLE so API pods do short HTTP work, realtime pods own
 # SSE/WebSocket clients, and scheduler pods own cron/game-cycle producers.

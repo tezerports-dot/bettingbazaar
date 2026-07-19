@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
  * operations.admin.routes.js — OPERATIONS PLATFORM (BBEPS Phase 012).
  *
@@ -95,7 +95,7 @@ router.get('/operations/overview', authenticate, isAdminOrSubAdmin, async (req, 
 // value, its owning authority, and the endpoint that edits it. THE index
 // enforcing "no hardcoded percentages/limits/providers/rules": if a value
 // isn't in this catalog, it isn't configurable and must not exist as a
-// business constant in code (04-GOVERNANCE.md §2/§3).
+// business constant in code (docs/governance/04-GOVERNANCE.md §2/§3).
 router.get('/operations/config-catalog', authenticate, isAdminOrSubAdmin, async (req, res) => {
   res.json({ success: true, catalog: [
     { value: 'Deposit/reserve split + reserve usage rules (per currency)', owner: 'Business Policy — DepositPolicy', edit: 'PUT /api/admin/deposit-policy/:currency' },

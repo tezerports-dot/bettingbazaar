@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
  * FaqPage.tsx  v4.3.0 — NEW PAGE
  * BUG-U9 / CROSS-1 FIX: Admin-written FAQs now displayed in the user panel.

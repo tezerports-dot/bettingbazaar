@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Domain: Merchant (BBEPS Phase 003 §3.3). Owns merchant assignment/reassignment,
 // the queue manager merchant pool, and pending-order-for-assignment listing.
 // Payment-order lifecycle (approve/reject/cancel/resolve-dispute) moved to

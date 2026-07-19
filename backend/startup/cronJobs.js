@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
  * startup/cronJobs.js — All scheduled background jobs.
  * Single responsibility: register cron intervals, nothing else.
@@ -146,7 +146,7 @@ export function registerCronJobs(rebuildLeaderboard) {
   // ── Data retention worker — runs daily (Phase X X-7) ────────────────────────
   // Prunes high-volume OPERATIONAL data (settled bets, completed cycles, error
   // reports) older than SystemConfig.retentionMonths. NEVER touches financial/
-  // audit/user data (see retention.service.js + RETENTION_POLICY.md). Leader-
+  // audit/user data (see retention.service.js + docs/governance/RETENTION_POLICY.md). Leader-
   // locked so only one instance prunes; idempotent (re-running finds nothing
   // new); a 30-day safety floor caps misconfiguration.
   registerRecurring('data-retention', 24 * 60 * 60 * 1000, async () => {
@@ -159,7 +159,7 @@ export function registerCronJobs(rebuildLeaderboard) {
   // ── Automated database backup — runs daily (plan item 45) ───────────────────
   // mongodump → gzip archive → S3 (backups/), keep newest BACKUP_KEEP (14).
   // Skips loudly (log + alert) when mongodump or S3 is unavailable; a failed
-  // backup pages the alert webhook. Restore steps: DISASTER_RECOVERY.md.
+  // backup pages the alert webhook. Restore steps: docs/governance/DISASTER_RECOVERY.md.
   registerRecurring('db-backup', 24 * 60 * 60 * 1000, async () => {
     try {
       const { runBackup } = await import('../services/backup.service.js');

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Integration test (real DB): the Game Registry — catalogue is DATA.
 // Verifies the public catalogue contract (visibility filtering), the seed
 // (populates + idempotent), and admin CRUD incl. the no-orphan category guard.

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Pure, dependency-free CSV serialization (no mongoose, no side effects) so it
 // can be imported by BOTH reporting.service.js and the CPU worker thread
 // (services/cpuWorker.js) without dragging the DB layer into the worker. Item 5:

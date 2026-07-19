@@ -2,7 +2,7 @@
 
 // These are fallback constants only — used when branding hasn't loaded yet.
 // GOVERNANCE §3: any name shown to end-users must originate from Branding.
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 export const APP_NAME_FALLBACK = 'Betting Bazaar';  // use branding.userPanelName at runtime
 // APP_VERSION: read from import.meta.env.VITE_APP_VERSION (set from package.json by Vite).
 // Do not add a literal version string here — GOVERNANCE §8.

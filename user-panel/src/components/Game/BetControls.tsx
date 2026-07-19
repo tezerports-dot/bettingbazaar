@@ -2,7 +2,7 @@
 // Replace: style={{color:'var(--brand-primary)'}} → style={{color: 'var(--brand-primary)'}}
 // Replace: className="text-[#D4AF37]" → className="text-[color:var(--brand-primary)]"
 // Full sweep is done by scripts/apply-brand-variables.sh (generated in this patch).
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import React, { useState, useEffect, memo } from 'react';
 import { useGame } from '../../services/GameContext';
 import { CHIP_VALUES } from '../../constants';

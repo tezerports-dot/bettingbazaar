@@ -80,7 +80,7 @@ jobs:
   # production dependency tree and publish it as a build artifact. Uses npm's
   # native generator (no extra tooling). This is the inventory a CVE-response or
   # SLSA/attestation process consumes; artifact signing/provenance layer on top
-  # of it when an image registry is introduced (see CAPABILITY_MATRIX_2026.md).
+  # of it when an image registry is introduced (see docs/governance/CAPABILITY_MATRIX_2026.md).
   sbom:
     runs-on: ubuntu-latest
     steps:

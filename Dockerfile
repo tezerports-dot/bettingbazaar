@@ -1,4 +1,4 @@
-# GOVERNANCE: Read 04-GOVERNANCE.md before editing this file.
+# GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
 # Portable container image — runs on ANY container host (AWS ECS/Fargate, GCP
 # Cloud Run, Azure, Fly.io, Render, Kubernetes, self-hosted, …). All config is
 # injected as environment variables at runtime (see .env.example / PORTABILITY.md).

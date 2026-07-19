@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
 import { AuditLog } from '../models/index.js';
 // F-3 (2026-07-10): counters shared across instances via Redis; graceful

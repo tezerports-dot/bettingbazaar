@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Unit tests for the item-5 CPU worker pool. Runs REAL worker_threads (they work
 // fine under vitest/node — no DB needed) and proves the inline fallback matches.
 import { describe, it, expect, afterAll } from 'vitest';

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Domain: Funding Platform (BBEPS Phase 009).
 //
 // FUNDING PROVIDER REGISTRY — the Provider/Adapter pattern confirmed in the
@@ -37,7 +37,7 @@ const manualP2PInr = {
 // Deposit-only USDT (TRC20) per the 2026-07 direction; config fields exist
 // on the platform already. Activating requires the USDT Treasury build
 // (address management, chain confirmation watching, INR-peg conversion at
-// the fixed 1:1 token rate) — tracked in EXECUTION_QUEUE.md. Until then the
+// the fixed 1:1 token rate) — tracked in docs/governance/EXECUTION_QUEUE.md. Until then the
 // adapter exists so the registry, not scattered route code, is where USDT
 // lands.
 const usdtTrc20 = {

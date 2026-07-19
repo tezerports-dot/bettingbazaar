@@ -187,7 +187,7 @@ Mapping the reference's HA roadmap to buckets, honestly:
 | Multi-region / multi-provider redundancy, DNS failover | infra | Bucket C |
 | WAF | infra | Bucket C (Cloudflare + `owaspFilter` is the app-side complement) |
 | IaC (Terraform/Ansible), one-click redeploy | infra | Bucket C |
-| Encrypted cross-region backups + restore testing | infra | Bucket C (`DISASTER_RECOVERY.md`) |
+| Encrypted cross-region backups + restore testing | infra | Bucket C (`docs/governance/DISASTER_RECOVERY.md`) |
 
 The app is HA-*ready* (stateless where it can be, health/metrics/drain correct,
 Redis-backed shared state so instances are interchangeable). Multi-region,

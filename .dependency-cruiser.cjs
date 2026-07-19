@@ -1,7 +1,7 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
  * Dependency validation (plan items 5 + 58, 2026-07-13) — the AUTOMATED
- * enforcement layer for the domain boundaries 04-GOVERNANCE.md defines.
+ * enforcement layer for the domain boundaries docs/governance/04-GOVERNANCE.md defines.
  * Run: npm run check:deps (wired into CI — violations fail the build).
  *
  * Rules are deliberately few and true: they pass the current codebase, so any

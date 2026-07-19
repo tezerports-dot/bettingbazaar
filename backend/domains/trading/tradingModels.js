@@ -1,10 +1,10 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Domain: Shared Trading Models (BBEPS Phase 011).
 //
 // The canonical trading vocabulary shared by every Product Platform
 // (Markets today; Sportsbook/Casino/Games/Event/Odds as they come live).
 // One name per concept — the same single-source discipline as
-// 04-GOVERNANCE.md §11 for socket events and the R&S chart of accounts.
+// docs/governance/04-GOVERNANCE.md §11 for socket events and the R&S chart of accounts.
 //
 // LIVE CONSUMERS: domains/markets/bet.routes.js (sides + statuses),
 // domains/markets/gameEngine.js (settlement statuses). New products import

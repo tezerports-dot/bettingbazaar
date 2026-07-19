@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // One-time seed of the Game Registry from the catalogue that used to be
 // hardcoded in the React lobbies (CasinoPage.tsx GAME_CATALOGUE,
 // CrashPage.tsx CRASH_GAMES) plus the in-house cycle game. Runs ONLY when the

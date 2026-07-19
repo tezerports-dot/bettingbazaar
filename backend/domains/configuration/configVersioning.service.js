@@ -1,9 +1,9 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Domain: Configuration / Business Policy Platform (BBEPS Phase 006).
 //
 // This is the intended write path for every future admin-editable business
 // parameter (merchant commission, reserve ratio, deposit split, withdrawal
-// rules, betting limits, etc.) — see PHASE_STATUS.md "Current Active Phase."
+// rules, betting limits, etc.) — see docs/governance/PHASE_STATUS.md "Current Active Phase."
 //
 // SCOPE NOTE: this does NOT retrofit existing direct writes to SystemConfig
 // (e.g. the Merchant Pool feature's PUT /queue/merchant-pool, which writes

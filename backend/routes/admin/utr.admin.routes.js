@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** utr.admin.routes.js — UTR fraud detection and resolution  v6.0.0
  *
  * v6.0.0: Added UTRRegistry-backed routes per Migration Spec Section 9 / 16.1

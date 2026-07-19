@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** system.admin.routes.js — System config, token rates, withdrawal requests, error logs */
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from './_adminShared.js';
 import { setConfigField } from '../../domains/configuration/configVersioning.service.js';
@@ -42,7 +42,7 @@ const FOOTER_PAGE_KEYS = [
 ];
 
 // Token rates removed 2026-07-08: conversion is fixed 1:1 (Phase 006
-// flattening — see ENTERPRISE_DECISIONS.md). The GET/PUT /token-rates
+// flattening — see docs/governance/ENTERPRISE_DECISIONS.md). The GET/PUT /token-rates
 // endpoints and rate validation that lived here are gone; rates are no
 // longer admin-editable.
 

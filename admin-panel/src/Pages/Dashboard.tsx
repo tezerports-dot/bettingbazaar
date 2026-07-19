@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import React, { useEffect, useState } from 'react';
 import { Users, Store, DollarSign, Activity, TrendingUp, Layers } from 'lucide-react';
 import { StatCard } from '../components/StatCard';

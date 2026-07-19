@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Domain: Settlement (BBEPS Phase 003 section 3.3).
 // F-2 (2026-07-10): ALL balance writes here go through walletAuthority (§7)
 // — the raw lockedBalance `$inc`s this file used to run are gone. Unlocks

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Integration test (real DB): cycle settlement through the actual GameEngine.
 // Exercises the dual-balance system the way production does — a placed bet
 // has already debited balances and locked the stake; settlement credits

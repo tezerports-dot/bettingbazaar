@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
  * gateway/consistentHash.js — consistent hash ring with virtual nodes (CAP-72).
  * Pure logic, no I/O — unit-tested in backend/tests/unit/consistentHash.test.js.

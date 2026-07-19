@@ -200,7 +200,7 @@ operations/retention.service.js.
       `paymentProcessing.service.js`'s `createDepositOrder()` — the
       user-facing order confirmation message was built from stale local
       variables instead of the actual post-save, policy-derived values.
-- [x] 04-GOVERNANCE.md updated: new §1 authority, §11 real-time event
+- [x] docs/governance/04-GOVERNANCE.md updated: new §1 authority, §11 real-time event
       (`deposit_policy_updated`), and an explicit note on how this relates to
       the earlier "commissionRate retired" decision.
 - [x] 11-assertion control-flow test against the real service code (version
@@ -213,7 +213,7 @@ operations/retention.service.js.
       `tsc --noEmit` (zero new errors) and a real `vite build` (succeeds).
 - [x] Formalized platform-oriented architecture direction (Business Policy,
       Operations, Revenue & Settlement, Merchant, Funding, Risk, Sportsbook,
-      Casino, Communication) — see ENTERPRISE_DECISIONS.md.
+      Casino, Communication) — see docs/governance/ENTERPRISE_DECISIONS.md.
 
 ---
 
@@ -226,7 +226,7 @@ operations/retention.service.js.
       Deposit creation and a completed buy+sell cycle are different trigger
       events — merchant incentive pay cannot live on a deposit-triggered
       policy. Safe: no code consumed these fields, no `DepositPolicy`
-      document exists yet in the live DB. See ENTERPRISE_DECISIONS.md.
+      document exists yet in the live DB. See docs/governance/ENTERPRISE_DECISIONS.md.
 - [x] Wired `applyScheduledPolicyChanges()` and `applyScheduledConfigChanges()`
       into `cronJobs.js` (60s interval, same dynamic-import pattern as the
       order expiry worker). Per-item failures logged, never thrown.
@@ -237,14 +237,14 @@ operations/retention.service.js.
       (4) admin token-rates routes + admin page removed, (5) `TokenRates`
       model removed (`'TokenRates'` kept in ConfigVersion enum for
       historical audit docs; `migrate-wallet-system.js` deleted per §13).
-      04-GOVERNANCE.md §1/§2/§14 updated. See ENTERPRISE_DECISIONS.md.
+      docs/governance/04-GOVERNANCE.md §1/§2/§14 updated. See docs/governance/ENTERPRISE_DECISIONS.md.
 
 ---
 
 ## NEXT — Phase 007: Revenue & Settlement Platform bootstrap (owner directive 2026-07-09)
 
 Phase renumbered 2026-07-09: 007 is now the R&S Platform bootstrap; the
-Operations Platform (orchestration-only) slots later. See ENTERPRISE_DECISIONS.md.
+Operations Platform (orchestration-only) slots later. See docs/governance/ENTERPRISE_DECISIONS.md.
 
 - [x] Ledger core: `domains/revenue/` — chart of accounts, append-only
       double-entry `AccountingEvent` model (integer paise, unique idempotency
@@ -260,7 +260,7 @@ Operations Platform (orchestration-only) slots later. See ENTERPRISE_DECISIONS.m
       POST .../bonus-pool/fund (explicit amount + businessJustification,
       capped at distributable revenue, audit-logged). Mounted via
       routes/admin/index.js.
-- [x] 04-GOVERNANCE.md §1: AccountingEvent / settlement-ledger authority row.
+- [x] docs/governance/04-GOVERNANCE.md §1: AccountingEvent / settlement-ledger authority row.
 
 **Phase 007 bootstrap complete (2026-07-09).**
 
@@ -345,7 +345,7 @@ Operations Platform (orchestration-only) slots later. See ENTERPRISE_DECISIONS.m
       order.payoutFee, withdrawal fiat = tokens − fee, ledger posts the fee
       to PAYOUT_FEES (its first real producer). GET/PUT /system/config
       exposes payoutFeePercent + riskRules.
-- [x] 04-GOVERNANCE.md §1 row: Risk Platform validation authority.
+- [x] docs/governance/04-GOVERNANCE.md §1 row: Risk Platform validation authority.
 - [x] 25 control-flow assertions on the real validators + fee postings.
 
 ### Deferred within 010 (flagged, not forgotten)
@@ -368,7 +368,7 @@ Operations Platform (orchestration-only) slots later. See ENTERPRISE_DECISIONS.m
       live completion routes → immediate ledger reconciliation).
 - [x] payment.routes.js deposit/withdrawal creation rerouted through the
       facade; subscribers registered at startup in server.js.
-- [x] 04-GOVERNANCE.md §1 rows: merchant wallet, funding authority,
+- [x] docs/governance/04-GOVERNANCE.md §1 rows: merchant wallet, funding authority,
       MerchantBonusPolicy.
 
 ### Deferred within 009
@@ -408,17 +408,17 @@ Operations Platform (orchestration-only) slots later. See ENTERPRISE_DECISIONS.m
       operating expense — `merchantBonusPercent` of completed buy→sell cycle
       volume, never deducted from users/deposits/withdrawals. Needs a Cycle
       Tracker → Bonus Calculator → Bonus Ledger (Merchant Platform, per
-      ENTERPRISE_DECISIONS.md), new `Transaction` type(s), ledger entries via
+      docs/governance/ENTERPRISE_DECISIONS.md), new `Transaction` type(s), ledger entries via
       `walletAuthority.service.js`, and a timing decision (per-cycle vs.
       batched settlement). Natural home: `domains/merchant/` bonus
       sub-module or a new `domains/settlement/`/`domains/revenue/` module —
       not bolted onto `merchant.routes.js`. Slots in after 1:1 buyRate/
       sellRate flattening per the dependency chain in
-      ENTERPRISE_DECISIONS.md.
+      docs/governance/ENTERPRISE_DECISIONS.md.
 
 ---
 
-## KNOWN OPEN ITEMS (not urgent, not forgotten — see PHASE_STATUS.md for full detail)
+## KNOWN OPEN ITEMS (not urgent, not forgotten — see docs/governance/PHASE_STATUS.md for full detail)
 
 - [x] Rerouted `merchant.routes.js` wallet-balance writes through
       `walletAuthority.service.js`; no live raw user wallet `$inc` remains in

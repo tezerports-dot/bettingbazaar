@@ -1,7 +1,7 @@
 # Enterprise Decisions — Decision Log
 
 **Purpose:** a running log of architecture decisions that aren't obvious from
-the code alone — the "why," not the "what" (the code + PHASE_STATUS.md cover
+the code alone — the "why," not the "what" (the code + docs/governance/PHASE_STATUS.md cover
 the "what"). Newest first. This file didn't exist before 2026-07-07; created
 as part of the DepositPolicy migration since decisions made in that session
 need a durable home.
@@ -88,7 +88,7 @@ different fee rates and confuse the winner board.
 
 **Verification correction (recorded so no future doc repeats it):** the
 integration suite added in the 2026-07-09 audit had NEVER passed in CI —
-every run failed on test-code bugs (see EXECUTION_QUEUE.md 2026-07-10).
+every run failed on test-code bugs (see docs/governance/EXECUTION_QUEUE.md 2026-07-10).
 "51 unit tests green + CI wired" was true; "integration tests run in CI"
 was not, until Phase A step 0 fixed the suite. CI run #10 (commit 6797c81)
 is the first green run in the repository's history.
@@ -301,7 +301,7 @@ idempotently. Why: one writer instead of five sprinkled recorders, no risk
 added to live money flows, self-healing after failures, and free historical
 backfill. Trade-off: entries lag up to ~60s and the anti-join scans grow
 with history — both acceptable now, checkpoint optimization flagged in
-EXECUTION_QUEUE.md.
+docs/governance/EXECUTION_QUEUE.md.
 
 **Historical-rate residuals:** pre-1:1 orders (fiat ≠ tokens) balance via a
 PLATFORM_REVENUE residual leg — the old buy/sell spread lands in revenue,
@@ -348,7 +348,7 @@ spread gone and `DepositPolicy.merchantCommissionPercent` removed (entry
 below), merchants currently earn nothing per order. This is the accepted
 interim state per the established dependency chain: the Merchant
 Performance Bonus engine (cycle-completion-triggered, platform-funded) is
-the next major Merchant Platform work item — see EXECUTION_QUEUE.md.
+the next major Merchant Platform work item — see docs/governance/EXECUTION_QUEUE.md.
 
 **Also deleted:** `backend/scripts/migrate-wallet-system.js` — marked
 APPLIED since before this migration; §13 dead-artifact policy says applied
@@ -367,7 +367,7 @@ from the schema, service, admin route, `paymentOrder.model.js`'s
 **only** the deposit/reserve wallet split and reserve usage rules for a
 single incoming deposit.
 
-The replacement concept — not yet built, tracked in EXECUTION_QUEUE.md as
+The replacement concept — not yet built, tracked in docs/governance/EXECUTION_QUEUE.md as
 the Merchant Performance Bonus engine — is:
 - Triggered by a **completed buy+sell cycle** (a merchant fulfilling both
   sides of a cycle), not by deposit approval.
@@ -400,11 +400,11 @@ behavior.
 
 **Safe to remove outright (not deprecate):** no `DepositPolicy` document has
 ever been created in the live database (bootstrap fallback state, unchanged
-since 2026-07-07 — see PHASE_STATUS.md). There is no data migration, no
+since 2026-07-07 — see docs/governance/PHASE_STATUS.md). There is no data migration, no
 in-flight order referencing the removed snapshot fields, and no consumer
 code to update elsewhere.
 
-**04-GOVERNANCE.md §1 updated to match:** the `DepositPolicy` authority line
+**docs/governance/04-GOVERNANCE.md §1 updated to match:** the `DepositPolicy` authority line
 now covers only deposit/reserve split, reserve usage rules; the "Merchant
 earnings model" line's note about `DepositPolicy`-driven commission is
 superseded by this entry — the platform-funded, never-user-deducted rule
@@ -456,7 +456,7 @@ structural migration — each time.
 work. It does NOT mean existing code (e.g. `TokenRates` staying in
 `Pages/Finance/`, or `merchant.routes.js` staying where it is) gets moved
 retroactively — that would be exactly the "expand scope into an unrelated
-migration" pattern 04-GOVERNANCE.md warns against. Existing code moves to
+migration" pattern docs/governance/04-GOVERNANCE.md warns against. Existing code moves to
 its platform home opportunistically, when it's already being touched for
 another reason (as `merchant.routes.js`'s hardcoded-split fix was, in this
 same migration) — not as a dedicated reshuffle.
@@ -524,7 +524,7 @@ layer rejection means the rule can't be silently bypassed via a future API
 change that widens the enum without updating the validator to match — the two
 have to be changed together, on purpose.
 
-**Supersedes:** 04-GOVERNANCE.md's prior §1 entry "Merchant earnings model:
+**Supersedes:** docs/governance/04-GOVERNANCE.md's prior §1 entry "Merchant earnings model:
 buy/sell spread only, `Merchant.commissionRate` retired." That decision
 covered a *different* mechanism (a per-merchant commission rate field,
 removed as part of the buyRate/sellRate spread model). This decision does not
@@ -540,7 +540,7 @@ accident.
 `commissionFundingSource` fields described here were removed, not just left
 unpaid; the deferred payout-engine work continues under the renamed
 Merchant Performance Bonus concept — see entry at top of file and
-EXECUTION_QUEUE.md.]**
+docs/governance/EXECUTION_QUEUE.md.]**
 
 **Decision:** this migration models, validates, versions, and exposes
 `merchantCommissionPercent`/`commissionFundingSource` for admin editing — but
@@ -554,7 +554,7 @@ above). Building a real payout mechanism means new `Transaction` types,
 ledger entries routed through `walletAuthority.service.js`, and a timing
 decision (per-order vs. batched settlement) — a financial-flow design
 decision in its own right, not something to bundle silently into a
-policy-modeling task. Flagged in PHASE_STATUS.md as an open next-step choice
+policy-modeling task. Flagged in docs/governance/PHASE_STATUS.md as an open next-step choice
 rather than decided unilaterally.
 
 ---
@@ -573,7 +573,7 @@ happened to already do the "right" thing
 (consume the stored fields). Fixing only the model's pre-save hook would have
 left the actual production behavior unchanged, since the live route
 recomputed its own ratio and ignored the stored fields entirely. This was a
-pre-existing 04-GOVERNANCE.md §2 violation (a second write path to the same
+pre-existing docs/governance/04-GOVERNANCE.md §2 violation (a second write path to the same
 value) that predates this migration; it was in scope to fix because it's the
 same runtime-consumption endpoint DepositPolicy needed to reach to have any
 real effect.

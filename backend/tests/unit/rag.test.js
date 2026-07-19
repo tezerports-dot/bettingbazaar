@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Unit tests for RAG store serialization (CAP-71) + the activation gates. Pure —
 // no DB, no network. The gates read process.env lazily, so toggling env in a
 // test flips them.

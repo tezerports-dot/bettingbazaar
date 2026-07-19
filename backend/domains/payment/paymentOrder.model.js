@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Domain: Payment (BBEPS Phase 003 §3.3). Moved from backend/models/paymentOrder.model.js
 // on 2026-07-01 (BBEPS Phase 004 migration).
 
@@ -201,7 +201,7 @@ paymentOrderSchema.pre('save', setOrderHmacHook);
 // retroactively alters orders already in flight. This is the single
 // computation site for the split — see merchant.routes.js POST
 // /orders/:id/approve, which was fixed to consume these stored fields
-// instead of recomputing its own hardcoded ratio (04-GOVERNANCE.md §2,
+// instead of recomputing its own hardcoded ratio (docs/governance/04-GOVERNANCE.md §2,
 // "No second write path to a value with a designated single-writer service").
 //
 // Falls back to a hardcoded 90/10 ONLY if no DepositPolicy has been

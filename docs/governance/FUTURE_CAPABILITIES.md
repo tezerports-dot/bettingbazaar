@@ -105,7 +105,7 @@ USDT · Bonus · VIP · Betting Policies
 **Confirmed state:** data model exists (`domains/configuration/` — SystemConfig,
 TokenRates). The actual platform (versioning, approval workflow, effective dates,
 rollback, admin UI with explanations/simulations/audit history) does not exist —
-this is the current active phase, see `PHASE_STATUS.md`.
+this is the current active phase, see `docs/governance/PHASE_STATUS.md`.
 
 ## Algorithm Registry
 Merchant Assignment · Settlement · Odds Calculation · Exposure · Commission ·

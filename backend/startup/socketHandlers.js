@@ -1,5 +1,5 @@
 
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import mongoose from 'mongoose';
 // AQ-2: verify via the single PASETO authority (Ed25519 signature + iss/aud stamped).
 import { verifyJwt } from '../domains/identity/jwt.util.js';

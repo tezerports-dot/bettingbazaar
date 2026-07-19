@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Integration tests (real DB): the two remaining un-covered money flows —
 // the withdrawal lock lifecycle (walletAuthority) and the Merchant
 // Performance Bonus accounting rules (Revenue & Settlement).

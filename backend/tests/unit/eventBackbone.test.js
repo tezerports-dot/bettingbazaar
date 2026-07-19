@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Unit tests for the event-backbone seam (CAP-74). Proves the safety property
 // the design leans on: with no drivers it is a no-op, and a broken driver never
 // breaks forwarding.

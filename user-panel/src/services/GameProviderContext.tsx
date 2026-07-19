@@ -7,7 +7,7 @@
  *
  * Cached in sessionStorage so subsequent renders don't re-fetch.
  */
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import React, { createContext, useContext, useEffect, useState } from 'react';
 
 interface Provider {

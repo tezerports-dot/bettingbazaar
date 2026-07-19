@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Integration test (real DB): reserveBalance is now credited only via
 // walletAuthority.creditReserve — idempotent, with a WalletLedger trail
 // (was a raw $inc with no audit record; §7 fix, 2026-07-09 audit).

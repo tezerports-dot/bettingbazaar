@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Domain: Analytics Platform (BBEPS Phase 012 — Enterprise Services tier).
 //
 // Platform-level trend analytics EXTENDING the existing analytics domain

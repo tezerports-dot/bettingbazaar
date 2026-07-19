@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
  * domains/operations/retention.service.js — data retention (Phase X X-7).
  *
@@ -7,7 +7,7 @@
  * frontend error reports. It NEVER touches financial, audit, or user data:
  * the money history and the append-only ledgers are kept forever.
  *
- * WHY THIS IS SAFE FOR FINANCIAL INTEGRITY (see RETENTION_POLICY.md):
+ * WHY THIS IS SAFE FOR FINANCIAL INTEGRITY (see docs/governance/RETENTION_POLICY.md):
  *   - The double-entry ledger (AccountingEvent) is DERIVED and stored
  *     independently; a settled cycle's net result is already recorded as a
  *     BET_CYCLE_SETTLED event long before the retention window (months) — so

@@ -22,7 +22,7 @@ missing the **catalogue half**:
 
 The two hardcoded arrays (`GAME_CATALOGUE`, `CRASH_GAMES`) were **migrated into
 the registry and deleted**. The registry is now the **sole authority** for the
-game catalogue (04-GOVERNANCE.md §1).
+game catalogue (docs/governance/04-GOVERNANCE.md §1).
 
 ## Schema (the game IS the data)
 
@@ -86,5 +86,5 @@ rework: per-game **regions/geo-visibility**, per-game **feature flags**, provide
 **game-sync adapters** (auto-import via `listGames()`), fully **dynamic nav
 generation** everywhere (home tiles, not just the two lobbies), per-game **SEO**,
 and casino **GGR ledger** integration (derive R&S entries from `GameTransaction`
-— already queued in EXECUTION_QUEUE.md). Adding any of them is new fields/an
+— already queued in docs/governance/EXECUTION_QUEUE.md). Adding any of them is new fields/an
 adapter, not a new architecture.

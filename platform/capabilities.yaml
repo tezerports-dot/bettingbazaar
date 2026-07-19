@@ -1,4 +1,4 @@
-# GOVERNANCE: Read 04-GOVERNANCE.md before editing this file.
+# GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
 # ══════════════════════════════════════════════════════════════════════════════
 # PLATFORM CAPABILITY REGISTRY — machine-readable source of truth
 # ══════════════════════════════════════════════════════════════════════════════
@@ -26,15 +26,15 @@ capabilities:
     implementation_status: full
     activation_status: active
     evidence: [backend/domains, backend/shared, backend/config, backend/providers]
-    docs: [ENTERPRISE_DECISIONS.md]
+    docs: [docs/governance/ENTERPRISE_DECISIONS.md]
   - id: CAP-02
     name: Governance Framework
     bucket: A
     owner: app
     implementation_status: full
     activation_status: active
-    evidence: ['04-GOVERNANCE.md', ENTERPRISE_DECISIONS.md]
-    docs: ['04-GOVERNANCE.md']
+    evidence: ['docs/governance/04-GOVERNANCE.md', docs/governance/ENTERPRISE_DECISIONS.md]
+    docs: ['docs/governance/04-GOVERNANCE.md']
   - id: CAP-03
     name: Domain-Driven Module Boundaries
     bucket: A
@@ -100,14 +100,14 @@ capabilities:
     implementation_status: partial
     activation_status: active
     evidence: [backend/domains/wallet/walletAuthority.service.js, backend/postgres/dualWrite.js]
-    docs: [PHASE_STATUS.md]
+    docs: [docs/governance/PHASE_STATUS.md]
   - id: CAP-11
     name: CDC Migration
     bucket: decision
     owner: app
     implementation_status: decision
     activation_status: 'n/a'
-    docs: [CAPABILITY_MATRIX_2026.md]
+    docs: [docs/governance/CAPABILITY_MATRIX_2026.md]
   - id: CAP-12
     name: Dual-Write Migration
     bucket: B
@@ -155,7 +155,7 @@ capabilities:
     implementation_status: partial
     activation_status: infra-gated
     evidence: [backend/services/backup.service.js]
-    docs: [DISASTER_RECOVERY.md]
+    docs: [docs/governance/DISASTER_RECOVERY.md]
   - id: CAP-18
     name: Read Replicas
     bucket: B
@@ -170,7 +170,7 @@ capabilities:
     implementation_status: partial
     activation_status: infra-gated
     evidence: [backend/services/backup.service.js]
-    docs: [DISASTER_RECOVERY.md]
+    docs: [docs/governance/DISASTER_RECOVERY.md]
   - id: CAP-20
     name: Autovacuum / Performance Tuning
     bucket: C
@@ -201,7 +201,7 @@ capabilities:
     owner: app
     implementation_status: decision
     activation_status: 'n/a'
-    docs: [CAPABILITY_MATRIX_2026.md]
+    docs: [docs/governance/CAPABILITY_MATRIX_2026.md]
   - id: CAP-24
     name: Queue Coordination
     bucket: A
@@ -283,8 +283,8 @@ capabilities:
     owner: app
     implementation_status: full
     activation_status: active
-    evidence: [backend/domains/identity/auth.middleware.js, AUTHORIZATION_MATRIX.md]
-    docs: [AUTHORIZATION_MATRIX.md]
+    evidence: [backend/domains/identity/auth.middleware.js, docs/governance/AUTHORIZATION_MATRIX.md]
+    docs: [docs/governance/AUTHORIZATION_MATRIX.md]
   - id: CAP-35
     name: Audit Logging
     bucket: A
@@ -329,14 +329,14 @@ capabilities:
     implementation_status: partial
     activation_status: infra-gated
     evidence: [deploy/README.md]
-    docs: [DISASTER_RECOVERY.md]
+    docs: [docs/governance/DISASTER_RECOVERY.md]
   - id: CAP-41
     name: Geo-Routing
     bucket: decision
     owner: edge-platform
     implementation_status: decision
     activation_status: 'n/a'
-    docs: [CAPABILITY_MATRIX_2026.md]
+    docs: [docs/governance/CAPABILITY_MATRIX_2026.md]
   - id: CAP-42
     name: Load Balancing
     bucket: C
@@ -374,7 +374,7 @@ capabilities:
     implementation_status: architecture-ready
     activation_status: infra-gated
     evidence: [backend/middleware/requestContext.js]
-    docs: [CAPABILITY_MATRIX_2026.md]
+    docs: [docs/governance/CAPABILITY_MATRIX_2026.md]
   - id: CAP-47
     name: Correlation IDs
     bucket: A
@@ -434,8 +434,8 @@ capabilities:
     owner: app
     implementation_status: full
     activation_status: active
-    docs: [DISASTER_RECOVERY.md, SRE.md]
-    evidence: [DISASTER_RECOVERY.md, SRE.md]
+    docs: [docs/governance/DISASTER_RECOVERY.md, docs/governance/SRE.md]
+    evidence: [docs/governance/DISASTER_RECOVERY.md, docs/governance/SRE.md]
   - id: CAP-55
     name: Cloud-Agnostic Provider Layer
     bucket: A
@@ -497,15 +497,15 @@ capabilities:
     implementation_status: absent
     activation_status: infra-gated
     dependencies: [CAP-61]
-    docs: [CAPABILITY_MATRIX_2026.md]
+    docs: [docs/governance/CAPABILITY_MATRIX_2026.md]
   - id: CAP-63
     name: SRE Runbooks / SLOs / Error Budgets
     bucket: A
     owner: app
     implementation_status: full
     activation_status: active
-    docs: [SRE.md]
-    evidence: [SRE.md]
+    docs: [docs/governance/SRE.md]
+    evidence: [docs/governance/SRE.md]
   - id: CAP-64
     name: Connection-Pool Monitoring
     bucket: A
@@ -529,7 +529,7 @@ capabilities:
     implementation_status: absent
     activation_status: infra-gated
     dependencies: [CAP-18]
-    docs: [CAPABILITY_MATRIX_2026.md]
+    docs: [docs/governance/CAPABILITY_MATRIX_2026.md]
   - id: CAP-67
     name: Backup Restore Testing
     bucket: B
@@ -538,7 +538,7 @@ capabilities:
     activation_status: infra-gated
     dependencies: [CAP-19]
     evidence: [backend/services/backup.service.js]
-    docs: [DISASTER_RECOVERY.md]
+    docs: [docs/governance/DISASTER_RECOVERY.md]
   - id: CAP-68
     name: Dashboard-as-Code
     bucket: A
@@ -553,7 +553,7 @@ capabilities:
     implementation_status: absent
     activation_status: infra-gated
     dependencies: [CAP-50]
-    docs: [CAPABILITY_MATRIX_2026.md]
+    docs: [docs/governance/CAPABILITY_MATRIX_2026.md]
   - id: CAP-70
     name: Policy-as-Code (OPA/Kyverno)
     bucket: C
@@ -561,10 +561,10 @@ capabilities:
     implementation_status: absent
     activation_status: infra-gated
     dependencies: [CAP-50]
-    docs: [CAPABILITY_MATRIX_2026.md]
+    docs: [docs/governance/CAPABILITY_MATRIX_2026.md]
 
   # ── H. Hybrid architecture (modular monolith → microservices, 1M DAU) ───────
-  # Seams built now, dormant until an env var flips them (HYBRID_ARCHITECTURE.md).
+  # Seams built now, dormant until an env var flips them (docs/governance/HYBRID_ARCHITECTURE.md).
   - id: CAP-71
     name: RAG Support Assistant
     bucket: B
@@ -581,7 +581,7 @@ capabilities:
       - backend/domains/support/support.admin.routes.js
       - backend/domains/support/knowledge
     verification: { test: backend/tests/unit/rag.test.js }
-    docs: [HYBRID_ARCHITECTURE.md, backend/domains/support/README.md]
+    docs: [docs/governance/HYBRID_ARCHITECTURE.md, backend/domains/support/README.md]
   - id: CAP-72
     name: Hybrid Service Topology + Consistent Hashing
     bucket: B
@@ -590,7 +590,7 @@ capabilities:
     activation_status: dormant
     evidence: [backend/gateway/serviceTopology.js, backend/gateway/consistentHash.js]
     verification: { test: backend/tests/unit/consistentHash.test.js }
-    docs: [HYBRID_ARCHITECTURE.md]
+    docs: [docs/governance/HYBRID_ARCHITECTURE.md]
   - id: CAP-73
     name: Inter-Service Authentication
     bucket: B
@@ -600,7 +600,7 @@ capabilities:
     dependencies: [CAP-72]
     evidence: [backend/gateway/serviceAuth.js]
     verification: { test: backend/tests/unit/serviceAuth.test.js }
-    docs: [HYBRID_ARCHITECTURE.md]
+    docs: [docs/governance/HYBRID_ARCHITECTURE.md]
   - id: CAP-74
     name: Event Backbone (Kafka-ready)
     bucket: B
@@ -612,4 +612,4 @@ capabilities:
       - backend/services/backbone/kafkaDriver.js
       - backend/services/eventBus.service.js
     verification: { test: backend/tests/unit/eventBackbone.test.js }
-    docs: [HYBRID_ARCHITECTURE.md]
+    docs: [docs/governance/HYBRID_ARCHITECTURE.md]

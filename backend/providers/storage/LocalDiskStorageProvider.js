@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Local-disk storage provider (plan item 51) — the graceful fallback when no
 // S3-compatible store is configured. Files land under backend/storage/ and are
 // served by the /storage static mount in server.js. Single-instance only
