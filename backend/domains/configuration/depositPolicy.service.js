@@ -1,7 +1,7 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Domain: Configuration / Business Policy Platform (BBEPS Phase 006).
 //
-// This is the ONLY allowed writer of DepositPolicy documents (04-GOVERNANCE.md
+// This is the ONLY allowed writer of DepositPolicy documents (docs/governance/04-GOVERNANCE.md
 // §1). Route handlers must call these functions — never
 // DepositPolicy.findOneAndUpdate / .create directly.
 //
@@ -13,7 +13,7 @@
 // SCOPE (corrected 2026-07-08): this policy governs ONLY the deposit/reserve
 // wallet split and reserve usage rules. Merchant incentive pay is a separate
 // mechanism ("Merchant Performance Bonus") triggered by completed buy+sell
-// cycles, not by deposit approval — see ENTERPRISE_DECISIONS.md.
+// cycles, not by deposit approval — see docs/governance/ENTERPRISE_DECISIONS.md.
 
 import mongoose from 'mongoose';
 import { DepositPolicy, SUPPORTED_CURRENCIES } from './depositPolicy.model.js';

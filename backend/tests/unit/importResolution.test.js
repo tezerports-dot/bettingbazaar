@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Guards against the bug class that took down production on 2026-07-09: a
 // DYNAMIC import() with a wrong relative path. node --check and static module
 // loading never catch these — they only resolve at runtime when that code

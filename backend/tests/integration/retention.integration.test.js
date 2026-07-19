@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Integration test (real DB): data retention (Phase X X-7). Proves the two
 // properties that matter — old OPERATIONAL data is pruned, and financial /
 // audit data is NEVER touched regardless of age.

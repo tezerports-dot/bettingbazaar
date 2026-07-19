@@ -1,8 +1,8 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Domain: Revenue & Settlement Platform (BBEPS Phase 007 bootstrap, 2026-07-09).
 //
 // THE SINGLE FINANCIAL AUTHORITY. This service is the ONLY writer of
-// AccountingEvent documents (04-GOVERNANCE.md §1/§2). It owns:
+// AccountingEvent documents (docs/governance/04-GOVERNANCE.md §1/§2). It owns:
 //   completed bets · completed payouts · platform revenue · the settlement
 //   ledger · reserve deductions · payout fees · accounting events · merchant
 //   bonus funding.
@@ -16,7 +16,7 @@
 //   - It does not orchestrate. The Operations Platform (admin routes, cron)
 //     calls in; this service enforces the invariants.
 //
-// DESIGN (standard fintech ledger practice — see ENTERPRISE_DECISIONS.md
+// DESIGN (standard fintech ledger practice — see docs/governance/ENTERPRISE_DECISIONS.md
 // 2026-07-09 for sources): append-only journal entries with signed integer
 // postings (paise) that sum to zero; unique idempotency keys; balances always
 // derived from postings; corrections are new reversing entries.
@@ -275,7 +275,7 @@ export async function getLedger({ page = 1, limit = 50, eventType } = {}) {
  * NOTE: the distributable check is read-then-write without a cross-document
  * transaction — concurrent fundings could jointly exceed distributable.
  * Acceptable for a rare, manual, admin-only action; flagged in
- * EXECUTION_QUEUE.md for when funding becomes automated.
+ * docs/governance/EXECUTION_QUEUE.md for when funding becomes automated.
  */
 export async function fundMerchantBonusPool({ amountMinor, actor, justification, idempotencyKey }) {
   if (!justification || !justification.trim()) {
@@ -353,7 +353,7 @@ export async function issueMerchantBonus({ merchantId, amountMinor, idempotencyK
 // via $lookup. Correct-by-construction and self-healing (a failed insert is
 // simply retried next pass; history backfills automatically on first runs).
 // If source volume makes the scan expensive, add a checkpoint optimization —
-// flagged in EXECUTION_QUEUE.md.
+// flagged in docs/governance/EXECUTION_QUEUE.md.
 
 async function unrecordedSources(Model, matchStage, refModel, localRefExpr, limit) {
   return Model.aggregate([

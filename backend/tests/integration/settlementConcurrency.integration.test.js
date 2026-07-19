@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Integration test (real DB): F-2 — settlement under concurrency and re-runs.
 //
 // The cycle "lock" (isSettled PENDING→PROCESSING) deliberately re-admits

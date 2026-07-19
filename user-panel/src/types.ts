@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // FIX (Audit #38) — Added depositBalance, winningsBalance fields to User interface
 // FIX (Audit #15) — GameState.CLOSED confirmed present (was already here, but calculateStatus didn't use it)
 

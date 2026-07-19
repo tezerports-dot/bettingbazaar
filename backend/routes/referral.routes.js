@@ -2,7 +2,7 @@
  * referral.routes.js — Referral system + commission distribution
  * Mounted at /api/referral (user-facing) and /api/admin/referral (admin)
  */
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import express from 'express';
 import mongoose from 'mongoose';
 import crypto from 'crypto';

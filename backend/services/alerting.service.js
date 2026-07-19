@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Operational alerting (plan item 38, 2026-07-13). Sends a JSON POST to an
 // ADMIN-CONFIGURED webhook (SystemConfig.alertWebhookUrl — editable in System
 // Settings, no redeploy; env ALERT_WEBHOOK_URL is the bootstrap fallback) when

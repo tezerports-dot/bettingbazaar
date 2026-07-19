@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Integration test (real Redis, provided as a CI service container): F-3.
 // THE property under test is horizontal scale — two store instances
 // (simulating two backend nodes) must SHARE counters, which is exactly what

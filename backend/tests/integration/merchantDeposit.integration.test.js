@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Integration test (real DB): the merchant deposit-completion paths, through
 // the REAL HTTP routes. Phase X fixes X-1/X-2/X-3/X-9:
 //   - a completed deposit funds the RESERVE wallet per the DepositPolicy

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // STATUS: PENDING — do not run until production has AADHAAR_HMAC_SECRET configured and the unique Aadhaar index is deployed.
 /**
  * Replaces legacy SHA-256 Aadhaar hashes using the plaintext KYC value with

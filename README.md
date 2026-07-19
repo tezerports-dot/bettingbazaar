@@ -50,7 +50,13 @@ The premier high-frequency prediction platform. Bet on Delhi vs Bombay in real-t
 * `/user-panel`: Customer-facing React/Vite application.
 * `/admin-panel`: Admin React/Vite application.
 * `/merchant-panel`: Merchant React/Vite application.
-* `/backend`: Node.js/Express API and domain services.
+* `/backend`: Node.js/Express API and bounded domain services for the modular monolith.
+* `/docs/governance`: Single governance hub for enterprise decisions, authorization, SRE, disaster recovery, retention, launch checks, and the monolith-to-microservices migration plan.
+* `/platform`: Capability inventory used by governance verification.
+* `/deploy`: Deployment notes and environment-specific runbooks.
+
+## 🏢 Enterprise & Launch Readiness
+Centralized governance now lives in `docs/governance/README.md`. Start there before launch review or contractor handoff. The current architecture is intentionally a modular monolith with documented seams for a future monolith + microservices transition; see `docs/governance/HYBRID_ARCHITECTURE.md` for the migration plan and `docs/governance/EXECUTION_QUEUE.md` for remaining launch/hardening work.
 
 ## 🛡️ Security
 This app includes:

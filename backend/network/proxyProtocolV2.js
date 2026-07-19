@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
  * network/proxyProtocolV2.js — trusted PROXY protocol v2 TCP preface handling.
  *
@@ -104,8 +104,9 @@ export function parseTrustedSubnets(value) {
 
 /** Return true when the TCP peer address belongs to the configured trusted proxy set. */
 export function isTrustedProxyAddress(remoteAddress, trustedSubnets) {
-  const ip = parseIpAddress(remoteAddress);
-  if (!ip) return false;
+  const ip = normalizeIp(remoteAddress);
+  const version = net.isIP(ip);
+  if (!version) return false;
   if (!Array.isArray(trustedSubnets) || trustedSubnets.length === 0) return false;
   if (version === 4) {
     const asInt = ipv4ToInt(ip);

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Unit tests for the F-3 rate-limit store's in-process fallback path (the
 // behavior every dev/CI environment without REDIS_URL gets, and the runtime
 // degradation mode when Redis drops). The Redis-shared path is proven in

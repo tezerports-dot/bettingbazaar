@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import { EventEmitter } from 'events';
 import { afterEach, describe, expect, it } from 'vitest';
 import SSEManager from '../../domains/notification/sseManager.service.js';

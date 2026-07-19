@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Unit tests for the token authority: JWT compatibility names now issue and
 // verify PASETO v2.public tokens with Ed25519 signatures and no alg header.
 import { describe, it, expect, beforeAll } from 'vitest';

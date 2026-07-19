@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 
 
 import mongoose from 'mongoose';
@@ -160,7 +160,7 @@ export function emitAdminUpdate(event, data) {
 }
 
 // ─── NEW EVENTS (GOVERNANCE §11) ─────────────────────────────────────────────
-// These events are registered in 04-GOVERNANCE.md §11 event table.
+// These events are registered in docs/governance/04-GOVERNANCE.md §11 event table.
 // order_assigned → server→user: when merchant assigned to order
 // order_expired  → server→user: when order hits expiry
 // order_disputed → server→admin: when either party disputes

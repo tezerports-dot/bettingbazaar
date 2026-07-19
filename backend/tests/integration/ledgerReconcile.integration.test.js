@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Integration test: the Revenue & Settlement reconciler against a REAL
 // (in-memory) MongoDB. Proves the two invariants that matter most for a
 // money system: (1) the ledger derived from completed source records

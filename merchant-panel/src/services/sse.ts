@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // §11: Public SSE events: system_config, branding, branding_updated
 // §11: Private merchant SSE events: merchant_orders_snapshot, new_order, order_update, merchant_stats
 //      (via /api/sse/merchant/events?token=<merchantToken>)

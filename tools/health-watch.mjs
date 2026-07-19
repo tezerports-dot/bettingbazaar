@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file.
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
 /**
  * tools/health-watch.mjs — DNS-failover trigger monitor (plan item 30). 2026-07-13.
  *
  * Polls the PRIMARY origin's /health endpoint and pages the alert webhook after
  * N consecutive failures — the human (or the DNS provider's own failover
- * feature) then executes the DNS step in DISASTER_RECOVERY.md §4.
+ * feature) then executes the DNS step in docs/governance/DISASTER_RECOVERY.md §4.
  *
  * HARD CONSTRAINT (non-negotiable, from the plan): failure detection uses
  * ORIGIN HEALTH SIGNALS ONLY — TCP/TLS connect success, HTTP status, response
@@ -56,7 +56,7 @@ async function check() {
     const ms = Date.now() - started;
     if (res.ok && ms <= budgetMs) {
       if (alerted) {
-        await page(`RECOVERED: ${url} healthy again (${ms}ms). Failback is a MANUAL decision — see DISASTER_RECOVERY.md §4.`, { latencyMs: ms });
+        await page(`RECOVERED: ${url} healthy again (${ms}ms). Failback is a MANUAL decision — see docs/governance/DISASTER_RECOVERY.md §4.`, { latencyMs: ms });
         alerted = false;
       }
       consecutiveFailures = 0;
@@ -70,7 +70,7 @@ async function check() {
     if (consecutiveFailures >= threshold && !alerted) {
       alerted = true;
       await page(
-        `PRIMARY ORIGIN DOWN: ${url} failed ${consecutiveFailures} consecutive checks. Execute the DNS failover runbook (DISASTER_RECOVERY.md §4).`,
+        `PRIMARY ORIGIN DOWN: ${url} failed ${consecutiveFailures} consecutive checks. Execute the DNS failover runbook (docs/governance/DISASTER_RECOVERY.md §4).`,
         { url, consecutiveFailures, lastError: e.message },
       );
     }

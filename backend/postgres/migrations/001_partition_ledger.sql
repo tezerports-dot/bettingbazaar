@@ -1,4 +1,4 @@
--- GOVERNANCE: Read 04-GOVERNANCE.md before editing this file.
+-- GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
 -- Partition migration 001 — RANGE-by-month partitioning for the two unbounded
 -- append-only money tables (capability #16). OPT-IN and NOT run at boot — apply
 -- with `npm run pg:migrate:partition` only when data volume justifies it.

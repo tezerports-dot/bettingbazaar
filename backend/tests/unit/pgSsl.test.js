@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Unit tests for the AQ-3 money-DB TLS resolver. The default MUST be verified
 // TLS — the regression this guards against is silently accepting any cert.
 import { describe, it, expect } from 'vitest';

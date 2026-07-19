@@ -12,17 +12,17 @@ Last updated: 2026-07-10
 
 | Phase | Status | Evidence |
 |---|---|---|
-| 0 — Repository Baseline Assessment | Locked | audit/PHASE0_BASELINE_AND_FINDINGS.md |
+| 0 — Repository Baseline Assessment | Locked | docs/governance/audits/PHASE0_BASELINE_AND_FINDINGS.md |
 | 002 — Capability Inventory | Locked (one open caveat) | Capability table in Phase 0 doc; "no orphaned functionality" being closed incrementally as each domain migration traces its own files |
 | 003 — Domain Discovery & Bounded Contexts | Substantively complete | 13 domains with real code have enforced bounded contexts |
 | 004 — Target Enterprise Architecture | Decision locked, execution complete for existing code | backend/domains/ + backend/shared/ inside the existing app |
 | 005 — Technology Strategy | Corrected 2026-07-03 | Originally under-scoped (language choice only). Now includes real research: Provider/Adapter pattern and Policy/Rules-Engine pattern both confirmed as standard, industry-proven fits for this platform. See FUTURE_CAPABILITIES.md architecture decision. |
 | 006 — Configuration Engine / Business Policy Platform | Core complete (2026-07-08) | DepositPolicy vertical slice (model/service/admin API/UI, wired into real runtime consumers) shipped 2026-07-07; scope corrected 2026-07-08 (merchant commission fields removed — deposit-triggered policy can't own cycle-triggered incentive pay); scheduled-apply wired into `cronJobs.js` (60s); **buyRate/sellRate fully flattened to fixed 1:1 and `TokenRates` removed (2026-07-08)**. Renamed in direction to Business Policy Platform per 2026-07-03 decision. Future sibling policies (Withdrawal/Risk/Merchant/Settlement) remain open Business Policy Platform work, but the 006 exit criteria are met. |
-| 007 — Revenue & Settlement Platform (bootstrap) | **Bootstrap complete (2026-07-09)** | **Renumbered by owner directive 2026-07-09** (was "Enterprise Control Center / Operations Platform" — that remains orchestration-only and slots later; see ENTERPRISE_DECISIONS.md). `domains/revenue/` — the single financial authority: append-only double-entry settlement ledger (`accountingEvent.model.js`, integer paise, unique idempotency keys, immutability middleware), closed chart of accounts, sole-writer `revenueSettlement.service.js` owning completed bets/payouts, platform revenue, reserve deductions, payout fees, accounting events, and merchant bonus funding. Ledger is DERIVED: a 60s reconciliation worker (cronJobs.js) anti-joins completed PaymentOrders + settled Cycles and records what's missing — no live money flow was modified; history backfills automatically. Admin surface: /api/admin/revenue/summary, /ledger, /bonus-pool/fund (platform-funded only, capped at distributable revenue, audit-logged). New §1 authority row in 04-GOVERNANCE.md. Verified: 34-assertion control-flow tests on the real posting builders. Remaining 007-adjacent work (bonus issuing engine, MerchantBonusPolicy) tracked in EXECUTION_QUEUE.md. |
+| 007 — Revenue & Settlement Platform (bootstrap) | **Bootstrap complete (2026-07-09)** | **Renumbered by owner directive 2026-07-09** (was "Enterprise Control Center / Operations Platform" — that remains orchestration-only and slots later; see docs/governance/ENTERPRISE_DECISIONS.md). `domains/revenue/` — the single financial authority: append-only double-entry settlement ledger (`accountingEvent.model.js`, integer paise, unique idempotency keys, immutability middleware), closed chart of accounts, sole-writer `revenueSettlement.service.js` owning completed bets/payouts, platform revenue, reserve deductions, payout fees, accounting events, and merchant bonus funding. Ledger is DERIVED: a 60s reconciliation worker (cronJobs.js) anti-joins completed PaymentOrders + settled Cycles and records what's missing — no live money flow was modified; history backfills automatically. Admin surface: /api/admin/revenue/summary, /ledger, /bonus-pool/fund (platform-funded only, capped at distributable revenue, audit-logged). New §1 authority row in docs/governance/04-GOVERNANCE.md. Verified: 34-assertion control-flow tests on the real posting builders. Remaining 007-adjacent work (bonus issuing engine, MerchantBonusPolicy) tracked in docs/governance/EXECUTION_QUEUE.md. |
 | 008 — Merchant Platform | **Complete (2026-07-09)** | Renumbered by owner directive (old "Financial Core" scope was partially absorbed into 007; its remainder is queued). Delivered: Merchant Performance Bonus Engine (matched buy→sell cycle volume, ledger-derived high-water marks, pool-capped idempotent issuance, 10-min cron + on-demand admin trigger), MerchantBonusPolicy (Business Policy Platform, disabled by default), `merchantWallet.service.js` as sole `Merchant.tokenBalance` writer (all 7 raw `$inc` sites rerouted with a MerchantWalletLedger + cross-route idempotency), merchant analytics/leaderboard/funding-stats/performance-history admin API, platform README. |
 | 009 — Funding Platform | **Complete (2026-07-09)** | Renumbered by owner directive. `domains/funding/` — the only authority for money movement: `fundingAuthority.service.js` (single entry for deposits/withdrawals, intent-based), `providerRegistry.js` (adapter pattern — MANUAL_P2P_INR live; USDT_TRC20 and PAYMENT_GATEWAY declared inactive), `fundingEvents.js` (first real eventBus wiring: order-created published by the facade, order-completed published at live completion points and consumed to nudge the R&S ledger reconciler within seconds). Creation routes rerouted through the facade. Never owns accounting. Old "Workflow Engine" scope re-queued. |
 | 010 — Risk Platform | **Complete (2026-07-09)** | Renumbered by owner directive (old "Event Architecture" scope: eventBus genuinely wired by Phase 009). `domains/risk/riskValidation.service.js` — single validation authority: positive/numeric/multiples-of-10 (config-gated, default ON per directive), min/max limits, reserve-split rounding (Spec 4.4, moved here from paymentOrder pre-save), opposite-side betting restriction (config-gated, default off), funding velocity limits (default off), payout-fee arithmetic (SystemConfig.payoutFeePercent, default 0 — first real PAYOUT_FEES ledger producer). Wired into deposit/withdrawal creation, bet placement, and the reserve split. AML/fraud/device/behaviour declared, not faked — queued. 25 control-flow assertions pass. |
-| 011 — Product Platforms | **Complete (2026-07-09)** | Four-tier architecture accepted (Core Enterprise / Product / Customer / Enterprise Services — see ENTERPRISE_DECISIONS.md). Real consolidation: `domains/markets/` (git mv of game + betting — the cycle-market product unified), `domains/casino/` (git mv of gameProvider model + routes), `domains/trading/tradingModels.js` (canonical vocabulary consumed by Markets + Risk, settlement-integration contract documented). Sportsbook/Games/Event/Odds declared with boundary READMEs + feature flags (all default off), no fake code. Runtime-verified incl. an accidental full server boot. |
+| 011 — Product Platforms | **Complete (2026-07-09)** | Four-tier architecture accepted (Core Enterprise / Product / Customer / Enterprise Services — see docs/governance/ENTERPRISE_DECISIONS.md). Real consolidation: `domains/markets/` (git mv of game + betting — the cycle-market product unified), `domains/casino/` (git mv of gameProvider model + routes), `domains/trading/tradingModels.js` (canonical vocabulary consumed by Markets + Risk, settlement-integration contract documented). Sportsbook/Games/Event/Odds declared with boundary READMEs + feature flags (all default off), no fake code. Runtime-verified incl. an accidental full server boot. |
 | 012 — Enterprise Experience | **IN PROGRESS (2026-07-09)** | Shipped: Communication Platform (notify() engine + channel adapters, IN_APP live, audit + admin-activity feeds), Operations Platform (orchestration-only enterprise overview + the config catalog enforcing no-hardcoded-values), Reporting Platform (financial/settlement/merchant reports + regulatory ledger CSV export), Analytics Platform trends (growth/business/revenue/risk, day-bucketed). Remaining: Enterprise UI/UX (admin consoles for all Phase 007-012 APIs, user-panel polish), performance/production hardening, inactive-channel/provider implementations. |
 | 011 — Algorithm Registry | Not started | Merchant scoring has real docs post-bugfix; reinforced (not replaced) by the platform-architecture decision |
 | 012 — Business Process Catalog | Not started | — |
@@ -75,8 +75,8 @@ full architecture decision and reasoning.
    code ever consumed these fields and no `DepositPolicy` document exists in
    the live DB. The replacement mechanism — "Merchant Performance Bonus",
    triggered by completed buy+sell cycles, platform-funded — is not yet
-   modeled anywhere; see ENTERPRISE_DECISIONS.md 2026-07-08 and
-   EXECUTION_QUEUE.md.
+   modeled anywhere; see docs/governance/ENTERPRISE_DECISIONS.md 2026-07-08 and
+   docs/governance/EXECUTION_QUEUE.md.
 9. **Found and fixed while verifying runtime consumers (2026-07-07):** a
    third independent hardcoded 90/10, in `paymentProcessing.service.js`'s
    `createDepositOrder()` — it computed `depositAllocation`/`reserveAllocation`
@@ -110,14 +110,14 @@ full architecture decision and reasoning.
   activation steps (need owner credentials).
 - **Phase F:** bcrypt-12 standardization and an env-tunable Mongo pool.
 
-**Remaining work is tracked follow-up:** see EXECUTION_QUEUE.md "Discovered during Phases B–F" for owner-action items, queued polish, and scale work such as the SSE/socket Redis bridge before >1 instance.
+**Remaining work is tracked follow-up:** see docs/governance/EXECUTION_QUEUE.md "Discovered during Phases B–F" for owner-action items, queued polish, and scale work such as the SSE/socket Redis bridge before >1 instance.
 
 ### Phase A record (same day)
 
 Betting-logic correctness & admin-configurability:
 
 - **Step 0:** the integration test suite had NEVER passed in CI (every run
-  failed on test-code bugs — see EXECUTION_QUEUE.md 2026-07-10). Fixed;
+  failed on test-code bugs — see docs/governance/EXECUTION_QUEUE.md 2026-07-10). Fixed;
   CI run #10 is the repository's first green run. All money-flow claims
   below are CI-proven, not static-check-proven.
 - **Bet-funding split:** `SystemConfig.betReservePercent` (default 3 =
@@ -134,12 +134,12 @@ Betting-logic correctness & admin-configurability:
   route → real engine → real ledger; balanced cycle where platform revenue
   equals exactly the retained fee).
 
-**Phase B follow-up record (historical open items, now tracked in EXECUTION_QUEUE.md):**
+**Phase B follow-up record (historical open items, now tracked in docs/governance/EXECUTION_QUEUE.md):**
 The Phase A handoff identified F-2 settlementService raw `$inc` reroute with a
 settle-under-concurrency integration test, F-3 Redis-backed rate limiting,
 merchant token-deduction admin control, and the settlement-recovery totals
 issue. Preserve this list as roadmap history; use the Current Active Phase
-summary and EXECUTION_QUEUE.md for present status.
+summary and docs/governance/EXECUTION_QUEUE.md for present status.
 
 ### Prior active phase (007 — Revenue & Settlement Platform)
 
@@ -193,7 +193,7 @@ sync mid-change. New files, all in `domains/configuration/`:
     `businessJustification`), `POST .../version/:id/approve`,
     `POST .../version/:id/rollback`. Mounted via `routes/admin/index.js`
     (zero changes needed in `server.js`). Emits `deposit_policy_updated`
-    (registered in 04-GOVERNANCE.md §11) and writes `EnhancedAuditLog` entries
+    (registered in docs/governance/04-GOVERNANCE.md §11) and writes `EnhancedAuditLog` entries
     (category `FINANCIAL`) on every write.
   - Verified with an 11-assertion control-flow mock test against the real
     service code (same documented constraint as `configVersioning.service.js`:
@@ -217,11 +217,11 @@ sync mid-change. New files, all in `domains/configuration/`:
     actually runs in production** (the old alternate `approveDeposit()` in
     `paymentProcessing.service.js` has been removed). It previously had its OWN
     independent hardcoded 90/10, silently
-    ignoring the model's computed fields — a real 04-GOVERNANCE.md §2 violation
+    ignoring the model's computed fields — a real docs/governance/04-GOVERNANCE.md §2 violation
     ("no second write path to a value with a designated single-writer
     service") that predates this migration. Fixed to consume
     `order.depositAllocation`/`order.reserveAllocation` instead of recomputing.
-  - `04-GOVERNANCE.md` §1 updated: new `DepositPolicy` authority added,
+  - `docs/governance/04-GOVERNANCE.md` §1 updated: new `DepositPolicy` authority added,
     explicitly noted as superseding "Merchant earnings model: buy/sell spread
     only, commissionRate retired" for the platform-funded-commission case —
     not a silent contradiction of that earlier decision.
@@ -242,14 +242,14 @@ errors in other files, present in the pristine repo too).
 **Platform-oriented architecture, formalized 2026-07-07:** going forward,
 new work is organized under platforms, not isolated features — Business
 Policy, Operations, Revenue & Settlement, Merchant, Funding, Risk,
-Sportsbook, Casino, Communication. See ENTERPRISE_DECISIONS.md. This gives
+Sportsbook, Casino, Communication. See docs/governance/ENTERPRISE_DECISIONS.md. This gives
 future work (opposite-side betting rules, reserve usage, payout fees, new
 payment providers) a natural home without another structural migration.
 
 **Not yet done, explicitly out of scope for this piece:**
 - No Merchant Performance Bonus engine exists yet (Merchant Platform /
-  Revenue & Settlement Platform-scoped work — see EXECUTION_QUEUE.md and
-  ENTERPRISE_DECISIONS.md 2026-07-08).
+  Revenue & Settlement Platform-scoped work — see docs/governance/EXECUTION_QUEUE.md and
+  docs/governance/ENTERPRISE_DECISIONS.md 2026-07-08).
 - The pre-existing `merchant.routes.js` raw-`$inc` wallet writes (§7
   violation) have since been rerouted through `walletAuthority.service.js`
   (`creditDeposit`/`creditReserve`) on the live approval/confirm paths.
@@ -269,9 +269,9 @@ user-panel + merchant-panel UI, admin routes + Token Rates page removal,
 and finally the `TokenRates` model itself. Historical orders keep their
 real stored values; `'TokenRates'` remains in the `ConfigVersion` enum for
 historical audit docs only. `migrate-wallet-system.js` deleted per §13.
-See ENTERPRISE_DECISIONS.md 2026-07-08 for compatibility choices and the
+See docs/governance/ENTERPRISE_DECISIONS.md 2026-07-08 for compatibility choices and the
 explicit interim merchant-earnings consequence.
 
 **Next per the roadmap:** Phase 007 (Operations Platform, orchestration-only)
 and the Merchant Performance Bonus engine (Merchant Platform: Cycle Tracker →
-Bonus Calculator → Bonus Ledger) — see EXECUTION_QUEUE.md for order.
+Bonus Calculator → Bonus Ledger) — see docs/governance/EXECUTION_QUEUE.md for order.

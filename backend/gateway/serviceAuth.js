@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
  * gateway/serviceAuth.js — service-to-service authentication (CAP-73).
  * Unit-tested in backend/tests/unit/serviceAuth.test.js.
@@ -8,7 +8,7 @@
  * authenticate. The MOMENT a domain is extracted to a remote service, those
  * calls cross the network and MUST be authenticated, or any pod on the network
  * could call "wallet.debit". This module is that seam: short-lived, signed
- * service tokens (mTLS is the infra-layer complement — see HYBRID_ARCHITECTURE.md).
+ * service tokens (mTLS is the infra-layer complement — see docs/governance/HYBRID_ARCHITECTURE.md).
  *
  * Design (mirrors the user-JWT hardening in domains/identity/jwt.util.js):
  *   - HS256 pinned (alg confusion rejected), NOT "none".

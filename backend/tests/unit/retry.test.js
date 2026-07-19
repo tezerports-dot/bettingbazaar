@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Unit tests for the item-3 backoff+jitter utility (pure, no DB). Proves the
 // jitter actually spreads retries and that fetchWithRetry retries the right
 // statuses and stops on the wrong ones.

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
  * services/backup.service.js — Automated Backups (plan item 45). 2026-07-13.
  *
@@ -15,7 +15,7 @@
  *     is not a real backup target for an ephemeral container).
  *
  * RESTORE (test this on staging before you ever need it — an untested backup
- * is not a backup; see DISASTER_RECOVERY.md):
+ * is not a backup; see docs/governance/DISASTER_RECOVERY.md):
  *   1. Download the archive from S3: backups/bb-<timestamp>.archive.gz
  *   2. mongorestore --uri "$MONGODB_URI" --gzip --archive=bb-<ts>.archive.gz --drop
  */

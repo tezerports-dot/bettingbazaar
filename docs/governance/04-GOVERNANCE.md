@@ -44,7 +44,7 @@ compute, or default this value independently.
 
 | Value | Allowed Owner |
 |---|---|
-| Token buy/sell rates | **REMOVED 2026-07-08** — token conversion is fixed 1:1 (1 BB token = ₹1), not configurable. The `TokenRates` model, its admin endpoints (`/api/admin/token-rates`), and the admin UI page are gone; public rate endpoints remain but return constant 1/1/0 for client compatibility. Do not reintroduce configurable rates — see ENTERPRISE_DECISIONS.md 2026-07-08. |
+| Token buy/sell rates | **REMOVED 2026-07-08** — token conversion is fixed 1:1 (1 BB token = ₹1), not configurable. The `TokenRates` model, its admin endpoints (`/api/admin/token-rates`), and the admin UI page are gone; public rate endpoints remain but return constant 1/1/0 for client compatibility. Do not reintroduce configurable rates — see docs/governance/ENTERPRISE_DECISIONS.md 2026-07-08. |
 | Deposit/reserve wallet split, reserve usage rules (per currency) | `DepositPolicy` model (`domains/configuration/depositPolicy.model.js`) — whole-document versioned, written only via `depositPolicy.service.js`. **Corrected 2026-07-08:** `merchantCommissionPercent`/`commissionFundingSource` were removed — merchant incentive pay is cycle-completion-triggered (Merchant Performance Bonus), not deposit-triggered, and does not belong on this policy. See the "Merchant earnings model" line below. |
 | Bet min/max (per cycle type) | `SystemConfig.betLimits` |
 | Deposit/withdrawal limits (platform-wide) | `SystemConfig` |
@@ -52,7 +52,7 @@ compute, or default this value independently.
 | Merchant token capacity (buy orders) | `Merchant.tokenBalance` (current wallet) |
 | Merchant token capacity (sell orders) | Lifetime initial top-up (tracked in merchant wallet history) |
 | Referral commission rates | `CommissionLevel.f1Rate` only — F2/F3 not implemented (H-03) |
-| Merchant earnings model | **The buy/sell spread is retired (2026-07-08, fixed 1:1 conversion)** — new orders carry `merchantProfit: 0`. `Merchant.commissionRate` remains retired; the interim `DepositPolicy.merchantCommissionPercent` mechanism was removed 2026-07-08 before ever being consumed. The go-forward mechanism is the **Merchant Performance Bonus**: triggered by completed buy+sell cycles, a % of cycle volume, funded from platform revenue, NEVER deducted from users/deposits/withdrawals. Not yet built — see EXECUTION_QUEUE.md and ENTERPRISE_DECISIONS.md 2026-07-08. Do not reintroduce `Merchant.commissionRate`, a rate spread, or a deposit-triggered commission. |
+| Merchant earnings model | **The buy/sell spread is retired (2026-07-08, fixed 1:1 conversion)** — new orders carry `merchantProfit: 0`. `Merchant.commissionRate` remains retired; the interim `DepositPolicy.merchantCommissionPercent` mechanism was removed 2026-07-08 before ever being consumed. The go-forward mechanism is the **Merchant Performance Bonus**: triggered by completed buy+sell cycles, a % of cycle volume, funded from platform revenue, NEVER deducted from users/deposits/withdrawals. Not yet built — see docs/governance/EXECUTION_QUEUE.md and docs/governance/ENTERPRISE_DECISIONS.md 2026-07-08. Do not reintroduce `Merchant.commissionRate`, a rate spread, or a deposit-triggered commission. |
 | Sub-admin permission keys | `User.subAdminPermissions` schema — frontend imports from `utils/permissions.ts` |
 | Chat rules (cooldown, length, banned words) | Chat config document via `/api/chat/config` |
 | Branding (colors, logo, names, banners) | `Branding` document — **see §3 and §12** |
@@ -358,7 +358,7 @@ isolation is immediately directed to read it.
 
 Preferred format (adapt to language):
 ```
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 ```
 
 For files created before this rule was introduced: the requirement applies on first edit.

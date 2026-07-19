@@ -1,7 +1,7 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Domain: Merchant Platform (BBEPS Phase 008).
 //
-// THE SOLE writer of Merchant.tokenBalance (04-GOVERNANCE.md §1/§2 — the
+// THE SOLE writer of Merchant.tokenBalance (docs/governance/04-GOVERNANCE.md §1/§2 — the
 // merchant-side counterpart of walletAuthority.service.js). Before Phase
 // 008, seven call sites ran their own raw $inc with three different
 // semantics (guarded / blind / blind-with-swallowed-errors); they now all
@@ -12,7 +12,7 @@
 //     { merchant: null } on insufficient balance so callers keep their own
 //     rollback/response logic (matches the previously-guarded sites).
 //   - debit with allowOverdraft:true  → blind $inc (matches the previously
-//     blind sites — flagged in EXECUTION_QUEUE.md to tighten later).
+//     blind sites — flagged in docs/governance/EXECUTION_QUEUE.md to tighten later).
 //   - Everything accepts an optional mongoose session and joins it.
 //   - txId idempotency: if the ledger already has this txId, the mutation is
 //     skipped and { idempotent: true } is returned.

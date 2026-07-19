@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Unit tests for the item-9 bounded load-shedder (pure — no DB, no server).
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { loadShed, _loadShedState, _setLoadShedConfig } from '../../middleware/loadShed.js';

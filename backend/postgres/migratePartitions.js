@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file.
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
 /**
  * postgres/migratePartitions.js — opt-in partitioning runner (capability #16,
  * Bucket A "framework now, activate later").

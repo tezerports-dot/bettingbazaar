@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Unit tests for the X-6 correlation-id context + structured logger (pure,
 // no DB). AsyncLocalStorage works in-process, so the correlation threading
 // is fully testable without a request.

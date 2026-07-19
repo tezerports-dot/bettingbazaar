@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Domain: Payment (BBEPS Phase 003 §3.3). Moved from backend/services/paymentProcessing.service.js
 // on 2026-07-01 (BBEPS Phase 004 migration).
 // NOTE: this file calls into the Merchant domain's selectBestMerchant() algorithm
@@ -211,7 +211,7 @@ export async function createDepositOrder(userId, tokenAmount) {
     // Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08):
     // 1 BB token = ₹1, no buy/sell spread. Merchant earnings come from the
     // future cycle-completion-triggered Merchant Performance Bonus, never
-    // from a rate spread — see ENTERPRISE_DECISIONS.md.
+    // from a rate spread — see docs/governance/ENTERPRISE_DECISIONS.md.
     const fiatAmount         = tokenAmount;
     const merchantProfit     = 0; // spread retired; schema default is also 0
     // depositAllocation / reserveAllocation are NOT computed here — the

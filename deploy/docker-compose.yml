@@ -1,4 +1,4 @@
-# GOVERNANCE: Read 04-GOVERNANCE.md before editing this file.
+# GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
 # Reproducible self-host stack (plan item 41, 2026-07-13) — the whole platform
 # from scratch on any Docker host: app + MongoDB single-node replica set
 # (transactions require a replica set) + Redis. Version-controlled environment

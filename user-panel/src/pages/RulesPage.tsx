@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
  * RulesPage.tsx — Rules / How to Play
  *
@@ -9,7 +9,7 @@
  * Falls back to a clean empty state when no slides are configured.
  */
 
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { getBackend } from '../services/backend.service';
 import { PromoContent } from '../types';

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Unit tests for the Integer Money Engine (capability #9): integer enforcement,
 // overflow protection, and value-conserving arithmetic.
 import { describe, it, expect } from 'vitest';

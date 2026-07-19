@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import mongoose from 'mongoose';
 
 const systemConfigSchema = new mongoose.Schema({
@@ -95,7 +95,7 @@ const systemConfigSchema = new mongoose.Schema({
   // How many months of high-volume OPERATIONAL data (settled bets, completed
   // cycles, frontend error reports) to keep before the retention worker prunes
   // it. Financial/audit/user data is NEVER pruned (kept forever — see
-  // RETENTION_POLICY.md). A hard 30-day safety floor applies regardless of
+  // docs/governance/RETENTION_POLICY.md). A hard 30-day safety floor applies regardless of
   // this value. Read by domains/operations/retention.service.js.
   retentionMonths: { type: Number, default: 6, min: 1, max: 120 },
 
@@ -235,7 +235,7 @@ const systemConfigSchema = new mongoose.Schema({
 });
 
 // TokenRates model removed 2026-07-08 — token conversion is fixed 1:1
-// (Phase 006 flattening, see ENTERPRISE_DECISIONS.md). The old `tokenrates`
+// (Phase 006 flattening, see docs/governance/ENTERPRISE_DECISIONS.md). The old `tokenrates`
 // Mongo collection may still hold historical data; nothing reads or writes
 // it anymore.
 

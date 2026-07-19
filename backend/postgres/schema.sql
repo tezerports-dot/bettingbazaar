@@ -1,4 +1,4 @@
--- GOVERNANCE: Read 04-GOVERNANCE.md before editing this file.
+-- GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
 -- POSTGRES MONEY SCHEMA — hybrid architecture step 1 (plan items 6/10/11).
 -- 2026-07-13. Requires PostgreSQL >= 14 (CREATE OR REPLACE TRIGGER).
 --

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
  * SupportPage.tsx  v4.3.0 — NEW PAGE
  * BUG-U19 FIX: Displays admin-configured support channels (WhatsApp, Telegram,

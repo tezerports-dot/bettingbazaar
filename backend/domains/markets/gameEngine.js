@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import { Cycle, Bet, User } from '../../models/index.js';
 import mongoose from 'mongoose';
 import { CacheService } from '../../services/cache.service.js';

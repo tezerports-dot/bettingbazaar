@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // §11: Public SSE events: new_cycle, cycle_result, cycle_phase, cycle_snapshot, cycle_history, system_config, branding, branding_updated
 // §11: Private admin SSE events: new_order, queue_order_update, kyc_update, queue_snapshot,
 //      admin_cycle_update, admin_new_cycle, admin_cycle_result (via /api/sse/admin/events)

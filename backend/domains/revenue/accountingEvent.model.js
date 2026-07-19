@@ -1,11 +1,11 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Domain: Revenue & Settlement Platform (BBEPS Phase 007 bootstrap, 2026-07-09).
 //
 // AccountingEvent — the settlement ledger. APPEND-ONLY, double-entry.
 //
 //   - Each document is one immutable journal entry: a set of signed postings
 //     (integer paise) that sum to exactly zero.
-//   - Written ONLY by revenueSettlement.service.js (04-GOVERNANCE.md §1/§2 —
+//   - Written ONLY by revenueSettlement.service.js (docs/governance/04-GOVERNANCE.md §1/§2 —
 //     single-writer authority). Route handlers and other services must call
 //     that service, never this model.
 //   - Never updated, never deleted. Corrections are new ADJUSTMENT entries

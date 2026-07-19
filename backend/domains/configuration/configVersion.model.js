@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Domain: Configuration / Business Policy Platform (BBEPS Phase 006 §6.7-§6.10).
 //
 // Why this exists separately from EnhancedAuditLog (models/audit.model.js):

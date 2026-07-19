@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Integration test (real Redis, CI service container): the SSE cross-instance
 // bridge (Phase X). Two SSEManager objects sharing one Redis simulate two
 // backend instances. Property under test: a fan-out produced on instance A

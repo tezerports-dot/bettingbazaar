@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Unit tests for the RAG chunker (CAP-71) — pure, no DB, no network.
 import { describe, it, expect } from 'vitest';
 import { chunkText, chunkDocument, estimateTokens } from '../../domains/support/chunk.js';

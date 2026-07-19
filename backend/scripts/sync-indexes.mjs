@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file.
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
 /**
  * scripts/sync-indexes.mjs — explicit index synchronization (AQ-14).
  *

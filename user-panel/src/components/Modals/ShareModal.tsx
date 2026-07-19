@@ -1,5 +1,5 @@
 
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import React, { useEffect, useState } from 'react';
 import Modal from '../ui/Modal';
 import { getBackend, getAssetUrl } from '../../services/backend.service';

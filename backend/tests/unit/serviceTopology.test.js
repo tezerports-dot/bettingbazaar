@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Unit tests for the monolith→microservices topology seam (CAP-72). Pure — every
 // function takes an explicit env, so no process.env mutation.
 import { describe, it, expect } from 'vitest';

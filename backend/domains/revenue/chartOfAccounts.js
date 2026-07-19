@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Domain: Revenue & Settlement Platform (BBEPS Phase 007 bootstrap, 2026-07-09).
 //
 // CHART OF ACCOUNTS — the canonical, closed list of ledger accounts.
@@ -61,7 +61,7 @@ export const ACCOUNT_CODES = Object.freeze(Object.keys(ACCOUNTS));
 
 // ── Event types ───────────────────────────────────────────────────────────────
 // The closed list of accounting event types. One name per logical financial
-// occurrence (same discipline as 04-GOVERNANCE.md §11 for socket events).
+// occurrence (same discipline as docs/governance/04-GOVERNANCE.md §11 for socket events).
 export const EVENT_TYPES = Object.freeze({
   // A completed DEPOSIT PaymentOrder: fiat in; user liability + reserve up;
   // any residual (historical buy-rate spread) is platform revenue.

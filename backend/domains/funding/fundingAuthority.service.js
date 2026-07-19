@@ -1,8 +1,8 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Domain: Funding Platform (BBEPS Phase 009).
 //
 // THE ONLY entry point for money entering or leaving the ecosystem
-// (04-GOVERNANCE.md §1). Routes call requestDeposit/requestWithdrawal;
+// (docs/governance/04-GOVERNANCE.md §1). Routes call requestDeposit/requestWithdrawal;
 // nothing outside this platform calls a provider (or the P2P order
 // machinery) directly for money movement.
 //

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** Drop request-smuggling primitives before body parsing or proxy-derived trust. */
 export function rejectAmbiguousFraming(req, res, next) {
   const names = [];

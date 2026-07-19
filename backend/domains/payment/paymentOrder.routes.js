@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Domain: Payment (BBEPS Phase 003 §3.3). Owns payment-order lifecycle: listing,
 // force-approve/reject/cancel, and dispute resolution (money movement + order status).
 // Does NOT own merchant assignment/selection — that's domains/merchant/merchant.assignment.routes.js.

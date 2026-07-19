@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Unit tests for the Revenue & Settlement ledger math (pure, no DB).
 // These are the money-correctness invariants — the most important tests in
 // the repo. If any of these fail, money is being created or destroyed.

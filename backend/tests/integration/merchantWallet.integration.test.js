@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Integration test (real DB): the merchant token wallet is a TRANSFER
 // mechanism, not a mint. Proves the safety property behind audit fix F-1 —
 // a debit without allowOverdraft REFUSES when the merchant is short (returns

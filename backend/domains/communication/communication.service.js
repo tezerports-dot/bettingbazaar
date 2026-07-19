@@ -1,9 +1,9 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Domain: Communication Platform (BBEPS Phase 012 — Customer Platforms tier).
 //
 // THE notification engine facade: every user-facing message goes through
 // notify(), which fans out to the requested channels. Callers never touch a
-// channel (or the Notification model) directly — 04-GOVERNANCE.md §1.
+// channel (or the Notification model) directly — docs/governance/04-GOVERNANCE.md §1.
 //
 // Per-channel failure isolation: one channel failing never blocks the
 // others, and a fully-failed notification never throws into business flows

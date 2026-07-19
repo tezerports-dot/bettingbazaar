@@ -46,7 +46,7 @@ done < <(find . -name "*.tsx" -o -name "*.ts" | grep -v node_modules | grep -v d
 # 5. Files missing GOVERNANCE header
 MISSING=0
 while IFS= read -r file; do
-  if ! head -10 "$file" | grep -q "GOVERNANCE: Read 04-GOVERNANCE.md"; then
+  if ! head -10 "$file" | grep -q "GOVERNANCE: Read docs/governance/04-GOVERNANCE.md"; then
     MISSING=$((MISSING + 1))
   fi
 done < <(find . \( -name "*.ts" -o -name "*.tsx" -o -name "*.js" \) \

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Domain: Configuration / Business Policy Platform (BBEPS Phase 008 consumer).
 //
 // MerchantBonusPolicy — the ONLY place the Merchant Performance Bonus
@@ -10,10 +10,10 @@
 // IS a version; exactly one ACTIVE at a time; rollback creates a new version
 // copying old values forward. Divergence from DepositPolicy (deliberate,
 // scope-boxed): no scheduling / approval-gating in v1 — every new version
-// applies immediately. Flagged in EXECUTION_QUEUE.md; add those lifecycle
+// applies immediately. Flagged in docs/governance/EXECUTION_QUEUE.md; add those lifecycle
 // states by mirroring depositPolicy.service.js when needed.
 //
-// Sole writer: merchantBonusPolicy.service.js (04-GOVERNANCE.md §1/§2).
+// Sole writer: merchantBonusPolicy.service.js (docs/governance/04-GOVERNANCE.md §1/§2).
 
 import mongoose from 'mongoose';
 

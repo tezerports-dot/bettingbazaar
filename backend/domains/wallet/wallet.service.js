@@ -1,4 +1,4 @@
-// GOVERNANCE: Read 04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 
 
 import mongoose from 'mongoose';
@@ -248,7 +248,7 @@ export async function creditDeposit(userId, amount, orderId, extSession) {
  * creditReserve — credit the deposit's reserve-allocation share to
  * reserveBalance. Mirrors creditDeposit exactly (idempotent via txId, writes
  * a WalletLedger entry). Added 2026-07-09 (audit) so reserve credits stop
- * being raw $inc writes with no audit trail (04-GOVERNANCE.md §7).
+ * being raw $inc writes with no audit trail (docs/governance/04-GOVERNANCE.md §7).
  */
 export async function creditReserve(userId, amount, orderId, extSession) {
   amount = round2(amount);
