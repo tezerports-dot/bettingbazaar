@@ -5,7 +5,7 @@ import express from 'express';
 import { randomUUID } from 'crypto'; // MED-01: for collision-safe ledger txId
 import { creditWinnings } from '../wallet/walletAuthority.service.js'; // HIGH-03: atomicBet removed (never called; inline atomic pattern used instead)
 import mongoose from 'mongoose';
-import { authenticate } from '../identity/auth.middleware.js';
+import { authenticate, requireApprovedKyc } from '../identity/auth.middleware.js';
 import { betLimiter } from '../../middleware/security.js';
 // Risk Platform (Phase 010): the single validation authority for bets.
 // Phase A (2026-07-10): computeBetFundingPlan owns the stake-split arithmetic.
@@ -42,7 +42,7 @@ async function abortOrEnd(session) {
 // POST /api/bet/place
 // Places a real bet. Deducts from winnings first, then deposits.
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/place', authenticate, betLimiter, async (req, res) => {
+router.post('/place', authenticate, requireApprovedKyc, betLimiter, async (req, res) => {
   // NOTE: No session opened here — the critical balance step is a single atomic
   // findOneAndUpdate (see FIX B). Remaining writes (Bet, Cycle pool, Transaction)
   // are idempotent/append-only and do not need a multi-document transaction.

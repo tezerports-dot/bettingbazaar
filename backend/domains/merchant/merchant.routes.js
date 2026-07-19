@@ -388,7 +388,7 @@ router.post('/admin-token-orders', merchantAuth, async (req, res) => {
         startOfDay.setHours(0, 0, 0, 0);
         const existingToday = await MerchantAdminTokenOrder.findOne({ merchantId: req.merchantId, requestedAt: { $gte: startOfDay } }).lean();
         if (existingToday) return res.status(429).json({ success: false, message: 'Only one admin token purchase request is allowed per day.' });
-        const usdtRate = merchant.adminUsdtRate ?? 1; // schema default: 1
+        const usdtRate = cfg?.usdtPricing?.merchantAdminBuyInr ?? 1; // schema default: SystemConfig.usdtPricing.merchantAdminBuyInr = 1
         const order = await MerchantAdminTokenOrder.create({
             orderId: `MAT_${new mongoose.Types.ObjectId().toString()}`,
             merchantId: req.merchantId,

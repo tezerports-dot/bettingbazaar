@@ -79,6 +79,14 @@ const systemConfigSchema = new mongoose.Schema({
   // recorded by the Revenue & Settlement Platform (PAYOUT_FEES account).
   payoutFeePercent: { type: Number, default: 0, min: 0, max: 100 },
 
+  // USDT buy-only pricing is separate from BB token conversion. BB tokens
+  // remain fixed 1:1 internally; these admin-owned prices are consumed by
+  // buy-only USDT flows and never define a USDT sell option.
+  usdtPricing: {
+    userMerchantBuyInr:  { type: Number, default: 0, min: 0 },
+    merchantAdminBuyInr: { type: Number, default: 1, min: 0 },
+  },
+
   // ── CYCLE TIMING (Phase X X-5, 2026-07-10) ────────────────────────────────
   // Duration (minutes) of the recurring short market block — previously the
   // hardcoded 30*60*1000 in cycleGenerator.service.js. Admin-editable so the

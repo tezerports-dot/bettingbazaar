@@ -105,6 +105,10 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
         tokenSellRate:         1, // fixed 1:1 conversion
         // Risk Platform rules (Phase 010) — schema defaults cited inline
         payoutFeePercent:      config.payoutFeePercent ?? 0,  // schema default: 0
+        usdtPricing: {
+          userMerchantBuyInr:  config.usdtPricing?.userMerchantBuyInr  ?? 0, // schema default: 0
+          merchantAdminBuyInr: config.usdtPricing?.merchantAdminBuyInr ?? 1, // schema default: 1
+        },
         // Bet funding split (Phase A) — % of each stake from reserveBalance
         betReservePercent:     config.betReservePercent ?? 3, // schema default: 3
         // Winnings platform fee (Phase A) — % of gross 2x retained at settlement
@@ -182,7 +186,7 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
       maintenanceMode, maintenanceMessage,
       depositMethods, withdrawalMethods,
       webUrl, androidUrl, iosUrl, minVersion, latestVersion,
-      payoutFeePercent, riskRules, betReservePercent, winningsFeePercent,
+      payoutFeePercent, usdtPricing, riskRules, betReservePercent, winningsFeePercent,
       cycleDurationMinutes, retentionMonths,
       payoutMultiplier, orderExpiryMinutes, cyclePhases,
       footerPages, alertWebhookUrl, tlsFingerprintDefense,
@@ -213,6 +217,14 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
          winningsFeePercent < 0 || winningsFeePercent > 100 ||
          Math.abs(winningsFeePercent * 100 - Math.round(winningsFeePercent * 100)) > 1e-9)) {
       return res.status(400).json({ success: false, message: 'winningsFeePercent must be a number between 0 and 100 with at most 2 decimals.' });
+    }
+    if (usdtPricing !== undefined) {
+      const userMerchantBuy = usdtPricing.userMerchantBuyInr;
+      const merchantAdminBuy = usdtPricing.merchantAdminBuyInr;
+      if ((userMerchantBuy !== undefined && (typeof userMerchantBuy !== 'number' || !Number.isFinite(userMerchantBuy) || userMerchantBuy < 0)) ||
+          (merchantAdminBuy !== undefined && (typeof merchantAdminBuy !== 'number' || !Number.isFinite(merchantAdminBuy) || merchantAdminBuy <= 0))) {
+        return res.status(400).json({ success: false, message: 'USDT buy rates must be non-negative; merchant/admin buy rate must be greater than zero.' });
+      }
     }
     if (riskRules?.maxFundingOrdersPerHour !== undefined &&
         (!Number.isInteger(riskRules.maxFundingOrdersPerHour) || riskRules.maxFundingOrdersPerHour < 0)) {
@@ -289,6 +301,8 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     // Risk Platform rules (Phase 010) — numbers owned here (Business Policy),
     // enforcement in domains/risk/riskValidation.service.js
     if (payoutFeePercent !== undefined) fieldWrites.push(['SystemConfig', 'payoutFeePercent', payoutFeePercent]);
+    if (usdtPricing?.userMerchantBuyInr  !== undefined) fieldWrites.push(['SystemConfig', 'usdtPricing.userMerchantBuyInr', usdtPricing.userMerchantBuyInr]);
+    if (usdtPricing?.merchantAdminBuyInr !== undefined) fieldWrites.push(['SystemConfig', 'usdtPricing.merchantAdminBuyInr', usdtPricing.merchantAdminBuyInr]);
     // Bet funding split (Phase A) — consumed by bet.routes.js via
     // riskValidation.computeBetFundingPlan
     if (betReservePercent !== undefined) fieldWrites.push(['SystemConfig', 'betReservePercent', betReservePercent]);

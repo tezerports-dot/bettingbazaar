@@ -3,7 +3,7 @@
  * Moved from backend/routes/payment.routes.js on 2026-07-01 (BBEPS Phase 004 migration). */
 import express   from 'express';
 import mongoose  from 'mongoose';
-import { authenticate } from '../identity/auth.middleware.js';
+import { authenticate, requireApprovedKyc } from '../identity/auth.middleware.js';
 import { tryVerifyJwt } from '../identity/jwt.util.js';
 import { merchantAuth } from '../../middleware/merchantAuth.js';
 import { withdrawalLimiter } from '../../middleware/security.js';
@@ -46,14 +46,14 @@ function sanitizeOrderForMerchant(order) {
   return plain;
 }
 
-router.post('/deposit/create', authenticate, async (req, res) => {
+router.post('/deposit/create', authenticate, requireApprovedKyc, async (req, res) => {
   try {
     const result = await requestDeposit({ userId: req.user._id, tokenAmount: Number(req.body.tokenAmount) });
     res.json({ success: true, message: 'Deposit request created. Waiting for merchant assignment.', ...result });
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code }); }
 });
 
-router.post('/withdrawal/create', authenticate, withdrawalLimiter, createSubnetLimiter('withdrawal'), globalSurgeBreaker('withdrawal'), async (req, res) => {
+router.post('/withdrawal/create', authenticate, requireApprovedKyc, withdrawalLimiter, createSubnetLimiter('withdrawal'), globalSurgeBreaker('withdrawal'), async (req, res) => {
   try {
     const result = await requestWithdrawal({ userId: req.user._id, tokenAmount: Number(req.body.tokenAmount) });
     res.json({ success: true, message: 'Withdrawal request created. Waiting for merchant assignment.', ...result });

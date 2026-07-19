@@ -33,7 +33,6 @@ const merchantSchema = new mongoose.Schema({
     ifsc: String
   },
   usdtWalletAddress: { type: String, trim: true, uppercase: true },
-  adminUsdtRate: { type: Number, default: 1, min: 0 },
   qrCodeUrl: String,
   limits: {
     minDeposit: { type: Number, default: 500 },
