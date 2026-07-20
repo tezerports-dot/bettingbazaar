@@ -275,7 +275,7 @@ export async function getLedger({ page = 1, limit = 50, eventType } = {}) {
  * NOTE: the distributable check is read-then-write without a cross-document
  * transaction — concurrent fundings could jointly exceed distributable.
  * Acceptable for a rare, manual, admin-only action; flagged in
- * docs/governance/EXECUTION_QUEUE.md for when funding becomes automated.
+ * docs/governance/CAPABILITY_MATRIX_2026.md for when funding becomes automated.
  */
 export async function fundMerchantBonusPool({ amountMinor, actor, justification, idempotencyKey }) {
   if (!justification || !justification.trim()) {
@@ -353,7 +353,7 @@ export async function issueMerchantBonus({ merchantId, amountMinor, idempotencyK
 // via $lookup. Correct-by-construction and self-healing (a failed insert is
 // simply retried next pass; history backfills automatically on first runs).
 // If source volume makes the scan expensive, add a checkpoint optimization —
-// flagged in docs/governance/EXECUTION_QUEUE.md.
+// flagged in docs/governance/CAPABILITY_MATRIX_2026.md.
 
 async function unrecordedSources(Model, matchStage, refModel, localRefExpr, limit) {
   return Model.aggregate([

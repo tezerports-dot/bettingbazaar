@@ -6,11 +6,9 @@ This folder is the single home for Betting Bazaar governance, enterprise-readine
 
 The repository is arranged as a modular monolith with separate user, admin, and merchant panels, a backend domain layer, deployment assets, and centralized governance. That is a strong enterprise-grade shape, but **launch readiness still depends on the open items and production checks tracked in this folder**. Before launch, review:
 
-1. `PHASE_STATUS.md` for current phase and known status.
-2. `EXECUTION_QUEUE.md` for declared-but-not-finished capabilities.
-3. `SECURITY_CODE_REVIEW_CHECKLIST.md` for release security review.
-4. `DISASTER_RECOVERY.md`, `SRE.md`, and `RETENTION_POLICY.md` for operations readiness.
-5. `CAPABILITY_MATRIX_2026.md` for what is implemented versus planned.
+1. `CAPABILITY_MATRIX_2026.md` for implemented capabilities, active gaps, and planned capabilities.
+2. `SECURITY_CODE_REVIEW_CHECKLIST.md` for release security review.
+3. `DISASTER_RECOVERY.md`, `SRE.md`, and `RETENTION_POLICY.md` for operations readiness.
 
 ## Folder map
 
@@ -19,10 +17,7 @@ The repository is arranged as a modular monolith with separate user, admin, and 
 | `04-GOVERNANCE.md` | Binding repository rules, ownership boundaries, no-hardcode/no-duplicate rules, and event naming authority. |
 | `ENTERPRISE_DECISIONS.md` | Record of approved enterprise architecture/product decisions. |
 | `AUTHORIZATION_MATRIX.md` | Role/permission and access-control reference. |
-| `CAPABILITY_MATRIX_2026.md` | Capability inventory and maturity/evidence tracking. |
-| `PHASE_STATUS.md` | Current delivery phase, completed phases, and active status. |
-| `EXECUTION_QUEUE.md` | Backlog/queue for future enterprise capabilities and hardening work. |
-| `FUTURE_CAPABILITIES.md` | Planned feature/capability expansion. |
+| `CAPABILITY_MATRIX_2026.md` | Capability inventory, implemented evidence, active gaps, and planned capability tracking. |
 | `HYBRID_ARCHITECTURE.md` | Smooth migration plan from modular monolith to monolith + selected microservices. |
 | `PORTABILITY.md` | Hosting, database, CDN, and deployment portability notes. |
 | `DISASTER_RECOVERY.md` | Backup, restore, and incident recovery guidance. |

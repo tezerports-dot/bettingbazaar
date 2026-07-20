@@ -109,6 +109,10 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
           userMerchantBuyInr:  config.usdtPricing?.userMerchantBuyInr  ?? 0, // schema default: 0
           merchantAdminBuyInr: config.usdtPricing?.merchantAdminBuyInr ?? 1, // schema default: 1
         },
+        merchantOrderLimits: {
+          minAdminTokenPurchaseUsdt: config.merchantOrderLimits?.minAdminTokenPurchaseUsdt ?? 100, // schema default: 100
+          maxAdminTokenPurchaseUsdt: config.merchantOrderLimits?.maxAdminTokenPurchaseUsdt ?? 0,   // 0 = unlimited
+        },
         // Bet funding split (Phase A) — % of each stake from reserveBalance
         betReservePercent:     config.betReservePercent ?? 3, // schema default: 3
         // Winnings platform fee (Phase A) — % of gross 2x retained at settlement
@@ -186,7 +190,7 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
       maintenanceMode, maintenanceMessage,
       depositMethods, withdrawalMethods,
       webUrl, androidUrl, iosUrl, minVersion, latestVersion,
-      payoutFeePercent, usdtPricing, riskRules, betReservePercent, winningsFeePercent,
+      payoutFeePercent, usdtPricing, merchantOrderLimits, riskRules, betReservePercent, winningsFeePercent,
       cycleDurationMinutes, retentionMonths,
       payoutMultiplier, orderExpiryMinutes, cyclePhases,
       footerPages, alertWebhookUrl, tlsFingerprintDefense,
@@ -224,6 +228,22 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
       if ((userMerchantBuy !== undefined && (typeof userMerchantBuy !== 'number' || !Number.isFinite(userMerchantBuy) || userMerchantBuy < 0)) ||
           (merchantAdminBuy !== undefined && (typeof merchantAdminBuy !== 'number' || !Number.isFinite(merchantAdminBuy) || merchantAdminBuy <= 0))) {
         return res.status(400).json({ success: false, message: 'USDT buy rates must be non-negative; merchant/admin buy rate must be greater than zero.' });
+      }
+    }
+    if (merchantOrderLimits !== undefined) {
+      if (!merchantOrderLimits || typeof merchantOrderLimits !== 'object' || Array.isArray(merchantOrderLimits)) {
+        return res.status(400).json({ success: false, message: 'merchantOrderLimits must be an object.' });
+      }
+      const currentConfig = await SystemConfig.findOne({ key: 'main' }).select('merchantOrderLimits').lean();
+      const minAdminUsdt = merchantOrderLimits.minAdminTokenPurchaseUsdt;
+      const maxAdminUsdt = merchantOrderLimits.maxAdminTokenPurchaseUsdt;
+      const effectiveMinAdminUsdt = minAdminUsdt ?? currentConfig?.merchantOrderLimits?.minAdminTokenPurchaseUsdt ?? 100;
+      const effectiveMaxAdminUsdt = maxAdminUsdt ?? currentConfig?.merchantOrderLimits?.maxAdminTokenPurchaseUsdt ?? 0;
+      if ((minAdminUsdt !== undefined && (typeof minAdminUsdt !== 'number' || !Number.isFinite(minAdminUsdt))) ||
+          (maxAdminUsdt !== undefined && (typeof maxAdminUsdt !== 'number' || !Number.isFinite(maxAdminUsdt))) ||
+          effectiveMinAdminUsdt < 100 || effectiveMaxAdminUsdt < 0 ||
+          (effectiveMaxAdminUsdt !== 0 && effectiveMaxAdminUsdt < effectiveMinAdminUsdt)) {
+        return res.status(400).json({ success: false, message: 'Merchant admin-token USDT limits require min >= 100 and max either 0 (unlimited) or >= min.' });
       }
     }
     if (riskRules?.maxFundingOrdersPerHour !== undefined &&
@@ -303,6 +323,8 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     if (payoutFeePercent !== undefined) fieldWrites.push(['SystemConfig', 'payoutFeePercent', payoutFeePercent]);
     if (usdtPricing?.userMerchantBuyInr  !== undefined) fieldWrites.push(['SystemConfig', 'usdtPricing.userMerchantBuyInr', usdtPricing.userMerchantBuyInr]);
     if (usdtPricing?.merchantAdminBuyInr !== undefined) fieldWrites.push(['SystemConfig', 'usdtPricing.merchantAdminBuyInr', usdtPricing.merchantAdminBuyInr]);
+    if (merchantOrderLimits?.minAdminTokenPurchaseUsdt !== undefined) fieldWrites.push(['SystemConfig', 'merchantOrderLimits.minAdminTokenPurchaseUsdt', merchantOrderLimits.minAdminTokenPurchaseUsdt]);
+    if (merchantOrderLimits?.maxAdminTokenPurchaseUsdt !== undefined) fieldWrites.push(['SystemConfig', 'merchantOrderLimits.maxAdminTokenPurchaseUsdt', merchantOrderLimits.maxAdminTokenPurchaseUsdt]);
     // Bet funding split (Phase A) — consumed by bet.routes.js via
     // riskValidation.computeBetFundingPlan
     if (betReservePercent !== undefined) fieldWrites.push(['SystemConfig', 'betReservePercent', betReservePercent]);

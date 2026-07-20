@@ -86,5 +86,5 @@ rework: per-game **regions/geo-visibility**, per-game **feature flags**, provide
 **game-sync adapters** (auto-import via `listGames()`), fully **dynamic nav
 generation** everywhere (home tiles, not just the two lobbies), per-game **SEO**,
 and casino **GGR ledger** integration (derive R&S entries from `GameTransaction`
-— already queued in docs/governance/EXECUTION_QUEUE.md). Adding any of them is new fields/an
+— already queued in docs/governance/CAPABILITY_MATRIX_2026.md). Adding any of them is new fields/an
 adapter, not a new architecture.

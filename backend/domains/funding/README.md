@@ -5,7 +5,7 @@ The only authority for money entering and leaving the ecosystem.
 | Capability | Where |
 |---|---|
 | INR deposits / withdrawals (intent-based, merchant-fulfilled P2P) | `fundingAuthority.service.js` → `MANUAL_P2P_INR` adapter → `domains/payment/paymentProcessing.service.js` (implementation detail of this platform) |
-| USDT deposits / USDT treasury | `USDT_TRC20` adapter — declared, inactive until the treasury build (docs/governance/EXECUTION_QUEUE.md) |
+| USDT deposits / USDT treasury | `USDT_TRC20` adapter — declared, inactive until the treasury build (docs/governance/CAPABILITY_MATRIX_2026.md) |
 | Future payment/crypto providers, gateway adapters | `providerRegistry.js` — one adapter interface; adding a rail touches no routes |
 | Deposit verification / withdrawal processing | UTR validation, merchant confirm/approve flows (`domains/payment/`, `domains/merchant/merchant.routes.js`) — Funding-owned processes |
 | Merchant assignment / queue | assignment + scoring machinery (`domains/merchant/merchant.assignment.routes.js`, `merchantScoring.service.js`) — the PROCESS is Funding-owned; scoring inputs are Merchant Platform-owned |

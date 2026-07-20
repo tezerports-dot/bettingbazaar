@@ -12,7 +12,7 @@ The single authority for operational rules and transaction validation.
 | Reserve-ratio rounding (Spec 4.4) | LIVE | `computeReserveSplit` — consumed by `paymentOrder.model.js` pre-save |
 | Payout fee rule | LIVE (default 0%) | `computePayoutFeeMinor` — % owned by `SystemConfig.payoutFeePercent`; fee recorded in the PAYOUT_FEES ledger account by R&S |
 | Reserve wallet usage rules | Owned by `DepositPolicy.reserveUsageRules` (Business Policy) — Risk enforces when a consumer flow exists | — |
-| AML / fraud detection / device risk / behaviour analysis / responsible gaming | DECLARED, not implemented (no fake placeholders) | docs/governance/EXECUTION_QUEUE.md |
+| AML / fraud detection / device risk / behaviour analysis / responsible gaming | DECLARED, not implemented (no fake placeholders) | docs/governance/CAPABILITY_MATRIX_2026.md |
 
 Boundaries: Business Policy Platform owns every configurable number/toggle
 (`SystemConfig.riskRules`, `payoutFeePercent`, `betLimits`, policy docs);

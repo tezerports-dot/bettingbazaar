@@ -100,7 +100,7 @@ capabilities:
     implementation_status: partial
     activation_status: active
     evidence: [backend/domains/wallet/walletAuthority.service.js, backend/postgres/dualWrite.js]
-    docs: [docs/governance/PHASE_STATUS.md]
+    docs: [docs/governance/CAPABILITY_MATRIX_2026.md]
   - id: CAP-11
     name: CDC Migration
     bucket: decision

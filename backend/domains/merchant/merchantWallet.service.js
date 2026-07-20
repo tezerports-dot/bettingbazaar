@@ -12,7 +12,7 @@
 //     { merchant: null } on insufficient balance so callers keep their own
 //     rollback/response logic (matches the previously-guarded sites).
 //   - debit with allowOverdraft:true  → blind $inc (matches the previously
-//     blind sites — flagged in docs/governance/EXECUTION_QUEUE.md to tighten later).
+//     blind sites — flagged in docs/governance/CAPABILITY_MATRIX_2026.md to tighten later).
 //   - Everything accepts an optional mongoose session and joins it.
 //   - txId idempotency: if the ledger already has this txId, the mutation is
 //     skipped and { idempotent: true } is returned.
