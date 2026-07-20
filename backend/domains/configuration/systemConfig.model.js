@@ -57,6 +57,8 @@ const systemConfigSchema = new mongoose.Schema({
     maxConcurrentDepositOrders:    { type: Number, default: 1, min: 1, max: 10 },
     maxConcurrentWithdrawalOrders: { type: Number, default: 1, min: 1, max: 10 },
     minAdminTokenPurchase:         { type: Number, default: 50000, min: 1 }, // legacy token-denominated floor
+    minUserTokenPurchaseUsdt:      { type: Number, default: 100, min: 100 },
+    maxUserTokenPurchaseUsdt:      { type: Number, default: 0, min: 0 }, // 0 = unlimited
     minAdminTokenPurchaseUsdt:     { type: Number, default: 100, min: 100 },
     maxAdminTokenPurchaseUsdt:     { type: Number, default: 0, min: 0 }, // 0 = unlimited
   },

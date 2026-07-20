@@ -110,6 +110,8 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
           merchantAdminBuyInr: config.usdtPricing?.merchantAdminBuyInr ?? 1, // schema default: 1
         },
         merchantOrderLimits: {
+          minUserTokenPurchaseUsdt:  config.merchantOrderLimits?.minUserTokenPurchaseUsdt  ?? 100, // schema default: 100
+          maxUserTokenPurchaseUsdt:  config.merchantOrderLimits?.maxUserTokenPurchaseUsdt  ?? 0,   // 0 = unlimited
           minAdminTokenPurchaseUsdt: config.merchantOrderLimits?.minAdminTokenPurchaseUsdt ?? 100, // schema default: 100
           maxAdminTokenPurchaseUsdt: config.merchantOrderLimits?.maxAdminTokenPurchaseUsdt ?? 0,   // 0 = unlimited
         },
@@ -235,15 +237,28 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
         return res.status(400).json({ success: false, message: 'merchantOrderLimits must be an object.' });
       }
       const currentConfig = await SystemConfig.findOne({ key: 'main' }).select('merchantOrderLimits').lean();
-      const minAdminUsdt = merchantOrderLimits.minAdminTokenPurchaseUsdt;
-      const maxAdminUsdt = merchantOrderLimits.maxAdminTokenPurchaseUsdt;
-      const effectiveMinAdminUsdt = minAdminUsdt ?? currentConfig?.merchantOrderLimits?.minAdminTokenPurchaseUsdt ?? 100;
-      const effectiveMaxAdminUsdt = maxAdminUsdt ?? currentConfig?.merchantOrderLimits?.maxAdminTokenPurchaseUsdt ?? 0;
-      if ((minAdminUsdt !== undefined && (typeof minAdminUsdt !== 'number' || !Number.isFinite(minAdminUsdt))) ||
-          (maxAdminUsdt !== undefined && (typeof maxAdminUsdt !== 'number' || !Number.isFinite(maxAdminUsdt))) ||
-          effectiveMinAdminUsdt < 100 || effectiveMaxAdminUsdt < 0 ||
-          (effectiveMaxAdminUsdt !== 0 && effectiveMaxAdminUsdt < effectiveMinAdminUsdt)) {
-        return res.status(400).json({ success: false, message: 'Merchant admin-token USDT limits require min >= 100 and max either 0 (unlimited) or >= min.' });
+      const validateUsdtLimitPair = (label, minKey, maxKey) => {
+        const minUsdt = merchantOrderLimits[minKey];
+        const maxUsdt = merchantOrderLimits[maxKey];
+        const effectiveMinUsdt = minUsdt ?? currentConfig?.merchantOrderLimits?.[minKey] ?? 100;
+        const effectiveMaxUsdt = maxUsdt ?? currentConfig?.merchantOrderLimits?.[maxKey] ?? 0;
+        const invalidProvided =
+          (minUsdt !== undefined && (typeof minUsdt !== 'number' || !Number.isFinite(minUsdt))) ||
+          (maxUsdt !== undefined && (typeof maxUsdt !== 'number' || !Number.isFinite(maxUsdt)));
+        const invalidEffective =
+          effectiveMinUsdt < 100 || effectiveMinUsdt % 10 !== 0 ||
+          effectiveMaxUsdt < 0 || effectiveMaxUsdt % 10 !== 0 ||
+          (effectiveMaxUsdt !== 0 && effectiveMaxUsdt < effectiveMinUsdt);
+        if (invalidProvided || invalidEffective) {
+          return `${label} USDT limits require min >= 100, min/max multiples of 10, and max either 0 (unlimited) or >= min.`;
+        }
+        return null;
+      };
+      const limitError =
+        validateUsdtLimitPair('User token purchase', 'minUserTokenPurchaseUsdt', 'maxUserTokenPurchaseUsdt') ||
+        validateUsdtLimitPair('Merchant admin-token', 'minAdminTokenPurchaseUsdt', 'maxAdminTokenPurchaseUsdt');
+      if (limitError) {
+        return res.status(400).json({ success: false, message: limitError });
       }
     }
     if (riskRules?.maxFundingOrdersPerHour !== undefined &&
@@ -323,6 +338,8 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     if (payoutFeePercent !== undefined) fieldWrites.push(['SystemConfig', 'payoutFeePercent', payoutFeePercent]);
     if (usdtPricing?.userMerchantBuyInr  !== undefined) fieldWrites.push(['SystemConfig', 'usdtPricing.userMerchantBuyInr', usdtPricing.userMerchantBuyInr]);
     if (usdtPricing?.merchantAdminBuyInr !== undefined) fieldWrites.push(['SystemConfig', 'usdtPricing.merchantAdminBuyInr', usdtPricing.merchantAdminBuyInr]);
+    if (merchantOrderLimits?.minUserTokenPurchaseUsdt !== undefined) fieldWrites.push(['SystemConfig', 'merchantOrderLimits.minUserTokenPurchaseUsdt', merchantOrderLimits.minUserTokenPurchaseUsdt]);
+    if (merchantOrderLimits?.maxUserTokenPurchaseUsdt !== undefined) fieldWrites.push(['SystemConfig', 'merchantOrderLimits.maxUserTokenPurchaseUsdt', merchantOrderLimits.maxUserTokenPurchaseUsdt]);
     if (merchantOrderLimits?.minAdminTokenPurchaseUsdt !== undefined) fieldWrites.push(['SystemConfig', 'merchantOrderLimits.minAdminTokenPurchaseUsdt', merchantOrderLimits.minAdminTokenPurchaseUsdt]);
     if (merchantOrderLimits?.maxAdminTokenPurchaseUsdt !== undefined) fieldWrites.push(['SystemConfig', 'merchantOrderLimits.maxAdminTokenPurchaseUsdt', merchantOrderLimits.maxAdminTokenPurchaseUsdt]);
     // Bet funding split (Phase A) — consumed by bet.routes.js via

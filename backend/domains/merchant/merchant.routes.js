@@ -388,7 +388,11 @@ router.post('/admin-token-orders', merchantAuth, async (req, res) => {
         if (!Number.isFinite(usdtRate) || usdtRate < 0.01) {
             return res.status(500).json({ success: false, message: 'Admin USDT buy rate is misconfigured.' });
         }
-        const usdtAmount = Math.round((tokenAmount / usdtRate) * 100) / 100;
+        // Merchants pay USDT in whole multiples of 10. If the configured INR/USDT
+        // rate produces a fractional/non-multiple quote, round UP so the platform
+        // never undercharges the merchant for admin tokens.
+        const exactUsdtCents = Math.ceil((tokenAmount / usdtRate) * 100 - 1e-9);
+        const usdtAmount = Math.ceil(exactUsdtCents / 1000) * 10;
         const minPurchaseUsdt = cfg?.merchantOrderLimits?.minAdminTokenPurchaseUsdt ?? 100;
         const maxPurchaseUsdt = cfg?.merchantOrderLimits?.maxAdminTokenPurchaseUsdt ?? 0;
         if (!Number.isFinite(usdtAmount) || usdtAmount < minPurchaseUsdt || (maxPurchaseUsdt > 0 && usdtAmount > maxPurchaseUsdt)) {
