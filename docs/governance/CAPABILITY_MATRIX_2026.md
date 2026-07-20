@@ -201,3 +201,11 @@ cutover, PITR, read replicas, DNS failover, Redis HA, WAF, secret rotation),
 sessions, geo-routing, OTel-at-trigger, Terraform-on-exit, Helm/policy-as-code
 only-under-k8s). None is an unaccounted gap, and none warranted a
 high-disruption change to a green, production-ready `main`.
+
+## Governance consolidation note (2026-07-19)
+
+To avoid maintaining multiple overlapping governance status files, present-state,
+completed-work, backlog, and future-capability tracking now live in this matrix.
+Do not recreate standalone phase-status, execution-queue, or future-capability
+markdown files unless a separate document is required for an active audit or
+regulatory handoff.

@@ -56,7 +56,9 @@ const systemConfigSchema = new mongoose.Schema({
   merchantOrderLimits: {
     maxConcurrentDepositOrders:    { type: Number, default: 1, min: 1, max: 10 },
     maxConcurrentWithdrawalOrders: { type: Number, default: 1, min: 1, max: 10 },
-    minAdminTokenPurchase:         { type: Number, default: 50000, min: 1 },
+    minAdminTokenPurchase:         { type: Number, default: 50000, min: 1 }, // legacy token-denominated floor
+    minAdminTokenPurchaseUsdt:     { type: Number, default: 100, min: 100 },
+    maxAdminTokenPurchaseUsdt:     { type: Number, default: 0, min: 0 }, // 0 = unlimited
   },
   // ── RISK PLATFORM RULES (BBEPS Phase 010) ─────────────────────────────────
   // Business Policy owns these numbers/toggles; domains/risk/
@@ -84,7 +86,7 @@ const systemConfigSchema = new mongoose.Schema({
   // buy-only USDT flows and never define a USDT sell option.
   usdtPricing: {
     userMerchantBuyInr:  { type: Number, default: 0, min: 0 },
-    merchantAdminBuyInr: { type: Number, default: 1, min: 0 },
+    merchantAdminBuyInr: { type: Number, default: 1, min: 0.01 },
   },
 
   // ── CYCLE TIMING (Phase X X-5, 2026-07-10) ────────────────────────────────

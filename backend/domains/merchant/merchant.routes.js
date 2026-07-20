@@ -380,21 +380,31 @@ router.post('/admin-token-orders', merchantAuth, async (req, res) => {
         if (!merchant || merchant.status !== 'ACTIVE' || merchant.merchantApprovalStatus !== 'APPROVED') {
             return res.status(403).json({ success: false, message: 'Only approved active merchants can buy admin tokens.' });
         }
-        const minPurchase = cfg?.merchantOrderLimits?.minAdminTokenPurchase ?? 50000; // schema default: 50000
-        if (!(tokenAmount >= minPurchase)) {
-            return res.status(400).json({ success: false, message: `Minimum admin token purchase is ${minPurchase} tokens.` });
+        if (!Number.isFinite(tokenAmount) || tokenAmount <= 0) {
+            return res.status(400).json({ success: false, message: 'Token amount must be greater than zero.' });
+        }
+        const configuredUsdtRate = cfg?.usdtPricing?.merchantAdminBuyInr;
+        const usdtRate = configuredUsdtRate ?? 1; // schema default: SystemConfig.usdtPricing.merchantAdminBuyInr = 1
+        if (!(usdtRate > 0)) {
+            return res.status(500).json({ success: false, message: 'Admin USDT buy rate is misconfigured.' });
+        }
+        const usdtAmount = Math.round((tokenAmount / usdtRate) * 100) / 100;
+        const minPurchaseUsdt = cfg?.merchantOrderLimits?.minAdminTokenPurchaseUsdt ?? 100;
+        const maxPurchaseUsdt = cfg?.merchantOrderLimits?.maxAdminTokenPurchaseUsdt ?? 0;
+        if (usdtAmount < minPurchaseUsdt || (maxPurchaseUsdt > 0 && usdtAmount > maxPurchaseUsdt)) {
+            const maxText = maxPurchaseUsdt > 0 ? ` and at most ${maxPurchaseUsdt} USDT` : '';
+            return res.status(400).json({ success: false, message: `Admin token purchase must be at least ${minPurchaseUsdt} USDT${maxText}.` });
         }
         const startOfDay = new Date();
         startOfDay.setHours(0, 0, 0, 0);
         const existingToday = await MerchantAdminTokenOrder.findOne({ merchantId: req.merchantId, requestedAt: { $gte: startOfDay } }).lean();
         if (existingToday) return res.status(429).json({ success: false, message: 'Only one admin token purchase request is allowed per day.' });
-        const usdtRate = cfg?.usdtPricing?.merchantAdminBuyInr ?? 1; // schema default: SystemConfig.usdtPricing.merchantAdminBuyInr = 1
         const order = await MerchantAdminTokenOrder.create({
             orderId: `MAT_${new mongoose.Types.ObjectId().toString()}`,
             merchantId: req.merchantId,
             tokenAmount,
             usdtRate,
-            usdtAmount: Math.round((tokenAmount / usdtRate) * 100) / 100,
+            usdtAmount,
             usdtTxHash,
         });
         res.json({ success: true, order });
