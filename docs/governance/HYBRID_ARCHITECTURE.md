@@ -200,7 +200,7 @@ integration points, not the infrastructure.
 
 The reference roadmap also calls for a **Core Infrastructure Architecture** for
 licensed operators. That future track is **not implemented in the application
-codebase today**, but it is recorded in `FUTURE_CAPABILITIES.md` as an owned-edge
+codebase today**, but it is recorded in `CAPABILITY_MATRIX_2026.md` as an owned-edge
 Layer-4 SNI passthrough and PROXY protocol v2 client-IP preservation plan.
 Delivery belongs to a legally registered software/company infrastructure
 workstream with legal, regulatory, provider-contract, abuse-monitoring, and

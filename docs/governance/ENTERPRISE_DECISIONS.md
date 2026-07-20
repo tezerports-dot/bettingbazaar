@@ -1,7 +1,7 @@
 # Enterprise Decisions — Decision Log
 
 **Purpose:** a running log of architecture decisions that aren't obvious from
-the code alone — the "why," not the "what" (the code + docs/governance/PHASE_STATUS.md cover
+the code alone — the "why," not the "what" (the code + docs/governance/CAPABILITY_MATRIX_2026.md cover
 the "what"). Newest first. This file didn't exist before 2026-07-07; created
 as part of the DepositPolicy migration since decisions made in that session
 need a durable home.
@@ -88,7 +88,7 @@ different fee rates and confuse the winner board.
 
 **Verification correction (recorded so no future doc repeats it):** the
 integration suite added in the 2026-07-09 audit had NEVER passed in CI —
-every run failed on test-code bugs (see docs/governance/EXECUTION_QUEUE.md 2026-07-10).
+every run failed on test-code bugs (see docs/governance/CAPABILITY_MATRIX_2026.md 2026-07-10).
 "51 unit tests green + CI wired" was true; "integration tests run in CI"
 was not, until Phase A step 0 fixed the suite. CI run #10 (commit 6797c81)
 is the first green run in the repository's history.
@@ -301,7 +301,7 @@ idempotently. Why: one writer instead of five sprinkled recorders, no risk
 added to live money flows, self-healing after failures, and free historical
 backfill. Trade-off: entries lag up to ~60s and the anti-join scans grow
 with history — both acceptable now, checkpoint optimization flagged in
-docs/governance/EXECUTION_QUEUE.md.
+docs/governance/CAPABILITY_MATRIX_2026.md.
 
 **Historical-rate residuals:** pre-1:1 orders (fiat ≠ tokens) balance via a
 PLATFORM_REVENUE residual leg — the old buy/sell spread lands in revenue,
@@ -348,7 +348,7 @@ spread gone and `DepositPolicy.merchantCommissionPercent` removed (entry
 below), merchants currently earn nothing per order. This is the accepted
 interim state per the established dependency chain: the Merchant
 Performance Bonus engine (cycle-completion-triggered, platform-funded) is
-the next major Merchant Platform work item — see docs/governance/EXECUTION_QUEUE.md.
+the next major Merchant Platform work item — see docs/governance/CAPABILITY_MATRIX_2026.md.
 
 **Also deleted:** `backend/scripts/migrate-wallet-system.js` — marked
 APPLIED since before this migration; §13 dead-artifact policy says applied
@@ -367,7 +367,7 @@ from the schema, service, admin route, `paymentOrder.model.js`'s
 **only** the deposit/reserve wallet split and reserve usage rules for a
 single incoming deposit.
 
-The replacement concept — not yet built, tracked in docs/governance/EXECUTION_QUEUE.md as
+The replacement concept — not yet built, tracked in docs/governance/CAPABILITY_MATRIX_2026.md as
 the Merchant Performance Bonus engine — is:
 - Triggered by a **completed buy+sell cycle** (a merchant fulfilling both
   sides of a cycle), not by deposit approval.
@@ -400,7 +400,7 @@ behavior.
 
 **Safe to remove outright (not deprecate):** no `DepositPolicy` document has
 ever been created in the live database (bootstrap fallback state, unchanged
-since 2026-07-07 — see docs/governance/PHASE_STATUS.md). There is no data migration, no
+since 2026-07-07 — see docs/governance/CAPABILITY_MATRIX_2026.md). There is no data migration, no
 in-flight order referencing the removed snapshot fields, and no consumer
 code to update elsewhere.
 
@@ -439,7 +439,7 @@ isolated features:
 - **Sportsbook Platform** / **Casino Platform** — game/bet-type-specific logic.
 - **Communication Platform** — notifications across channels/providers.
 
-**Why:** this isn't a new direction — FUTURE_CAPABILITIES.md already used
+**Why:** this isn't a new direction — CAPABILITY_MATRIX_2026.md already used
 "Platform" language for several of these. What changed 2026-07-07 is treating
 it as the organizing principle for where NEW code goes, starting now, rather
 than a future aspiration. Concretely: `DepositPolicy` went into a fresh
@@ -493,7 +493,7 @@ mid-session once the coupling above was identified as the real requirement.
 **Decision:** the new model/service/routes are named `DepositPolicy`, not
 "Deposit Allocation Policy" or "Financial Allocation Policy."
 
-**Why:** FUTURE_CAPABILITIES.md's Business Policy Platform list already
+**Why:** CAPABILITY_MATRIX_2026.md's Business Policy Platform list already
 anticipates siblings — Withdrawal, Settlement, Risk, Merchant policies — one
 policy per money-moving **event type**, not one policy per field group.
 "Allocation" describes only the wallet-split fields and undersells the two
@@ -540,7 +540,7 @@ accident.
 `commissionFundingSource` fields described here were removed, not just left
 unpaid; the deferred payout-engine work continues under the renamed
 Merchant Performance Bonus concept — see entry at top of file and
-docs/governance/EXECUTION_QUEUE.md.]**
+docs/governance/CAPABILITY_MATRIX_2026.md.]**
 
 **Decision:** this migration models, validates, versions, and exposes
 `merchantCommissionPercent`/`commissionFundingSource` for admin editing — but
@@ -554,7 +554,7 @@ above). Building a real payout mechanism means new `Transaction` types,
 ledger entries routed through `walletAuthority.service.js`, and a timing
 decision (per-order vs. batched settlement) — a financial-flow design
 decision in its own right, not something to bundle silently into a
-policy-modeling task. Flagged in docs/governance/PHASE_STATUS.md as an open next-step choice
+policy-modeling task. Flagged in docs/governance/CAPABILITY_MATRIX_2026.md as an open next-step choice
 rather than decided unilaterally.
 
 ---

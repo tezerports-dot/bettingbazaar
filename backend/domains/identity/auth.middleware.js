@@ -21,7 +21,7 @@
  * @requires ../models
  */
 
-import { User } from '../../models/index.js';
+import { SystemConfig, User } from '../../models/index.js';
 import { setContextUser } from '../../middleware/requestContext.js'; // X-6
 // AQ-2 (2026-07-13): every sign/verify goes through the single PASETO authority —
 // Ed25519 signature verification, iss/aud stamped on sign. No raw token-library calls remain here.
@@ -159,13 +159,19 @@ const authenticate = async (req, res, next) => {
 };
 
 
-export function requireApprovedKyc(req, res, next) {
-  if (req.user?.kycStatus === 'APPROVED') return next();
-  return res.status(403).json({
-    success: false,
-    message: 'Please complete KYC verification to use this action.',
-    code: 'KYC_REQUIRED',
-  });
+export async function requireApprovedKyc(req, res, next) {
+  try {
+    const cfg = await SystemConfig.findOne({ key: 'main' }).select('kycRequired').lean();
+    if (cfg?.kycRequired === false || req.user?.kycStatus === 'APPROVED') return next();
+    return res.status(403).json({
+      success: false,
+      message: 'Please complete KYC verification to use this action.',
+      code: 'KYC_REQUIRED',
+    });
+  } catch (error) {
+    console.error('KYC config check error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to verify KYC settings.' });
+  }
 }
 
 /**

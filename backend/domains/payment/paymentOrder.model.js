@@ -272,7 +272,7 @@ paymentOrderSchema.statics.scrubExpiredProofs = async function(now = new Date())
     ),
     this.updateMany(
       {
-        proofScreenshot: { $exists: true, $ne: null },
+        proofScreenshot: { $exists: true, $ne: null, $type: 'string' },
         proofExpiresAt: { $exists: false },
         createdAt: { $lte: fallbackCutoff },
       },

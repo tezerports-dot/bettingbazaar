@@ -10,7 +10,7 @@
 // IS a version; exactly one ACTIVE at a time; rollback creates a new version
 // copying old values forward. Divergence from DepositPolicy (deliberate,
 // scope-boxed): no scheduling / approval-gating in v1 — every new version
-// applies immediately. Flagged in docs/governance/EXECUTION_QUEUE.md; add those lifecycle
+// applies immediately. Flagged in docs/governance/CAPABILITY_MATRIX_2026.md; add those lifecycle
 // states by mirroring depositPolicy.service.js when needed.
 //
 // Sole writer: merchantBonusPolicy.service.js (docs/governance/04-GOVERNANCE.md §1/§2).

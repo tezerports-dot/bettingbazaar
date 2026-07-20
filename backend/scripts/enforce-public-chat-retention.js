@@ -31,7 +31,7 @@ try {
         $set: {
           expiresAt: {
             $min: [
-              { $ifNull: ['$expiresAt', now] },
+              { $ifNull: ['$expiresAt', new Date('9999-12-31T23:59:59.999Z')] },
               { $dateAdd: { startDate: { $max: ['$createdAt', retentionFloor] }, unit: 'millisecond', amount: PUBLIC_CHAT_RETENTION_MS } },
             ],
           },

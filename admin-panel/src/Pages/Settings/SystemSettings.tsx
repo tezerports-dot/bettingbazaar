@@ -29,6 +29,7 @@ export const SystemSettings: React.FC = () => {
     winningsFeePercent: 1,     // schema default: 1
     payoutFeePercent: 0,       // schema default: 0
     usdtPricing: { userMerchantBuyInr: 0, merchantAdminBuyInr: 1 },
+    merchantOrderLimits: { minUserTokenPurchaseUsdt: 100, maxUserTokenPurchaseUsdt: 0, minAdminTokenPurchaseUsdt: 100, maxAdminTokenPurchaseUsdt: 0 },
     cycleDurationMinutes: 30,  // schema default: 30 (Phase X X-5)
     // Business Config Audit (2026-07-11) — formerly-hardcoded business values
     payoutMultiplier: 2,       // schema default: 2 (2x)
@@ -86,6 +87,12 @@ export const SystemSettings: React.FC = () => {
           usdtPricing: {
             userMerchantBuyInr:  response.data.usdtPricing?.userMerchantBuyInr  ?? 0, // schema default: 0
             merchantAdminBuyInr: response.data.usdtPricing?.merchantAdminBuyInr ?? 1, // schema default: 1
+          },
+          merchantOrderLimits: {
+            minUserTokenPurchaseUsdt:  response.data.merchantOrderLimits?.minUserTokenPurchaseUsdt  ?? 100,
+            maxUserTokenPurchaseUsdt:  response.data.merchantOrderLimits?.maxUserTokenPurchaseUsdt  ?? 0,
+            minAdminTokenPurchaseUsdt: response.data.merchantOrderLimits?.minAdminTokenPurchaseUsdt ?? 100,
+            maxAdminTokenPurchaseUsdt: response.data.merchantOrderLimits?.maxAdminTokenPurchaseUsdt ?? 0,
           },
           cycleDurationMinutes: response.data.cycleDurationMinutes ?? 30, // schema default: 30
           payoutMultiplier:   response.data.payoutMultiplier   ?? 2,  // schema default: 2
@@ -448,15 +455,59 @@ export const SystemSettings: React.FC = () => {
           <div className="pt-4 border-t border-dark-700">
             <label className="label">USDT Buy Price: Merchant ↔ Admin (INR)</label>
             <input
-              type="number" min={0} step={0.01}
+              type="number" min={0.01} step={0.01}
               value={formData.usdtPricing.merchantAdminBuyInr}
-              onChange={(e) => setFormData({ ...formData, usdtPricing: { ...formData.usdtPricing, merchantAdminBuyInr: Math.max(0.01, Number(e.target.value) || 1) } })}
+              onChange={(e) => setFormData({ ...formData, usdtPricing: { ...formData.usdtPricing, merchantAdminBuyInr: Math.max(0.01, Number(e.target.value)) } })}
               className="input"
             />
             <p className="text-xs text-gray-500 mt-1">
               Admin-owned INR price for one USDT when merchants buy admin tokens with USDT.
               This is also buy-only; merchant top-ups/security deposits remain cash flow, not platform revenue.
             </p>
+          </div>
+
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-dark-700">
+            <div>
+              <label className="label">User Token Buy Min Order (USDT)</label>
+              <input
+                type="number" min={100} step={10}
+                value={formData.merchantOrderLimits.minUserTokenPurchaseUsdt}
+                onChange={(e) => setFormData({ ...formData, merchantOrderLimits: { ...formData.merchantOrderLimits, minUserTokenPurchaseUsdt: Math.max(100, Math.ceil((Number(e.target.value) || 100) / 10) * 10) } })}
+                className="input"
+              />
+              <p className="text-xs text-gray-500 mt-1">Minimum buy-only user USDT deposit to receive BB tokens from a merchant. Multiple of 10 USDT.</p>
+            </div>
+            <div>
+              <label className="label">User Token Buy Max Order (USDT)</label>
+              <input
+                type="number" min={0} step={10}
+                value={formData.merchantOrderLimits.maxUserTokenPurchaseUsdt}
+                onChange={(e) => setFormData({ ...formData, merchantOrderLimits: { ...formData.merchantOrderLimits, maxUserTokenPurchaseUsdt: Math.max(0, Math.ceil((Number(e.target.value) || 0) / 10) * 10) } })}
+                className="input"
+              />
+              <p className="text-xs text-gray-500 mt-1">Optional maximum buy-only user USDT deposit. Use 0 for unlimited; users cannot sell tokens for USDT.</p>
+            </div>
+            <div>
+              <label className="label">Merchant Admin Token Min Order (USDT)</label>
+              <input
+                type="number" min={100} step={10}
+                value={formData.merchantOrderLimits.minAdminTokenPurchaseUsdt}
+                onChange={(e) => setFormData({ ...formData, merchantOrderLimits: { ...formData.merchantOrderLimits, minAdminTokenPurchaseUsdt: Math.max(100, Math.ceil((Number(e.target.value) || 100) / 10) * 10) } })}
+                className="input"
+              />
+              <p className="text-xs text-gray-500 mt-1">Minimum merchant admin-token purchase value. Multiple of 10 USDT and cannot be below 100 USDT.</p>
+            </div>
+            <div>
+              <label className="label">Merchant Admin Token Max Order (USDT)</label>
+              <input
+                type="number" min={0} step={10}
+                value={formData.merchantOrderLimits.maxAdminTokenPurchaseUsdt}
+                onChange={(e) => setFormData({ ...formData, merchantOrderLimits: { ...formData.merchantOrderLimits, maxAdminTokenPurchaseUsdt: Math.max(0, Math.ceil((Number(e.target.value) || 0) / 10) * 10) } })}
+                className="input"
+              />
+              <p className="text-xs text-gray-500 mt-1">Optional maximum merchant admin-token purchase value. Use 0 for unlimited; merchants cannot sell tokens for USDT.</p>
+            </div>
           </div>
 
           <div className="pt-4 border-t border-dark-700">

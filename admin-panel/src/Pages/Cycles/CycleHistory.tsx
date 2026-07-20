@@ -250,6 +250,10 @@ export const CycleHistory: React.FC = () => {
                         <span className="text-green-400 font-medium">{formatters.currency(loserBets)}</span>
                       </div>
                       <div className="flex justify-between">
+                        <span className="text-gray-400">Winner Side Stake ({selectedCycle.winner}):</span>
+                        <span className="text-green-400 font-medium">{formatters.currency(winnerBets)}</span>
+                      </div>
+                      <div className="flex justify-between">
                         <span className="text-gray-400">Net Paid Out to Winners ({selectedCycle.winner}):</span>
                         <span className="text-red-400 font-medium">− {formatters.currency(selectedCycle.totalPaidOut || 0)}</span>
                       </div>
