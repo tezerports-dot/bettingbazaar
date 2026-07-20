@@ -231,11 +231,18 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
       }
     }
     if (merchantOrderLimits !== undefined) {
+      if (!merchantOrderLimits || typeof merchantOrderLimits !== 'object' || Array.isArray(merchantOrderLimits)) {
+        return res.status(400).json({ success: false, message: 'merchantOrderLimits must be an object.' });
+      }
+      const currentConfig = await SystemConfig.findOne({ key: 'main' }).select('merchantOrderLimits').lean();
       const minAdminUsdt = merchantOrderLimits.minAdminTokenPurchaseUsdt;
       const maxAdminUsdt = merchantOrderLimits.maxAdminTokenPurchaseUsdt;
-      if ((minAdminUsdt !== undefined && (typeof minAdminUsdt !== 'number' || !Number.isFinite(minAdminUsdt) || minAdminUsdt < 100)) ||
-          (maxAdminUsdt !== undefined && (typeof maxAdminUsdt !== 'number' || !Number.isFinite(maxAdminUsdt) || maxAdminUsdt < 0)) ||
-          (minAdminUsdt !== undefined && maxAdminUsdt !== undefined && maxAdminUsdt !== 0 && maxAdminUsdt < minAdminUsdt)) {
+      const effectiveMinAdminUsdt = minAdminUsdt ?? currentConfig?.merchantOrderLimits?.minAdminTokenPurchaseUsdt ?? 100;
+      const effectiveMaxAdminUsdt = maxAdminUsdt ?? currentConfig?.merchantOrderLimits?.maxAdminTokenPurchaseUsdt ?? 0;
+      if ((minAdminUsdt !== undefined && (typeof minAdminUsdt !== 'number' || !Number.isFinite(minAdminUsdt))) ||
+          (maxAdminUsdt !== undefined && (typeof maxAdminUsdt !== 'number' || !Number.isFinite(maxAdminUsdt))) ||
+          effectiveMinAdminUsdt < 100 || effectiveMaxAdminUsdt < 0 ||
+          (effectiveMaxAdminUsdt !== 0 && effectiveMaxAdminUsdt < effectiveMinAdminUsdt)) {
         return res.status(400).json({ success: false, message: 'Merchant admin-token USDT limits require min >= 100 and max either 0 (unlimited) or >= min.' });
       }
     }

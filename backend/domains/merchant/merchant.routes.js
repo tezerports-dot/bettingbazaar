@@ -384,14 +384,14 @@ router.post('/admin-token-orders', merchantAuth, async (req, res) => {
             return res.status(400).json({ success: false, message: 'Token amount must be greater than zero.' });
         }
         const configuredUsdtRate = cfg?.usdtPricing?.merchantAdminBuyInr;
-        const usdtRate = configuredUsdtRate ?? 1; // schema default: SystemConfig.usdtPricing.merchantAdminBuyInr = 1
-        if (!(usdtRate > 0)) {
+        const usdtRate = configuredUsdtRate === undefined ? 1 : configuredUsdtRate; // schema default: SystemConfig.usdtPricing.merchantAdminBuyInr = 1
+        if (!Number.isFinite(usdtRate) || usdtRate < 0.01) {
             return res.status(500).json({ success: false, message: 'Admin USDT buy rate is misconfigured.' });
         }
         const usdtAmount = Math.round((tokenAmount / usdtRate) * 100) / 100;
         const minPurchaseUsdt = cfg?.merchantOrderLimits?.minAdminTokenPurchaseUsdt ?? 100;
         const maxPurchaseUsdt = cfg?.merchantOrderLimits?.maxAdminTokenPurchaseUsdt ?? 0;
-        if (usdtAmount < minPurchaseUsdt || (maxPurchaseUsdt > 0 && usdtAmount > maxPurchaseUsdt)) {
+        if (!Number.isFinite(usdtAmount) || usdtAmount < minPurchaseUsdt || (maxPurchaseUsdt > 0 && usdtAmount > maxPurchaseUsdt)) {
             const maxText = maxPurchaseUsdt > 0 ? ` and at most ${maxPurchaseUsdt} USDT` : '';
             return res.status(400).json({ success: false, message: `Admin token purchase must be at least ${minPurchaseUsdt} USDT${maxText}.` });
         }

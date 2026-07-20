@@ -453,7 +453,7 @@ export const SystemSettings: React.FC = () => {
           <div className="pt-4 border-t border-dark-700">
             <label className="label">USDT Buy Price: Merchant ↔ Admin (INR)</label>
             <input
-              type="number" min={0} step={0.01}
+              type="number" min={0.01} step={0.01}
               value={formData.usdtPricing.merchantAdminBuyInr}
               onChange={(e) => setFormData({ ...formData, usdtPricing: { ...formData.usdtPricing, merchantAdminBuyInr: Math.max(0.01, Number(e.target.value)) } })}
               className="input"
