@@ -23,7 +23,8 @@
     "migrate:aadhaar-hashes": "node backend/scripts/migrate-aadhaar-hashes.js",
     "pg:migrate:partition": "node backend/postgres/migratePartitions.js",
     "verify:capabilities": "node scripts/verify-capabilities.mjs",
-    "migrate:public-chat-retention": "node backend/scripts/enforce-public-chat-retention.js"
+    "migrate:public-chat-retention": "node backend/scripts/enforce-public-chat-retention.js",
+    "handoff:frontends": "node scripts/create-frontend-handoffs.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.111.0",
