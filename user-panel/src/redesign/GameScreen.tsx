@@ -38,8 +38,20 @@ const bead = (sd: Side) => ({ ch: sd === 'DELHI' ? 'D' : 'B', bg: sd === 'DELHI'
 const GameScreen: React.FC = () => {
   const {
     currentCycle, gameState, cycleType, setCycleType, placeBet, placePhantomBet,
-    userBets, isGhostMode, isAuthenticated, sysConfig, pastCycles, subscribeToVolume, getCurrentVolume,
+    userBets, isGhostMode, toggleGhostMode, user, isAuthenticated, sysConfig, pastCycles, subscribeToVolume, getCurrentVolume,
   } = useGame();
+
+  // Phantom-manager access (ghost mode). Only users granted phantomAccess for the
+  // active cycle type see the toggle; enabling it routes bets through
+  // placePhantomBet (equalizer bets that balance the display pool, never paid out).
+  const canUseGhostMode = (() => {
+    const access = (user as any)?.phantomAccess as string | undefined;
+    if (!access || access === 'NONE') return false;
+    if (access === 'BOTH') return true;
+    if (access === '30_MIN') return cycleType === CycleType.THIRTY_MIN;
+    if (access === 'FULL_DAY') return cycleType === CycleType.FULL_DAY;
+    return false;
+  })();
   const { openAuth } = useShell();
   const { desktop, mobile, vh } = useViewport();
   const { addToast } = useToast();
@@ -324,7 +336,14 @@ const GameScreen: React.FC = () => {
 
         {/* Bet controls */}
         <div style={{ flex: 'none', padding: '6px 0 2px' }}>
-          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'flex-end', gap: mobile ? 11 : 18, padding: '8px 6px 4px' }}>
+          {canUseGhostMode && (
+            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 4 }}>
+              <button onClick={() => { toggleGhostMode(); setSelectedChip(null); setManualInput(''); }} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 10, fontWeight: 800, letterSpacing: '.04em', padding: '5px 14px', borderRadius: 999, cursor: 'pointer', border: `1px solid ${isGhostMode ? '#a78bfa' : 'var(--line2)'}`, background: isGhostMode ? 'rgba(139,111,224,.22)' : 'var(--surface2)', color: isGhostMode ? '#c4b5fd' : 'var(--text3)', boxShadow: isGhostMode ? '0 0 16px -4px rgba(139,111,224,.6)' : 'none' }}>
+                <span>👻 GHOST MODE</span><span>{isGhostMode ? 'ON' : 'OFF'}</span>
+              </button>
+            </div>
+          )}
+          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'flex-end', gap: mobile ? 11 : 18, padding: '8px 6px 4px', background: isGhostMode ? 'rgba(139,111,224,.07)' : 'transparent', border: isGhostMode ? '1px solid rgba(139,111,224,.28)' : '1px solid transparent', borderRadius: 14, transition: 'background .2s' }}>
             {chips.map(chip => {
               const size = mobile ? 52 : desktop ? 60 : 56;
               return (
@@ -349,6 +368,9 @@ const GameScreen: React.FC = () => {
             <span style={{ position: 'absolute', right: 20, top: '50%', transform: 'translateY(-50%)', color: 'var(--gold-ink)', fontWeight: 800, fontSize: 12, pointerEvents: 'none' }}>₹</span>
             {(myBetDelhi > 0 || myBetBombay > 0) && !isResult && (
               <div style={{ textAlign: 'center', fontSize: 9, fontWeight: 800, letterSpacing: '.06em', color: 'var(--gold-ink)', marginTop: 8 }}>🔒 One side per cycle — locked to {myBetDelhi > 0 ? 'DELHI' : 'BOMBAY'}</div>
+            )}
+            {isGhostMode && (
+              <div style={{ textAlign: 'center', fontSize: 9, fontWeight: 800, letterSpacing: '.06em', color: '#c4b5fd', marginTop: 8 }}>👻 GHOST MODE ACTIVE · phantom bets balance the pool and are never paid out</div>
             )}
           </div>
         </div>
