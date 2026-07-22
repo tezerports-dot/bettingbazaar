@@ -63,7 +63,7 @@ import { seedGameRegistry } from './domains/gameRegistry/gameRegistry.seed.js';
 import { httpMetrics, metricsHandler } from './services/metrics.service.js';
 // Plan items 19/21/28/24/4/51 (2026-07-13): central security + network config,
 // OWASP filter, service registry, storage abstraction.
-import { HELMET_OPTIONS, CORS_SHAPE, RATE_LIMIT_TIERS } from './config/security.config.js';
+import { HELMET_OPTIONS, CORS_SHAPE, RATE_LIMIT_TIERS, isPhantomBetPlacement } from './config/security.config.js';
 import { network, canonicalRedirect } from './config/network.config.js';
 import {
   attachProxyProtocolRequestMetadata,
@@ -210,8 +210,15 @@ app.get('/metrics', (req, res) => {
   }
   return metricsHandler(req, res);
 });
+// Phantom managers fire many equalizer (ghost) bets in quick succession to
+// balance the display pool, so their placements must NOT be throttled. Exempt
+// POST /api/bet/phantom from the global backstop: the route is already gated
+// (authenticate + phantomAccess → 403 for everyone else) and loadShed still
+// bounds total in-flight work, so this removes no real DoS protection.
+// (The isPhantomBetPlacement predicate lives in config/security.config.js.)
 app.use('/api/', rateLimit({
   ...RATE_LIMIT_TIERS.global, standardHeaders: true, legacyHeaders: false,
+  skip: isPhantomBetPlacement,
   message: { success: false, message: 'Too many requests. Please try again later.' }
 }));
 // Item 24: OWASP-pattern request filter — flag-gated (FLAGS.WAF_FILTER,
