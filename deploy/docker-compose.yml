@@ -15,11 +15,17 @@ services:
     environment:
       MONGODB_URI: mongodb://mongo:27017/bettingbazaar?replicaSet=rs0&directConnection=true
       REDIS_URL: redis://redis:6379
+      # Hybrid money datastore (required in production — validateEnv gates on it).
+      DATABASE_URL: postgresql://bb:bb@postgres:5432/bettingbazaar
+      # Local plaintext Postgres → no TLS. NEVER use PG_SSL=false against a remote
+      # money DB; pin the provider CA via PG_CA_CERT there (boot refuses no-verify).
+      PG_SSL: "false"
       PORT: "8080"
     env_file: [".env"]
     depends_on:
       mongo-init: { condition: service_completed_successfully }
       redis: { condition: service_started }
+      postgres: { condition: service_healthy }
     restart: unless-stopped
 
   mongo:
@@ -47,6 +53,24 @@ services:
     volumes: ["redis-data:/data"]
     restart: unless-stopped
 
+  # PostgreSQL 18 — the append-only BIGINT-paise money ledger (matches the CI
+  # service and the version the money cutover provisions). The schema is applied
+  # idempotently by the app at boot (pgClient.applySchema).
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: bb
+      POSTGRES_PASSWORD: bb
+      POSTGRES_DB: bettingbazaar
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bb -d bettingbazaar"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
 volumes:
   mongo-data:
   redis-data:
+  postgres-data:

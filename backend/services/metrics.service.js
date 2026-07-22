@@ -85,20 +85,37 @@ export const pgReconcileErrors = new client.Counter({
   help: 'Postgres reconciliation run failures',
   registers: [registry],
 });
+// The cutover-readiness gate: consecutive clean reconciliation passes. Any drift
+// or crashed run resets it to 0. Flipping money authority to Postgres
+// (DATA_ROLLBACK_PLAN.md) requires this to stay high over a sustained window —
+// drift DETECTION alone is not proof; sustained agreement is.
+export const pgReconcileConsecutiveClean = new client.Gauge({
+  name: 'bb_pg_reconcile_consecutive_clean',
+  help: 'Consecutive clean hybrid-DB reconciliation passes (0 = last run drifted or failed)',
+  registers: [registry],
+});
 
-// Connection-pool monitoring (2026 DB hygiene). A Gauge with an async collect()
+// Pool-stats provider — registered by pgClient via setPoolStatsProvider() when
+// Postgres is in use. Inversion of control keeps this low-level metrics module
+// free of any dependency on the higher-level pgClient (dependency-cruiser
+// no-circular: metrics must not import pgClient; pgClient depends on metrics).
+let poolStatsProvider = null;
+/** pgClient registers its getPoolStats() here so /metrics can sample the pool
+ *  without metrics.service importing pgClient (which would form an import cycle). */
+export function setPoolStatsProvider(fn) { poolStatsProvider = typeof fn === 'function' ? fn : null; }
+
+// Connection-pool monitoring (2026 DB hygiene). A Gauge with a collect() that
 // samples the live pool on each scrape — no interval, no state. `waiting > 0`
 // sustained = pool exhaustion (raise PG_POOL_SIZE or scale the DB). Dormant
-// (emits nothing) until Postgres is configured and the pool has opened.
+// (emits nothing) until pgClient registers a provider and the pool has opened.
 export const pgPoolConnections = new client.Gauge({
   name: 'bb_pg_pool_connections',
   help: 'Postgres connection pool state by bucket (total|idle|waiting)',
   labelNames: ['state'],
   registers: [registry],
-  async collect() {
+  collect() {
     try {
-      const { getPoolStats } = await import('../postgres/pgClient.js');
-      const s = getPoolStats();
+      const s = poolStatsProvider ? poolStatsProvider() : null;
       if (!s) return;
       this.set({ state: 'total' }, s.total);
       this.set({ state: 'idle' }, s.idle);

@@ -3,10 +3,20 @@
 import crypto   from 'crypto';
 import mongoose from 'mongoose';
 
-const SECRET=process.env.ORDER_HMAC_SECRET||process.env.JWT_SECRET;
+// New orders (and the model hook) sign with the CURRENT secret; verification
+// ALSO accepts retained rotation secrets (ORDER_HMAC_PREVIOUS_SECRETS, comma-
+// separated) so rotating ORDER_HMAC_SECRET never 403s in-flight orders signed
+// under the old key. Mirrors the PASETO previous-public-keys and Aadhaar
+// previous-secrets overlap, so every signing secret is now rotatable with zero
+// user impact. Secrets are read at call time (like aadhaarHash.util.js).
+const currentOrderSecret=()=>process.env.ORDER_HMAC_SECRET||process.env.JWT_SECRET;
+const orderVerifySecrets=()=>[currentOrderSecret(),...(process.env.ORDER_HMAC_PREVIOUS_SECRETS||'').split(',').map(s=>s.trim()).filter(Boolean)].filter(Boolean);
+const orderHmacWith=(secret,orderId)=>crypto.createHmac('sha256',secret).update(`order:${orderId}:v1`).digest('hex');
 
-export function deriveOrderHmac(orderId){return crypto.createHmac('sha256',SECRET).update(`order:${orderId}:v1`).digest('hex');}
-export function verifyOrderHmac(orderId,stored){if(!stored)return false;const e=Buffer.from(deriveOrderHmac(orderId)),p=Buffer.from(stored);return e.length===p.length&&crypto.timingSafeEqual(e,p);}
+export function deriveOrderHmac(orderId){return orderHmacWith(currentOrderSecret(),orderId);}
+// Timing-safe match against the current OR any retained rotation secret; every
+// candidate is evaluated (no early return) so timing never reveals which matched.
+export function verifyOrderHmac(orderId,stored){if(!stored)return false;const p=Buffer.from(String(stored));let ok=false;for(const s of orderVerifySecrets()){const e=Buffer.from(orderHmacWith(s,orderId));if(e.length===p.length&&crypto.timingSafeEqual(e,p))ok=true;}return ok;}
 
 export async function setOrderHmacHook(next){if(this.isNew||!this.orderHmac)this.orderHmac=deriveOrderHmac(this.orderId);next();}
 

@@ -1,7 +1,7 @@
 # HAProxy Core Infrastructure Architecture Template
 
 This folder contains a safe starting template for the future licensed-operator
-Core Infrastructure Architecture track recorded in `CAPABILITY_MATRIX_2026.md`.
+Core Infrastructure Architecture track recorded in `docs/governance/04-GOVERNANCE.md` §19.
 It is deployment infrastructure, not application-domain code.
 
 ## What the template does

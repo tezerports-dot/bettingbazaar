@@ -6,7 +6,7 @@
 // NOT govern merchant incentive pay. Deposit creation and a completed
 // buy+sell cycle are different trigger events — the merchant bonus is earned
 // on cycle completion, not on deposit approval, so it cannot live on a
-// deposit-triggered policy. See docs/governance/ENTERPRISE_DECISIONS.md 2026-07-08 for the
+// deposit-triggered policy. See docs/governance/04-GOVERNANCE.md 2026-07-08 for the
 // correction and "Merchant Performance Bonus" as the platform-funded,
 // cycle-completion-triggered mechanism that replaces the fields formerly
 // modeled here (`merchantCommissionPercent`, `commissionFundingSource`).

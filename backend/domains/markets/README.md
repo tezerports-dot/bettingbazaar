@@ -4,7 +4,7 @@ The flagship product: the proprietary two-sided cycle market
 (DELHI/BOMBAY). Consolidated 2026-07-09 from the former domains/game/
 (engine, cycle generator, cycle model) and domains/betting/ (bet model,
 placement routes) — one product, one platform, per the Product Platforms
-tier of the accepted four-tier architecture (docs/governance/ENTERPRISE_DECISIONS.md).
+tier of the accepted four-tier architecture (docs/governance/04-GOVERNANCE.md).
 
 | File | Role |
 |---|---|

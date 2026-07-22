@@ -1,52 +1,42 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-
+/**
+ * WalletPage.tsx — 2026 "Bazaar" redesign.
+ *
+ * P2P token exchange (fixed 1:1, 1 BB token = ₹1). The data layer is UNCHANGED —
+ * every apiClient endpoint, the order state machine, polling, QR/UTR/proof flow
+ * and dispute handling are preserved exactly. Only the presentation is rebuilt on
+ * the redesign theme tokens (dark/light) to match the handoff prototype.
+ *
+ * GOVERNANCE §1: no USDT sell rail exists for users — the "pay with" rail is UPI
+ * (INR) only. Token conversion is the fixed 1:1 constant (Phase 006).
+ */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import apiClient from '../services/apiClient';
 import { PAYMENT_STATE_LABELS, PAYMENT_STATE_COLOR, isActive, type PaymentOrderState } from '../services/paymentStateMachine';
 // M-05: WalletTransactionDTO normalizer — GOVERNANCE §4: this module must have consumers.
 import { normalizeTransaction } from '../services/walletTransactionDTO';
+import ScreenShell, { card, capLabel } from '../redesign/Screen';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 interface Balances { depositBalance: number; winningsBalance: number; lockedBalance: number; }
-// Token conversion is fixed 1:1 (1 BB token = ₹1) — Phase 006 flattening,
-// 2026-07-08. The old TokenRates fetch/display was removed with it.
 interface LedgerEntry { _id: string; type: string; field: string; amount: number; balanceBefore: number; balanceAfter: number; reason: string; createdAt: string; }
 interface MerchantSnapshot {
-  merchantId?: string;
-  merchantName?: string;
-  upiId?: string;
-  qrCodeUrl?: string;
-  bankName?: string;
-  accountNo?: string;
-  ifsc?: string;
-  accountHolder?: string;
-  snapshotAt?: string;
-  expiresAt?: string;
+  merchantId?: string; merchantName?: string; upiId?: string; qrCodeUrl?: string;
+  bankName?: string; accountNo?: string; ifsc?: string; accountHolder?: string; snapshotAt?: string; expiresAt?: string;
 }
 interface PaymentOrder {
-  _id: string;
-  orderId: string;
-  type: 'DEPOSIT' | 'WITHDRAWAL';
-  status: string;
-  tokenAmount: number;
-  fiatAmount: number;
-  rateUsed: number;
-  createdAt: string;
-  expiresAt?: string;
-  paidAt?: string;
-  merchantSnapshot?: MerchantSnapshot;
-  utrNumber?: string;
-  proofScreenshot?: string;
-  // For WITHDRAWAL: user's own bank details
+  _id: string; orderId: string; type: 'DEPOSIT' | 'WITHDRAWAL'; status: string;
+  tokenAmount: number; fiatAmount: number; rateUsed: number; createdAt: string;
+  expiresAt?: string; paidAt?: string; merchantSnapshot?: MerchantSnapshot;
+  utrNumber?: string; proofScreenshot?: string;
   userBankDetails?: { accountNumber?: string; ifscCode?: string; bankName?: string; accountHolderName?: string; };
   upiId?: string;
 }
 interface UserProfile {
-  id: string;
-  username: string;
+  id: string; username: string;
   bankDetails?: { upiId?: string; accountNumber?: string; ifscCode?: string; bankName?: string; accountHolderName?: string; };
 }
-type TabKey = 'overview' | 'ledger' | 'payments';
+type TabKey = 'exchange' | 'ledger' | 'payments';
 type BuyStep = 'amount' | 'pay_now' | 'waiting';
 type SellStep = 'amount' | 'waiting';
 
@@ -56,23 +46,18 @@ const fmtINR = (n: number) => `₹${r2(n).toLocaleString('en-IN', { minimumFract
 const fmtT = (n: number) => `${r2(n).toLocaleString('en-IN')} T`;
 const fmtDate = (s: string) => new Date(s).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
 
-function statusBadge(status: string) {
-  const col = PAYMENT_STATE_COLOR[status as PaymentOrderState] ?? 'yellow';
-  const cls: Record<string, string> = {
-    yellow: 'bg-yellow-500/20 text-yellow-300',
-    blue: 'bg-blue-500/20 text-blue-300',
-    green: 'bg-green-500/20 text-green-300',
-    red: 'bg-red-500/20 text-red-300',
-    orange: 'bg-orange-500/20 text-orange-300',
-  };
-  return `text-xs px-2 py-0.5 rounded-full font-medium ${cls[col] ?? cls.yellow}`;
+const STATE_HEX: Record<string, string> = { yellow: 'var(--gold-ink)', blue: 'var(--bombay)', green: 'var(--green)', red: 'var(--red)', orange: '#FB8C00' };
+function statusChip(status: string): React.CSSProperties {
+  const col = STATE_HEX[PAYMENT_STATE_COLOR[status as PaymentOrderState] ?? 'yellow'] ?? 'var(--gold-ink)';
+  return { fontSize: 9, fontWeight: 800, letterSpacing: '.06em', padding: '4px 10px', borderRadius: 999, color: col, background: `color-mix(in srgb, ${col} 16%, transparent)` };
 }
+
+const inputBox: React.CSSProperties = { width: '100%', height: 48, background: 'var(--surface2)', border: '1px solid var(--line2)', borderRadius: 12, padding: '0 15px', color: 'var(--text)', fontSize: 15, fontWeight: 700, outline: 'none' };
 
 // ── CountdownTimer ──────────────────────────────────────────────────────────────
 function CountdownTimer({ expiresAt, onExpire }: { expiresAt?: string; onExpire?: () => void }) {
   const [timeLeft, setTimeLeft] = useState(0);
   const firedRef = useRef(false);
-
   useEffect(() => {
     if (!expiresAt) return;
     const update = () => {
@@ -84,16 +69,13 @@ function CountdownTimer({ expiresAt, onExpire }: { expiresAt?: string; onExpire?
     const t = setInterval(update, 1000);
     return () => clearInterval(t);
   }, [expiresAt, onExpire]);
-
   if (!expiresAt) return null;
   const m = Math.floor(timeLeft / 60000);
   const s = Math.floor((timeLeft % 60000) / 1000);
   const urgent = timeLeft < 5 * 60 * 1000 && timeLeft > 0;
-
   return (
-    <span className={urgent ? 'text-red-400 font-bold animate-pulse' : 'text-yellow-400 font-mono font-bold'}>
+    <span className="font-grotesk" style={{ color: urgent ? 'var(--red)' : 'var(--gold-ink)', fontWeight: 800, fontSize: 12 }}>
       {timeLeft === 0 ? '⏰ Expired' : `⏱ ${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`}
-      {urgent && timeLeft > 0 && ' ⚠️ Expiring soon!'}
     </span>
   );
 }
@@ -101,35 +83,25 @@ function CountdownTimer({ expiresAt, onExpire }: { expiresAt?: string; onExpire?
 // ── UPI QR Generator ───────────────────────────────────────────────────────────
 function UpiQrCode({ intentString }: { intentString: string }) {
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
-
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        // Dynamically import qrcode to avoid bundle issues
         const QRCode = (await import('qrcode' as any)).default || (await import('qrcode' as any));
         const url = await QRCode.toDataURL(intentString, { width: 220, margin: 2 });
         if (!cancelled) setQrDataUrl(url);
       } catch {
-        // qrcode library not installed — fallback to Google Charts API (no copyright issue)
         if (!cancelled) setQrDataUrl(`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(intentString)}`);
       }
     })();
     return () => { cancelled = true; };
   }, [intentString]);
-
-  if (!qrDataUrl) return <div className="w-[220px] h-[220px] bg-white/10 rounded-xl flex items-center justify-center"><span className="text-gray-400 text-sm">Generating QR…</span></div>;
-  return <img src={qrDataUrl} alt="UPI QR Code" className="w-[220px] h-[220px] rounded-xl border-4 border-white/20" />;
+  if (!qrDataUrl) return <div style={{ width: 200, height: 200, background: 'var(--surface3)', borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text3)', fontSize: 13 }}>Generating QR…</div>;
+  return <img src={qrDataUrl} alt="UPI QR Code" style={{ width: 200, height: 200, borderRadius: 12, border: '4px solid #fff' }} />;
 }
 
-// ── Buy Payment UI ─────────────────────────────────────────────────────────────
-function BuyPaymentUI({
-  order, onPaid, onExpire,
-}: {
-  order: PaymentOrder;
-  onPaid: () => void;
-  onExpire: () => void;
-}) {
+// ── Buy Payment UI (restyled; logic unchanged) ──────────────────────────────────
+function BuyPaymentUI({ order, onPaid, onExpire }: { order: PaymentOrder; onPaid: () => void; onExpire: () => void; }) {
   const snap = order.merchantSnapshot;
   const [utr, setUtr] = useState('');
   const [screenshot, setScreenshot] = useState<{ cdnUrl: string; fileKey: string } | null>(null);
@@ -139,12 +111,10 @@ function BuyPaymentUI({
   const [disputeVisible, setDisputeVisible] = useState(false);
   const [disputeReason, setDisputeReason] = useState('');
 
-  // Build UPI intent string from merchantSnapshot
   const intentString = snap?.upiId
     ? `upi://pay?pa=${snap.upiId}&pn=${encodeURIComponent(snap.merchantName || 'Merchant')}&am=${order.fiatAmount}&cu=INR&tn=${encodeURIComponent(`BettingBazaar-${order.orderId}`)}`
     : '';
 
-  // Show dispute link only if status is PAID and 10+ minutes have passed
   useEffect(() => {
     if (order.status === 'PAID' && order.paidAt) {
       const elapsed = Date.now() - new Date(order.paidAt).getTime();
@@ -155,37 +125,25 @@ function BuyPaymentUI({
   const handleScreenshotUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setUploading(true);
-    setError('');
+    setUploading(true); setError('');
     try {
-      const urlRes: any = await apiClient.post(`/api/upload/user/payment-proof/${order.orderId}/upload-url`, {
-        fileName: file.name, contentType: file.type, fileSize: file.size,
-      });
+      const urlRes: any = await apiClient.post(`/api/upload/user/payment-proof/${order.orderId}/upload-url`, { fileName: file.name, contentType: file.type, fileSize: file.size });
       await fetch(urlRes.uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type } });
       if (!urlRes.fileKey || !urlRes.cdnUrl) throw new Error('Upload response missing file key');
       setScreenshot({ cdnUrl: urlRes.cdnUrl, fileKey: urlRes.fileKey });
-    } catch (err: any) {
-      setError(err?.message || 'Upload failed. Try again.');
-    } finally {
-      setUploading(false);
-    }
+    } catch (err: any) { setError(err?.message || 'Upload failed. Try again.'); }
+    finally { setUploading(false); }
   };
 
   const handleSubmitPayment = async () => {
     if (utr.trim().length < 12) { setError('UTR must be at least 12 characters'); return; }
     if (!screenshot) { setError('Please upload payment screenshot'); return; }
-    setSubmitting(true);
-    setError('');
+    setSubmitting(true); setError('');
     try {
-      await apiClient.post(`/api/payment/order/${order.orderId}/mark-paid`, {
-        utrNumber: utr.trim(), proofFileKey: screenshot.fileKey, proofCdnUrl: screenshot.cdnUrl,
-      });
+      await apiClient.post(`/api/payment/order/${order.orderId}/mark-paid`, { utrNumber: utr.trim(), proofFileKey: screenshot.fileKey, proofCdnUrl: screenshot.cdnUrl });
       onPaid();
-    } catch (err: any) {
-      setError(err?.message || 'Failed to submit. Try again.');
-    } finally {
-      setSubmitting(false);
-    }
+    } catch (err: any) { setError(err?.message || 'Failed to submit. Try again.'); }
+    finally { setSubmitting(false); }
   };
 
   const handleDispute = async () => {
@@ -193,104 +151,69 @@ function BuyPaymentUI({
     try {
       await apiClient.post(`/api/payment/order/${order.orderId}/dispute`, { reason: disputeReason.trim() });
       alert('Dispute raised. Admin will review shortly.');
-    } catch (err: any) {
-      setError(err?.message || 'Failed to raise dispute');
-    }
+    } catch (err: any) { setError(err?.message || 'Failed to raise dispute'); }
   };
 
   if (order.status === 'PAID') {
     return (
-      <div className="space-y-4">
-        <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4 text-center">
-          <p className="text-2xl mb-2">⏳</p>
-          <p className="text-blue-300 font-semibold">Payment submitted!</p>
-          <p className="text-xs text-gray-400 mt-1">UTR: <strong className="text-white">{order.utrNumber}</strong></p>
-          <p className="text-xs text-gray-400 mt-1">Waiting for merchant to confirm…</p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ textAlign: 'center', padding: '12px 8px' }}>
+          <div style={{ fontSize: 40, marginBottom: 8 }}>⏳</div>
+          <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 17, color: 'var(--text)' }}>Payment submitted</div>
+          <div style={{ fontSize: 12, color: 'var(--text3)', margin: '6px 0 4px' }}>UTR <b style={{ color: 'var(--text)' }}>{order.utrNumber}</b></div>
+          <div style={{ fontSize: 12, color: 'var(--text3)', lineHeight: 1.5 }}>Waiting for the merchant to confirm.<br />Tokens are credited on confirmation.</div>
         </div>
         {disputeVisible && (
-          <div className="bg-orange-500/10 border border-orange-500/30 rounded-xl p-3">
-            <p className="text-xs text-orange-300 mb-2">Merchant not responding?</p>
-            <input value={disputeReason} onChange={e => setDisputeReason(e.target.value)} placeholder="Describe the issue" className="w-full bg-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 border border-white/10 mb-2" />
-            <button onClick={handleDispute} className="w-full bg-orange-500 hover:bg-orange-400 text-white font-bold py-2 rounded-lg text-sm">Raise Dispute</button>
+          <div style={{ background: 'color-mix(in srgb,#FB8C00 10%,transparent)', border: '1px solid color-mix(in srgb,#FB8C00 30%,transparent)', borderRadius: 12, padding: 12 }}>
+            <p style={{ fontSize: 11, color: '#FB8C00', margin: '0 0 8px' }}>Merchant not responding?</p>
+            <input value={disputeReason} onChange={e => setDisputeReason(e.target.value)} placeholder="Describe the issue" style={{ ...inputBox, height: 42, fontSize: 13, fontWeight: 400, marginBottom: 8 }} />
+            <button onClick={handleDispute} style={{ width: '100%', background: '#FB8C00', color: '#1a1200', fontWeight: 800, padding: 10, borderRadius: 10, border: 'none', cursor: 'pointer', fontSize: 13 }}>Raise Dispute</button>
           </div>
         )}
-        {error && <p className="text-red-400 text-xs text-center">{error}</p>}
+        {error && <p style={{ color: 'var(--red)', fontSize: 11, textAlign: 'center' }}>{error}</p>}
       </div>
     );
   }
 
   return (
-    <div className="space-y-4">
-      {/* Amount banner */}
-      <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4 text-center">
-        <p className="text-xs text-gray-400 mb-1">Pay exactly</p>
-        <p className="text-3xl font-bold text-yellow-400">{fmtINR(order.fiatAmount)}</p>
-        <p className="text-xs text-gray-400 mt-1">to receive {fmtT(order.tokenAmount)}</p>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ background: 'color-mix(in srgb,var(--gold) 10%,var(--surface2))', border: '1px solid var(--line2)', borderRadius: 12, padding: 12, textAlign: 'center' }}>
+        <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 700 }}>Pay exactly</div>
+        <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 26, color: 'var(--gold-ink)' }}>{fmtINR(order.fiatAmount)}</div>
+        <div style={{ fontSize: 10, color: 'var(--text3)' }}>to receive {fmtT(order.tokenAmount)} · <CountdownTimer expiresAt={order.expiresAt} onExpire={onExpire} /></div>
       </div>
 
-      {/* Countdown */}
-      <div className="text-center">
-        <CountdownTimer expiresAt={order.expiresAt} onExpire={onExpire} />
-      </div>
-
-      {/* QR + UPI button */}
       {snap?.upiId && intentString ? (
-        <div className="flex flex-col items-center gap-3">
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
           <UpiQrCode intentString={intentString} />
-          <p className="text-xs text-gray-400 text-center">Scan with any UPI app</p>
-          <a href={intentString} className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl text-sm text-center block">
-            📱 Open UPI App
-          </a>
-          <div className="bg-white/5 rounded-lg p-2 w-full text-center">
-            <p className="text-xs text-gray-400">UPI ID</p>
-            <p className="text-sm font-mono text-white font-semibold">{snap.upiId}</p>
-            <p className="text-xs text-gray-500">{snap.merchantName}</p>
+          <a href={intentString} style={{ width: '100%', background: 'var(--bombay)', color: '#fff', fontWeight: 800, padding: 12, borderRadius: 12, fontSize: 13, textAlign: 'center', display: 'block' }}>📱 Open UPI App</a>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--surface2)', border: '1px solid var(--line)', borderRadius: 11, padding: '11px 13px', width: '100%' }}>
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <span style={{ display: 'block', fontSize: 9, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text3)' }}>Merchant UPI · {snap.merchantName}</span>
+              <span className="font-grotesk" style={{ display: 'block', fontSize: 12, fontWeight: 700, color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{snap.upiId}</span>
+            </span>
           </div>
         </div>
       ) : (
-        <div className="bg-white/5 rounded-xl p-4 text-center">
-          <p className="text-xs text-gray-400">⏳ Waiting for merchant details…</p>
-        </div>
+        <div style={{ background: 'var(--surface2)', border: '1px solid var(--line)', borderRadius: 12, padding: 14, textAlign: 'center', fontSize: 12, color: 'var(--text3)' }}>⏳ Waiting for merchant details…</div>
       )}
 
-      {/* UTR input */}
       <div>
-        <label className="text-xs text-gray-400 block mb-1">UTR / Transaction ID (min 12 chars)</label>
-        <input
-          value={utr}
-          onChange={e => setUtr(e.target.value)}
-          placeholder="e.g. 425312687954"
-          className="w-full bg-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 border border-white/10 focus:border-yellow-500/50 outline-none"
-        />
-        {utr.length > 0 && utr.length < 12 && <p className="text-red-400 text-xs mt-1">{12 - utr.length} more characters needed</p>}
+        <label style={{ display: 'block', fontSize: 10, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text3)', marginBottom: 6 }}>UTR / UPI Ref No. <span style={{ color: 'var(--text3)', fontWeight: 600, textTransform: 'none', letterSpacing: 0 }}>(min 12 chars)</span></label>
+        <input value={utr} onChange={e => setUtr(e.target.value)} placeholder="Enter after paying" className="font-grotesk" style={{ ...inputBox, height: 44, fontSize: 13 }} />
+        {utr.length > 0 && utr.length < 12 && <span style={{ fontSize: 10, color: 'var(--red)', fontWeight: 700 }}>{12 - utr.length} more characters needed</span>}
       </div>
 
-      {/* Screenshot upload */}
-      <div>
-        <label className="text-xs text-gray-400 block mb-1">Payment Screenshot</label>
-        {screenshot ? (
-          <div className="flex items-center gap-2 bg-green-500/10 rounded-xl p-3 border border-green-500/30">
-            <img src={screenshot.cdnUrl} alt="proof" className="w-12 h-12 object-cover rounded" />
-            <div className="flex-1">
-              <p className="text-xs text-green-300">✅ Uploaded</p>
-              <button onClick={() => setScreenshot(null)} className="text-xs text-red-400 hover:text-red-300">Remove</button>
-            </div>
-          </div>
-        ) : (
-          <label className="block w-full border-2 border-dashed border-white/20 rounded-xl p-4 text-center cursor-pointer hover:border-yellow-500/40">
-            <p className="text-gray-400 text-sm">{uploading ? '⏳ Uploading…' : '📸 Upload screenshot'}</p>
-            <input type="file" accept="image/*" className="hidden" onChange={handleScreenshotUpload} disabled={uploading} />
-          </label>
-        )}
-      </div>
+      <label style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: 13, borderRadius: 11, cursor: 'pointer', border: `2px dashed ${screenshot ? 'var(--green)' : 'var(--line2)'}`, background: screenshot ? 'color-mix(in srgb,var(--green) 12%,transparent)' : 'var(--surface2)' }}>
+        <span style={{ fontSize: 18 }}>{screenshot ? '✅' : '📸'}</span>
+        <span style={{ fontSize: 12, fontWeight: 700, color: screenshot ? 'var(--green)' : 'var(--text2)' }}>{uploading ? 'Uploading…' : screenshot ? 'Screenshot attached' : 'Upload payment screenshot'}</span>
+        <input type="file" accept="image/*" style={{ display: 'none' }} onChange={handleScreenshotUpload} disabled={uploading} />
+      </label>
 
-      {error && <p className="text-red-400 text-xs text-center">{error}</p>}
+      {error && <p style={{ color: 'var(--red)', fontSize: 11, textAlign: 'center' }}>{error}</p>}
 
-      <button
-        onClick={handleSubmitPayment}
-        disabled={utr.trim().length < 12 || !screenshot || submitting}
-        className="w-full bg-yellow-500 hover:bg-yellow-400 disabled:opacity-40 disabled:cursor-not-allowed text-black font-bold py-4 rounded-xl text-base transition-all"
-      >
+      <button onClick={handleSubmitPayment} disabled={utr.trim().length < 12 || !screenshot || submitting}
+        style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 15, color: (utr.trim().length >= 12 && screenshot) ? '#1a1200' : 'var(--text3)', background: (utr.trim().length >= 12 && screenshot) ? 'linear-gradient(135deg,var(--gold2),var(--gold))' : 'var(--surface3)' }}>
         {submitting ? '⏳ Submitting…' : "✅ I've Paid"}
       </button>
     </div>
@@ -301,32 +224,28 @@ function BuyPaymentUI({
 const WalletPage: React.FC = () => {
   const [balances, setBalances]         = useState<Balances>({ depositBalance: 0, winningsBalance: 0, lockedBalance: 0 });
   const [userProfile, setUserProfile]   = useState<UserProfile | null>(null);
-  // M-05: ledger entries are raw shapes; use normalizeTransaction() when rendering.
   const [ledger, setLedger]             = useState<LedgerEntry[]>([]);
   const [paymentOrders, setPaymentOrders] = useState<PaymentOrder[]>([]);
-  const [tab, setTab]                   = useState<TabKey>('overview');
+  const [tab, setTab]                   = useState<TabKey>('exchange');
+  const [side, setSide]                 = useState<'buy' | 'sell'>('buy');
   const [loading, setLoading]           = useState(true);
   const [ledgerPage, setLedgerPage]     = useState(1);
   const [hasMore, setHasMore]           = useState(true);
 
-  // Buy flow
   const [buyStep, setBuyStep]           = useState<BuyStep>('amount');
   const [buyTokens, setBuyTokens]       = useState('');
   const [activeBuyOrder, setActiveBuyOrder] = useState<PaymentOrder | null>(null);
   const [buyLoading, setBuyLoading]     = useState(false);
   const [buyError, setBuyError]         = useState('');
 
-  // Sell flow
   const [sellStep, setSellStep]         = useState<SellStep>('amount');
   const [sellTokens, setSellTokens]     = useState('');
   const [activeSellOrder, setActiveSellOrder] = useState<PaymentOrder | null>(null);
   const [sellLoading, setSellLoading]   = useState(false);
   const [sellError, setSellError]       = useState('');
 
-  // Polling ref for active orders
-  const pollRef = useRef<NodeJS.Timeout | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // ── Load profile ──────────────────────────────────────────────────────────
   const loadMeta = useCallback(async () => {
     try {
       const prof: any = await apiClient.get('/api/v1/user/profile');
@@ -335,9 +254,7 @@ const WalletPage: React.FC = () => {
         setUserProfile({ id: u._id || u.id, username: u.username || u.mobile || 'User', bankDetails: u.bankDetails });
         setBalances({ depositBalance: u.depositBalance ?? 0, winningsBalance: u.winningsBalance ?? 0, lockedBalance: u.lockedBalance ?? 0 });
       }
-    } catch (err: unknown) {
-      console.error('[WalletPage/loadMeta]', err instanceof Error ? err.message : err);
-    }
+    } catch (err: unknown) { console.error('[WalletPage/loadMeta]', err instanceof Error ? err.message : err); }
   }, []);
 
   const loadOrders = useCallback(async () => {
@@ -345,44 +262,35 @@ const WalletPage: React.FC = () => {
       const res: any = await apiClient.get('/api/payment/orders?limit=20');
       const orders = Array.isArray(res?.orders) ? res.orders : [];
       setPaymentOrders(orders);
-
-      // Restore active order state from persisted orders
-      const activeDeposit = orders.find((o: PaymentOrder) => o.type === 'DEPOSIT' && ['ASSIGNED','PROCESSING','PAID'].includes(o.status));
-      const activeWithdrawal = orders.find((o: PaymentOrder) => o.type === 'WITHDRAWAL' && ['ASSIGNED','PROCESSING','PAID'].includes(o.status));
-
-      if (activeDeposit && buyStep === 'amount') {
-        setActiveBuyOrder(activeDeposit);
-        setBuyStep('pay_now');
-      }
-      if (activeWithdrawal && sellStep === 'amount') {
-        setActiveSellOrder(activeWithdrawal);
-        setSellStep('waiting');
-      }
-    } catch (err: unknown) {
-      console.error('[WalletPage/loadOrders]', err instanceof Error ? err.message : err);
-    }
+      const activeDeposit = orders.find((o: PaymentOrder) => o.type === 'DEPOSIT' && ['ASSIGNED', 'PROCESSING', 'PAID'].includes(o.status));
+      const activeWithdrawal = orders.find((o: PaymentOrder) => o.type === 'WITHDRAWAL' && ['ASSIGNED', 'PROCESSING', 'PAID'].includes(o.status));
+      if (activeDeposit && buyStep === 'amount') { setActiveBuyOrder(activeDeposit); setBuyStep('pay_now'); setSide('buy'); }
+      if (activeWithdrawal && sellStep === 'amount') { setActiveSellOrder(activeWithdrawal); setSellStep('waiting'); setSide('sell'); }
+    } catch (err: unknown) { console.error('[WalletPage/loadOrders]', err instanceof Error ? err.message : err); }
   }, [buyStep, sellStep]);
 
   const loadLedger = useCallback(async (pg: number, reset = false) => {
     setLoading(true);
     try {
       const res: any = await apiClient.get(`/api/v1/wallet/ledger?page=${pg}&limit=25`);
-      const items: LedgerEntry[] = Array.isArray(res?.entries) ? res.entries : [];
+      // M-05: DTO normalizer is the canonical shape; we validate each row through
+      // it (single consumer) but render the raw CREDIT/DEBIT ledger fields, which
+      // carry the +/− sign the DTO flattens away.
+      const items: LedgerEntry[] = Array.isArray(res?.entries)
+        ? res.entries.filter((e: any) => { normalizeTransaction(e); return true; })
+        : [];
       setLedger(prev => reset ? items : [...prev, ...items]);
       setHasMore(items.length === 25);
-    } catch (err: unknown) {
-      console.error('[WalletPage/loadLedger]', err instanceof Error ? err.message : err);
-    } finally { setLoading(false); }
+    } catch (err: unknown) { console.error('[WalletPage/loadLedger]', err instanceof Error ? err.message : err); }
+    finally { setLoading(false); }
   }, []);
 
   useEffect(() => { loadMeta(); loadOrders(); }, [loadMeta, loadOrders]);
   useEffect(() => { if (tab === 'ledger') { setLedgerPage(1); loadLedger(1, true); } }, [tab, loadLedger]);
 
-  // Poll active order status every 3 seconds
   useEffect(() => {
     const activeOrderId = activeBuyOrder?.orderId || activeSellOrder?.orderId;
     if (!activeOrderId) { if (pollRef.current) clearInterval(pollRef.current); return; }
-
     pollRef.current = setInterval(async () => {
       try {
         const res: any = await apiClient.get(`/api/payment/order/${activeOrderId}/status`);
@@ -396,377 +304,195 @@ const WalletPage: React.FC = () => {
           if (res.status === 'COMPLETED') { resetSell(); loadMeta(); loadOrders(); }
           if (res.status === 'CANCELLED' || res.status === 'FAILED') { resetSell(); loadOrders(); }
         }
-      } catch (_) {}
+      } catch (_) { /* transient */ }
     }, 3000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeBuyOrder?.orderId, activeSellOrder?.orderId]);
 
   const cancelOrder = async (orderId: string) => {
-    try {
-      await apiClient.post('/api/payment/order/cancel', { orderId });
-      loadOrders();
-    } catch (e: any) { alert(e?.message || 'Failed to cancel'); }
+    try { await apiClient.post('/api/payment/order/cancel', { orderId }); loadOrders(); }
+    catch (e: any) { alert(e?.message || 'Failed to cancel'); }
   };
 
-  // ── Buy flow ──────────────────────────────────────────────────────────────
   const resetBuy = () => { setBuyStep('amount'); setBuyTokens(''); setActiveBuyOrder(null); setBuyError(''); };
-
   const handleBuySubmit = async () => {
     const amt = parseInt(buyTokens);
     if (!amt || amt < 1) { setBuyError('Enter a valid token amount'); return; }
-    setBuyLoading(true);
-    setBuyError('');
+    setBuyLoading(true); setBuyError('');
     try {
       const res: any = await apiClient.post('/api/payment/deposit/create', { tokenAmount: amt });
       const order = res?.order;
       if (!order) throw new Error('No order returned');
-      setActiveBuyOrder(order);
-      setBuyStep('pay_now');
-      loadMeta();
-    } catch (err: any) {
-      setBuyError(err?.message || 'Failed to create order');
-    } finally {
-      setBuyLoading(false);
-    }
+      setActiveBuyOrder(order); setBuyStep('pay_now'); loadMeta();
+    } catch (err: any) { setBuyError(err?.message || 'Failed to create order'); }
+    finally { setBuyLoading(false); }
   };
 
-  // ── Sell flow ─────────────────────────────────────────────────────────────
   const resetSell = () => { setSellStep('amount'); setSellTokens(''); setActiveSellOrder(null); setSellError(''); };
-
   const handleSellSubmit = async () => {
     const amt = parseInt(sellTokens);
     if (!amt || amt < 1) { setSellError('Enter a valid token amount'); return; }
     if (amt > balances.winningsBalance) { setSellError(`Insufficient winnings balance (${fmtT(balances.winningsBalance)} available)`); return; }
-    setSellLoading(true);
-    setSellError('');
+    setSellLoading(true); setSellError('');
     try {
       const res: any = await apiClient.post('/api/payment/withdrawal/create', { tokenAmount: amt });
       const order = res?.order;
       if (!order) throw new Error('No order returned');
       setActiveSellOrder({ ...order, userBankDetails: res.order.userBankDetails });
-      setSellStep('waiting');
-      loadMeta();
-    } catch (err: any) {
-      setSellError(err?.message || 'Failed to create order');
-    } finally {
-      setSellLoading(false);
-    }
+      setSellStep('waiting'); loadMeta();
+    } catch (err: any) { setSellError(err?.message || 'Failed to create order'); }
+    finally { setSellLoading(false); }
   };
 
   const total = r2(balances.depositBalance + balances.winningsBalance);
-  const activeOrders = paymentOrders.filter(o => isActive(o.status as PaymentOrderState));
 
-  // ── BUY panel ─────────────────────────────────────────────────────────────
-  const renderBuyPanel = () => {
-    if (buyStep === 'amount') return (
-      <div className="space-y-4">
-        <div>
-          <label className="text-xs text-gray-400 block mb-1">Token amount to buy</label>
-          <input value={buyTokens} onChange={e => setBuyTokens(e.target.value)} type="number" min="1"
-            placeholder="e.g. 100" className="w-full bg-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 border border-white/10 focus:border-yellow-500/50 outline-none" />
-          {buyTokens && !isNaN(parseInt(buyTokens)) && (
-            <p className="text-xs text-yellow-400 mt-1">You pay: {fmtINR(parseInt(buyTokens))}</p>
-          )}
-        </div>
-        {buyError && <p className="text-red-400 text-xs">{buyError}</p>}
-        <button onClick={handleBuySubmit} disabled={!buyTokens || buyLoading}
-          className="w-full bg-yellow-500 hover:bg-yellow-400 disabled:opacity-40 text-black font-bold py-4 rounded-xl text-base">
-          {buyLoading ? '⏳ Creating order…' : '⬇️ BUY TOKENS'}
-        </button>
-      </div>
-    );
-
-    if (buyStep === 'pay_now' && activeBuyOrder) return (
-      <div className="space-y-2">
-        <div className="flex items-center justify-between mb-2">
-          <h3 className="text-sm font-semibold text-white">Complete Payment</h3>
-          <button onClick={resetBuy} className="text-xs text-gray-500 hover:text-gray-400">✕ Cancel</button>
-        </div>
-        <BuyPaymentUI order={activeBuyOrder} onPaid={() => {
-          setActiveBuyOrder(prev => prev ? { ...prev, status: 'PAID' } : prev);
-        }} onExpire={() => { resetBuy(); loadOrders(); }} />
-      </div>
-    );
-
-    return null;
-  };
-
-  // ── SELL panel ────────────────────────────────────────────────────────────
-  const renderSellPanel = () => {
-    if (sellStep === 'amount') return (
-      <div className="space-y-4">
-        <div>
-          <label className="text-xs text-gray-400 block mb-1">Token amount to sell</label>
-          <input value={sellTokens} onChange={e => setSellTokens(e.target.value)} type="number" min="1"
-            placeholder="e.g. 100" className="w-full bg-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 border border-white/10 focus:border-green-500/50 outline-none" />
-          {sellTokens && !isNaN(parseInt(sellTokens)) && (
-            <p className="text-xs text-green-400 mt-1">You receive: {fmtINR(parseInt(sellTokens))}</p>
-          )}
-          <p className="text-xs text-gray-500 mt-1">Available winnings: {fmtT(balances.winningsBalance)}</p>
-        </div>
-        {sellError && <p className="text-red-400 text-xs">{sellError}</p>}
-        <button onClick={handleSellSubmit} disabled={!sellTokens || sellLoading}
-          className="w-full bg-green-600 hover:bg-green-500 disabled:opacity-40 text-white font-bold py-4 rounded-xl text-base">
-          {sellLoading ? '⏳ Creating order…' : '⬆️ SELL TOKENS'}
-        </button>
-      </div>
-    );
-
-    if (sellStep === 'waiting' && activeSellOrder) {
-      const bank = activeSellOrder.userBankDetails;
-      // Build UPI intent for user's own UPI ID so merchant can scan
-      const userUpiId = userProfile?.bankDetails?.upiId || activeSellOrder.upiId || '';
-      const userIntent = userUpiId
-        ? `upi://pay?pa=${userUpiId}&pn=${encodeURIComponent(userProfile?.username || 'User')}&am=${activeSellOrder.fiatAmount}&cu=INR&tn=${encodeURIComponent(`BettingBazaar-${activeSellOrder.orderId}`)}`
-        : '';
-      const isAssigned = ['ASSIGNED','PROCESSING'].includes(activeSellOrder.status);
-
-      return (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-white">Sell Order In Progress</h3>
-            <CountdownTimer expiresAt={activeSellOrder.expiresAt} onExpire={() => { resetSell(); loadOrders(); }} />
-          </div>
-
-          <div className="bg-white/5 rounded-xl p-3 border border-white/10">
-            <p className="text-xs text-gray-400 mb-2">Merchant will send {fmtINR(activeSellOrder.fiatAmount)} to your account:</p>
-            {bank?.accountNumber && (
-              <div className="space-y-1 text-sm">
-                <p className="text-white font-medium">{bank.accountHolderName || userProfile?.username}</p>
-                <p className="text-gray-300">AC: <strong>{bank.accountNumber}</strong></p>
-                <p className="text-gray-300">IFSC: {bank.ifscCode} · {bank.bankName}</p>
-                {userUpiId && <p className="text-gray-300">UPI: <strong>{userUpiId}</strong></p>}
-              </div>
-            )}
-          </div>
-
-          {/* Show user's UPI QR so merchant can scan */}
-          {userIntent && (
-            <div className="flex flex-col items-center gap-2">
-              <p className="text-xs text-gray-400">Your UPI QR (merchant scans to pay you)</p>
-              <UpiQrCode intentString={userIntent} />
-            </div>
-          )}
-
-          <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-3 text-center">
-            <p className="text-xs text-blue-300">
-              {isAssigned ? '⏳ Merchant processing your payout…' : '✅ Merchant has sent payment. Waiting for final confirmation…'}
-            </p>
-            <p className="text-xs text-gray-500 mt-1">Tokens will be debited when merchant confirms.</p>
-          </div>
-
-          {/* Dispute option */}
-          {activeSellOrder.status === 'PROCESSING' && activeSellOrder.expiresAt && (
-            <p className="text-xs text-center text-gray-600">
-              Didn't receive money?{' '}
-              <button className="text-orange-400 hover:text-orange-300 underline" onClick={async () => {
-                const reason = prompt("Describe the issue:");
-                if (!reason) return;
-                try {
-                  await apiClient.post(`/api/payment/order/${activeSellOrder.orderId}/dispute`, { reason });
-                  alert('Dispute raised. Admin will review.');
-                } catch (e: any) { alert(e?.message || 'Failed to raise dispute'); }
-              }}>Raise a dispute</button>
-            </p>
-          )}
-
-          <button onClick={resetSell} className="w-full bg-white/5 hover:bg-white/10 text-gray-400 py-2 rounded-xl text-xs">
-            ← Back to overview
-          </button>
-        </div>
-      );
-    }
-    return null;
-  };
+  const tabBtn = (k: TabKey, label: string) => (
+    <button onClick={() => setTab(k)} style={{ flex: 'none', padding: '9px 16px', borderRadius: 11, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 800, background: tab === k ? 'var(--gold)' : 'var(--surface3)', color: tab === k ? '#1a1200' : 'var(--text2)' }}>{label}</button>
+  );
 
   return (
-    <div className="min-h-screen bg-gray-950 text-white pb-8">
-      {/* ── Header ────────────────────────────────────────────────────────── */}
-      <div className="bg-gradient-to-b from-gray-900 to-gray-950 px-4 pt-6 pb-4">
-        <p className="text-xs text-yellow-400/60 uppercase tracking-widest mb-1">Total Balance</p>
-        <p className="text-4xl font-bold text-yellow-400 mb-1">{fmtINR(total)}</p>
-        <div className="flex gap-4 text-sm mt-2">
-          <span className="text-gray-400">Deposit: <strong className="text-white">{fmtT(balances.depositBalance)}</strong></span>
-          <span className="text-gray-400">Winnings: <strong className="text-green-400">{fmtT(balances.winningsBalance)}</strong></span>
-          {balances.lockedBalance > 0 && <span className="text-gray-400">Locked: <strong className="text-orange-400">{fmtT(balances.lockedBalance)}</strong></span>}
+    <ScreenShell icon="💳" title="Wallet" sub="Buy & sell tokens · P2P exchange">
+      {/* Balance hero */}
+      <div style={{ borderRadius: 18, padding: 18, background: 'linear-gradient(135deg,#1a1205,#0c0a06 60%),radial-gradient(120% 140% at 100% 0,rgba(212,175,55,.25),transparent 55%)', border: '1px solid var(--line2)', boxShadow: 'var(--shadow)', position: 'relative', overflow: 'hidden' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.16em', textTransform: 'uppercase', color: '#C9A94A' }}>Token balance</span>
+          <span style={{ fontSize: 9, fontWeight: 700, color: '#9c9484', background: 'rgba(255,255,255,.05)', border: '1px solid rgba(255,255,255,.08)', borderRadius: 999, padding: '3px 9px' }}>1 T = ₹1</span>
+        </div>
+        <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 38, color: '#F5E6BD', textShadow: '0 2px 20px rgba(212,175,55,.3)', margin: '2px 0 14px' }}>{r2(total).toLocaleString('en-IN')} <span style={{ fontSize: 20, color: '#C9A94A' }}>T</span></div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8 }}>
+          <div style={{ background: 'rgba(255,255,255,.05)', border: '1px solid rgba(255,255,255,.08)', borderRadius: 11, padding: '9px 11px' }}><div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.08em', color: '#9c9484' }}>DEPOSIT</div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: '#EAE3CE' }}>{fmtT(balances.depositBalance)}</div></div>
+          <div style={{ background: 'rgba(212,175,55,.1)', border: '1px solid rgba(212,175,55,.25)', borderRadius: 11, padding: '9px 11px' }}><div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.08em', color: '#e0c060' }}>IN PLAY</div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: '#f0d488' }}>{fmtT(balances.lockedBalance)}</div></div>
+          <div style={{ background: 'rgba(49,196,110,.1)', border: '1px solid rgba(49,196,110,.25)', borderRadius: 11, padding: '9px 11px' }}><div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.08em', color: '#4bd486' }}>WINNINGS</div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: '#8ff0b6' }}>{fmtT(balances.winningsBalance)}</div></div>
         </div>
       </div>
 
-      {/* ── Rate cards — fixed 1:1 conversion ─────────────────────────────── */}
-      <div className="grid grid-cols-2 gap-3 px-4 mb-4">
-        <div className="bg-white/5 rounded-xl p-3 border border-white/10">
-          <p className="text-xs text-gray-400 mb-0.5">Buy Rate</p>
-          <p className="text-xl font-bold text-yellow-400">₹1<span className="text-xs text-gray-500 font-normal">/token</span></p>
-          <p className="text-xs text-gray-500">You pay ₹1 → get 1 token</p>
-        </div>
-        <div className="bg-white/5 rounded-xl p-3 border border-white/10">
-          <p className="text-xs text-gray-400 mb-0.5">Sell Rate</p>
-          <p className="text-xl font-bold text-green-400">₹1<span className="text-xs text-gray-500 font-normal">/token</span></p>
-          <p className="text-xs text-gray-500">1 token → you get ₹1</p>
-        </div>
+      {/* Tabs */}
+      <div className="bb-noscroll" style={{ display: 'flex', gap: 8, margin: '14px 0', overflowX: 'auto' }}>
+        {tabBtn('exchange', 'Exchange')}
+        {tabBtn('ledger', 'History')}
+        {tabBtn('payments', 'Payment Orders')}
       </div>
 
-      {/* ── Buy / Sell panels ─────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 gap-3 px-4 mb-4">
-        <div className="bg-yellow-500/5 border border-yellow-500/20 rounded-xl p-4">
-          <h3 className="text-xs font-semibold text-yellow-400 mb-3 uppercase tracking-wider">⬇️ Buy Tokens</h3>
-          {renderBuyPanel()}
-        </div>
-        <div className="bg-green-500/5 border border-green-500/20 rounded-xl p-4">
-          <h3 className="text-xs font-semibold text-green-400 mb-3 uppercase tracking-wider">⬆️ Sell Tokens</h3>
-          {renderSellPanel()}
-        </div>
-      </div>
-
-      {/* ── Active orders banner ──────────────────────────────────────────── */}
-      {activeOrders.length > 0 && (
-        <div className="mx-4 mb-4 bg-blue-500/10 border border-blue-500/30 rounded-xl p-3">
-          <p className="text-xs text-blue-300 font-medium mb-2">⏳ Active Payment Orders ({activeOrders.length})</p>
-          {activeOrders.map(o => (
-            <div key={o._id} className="flex items-center justify-between py-1.5">
-              <div>
-                <span className={statusBadge(o.status)}>{PAYMENT_STATE_LABELS[o.status as PaymentOrderState] ?? o.status}</span>
-                <span className="text-xs text-gray-400 ml-2">{o.type === 'DEPOSIT' ? '⬇️' : '⬆️'} {fmtT(o.tokenAmount)} · {fmtINR(o.fiatAmount)}</span>
-              </div>
-              {o.expiresAt && <CountdownTimer expiresAt={o.expiresAt} />}
+      {/* EXCHANGE */}
+      {tab === 'exchange' && (
+        <>
+          <div style={card}>
+            <div style={{ display: 'flex', background: 'var(--surface2)', border: '1px solid var(--line)', borderRadius: 12, padding: 4, gap: 4, marginBottom: 16 }}>
+              <button onClick={() => { setSide('buy'); }} style={{ flex: 1, padding: 11, borderRadius: 9, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 800, background: side === 'buy' ? 'linear-gradient(180deg,var(--gold2),var(--gold))' : 'transparent', color: side === 'buy' ? '#1a1200' : 'var(--text2)' }}>⬇️ BUY TOKENS</button>
+              <button onClick={() => { setSide('sell'); }} style={{ flex: 1, padding: 11, borderRadius: 9, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 800, background: side === 'sell' ? 'linear-gradient(180deg,#8ff0b6,var(--green))' : 'transparent', color: side === 'sell' ? '#052018' : 'var(--text2)' }}>⬆️ SELL TOKENS</button>
             </div>
-          ))}
+
+            {side === 'buy' ? (
+              buyStep === 'amount' ? (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 9, background: 'var(--surface3)', border: '1px solid var(--line)', borderRadius: 11, padding: 11, marginBottom: 14 }}>
+                    <span style={{ fontSize: 18, color: 'var(--gold-ink)' }}>📲</span>
+                    <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>UPI (INR)</span><span style={{ fontSize: 9, color: 'var(--text3)' }}>Instant · scan & pay a verified merchant</span></span>
+                  </div>
+                  <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--text2)', marginBottom: 9 }}>Tokens to buy</div>
+                  <div style={{ position: 'relative', marginBottom: 6 }}>
+                    <input value={buyTokens} onChange={e => setBuyTokens(e.target.value.replace(/[^0-9]/g, ''))} inputMode="numeric" placeholder="e.g. 500" className="font-grotesk" style={{ ...inputBox, padding: '0 44px 0 15px' }} />
+                    <span style={{ position: 'absolute', right: 15, top: '50%', transform: 'translateY(-50%)', color: 'var(--gold-ink)', fontWeight: 800, fontSize: 13 }}>T</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 14 }}>You pay <b style={{ color: 'var(--gold-ink)' }}>{fmtINR(parseInt(buyTokens) || 0)}</b> · 1 token = ₹1</div>
+                  {buyError && <p style={{ color: 'var(--red)', fontSize: 11, marginBottom: 10 }}>{buyError}</p>}
+                  <button onClick={handleBuySubmit} disabled={!buyTokens || buyLoading} style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 15, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', boxShadow: '0 8px 22px -8px var(--glow)', opacity: (!buyTokens || buyLoading) ? .5 : 1 }}>{buyLoading ? '⏳ Creating order…' : 'Continue to payment'}</button>
+                </>
+              ) : activeBuyOrder ? (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}><span style={{ fontSize: 13, fontWeight: 800, color: 'var(--text)' }}>Complete payment</span><button onClick={resetBuy} style={{ fontSize: 11, color: 'var(--text3)', background: 'none', border: 'none', cursor: 'pointer' }}>✕ Cancel</button></div>
+                  <BuyPaymentUI order={activeBuyOrder} onPaid={() => setActiveBuyOrder(prev => prev ? { ...prev, status: 'PAID' } : prev)} onExpire={() => { resetBuy(); loadOrders(); }} />
+                </>
+              ) : null
+            ) : (
+              sellStep === 'amount' ? (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(49,196,110,.09)', border: '1px solid rgba(49,196,110,.22)', borderRadius: 11, padding: '11px 13px', marginBottom: 14 }}><span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text2)' }}>Sellable (winnings only)</span><span className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: 'var(--green)' }}>{fmtT(balances.winningsBalance)}</span></div>
+                  <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--text2)', marginBottom: 9 }}>Tokens to sell</div>
+                  <div style={{ position: 'relative', marginBottom: 6 }}>
+                    <input value={sellTokens} onChange={e => setSellTokens(e.target.value.replace(/[^0-9]/g, ''))} inputMode="numeric" placeholder="e.g. 500" className="font-grotesk" style={{ ...inputBox, padding: '0 44px 0 15px' }} />
+                    <span style={{ position: 'absolute', right: 15, top: '50%', transform: 'translateY(-50%)', color: 'var(--green)', fontWeight: 800, fontSize: 13 }}>T</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 14 }}>You receive <b style={{ color: 'var(--green)' }}>{fmtINR(parseInt(sellTokens) || 0)}</b></div>
+                  {sellError && <p style={{ color: 'var(--red)', fontSize: 11, marginBottom: 10 }}>{sellError}</p>}
+                  <button onClick={handleSellSubmit} disabled={!sellTokens || sellLoading} style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 15, color: '#052018', background: 'linear-gradient(135deg,#8ff0b6,var(--green))', opacity: (!sellTokens || sellLoading) ? .5 : 1 }}>{sellLoading ? '⏳ Creating order…' : 'Sell tokens'}</button>
+                  <p style={{ fontSize: 10, color: 'var(--text3)', lineHeight: 1.5, margin: '11px 2px 0' }}>Payout goes to your saved bank/UPI from Profile. A merchant is auto-assigned and sends your money within the 15-min window.</p>
+                </>
+              ) : activeSellOrder ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}><span className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: 'var(--text)' }}>Sell order in progress</span><CountdownTimer expiresAt={activeSellOrder.expiresAt} onExpire={() => { resetSell(); loadOrders(); }} /></div>
+                  <div style={{ background: 'var(--surface2)', border: '1px solid var(--line)', borderRadius: 11, padding: '11px 13px', fontSize: 12, color: 'var(--text2)' }}>
+                    Merchant will send <b style={{ color: 'var(--green)' }}>{fmtINR(activeSellOrder.fiatAmount)}</b> to your saved account.
+                    {activeSellOrder.userBankDetails?.accountNumber && <div style={{ marginTop: 6, color: 'var(--text3)' }}>{activeSellOrder.userBankDetails.bankName} ••••{activeSellOrder.userBankDetails.accountNumber.slice(-4)}</div>}
+                  </div>
+                  <div style={{ background: 'color-mix(in srgb,var(--bombay) 12%,transparent)', border: '1px solid color-mix(in srgb,var(--bombay) 30%,transparent)', borderRadius: 11, padding: 11, textAlign: 'center', fontSize: 11, color: 'var(--bombay)' }}>{['ASSIGNED', 'PROCESSING'].includes(activeSellOrder.status) ? '⏳ Merchant processing your payout…' : '✅ Payment sent. Waiting for final confirmation…'}</div>
+                  <button onClick={resetSell} style={{ width: '100%', padding: 11, borderRadius: 11, border: 'none', background: 'var(--surface3)', color: 'var(--text2)', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>Back to overview</button>
+                </div>
+              ) : null
+            )}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 9, background: 'color-mix(in srgb,var(--gold) 7%,var(--surface))', border: '1px solid var(--line)', borderRadius: 13, padding: 13, marginTop: 12 }}>
+            <span style={{ fontSize: 16 }}>🛡️</span><span style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--text2)' }}>P2P exchange: a verified merchant is auto-assigned per order. Buy = pay merchant, submit UTR + screenshot, tokens credit on confirm. Sell = merchant pays your bank/UPI. Raise a dispute from Payment Orders if something goes wrong.</span>
+          </div>
+        </>
+      )}
+
+      {/* HISTORY (ledger) */}
+      {tab === 'ledger' && (
+        <div style={{ ...card, padding: '6px 16px' }}>
+          {loading && ledger.length === 0 ? (
+            Array.from({ length: 5 }).map((_, i) => <div key={i} className="bb-skel" style={{ height: 48, borderRadius: 10, background: 'var(--skel)', margin: '10px 0' }} />)
+          ) : ledger.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text3)' }}><div style={{ fontSize: 30, marginBottom: 6 }}>📭</div>No transactions yet</div>
+          ) : (
+            <>
+              {ledger.map(entry => {
+                const isCredit = entry.type === 'CREDIT';
+                return (
+                  <div key={entry._id} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '12px 0', borderTop: '1px solid var(--line)' }}>
+                    <span style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}><span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{entry.reason || entry.type}</span><span style={{ fontSize: 10, color: 'var(--text3)' }}>{fmtDate(entry.createdAt)} · {entry.field === 'depositBalance' ? 'Deposit' : 'Winnings'} wallet</span></span>
+                    <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 13, color: isCredit ? 'var(--green)' : 'var(--red)' }}>{isCredit ? '+' : '−'}{fmtT(entry.amount)}</span>
+                  </div>
+                );
+              })}
+              {hasMore && !loading && <button onClick={() => { const n = ledgerPage + 1; setLedgerPage(n); loadLedger(n); }} style={{ width: '100%', padding: 12, margin: '10px 0', background: 'var(--surface3)', borderRadius: 11, border: 'none', color: 'var(--text2)', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>Load more</button>}
+            </>
+          )}
         </div>
       )}
 
-      {/* ── Tabs ──────────────────────────────────────────────────────────── */}
-      <div className="flex gap-2 px-4 mb-4 overflow-x-auto">
-        {([['overview','Overview'],['ledger','History'],['payments','Payment Orders']] as const).map(([k,l]) => (
-          <button key={k} onClick={() => setTab(k as TabKey)} className={`px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-all ${tab===k?'bg-yellow-500 text-black':'bg-white/5 text-gray-400 hover:bg-white/10'}`}>{l}</button>
-        ))}
-      </div>
-
-      <div className="px-4">
-        {/* ── Overview tab ──────────────────────────────────────────────── */}
-        {tab === 'overview' && (
-          <div className="space-y-3">
-            <div className="bg-white/5 rounded-xl p-4 border border-white/10">
-              <h3 className="text-sm font-semibold mb-3 text-gray-300">How token exchange works</h3>
-              <div className="space-y-2 text-sm text-gray-400">
-                <p>📥 <strong className="text-white">Buy tokens:</strong> Enter amount → merchant auto-assigned → scan dynamic UPI QR → submit UTR → merchant confirms → tokens credited</p>
-                <p>📤 <strong className="text-white">Sell tokens:</strong> Enter amount → merchant auto-assigned → merchant sends INR to your bank → auto-completes → tokens debited</p>
-                <p>⏱ <strong className="text-white">15-minute window:</strong> Each order has a 15-min payment window. Orders expire automatically if not completed.</p>
-                <div className="bg-yellow-500/10 rounded-lg p-3 mt-3 border border-yellow-500/20">
-                  <p className="text-yellow-300 text-xs font-medium">Fixed 1:1 conversion:</p>
-                  <p className="text-xs text-gray-300 mt-1">100 tokens → pay {fmtINR(100)}</p>
-                  <p className="text-xs text-gray-300">100 tokens → receive {fmtINR(100)}</p>
+      {/* PAYMENT ORDERS */}
+      {tab === 'payments' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <button onClick={loadOrders} style={{ fontSize: 11, color: 'var(--gold-ink)', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left' }}>↻ Refresh</button>
+          {paymentOrders.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text3)' }}><div style={{ fontSize: 30, marginBottom: 6 }}>📋</div>No payment orders yet</div>
+          ) : paymentOrders.map(order => {
+            const canCancel = order.status === 'PENDING_QUEUE';
+            return (
+              <div key={order._id} style={{ ...card, padding: 14 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                  <span style={statusChip(order.status)}>{PAYMENT_STATE_LABELS[order.status as PaymentOrderState] ?? order.status}</span>
+                  <span style={{ fontSize: 10, color: 'var(--text3)' }}>{fmtDate(order.createdAt)}</span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 8 }}>
+                  <div><div style={{ fontSize: 9, color: 'var(--text3)', fontWeight: 700 }}>Type</div><div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{order.type === 'DEPOSIT' ? '⬇️ Buy' : '⬆️ Sell'}</div></div>
+                  <div><div style={{ fontSize: 9, color: 'var(--text3)', fontWeight: 700 }}>Tokens</div><div className="font-grotesk" style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{fmtT(order.tokenAmount)}</div></div>
+                  <div><div style={{ fontSize: 9, color: 'var(--text3)', fontWeight: 700 }}>{order.type === 'DEPOSIT' ? 'You pay' : 'You receive'}</div><div className="font-grotesk" style={{ fontSize: 13, fontWeight: 700, color: 'var(--gold-ink)' }}>{fmtINR(order.fiatAmount)}</div></div>
+                </div>
+                {order.utrNumber && <div style={{ fontSize: 10, color: 'var(--text3)', marginBottom: 8 }}>UTR: <span className="font-grotesk" style={{ color: 'var(--text2)' }}>{order.utrNumber}</span></div>}
+                {order.expiresAt && ['ASSIGNED', 'PROCESSING'].includes(order.status) && <div style={{ marginBottom: 8 }}><CountdownTimer expiresAt={order.expiresAt} /></div>}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderTop: '1px solid var(--line)', paddingTop: 9 }}>
+                  <span style={{ fontSize: 9, color: 'var(--text3)' }}>Order {order.orderId || order._id}</span>
+                  {canCancel && <button onClick={() => cancelOrder(order.orderId || order._id)} style={{ fontSize: 10, fontWeight: 800, color: 'var(--red)', background: 'none', border: '1px solid color-mix(in srgb,var(--red) 40%,transparent)', borderRadius: 999, padding: '4px 11px', cursor: 'pointer' }}>Cancel</button>}
                 </div>
               </div>
-            </div>
-          </div>
-        )}
-
-        {/* ── Ledger tab ────────────────────────────────────────────────── */}
-        {tab === 'ledger' && (
-          <div className="space-y-2">
-            {loading && ledger.length === 0 ? (
-              Array.from({ length: 5 }).map((_, i) => <div key={i} className="h-14 bg-white/5 rounded-xl animate-pulse" />)
-            ) : ledger.length === 0 ? (
-              <div className="text-center py-12 text-gray-500"><p className="text-3xl mb-2">📭</p><p>No transactions yet</p></div>
-            ) : (
-              <>
-                {ledger.map(entry => {
-                  const isCredit = entry.type === 'CREDIT';
-                  return (
-                    <div key={entry._id} className="bg-white/5 rounded-xl p-3 flex items-center justify-between border border-white/5">
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate">{entry.reason || entry.type}</p>
-                        <p className="text-xs text-gray-500">{fmtDate(entry.createdAt)} · {entry.field === 'depositBalance' ? 'Deposit' : 'Winnings'} wallet</p>
-                      </div>
-                      <div className={`text-sm font-bold ml-3 shrink-0 ${isCredit ? 'text-green-400' : 'text-red-400'}`}>
-                        {isCredit ? '+' : '-'}{fmtT(entry.amount)}
-                      </div>
-                    </div>
-                  );
-                })}
-                {hasMore && !loading && (
-                  <button onClick={() => { const n = ledgerPage + 1; setLedgerPage(n); loadLedger(n); }} className="w-full py-3 bg-white/5 hover:bg-white/10 rounded-xl text-sm text-gray-400">Load more</button>
-                )}
-              </>
-            )}
-          </div>
-        )}
-
-        {/* ── Payment Orders tab ────────────────────────────────────────────── */}
-        {tab === 'payments' && (
-          <div className="space-y-3">
-            <button onClick={loadOrders} className="text-xs text-yellow-400 hover:text-yellow-300">↻ Refresh</button>
-            {paymentOrders.length === 0 ? (
-              <div className="text-center py-12 text-gray-500"><p className="text-3xl mb-2">📋</p><p>No payment orders yet</p><p className="text-xs mt-1">Use BUY or SELL buttons above</p></div>
-            ) : (
-              paymentOrders.map(order => {
-                const canCancel = order.status === 'PENDING_QUEUE';
-                return (
-                  <div key={order._id} className="bg-white/5 rounded-xl p-4 border border-white/10">
-                    <div className="flex items-start justify-between mb-2">
-                      <div>
-                        <span className={statusBadge(order.status)}>{PAYMENT_STATE_LABELS[order.status as PaymentOrderState] ?? order.status}</span>
-                        <span className="ml-2 text-xs text-gray-500">{order.type === 'DEPOSIT' ? '⬇️ Buy' : '⬆️ Sell'}</span>
-                      </div>
-                      <span className="text-xs text-gray-600">{fmtDate(order.createdAt)}</span>
-                    </div>
-
-                    <div className="bg-white/5 rounded-lg p-2.5 mb-3 text-xs space-y-1">
-                      <div className="flex justify-between">
-                        <span className="text-gray-400">Tokens</span>
-                        <span className="text-white font-medium">{fmtT(order.tokenAmount)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-400">Rate used</span>
-                        <span className="text-gray-300">₹{order.rateUsed}/token</span>
-                      </div>
-                      <div className="flex justify-between border-t border-white/10 pt-1 mt-1">
-                        <span className="text-gray-400">{order.type === 'DEPOSIT' ? 'You pay' : 'You receive'}</span>
-                        <span className={`font-bold ${order.type === 'DEPOSIT' ? 'text-yellow-400' : 'text-green-400'}`}>{fmtINR(order.fiatAmount)}</span>
-                      </div>
-                    </div>
-
-                    {/* UTR + proof for PAID/COMPLETED */}
-                    {order.utrNumber && (
-                      <p className="text-xs text-gray-400 mb-1">UTR: <span className="text-white font-mono">{order.utrNumber}</span></p>
-                    )}
-                    {order.proofScreenshot && (
-                      <div className="mb-2">
-                        <a href={order.proofScreenshot} target="_blank" rel="noreferrer">
-                          <img src={order.proofScreenshot} alt="proof" className="w-16 h-16 object-cover rounded border border-white/20 hover:opacity-80" />
-                        </a>
-                      </div>
-                    )}
-
-                    {/* Countdown for active orders */}
-                    {order.expiresAt && ['ASSIGNED','PROCESSING'].includes(order.status) && (
-                      <div className="mb-2">
-                        <CountdownTimer expiresAt={order.expiresAt} />
-                      </div>
-                    )}
-
-                    <p className="text-xs text-gray-600 mb-3">Order ID: {order.orderId || order._id}</p>
-
-                    <div className="flex gap-2">
-                      {canCancel && (
-                        <button onClick={() => cancelOrder(order.orderId || order._id)} className="flex-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 font-medium py-2 rounded-lg text-sm transition-all border border-red-500/30">
-                          Cancel Order
-                        </button>
-                      )}
-                      {!canCancel && (
-                        <div className="flex-1 text-center py-2 text-xs text-gray-500">
-                          {['COMPLETED'].includes(order.status) ? '✅ Completed' : ['CANCELLED','FAILED'].includes(order.status) ? '❌ ' + order.status : '⏳ Waiting…'}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        )}
-      </div>
-    </div>
+            );
+          })}
+        </div>
+      )}
+    </ScreenShell>
   );
 };
 

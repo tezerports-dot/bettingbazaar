@@ -3,8 +3,13 @@
 import { describe, it, expect } from 'vitest';
 import { validateEnv } from '../../startup/validateEnv.js';
 
+// Signing/HMAC secrets must be strong (≥32 chars, non-placeholder) — the gate
+// rejects weak ones in production, so the "happy path" fixture uses real ones.
+const STRONG_JWT   = 'a-strong-random-jwt-signing-secret-value';
+const STRONG_ORDER = 'a-strong-random-order-hmac-secret-value';
+
 const full = {
-  JWT_SECRET: 's', ORDER_HMAC_SECRET: 'h', AADHAAR_HMAC_SECRET: 'a-secure-aadhaar-hmac-secret-value', MONGODB_URI: 'mongodb://x', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb',
+  JWT_SECRET: STRONG_JWT, ORDER_HMAC_SECRET: STRONG_ORDER, AADHAAR_HMAC_SECRET: 'a-secure-aadhaar-hmac-secret-value', MONGODB_URI: 'mongodb://x', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb',
   REDIS_URL: 'r', ALLOWED_ORIGINS: 'o', S3_BUCKET_NAME: 'b', METRICS_TOKEN: 'a-secure-random-metrics-token-value',
   PUBLIC_APP_ORIGIN: 'https://app.example.test', PUBLIC_APP_ALLOWED_ORIGINS: 'https://app.example.test',
 };
@@ -31,13 +36,40 @@ describe('validateEnv', () => {
       .toThrow(/AADHAAR_HMAC_SECRET/);
   });
 
+  it('rejects a weak or placeholder JWT signing secret in production', () => {
+    expect(() => validateEnv({ ...full, JWT_SECRET: 'test-only-jwt-secret', NODE_ENV: 'production' }, true))
+      .toThrow(/JWT_SECRET/);
+    expect(() => validateEnv({ ...full, JWT_SECRET: 'short', NODE_ENV: 'production' }, true))
+      .toThrow(/at least 32 characters/);
+  });
+
+  it('rejects a weak ORDER_HMAC_SECRET in production', () => {
+    expect(() => validateEnv({ ...full, ORDER_HMAC_SECRET: 'changeme', NODE_ENV: 'production' }, true))
+      .toThrow(/ORDER_HMAC_SECRET/);
+  });
+
+  it('rejects a weak PASETO_SECRET_KEY when it is the one in use', () => {
+    expect(() => validateEnv({ ...full, PASETO_SECRET_KEY: 'secret', NODE_ENV: 'production' }, true))
+      .toThrow(/PASETO_SECRET_KEY/);
+  });
+
+  it('refuses to boot production with unverified money-DB TLS (PG_SSL=no-verify)', () => {
+    expect(() => validateEnv({ ...full, PG_SSL: 'no-verify', NODE_ENV: 'production' }, true))
+      .toThrow(/PG_SSL=no-verify/);
+  });
+
+  it('allows PG_SSL=no-verify only with an explicit ALLOW_INSECURE_PG_TLS override', () => {
+    const r = validateEnv({ ...full, PG_SSL: 'no-verify', ALLOW_INSECURE_PG_TLS: 'true', NODE_ENV: 'production' }, true);
+    expect(r.ok).toBe(true);
+  });
+
   it('lists every missing required var in the thrown message', () => {
     expect(() => validateEnv({ NODE_ENV: 'production' }, true))
       .toThrow(/JWT_SECRET[\s\S]*MONGODB_URI[\s\S]*DATABASE_URL/);
   });
 
   it('requires production hardening vars instead of silently falling back', () => {
-    expect(() => validateEnv({ JWT_SECRET: 's', MONGODB_URI: 'm', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb', NODE_ENV: 'production' }, true))
+    expect(() => validateEnv({ JWT_SECRET: STRONG_JWT, MONGODB_URI: 'm', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb', NODE_ENV: 'production' }, true))
       .toThrow(/ORDER_HMAC_SECRET[\s\S]*REDIS_URL[\s\S]*ALLOWED_ORIGINS[\s\S]*S3_BUCKET_NAME[\s\S]*METRICS_TOKEN/);
   });
 

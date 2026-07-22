@@ -32,10 +32,13 @@ verification + account-status checks (blocked/suspended/approved).
 
 1. **Every admin sub-router route carries a role guard.** Scanning all
    `routes/admin/*.js` + `domains/*/*.admin.routes.js` for an `authenticate`
-   without `isAdmin`/`isAdminOrSubAdmin`/`isSubAdmin`/`isQueueManager`: **0
-   findings.** (The one line the crude scan flagged — `branding
-   /app-assets/upload` — carries `authenticate, isAdmin` on the next line; it
-   is protected.)
+   without `isAdmin`/`isAdminOrSubAdmin`/`isSubAdmin`/`isQueueManager`/`hasPermission`:
+   **0 findings.** Note: KYC (`kyc.admin.routes.js`) and dispute-resolution
+   (`disputeResolution.admin.routes.js`) admin routes guard with
+   `authenticate, hasPermission('canVerifyKYC' | 'canResolveDisputes')` — a
+   permission-key guard that returns 403 on a missing permission — which is why
+   the scan allowlist includes `hasPermission`. The `branding/app-assets/upload`
+   line the crude scan flags carries `authenticate, isAdmin` on the next line.
 2. **Merchant routes enforce ownership.** 23 `merchantAuth` routes; 43
    in-handler `order.merchantId === req.merchantId` / `req.merchantId`
    ownership references. The deposit approve/confirm/reject paths each check
@@ -83,7 +86,7 @@ None expose another user's private data or accept a state mutation.
 # admin routes missing a role guard (expect: only false-positive multiline defs)
 for f in backend/routes/admin/*.js backend/domains/*/*.admin.routes.js; do
   grep -nE "router\.(get|post|put|delete|patch)\(" "$f" | grep authenticate \
-    | grep -vE "isAdmin|isAdminOrSubAdmin|isSubAdmin|isQueueManager" && echo "  ^ in $f"
+    | grep -vE "isAdmin|isAdminOrSubAdmin|isSubAdmin|isQueueManager|hasPermission" && echo "  ^ in $f"
 done
 # public (no-auth) route lines across public-facing routers — expect read-only only
 grep -rnE "router\.(get|post)\(" backend/routes.js backend/domains/user backend/routes/winners.routes.js \

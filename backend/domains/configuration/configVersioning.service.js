@@ -3,7 +3,7 @@
 //
 // This is the intended write path for every future admin-editable business
 // parameter (merchant commission, reserve ratio, deposit split, withdrawal
-// rules, betting limits, etc.) — see docs/governance/CAPABILITY_MATRIX_2026.md "Current Active Phase."
+// rules, betting limits, etc.) — see docs/governance/04-GOVERNANCE.md "Current Active Phase."
 //
 // SCOPE NOTE: this does NOT retrofit existing direct writes to SystemConfig
 // (e.g. the Merchant Pool feature's PUT /queue/merchant-pool, which writes

@@ -63,3 +63,17 @@ export const RATE_LIMIT_TIERS = {
   // General API tier used by security.js's apiLimiter
   api:        { windowMs: 1 * 60 * 1000,  max: 100 },
 };
+
+// ── Global-limiter exemption for phantom (ghost) bet placement ──────────────
+// Phantom managers fire many equalizer bets in quick succession to keep the
+// display pool balanced, so their placements must NOT be throttled by the
+// global /api/* backstop. The POST /api/bet/phantom route is itself gated
+// (authenticate + phantomAccess → 403 for everyone else) and loadShed still
+// bounds total in-flight work, so exempting it removes no real DoS protection.
+export const PHANTOM_BET_PATH = '/api/bet/phantom';
+// Skip predicate for the global limiter. Matches on the untouched originalUrl
+// (immune to app.use() mount-path stripping), drops any query string, and
+// normalises a trailing slash so /api/bet/phantom/ is treated identically.
+export const isPhantomBetPlacement = (req) =>
+  req.method === 'POST' &&
+  String(req.originalUrl || '').split('?')[0].replace(/\/+$/, '') === PHANTOM_BET_PATH;

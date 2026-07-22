@@ -59,9 +59,20 @@ function seedFromSecret(secret) {
 }
 
 const keyPair = nacl.sign.keyPair.fromSeed(seedFromSecret(secretSeed));
-const previousPublicKeys = (process.env.PASETO_PREVIOUS_PUBLIC_KEYS || '')
-  .split(',').map((s) => s.trim()).filter(Boolean).map(unb64url);
-const verifyKeys = [keyPair.publicKey, ...previousPublicKeys];
+// Zero-downtime key rotation: tokens are always SIGNED with the current key but
+// VERIFIED against the current key plus any retained previous keys, so tokens
+// issued before a rotation keep working until they age out (≤ PASETO_EXPIRES_IN),
+// then the old key is dropped. Previous keys may be supplied as old signing
+// SECRETS/passphrases — PASETO_PREVIOUS_SECRETS, or the JWT_PREVIOUS_SECRETS name
+// .env.example documents (same mental model as the current secret) — and/or as
+// pre-derived base64url public keys (PASETO_PREVIOUS_PUBLIC_KEYS). All are merged.
+const splitList = (v) => String(v || '').split(',').map((s) => s.trim()).filter(Boolean);
+const previousSecretPublicKeys = [
+  ...splitList(process.env.PASETO_PREVIOUS_SECRETS),
+  ...splitList(process.env.JWT_PREVIOUS_SECRETS),
+].map((secret) => nacl.sign.keyPair.fromSeed(seedFromSecret(secret)).publicKey);
+const previousPublicKeys = splitList(process.env.PASETO_PREVIOUS_PUBLIC_KEYS).map(unb64url);
+const verifyKeys = [keyPair.publicKey, ...previousSecretPublicKeys, ...previousPublicKeys];
 
 function parseDurationMs(value) {
   if (typeof value === 'number') return value * 1000;

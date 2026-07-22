@@ -14,7 +14,7 @@
  * exactly as before. That is precisely why wiring it into the hot publish path
  * is safe: unless KAFKA_BROKERS is set, this adds a single array-length check.
  *
- * IS KAFKA NEEDED TODAY? No — see docs/governance/HYBRID_ARCHITECTURE.md §Kafka. In-process
+ * IS KAFKA NEEDED TODAY? No — see docs/governance/04-GOVERNANCE.md §Kafka. In-process
  * events + Redis pub/sub (realtime fan-out) + BullMQ (durable jobs) already
  * cover the monolith. Kafka earns its operational cost only once independent
  * services need a shared, replayable event log across the network. This seam is

@@ -31,9 +31,15 @@ describe('cron leader lock (X-4)', () => {
 
   it('an expired lock is taken over (crashed-holder recovery)', async () => {
     const name = 'test-job-' + Math.random().toString(16).slice(2);
-    expect(await acquire(name, 40)).toBe(true); // short TTL, not released
-    expect(await acquire(name, 40)).toBe(false); // still held
-    await sleep(60);                              // TTL lapses
+    // TTL must comfortably outlast the immediate "still held" re-check below:
+    // that second acquire is two Mongo round-trips after the first, and on a
+    // loaded CI runner a 40ms TTL could lapse in between — the lock would be
+    // taken over and the assertion would flip (got true, expected false). 250ms
+    // is far longer than the back-to-back acquires yet the 400ms sleep still
+    // outlasts it for the takeover assertion.
+    expect(await acquire(name, 250)).toBe(true);  // short TTL, not released
+    expect(await acquire(name, 250)).toBe(false); // still held
+    await sleep(400);                             // TTL lapses (400 > 250)
     expect(await acquire(name, 60000)).toBe(true); // taken over
     await release(name);
   });

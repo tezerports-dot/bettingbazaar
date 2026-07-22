@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
 import express from 'express';
-import jwt from 'jsonwebtoken';
+import { signToken } from '../../domains/identity/paseto.util.js';
 import registryRoutes from '../../domains/gameRegistry/gameRegistry.routes.js';
 import { seedGameRegistry } from '../../domains/gameRegistry/gameRegistry.seed.js';
 import { Game, GameCategory, User } from '../../models/index.js';
@@ -17,7 +17,8 @@ app.use('/api/game', registryRoutes);
 
 async function adminToken() {
   const admin = await User.create({ username: 'GameAdmin', mobile: '9000000001', isAdmin: true });
-  return jwt.sign({ userId: admin._id }, process.env.JWT_SECRET);
+  // PASETO (AQ-2): sign via the token authority; a raw JWT is rejected (401).
+  return signToken({ userId: admin._id });
 }
 
 describe('Game Registry', () => {

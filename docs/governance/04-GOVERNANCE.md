@@ -44,7 +44,7 @@ compute, or default this value independently.
 
 | Value | Allowed Owner |
 |---|---|
-| Token buy/sell rates | **REMOVED 2026-07-08** — token conversion is fixed 1:1 (1 BB token = ₹1), not configurable. The `TokenRates` model, its admin endpoints (`/api/admin/token-rates`), and the admin UI page are gone; public rate endpoints remain but return constant 1/1/0 for client compatibility. Do not reintroduce configurable rates — see docs/governance/ENTERPRISE_DECISIONS.md 2026-07-08. |
+| Token buy/sell rates | **REMOVED 2026-07-08** — token conversion is fixed 1:1 (1 BB token = ₹1), not configurable. The `TokenRates` model, its admin endpoints (`/api/admin/token-rates`), and the admin UI page are gone; public rate endpoints remain but return constant 1/1/0 for client compatibility. Do not reintroduce configurable rates — see §20 (Decision Log) 2026-07-08. |
 | Deposit/reserve wallet split, reserve usage rules (per currency) | `DepositPolicy` model (`domains/configuration/depositPolicy.model.js`) — whole-document versioned, written only via `depositPolicy.service.js`. **Corrected 2026-07-08:** `merchantCommissionPercent`/`commissionFundingSource` were removed — merchant incentive pay is cycle-completion-triggered (Merchant Performance Bonus), not deposit-triggered, and does not belong on this policy. See the "Merchant earnings model" line below. |
 | Bet min/max (per cycle type) | `SystemConfig.betLimits` |
 | Deposit/withdrawal limits (platform-wide) | `SystemConfig` |
@@ -52,7 +52,7 @@ compute, or default this value independently.
 | Merchant token capacity (buy orders) | `Merchant.tokenBalance` (current wallet) |
 | Merchant token capacity (sell orders) | Lifetime initial top-up (tracked in merchant wallet history) |
 | Referral commission rates | `CommissionLevel.f1Rate` only — F2/F3 not implemented (H-03) |
-| Merchant earnings model | **The buy/sell spread is retired (2026-07-08, fixed 1:1 conversion)** — new orders carry `merchantProfit: 0`. `Merchant.commissionRate` remains retired; the interim `DepositPolicy.merchantCommissionPercent` mechanism was removed 2026-07-08 before ever being consumed. The go-forward mechanism is the **Merchant Performance Bonus**: triggered by completed buy+sell cycles, a % of cycle volume, funded from platform revenue, NEVER deducted from users/deposits/withdrawals. Not yet built — see docs/governance/CAPABILITY_MATRIX_2026.md and docs/governance/ENTERPRISE_DECISIONS.md 2026-07-08. Do not reintroduce `Merchant.commissionRate`, a rate spread, or a deposit-triggered commission. |
+| Merchant earnings model | **The buy/sell spread is retired (2026-07-08, fixed 1:1 conversion)** — new orders carry `merchantProfit: 0`. `Merchant.commissionRate` remains retired; the interim `DepositPolicy.merchantCommissionPercent` mechanism was removed 2026-07-08 before ever being consumed. The go-forward mechanism is the **Merchant Performance Bonus**: triggered by completed buy+sell cycles (matched volume = `min(deposit, withdrawal)` per merchant), a % of that matched volume, funded from platform revenue, NEVER deducted from users/deposits/withdrawals. **Built** (Phase 008, 2026-07-09): engine `domains/merchant/merchantBonus.service.js` + `MerchantBonusPolicy` (Business Policy, the `bonusPercent`/`enabled` authority) + admin routes (`/api/admin/merchant-bonus-policy`, pool funding) + `MerchantPlatform` admin UI + the 10-min `bonus-engine` cron. Ships **dormant** — the policy is disabled and the `MERCHANT_BONUS_POOL` unfunded until an admin sets `bonusPercent`, enables it, and funds the pool from distributable revenue. See §20 (Decision Log) 2026-07-09 Phase 008. Do not reintroduce `Merchant.commissionRate`, a rate spread, or a deposit-triggered commission. |
 | Sub-admin permission keys | `User.subAdminPermissions` schema — frontend imports from `utils/permissions.ts` |
 | Chat rules (cooldown, length, banned words) | Chat config document via `/api/chat/config` |
 | Branding (colors, logo, names, banners) | `Branding` document — **see §3 and §12** |
@@ -431,3 +431,162 @@ by the owner on 2026-07-13. Enforcement items are queued as AQ-5/AQ-7 in that au
 | GAP-2 | Fixed | See §14 for cross-panel authority and split-readiness rules |
 | GAP-3 | Fixed | See §13 for dead artifact policy |
 | Additional | Fixed | See §15 for file header requirement |
+
+---
+
+# Part II — Architecture, Portability, Capabilities, Decisions & Operations
+
+> **Consolidated 2026-07-22.** The former `PORTABILITY.md`, `HYBRID_ARCHITECTURE.md`,
+> `CAPABILITY_MATRIX_2026.md`, `ENTERPRISE_DECISIONS.md`, and `SRE.md` now live here as
+> §§17–21 (content compacted, not changed in substance). External references to those
+> filenames were repointed to this document. `platform/capabilities.yaml` remains the
+> **machine-readable, CI-verified** capability source of truth (`npm run verify:capabilities`);
+> §19 is the human-readable companion.
+
+---
+
+## 17. Portability (hosting / server / database / CDN)
+
+**Goal:** move to any host/DB/CDN with **no code change** — all infra via env vars, never hardcoded.
+
+Portable today (audited): a scan of `backend/**` found **zero** hardcoded platform URLs or container paths.
+
+| Concern | Env var(s) | Swap to |
+|---|---|---|
+| Database | `MONGODB_URI`, `MONGO_MAX/MIN_POOL_SIZE` | Atlas, self-hosted Mongo, DocumentDB, any MongoDB-wire host |
+| Cache / lock / rate-limit | `REDIS_URL` | Railway, Elasticache, Upstash, self-hosted, or **none** (in-memory fallback) |
+| Object storage | `S3_ENDPOINT/REGION/BUCKET_NAME/ACCESS_KEY/SECRET_KEY` | any S3-compatible (S3, R2, B2, iDrive, Vultr, MinIO) |
+| CDN | `CDN_URL` | any CDN in front of the bucket |
+| Public URL / CORS | `APP_BASE_URL`, `ALLOWED_ORIGINS` | any domain |
+| Email | `SMTP_*` | any SMTP provider |
+| Port | `PORT` (default 8080) | whatever the platform assigns |
+
+- **Frontends are origin-agnostic:** call `VITE_API_URL` if set, else same-origin `/api` (single-service deploy needs no frontend URL config).
+- **Any container host:** the `Dockerfile` starts `node backend/server.js` — no platform SDK, no `.env` at boot (env injected). Runs on ECS/Fargate, Cloud Run, Azure, DO, Fly, Render, k8s, bare VM.
+- **Observability is portable:** structured JSON logs to stdout; any system ingests them.
+- **Migrate:** provision Mongo (+ optional Redis + S3 bucket + CDN) → set `.env.example` vars → `docker build`/buildpack → point DNS + set `APP_BASE_URL`/`ALLOWED_ORIGINS`. Railway files (`railway.json`, `nixpacks.toml`, `Procfile`, `Caddyfile`) are optional convenience; the Dockerfile is the neutral path.
+- **⚠️ One honest limit — the DB ENGINE.** The app is built on **MongoDB via Mongoose** (200+ models, aggregation pipelines, ledger document shape, transactions). Any MongoDB *host* is a config swap; swapping the *engine* to SQL is a **data-layer rewrite** (would need a repository/DAL abstraction — none exists today). Deliberate, recorded.
+- **Resolved caveats:** app-asset uploads write to S3 when configured (multi-instance correct); SSE/socket fan-out uses a Redis pub/sub bridge (`startup/realtimeBridge.js`, graceful no-op without Redis).
+
+---
+
+## 18. Hybrid Architecture — modular monolith → selected microservices, for 1M DAU
+
+**Today: a modular monolith.** 26 bounded domains under `backend/domains/`, boundaries CI-enforced by dependency-cruiser. One process, one deploy — the right shape now (most "microservices at 1M DAU" failures split too early).
+
+**Target: hybrid.** Keep the monolith core; extract a *small number* of services only on a **measured trigger** (independent scaling, failure isolation, or a different runtime profile). Method: **strangler-fig, seams-first** — the seams are built and **dormant** until an env var flips them (same pattern as the Postgres money DB and S3 storage).
+
+**Seams built now (dormant):**
+
+| Seam | File | Dormant until |
+|---|---|---|
+| Service topology (local vs remote resolver) | `backend/gateway/serviceTopology.js` | `SERVICE_<NAME>_URL` set |
+| Consistent hashing (ring, ~1/N remap) | `backend/gateway/consistentHash.js` | a service scales horizontally |
+| Inter-service auth (short-lived HS256 `iss`/`aud` tokens) | `backend/gateway/serviceAuth.js` | a domain goes remote; `SERVICE_JWT_SECRET` |
+| Event backbone (forwards domain events to a log) | `backend/services/eventBackbone.js` + `backbone/kafkaDriver.js` | `KAFKA_BROKERS` set |
+| RAG service (first split candidate) | `backend/domains/support/*` | `ANTHROPIC_API_KEY` + embeddings + pgvector |
+
+**API gateway — two meanings, both explicit.** (a) The **application edge** is already in-process (`server.js`: Helmet, CORS, compression, correlation IDs, metrics, tiered rate-limiting, load-shed, OWASP filter, service registry, `/api/v1/` versioned routes) + the new `serviceTopology` resolver. (b) The **infrastructure edge** at 1M DAU is a dedicated **Envoy / Kong / APISIX** in front (TLS, global rate-limit, LB) — **infra-owned**; the app exposes `/health/live`, `/health/ready`, `/metrics`, versioned routes. Protocols: **public REST/JSON stays**; **internal service-to-service = gRPC** once services exist (proto contracts written at extraction, not speculatively).
+
+**Do we need Kafka? — not yet; seam is ready.** The monolith is covered by the in-process `eventBus`, Redis pub/sub (cross-instance realtime), and BullMQ (durable jobs). Kafka earns its cost only at: 2+ independent services needing the same stream · replay · throughput/retention beyond Redis · CQRS/event-sourcing. Turning it on is `KAFKA_BROKERS=...` + the existing driver — no call-site changes.
+
+**Inter-service security.** Inside the monolith the process boundary *is* the trust boundary — do not add service-auth ceremony to in-process calls. When a domain goes remote: app-identity service tokens (built, `serviceAuth.js`) + mTLS (mesh/Envoy, infra) + default-deny network policies (infra) + rotated `SERVICE_JWT_SECRET` (infra).
+
+**Hybrid database (Mongo + Postgres).** MongoDB = high-velocity flexible data (cycles, realtime, sessions, logs, content), **authoritative today**. PostgreSQL = financial integrity (wallets, ledger, payment orders, KYC): strong ACID, integer paise, partitioning. Sync = **dual-write** (`postgres/dualWrite.js`) + **continuous reconciliation** (`reconcile.js`). Postgres is a verified **shadow** first, **authoritative for money last**, owner-gated (`postgres/DATA_ROLLBACK_PLAN.md`). pgvector rides the same Postgres for RAG. CDC (Debezium) is a later option; dual-write + reconcile is the right choice while PG is a shadow. Redis stays the cache + lock + rate-limit + queue layer.
+
+**HA / resilience — app vs infra.** **App (done):** health/readiness/drain, load-shed/bulkhead, backoff+jitter, tiered + per-subnet rate limiting + surge breaker, consistent-hash primitive, Prometheus + Grafana-as-code. **Infra (Bucket C):** reverse proxy w/ dynamic upstreams + geo-routing, multi-region/multi-provider + DNS failover, managed WAF (`owaspFilter` is the app-side complement), IaC, encrypted cross-region backups. The app is HA-*ready* (stateless, Redis-backed shared state); multi-region/WAF/DNS are operational programs the app integrates with.
+
+**Extraction order (on measured triggers):** 1) `support` (RAG) — stateless, zero money risk, the rehearsal; 2) `markets` — CPU-heavy engine + realtime; 3) `payment`/`merchant` — high throughput; 4) `wallet` — **last** (strongest consistency). `identity` stays central.
+
+**Capacity sketch (1M DAU):** ~30–70k concurrent at peak → ~6–20k RPS. A horizontally-scaled stateless monolith + Redis shared state + Mongo/PG read replicas + pooling handles this behind a load balancer **before** any split is mandatory. The first thing to hurt is hot datastore paths, not the web tier — hence the money-DB partitioning framework + pool monitoring. **Scale the monolith horizontally first; extract on measured triggers.**
+
+**Activation env-vars (all off by default):** `DATABASE_URL`+`VOYAGE_API_KEY` (RAG retrieval), `ANTHROPIC_API_KEY` (RAG generation), `KAFKA_BROKERS` (event backbone), `SERVICE_<NAME>_URL` (remote service), `SERVICE_JWT_SECRET` (mesh signing).
+
+---
+
+## 19. Capability Matrix (human-readable; **authoritative source = `platform/capabilities.yaml`**)
+
+`platform/capabilities.yaml` (70 capabilities: id / bucket / owner / status / deps / evidence / verification / docs) is checked on every build by `scripts/verify-capabilities.mjs` so a claimed capability can't rot. **Bucket model:** **A** = build fully now · **B** = built + configurable, activated when infra exists · **C** = infra/ops-owned (app provides integration points) · *decision* = recorded architecture decision.
+
+**Scoreboard (live — `platform/capabilities.yaml`, verified by `npm run verify:capabilities`):** **74 capabilities** — full **48** · partial **10** · architecture-ready **9** · absent **4** · recorded-decision **3**. **Zero capabilities are absent-and-unaccounted-for** — every partial/absent has a recommended upgrade + priority; the high-priority ones are all **owner/infra-gated** (Postgres cutover, PITR), not code gaps. Legend: **full** meets the 2026 enterprise standard · **architecture-ready** built + configurable, dormant until infra exists · **partial** works but has an owner/infra/volume-gated gap · **decision** a recorded architecture choice · **absent** not implemented. (Run the verifier for the exact live counts — this line is a snapshot.)
+
+**FULL (representative evidence):** enterprise-architecture layering, governance framework, DDD boundaries (CI-enforced), centralized config, dependency validation + drift detection, append-only ledger (app + PG trigger), dual-write (dormant) + reconciliation engine, rollback strategy, connection pooling (+ `bb_pg_pool_connections`), Redis cache/locks/queue/rate-limit, central security config, security headers/cookies/CSP/HSTS, authorization matrix, audit logging, Caddy hardening + reverse proxy, central network config, load balancing (k8s HPA), health endpoints, Prometheus histogram metrics, Grafana-as-code, correlation IDs, structured logging + alerting, Docker + k8s readiness, CI/CD (PG18/Redis8, `npm ci`, audit + secret-scan + SBOM + 3 panel builds), blue/green + rolling, DR platform + SRE, cloud-agnostic provider layer, storage/email/SMS abstraction, feature flags, background job platform.
+
+**PARTIAL / ABSENT (all accounted, gated):**
+- **Owner/infra-gated (high):** PostgreSQL-as-SoT + integer-money-at-rest (item 7/9 — dormant, resolved by the cutover), Point-in-Time Recovery (enable Atlas/WAL).
+- **Owner/infra-gated (medium):** read replicas (+ lag gauge), Redis HA (Sentinel/Cluster URL), WAF (front with Cloudflare), DNS failover (wire health-watch to provider), secret rotation automation (vault — pairs with secret-management), backup restore automation, Mongo multi-doc atomicity (run as replica set).
+- **Volume-gated:** partitioning (apply RANGE-by-month with preserved global-uniqueness when millions/month).
+- **Recorded decisions:** CDC/Debezium (reconciliation already proves correctness), Redis sessions (JWT+blacklist gives revocation), geo-routing (single region), OpenTelemetry SDK (adopt at 2nd-service trigger; W3C `traceparent` interop already shipped), IaC Terraform (manifests are the reproducibility layer on Railway), Helm / policy-as-code (only under k8s).
+- **ABSENT (low/medium, no registry pipeline yet):** artifact signing (Cosign), SLSA provenance, replica-lag monitoring — all add when an image registry / read replica exists.
+
+> **Governance consolidation note:** present-state, completed-work, backlog, and future-capability tracking live in this matrix + `capabilities.yaml`. Do not recreate standalone phase-status / execution-queue / future-capability markdown files unless a separate document is required for an active audit or regulatory handoff.
+
+---
+
+## 20. Enterprise Decision Log (the "why", newest first)
+
+Architecture decisions that aren't obvious from code alone. Dates are stable anchors — **code comments cite these dates**, so keep them.
+
+**2026-07-22 — Winner tie-breaker stays `Math.random` (owner-accepted).** When a cycle's DELHI/BOMBAY pools are exactly equal, the winner tie-break is `Math.random() < 0.5` (`domains/markets/cycleGenerator.service.js`). This is a deliberate, owner-accepted exception to the security-review guidance "use a CSPRNG for outcome-determining code / tie-breakers" (`SECURITY_CODE_REVIEW_CHECKLIST.md` §4): it fires only on an exact-tie edge case, decides a 50/50 with no attacker-exploitable bias worth a CSPRNG, and the owner has chosen to keep it. A future review flagging this line should treat it as **accepted**, not a defect — do not change it to `crypto` without an explicit owner decision reversing this.
+
+**2026-07-10 — Phases B–F: duplicate-txId gate; env-gated integrations.** Wallet idempotency is the **WalletLedger unique txId index inside the money transaction**, not the `checkIdempotent` pre-read (two concurrent calls both pass the pre-read); the losing writer resolves `{ idempotent: true }` instead of erroring. Forced by the F-2 settle-under-concurrency test (first CI run double-credited 198 for a 99 payout because the index build wasn't awaited and a dup-key abort was treated as an error); `setup.js` now awaits `Model.init()`. Same pattern in `releaseLockedStake` + all six wallet money movers. **Integrations are activation-gated on config, never stubbed:** EMAIL is a full SMTP impl whose `active` flag derives from env; SMS/PUSH/USDT/payment-gateway stay declared-inactive (each needs a provider *decision*, not just keys).
+
+**2026-07-10 — Phase A: bet-funding split & winnings fee.** **Precision = PAISE (integer paise; percents as integer basis points; floats never in the math, only storage)** — whole-token math can't express a ₹10 bet drawing 9.7/0.3. Drain rule: emptying a bucket returns the stored value verbatim so the atomic `$gte` can't spuriously fail on float error. Split stored as `betReservePercent` only (main = 100−reserve derived — one degree of freedom; DepositPolicy keeps two fields because it's whole-doc versioned). `winningsFeePercent` defaults to **1** (owner-specified core rule; 0 restores flat 2x). Fee → PLATFORM_REVENUE via `Cycle.netProfit` (no separate WINNINGS_FEES leg); itemized on the cycle (`totalPlatformFees`, `winningsFeePercentUsed`, snapshotted at settle). Fee percent read **once per settlement**. Correction recorded: the 2026-07-09 integration suite had never passed in CI until Phase A step 0 fixed it — CI run #10 (6797c81) is the first green run in repo history.
+
+**2026-07-09 — Phase 012: Communication / Operations / Reporting.** `notify()` is the single user-messaging path over a channel-adapter registry (IN_APP live; EMAIL/SMS/PUSH declared) and never throws into business flows. Operations stays orchestration-only (owns no data; the config catalog is the "no hardcoded values" enforcement index). Reporting is DERIVED/read-only, never re-computes money — the regulatory export emits one CSV row per journal posting.
+
+**2026-07-09 — Phase 011: Product Platforms + accepted four-tier architecture (future work EXTENDS, never restructures).** Tiers: **Core Enterprise** (Business Policy, Operations, Revenue & Settlement, Funding, Merchant, Risk) · **Product** (Sportsbook, Casino, Games, Markets, Odds, Event) · **Customer** (Communication, Wallet, Rewards, KYC) · **Enterprise Services** (Reporting, Analytics, Notification, Treasury, Configuration, Audit, Integration). Real consolidation done: `game/`+`betting/` → `domains/markets/`; provider model/routes → `domains/casino/`; shared `trading/tradingModels.js` (canonical sides/statuses + the settlement-integration contract: products persist source records, R&S derives ledger entries, wallets only via authorities). Sportsbook/Games/Event/Odds are **declared** (boundary READMEs + default-false flags), not faked.
+
+**2026-07-09 — Phase 010: Risk Platform.** `domains/risk/riskValidation.service.js` is the single authority for operational rules + transaction validation (inline checks removed from bet/funding paths → `assessBet`/`assessFundingOrder`/`computeReserveSplit`). Numbers/toggles live in Business Policy; Risk only reads/enforces. Defaults: `enforceMultiplesOf10=true` (live change by owner directive), `blockOppositeSideBetting=false`, `maxFundingOrdersPerHour=0`, `payoutFeePercent=0` (when set, Risk computes at withdrawal, floored paise, posted to PAYOUT_FEES by R&S). AML/fraud/device-risk/responsible-gaming are **declared, not stubbed** (no fake placeholders).
+
+**2026-07-09 — Phase 009: Funding Platform.** `domains/funding/` is the only authority for money entering/leaving; an **authority boundary** over existing P2P machinery, not a file move (`paymentProcessing.service.js` stays in `domains/payment/` behind the `MANUAL_P2P_INR` adapter). Deposits/withdrawals enter only via `fundingAuthority.requestDeposit/requestWithdrawal`; future rails are `providerRegistry.js` adapters. The zero-importer `eventBus` is now wired (PAYMENT_ORDER_CREATED/COMPLETED → a Funding subscriber nudges the R&S reconciler; 60s cron stays as the idempotent safety net). Funding never owns accounting, never mutates balances.
+
+**2026-07-09 — Phase 008: Merchant Platform.** Single authority for merchant lifecycle. **Merchant Performance Bonus** shipped: "completed buy→sell cycle" = matched volume `min(deposit fiat, withdrawal fiat)` per merchant; bonus applies to newly-matched volume above a ledger-derived high-water mark (nothing stored that can drift); issuance = two idempotent ops on one deterministic key (ledger event pool→MERCHANT_FUNDS capped at pool, then wallet credit; crash heals next run); never partial-issues; percent/threshold/enablement live ONLY in `MerchantBonusPolicy`, shipped **disabled**. `merchantWallet.service.js` is the single writer of `Merchant.tokenBalance` (seven raw `$inc` sites rerouted preserving semantics; one canonical txId per op).
+
+**2026-07-09 — Phase 007: Revenue & Settlement Platform (single financial authority).** Owns completed bets/payouts, platform revenue, settlement ledger, reserve deductions, payout fees, accounting events, merchant-bonus funding. `walletAuthority` stays the sole balance writer; R&S is the ACCOUNTING view (never mutates balances), owns no configurable percentages. **Ledger design (standard fintech double-entry):** append-only `AccountingEvent` (mutation throws; corrections are new reversing entries); each entry = signed integer paise postings summing to **exactly zero** (service + schema invariant); globally-unique `idempotencyKey` (dup = silent no-op); **balances always derived from postings**, never stored; closed chart of accounts (EXTERNAL_FIAT, USER_FUNDS, PLATFORM_RESERVE, PLATFORM_REVENUE, PAYOUT_FEES, MERCHANT_BONUS_POOL). **Producer model = DERIVED, not inline:** a reconciliation worker anti-joins completed source records against existing entries and records what's missing, idempotently (one writer, no risk to live money, self-healing, free backfill; ~60s lag acceptable). Pre-1:1 orders balance via a PLATFORM_REVENUE residual leg.
+
+**2026-07-08 — buyRate/sellRate flattened to fixed 1:1; TokenRates removed.** Token conversion is a fixed **1:1 constant** (1 BB token = ₹1) across the stack. `TokenRates` model + admin endpoints (`/api/admin/token-rates`) + admin page + all rate reads are gone; new orders carry `rateUsed:1`, `fiatAmount===tokenAmount`, `merchantProfit:0`. Executed in five independently-green slices. Compatibility: public rate endpoints keep their shapes but return constant 1/1/0 (old clients degrade to identity); historical orders keep real `rateUsed`; `'TokenRates'` stays in the `ConfigVersion` enum for audit validity but is removed from `MODEL_BY_KEY` (no new version writable); the dead `tokenrates` collection is left in place (a DB op, not code). **Merchant earnings consequence:** with the spread gone and `merchantCommissionPercent` removed, merchants earn nothing per order until the Merchant Performance Bonus engine — the accepted interim state.
+
+**2026-07-08 — Correction: merchant incentive removed from DepositPolicy; it's cycle-completion-triggered, not deposit-triggered.** `DepositPolicy.merchantCommissionPercent` + `commissionFundingSource` (added 2026-07-07) removed entirely; `DepositPolicy` now governs only the deposit/reserve split + reserve-usage rules for one incoming deposit. The replacement (**Merchant Performance Bonus**, not yet built) is triggered by a completed buy+sell cycle, a % of cycle volume on a future Merchant/Business Policy, a **platform-funded operating expense never deducted from users/deposits/withdrawals**. Named distinctly from the retired `Merchant.commissionRate` and yesterday's `merchantCommissionPercent` so three mechanisms aren't conflated. Safe to remove outright — no `DepositPolicy` doc ever existed in the live DB; `merchantCommissionPercent` was already dead (no reader). §1 updated to match.
+
+**2026-07-07 — Platform-oriented architecture (formalized).** New code is organized under named platforms (Business Policy, Operations, Revenue & Settlement, Merchant, Funding, Risk, Sportsbook, Casino, Communication) rather than isolated features. Scope of the decision: naming + folder/nav placement for **new** work; existing code moves to its platform home **opportunistically** (when touched for another reason), never as a dedicated reshuffle (that would be the "expand scope into an unrelated migration" pattern §-forbidden).
+
+**2026-07-07 — DepositPolicy: whole-document versioning, not field-level.** Deposit%/reserve%/reserve-usage rules are versioned together as ONE document per version (not independent fields via `configVersioning`) because they describe one coherent decision ("what happens to an incoming deposit"); field-level versioning would let them drift out of sync mid-change. Exactly one version is ACTIVE per currency at any moment. Named `DepositPolicy` (matches future siblings `WithdrawalPolicy`/`SettlementPolicy`), not "Allocation Policy". *(Superseded sub-decisions on `commissionFundingSource`/`merchantCommissionPercent` — see the 2026-07-08 correction above; the "platform-funded, never user-deducted" rule survives, now owned by the Merchant Performance Bonus mechanism.)*
+
+**2026-07-07 — Fixed the live 90/10 hardcode in `merchant.routes.js` (not just the model).** The inline route handler in POST `/orders/:id/approve` was the live path and recomputed its own ratio, ignoring the stored `depositAllocation`/`reserveAllocation`; fixed to consume the stored fields (dead `approveDeposit()` helper removed). Follow-up 2026-07-10: those wallet writes now route through `walletAuthority.service.js` rather than raw `$inc`.
+
+---
+
+## 21. SRE & Operations
+
+Grounded in what the repo exposes: Prometheus metrics (`services/metrics.service.js`), the alert webhook (`alerting.service.js`), `/health/live`+`/health/ready` probes, and the Grafana dashboard (`deploy/grafana/`).
+
+**SLOs (rolling 28d; error budget = 100%−SLO):**
+
+| SLO | Target | Source |
+|---|---|---|
+| API availability (`/health/ready` 200) | 99.9% | uptime monitor (budget 40m19s/28d) |
+| p99 latency, non-settlement GET | < 400 ms | `http_request_duration_seconds` |
+| p99 latency, `POST /api/bet` | < 800 ms | same, route-labeled |
+| Settlement success | ≥ 99.95% | `bb_settlement_runs_total{outcome}` |
+| Ledger integrity | 100% (hard) | revenue `integrityOk` / `bb_ledger_reconcile_errors_total`==0 |
+| Money-DB drift (PG live) | 0 rows (hard) | `bb_pg_drift_rows`==0, `bb_pg_trial_balance_ok`==1 |
+
+**Hard SLOs** (ledger integrity, money-DB drift) have a **zero** error budget — any breach is a P1, never "spend the budget."
+
+**Error-budget policy:** >25% ship normally · <25% freeze non-critical releases · exhausted → reliability/security only · hard-SLO breach → stop deploys, open P1, reconcile the ledger first.
+
+**Golden signals:** Latency (`http_request_duration_seconds` buckets; alert p99 > SLO 10m) · Traffic (`_count` rate) · Errors (5xx rate from `status` label; alert >1% 5m) · Saturation (`bb_requests_shed_total`, `bb_pg_pool_connections{state="waiting"}`, event-loop lag). Money-path alerts wire to the webhook (10-min cooldown): ledger-reconcile, settlement-tick, and (PG live) `pg-drift`. Point `SystemConfig.alertWebhookUrl` at PagerDuty/Slack.
+
+**Incident runbooks** (P1 = money incorrect or platform down · P2 = degraded · P3 = minor). First 5 min: check `/health/ready` per instance + Grafana; identify blast radius; if a deploy is implicated, **roll back first**, diagnose after.
+- **Ledger integrity (P1):** do NOT hand-mutate balances. Pull the failing event via `GET /api/admin/revenue/ledger`; ledger is append-only (corrections are new offsetting entries); reconciler is idempotent; escalate to the money-domain owner.
+- **Settlement failures (P1/P2):** idempotent + crash-resumable; a failed tick retries next cycle. If persistent, check Mongo connectivity + the cycle lock (`settlementConcurrency.integration.test.js` documents invariants).
+- **Money-DB drift (P1, PG live):** `npm run reconcile:pg -- --hours 168` for detail; do NOT flip authority while drifting; `DATA_ROLLBACK_PLAN.md` has the per-phase fallback.
+- **Overload (P2):** the edge sheds to protect the event loop — scale out (k8s replicas/Railway instances), raise the admin load-shed ceiling if headroom, check for a hot query. Rate-limit counters are Redis-shared, so scaling is safe.
+- **Redis down (P2, self-mitigating):** rate-limit degrades to per-instance, cache to in-memory, realtime to single-instance (all by design). Restore Redis; no data loss (money is in Mongo/PG).
+
+**Capacity planning:** app tier is stateless → scale horizontally (k8s HPA on CPU: api **3→30** @ 65%, realtime **2→40** @ 60% — `deploy/k8s/deployment.yaml`). Inputs: RPS (`_count` rate), event-loop lag, pool waiting. **DB connections are the first ceiling:** keep `instances × (MONGO_MAX_POOL_SIZE + PG_POOL_SIZE) ≤` the DB tier's connection budget. Review headroom monthly + before campaigns; load-test before raising the instance ceiling.
+
+**Rollback:** Railway → redeploy previous deployment (or revert the merge on `main`). k8s → `kubectl rollout undo deployment/bettingbazaar` or flip the blue/green Service selector. Deploys are boot-safe: `validateEnv` fails fast on missing secrets, so a misconfigured rollout refuses to start.
+
+**On-call quick reference:** dashboards `deploy/grafana/bettingbazaar-dashboard.json` · scrape `GET /metrics` (Bearer `METRICS_TOKEN` if set) · health `/health/live` (process) + `/health/ready` (deps+drain) · alert sink `SystemConfig.alertWebhookUrl` / `ALERT_WEBHOOK_URL` · DR `docs/governance/DISASTER_RECOVERY.md` · money rollback `backend/postgres/DATA_ROLLBACK_PLAN.md`.

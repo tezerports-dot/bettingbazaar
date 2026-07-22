@@ -9,7 +9,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import express from 'express';
-import jwt from 'jsonwebtoken';
+import { signToken } from '../../domains/identity/paseto.util.js';
 import mongoose from 'mongoose';
 import '../../models/index.js';
 import merchantRoutes from '../../domains/merchant/merchant.routes.js';
@@ -22,8 +22,10 @@ const Merchant     = () => mongoose.model('Merchant');
 const User         = () => mongoose.model('User');
 const PaymentOrder = () => mongoose.model('PaymentOrder');
 
+// PASETO (AQ-2): merchant PASETO carries { merchantId, isMerchant }; sign via the
+// token authority so authenticateMerchant's Ed25519 verify accepts it (raw JWT → 401).
 const merchantToken = (merchantId) =>
-  `Bearer ${jwt.sign({ isMerchant: true, merchantId: String(merchantId) }, process.env.JWT_SECRET)}`;
+  `Bearer ${signToken({ isMerchant: true, merchantId: String(merchantId) })}`;
 
 async function seed({ tokenBalance = 100000 } = {}) {
   const merchant = await Merchant().create({

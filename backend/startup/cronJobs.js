@@ -194,7 +194,7 @@ export function registerCronJobs(rebuildLeaderboard) {
       const { pgConfigured } = await import('../postgres/pgClient.js');
       if (!pgConfigured()) return; // dormant until Postgres is wired
       const { runReconcile } = await import('../postgres/reconcile.js');
-      const { pgDriftRows, pgTrialBalanceOk } = await import('../services/metrics.service.js');
+      const { pgDriftRows, pgTrialBalanceOk, pgReconcileConsecutiveClean } = await import('../services/metrics.service.js');
 
       const report = await runReconcile({ hours: 24 });
       const missing = report.results.reduce((s, r) => s + r.missingInPg, 0);
@@ -202,6 +202,7 @@ export function registerCronJobs(rebuildLeaderboard) {
       pgTrialBalanceOk.set(report.trialBalance.conservesToZero ? 1 : 0);
 
       if (report.drift) {
+        pgReconcileConsecutiveClean.set(0); // any drift breaks the cutover-readiness streak
         console.error(`[pg-reconcile] DRIFT: ${missing} missing row(s), trialBalanceOk=${report.trialBalance.conservesToZero}`);
         sendAlert('pg-drift', 'Hybrid money-DB drift detected (Mongo vs Postgres)', {
           missingRows: missing,
@@ -209,10 +210,19 @@ export function registerCronJobs(rebuildLeaderboard) {
           perTable: report.results.filter(r => r.missingInPg > 0)
             .map(r => ({ table: r.table, missing: r.missingInPg, sample: r.sampleMissing })),
         });
+      } else {
+        // Clean pass — advance the cutover gate. This is the signal to watch
+        // before a cutover: it must stay high over a sustained window
+        // (DATA_ROLLBACK_PLAN.md). Any drift or crash resets it to 0.
+        pgReconcileConsecutiveClean.inc();
       }
     } catch (e) {
       console.error('[pg-reconcile] cron error:', e.message);
-      try { const { pgReconcileErrors } = await import('../services/metrics.service.js'); pgReconcileErrors.inc(); } catch { /* metrics optional */ }
+      try {
+        const { pgReconcileErrors, pgReconcileConsecutiveClean } = await import('../services/metrics.service.js');
+        pgReconcileErrors.inc();
+        pgReconcileConsecutiveClean.set(0); // a failed run is not a clean run
+      } catch { /* metrics optional */ }
       sendAlert('pg-reconcile-cron', 'Postgres reconciliation cron crashed', { error: e.message });
     }
   });
