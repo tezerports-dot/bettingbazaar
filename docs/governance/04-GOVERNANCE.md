@@ -283,6 +283,8 @@ Never concatenate `cdnBase + '/' + logo` without normalising both sides (C-07 fi
 | `withdrawalPageBannerUrl` | WalletModal.tsx sell-tokens section |
 | `loginPageBannerUrl` | AuthModal.tsx or Login page background |
 | `registerPageBannerUrl` | AuthModal.tsx register tab |
+| `betCardDelhiImageUrl` | redesign `GameScreen` DELHI bet-card background (resolved via `getAssetUrl`) |
+| `betCardBombayImageUrl` | redesign `GameScreen` BOMBAY bet-card background (resolved via `getAssetUrl`) |
 
 ---
 

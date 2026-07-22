@@ -79,6 +79,7 @@ router.put('/branding', authenticate, isAdmin, async (req, res) => {
       'homePopupImageUrl','homePopupLinkUrl','homePopupEnabled',
       'tricksTipsBannerUrl','rulesPageImageUrl','depositPageBannerUrl',
       'withdrawalPageBannerUrl','loginPageBannerUrl','registerPageBannerUrl',
+      'betCardDelhiImageUrl','betCardBombayImageUrl',
     ];
     for (const field of BRANDING_FIELDS) {
       if (b[field] !== undefined) $set[field] = b[field];
