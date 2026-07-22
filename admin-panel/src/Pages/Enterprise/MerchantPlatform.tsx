@@ -26,7 +26,9 @@ export const MerchantPlatform: React.FC = () => {
   const [ledgerEntries, setLedgerEntries] = useState<any[]>([]);
 
   const [form, setForm] = useState({
-    enabled: false, bonusPercent: 1, minMatchedVolume: 0, justification: '',
+    // Default the form to the owner-defined 10% policy (still saved DISABLED until
+    // an admin enables it and funds the pool). Governance §1 "Merchant earnings model".
+    enabled: false, bonusPercent: 10, minMatchedVolume: 0, justification: '',
   });
 
   const load = useCallback(async () => {
