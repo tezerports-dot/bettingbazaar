@@ -86,19 +86,27 @@ export const pgReconcileErrors = new client.Counter({
   registers: [registry],
 });
 
-// Connection-pool monitoring (2026 DB hygiene). A Gauge with an async collect()
+// Pool-stats provider — registered by pgClient via setPoolStatsProvider() when
+// Postgres is in use. Inversion of control keeps this low-level metrics module
+// free of any dependency on the higher-level pgClient (dependency-cruiser
+// no-circular: metrics must not import pgClient; pgClient depends on metrics).
+let poolStatsProvider = null;
+/** pgClient registers its getPoolStats() here so /metrics can sample the pool
+ *  without metrics.service importing pgClient (which would form an import cycle). */
+export function setPoolStatsProvider(fn) { poolStatsProvider = typeof fn === 'function' ? fn : null; }
+
+// Connection-pool monitoring (2026 DB hygiene). A Gauge with a collect() that
 // samples the live pool on each scrape — no interval, no state. `waiting > 0`
 // sustained = pool exhaustion (raise PG_POOL_SIZE or scale the DB). Dormant
-// (emits nothing) until Postgres is configured and the pool has opened.
+// (emits nothing) until pgClient registers a provider and the pool has opened.
 export const pgPoolConnections = new client.Gauge({
   name: 'bb_pg_pool_connections',
   help: 'Postgres connection pool state by bucket (total|idle|waiting)',
   labelNames: ['state'],
   registers: [registry],
-  async collect() {
+  collect() {
     try {
-      const { getPoolStats } = await import('../postgres/pgClient.js');
-      const s = getPoolStats();
+      const s = poolStatsProvider ? poolStatsProvider() : null;
       if (!s) return;
       this.set({ state: 'total' }, s.total);
       this.set({ state: 'idle' }, s.idle);

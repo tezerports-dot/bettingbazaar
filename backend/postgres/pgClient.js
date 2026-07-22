@@ -12,7 +12,7 @@
 import fs from 'fs';
 import path from 'path';
 import { rupeesToPaise } from '../shared/money.js'; // Integer Money Engine (cap #9)
-import { pgQueryDuration } from '../services/metrics.service.js';
+import { pgQueryDuration, setPoolStatsProvider } from '../services/metrics.service.js';
 
 let pool = null;
 
@@ -102,6 +102,12 @@ export function getPoolStats() {
   if (!pool) return null;
   return { total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount };
 }
+
+// Register the pool-stats provider with the metrics module (inversion of control:
+// pgClient depends on metrics, never the reverse — this breaks the import cycle
+// dependency-cruiser's no-circular rule enforces). The /metrics pgPoolConnections
+// gauge samples through this without importing pgClient.
+setPoolStatsProvider(getPoolStats);
 
 /** Rupees(float) → integer paise at the Postgres boundary. THE money unit.
  *  Delegates to the Integer Money Engine (shared/money.js) for the canonical

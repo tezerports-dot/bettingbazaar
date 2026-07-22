@@ -13,7 +13,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import express from 'express';
-import jwt from 'jsonwebtoken';
+import { signToken } from '../../domains/identity/paseto.util.js';
 import mongoose from 'mongoose';
 import { User, Cycle, Bet } from '../../models/index.js';
 import betRoutes from '../../domains/markets/bet.routes.js';
@@ -27,8 +27,11 @@ app.use(express.json());
 // Mirror the real mount: server.js does app.use('/api/bet', betRoutes)
 app.use('/api/bet', betRoutes);
 
+// Auth migrated to PASETO (AQ-2, 2026-07-13): sign a real v2.public token via the
+// single token authority so the middleware's Ed25519 verify accepts it. A raw
+// jsonwebtoken JWT is rejected as an invalid signature (401).
 const authFor = (user) =>
-  `Bearer ${jwt.sign({ userId: user._id }, process.env.JWT_SECRET)}`;
+  `Bearer ${signToken({ userId: user._id })}`;
 
 describe('Phase A money flow: split → settle → ledger', () => {
   let engine;
@@ -42,12 +45,14 @@ describe('Phase A money flow: split → settle → ledger', () => {
   });
 
   it('runs a balanced ₹10-vs-₹10 cycle: winner nets 19.80, platform revenue = the 0.20 fee', async () => {
+    // kycStatus APPROVED: /api/bet/place chains requireApprovedKyc after
+    // authenticate — an unverified user is 403'd before the money path runs.
     const alice = await User.create({
-      username: 'alice', mobile: '9100000001',
+      username: 'alice', mobile: '9100000001', kycStatus: 'APPROVED',
       depositBalance: 100, winningsBalance: 0, reserveBalance: 10,
     });
     const bob = await User.create({
-      username: 'bob', mobile: '9100000002',
+      username: 'bob', mobile: '9100000002', kycStatus: 'APPROVED',
       depositBalance: 100, winningsBalance: 0, reserveBalance: 10,
     });
 
@@ -136,7 +141,7 @@ describe('Phase A money flow: split → settle → ledger', () => {
 
   it('rejects a bet the three wallets cannot cover, without touching balances', async () => {
     const user = await User.create({
-      username: 'broke', mobile: '9100000003',
+      username: 'broke', mobile: '9100000003', kycStatus: 'APPROVED',
       depositBalance: 4, winningsBalance: 3, reserveBalance: 2, // total 9 < 10
     });
     const cycle = await Cycle.create({
@@ -165,7 +170,7 @@ describe('Phase A money flow: split → settle → ledger', () => {
     // reserve 0.10 (short of 0.30) and deposit 5 (short of the 9.90 adjusted
     // main) → winnings covers the overflow. Total 15.10 > 10 stake.
     const user = await User.create({
-      username: 'fallback', mobile: '9100000004',
+      username: 'fallback', mobile: '9100000004', kycStatus: 'APPROVED',
       depositBalance: 5, winningsBalance: 10, reserveBalance: 0.1,
     });
     const cycle = await Cycle.create({
