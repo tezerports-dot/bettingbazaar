@@ -85,6 +85,15 @@ export const pgReconcileErrors = new client.Counter({
   help: 'Postgres reconciliation run failures',
   registers: [registry],
 });
+// The cutover-readiness gate: consecutive clean reconciliation passes. Any drift
+// or crashed run resets it to 0. Flipping money authority to Postgres
+// (DATA_ROLLBACK_PLAN.md) requires this to stay high over a sustained window —
+// drift DETECTION alone is not proof; sustained agreement is.
+export const pgReconcileConsecutiveClean = new client.Gauge({
+  name: 'bb_pg_reconcile_consecutive_clean',
+  help: 'Consecutive clean hybrid-DB reconciliation passes (0 = last run drifted or failed)',
+  registers: [registry],
+});
 
 // Pool-stats provider — registered by pgClient via setPoolStatsProvider() when
 // Postgres is in use. Inversion of control keeps this low-level metrics module

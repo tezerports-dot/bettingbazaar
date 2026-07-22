@@ -50,6 +50,24 @@
       "id": 8, "type": "timeseries", "title": "Event loop lag p99 (s)",
       "gridPos": { "h": 6, "w": 6, "x": 18, "y": 16 },
       "targets": [{ "expr": "nodejs_eventloop_lag_p99_seconds", "legendFormat": "lag p99" }]
+    },
+    {
+      "id": 9, "type": "stat", "title": "PG drift rows (Mongo vs Postgres) — MUST be 0",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 22 },
+      "targets": [{ "expr": "bb_pg_drift_rows" }],
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] }
+    },
+    {
+      "id": 10, "type": "stat", "title": "PG ledger trial balance OK (1 = conserves to zero)",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 22 },
+      "targets": [{ "expr": "bb_pg_trial_balance_ok" }],
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] }
+    },
+    {
+      "id": 11, "type": "stat", "title": "PG reconcile — consecutive clean passes (cutover gate; green ≥ 24h)",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 22 },
+      "targets": [{ "expr": "bb_pg_reconcile_consecutive_clean" }],
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 1 }, { "color": "green", "value": 288 } ] } }, "overrides": [] }
     }
   ]
 }

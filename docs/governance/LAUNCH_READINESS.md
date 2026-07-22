@@ -93,8 +93,15 @@ Making Postgres authoritative is an **owner-gated production cutover**, not a
 code flip, because it moves the source of truth for money. The sequence
 (`HYBRID_ARCHITECTURE.md §6`, `postgres/DATA_ROLLBACK_PLAN.md`):
 
-1. 🟡 Run `npm run reconcile:pg` on a schedule in **staging → production**; require **repeated clean runs** (zero drift) over a real window.
-2. 🟡 Flip **reads** to Postgres per money path, one at a time, watching drift metrics.
+1. ✅ **Reconciliation is already scheduled** — the `pg-reconcile` cron
+   (`startup/cronJobs.js`) runs every 5 min once `DATABASE_URL` is set,
+   leader-locked, detection-only. It exports drift as metrics and pages
+   `sendAlert('pg-drift', …)`. Watch the **cutover gate** on the Grafana
+   dashboard: `bb_pg_reconcile_consecutive_clean` must climb and **stay green
+   (≥ 24h of clean 5-min passes)** — any drift or crashed run resets it to 0.
+   `bb_pg_drift_rows` must be 0 and `bb_pg_trial_balance_ok` must be 1. (Ad-hoc:
+   `npm run reconcile:pg -- --all` for a full-history check.)
+2. 🟡 Once the gate has been green over a sustained window, flip **reads** to Postgres per money path, one at a time, watching the same metrics.
 3. 🟡 Flip **writes/authority** per path; wallet/ledger first, **KYC last**.
 4. 🟡 Keep the Mongo→PG rollback ready at each step.
 
