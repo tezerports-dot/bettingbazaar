@@ -23,6 +23,7 @@ import { useToast } from '../components/ui/Toast';
 import { fmt, timeStr } from './format';
 import { analyticsFor, Side } from './analytics';
 import AnalyticsDrawer from './AnalyticsDrawer';
+import { getAssetUrl } from '../services/backend.service';
 
 // UI-only chip face palette (GOVERNANCE §10 — presentation, not validation).
 const CHIP_STYLES = [
@@ -139,8 +140,8 @@ const GameScreen: React.FC = () => {
     if (isClosed || isResult) return;
     if (!betAmount) { addToast('Pick a chip or enter an amount first', 'error'); return; }
     if (betAmount < minBet) { addToast(`Minimum bet for this cycle is ₹${minBet}`, 'error'); return; }
-    if (side === BettingSide.DELHI && myBetBombay > 0) return;
-    if (side === BettingSide.BOMBAY && myBetDelhi > 0) return;
+    if (side === BettingSide.DELHI && myBetBombay > 0) { addToast('You already backed BOMBAY this cycle — one side per cycle', 'error'); return; }
+    if (side === BettingSide.BOMBAY && myBetDelhi > 0) { addToast('You already backed DELHI this cycle — one side per cycle', 'error'); return; }
     if (navigator.vibrate) navigator.vibrate(40);
     if (isGhostMode) placePhantomBet(betAmount, side); else placeBet(betAmount, side);
   };
@@ -154,15 +155,35 @@ const GameScreen: React.FC = () => {
     : Math.max(160, Math.min(296, Math.round((vh || 760) * 0.33)));
   const sideFont = mobile ? 20 : 24;
 
+  // Admin-configurable bet-card backgrounds (Branding → CDN, GOVERNANCE §12).
+  // Empty ⇒ default themed gradient. Read from app_branding like the other
+  // branding consumers (PromoPage/RulesPage); getAssetUrl resolves CDN paths.
+  const brand = (() => { try { return JSON.parse(localStorage.getItem('app_branding') || '{}'); } catch { return {}; } })();
+  const cardImg: Record<string, string> = {
+    [BettingSide.DELHI]: getAssetUrl(brand.betCardDelhiImageUrl || ''),
+    [BettingSide.BOMBAY]: getAssetUrl(brand.betCardBombayImageUrl || ''),
+  };
+
   const sideStyle = (side: BettingSide): React.CSSProperties => {
     const isWinner = isResult && winner === side;
     const lock = side === BettingSide.DELHI ? lockD : lockB;
-    const opacity = isResult && winner !== side ? .35 : lock ? .42 : isClosed ? .6 : 1;
-    const filter = isResult && winner !== side ? 'grayscale(.7)' : lock ? 'grayscale(.55)' : 'none';
+    // A bet on the OTHER side blocks placing here (handleBet), but this card stays
+    // fully coloured — NO grey-out (owner UX). Only result/closed states dim.
+    const opacity = isResult && winner !== side ? .35 : isClosed ? .6 : 1;
+    const filter = isResult && winner !== side ? 'grayscale(.7)' : 'none';
     const cursor = (isClosed || isResult || lock) ? 'not-allowed' : 'pointer';
+    const gradient = side === BettingSide.DELHI
+      ? 'linear-gradient(160deg,#2A0A0A,#140406 55%,#050203)'
+      : 'linear-gradient(160deg,#07172E,#04101F 55%,#020814)';
+    const img = cardImg[side];
+    // Admin-set CDN image (if any) under a dark scrim so the labels stay legible;
+    // otherwise the default themed gradient (GOVERNANCE §12).
+    const background = img
+      ? `linear-gradient(160deg, rgba(4,3,6,.45), rgba(4,3,6,.72)), url("${img}") center/cover no-repeat`
+      : gradient;
     return {
       width: '50%', height: '100%', position: 'relative', border: 'none', cursor, overflow: 'hidden',
-      background: side === BettingSide.DELHI ? 'linear-gradient(160deg,#2A0A0A,#140406 55%,#050203)' : 'linear-gradient(160deg,#07172E,#04101F 55%,#020814)',
+      background,
       opacity, filter, transition: 'opacity .3s, filter .3s', display: 'flex', flexDirection: 'column',
       alignItems: 'center', justifyContent: 'space-between', padding: '16px 8px',
       ...(isWinner ? {} : {}),

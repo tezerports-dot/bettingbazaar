@@ -61,6 +61,9 @@ const brandingSchema = new mongoose.Schema({
   withdrawalPageBannerUrl:{ type: String, default: '' },
   loginPageBannerUrl:     { type: String, default: '' },
   registerPageBannerUrl:  { type: String, default: '' },
+  // ── Game bet-card backgrounds (GOVERNANCE §12: consumed by redesign GameScreen)
+  betCardDelhiImageUrl:   { type: String, default: '' },   // DELHI card background image (CDN)
+  betCardBombayImageUrl:  { type: String, default: '' },   // BOMBAY card background image (CDN)
   lastUpdated: { type: Date, default: Date.now },
   updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 });
