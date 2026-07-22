@@ -1,4 +1,7 @@
 @import './glassmorphism.css';
+/* Redesign theme tokens (dark/light) + bb-* animations. Must precede rule blocks
+   so the @import is honored (CSS requires @import before other statements). */
+@import './redesign/theme.css';
 /* ── Brand CSS variables — set at runtime by branding socket event ─────────────
    Defaults match the current hardcoded #D4AF37 gold used across 60+ files.
    When admin saves branding, handleBrandingUpdated() overwrites these instantly

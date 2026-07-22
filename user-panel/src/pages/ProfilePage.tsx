@@ -1,363 +1,177 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
- * ProfilePage.tsx  v4.3.0
+ * ProfilePage.tsx — 2026 "Bazaar" redesign.
  *
- * BUG-U5  FIX: userBets guard added (|| []) so .filter() never crashes
- * BUG-U6  FIX: Available balance = depositBalance + winningsBalance - lockedBalance
- * BUG-U8  FIX: Profile pic uploaded to server via uploadFile() + updateProfile(), not just localStorage
- * BUG-U15 FIX: KYC rejection reason shown when kycStatus === 'REJECTED'
- * BUG-U22 FIX: "Bet History" quick action navigates to /my-bets (personal), not /history (global cycles)
- * BUG-U23 FIX: P&L uses b.payout (actual server payout) not hardcoded b.amount * 2
+ * Wired to live GameContext data: profile identity + balances, settled-bet stats
+ * (net placed / winnings / win-rate / cycles), KYC status (KYCModal), bank/UPI
+ * details (backend.updateBankDetails), theme appearance toggle, and logout.
  */
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router';
 import { useGame } from '../services/GameContext';
-import { useNavigate } from 'react-router-dom';
-import Modal from '../components/ui/Modal';
-import { Show } from '../components/ui/Show';
-import KYCModal from '../components/Modals/KYCModal';
+import { useTheme } from '../redesign/ThemeContext';
 import { getBackend } from '../services/backend.service';
-import { APP_NAME_FALLBACK as APP_NAME } from '../constants';
+import { fmt } from '../redesign/format';
+import ScreenShell, { card, capLabel, goldButton, inputStyle, fieldLabel } from '../redesign/Screen';
+import KYCModal from '../components/Modals/KYCModal';
 
 const backend = getBackend();
 
+const kycMeta: Record<string, { label: string; color: string; bg: string }> = {
+  APPROVED:          { label: 'VERIFIED',  color: 'var(--green)', bg: 'color-mix(in srgb,var(--green) 16%,transparent)' },
+  PENDING_APPROVAL:  { label: 'IN REVIEW', color: '#FB8C00', bg: 'color-mix(in srgb,#FB8C00 16%,transparent)' },
+  REJECTED:          { label: 'REJECTED',  color: 'var(--red)', bg: 'color-mix(in srgb,var(--red) 16%,transparent)' },
+  PENDING_SUBMISSION:{ label: 'PENDING',   color: '#FB8C00', bg: 'color-mix(in srgb,#FB8C00 16%,transparent)' },
+};
+
 const ProfilePage: React.FC = () => {
-  const { user, userBets: rawUserBets, updateProfile, refreshUserWallet } = useGame();
+  const { user, userBets, updateProfile, logout } = useGame();
+  const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
-  // BUG-U5 fix: always an array, never undefined
-  const userBets = rawUserBets || [];
+  const [kycOpen, setKycOpen] = useState(false);
+  const [bankOpen, setBankOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [localPic, setLocalPic] = useState<string | null>(null);
+  const [bank, setBank] = useState({ upiId: '', accountHolderName: '', accountNumber: '', ifscCode: '', bankName: '' });
 
-  const [localProfilePic, setLocalProfilePic] = useState<string | null>(null);
-  const [isEditOpen, setIsEditOpen]         = useState(false);
-  const [isBankOpen, setIsBankOpen]         = useState(false);
-  const [isKYCModalOpen, setIsKYCModalOpen] = useState(false);
-  const [saving, setSaving]                 = useState(false);
-  const [activeTab, setActiveTab]           = useState<'profile' | 'security'>('profile');
-  const [uploadingPic, setUploadingPic]     = useState(false);
+  const stats = useMemo(() => {
+    const settled = (userBets || []).filter(b => b.status === 'WON' || b.status === 'LOST');
+    const invested = settled.reduce((a, b) => a + (b.amount || 0), 0);
+    const returned = settled.reduce((a, b) => (b.status === 'WON' ? a + (b.payout || b.amount || 0) : a), 0);
+    const net = returned - invested;
+    const wins = settled.filter(b => b.status === 'WON').length;
+    const winRate = settled.length ? Math.round((wins / settled.length) * 100) : 0;
+    return [
+      { k: 'Net placed bets', v: `₹${fmt(invested)}` },
+      { k: 'Net winnings', v: `${net >= 0 ? '+' : '−'}₹${fmt(Math.abs(net))}` },
+      { k: 'Win rate', v: `${winRate}%` },
+      { k: 'Cycles played', v: fmt(settled.length) },
+    ];
+  }, [userBets]);
 
-  const [formData, setFormData] = useState({ username: '', mobile: '', email: '', newPassword: '', confirmPassword: '' });
-  const [bankData, setBankData] = useState({ accountHolderName: '', accountNumber: '', ifscCode: '', bankName: '' });
+  const initials = (user?.username || 'U').slice(0, 2).toUpperCase();
+  const kyc = kycMeta[user?.kycStatus || 'PENDING_SUBMISSION'] || kycMeta.PENDING_SUBMISSION;
+  const canVerify = user?.kycStatus !== 'APPROVED' && user?.kycStatus !== 'PENDING_APPROVAL';
 
-  // BUG-U23 fix: use b.payout (real server payout amount) not hardcoded b.amount * 2
-  const settledBets   = userBets.filter(b => b.status === 'WON' || b.status === 'LOST');
-  const totalInvested = settledBets.reduce((acc, b) => acc + (b.amount || 0), 0);
-  const totalReturn   = settledBets.reduce((acc, b) => (b.status === 'WON' ? acc + (b.payout || b.amount || 0) : acc), 0);
-  const netPL         = totalReturn - totalInvested;
-  const isProfit      = netPL >= 0;
-
-  // BUG-U6 fix: correct dual balance calculation
-  const depositBal  = user?.depositBalance  || 0;
-  const winningsBal = user?.winningsBalance || 0;
-  const lockedBal   = user?.lockedBalance   || 0;
-  // Architecture: deposit+winnings is spendable; lockedBal is a tracking counter not a deduction
-  const availableBal = depositBal + winningsBal;
-
-  const handleEditClick = () => {
-    if (user) {
-      setFormData({ username: user.username || '', mobile: (user as any).mobile || '', email: (user as any).email || '', newPassword: '', confirmPassword: '' });
-      setActiveTab('profile');
-      setIsEditOpen(true);
-    }
+  const openBank = () => {
+    const d = user?.bankDetails as any;
+    setBank({ upiId: d?.upiId || '', accountHolderName: d?.accountHolderName || '', accountNumber: d?.accountNumber || '', ifscCode: d?.ifscCode || '', bankName: d?.bankName || '' });
+    setBankOpen(true);
   };
 
-  const handleBankClick = () => {
-    setBankData({
-      accountHolderName: user?.bankDetails?.accountHolderName || '',
-      accountNumber:     user?.bankDetails?.accountNumber     || '',
-      ifscCode:          user?.bankDetails?.ifscCode          || '',
-      bankName:          user?.bankDetails?.bankName          || '',
-    });
-    setIsBankOpen(true);
-  };
-
-  const handleSaveProfile = async () => {
-    if (!formData.username.trim()) return alert('Name is required.');
-    const trimmedEmail = formData.email.trim();
-    if (trimmedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) return alert('Please enter a valid email address.');
-    if (formData.newPassword && formData.newPassword.length < 6) return alert('Password must be at least 6 characters.');
-    if (formData.newPassword && formData.newPassword !== formData.confirmPassword) return alert('Passwords do not match.');
+  const saveBank = async () => {
+    if (!bank.accountHolderName || !bank.accountNumber || !bank.ifscCode || !bank.bankName) { alert('All bank fields are required.'); return; }
     setSaving(true);
     try {
-      const updates: any = {};
-      if (formData.username !== user?.username) updates.username = formData.username.trim();
-      if (trimmedEmail !== ((user as any)?.email || '')) updates.email = trimmedEmail;
-      if (formData.newPassword) updates.password = formData.newPassword;
-      if (Object.keys(updates).length > 0) {
-        await updateProfile(updates);
-        alert('Profile updated!');
-      }
-      setIsEditOpen(false);
-    } catch (e: any) {
-      alert(e.message || 'Update failed.');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleSaveBankDetails = async () => {
-    if (!bankData.accountHolderName || !bankData.accountNumber || !bankData.ifscCode || !bankData.bankName)
-      return alert('All bank fields are required.');
-    setSaving(true);
-    try {
-      await backend.updateBankDetails(user!.id, { ...bankData, ifscCode: bankData.ifscCode.toUpperCase() });
-      setIsBankOpen(false);
+      await backend.updateBankDetails(user!.id, { accountHolderName: bank.accountHolderName, accountNumber: bank.accountNumber, ifscCode: bank.ifscCode.toUpperCase(), bankName: bank.bankName });
+      setBankOpen(false);
       alert('Bank details saved!');
-    } catch (e: any) {
-      alert(e.message || 'Failed to save.');
-    } finally {
-      setSaving(false);
-    }
+    } catch (e: any) { alert(e?.message || 'Failed to save.'); }
+    finally { setSaving(false); }
   };
 
-  // Profile pic — upload to S3 first, then save CDN URL to user profile
-  const handleProfilePicUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files?.[0] || !user) return;
-    const file = e.target.files[0];
+  const onPicUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !user) return;
     if (file.size > 10 * 1024 * 1024) { alert('Image too large. Max 10MB.'); return; }
-    if (!file.type.startsWith('image/')) { alert('Only image files allowed.'); return; }
-
-    setUploadingPic(true);
     try {
-      // Show preview immediately for responsiveness
       const reader = new FileReader();
-      reader.onloadend = () => setLocalProfilePic(reader.result as string);
+      reader.onloadend = () => setLocalPic(reader.result as string);
       reader.readAsDataURL(file);
-
-      // Upload to S3/CDN. The backend confirm-upload route verifies the object
-      // and persists the CDN URL; users cannot submit arbitrary image URLs.
       const cdnUrl = await backend.uploadFile(file);
-      setLocalProfilePic(cdnUrl);
-    } catch (err: any) {
-      setLocalProfilePic(user?.profilePic || '');
-      alert(err?.message || 'Upload failed. Please try again.');
-    } finally {
-      setUploadingPic(false);
-    }
+      setLocalPic(cdnUrl);
+      await updateProfile({ profilePic: cdnUrl });
+    } catch (err: any) { alert(err?.message || 'Upload failed.'); }
   };
 
-  const inp = "w-full bg-[#0B0E14] border border-[#1e2736] rounded-2xl p-4 text-sm text-white focus:border-[#D4AF37] outline-none font-medium placeholder-gray-600";
-  const lbl = "text-[10px] text-slate-500 uppercase font-black mb-1.5 block ml-1 tracking-widest";
+  const settingsRows = [
+    { ic: '🔔', t: 'Notifications', v: 'On' },
+    { ic: '🌐', t: 'Language', v: 'English' },
+    { ic: '🔒', t: 'Security & PIN', v: '' },
+    { ic: '📄', t: 'Responsible Play', v: '' },
+    { ic: 'ℹ️', t: 'About & Terms', v: '' },
+  ];
 
   return (
-    <div className="h-full flex flex-col bg-[#0B0E14]">
-      <div className="flex-1 overflow-y-auto p-5 space-y-4 pb-4">
-
-        {/* Profile Card */}
-        <div className="bg-[#121826] rounded-[2.5rem] p-8 flex flex-col items-center border border-[#D4AF37]/20 relative overflow-hidden text-center">
-          <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-[#F5C77A] to-[#D4AF37]"></div>
-          <div
-            className="w-28 h-28 rounded-full border-4 border-[#D4AF37] overflow-hidden mb-4 relative bg-black group cursor-pointer"
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <img
-              src={localProfilePic || user?.profilePic || `https://ui-avatars.com/api/?name=${encodeURIComponent(user?.username || 'U')}&background=D4AF37&color=000&bold=true`}
-              className="w-full h-full object-cover"
-              alt="Profile"
-            />
-            <div className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 flex flex-col items-center justify-center transition-all">
-              {uploadingPic ? (
-                <div className="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-              ) : (
-                <>
-                  <span className="text-xl">📷</span>
-                  <span className="text-white text-[9px] font-bold mt-1">CHANGE</span>
-                </>
-              )}
-            </div>
-            <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleProfilePicUpload} />
-          </div>
-          <h2 className="text-2xl font-black text-white">{user?.username}</h2>
-          <p className="text-slate-400 text-xs mt-1">📱 {(user as any)?.mobile || '—'}</p>
-          <p className="text-[#D4AF37] text-[10px] uppercase font-black tracking-widest mt-2 border border-[#D4AF37]/30 px-3 py-1 rounded-full">{APP_NAME} Member</p>
-        </div>
-
-        {/* Balances — BUG-U6 fix */}
-        <div className="grid grid-cols-3 gap-2">
-          <div className="bg-[#1A1F2E] p-4 rounded-2xl border border-white/5">
-            <div className="text-[9px] text-slate-500 uppercase font-black mb-1">Spendable</div>
-            <div className="text-base font-black text-[#25D366]">₹{availableBal.toLocaleString()}</div>
-          </div>
-          <div className="bg-[#1A1F2E] p-4 rounded-2xl border border-white/5">
-            <div className="text-[9px] text-slate-500 uppercase font-black mb-1">Withdrawable</div>
-            <div className="text-base font-black text-[#D4AF37]">₹{winningsBal.toLocaleString()}</div>
-          </div>
-          <div className="bg-[#1A1F2E] p-4 rounded-2xl border border-white/5">
-            <div className="text-[9px] text-slate-500 uppercase font-black mb-1">In Play</div>
-            <div className="text-base font-black text-[#E53935]">₹{lockedBal.toLocaleString()}</div>
-          </div>
-        </div>
-
-        {/* P&L — BUG-U23 fix */}
-        <div className={`p-6 rounded-2xl border border-white/5 flex flex-col items-center bg-gradient-to-br ${isProfit ? 'from-green-900/30' : 'from-red-900/30'} to-black`}>
-          <div className="text-[10px] text-slate-500 uppercase tracking-widest mb-2 font-black">Net P&L ({settledBets.length} settled bets)</div>
-          <div className={`text-4xl font-black ${isProfit ? 'text-[#25D366]' : 'text-[#E53935]'}`}>
-            {isProfit ? '+' : '−'} ₹{Math.abs(netPL).toLocaleString()}
-          </div>
-          {settledBets.length > 0 && (
-            <div className="mt-3 flex gap-6 text-xs text-slate-500">
-              <span>Invested: <span className="text-white font-bold">₹{totalInvested.toLocaleString()}</span></span>
-              <span>Returned: <span className="text-white font-bold">₹{totalReturn.toLocaleString()}</span></span>
-            </div>
-          )}
-        </div>
-
-        {/* KYC — BUG-U15 fix: show rejection reason */}
-        <div className="bg-[#1A1F2E] rounded-2xl p-5 border border-white/5">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className={`w-12 h-12 rounded-xl flex items-center justify-center text-xl border border-white/10 ${
-                user?.kycStatus === 'APPROVED'         ? 'text-green-500 bg-green-900/20' :
-                user?.kycStatus === 'REJECTED'         ? 'text-red-500 bg-red-900/20' :
-                user?.kycStatus === 'PENDING_APPROVAL' ? 'text-yellow-500 bg-yellow-900/20' :
-                'text-orange-500 bg-orange-900/20'
-              }`}>
-                {user?.kycStatus === 'APPROVED' ? '✅' : user?.kycStatus === 'REJECTED' ? '❌' : '⚠️'}
-              </div>
-              <div>
-                <div className="text-[10px] text-slate-500 uppercase font-black tracking-widest">KYC Status</div>
-                <div className={`text-sm font-black uppercase ${
-                  user?.kycStatus === 'APPROVED'         ? 'text-green-400' :
-                  user?.kycStatus === 'REJECTED'         ? 'text-red-400' :
-                  user?.kycStatus === 'PENDING_APPROVAL' ? 'text-yellow-400' :
-                  'text-orange-400'
-                }`}>
-                  {user?.kycStatus?.replace(/_/g, ' ') || 'NOT SUBMITTED'}
-                </div>
-                {/* BUG-U15 fix: show rejection reason */}
-                {user?.kycStatus === 'REJECTED' && (user as any)?.kycData?.rejectionReason && (
-                  <div className="text-[10px] text-red-300 mt-1 max-w-[200px]">
-                    Reason: {(user as any).kycData.rejectionReason}
-                  </div>
-                )}
-              </div>
-            </div>
-            <Show when={user?.kycStatus !== 'APPROVED' && user?.kycStatus !== 'PENDING_APPROVAL'}>
-              <button
-                onClick={() => setIsKYCModalOpen(true)}
-                className="bg-[#D4AF37] text-black text-[10px] font-black px-4 py-2 rounded-xl"
-              >
-                {user?.kycStatus === 'REJECTED' ? 'RESUBMIT' : 'VERIFY'}
-              </button>
-            </Show>
-          </div>
-        </div>
-
-        {/* Actions — BUG-U22 fix: "Bet History" → /my-bets */}
-        <div className="space-y-3">
-          {[
-            { icon: '✏️', label: 'Edit Profile',  sub: 'Name · Mobile · Password', action: handleEditClick },
-            { icon: '🏦', label: 'Bank Details',  sub: user?.bankDetails?.bankName ? `${user.bankDetails.bankName} ···${user.bankDetails.accountNumber?.slice(-4)}` : 'Tap to add bank account', action: handleBankClick },
-            // BUG-U22 fix: now navigates to /my-bets (personal), not /history (global)
-            { icon: '📜', label: 'My Bet History', sub: `${settledBets.length} settled bets`, action: () => navigate('/my-bets') },
-          ].map((item, i) => (
-            <button key={i} onClick={item.action}
-              className="w-full bg-[#1A1F2E] p-5 rounded-2xl border border-white/5 text-left flex justify-between items-center group hover:border-[#D4AF37]/30 active:scale-[0.98] transition-all">
-              <div className="flex items-center gap-3">
-                <span className="text-lg">{item.icon}</span>
-                <div>
-                  <div className="text-sm font-bold text-slate-200">{item.label}</div>
-                  <div className="text-[10px] text-slate-500">{item.sub}</div>
-                </div>
-              </div>
-              <span className="text-[#D4AF37] text-lg group-hover:translate-x-1 transition-transform">›</span>
-            </button>
-          ))}
+    <ScreenShell icon="👤" title="Profile" sub="Account, stats & preferences">
+      {/* Identity card */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 15, background: 'linear-gradient(135deg,var(--surface2),var(--surface3))', border: '1px solid var(--line2)', borderRadius: 18, padding: 18, boxShadow: 'var(--shadow-sm)', marginBottom: 14 }}>
+        <button onClick={() => fileRef.current?.click()} style={{ width: 62, height: 62, flex: 'none', borderRadius: '50%', overflow: 'hidden', border: 'none', cursor: 'pointer', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', color: '#1a1200', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {(localPic || user?.profilePic) ? <img src={localPic || user?.profilePic} alt="Profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 24 }}>{initials}</span>}
+          <input type="file" ref={fileRef} accept="image/*" style={{ display: 'none' }} onChange={onPicUpload} />
+        </button>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 19, color: 'var(--text)' }}>{user?.username || 'Player'}</div>
+          <div style={{ fontSize: 11, color: 'var(--text3)' }}>ID {user?.id ? String(user.id).slice(-6).toUpperCase() : '—'} · {(user as any)?.mobile ? `+91 ${String((user as any).mobile).slice(0, 5)}•••${String((user as any).mobile).slice(-2)}` : '—'}</div>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, marginTop: 6, background: 'color-mix(in srgb,var(--gold) 15%,transparent)', border: '1px solid var(--line2)', borderRadius: 999, padding: '3px 10px' }}><span style={{ fontSize: 11 }}>💎</span><span style={{ fontSize: 10, fontWeight: 800, color: 'var(--gold-ink)' }}>SILVER TIER</span></div>
         </div>
       </div>
 
-      {/* Edit Profile Modal */}
-      <Show when={isEditOpen}>
-        <Modal onClose={() => setIsEditOpen(false)} title="Edit Profile">
-          <div className="space-y-5">
-            <div className="flex gap-2 bg-[#0B0E14] p-1 rounded-xl">
-              {(['profile', 'security'] as const).map(tab => (
-                <button key={tab} onClick={() => setActiveTab(tab)}
-                  className={`flex-1 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition-all ${activeTab === tab ? 'bg-[#D4AF37] text-black' : 'text-slate-400'}`}>
-                  {tab}
-                </button>
-              ))}
-            </div>
-
-            {activeTab === 'profile' ? (
-              <div className="space-y-4">
-                <div>
-                  <label className={lbl}>Display Name</label>
-                  <input type="text" value={formData.username} placeholder="Your name"
-                    onChange={e => setFormData({ ...formData, username: e.target.value })} className={inp} />
-                </div>
-                <div>
-                  <label className={lbl}>Email <span className="text-slate-600 normal-case tracking-normal">(optional — for notifications)</span></label>
-                  <input type="email" value={formData.email} placeholder="you@example.com"
-                    onChange={e => setFormData({ ...formData, email: e.target.value })} className={inp} />
-                </div>
-                <div>
-                  <label className={lbl}>Profile Photo</label>
-                  <button onClick={() => fileInputRef.current?.click()}
-                    className="w-full bg-[#0B0E14] border border-[#1e2736] rounded-2xl p-4 text-sm text-slate-400 text-left hover:border-[#D4AF37] transition-all flex items-center gap-3">
-                    <span>📷</span>
-                    <span>{uploadingPic ? 'Uploading…' : localProfilePic ? 'Change photo' : 'Upload photo (max 2MB)'}</span>
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="bg-yellow-900/20 border border-yellow-500/30 rounded-xl p-3 text-xs text-yellow-400">
-                  Leave blank to keep current password
-                </div>
-                <div>
-                  <label className={lbl}>New Password</label>
-                  <input type="password" value={formData.newPassword} placeholder="Min 6 characters"
-                    onChange={e => setFormData({ ...formData, newPassword: e.target.value })} className={inp} />
-                </div>
-                <div>
-                  <label className={lbl}>Confirm New Password</label>
-                  <input type="password" value={formData.confirmPassword} placeholder="Repeat password"
-                    onChange={e => setFormData({ ...formData, confirmPassword: e.target.value })} className={inp} />
-                </div>
-              </div>
-            )}
-
-            <button onClick={handleSaveProfile} disabled={saving}
-              className="w-full bg-[#D4AF37] text-black font-black py-4 rounded-2xl disabled:opacity-50 uppercase text-xs tracking-widest hover:bg-[#F5C77A] active:scale-[0.98] transition-all">
-              {saving ? 'SAVING...' : 'SAVE CHANGES'}
-            </button>
+      {/* Stats */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: 10, marginBottom: 14 }}>
+        {stats.map(st => (
+          <div key={st.k} style={{ ...card, padding: '13px 14px' }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}>{st.k}</div>
+            <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 20, color: 'var(--text)', marginTop: 2 }}>{st.v}</div>
           </div>
-        </Modal>
-      </Show>
+        ))}
+      </div>
 
-      {/* Bank Details Modal */}
-      <Show when={isBankOpen}>
-        <Modal onClose={() => setIsBankOpen(false)} title="Bank Details">
-          <div className="space-y-4">
-            <div className="bg-blue-900/20 border border-blue-500/30 rounded-xl p-3 text-xs text-blue-400">
-              Required for withdrawals. Encrypted and stored securely.
-            </div>
-            {[
-              { k: 'accountHolderName', lbl: 'Account Holder Name', ph: 'Full name as on bank account' },
-              { k: 'accountNumber',     lbl: 'Account Number',       ph: 'Your bank account number' },
-              { k: 'ifscCode',          lbl: 'IFSC Code',            ph: 'e.g. HDFC0001234' },
-              { k: 'bankName',          lbl: 'Bank Name',            ph: 'e.g. HDFC Bank' },
-            ].map(f => (
-              <div key={f.k}>
-                <label className={lbl}>{f.lbl}</label>
-                <input type="text" value={(bankData as any)[f.k]} placeholder={f.ph}
-                  onChange={e => setBankData({ ...bankData, [f.k]: f.k === 'ifscCode' ? e.target.value.toUpperCase() : e.target.value })}
-                  className={inp} />
+      {/* KYC */}
+      <button onClick={() => canVerify && setKycOpen(true)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, background: 'var(--surface)', border: '1px solid var(--line2)', borderRadius: 16, padding: '14px 15px', boxShadow: 'var(--shadow-sm)', marginBottom: 14, cursor: canVerify ? 'pointer' : 'default', textAlign: 'left' }}>
+        <span style={{ width: 40, height: 40, flex: 'none', borderRadius: 11, background: 'color-mix(in srgb,var(--gold) 12%,var(--surface3))', border: '1px solid var(--line2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>🪪</span>
+        <span style={{ flex: 1 }}><span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>KYC Verification</span><span style={{ display: 'block', fontSize: 11, color: 'var(--text3)' }}>Verify to unlock token selling</span></span>
+        <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.06em', padding: '4px 10px', borderRadius: 999, color: kyc.color, background: kyc.bg }}>{kyc.label}</span>
+      </button>
+
+      {/* Bank */}
+      <button onClick={openBank} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 16, padding: '14px 15px', boxShadow: 'var(--shadow-sm)', marginBottom: 14, cursor: 'pointer', textAlign: 'left' }}>
+        <span style={{ width: 40, height: 40, flex: 'none', borderRadius: 11, background: 'var(--surface3)', border: '1px solid var(--line)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>🏦</span>
+        <span style={{ flex: 1 }}><span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Bank / UPI Details</span><span style={{ display: 'block', fontSize: 11, color: 'var(--text3)' }}>{user?.bankDetails?.bankName ? `${user.bankDetails.bankName} ••••${String(user.bankDetails.accountNumber || '').slice(-4)}` : 'Used for sell-order payouts'}</span></span>
+        <span style={{ fontSize: 11, color: 'var(--gold-ink)', fontWeight: 800 }}>{user?.bankDetails?.bankName ? 'Edit' : 'Add'}</span>
+      </button>
+
+      {/* Settings */}
+      <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 15px', borderBottom: '1px solid var(--line)' }}>
+          <span style={{ fontSize: 17 }}>{theme === 'dark' ? '☀️' : '🌙'}</span><span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>Appearance</span>
+          <button onClick={toggleTheme} style={{ padding: '6px 13px', borderRadius: 999, border: '1px solid var(--line2)', background: 'var(--surface3)', color: 'var(--gold-ink)', fontSize: 11, fontWeight: 800, cursor: 'pointer' }}>Switch theme</button>
+        </div>
+        {settingsRows.map(op => (
+          <button key={op.t} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, padding: '14px 15px', border: 'none', borderTop: '1px solid var(--line)', background: 'none', cursor: 'pointer', textAlign: 'left' }}>
+            <span style={{ fontSize: 17 }}>{op.ic}</span><span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{op.t}</span>
+            <span style={{ fontSize: 11, color: 'var(--text3)' }}>{op.v}</span><span style={{ fontSize: 14, color: 'var(--text3)' }}>›</span>
+          </button>
+        ))}
+      </div>
+
+      <button onClick={() => { logout(); navigate('/'); }} style={{ width: '100%', marginTop: 14, padding: 13, borderRadius: 13, border: '1px solid var(--red)', background: 'color-mix(in srgb,var(--red) 10%,transparent)', color: 'var(--red)', fontWeight: 800, fontSize: 13, cursor: 'pointer' }}>Log out</button>
+
+      {/* Bank modal */}
+      {bankOpen && (
+        <div onClick={() => setBankOpen(false)} style={{ position: 'absolute', inset: 0, zIndex: 140, background: 'rgba(0,0,0,.6)', backdropFilter: 'blur(3px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px 16px' }}>
+          <div onClick={e => e.stopPropagation()} className="bb-rise" style={{ width: '100%', maxWidth: 420, maxHeight: '92%', overflowY: 'auto', background: 'var(--surface)', border: '1px solid var(--line2)', borderRadius: 20, padding: 22, boxShadow: 'var(--shadow)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}><span className="font-grotesk" style={{ fontWeight: 700, fontSize: 17, color: 'var(--text)' }}>Bank / UPI Details</span><button onClick={() => setBankOpen(false)} style={{ width: 30, height: 30, borderRadius: '50%', border: '1px solid var(--line)', background: 'var(--surface3)', color: 'var(--text2)', cursor: 'pointer', fontSize: 12 }}>✕</button></div>
+            <p style={{ fontSize: 11, color: 'var(--text2)', margin: '0 0 14px' }}>Required to receive sell-order payouts. Stored securely.</p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
+              <div><label style={fieldLabel}>UPI ID</label><input value={bank.upiId} onChange={e => setBank({ ...bank, upiId: e.target.value })} placeholder="yourname@okhdfc" style={inputStyle} /></div>
+              <div style={{ textAlign: 'center', fontSize: 10, fontWeight: 800, letterSpacing: '.1em', color: 'var(--text3)' }}>— OR BANK ACCOUNT —</div>
+              <div><label style={fieldLabel}>Account holder name</label><input value={bank.accountHolderName} onChange={e => setBank({ ...bank, accountHolderName: e.target.value })} placeholder="Full name as per bank" style={inputStyle} /></div>
+              <div><label style={fieldLabel}>Account number</label><input value={bank.accountNumber} onChange={e => setBank({ ...bank, accountNumber: e.target.value })} inputMode="numeric" placeholder="0000 0000 0000" className="font-grotesk" style={inputStyle} /></div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <div><label style={fieldLabel}>IFSC</label><input value={bank.ifscCode} onChange={e => setBank({ ...bank, ifscCode: e.target.value.toUpperCase() })} placeholder="HDFC0001234" style={{ ...inputStyle, textTransform: 'uppercase' }} /></div>
+                <div><label style={fieldLabel}>Bank</label><input value={bank.bankName} onChange={e => setBank({ ...bank, bankName: e.target.value })} placeholder="HDFC Bank" style={inputStyle} /></div>
               </div>
-            ))}
-            <button onClick={handleSaveBankDetails} disabled={saving}
-              className="w-full bg-[#D4AF37] text-black font-black py-4 rounded-2xl disabled:opacity-50 uppercase text-xs tracking-widest hover:bg-[#F5C77A] active:scale-[0.98] transition-all">
-              {saving ? 'SAVING...' : 'SAVE BANK DETAILS'}
-            </button>
+              <button onClick={saveBank} disabled={saving} style={{ ...goldButton, opacity: saving ? .6 : 1 }}>{saving ? 'Saving…' : 'Save details'}</button>
+            </div>
           </div>
-        </Modal>
-      </Show>
+        </div>
+      )}
 
-      <Show when={isKYCModalOpen}>
-        <KYCModal onClose={() => setIsKYCModalOpen(false)} />
-      </Show>
-    </div>
+      {kycOpen && <KYCModal onClose={() => setKycOpen(false)} />}
+    </ScreenShell>
   );
 };
 
