@@ -49,6 +49,21 @@ const AADHAAR_HMAC_PLACEHOLDERS = new Set([
   'change-this-to-a-random-string',
 ]);
 
+// Signing/HMAC secrets that must never reach production weak. A forgeable
+// JWT/PASETO signing key or order-HMAC key is the single highest-impact failure
+// on a money platform (anyone can mint sessions or sign fraudulent orders), so
+// hold them to the same non-placeholder ≥32-char bar as the other secrets.
+const SIGNING_SECRET_MIN = 32;
+const SIGNING_SECRET_PLACEHOLDERS = new Set([
+  'change-me', 'changeme', 'secret', 'password', 'your-secret-key', 'changethis',
+  'test-only-jwt-secret', 'test-only-order-hmac-secret', 'change-this-to-a-random-string',
+]);
+
+function hasWeakSigningSecret(value) {
+  const s = String(value || '').trim();
+  return s.length < SIGNING_SECRET_MIN || SIGNING_SECRET_PLACEHOLDERS.has(s.toLowerCase());
+}
+
 function hasWeakMetricsToken(value) {
   const token = String(value || '').trim();
   return token.length < 32 || METRICS_TOKEN_PLACEHOLDERS.has(token.toLowerCase());
@@ -88,7 +103,25 @@ export function validateEnv(env = process.env, isProd = env.NODE_ENV === 'produc
   });
   const advisedMissing = ADVISED.filter(([k]) => !env[k] || String(env[k]).trim() === '').map(([k]) => k);
 
+  // Signing secrets: the effective PASETO seed is PASETO_SECRET_KEY || JWT_SECRET
+  // (see domains/identity/jwt.util.js), so hold whichever is set — plus the
+  // order-HMAC key — to the strong-secret bar.
+  const weakSigningSecrets = ['JWT_SECRET', 'PASETO_SECRET_KEY', 'ORDER_HMAC_SECRET']
+    .filter((k) => env[k] && !missing.includes(k) && hasWeakSigningSecret(env[k]));
+
+  // Money-DB TLS: PG_SSL=no-verify accepts ANY certificate for the Postgres
+  // money datastore (a network attacker could MITM the ledger). Refuse to boot
+  // production with it unless the operator explicitly accepts the risk.
+  const insecurePgTls = String(env.PG_SSL || '').trim().toLowerCase() === 'no-verify'
+    && String(env.ALLOW_INSECURE_PG_TLS || '').trim().toLowerCase() !== 'true';
+
   if (invalidOrigins.length && isProd) throw new Error(`FATAL: invalid public application origin configuration: ${invalidOrigins.join(', ')}`);
+  if (weakSigningSecrets.length && isProd) {
+    throw new Error(`FATAL: ${weakSigningSecrets.join(', ')} must each be a non-placeholder secret of at least ${SIGNING_SECRET_MIN} characters — a weak signing key lets anyone forge auth tokens or sign fraudulent orders`);
+  }
+  if (insecurePgTls && isProd) {
+    throw new Error('FATAL: PG_SSL=no-verify disables money-DB TLS certificate verification. Pin the provider CA via PG_CA_CERT, or set ALLOW_INSECURE_PG_TLS=true to explicitly accept the risk.');
+  }
   if (weakAadhaarHmacSecret && !missing.includes('AADHAAR_HMAC_SECRET') && isProd) {
     throw new Error('FATAL: AADHAAR_HMAC_SECRET must be a non-placeholder secret of at least 32 characters');
   }
