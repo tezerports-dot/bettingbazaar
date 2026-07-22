@@ -40,8 +40,12 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 animate-fadeIn" onClick={(e)=>{if(e.target===e.currentTarget)onClose();}}>
-      <div className="bg-dark-800 rounded-xl shadow-xl w-full max-w-md animate-slideIn">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 om-fade"
+      style={{ background: 'var(--overlay)', backdropFilter: 'blur(3px)' }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="om-pop w-full max-w-md" style={{ background: 'var(--surface)', border: '1px solid var(--border-2)', borderRadius: 16, boxShadow: 'var(--sh3)' }}>
         <div className="p-6 text-center">
           <div className="flex justify-center mb-4">{icons[type]}</div>
           <h3 className="text-xl font-bold mb-2">{title}</h3>
