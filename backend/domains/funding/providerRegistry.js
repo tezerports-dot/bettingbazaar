@@ -37,7 +37,7 @@ const manualP2PInr = {
 // Deposit-only USDT (TRC20) per the 2026-07 direction; config fields exist
 // on the platform already. Activating requires the USDT Treasury build
 // (address management, chain confirmation watching, INR-peg conversion at
-// the fixed 1:1 token rate) — tracked in docs/governance/CAPABILITY_MATRIX_2026.md. Until then the
+// the fixed 1:1 token rate) — tracked in docs/governance/04-GOVERNANCE.md. Until then the
 // adapter exists so the registry, not scattered route code, is where USDT
 // lands.
 const usdtTrc20 = {

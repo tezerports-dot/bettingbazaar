@@ -13,7 +13,7 @@
 // SCOPE (corrected 2026-07-08): this policy governs ONLY the deposit/reserve
 // wallet split and reserve usage rules. Merchant incentive pay is a separate
 // mechanism ("Merchant Performance Bonus") triggered by completed buy+sell
-// cycles, not by deposit approval — see docs/governance/ENTERPRISE_DECISIONS.md.
+// cycles, not by deposit approval — see docs/governance/04-GOVERNANCE.md.
 
 import mongoose from 'mongoose';
 import { DepositPolicy, SUPPORTED_CURRENCIES } from './depositPolicy.model.js';

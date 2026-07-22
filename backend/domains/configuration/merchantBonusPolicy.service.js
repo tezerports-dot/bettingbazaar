@@ -50,7 +50,7 @@ async function activate(doc) {
 
 /**
  * createBonusPolicyVersion — the write path. Immediate-apply only in v1
- * (no scheduling/approval-gating — see model header + docs/governance/CAPABILITY_MATRIX_2026.md).
+ * (no scheduling/approval-gating — see model header + docs/governance/04-GOVERNANCE.md).
  */
 export async function createBonusPolicyVersion(fields, actor, { justification } = {}) {
   if (!justification || !justification.trim()) {

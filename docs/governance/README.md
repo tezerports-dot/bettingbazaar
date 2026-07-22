@@ -6,22 +6,20 @@ This folder is the single home for Betting Bazaar governance, enterprise-readine
 
 The repository is arranged as a modular monolith with separate user, admin, and merchant panels, a backend domain layer, deployment assets, and centralized governance. That is a strong enterprise-grade shape, but **launch readiness still depends on the open items and production checks tracked in this folder**. Before launch, review:
 
-1. `CAPABILITY_MATRIX_2026.md` for implemented capabilities, active gaps, and planned capabilities.
-2. `SECURITY_CODE_REVIEW_CHECKLIST.md` for release security review.
-3. `DISASTER_RECOVERY.md`, `SRE.md`, and `RETENTION_POLICY.md` for operations readiness.
+1. `LAUNCH_READINESS.md` — the top-level "app is ready vs infra/ops you must do" checklist.
+2. `04-GOVERNANCE.md` §19 (Capability Matrix) — and `platform/capabilities.yaml` — for implemented capabilities, active gaps, and planned capabilities.
+3. `SECURITY_CODE_REVIEW_CHECKLIST.md` for release security review.
+4. `DISASTER_RECOVERY.md`, `04-GOVERNANCE.md` §21 (SRE), and `RETENTION_POLICY.md` for operations readiness.
 
 ## Folder map
 
 | File | Purpose |
 |---|---|
-| `04-GOVERNANCE.md` | Binding repository rules, ownership boundaries, no-hardcode/no-duplicate rules, and event naming authority. |
-| `ENTERPRISE_DECISIONS.md` | Record of approved enterprise architecture/product decisions. |
+| `04-GOVERNANCE.md` | Binding repository rules + ownership / no-hardcode / no-duplicate rules + event-name authority (§§0–16), **and** the consolidated architecture reference (2026-07-22): Portability (§17), Hybrid Architecture / 1M-DAU plan (§18), Capability Matrix (§19), Enterprise Decision Log (§20), SRE & Operations (§21). |
+| `LAUNCH_READINESS.md` | "App is ready" vs "infra/ops you must do" launch checklist. |
+| `ENV.md` | Mandatory + optional environment variables — what to set before boot. |
 | `AUTHORIZATION_MATRIX.md` | Role/permission and access-control reference. |
-| `CAPABILITY_MATRIX_2026.md` | Capability inventory, implemented evidence, active gaps, and planned capability tracking. |
-| `HYBRID_ARCHITECTURE.md` | Smooth migration plan from modular monolith to monolith + selected microservices. |
-| `PORTABILITY.md` | Hosting, database, CDN, and deployment portability notes. |
 | `DISASTER_RECOVERY.md` | Backup, restore, and incident recovery guidance. |
-| `SRE.md` | Reliability, observability, and operations guidance. |
 | `RETENTION_POLICY.md` | Data retention and deletion policy. |
 | `GAME_REGISTRY.md` | Game catalogue governance and ownership. |
 | `NATIVE_APP_DISTRIBUTION_POLICY.md` | Mobile/native app distribution policy. |

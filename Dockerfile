@@ -1,7 +1,7 @@
 # GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
 # Portable container image — runs on ANY container host (AWS ECS/Fargate, GCP
 # Cloud Run, Azure, Fly.io, Render, Kubernetes, self-hosted, …). All config is
-# injected as environment variables at runtime (see .env.example / PORTABILITY.md).
+# injected as environment variables at runtime (see .env.example / docs/governance/04-GOVERNANCE.md §17).
 #
 # AQ-5 (2026-07-13): Node 22 LTS (Node 20 reached EOL 2026-04-30), multi-stage
 # (frontend toolchains never reach the runtime image), and a non-root runtime

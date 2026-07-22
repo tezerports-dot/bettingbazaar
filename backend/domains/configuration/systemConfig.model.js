@@ -247,7 +247,7 @@ const systemConfigSchema = new mongoose.Schema({
 });
 
 // TokenRates model removed 2026-07-08 — token conversion is fixed 1:1
-// (Phase 006 flattening, see docs/governance/ENTERPRISE_DECISIONS.md). The old `tokenrates`
+// (Phase 006 flattening, see docs/governance/04-GOVERNANCE.md). The old `tokenrates`
 // Mongo collection may still hold historical data; nothing reads or writes
 // it anymore.
 

@@ -56,7 +56,7 @@ The premier high-frequency prediction platform. Bet on Delhi vs Bombay in real-t
 * `/deploy`: Deployment notes and environment-specific runbooks.
 
 ## 🏢 Enterprise & Launch Readiness
-Centralized governance now lives in `docs/governance/README.md`. Start there before launch review or contractor handoff. The current architecture is intentionally a modular monolith with documented seams for a future monolith + microservices transition; see `docs/governance/HYBRID_ARCHITECTURE.md` for the migration plan and `docs/governance/CAPABILITY_MATRIX_2026.md` for remaining launch/hardening work.
+Centralized governance now lives in `docs/governance/README.md`. Start there before launch review or contractor handoff. The current architecture is intentionally a modular monolith with documented seams for a future monolith + microservices transition; see `docs/governance/04-GOVERNANCE.md` §18 for the migration plan and §19 for the capability matrix / remaining launch/hardening work.
 
 ## 🛡️ Security
 This app includes:

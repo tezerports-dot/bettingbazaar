@@ -52,7 +52,7 @@ const ALL_MENU_ITEMS: MenuItem[] = [
   // New 'policy' group, deliberately separate from 'payments' — future
   // siblings (Withdrawal Policy, Risk Policy, Merchant Policy, Settlement
   // Policy...) belong here too, not scattered across other groups. See
-  // docs/governance/ENTERPRISE_DECISIONS.md 2026-07-07 "Platform-oriented architecture".
+  // docs/governance/04-GOVERNANCE.md 2026-07-07 "Platform-oriented architecture".
   { path: '/business-policy/deposit', icon: Landmark, label: 'Deposit Policy', adminOnly: true, group: 'policy' },
 
   // ── ENTERPRISE PLATFORMS (Phase C, 2026-07-10) — consoles for the Phase
