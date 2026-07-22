@@ -1,394 +1,241 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+//
+// Live Cycles — Command Center design (handoff "Betting Bazaar Admin.dc.html").
+// Cycle-card grid with the real/phantom book. Data loading (admin phases
+// endpoint + SSE) and admin actions (equalizer / pause / resume / cancel) are
+// unchanged; only the presentation is rebuilt. There is intentionally no manual
+// "Declare Result" — winners are algorithmic (Markets Platform), not admin-set.
 import React, { useEffect, useState } from 'react';
-import { Activity, RefreshCw, Play, Pause, XCircle } from 'lucide-react';
-import { StatusBadge } from '../../components/StatusBadge';
+import { Activity, RefreshCw, Play, Pause, XCircle, Scale } from 'lucide-react';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
-import { formatters } from '../../utils/formatters';
 import api from '../../services/api';
 import sseService from '../../services/sse';
 import type { Cycle } from '../../types';
 import toast from 'react-hot-toast';
 
+const inr = (n: number | undefined | null): string => {
+  const x = Number(n) || 0;
+  if (x >= 1e7) return `₹${(x / 1e7).toFixed(2)}Cr`;
+  if (x >= 1e5) return `₹${(x / 1e5).toFixed(2)}L`;
+  if (x >= 1e3) return `₹${(x / 1e3).toFixed(1)}k`;
+  return `₹${x.toLocaleString('en-IN')}`;
+};
+
+const cycleStatusTone: Record<string, string> = {
+  OPEN: 'success', MERGED: 'info', CLOSED: 'warning', RESULT_DECLARED: 'gold',
+  COMPLETED: 'success', PAUSED: 'neutral', CANCELLED: 'danger',
+};
+
 export const LiveCycles: React.FC = () => {
   const [cycles, setCycles] = useState<Cycle[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [now, setNow] = useState(Date.now());
   const [confirmAction, setConfirmAction] = useState<{ type: string; cycle: Cycle } | null>(null);
 
   useEffect(() => {
-    loadCycles(); // one HTTP seed on mount
-
-    // cycle_update carries all pool data — update state directly, no HTTP
+    loadCycles();
     const handleCycleUpdate = (update: any) => {
-      setCycles(prev => prev.map(c =>
+      setCycles((prev) => prev.map((c) =>
         c.cycleId === update.cycleId
           ? {
               ...c,
-              status:        update.status        || c.status,
-              totalDelhi:    update.totalDelhi  ?? c.totalDelhi,
-              totalBombay:   update.totalBombay ?? c.totalBombay,
-              realDelhi:     update.realDelhi   ?? c.realDelhi,
-              realBombay:    update.realBombay  ?? c.realBombay,
-              phantomDelhi:  update.phantomDelhi  ?? c.phantomDelhi,
+              status: update.status || c.status,
+              totalDelhi: update.totalDelhi ?? c.totalDelhi,
+              totalBombay: update.totalBombay ?? c.totalBombay,
+              realDelhi: update.realDelhi ?? c.realDelhi,
+              realBombay: update.realBombay ?? c.realBombay,
+              phantomDelhi: update.phantomDelhi ?? c.phantomDelhi,
               phantomBombay: update.phantomBombay ?? c.phantomBombay,
             }
           : c
       ));
     };
-
-    // Only do HTTP on structural changes (new cycle, result, cancel)
-    const handleNewCycle    = () => { loadCycles(); };
-    const handleCycleResult = () => { loadCycles(); };
-
-    
-    sseService.on('admin_new_cycle',    handleCycleUpdate); // §11: backend emits admin_new_cycle via private admin SSE
-    sseService.on('cycle_update',       handleCycleUpdate); // fallback if WS also carries it
-
-    // new_cycle / cycle_result are public events — now arrive via SSE
-    sseService.on('new_cycle',    handleNewCycle);
-    sseService.on('cycle_result', handleCycleResult);
-
+    const reload = () => loadCycles();
+    sseService.on('admin_new_cycle', handleCycleUpdate);
+    sseService.on('cycle_update', handleCycleUpdate);
+    sseService.on('new_cycle', reload);
+    sseService.on('cycle_result', reload);
     return () => {
-      sseService.off('admin_new_cycle',    handleCycleUpdate);
-      sseService.off('cycle_update',       handleCycleUpdate);
-      sseService.off('new_cycle',    handleNewCycle);
-      sseService.off('cycle_result', handleCycleResult);
+      sseService.off('admin_new_cycle', handleCycleUpdate);
+      sseService.off('cycle_update', handleCycleUpdate);
+      sseService.off('new_cycle', reload);
+      sseService.off('cycle_result', reload);
     };
+  }, []);
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
   }, []);
 
   const loadCycles = async () => {
     try {
-      // Admin-only endpoint — returns realDelhi, realBombay, phantomDelhi, phantomBombay.
-      // Public /cycles/active strips all real/phantom fields (sanitiseCycleForUser).
       const response = await api.get<any>('/api/admin/cycles/phases');
       if (response.data?.success && response.data?.cycles) {
         setCycles(response.data.cycles.map((c: any) => ({
-          cycleId:       c.cycleId,
-          type:          c.type,
-          status:        c.status,
-          startTime:     c.startTime,
-          endTime:       c.endTime,
-          totalDelhi:    c.pools?.totalDelhi    || 0,
-          totalBombay:   c.pools?.totalBombay   || 0,
-          realDelhi:     c.pools?.realDelhi     || 0,
-          realBombay:    c.pools?.realBombay    || 0,
-          phantomDelhi:  c.pools?.phantomDelhi  || 0,
+          _id: c.cycleId,
+          cycleId: c.cycleId,
+          type: c.type,
+          status: c.status,
+          startTime: c.startTime,
+          endTime: c.endTime,
+          totalDelhi: c.pools?.totalDelhi || 0,
+          totalBombay: c.pools?.totalBombay || 0,
+          realDelhi: c.pools?.realDelhi || 0,
+          realBombay: c.pools?.realBombay || 0,
+          phantomDelhi: c.pools?.phantomDelhi || 0,
           phantomBombay: c.pools?.phantomBombay || 0,
-          phantomBalanced: c.phantomBalanced    || false,
-          currentPhase:  c.currentPhase,
-        })));
+          phantomBalanced: c.phantomBalanced || false,
+        })) as Cycle[]);
       }
-    } catch (error) {
+    } catch {
       toast.error('Failed to load cycles');
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleTriggerEqualizer = async (cycleId: string) => {
+  const act = async (type: string, cycleId: string) => {
     try {
-      await api.cycles.triggerEqualizer(cycleId);
-      toast.success('Phantom equalizer triggered');
+      if (type === 'equalizer') { await api.cycles.triggerEqualizer(cycleId); toast.success('Phantom equalizer triggered'); }
+      else if (type === 'pause') { await api.cycles.pauseCycle(cycleId); toast.success('Cycle paused'); }
+      else if (type === 'resume') { await api.cycles.resumeCycle(cycleId); toast.success('Cycle resumed'); }
+      else if (type === 'cancel') { await api.cycles.cancelCycle(cycleId, 'Cancelled by admin'); toast.success('Cycle cancelled — all bets refunded'); }
       loadCycles();
-    } catch (error: any) {
-      toast.error(error.response?.data?.message || 'Failed to trigger equalizer');
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || `Failed to ${type} cycle`);
     }
   };
 
-  const handlePauseCycle = async (cycleId: string) => {
-    try {
-      await api.cycles.pauseCycle(cycleId);
-      toast.success('Cycle paused');
-      loadCycles();
-    } catch (error: any) {
-      toast.error(error.response?.data?.message || 'Failed to pause cycle');
-    }
-  };
-
-  const handleResumeCycle = async (cycleId: string) => {
-    try {
-      await api.cycles.resumeCycle(cycleId);
-      toast.success('Cycle resumed');
-      loadCycles();
-    } catch (error: any) {
-      toast.error(error.response?.data?.message || 'Failed to resume cycle');
-    }
-  };
-
-  const handleCancelCycle = async (cycleId: string) => {
-    try {
-      await api.cycles.cancelCycle(cycleId, 'Cancelled by admin');
-      toast.success('Cycle cancelled - all bets refunded');
-      loadCycles();
-    } catch (error: any) {
-      toast.error(error.response?.data?.message || 'Failed to cancel cycle');
-    }
-  };
-
-  const getTimeRemaining = (endTime: number): string => {
-    const now = Date.now();
+  const timer = (endTime: number): string => {
     const diff = endTime - now;
-
     if (diff <= 0) return '00:00';
-
-    const hours = Math.floor(diff / (1000 * 60 * 60));
-    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-    const seconds = Math.floor((diff % (1000 * 60)) / 1000);
-
-    if (hours > 0) {
-      return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-    }
-    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    const h = Math.floor(diff / 3600000), m = Math.floor((diff % 3600000) / 60000), s = Math.floor((diff % 60000) / 1000);
+    const p = (v: number) => String(v).padStart(2, '0');
+    return h > 0 ? `${p(h)}:${p(m)}:${p(s)}` : `${p(m)}:${p(s)}`;
   };
 
-  const getCycleTypeBadge = (type: string) => {
-    return type === '30_MIN' ? (
-      <span className="px-2 py-1 rounded text-xs font-medium bg-blue-500/20 text-blue-500">
-        30 MIN
-      </span>
-    ) : (
-      <span className="px-2 py-1 rounded text-xs font-medium bg-purple-500/20 text-purple-500">
-        FULL DAY
-      </span>
-    );
-  };
+  const totalBook = cycles.reduce((a, c) => a + (c.totalDelhi || 0) + (c.totalBombay || 0), 0);
+  const totalPhantom = cycles.reduce((a, c) => a + (c.phantomDelhi || 0) + (c.phantomBombay || 0), 0);
+  const nextClose = cycles.filter((c) => c.status === 'OPEN' && c.endTime > now).sort((a, b) => a.endTime - b.endTime)[0];
+
+  const kpis = [
+    { label: 'Active Cycles', value: String(cycles.length), color: 'var(--text)' },
+    { label: 'Total Book', value: inr(totalBook), color: 'var(--text)' },
+    { label: 'Phantom Exposure', value: inr(totalPhantom), color: 'var(--risk)' },
+    { label: 'Next Settlement', value: nextClose ? timer(nextClose.endTime) : '—', color: 'var(--gold-ink)' },
+  ];
 
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <div className="w-8 h-8 border-4 border-dark-600 border-t-gold-500 rounded-full animate-spin" />
-      </div>
-    );
+    return <div className="flex items-center justify-center py-12"><div className="w-8 h-8 border-4 border-dark-600 border-t-gold-500 rounded-full animate-spin" /></div>;
   }
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold mb-2">Live Cycles</h1>
-          <p className="text-gray-400">
-            ✅ Only 2 cycle types (FIX #1) | ✅ Full day starts 6:00 PM IST (FIX #3)
-          </p>
-        </div>
-        <button onClick={loadCycles} className="btn-secondary flex items-center">
-          <RefreshCw size={16} className="mr-2" />
-          Refresh
-        </button>
-      </div>
-
-      {/* Info Banner */}
-      <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4">
-        <div className="text-sm space-y-1">
-          <p className="font-semibold text-blue-400">Cycle System (ALL FIXES APPLIED)</p>
-          <ul className="space-y-1 text-gray-300">
-            <li>• <strong>30-MIN:</strong> Runs every 30 minutes at :00 and :30</li>
-            <li>• <strong>FULL DAY:</strong> Starts 6:00 PM IST (18:00), ends 6:00 PM next day</li>
-            <li>• <strong>Real Pool:</strong> Actual user bets (shown separately)</li>
-            <li>• <strong>Phantom Pool:</strong> Phantom manager bets (balances pools)</li>
-            <li>• <strong>Phantom Equalizer:</strong> Runs at 28th min (30-min) / 17:58 IST (full-day)</li>
-            <li>• <strong>Winner:</strong> Based ONLY on real bets (phantom bets always lose)</li>
-          </ul>
+    <div className="om-fade" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* KPI row */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 14 }}>
+        {kpis.map((k) => (
+          <div key={k.label} className="card" style={{ padding: '15px 16px' }}>
+            <div style={{ fontSize: 11.5, color: 'var(--text-2)', fontWeight: 600 }}>{k.label}</div>
+            <div className="font-mono" style={{ fontSize: 22, fontWeight: 800, marginTop: 7, color: k.color }}>{k.value}</div>
+          </div>
+        ))}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
+          <button onClick={loadCycles} className="btn-secondary flex items-center" style={{ height: 38 }}>
+            <RefreshCw size={15} className="mr-2" /> Refresh
+          </button>
         </div>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="card">
-          <p className="text-sm text-gray-400 mb-1">Active Cycles</p>
-          <p className="text-2xl font-bold">{cycles.length}</p>
-        </div>
-        <div className="card">
-          <p className="text-sm text-gray-400 mb-1">30-Min Cycles</p>
-          <p className="text-2xl font-bold text-blue-500">
-            {cycles.filter((c) => c.type === '30_MIN').length}
-          </p>
-        </div>
-        <div className="card">
-          <p className="text-sm text-gray-400 mb-1">Full Day Cycles</p>
-          <p className="text-2xl font-bold text-purple-500">
-            {cycles.filter((c) => c.type === 'FULL_DAY').length}
-          </p>
-        </div>
-        <div className="card">
-          <p className="text-sm text-gray-400 mb-1">Total Real Bets</p>
-          <p className="text-2xl font-bold text-gold-500">
-            {cycles.reduce((sum, c) => sum + (c.realDelhi || 0) + (c.realBombay || 0), 0).toLocaleString()}
-          </p>
-          <p className="text-xs text-gray-500 mt-0.5">Phantom excluded</p>
-        </div>
-      </div>
-
-      {/* Cycles Grid */}
       {cycles.length === 0 ? (
-        <div className="card text-center py-12">
-          <Activity size={48} className="mx-auto mb-4 text-gray-600" />
-          <p className="text-gray-400">No active cycles</p>
+        <div className="card" style={{ padding: '64px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center' }}>
+          <Activity size={40} style={{ color: 'var(--muted)', marginBottom: 14 }} />
+          <div style={{ fontSize: 16, fontWeight: 700 }}>No active cycles</div>
+          <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 6 }}>New Delhi vs Bombay cycles will appear here as they open.</div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {cycles.map((cycle) => (
-            <div key={cycle._id} className="card">
-              {/* Header */}
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center space-x-2">
-                  {getCycleTypeBadge(cycle.type)}
-                  <StatusBadge status={cycle.status} type="cycle" />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(360px,1fr))', gap: 16 }}>
+          {cycles.map((c) => {
+            const total = (c.totalDelhi || 0) + (c.totalBombay || 0);
+            const delhiPct = total > 0 ? Math.round(((c.totalDelhi || 0) / total) * 100) : 50;
+            const tone = cycleStatusTone[c.status] || 'neutral';
+            const toneColor = tone === 'gold' ? 'var(--gold-ink)' : `var(--${tone})`;
+            const toneBg = tone === 'gold' ? 'var(--warning-bg)' : `var(--${tone}-bg)`;
+            const phantom = (c.phantomDelhi || 0) + (c.phantomBombay || 0);
+            return (
+              <div key={c.cycleId} className="card" style={{ padding: '18px 20px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 15 }}>
+                  <div className="font-mono" style={{ fontSize: 15, fontWeight: 800 }}>{c.cycleId}</div>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-2)', background: 'var(--surface-2)', border: '1px solid var(--border)', padding: '3px 8px', borderRadius: 6 }}>{c.type === '30_MIN' ? '30 MIN' : 'FULL DAY'}</span>
+                  <span style={{ flex: 1 }} />
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10.5, fontWeight: 700, padding: '4px 10px', borderRadius: 20, color: toneColor, background: toneBg }}>
+                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: toneColor }} />{(c.status || '').replace(/_/g, ' ')}
+                  </span>
                 </div>
-                <p className="text-sm text-gray-400">{cycle.cycleId}</p>
-              </div>
 
-              {/* Timer */}
-              <div className="text-center mb-4">
-                <p className="text-sm text-gray-400 mb-1">Time Remaining</p>
-                <p className="text-3xl font-mono font-bold text-gold-500">
-                  {getTimeRemaining(cycle.endTime)}
-                </p>
-                {cycle.type === 'FULL_DAY' && (
-                  <p className="text-xs text-gray-500 mt-1">Result at 6:00 PM IST</p>
-                )}
-              </div>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 13 }}>
+                  <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>Closes in</span>
+                  <span className="font-mono" style={{ fontSize: 25, fontWeight: 800, color: c.endTime - now <= 0 ? 'var(--danger)' : 'var(--text)' }}>{timer(c.endTime)}</span>
+                </div>
 
-              {/* Pool Display (FIX #2, #6) */}
-              <div className="space-y-3 mb-4">
-                <div className="grid grid-cols-2 gap-3">
-                  {/* Delhi Pools */}
-                  <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
-                    <p className="text-xs text-gray-400 mb-1">DELHI</p>
-                    <p className="text-xl font-bold text-red-500">
-                      {formatters.currency(cycle.totalDelhi)}
-                    </p>
-                    <div className="text-xs text-gray-500 mt-2 space-y-1">
-                      <p>Real: {formatters.currency(cycle.realDelhi)}</p>
-                      <p>Phantom: {formatters.currency(cycle.phantomDelhi)}</p>
-                    </div>
+                <div style={{ display: 'flex', height: 12, borderRadius: 8, overflow: 'hidden', background: 'var(--track)', marginBottom: 12 }}>
+                  <div style={{ width: `${delhiPct}%`, background: 'linear-gradient(90deg,#5aa0f2,#3d6bd6)' }} />
+                  <div style={{ width: `${100 - delhiPct}%`, background: 'linear-gradient(90deg,#efb03e,#d4913a)' }} />
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                  <div style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 11, padding: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}><span style={{ width: 8, height: 8, borderRadius: 2, background: 'var(--info)' }} /><span style={{ fontSize: 11, fontWeight: 800, color: 'var(--info)' }}>DELHI</span></div>
+                    <div className="font-mono" style={{ fontSize: 17, fontWeight: 800 }}>{inr(c.totalDelhi)}</div>
+                    <div className="font-mono" style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 4 }}>real {inr(c.realDelhi)} · ph {inr(c.phantomDelhi)}</div>
                   </div>
-
-                  {/* Bombay Pools */}
-                  <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
-                    <p className="text-xs text-gray-400 mb-1">BOMBAY</p>
-                    <p className="text-xl font-bold text-blue-500">
-                      {formatters.currency(cycle.totalBombay)}
-                    </p>
-                    <div className="text-xs text-gray-500 mt-2 space-y-1">
-                      <p>Real: {formatters.currency(cycle.realBombay)}</p>
-                      <p>Phantom: {formatters.currency(cycle.phantomBombay)}</p>
-                    </div>
+                  <div style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 11, padding: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}><span style={{ width: 8, height: 8, borderRadius: 2, background: 'var(--warning)' }} /><span style={{ fontSize: 11, fontWeight: 800, color: 'var(--warning)' }}>BOMBAY</span></div>
+                    <div className="font-mono" style={{ fontSize: 17, fontWeight: 800 }}>{inr(c.totalBombay)}</div>
+                    <div className="font-mono" style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 4 }}>real {inr(c.realBombay)} · ph {inr(c.phantomBombay)}</div>
                   </div>
                 </div>
 
-                {/* Phantom Status (FIX #6) */}
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-gray-400">Phantom Equalizer:</span>
-                  {cycle.phantomBalanced ? (
-                    <span className="text-green-500 font-medium">✓ Balanced</span>
-                  ) : (
-                    <span className="text-yellow-500 font-medium">Pending</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 10.5, color: 'var(--muted)', fontWeight: 600 }}>Phantom exposure</div>
+                    <div className="font-mono" style={{ fontSize: 13, fontWeight: 700, color: 'var(--risk)', marginTop: 2 }}>{inr(phantom)}</div>
+                  </div>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10.5, fontWeight: 700, padding: '4px 10px', borderRadius: 20, color: c.phantomBalanced ? 'var(--success)' : 'var(--warning)', background: c.phantomBalanced ? 'var(--success-bg)' : 'var(--warning-bg)' }}>
+                    {c.phantomBalanced ? 'Balanced' : 'Balancing'}
+                  </span>
+                </div>
+
+                {/* Actions — Balance Book (equalizer) + lifecycle controls */}
+                <div style={{ display: 'flex', gap: 9, marginTop: 14, flexWrap: 'wrap' }}>
+                  {!c.phantomBalanced && c.status === 'OPEN' && (
+                    <button onClick={() => setConfirmAction({ type: 'equalizer', cycle: c })} style={{ flex: 1, minWidth: 130, height: 38, borderRadius: 9, background: 'var(--surface-2)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 12.5, fontWeight: 700, cursor: 'pointer', color: 'var(--text)' }}>
+                      <Scale size={14} /> Balance Book
+                    </button>
+                  )}
+                  {c.status === 'OPEN' && (
+                    <>
+                      <button onClick={() => setConfirmAction({ type: 'pause', cycle: c })} style={{ height: 38, padding: '0 14px', borderRadius: 9, background: 'var(--surface-2)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, fontWeight: 700, cursor: 'pointer', color: 'var(--text)' }}><Pause size={14} /> Pause</button>
+                      <button onClick={() => setConfirmAction({ type: 'cancel', cycle: c })} style={{ height: 38, padding: '0 14px', borderRadius: 9, background: 'var(--danger-bg)', border: '1px solid var(--danger)', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, fontWeight: 700, cursor: 'pointer', color: 'var(--danger)' }}><XCircle size={14} /> Cancel</button>
+                    </>
+                  )}
+                  {c.status === 'PAUSED' && (
+                    <button onClick={() => setConfirmAction({ type: 'resume', cycle: c })} style={{ flex: 1, height: 38, borderRadius: 9, background: 'var(--gold)', color: 'var(--gold-on)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 12.5, fontWeight: 700, cursor: 'pointer', border: 'none' }}><Play size={14} /> Resume</button>
                   )}
                 </div>
-                {cycle.phantomBetsClosed && (
-                  <div className="bg-orange-500/10 border border-orange-500/30 rounded px-2 py-1">
-                    <p className="text-xs text-orange-400">🔒 Phantom bets closed</p>
-                  </div>
-                )}
               </div>
-
-              {/* Winner Display */}
-              {cycle.winner && (
-                <div className="bg-gold-500/10 border border-gold-500/30 rounded-lg p-3 mb-4">
-                  <p className="text-sm text-gray-400 mb-1">Winner</p>
-                  <p className="text-xl font-bold text-gold-500">{cycle.winner}</p>
-                  {cycle.totalPaidOut && (
-                    <p className="text-xs text-gray-500 mt-1">
-                      Paid out: {formatters.currency(cycle.totalPaidOut)}
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {/* Admin Actions */}
-              <div className="flex flex-wrap gap-2">
-                {!cycle.phantomBalanced && cycle.status === 'OPEN' && (
-                  <button
-                    onClick={() => setConfirmAction({ type: 'equalizer', cycle })}
-                    className="btn-secondary text-sm"
-                  >
-                    Trigger Equalizer
-                  </button>
-                )}
-                {cycle.status === 'OPEN' && (
-                  <>
-                    <button
-                      onClick={() => setConfirmAction({ type: 'pause', cycle })}
-                      className="btn-secondary text-sm"
-                    >
-                      <Pause size={14} className="mr-1" />
-                      Pause
-                    </button>
-                    <button
-                      onClick={() => setConfirmAction({ type: 'cancel', cycle })}
-                      className="bg-red-600 hover:bg-red-700 px-3 py-1 rounded-lg text-sm font-medium transition-colors"
-                    >
-                      <XCircle size={14} className="mr-1 inline" />
-                      Cancel
-                    </button>
-                  </>
-                )}
-                {cycle.status === 'PAUSED' && (
-                  <button
-                    onClick={() => setConfirmAction({ type: 'resume', cycle })}
-                    className="btn-primary text-sm"
-                  >
-                    <Play size={14} className="mr-1" />
-                    Resume
-                  </button>
-                )}
-              </div>
-
-              {/* Timestamps */}
-              <div className="mt-4 pt-4 border-t border-dark-700 text-xs text-gray-500">
-                <p>Start: {formatters.datetime(new Date(cycle.startTime))}</p>
-                <p>End: {formatters.datetime(new Date(cycle.endTime))}</p>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
-      {/* Confirm Dialog */}
       {confirmAction && (
         <ConfirmDialog
           isOpen={!!confirmAction}
           onClose={() => setConfirmAction(null)}
-          onConfirm={() => {
-            switch (confirmAction.type) {
-              case 'equalizer':
-                handleTriggerEqualizer(confirmAction.cycle.cycleId);
-                break;
-              case 'pause':
-                handlePauseCycle(confirmAction.cycle.cycleId);
-                break;
-              case 'resume':
-                handleResumeCycle(confirmAction.cycle.cycleId);
-                break;
-              case 'cancel':
-                handleCancelCycle(confirmAction.cycle.cycleId);
-                break;
-            }
-          }}
-          title={
-            confirmAction.type === 'equalizer'
-              ? 'Trigger Phantom Equalizer'
-              : confirmAction.type === 'cancel'
-              ? 'Cancel Cycle'
-              : `${confirmAction.type.charAt(0).toUpperCase() + confirmAction.type.slice(1)} Cycle`
-          }
-          message={
-            confirmAction.type === 'equalizer'
-              ? 'This will balance phantom pools. Continue?'
-              : confirmAction.type === 'cancel'
-              ? 'All bets will be refunded. This cannot be undone!'
-              : `Are you sure you want to ${confirmAction.type} this cycle?`
-          }
+          onConfirm={() => act(confirmAction.type, confirmAction.cycle.cycleId)}
+          title={confirmAction.type === 'equalizer' ? 'Balance the book?' : confirmAction.type === 'cancel' ? 'Cancel Cycle' : `${confirmAction.type.charAt(0).toUpperCase() + confirmAction.type.slice(1)} Cycle`}
+          message={confirmAction.type === 'equalizer' ? 'Add phantom bets to balance Delhi vs Bombay exposure for this cycle. Recorded in Audit Logs.' : confirmAction.type === 'cancel' ? 'All bets will be refunded. This cannot be undone!' : `Are you sure you want to ${confirmAction.type} this cycle?`}
           type={confirmAction.type === 'cancel' ? 'danger' : 'warning'}
           confirmText={confirmAction.type.charAt(0).toUpperCase() + confirmAction.type.slice(1)}
         />

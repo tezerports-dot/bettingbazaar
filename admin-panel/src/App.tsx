@@ -35,6 +35,7 @@ import { GameProviders }           from './Pages/GameProviders/GameProviders';
 import { GamesManager }            from './Pages/Games/GamesManager';
 import { AccountRecoveryAdmin } from './Pages/AccountRecovery/AccountRecoveryAdmin';
 import { FakeWinnersManager }  from './Pages/Winners/FakeWinnersManager';
+import { ChatSupport }         from './Pages/Chat/ChatSupport';
 // ── ENTERPRISE PLATFORM CONSOLES (Phase C, 2026-07-10) ─────────────────────
 import { RevenueLedger }      from './Pages/Enterprise/RevenueLedger';
 import { OperationsOverview } from './Pages/Enterprise/OperationsOverview';
@@ -313,9 +314,7 @@ const App: React.FC = () => {
         {}
         <Route path="/chat-management" element={
           <PermRoute permission="canModerateChatPublic">
-            <Layout>
-              <div className="p-6 text-gray-400">Chat moderation console — coming soon.</div>
-            </Layout>
+            <Layout><ChatSupport /></Layout>
           </PermRoute>
         } />
 

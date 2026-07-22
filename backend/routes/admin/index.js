@@ -30,6 +30,7 @@ import communicationRoutes from '../../domains/communication/communication.admin
 import operationsRoutes from '../../domains/operations/operations.admin.routes.js';
 import reportingRoutes from '../../domains/reporting/reporting.admin.routes.js';
 import supportAdminRoutes from '../../domains/support/support.admin.routes.js'; // CAP-71: RAG support assistant
+import chatRoutes        from './chat.admin.routes.js'; // Public chat moderation + support-ticket desk
 import { authenticate } from '../../domains/identity/auth.middleware.js';
 
 const router = express.Router();
@@ -60,5 +61,6 @@ router.use('/', communicationRoutes);
 router.use('/', operationsRoutes);
 router.use('/', reportingRoutes);
 router.use('/', supportAdminRoutes);
+router.use('/', chatRoutes);
 
 export default router;
