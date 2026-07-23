@@ -9,6 +9,7 @@ import { RefreshCw, Play, Trophy, ScrollText } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../../services/api';
 import { usePermissions } from '../../hooks/usePermission';
+import { Toolbar, type ToolbarAction } from '../../components/design';
 
 const inr = (n: number) =>
   '₹' + (n ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
@@ -113,25 +114,11 @@ export const MerchantPlatform: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold mb-1">Merchant Platform</h1>
-          <p className="text-gray-400 text-sm">
-            Performance bonuses (platform-funded, never from users), leaderboard, wallet ledgers.
-          </p>
-        </div>
-        <div className="flex gap-2">
-          {isAdmin && (
-            <button onClick={runEngine} disabled={running} className="btn-primary flex items-center">
-              <Play size={16} className="mr-2" /> {running ? 'Running…' : 'Run Bonus Engine'}
-            </button>
-          )}
-          <button onClick={load} className="btn-primary flex items-center" disabled={loading}>
-            <RefreshCw size={16} className={`mr-2 ${loading ? 'animate-spin' : ''}`} /> Refresh
-          </button>
-        </div>
-      </div>
+    <div className="om-fade space-y-6">
+      <Toolbar actions={[
+        ...(isAdmin ? [{ label: running ? 'Running…' : 'Run Bonus Engine', icon: Play, primary: true, onClick: runEngine } as ToolbarAction] : []),
+        { label: 'Refresh', icon: RefreshCw, onClick: load },
+      ]} />
 
       {isAdmin && (
         <div className="card border border-gold-500/30">
