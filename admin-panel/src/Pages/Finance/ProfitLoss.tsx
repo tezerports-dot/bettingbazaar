@@ -2,6 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { TrendingUp, TrendingDown, DollarSign, Download, Calendar } from 'lucide-react';
 import { formatters } from '../../utils/formatters';
+import { Kpis, Toolbar } from '../../components/design';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
 
@@ -68,43 +69,15 @@ export const ProfitLoss: React.FC = () => {
   const netPos = (stats?.netProfit || 0) >= 0;
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold mb-1">Profit & Loss</h1>
-          <p className="text-gray-400 text-sm">Financial performance overview</p>
+    <div className="om-fade space-y-6">
+      <Toolbar tabs={PRESETS.map((p) => ({ label: p.label, active: preset === p.key, onClick: () => changePreset(p.key) }))} />
+      {preset === 'custom' && (
+        <div className="flex items-end gap-3">
+          <div><label className="text-xs text-gray-400 mb-1 block">From</label><input type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="input" style={{ width: 175 }} /></div>
+          <div><label className="text-xs text-gray-400 mb-1 block">To</label><input type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} className="input" style={{ width: 175 }} /></div>
+          <button onClick={load} className="btn-primary text-xs">Apply</button>
         </div>
-        <button className="btn-secondary flex items-center gap-2"><Download size={16}/>Export</button>
-      </div>
-
-      {/* Date Preset Tabs */}
-      <div className="card space-y-3">
-        <div className="flex items-center gap-2 flex-wrap">
-          <Calendar size={14} className="text-gray-500"/>
-          <span className="text-xs text-gray-500 mr-1">Range:</span>
-          {PRESETS.map(p => (
-            <button key={p.key} onClick={() => changePreset(p.key)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
-                preset === p.key ? 'border-yellow-500 bg-yellow-500/10 text-yellow-400' : 'border-dark-600 text-gray-400 hover:border-dark-500'
-              }`}>{p.label}</button>
-          ))}
-        </div>
-        {preset === 'custom' && (
-          <div className="flex items-center gap-3 pt-1">
-            <div>
-              <label className="text-xs text-gray-400 mb-1 block">From</label>
-              <input type="date" value={startDate} onChange={e => setStart(e.target.value)}
-                className="bg-dark-800 border border-dark-600 rounded-lg px-3 py-1.5 text-sm text-white outline-none focus:border-yellow-500/50"/>
-            </div>
-            <div>
-              <label className="text-xs text-gray-400 mb-1 block">To</label>
-              <input type="date" value={endDate} onChange={e => setEnd(e.target.value)}
-                className="bg-dark-800 border border-dark-600 rounded-lg px-3 py-1.5 text-sm text-white outline-none focus:border-yellow-500/50"/>
-            </div>
-            <button onClick={load} className="btn-primary text-xs mt-5">Apply</button>
-          </div>
-        )}
-      </div>
+      )}
 
       {loading ? (
         <div className="flex items-center justify-center py-16">
@@ -112,12 +85,12 @@ export const ProfitLoss: React.FC = () => {
         </div>
       ) : stats && (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="card"><div className="flex items-center justify-between mb-2"><p className="text-xs text-gray-400">Total Revenue</p><TrendingUp className="text-green-500" size={18}/></div><p className="text-2xl font-bold text-green-500">{fmt(stats.totalRevenue)}</p></div>
-            <div className="card"><div className="flex items-center justify-between mb-2"><p className="text-xs text-gray-400">Total Expenses</p><TrendingDown className="text-red-500" size={18}/></div><p className="text-2xl font-bold text-red-500">{fmt(stats.totalExpenses)}</p></div>
-            <div className="card"><div className="flex items-center justify-between mb-2"><p className="text-xs text-gray-400">Net Profit</p><DollarSign className={netPos ? 'text-gold-500' : 'text-red-400'} size={18}/></div><p className={`text-2xl font-bold ${netPos ? 'text-gold-500' : 'text-red-400'}`}>{fmt(stats.netProfit)}</p></div>
-            <div className="card"><p className="text-xs text-gray-400 mb-2">Profit Margin</p><p className={`text-2xl font-bold ${profitMargin >= 0 ? 'text-white' : 'text-red-400'}`}>{profitMargin >= 0 ? '+' : ''}{profitMargin.toFixed(1)}%</p></div>
-          </div>
+          <Kpis items={[
+            { label: 'Total Revenue', value: fmt(stats.totalRevenue), tone: 'var(--success)' },
+            { label: 'Total Expenses', value: fmt(stats.totalExpenses), tone: 'var(--danger)' },
+            { label: 'Net Profit', value: fmt(stats.netProfit), tone: netPos ? 'var(--gold-ink)' : 'var(--danger)' },
+            { label: 'Profit Margin', value: `${profitMargin >= 0 ? '+' : ''}${profitMargin.toFixed(1)}%`, tone: profitMargin >= 0 ? 'var(--text)' : 'var(--danger)' },
+          ]} />
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="card">
