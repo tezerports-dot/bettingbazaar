@@ -2,6 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { HelpCircle, Plus, Edit, Trash2, Eye, EyeOff } from 'lucide-react';
 import { DataTable } from '../../components/DataTable';
+import { Kpis, Toolbar } from '../../components/design';
 import { Modal } from '../../components/Modal';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import api from '../../services/api';
@@ -144,44 +145,13 @@ export const FAQManager: React.FC = () => {
   ];
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold mb-2">FAQ Manager</h1>
-          <p className="text-gray-400">Manage frequently asked questions</p>
-        </div>
-        <button
-          onClick={() => {
-            resetForm();
-            setShowModal(true);
-          }}
-          className="btn-primary flex items-center"
-        >
-          <Plus size={16} className="mr-2" />
-          Add FAQ
-        </button>
-      </div>
-
-      {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="card">
-          <p className="text-sm text-gray-400 mb-1">Total FAQs</p>
-          <p className="text-2xl font-bold">{faqs.length}</p>
-        </div>
-        <div className="card">
-          <p className="text-sm text-gray-400 mb-1">Published</p>
-          <p className="text-2xl font-bold text-green-500">
-            {faqs.filter((f) => f.isPublished).length}
-          </p>
-        </div>
-        <div className="card">
-          <p className="text-sm text-gray-400 mb-1">Total Views</p>
-          <p className="text-2xl font-bold text-blue-500">
-            {faqs.reduce((sum, f) => sum + (f.views || 0), 0)}
-          </p>
-        </div>
-      </div>
+    <div className="om-fade">
+      <Kpis min={200} items={[
+        { label: 'Total FAQs', value: faqs.length },
+        { label: 'Published', value: faqs.filter((f) => f.isPublished).length, tone: 'var(--success)' },
+        { label: 'Total Views', value: faqs.reduce((sum, f) => sum + (f.views || 0), 0), tone: 'var(--info)' },
+      ]} />
+      <Toolbar actions={[{ label: 'Add FAQ', icon: Plus, primary: true, onClick: () => { resetForm(); setShowModal(true); } }]} />
 
       {/* Table */}
       <div className="card">

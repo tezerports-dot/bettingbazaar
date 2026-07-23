@@ -2,6 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { Plus, Trash2, Edit2, RefreshCw, Bell } from 'lucide-react';
 import api from '../../services/api';
+import { Toolbar } from '../../components/design';
 import toast from 'react-hot-toast';
 
 export const AnnouncementsPage: React.FC = () => {
@@ -30,11 +31,11 @@ export const AnnouncementsPage: React.FC = () => {
   const typeColor: Record<string,string> = { INFO:'bg-blue-500/20 text-blue-400', WARNING:'bg-yellow-500/20 text-yellow-400', PROMO:'bg-green-500/20 text-green-400', MAINTENANCE:'bg-red-500/20 text-red-400' };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div><h1 className="text-2xl font-bold">Announcements</h1><p className="text-gray-400 text-sm">Push site-wide messages to the user panel</p></div>
-        <div className="flex gap-2"><button onClick={load} className="btn-secondary flex items-center gap-2"><RefreshCw size={14}/>Refresh</button><button onClick={()=>{setShowForm(true);setEditId(null);}} className="btn-primary flex items-center gap-2"><Plus size={14}/>New</button></div>
-      </div>
+    <div className="om-fade space-y-6">
+      <Toolbar actions={[
+        { label: 'Refresh', icon: RefreshCw, onClick: load },
+        { label: 'New', icon: Plus, primary: true, onClick: () => { setShowForm(true); setEditId(null); } },
+      ]} />
 
       {showForm && (
         <div className="card space-y-4 border border-blue-500/30">

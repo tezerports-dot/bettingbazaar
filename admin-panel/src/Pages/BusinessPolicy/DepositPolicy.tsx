@@ -25,6 +25,7 @@ import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { EmptyState } from '../../components/EmptyState';
 import { StatusBadge } from '../../components/StatusBadge';
 import { DataTable } from '../../components/DataTable';
+import { Toolbar } from '../../components/design';
 import api from '../../services/api';
 import type { DepositPolicyVersion, DepositPolicyCurrency } from '../../types';
 import toast from 'react-hot-toast';
@@ -272,26 +273,8 @@ export const DepositPolicy: React.FC = () => {
   ];
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold mb-2">Deposit Policy</h1>
-          <p className="text-gray-400">Business Policy Platform — deposit/reserve split &amp; reserve usage rules</p>
-        </div>
-        <div className="flex bg-dark-700 rounded-lg p-1">
-          {CURRENCIES.map((c) => (
-            <button
-              key={c}
-              onClick={() => setCurrency(c)}
-              className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                currency === c ? 'bg-gold-500 text-dark-900' : 'text-gray-400 hover:text-white'
-              }`}
-            >
-              {c}
-            </button>
-          ))}
-        </div>
-      </div>
+    <div className="om-fade space-y-6">
+      <Toolbar tabs={CURRENCIES.map((c) => ({ label: c, active: currency === c, onClick: () => setCurrency(c) }))} />
 
       <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4">
         <div className="flex items-start space-x-3">
