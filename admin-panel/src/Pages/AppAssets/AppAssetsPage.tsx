@@ -9,6 +9,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import { Upload, Trash2, RefreshCw, CheckCircle, ImageIcon, Info } from 'lucide-react';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
+import { Toolbar } from '../../components/design';
 
 interface AssetSlot {
   name: string; label: string; width: number; height: number; hint: string;
@@ -130,18 +131,8 @@ export const AppAssetsPage: React.FC = () => {
   const sorted = [...slots].sort((a, b) => ORDER.indexOf(a.name) - ORDER.indexOf(b.name));
 
   return (
-    <div className="p-6 max-w-5xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-xl font-bold text-white">App Assets</h1>
-          <p className="text-xs text-slate-500 mt-1">Upload logos, icons, and splash screen. No CDN needed — files are served directly and go live immediately.</p>
-        </div>
-        <button onClick={load} disabled={isLoading}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition-colors disabled:opacity-50">
-          <RefreshCw size={13} className={isLoading ? 'animate-spin' : ''} />
-          Refresh
-        </button>
-      </div>
+    <div className="om-fade" style={{ maxWidth: 1040, margin: '0 auto' }}>
+      <Toolbar actions={[{ label: 'Refresh', icon: RefreshCw, onClick: load }]} />
 
       <div className="mb-6 p-4 bg-blue-950/40 border border-blue-900/40 rounded-xl">
         <div className="text-xs font-semibold text-blue-300 mb-2 flex items-center gap-1.5"><Info size={13} /> Required Image Sizes — use transparent PNG</div>
