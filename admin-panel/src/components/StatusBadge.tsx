@@ -70,7 +70,8 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, type = 'user' 
   };
 
   return (
-    <span className={`px-2 py-1 rounded text-xs font-medium ${getStyles()}`}>
+    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${getStyles()}`}>
+      <span className="w-1.5 h-1.5 rounded-full bg-current flex-none" />
       {status.replace(/_/g, ' ')}
     </span>
   );

@@ -19,6 +19,18 @@ export default {
         // Command Center semantic tokens (theme-aware).
         surface: v('--c-surface'),
         'surface-2': v('--c-surface-2'),
+        // Convenience solid tokens (no opacity modifiers needed on these).
+        hover: 'var(--hover)',
+        active: 'var(--active)',
+        input: 'var(--input)',
+        track: 'var(--track)',
+        success: 'var(--success)',
+        warning: 'var(--warning)',
+        danger: 'var(--danger)',
+        info: 'var(--info)',
+        risk: 'var(--risk)',
+        neutral: 'var(--neutral)',
+        'gold-ink': 'var(--gold-ink)',
 
         primary: {
           50: '#f0f9ff', 100: '#e0f2fe', 200: '#bae6fd', 300: '#7dd3fc',

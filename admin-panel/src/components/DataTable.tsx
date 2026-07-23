@@ -54,7 +54,7 @@ export function DataTable<T extends { _id: string }>({
           </thead>
           <tbody>
             {data.map((item) => (
-              <tr key={item._id} className="hover:bg-dark-700 transition-colors">
+              <tr key={item._id} className="hover:bg-hover transition-colors">
                 {columns.map((column) => (
                   <td key={column.key}>
                     {column.render ? column.render(item) : (item as any)[column.key]}
