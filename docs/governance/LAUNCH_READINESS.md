@@ -114,7 +114,31 @@ code flip, because it moves the source of truth for money. The sequence
 
 ---
 
-## F. Compliance & legal — ⛔ hard gate
+## F. Account-security controls — 🟡 two common expectations are NOT built
+
+Verified against the code on 2026-07-27. Both are the kind of control a
+reviewer, auditor or regulator tends to assume is present on a real-money
+platform, so they are called out explicitly rather than left to be discovered.
+
+| Control | State | Evidence |
+|---|---|---|
+| Two-factor authentication (any role, admin included) | ⛔ **not implemented** | `User.twoFactorSecret` / `User.twoFactorEnabled` exist in `domains/user/user.model.js` but are **never written and never verified** — no TOTP library is installed, there is no enrolment endpoint and no challenge step. The only code touching them excludes `twoFactorSecret` from admin responses. |
+| CAPTCHA / bot-mitigation challenge | ⛔ **not implemented** | No captcha, Turnstile, reCAPTCHA or hCaptcha integration anywhere. Automated-abuse defence today is rate limiting only (`middleware/security.js`, `ipDefense.js`). |
+
+Until 2026-07-27 the repository claimed both: `README.md` listed "TOTP 2FA for
+Admins" and "Bot-mitigation captchas" under Security, and the admin login screen
+printed "Secured by 2FA". Those claims were removed — a stated control that does
+not exist is worse than a missing one, because it stops anyone from asking for it.
+
+**Owner decision needed before launch:** admin 2FA is the higher-risk gap of the
+two (privileged accounts that can move money and adjust balances are protected by
+a password alone). The dead schema fields are a usable starting point, but the
+enrolment flow, challenge step, recovery codes and admin-panel UI are all
+unbuilt. Either implement it or record an explicit acceptance here.
+
+---
+
+## G. Compliance & legal — ⛔ hard gate
 
 - ⛔ Gambling/gaming **licence** for each jurisdiction served.
 - ⛔ **AML/KYC** program appropriate to that licence.
@@ -133,8 +157,9 @@ standard, but is **not** a substitute for licensing or a way to evade regulators
 CI green, deploy artifacts committed.
 
 **Must clear before a real-money launch:**
-- ⛔ Compliance/licensing + third-party pen-test (§F)
+- ⛔ Compliance/licensing + third-party pen-test (§G)
 - ⛔ A real load test at target scale (§D)
+- 🟡 Decide on admin 2FA — currently not implemented (§F)
 - 🟡 Managed clustered datastores + gateway/LB/WAF stood up (§D)
 - 🟡 Restore drill executed at least once; PITR enabled (§C)
 

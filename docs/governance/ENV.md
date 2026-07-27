@@ -79,7 +79,74 @@ after the overlap (token TTL / order lifetime). Verification accepts current **o
 | `ARGON2_MEMORY_KIB` / `ARGON2_TIME_COST` / `ARGON2_PARALLELISM` | Password-hash cost (OWASP minimum by default; raise on capable hardware). |
 | `BB_RUNTIME_ROLE` | `api` / `realtime` / `scheduler` for a split k8s fleet (see `deploy/k8s/`). |
 
-## 6. Activation vars — off by default (feature stays dormant until set; see §18/§19)
+## 6. Documented 2026-07-27 — read by the backend, previously listed nowhere
+
+An audit of `process.env.*` reads against this file and `.env.example` found 35
+variables the backend consults that appeared in neither. Nothing here is
+required — every one has a working default — but an operator cannot tune or
+harden what is not written down, so they are recorded. Re-run the check with:
+
+```bash
+grep -rhoE 'process\.env\.[A-Z][A-Z0-9_]{2,}' backend --include='*.js' | sort -u
+```
+
+**Defence toggles** (all default ON — set to `false` only to debug):
+
+| Variable | Default | Effect |
+|---|---|---|
+| `LOAD_SHED_ENABLED` | on | Master switch for the load-shed/bulkhead middleware. |
+| `LOAD_SHED_MAX_INFLIGHT` | see `middleware/loadShed.js` | Concurrent-request ceiling before shedding. |
+| `LOAD_SHED_MAX_LAG_MS` | see `middleware/loadShed.js` | Event-loop lag threshold that triggers shedding. |
+| `IP_DEFENSE_ENABLED` | on | Master switch for per-IP/per-subnet defence. |
+| `IP_DEFENSE_SUBNET_MULT` | see `middleware/ipDefense.js` | Subnet budget multiplier over the per-IP budget. |
+| `BET_BEHAVIOR_MAX_PER_MINUTE` | see risk rules | Per-user bet velocity ceiling. |
+
+**Runtime & transport tuning:**
+
+| Variable | Default | Effect |
+|---|---|---|
+| `WORKER_THREADS_ENABLED` | `true` | Offload CPU-bound work to the worker pool. |
+| `WORKER_POOL_SIZE` | CPU-derived | Worker thread count. |
+| `SSE_MAX_BUFFERED_BYTES` | see `sseManager.service.js` | Per-client SSE backpressure ceiling before disconnect. |
+| `CSV_OFFLOAD_MIN_ROWS` | see reporting | Row count above which CSV export is offloaded to a worker. |
+
+**Auth token claims** (defaults are fine for a single deployment):
+
+| Variable | Default | Effect |
+|---|---|---|
+| `PASETO_ISSUER` | `bettingbazaar` (falls back to `JWT_ISSUER`) | `iss` claim. |
+| `PASETO_AUDIENCE` | see `paseto.util.js` | `aud` claim. |
+| `PASETO_EXPIRES_IN` | see `paseto.util.js` | Token TTL. |
+| `PASETO_PREVIOUS_PUBLIC_KEYS` | unset | Verify-only keys during a rotation (§4 pattern). |
+| `SERVICE_JWT_TTL` | see `gateway/serviceAuth.js` | Inter-service token lifetime (dormant until a domain goes remote). |
+
+**Edge / mTLS** (all unset by default; the server runs plain HTTP behind a proxy):
+
+| Variable | Effect |
+|---|---|
+| `BACKEND_MTLS_CERT` / `BACKEND_MTLS_KEY` / `BACKEND_MTLS_CA` | Enable mutual TLS on the backend listener. All three are required together. |
+| `TLS_FINGERPRINT_EDGE_SECRET` | Shared secret that lets the app trust a TLS-fingerprint header from the edge. Without it the header is ignored — correct default. |
+
+**Native app identifiers** (used by the app-distribution endpoints — see `NATIVE_APP_DISTRIBUTION_POLICY.md`):
+`ANDROID_PACKAGE_ID`, `IOS_BUNDLE_ID`, `DESKTOP_APP_ID`, `PUBLIC_APP_NAME`.
+
+**Support RAG service** (dormant until an API key is set — §19):
+`RAG_CHAT_API_KEY`, `RAG_CHAT_BASE_URL`, `RAG_CHAT_MODEL`, `RAG_MODEL`,
+`RAG_MAX_TOKENS`, `RAG_ASK_RATE`, `RAG_GENERATION_PROVIDER`,
+`RAG_EMBEDDING_PROVIDER`, `RAG_EMBEDDING_MODEL`, `RAG_EMBEDDING_DIM`.
+
+> ⚠️ Two naming traps worth knowing:
+> - **`OPENAI_API_KEY`** is read as a fallback for `RAG_CHAT_API_KEY`
+>   (`domains/support/ragService.js`). The provider is configurable — governance
+>   §18 names `ANTHROPIC_API_KEY` as the RAG trigger, so set the provider vars
+>   deliberately rather than relying on whichever key happens to be in the env.
+> - **`MONGO_URI`** (no `DB`) is accepted *only* by
+>   `backend/scripts/enforce-public-chat-retention.js`, which falls back to
+>   `MONGODB_URI`. Everything else uses `MONGODB_URI`. Set `MONGODB_URI`.
+
+---
+
+## 7. Activation vars — off by default (feature stays dormant until set; see §18/§19)
 
 | Variable | Activates |
 |---|---|
