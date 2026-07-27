@@ -8,6 +8,7 @@ import sseService from '../../services/sse';
 import React, { useEffect, useState, useCallback } from 'react';
 import { Layers, Store, Clock, CheckCircle, XCircle, RefreshCw, List, Users } from 'lucide-react';
 import { LoadingSpinner } from '../../components/LoadingSpinner';
+import { Kpis, Toolbar } from '../../components/design';
 import api from '../../services/api';
 import type { PaymentOrder, Merchant } from '../../types';
 import toast from 'react-hot-toast';
@@ -245,53 +246,28 @@ export const QueueDashboard: React.FC = () => {
   ];
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold mb-1">Queue Manager</h1>
-          <p className="text-gray-400 text-sm">Assign orders to merchants and monitor all P2P activity</p>
-        </div>
-        <button onClick={loadData} className="btn-secondary flex items-center gap-2">
-          <RefreshCw size={15}/>Refresh
-        </button>
-      </div>
-
-      {/* Tabs */}
-      <div className="flex gap-1 border-b border-dark-600">
-        {TAB_CFG.map(tc => (
-          <button key={tc.id} onClick={() => setTab(tc.id)}
-            className={`px-5 py-2 text-sm font-medium rounded-t transition-colors flex items-center gap-2
-              ${tab===tc.id ? `bg-dark-700 ${tc.color} border-b-2 border-current` : 'text-gray-400 hover:text-white'}`}>
-            {tc.id==='pending' ? <Layers size={14}/> : tc.id==='all' ? <List size={14}/> : <Users size={14}/>}
-            {tc.label}
-            <span className={`text-xs px-1.5 py-0.5 rounded bg-dark-600 ${tc.color}`}>{tc.count||0}</span>
-          </button>
-        ))}
-      </div>
+    <div className="om-fade space-y-6">
+      <Toolbar
+        tabs={TAB_CFG.map((tc) => ({ label: tc.label, count: tc.count || 0, active: tab === tc.id, onClick: () => setTab(tc.id) }))}
+        actions={[{ label: 'Refresh', icon: RefreshCw, onClick: loadData }]}
+      />
 
       {/* ─── PENDING QUEUE TAB ─── */}
       {tab==='pending' && (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {[
-              { label:'Pending',          val: pendingOrders.length,                                       icon:<Layers size={22}/>,       color:'text-yellow-500' },
-              { label:'Deposits',         val: pendingOrders.filter(o=>o.type==='DEPOSIT').length,         icon:<CheckCircle size={22}/>,   color:'text-green-500' },
-              { label:'Withdrawals',      val: pendingOrders.filter(o=>o.type==='WITHDRAWAL').length,      icon:<XCircle size={22}/>,       color:'text-red-500' },
-              { label:'Online Merchants', val: merchants.filter(m=>m.isOnline).length,                     icon:<Store size={22}/>,         color:'text-blue-500' },
-            ].map(s => (
-              <div key={s.label} className="card flex items-center justify-between">
-                <div><p className="text-xs text-gray-400 mb-0.5">{s.label}</p><p className={`text-2xl font-bold ${s.color}`}>{s.val}</p></div>
-                <div className={s.color}>{s.icon}</div>
-              </div>
-            ))}
-          </div>
+          <Kpis items={[
+            { label: 'Pending', value: pendingOrders.length, tone: 'var(--warning)' },
+            { label: 'Deposits', value: pendingOrders.filter((o) => o.type === 'DEPOSIT').length, tone: 'var(--success)' },
+            { label: 'Withdrawals', value: pendingOrders.filter((o) => o.type === 'WITHDRAWAL').length, tone: 'var(--danger)' },
+            { label: 'Online Merchants', value: merchants.filter((m) => m.isOnline).length, tone: 'var(--info)' },
+          ]} />
 
-          <div className="card flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-3 flex-wrap">
             <span className="text-sm text-gray-400">Filter:</span>
-            {(['ALL','DEPOSIT','WITHDRAWAL'] as const).map(f => (
+            {(['ALL', 'DEPOSIT', 'WITHDRAWAL'] as const).map((f) => (
               <button key={f} onClick={() => setFilterType(f)}
-                className={`px-3 py-1.5 rounded text-sm font-medium transition-colors
-                  ${filterType===f ? 'bg-yellow-500/20 text-yellow-400' : 'bg-dark-700 text-gray-300 hover:bg-dark-600'}`}>{f}</button>
+                className="px-3 py-1.5 rounded text-sm font-medium transition-colors"
+                style={filterType === f ? { background: 'var(--warning-bg)', color: 'var(--warning)' } : { background: 'var(--surface-2)', color: 'var(--text-2)' }}>{f}</button>
             ))}
           </div>
 

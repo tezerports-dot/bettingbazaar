@@ -1,130 +1,111 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+/**
+ * InvitePage.tsx — 2026 "Bazaar" redesign.
+ *
+ * Referral hub wired to the real referral API (/api/referral/me + /team).
+ * GOVERNANCE §7 / H-03: only F1 (direct-referral) commission is paid by
+ * gameEngine.js — the copy here describes F1 only; no F2/F3 earning is implied.
+ */
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router';
+import { fmt } from '../redesign/format';
+import ScreenShell, { card, capLabel } from '../redesign/Screen';
 
 export default function InvitePage() {
-  const navigate = useNavigate();
-  const [data, setData]   = useState<any>(null);
-  // H-03 NOTICE: Only F1 (direct referral) commissions are paid out by gameEngine.js.
-// F2/F3 tree data is shown for reference only — those levels do NOT earn commission.
-// GOVERNANCE §7: commission calculated but not paid is a violation of this rule's spirit.
-const [team, setTeam]   = useState<any>({ f1:[], f2:[], f3:[] });
-  const [copied, setCopied] = useState(false);
-  const [tab, setTab]     = useState<'invite'|'team'|'earnings'>('invite');
+  const [data, setData] = useState<any>(null);
+  const [team, setTeam] = useState<any>({ f1: [], f2: [], f3: [] });
+  const [copied, setCopied] = useState('');
 
   useEffect(() => {
     const token = localStorage.getItem('auth_token') || '';
     const h = { Authorization: `Bearer ${token}` };
     Promise.all([
-      fetch('/api/referral/me', { headers: h, credentials: 'include' }).then(r => r.json()),
-      fetch('/api/referral/team', { headers: h, credentials: 'include' }).then(r => r.json()),
-    ]).then(([me, t]) => {
-      if (me.success) setData(me);
-      if (t.success) setTeam(t);
-    });
+      fetch('/api/referral/me', { headers: h, credentials: 'include' }).then(r => r.json()).catch(() => ({})),
+      fetch('/api/referral/team', { headers: h, credentials: 'include' }).then(r => r.json()).catch(() => ({})),
+    ]).then(([me, t]) => { if (me?.success) setData(me); if (t?.success) setTeam(t); });
   }, []);
 
-  const copy = (text: string) => {
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const copy = (text: string, which: string) => {
+    if (!text) return;
+    navigator.clipboard?.writeText(text);
+    setCopied(which);
+    setTimeout(() => setCopied(''), 2000);
+  };
+  const share = () => {
+    if (navigator.share && data?.inviteUrl) navigator.share({ title: 'Join Betting Bazaar!', text: `Use my invite code ${data?.inviteCode} and win big!`, url: data.inviteUrl });
+    else copy(data?.inviteUrl || '', 'link');
   };
 
-  const share = () => {
-    if (navigator.share && data?.inviteUrl) {
-      navigator.share({ title: 'Join BettingBazaar!', text: `Use my invite code ${data.inviteCode} and win big!`, url: data.inviteUrl });
-    } else {
-      copy(data?.inviteUrl || '');
-    }
-  };
+  const code = data?.inviteCode || '———';
+  const url = data?.inviteUrl || '';
+  const friends = team.f1 || [];
+
+  const steps = [
+    { n: '1', t: 'Share your code', d: 'Send your link or code to friends.' },
+    { n: '2', t: 'They join & play', d: 'Friend signs up with your code and places bets.' },
+    { n: '3', t: 'You earn', d: 'Earn F1 commission on their winning bets, credited to Winnings.' },
+  ];
 
   return (
-    <div className="h-full overflow-y-auto bg-[#0A0F1C] text-white pb-4">
-      <div className="bg-gradient-to-b from-yellow-900/30 to-transparent px-4 pt-4 pb-6">
-        <button onClick={() => navigate(-1)} className="text-gray-500 text-xs mb-3 block">← Back</button>
-        <h1 className="text-xl font-bold">🎁 Invite & Earn</h1>
-        <p className="text-gray-400 text-sm mt-1">Earn commission on every bet your referrals place</p>
-      </div>
-
-      {/* Stats */}
-      <div className="grid grid-cols-3 gap-3 mx-4 mb-5">
-        {[
-          { label:'Total Referrals', val: data?.totalReferrals || 0, icon:'👥' },
-          { label:'Today Earned',    val: `₹${(data?.todayEarned||0).toFixed(0)}`, icon:'💰' },
-          { label:'Total Earned',    val: `₹${(data?.totalEarned||0).toFixed(0)}`, icon:'🏆' },
-        ].map(s => (
-          <div key={s.label} className="bg-dark-800 border border-dark-700 rounded-xl p-3 text-center">
-            <div className="text-2xl mb-1">{s.icon}</div>
-            <div className="font-bold text-lg text-yellow-400">{s.val}</div>
-            <div className="text-[9px] text-gray-500 mt-0.5">{s.label}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* Tabs */}
-      <div className="flex gap-1 px-4 mb-4">
-        {(['invite','team','earnings'] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`flex-1 py-2 rounded-lg text-xs font-medium transition-all ${tab===t?'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30':'bg-dark-800 text-gray-400 border border-dark-700'}`}>
-            {t==='invite'?'My Code':t==='team'?'My Team':'Earnings'}
-          </button>
-        ))}
-      </div>
-
-      {tab === 'invite' && (
-        <div className="mx-4 space-y-4">
-          <div className="bg-dark-800 border border-dark-700 rounded-2xl p-5 text-center">
-            <p className="text-gray-400 text-xs mb-2">Your Invite Code</p>
-            <p className="text-3xl font-black tracking-widest text-yellow-400 font-mono">{data?.inviteCode || '———'}</p>
-          </div>
-          <div className="space-y-3">
-            <button onClick={() => copy(data?.inviteCode)} className="w-full bg-dark-700 border border-dark-600 hover:border-yellow-500/50 active:scale-95 text-white py-3.5 rounded-xl text-sm font-medium transition-all">
-              {copied ? '✅ Copied!' : '📋 Copy Invite Code'}
-            </button>
-            <button onClick={() => copy(data?.inviteUrl)} className="w-full bg-dark-700 border border-dark-600 hover:border-yellow-500/50 active:scale-95 text-white py-3.5 rounded-xl text-sm font-medium transition-all">
-              🔗 Copy Invite Link
-            </button>
-            <button onClick={share} className="w-full bg-gradient-to-r from-yellow-600 to-yellow-500 hover:from-yellow-500 hover:to-yellow-400 active:scale-95 text-black font-bold py-3.5 rounded-xl text-sm transition-all">
-              📤 Share to WhatsApp / Telegram
-            </button>
-          </div>
-          <div className="bg-dark-800 border border-dark-700 rounded-xl p-4 space-y-2 text-xs">
-            <p className="font-semibold text-white">How it works</p>
-            <p className="text-gray-400">🎯 Direct Referral (F1): Earn 1% on every winning bet your direct invite places</p>
-            <p className="text-gray-400">💡 Rate is set by admin and may change — check Earnings tab for current rate</p>
-            <p className="text-gray-400">💰 Commissions credited to your Winnings Balance within 5 minutes of payout</p>
-            <p className="text-gray-400">🔒 Commission only on winning bets — encouraging your team to play smart</p>
-          </div>
+    <ScreenShell icon="🤝" title="Invite & Earn" sub="Share your code, get rewarded">
+      {/* Referral hero */}
+      <div style={{ borderRadius: 18, padding: 18, background: 'linear-gradient(135deg,#062018,#04120d),radial-gradient(120% 120% at 100% 0,rgba(49,196,110,.28),transparent 55%)', border: '1px solid rgba(49,196,110,.3)', boxShadow: 'var(--shadow)', marginBottom: 14 }}>
+        <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.14em', textTransform: 'uppercase', color: '#66d99a' }}>Your referral code</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 }}>
+          <div className="font-grotesk" style={{ flex: 1, fontWeight: 700, fontSize: 26, letterSpacing: '.14em', color: '#b6f2cf', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{code}</div>
+          <button onClick={() => copy(code, 'code')} style={{ padding: '11px 18px', borderRadius: 12, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: '#062018', background: 'linear-gradient(135deg,#8ff0b6,#31c46e)' }}>{copied === 'code' ? 'Copied!' : 'Copy'}</button>
         </div>
-      )}
+        {url && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, background: 'rgba(255,255,255,.06)', border: '1px solid rgba(255,255,255,.1)', borderRadius: 11, padding: '9px 12px' }}>
+            <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontFamily: 'ui-monospace,monospace', color: '#cdeede', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{url}</span>
+            <button onClick={() => copy(url, 'link')} style={{ flex: 'none', fontSize: 11, fontWeight: 800, color: '#8ff0b6', background: 'none', border: 'none', cursor: 'pointer' }}>{copied === 'link' ? 'Copied!' : 'Copy link'}</button>
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          <button onClick={share} style={{ flex: 1, padding: 9, borderRadius: 10, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 800, color: '#052018', background: '#25D366' }}>WhatsApp</button>
+          <button onClick={share} style={{ flex: 1, padding: 9, borderRadius: 10, border: '1px solid rgba(255,255,255,.18)', cursor: 'pointer', fontSize: 12, fontWeight: 800, color: '#cdeede', background: 'rgba(255,255,255,.05)' }}>Telegram</button>
+          <button onClick={share} style={{ flex: 1, padding: 9, borderRadius: 10, border: '1px solid rgba(255,255,255,.18)', cursor: 'pointer', fontSize: 12, fontWeight: 800, color: '#cdeede', background: 'rgba(255,255,255,.05)' }}>More</button>
+        </div>
+        <div style={{ display: 'flex', gap: 16, marginTop: 16 }}>
+          <div><div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.08em', color: '#66d99a' }}>EARNED</div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 20, color: '#eafff2' }}>₹{fmt(Math.round(data?.totalEarned || 0))}</div></div>
+          <div style={{ width: 1, background: 'rgba(255,255,255,.12)' }} />
+          <div><div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.08em', color: '#66d99a' }}>FRIENDS</div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 20, color: '#eafff2' }}>{fmt(data?.totalReferrals || friends.length)}</div></div>
+        </div>
+      </div>
 
-      {tab === 'team' && (
-        <div className="mx-4 space-y-3">
-          {[{label:'Direct Referrals', data:team.f1 || [], icon:'🤝'}].map(lvl => (
-            <div key={lvl.label} className="bg-dark-800 border border-dark-700 rounded-xl p-4">
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-sm font-semibold">{lvl.icon} {lvl.label}</span>
-                <span className="text-xs text-yellow-400">{lvl.data.length} members</span>
-              </div>
-              {lvl.data.slice(0,5).map((m:any) => (
-                <div key={m.userId} className="flex items-center gap-3 py-2 border-t border-dark-700">
-                  <div className="w-8 h-8 rounded-full bg-dark-600 flex items-center justify-center text-sm">👤</div>
-                  <div><p className="text-sm font-medium">{m.username || '***' + m.mobile}</p><p className="text-[10px] text-gray-500">{new Date(m.joinedAt).toLocaleDateString()}</p></div>
-                </div>
-              ))}
-              {lvl.data.length === 0 && <p className="text-gray-600 text-xs text-center py-2">No members yet</p>}
+      {/* Commission structure (F1 only) */}
+      <div style={{ ...card, marginBottom: 14 }}>
+        <span style={capLabel}>Commission structure</span>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 9, marginTop: 12 }}>
+          <div style={{ background: 'var(--surface3)', border: '1px solid var(--line)', borderRadius: 12, padding: '11px 13px' }}><div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.08em', color: 'var(--text3)' }}>DIRECT REFERRAL · F1</div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 18, color: 'var(--gold-ink)' }}>1%</div><div style={{ fontSize: 9, color: 'var(--text3)' }}>on every winning bet your invite places</div></div>
+          <div style={{ background: 'var(--surface3)', border: '1px solid var(--line)', borderRadius: 12, padding: '11px 13px' }}><div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.08em', color: 'var(--text3)' }}>TODAY EARNED</div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 18, color: 'var(--green)' }}>₹{fmt(Math.round(data?.todayEarned || 0))}</div><div style={{ fontSize: 9, color: 'var(--text3)' }}>credited to your Winnings balance</div></div>
+        </div>
+        <div style={{ fontSize: 10, color: 'var(--text3)', marginTop: 10, lineHeight: 1.5 }}>Rate is set by admin and may change. Commission is paid on winning bets by direct (F1) referrals only.</div>
+      </div>
+
+      {/* How it works */}
+      <div style={{ ...card, marginBottom: 14 }}>
+        <span style={capLabel}>How it works</span>
+        <div style={{ display: 'grid', gap: 12, marginTop: 13 }}>
+          {steps.map(s => (
+            <div key={s.n} style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+              <span className="font-grotesk" style={{ width: 28, height: 28, flex: 'none', borderRadius: '50%', background: 'color-mix(in srgb,var(--gold) 16%,transparent)', border: '1px solid var(--line2)', color: 'var(--gold-ink)', fontWeight: 700, fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{s.n}</span>
+              <div><div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{s.t}</div><div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 1 }}>{s.d}</div></div>
             </div>
           ))}
         </div>
-      )}
+      </div>
 
-      {tab === 'earnings' && (
-        <div className="mx-4">
-          <div className="bg-dark-800 border border-dark-700 rounded-xl p-4 text-center text-gray-500 text-sm">
-            Commission details load from your referral history. All earnings go to your Winnings Balance.
+      {/* Referred friends */}
+      <div style={card}>
+        <span style={capLabel}>Referred friends</span>
+        {friends.length === 0 && <div style={{ fontSize: 12, color: 'var(--text3)', padding: '12px 0 2px' }}>No referrals yet — share your code to get started.</div>}
+        {friends.slice(0, 8).map((m: any) => (
+          <div key={m.userId} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '11px 0', borderTop: '1px solid var(--line)' }}>
+            <span style={{ width: 32, height: 32, flex: 'none', borderRadius: '50%', background: 'var(--surface3)', border: '1px solid var(--line)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13 }}>👤</span>
+            <span style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}><span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{m.username || `•••${String(m.mobile || '').slice(-4)}`}</span><span style={{ fontSize: 10, color: 'var(--text3)' }}>{m.joinedAt ? new Date(m.joinedAt).toLocaleDateString() : ''}</span></span>
           </div>
-        </div>
-      )}
-    </div>
+        ))}
+      </div>
+    </ScreenShell>
   );
 }

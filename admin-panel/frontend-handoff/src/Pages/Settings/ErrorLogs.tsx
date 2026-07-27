@@ -63,7 +63,7 @@ const ErrorLogs: React.FC = () => {
   };
 
   return (
-    <div className="p-6 max-w-4xl mx-auto">
+    <div className="om-fade max-w-4xl mx-auto">
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
           <AlertTriangle className="text-red-400" size={22} />

@@ -3,7 +3,7 @@
 // Command Center sign-in — recreated from the design handoff. Auth flow
 // (mobile + password, role-based post-login redirect) is unchanged.
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { ArrowRight } from 'lucide-react';
 import { useAuthStore } from '../services/auth';
 import { LogoMark, getBrand } from '../components/Logo';

@@ -10,7 +10,7 @@
 // (GOVERNANCE §2/§3: no hardcoded business values).
 import React, { useEffect, useMemo, useState } from 'react';
 import { ArrowRight, ChevronRight, Clock, Coins, Power, ShieldCheck, Wallet } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import toast from 'react-hot-toast';
 import { useAuth } from '../services/AuthContext';
 import { api } from '../services/api';

@@ -51,10 +51,15 @@ export default defineConfig({
     sourcemap: 'hidden',
     rollupOptions: {
       output: {
+        // Only split chunks for packages this panel actually imports. The
+        // former 'three-vendor' entry listed three/@react-three/*, which no
+        // file here imports and which this panel has never declared — it
+        // resolved out of the repository-root node_modules, so the build was
+        // bundling a 3D library into the player app by accident. Removed with
+        // the root dependency cleanup (2026-07-27).
         manualChunks: {
-          'three-vendor': ['three', '@react-three/fiber', '@react-three/drei'],
           'framer':       ['framer-motion'],
-          'react-vendor': ['react', 'react-dom', 'react-router-dom'],
+          'react-vendor': ['react', 'react-dom', 'react-router'],
         },
       },
     },

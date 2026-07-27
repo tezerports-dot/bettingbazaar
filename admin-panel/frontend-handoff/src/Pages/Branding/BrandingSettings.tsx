@@ -145,6 +145,10 @@ export const BrandingSettings: React.FC = () => {
     loginPageBannerUrl: '',
     registerPageBannerUrl: '',
 
+    // Game bet-card backgrounds (CDN URLs) — consumed by the redesign GameScreen
+    betCardDelhiImageUrl: '',
+    betCardBombayImageUrl: '',
+
     // Social links removed — managed in SupportLinks page (H-04 / GOVERNANCE §2)
   });
 
@@ -343,6 +347,8 @@ export const BrandingSettings: React.FC = () => {
           <CdnUrlField id="icon" name="icon" label="App Icon / Avatar" hint="Square icon used in browser tabs, notifications. Recommended: 512×512px" value={formData.icon} onChange={(v) => set('icon', v)} />
           <CdnUrlField id="favicon" name="favicon" label="Favicon URL" hint="Small browser tab icon. .ico or 32×32px PNG" value={formData.favicon} onChange={(v) => set('favicon', v)} />
           <CdnUrlField id="splash" name="splashScreen" label="Splash Screen / Loading Image" hint="Shown while app loads. Full-width banner." value={formData.splashScreen} onChange={(v) => set('splashScreen', v)} />
+          <CdnUrlField id="betcard-delhi" name="betCardDelhiImageUrl" label="Bet Card Background — DELHI" hint="Background image for the DELHI bet card on the game screen. Wide/landscape, e.g. 560×300px. Falls back to the default gradient when empty." value={formData.betCardDelhiImageUrl} onChange={(v) => set('betCardDelhiImageUrl', v)} />
+          <CdnUrlField id="betcard-bombay" name="betCardBombayImageUrl" label="Bet Card Background — BOMBAY" hint="Background image for the BOMBAY bet card on the game screen. Wide/landscape, e.g. 560×300px. Falls back to the default gradient when empty." value={formData.betCardBombayImageUrl} onChange={(v) => set('betCardBombayImageUrl', v)} />
         </div>
       )}
 

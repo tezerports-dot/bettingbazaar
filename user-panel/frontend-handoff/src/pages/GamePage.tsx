@@ -1,203 +1,76 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+/**
+ * GamePage.tsx — 2026 "Bazaar" redesign.
+ *
+ * The full Delhi vs Bombay game experience now lives in redesign/GameScreen
+ * (cycle control, betting card, chips, side panels, analytics drawer), rendered
+ * inside the persistent RedesignShell. This page keeps the two page-level
+ * concerns: the admin HOME_POPUP promo and the "openDeposit" navigation intercept.
+ */
 import React, { useState, useEffect } from 'react';
-import { useGame } from '../services/GameContext';
-import Header from '../components/Layout/Header';
-import Footer from '../components/Layout/Footer';
-import CycleControl from '../components/Game/CycleControl';
-import BettingCard from '../components/Game/BettingCard';
-import BetControls from '../components/Game/BetControls';
-import LivePoolStats from '../components/Game/LivePoolStats';
-import ResultsPanel from '../components/Game/ResultsPanel';
-// Oracle (AIAnalyst) removed — the "Bazaar Oracle" prediction button has been
-// removed from the game page. It was a purple floating button that called an
-// AI prediction endpoint. Removed per product decision.
-import { BettingSide, GameState, PromoContent } from '../types';
-// Fix: Import useNavigate from 'react-router'
 import { useNavigate, useLocation } from 'react-router';
-import GameCategoryStrip from '../components/Game/GameCategoryStrip';
-// MIN_BET removed — GamePage now reads live sysConfig.minBet from GameContext (C-3 fix)
-import { getBackend, getAssetUrl } from '../services/backend.service'; 
-import Modal from '../components/ui/Modal';
-import { Show } from '../components/ui/Show';
-import AuthModal from '../components/Modals/AuthModal';
-import WalletModal from '../components/Modals/WalletModal';
+import { useGame } from '../services/GameContext';
+import GameScreen from '../redesign/GameScreen';
+import { getBackend, getAssetUrl } from '../services/backend.service';
+import { PromoContent } from '../types';
 
 const backend = getBackend();
 
 const GamePage: React.FC = () => {
-  const { currentCycle, gameState, pastCycles, placeBet, placePhantomBet, cycleType, isGhostMode, isAuthenticated, sysConfig, user } = useGame();
-  const [betAmount, setBetAmount] = useState<number | null>(null);
-  const navigate  = useNavigate();
-  const location  = useLocation();
-  const [showWalletModal, setShowWalletModal] = useState(false);
-  const [showAuthModal, setShowAuthModal] = useState(false);
-  const [chatOrderId, setChatOrderId] = useState<string | null>(null);
-
+  const { isAuthenticated } = useGame();
+  const navigate = useNavigate();
+  const location = useLocation();
   const [promoPopup, setPromoPopup] = useState<PromoContent | null>(null);
 
+  // Admin HOME_POPUP — show once per browser.
   useEffect(() => {
-    setBetAmount(null);
-  }, [cycleType]);
-
-  useEffect(() => {
-    const hasSeen = localStorage.getItem('hasSeenPromoPopup');
-    if (hasSeen) return;
-
-    const loadPopup = async () => {
-       try {
-         const promos = await backend.getPublicContent('HOME_POPUP');
-         if (promos.length > 0) {
-           setPromoPopup(promos[0]);
-           localStorage.setItem('hasSeenPromoPopup', 'true');
-         }
-       } catch {
-         // Promo popup is optional -- silently skip if route unavailable
-       }
-    };
-    loadPopup();
+    if (localStorage.getItem('hasSeenPromoPopup')) return;
+    (async () => {
+      try {
+        const promos = await backend.getPublicContent('HOME_POPUP');
+        if (promos.length > 0) {
+          setPromoPopup(promos[0]);
+          localStorage.setItem('hasSeenPromoPopup', 'true');
+        }
+      } catch { /* optional — skip if unavailable */ }
+    })();
   }, []);
 
-
-  // ── DEPOSIT INTERCEPT (from WalletPage "Buy Tokens" → navigate('/',{state:{openDeposit:true}})) ──
+  // Deposit intercept: WalletPage "Buy Tokens" → navigate('/',{state:{openDeposit}}).
   useEffect(() => {
     const state = location.state as Record<string, unknown> | null;
     if (state?.openDeposit) {
-      if (isAuthenticated) {
-        setShowWalletModal(true);
-      } else {
-        setShowAuthModal(true);
-      }
-      // Clear the navigation state so back/forward doesn't re-trigger the modal
       window.history.replaceState({}, document.title, window.location.href);
+      navigate('/wallet');
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // intentionally run once on mount — location.state is consumed immediately
-
-  const handlePlaceBet = (side: BettingSide) => {
-    // Check if user is authenticated - if not, show auth modal
-    if (!isAuthenticated) {
-      setShowAuthModal(true);
-      return;
-    }
-
-    if (!betAmount) {
-      alert("Please select a chip or enter amount first!");
-      return;
-    }
-    
-    // Live server-pushed value — single authority is GameContext.sysConfig.
-    // Server enforcement in bet.routes.js is authoritative; this is the client pre-check.
-    const minRequired = sysConfig?.minBet ?? 10;
-    if (betAmount < minRequired) {
-        alert(`Minimum bet for this cycle is Rs.${minRequired}`);
-        return;
-    }
-
-    if (navigator.vibrate) navigator.vibrate(50);
-    
-    if (isGhostMode) {
-        placePhantomBet(betAmount, side);
-    } else {
-        placeBet(betAmount, side);
-    }
-  };
-
-  const showMerged = gameState === GameState.MERGED || gameState === GameState.CLOSED;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
-    <div className={`casino-screen-layout bg-gradient-to-b from-[#0B0E14] to-[#121826] relative ${isGhostMode ? 'border-4 border-purple-900/50' : ''}`}>
-      <Header onAuthRequired={() => setShowAuthModal(true)} />
-      <GameCategoryStrip />
+    <>
+      <GameScreen />
 
-      {/* AUTH MODAL - Only show when explicitly requested */}
-      {showAuthModal && !isAuthenticated ? (
-          <AuthModal onClose={() => setShowAuthModal(false)} />
-      ) : null}
-
-      <CycleControl />
-
-      <div className="flex-none flex flex-col items-center justify-center relative px-4 py-4 min-h-[60px]">
-        <h2 className="text-[#EAEAEA] font-bold text-base md:text-lg tracking-wide shadow-black drop-shadow-md flex items-center">
-          DELHI BAZAAR <span className="text-[#D4AF37] italic mx-2 text-lg font-black">VS</span> BOMBAY BAZAAR
-        </h2>
-        <LivePoolStats showMerged={showMerged} />
-      </div>
-
-      <main className="casino-main-stage">
-        <div className="game-viewport-container">
-          <BettingCard onPlaceBet={handlePlaceBet} selectedAmount={betAmount} isMerged={showMerged} />
-        </div>
-      </main>
-
-      {/* -- RESULT STRIP + expandable mini results box (ResultsPanel) -- */}
-      <ResultsPanel />
-
-      <BetControls onAmountChange={setBetAmount} currentAmount={betAmount} />
-      <Footer />
-      
-      
-
-
-      {/* ── DEPOSIT MODAL — triggered by openDeposit navigation state ── */}
-      {showWalletModal && isAuthenticated && (
-        <WalletModal
-          isOpen={showWalletModal}
-          onClose={() => setShowWalletModal(false)}
-          onOpenChat={(orderId) => { setChatOrderId(orderId); setShowWalletModal(false); }}
-          onNavigateToHistory={() => { setShowWalletModal(false); navigate('/wallet'); }}
-        />
-      )}
-      {chatOrderId && isAuthenticated && user && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm">
-          <div className="bg-gray-900 border border-white/10 rounded-t-3xl sm:rounded-2xl w-full max-w-md h-[85vh] flex flex-col overflow-hidden">
-            {}
-          </div>
-        </div>
-      )}
-
-      {promoPopup !== null ? (
-        <Modal onClose={() => setPromoPopup(null)} title="">
-          <div className="text-center relative">
-              <button 
-                onClick={() => setPromoPopup(null)}
-                className="absolute -top-3 -right-3 w-8 h-8 flex items-center justify-center bg-black/50 hover:bg-red-500 text-white/70 hover:text-white rounded-full border border-white/20 transition-colors z-50 backdrop-blur-md"
-              >
-                ?
-              </button>
-              <div className="absolute -top-10 -left-10 text-6xl opacity-20 animate-spin-slow">?</div>
-              <div className="absolute -bottom-10 -right-10 text-6xl opacity-20 animate-bounce">?</div>
-
-              <h2 className="text-xl font-black text-[#D4AF37] mb-3 uppercase tracking-widest drop-shadow-md">
-                {promoPopup?.title}
-              </h2>
-              
-              {promoPopup?.fileUrl !== undefined && promoPopup?.fileUrl !== null && promoPopup?.fileUrl !== '' ? (
-                <div className="w-full rounded-xl overflow-hidden border-2 border-[#D4AF37]/50 shadow-[0_0_20px_rgba(212,175,55,0.2)] mb-4 bg-black">
-                    <img 
-                        src={getAssetUrl(promoPopup?.fileUrl || '', '')} 
-                        alt="Promo" 
-                        className="w-full h-auto object-cover max-h-[300px]" 
-                    />
-                </div>
-              ) : null}
-
-              <div className="bg-[#121826] p-4 rounded-lg border border-white/5 mb-6">
-                <p className="text-slate-200 text-sm font-medium leading-relaxed whitespace-pre-wrap">
-                    {promoPopup?.description}
-                </p>
+      {promoPopup !== null && (
+        <div onClick={() => setPromoPopup(null)} style={{ position: 'absolute', inset: 0, zIndex: 140, background: 'rgba(0,0,0,.6)', backdropFilter: 'blur(3px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px 16px' }}>
+          <div onClick={e => e.stopPropagation()} className="bb-rise" style={{ width: '100%', maxWidth: 420, background: 'var(--surface)', border: '1px solid var(--line2)', borderRadius: 20, padding: 22, boxShadow: 'var(--shadow)', textAlign: 'center', position: 'relative' }}>
+            <button onClick={() => setPromoPopup(null)} style={{ position: 'absolute', top: 12, right: 12, width: 30, height: 30, borderRadius: '50%', border: '1px solid var(--line)', background: 'var(--surface3)', color: 'var(--text2)', cursor: 'pointer', fontSize: 12 }}>✕</button>
+            <h2 className="font-grotesk" style={{ fontWeight: 700, fontSize: 19, color: 'var(--gold-ink)', margin: '4px 0 12px', textTransform: 'uppercase', letterSpacing: '.06em' }}>{promoPopup.title}</h2>
+            {!!promoPopup.fileUrl && (
+              <div style={{ width: '100%', borderRadius: 14, overflow: 'hidden', border: '1px solid var(--line2)', marginBottom: 14, background: 'var(--bg)' }}>
+                <img src={getAssetUrl(promoPopup.fileUrl, '')} alt="Promo" style={{ width: '100%', height: 'auto', objectFit: 'cover', maxHeight: 300 }} />
               </div>
-              <button 
-                onClick={() => setPromoPopup(null)}
-                className="w-full bg-gradient-to-r from-[#D4AF37] to-[#F5C77A] hover:from-[#B8860B] hover:to-[#D4AF37] text-black font-black py-4 rounded-xl shadow-lg transform transition-all hover:scale-[1.02] active:scale-95 text-sm tracking-wider uppercase"
-              >
-                ? ENTER ARENA ?
-              </button>
+            )}
+            {!!promoPopup.description && (
+              <div style={{ background: 'var(--surface2)', padding: 14, borderRadius: 12, border: '1px solid var(--line)', marginBottom: 16 }}>
+                <p style={{ color: 'var(--text2)', fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre-wrap', margin: 0 }}>{promoPopup.description}</p>
+              </div>
+            )}
+            <button onClick={() => setPromoPopup(null)} style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 14, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', textTransform: 'uppercase', letterSpacing: '.06em' }}>Enter Arena</button>
           </div>
-        </Modal>
-      ) : null}
-    </div>
+        </div>
+      )}
+    </>
   );
 };
 
 export default GamePage;
-

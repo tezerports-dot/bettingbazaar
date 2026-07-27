@@ -1,71 +1,26 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
- * WinnersPage.tsx — RESTORED + REDESIGNED
- * 3D podium for Top-3, ranked list for Top-10.
- * Data from GET /api/v1/winners (backend-managed: real bets + admin-curated).
+ * WinnersPage.tsx — 2026 "Bazaar" redesign. Hall of Champions podium + runners-up,
+ * wired to GET /api/v1/winners (real bets + admin-curated), with a today/week toggle.
  */
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router';
+import { fmt } from '../redesign/format';
+import ScreenShell, { card, capLabel } from '../redesign/Screen';
 
-const GOLD = '#D4AF37';
-const SILVER = '#9CA3AF';
-const BRONZE = '#CD7F32';
+interface Winner { displayName: string; profilePic?: string; amount: number; betAmount?: number; game?: string; }
 
-interface Winner {
-  displayName: string;
-  profilePic?: string;
-  amount: number;
-  betAmount?: number;
-  game?: string;
-  isReal?: boolean;
-  source?: string;
-}
+const MEDAL: Record<number, { color: string; medal: string; podH: number; avSize: number }> = {
+  1: { color: '#F5C77A', medal: '👑', podH: 92, avSize: 62 },
+  2: { color: '#C7CBD1', medal: '🥈', podH: 70, avSize: 52 },
+  3: { color: '#D9A066', medal: '🥉', podH: 54, avSize: 52 },
+};
 
-function Avatar({ name, pic, size = 48 }: { name: string; pic?: string; size?: number }) {
-  const [err, setErr] = useState(false);
-  const initials = name.slice(0, 2).toUpperCase();
-  if (pic && !err) {
-    return <img src={pic} alt={name} onError={() => setErr(true)}
-      style={{ width: size, height: size }} className="rounded-full object-cover border-2 border-white/20" />;
-  }
-  return (
-    <div style={{ width: size, height: size, background: 'linear-gradient(135deg,#1a1f2e,#2a3349)', fontSize: size / 3 }}
-      className="rounded-full flex items-center justify-center text-white font-black border-2 border-white/10">
-      {initials}
-    </div>
-  );
-}
-
-function PodiumStand({ winner, rank, height, color }: { winner: Winner; rank: number; height: number; color: string }) {
-  const icons = { 1: '👑', 2: '🥈', 3: '🥉' } as Record<number, string>;
-  return (
-    <div className="flex flex-col items-center" style={{ flex: 1 }}>
-      {/* Avatar + badge */}
-      <div className="relative mb-2">
-        <Avatar name={winner.displayName} pic={winner.profilePic} size={rank === 1 ? 64 : 52} />
-        <span className="absolute -top-2 -right-1 text-lg">{icons[rank]}</span>
-      </div>
-      {/* Name */}
-      <p className="text-white font-bold text-xs mb-0.5 truncate max-w-[70px] text-center">{winner.displayName}</p>
-      {/* Win amount */}
-      <p className="font-black text-sm mb-2" style={{ color }}>₹{winner.amount.toLocaleString('en-IN')}</p>
-      {/* Stand */}
-      <div className="w-full rounded-t-lg flex flex-col items-center justify-center py-3 shadow-lg"
-        style={{ height, background: `linear-gradient(180deg, ${color}22, ${color}11)`, border: `1.5px solid ${color}44` }}>
-        <span className="font-black text-2xl" style={{ color }}>#{rank}</span>
-        {winner.betAmount ? (
-          <p className="text-[9px] text-white/40 mt-0.5">bet ₹{winner.betAmount.toLocaleString('en-IN')}</p>
-        ) : null}
-      </div>
-    </div>
-  );
-}
+const COINS = [12, 26, 40, 54, 68, 82, 20, 48, 74, 90, 6, 60];
 
 export default function WinnersPage() {
-  const navigate = useNavigate();
-  const [winners, setWinners]   = useState<Winner[]>([]);
-  const [loading, setLoading]   = useState(true);
-  const [period, setPeriod]     = useState<'today'|'week'>('today');
+  const [winners, setWinners] = useState<Winner[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [period, setPeriod] = useState<'today' | 'week'>('today');
 
   useEffect(() => {
     setLoading(true);
@@ -76,84 +31,68 @@ export default function WinnersPage() {
       .finally(() => setLoading(false));
   }, [period]);
 
-  const top3   = winners.slice(0, 3);
-  const rest   = winners.slice(3, 10);
-  const [p2, p1, p3] = [top3[1], top3[0], top3[2]]; // podium order: 2nd left, 1st centre, 3rd right
+  const top3 = winners.slice(0, 3);
+  const rest = winners.slice(3, 10);
+  const podium = [top3[1], top3[0], top3[2]].map((w, i) => w ? { ...w, rank: i === 1 ? 1 : i === 0 ? 2 : 3 } : null);
 
   return (
-    <div className="flex flex-col h-full bg-[#080B12] text-white overflow-y-auto pb-6">
-      {/* Header */}
-      <div className="relative px-4 pt-5 pb-4"
-        style={{ background: 'linear-gradient(180deg,#0d1120 0%,#080b12 100%)' }}>
-        <button onClick={() => navigate(-1)} className="text-slate-500 text-xs mb-3 block">← Back</button>
-        <h1 className="text-2xl font-black tracking-wider" style={{ color: GOLD }}>🏆 TOP WINNERS</h1>
-        {/* Period toggle */}
-        <div className="flex gap-2 mt-3">
-          {(['today','week'] as const).map(p => (
-            <button key={p} onClick={() => setPeriod(p)}
-              className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${period === p ? 'text-black' : 'text-white/50 bg-white/5'}`}
-              style={period === p ? { background: GOLD } : {}}>
-              {p === 'today' ? 'Today' : 'This Week'}
-            </button>
-          ))}
-        </div>
+    <ScreenShell icon="🏆" title="Top Winners" sub="Biggest wins right now">
+      <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+        {(['today', 'week'] as const).map(p => (
+          <button key={p} onClick={() => setPeriod(p)} style={{ padding: '7px 16px', borderRadius: 999, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 800, background: period === p ? 'var(--gold)' : 'var(--surface3)', color: period === p ? '#1a1200' : 'var(--text2)' }}>{p === 'today' ? 'Today' : 'This Week'}</button>
+        ))}
       </div>
 
       {loading ? (
-        <div className="flex-1 flex items-center justify-center">
-          <div className="w-10 h-10 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: GOLD, borderTopColor: 'transparent' }} />
-        </div>
+        <div style={{ textAlign: 'center', padding: 40 }}><span className="bb-spin" style={{ display: 'inline-block', width: 28, height: 28, border: '2px solid var(--line2)', borderTopColor: 'var(--gold)', borderRadius: '50%' }} /></div>
       ) : winners.length === 0 ? (
-        <div className="flex-1 flex flex-col items-center justify-center gap-3 text-white/30">
-          <span className="text-5xl">🎯</span>
-          <p className="font-semibold">No winners data yet</p>
-          <p className="text-xs">Place bets to appear on the podium!</p>
-        </div>
+        <div style={{ ...card, textAlign: 'center', padding: '36px 16px' }}><div style={{ fontSize: 40, marginBottom: 8 }}>🎯</div><div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>No winners yet</div><div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4 }}>Place bets to appear on the podium!</div></div>
       ) : (
         <>
-          {/* ── 3D Podium ─────────────────────────────────────────────────── */}
-          {top3.length >= 2 && (
-            <div className="mx-4 mt-4 mb-2">
-              {/* Spotlight glow */}
-              <div className="absolute inset-x-0 top-32 h-32 pointer-events-none opacity-30"
-                style={{ background: `radial-gradient(ellipse 60% 40% at 50% 0%, ${GOLD}66, transparent)` }} />
-              <div className="flex items-end gap-1 px-2 relative">
-                {/* 2nd place — left */}
-                {p2 && <PodiumStand winner={p2} rank={2} height={80} color={SILVER} />}
-                {/* 1st place — centre (tallest) */}
-                {p1 && <PodiumStand winner={p1} rank={1} height={110} color={GOLD} />}
-                {/* 3rd place — right */}
-                {p3 && <PodiumStand winner={p3} rank={3} height={60} color={BRONZE} />}
-              </div>
-              {/* Podium base */}
-              <div className="h-2 rounded-b-xl mx-2"
-                style={{ background: `linear-gradient(90deg, ${SILVER}33, ${GOLD}55, ${BRONZE}33)` }} />
+          {/* Podium */}
+          <div style={{ position: 'relative', overflow: 'hidden', borderRadius: 20, background: 'radial-gradient(120% 90% at 50% -10%,rgba(212,175,55,.22),transparent 60%),linear-gradient(180deg,var(--surface2),var(--surface))', border: '1px solid var(--line2)', boxShadow: 'var(--shadow)', padding: '18px 10px 14px', marginBottom: 14 }}>
+            <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none' }}>
+              {COINS.map((L, i) => <span key={i} style={{ position: 'absolute', top: -20, left: L + '%', width: 13 + (i % 3) * 4, height: 13 + (i % 3) * 4, borderRadius: '50%', background: 'radial-gradient(circle at 35% 30%,#FFF1B8,#D4AF37 55%,#9c7a15)', boxShadow: '0 0 6px rgba(212,175,55,.6)', animation: `bb-coinfall ${(2.8 + (i % 4) * 0.5).toFixed(1)}s linear ${(i * 0.5 % 3.2).toFixed(2)}s infinite` }} />)}
             </div>
-          )}
+            <div style={{ position: 'relative', textAlign: 'center', fontSize: 10, fontWeight: 800, letterSpacing: '.2em', textTransform: 'uppercase', color: 'var(--gold-ink)', marginBottom: 10 }}>🏆 Hall of Champions</div>
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', gap: 8 }}>
+              {podium.map((w, i) => {
+                if (!w) return <div key={i} style={{ flex: 1, maxWidth: 120 }} />;
+                const m = MEDAL[w.rank];
+                return (
+                  <div key={i} style={{ flex: 1, maxWidth: 120, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                    <span className="font-grotesk" style={{ width: m.avSize, height: m.avSize, borderRadius: '50%', background: 'linear-gradient(135deg,var(--surface2),var(--surface3))', border: `2px solid ${m.color}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 16, color: 'var(--text)', position: 'relative', boxShadow: `0 0 18px -4px ${m.color}`, overflow: 'visible' }}>
+                      {w.profilePic ? <img src={w.profilePic} alt={w.displayName} style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} /> : w.displayName.slice(0, 2).toUpperCase()}
+                      <span style={{ position: 'absolute', top: -10, right: -4, fontSize: 16 }}>{m.medal}</span>
+                    </span>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)', marginTop: 8, maxWidth: 90, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{w.displayName}</span>
+                    <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 13, color: m.color, marginBottom: 8 }}>₹{fmt(w.amount)}</span>
+                    <div style={{ width: '100%', borderRadius: '10px 10px 0 0', display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 8, height: m.podH, background: `linear-gradient(180deg,color-mix(in srgb,${m.color} 26%,transparent),color-mix(in srgb,${m.color} 8%,transparent))`, border: `1px solid color-mix(in srgb,${m.color} 30%,transparent)` }}>
+                      <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 20, color: m.color }}>#{w.rank}</span>
+                      {w.betAmount ? <span style={{ fontSize: 8, color: 'var(--text3)', marginTop: 2 }}>bet ₹{fmt(w.betAmount)}</span> : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
 
-          {/* ── Top 4-10 list ─────────────────────────────────────────────── */}
+          {/* Runners up */}
           {rest.length > 0 && (
-            <div className="mx-4 mt-4 space-y-2">
-              <p className="text-[10px] text-white/30 uppercase tracking-widest font-bold mb-2">Runners Up</p>
+            <div style={{ ...card, padding: '6px 16px' }}>
+              <div style={{ ...capLabel, fontSize: 9, color: 'var(--text3)', padding: '12px 0 4px' }}>Runners up</div>
               {rest.map((w, i) => (
-                <div key={i} className="flex items-center gap-3 rounded-xl px-4 py-3"
-                  style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
-                  <span className="text-white/30 font-black text-sm w-5 text-right">#{i + 4}</span>
-                  <Avatar name={w.displayName} pic={w.profilePic} size={36} />
-                  <div className="flex-1 min-w-0">
-                    <p className="font-bold text-sm truncate">{w.displayName}</p>
-                    {w.game && <p className="text-[10px] text-white/30">{w.game}</p>}
-                  </div>
-                  <div className="text-right">
-                    <p className="font-black text-sm" style={{ color: GOLD }}>₹{w.amount.toLocaleString('en-IN')}</p>
-                    {w.betAmount ? <p className="text-[9px] text-white/25">bet ₹{w.betAmount.toLocaleString('en-IN')}</p> : null}
-                  </div>
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 0', borderTop: '1px solid var(--line)' }}>
+                  <span className="font-grotesk" style={{ width: 22, textAlign: 'right', fontWeight: 700, fontSize: 13, color: 'var(--text3)' }}>#{i + 4}</span>
+                  <span style={{ width: 34, height: 34, flex: 'none', borderRadius: '50%', background: 'var(--surface3)', border: '1px solid var(--line)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, overflow: 'hidden' }}>{w.profilePic ? <img src={w.profilePic} alt={w.displayName} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : '👤'}</span>
+                  <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{w.displayName}</span>
+                  <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 13, color: 'var(--gold-ink)' }}>₹{fmt(w.amount)}</span>
                 </div>
               ))}
             </div>
           )}
         </>
       )}
-    </div>
+    </ScreenShell>
   );
 }

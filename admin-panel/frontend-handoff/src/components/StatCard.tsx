@@ -25,14 +25,14 @@ export const StatCard: React.FC<StatCardProps> = ({
       <div className="flex items-center justify-between">
         <div>
           <p className="text-sm text-gray-400 mb-1">{title}</p>
-          <p className="text-2xl font-bold text-gray-100">{value}</p>
+          <p className="text-2xl font-bold font-mono text-gray-100 tracking-tight">{value}</p>
           {trend && (
-            <p className={`text-sm mt-1 ${trend.isPositive ? 'text-green-500' : 'text-red-500'}`}>
+            <p className={`text-sm mt-1 font-mono ${trend.isPositive ? 'text-green-500' : 'text-red-500'}`}>
               {trend.isPositive ? '↑' : '↓'} {Math.abs(trend.value)}%
             </p>
           )}
         </div>
-        <div className={`p-3 bg-dark-700 rounded-lg ${iconColor}`}>
+        <div className={`p-3 rounded-xl ${iconColor}`} style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
           <Icon size={24} />
         </div>
       </div>

@@ -10,6 +10,7 @@ import { Download, RefreshCw } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../../services/api';
 import { usePermissions } from '../../hooks/usePermission';
+import { Toolbar } from '../../components/design';
 
 const inr = (n: number) =>
   '₹' + (n ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
@@ -68,42 +69,25 @@ export const Reports: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-2xl font-bold mb-1">Reports</h1>
-          <p className="text-gray-400 text-sm">
-            Derived read-only reports over the settlement ledger and completed orders.
-          </p>
-        </div>
-        <div className="flex items-end gap-2 flex-wrap">
-          <div>
-            <label className="label">From</label>
-            <input type="date" className="input" value={from} onChange={e => setFrom(e.target.value)} />
-          </div>
-          <div>
-            <label className="label">To</label>
-            <input type="date" className="input" value={to} onChange={e => setTo(e.target.value)} />
-          </div>
-          <button onClick={load} className="btn-primary flex items-center h-10" disabled={loading}>
-            <RefreshCw size={16} className={`mr-2 ${loading ? 'animate-spin' : ''}`} /> Run
+    <div className="om-fade space-y-6">
+      <Toolbar
+        tabs={[
+          { label: 'Financial', active: tab === 'financial', onClick: () => setTab('financial') },
+          { label: 'Settlement', active: tab === 'settlement', onClick: () => setTab('settlement') },
+          { label: 'Merchants', active: tab === 'merchants', onClick: () => setTab('merchants') },
+        ]}
+      />
+      <div className="flex items-end gap-2 flex-wrap">
+        <div><label className="label">From</label><input type="date" className="input" style={{ width: 170 }} value={from} onChange={(e) => setFrom(e.target.value)} /></div>
+        <div><label className="label">To</label><input type="date" className="input" style={{ width: 170 }} value={to} onChange={(e) => setTo(e.target.value)} /></div>
+        <button onClick={load} className="btn-primary flex items-center h-10" disabled={loading}>
+          <RefreshCw size={16} className={`mr-2 ${loading ? 'animate-spin' : ''}`} /> Run
+        </button>
+        {isAdmin && (
+          <button onClick={downloadCsv} className="btn-primary flex items-center h-10" title="Regulatory export — one CSV row per journal posting">
+            <Download size={16} className="mr-2" /> Ledger CSV
           </button>
-          {isAdmin && (
-            <button onClick={downloadCsv} className="btn-primary flex items-center h-10" title="Regulatory export — one CSV row per journal posting">
-              <Download size={16} className="mr-2" /> Ledger CSV
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="flex gap-2">
-        {(['financial', 'settlement', 'merchants'] as Tab[]).map(t => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`px-4 py-2 rounded-lg text-sm font-medium capitalize ${
-              tab === t ? 'bg-gold-500 text-dark-900' : 'bg-dark-800 text-gray-300 hover:bg-dark-700'}`}>
-            {t}
-          </button>
-        ))}
+        )}
       </div>
 
       {tab === 'financial' && financial && (

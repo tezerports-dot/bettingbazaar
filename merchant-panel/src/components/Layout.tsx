@@ -8,7 +8,7 @@
 // The top bar carries the screen title, the online toggle, notifications and
 // (on desktop) the profile chip and sign-out.
 import React, { useMemo } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router';
 import { Home, Package, History, User, LogOut, Power, Bell, Sun, Moon } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../services/AuthContext';

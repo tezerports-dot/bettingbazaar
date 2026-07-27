@@ -2,97 +2,188 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================================================
+   BETTING BAZAAR — ADMIN "COMMAND CENTER" DESIGN SYSTEM
+   Ported from design/handoff "Betting Bazaar Admin.dc.html".
+   Two theme layers switch on the [data-theme] attribute set on <html>:
+     • Full-colour vars (--surface, --gold, --text …) drive the hand-built
+       shell (Layout, Dashboard, Login, Command Palette) via inline styles.
+     • RGB-channel vars (--c-*) back the Tailwind palette below so every
+       existing page's `bg-dark-800`, `text-gray-400`, `bg-gold-500/20`
+       utility (incl. opacity modifiers) becomes theme-aware automatically.
+   ========================================================================== */
+
+:root,
+:root[data-theme='dark'] {
+  /* Full-colour design tokens (dark) */
+  --bg:#080b12; --surface:#10151f; --surface-2:#141b28; --sidebar:#0a0e16; --header:#0c1119;
+  --border:#1e2836; --border-2:#2a3648; --hover:#161f2e; --active:#18222f;
+  --text:#eaeff5; --text-2:#9dabbc; --muted:#5f6e7e;
+  --gold:#d4af37; --gold-ink:#f0cf7a; --gold-deep:#b8941f; --gold-on:#1c1602;
+  --success:#34d17f; --success-bg:rgba(52,209,127,.14);
+  --warning:#efb03e; --warning-bg:rgba(239,176,62,.14);
+  --danger:#f36a6a; --danger-bg:rgba(243,106,106,.14);
+  --info:#5aa0f2; --info-bg:rgba(90,160,242,.14);
+  --risk:#b57cf0; --risk-bg:rgba(181,124,240,.15);
+  --neutral:#8494a5; --neutral-bg:rgba(132,148,165,.13);
+  --input:#0b111b; --input-border:#25324390; --overlay:rgba(3,6,11,.66);
+  --grid:#1a2432; --track:#0c121c; --focus:0 0 0 3px rgba(212,175,55,.4);
+  --sh1:0 1px 2px rgba(0,0,0,.4); --sh2:0 10px 30px rgba(0,0,0,.44); --sh3:0 28px 64px rgba(0,0,0,.55);
+  --cardtop:inset 0 1px 0 rgba(255,255,255,.045);
+
+  /* RGB channels for the Tailwind palette (dark) */
+  --c-bg:8 11 18; --c-surface:16 21 31; --c-surface-2:20 27 40;
+  --c-border:30 40 54; --c-border-2:42 54 72;
+  --c-text:234 239 245; --c-text-2:157 171 188; --c-muted:95 110 126;
+  --c-gold:212 175 55; --c-gold-ink:240 207 122; --c-gold-deep:184 148 31;
+}
+
+:root[data-theme='light'] {
+  /* Full-colour design tokens (light) */
+  --bg:#eef1f6; --surface:#ffffff; --surface-2:#ffffff; --sidebar:#ffffff; --header:#ffffff;
+  --border:#e4e8ef; --border-2:#d5dce5; --hover:#f3f6fa; --active:#f0f4f9;
+  --text:#141c27; --text-2:#4f5c6b; --muted:#8592a1;
+  --gold:#c99f26; --gold-ink:#9c7d1a; --gold-deep:#a6821c; --gold-on:#1c1602;
+  --success:#15a862; --success-bg:rgba(21,168,98,.12);
+  --warning:#c77d0e; --warning-bg:rgba(199,125,14,.13);
+  --danger:#dc3b3b; --danger-bg:rgba(220,59,59,.10);
+  --info:#2f6fd6; --info-bg:rgba(47,111,214,.10);
+  --risk:#8b48d0; --risk-bg:rgba(139,72,208,.11);
+  --neutral:#5f6b78; --neutral-bg:rgba(95,107,120,.10);
+  --input:#ffffff; --input-border:#dce2ea; --overlay:rgba(22,31,45,.34);
+  --grid:#eef1f6; --track:#eef1f6; --focus:0 0 0 3px rgba(184,148,31,.35);
+  --sh1:0 1px 2px rgba(16,24,40,.06); --sh2:0 8px 24px rgba(16,24,40,.09); --sh3:0 20px 48px rgba(16,24,40,.13);
+  --cardtop:inset 0 1px 0 rgba(255,255,255,.7);
+
+  /* RGB channels for the Tailwind palette (light) */
+  --c-bg:238 241 246; --c-surface:255 255 255; --c-surface-2:243 246 250;
+  --c-border:228 232 239; --c-border-2:213 220 229;
+  --c-text:20 28 39; --c-text-2:79 92 107; --c-muted:133 146 161;
+  --c-gold:201 159 38; --c-gold-ink:156 125 26; --c-gold-deep:166 130 28;
+}
+
 @layer base {
   * {
     @apply border-border;
   }
+  html { background: var(--bg); }
   body {
-    @apply bg-dark-900 text-gray-100 antialiased;
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    @apply antialiased;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Manrope', 'Inter', system-ui, -apple-system, sans-serif;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
   }
+  ::selection { background: rgba(212,175,55,.28); }
+  input::placeholder, textarea::placeholder { color: var(--muted); }
+  a { color: var(--info); text-decoration: none; }
+  a:hover { color: var(--gold-ink); }
 }
 
 @layer components {
+  /* Buttons ---------------------------------------------------------------- */
   .btn-primary {
-    @apply bg-gold-500 hover:bg-gold-600 text-dark-900 font-semibold py-2 px-4 rounded-lg transition-colors;
+    background: var(--gold); color: var(--gold-on);
+    @apply font-bold py-2 px-4 rounded-lg transition-all;
   }
-  
+  .btn-primary:hover { filter: brightness(1.08); }
+
   .btn-secondary {
-    @apply bg-dark-700 hover:bg-dark-600 text-gray-100 font-semibold py-2 px-4 rounded-lg transition-colors;
+    background: var(--surface-2); color: var(--text);
+    border: 1px solid var(--border);
+    @apply font-semibold py-2 px-4 rounded-lg transition-colors;
   }
-  
+  .btn-secondary:hover { border-color: var(--border-2); }
+
   .btn-danger {
-    @apply bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors;
+    background: var(--danger); color: #fff;
+    @apply font-semibold py-2 px-4 rounded-lg transition-all;
   }
-  
+  .btn-danger:hover { filter: brightness(1.06); }
+
+  /* Card ------------------------------------------------------------------- */
   .card {
-    @apply bg-dark-800 rounded-xl p-6 border border-dark-700;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    box-shadow: var(--cardtop);
+    @apply p-5;
   }
-  
+
+  /* Form controls ---------------------------------------------------------- */
   .input {
-    @apply w-full bg-dark-700 border border-dark-600 rounded-lg px-4 py-2 text-gray-100 focus:outline-none focus:border-gold-500 transition-colors;
+    width: 100%;
+    background: var(--input);
+    border: 1px solid var(--input-border);
+    border-radius: 9px;
+    color: var(--text);
+    @apply px-3.5 py-2.5 text-sm transition-colors;
+    outline: none;
   }
-  
+  .input:focus { border-color: var(--gold); box-shadow: var(--focus); }
+
   .label {
-    @apply block text-sm font-medium text-gray-300 mb-2;
+    display: block;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-2);
+    @apply mb-2;
   }
-  
-  .table {
-    @apply w-full border-collapse;
-  }
-  
+
+  /* Table ------------------------------------------------------------------ */
+  .table { @apply w-full border-collapse; }
   .table th {
-    @apply bg-dark-700 text-left px-4 py-3 text-sm font-semibold text-gray-300;
+    background: var(--surface-2);
+    color: var(--muted);
+    text-align: left;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    @apply px-4 py-3 text-[11px] font-extrabold;
   }
-  
   .table td {
-    @apply px-4 py-3 border-t border-dark-700 text-sm;
+    border-top: 1px solid var(--border);
+    color: var(--text-2);
+    @apply px-4 py-3 text-sm;
   }
 }
 
-/* Custom scrollbar */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+/* Skeleton shimmer ---------------------------------------------------------- */
+.bb-skel {
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--hover) 37%, var(--surface-2) 63%);
+  background-size: 720px 100%;
+  animation: om-shim 1.5s infinite linear;
+  border-radius: 6px;
 }
 
-::-webkit-scrollbar-track {
-  background: #121826;
-}
-
+/* Scrollbars ---------------------------------------------------------------- */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: #334155;
-  border-radius: 4px;
+  background: var(--border-2); border-radius: 20px;
+  border: 2px solid transparent; background-clip: padding-box;
 }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); background-clip: padding-box; }
 
-::-webkit-scrollbar-thumb:hover {
-  background: #475569;
-}
+/* Animations ---------------------------------------------------------------- */
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes slideIn { from { transform: translateY(-10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes om-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes om-rise { from { opacity: 0; transform: translateY(9px); } to { opacity: 1; transform: none; } }
+@keyframes om-pop { from { opacity: 0; transform: translateY(8px) scale(.985); } to { opacity: 1; transform: none; } }
+@keyframes om-slide { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes om-pulse { 0%,100% { opacity: 1; } 50% { opacity: .32; } }
+@keyframes om-shim { 0% { background-position: -360px 0; } 100% { background-position: 360px 0; } }
 
-/* Animations */
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
+.animate-fadeIn { animation: fadeIn 0.3s ease-in; }
+.animate-slideIn { animation: slideIn 0.3s ease-out; }
+.animate-spin { animation: spin 1s linear infinite; }
+.om-fade { animation: om-fade .3s ease; }
+.om-rise { animation: om-rise .2s ease; }
+.om-pop { animation: om-pop .18s ease; }
+.om-slide { animation: om-slide .24s cubic-bezier(.4,0,.2,1); }
 
-@keyframes slideIn {
-  from { transform: translateY(-10px); opacity: 0; }
-  to { transform: translateY(0); opacity: 1; }
-}
-
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-.animate-fadeIn {
-  animation: fadeIn 0.3s ease-in;
-}
-
-.animate-slideIn {
-  animation: slideIn 0.3s ease-out;
-}
-
-.animate-spin {
-  animation: spin 1s linear infinite;
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
 }

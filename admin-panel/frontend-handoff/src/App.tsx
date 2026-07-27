@@ -1,6 +1,6 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import React, { useEffect } from 'react';
-import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { HashRouter as Router, Routes, Route, Navigate } from 'react-router';
 import { Toaster } from 'react-hot-toast';
 import { Layout } from './components/Layout';
 import { Login } from './Pages/Login';
@@ -35,6 +35,7 @@ import { GameProviders }           from './Pages/GameProviders/GameProviders';
 import { GamesManager }            from './Pages/Games/GamesManager';
 import { AccountRecoveryAdmin } from './Pages/AccountRecovery/AccountRecoveryAdmin';
 import { FakeWinnersManager }  from './Pages/Winners/FakeWinnersManager';
+import { ChatSupport }         from './Pages/Chat/ChatSupport';
 // ── ENTERPRISE PLATFORM CONSOLES (Phase C, 2026-07-10) ─────────────────────
 import { RevenueLedger }      from './Pages/Enterprise/RevenueLedger';
 import { OperationsOverview } from './Pages/Enterprise/OperationsOverview';
@@ -313,9 +314,7 @@ const App: React.FC = () => {
         {}
         <Route path="/chat-management" element={
           <PermRoute permission="canModerateChatPublic">
-            <Layout>
-              <div className="p-6 text-gray-400">Chat moderation console — coming soon.</div>
-            </Layout>
+            <Layout><ChatSupport /></Layout>
           </PermRoute>
         } />
 

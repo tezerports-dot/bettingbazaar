@@ -1,114 +1,72 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
- * FaqPage.tsx  v4.3.0 — NEW PAGE
- * BUG-U9 / CROSS-1 FIX: Admin-written FAQs now displayed in the user panel.
- * Grouped by category, accordion style, fetched from GET /v1/content/faq.
+ * FaqPage.tsx — 2026 "Bazaar" redesign. Admin-written FAQs (GET /v1/content/faq
+ * via backend.getFaq) in a themed accordion, with a static fallback set.
  */
-import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router';
 import { getBackend } from '../services/backend.service';
+import ScreenShell, { card } from '../redesign/Screen';
 
 const backend = getBackend();
+interface FAQ { id: string; question: string; answer: string; category: string; }
 
-interface FAQ {
-  id:       string;
-  question: string;
-  answer:   string;
-  category: string;
-}
+const FALLBACK: FAQ[] = [
+  { id: 'f1', category: 'Gameplay', question: 'How does Delhi vs Bombay Bazaar work?', answer: 'Each cycle you back either Delhi or Bombay with chips. When bets close, the side holding the smaller real-money pool is declared the winner and everyone on it is paid 2× their stake.' },
+  { id: 'f2', category: 'Gameplay', question: 'What are the two cycle types?', answer: '30-Min cycles resolve every 30 minutes with smaller chip values. Full-Day cycles resolve once per day with larger chips. Bets, pools and results are tracked separately per cycle type.' },
+  { id: 'f3', category: 'Gameplay', question: 'Why did the pools disappear before results?', answer: 'A few minutes before each result the two pools merge into one hidden total. This blind window keeps late betting fair — you can still bet, but you cannot see the split.' },
+  { id: 'f4', category: 'Withdrawals', question: 'When can I withdraw my winnings?', answer: 'Winnings are withdrawable to UPI or bank once a cycle settles and KYC is approved. Deposit balance used for betting clears normal wagering first.' },
+  { id: 'f5', category: 'Gameplay', question: 'Is there a minimum bet?', answer: 'Yes — ₹10 for 30-min cycles and ₹100 for full-day cycles, matching the smallest chip in each mode.' },
+];
 
 const FaqPage: React.FC = () => {
-  const navigate       = useNavigate();
-  const [faqs, setFaqs]         = useState<FAQ[]>([]);
-  const [loading, setLoading]   = useState(true);
-  const [openId, setOpenId]     = useState<string | null>(null);
-  const [activeCategory, setActiveCategory] = useState<string>('All');
+  const navigate = useNavigate();
+  const [faqs, setFaqs] = useState<FAQ[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [cat, setCat] = useState('All');
 
   useEffect(() => {
-    (backend as any).getFaq?.()
-      .then((data: FAQ[]) => setFaqs(data || []))
-      .catch(() => {})
-      .finally(() => setLoading(false));
+    (backend as any).getFaq?.().then((d: FAQ[]) => setFaqs(d || [])).catch(() => {}).finally(() => setLoading(false));
   }, []);
 
   const categories = ['All', ...Array.from(new Set(faqs.map(f => f.category)))];
-  const filtered   = activeCategory === 'All' ? faqs : faqs.filter(f => f.category === activeCategory);
-
-  // Static fallback FAQs shown while loading or if none configured
-  const fallbackFaqs: FAQ[] = [
-    { id: 'f1', category: 'General',    question: 'What is BettingBazaar?',                       answer: 'BettingBazaar is a Payment token trading platform with cycle-based gameplay. You buy tokens, bet on Delhi or Bombay in each cycle, and earn winnings from the pool.' },
-    { id: 'f2', category: 'General',    question: 'How does a cycle work?',                        answer: 'Each cycle has OPEN, MERGED (betting closed), and RESULT phases. When closed, the side with more pool wins. Payouts are proportional to your bet in the winning pool.' },
-    { id: 'f3', category: 'Deposits',   question: 'How do I deposit tokens?',                      answer: 'Open the Wallet, tap "Buy Tokens", enter the amount, and a merchant will be assigned. Pay to the merchant via UPI/NEFT and mark "I Have Paid". After verification, tokens are credited.' },
-    { id: 'f4', category: 'Deposits',   question: 'How long does deposit take?',                   answer: 'Usually under 30 minutes once payment is marked. If delayed beyond 2 hours, raise a dispute in the chat.' },
-    { id: 'f5', category: 'Withdrawals', question: 'How do I withdraw winnings?',                  answer: 'KYC must be approved and bank details added. Tap "Sell Tokens" in the Wallet and a merchant will process the transfer.' },
-    { id: 'f6', category: 'KYC',        question: 'Why is KYC required?',                          answer: 'KYC (Aadhaar verification) is required to unlock withdrawals and comply with regulations. Your data is encrypted.' },
-    { id: 'f7', category: 'KYC',        question: 'How long does KYC approval take?',              answer: 'Usually within 24 hours. You will see the status update on your Profile page.' },
-    { id: 'f8', category: 'Gameplay',   question: 'What is the minimum and maximum bet?',          answer: 'Minimum bet is ₹10 for 30-minute cycles and ₹100 for full-day cycles. Maximum bet is set by the admin.' },
-    { id: 'f9', category: 'Gameplay',   question: 'Can I cancel a bet after placing it?',          answer: 'No. Bets are final once placed. They are locked until the cycle result is declared.' },
-    { id: 'f10', category: 'Disputes',  question: 'My deposit is stuck. What do I do?',            answer: 'Open the Wallet, find the order in Recent Activity, tap Chat, and raise a dispute. Admin will review within a few hours.' },
-  ];
-
-  const displayFaqs = loading ? [] : (filtered.length > 0 ? filtered : fallbackFaqs);
+  const source = faqs.length > 0 ? faqs : FALLBACK;
+  const list = cat === 'All' ? source : source.filter(f => f.category === cat);
 
   return (
-    <div className="h-full flex flex-col bg-[#0B0E14]">
+    <ScreenShell icon="❓" title="Help Center" sub="Answers to common questions">
+      {faqs.length > 0 && (
+        <div className="bb-noscroll" style={{ display: 'flex', gap: 8, overflowX: 'auto', marginBottom: 12 }}>
+          {categories.map(c => (
+            <button key={c} onClick={() => setCat(c)} style={{ flex: 'none', padding: '7px 14px', borderRadius: 999, fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', cursor: 'pointer', border: `1px solid ${cat === c ? 'var(--gold)' : 'var(--line)'}`, background: cat === c ? 'var(--gold)' : 'var(--surface)', color: cat === c ? '#1a1200' : 'var(--text2)' }}>{c}</button>
+          ))}
+        </div>
+      )}
 
-      <div className="flex-1 overflow-y-auto pb-4">
-        {/* Category filter tabs */}
-        {!loading && faqs.length > 0 && (
-          <div className="px-4 pt-4 flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
-            {categories.map(cat => (
-              <button key={cat} onClick={() => setActiveCategory(cat)}
-                className={`flex-shrink-0 px-4 py-2 rounded-full text-xs font-black uppercase tracking-wide transition-all
-                  ${activeCategory === cat ? 'bg-[#D4AF37] text-black' : 'bg-[#1A1F2E] text-slate-400 border border-white/10'}`}>
-                {cat}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {loading ? (
-          <div className="flex flex-col items-center py-16 gap-4">
-            <div className="w-10 h-10 border-4 border-[#D4AF37]/20 border-t-[#D4AF37] rounded-full animate-spin" />
-            <p className="text-slate-500 text-xs">Loading FAQs…</p>
-          </div>
-        ) : (
-          <div className="p-4 space-y-2">
-            {displayFaqs.map(faq => (
-              <div key={faq.id}
-                className={`bg-[#121826] rounded-2xl border transition-all overflow-hidden
-                  ${openId === faq.id ? 'border-[#D4AF37]/30' : 'border-white/5'}`}>
-                <button
-                  className="w-full text-left p-5 flex justify-between items-start gap-3"
-                  onClick={() => setOpenId(openId === faq.id ? null : faq.id)}
-                >
-                  <span className="text-sm font-bold text-slate-200 leading-snug">{faq.question}</span>
-                  <span className={`text-[#D4AF37] text-lg flex-shrink-0 transition-transform duration-200 ${openId === faq.id ? 'rotate-180' : ''}`}>
-                    ▾
-                  </span>
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: 40 }}><span className="bb-spin" style={{ display: 'inline-block', width: 28, height: 28, border: '2px solid var(--line2)', borderTopColor: 'var(--gold)', borderRadius: '50%' }} /></div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+          {list.map(f => {
+            const open = openId === f.id;
+            return (
+              <div key={f.id} style={{ ...card, padding: 0, overflow: 'hidden' }}>
+                <button onClick={() => setOpenId(open ? null : f.id)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, padding: 15, border: 'none', background: 'none', cursor: 'pointer', textAlign: 'left' }}>
+                  <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{f.question}</span>
+                  <span style={{ width: 24, height: 24, flex: 'none', borderRadius: 7, background: 'var(--surface3)', border: '1px solid var(--line)', color: 'var(--gold-ink)', fontSize: 15, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{open ? '−' : '+'}</span>
                 </button>
-                {openId === faq.id && (
-                  <div className="px-5 pb-5 text-sm text-slate-400 leading-relaxed border-t border-white/5 pt-3">
-                    {faq.answer}
-                  </div>
-                )}
+                {open && <div style={{ padding: '0 15px 15px', fontSize: 12, lineHeight: 1.6, color: 'var(--text2)' }}>{f.answer}</div>}
               </div>
-            ))}
-
-            <div className="text-center pt-6 pb-2">
-              <p className="text-slate-500 text-xs">Still have questions?</p>
-              <button
-                onClick={() => navigate('/support')}
-                className="mt-2 text-[#D4AF37] font-bold text-sm"
-              >
-                Contact Support →
-              </button>
-            </div>
+            );
+          })}
+          <div style={{ textAlign: 'center', paddingTop: 12 }}>
+            <p style={{ fontSize: 11, color: 'var(--text3)', margin: 0 }}>Still have questions?</p>
+            <button onClick={() => navigate('/support')} style={{ marginTop: 6, color: 'var(--gold-ink)', fontWeight: 800, fontSize: 13, background: 'none', border: 'none', cursor: 'pointer' }}>Contact Support →</button>
           </div>
-        )}
-      </div>
-
-    </div>
+        </div>
+      )}
+    </ScreenShell>
   );
 };
 

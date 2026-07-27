@@ -5,7 +5,7 @@
 // design handoff "Betting Bazaar Admin.dc.html". All routing, permission
 // filtering, auth and branding wiring is preserved from the previous shell.
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router';
 import {
   LayoutDashboard, Users, Store, Activity, Layers, Landmark,
   UserCheck, FileText, Palette, Settings, ChevronLeft, ChevronRight,

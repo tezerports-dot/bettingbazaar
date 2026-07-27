@@ -4,7 +4,7 @@
 // "BB Merchant Panel.dc.html". A merchant's settlement rail is assigned by an
 // admin after approval, so it is deliberately not asked for here.
 import React, { useState } from 'react';
-import { Navigate } from 'react-router-dom';
+import { Navigate } from 'react-router';
 import { Lock, Smartphone, Mail, User as UserIcon, ShieldCheck, CheckCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../services/AuthContext';

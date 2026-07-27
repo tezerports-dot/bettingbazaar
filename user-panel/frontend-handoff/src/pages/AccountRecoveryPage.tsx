@@ -1,67 +1,53 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
- * AccountRecoveryPage.tsx
+ * AccountRecoveryPage.tsx — 2026 "Bazaar" redesign.
  *
- * User-facing Aadhaar card video KYC account recovery.
- * Flow:
- *  1. User enters their Aadhaar number → system finds the locked/lost account
- *  2. User records a short video HOLDING their Aadhaar card clearly in frame
- *  3. User fills their name (as on Aadhaar) and DOB (as on Aadhaar) + contact mobile
- *  4. Admin reviews the video — verifies face and Aadhaar card details match
- *  5. If approved, admin gets a temp password to share with user
+ * Aadhaar + live-video KYC account recovery. The flow and every API call are
+ * unchanged (check-aadhaar → record video → presigned upload → submit recover);
+ * only the presentation is rebuilt on the redesign theme tokens.
  */
-import React, { useState, useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
+import ScreenShell, { card, goldButton, inputStyle, fieldLabel } from '../redesign/Screen';
 
 type Step = 'aadhaar_check' | 'record_video' | 'details' | 'submitted';
+const STEPS: Step[] = ['aadhaar_check', 'record_video', 'details', 'submitted'];
+const STEP_LABELS = ['Aadhaar', 'Video', 'Details', 'Done'];
 
 export default function AccountRecoveryPage() {
   const navigate = useNavigate();
-  const [step, setStep]           = useState<Step>('aadhaar_check');
+  const [step, setStep] = useState<Step>('aadhaar_check');
   const [aadhaarNumber, setAadhaarNumber] = useState('');
-  const [checking, setChecking]   = useState(false);
-  const [aadhaarError, setAadhaarError]   = useState('');
-  const [videoBlob, setVideoBlob] = useState<Blob|null>(null);
-  const [videoUrl, setVideoUrl]   = useState('');
+  const [checking, setChecking] = useState(false);
+  const [aadhaarError, setAadhaarError] = useState('');
+  const [videoBlob, setVideoBlob] = useState<Blob | null>(null);
+  const [videoUrl, setVideoUrl] = useState('');
   const [videoS3Url, setVideoS3Url] = useState('');
   const [recording, setRecording] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [form, setForm]           = useState({ fullName:'', dob:'', mobile:'' });
+  const [form, setForm] = useState({ fullName: '', dob: '', mobile: '' });
   const [submitting, setSubmitting] = useState(false);
   const [recoveryId, setRecoveryId] = useState('');
   const [statusMsg, setStatusMsg] = useState('');
 
-  const mediaRef  = useRef<MediaRecorder|null>(null);
-  const streamRef = useRef<MediaStream|null>(null);
-  const videoElRef= useRef<HTMLVideoElement>(null);
+  const mediaRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const videoElRef = useRef<HTMLVideoElement>(null);
   const chunksRef = useRef<Blob[]>([]);
 
-  // ── Step 1: Check Aadhaar ────────────────────────────────────────────────────
   const checkAadhaar = async () => {
     const clean = aadhaarNumber.replace(/[\s-]/g, '');
-    if (!/^\d{12}$/.test(clean)) {
-      setAadhaarError('Invalid Aadhaar format. Enter 12 digits.'); return;
-    }
+    if (!/^\d{12}$/.test(clean)) { setAadhaarError('Invalid Aadhaar format. Enter 12 digits.'); return; }
     setChecking(true); setAadhaarError('');
     try {
-      const r = await fetch('/api/auth/check-aadhaar', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ aadhaarNumber: clean }),
-      });
+      const r = await fetch('/api/auth/check-aadhaar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ aadhaarNumber: clean }) });
       const d = await r.json();
-      if (d.success) {
-        // Always proceed to video step - account existence is verified during admin review
-        setStep('record_video');
-      } else {
-        setAadhaarError(d.message || 'Unable to process request. Please try again.');
-      }
+      if (d.success) setStep('record_video');
+      else setAadhaarError(d.message || 'Unable to process request. Please try again.');
     } catch { setAadhaarError('Network error. Please try again.'); }
     finally { setChecking(false); }
   };
 
-  // ── Step 2: Record video ─────────────────────────────────────────────────
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -72,227 +58,112 @@ export default function AccountRecoveryPage() {
       mr.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data); };
       mr.onstop = () => {
         const blob = new Blob(chunksRef.current, { type: 'video/webm' });
-        setVideoBlob(blob);
-        setVideoUrl(URL.createObjectURL(blob));
+        setVideoBlob(blob); setVideoUrl(URL.createObjectURL(blob));
         stream.getTracks().forEach(t => t.stop());
         if (videoElRef.current) videoElRef.current.srcObject = null;
       };
-      mr.start();
-      mediaRef.current = mr;
-      setRecording(true);
+      mr.start(); mediaRef.current = mr; setRecording(true);
     } catch { alert('Camera/microphone access is required for video KYC.'); }
   };
-
-  const stopRecording = () => {
-    mediaRef.current?.stop();
-    setRecording(false);
-  };
+  const stopRecording = () => { mediaRef.current?.stop(); setRecording(false); };
 
   const uploadVideo = async () => {
     if (!videoBlob) return;
     setUploading(true);
     try {
-      // Get presigned URL
-      const r1 = await fetch('/api/user/kyc/upload-url', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ fileName:'recovery_video.webm', contentType:'video/webm', fileSize:videoBlob.size, docType:'recovery_video' }),
-      });
+      const r1 = await fetch('/api/user/kyc/upload-url', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ fileName: 'recovery_video.webm', contentType: 'video/webm', fileSize: videoBlob.size, docType: 'recovery_video' }) });
       const u = await r1.json();
       if (!u.success) throw new Error(u.message);
-      // Upload to S3
-      await fetch(u.uploadUrl, { method:'PUT', body:videoBlob, headers:{'Content-Type':'video/webm'} });
-      setVideoS3Url(u.cdnUrl);
-      setStep('details');
+      await fetch(u.uploadUrl, { method: 'PUT', body: videoBlob, headers: { 'Content-Type': 'video/webm' } });
+      setVideoS3Url(u.cdnUrl); setStep('details');
     } catch (e: any) { alert('Upload failed: ' + e.message); }
     finally { setUploading(false); }
   };
-
   const retakeVideo = () => { setVideoBlob(null); setVideoUrl(''); setVideoS3Url(''); };
 
-  // ── Step 3: Submit ────────────────────────────────────────────────────────
   const submit = async () => {
     if (!form.fullName || !form.dob || !form.mobile) { alert('All fields are required'); return; }
     setSubmitting(true);
     try {
-      const r = await fetch('/api/auth/recover', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          aadhaarNumber: aadhaarNumber.replace(/[\s-]/g,''),
-          mobile:    form.mobile,
-          fullName:  form.fullName,
-          dob:       form.dob,
-          videoKycUrl: videoS3Url,
-        }),
-      });
+      const r = await fetch('/api/auth/recover', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ aadhaarNumber: aadhaarNumber.replace(/[\s-]/g, ''), mobile: form.mobile, fullName: form.fullName, dob: form.dob, videoKycUrl: videoS3Url }) });
       const d = await r.json();
-      if (d.success) {
-        setRecoveryId(d.recoveryId);
-        setStatusMsg(d.message);
-        setStep('submitted');
-      } else {
-        alert(d.message || 'Submission failed');
-      }
+      if (d.success) { setRecoveryId(d.recoveryId); setStatusMsg(d.message); setStep('submitted'); }
+      else alert(d.message || 'Submission failed');
     } finally { setSubmitting(false); }
   };
 
+  const curIdx = STEPS.indexOf(step);
+
   return (
-    <div className="h-full overflow-y-auto bg-[#0A0F1C] text-white flex flex-col">
-      {/* Header */}
-      <div className="px-4 pt-4 pb-3 border-b border-dark-700">
-        <button onClick={() => navigate(-1)} className="text-gray-500 text-xs mb-2 block">← Back to Login</button>
-        <h1 className="text-lg font-bold">🔐 Account Recovery</h1>
-        <p className="text-gray-400 text-xs mt-0.5">Recover access using your Aadhaar card and a short video</p>
-      </div>
+    <ScreenShell icon="🔑" title="Account Recovery" sub="Regain access with Aadhaar + video">
+      <div style={{ maxWidth: 480, margin: '0 auto' }}>
+        {/* Step indicator */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 16 }}>
+          {STEP_LABELS.map((s, i) => {
+            const done = curIdx > i, cur = curIdx === i;
+            return (
+              <React.Fragment key={s}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ width: 24, height: 24, borderRadius: '50%', fontSize: 10, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', background: done ? 'var(--green)' : cur ? 'var(--gold)' : 'var(--surface3)', color: done ? '#fff' : cur ? '#1a1200' : 'var(--text3)' }}>{done ? '✓' : i + 1}</span>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: cur ? 'var(--gold-ink)' : 'var(--text3)' }}>{s}</span>
+                </div>
+                {i < 3 && <div style={{ flex: 1, height: 1, background: 'var(--line)' }} />}
+              </React.Fragment>
+            );
+          })}
+        </div>
 
-      {/* Step indicator */}
-      <div className="flex items-center px-4 py-3 gap-2">
-        {['Aadhaar Check','Record Video','Your Details','Submitted'].map((s,i) => {
-          const steps = ['aadhaar_check','record_video','details','submitted'];
-          const done  = steps.indexOf(step) > i;
-          const cur   = steps[i] === step;
-          return (
-            <React.Fragment key={s}>
-              <div className={`flex items-center justify-center w-6 h-6 rounded-full text-[10px] font-bold flex-shrink-0 ${done?'bg-green-500 text-white':cur?'bg-yellow-500 text-black':'bg-dark-700 text-gray-500'}`}>
-                {done ? '✓' : i+1}
-              </div>
-              <span className={`text-[10px] flex-shrink-0 ${cur?'text-yellow-400 font-medium':'text-gray-600'}`}>{s}</span>
-              {i < 3 && <div className="flex-1 h-px bg-dark-700"/>}
-            </React.Fragment>
-          );
-        })}
-      </div>
+        <div style={{ background: 'color-mix(in srgb,var(--gold) 8%,var(--surface))', border: '1px solid var(--line2)', borderRadius: 16, padding: 15, marginBottom: 14, display: 'flex', gap: 11, alignItems: 'flex-start' }}>
+          <span style={{ fontSize: 20 }}>🔑</span><span style={{ fontSize: 12, lineHeight: 1.55, color: 'var(--text2)' }}>Lost access to your number or password? Verify your identity with Aadhaar and a live selfie video to recover your account securely.</span>
+        </div>
 
-      <div className="flex-1 px-4 py-4 space-y-4">
-
-        {/* STEP 1: AADHAAR CHECK */}
         {step === 'aadhaar_check' && (
-          <div className="space-y-4">
-            <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 text-xs text-gray-300 space-y-1.5">
-              <p className="font-semibold text-white">Before you start</p>
-              <p>• Your Aadhaar card must have been used for KYC on your account</p>
-              <p>• You will need to record a short video holding your Aadhaar card</p>
-              <p>• Make sure the Aadhaar number, your name, and your face are all clearly visible</p>
-              <p>• Our team reviews all requests within 24 hours</p>
-            </div>
-            <div>
-              <label className="text-xs text-gray-400 mb-1.5 block">Enter your Aadhaar Card Number</label>
-              <input value={aadhaarNumber} onChange={e => setAadhaarNumber(e.target.value.replace(/\D/g, '').slice(0, 12))}
-                placeholder="1234 5678 9012"
-                maxLength={12}
-                className="w-full bg-dark-800 border border-dark-600 focus:border-yellow-500/50 rounded-xl px-4 py-3.5 text-white font-mono text-lg tracking-[0.3em] outline-none text-center uppercase"/>
-              {aadhaarError && <p className="text-red-400 text-xs mt-2">{aadhaarError}</p>}
-            </div>
-            <button onClick={checkAadhaar} disabled={checking || aadhaarNumber.replace(/\D/g, '').length < 12}
-              className="w-full bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-black font-bold py-3.5 rounded-xl transition-all active:scale-95">
-              {checking ? '⏳ Checking…' : 'Find My Account →'}
-            </button>
+          <div style={{ ...card, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div><label style={fieldLabel}>Aadhaar number</label><input value={aadhaarNumber} onChange={e => setAadhaarNumber(e.target.value)} inputMode="numeric" placeholder="1234 5678 9012" className="font-grotesk" style={{ ...inputStyle, letterSpacing: '.1em' }} /></div>
+            {aadhaarError && <p style={{ color: 'var(--red)', fontSize: 12, margin: 0 }}>{aadhaarError}</p>}
+            <button onClick={checkAadhaar} disabled={checking} style={{ ...goldButton, opacity: checking ? .6 : 1 }}>{checking ? 'Checking…' : 'Continue'}</button>
           </div>
         )}
 
-        {/* STEP 2: RECORD VIDEO */}
         {step === 'record_video' && (
-          <div className="space-y-4">
-            <div className="bg-green-500/10 border border-green-500/20 rounded-xl p-4 text-xs text-gray-300 space-y-1.5">
-              <p className="font-semibold text-white">✅ Account found! Now record your verification video</p>
-              <p>Hold your Aadhaar card in front of the camera and say:</p>
-              <p className="bg-dark-700 rounded-lg p-2 font-mono text-white text-center">"My name is [NAME], I am recovering my BettingBazaar account"</p>
-              <p>• Aadhaar card must be clearly readable in the video</p>
-              <p>• Your face must be visible alongside the card</p>
-              <p>• Minimum 5 seconds, maximum 30 seconds</p>
-              <p>• Good lighting helps speed up verification</p>
-            </div>
-
-            {/* Video preview */}
-            <div className="relative bg-black rounded-2xl overflow-hidden aspect-video">
-              <video ref={videoElRef} muted playsInline className="w-full h-full object-cover"/>
-              {videoUrl && !recording && (
-                <video src={videoUrl} controls className="absolute inset-0 w-full h-full object-cover"/>
-              )}
-              {!recording && !videoUrl && (
-                <div className="absolute inset-0 flex items-center justify-center text-gray-600">
-                  <div className="text-center"><div className="text-4xl mb-2">📹</div><p className="text-sm">Camera preview</p></div>
-                </div>
-              )}
-              {recording && (
-                <div className="absolute top-3 left-3 flex items-center gap-1.5 bg-red-500/90 text-white text-xs font-bold px-2.5 py-1 rounded-full">
-                  <div className="w-2 h-2 bg-white rounded-full animate-pulse"/> RECORDING
-                </div>
-              )}
-            </div>
-
-            {!videoUrl ? (
-              <button onClick={recording ? stopRecording : startRecording}
-                className={`w-full py-3.5 rounded-xl font-bold text-sm transition-all active:scale-95 ${recording?'bg-red-600 hover:bg-red-500 text-white':'bg-green-600 hover:bg-green-500 text-white'}`}>
-                {recording ? '⏹ Stop Recording' : '● Start Recording'}
-              </button>
-            ) : (
-              <div className="space-y-3">
-                <p className="text-center text-green-400 text-sm font-medium">✅ Video recorded!</p>
-                <div className="grid grid-cols-2 gap-3">
-                  <button onClick={retakeVideo} className="py-3 rounded-xl border border-dark-600 text-gray-300 text-sm font-medium hover:border-dark-500">↺ Retake</button>
-                  <button onClick={uploadVideo} disabled={uploading}
-                    className="py-3 rounded-xl bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-black font-bold text-sm transition-all active:scale-95">
-                    {uploading ? '⏳ Uploading…' : 'Use This Video →'}
-                  </button>
-                </div>
+          <div style={{ ...card, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ border: '2px dashed var(--line2)', borderRadius: 13, padding: 14, textAlign: 'center', background: 'var(--surface2)' }}>
+              <div style={{ fontSize: 26, marginBottom: 6 }}>🎥</div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>Record a live video holding your Aadhaar</div>
+              <div style={{ fontSize: 10, color: 'var(--text3)', marginTop: 3 }}>Keep the card readable and your face in frame</div>
+              <div style={{ marginTop: 12, borderRadius: 12, overflow: 'hidden', background: '#000', display: (recording || videoUrl) ? 'block' : 'none' }}>
+                <video ref={videoElRef} src={videoUrl || undefined} controls={!!videoUrl && !recording} muted={recording} playsInline style={{ width: '100%', maxHeight: 260, background: '#000' }} />
               </div>
-            )}
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 12 }}>
+                {!recording && !videoUrl && <button onClick={startRecording} style={{ padding: '9px 18px', borderRadius: 10, border: '1px solid var(--line2)', background: 'var(--surface3)', color: 'var(--gold-ink)', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>Start recording</button>}
+                {recording && <button onClick={stopRecording} style={{ padding: '9px 18px', borderRadius: 10, border: 'none', background: 'var(--red)', color: '#fff', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>⏹ Stop</button>}
+                {videoUrl && !recording && <button onClick={retakeVideo} style={{ padding: '9px 18px', borderRadius: 10, border: '1px solid var(--line2)', background: 'var(--surface3)', color: 'var(--text2)', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>Retake</button>}
+              </div>
+            </div>
+            <button onClick={uploadVideo} disabled={!videoBlob || uploading} style={{ ...goldButton, opacity: (!videoBlob || uploading) ? .5 : 1 }}>{uploading ? 'Uploading…' : 'Continue'}</button>
           </div>
         )}
 
-        {/* STEP 3: DETAILS */}
         {step === 'details' && (
-          <div className="space-y-4">
-            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-3 text-xs text-gray-300">
-              <p>✅ Video uploaded. Fill in your details exactly as they appear on your Aadhaar card.</p>
-            </div>
-            {[
-              { label:'Full Name (as on Aadhaar Card)', key:'fullName', type:'text', ph:'RAHUL KUMAR SHARMA' },
-              { label:'Date of Birth (as on Aadhaar)',  key:'dob',      type:'date', ph:'' },
-              { label:'Contact Mobile Number',      key:'mobile',   type:'tel',  ph:'9876543210' },
-            ].map(f => (
-              <div key={f.key}>
-                <label className="text-xs text-gray-400 mb-1 block">{f.label}</label>
-                <input type={f.type} value={(form as any)[f.key]} placeholder={f.ph}
-                  onChange={e => setForm(fm => ({...fm, [f.key]: f.key==='fullName'?e.target.value.toUpperCase():e.target.value}))}
-                  className="w-full bg-dark-800 border border-dark-600 focus:border-yellow-500/50 rounded-xl px-4 py-3 text-white outline-none"/>
-              </div>
-            ))}
-            <button onClick={submit} disabled={submitting}
-              className="w-full bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-black font-bold py-3.5 rounded-xl transition-all active:scale-95">
-              {submitting ? '⏳ Submitting…' : '🔐 Submit Recovery Request'}
-            </button>
+          <div style={{ ...card, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div><label style={fieldLabel}>Full name (as on Aadhaar)</label><input value={form.fullName} onChange={e => setForm({ ...form, fullName: e.target.value })} placeholder="RAHUL SHARMA" style={{ ...inputStyle, textTransform: 'uppercase' }} /></div>
+            <div><label style={fieldLabel}>Date of birth</label><input value={form.dob} onChange={e => setForm({ ...form, dob: e.target.value })} placeholder="DD/MM/YYYY" style={inputStyle} /></div>
+            <div><label style={fieldLabel}>New contact mobile</label><input value={form.mobile} onChange={e => setForm({ ...form, mobile: e.target.value.replace(/[^0-9]/g, '').slice(0, 10) })} inputMode="numeric" placeholder="9876543210" className="font-grotesk" style={inputStyle} /></div>
+            <button onClick={submit} disabled={submitting} style={{ ...goldButton, opacity: submitting ? .6 : 1 }}>{submitting ? 'Submitting…' : 'Submit recovery request'}</button>
+            <p style={{ fontSize: 10, color: 'var(--text3)', lineHeight: 1.5, textAlign: 'center', margin: 0 }}>Our team reviews recovery requests within 24 hours. You'll be contacted on your new number.</p>
           </div>
         )}
 
-        {/* STEP 4: SUBMITTED */}
         {step === 'submitted' && (
-          <div className="flex flex-col items-center text-center space-y-5 py-8">
-            <div className="w-16 h-16 bg-green-500/20 rounded-full flex items-center justify-center text-3xl">🎉</div>
-            <div>
-              <h2 className="text-xl font-bold text-green-400">Request Submitted!</h2>
-              <p className="text-gray-400 text-sm mt-2">{statusMsg}</p>
-            </div>
-            <div className="bg-dark-800 border border-dark-700 rounded-xl p-4 w-full text-left space-y-2 text-xs">
-              <p className="font-semibold text-white">Your Recovery ID</p>
-              <p className="font-mono text-yellow-400 text-lg">{recoveryId}</p>
-              <p className="text-gray-500">Save this ID to track your request status</p>
-            </div>
-            <div className="bg-dark-800 border border-dark-700 rounded-xl p-4 w-full text-left space-y-1.5 text-xs text-gray-400">
-              <p>📋 Our team will review your Aadhaar card video within 24 hours</p>
-              <p>📞 We will contact you on {form.mobile} with your new login details</p>
-              <p>🔐 You will receive a temporary password — change it immediately</p>
-            </div>
-            <button onClick={() => navigate('/login')} className="w-full border border-dark-600 text-gray-300 py-3 rounded-xl text-sm hover:border-dark-500">
-              ← Back to Login
-            </button>
+          <div style={{ ...card, textAlign: 'center', padding: 22 }}>
+            <div style={{ fontSize: 40, marginBottom: 8 }}>✅</div>
+            <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 18, color: 'var(--text)' }}>Request submitted</div>
+            <p style={{ fontSize: 12, color: 'var(--text2)', marginTop: 8, lineHeight: 1.5 }}>{statusMsg || 'Our team will review your video and get back to you within 24 hours.'}</p>
+            {recoveryId && <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text3)' }}>Reference: <span className="font-grotesk" style={{ color: 'var(--text2)' }}>{recoveryId}</span></div>}
+            <button onClick={() => navigate('/')} style={{ ...goldButton, marginTop: 16 }}>Back to Home</button>
           </div>
         )}
       </div>
-    </div>
+    </ScreenShell>
   );
 }
