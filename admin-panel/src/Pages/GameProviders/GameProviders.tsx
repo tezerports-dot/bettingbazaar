@@ -3,6 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { Save, TestTube, RefreshCw, ToggleLeft, ToggleRight, ChevronDown, ChevronUp,
          Gamepad2, Trophy, Zap, Activity, Plus, Trash2, X } from 'lucide-react';
 import api from '../../services/api';
+import { Toolbar } from '../../components/design';
 import toast from 'react-hot-toast';
 
 const CATEGORY_META: Record<string, { label: string; icon: React.ReactNode; color: string; desc: string }> = {
@@ -113,19 +114,11 @@ export const GameProviders: React.FC = () => {
   }, {} as Record<string, any[]>);
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Game Providers</h1>
-          <p className="text-gray-400 text-sm mt-1">
-            Configure casino, crash, and sports APIs. Users see <strong className="text-white">Coming Soon</strong> until a provider is enabled with valid credentials.
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <button onClick={load} className="btn-secondary flex items-center gap-2"><RefreshCw size={14}/>Refresh</button>
-          <button onClick={() => setShowAdd(true)} className="btn-primary flex items-center gap-2"><Plus size={14}/>Add Provider</button>
-        </div>
-      </div>
+    <div className="om-fade space-y-6">
+      <Toolbar actions={[
+        { label: 'Refresh', icon: RefreshCw, onClick: load },
+        { label: 'Add Provider', icon: Plus, primary: true, onClick: () => setShowAdd(true) },
+      ]} />
 
       <div className="card border border-blue-500/20 bg-blue-500/5 text-sm text-gray-300 space-y-1">
         <p className="font-semibold text-white">How it works</p>

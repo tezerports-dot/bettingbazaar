@@ -4,6 +4,7 @@ import { FileText, Download } from 'lucide-react';
 import { DataTable } from '../../components/DataTable';
 import { StatusBadge } from '../../components/StatusBadge';
 import { SearchBar } from '../../components/SearchBar';
+import { Kpis, Toolbar, AvatarCell } from '../../components/design';
 import { DateRangePicker } from '../../components/DateRangePicker';
 import { usePagination } from '../../hooks/usePagination';
 import { useDebounce } from '../../hooks/useDebounce';
@@ -84,10 +85,11 @@ export const TransactionsList: React.FC = () => {
       key: 'user',
       label: 'User',
       render: (tx: Transaction) => (
-        <div>
-          <p className="font-medium">{typeof tx.userId === 'object' ? tx.userId.username : tx.userId}</p>
-          <p className="text-sm text-gray-400">{typeof tx.userId === 'object' ? tx.userId._id.slice(-8) : tx.userId.slice(-8)}</p>
-        </div>
+        <AvatarCell
+          name={typeof tx.userId === 'object' ? tx.userId.username : String(tx.userId)}
+          sub={typeof tx.userId === 'object' ? tx.userId._id.slice(-8) : String(tx.userId).slice(-8)}
+          index={Math.max(0, transactions.indexOf(tx))}
+        />
       ),
     },
     {
@@ -152,72 +154,34 @@ export const TransactionsList: React.FC = () => {
     .reduce((sum, t) => sum + t.amount, 0);
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold mb-2">Transactions</h1>
-          <p className="text-gray-400">All platform transactions</p>
-        </div>
-        <button className="btn-secondary flex items-center">
-          <Download size={16} className="mr-2" />
-          Export CSV
-        </button>
-      </div>
+    <div className="om-fade">
+      <Kpis items={[
+        { label: 'Total Transactions', value: total.toLocaleString('en-IN') },
+        { label: 'Total Deposits', value: formatters.currency(totalDeposits), tone: 'var(--success)' },
+        { label: 'Total Withdrawals', value: formatters.currency(totalWithdrawals), tone: 'var(--danger)' },
+        { label: 'Total Bets', value: formatters.currency(totalBets), tone: 'var(--info)' },
+      ]} />
 
-      {/* Filters */}
-      <div className="card space-y-4">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div className="md:col-span-2">
-            <SearchBar
-              value={search}
-              onChange={setSearch}
-              placeholder="Search by user name, ID..."
-            />
-          </div>
-          <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className="input">
-            <option value="ALL">All Types</option>
-            <option value="DEPOSIT">Deposits</option>
-            <option value="WITHDRAWAL">Withdrawals</option>
-            <option value="BET_PLACED">Bets Placed</option>
-            <option value="BET_WIN">Bet Wins</option>
-            <option value="BET_LOSS">Bet Losses</option>
-            <option value="BET_REFUND">Refunds</option>
-            <option value="ADMIN_ADJUSTMENT">Admin Adjustments</option>
-          </select>
-          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="input">
-            <option value="ALL">All Status</option>
-            <option value="SUCCESS">Success</option>
-            <option value="PENDING">Pending</option>
-            <option value="FAILED">Failed</option>
-          </select>
-        </div>
-        <DateRangePicker
-          startDate={startDate}
-          endDate={endDate}
-          onStartDateChange={setStartDate}
-          onEndDateChange={setEndDate}
-        />
-      </div>
+      <Toolbar
+        tabs={[
+          { label: 'All', active: typeFilter === 'ALL', onClick: () => setTypeFilter('ALL') },
+          { label: 'Deposits', active: typeFilter === 'DEPOSIT', onClick: () => setTypeFilter('DEPOSIT') },
+          { label: 'Withdrawals', active: typeFilter === 'WITHDRAWAL', onClick: () => setTypeFilter('WITHDRAWAL') },
+          { label: 'Bets', active: typeFilter === 'BET_PLACED', onClick: () => setTypeFilter('BET_PLACED') },
+          { label: 'Adjustments', active: typeFilter === 'ADMIN_ADJUSTMENT', onClick: () => setTypeFilter('ADMIN_ADJUSTMENT') },
+        ]}
+        search={{ value: search, onChange: setSearch, placeholder: 'Search txn id, player, ref…' }}
+      />
 
-      {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="card">
-          <p className="text-sm text-gray-400 mb-1">Total Transactions</p>
-          <p className="text-2xl font-bold">{total.toLocaleString()}</p>
-        </div>
-        <div className="card">
-          <p className="text-sm text-gray-400 mb-1">Total Deposits</p>
-          <p className="text-2xl font-bold text-green-500">{formatters.currency(totalDeposits)}</p>
-        </div>
-        <div className="card">
-          <p className="text-sm text-gray-400 mb-1">Total Withdrawals</p>
-          <p className="text-2xl font-bold text-red-500">{formatters.currency(totalWithdrawals)}</p>
-        </div>
-        <div className="card">
-          <p className="text-sm text-gray-400 mb-1">Total Bets</p>
-          <p className="text-2xl font-bold text-blue-500">{formatters.currency(totalBets)}</p>
-        </div>
+      {/* Secondary filters */}
+      <div className="flex flex-wrap items-center gap-3 mb-4">
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="input" style={{ width: 160 }}>
+          <option value="ALL">All Status</option>
+          <option value="SUCCESS">Success</option>
+          <option value="PENDING">Pending</option>
+          <option value="FAILED">Failed</option>
+        </select>
+        <DateRangePicker startDate={startDate} endDate={endDate} onStartDateChange={setStartDate} onEndDateChange={setEndDate} />
       </div>
 
       {/* Table */}

@@ -7,6 +7,7 @@ import { SearchBar } from '../../components/SearchBar';
 import { Modal } from '../../components/Modal';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { UserAvatar } from '../../components/UserAvatar';
+import { Kpis, Toolbar, AvatarCell, Money } from '../../components/design';
 import { usePagination } from '../../hooks/usePagination';
 import { useDebounce } from '../../hooks/useDebounce';
 import { formatters } from '../../utils/formatters';
@@ -115,30 +116,18 @@ export const UsersList: React.FC = () => {
 
   const columns = [
     {
-      key: 'user', label: 'User',
-      render: (u: User) => (
-        <div className="flex items-center space-x-3">
-          <UserAvatar src={u.profilePic} name={u.username} />
-          <div><p className="font-medium">{u.username}</p><p className="text-sm text-gray-400">{formatters.phone(u.mobile)}</p></div>
-        </div>
-      ),
+      key: 'user', label: 'Player',
+      render: (u: User) => <AvatarCell name={u.username} sub={formatters.phone(u.mobile)} index={Math.max(0, users.indexOf(u))} />,
     },
-    {
-      key: 'balance', label: 'Balance',
-      render: (u: User) => (
-        <div className="text-sm">
-          <p><span className="text-gray-400">Dep:</span> {formatters.currency(u.depositBalance)}</p>
-          <p><span className="text-gray-400">Win:</span> {formatters.currency(u.winningsBalance)}</p>
-        </div>
-      ),
-    },
-    { key: 'status',    label: 'Status', render: (u: User) => <StatusBadge status={u.status}    type="user" /> },
+    { key: 'deposit',  label: 'Deposit',  render: (u: User) => <div className="text-right"><Money value={formatters.currency(u.depositBalance)} /></div> },
+    { key: 'winnings', label: 'Winnings', render: (u: User) => <div className="text-right"><Money value={formatters.currency(u.winningsBalance)} /></div> },
+    { key: 'locked',   label: 'Locked',   render: (u: User) => <div className="text-right"><Money value={formatters.currency(u.lockedBalance)} tone={(u.lockedBalance || 0) > 0 ? 'warning' : 'muted'} /></div> },
     { key: 'kycStatus', label: 'KYC',    render: (u: User) => <StatusBadge status={u.kycStatus} type="kyc"  /> },
-    { key: 'joined', label: 'Joined', render: (u: User) => <span className="text-sm text-gray-400">{formatters.date(u.joinedAt)}</span> },
+    { key: 'status',    label: 'Status', render: (u: User) => <StatusBadge status={u.status}    type="user" /> },
     {
-      key: 'actions', label: 'Actions',
+      key: 'actions', label: '',
       render: (u: User) => (
-        <div className="flex items-center space-x-1">
+        <div className="flex items-center justify-end space-x-1">
           <button onClick={() => openUserDetails(u, 'profile')} className="p-1.5 hover:bg-dark-700 rounded" title="Details"><Eye size={14} /></button>
           <button onClick={() => openBalanceModal(u, 'add')}    className="p-1.5 hover:bg-green-600/20 text-green-500 rounded" title="Add Balance"><Plus size={14} /></button>
           <button onClick={() => openBalanceModal(u, 'deduct')} className="p-1.5 hover:bg-red-600/20   text-red-400   rounded" title="Deduct"><Minus size={14} /></button>
@@ -156,33 +145,24 @@ export const UsersList: React.FC = () => {
   ];
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold mb-2">User Management</h1>
-        <p className="text-gray-400">Manage users, balances, bank details and transaction history</p>
-      </div>
+    <div className="om-fade">
+      <Kpis items={[
+        { label: 'Total Users', value: total.toLocaleString('en-IN') },
+        { label: 'Active', value: users.filter((u) => u.status === 'ACTIVE').length, tone: 'var(--success)' },
+        { label: 'Blocked', value: users.filter((u) => u.status === 'BLOCKED').length, tone: 'var(--danger)' },
+        { label: 'Pending KYC', value: users.filter((u) => u.kycStatus !== 'APPROVED').length, tone: 'var(--warning)' },
+      ]} />
 
-      <div className="card">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="md:col-span-2">
-            <SearchBar value={search} onChange={setSearch} placeholder="Search by name, mobile or email..." />
-          </div>
-          <select id="user-status-filter" name="statusFilter" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="input">
-            <option value="ALL">All Status</option>
-            <option value="ACTIVE">Active</option>
-            <option value="BLOCKED">Blocked</option>
-            <option value="SUSPENDED">Suspended</option>
-            <option value="PENDING_KYC">Pending KYC</option>
-          </select>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="card"><p className="text-sm text-gray-400 mb-1">Total</p><p className="text-2xl font-bold">{total.toLocaleString()}</p></div>
-        <div className="card"><p className="text-sm text-gray-400 mb-1">Active</p><p className="text-2xl font-bold text-green-500">{users.filter(u => u.status === 'ACTIVE').length}</p></div>
-        <div className="card"><p className="text-sm text-gray-400 mb-1">Blocked</p><p className="text-2xl font-bold text-red-500">{users.filter(u => u.status === 'BLOCKED').length}</p></div>
-        <div className="card"><p className="text-sm text-gray-400 mb-1">KYC Pending</p><p className="text-2xl font-bold text-yellow-500">{users.filter(u => u.kycStatus !== 'APPROVED').length}</p></div>
-      </div>
+      <Toolbar
+        tabs={[
+          { label: 'All', active: statusFilter === 'ALL', onClick: () => setStatusFilter('ALL') },
+          { label: 'Active', active: statusFilter === 'ACTIVE', onClick: () => setStatusFilter('ACTIVE') },
+          { label: 'Blocked', active: statusFilter === 'BLOCKED', onClick: () => setStatusFilter('BLOCKED') },
+          { label: 'Suspended', active: statusFilter === 'SUSPENDED', onClick: () => setStatusFilter('SUSPENDED') },
+          { label: 'Pending KYC', active: statusFilter === 'PENDING_KYC', onClick: () => setStatusFilter('PENDING_KYC') },
+        ]}
+        search={{ value: search, onChange: setSearch, placeholder: 'Search name, mobile, ID…' }}
+      />
 
       <div className="card">
         <DataTable data={users} columns={columns} currentPage={page} totalPages={Math.ceil(total / limit)} onPageChange={setPage} isLoading={isLoading} />

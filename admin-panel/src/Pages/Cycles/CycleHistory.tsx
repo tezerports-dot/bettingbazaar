@@ -5,6 +5,7 @@ import { DataTable } from '../../components/DataTable';
 import { StatusBadge } from '../../components/StatusBadge';
 import { SearchBar } from '../../components/SearchBar';
 import { DateRangePicker } from '../../components/DateRangePicker';
+import { Kpis, Toolbar } from '../../components/design';
 import { Modal } from '../../components/Modal';
 import { usePagination } from '../../hooks/usePagination';
 import { useDebounce } from '../../hooks/useDebounce';
@@ -137,37 +138,23 @@ export const CycleHistory: React.FC = () => {
   const totalPaidOut    = cycles.reduce((sum, c) => sum + (c.totalPaidOut || 0), 0);
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold mb-2">Cycle History</h1>
-          <p className="text-gray-400">Past cycle results — Net Revenue = losing-side stake − winning-side stake + retained winnings fee</p>
-        </div>
-        <button className="btn-secondary flex items-center">
-          <Download size={16} className="mr-2" /> Export CSV
-        </button>
-      </div>
+    <div className="om-fade space-y-6">
+      <Kpis items={[
+        { label: 'Total Cycles', value: total },
+        { label: '30-Min', value: cycles.filter((c) => c.type === '30_MIN').length, tone: 'var(--info)' },
+        { label: 'Total Paid Out', value: formatters.currency(totalPaidOut), tone: 'var(--warning)' },
+        { label: 'Net Revenue', value: formatters.currency(totalNetRevenue), tone: totalNetRevenue >= 0 ? 'var(--success)' : 'var(--danger)' },
+      ]} />
 
-      <div className="card space-y-4">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="md:col-span-2">
-            <SearchBar value={search} onChange={setSearch} placeholder="Search by Cycle ID..." />
-          </div>
-          <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className="input">
-            <option value="ALL">All Types</option>
-            <option value="30_MIN">30-Min Cycles</option>
-            <option value="FULL_DAY">Full Day Cycles</option>
-          </select>
-        </div>
-        <DateRangePicker startDate={startDate} endDate={endDate} onStartDateChange={setStartDate} onEndDateChange={setEndDate} />
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="card"><p className="text-sm text-gray-400 mb-1">Total Cycles</p><p className="text-2xl font-bold">{total}</p></div>
-        <div className="card"><p className="text-sm text-gray-400 mb-1">30-Min</p><p className="text-2xl font-bold text-blue-500">{cycles.filter(c => c.type === '30_MIN').length}</p></div>
-        <div className="card"><p className="text-sm text-gray-400 mb-1">Total Paid Out</p><p className="text-2xl font-bold text-orange-400">{formatters.currency(totalPaidOut)}</p></div>
-        <div className="card"><p className="text-sm text-gray-400 mb-1">Net Revenue</p><p className={`text-2xl font-bold ${totalNetRevenue >= 0 ? 'text-green-400' : 'text-red-400'}`}>{formatters.currency(totalNetRevenue)}</p></div>
-      </div>
+      <Toolbar
+        tabs={[
+          { label: 'All', active: typeFilter === 'ALL', onClick: () => setTypeFilter('ALL') },
+          { label: '30-Min', active: typeFilter === '30_MIN', onClick: () => setTypeFilter('30_MIN') },
+          { label: 'Full Day', active: typeFilter === 'FULL_DAY', onClick: () => setTypeFilter('FULL_DAY') },
+        ]}
+        search={{ value: search, onChange: setSearch, placeholder: 'Search cycle id…' }}
+      />
+      <DateRangePicker startDate={startDate} endDate={endDate} onStartDateChange={setStartDate} onEndDateChange={setEndDate} />
 
       {/* Revenue formula explanation */}
       <div className="bg-dark-800 border border-dark-600 rounded-lg p-4 text-sm">

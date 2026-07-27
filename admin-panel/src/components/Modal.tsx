@@ -38,16 +38,22 @@ export const Modal: React.FC<ModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 animate-fadeIn" onClick={(e)=>{if(e.target===e.currentTarget)onClose();}}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 om-fade"
+      style={{ background: 'var(--overlay)', backdropFilter: 'blur(3px)' }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
       <div
-        className={`bg-dark-800 rounded-xl shadow-xl w-full ${sizeClasses[size]} max-h-[90vh] overflow-hidden flex flex-col animate-slideIn`}
+        className={`om-pop w-full ${sizeClasses[size]} max-h-[90vh] overflow-hidden flex flex-col`}
+        style={{ background: 'var(--surface)', border: '1px solid var(--border-2)', borderRadius: 16, boxShadow: 'var(--sh3)' }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-dark-700">
+        <div className="flex items-center justify-between p-6" style={{ borderBottom: '1px solid var(--border)' }}>
           <h2 className="text-xl font-bold">{title}</h2>
           <button
             onClick={onClose}
-            className="p-2 hover:bg-dark-700 rounded-lg transition-colors"
+            className="p-2 rounded-lg transition-colors"
+            style={{ color: 'var(--text-2)' }}
           >
             <X size={20} />
           </button>

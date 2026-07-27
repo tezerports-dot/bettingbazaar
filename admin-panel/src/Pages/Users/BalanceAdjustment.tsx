@@ -34,9 +34,7 @@ export const BalanceAdjustment: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
-      <div><h1 className="text-2xl font-bold">Balance Adjustment</h1><p className="text-gray-400 text-sm">Manually credit or debit any user's balance with a reason</p></div>
-
+    <div className="om-fade space-y-6">
       <div className="card space-y-4">
         <h3 className="font-semibold">New Adjustment</h3>
         <div>

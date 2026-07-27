@@ -17,6 +17,7 @@
 import { DataTable } from '../../components/DataTable';
 import { DateRangePicker } from '../../components/DateRangePicker';
 import { SearchBar } from '../../components/SearchBar';
+import { Kpis, Toolbar } from '../../components/design';
 import { usePagination } from '../../hooks/usePagination';
 import { useDebounce } from '../../hooks/useDebounce';
 import { formatters } from '../../utils/formatters';
@@ -142,60 +143,15 @@ export const AuditLogs: React.FC = () => {
   ];
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold mb-2">Audit Logs</h1>
-          <p className="text-gray-400">Track all admin actions and system changes</p>
-        </div>
-        <button className="btn-secondary flex items-center">
-          <Download size={16} className="mr-2" />
-          Export Logs
-        </button>
-      </div>
+    <div className="om-fade space-y-6">
+      <Kpis min={200} items={[
+        { label: 'Total Logs', value: total.toLocaleString('en-IN') },
+        { label: 'Today', value: logs.filter((l) => new Date(l.timestamp).toDateString() === new Date().toDateString()).length, tone: 'var(--info)' },
+        { label: 'This Week', value: logs.filter((l) => { const w = new Date(); w.setDate(w.getDate() - 7); return new Date(l.timestamp) > w; }).length, tone: 'var(--success)' },
+      ]} />
 
-      {/* Filters */}
-      <div className="card space-y-4">
-        <SearchBar
-          value={search}
-          onChange={setSearch}
-          placeholder="Search by admin name, action..."
-        />
-        <DateRangePicker
-          startDate={startDate}
-          endDate={endDate}
-          onStartDateChange={setStartDate}
-          onEndDateChange={setEndDate}
-        />
-      </div>
-
-      {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="card">
-          <p className="text-sm text-gray-400 mb-1">Total Logs</p>
-          <p className="text-2xl font-bold">{total.toLocaleString()}</p>
-        </div>
-        <div className="card">
-          <p className="text-sm text-gray-400 mb-1">Today</p>
-          <p className="text-2xl font-bold text-blue-500">
-            {logs.filter((l) => {
-              const today = new Date().toDateString();
-              return new Date(l.timestamp).toDateString() === today;
-            }).length}
-          </p>
-        </div>
-        <div className="card">
-          <p className="text-sm text-gray-400 mb-1">This Week</p>
-          <p className="text-2xl font-bold text-green-500">
-            {logs.filter((l) => {
-              const weekAgo = new Date();
-              weekAgo.setDate(weekAgo.getDate() - 7);
-              return new Date(l.timestamp) > weekAgo;
-            }).length}
-          </p>
-        </div>
-      </div>
+      <Toolbar search={{ value: search, onChange: setSearch, placeholder: 'Search actor, action…' }} />
+      <DateRangePicker startDate={startDate} endDate={endDate} onStartDateChange={setStartDate} onEndDateChange={setEndDate} />
 
       {/* Table */}
       <div className="card">

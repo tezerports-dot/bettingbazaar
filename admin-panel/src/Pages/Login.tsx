@@ -1,36 +1,36 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+//
+// Command Center sign-in — recreated from the design handoff. Auth flow
+// (mobile + password, role-based post-login redirect) is unchanged.
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Shield, Layers, Users } from 'lucide-react';
+import { ArrowRight } from 'lucide-react';
 import { useAuthStore } from '../services/auth';
-import { usePermissions } from '../hooks/usePermission';
+import { LogoMark, getBrand } from '../components/Logo';
 import toast from 'react-hot-toast';
 
 type LoginType = 'admin' | 'subadmin' | 'queue_manager';
 
-const ROLES: { id: LoginType; label: string; icon: typeof Shield; color: string }[] = [
-  { id: 'admin',         label: 'Admin',         icon: Shield, color: 'bg-gold-500 text-dark-900' },
-  { id: 'subadmin',      label: 'Sub-Admin',      icon: Users,  color: 'bg-purple-500 text-white' },
-  { id: 'queue_manager', label: 'Queue Manager',  icon: Layers, color: 'bg-blue-500 text-white'  },
+const ROLES: { id: LoginType; label: string }[] = [
+  { id: 'admin', label: 'Super Admin' },
+  { id: 'subadmin', label: 'Sub-Admin' },
+  { id: 'queue_manager', label: 'Queue Manager' },
 ];
 
 export const Login: React.FC = () => {
-  const [mobile, setMobile]         = useState('');
-  const [password, setPassword]     = useState('');
-  const [loginType, setLoginType]   = useState<LoginType>('admin');
-  const [isLoading, setIsLoading]   = useState(false);
-  const navigate                    = useNavigate();
-  const { login }                   = useAuthStore();
+  const [mobile, setMobile] = useState('');
+  const [password, setPassword] = useState('');
+  const [loginType, setLoginType] = useState<LoginType>('admin');
+  const [isLoading, setIsLoading] = useState(false);
+  const navigate = useNavigate();
+  const { login } = useAuthStore();
+  const brand = getBrand();
 
-  // We need defaultRoute AFTER login resolves, so we call it inside the handler
-  // by accessing the store directly after the state update.
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
     try {
       await login(mobile, password, loginType);
-
-      // Read the store state right after login to decide where to redirect
       const { admin } = useAuthStore.getState();
       if (!admin) throw new Error('Login failed');
 
@@ -39,7 +39,6 @@ export const Login: React.FC = () => {
       } else if (admin.isQueueManager) {
         navigate('/queue-manager');
       } else {
-        // Sub-admin: go to first permitted page
         const perms = (admin.permissions || {}) as import('../types').SubAdminPermissions;
         if (perms.canViewAnalytics) navigate('/');
         else if (perms.canManageUsers) navigate('/users');
@@ -47,9 +46,8 @@ export const Login: React.FC = () => {
         else if (perms.canVerifyKYC) navigate('/kyc');
         else if (perms.canViewTransactions) navigate('/transactions');
         else if (perms.canManageContent) navigate('/content/faq');
-        else navigate('/login'); // no permissions assigned yet
+        else navigate('/login');
       }
-
       toast.success('Login successful!');
     } catch (error: any) {
       toast.error(error.response?.data?.message || 'Login failed. Check your credentials.');
@@ -58,83 +56,92 @@ export const Login: React.FC = () => {
     }
   };
 
-  const activeRole = ROLES.find((r) => r.id === loginType)!;
+  const inputStyle: React.CSSProperties = {
+    width: '100%', height: 42, borderRadius: 10, border: '1px solid var(--input-border)',
+    background: 'var(--input)', color: 'var(--text)', padding: '0 13px', fontSize: 13, outline: 'none',
+  };
 
   return (
-    <div className="min-h-screen bg-dark-900 flex items-center justify-center p-4">
-      <div className="w-full max-w-md">
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-gold-400 to-gold-600 rounded-2xl mb-4">
-            <Shield size={32} className="text-dark-900" />
-          </div>
-          <h1 className="text-3xl font-bold bg-gradient-to-r from-gold-400 to-gold-600 bg-clip-text text-transparent">
-            {import.meta.env.VITE_APP_NAME || 'Betting Bazaar'}
-          </h1>
-          <p className="text-gray-400 mt-2">Admin Panel</p>
+    <div style={{ position: 'fixed', inset: 0, background: 'var(--bg)', color: 'var(--text)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }} className="om-fade">
+      <div style={{ width: 410, maxWidth: '94vw' }}>
+        {/* Brand */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: 22 }}>
+          <LogoMark size={52} radius={14} />
+          <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: '-.01em', marginTop: 13 }}>{brand.appName}</div>
+          <div style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 700, letterSpacing: '.16em', textTransform: 'uppercase', marginTop: 3 }}>{brand.adminPanelName}</div>
         </div>
 
-        <div className="card">
-          {/* Role selector */}
-          <div className="flex rounded-lg overflow-hidden border border-dark-600 mb-6">
-            {ROLES.map((role) => {
-              const Icon = role.icon;
-              const isActive = loginType === role.id;
-              return (
-                <button
-                  key={role.id}
-                  type="button"
-                  onClick={() => setLoginType(role.id)}
-                  className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-colors ${
-                    isActive ? role.color : 'bg-dark-700 text-gray-400 hover:bg-dark-600'
-                  }`}
-                >
-                  <Icon size={14} />
-                  {role.label}
-                </button>
-              );
-            })}
-          </div>
+        {/* Card */}
+        <div className="card" style={{ padding: 24 }}>
+          <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 4 }}>Sign in</div>
+          <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 18 }}>Choose your role to continue</div>
 
-          <form onSubmit={handleSubmit} className="space-y-5">
-            <div>
-              <label className="label">Mobile Number</label>
+          <form onSubmit={handleSubmit}>
+            {/* Role picker */}
+            <div style={{ display: 'flex', gap: 8, marginBottom: 18 }}>
+              {ROLES.map((r) => {
+                const active = loginType === r.id;
+                return (
+                  <button
+                    key={r.id}
+                    type="button"
+                    onClick={() => setLoginType(r.id)}
+                    style={{
+                      flex: 1, textAlign: 'center', padding: '11px 6px', borderRadius: 9, fontSize: 12,
+                      fontWeight: 700, cursor: 'pointer', transition: 'all .15s',
+                      border: `1px solid ${active ? 'var(--gold)' : 'var(--border)'}`,
+                      color: active ? 'var(--gold-ink)' : 'var(--text-2)',
+                      background: active ? 'var(--warning-bg)' : 'transparent',
+                    }}
+                  >
+                    {r.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Mobile */}
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 7 }}>Mobile number</label>
+            <div style={{ display: 'flex', alignItems: 'center', height: 42, borderRadius: 10, border: '1px solid var(--input-border)', background: 'var(--input)', marginBottom: 14, overflow: 'hidden' }}>
+              <span style={{ padding: '0 12px', fontSize: 13, fontWeight: 700, color: 'var(--muted)', borderRight: '1px solid var(--border)', height: '100%', display: 'flex', alignItems: 'center', fontFamily: "'JetBrains Mono',monospace" }}>+91</span>
               <input
                 type="tel"
                 value={mobile}
                 onChange={(e) => setMobile(e.target.value)}
-                className="input"
-                placeholder="Enter mobile number"
+                placeholder="98000 12345"
                 required
+                style={{ flex: 1, height: '100%', border: 'none', background: 'transparent', color: 'var(--text)', padding: '0 12px', fontSize: 13, outline: 'none', fontFamily: "'JetBrains Mono',monospace" }}
               />
             </div>
 
-            <div>
-              <label className="label">Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="input"
-                placeholder="Enter password"
-                required
-              />
-            </div>
+            {/* Password */}
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 7 }}>Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••"
+              required
+              style={{ ...inputStyle, marginBottom: 20 }}
+            />
 
             <button
               type="submit"
               disabled={isLoading}
-              className={`w-full py-3 rounded-lg font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${activeRole.color}`}
+              style={{
+                width: '100%', height: 44, borderRadius: 10, background: 'var(--gold)', color: 'var(--gold-on)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontSize: 14, fontWeight: 800,
+                cursor: isLoading ? 'not-allowed' : 'pointer', opacity: isLoading ? 0.6 : 1, border: 'none',
+              }}
             >
-              {isLoading ? 'Logging in…' : `Login as ${activeRole.label}`}
+              {isLoading ? 'Signing in…' : 'Sign in'} {!isLoading && <ArrowRight size={16} />}
             </button>
           </form>
         </div>
 
-        <p className="text-center text-xs text-gray-500 mt-6">
-          {/* H-07 fix: version from package.json via Vite, not a literal string.
-              App name from branding bootstrap — GOVERNANCE §3 + §7 */}
-          {import.meta.env.VITE_APP_NAME || 'Betting Bazaar'} Admin Panel v{import.meta.env.VITE_APP_VERSION || '—'}
-        </p>
+        <div style={{ textAlign: 'center', fontSize: 11, color: 'var(--muted)', marginTop: 16 }}>
+          Secured by 2FA · sessions logged to Audit Logs
+        </div>
       </div>
     </div>
   );

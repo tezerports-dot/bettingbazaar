@@ -9,6 +9,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { RefreshCw, Activity, BookOpenCheck, Radio } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../../services/api';
+import { Toolbar } from '../../components/design';
 
 const inr = (n: number) =>
   '₹' + (n ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
@@ -57,32 +58,15 @@ export const OperationsOverview: React.FC = () => {
   );
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold mb-1">Operations Platform</h1>
-          <p className="text-gray-400 text-sm">
-            Live enterprise overview — every value is read from the platform that owns it.
-          </p>
-        </div>
-        <button onClick={load} className="btn-primary flex items-center" disabled={loading}>
-          <RefreshCw size={16} className={`mr-2 ${loading ? 'animate-spin' : ''}`} /> Refresh
-        </button>
-      </div>
-
-      <div className="flex gap-2">
-        {([
-          ['overview', 'Overview', Activity],
-          ['catalog', 'Config Catalog', BookOpenCheck],
-          ['audit', 'Audit Feed', Radio],
-        ] as Array<[Tab, string, any]>).map(([t, label, Icon]) => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 ${
-              tab === t ? 'bg-gold-500 text-dark-900' : 'bg-dark-800 text-gray-300 hover:bg-dark-700'}`}>
-            <Icon size={15} /> {label}
-          </button>
-        ))}
-      </div>
+    <div className="om-fade space-y-6">
+      <Toolbar
+        tabs={[
+          { label: 'Overview', active: tab === 'overview', onClick: () => setTab('overview') },
+          { label: 'Config Catalog', active: tab === 'catalog', onClick: () => setTab('catalog') },
+          { label: 'Audit Feed', active: tab === 'audit', onClick: () => setTab('audit') },
+        ]}
+        actions={[{ label: 'Refresh', icon: RefreshCw, onClick: load }]}
+      />
 
       {tab === 'overview' && overview && (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">

@@ -2,6 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { CheckCircle, XCircle, RefreshCw, Video, AlertTriangle } from 'lucide-react';
 import api from '../../services/api';
+import { Toolbar } from '../../components/design';
 import toast from 'react-hot-toast';
 
 export const AccountRecoveryAdmin: React.FC = () => {
@@ -48,17 +49,7 @@ export const AccountRecoveryAdmin: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Account Recovery Queue</h1>
-          <p className="text-gray-400 text-sm mt-1">
-            Review Aadhaar card video KYC submissions. Watch the video — verify the user's face
-            AND the Aadhaar card number/name match the registered account.
-          </p>
-        </div>
-        <button onClick={load} className="btn-secondary flex items-center gap-2"><RefreshCw size={14}/>Refresh</button>
-      </div>
+    <div className="om-fade space-y-6">
 
       {/* Temp password modal */}
       {approved && (
@@ -93,14 +84,10 @@ export const AccountRecoveryAdmin: React.FC = () => {
       )}
 
       {/* Status tabs */}
-      <div className="flex gap-2">
-        {['pending','approved','rejected'].map(s => (
-          <button key={s} onClick={() => setStatus(s)}
-            className={`px-4 py-1.5 rounded-lg text-sm font-medium capitalize transition-colors ${status===s?'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30':'bg-dark-700 text-gray-400 hover:bg-dark-600'}`}>
-            {s}
-          </button>
-        ))}
-      </div>
+      <Toolbar
+        tabs={['pending', 'approved', 'rejected'].map((s) => ({ label: s.charAt(0).toUpperCase() + s.slice(1), active: status === s, onClick: () => setStatus(s) }))}
+        actions={[{ label: 'Refresh', icon: RefreshCw, onClick: load }]}
+      />
 
       {/* How-to guide */}
       {status === 'pending' && requests.length > 0 && (

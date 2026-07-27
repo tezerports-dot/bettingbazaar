@@ -2,6 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { Plus, Trash2, Eye, RefreshCw, Gift, Copy } from 'lucide-react';
 import api from '../../services/api';
+import { Kpis, Toolbar } from '../../components/design';
 import toast from 'react-hot-toast';
 
 export const GiftCodes: React.FC = () => {
@@ -32,14 +33,16 @@ export const GiftCodes: React.FC = () => {
   const copy = (code: string) => { navigator.clipboard.writeText(code); toast.success('Copied!'); };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div><h1 className="text-2xl font-bold">Gift Codes</h1><p className="text-gray-400 text-sm">Create redeemable codes that credit balance to users</p></div>
-        <div className="flex gap-2">
-          <button onClick={load} className="btn-secondary flex items-center gap-2"><RefreshCw size={14}/>Refresh</button>
-          <button onClick={() => setShowForm(true)} className="btn-primary flex items-center gap-2"><Plus size={14}/>New Code</button>
-        </div>
-      </div>
+    <div className="om-fade space-y-6">
+      <Kpis min={200} items={[
+        { label: 'Total Codes', value: codes.length },
+        { label: 'Active', value: codes.filter((c) => c.isActive && c.usedCount < c.maxUses).length, tone: 'var(--success)' },
+        { label: 'Redeemed', value: codes.reduce((s, c) => s + (c.usedCount || 0), 0) },
+      ]} />
+      <Toolbar actions={[
+        { label: 'Refresh', icon: RefreshCw, onClick: load },
+        { label: 'New Code', icon: Plus, primary: true, onClick: () => setShowForm(true) },
+      ]} />
 
       {showForm && (
         <div className="card space-y-4 border border-yellow-500/30">

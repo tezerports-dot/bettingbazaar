@@ -2,6 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { Plus, Trash2, Edit2, RefreshCw, Trophy, Eye, EyeOff } from 'lucide-react';
 import api from '../../services/api';
+import { Toolbar } from '../../components/design';
 import toast from 'react-hot-toast';
 
 const EMPTY = { displayName:'', profilePic:'', city:'', amount:'', game:'Delhi/Bombay', badge:'', isPublic:true, sortOrder:'0', displayTime:'' };
@@ -59,15 +60,11 @@ export const FakeWinnersManager: React.FC = () => {
   );
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div><h1 className="text-2xl font-bold">Winners List Manager</h1>
-          <p className="text-gray-400 text-sm mt-1">Add, edit, and reorder winners shown on the public winners page. All entries are curated.</p></div>
-        <div className="flex gap-2">
-          <button onClick={load} className="btn-secondary flex items-center gap-2"><RefreshCw size={14}/>Refresh</button>
-          <button onClick={()=>{setForm(EMPTY);setEditId(null);setShowForm(true);}} className="btn-primary flex items-center gap-2"><Plus size={14}/>Add Winner</button>
-        </div>
-      </div>
+    <div className="om-fade space-y-6">
+      <Toolbar actions={[
+        { label: 'Refresh', icon: RefreshCw, onClick: load },
+        { label: 'Add Winner', icon: Plus, primary: true, onClick: () => { setForm(EMPTY); setEditId(null); setShowForm(true); } },
+      ]} />
 
       {showForm && (
         <div className="card border border-yellow-500/30 space-y-4">

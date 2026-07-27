@@ -74,13 +74,7 @@ export const SupportLinks: React.FC = () => {
   }
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold mb-2">Support Links & Contact</h1>
-        <p className="text-gray-400">Manage support channels and contact information</p>
-      </div>
-
+    <div className="om-fade space-y-6">
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Contact Information */}
         <div className="card">

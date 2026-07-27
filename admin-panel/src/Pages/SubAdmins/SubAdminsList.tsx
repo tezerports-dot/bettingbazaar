@@ -2,6 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { ShieldCheck, UserPlus, Edit, Trash2, Key } from 'lucide-react';
 import { DataTable } from '../../components/DataTable';
+import { Kpis, Toolbar } from '../../components/design';
 import { Modal } from '../../components/Modal';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { formatters } from '../../utils/formatters';
@@ -214,16 +215,8 @@ export const SubAdminsList: React.FC = () => {
   ];
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold mb-2">Sub-Admins & Phantom Managers</h1>
-          <p className="text-gray-400">Manage roles, permissions, and phantom betting access</p>
-        </div>
-        <button onClick={() => setShowCreateModal(true)} className="btn-primary flex items-center">
-          <UserPlus size={16} className="mr-2" /> Create Sub-Admin
-        </button>
-      </div>
+    <div className="om-fade space-y-6">
+      <Toolbar actions={[{ label: 'Create Sub-Admin', icon: UserPlus, primary: true, onClick: () => setShowCreateModal(true) }]} />
 
       {/* Permission Reference */}
       <div className="bg-dark-800 border border-dark-600 rounded-lg p-4">
@@ -250,28 +243,11 @@ export const SubAdminsList: React.FC = () => {
         </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="card">
-          <p className="text-sm text-gray-400 mb-1">Total Sub-Admins</p>
-          <p className="text-2xl font-bold">{subAdmins.length}</p>
-        </div>
-        <div className="card">
-          <p className="text-sm text-gray-400 mb-1">Phantom Managers</p>
-          <p className="text-2xl font-bold text-gold-500">
-            {subAdmins.filter((u) => u.phantomAccess && u.phantomAccess !== 'NONE').length}
-          </p>
-        </div>
-        <div className="card">
-          <p className="text-sm text-gray-400 mb-1">With Permissions</p>
-          <p className="text-2xl font-bold text-purple-500">
-            {
-              subAdmins.filter(
-                (u) => u.subAdminPermissions && Object.values(u.subAdminPermissions).some(Boolean)
-              ).length
-            }
-          </p>
-        </div>
-      </div>
+      <Kpis min={200} items={[
+        { label: 'Total Sub-Admins', value: subAdmins.length },
+        { label: 'Phantom Managers', value: subAdmins.filter((u) => u.phantomAccess && u.phantomAccess !== 'NONE').length, tone: 'var(--gold-ink)' },
+        { label: 'With Permissions', value: subAdmins.filter((u) => u.subAdminPermissions && Object.values(u.subAdminPermissions).some(Boolean)).length, tone: 'var(--risk)' },
+      ]} />
 
       <div className="card">
         <DataTable

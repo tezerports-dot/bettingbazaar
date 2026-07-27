@@ -7,6 +7,7 @@ import { EmptyState } from '../../components/EmptyState';
 import api from '../../services/api';
 import type { CDNImage } from '../../types';
 import toast from 'react-hot-toast';
+import { Kpis, Toolbar } from '../../components/design';
 
 // CDN Library — manages CDN URLs (zero-upload setup, 0 RAM usage)
 // Admin pastes CDN URLs from their CDN provider (e.g. Cloudflare, BunnyCDN, etc.)
@@ -81,44 +82,20 @@ export const CDNManager: React.FC = () => {
   const filteredImages = images.filter(img => categoryFilter === 'ALL' || img.category === categoryFilter);
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold mb-2">CDN Library</h1>
-          <p className="text-gray-400">Manage CDN URLs for images used across all panels — zero file upload, zero RAM usage</p>
-        </div>
-        <button onClick={() => setShowAddModal(true)} className="btn-primary flex items-center">
-          <Plus size={15} className="mr-1" /> Add CDN URL
-        </button>
-      </div>
+    <div className="om-fade space-y-6">
+      <Kpis items={[
+        { label: 'Total URLs', value: images.length },
+        ...['promo', 'banner', 'logo', 'icon'].map((cat) => ({ label: cat.charAt(0).toUpperCase() + cat.slice(1), value: images.filter((i) => i.category === cat).length })),
+      ]} />
+      <Toolbar
+        tabs={['ALL', ...CATEGORIES].map((cat) => ({ label: cat.charAt(0).toUpperCase() + cat.slice(1), active: categoryFilter === cat, onClick: () => setCategoryFilter(cat) }))}
+        actions={[{ label: 'Add CDN URL', icon: Plus, primary: true, onClick: () => setShowAddModal(true) }]}
+      />
 
       {/* Info Banner */}
       <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4 text-sm">
         <p className="font-semibold text-blue-400 mb-2">How it works</p>
         <p className="text-gray-300">Upload images to your CDN provider (Cloudflare Images, BunnyCDN, Cloudinary, etc.), paste the public URL here, assign a category and title. These URLs are then available across all three panels (user app, merchant, admin) and referenced in Branding, Promo Content, and KYC flows.</p>
-      </div>
-
-      {/* Category Filter */}
-      <div className="card">
-        <div className="flex flex-wrap gap-2">
-          {['ALL', ...CATEGORIES].map((cat) => (
-            <button key={cat} onClick={() => setCategoryFilter(cat)}
-              className={`px-3 py-1 rounded-lg text-sm font-medium transition-colors capitalize ${categoryFilter === cat ? 'bg-gold-500 text-dark-900' : 'bg-dark-700 text-gray-300 hover:bg-dark-600'}`}>
-              {cat}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="card"><p className="text-sm text-gray-400 mb-1">Total URLs</p><p className="text-2xl font-bold">{images.length}</p></div>
-        {['promo', 'banner', 'logo', 'icon'].map((cat) => (
-          <div key={cat} className="card">
-            <p className="text-sm text-gray-400 mb-1 capitalize">{cat}</p>
-            <p className="text-2xl font-bold">{images.filter(i => i.category === cat).length}</p>
-          </div>
-        ))}
       </div>
 
       {/* Image Grid */}
