@@ -8,6 +8,7 @@
  */
 
 import mongoose from 'mongoose';
+import { MERCHANT_CURRENCY } from './merchantCurrency.js';
 
 const ACTIVE_ASSIGNMENT_STATUSES = ['ASSIGNED', 'PROCESSING', 'PAID'];
 
@@ -89,7 +90,7 @@ function typeLimitFor(merchant, orderType, defaults) {
  * buy-minus-sell value are replenished first; if none are free, the order stays
  * in the open sell pool instead of burning retry attempts.
  */
-export async function selectBestMerchant(orderType, tokenAmount, currency = 'INR') {
+export async function selectBestMerchant(orderType, tokenAmount, currency = MERCHANT_CURRENCY.INR) {
   const Merchant = mongoose.model('Merchant');
   const defaults = await getFundingLimits();
 

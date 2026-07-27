@@ -1,4 +1,14 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+
+/**
+ * Settlement rail. A merchant is INR-only (UPI + bank) or USDT-only (TRC-20) —
+ * never both. Mirrors the backend enum on Merchant.acceptedCurrencies and
+ * PaymentOrder.currency (backend/domains/merchant/merchantCurrency.js,
+ * MERCHANT_CURRENCIES). GOVERNANCE §4: this is the panel's only declaration of
+ * the rail names; utils/rail.ts holds the behaviour that goes with them.
+ */
+export type MerchantRail = 'INR' | 'USDT';
+
 export enum OrderStatus {
   PENDING_QUEUE = 'PENDING_QUEUE',
   ASSIGNED = 'ASSIGNED',
@@ -77,6 +87,12 @@ export interface PaymentOrder {
   orderId: string;
   shortId: string;
   type: 'DEPOSIT' | 'WITHDRAWAL';
+
+  // Settlement rail this order runs on. Mirrors PaymentOrder.currency
+  // (backend/domains/payment/paymentOrder.model.js, enum ['INR','USDT'],
+  // schema default 'INR'). A merchant only ever receives orders on their own
+  // rail — see utils/rail.ts.
+  currency?: MerchantRail;
   
   // Token and pricing (REAL from backend)
   tokenAmount: number;
@@ -92,12 +108,17 @@ export interface PaymentOrder {
   userKycSnapshot?: KYCSnapshot;
   userBankDetails?: BankDetails;
   upiId?: string; // user UPI ID stored on WITHDRAWAL orders
+  // TRC-20 payout address on USDT WITHDRAWAL orders — the crypto counterpart
+  // of userBankDetails (backend: PaymentOrder.userUsdtAddress).
+  userUsdtAddress?: string;
   
   // Merchant information
   merchantId?: string;
   merchantSnapshot?: {
     merchantId?: string;
     merchantName?: string;
+    merchantType?: MerchantRail;
+    usdtAddress?: string;
     upiId?: string;
     qrCodeUrl?: string;
     bankName?: string;
@@ -140,7 +161,6 @@ export interface PaymentOrder {
   
   // Other
   rejectionReason?: string;
-  currency?: string;
   bbTokenAmount?: number; // alias for tokenAmount
 }
 
@@ -154,6 +174,14 @@ export interface MerchantProfile {
   isApproved?: boolean;
   status?: string;
   role?: string;
+
+  // ── Settlement rail (exclusive) ──────────────────────────────────────────
+  // 'INR' (UPI + bank) or 'USDT' (TRC-20) — never both. Backend authority is
+  // Merchant.acceptedCurrencies, which holds exactly one entry;
+  // GET /api/merchant/profile surfaces both the array and this scalar.
+  merchantType?: MerchantRail;
+  acceptedCurrencies?: MerchantRail[];
+  usdtWalletAddress?: string;
   
   // Preferences (REAL from backend)
   acceptsDeposits?: boolean;
@@ -182,6 +210,18 @@ export interface MerchantProfile {
     maxWithdraw?: number;
   };
   
+  // Settlement credentials as stored on the Merchant document — this is the
+  // shape GET /api/merchant/profile returns (backend formatMerchant).
+  // `settlementDetails` below is an older alias kept for compatibility.
+  bankDetails?: {
+    accountHolderName?: string;
+    upiId?: string;
+    bankName?: string;
+    accountNo?: string;
+    ifsc?: string;
+  };
+  qrCodeUrl?: string;
+
   // Settlement details
   settlementDetails?: {
     upiId?: string;
@@ -194,9 +234,20 @@ export interface MerchantProfile {
   
   // Stats (REAL from backend)
   earnings?: number; // Total lifetime earnings
-  totalDepositsProcessed?: number; // Total volume
-  totalWithdrawalsProcessed?: number; // Total volume
+  totalDepositsProcessed?: number;    // completed deposit order count
+  totalDepositAmount?: number;        // completed deposit volume
+  totalWithdrawalsProcessed?: number; // completed withdrawal order count
+  totalWithdrawalAmount?: number;     // completed withdrawal volume
+  totalProcessedVolume?: number;
   rating?: number; // Merchant rating
+
+  // Scoring figures maintained by merchantScoring.service.js (read-only here)
+  successRate?: number;        // ratio 0-1
+  avgResponseMinutes?: number;
+  disputeRate?: number;        // ratio 0-1
+  totalOrdersCompleted?: number;
+  minOrder?: number;
+  maxOrder?: number;
   
   stats?: {
     todayVolume?: number;

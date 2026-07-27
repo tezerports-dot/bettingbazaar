@@ -343,10 +343,15 @@ export const updatePreferences = async (preferences: {
 // PROFILE UPDATE (FIX M6)
 // =======================================================================
 
+// The backend enforces rail exclusivity on this endpoint: an INR merchant may
+// send upiId/qrCodeUrl/bankDetails, a USDT merchant may send only
+// usdtWalletAddress. Sending a field for the wrong rail is a 400, not a silent
+// no-op (backend/domains/merchant/merchant.routes.js PUT /profile).
 export const updateProfile = async (data: {
   upiId?: string;
   qrCodeUrl?: string;
   bankDetails?: { accountHolderName?: string; bankName?: string; accountNo?: string; ifsc?: string };
+  usdtWalletAddress?: string;
 }): Promise<any> => {
   const result = await request<any>(ENDPOINTS.PROFILE.UPDATE, {
     method: 'PUT',
@@ -376,29 +381,13 @@ export const redFlagOrder = async (orderId: string, reason: string): Promise<any
   return data.order || data;
 };
 
-// =======================================================================
-// BULK PAYOUTS (FIX M7 / new BulkPayouts page)
-// =======================================================================
-
 // getRates removed: token conversion is fixed 1:1 (Phase 006 flattening,
 // 2026-07-08) — there is no buy/sell spread to fetch or display.
-
-export const getBulkPayouts = async (date?: string): Promise<any> => {
-  const qs = date ? `?date=${date}` : '';
-  return request<any>(`${ENDPOINTS.BULK_PAYOUTS.LIST}${qs}`);
-};
-
-export const exportBulkPayouts = async (date?: string): Promise<any> => {
-  const qs = date ? `?date=${date}` : '';
-  return request<any>(`${ENDPOINTS.BULK_PAYOUTS.EXPORT}${qs}`);
-};
-
-export const markBulkPaid = async (orderIds: string[], batchRef?: string): Promise<any> => {
-  return request<any>(ENDPOINTS.BULK_PAYOUTS.MARK_PAID, {
-    method: 'POST',
-    body: JSON.stringify({ orderIds, batchRef }),
-  });
-};
+//
+// Bulk-payout clients removed with the 2026-07-27 redesign: the panel is four
+// screens (Dashboard, Orders, History, Profile) and withdrawals are handled
+// per-order, so nothing consumed them. The backend endpoints remain, gated by
+// the MERCHANT_BULK_PAYOUTS feature flag.
 
 // =======================================================================
 // UTILITIES
@@ -485,10 +474,6 @@ export const api = {
   // Red Flag
   redFlagOrder,
 
-  // Bulk payouts
-  getBulkPayouts,
-  exportBulkPayouts,
-  markBulkPaid,
   
   // Utilities
   formatCurrency,

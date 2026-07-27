@@ -7,6 +7,8 @@ import { setOrderHmacHook } from '../../middleware/order-crypto-access.js';
 import { getActivePolicy } from '../configuration/depositPolicy.service.js';
 // Risk Platform (Phase 010) owns the reserve-ratio rounding rule (Spec 4.4).
 import { computeReserveSplit } from '../risk/riskValidation.service.js';
+// Merchant Platform owns the settlement-rail vocabulary (GOVERNANCE §4).
+import { MERCHANT_CURRENCY, MERCHANT_CURRENCIES } from '../merchant/merchantCurrency.js';
 
 export const PAYMENT_PROOF_RETENTION_MS = 48 * 60 * 60 * 1000;
 
@@ -17,12 +19,18 @@ const paymentOrderSchema = new mongoose.Schema({
 
   type:           { type: String, enum: ['DEPOSIT', 'WITHDRAWAL'], required: true },
 
+  // ── Settlement rail ──────────────────────────────────────────────────────
+  // Which rail this order settles on. Matched against Merchant.acceptedCurrencies
+  // during assignment (merchantScoring.selectBestMerchant) and re-checked when a
+  // merchant accepts, so an INR-only merchant never handles a USDT order and
+  // vice-versa (2026-07-27). Vocabulary owned by
+  // domains/merchant/merchantCurrency.js — GOVERNANCE §4.
+  currency:       { type: String, enum: MERCHANT_CURRENCIES, default: MERCHANT_CURRENCY.INR, index: true },
+
   // ── Token & Pricing ─────────────────────────────────────────────────────
   // Token allocation split is governed by the active DepositPolicy for this
   // order's currency (domains/configuration/depositPolicy.model.js,
-  // BBEPS §6.7 Business Policy) — currency is implicitly 'INR' today (see
-  // depositPolicySnapshot.currency default below; add a real `currency` field
-  // to this schema once a non-INR deposit flow actually exists).
+  // BBEPS §6.7 Business Policy).
   // 97/3 betting deduction:  3% platform fee deducted on settlement
   tokenAmount:    { type: Number, required: true },   // BB tokens to transfer
   fiatAmount:     { type: Number, required: true },   // INR user pays/receives (= tokenAmount, fixed 1:1 since 2026-07-08)
@@ -84,6 +92,11 @@ const paymentOrderSchema = new mongoose.Schema({
     bankName:          String,
     accountHolderName: String,
   },
+  // Payout destination on the USDT rail (currency === 'USDT', WITHDRAWAL only)
+  // — the TRC-20 address the merchant sends to, the crypto counterpart of
+  // userBankDetails. Read by the merchant panel's order detail; format-checked
+  // by isTrc20Address at the write site.
+  userUsdtAddress: { type: String, trim: true },
 
   // ── Payment Proof ────────────────────────────────────────────────────────
   requiresVideoKYC: { type: Boolean, default: false },
@@ -160,12 +173,16 @@ const paymentOrderSchema = new mongoose.Schema({
   merchantSnapshot: {
     merchantId:    { type: mongoose.Schema.Types.ObjectId, ref: 'Merchant' },
     merchantName:  { type: String },
+    // Which rail the merchant settled on at assignment time — tells the reader
+    // which of the two credential sets below is the meaningful one.
+    merchantType:  { type: String, enum: MERCHANT_CURRENCIES },
     upiId:         { type: String },
     qrCodeUrl:     { type: String },
     bankName:      { type: String },
     accountNo:     { type: String },
     ifsc:          { type: String },
     accountHolder: { type: String },
+    usdtAddress:   { type: String },
     snapshotAt:    { type: Date },
     expiresAt:     { type: Date },
   },
@@ -223,7 +240,8 @@ paymentOrderSchema.pre('save', async function (next) {
       this.amount = this.fiatAmount;
     }
     if (this.isNew && this.type === 'DEPOSIT') {
-      const currency = 'INR'; // only currency this flow supports today — see schema note above
+      // The order's own rail — DepositPolicy is versioned per currency.
+      const currency = this.currency || MERCHANT_CURRENCY.INR; // schema default: 'INR'
       const policy = await getActivePolicy(currency);
 
       let depositPercent, reservePercent, policyVersionId;

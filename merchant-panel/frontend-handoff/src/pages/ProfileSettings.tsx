@@ -1,478 +1,468 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-/**
- * ProfileSettings.tsx  v3.0.0
- *
- * FIX M6: Add editable UPI / QR Code / bank details form.
- *
- * Before: The profile page was entirely read-only. Merchants had no way to
- *   update their UPI ID or bank details after registration.
- *   The settlement details section rendered merchant.settlementDetails which
- *   doesn't match the Merchant schema (bankDetails.upiId, qrCodeUrl).
- *
- * After:
- *   - New "Payment Details" section with editable inputs for:
- *       UPI ID, QR Code URL, bank name, account number, IFSC
- *   - Save calls api.updateProfile() -> PUT /api/merchant/profile (Batch 1)
- *   - Profile is refreshed after save so AuthContext reflects latest values
- *   - Display reads from correct schema paths (bankDetails.upiId, qrCodeUrl)
- *
- * All existing functionality retained.
- */
-import React, { useState } from 'react';
+//
+// Profile — design handoff "BB Merchant Panel.dc.html": performance, identity,
+// payment details, order preferences, wallet and account status.
+//
+// The payment-details section is the one place the settlement rail is fully
+// visible: an INR merchant edits UPI + QR + bank, a USDT merchant edits a single
+// TRC-20 address. Which rail this merchant is on is assigned by an admin
+// (Merchant.acceptedCurrencies) and is read-only here — the backend rejects a
+// request that carries the other rail's fields, so this is a real boundary and
+// not merely a hidden form.
+import React, { useEffect, useMemo, useState } from 'react';
+import { Copy, Edit3, LogOut, Save, Wallet } from 'lucide-react';
+import toast from 'react-hot-toast';
 import { useAuth } from '../services/AuthContext';
 import { api } from '../services/api';
-import toast from 'react-hot-toast';
+import { useViewport } from '../hooks/useViewport';
+import { SUCCESS_MESSAGES } from '../constants';
+import { formatMoney, formatWallet, isTrc20Address, railCopy, railOf } from '../utils/rail';
 import {
-  Save, User, Phone, Mail, Wallet, CreditCard,
-  Settings, TrendingUp, Award, Calendar, Edit3,
-} from 'lucide-react';
+  Banner, Button, Card, CardTitle, Field, Toggle, Verified, cardStyle, copyText, inputStyle,
+} from '../components/ui';
 
 const ProfileSettings: React.FC = () => {
-  const { merchant, refreshProfile } = useAuth();
+  const { merchant, logout, refreshProfile } = useAuth();
+  const { isMobile } = useViewport();
+  const rail = railOf(merchant);
+  const copy = railCopy(rail);
+  const isUsdt = rail === 'USDT';
 
-  // Order preferences
-  const [acceptDeposits,    setAcceptDeposits]    = useState(merchant?.acceptsDeposits    !== false);
-  const [acceptWithdrawals, setAcceptWithdrawals] = useState(merchant?.acceptsWithdrawals !== false);
-  const [saving,            setSaving]            = useState(false);
-
-  // FIX M6: Payment details form state
-  const existingUpiId    = (merchant as any)?.bankDetails?.upiId || (merchant as any)?.upiId || '';
-  const existingQrUrl    = (merchant as any)?.qrCodeUrl || '';
-  const existingAccountHolderName = (merchant as any)?.bankDetails?.accountHolderName || '';
-  const existingBankName = (merchant as any)?.bankDetails?.bankName || '';
-  const existingAccountNo = (merchant as any)?.bankDetails?.accountNo || '';
-  const existingIfsc     = (merchant as any)?.bankDetails?.ifsc || '';
-
-  const [upiId,              setUpiId]              = useState<string>(existingUpiId);
-  const [qrCodeUrl,          setQrCodeUrl]          = useState<string>(existingQrUrl);
-  const [accountHolderName,  setAccountHolderName]  = useState<string>(existingAccountHolderName);
-  const [bankName,           setBankName]           = useState<string>(existingBankName);
-  const [accountNo,          setAccountNo]          = useState<string>(existingAccountNo);
-  const [ifsc,               setIfsc]               = useState<string>(existingIfsc);
-  const [savingProfile, setSavingProfile] = useState(false);
   const [editingPayment, setEditingPayment] = useState(false);
-  const [uploadingQr, setUploadingQr] = useState(false);
+  const [savingPayment, setSavingPayment] = useState(false);
+  const [savingPrefs, setSavingPrefs] = useState(false);
 
-  const handleSavePreferences = async () => {
-    setSaving(true);
-    try {
-      await api.updatePreferences({
-        acceptsDeposits:    acceptDeposits,
-        acceptsWithdrawals: acceptWithdrawals,
-      });
-      await refreshProfile();
-      toast.success('Preferences updated successfully');
-    } catch (error: any) {
-      toast.error(error.message || 'Failed to update preferences');
-    } finally {
-      setSaving(false);
+  const bank = merchant?.bankDetails ?? merchant?.settlementDetails;
+
+  const [form, setForm] = useState({
+    upiId: '',
+    qrCodeUrl: '',
+    accountHolderName: '',
+    bankName: '',
+    accountNo: '',
+    ifsc: '',
+    usdtWalletAddress: '',
+  });
+
+  const [prefs, setPrefs] = useState({ acceptsDeposits: true, acceptsWithdrawals: true });
+
+  // Re-seed the forms whenever the profile changes, so an edit never starts
+  // from values that have since been changed elsewhere (e.g. by an admin).
+  useEffect(() => {
+    if (!merchant) return;
+    setForm({
+      upiId: merchant.bankDetails?.upiId ?? merchant.settlementDetails?.upiId ?? '',
+      qrCodeUrl: merchant.settlementDetails?.upiQrCodeUrl ?? '',
+      accountHolderName: merchant.bankDetails?.accountHolderName ?? merchant.settlementDetails?.accountName ?? '',
+      bankName: merchant.bankDetails?.bankName ?? merchant.settlementDetails?.bankName ?? '',
+      accountNo: merchant.bankDetails?.accountNo ?? merchant.settlementDetails?.accountNumber ?? '',
+      ifsc: merchant.bankDetails?.ifsc ?? merchant.settlementDetails?.ifsc ?? '',
+      usdtWalletAddress: merchant.usdtWalletAddress ?? '',
+    });
+    setPrefs({
+      acceptsDeposits: merchant.acceptsDeposits ?? merchant.orderPreferences?.acceptDeposits ?? true,
+      acceptsWithdrawals: merchant.acceptsWithdrawals ?? merchant.orderPreferences?.acceptWithdrawals ?? true,
+    });
+  }, [merchant]);
+
+  const addressError = useMemo(() => {
+    if (!isUsdt || !editingPayment) return undefined;
+    const value = form.usdtWalletAddress.trim();
+    if (!value) return undefined;
+    return isTrc20Address(value)
+      ? undefined
+      : 'That is not a TRC-20 address — it must be 34 characters starting with "T".';
+  }, [isUsdt, editingPayment, form.usdtWalletAddress]);
+
+  const savePayment = async () => {
+    if (isUsdt && !isTrc20Address(form.usdtWalletAddress)) {
+      toast.error('Enter a valid TRC-20 (Tron) wallet address before saving.');
+      return;
     }
-  };
-
-  // FIX M6: save payment details via PUT /api/merchant/profile
-  const handleSavePaymentDetails = async () => {
-    setSavingProfile(true);
+    setSavingPayment(true);
     try {
-      await api.updateProfile({
-        upiId:      upiId.trim()     || undefined,
-        qrCodeUrl:  qrCodeUrl.trim() || undefined,
-        bankDetails: {
-          accountHolderName: accountHolderName.trim() || undefined,
-          bankName:  bankName.trim()  || undefined,
-          accountNo: accountNo.trim() || undefined,
-          ifsc:      ifsc.trim()      || undefined,
-        },
-      });
+      // Only the fields for this merchant's rail are sent — the backend rejects
+      // the other rail's fields outright.
+      await api.updateProfile(
+        isUsdt
+          ? { usdtWalletAddress: form.usdtWalletAddress.trim() }
+          : {
+              upiId: form.upiId.trim(),
+              qrCodeUrl: form.qrCodeUrl.trim(),
+              bankDetails: {
+                accountHolderName: form.accountHolderName.trim(),
+                bankName: form.bankName.trim(),
+                accountNo: form.accountNo.trim(),
+                ifsc: form.ifsc.trim().toUpperCase(),
+              },
+            }
+      );
       await refreshProfile();
       setEditingPayment(false);
-      toast.success('Payment details updated');
+      toast.success(SUCCESS_MESSAGES.PROFILE_UPDATED);
     } catch (error: any) {
       toast.error(error.message || 'Failed to update payment details');
     } finally {
-      setSavingProfile(false);
+      setSavingPayment(false);
     }
   };
 
-  const copyToClipboard = (text: string, label: string) => {
-    navigator.clipboard.writeText(text);
-    toast.success(`${label} copied to clipboard`);
+  const savePrefs = async () => {
+    setSavingPrefs(true);
+    try {
+      await api.updatePreferences(prefs);
+      await refreshProfile();
+      toast.success('Preferences saved');
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to save preferences');
+    } finally {
+      setSavingPrefs(false);
+    }
   };
 
-  const totalEarnings          = (merchant as any)?.earnings           || 0;
-  const totalDepositsVolume    = (merchant as any)?.totalDepositsProcessed    || 0;
-  const totalWithdrawalsVolume = (merchant as any)?.totalWithdrawalsProcessed || 0;
-  const merchantRating         = merchant?.rating || 0;
-  const accountAge             = merchant?.createdAt
-    ? Math.floor((Date.now() - new Date(merchant.createdAt).getTime()) / (1000 * 60 * 60 * 24))
-    : 0;
+  const perfColumns = isMobile ? '1fr 1fr' : 'repeat(4, minmax(0, 1fr))';
+  const twoColumns = isMobile ? '1fr' : '1fr 1fr';
 
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center space-x-3">
-        <Settings className="h-8 w-8 text-blue-600" />
-        <h1 className="text-3xl font-bold text-gray-900">Profile Settings</h1>
-      </div>
+  const accountAgeDays = merchant?.createdAt
+    ? Math.max(0, Math.floor((Date.now() - new Date(merchant.createdAt).getTime()) / 86400000))
+    : null;
 
-      {/* Performance Stats */}
-      <div className="bg-gradient-to-br from-blue-50 to-indigo-50 p-6 rounded-lg shadow border border-blue-200">
-        <h2 className="text-xl font-semibold text-gray-900 mb-4 flex items-center">
-          <Award className="h-6 w-6 text-blue-600 mr-2" />
-          Merchant Performance
-        </h2>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="bg-white p-4 rounded-lg shadow-sm">
-            <p className="text-xs text-gray-600">Total Earnings</p>
-            <p className="text-2xl font-bold text-green-600">Rs.{totalEarnings.toLocaleString('en-IN')}</p>
-            <p className="text-xs text-gray-500 mt-1">Lifetime profit</p>
-          </div>
-          <div className="bg-white p-4 rounded-lg shadow-sm">
-            <p className="text-xs text-gray-600">Deposits Processed</p>
-            <p className="text-2xl font-bold text-blue-600">Rs.{totalDepositsVolume.toLocaleString('en-IN')}</p>
-            <p className="text-xs text-gray-500 mt-1">Total volume</p>
-          </div>
-          <div className="bg-white p-4 rounded-lg shadow-sm">
-            <p className="text-xs text-gray-600">Withdrawals Processed</p>
-            <p className="text-2xl font-bold text-purple-600">Rs.{totalWithdrawalsVolume.toLocaleString('en-IN')}</p>
-            <p className="text-xs text-gray-500 mt-1">Total volume</p>
-          </div>
-          <div className="bg-white p-4 rounded-lg shadow-sm">
-            <p className="text-xs text-gray-600">Merchant Rating</p>
-            <p className="text-2xl font-bold text-orange-600">{merchantRating.toFixed(1)} [star]</p>
-            <p className="text-xs text-gray-500 mt-1">From users</p>
-          </div>
+  const maskedAccount = form.accountNo ? `••••••••${form.accountNo.slice(-4)}` : '—';
+
+  const identityRow = (label: string, value: string, onCopy?: () => void, trailing?: React.ReactNode) => (
+    <div style={{
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+      padding: '12px 14px', background: 'var(--surface-2)', borderRadius: 12,
+    }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--muted)' }}>{label}</div>
+        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {value || '—'}
         </div>
       </div>
+      {trailing ?? (onCopy && value ? (
+        <button onClick={onCopy} style={{ fontSize: 12, fontWeight: 700, color: 'var(--brand)', background: 'none', border: 0, cursor: 'pointer', flexShrink: 0 }}>
+          Copy
+        </button>
+      ) : null)}
+    </div>
+  );
 
-      {/* Profile Information */}
-      <div className="bg-white rounded-lg shadow p-6 border border-gray-200">
-        <h2 className="text-xl font-semibold text-gray-900 mb-4">Profile Information</h2>
-        <div className="space-y-4">
+  return (
+    <div style={{ maxWidth: 840, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: isMobile ? 14 : 16 }}>
+      {/* Performance */}
+      <Card>
+        <CardTitle title="Merchant performance" />
+        <div style={{ display: 'grid', gridTemplateColumns: perfColumns, gap: 11 }}>
           {[
-            { icon: User,     label: 'Username',    value: merchant?.username },
-            { icon: Phone,    label: 'Mobile',      value: merchant?.mobile },
-            { icon: Mail,     label: 'Email',       value: merchant?.email },
-            { icon: Calendar, label: 'Account Age', value: `${accountAge} days`, noCopy: true },
-          ].map(({ icon: Icon, label, value, noCopy }) => (
-            <div key={label} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-              <div className="flex items-center space-x-3">
-                <Icon className="h-5 w-5 text-gray-400" />
-                <div>
-                  <p className="text-sm text-gray-600">{label}</p>
-                  <p className="text-lg font-medium text-gray-900">{value || '--'}</p>
-                </div>
-              </div>
-              {!noCopy && value && (
-                <button
-                  onClick={() => copyToClipboard(value, label)}
-                  className="text-sm text-blue-600 hover:text-blue-700 font-medium"
-                >
-                  Copy
-                </button>
-              )}
+            { label: 'Completed orders', value: merchant?.totalOrdersCompleted !== undefined ? String(merchant.totalOrdersCompleted) : '—', tone: 'var(--text)' },
+            { label: 'Deposits processed', value: merchant?.totalDepositAmount !== undefined ? formatMoney(merchant.totalDepositAmount, rail) : '—', tone: 'var(--dep)' },
+            { label: 'Withdrawals processed', value: merchant?.totalWithdrawalAmount !== undefined ? formatMoney(merchant.totalWithdrawalAmount, rail) : '—', tone: 'var(--wd)' },
+            { label: 'Merchant rating', value: merchant?.rating !== undefined ? `${merchant.rating.toFixed(1)} ★` : '—', tone: 'var(--text)' },
+          ].map((tile) => (
+            <div key={tile.label} style={{ background: 'var(--surface-2)', borderRadius: 13, padding: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)' }}>{tile.label}</div>
+              <div className="bb-mono" style={{ fontSize: 17, fontWeight: 700, color: tile.tone, marginTop: 4 }}>{tile.value}</div>
             </div>
           ))}
         </div>
-      </div>
+      </Card>
 
-      {/* FIX M6: Editable Payment Details */}
-      <div className="bg-white rounded-lg shadow p-6 border border-gray-200">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-semibold text-gray-900">Payment Details</h2>
+      {/* Identity */}
+      <Card>
+        <CardTitle title="Profile information" />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+          {identityRow('Username', merchant?.username || '')}
+          {identityRow('Mobile', merchant?.mobile || '', () => copyText(merchant?.mobile || '', 'Mobile'))}
+          {identityRow('Email', merchant?.email || '', () => copyText(merchant?.email || '', 'Email'))}
+          {identityRow(
+            'Account age',
+            accountAgeDays === null ? '—' : `${accountAgeDays} days`,
+            undefined,
+            merchant?.status === 'ACTIVE' ? <Verified label="Active" /> : undefined
+          )}
+        </div>
+      </Card>
+
+      {/* Payment details — the rail-specific section */}
+      <Card>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 3 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+            <span style={{ fontSize: 14, fontWeight: 800, color: 'var(--text)' }}>Payment details</span>
+            <span style={{
+              fontSize: 10, fontWeight: 800, padding: '3px 8px', borderRadius: 7, letterSpacing: '.03em',
+              color: isUsdt ? 'var(--dep)' : 'var(--brand)',
+              background: isUsdt ? 'var(--dep-bg)' : 'var(--brand-bg)',
+            }}>
+              {isUsdt ? 'USDT · TRC-20' : 'INR · UPI & bank'}
+            </span>
+          </div>
           {!editingPayment && (
             <button
               onClick={() => setEditingPayment(true)}
-              className="flex items-center gap-2 text-sm text-blue-600 hover:text-blue-700 font-medium"
+              style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, fontWeight: 700, color: 'var(--brand)', background: 'none', border: 0, cursor: 'pointer' }}
             >
-              <Edit3 className="h-4 w-4" />
-              Edit
+              <Edit3 size={14} /> Edit
             </button>
           )}
         </div>
+        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)', marginBottom: 15 }}>
+          {isUsdt
+            ? 'Users send USDT deposits to this address · payouts are sent from here'
+            : 'Users pay here for deposits · you receive settlements here'}
+        </div>
 
-        {!editingPayment ? (
-          /* Read-only view -- uses correct schema paths */
-          <div className="space-y-3">
-            {upiId ? (
-              <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                <div>
-                  <p className="text-sm text-gray-600">UPI ID</p>
-                  <p className="text-base font-medium text-gray-900 font-mono">{upiId}</p>
+        {!editingPayment && (isUsdt ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+              padding: '13px 15px', background: 'var(--dep-bg)', borderRadius: 13,
+            }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--dep)' }}>USDT wallet · TRC-20</div>
+                <div className="bb-mono" style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {merchant?.usdtWalletAddress || 'Not set'}
                 </div>
-                <button onClick={() => copyToClipboard(upiId, 'UPI ID')} className="text-blue-600 hover:text-blue-700 text-sm font-medium">Copy</button>
               </div>
+              {merchant?.usdtWalletAddress && (
+                <button
+                  onClick={() => copyText(merchant.usdtWalletAddress || '', 'USDT address')}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 700, color: 'var(--dep)',
+                    background: 'var(--surface)', border: 0, padding: '8px 12px', borderRadius: 9, cursor: 'pointer', flexShrink: 0,
+                  }}
+                >
+                  <Copy size={13} /> Copy
+                </button>
+              )}
+            </div>
+            {!merchant?.usdtWalletAddress ? (
+              <Banner tone="warn" title="Add your wallet address">
+                You cannot take USDT orders until a TRC-20 address is saved.
+              </Banner>
             ) : (
-              <p className="text-sm text-gray-500 italic p-3 bg-yellow-50 rounded-lg border border-yellow-200">
-                [!] No UPI ID set. Users won't see payment instructions. Click Edit to add one.
-              </p>
-            )}
-
-            {qrCodeUrl && (
-              <div className="p-3 bg-gray-50 rounded-lg">
-                <p className="text-sm text-gray-600 mb-2">QR Code</p>
-                <img src={qrCodeUrl} alt="UPI QR Code" className="w-40 h-40 border rounded shadow-sm object-contain" />
-              </div>
-            )}
-
-            {(bankName || accountNo || ifsc || accountHolderName) && (
-              <div className="p-3 bg-gray-50 rounded-lg space-y-1">
-                <p className="text-sm text-gray-600 font-medium">Bank Details</p>
-                {accountHolderName && <p className="text-sm text-gray-900"><span className="font-medium">Name:</span> {accountHolderName}</p>}
-                {bankName  && <p className="text-sm text-gray-900"><span className="font-medium">Bank:</span> {bankName}</p>}
-                {accountNo && <p className="text-sm text-gray-900"><span className="font-medium">Account:</span> {accountNo}</p>}
-                {ifsc      && <p className="text-sm text-gray-900"><span className="font-medium">IFSC:</span> {ifsc}</p>}
-              </div>
+              <Banner tone="warn">
+                Only <strong style={{ color: 'var(--text)' }}>TRC-20 (Tron)</strong> USDT is supported. Users send deposits
+                here and submit the transaction ID for you to verify.
+              </Banner>
             )}
           </div>
         ) : (
-          /* Edit form */
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">UPI ID</label>
-              <input
-                type="text"
-                value={upiId}
-                onChange={e => setUpiId(e.target.value)}
-                placeholder="yourname@upi"
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 font-mono"
-              />
-              {!upiId.trim() && (
-                <p className="text-xs text-amber-600 mt-1 flex items-center gap-1">
-                  ⚠️ No UPI ID set — users cannot pay you. Add your UPI ID to receive DEPOSIT payments.
-                </p>
-              )}
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">QR Code Image</label>
-              {qrCodeUrl ? (
-                <div className="flex items-center gap-3">
-                  <img src={qrCodeUrl} alt="Current QR Code" className="w-24 h-24 rounded border border-gray-200 object-contain" />
-                  <div>
-                    <p className="text-xs text-green-600 font-medium mb-1">✅ QR Code uploaded</p>
-                    <button
-                      type="button"
-                      onClick={() => setQrCodeUrl('')}
-                      className="text-xs text-red-500 hover:text-red-700 underline"
-                    >
-                      Replace QR Code
-                    </button>
-                  </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+              padding: '13px 15px', background: 'var(--dep-bg)', borderRadius: 13,
+            }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--dep)' }}>UPI ID</div>
+                <div className="bb-mono" style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {bank?.upiId || 'Not set'}
                 </div>
-              ) : (
-                <label className="block border-2 border-dashed border-gray-300 rounded-lg p-4 text-center cursor-pointer hover:border-blue-400 transition-colors">
-                  <p className="text-sm text-gray-500">
-                    {uploadingQr ? '⏳ Uploading QR…' : '📁 Click to upload QR code image (JPG, PNG, WebP)'}
-                  </p>
-                  <input
-                    type="file"
-                    accept="image/jpeg,image/png,image/webp"
-                    className="hidden"
-                    disabled={uploadingQr}
-                    onChange={async (e) => {
-                      const file = e.target.files?.[0];
-                      if (!file) return;
-                      setUploadingQr(true);
-                      try {
-                        const token = localStorage.getItem('merchantToken') || '';
-                        const BASE_URL = (import.meta as any).env?.VITE_API_URL || '';
-                        const urlRes = await fetch(`${BASE_URL}/api/upload/merchant/qr/upload-url`, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                          body: JSON.stringify({ fileName: file.name, contentType: file.type, fileSize: file.size }),
-                        }).then(r => r.json());
-                        if (urlRes.uploadUrl) {
-                          await fetch(urlRes.uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type } });
-                          setQrCodeUrl(urlRes.cdnUrl || urlRes.fileUrl || '');
-                          toast.success('QR code uploaded');
-                        } else {
-                          toast.error(urlRes.message || 'CDN not configured. Enter QR URL manually.');
-                        }
-                      } catch (err: any) {
-                        toast.error(err?.message || 'QR upload failed');
-                      } finally {
-                        setUploadingQr(false);
-                      }
-                    }}
-                  />
-                </label>
+              </div>
+              {bank?.upiId && (
+                <button
+                  onClick={() => copyText(bank.upiId || '', 'UPI ID')}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 700, color: 'var(--dep)',
+                    background: 'var(--surface)', border: 0, padding: '8px 12px', borderRadius: 9, cursor: 'pointer', flexShrink: 0,
+                  }}
+                >
+                  <Copy size={13} /> Copy
+                </button>
               )}
-              <p className="text-xs text-gray-400 mt-1">Used to generate dynamic UPI QR with pre-filled amount for users</p>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Account Holder Name</label>
-                <input
-                  type="text"
-                  value={accountHolderName}
-                  onChange={e => setAccountHolderName(e.target.value)}
-                  placeholder="Full name as on bank account"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Bank Name</label>
-                <input
-                  type="text"
-                  value={bankName}
-                  onChange={e => setBankName(e.target.value)}
-                  placeholder="HDFC Bank"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Account Number</label>
-                <input
-                  type="text"
-                  value={accountNo}
-                  onChange={e => setAccountNo(e.target.value)}
-                  placeholder="1234567890"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 font-mono"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">IFSC Code</label>
-                <input
-                  type="text"
-                  value={ifsc}
-                  onChange={e => setIfsc(e.target.value.toUpperCase())}
-                  placeholder="HDFC0001234"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 font-mono"
-                />
+
+            <div style={{ padding: '14px 15px', background: 'var(--surface-2)', borderRadius: 13 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', marginBottom: 9 }}>Bank settlement account</div>
+              <div style={{ display: 'grid', gridTemplateColumns: twoColumns, gap: '9px 18px' }}>
+                {[
+                  { label: 'Holder', value: form.accountHolderName },
+                  { label: 'Bank', value: form.bankName },
+                  { label: 'Account no.', value: maskedAccount, mono: true },
+                  { label: 'IFSC', value: form.ifsc, mono: true },
+                ].map((row) => (
+                  <div key={row.label}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--muted)' }}>{row.label}</div>
+                    <div className={row.mono ? 'bb-mono' : undefined} style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--text)' }}>
+                      {row.value || '—'}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
-            <div className="flex gap-3">
-              <button
-                onClick={handleSavePaymentDetails}
-                disabled={savingProfile}
-                className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 text-sm font-medium"
-              >
-                <Save className="h-4 w-4" />
-                {savingProfile ? 'Saving...' : 'Save Payment Details'}
-              </button>
-              <button
-                onClick={() => setEditingPayment(false)}
-                className="px-6 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm font-medium"
-              >
+          </div>
+        ))}
+
+        {editingPayment && (isUsdt ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
+            <Field
+              label="USDT wallet address (TRC-20)"
+              error={addressError}
+              hint="USDT sent to a wrong or non-TRC-20 address cannot be recovered. Check it character by character."
+            >
+              <input
+                value={form.usdtWalletAddress}
+                onChange={(e) => setForm((f) => ({ ...f, usdtWalletAddress: e.target.value }))}
+                placeholder="T… TRC-20 address"
+                spellCheck={false}
+                autoCapitalize="none"
+                autoCorrect="off"
+                className="bb-mono"
+                style={inputStyle}
+              />
+            </Field>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <Button onClick={savePayment} busy={savingPayment} disabled={!!addressError}>
+                <Save size={15} /> Save USDT address
+              </Button>
+              <Button variant="outline" tone="neutral" onClick={() => setEditingPayment(false)} style={{ borderColor: 'var(--border)', color: 'var(--text)' }}>
                 Cancel
-              </button>
+              </Button>
             </div>
           </div>
-        )}
-      </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
+            <Field label="UPI ID">
+              <input
+                value={form.upiId}
+                onChange={(e) => setForm((f) => ({ ...f, upiId: e.target.value }))}
+                placeholder="yourname@bank"
+                spellCheck={false}
+                autoCapitalize="none"
+                className="bb-mono"
+                style={inputStyle}
+              />
+            </Field>
+            <Field label="Payment QR image URL" hint="Shown to users alongside your UPI ID.">
+              <input
+                value={form.qrCodeUrl}
+                onChange={(e) => setForm((f) => ({ ...f, qrCodeUrl: e.target.value }))}
+                placeholder="https://…"
+                spellCheck={false}
+                style={inputStyle}
+              />
+            </Field>
+            <div style={{ display: 'grid', gridTemplateColumns: twoColumns, gap: 12 }}>
+              <Field label="Account holder">
+                <input value={form.accountHolderName} onChange={(e) => setForm((f) => ({ ...f, accountHolderName: e.target.value }))} style={inputStyle} />
+              </Field>
+              <Field label="Bank name">
+                <input value={form.bankName} onChange={(e) => setForm((f) => ({ ...f, bankName: e.target.value }))} style={inputStyle} />
+              </Field>
+              <Field label="Account number">
+                <input
+                  value={form.accountNo}
+                  onChange={(e) => setForm((f) => ({ ...f, accountNo: e.target.value }))}
+                  inputMode="numeric"
+                  className="bb-mono"
+                  style={inputStyle}
+                />
+              </Field>
+              <Field label="IFSC code">
+                <input
+                  value={form.ifsc}
+                  onChange={(e) => setForm((f) => ({ ...f, ifsc: e.target.value.toUpperCase() }))}
+                  autoCapitalize="characters"
+                  className="bb-mono"
+                  style={inputStyle}
+                />
+              </Field>
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <Button onClick={savePayment} busy={savingPayment}>
+                <Save size={15} /> Save payment details
+              </Button>
+              <Button variant="outline" tone="neutral" onClick={() => setEditingPayment(false)} style={{ borderColor: 'var(--border)', color: 'var(--text)' }}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        ))}
+      </Card>
 
-      {/* Order Preferences */}
-      <div className="bg-white rounded-lg shadow p-6 border border-gray-200">
-        <h2 className="text-xl font-semibold text-gray-900 mb-4">Order Preferences</h2>
-        <div className="space-y-4">
-          <label className="flex items-center justify-between p-4 bg-gray-50 rounded-lg cursor-pointer hover:bg-gray-100 transition-colors">
-            <div>
-              <p className="font-medium text-gray-900">Accept Deposit Orders</p>
-              <p className="text-sm text-gray-600">Receive deposit requests from users</p>
+      {/* Order preferences */}
+      <Card>
+        <CardTitle title="Order preferences" />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {[
+            { key: 'acceptsDeposits' as const, title: 'Accept deposit orders', sub: 'Receive deposit requests from users' },
+            { key: 'acceptsWithdrawals' as const, title: 'Accept withdrawal orders', sub: 'Receive withdrawal requests from users' },
+          ].map((row) => (
+            <div key={row.key} style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+              padding: 14, background: 'var(--surface-2)', borderRadius: 13,
+            }}>
+              <div>
+                <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--text)' }}>{row.title}</div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)' }}>{row.sub}</div>
+              </div>
+              <Toggle
+                on={prefs[row.key]}
+                label={row.title}
+                onChange={() => setPrefs((p) => ({ ...p, [row.key]: !p[row.key] }))}
+              />
             </div>
-            <input
-              type="checkbox"
-              checked={acceptDeposits}
-              onChange={e => setAcceptDeposits(e.target.checked)}
-              className="w-6 h-6 text-blue-600 rounded focus:ring-blue-500"
-            />
-          </label>
-          <label className="flex items-center justify-between p-4 bg-gray-50 rounded-lg cursor-pointer hover:bg-gray-100 transition-colors">
-            <div>
-              <p className="font-medium text-gray-900">Accept Withdrawal Orders</p>
-              <p className="text-sm text-gray-600">Receive withdrawal requests from users</p>
-            </div>
-            <input
-              type="checkbox"
-              checked={acceptWithdrawals}
-              onChange={e => setAcceptWithdrawals(e.target.checked)}
-              className="w-6 h-6 text-blue-600 rounded focus:ring-blue-500"
-            />
-          </label>
+          ))}
         </div>
-        <button
-          onClick={handleSavePreferences}
-          disabled={saving}
-          className="mt-6 w-full sm:w-auto px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center space-x-2 transition-colors"
-        >
-          <Save className="h-4 w-4" />
-          <span>{saving ? 'Saving...' : 'Save Preferences'}</span>
-        </button>
-      </div>
+        <Button onClick={savePrefs} busy={savingPrefs} style={{ marginTop: 14 }}>
+          Save preferences
+        </Button>
+      </Card>
 
-      {/* Wallet */}
-      <div className="bg-white rounded-lg shadow p-6 border border-gray-200">
-        <h2 className="text-xl font-semibold text-gray-900 mb-4">Wallet Information</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="flex items-center space-x-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
-            <Wallet className="h-10 w-10 text-blue-500" />
-            <div>
-              <p className="text-sm text-gray-600">BB Token Balance</p>
-              <p className="text-2xl font-bold text-gray-900">
-                {((merchant as any)?.tokenBalance || (merchant as any)?.walletBalance || 0).toLocaleString('en-IN')}
-              </p>
-              <p className="text-xs text-gray-500 mt-1">Available tokens</p>
+      {/* Wallet + account status */}
+      <div style={{ display: 'grid', gridTemplateColumns: twoColumns, gap: 14, alignItems: 'start' }}>
+        <Card>
+          <CardTitle title="Wallet" />
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 12, padding: 14, borderRadius: 13,
+            background: isUsdt ? 'var(--dep-bg)' : 'var(--brand-bg)',
+          }}>
+            <span style={{
+              width: 38, height: 38, borderRadius: 11, background: 'var(--surface)', flexShrink: 0,
+              color: isUsdt ? 'var(--dep)' : 'var(--brand)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <Wallet size={18} />
+            </span>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)' }}>{copy.walletLabel}</div>
+              <div className="bb-mono" style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)' }}>
+                {formatWallet(merchant?.tokenBalance, rail)}
+              </div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--muted)', marginTop: 2 }}>{copy.walletNote}</div>
             </div>
           </div>
-          <div className="flex items-center space-x-4 p-4 bg-green-50 rounded-lg border border-green-200">
-            <CreditCard className="h-10 w-10 text-green-500" />
-            <div>
-              <p className="text-sm text-gray-600">Fiat Balance</p>
-              <p className="text-2xl font-bold text-gray-900">
-                Rs.{((merchant as any)?.fiatBalance || 0).toLocaleString('en-IN')}
-              </p>
-              <p className="text-xs text-gray-500 mt-1">Available funds</p>
-            </div>
-          </div>
-        </div>
-      </div>
+        </Card>
 
-      {/* Pricing */}
-      <div className="bg-white rounded-lg shadow p-6 border border-gray-200">
-        <h2 className="text-xl font-semibold text-gray-900 mb-4">Current Pricing (Set by Admin)</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="p-4 bg-green-50 rounded-lg border border-green-200">
-            <div className="flex items-center space-x-2 mb-2">
-              <TrendingUp className="h-5 w-5 text-green-600" />
-              <p className="text-sm text-gray-600 font-medium">Buy Price</p>
+        <Card>
+          <CardTitle title="Account status" />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ ...cardStyle, boxShadow: 'none', background: 'var(--surface-2)', border: 0, borderRadius: 13, padding: '13px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-2)' }}>Account</span>
+              <Verified label={merchant?.status === 'ACTIVE' ? 'Active' : merchant?.status || 'Pending'} />
             </div>
-            <p className="text-xs text-gray-500 mb-2">You buy BB Tokens from users</p>
-            <p className="text-3xl font-semibold text-gray-900">
-              Rs.{((merchant as any)?.prices?.buyPrice || 0).toFixed(2)}
-            </p>
-            <p className="text-xs text-gray-500 mt-1">per token</p>
-          </div>
-          <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
-            <div className="flex items-center space-x-2 mb-2">
-              <TrendingUp className="h-5 w-5 text-blue-600 transform rotate-180" />
-              <p className="text-sm text-gray-600 font-medium">Sell Price</p>
+            <div style={{ background: 'var(--surface-2)', borderRadius: 13, padding: '13px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-2)' }}>Availability</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, fontWeight: 700, color: 'var(--text)' }}>
+                <span style={{
+                  width: 8, height: 8, borderRadius: '50%',
+                  background: merchant?.isOnline ? 'var(--online)' : 'var(--offline)',
+                  animation: merchant?.isOnline ? 'bb-pulse 2s ease infinite' : 'none',
+                }} />
+                {merchant?.isOnline ? 'Available for orders' : 'Not accepting'}
+              </span>
             </div>
-            <p className="text-xs text-gray-500 mb-2">You sell BB Tokens to users</p>
-            <p className="text-3xl font-semibold text-gray-900">
-              Rs.{((merchant as any)?.prices?.sellPrice || 0).toFixed(2)}
-            </p>
-            <p className="text-xs text-gray-500 mt-1">per token</p>
+            <div style={{ background: 'var(--surface-2)', borderRadius: 13, padding: '13px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-2)' }}>Settlement rail</span>
+              <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text)' }}>
+                {isUsdt ? 'USDT · TRC-20' : 'INR · UPI & bank'}
+              </span>
+            </div>
+            <Button variant="outline" tone="danger" full onClick={logout} style={{ marginTop: 2 }}>
+              <LogOut size={16} /> Log out
+            </Button>
           </div>
-        </div>
-        <div className="mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-          <p className="text-sm text-yellow-800">(i) Prices are set by the admin and cannot be modified by merchants</p>
-          <p className="text-xs text-yellow-700 mt-1">Your profit = (Sell Price - Buy Price) x Token Amount</p>
-        </div>
-      </div>
-
-      {/* Account Status */}
-      <div className="bg-white rounded-lg shadow p-6 border border-gray-200">
-        <h2 className="text-xl font-semibold text-gray-900 mb-4">Account Status</h2>
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <p className="text-sm text-gray-600">Status</p>
-            <p className="text-lg font-semibold text-gray-900">{merchant?.status || 'ACTIVE'}</p>
-          </div>
-          <div>
-            <p className="text-sm text-gray-600">Online Status</p>
-            <p className={`text-lg font-semibold ${merchant?.isOnline ? 'text-green-600' : 'text-gray-600'}`}>
-              {merchant?.isOnline ? '[green] Online' : '[red] Offline'}
-            </p>
-          </div>
-        </div>
+        </Card>
       </div>
     </div>
   );
