@@ -93,6 +93,16 @@ Making Postgres authoritative is an **owner-gated production cutover**, not a
 code flip, because it moves the source of truth for money. The sequence
 (`04-GOVERNANCE.md` §18, `postgres/DATA_ROLLBACK_PLAN.md`):
 
+0. ✅ **The cutover machinery is built (2026-07-28), dormant.** Three
+   prerequisites that did not exist in code now do: a per-path authority switch
+   (`postgres/moneyAuthority.js` — one env var per path, defaults to Mongo,
+   refuses an out-of-order cutover at boot), the reverse mirror the rollback
+   plan's zero-RPO guarantee depends on (`postgres/reverseMirror.js`), and a
+   two-sided reconcile with a per-account Mongo-vs-PG ledger comparison. The
+   authoritative wallet path itself (`postgres/walletPg.js`) is written and
+   proven against a real Postgres — row locking, the negative-balance guard and
+   the unique-`tx_id` idempotency gate hold under concurrency (`npm run test:pg`).
+   **No path is flipped**; every one still resolves to MongoDB.
 1. ✅ **Reconciliation is already scheduled** — the `pg-reconcile` cron
    (`startup/cronJobs.js`) runs every 5 min once `DATABASE_URL` is set,
    leader-locked, detection-only. It exports drift as metrics and pages
@@ -100,7 +110,13 @@ code flip, because it moves the source of truth for money. The sequence
    dashboard: `bb_pg_reconcile_consecutive_clean` must climb and **stay green
    (≥ 24h of clean 5-min passes)** — any drift or crashed run resets it to 0.
    `bb_pg_drift_rows` must be 0 and `bb_pg_trial_balance_ok` must be 1. (Ad-hoc:
-   `npm run reconcile:pg -- --all` for a full-history check.)
+   `npm run reconcile:pg -- --all` for a full-history check.) Once any path is
+   PG-authoritative the job also checks the REVERSE direction —
+   `bb_mongo_drift_rows` (rows in Postgres missing from Mongo, the writes a
+   fallback would lose) and `bb_ledgers_agree` (both ledgers match account by
+   account). Without those two the gate would keep climbing while Mongo
+   silently fell behind. `bb_money_authority_postgres{path=...}` shows which
+   paths have moved.
 2. 🟡 Once the gate has been green over a sustained window, flip **reads** to Postgres per money path, one at a time, watching the same metrics.
 3. 🟡 Flip **writes/authority** per path; wallet/ledger first, **KYC last**.
 4. 🟡 Keep the Mongo→PG rollback ready at each step.

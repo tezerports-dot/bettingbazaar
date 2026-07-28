@@ -16,6 +16,7 @@
     "test": "vitest run",
     "test:unit": "vitest run --config vitest.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:pg": "vitest run --config vitest.pg.config.ts",
     "test:watch": "vitest --config vitest.config.ts",
     "check:deps": "depcruise backend --config .dependency-cruiser.cjs",
     "reconcile:pg": "node backend/postgres/reconcile.js",

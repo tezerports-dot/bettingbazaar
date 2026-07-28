@@ -62,7 +62,8 @@ compute, or default this value independently.
 | Banner/promo URLs | `Branding` document (tricksTipsBannerUrl, rulesPageImageUrl, etc.) |
 | Social/support links | `SupportLinks` document — **NOT Branding** (H-04 fix) |
 | Homepage/banner content order | `PromoContent.priority` field |
-| Wallet balance mutations (user) | `walletAuthority.service.js` exclusively |
+| Wallet balance mutations (user) | `walletAuthority.service.js` exclusively. When `MONEY_AUTHORITY_WALLET=postgres` the authoritative store behind it is `postgres/walletPg.js` (integer paise, row-locked, ledger row in the same transaction); the service stays the sole entry point either way. |
+| **Which store is the source of truth for money, per path** | `postgres/moneyAuthority.js` — `MONEY_AUTHORITY_{WALLET,LEDGER,ORDERS,KYC}`, default MongoDB. Flips one path at a time in that order (KYC last); an out-of-order or unconfigured cutover is refused at boot. Nothing else may decide which store owns a money path. Gate: LAUNCH_READINESS §E. |
 | Merchant token balance mutations | `merchantWallet.service.js` exclusively (Merchant Platform, Phase 008) — writes `MerchantWalletLedger`, idempotent txIds |
 | Money movement in/out of the ecosystem (deposits, withdrawals, providers) | `fundingAuthority.service.js` (Funding Platform, Phase 009) — routes call requestDeposit/requestWithdrawal; providers live in `providerRegistry.js`. Never owns accounting (R&S derives ledger entries from completed orders). |
 | USDT buy-only pricing (user↔merchant buy and merchant↔admin buy) | `SystemConfig.usdtPricing` — buy-only rates. `userMerchantBuyInr` is for the future user/merchant USDT buy rail; `merchantAdminBuyInr` is consumed by the merchant admin-token purchase workflow. No USDT sell rail exists for users or merchants. |

@@ -50,6 +50,15 @@ jobs:
         run: npm ci --legacy-peer-deps
       - name: Unit tests (money math — no DB)
         run: npm run test:unit
+      # The Postgres-authoritative wallet path: row locking, the negative-balance
+      # guard and the unique-tx_id idempotency gate are behaviours of the
+      # database, so they are proven against a real one. Needs no MongoDB, which
+      # is why it is a separate suite (see vitest.pg.config.ts).
+      - name: Postgres money-path tests (real Postgres, no MongoDB)
+        run: npm run test:pg
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bb_test
+          PG_SSL: 'false'
       - name: Integration tests (real in-memory MongoDB + real Redis + real Postgres)
         run: npm run test:integration
         env:

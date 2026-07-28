@@ -95,6 +95,34 @@ export const pgReconcileConsecutiveClean = new client.Gauge({
   registers: [registry],
 });
 
+// ── Reverse direction (cutover Phase B) ──────────────────────────────────────
+// Once a money path is authoritative in Postgres, MongoDB becomes the copy that
+// can fall behind — and the zero-RPO rollback guarantee in DATA_ROLLBACK_PLAN.md
+// depends on it staying complete. The forward gauges above cannot see that:
+// bb_pg_drift_rows only counts rows missing from Postgres. Without these two,
+// bb_pg_reconcile_consecutive_clean would keep climbing while Mongo silently
+// lost writes, and the gate the whole cutover rests on would be lying.
+// Alert on `bb_mongo_drift_rows > 0` or `bb_ledgers_agree == 0`.
+export const mongoDriftRows = new client.Gauge({
+  name: 'bb_mongo_drift_rows',
+  help: 'Money rows present in Postgres but missing from MongoDB (0 = in sync; only meaningful once a path is PG-authoritative)',
+  registers: [registry],
+});
+export const ledgersAgree = new client.Gauge({
+  name: 'bb_ledgers_agree',
+  help: 'Mongo and Postgres ledgers agree account-by-account and both conserve to zero (1) or not (0)',
+  registers: [registry],
+});
+// Which stores own money right now, as a labelled gauge: one series per path,
+// 1 = Postgres is authoritative, 0 = MongoDB. Makes the cutover visible on the
+// dashboard and lets an alert fire if a path moves unexpectedly.
+export const moneyAuthorityPostgres = new client.Gauge({
+  name: 'bb_money_authority_postgres',
+  help: 'Postgres is the source of truth for this money path (1) or MongoDB is (0)',
+  labelNames: ['path'],
+  registers: [registry],
+});
+
 // Pool-stats provider — registered by pgClient via setPoolStatsProvider() when
 // Postgres is in use. Inversion of control keeps this low-level metrics module
 // free of any dependency on the higher-level pgClient (dependency-cruiser
