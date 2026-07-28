@@ -1,50 +1,44 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
- * SportsPage.tsx — Sports Betting (Betby widget or similar)
- * Only visible when admin enables a sports provider from Game Providers admin page.
+ * SportsPage.tsx — 2026 "Bazaar" redesign. Sportsbook lobby (Betby-style widget).
+ * Only visible when admin enables a sports provider (useGameProviders); launch
+ * goes through the standard POST /api/game/launch spine. Logic unchanged.
+ *
+ * GOVERNANCE §10: the SPORTS list below is a UI-only set of category tiles for
+ * the lobby — it is never used for server-side validation; the actual markets
+ * come from the enabled provider's sportsbook.
  */
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { useGameProviders } from '../services/GameProviderContext';
+import ScreenShell, { card } from '../redesign/Screen';
 
 const SPORTS = [
-  { name: 'Cricket',    icon: '🏏', markets: '400+', live: true  },
-  { name: 'Football',   icon: '⚽', markets: '800+', live: true  },
-  { name: 'Kabaddi',    icon: '🤼', markets: '120+', live: true  },
-  { name: 'Basketball', icon: '🏀', markets: '300+', live: true  },
-  { name: 'Tennis',     icon: '🎾', markets: '500+', live: true  },
-  { name: 'Esports',    icon: '🎮', markets: '200+', live: true  },
-  { name: 'Badminton',  icon: '🏸', markets: '80+',  live: false },
-  { name: 'Boxing',     icon: '🥊', markets: '60+',  live: false },
-  { name: 'Hockey',     icon: '🏑', markets: '90+',  live: false },
-  { name: 'Formula 1',  icon: '🏎️', markets: '50+',  live: false },
-  { name: 'Chess',      icon: '♟️', markets: '30+',  live: false },
-  { name: 'Volleyball', icon: '🏐', markets: '70+',  live: false },
+  { name: 'Cricket', icon: '🏏', markets: '400+', live: true }, { name: 'Football', icon: '⚽', markets: '800+', live: true },
+  { name: 'Kabaddi', icon: '🤼', markets: '120+', live: true }, { name: 'Basketball', icon: '🏀', markets: '300+', live: true },
+  { name: 'Tennis', icon: '🎾', markets: '500+', live: true }, { name: 'Esports', icon: '🎮', markets: '200+', live: true },
+  { name: 'Badminton', icon: '🏸', markets: '80+', live: false }, { name: 'Boxing', icon: '🥊', markets: '60+', live: false },
+  { name: 'Hockey', icon: '🏑', markets: '90+', live: false }, { name: 'Formula 1', icon: '🏎️', markets: '50+', live: false },
+  { name: 'Chess', icon: '♟️', markets: '30+', live: false }, { name: 'Volleyball', icon: '🏐', markets: '70+', live: false },
 ];
 
 const SportsPage: React.FC = () => {
-  const navigate  = useNavigate();
+  const navigate = useNavigate();
   const { enabledSports, anySports } = useGameProviders();
   const [launching, setLaunching] = useState(false);
-  const [sbUrl, setSbUrl]         = useState<string|null>(null);
-  const [filter, setFilter]       = useState<'all'|'live'>('all');
+  const [sbUrl, setSbUrl] = useState<string | null>(null);
+  const [filter, setFilter] = useState<'all' | 'live'>('all');
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   useEffect(() => { if (!anySports) navigate('/', { replace: true }); }, [anySports]);
-
-  const provider = enabledSports[0]; // use first enabled sports provider
+  const provider = enabledSports[0];
 
   const openSportsbook = useCallback(async (sportName?: string) => {
     if (!provider) return;
     setLaunching(true);
     try {
       const token = localStorage.getItem('auth_token') || '';
-      const r = await fetch('/api/game/launch', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-          credentials: 'include',
-        body: JSON.stringify({ providerKey: provider.key, gameId: sportName || 'sportsbook', gameName: sportName || 'Sportsbook' }),
-      });
+      const r = await fetch('/api/game/launch', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ providerKey: provider.key, gameId: sportName || 'sportsbook', gameName: sportName || 'Sportsbook' }) });
       const d = await r.json();
       if (d.success && d.launchUrl) setSbUrl(d.launchUrl);
       else alert(d.message || 'Could not launch sportsbook');
@@ -52,72 +46,41 @@ const SportsPage: React.FC = () => {
   }, [provider]);
 
   if (sbUrl) return (
-    <div className="fixed inset-0 bg-black z-50 flex flex-col">
-      <div className="flex items-center justify-between bg-[#0A0F1C] px-4 h-10 flex-shrink-0 border-b border-dark-700">
-        <span className="text-green-400 text-sm font-bold">⚽ Live Sportsbook</span>
-        <button onClick={() => setSbUrl(null)} className="text-gray-400 text-xs border border-dark-600 px-3 py-1 rounded">✕ Close</button>
+    <div style={{ position: 'fixed', inset: 0, background: '#000', zIndex: 200, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--bg)', padding: '0 14px', height: 44, flex: 'none', borderBottom: '1px solid var(--line)' }}>
+        <span style={{ color: 'var(--text)', fontSize: 12, fontWeight: 700 }}>⚽ Live Sportsbook</span>
+        <button onClick={() => setSbUrl(null)} style={{ color: 'var(--text2)', fontSize: 12, border: '1px solid var(--line2)', padding: '4px 12px', borderRadius: 8, background: 'var(--surface2)', cursor: 'pointer' }}>✕ Close</button>
       </div>
-      <iframe ref={iframeRef} src={sbUrl} className="flex-1 w-full border-0" allow="fullscreen" allowFullScreen title="Sportsbook"/>
+      <iframe ref={iframeRef} src={sbUrl} style={{ flex: 1, width: '100%', border: 0 }} allow="fullscreen" allowFullScreen title="Sportsbook" />
     </div>
   );
 
   const visibleSports = filter === 'live' ? SPORTS.filter(s => s.live) : SPORTS;
 
   return (
-    <div className="h-full overflow-y-auto bg-[#0A0F1C] text-white pb-4">
-      {/* Header */}
-      <div className="bg-gradient-to-b from-green-950/50 to-transparent px-4 pt-3 pb-4">
-        <button onClick={() => navigate('/')} className="text-gray-500 text-xs mb-2 block">← Back</button>
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-bold">⚽ Sportsbook</h1>
-            <p className="text-gray-500 text-xs mt-0.5">Live in-play · {SPORTS.length} sports · 125+ markets each</p>
-          </div>
-          <button onClick={() => openSportsbook()} disabled={launching}
-            className="bg-green-600 hover:bg-green-500 text-white font-bold px-4 py-2 rounded-xl text-xs disabled:opacity-60 transition-all active:scale-95 flex items-center gap-1.5">
-            {launching ? <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"/> : '▶'}
-            {launching ? 'Opening…' : 'Open All'}
-          </button>
+    <ScreenShell icon="🏇" title="Sports" sub="Live & pre-match betting">
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 14 }}>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {(['all', 'live'] as const).map(f => (
+            <button key={f} onClick={() => setFilter(f)} style={{ padding: '7px 14px', borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: 'pointer', border: `1px solid ${filter === f ? 'var(--green)' : 'var(--line)'}`, background: filter === f ? 'var(--green)' : 'var(--surface)', color: filter === f ? '#fff' : 'var(--text2)' }}>{f === 'live' ? '🔴 LIVE' : 'All'}</button>
+          ))}
         </div>
+        <button onClick={() => openSportsbook()} disabled={launching} style={{ background: 'var(--green)', color: '#fff', fontWeight: 800, padding: '9px 16px', borderRadius: 12, fontSize: 12, border: 'none', cursor: 'pointer', opacity: launching ? .6 : 1 }}>{launching ? 'Opening…' : '▶ Open All'}</button>
       </div>
 
-      {/* Live / All filter */}
-      <div className="flex gap-2 px-4 mb-4">
-        {(['all', 'live'] as const).map(f => (
-          <button key={f} onClick={() => setFilter(f)}
-            className={`px-4 py-1.5 rounded-full text-xs font-medium border transition-all ${
-              filter === f ? 'bg-green-600 border-green-500 text-white' : 'bg-dark-800 border-dark-700 text-gray-400'
-            }`}>
-            {f === 'live' ? '🔴 LIVE' : '📋 All Sports'}
-          </button>
-        ))}
-      </div>
-
-      {/* Sports grid */}
-      <div className="px-4 grid grid-cols-3 gap-2.5">
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(104px,1fr))', gap: 10 }}>
         {visibleSports.map(sport => (
-          <button key={sport.name} onClick={() => openSportsbook(sport.name)} disabled={launching}
-            className="relative bg-dark-800 border border-dark-700 hover:border-green-700/50 rounded-xl p-3 text-center active:scale-95 transition-all">
-            {sport.live && (
-              <span className="absolute top-1.5 right-1.5 flex items-center gap-0.5">
-                <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse"/>
-              </span>
-            )}
-            <div className="text-3xl mb-1.5">{sport.icon}</div>
-            <div className="text-xs font-semibold text-white">{sport.name}</div>
-            <div className="text-[9px] text-green-400 mt-0.5">{sport.markets} markets</div>
+          <button key={sport.name} onClick={() => openSportsbook(sport.name)} disabled={launching} style={{ position: 'relative', ...card, padding: 12, textAlign: 'center', cursor: 'pointer' }}>
+            {sport.live && <span style={{ position: 'absolute', top: 8, right: 8, width: 6, height: 6, background: 'var(--red)', borderRadius: '50%' }} />}
+            <div style={{ fontSize: 28, marginBottom: 6 }}>{sport.icon}</div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{sport.name}</div>
+            <div style={{ fontSize: 9, color: 'var(--green)', marginTop: 2 }}>{sport.markets} markets</div>
           </button>
         ))}
       </div>
 
-      {/* Provider info */}
-      <div className="mx-4 mt-5 p-3 bg-dark-800/50 border border-dark-700 rounded-xl">
-        <p className="text-[10px] text-gray-500 text-center">
-          Powered by <span className="text-white font-medium">{provider?.name}</span> ·
-          Live odds update every second · Settle within 30 seconds
-        </p>
-      </div>
-    </div>
+      {provider && <div style={{ ...card, marginTop: 16, textAlign: 'center' }}><p style={{ fontSize: 10, color: 'var(--text3)', margin: 0 }}>Powered by <b style={{ color: 'var(--text2)' }}>{provider?.name}</b> · Live odds update every second</p></div>}
+    </ScreenShell>
   );
 };
 

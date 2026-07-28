@@ -5,12 +5,33 @@ import App from './App';
 import './index.css';
 
 // --- INTELLIGENT SERVICE WORKER HANDLER ---
-if ('serviceWorker' in navigator) {
+// The native Android shell (Capacitor) serves this bundle from the app package
+// over its own scheme. A service worker there would intercept navigations the
+// WebView already resolves locally, so it is skipped entirely — the native app
+// updates through the Play Store, not through a cached shell.
+const isNativeShell = !!(window as any).Capacitor?.isNativePlatform?.();
+
+if ('serviceWorker' in navigator && !isNativeShell) {
   const hostname = window.location.hostname;
-  const isSandbox = hostname.includes('usercontent.goog') || 
+  const isSandbox = hostname.includes('usercontent.goog') ||
                     hostname.includes('ai.studio');
   const isLocal = hostname === 'localhost' || hostname === '127.0.0.1';
   const isHttps = window.location.protocol === 'https:';
+
+  // Whether this page is ALREADY under a service worker's control, captured
+  // before registering. This is the whole fix for the first-load reload:
+  //
+  // `activate` calls clients.claim(), which fires `controllerchange` even on a
+  // page that never had a controller — a first-ever visit, a new device, or
+  // anyone who cleared their storage. Reloading on that event unconditionally
+  // meant every new user's first page load flashed and reloaded itself, and it
+  // is the classic PWA reload-loop footgun: any condition that makes the worker
+  // look new on each load turns "reload once" into "reload forever".
+  //
+  // A reload is only ever warranted when a NEW worker replaced one that was
+  // already driving this page. No controller at registration time = nothing was
+  // replaced = nothing to reload for.
+  const hadController = !!navigator.serviceWorker.controller;
 
   // Attempt registration on all HTTPS origins or Localhost, excluding sandboxes
   if (!isSandbox && (isHttps || isLocal)) {
@@ -36,18 +57,19 @@ if ('serviceWorker' in navigator) {
           });
         });
 
-        // Reload when the SW takes control (after skipWaiting)
         let refreshing = false;
-        navigator.serviceWorker.addEventListener('controllerchange', () => {
-          if (!refreshing) { refreshing = true; window.location.reload(); }
-        });
+        const reloadOnce = () => {
+          if (refreshing || !hadController) return;
+          refreshing = true;
+          window.location.reload();
+        };
+
+        // Reload when a new SW takes control of a page an older one was driving.
+        navigator.serviceWorker.addEventListener('controllerchange', reloadOnce);
 
         // Listen for SW_UPDATED message from the new SW
         navigator.serviceWorker.addEventListener('message', (e) => {
-          if (e.data?.type === 'SW_UPDATED' && !refreshing) {
-            refreshing = true;
-            window.location.reload();
-          }
+          if (e.data?.type === 'SW_UPDATED') reloadOnce();
         });
       }).catch(err => {
         console.debug('[PWA] SW registration deferred:', err.message);

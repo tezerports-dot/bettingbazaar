@@ -1,6 +1,8 @@
-# Betting Bazaar - 3D Prediction Market
+# Betting Bazaar — high-frequency prediction market
 
-The premier high-frequency prediction platform. Bet on Delhi vs Bombay in real-time with an immersive 3D interface, P2P merchant system, and algorithmic game cycles.
+Bet on Delhi vs Bombay in real time, with a P2P merchant settlement network and
+algorithmic game cycles. The player app is a React SPA; there is no 3D renderer
+in it (the three.js dependency was removed 2026-07-27 — nothing imported it).
 
 ## 🚀 Deployment Guide (For No-Coders)
 
@@ -52,18 +54,46 @@ The premier high-frequency prediction platform. Bet on Delhi vs Bombay in real-t
 * `/merchant-panel`: Merchant React/Vite application.
 * `/backend`: Node.js/Express API and bounded domain services for the modular monolith.
 * `/docs/governance`: Single governance hub for enterprise decisions, authorization, SRE, disaster recovery, retention, launch checks, and the monolith-to-microservices migration plan.
+* `/design`: UI/UX blueprint and the `visual-mapping/` screen sketch — reference material, not build targets.
 * `/platform`: Capability inventory used by governance verification.
-* `/deploy`: Deployment notes and environment-specific runbooks.
+* `/deploy`: Deployment notes and environment-specific runbooks (k8s, Compose, Grafana, HAProxy).
+* `/e2e`, `/scripts`, `/tools`: Playwright specs, maintenance scripts, and developer tooling.
+
+Each panel owns its `package.json` and lockfile and installs its own React
+stack; the repository root holds **backend dependencies only** (GOVERNANCE §14).
+Do not add frontend packages to the root — the backend image installs it.
 
 ## 🏢 Enterprise & Launch Readiness
 Centralized governance now lives in `docs/governance/README.md`. Start there before launch review or contractor handoff. The current architecture is intentionally a modular monolith with documented seams for a future monolith + microservices transition; see `docs/governance/04-GOVERNANCE.md` §18 for the migration plan and §19 for the capability matrix / remaining launch/hardening work.
 
 ## 🛡️ Security
-This app includes:
-* TOTP 2FA for Admins.
-* User wallet consistency checks.
-* P2P Escrow status tracking.
-* Bot-mitigation captchas.
+
+Implemented and verifiable in the codebase:
+
+* **PASETO Ed25519 auth** with instant revocation and rotatable signing keys
+  (`domains/identity/paseto.util.js`) — no alg-swap or `none` algorithm.
+* **Argon2id password hashing** with a bcrypt verify-fallback for legacy rows
+  (`domains/identity/password.util.js`).
+* **Boot gate** that refuses to start in production on a missing or weak secret,
+  or on unverified money-database TLS (`startup/validateEnv.js`).
+* **HMAC-bound payment orders** — order integrity is cryptographically signed
+  (`middleware/order-crypto-access.js`), with rotatable secrets.
+* **Append-only double-entry ledger** in integer paise, DB-enforced, balances
+  always derived from postings (`domains/revenue/`, `postgres/schema.sql`).
+* **P2P escrow status tracking** on every payment order.
+* **Tiered + per-subnet rate limiting**, surge breaker, load-shed and an
+  application-side OWASP filter (`middleware/security.js`, `ipDefense.js`).
+* **Admin action audit logging** (`EnhancedAuditLog`) across privileged routes.
+
+**Not implemented — do not assume these exist** (see
+`docs/governance/LAUNCH_READINESS.md` §F):
+
+* **No two-factor authentication anywhere**, admin included. `User.twoFactorSecret`
+  and `User.twoFactorEnabled` exist in the schema but are never written and never
+  verified; there is no TOTP library, enrolment flow or challenge step. This
+  README previously claimed "TOTP 2FA for Admins" — it was never true.
+* **No CAPTCHA / bot-mitigation challenge** on any form. Rate limiting is the only
+  automated-abuse control today.
 
 ---
 **Maintained by AI Studio Production Pipeline**

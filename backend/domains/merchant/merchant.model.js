@@ -1,6 +1,12 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import mongoose from 'mongoose';
 import crypto from 'crypto';
+import {
+  MERCHANT_CURRENCY,
+  MERCHANT_CURRENCIES,
+  isTrc20Address,
+  merchantTypeOf,
+} from './merchantCurrency.js';
 
 export function generateMerchantPublicRef() {
   return `M${crypto.randomBytes(8).toString('hex').toUpperCase()}`;
@@ -20,19 +26,43 @@ const merchantSchema = new mongoose.Schema({
   isOnline: { type: Boolean, default: false, index: true },
   acceptsDeposits: { type: Boolean, default: true },
   acceptsWithdrawals: { type: Boolean, default: true },
-  // Which fiat/crypto rails this merchant can fulfil (Phase-audit 2026-07-09).
-  // Admin-editable via PUT /merchants/:id/capabilities; ENFORCED in
-  // merchantScoring.selectBestMerchant so an order is only offered to a
-  // merchant that accepts its currency (no dead admin field — GOVERNANCE §2).
-  acceptedCurrencies: { type: [String], enum: ['INR', 'USDT'], default: ['INR'], index: true },
+  // Which rail this merchant settles on (Phase-audit 2026-07-09; made EXCLUSIVE
+  // 2026-07-27). A merchant is either an INR merchant (UPI + bank) or a USDT
+  // merchant (TRC-20) — never both, so every merchant has exactly one set of
+  // payment credentials and one currency of order to reason about. Kept as an
+  // array (not renamed to a scalar) because it is already the field enforced by
+  // merchantScoring.selectBestMerchant and the admin capabilities route — the
+  // `merchantType` virtual below is the read-only scalar view for panels
+  // (GOVERNANCE §4: extend the existing field, do not add a second authority).
+  // Admin-editable via PUT /merchants/:id/capabilities.
+  acceptedCurrencies: {
+    type: [String],
+    enum: MERCHANT_CURRENCIES,
+    default: [MERCHANT_CURRENCY.INR],
+    index: true,
+    validate: {
+      validator: (v) => Array.isArray(v) && v.length === 1 && MERCHANT_CURRENCIES.includes(v[0]),
+      message: `A merchant settles on exactly one rail — acceptedCurrencies must be ["INR"] or ["USDT"].`,
+    },
+  },
   bankDetails: {
-    accountHolderName: String,   
+    accountHolderName: String,
     upiId: String,
     bankName: String,
     accountNo: String,
     ifsc: String
   },
-  usdtWalletAddress: { type: String, trim: true, uppercase: true },
+  // TRC-20 (Tron) address. NOT uppercased: Tron addresses are base58, which is
+  // case-sensitive — uppercasing silently corrupts an address and USDT sent to
+  // a corrupted address is unrecoverable (fixed 2026-07-27).
+  usdtWalletAddress: {
+    type: String,
+    trim: true,
+    validate: {
+      validator: (v) => !v || isTrc20Address(v),
+      message: 'usdtWalletAddress must be a TRC-20 (Tron) address: 34 base58 characters starting with "T".',
+    },
+  },
   qrCodeUrl: String,
   limits: {
     minDeposit: { type: Number, default: 500 },
@@ -96,6 +126,16 @@ const merchantSchema = new mongoose.Schema({
 // ════════════════════════════════════════════════════════════════════════════
 
 // ════════════════════════════════════════════════════════════════════════════
+
+// merchantType — DERIVED read-only view of the single rail in
+// acceptedCurrencies, for panels that want a scalar ('INR' | 'USDT') rather
+// than an array. Deliberately a virtual, not a stored field: a second stored
+// copy would be a second authority for the same value (GOVERNANCE §1/§4).
+merchantSchema.virtual('merchantType').get(function () {
+  return merchantTypeOf(this);
+});
+merchantSchema.set('toObject', { virtuals: true });
+merchantSchema.set('toJSON',   { virtuals: true });
 
 merchantSchema.pre('validate', function ensurePublicRef(next) {
   if (!this.publicRef) this.publicRef = generateMerchantPublicRef();

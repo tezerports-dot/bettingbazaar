@@ -93,6 +93,37 @@ Making Postgres authoritative is an **owner-gated production cutover**, not a
 code flip, because it moves the source of truth for money. The sequence
 (`04-GOVERNANCE.md` §18, `postgres/DATA_ROLLBACK_PLAN.md`):
 
+0. ✅ **The cutover machinery is built (2026-07-28), dormant.** Three
+   prerequisites that did not exist in code now do: a per-path authority switch
+   (`postgres/moneyAuthority.js` — one env var per path, defaults to Mongo,
+   refuses an out-of-order cutover at boot), the reverse mirror the rollback
+   plan's zero-RPO guarantee depends on (`postgres/reverseMirror.js`), and a
+   two-sided reconcile with a per-account Mongo-vs-PG ledger comparison. The
+   authoritative wallet path itself (`postgres/walletPg.js`) is written and
+   proven against a real Postgres — row locking, the negative-balance guard and
+   the unique-`tx_id` idempotency gate hold under concurrency (`npm run test:pg`).
+   **No path is flipped**; every one still resolves to MongoDB.
+0b. ✅ **The wallet path is genuinely routed (2026-07-28), still dormant.**
+   Every operation `walletAuthority.service.js` exposes now has a Postgres
+   implementation behind the switch (`postgres/walletPgAuthority.js`), keyed by
+   byte-identical txIds so a rollback's Mongo idempotency gate still recognises
+   movements Postgres made. Bet placement, which mutated balances with a raw
+   `$inc` inside `domains/markets/bet.routes.js`, was moved behind
+   `lockBetStake`/`unlockBetStake` — until that happened, balances had a second
+   writer the switch could not reach and a flip would have split the source of
+   truth mid-bet. 46 tests cover both layers against a real Postgres.
+   **Two things remain before the wallet path is flippable:**
+   - **Run `npm run pg:seed-locks` immediately before the flip**, while Mongo is
+     still authoritative. `lockedDepositAmount`/`lockedWinningsAmount` are never
+     a ledger row's field, so the forward mirror cannot carry them and the new
+     `wallets.locked_*_paise` columns would be 0 at cutover — the first
+     settlement to release a stake would unwind a split Postgres never learned.
+     (`-- --check` reports drift without writing.)
+   - **Balance READS are still Mongo property access** (~211 sites). They read
+     the copy the reverse mirror keeps current — stale by at most a reconcile
+     pass rather than wrong — but they are not authoritative.
+     `walletAuthority.getBalances()` is the routed read; call sites move to it
+     incrementally, and any NEW balance read must use it.
 1. ✅ **Reconciliation is already scheduled** — the `pg-reconcile` cron
    (`startup/cronJobs.js`) runs every 5 min once `DATABASE_URL` is set,
    leader-locked, detection-only. It exports drift as metrics and pages
@@ -100,7 +131,13 @@ code flip, because it moves the source of truth for money. The sequence
    dashboard: `bb_pg_reconcile_consecutive_clean` must climb and **stay green
    (≥ 24h of clean 5-min passes)** — any drift or crashed run resets it to 0.
    `bb_pg_drift_rows` must be 0 and `bb_pg_trial_balance_ok` must be 1. (Ad-hoc:
-   `npm run reconcile:pg -- --all` for a full-history check.)
+   `npm run reconcile:pg -- --all` for a full-history check.) Once any path is
+   PG-authoritative the job also checks the REVERSE direction —
+   `bb_mongo_drift_rows` (rows in Postgres missing from Mongo, the writes a
+   fallback would lose) and `bb_ledgers_agree` (both ledgers match account by
+   account). Without those two the gate would keep climbing while Mongo
+   silently fell behind. `bb_money_authority_postgres{path=...}` shows which
+   paths have moved.
 2. 🟡 Once the gate has been green over a sustained window, flip **reads** to Postgres per money path, one at a time, watching the same metrics.
 3. 🟡 Flip **writes/authority** per path; wallet/ledger first, **KYC last**.
 4. 🟡 Keep the Mongo→PG rollback ready at each step.
@@ -114,7 +151,31 @@ code flip, because it moves the source of truth for money. The sequence
 
 ---
 
-## F. Compliance & legal — ⛔ hard gate
+## F. Account-security controls — 🟡 two common expectations are NOT built
+
+Verified against the code on 2026-07-27. Both are the kind of control a
+reviewer, auditor or regulator tends to assume is present on a real-money
+platform, so they are called out explicitly rather than left to be discovered.
+
+| Control | State | Evidence |
+|---|---|---|
+| Two-factor authentication (any role, admin included) | ⛔ **not implemented** | `User.twoFactorSecret` / `User.twoFactorEnabled` exist in `domains/user/user.model.js` but are **never written and never verified** — no TOTP library is installed, there is no enrolment endpoint and no challenge step. The only code touching them excludes `twoFactorSecret` from admin responses. |
+| CAPTCHA / bot-mitigation challenge | ⛔ **not implemented** | No captcha, Turnstile, reCAPTCHA or hCaptcha integration anywhere. Automated-abuse defence today is rate limiting only (`middleware/security.js`, `ipDefense.js`). |
+
+Until 2026-07-27 the repository claimed both: `README.md` listed "TOTP 2FA for
+Admins" and "Bot-mitigation captchas" under Security, and the admin login screen
+printed "Secured by 2FA". Those claims were removed — a stated control that does
+not exist is worse than a missing one, because it stops anyone from asking for it.
+
+**Owner decision needed before launch:** admin 2FA is the higher-risk gap of the
+two (privileged accounts that can move money and adjust balances are protected by
+a password alone). The dead schema fields are a usable starting point, but the
+enrolment flow, challenge step, recovery codes and admin-panel UI are all
+unbuilt. Either implement it or record an explicit acceptance here.
+
+---
+
+## G. Compliance & legal — ⛔ hard gate
 
 - ⛔ Gambling/gaming **licence** for each jurisdiction served.
 - ⛔ **AML/KYC** program appropriate to that licence.
@@ -133,8 +194,9 @@ standard, but is **not** a substitute for licensing or a way to evade regulators
 CI green, deploy artifacts committed.
 
 **Must clear before a real-money launch:**
-- ⛔ Compliance/licensing + third-party pen-test (§F)
+- ⛔ Compliance/licensing + third-party pen-test (§G)
 - ⛔ A real load test at target scale (§D)
+- 🟡 Decide on admin 2FA — currently not implemented (§F)
 - 🟡 Managed clustered datastores + gateway/LB/WAF stood up (§D)
 - 🟡 Restore drill executed at least once; PITR enabled (§C)
 

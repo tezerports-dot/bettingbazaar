@@ -6,7 +6,7 @@
 // Sections with no live source render an honest "awaiting data" state rather
 // than fabricated numbers (GOVERNANCE §2: no hardcoded business values).
 import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { ArrowRight, Inbox, ShieldCheck, Activity } from 'lucide-react';
 import { LoadingSpinner } from '../components/LoadingSpinner';
 import api from '../services/api';

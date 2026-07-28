@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+
+  Enforced by the OS, not by app code: even a compromised or mis-built bundle
+  cannot send this app's traffic in the clear. Capacitor serves the bundled UI
+  from https://localhost inside the WebView, and the only other origin the app
+  talks to is the API over TLS — so there is no legitimate cleartext case.
+
+  Deliberately NOT pinning certificates here. Pinning a leaf or intermediate in
+  a shipped APK means that the day the certificate rotates, every installed copy
+  stops working until users update — and the rotation is exactly when you cannot
+  ship a fix quickly. If pinning is wanted later, pin the CA's SPKI with a
+  backup pin and an expiration, and only alongside a remote kill-switch.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

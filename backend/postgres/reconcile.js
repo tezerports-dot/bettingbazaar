@@ -13,6 +13,8 @@
  *   npm run reconcile:pg                 # verify last 24h; exit 1 on drift
  *   npm run reconcile:pg -- --hours 168  # bigger window
  *   npm run reconcile:pg -- --all --backfill   # initial sync: copy missing Mongo→PG
+ *   npm run reconcile:pg -- --reverse          # also check PG→Mongo (auto once a path is on PG)
+ *   npm run reconcile:pg -- --repair-mongo     # Phase B fallback: write PG-only rows back to Mongo
  *
  * Checks per table: Mongo-side count vs PG-side count in the window, missing
  * keys (Mongo docs absent from PG), and for accounting_events the trial
@@ -23,11 +25,13 @@
  * Also exported as functions so the integration test drives it directly.
  */
 import mongoose from 'mongoose';
-import { pgConfigured, pgQuery, paise, closePg } from './pgClient.js';
+import { pgConfigured, pgQuery, closePg } from './pgClient.js';
 import {
   mirrorWalletLedger, mirrorAccountingEvent, mirrorTransaction,
   mirrorPaymentOrder, mirrorUtr, mirrorMerchantWalletLedger,
 } from './dualWrite.js';
+import { REVERSE_TABLES } from './reverseMirror.js';
+import { anyPathOnPostgres } from './moneyAuthority.js';
 
 const TABLES = [
   { name: 'wallet_ledger',          model: 'WalletLedger',         key: '_id',            pgKey: 'mongo_id',        mirror: mirrorWalletLedger },
@@ -62,6 +66,101 @@ export async function reconcileTable(t, { since = null, backfill = false } = {})
            sampleMissing: missing.slice(0, 5).map(d => String(d[t.key])) };
 }
 
+/**
+ * The other direction: Postgres rows with no counterpart in Mongo.
+ *
+ * Phase A cannot produce these — Mongo is where writes originate, so Postgres
+ * is always a subset. They appear only once a path is authoritative in
+ * Postgres (Phase B) and the reverse mirror has dropped a row. That is exactly
+ * the case DATA_ROLLBACK_PLAN Phase B step 2 has to repair before falling back:
+ *
+ *   "every PG row since cutover-start missing in Mongo is written back"
+ *
+ * `repair: true` performs that write-back through the same reverse mirrors the
+ * live path uses, so replay stays idempotent against Mongo's unique indexes.
+ */
+export async function reconcileTableReverse(t, { since = null, repair = false } = {}) {
+  // t.since names this table's timestamp column — utr_registry uses
+  // registered_at, not created_at. Both are internal identifiers from
+  // REVERSE_TABLES, never user input, so interpolating them is safe.
+  const tsColumn = t.since;
+  const where = since ? `WHERE ${tsColumn} >= $1` : '';
+  const { rows } = await pgQuery(
+    `SELECT * FROM ${t.table} ${where} ORDER BY ${tsColumn} DESC LIMIT 50000`,
+    since ? [since] : [],
+  );
+
+  let missing = [];
+  if (rows.length) {
+    const keys = rows.map((r) => String(r[t.pgKey]));
+    const Model = mongoose.model(t.model);
+    const found = await Model.find({ [t.mongoKey]: { $in: keys } })
+      .select(t.mongoKey).lean();
+    const have = new Set(found.map((d) => String(d[t.mongoKey])));
+    missing = rows.filter((r) => !have.has(String(r[t.pgKey])));
+  }
+
+  let repaired = 0;
+  if (repair && missing.length) {
+    for (const row of missing) { await t.mirror(row); repaired++; }
+    missing = [];
+  }
+
+  return {
+    table: t.table, pgCount: rows.length, missingInMongo: missing.length, repaired,
+    sampleMissing: missing.slice(0, 5).map((r) => String(r[t.pgKey])),
+  };
+}
+
+/**
+ * Trial balance from the MONGO ledger, in the same shape as pgTrialBalance().
+ *
+ * DATA_ROLLBACK_PLAN Phase B step 3 requires, before falling back, that "the
+ * Mongo trial balance (getTrialBalance) equals the PG trial balance". Comparing
+ * them needs both sides computed the same way — per account, in integer minor
+ * units, summing to zero. Amounts are already integer paise in both stores
+ * (AccountingEvent.postings[].amountMinor), so this is an exact comparison with
+ * no float rounding anywhere in it.
+ */
+export async function mongoTrialBalance() {
+  const rows = await mongoose.model('AccountingEvent').aggregate([
+    { $unwind: '$postings' },
+    { $group: { _id: '$postings.account', total_paise: { $sum: '$postings.amountMinor' } } },
+    { $sort: { _id: 1 } },
+  ]);
+  const accounts = rows.map((r) => ({ account: r._id, total_paise: String(r.total_paise) }));
+  const grand = accounts.reduce((s, r) => s + BigInt(r.total_paise), 0n);
+  return { accounts, grandTotalPaise: grand.toString(), conservesToZero: grand === 0n };
+}
+
+/**
+ * Do the two ledgers agree, account by account? This is the check that decides
+ * whether a cutover may proceed or a fallback is safe — a per-account equality,
+ * not just "both sum to zero", because two ledgers can each conserve to zero
+ * while disagreeing about which accounts hold the money.
+ */
+export function compareTrialBalances(mongoTb, pgTb) {
+  const toMap = (tb) => new Map(tb.accounts.map((a) => [a.account, BigInt(a.total_paise)]));
+  const m = toMap(mongoTb);
+  const p = toMap(pgTb);
+  const accounts = [...new Set([...m.keys(), ...p.keys()])].sort();
+
+  const differences = accounts
+    .map((account) => ({
+      account,
+      mongoPaise: (m.get(account) ?? 0n).toString(),
+      pgPaise: (p.get(account) ?? 0n).toString(),
+    }))
+    .filter((d) => d.mongoPaise !== d.pgPaise);
+
+  return {
+    agree: differences.length === 0
+      && mongoTb.conservesToZero
+      && pgTb.conservesToZero,
+    differences,
+  };
+}
+
 /** Trial balance on the PG ledger: per-account sums; grand total MUST be 0. */
 export async function pgTrialBalance() {
   const { rows } = await pgQuery(`
@@ -72,13 +171,57 @@ export async function pgTrialBalance() {
   return { accounts: rows, grandTotalPaise: grand.toString(), conservesToZero: grand === 0n };
 }
 
-export async function runReconcile({ hours = 24, all = false, backfill = false } = {}) {
+/**
+ * runReconcile — the trust gate.
+ *
+ * Always checks Mongo→PG (the Phase A direction). Once any path is
+ * authoritative in Postgres, ALSO checks PG→Mongo and compares both ledgers
+ * account by account, because from that moment Mongo is the copy that can fall
+ * behind and the rollback plan depends on it being complete.
+ *
+ * `reverse` / `repairMongo` force the reverse pass on regardless of the
+ * configured authority — needed when running the fallback drill, and when
+ * verifying a window after reverting a path to Mongo.
+ */
+export async function runReconcile({
+  hours = 24, all = false, backfill = false,
+  reverse = false, repairMongo = false,
+} = {}) {
   const since = all ? null : new Date(Date.now() - hours * 3600 * 1000);
+
   const results = [];
   for (const t of TABLES) results.push(await reconcileTable(t, { since, backfill }));
-  const trial = await pgTrialBalance();
-  const drift = results.some(r => r.missingInPg > 0) || !trial.conservesToZero;
-  return { window: all ? 'all' : `${hours}h`, results, trialBalance: trial, drift };
+
+  const pgTrial = await pgTrialBalance();
+  const forwardDrift = results.some((r) => r.missingInPg > 0) || !pgTrial.conservesToZero;
+
+  // The reverse direction only means something once Postgres owns a path — or
+  // when an operator explicitly asks for it during a drill or a fallback.
+  const checkReverse = reverse || repairMongo || anyPathOnPostgres();
+  let reverseResults = null;
+  let mongoTrial = null;
+  let ledgersAgree = null;
+  let reverseDrift = false;
+
+  if (checkReverse) {
+    reverseResults = [];
+    for (const t of REVERSE_TABLES) {
+      reverseResults.push(await reconcileTableReverse(t, { since, repair: repairMongo }));
+    }
+    mongoTrial = await mongoTrialBalance();
+    ledgersAgree = compareTrialBalances(mongoTrial, pgTrial);
+    reverseDrift = reverseResults.some((r) => r.missingInMongo > 0) || !ledgersAgree.agree;
+  }
+
+  return {
+    window: all ? 'all' : `${hours}h`,
+    results,
+    trialBalance: pgTrial,
+    reverse: reverseResults,
+    mongoTrialBalance: mongoTrial,
+    ledgersAgree,
+    drift: forwardDrift || reverseDrift,
+  };
 }
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
@@ -93,7 +236,10 @@ if (isMain) {
 
   await mongoose.connect(process.env.MONGODB_URI);
   await import('../models/index.js');
-  const report = await runReconcile({ hours: opt('hours', 24), all: flag('all'), backfill: flag('backfill') });
+  const report = await runReconcile({
+    hours: opt('hours', 24), all: flag('all'), backfill: flag('backfill'),
+    reverse: flag('reverse'), repairMongo: flag('repair-mongo'),
+  });
   console.log(JSON.stringify(report, null, 2));
   await mongoose.disconnect(); await closePg();
   process.exit(report.drift ? 1 : 0);

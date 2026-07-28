@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Betting Bazaar</string>
+    <string name="title_activity_main">Betting Bazaar</string>
+    <string name="package_name">com.bettingbazaar.app</string>
+    <string name="custom_url_scheme">com.bettingbazaar.app</string>
+</resources>

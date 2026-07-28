@@ -3,11 +3,12 @@
      file in this repository. This is not optional — it is the contractual ground truth for
      all architectural decisions. See §0 for the mandatory pre-edit checklist. -->
 
-**Status:** This document supersedes the pre-existing `ARCHITECTURE.md` wherever the two
-disagree. During this audit, three specific claims in `ARCHITECTURE.md` were checked against
-the actual code and found incorrect (P2P state machine names; "private channels are SSE-only"
-as a universal claim; "single `setToken()` call site"). Until `ARCHITECTURE.md` is corrected
-or retired, treat this file as authoritative for anything it covers.
+**Status:** This document is the authoritative architecture reference for the repository.
+It formerly shared that role with an `ARCHITECTURE.md` whose claims were found incorrect on
+audit (P2P state machine names; "private channels are SSE-only" as a universal claim; "single
+`setToken()` call site`"). **That file has since been retired and no longer exists** — this
+document is the sole architecture authority (verified 2026-07-27; the previous wording still
+told readers to defer to a file that had been deleted).
 
 **Authority chain (updated 2026-07-02, approved):** The Betting Bazaar Enterprise Platform
 Specification (BBEPS) is now the senior authority for this repository. Where BBEPS and this
@@ -49,6 +50,8 @@ compute, or default this value independently.
 | Bet min/max (per cycle type) | `SystemConfig.betLimits` |
 | Deposit/withdrawal limits (platform-wide) | `SystemConfig` |
 | Per-merchant order min/max | `Merchant.minOrder` / `Merchant.maxOrder` (edited per-merchant from admin) |
+| Merchant settlement rail (INR-only vs USDT-only) | `Merchant.acceptedCurrencies` — **exactly one** entry, `["INR"]` or `["USDT"]` (schema validator, 2026-07-27). An INR merchant settles by UPI + bank; a USDT merchant settles by TRC-20 address; never both. Vocabulary + TRC-20 format check live in `domains/merchant/merchantCurrency.js` (`MERCHANT_CURRENCIES`, `isTrc20Address`, `merchantTypeOf`) — do not re-declare the rail strings or a second address regex. `Merchant.merchantType` is a **derived read-only virtual** over this field, never a second stored copy. Admin writes it via `PUT /api/admin/merchants/:id/capabilities` (`merchantType` or `acceptedCurrencies`); consumers: `merchantScoring.selectBestMerchant` (assignment), `POST /api/merchant/accept/:id` (claim guard), `GET /api/merchant/orders` (open-pool filter), `PUT /api/merchant/profile` (which credentials are editable), the merchant panel and the admin Merchants → Limits tab. |
+| Which rail an order settles on | `PaymentOrder.currency` — enum `MERCHANT_CURRENCIES`, schema default `'INR'`. Matched against the merchant's rail at assignment and at accept. `PaymentOrder.userUsdtAddress` is the USDT-rail counterpart of `userBankDetails` (withdrawal payout destination). |
 | Merchant token capacity (buy orders) | `Merchant.tokenBalance` (current wallet) |
 | Merchant token capacity (sell orders) | Lifetime initial top-up (tracked in merchant wallet history) |
 | Referral commission rates | `CommissionLevel.f1Rate` only — F2/F3 not implemented (H-03) |
@@ -59,7 +62,9 @@ compute, or default this value independently.
 | Banner/promo URLs | `Branding` document (tricksTipsBannerUrl, rulesPageImageUrl, etc.) |
 | Social/support links | `SupportLinks` document — **NOT Branding** (H-04 fix) |
 | Homepage/banner content order | `PromoContent.priority` field |
-| Wallet balance mutations (user) | `walletAuthority.service.js` exclusively |
+| Wallet balance mutations (user) | `walletAuthority.service.js` exclusively — **including a bet's stake lock** (`lockBetStake`/`unlockBetStake`, moved out of `bet.routes.js` on 2026-07-28; a raw `$inc` there made balances have a second writer the money-authority switch could not reach). When `MONEY_AUTHORITY_WALLET=postgres` the store behind it is `postgres/walletPgAuthority.js` over `postgres/walletPg.js` (integer paise, row-locked, ledger rows in the same transaction, txIds byte-identical to the Mongo path's); the service stays the sole entry point either way. |
+| Wallet balance READS that must follow the switch | `walletAuthority.getBalances()`. Direct `user.depositBalance` property access reads the MongoDB copy whatever the switch says — acceptable for existing sites while the reverse mirror keeps that copy current, not acceptable for new ones. |
+| **Which store is the source of truth for money, per path** | `postgres/moneyAuthority.js` — `MONEY_AUTHORITY_{WALLET,LEDGER,ORDERS,KYC}`, default MongoDB. Flips one path at a time in that order (KYC last); an out-of-order or unconfigured cutover is refused at boot. Nothing else may decide which store owns a money path. Gate: LAUNCH_READINESS §E. |
 | Merchant token balance mutations | `merchantWallet.service.js` exclusively (Merchant Platform, Phase 008) — writes `MerchantWalletLedger`, idempotent txIds |
 | Money movement in/out of the ecosystem (deposits, withdrawals, providers) | `fundingAuthority.service.js` (Funding Platform, Phase 009) — routes call requestDeposit/requestWithdrawal; providers live in `providerRegistry.js`. Never owns accounting (R&S derives ledger entries from completed orders). |
 | USDT buy-only pricing (user↔merchant buy and merchant↔admin buy) | `SystemConfig.usdtPricing` — buy-only rates. `userMerchantBuyInr` is for the future user/merchant USDT buy rail; `merchantAdminBuyInr` is consumed by the merchant admin-token purchase workflow. No USDT sell rail exists for users or merchants. |
@@ -110,9 +115,15 @@ compute, or default this value independently.
 - **Any color, font, logo path, or app name shown to end users must originate from `Branding`,
   injected as a CSS variable (`--brand-primary`, `--brand-secondary`, `--brand-accent`) or via
   the `app_branding` localStorage key.** Never typed as a hex literal in a component file.
-  This rule is currently being remediated (C-03). The 126 instances of `#D4AF37` in 29 files
-  must be converted to `var(--brand-primary)` using the script at
-  `scripts/apply-brand-variables.sh`.
+  This rule is still being remediated (C-03). **Recounted 2026-07-27: 93 remaining
+  instances of `#D4AF37` across 25 panel source files** (was cited as 126/29 —
+  the count had drifted as files were rewritten). Convert them to
+  `var(--brand-primary)`. The previously cited helper
+  `scripts/apply-brand-variables.sh` **does not exist in the repository** — it was
+  either never committed or removed under §13; do the conversion per file rather
+  than looking for it. Re-count with:
+  `grep -ro "D4AF37" user-panel/src admin-panel/src merchant-panel/src | wc -l`.
+  The merchant panel is already at zero (rebuilt on design tokens, 2026-07-27).
 - Any route path string must originate from the route-constants module.
 - Any permission key, status enum, or event name must originate from a shared module.
 
@@ -194,33 +205,113 @@ compute, or default this value independently.
 
 ## 11. Real-Time Event Registry
 
-All socket.io events emitted by the backend are listed below. **One name per logical change.**
-Any new event must be added here in the same PR that introduces it.
+Every realtime event the backend emits, across all three transports. **One name
+per logical change.** Any new event must be added here in the same PR that
+introduces it.
 
-| Event name | Direction | Payload | Notes |
+> **Regenerated 2026-07-27 from the code.** The previous table had drifted in
+> both directions: it listed three names the backend never emits (`cycle_update`,
+> `chat_message`, `merchant_stats` — the merchant panel was subscribed to that
+> last one, receiving nothing) and omitted roughly twenty names that are emitted.
+> A registry that is wrong is worse than no registry, because §4 tells you to
+> grep it before adding an event. Re-derive it with:
+> `grep -rhoE "\.emit\(\s*'[a-z_]+'" backend --include='*.js'` plus the
+> `broadcastTo*` and `emit(Order|Merchant|Admin)Update` call sites.
+
+**Three transports, one namespace.** Names are unique across all three — never
+reuse a name on a different transport for a different meaning.
+
+- **socket.io** — public, browser-connected clients (`startup/socketHandlers.js`).
+- **SSE** — private authenticated streams (`/api/sse/admin/events`, `/api/sse/merchant/events`), fanned out by `global.sseManager`, cross-instance via `startup/realtimeBridge.js`.
+- **emitter** — `domains/notification/realtimeEmitters.js` (`emitOrderUpdate` / `emitMerchantUpdate` / `emitAdminUpdate`), which routes to the right room/stream for the recipient.
+
+### Cycle & game
+
+| Event | Transport | Direction | Emitted from |
 |---|---|---|---|
-| `branding` | server→client | Branding document fields | On connect and after PUT /branding |
-| `branding_updated` | server→client | `{ branding, timestamp }` | After admin saves branding |
-| `system_config` | server→client | SystemConfig fields | On connect and after PUT /system/config |
-| `new_cycle` | server→client | Cycle snapshot | When cycleGenerator starts a new cycle |
-| `cycle_update` | server→client | Cycle snapshot | Periodic tick / phase change |
-| `cycle_result` | server→client | `{ winner, cycleId }` | When result is declared |
-| `order_update` | server→client | P2POrder snapshot | After any P2POrder status change |
-| `new_order` | server→merchant | P2POrder snapshot | When a new order enters queue |
-| `chat_message` | bidirectional | ChatMessage | P2P chat messages |
-| `withdrawal_approved` | server→user | `{ requestId, amount }` | After admin approves |
-| `withdrawal_rejected` | server→user | `{ requestId, amount, reason }` | After admin rejects |
-| `merchant_limits_updated` | server→admin | `{ merchantId, limits }` | After admin updates limits |
-| `queue_order_update` | server→admin | PaymentOrder snapshot | Via private /api/sse/admin/events |
-| `kyc_update` | server→admin | KYC submission data | Via private /api/sse/admin/events |
-| `admin_new_cycle` | server→admin | Cycle snapshot | Via private /api/sse/admin/events |
-| `admin_cycle_result` | server→admin | `{ winner, cycleId }` | Via private /api/sse/admin/events |
-| `queue_snapshot` | server→admin | Pending orders array | On connect to admin SSE |
-| `merchant_status_changed` | server→admin | `{ merchantId, status }` | Via private /api/sse/admin/events |
-| `merchant_orders_snapshot` | server→merchant | Active orders array | On connect to merchant SSE |
-| `new_order` | server→merchant | PaymentOrder snapshot | Via private /api/sse/merchant/events |
-| `merchant_stats` | server→merchant | Balance/earnings snapshot | Via private /api/sse/merchant/events |
-| `deposit_policy_updated` | server→admin | `{ currency, policy }` | After PUT/approve/rollback on `/api/admin/deposit-policy/:currency` |
+| `new_cycle` | socket.io | server→client | `cycleGenerator.service.js` |
+| `cycle_snapshot` | socket.io | server→client | `cycleGenerator.service.js` |
+| `cycle_phase` | socket.io | server→client | `cycles.admin.routes.js` |
+| `cycle_result` | socket.io + SSE | server→client, server→admin | `cycles.admin.routes.js` |
+| `cycle_history` | socket.io | server→client | `startup/socketHandlers.js` |
+| `game_state` | socket.io | server→client | `startup/socketHandlers.js` |
+| `phantom_equalized` | socket.io | server→client | `cycleGenerator.service.js`, `cycles.admin.routes.js` |
+| `bet_placed` | socket.io + SSE | server→client, server→admin | `markets/bet.routes.js` |
+| `admin_bet_placed` | socket.io | server→admin | `markets/bet.routes.js` |
+| `payout_success` | socket.io | server→user room | `realtimeEmitters.js` (per-winner wallet credit) |
+| `payout_complete` | socket.io | server→client | `gameEngine.js` (cycle payouts finished — distinct from the per-user event above) |
+
+### Wallet, user & withdrawals
+
+| Event | Transport | Direction | Emitted from |
+|---|---|---|---|
+| `user_balance_update` | socket.io | server→user | `realtimeEmitters.js` |
+| `user_update` | socket.io | server→admin | `users.admin.routes.js`, `kyc.admin.routes.js` |
+| `new_withdrawal_request` | socket.io | server→admin | `domains/user/user.routes.js` |
+| `withdrawal_approved` | socket.io | server→user | `system.admin.routes.js` |
+| `withdrawal_rejected` | socket.io | server→user | `system.admin.routes.js` |
+| `recovery_request` | SSE | server→admin | `routes/account-recovery.routes.js` |
+| `kyc_update` | socket.io | server→admin | `kyc.admin.routes.js` |
+
+### Payment orders (P2P)
+
+| Event | Transport | Direction | Emitted from |
+|---|---|---|---|
+| `new_order` | emitter | server→merchant | `paymentProcessing.service.js`, `merchant.assignment.routes.js` |
+| `order_assigned` | emitter | server→user | `merchant.routes.js`, `merchant.assignment.routes.js` |
+| `order_paid` | emitter | server→merchant | `paymentProcessing.service.js` |
+| `order_update` | emitter + socket.io | server→user/merchant | `merchant.routes.js`, `disputeResolution.admin.routes.js` |
+| `order_completed` | emitter | server→user | `merchant.routes.js`, `paymentOrder.routes.js` |
+| `order_rejected` | emitter | server→user | `merchant.routes.js` |
+| `order_expired` | emitter | server→user | `paymentProcessing.service.js` |
+| `order_red_flagged` | SSE | server→admin | `merchant.routes.js` |
+| `queue_order_update` | SSE | server→admin | `disputeResolution.admin.routes.js` and others |
+| `queue_snapshot` | SSE | server→admin | on connect to the admin stream |
+| `merchant_orders_snapshot` | SSE | server→merchant | on connect to the merchant stream |
+| `bulk_payout_completed` | SSE | server→admin | `merchant.routes.js` |
+
+### Merchant lifecycle
+
+| Event | Transport | Direction | Emitted from |
+|---|---|---|---|
+| `merchant_status_changed` | SSE | server→admin | `merchant.routes.js`, `merchant.admin.routes.js` |
+| `merchant_approved` | SSE | server→admin | `merchant.admin.routes.js` |
+| `merchant_rejected` | SSE | server→admin | `merchant.admin.routes.js` |
+| `merchant_limits_updated` | SSE | server→admin | `merchant.admin.routes.js` |
+| `merchant_config_updated` | socket.io | server→merchant | `merchant.admin.routes.js` |
+| `merchant_score_update` | emitter | server→merchant | `merchant.routes.js` (after a completed order) |
+
+### Configuration & content
+
+| Event | Transport | Direction | Emitted from |
+|---|---|---|---|
+| `branding` | socket.io | server→client | `startup/socketHandlers.js` (on connect), `branding.admin.routes.js` |
+| `branding_updated` | socket.io | server→client | `branding.admin.routes.js` |
+| `system_config` | socket.io + SSE | server→client | `startup/socketHandlers.js`, `system.admin.routes.js` |
+| `deposit_policy_updated` | socket.io + SSE | server→admin | `depositPolicy.admin.routes.js` |
+| `promo_data` | socket.io | server→client | `startup/socketHandlers.js` |
+
+### Chat & support
+
+| Event | Transport | Direction | Emitted from |
+|---|---|---|---|
+| `new_chat_message` | socket.io | server→participants | `merchant.routes.js` |
+| `chat_message_deleted` | socket.io | server→participants | `chat.admin.routes.js` |
+| `chat_banned` | socket.io | server→user | `chat.admin.routes.js` |
+| `support_reply` | socket.io | server→user | `chat.admin.routes.js`, `disputeResolution.admin.routes.js` |
+
+### Admin telemetry & plumbing
+
+| Event | Transport | Direction | Emitted from |
+|---|---|---|---|
+| `admin_stats_update` | socket.io | server→admin | `gameEngine.js` |
+| `admin_stats_delta` | socket.io | server→admin | `users.admin.routes.js` |
+| `admin_new_cycle` | SSE | server→admin | admin stream |
+| `admin_cycle_result` | SSE | server→admin | admin stream |
+| `joined_admin_room` | socket.io | server→admin | `startup/socketHandlers.js` (room-join ack) |
+
+Per-order chat also emits a dynamic `chat_<orderId>` channel to the
+`order_<orderId>` room — a per-order channel, not a distinct event name.
 
 **Merchant panel `SOCKET_EVENTS.ORDER_UPDATE` must equal `'order_update'`** (H-02 fix). The
 constant in `merchant-panel/src/constants.ts` is the canonical value — do not use string
@@ -528,6 +619,32 @@ Portable today (audited): a scan of `backend/**` found **zero** hardcoded platfo
 ## 20. Enterprise Decision Log (the "why", newest first)
 
 Architecture decisions that aren't obvious from code alone. Dates are stable anchors — **code comments cite these dates**, so keep them.
+
+**2026-07-28 — The native Android app bundles its UI and is told its API origin at build time.** The user panel ships as an APK/AAB via Capacitor with `webDir: dist` — assets in the package, not a `server.url` pointing at production, which would make it a repackaged website. The trap this had to design around: inside the shell `window.location` is `https://localhost`, so `realBackend.ts` matches its `isLocal` branch and resolves the API to `http://localhost:8080/api`, i.e. the handset. Nothing throws — the APK installs, opens, renders the shell and fails every request, discoverable only on real hardware. `scripts/assert-native-env.mjs` therefore refuses the build without an absolute `https` `VITE_API_URL`, and rejects `localhost` and an `/api` suffix. Capacitor's template defaults were also not written for a money app: `allowBackup="true"` copies WebView storage — which holds the live session token — into the user's Google Drive and clones a logged-in session on device transfer; it is off for both pre-12 and 12+. **R8 is deliberately disabled**: Capacitor resolves plugins reflectively, so shrinking needs exactly-right keep rules or the build compiles and fails on hardware, the payoff on a WebView app is small, and there is no Android SDK in the build sandbox to verify it. The keep rules are recorded in `proguard-rules.pro` so enabling it later is one line plus a device smoke test.
+
+**2026-07-28 — No VPN or proxy client is bundled in the app.** Asked for as "bake-in lightweight VPNs / proxy protocols". Availability engineering against a blocked or failing *origin* is legitimate and already architected — multi-domain redundancy (§ `network.config.js` `DOMAINS`), an Anycast/CDN edge, and client-side domain failover — and that hard constraint stands: nothing in that module may take client IP, geo or ISP as an input. Shipping a circumvention transport inside a real-money gambling client is a different thing: its function is to place bets from where the platform is not licensed to accept them, which is the opposite of the licensing gate in LAUNCH_READINESS §G and would additionally get the package removed from any app store. Resilience is built at the origin and DNS layer, not by tunnelling the user.
+
+**2026-07-28 — Docker layers are ordered dependencies-then-sources.** The builder ran `COPY . .` ahead of four `npm ci` invocations, so a one-character source change invalidated every dependency layer and re-downloaded all of them on every build — the image was multi-stage but its caching was defeated. Manifests are now installed first. `mongodump` moved to its own stage and arrives as binaries, so `wget`, `gnupg`, the MongoDB apt keyring and apt lists no longer exist in the shipped image. The root `npm ci` left the builder entirely once it was verified that all three panels resolve every import from their own `node_modules` — it was pure build time.
+
+**2026-07-28 — A service worker must not reload a page it never controlled.** Every first-ever visit to the user panel did a spurious full-page reload: `install` called `skipWaiting()` unconditionally, `activate` called `clients.claim()`, and `clients.claim()` fires `controllerchange` on a page with no previous controller — which the client answered with `location.reload()`. A reload is only ever warranted when a new worker *replaced* one already driving the page. Guarded at both ends deliberately — the client checks whether a controller existed before registration, and the worker only posts `SW_UPDATED` when it actually purged an older cache — so neither side alone can resurrect the loop.
+
+**2026-07-28 — The Postgres ledger stores a positive magnitude, not a signed amount.** The authoritative wallet path naturally wants signed amounts — a balance leg of −₹500 *is* the movement. It must not store them that way. `WalletLedger.amount` is a positive Number on the Mongo side with the direction in `type`, `dualWrite.js` mirrors it as such, and `reverseMirror.js` copies `amount_paise` straight back into it. A signed row would push a negative amount into Mongo on rollback and make every sum-based cross-check disagree between the stores. `appendLedgerRows` therefore takes signed input from callers and writes `Math.abs()` + `tx_type`. Same review found `balance_before_paise` missing entirely: `WalletLedger.balanceBefore` is `required`, so the reverse mirror was building documents that could not satisfy the schema it was writing into. The column was added to both mirrors, nullable, with an exact **paise** derivation for rows predating it.
+
+**2026-07-28 — A spend-order split is decided while holding the wallet row lock, never from a pre-read.** `debitForBet` draws deposit first and lets winnings cover the shortfall, so the split depends on the balances. Computing it from an unlocked read and trusting the negative-balance guard to catch a stale result is not merely racy — it is unsafe for **idempotency**: after the first call commits, a replay's freshly computed split can legitimately draw nothing from deposit, write no `_dep` row, miss the UNIQUE `tx_id` collision that makes a replay a no-op, and debit a second time. `debitSpendOrderPaise` computes the split inside `withWalletLock` and probes for the movement's base key there, where the row lock makes the probe exact. This is the same lesson as the 2026-07-10 entry below, one level up: the durable gate is the constraint, and a check is only trustworthy if it is inside the thing that serialises writers.
+
+**2026-07-28 — The bet stake lock moved out of the route into walletAuthority.** `bet.routes.js` mutated four balance fields with a raw `findOneAndUpdate($inc)` and then wrote its ledger rows fire-and-forget. That made §7's "sole balance writer" false in the one place it mattered most, and — more concretely — left a writer the money-authority switch could not reach, so `MONEY_AUTHORITY_WALLET=postgres` would have split the source of truth mid-bet: stake taken from Mongo, settlement paid from Postgres. It is now `walletAuthority.lockBetStake` / `unlockBetStake`, one implementation per store. The Postgres side puts the balance move, the lock-provenance counters and every audit row in one transaction; the Mongo side keeps the exact prior behaviour, including the fire-and-forget ledger write, so the switch is the only new variable.
+
+**2026-07-28 — Lock provenance is seeded, not mirrored.** `lockedDepositAmount`/`lockedWinningsAmount` record which pocket a locked stake came from. They are never a WalletLedger row's `field`, so `dualWrite.js` — which populates `wallets` from ledger rows — structurally cannot carry them, and the new `locked_*_paise` columns would read 0 at the moment of a flip. The first settlement to release a stake would then unwind a split Postgres never learned. `npm run pg:seed-locks` copies them from the User documents and must run **immediately before** the flip, while Mongo is still authoritative; running it afterwards would overwrite live Postgres values with stale Mongo ones. Recorded as a hard step in LAUNCH_READINESS §E rather than left to be discovered.
+
+**2026-07-28 — The Postgres path labels a withdrawal release `lockedBalance`, diverging from Mongo deliberately.** `releaseWithdrawal` in Mongo writes a ledger row labelled `winningsBalance` while carrying locked-balance numbers — a latent mislabelling. Reproducing it for parity would have made the reverse mirror write the locked figure into `User.winningsBalance` on a rollback, corrupting a balance to preserve a bug. The Postgres row records the field that actually moved. Divergence is in the row's `field` label only; the `tx_id`, amount and direction still match, so reconcile and the idempotency gate are unaffected.
+
+**2026-07-27 — The repository root holds backend dependencies only.** The root `package.json` carried react, react-dom, react-router(-dom), three, `@react-three/*`, framer-motion, lucide-react and socket.io-client as **production** dependencies. Nothing under `backend/`, `scripts/`, `tools/` or `e2e/` imports any of them — they existed solely for `src/frontend/`, an unbuilt 72-file screen sketch with no entry point and no importers. Because the root package is what the backend image installs (`node backend/server.js`), the deployed API server was shipping an entire React and 3D stack it never loads, and inheriting every advisory filed against it — the direct cause of a permanently red `npm audit --audit-level=high` in CI. The sketch moved to `design/visual-mapping/` and the ten packages left the root; with two override bumps (js-yaml → ^5.2.2, brace-expansion → ^5.0.8) the audit went to **zero findings**. Rule going forward: **no frontend package in the root `package.json`** — each panel declares its own stack (§14). Two latent couplings surfaced when the root stopped providing them, both silently resolving through Node's parent-directory lookup: the user panel's Vite config declared a `three-vendor` chunk for libraries it never imports, and its tsconfig typechecked the generated `frontend-handoff/` snapshot. Both fixed.
+
+**2026-07-27 — Panels moved to React 19 + React Router v8.** `react-router` 7.12.0–8.2.0 is flagged (GHSA-qwww-vcr4-c8h2) with **no patched 7.x**; the fix is v8, which peers on React ≥19.2.7. All three panels therefore moved to React 19.2.8 / `@types/react` 19, and `react-router-dom` (which has no v8 — v8 ships a single `react-router` package) was replaced across 11 files. Owner-approved after being shown the trade-off. Each panel was loaded in a real browser to confirm it mounts, not merely that it builds. Known unrelated behaviour: the user panel's PWA service worker force-reloads on a new build id, which loops in a throwaway preview — pre-existing, and the two panels without a service worker are unaffected.
+
+**2026-07-27 — Documentation audit: two claimed security controls do not exist.** `README.md` advertised "TOTP 2FA for Admins" and "Bot-mitigation captchas", and the admin login screen printed "Secured by 2FA". Neither is implemented: `User.twoFactorSecret` / `twoFactorEnabled` are schema fields that are **never written and never verified** (no TOTP library, no enrolment, no challenge), and there is no captcha integration anywhere. All three claims were corrected and the gap recorded as `LAUNCH_READINESS.md` §F for an explicit owner decision — admin accounts that can move money are password-only today. The same pass corrected: the §11 realtime registry, which had drifted in both directions (listed `cycle_update`, `chat_message` and `merchant_stats`, none of which the backend emits — the merchant panel was subscribed to that last one and receiving nothing — while omitting ~20 events that are emitted; regenerated from code, 45 events); a header still deferring to a deleted `ARCHITECTURE.md`; C-03's `#D4AF37` count (126/29 → 93/25) and its reference to a remediation script that does not exist; and 35 backend-read environment variables documented in neither `ENV.md` nor `.env.example` (now `ENV.md` §6). **Rule:** a stated control that does not exist is worse than a missing one — it stops anyone from asking for it. Verify before documenting.
+
+**2026-07-27 — A merchant settles on exactly ONE rail: INR-only or USDT-only.** `Merchant.acceptedCurrencies` was a free subset of `["INR","USDT"]`; it is now schema-validated to exactly one entry. Rationale: a merchant holds one set of payment credentials and one operational routine, and "both rails" was never a state anyone configured or the panel could render coherently — a single rail makes every downstream question ("which credentials do we snapshot onto this order?", "which orders may this merchant claim?", "what currency do we show?") have one answer. Kept as the existing array field rather than a new scalar so the assignment query and admin route keep working unchanged (GOVERNANCE §4); `merchantType` is a derived virtual for panels, never stored. Enforcement is layered, not cosmetic: `PaymentOrder.currency` (new, default `'INR'`) is matched in `selectBestMerchant` — previously `paymentProcessing` never passed the argument, so **every** order fell through to the `'INR'` default and a USDT order would have been routed to an INR merchant — re-checked when a merchant accepts, and used to filter the open withdrawal pool. `PUT /api/merchant/profile` now refuses the other rail's fields rather than silently ignoring them, and the admin capabilities route clears the old rail's credentials on a switch so they cannot be snapshotted onto a later order. Two defects fixed in passing: `Merchant.usdtWalletAddress` carried `uppercase: true`, which silently corrupts base58 Tron addresses (USDT sent to a corrupted address is unrecoverable), and the merchant accept route re-implemented `buildMerchantSnapshot` inline, so the USDT address would have been dropped on that path. Vocabulary is centralised in `domains/merchant/merchantCurrency.js`.
 
 **2026-07-22 — Winner tie-breaker stays `Math.random` (owner-accepted).** When a cycle's DELHI/BOMBAY pools are exactly equal, the winner tie-break is `Math.random() < 0.5` (`domains/markets/cycleGenerator.service.js`). This is a deliberate, owner-accepted exception to the security-review guidance "use a CSPRNG for outcome-determining code / tie-breakers" (`SECURITY_CODE_REVIEW_CHECKLIST.md` §4): it fires only on an exact-tie edge case, decides a 50/50 with no attacker-exploitable bias worth a CSPRNG, and the owner has chosen to keep it. A future review flagging this line should treat it as **accepted**, not a defect — do not change it to `crypto` without an explicit owner decision reversing this.
 

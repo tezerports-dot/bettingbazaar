@@ -50,6 +50,15 @@ jobs:
         run: npm ci --legacy-peer-deps
       - name: Unit tests (money math — no DB)
         run: npm run test:unit
+      # The Postgres-authoritative wallet path: row locking, the negative-balance
+      # guard and the unique-tx_id idempotency gate are behaviours of the
+      # database, so they are proven against a real one. Needs no MongoDB, which
+      # is why it is a separate suite (see vitest.pg.config.ts).
+      - name: Postgres money-path tests (real Postgres, no MongoDB)
+        run: npm run test:pg
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bb_test
+          PG_SSL: 'false'
       - name: Integration tests (real in-memory MongoDB + real Redis + real Postgres)
         run: npm run test:integration
         env:
@@ -136,9 +145,12 @@ jobs:
       # registry claims must have its evidence/docs/tests present on disk.
       - name: Capability registry verification
         run: npm run verify:capabilities
-      - name: User panel build
+      # The user panel now carries logic worth testing on its own — origin
+      # failover decides which host the app talks to when one stops answering,
+      # and a silent regression there is an outage the build would not catch.
+      - name: User panel typecheck + unit tests + build
         working-directory: user-panel
-        run: npm ci --legacy-peer-deps && npm run build
+        run: npm ci --legacy-peer-deps && npx tsc --noEmit && npm test && npm run build
       - name: Admin panel typecheck + build
         working-directory: admin-panel
         run: npm ci --legacy-peer-deps && npx tsc --noEmit && npx vite build

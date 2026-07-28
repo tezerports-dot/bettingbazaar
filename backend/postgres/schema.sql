@@ -33,13 +33,19 @@ CREATE TABLE IF NOT EXISTS wallet_ledger (
   tx_id               TEXT UNIQUE,          -- the idempotency gate (nullable, unique when present)
   user_id             TEXT NOT NULL,
   field               TEXT NOT NULL,        -- depositBalance|winningsBalance|tokenBalance|reserveBalance|lockedBalance
-  amount_paise        BIGINT NOT NULL,
+  amount_paise        BIGINT NOT NULL,      -- POSITIVE magnitude; tx_type carries the direction
   balance_after_paise BIGINT NOT NULL,
-  tx_type             TEXT,
+  tx_type             TEXT,                 -- CREDIT | DEBIT
   description         TEXT,
   ref_id              TEXT,
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- WalletLedger.balanceBefore is `required` on the Mongo side, so a row that
+-- travels back through the reverse mirror needs it. Nullable because rows
+-- written before this column existed genuinely do not have one — readers
+-- derive those as balance_after ∓ amount from tx_type.
+ALTER TABLE wallet_ledger ADD COLUMN IF NOT EXISTS balance_before_paise BIGINT;
 CREATE INDEX IF NOT EXISTS wallet_ledger_user_idx ON wallet_ledger (user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS wallet_ledger_user_cursor_idx ON wallet_ledger (user_id, created_at DESC, id DESC);
 
@@ -60,6 +66,19 @@ CREATE TABLE IF NOT EXISTS wallets (
   locked_paise   BIGINT NOT NULL DEFAULT 0,
   updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Lock provenance. `locked_paise` says HOW MUCH is locked; these say which
+-- pocket it came out of, mirroring the User document's lockedDepositAmount /
+-- lockedWinningsAmount. Settlement needs the split to return a stake to the
+-- balance it was taken from, so a Postgres-authoritative wallet path cannot
+-- work without it. Added as ALTER (not in the CREATE above) so a deployment
+-- that already ran this schema picks the columns up on the next boot.
+--
+-- NOTE for the cutover: no WalletLedger row carries these fields, so the
+-- forward mirror never populates them — they are seeded from the User
+-- documents by `npm run pg:seed-locks` immediately before a wallet flip.
+ALTER TABLE wallets ADD COLUMN IF NOT EXISTS locked_deposit_paise  BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE wallets ADD COLUMN IF NOT EXISTS locked_winnings_paise BIGINT NOT NULL DEFAULT 0;
 
 -- ── ACCOUNTING LEDGER (mirrors AccountingEvent — THE most important table) ───
 CREATE TABLE IF NOT EXISTS accounting_events (

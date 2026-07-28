@@ -14,3 +14,20 @@ requirements.md
 e2e
 playwright-report
 test-results
+
+# The native Android project. It is a full Gradle workspace (wrapper, plugin
+# sources, build outputs) that the server image has no use for, and without this
+# it would be copied into the builder stage on every build — inflating the build
+# context and invalidating the user-panel source layer whenever a native file
+# changes. The APK is built by .github/workflows/android-release.yml, not here.
+user-panel/android
+
+# Build-context weight with no runtime consumer: the unbuilt screen sketch, the
+# governance corpus, audit archives and dev tooling. None of it is COPYed into
+# any stage; excluding it keeps the context small so `docker build` starts fast.
+design
+docs
+audit
+tools
+platform
+deploy

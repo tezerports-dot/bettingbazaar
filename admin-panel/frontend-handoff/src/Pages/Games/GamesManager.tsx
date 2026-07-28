@@ -11,6 +11,7 @@
 import React, { useEffect, useState } from 'react';
 import { Plus, Trash2, Save, X, Star, Gamepad2, Tag } from 'lucide-react';
 import api from '../../services/api';
+import { Toolbar } from '../../components/design';
 import toast from 'react-hot-toast';
 
 interface Game {
@@ -106,27 +107,11 @@ export const GamesManager: React.FC = () => {
   const catName = (slug: string) => categories.find(c => c.slug === slug)?.name || slug || '—';
 
   return (
-    <div className="p-4 md:p-6 text-white max-w-6xl">
-      <div className="flex items-center justify-between mb-1">
-        <h1 className="text-2xl font-bold flex items-center gap-2"><Gamepad2 className="text-yellow-400" /> Game Registry</h1>
-        <button onClick={() => (tab === 'games' ? setEditing({ ...BLANK_GAME }) : setCatEditing({ name: '', icon: '', order: 0, enabled: true }))}
-          className="bg-yellow-500 hover:bg-yellow-400 text-black font-bold text-sm px-4 py-2 rounded-lg flex items-center gap-1">
-          <Plus size={16} /> New {tab === 'games' ? 'Game' : 'Category'}
-        </button>
-      </div>
-      <p className="text-xs text-slate-400 mb-4">
-        Games and categories are data — add one and it appears in the user panel immediately, no deploy.
-        Providers are configured on the Game Providers page; this registry references them.
-      </p>
-
-      <div className="flex gap-2 mb-4">
-        {(['games', 'categories'] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`px-4 py-1.5 rounded-lg text-sm font-semibold capitalize ${tab === t ? 'bg-yellow-500 text-black' : 'bg-[#1A1F2E] text-slate-400'}`}>
-            {t === 'games' ? <Gamepad2 size={14} className="inline mr-1" /> : <Tag size={14} className="inline mr-1" />}{t}
-          </button>
-        ))}
-      </div>
+    <div className="om-fade text-white">
+      <Toolbar
+        tabs={(['games', 'categories'] as const).map((t) => ({ label: t.charAt(0).toUpperCase() + t.slice(1), active: tab === t, onClick: () => setTab(t) }))}
+        actions={[{ label: `New ${tab === 'games' ? 'Game' : 'Category'}`, icon: Plus, primary: true, onClick: () => (tab === 'games' ? setEditing({ ...BLANK_GAME }) : setCatEditing({ name: '', icon: '', order: 0, enabled: true })) }]}
+      />
 
       {loading ? <p className="text-slate-500">Loading…</p> : tab === 'games' ? (
         <div className="overflow-x-auto rounded-lg border border-[#1e2736]">

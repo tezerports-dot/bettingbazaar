@@ -27,11 +27,69 @@ import {
   refundOrder        as _refundOrder,
   adminAdjust        as _adminAdjust,
   getUserLedger      as _getUserLedger,
+  sseBalancePush,
 } from './wallet.service.js';
+import { rupeesToPaise } from '../../shared/money.js';
+import { isPostgresAuthoritative, MONEY_PATHS } from '../../postgres/moneyAuthority.js';
+import * as pg from '../../postgres/walletPgAuthority.js';
+
+// ── Source-of-truth routing (hybrid money DB, LAUNCH_READINESS.md §E) ────────
+/**
+ * Which store owns balances right now. MongoDB unless an operator has
+ * deliberately set MONEY_AUTHORITY_WALLET=postgres on a deploy that has a
+ * DATABASE_URL — see postgres/moneyAuthority.js, which also refuses an
+ * incoherent combination at boot.
+ *
+ * This is asked PER CALL rather than cached at import time so a process does
+ * not have to be rebuilt to be re-pointed, and so tests can exercise both
+ * halves in one run.
+ */
+function onPostgres() {
+  return isPostgresAuthoritative(MONEY_PATHS.WALLET);
+}
+
+/**
+ * The Postgres path returns balances with every mutation; the Mongo path pushes
+ * them to the user's SSE channel as a side effect. This keeps that behaviour
+ * identical across the two, for the operations that had it — the ones that
+ * never pushed (reserve credits, withdrawal locking) still do not.
+ */
+function pushBalances(userId, result) {
+  const b = result?.balances;
+  if (b) sseBalancePush(userId, b.depositBalance || 0, b.winningsBalance || 0);
+  return result;
+}
 
 // ── Internal ledger helper (for operations wallet.service.js doesn't cover) ──
 
 function round2(n) { return Math.round((n || 0) * 100) / 100; }
+
+/**
+ * getBalances — THE read counterpart to this module's write authority.
+ *
+ * Balance reads are scattered across the codebase as direct `user.depositBalance`
+ * property access, which silently keeps reading MongoDB whatever the switch
+ * says. Call sites move here incrementally; until one does, it is reading the
+ * Mongo copy, which the reverse mirror keeps current — stale by at most a
+ * reconcile pass rather than wrong, but not authoritative. Any NEW read of a
+ * balance should go through this function.
+ */
+export async function getBalances(userId) {
+  if (onPostgres()) return pg.getBalances(userId);
+
+  const user = await mongoose.model('User').findById(userId)
+    .select('depositBalance winningsBalance tokenBalance reserveBalance lockedBalance lockedDepositAmount lockedWinningsAmount')
+    .lean();
+  return {
+    depositBalance:       round2(user?.depositBalance       || 0),
+    winningsBalance:      round2(user?.winningsBalance      || 0),
+    tokenBalance:         round2(user?.tokenBalance         || 0),
+    reserveBalance:       round2(user?.reserveBalance       || 0),
+    lockedBalance:        round2(user?.lockedBalance        || 0),
+    lockedDepositAmount:  round2(user?.lockedDepositAmount  || 0),
+    lockedWinningsAmount: round2(user?.lockedWinningsAmount || 0),
+  };
+}
 
 async function _appendLedger(session, userId, field, type, amount, before, after, reason, refModel, txId) {
   const WalletLedger = mongoose.model('WalletLedger');
@@ -49,13 +107,12 @@ async function _appendLedger(session, userId, field, type, amount, before, after
  * Idempotent via txId. Writes WalletLedger. Pushes SSE balance update.
  */
 export async function debitForBet(userId, amount, betId, cycleId, session) {
-  return _debitForBet(
-    userId, amount,
-    `Bet ₹${amount} on cycle ${cycleId}`,
-    'Bet', betId,
-    `bet_${userId}_${cycleId}_${betId}`,
-    session
-  );
+  const reason = `Bet ₹${amount} on cycle ${cycleId}`;
+  const txId = `bet_${userId}_${cycleId}_${betId}`;
+  if (onPostgres()) {
+    return pushBalances(userId, await pg.debitForBet(userId, amount, reason, 'Bet', betId, txId));
+  }
+  return _debitForBet(userId, amount, reason, 'Bet', betId, txId, session);
 }
 
 /**
@@ -86,6 +143,9 @@ export async function creditWinnings(userId, amount, reason, refIdOrModel, txIdO
     refId     = refIdOrModel;
     txId      = txIdOrRefId;
   }
+  if (onPostgres()) {
+    return pushBalances(userId, await pg.creditWinnings(userId, amount, reason, refModel, refId, txId));
+  }
   return _creditWinnings(userId, amount, reason || 'Bet win payout', refModel, refId, txId, session);
 }
 
@@ -95,6 +155,11 @@ export async function creditWinnings(userId, amount, reason, refIdOrModel, txIdO
  */
 export async function creditCommission(referrerId, amount, fromUserId, cycleId) {
   const txId = `commission_${referrerId}_${fromUserId}_${cycleId}`;
+  if (onPostgres()) {
+    return pushBalances(referrerId, await pg.creditWinnings(
+      referrerId, amount, `F1 commission from cycle ${cycleId}`, 'Commission', null, txId,
+    ));
+  }
   return _creditWinnings(
     referrerId, amount,
     `F1 commission from cycle ${cycleId}`,
@@ -110,6 +175,8 @@ export async function creditCommission(referrerId, amount, fromUserId, cycleId) 
  */
 export async function lockWithdrawal(userId, amount, withdrawalId) {
   const txId = `wd_lock_${withdrawalId}`;
+  if (onPostgres()) return pg.lockWithdrawal(userId, amount, withdrawalId);
+
   const User         = mongoose.model('User');
   const WalletLedger = mongoose.model('WalletLedger');
 
@@ -158,6 +225,8 @@ export async function lockWithdrawal(userId, amount, withdrawalId) {
  */
 export async function releaseWithdrawal(userId, amount, withdrawalId) {
   const txId = `wd_release_${withdrawalId}`;
+  if (onPostgres()) return pg.releaseWithdrawal(userId, amount, withdrawalId);
+
   const User         = mongoose.model('User');
   const WalletLedger = mongoose.model('WalletLedger');
 
@@ -211,6 +280,8 @@ export async function releaseWithdrawal(userId, amount, withdrawalId) {
  */
 export async function refundWithdrawal(userId, amount, withdrawalId) {
   const txId = `refund_${withdrawalId}`;
+  if (onPostgres()) return pg.refundWithdrawal(userId, amount, withdrawalId);
+
   const User         = mongoose.model('User');
   const WalletLedger = mongoose.model('WalletLedger');
 
@@ -278,6 +349,10 @@ export async function refundWithdrawal(userId, amount, withdrawalId) {
 export async function releaseLockedStake(userId, { amount, fromDeposit = 0, fromWinnings = 0, txId, reason }) {
   if (!txId) throw new Error('releaseLockedStake requires a deterministic txId');
   if (!(amount > 0)) throw new Error(`releaseLockedStake: invalid amount ${amount}`);
+  if (onPostgres()) {
+    return pg.releaseLockedStake(userId, { amount, fromDeposit, fromWinnings, txId, reason });
+  }
+
   const User         = mongoose.model('User');
   const WalletLedger = mongoose.model('WalletLedger');
 
@@ -325,16 +400,133 @@ export async function releaseLockedStake(userId, { amount, fromDeposit = 0, from
 }
 
 /**
+ * lockBetStake — bet placement: move the stake out of its pockets into
+ * `locked`, recording which pocket each slice came from.
+ *
+ * THE sanctioned writer for a bet's stake lock (§7). This logic used to live
+ * inline in domains/markets/bet.routes.js as a raw three-field `$inc`, which
+ * meant balances had two writers and the money-authority switch could not
+ * reach one of them — flipping the wallet path would have split the source of
+ * truth mid-bet.
+ *
+ * @param {object} args
+ * @param {number} args.amount  the full stake (locked gains exactly this)
+ * @param {string} args.txId    base key; each slice's row is `${txId}${suffix}`
+ * @param {Array<{field:string, suffix:string, amount:number, reason:string}>} args.slices
+ *   must sum to `amount` — the pockets the stake is drawn from, already split
+ *   by the risk domain's funding plan.
+ * @returns {Promise<{ok, insufficient?, balances?}>}
+ */
+export async function lockBetStake(userId, { amount, txId, refId, slices }) {
+  if (onPostgres()) {
+    return pg.lockBetStake(userId, {
+      amountPaise: rupeesToPaise(amount), txId, refId,
+      slices: slices.map((s) => ({ ...s, amountPaise: rupeesToPaise(s.amount) })),
+    });
+  }
+  return _mongoBetStake(userId, { amount, txId, refId, slices, direction: 'LOCK' });
+}
+
+/**
+ * unlockBetStake — the exact reverse, for the compensating path when the cycle
+ * closes between the stake debit and the pool commit.
+ */
+export async function unlockBetStake(userId, { amount, txId, refId, slices }) {
+  if (onPostgres()) {
+    return pg.unlockBetStake(userId, {
+      amountPaise: rupeesToPaise(amount), txId, refId,
+      slices: slices.map((s) => ({ ...s, amountPaise: rupeesToPaise(s.amount) })),
+    });
+  }
+  return _mongoBetStake(userId, { amount, txId, refId, slices, direction: 'UNLOCK' });
+}
+
+/** Lock provenance counters, by the pocket they track. Reserve has none. */
+const LOCK_PROVENANCE = {
+  depositBalance:  'lockedDepositAmount',
+  winningsBalance: 'lockedWinningsAmount',
+};
+
+/**
+ * The MongoDB half of lock/unlockBetStake — the behaviour bet.routes.js had,
+ * moved here unchanged so the cutover switch is the only new variable.
+ *
+ * The `$gte` filters are what make the debit atomic: if a concurrent bet landed
+ * between the caller's split and this write, the filter matches no document and
+ * the caller is told to retry. Postgres achieves the same thing by holding the
+ * wallet row lock while it computes the split, which is strictly stronger.
+ */
+async function _mongoBetStake(userId, { amount, txId, refId, slices, direction }) {
+  const User         = mongoose.model('User');
+  const WalletLedger = mongoose.model('WalletLedger');
+  const locking = direction === 'LOCK';
+  const sign = locking ? -1 : 1;   // sign applied to the source pockets
+
+  const inc = { lockedBalance: locking ? amount : -amount };
+  const filter = { _id: userId };
+  for (const slice of slices) {
+    inc[slice.field] = (inc[slice.field] || 0) + sign * slice.amount;
+    const counter = LOCK_PROVENANCE[slice.field];
+    if (counter) inc[counter] = (inc[counter] || 0) + (locking ? slice.amount : -slice.amount);
+    if (locking) filter[slice.field] = { $gte: slice.amount };
+  }
+
+  const before = await User.findById(userId).lean();
+  const updated = await User.findOneAndUpdate(filter, { $inc: inc }, { new: true });
+  if (!updated) return { ok: false, insufficient: true, txId };
+
+  // Audit rows are best-effort here, exactly as they were in the route: a
+  // ledger write failure must not strand a bet that already moved money.
+  // (The Postgres path has no such compromise — there the rows are in the same
+  // transaction as the balance.)
+  try {
+    const rows = slices.map((slice) => ({
+      userId,
+      type: locking ? 'DEBIT' : 'CREDIT',
+      field: slice.field,
+      amount: slice.amount,
+      balanceBefore: round2(before?.[slice.field] || 0),
+      balanceAfter:  round2(updated[slice.field] || 0),
+      reason: slice.reason,
+      refModel: 'Bet',
+      refId,
+      txId: `${txId}${slice.suffix}`,
+    }));
+    if (rows.length) await WalletLedger.insertMany(rows, { ordered: false }).catch(() => {});
+  } catch { /* ledger write failure never blocks the money movement */ }
+
+  return {
+    ok: true,
+    txId,
+    balances: {
+      depositBalance:  round2(updated.depositBalance  || 0),
+      winningsBalance: round2(updated.winningsBalance || 0),
+      reserveBalance:  round2(updated.reserveBalance  || 0),
+      lockedBalance:   round2(updated.lockedBalance   || 0),
+    },
+  };
+}
+
+/**
  * Admin manual balance adjustment.
  * type = 'CREDIT' | 'DEBIT'
  * field = 'depositBalance' | 'winningsBalance'
  */
 export async function adminAdjustment(adminId, userId, type, field, amount, reason, adjustmentId) {
-  return _adminAdjust(userId, type, field, amount, `[Admin:${adminId}] ${reason}`, adjustmentId);
+  const fullReason = `[Admin:${adminId}] ${reason}`;
+  if (onPostgres()) {
+    const txId = `admin_${adjustmentId}`;
+    return pushBalances(userId, type === 'CREDIT'
+      ? await pg.creditWinnings(userId, amount, fullReason, 'AdminAdjustment', adjustmentId, txId)
+      // Admin debit: same spend order as a bet (deposit first, winnings shortfall).
+      : await pg.debitForBet(userId, amount, fullReason, 'AdminAdjustment', adjustmentId, txId));
+  }
+  return _adminAdjust(userId, type, field, amount, fullReason, adjustmentId);
 }
 
 
 export async function creditDeposit(userId, amount, orderId, extSession) {
+  if (onPostgres()) return pushBalances(userId, await pg.creditDeposit(userId, amount, orderId));
   const { creditDeposit: _cd } = await import('./wallet.service.js');
   return _cd(userId, amount, orderId, extSession);
 }
@@ -344,12 +536,18 @@ export async function creditDeposit(userId, amount, orderId, extSession) {
  * sanctioned single writer for reserveBalance (§7). Idempotent, ledgered.
  */
 export async function creditReserve(userId, amount, orderId, extSession) {
+  // No SSE push here — the Mongo counterpart does not push either, and the
+  // reserve pocket is not shown on the balance widget.
+  if (onPostgres()) return pg.creditReserve(userId, amount, orderId);
   const { creditReserve: _cr } = await import('./wallet.service.js');
   return _cr(userId, amount, orderId, extSession);
 }
 
 
 export async function debitWinningsForWithdrawal(userId, amount, orderId, extSession) {
+  if (onPostgres()) {
+    return pushBalances(userId, await pg.debitWinningsForWithdrawal(userId, amount, orderId));
+  }
   return _debitWinningsForWithdrawal(userId, amount, orderId, extSession);
 }
 
@@ -359,6 +557,9 @@ export async function debitWinningsForWithdrawal(userId, amount, orderId, extSes
  * Unlike refundWithdrawal, this does not hardcode the balance field.
  */
 export async function refundOrder(userId, amount, orderId, field, extSession) {
+  if (onPostgres()) {
+    return pushBalances(userId, await pg.refundOrder(userId, amount, orderId, field));
+  }
   return _refundOrder(userId, amount, orderId, field, extSession);
 }
 
@@ -366,6 +567,7 @@ export async function refundOrder(userId, amount, orderId, field, extSession) {
  * Read paginated WalletLedger entries for a user.
  */
 export async function getUserLedger(userId, page, limit) {
+  if (onPostgres()) return pg.getUserLedger(userId, page, limit);
   return _getUserLedger(userId, page, limit);
 }
 
@@ -378,5 +580,8 @@ export async function getUserLedger(userId, page, limit) {
  * existing ledger records and idempotency guards.
  */
 export async function debitForGameProviderBet(userId, amount, reason, txId) {
+  if (onPostgres()) {
+    return pushBalances(userId, await pg.debitForBet(userId, amount, reason, 'GameTransaction', null, txId));
+  }
   return _debitForBet(userId, amount, reason, 'GameTransaction', null, txId);
 }

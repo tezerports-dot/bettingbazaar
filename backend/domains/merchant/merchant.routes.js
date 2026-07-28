@@ -19,6 +19,7 @@ import { publish as publishDomainEvent, EVENTS as DOMAIN_EVENTS } from '../../se
 import { getRiskRules } from '../risk/riskValidation.service.js';
 import { FLAGS, isEnabled } from '../../services/featureFlags.service.js';
 import { buildBulkPayoutExportRows } from './bulkPayoutExport.js';
+import { MERCHANT_CURRENCY, isTrc20Address, merchantTypeOf } from './merchantCurrency.js';
 
 const router     = express.Router();
 // JWT secret + expiry owned by jwt.util.js — removed a '|| fallback-secret'
@@ -33,18 +34,17 @@ async function requireBulkPayoutsEnabled(req, res, next) {
 }
 
 
-function merchantDisplayRef(merchant) {
-    return `Merchant #${merchant.publicRef}`;
-}
-
 function sanitizeMerchantOrder(order) {
     const plain = typeof order?.toObject === 'function' ? order.toObject() : { ...(order || {}) };
     delete plain.userKycSnapshot;
     delete plain.userPhone;
     delete plain.merchantSnapshot;
     if (plain.type === 'DEPOSIT') {
+        // A deposit is money coming IN to the merchant — the user's payout
+        // destinations (bank, UPI, TRC-20 wallet) are not needed and are not sent.
         delete plain.userBankDetails;
         delete plain.upiId;
+        delete plain.userUsdtAddress;
     }
     return plain;
 }
@@ -54,27 +54,49 @@ function sanitizeMerchantOrders(orders) {
 }
 
 
-const formatMerchant = (merchant, user = null) => ({
-    id:                   merchant._id,
-    _id:                  merchant._id,
-    userId:               merchant.userId,
-    name:                 merchant.name,
-    username:             user?.username || merchant.username,
-    mobile:               user?.mobile   || merchant.mobile,
-    email:                merchant.email,
-    status:               merchant.status,
-    isOnline:             merchant.isOnline,
-    acceptsDeposits:      merchant.acceptsDeposits,
-    acceptsWithdrawals:   merchant.acceptsWithdrawals,
-    bankDetails:          merchant.bankDetails,
-    qrCodeUrl:            merchant.qrCodeUrl,
-    limits:               merchant.limits,
-    tokenBalance:         merchant.tokenBalance,
-    earnings:             merchant.earnings,
-    totalProcessedVolume: merchant.totalProcessedVolume,
-    rating:               merchant.rating,
-    createdAt:            merchant.createdAt,
-});
+const formatMerchant = (merchant, user = null) => {
+    // A merchant settles on exactly one rail; the panel renders UPI/bank OR the
+    // TRC-20 address from this, never both (domains/merchant/merchantCurrency.js).
+    // merchantTypeOf() is used rather than the `merchantType` virtual so lean()
+    // documents (which carry no virtuals) format identically to hydrated ones.
+    const merchantType = merchantTypeOf(merchant);
+    return {
+        id:                   merchant._id,
+        _id:                  merchant._id,
+        userId:               merchant.userId,
+        name:                 merchant.name,
+        username:             user?.username || merchant.username,
+        mobile:               user?.mobile   || merchant.mobile,
+        email:                merchant.email,
+        status:               merchant.status,
+        isOnline:             merchant.isOnline,
+        acceptsDeposits:      merchant.acceptsDeposits,
+        acceptsWithdrawals:   merchant.acceptsWithdrawals,
+        merchantType,
+        acceptedCurrencies:   merchant.acceptedCurrencies,
+        bankDetails:          merchant.bankDetails,
+        usdtWalletAddress:    merchant.usdtWalletAddress || '',
+        qrCodeUrl:            merchant.qrCodeUrl,
+        limits:               merchant.limits,
+        minOrder:             merchant.minOrder,
+        maxOrder:             merchant.maxOrder,
+        tokenBalance:         merchant.tokenBalance,
+        earnings:             merchant.earnings,
+        totalProcessedVolume: merchant.totalProcessedVolume,
+        // Performance figures the panel's dashboard/profile show; all are
+        // maintained by merchantScoring.service.js — read-only here.
+        totalDepositsProcessed:    merchant.totalDepositsProcessed,
+        totalDepositAmount:        merchant.totalDepositAmount,
+        totalWithdrawalsProcessed: merchant.totalWithdrawalsProcessed,
+        totalWithdrawalAmount:     merchant.totalWithdrawalAmount,
+        successRate:               merchant.successRate,
+        avgResponseMinutes:        merchant.avgResponseMinutes,
+        disputeRate:               merchant.disputeRate,
+        totalOrdersCompleted:      merchant.totalOrdersCompleted,
+        rating:               merchant.rating,
+        createdAt:            merchant.createdAt,
+    };
+};
 
 // ─── AUTH: SIGNUP & LOGIN ─────────────────────────────────────────────────────
 
@@ -250,11 +272,41 @@ router.get('/profile', merchantAuth, async (req, res) => {
     }
 });
 
-// FIX B5-d: PUT /profile — update UPI/QR/bank details
+// FIX B5-d: PUT /profile — merchant edits their own settlement credentials.
+// Rail-exclusive (2026-07-27): an INR merchant may edit UPI/QR/bank and NOT the
+// USDT address; a USDT merchant may edit only the TRC-20 address. Enforced here
+// and not merely hidden in the panel, so a hand-crafted request cannot leave a
+// merchant holding credentials for a rail they do not settle on. Only the admin
+// (PUT /merchants/:id/capabilities) can change which rail a merchant is on.
 router.put('/profile', merchantAuth, async (req, res) => {
     try {
-        const { upiId, qrCodeUrl, bankDetails } = req.body;
-        const update = {};
+        const { upiId, qrCodeUrl, bankDetails, usdtWalletAddress } = req.body;
+
+        const Merchant = mongoose.model('Merchant');
+        const current  = await Merchant.findById(req.merchantId).lean();
+        if (!current) return res.status(404).json({ success: false, message: 'Merchant profile not found.' });
+
+        const isUsdt  = merchantTypeOf(current) === MERCHANT_CURRENCY.USDT;
+        const railName = isUsdt ? 'USDT' : 'INR';
+        const update  = {};
+
+        const wantsInrFields  = upiId !== undefined || qrCodeUrl !== undefined || bankDetails !== undefined;
+        const wantsUsdtFields = usdtWalletAddress !== undefined;
+
+        if (isUsdt && wantsInrFields) {
+            return res.status(400).json({ success: false, message: `This is a ${railName} merchant account — UPI, QR and bank details do not apply. Update the USDT wallet address instead.` });
+        }
+        if (!isUsdt && wantsUsdtFields) {
+            return res.status(400).json({ success: false, message: `This is a ${railName} merchant account — a USDT wallet address does not apply. Update UPI/bank details instead.` });
+        }
+
+        if (wantsUsdtFields) {
+            const address = String(usdtWalletAddress || '').trim();
+            if (!isTrc20Address(address)) {
+                return res.status(400).json({ success: false, message: 'Enter a valid TRC-20 (Tron) address — 34 characters starting with "T". USDT sent to a wrong address cannot be recovered.' });
+            }
+            update.usdtWalletAddress = address;
+        }
 
         if (upiId !== undefined) {
             update['bankDetails.upiId'] = upiId;
@@ -273,15 +325,23 @@ router.put('/profile', merchantAuth, async (req, res) => {
             return res.status(400).json({ success: false, message: 'No valid profile fields provided.' });
         }
 
-        const merchant = await mongoose.model('Merchant').findByIdAndUpdate(
+        // runValidators so the schema's TRC-20 / uniqueness rules apply to this
+        // update path too, not only to full document saves.
+        const merchant = await Merchant.findByIdAndUpdate(
             req.merchantId,
             { $set: update },
-            { new: true }
+            { new: true, runValidators: true }
         );
 
         res.json({ success: true, merchant: formatMerchant(merchant, req.user) });
     } catch (err) {
         console.error('PUT /merchant/profile error:', err);
+        if (err?.name === 'ValidationError') {
+            return res.status(400).json({ success: false, message: err.message });
+        }
+        if (err?.code === 11000) {
+            return res.status(409).json({ success: false, message: 'Those payment details are already registered to another merchant.' });
+        }
         res.status(500).json({ success: false, message: 'Failed to update profile.' });
     }
 });
@@ -426,10 +486,21 @@ router.get('/orders', merchantAuth, async (req, res) => {
         const parsedLimit = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
         const parsedSkip  = Math.max(parseInt(skip)  || 0, 0);
 
+        // The open withdrawal pool (unassigned sell orders any merchant may pick
+        // up) must be filtered to this merchant's own rail — a USDT merchant has
+        // no way to pay out an INR withdrawal and vice-versa (2026-07-27).
+        // Orders written before `currency` existed have no field at all, so the
+        // INR rail also matches missing/null (schema default: 'INR').
+        const rail = merchantTypeOf(req.merchant);
+        const railMatch = rail === MERCHANT_CURRENCY.INR
+            ? { $in: [MERCHANT_CURRENCY.INR, null] }
+            : rail;
+        const openPool = { type: 'WITHDRAWAL', status: 'PENDING_QUEUE', currency: railMatch };
+
         const query = { $or: [
             { merchantId: req.merchantId },
-            { type: 'WITHDRAWAL', status: 'PENDING_QUEUE', merchantId: null },
-            { type: 'WITHDRAWAL', status: 'PENDING_QUEUE', merchantId: { $exists: false } },
+            { ...openPool, merchantId: null },
+            { ...openPool, merchantId: { $exists: false } },
         ] };
         if (status) query.status = status;
         if (type)   query.type   = type;
@@ -465,6 +536,18 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         const merchant = await Merchant.findById(req.merchantId);
         if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found.' });
 
+        // Rail check (2026-07-27). Assignment already matches currency, but an
+        // order can also be claimed from the open withdrawal pool — so the rail
+        // is re-checked at the point the merchant actually takes the order.
+        const merchantRail = merchantTypeOf(merchant);
+        const orderRail    = order.currency || MERCHANT_CURRENCY.INR; // schema default: 'INR'
+        if (orderRail !== merchantRail) {
+            return res.status(400).json({ success: false, message: `This is a ${orderRail} order and you settle in ${merchantRail}.` });
+        }
+        if (merchantRail === MERCHANT_CURRENCY.USDT && !merchant.usdtWalletAddress) {
+            return res.status(400).json({ success: false, message: 'Add your TRC-20 wallet address in Profile before taking USDT orders.' });
+        }
+
         if (order.type === 'DEPOSIT') {
             if (merchant.acceptsDeposits === false || (merchant.tokenBalance || 0) < order.tokenAmount) {
                 return res.status(400).json({ success: false, message: 'Merchant has insufficient token balance or deposit capability for this buy order.' });
@@ -488,23 +571,15 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         const expiresAt  = new Date(now.getTime() + 15 * 60 * 1000); // 15-min window starts on accept
 
         // Build full immutable merchantSnapshot (GOVERNANCE §1: assigned at accept)
+        // via the Payment domain's single builder — this route used to re-implement
+        // it inline, which is how the USDT address would have been missed on the
+        // accept path while assignment carried it (GOVERNANCE §4).
         order.merchantId      = req.merchantId;
         order.status          = 'PROCESSING';
         order.assignedAt      = order.assignedAt || now;
         order.processingAt    = now;
         order.expiresAt       = expiresAt;
-        order.merchantSnapshot = {
-            merchantId:    merchant._id,
-            merchantName:  merchantDisplayRef(merchant),
-            upiId:         merchant.bankDetails?.upiId             || '',
-            qrCodeUrl:     merchant.qrCodeUrl                      || '',
-            bankName:      merchant.bankDetails?.bankName           || '',
-            accountNo:     merchant.bankDetails?.accountNo          || '',
-            ifsc:          merchant.bankDetails?.ifsc               || '',
-            accountHolder: merchant.bankDetails?.accountHolderName  || '',
-            snapshotAt:    now,
-            expiresAt,
-        };
+        order.merchantSnapshot = buildMerchantSnapshot(merchant, expiresAt);
 
         // Update rolling avgResponseMinutes: EMA with α=0.2
         if (order.assignedAt) {
@@ -523,19 +598,34 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         const isDeposit = order.type === 'DEPOSIT';
         const bank = order.userBankDetails  || {};
 
+        // Both rails describe the same two steps; only the destination differs.
+        const isUsdtOrder = merchantRail === MERCHANT_CURRENCY.USDT;
+        const payAmount   = isUsdtOrder ? `${order.fiatAmount} USDT` : `₹${order.fiatAmount}`;
+
         if (isDeposit) {
+            const payTo = isUsdtOrder
+                ? `merchant USDT address (TRC-20): ${merchant.usdtWalletAddress || 'See payment details'}`
+                : `merchant UPI: ${merchant.bankDetails?.upiId || 'See payment details'}`;
             await sendSystemMessage(oid,
                 `✅ Order Accepted by Merchant\n` +
                 `📋 Order: ${order.orderId}\n` +
-                `💰 User must pay ₹${order.fiatAmount} to merchant UPI: ${merchant.bankDetails?.upiId || 'See payment details'}\n` +
+                `💰 User must pay ${payAmount} to ${payTo}\n` +
                 `⏱ Payment window: 15 minutes`,
+                io
+            );
+        } else if (isUsdtOrder) {
+            await sendSystemMessage(oid,
+                `✅ Withdrawal Order Accepted\n` +
+                `📋 Order: ${order.orderId}\n` +
+                `💸 Merchant must send ${payAmount} to the user's wallet:\n` +
+                `   🔗 TRC-20: ${order.userUsdtAddress || 'N/A'}`,
                 io
             );
         } else {
             await sendSystemMessage(oid,
                 `✅ Withdrawal Order Accepted\n` +
                 `📋 Order: ${order.orderId}\n` +
-                `💸 Merchant must send ₹${order.fiatAmount} to user's bank:\n` +
+                `💸 Merchant must send ${payAmount} to user's bank:\n` +
                 `   🏦 ${bank.bankName || ''} | AC: ${bank.accountNumber || 'N/A'} | IFSC: ${bank.ifscCode || 'N/A'}\n` +
                 `   Account Holder: ${bank.accountHolderName || 'N/A'}\n` +
                 `   UPI ID: ${order.upiId || 'N/A'}`,

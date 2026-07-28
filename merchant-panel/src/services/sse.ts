@@ -52,9 +52,12 @@ class SSEService {
     if (!token) return; // not logged in yet
     try {
       this.merchantSse = new EventSource(`${MERCHANT_SSE_URL}?token=${encodeURIComponent(token)}`);
-      // §11 private merchant events — all confirmed emitted by backend sse.routes.js
+      // §11 private merchant events. `merchant_stats` was listed here and in
+      // GOVERNANCE §11, but no backend file emits that name — it was a dead
+      // subscription (verified 2026-07-27). `merchant_score_update` is the one
+      // the backend actually sends after a completed order.
       const merchantEvents = [
-        'merchant_orders_snapshot', 'new_order', 'order_update', 'merchant_stats',
+        'merchant_orders_snapshot', 'new_order', 'order_update', 'merchant_score_update',
       ];
       for (const ev of merchantEvents) {
         this.merchantSse.addEventListener(ev, (e: MessageEvent) => {

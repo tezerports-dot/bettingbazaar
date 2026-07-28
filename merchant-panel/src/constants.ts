@@ -44,22 +44,16 @@ export const ENDPOINTS = {
   PROFILE: {
     UPDATE: '/api/merchant/profile',
   },
-  BULK_PAYOUTS: {
-    LIST:      '/api/merchant/bulk-payouts',
-    EXPORT:    '/api/merchant/bulk-payouts/export',
-    MARK_PAID: '/api/merchant/bulk-payouts/mark-paid',
-  },
   ORDERS_EXTRA: {
     RED_FLAG: (id: string) => `/api/merchant/orders/${id}/red-flag`,
   },
 };
 
 export const APP_CONFIG = {
+  // Overridden at runtime by Branding.merchantPanelName (GOVERNANCE §12);
+  // this is only what the tab says before branding arrives.
   NAME: 'BB Token Merchant Panel',
   VERSION: import.meta.env.VITE_APP_VERSION || '—',  // L-03 fix: from package.json via Vite
-  CURRENCY_SYMBOL: 'Rs.',
-  DEFAULT_CURRENCY: 'INR',
-  ORDER_EXPIRY_MINUTES: 30,
   CHAT_MAX_LENGTH: 500,
   FILE_MAX_SIZE: 5 * 1024 * 1024,
   AUTO_REFRESH_INTERVAL: 60000,
@@ -95,48 +89,10 @@ export const STORAGE_KEYS = {
   PREFERENCES: 'merchant_preferences',
 };
 
-export const STATUS_COLORS: { [key: string]: string } = {
-  PENDING_QUEUE: '#FFA500',
-  ASSIGNED: '#3498db',
-  PROCESSING: '#f39c12',
-  COMPLETED: '#27ae60',
-  PAID: '#2ecc71',
-  CANCELLED: '#e74c3c',
-  REJECTED: '#e74c3c',
-  DISPUTED: '#e67e22',
-  FAILED: '#c0392b',
-};
-
-export const STATUS_ICONS: { [key: string]: string } = {
-  PENDING_QUEUE: '[wait]',
-  ASSIGNED: '[list]',
-  PROCESSING: '?',
-  COMPLETED: '[OK]',
-  PAID: '[money]',
-  CANCELLED: '[X]',
-  REJECTED: '[block]',
-  DISPUTED: '[!]',
-  FAILED: '?',
-};
-
-export const STATUS_LABELS: { [key: string]: string } = {
-  PENDING_QUEUE: 'Waiting in Queue',
-  ASSIGNED: 'Assigned to You',
-  PROCESSING: 'Payment Processing',
-  PAID: 'Payment Confirmed',
-  COMPLETED: 'Completed',
-  CANCELLED: 'Cancelled',
-  REJECTED: 'Rejected',
-  DISPUTED: 'Under Dispute',
-  FAILED: 'Failed',
-};
-
-export const ESCROW_COLORS: { [key: string]: string } = {
-  NONE: '#95a5a6',
-  LOCKED: '#e67e22',
-  RELEASED: '#27ae60',
-  REFUNDED: '#3498db',
-};
+// STATUS_COLORS / STATUS_ICONS / ESCROW_COLORS / CHART_COLORS removed with the
+// 2026-07-27 redesign: status colours are design tokens applied by
+// components/ui.tsx `statusMeta()`, and no component may carry a hex literal
+// (GOVERNANCE §3). Status wording lives with the same helper.
 
 export const PAGINATION = {
   DEFAULT_PAGE_SIZE: 20,
@@ -161,42 +117,8 @@ export const ROUTES = {
 };
 
 export const ORDER_TYPE_LABELS = {
-  DEPOSIT: 'Deposit (User -> Merchant)',
-  WITHDRAWAL: 'Withdrawal (Merchant -> User)',
-};
-
-export const PAYMENT_METHOD_LABELS: { [key: string]: string } = {
-  UPI: 'UPI',
-  IMPS: 'IMPS',
-  NEFT: 'NEFT',
-  RTGS: 'RTGS',
-  BANK_TRANSFER: 'Bank Transfer',
-};
-
-export const KYC_STATUS_LABELS: { [key: string]: string } = {
-  PENDING_SUBMISSION: 'Not Submitted',
-  PENDING_APPROVAL: 'Pending Verification',
-  APPROVED: 'Verified',
-  REJECTED: 'Rejected',
-};
-
-export const CHART_COLORS = {
-  PRIMARY: '#3b82f6',
-  SUCCESS: '#10b981',
-  WARNING: '#f59e0b',
-  DANGER: '#ef4444',
-  INFO: '#06b6d4',
-  DEPOSITS: '#10b981',
-  WITHDRAWALS: '#ef4444',
-  PROFIT: '#3b82f6',
-  VOLUME: '#8b5cf6',
-};
-
-export const DATE_FORMATS = {
-  SHORT: 'DD/MM/YYYY',
-  LONG: 'DD MMM YYYY, HH:mm',
-  TIME: 'HH:mm:ss',
-  FULL: 'DD MMMM YYYY, HH:mm:ss',
+  DEPOSIT: 'Deposit',
+  WITHDRAWAL: 'Withdrawal',
 };
 
 export const ERROR_MESSAGES = {
@@ -217,7 +139,7 @@ export const SUCCESS_MESSAGES = {
 };
 
 if (import.meta.env.DEV) {
-  console.log('? Configuration loaded:', {
+  console.log('Merchant panel configuration loaded:', {
     apiBaseUrl: API_BASE_URL,
     version: APP_CONFIG.VERSION,
     features: FEATURES,

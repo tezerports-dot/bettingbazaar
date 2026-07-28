@@ -3,7 +3,7 @@
 // Command Center sign-in — recreated from the design handoff. Auth flow
 // (mobile + password, role-based post-login redirect) is unchanged.
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { ArrowRight } from 'lucide-react';
 import { useAuthStore } from '../services/auth';
 import { LogoMark, getBrand } from '../components/Logo';
@@ -139,8 +139,14 @@ export const Login: React.FC = () => {
           </form>
         </div>
 
+        {/* Says only what is true: admin actions are written to EnhancedAuditLog.
+            This line used to read "Secured by 2FA", which the platform does not
+            implement — there is no TOTP enrolment or challenge anywhere in the
+            codebase (README §Security, LAUNCH_READINESS §F). Telling an operator
+            their session is protected by a control that does not exist is worse
+            than saying nothing. */}
         <div style={{ textAlign: 'center', fontSize: 11, color: 'var(--muted)', marginTop: 16 }}>
-          Secured by 2FA · sessions logged to Audit Logs
+          Sessions and privileged actions are logged to Audit Logs
         </div>
       </div>
     </div>

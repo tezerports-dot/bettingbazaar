@@ -5,6 +5,7 @@ import { Store, Eye, Ban, CheckCircle, Plus, Settings, History, RefreshCw, Dolla
 import { DataTable } from '../../components/DataTable';
 import { StatusBadge } from '../../components/StatusBadge';
 import { SearchBar } from '../../components/SearchBar';
+import { Kpis, Toolbar, AvatarCell } from '../../components/design';
 import { Modal } from '../../components/Modal';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { usePagination } from '../../hooks/usePagination';
@@ -68,6 +69,12 @@ export const MerchantsList: React.FC = () => {
     } catch { setMerchantProfit(null); }
   };
   const [isSavingLimits, setIsSavingLimits] = useState(false);
+  // Settlement rail. A merchant is INR-only (UPI + bank) or USDT-only (TRC-20)
+  // — never both. Written to Merchant.acceptedCurrencies via the capabilities
+  // route; enforced in merchantScoring.selectBestMerchant so switching the rail
+  // immediately changes which orders reach this merchant.
+  const [rail, setRail] = useState<'INR' | 'USDT'>('INR');
+  const [isSavingRail, setIsSavingRail] = useState(false);
 
   // Merchant panel URL comes from admin panel env var VITE_MERCHANT_PANEL_URL
   // Set this in Railway → admin-panel service → Variables
@@ -116,6 +123,9 @@ export const MerchantsList: React.FC = () => {
         setSelectedMerchant(mData);
         setPanelUrl(mData.panelUrl || '');
         setDetailTab(tab);
+        // Settlement rail — Merchant.acceptedCurrencies holds exactly one entry
+        // (backend: domains/merchant/merchantCurrency.js). schema default: ['INR'].
+        setRail(mData.merchantType ?? mData.acceptedCurrencies?.[0] ?? 'INR');
         setLimitsForm({
           // M-01 fix: use Merchant.limits from schema defaults (500 / 50000) — GOVERNANCE §5
           minOrder: mData.minOrder ?? mData.merchantLimits?.minOrder ?? 500,
@@ -179,6 +189,23 @@ export const MerchantsList: React.FC = () => {
     finally { setIsSavingLimits(false); }
   };
 
+  const handleSaveRail = async (next: 'INR' | 'USDT') => {
+    if (!selectedMerchant || next === rail) return;
+    setIsSavingRail(true);
+    try {
+      await api.put(`/api/admin/merchants/${selectedMerchant._id}/capabilities`, { merchantType: next });
+      setRail(next);
+      toast.success(
+        next === 'USDT'
+          ? 'Now a USDT merchant — TRC-20 only. Existing UPI/bank details were cleared.'
+          : 'Now an INR merchant — UPI & bank. The USDT address was cleared.'
+      );
+      loadMerchants();
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Failed to change settlement rail');
+    } finally { setIsSavingRail(false); }
+  };
+
   const handleCreateMerchant = async () => {
     if (!createForm.username || !createForm.mobile || !createForm.password) { toast.error('Fill required fields'); return; }
     setIsCreating(true);
@@ -197,9 +224,8 @@ export const MerchantsList: React.FC = () => {
       key: 'merchant', label: 'Merchant',
       render: (m: Merchant) => (
         <div>
-          <p className="font-medium">{m.name}</p>
-          <p className="text-sm text-gray-400">{formatters.phone(m.mobile)}</p>
-          {m.isOnline && <span className="inline-flex items-center text-xs text-green-500 mt-0.5"><span className="w-1.5 h-1.5 bg-green-500 rounded-full mr-1"/>Online</span>}
+          <AvatarCell name={m.name} sub={formatters.phone(m.mobile)} index={Math.max(0, merchants.indexOf(m))} />
+          {m.isOnline && <span className="inline-flex items-center text-xs mt-1" style={{ color: 'var(--success)' }}><span className="w-1.5 h-1.5 rounded-full mr-1" style={{ background: 'var(--success)' }} />Online</span>}
         </div>
       ),
     },
@@ -289,36 +315,27 @@ export const MerchantsList: React.FC = () => {
   ];
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold mb-2">Merchant Management</h1>
-          <p className="text-gray-400">Manage merchants, approvals, limits and transaction history</p>
-        </div>
-        <div className="flex gap-2">
-          <button onClick={loadMerchants} className="btn-secondary flex items-center"><RefreshCw size={15} className="mr-1"/>Refresh</button>
-          <button onClick={() => setShowCreateModal(true)} className="btn-primary flex items-center"><Plus size={15} className="mr-1"/>Create Merchant</button>
-        </div>
-      </div>
+    <div className="om-fade">
+      <Kpis items={[
+        { label: 'Merchants', value: total },
+        { label: 'Online', value: merchants.filter((m) => m.isOnline).length, tone: 'var(--success)' },
+        { label: 'Approved', value: merchants.filter((m) => m.merchantApprovalStatus === 'APPROVED').length, tone: 'var(--info)' },
+        { label: 'Pending', value: merchants.filter((m) => m.merchantApprovalStatus === 'PENDING').length, tone: 'var(--warning)' },
+      ]} />
 
-      <div className="card">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="md:col-span-2"><SearchBar value={search} onChange={setSearch} placeholder="Search merchants..." /></div>
-          <select id="merchant-status-filter" name="statusFilter" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="input">
-            <option value="ALL">All Status</option>
-            <option value="APPROVED">Approved</option>
-            <option value="PENDING">Pending Approval</option>
-            <option value="SUSPENDED">Suspended</option>
-          </select>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="card"><p className="text-sm text-gray-400 mb-1">Total</p><p className="text-2xl font-bold">{total}</p></div>
-        <div className="card"><p className="text-sm text-gray-400 mb-1">Online</p><p className="text-2xl font-bold text-green-500">{merchants.filter(m => m.isOnline).length}</p></div>
-        <div className="card"><p className="text-sm text-gray-400 mb-1">Approved</p><p className="text-2xl font-bold text-blue-500">{merchants.filter(m => m.merchantApprovalStatus === 'APPROVED').length}</p></div>
-        <div className="card"><p className="text-sm text-gray-400 mb-1">Pending</p><p className="text-2xl font-bold text-yellow-500">{merchants.filter(m => m.merchantApprovalStatus === 'PENDING').length}</p></div>
-      </div>
+      <Toolbar
+        tabs={[
+          { label: 'All', active: statusFilter === 'ALL', onClick: () => setStatusFilter('ALL') },
+          { label: 'Approved', active: statusFilter === 'APPROVED', onClick: () => setStatusFilter('APPROVED') },
+          { label: 'Pending', active: statusFilter === 'PENDING', onClick: () => setStatusFilter('PENDING') },
+          { label: 'Suspended', active: statusFilter === 'SUSPENDED', onClick: () => setStatusFilter('SUSPENDED') },
+        ]}
+        search={{ value: search, onChange: setSearch, placeholder: 'Search merchants…' }}
+        actions={[
+          { label: 'Refresh', icon: RefreshCw, onClick: loadMerchants },
+          { label: 'Create Merchant', icon: Plus, primary: true, onClick: () => setShowCreateModal(true) },
+        ]}
+      />
 
       <div className="card">
         <DataTable data={merchants} columns={columns} currentPage={page} totalPages={Math.ceil(total / limit)} onPageChange={setPage} isLoading={isLoading} />
@@ -418,6 +435,36 @@ export const MerchantsList: React.FC = () => {
 
           {detailTab === 'limits' && (
             <div className="space-y-5">
+              {/* Settlement rail — the consumer for Merchant.acceptedCurrencies
+                  (GOVERNANCE §2: no admin-editable field without a real consumer). */}
+              <div className="p-4 bg-dark-700 rounded-lg space-y-3">
+                <div>
+                  <p className="text-sm font-semibold text-gray-300">Settlement Rail</p>
+                  <p className="text-xs text-gray-500 mt-1">
+                    A merchant settles on exactly one rail and is only ever offered orders in that currency.
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {(['INR', 'USDT'] as const).map((option) => (
+                    <button
+                      key={option}
+                      disabled={isSavingRail}
+                      onClick={() => handleSaveRail(option)}
+                      className={`py-2 rounded-lg text-sm font-medium border transition-colors disabled:opacity-50 ${
+                        rail === option
+                          ? 'bg-gold-500/15 border-gold-500/60 text-gold-300'
+                          : 'bg-dark-800 border-dark-600 text-gray-400 hover:text-gray-200'
+                      }`}
+                    >
+                      {option === 'INR' ? 'INR · UPI & bank' : 'USDT · TRC-20'}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-xs text-amber-400/80">
+                  Switching rails clears the payment details for the old rail — the merchant re-enters them from their panel.
+                </p>
+              </div>
+
               {/* FIX 8: tokenBalance is the capacity -- show it prominently and allow top-up */}
               <div className="p-4 bg-dark-700 rounded-lg border border-gold-500/30">
                 <p className="text-xs text-gray-400 mb-1">Current Token Wallet Balance</p>

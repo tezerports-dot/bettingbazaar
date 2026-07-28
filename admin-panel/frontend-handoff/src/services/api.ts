@@ -783,6 +783,44 @@ export const orderActions = {
     },
 };
 
+// --- CHAT & SUPPORT (public chat moderation + support-ticket desk) -----------
+// Backend: routes/admin/chat.admin.routes.js (gated by canManageSupport).
+
+export const chat = {
+  getMessages: async (limit = 60, includeDeleted = false) => {
+    const res = await api.get<any>('/api/admin/chat/messages', { params: { limit, includeDeleted } });
+    return res.data;
+  },
+  deleteMessage: async (id: string) => {
+    const res = await api.post(`/api/admin/chat/messages/${id}/delete`);
+    return res.data;
+  },
+  getBans: async () => {
+    const res = await api.get<any>('/api/admin/chat/bans');
+    return res.data;
+  },
+  banUser: async (userId: string, reason: string, hours?: number) => {
+    const res = await api.post('/api/admin/chat/ban', { userId, reason, hours });
+    return res.data;
+  },
+  unbanUser: async (userId: string) => {
+    const res = await api.delete(`/api/admin/chat/ban/${userId}`);
+    return res.data;
+  },
+  getTickets: async (status?: string) => {
+    const res = await api.get<any>('/api/admin/support/tickets', { params: { status } });
+    return res.data;
+  },
+  getTicket: async (id: string) => {
+    const res = await api.get<any>(`/api/admin/support/tickets/${id}`);
+    return res.data;
+  },
+  reply: async (ticketId: string, content: string) => {
+    const res = await api.post(`/api/admin/support/tickets/${ticketId}/reply`, { content });
+    return res.data;
+  },
+};
+
 export default {
   auth,
   analytics,
@@ -804,6 +842,7 @@ export default {
   errorReports,
   appAssets,
   orderActions,
+  chat,
   get: <T = any>(url: string, config?: any) => api.get<T>(url, config),
   post: <T = any>(url: string, data?: any, config?: any) => api.post<T>(url, data, config),
   put: <T = any>(url: string, data?: any, config?: any) => api.put<T>(url, data, config),

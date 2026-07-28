@@ -20,7 +20,7 @@ never through another domain's internal state.
 | `wallet/` | PLACEHOLDER | `services/walletAuthority.service.js` (sole wallet-mutation authority, GOVERNANCE §7), `models/wallet.model.js` |
 | `game/` | PLACEHOLDER | `gameEngine.js`, `services/cycleGenerator.service.js`, `models/cycle.model.js` — this is the actual core product (proprietary cycle/crash engine). Not part of original BBEPS's generic domain list; added per Phase 0 evidence. |
 | `betting/` | PLACEHOLDER | `models/bet.model.js`, `routes/bet.routes.js` |
-| `sportsbook/` | PLACEHOLDER | No dedicated backend exists today — confirmed via repo search, only `models/gameProvider.model.js` / `routes/game-providers.routes.js`, which are third-party casino/game-provider integrations, not sports fixtures/odds. Frontend `SportsPage.tsx` is presentational only. This domain is effectively unbuilt. |
+| `sportsbook/` | PLACEHOLDER | No dedicated backend exists today — confirmed via repo search, only `domains/casino/gameProvider.model.js` / `gameProvider.routes.js` (moved there in Phase 011), which are third-party casino/game-provider integrations, not sports fixtures/odds. Frontend `SportsPage.tsx` is presentational only. This domain is effectively unbuilt. |
 | `user/` | PLACEHOLDER | `models/user.model.js`, `routes/user.routes.js` |
 | `identity/` | PLACEHOLDER | `middleware/auth.middleware.js`, `models/auth.model.js` |
 | `support/` | PLACEHOLDER | Minimal/TBD — no dedicated ticketing backend found in Phase 0 audit |

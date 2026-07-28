@@ -5,6 +5,7 @@
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from '../../routes/admin/_adminShared.js';
 import { creditMerchantTokens, debitMerchantTokens } from './merchantWallet.service.js';
 import { generateMerchantPublicRef } from './merchant.model.js';
+import { MERCHANT_CURRENCY, MERCHANT_CURRENCIES, merchantTypeOf } from './merchantCurrency.js';
 
 const router = express.Router();
 
@@ -86,6 +87,8 @@ router.get('/merchants', authenticate, isAdmin, async (req, res) => {
         isOnline:               m.isOnline  || false,
         acceptsDeposits:        m.acceptsDeposits    !== false,
         acceptsWithdrawals:     m.acceptsWithdrawals !== false,
+        // Settlement rail — 'INR' (UPI + bank) or 'USDT' (TRC-20), exclusive.
+        merchantType:           merchantTypeOf(m),
         tokenBalance:           m.tokenBalance || 0,
         // commissionRate removed — merchants earn via buy/sell spread
         panelUrl:               m.panelUrl || '',
@@ -241,17 +244,35 @@ router.put('/merchants/:merchantId/limits', authenticate, isAdmin, async (req, r
 router.put('/merchants/:merchantId/capabilities', authenticate, isAdmin, async (req, res) => {
   try {
     const { merchantId } = req.params;
-    const { acceptsDeposits, acceptsWithdrawals, acceptedCurrencies, minOrder, maxOrder } = req.body;
+    const { acceptsDeposits, acceptsWithdrawals, acceptedCurrencies, merchantType, minOrder, maxOrder } = req.body;
 
     const merchant = await Merchant.findById(merchantId);
     if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
 
-    if (acceptedCurrencies !== undefined) {
-      if (!Array.isArray(acceptedCurrencies) || acceptedCurrencies.length === 0 ||
-          !acceptedCurrencies.every(c => ['INR', 'USDT'].includes(c))) {
-        return res.status(400).json({ success: false, message: 'acceptedCurrencies must be a non-empty subset of ["INR","USDT"].' });
+    // A merchant settles on exactly ONE rail (2026-07-27) — an INR merchant
+    // (UPI + bank) or a USDT merchant (TRC-20), never both. Accepts either
+    // `merchantType: 'USDT'` or the equivalent `acceptedCurrencies: ['USDT']`;
+    // both write the same stored authority, Merchant.acceptedCurrencies.
+    const railInput = merchantType !== undefined ? [merchantType] : acceptedCurrencies;
+    if (railInput !== undefined) {
+      const rails = Array.isArray(railInput) ? [...new Set(railInput)] : [railInput];
+      if (rails.length !== 1 || !MERCHANT_CURRENCIES.includes(rails[0])) {
+        return res.status(400).json({ success: false, message: 'A merchant settles on exactly one rail — send merchantType "INR" or "USDT".' });
       }
-      merchant.acceptedCurrencies = [...new Set(acceptedCurrencies)];
+      const nextRail = rails[0];
+      if (nextRail !== merchantTypeOf(merchant)) {
+        // Switching rails strands the old rail's credentials on the account,
+        // where they would still satisfy uniqueness indexes and could be
+        // snapshotted onto an order. Clear them; the merchant re-enters the
+        // credentials for their new rail from the panel.
+        if (nextRail === MERCHANT_CURRENCY.USDT) {
+          merchant.bankDetails = undefined;
+          merchant.qrCodeUrl   = undefined;
+        } else {
+          merchant.usdtWalletAddress = undefined;
+        }
+      }
+      merchant.acceptedCurrencies = rails;
     }
     if (typeof acceptsDeposits === 'boolean')    merchant.acceptsDeposits = acceptsDeposits;
     if (typeof acceptsWithdrawals === 'boolean') merchant.acceptsWithdrawals = acceptsWithdrawals;
@@ -275,7 +296,8 @@ router.put('/merchants/:merchantId/capabilities', authenticate, isAdmin, async (
         targetType: 'Merchant', targetId: String(merchant._id),
         details: {
           acceptsDeposits: merchant.acceptsDeposits, acceptsWithdrawals: merchant.acceptsWithdrawals,
-          acceptedCurrencies: merchant.acceptedCurrencies, minOrder: merchant.minOrder, maxOrder: merchant.maxOrder,
+          merchantType: merchantTypeOf(merchant), acceptedCurrencies: merchant.acceptedCurrencies,
+          minOrder: merchant.minOrder, maxOrder: merchant.maxOrder,
         },
         success: true,
       });
@@ -288,7 +310,8 @@ router.put('/merchants/:merchantId/capabilities', authenticate, isAdmin, async (
       message: 'Merchant capabilities updated.',
       capabilities: {
         acceptsDeposits: merchant.acceptsDeposits, acceptsWithdrawals: merchant.acceptsWithdrawals,
-        acceptedCurrencies: merchant.acceptedCurrencies, minOrder: merchant.minOrder, maxOrder: merchant.maxOrder,
+        merchantType: merchantTypeOf(merchant), acceptedCurrencies: merchant.acceptedCurrencies,
+        minOrder: merchant.minOrder, maxOrder: merchant.maxOrder,
       },
     });
   } catch (error) {

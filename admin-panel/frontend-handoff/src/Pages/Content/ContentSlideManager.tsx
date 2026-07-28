@@ -30,6 +30,7 @@ import { Modal } from '../../components/Modal';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
+import { Toolbar } from '../../components/design';
 
 type Location = 'TRICKS_PAGE' | 'RULES_PAGE';
 
@@ -154,25 +155,11 @@ export const ContentSlideManager: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold mb-1">Content Slides</h1>
-          <p className="text-gray-400 text-sm">
-            Manage full-screen image slides shown to users on the Promo and Rules pages.
-            Images are displayed in a swipeable carousel — higher priority = shown first.
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <button onClick={loadSlides} className="btn-secondary flex items-center gap-1">
-            <RefreshCw size={14} /> Refresh
-          </button>
-          <button onClick={() => setShowAdd(true)} className="btn-primary flex items-center gap-1">
-            <Plus size={14} /> Add Slide
-          </button>
-        </div>
-      </div>
+    <div className="om-fade space-y-6">
+      <Toolbar actions={[
+        { label: 'Refresh', icon: RefreshCw, onClick: loadSlides },
+        { label: 'Add Slide', icon: Plus, primary: true, onClick: () => setShowAdd(true) },
+      ]} />
 
       {/* Tabs */}
       <div className="flex gap-2 bg-dark-800 p-1 rounded-lg w-fit">

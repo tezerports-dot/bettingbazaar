@@ -26,6 +26,22 @@ Generate every secret with: `openssl rand -base64 48`
 | `PUBLIC_APP_ORIGIN` | Official public app origin advertised to native clients (a valid `https://…` origin). |
 | `PUBLIC_APP_ALLOWED_ORIGINS` | Public app origin allow-list advertised to native clients (comma-separated origins). |
 
+**`TRUST_PROXY` — set this whenever anything terminates TLS in front of Node.**
+Not in the required table because the app boots without it, but leaving it
+wrong breaks IP attribution in both directions, and every per-IP control
+(`ipDefense`, the rate limiters, audit logs) reads the result.
+
+| Value | Meaning |
+|---|---|
+| *unset* / `false` / `none` | **Default.** `X-Forwarded-*` is ignored — correct for a directly-exposed listener. Behind a proxy this makes every client look like the proxy, so per-IP limits apply to your whole fleet at once. |
+| `1` (or an integer *n*) | Trust *n* proxy hops. Correct for a single known edge (Caddy, one NGINX, one CDN). |
+| `10.0.0.0/8, 172.16.0.0/12` | Trust these addresses/CIDRs only — a comma-separated list is passed through to Express verbatim. **Prefer this** when the upstream ranges are known. |
+| `true` | Trusts every hop. Any client can then forge `X-Forwarded-For` and impersonate an arbitrary IP to `ipDefense`. Do not use in production. |
+
+`PROXY_PROTOCOL_V2` / `PROXY_PROTOCOL_TRUSTED_SUBNETS` are the L4 alternative:
+enable only when this listener sits directly behind internal edge routers that
+prepend PROXY v2.
+
 **Secret-strength rules the gate enforces (production):**
 - `JWT_SECRET`, `PASETO_SECRET_KEY` (if used instead of `JWT_SECRET`), `ORDER_HMAC_SECRET`,
   `AADHAAR_HMAC_SECRET`, `METRICS_TOKEN` must each be **≥ 32 characters and non-placeholder**.
@@ -79,7 +95,74 @@ after the overlap (token TTL / order lifetime). Verification accepts current **o
 | `ARGON2_MEMORY_KIB` / `ARGON2_TIME_COST` / `ARGON2_PARALLELISM` | Password-hash cost (OWASP minimum by default; raise on capable hardware). |
 | `BB_RUNTIME_ROLE` | `api` / `realtime` / `scheduler` for a split k8s fleet (see `deploy/k8s/`). |
 
-## 6. Activation vars — off by default (feature stays dormant until set; see §18/§19)
+## 6. Documented 2026-07-27 — read by the backend, previously listed nowhere
+
+An audit of `process.env.*` reads against this file and `.env.example` found 35
+variables the backend consults that appeared in neither. Nothing here is
+required — every one has a working default — but an operator cannot tune or
+harden what is not written down, so they are recorded. Re-run the check with:
+
+```bash
+grep -rhoE 'process\.env\.[A-Z][A-Z0-9_]{2,}' backend --include='*.js' | sort -u
+```
+
+**Defence toggles** (all default ON — set to `false` only to debug):
+
+| Variable | Default | Effect |
+|---|---|---|
+| `LOAD_SHED_ENABLED` | on | Master switch for the load-shed/bulkhead middleware. |
+| `LOAD_SHED_MAX_INFLIGHT` | see `middleware/loadShed.js` | Concurrent-request ceiling before shedding. |
+| `LOAD_SHED_MAX_LAG_MS` | see `middleware/loadShed.js` | Event-loop lag threshold that triggers shedding. |
+| `IP_DEFENSE_ENABLED` | on | Master switch for per-IP/per-subnet defence. |
+| `IP_DEFENSE_SUBNET_MULT` | see `middleware/ipDefense.js` | Subnet budget multiplier over the per-IP budget. |
+| `BET_BEHAVIOR_MAX_PER_MINUTE` | see risk rules | Per-user bet velocity ceiling. |
+
+**Runtime & transport tuning:**
+
+| Variable | Default | Effect |
+|---|---|---|
+| `WORKER_THREADS_ENABLED` | `true` | Offload CPU-bound work to the worker pool. |
+| `WORKER_POOL_SIZE` | CPU-derived | Worker thread count. |
+| `SSE_MAX_BUFFERED_BYTES` | see `sseManager.service.js` | Per-client SSE backpressure ceiling before disconnect. |
+| `CSV_OFFLOAD_MIN_ROWS` | see reporting | Row count above which CSV export is offloaded to a worker. |
+
+**Auth token claims** (defaults are fine for a single deployment):
+
+| Variable | Default | Effect |
+|---|---|---|
+| `PASETO_ISSUER` | `bettingbazaar` (falls back to `JWT_ISSUER`) | `iss` claim. |
+| `PASETO_AUDIENCE` | see `paseto.util.js` | `aud` claim. |
+| `PASETO_EXPIRES_IN` | see `paseto.util.js` | Token TTL. |
+| `PASETO_PREVIOUS_PUBLIC_KEYS` | unset | Verify-only keys during a rotation (§4 pattern). |
+| `SERVICE_JWT_TTL` | see `gateway/serviceAuth.js` | Inter-service token lifetime (dormant until a domain goes remote). |
+
+**Edge / mTLS** (all unset by default; the server runs plain HTTP behind a proxy):
+
+| Variable | Effect |
+|---|---|
+| `BACKEND_MTLS_CERT` / `BACKEND_MTLS_KEY` / `BACKEND_MTLS_CA` | Enable mutual TLS on the backend listener. All three are required together. |
+| `TLS_FINGERPRINT_EDGE_SECRET` | Shared secret that lets the app trust a TLS-fingerprint header from the edge. Without it the header is ignored — correct default. |
+
+**Native app identifiers** (used by the app-distribution endpoints — see `NATIVE_APP_DISTRIBUTION_POLICY.md`):
+`ANDROID_PACKAGE_ID`, `IOS_BUNDLE_ID`, `DESKTOP_APP_ID`, `PUBLIC_APP_NAME`.
+
+**Support RAG service** (dormant until an API key is set — §19):
+`RAG_CHAT_API_KEY`, `RAG_CHAT_BASE_URL`, `RAG_CHAT_MODEL`, `RAG_MODEL`,
+`RAG_MAX_TOKENS`, `RAG_ASK_RATE`, `RAG_GENERATION_PROVIDER`,
+`RAG_EMBEDDING_PROVIDER`, `RAG_EMBEDDING_MODEL`, `RAG_EMBEDDING_DIM`.
+
+> ⚠️ Two naming traps worth knowing:
+> - **`OPENAI_API_KEY`** is read as a fallback for `RAG_CHAT_API_KEY`
+>   (`domains/support/ragService.js`). The provider is configurable — governance
+>   §18 names `ANTHROPIC_API_KEY` as the RAG trigger, so set the provider vars
+>   deliberately rather than relying on whichever key happens to be in the env.
+> - **`MONGO_URI`** (no `DB`) is accepted *only* by
+>   `backend/scripts/enforce-public-chat-retention.js`, which falls back to
+>   `MONGODB_URI`. Everything else uses `MONGODB_URI`. Set `MONGODB_URI`.
+
+---
+
+## 7. Activation vars — off by default (feature stays dormant until set; see §18/§19)
 
 | Variable | Activates |
 |---|---|
@@ -93,3 +176,24 @@ after the overlap (token TTL / order lifetime). Verification accepts current **o
 
 **Full annotated reference:** `.env.example` (repo root). **Deploy walkthroughs:** `DEPLOYMENT.md`.
 **Boot-gate source of truth:** `backend/startup/validateEnv.js`.
+
+## Client origin failover (user panel, build-time)
+
+| Variable | Purpose |
+|---|---|
+| `VITE_API_URL` | Absolute API origin. Optional for a same-origin web deploy (relative `/api` works); **mandatory** for the Android build, which has no same-origin backend to fall back on. |
+| `VITE_API_FALLBACK_URLS` | Comma-separated alternate origins serving the SAME deployment, tried in order when the primary does not answer. |
+
+Every listed host must serve the same app — this is the multi-domain redundancy
+in `backend/config/network.config.js` (`DOMAINS`), where each hostname serves
+identical routes and behaviour. The client probes `/health/live` and adopts the
+first origin that responds, remembering it for 30 minutes so a recovered primary
+is eventually retried.
+
+Failover triggers on **transport** failures only (DNS, TLS, connection refused,
+timeout). An HTTP error status means the origin answered, and abandoning a host
+that is talking to us would turn a server-side bug into a multi-origin outage.
+
+This addresses origin availability. It takes no client IP, geo or ISP as an
+input — the candidate order is static and identical for every user — and it is
+not a circumvention mechanism (`04-GOVERNANCE.md` §20, 2026-07-28).

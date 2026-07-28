@@ -16,7 +16,7 @@
  */
 import React, { Suspense, useEffect, useState } from 'react';
 import { Routes, Route, Navigate } from 'react-router';
-import { HashRouter } from 'react-router-dom';
+import { HashRouter } from 'react-router';
 import { MotionConfig } from 'framer-motion';
 import { ThemeProvider } from './redesign/ThemeContext';
 import RedesignShell from './redesign/RedesignShell';

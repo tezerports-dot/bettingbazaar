@@ -194,21 +194,56 @@ export function registerCronJobs(rebuildLeaderboard) {
       const { pgConfigured } = await import('../postgres/pgClient.js');
       if (!pgConfigured()) return; // dormant until Postgres is wired
       const { runReconcile } = await import('../postgres/reconcile.js');
-      const { pgDriftRows, pgTrialBalanceOk, pgReconcileConsecutiveClean } = await import('../services/metrics.service.js');
+      const { ALL_PATHS, isPostgresAuthoritative, anyPathOnPostgres } =
+        await import('../postgres/moneyAuthority.js');
+      const {
+        pgDriftRows, pgTrialBalanceOk, pgReconcileConsecutiveClean,
+        mongoDriftRows, ledgersAgree, moneyAuthorityPostgres,
+      } = await import('../services/metrics.service.js');
 
-      const report = await runReconcile({ hours: 24 });
+      // Publish the current source-of-truth matrix so the dashboard shows which
+      // paths have moved, and an alert can fire if one moves unexpectedly.
+      for (const path of ALL_PATHS) {
+        moneyAuthorityPostgres.set({ path }, isPostgresAuthoritative(path) ? 1 : 0);
+      }
+
+      // runReconcile turns the reverse pass on by itself once any path is
+      // PG-authoritative; asking for it explicitly keeps this job's behaviour
+      // readable at the call site rather than implicit.
+      const cutoverActive = anyPathOnPostgres();
+      const report = await runReconcile({ hours: 24, reverse: cutoverActive });
+
       const missing = report.results.reduce((s, r) => s + r.missingInPg, 0);
       pgDriftRows.set(missing);
       pgTrialBalanceOk.set(report.trialBalance.conservesToZero ? 1 : 0);
 
+      // Reverse direction: only meaningful after a cutover, but the gauges are
+      // always published so a Grafana panel never shows "no data" — before the
+      // cutover the honest reading is "zero drift, ledgers agree".
+      const missingInMongo = (report.reverse || []).reduce((s, r) => s + r.missingInMongo, 0);
+      mongoDriftRows.set(missingInMongo);
+      ledgersAgree.set(report.ledgersAgree ? (report.ledgersAgree.agree ? 1 : 0) : 1);
+
       if (report.drift) {
         pgReconcileConsecutiveClean.set(0); // any drift breaks the cutover-readiness streak
-        console.error(`[pg-reconcile] DRIFT: ${missing} missing row(s), trialBalanceOk=${report.trialBalance.conservesToZero}`);
+        console.error(
+          `[pg-reconcile] DRIFT: ${missing} row(s) missing in PG, ${missingInMongo} missing in Mongo, ` +
+          `pgTrialBalanceOk=${report.trialBalance.conservesToZero}` +
+          (report.ledgersAgree ? `, ledgersAgree=${report.ledgersAgree.agree}` : '')
+        );
         sendAlert('pg-drift', 'Hybrid money-DB drift detected (Mongo vs Postgres)', {
-          missingRows: missing,
+          missingInPg: missing,
+          missingInMongo,
           trialBalanceOk: report.trialBalance.conservesToZero,
+          // After a cutover, a Mongo shortfall is the more urgent of the two: it
+          // is the store the rollback plan falls back to, so every missing row
+          // is a write that a fallback would lose.
+          cutoverActive,
+          ledgerDifferences: report.ledgersAgree?.differences?.slice(0, 10) ?? [],
           perTable: report.results.filter(r => r.missingInPg > 0)
             .map(r => ({ table: r.table, missing: r.missingInPg, sample: r.sampleMissing })),
+          perTableReverse: (report.reverse || []).filter(r => r.missingInMongo > 0)
+            .map(r => ({ table: r.table, missing: r.missingInMongo, sample: r.sampleMissing })),
         });
       } else {
         // Clean pass — advance the cutover gate. This is the signal to watch

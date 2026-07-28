@@ -8,7 +8,7 @@ import crypto   from 'crypto';
 
 function round2(n) { return Math.round((n || 0) * 100) / 100; }
 
-function sseBalancePush(userId, depositBalance, winningsBalance) {
+export function sseBalancePush(userId, depositBalance, winningsBalance) {
   try {
     global.sseManager?.sendToUser?.(String(userId), 'balance_update', {
       depositBalance:  round2(depositBalance),

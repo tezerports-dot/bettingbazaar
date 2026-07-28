@@ -11,6 +11,7 @@ import mongoose from 'mongoose';
 import crypto   from 'crypto';
 import { debitWinningsForWithdrawal, refundWithdrawal } from '../wallet/walletAuthority.service.js';
 import { selectBestMerchant } from '../merchant/merchantScoring.service.js';
+import { merchantTypeOf } from '../merchant/merchantCurrency.js';
 // Risk Platform (Phase 010): the single validation authority for funding orders.
 import { assessFundingOrder, getRiskRules, computePayoutFeeMinor } from '../risk/riskValidation.service.js';
 import { markUTRAsUsed }   from '../../middleware/utrValidation.js';
@@ -60,12 +61,17 @@ function buildMerchantSnapshot(merchantDoc, expiresAt) {
   return {
     merchantId:    merchantDoc._id,
     merchantName:  merchantDisplayRef(merchantDoc),
+    // A merchant settles on exactly one rail, so exactly one credential set is
+    // populated: UPI/bank for an INR merchant, the TRC-20 address for a USDT
+    // merchant. The user panel renders whichever is present.
+    merchantType:  merchantTypeOf(merchantDoc),
     upiId:         merchantDoc.bankDetails?.upiId             || '',
     qrCodeUrl:     merchantDoc.qrCodeUrl                      || '',
     bankName:      merchantDoc.bankDetails?.bankName           || '',
     accountNo:     merchantDoc.bankDetails?.accountNo          || '',
     ifsc:          merchantDoc.bankDetails?.ifsc               || '',
     accountHolder: merchantDoc.bankDetails?.accountHolderName  || '',
+    usdtAddress:   merchantDoc.usdtWalletAddress               || '',
     snapshotAt:    new Date(),
     expiresAt,
   };
@@ -89,7 +95,12 @@ async function getOrderExpiryMs() {
 // ─── Attempt to assign order to best merchant; returns true if assigned ────────
 async function tryAssignMerchant(order) {
   const Merchant = mongoose.model('Merchant');
-  const merchant = await selectBestMerchant(order.type, order.tokenAmount);
+  // Pass the order's rail: selectBestMerchant matches it against
+  // Merchant.acceptedCurrencies, so a USDT order can only reach a USDT merchant
+  // and an INR order only an INR merchant. Previously the argument was omitted
+  // and every order fell back to the 'INR' default, which would have routed a
+  // USDT order to an INR merchant (2026-07-27).
+  const merchant = await selectBestMerchant(order.type, order.tokenAmount, order.currency);
   if (!merchant) return false;
 
   const expiresAt = new Date(Date.now() + await getOrderExpiryMs()); // admin-configurable window
