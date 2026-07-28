@@ -37,17 +37,40 @@ const router = express.Router();
 /** Roles for which 2FA is mandatory rather than optional. */
 const MANDATORY_2FA_ROLES = new Set(['admin', 'subadmin']);
 
-/** Does this account have to hold a second factor? */
+/**
+ * Does this account have to hold a second factor?
+ *
+ * `isAdmin` / `isSubAdmin` are checked FIRST and are authoritative, because
+ * that is what the login handler and route guards actually use to grant
+ * privilege. Deriving this from `roles` alone was a real hole: an account with
+ * `isAdmin: true` and the default `roles: ['user']` — which is how externally
+ * created or older admin documents look — would be reported as non-mandatory
+ * and allowed to switch its own 2FA off, while the rest of the application
+ * treated it as an admin. The policy has to key on the same field the
+ * privilege does, or it is guarding a different account than it thinks.
+ */
 export function requires2FA(user) {
   if (!user) return false;
+  if (user.isAdmin === true || user.isSubAdmin === true) return true;
   const roles = [user.role, ...(user.roles || [])].filter(Boolean);
   return roles.some((r) => MANDATORY_2FA_ROLES.has(String(r).toLowerCase()));
+}
+
+/** The effective role name, from the same flags the login handler trusts. */
+function effectiveRole(user) {
+  if (user.isAdmin === true) return 'admin';
+  if (user.isSubAdmin === true) return 'subadmin';
+  const roles = [user.role, ...(user.roles || [])].filter(Boolean).map((r) => String(r).toLowerCase());
+  return roles.find((r) => MANDATORY_2FA_ROLES.has(r)) || 'user';
 }
 
 /** A label that tells the user WHICH account a code belongs to, in their app. */
 function accountLabel(user) {
   const who = user.mobile || user.email || String(user._id);
-  const role = (user.role || 'user').toLowerCase();
+  // effectiveRole, not user.role — the schema has no singular `role` field, so
+  // reading it gave every admin an unlabelled entry indistinguishable from
+  // their player account in the same authenticator app.
+  const role = effectiveRole(user);
   return role === 'user' ? who : `${role}:${who}`;
 }
 

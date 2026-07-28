@@ -100,7 +100,7 @@ import { errorHandler }   from './middleware/errorHandler.js';
 import { requestContext } from './middleware/requestContext.js'; // X-6: correlation ids
 import { tlsFingerprintDefense, startTlsFingerprintDefenseConfigRefresh } from './middleware/tlsFingerprintDefense.js';
 import { rejectAmbiguousFraming } from './middleware/headerNormalization.js';
-import { authLimiter, adminAuthLimiter, betLimiter } from './middleware/security.js';
+import { authLimiter, adminAuthLimiter, merchantAuthLimiter, betLimiter } from './middleware/security.js';
 // Item 12 (2026-07-13): IP-rotation defense — per-subnet backstop + optional
 // global surge breaker on sensitive endpoints, on top of the per-IP limiters.
 import { createSubnetLimiter, globalSurgeBreaker, startIpDefenseConfigRefresh } from './middleware/ipDefense.js';
@@ -430,7 +430,11 @@ app.use('/api/game',      gameProviderRoutes);
 app.use('/api/game',      gameRegistryRoutes);
 app.use('/api/bet',       betRoutes);
 app.use('/api',           userRoutes);
-app.use('/api/merchant',  merchantRoutes);
+// merchantAuthLimiter guards the login route inside this router. Applied at the
+// mount because the limiter itself skips successful requests, so non-login
+// merchant traffic never consumes budget — and a limiter that is exported but
+// never applied is worse than none, since it reads as protection that is not there.
+app.use('/api/merchant',  merchantAuthLimiter, merchantRoutes);
 app.use('/api/payment', paymentRoutes);
 app.use('/api/support',   supportRoutes); // CAP-71: RAG support assistant (dormant until keys set)
 app.use('/api',           uploadRoutes);

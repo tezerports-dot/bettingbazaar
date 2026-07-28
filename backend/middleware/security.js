@@ -47,8 +47,8 @@ export const authLimiter = rateLimit({
         
         res.status(429).json({
             success: false,
-            message: "Too many authentication attempts. Please try again after 15 minutes.",
-            retryAfter: 900
+            message: "Too many failed login attempts. Please try again in 30 minutes.",
+            retryAfter: 1800
         });
     }
 });
@@ -83,8 +83,8 @@ export const adminAuthLimiter = rateLimit({
         
         res.status(429).json({
             success: false,
-            message: "Too many admin login attempts. Account security triggered. Please contact support.",
-            retryAfter: 1800
+            message: "Too many failed admin login attempts. Account security triggered. Please try again in an hour or contact support.",
+            retryAfter: 3600
         });
     }
 });

@@ -196,11 +196,23 @@ function encryptionKey() {
       'Generate one with: openssl rand -base64 32',
     );
   }
-  // Accept base64 or hex; normalise to exactly 32 bytes via SHA-256 so a
-  // slightly-wrong-length key is a hard error at boot rather than a subtle one.
+  // Exactly 32 bytes, as base64 or hex. Anything else is REFUSED rather than
+  // hashed into a usable key.
+  //
+  // Deriving a key from malformed material looks forgiving and is a trap: the
+  // service starts happily, users enrol, secrets are encrypted under the
+  // derived key — and the moment someone notices the typo and corrects the
+  // env var, every stored secret becomes undecryptable and every enrolled
+  // user is locked out. Failing at the first use is recoverable; silently
+  // succeeding under the wrong key is not.
   const key = Buffer.from(raw, /^[0-9a-f]{64}$/i.test(raw) ? 'hex' : 'base64');
-  if (key.length === 32) return key;
-  return crypto.createHash('sha256').update(raw).digest();
+  if (key.length !== 32) {
+    throw new Error(
+      `TOTP_ENCRYPTION_KEY must decode to exactly 32 bytes (got ${key.length}). ` +
+      'Generate one with: openssl rand -base64 32',
+    );
+  }
+  return key;
 }
 
 /** Encrypt a secret for storage. Returns `v1:<iv>:<tag>:<ciphertext>`, base64. */

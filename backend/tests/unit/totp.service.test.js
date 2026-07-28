@@ -219,6 +219,23 @@ describe('TOTP service', () => {
       expect(() => encryptSecret('ABC')).toThrow(/TOTP_ENCRYPTION_KEY is not set/);
     });
 
+    // Regression: this used to hash any wrong-length value into a usable key.
+    // The service started fine, users enrolled, and the moment the typo was
+    // corrected every stored secret became undecryptable — a mass lockout
+    // caused by FIXING the configuration.
+    it('refuses a key that does not decode to exactly 32 bytes', () => {
+      for (const bad of ['too-short', 'AAAA', Buffer.alloc(16).toString('base64')]) {
+        process.env.TOTP_ENCRYPTION_KEY = bad;
+        expect(() => encryptSecret('ABC')).toThrow(/exactly 32 bytes/);
+      }
+    });
+
+    it('accepts a 32-byte key as hex as well as base64', () => {
+      process.env.TOTP_ENCRYPTION_KEY = crypto.randomBytes(32).toString('hex');
+      const secret = generateSecret();
+      expect(decryptSecret(encryptSecret(secret))).toBe(secret);
+    });
+
     it('rejects a stored value that is not the expected format', () => {
       expect(() => decryptSecret('not-encrypted')).toThrow(/expected v1 format/);
     });
