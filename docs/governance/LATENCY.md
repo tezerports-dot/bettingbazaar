@@ -42,7 +42,13 @@ most likely source of a bad first impression at launch, because sign-ins cluster
 hard: a promotion, a cycle opening, a push notification.
 
 Mitigations, in order of preference:
-1. **Raise `UV_THREADPOOL_SIZE`** (e.g. 8–16) — one env var, immediate effect.
+1. **Raise `UV_THREADPOOL_SIZE`** — one env var, but **benchmark before and
+   after; do not assume a value is safe.** Argon2 holds ~19 MiB per concurrent
+   job, so 16 threads is ~304 MiB of hashing memory alone, before the
+   application, the driver pools and the OS. Raising it past what the instance
+   can hold trades queueing for CPU contention or an OOM kill, which is a worse
+   failure than a slow login. Size it against the instance's actual memory and
+   cores.
 2. **Scale horizontally** — logins are stateless; more instances is linear.
 3. Lower `ARGON2_MEMORY_KIB` — **last resort**, it directly weakens password
    storage. Do not do this to fix a capacity problem that hardware can fix.
@@ -57,15 +63,25 @@ Token verification is 0.13 ms. A normal request's latency is therefore
 - MongoDB pool: `MONGO_MAX_POOL_SIZE`, default **10** per instance
 - Postgres pool: `PG_POOL_SIZE`, default **10** per instance
 
-Those defaults are the ceiling that matters. Ten concurrent in-flight queries
-per instance; the eleventh waits for a connection, and that wait appears as
-latency with no slow query to blame it on. Watch `bb_pg_pool_connections`
-with `state="waiting"` — sustained non-zero is pool exhaustion, and it is the
-failure that looks like "the database got slow" when the database is fine.
+**These are two independent ceilings, not one shared budget.** A query waits
+only when *its own* pool is saturated: ten concurrent Mongo queries do not
+consume Postgres capacity, or the reverse. The wait then appears as latency with
+no slow query to blame it on.
 
-**Keep `instances × (Mongo pool + PG pool) ≤ the database tier's connection
-cap`** (§21). Scaling out without raising the cap moves the bottleneck to the
-database's own connection limit, where it is much harder to diagnose.
+Each database must be sized against its own cap:
+
+- `instances × MONGO_MAX_POOL_SIZE ≤ the MongoDB tier's connection limit`
+- `instances × PG_POOL_SIZE ≤ the Postgres tier's connection limit`
+
+Scaling out without raising a cap moves the bottleneck into the database's own
+connection limit, where it is much harder to diagnose.
+
+**Watch both.** `bb_pg_pool_connections{state="waiting"}` covers Postgres only
+and **cannot** see MongoDB exhaustion — sustained non-zero there means the PG
+pool. There is currently **no equivalent MongoDB pool metric**; until one is
+added, Mongo pool pressure has to be inferred from driver logs or from request
+latency rising with no slow query behind it. That gap is worth closing before a
+load test, or the test will not be able to tell the two apart.
 
 ---
 
@@ -85,11 +101,14 @@ That is **five to six sequential round trips**. On a same-region replica set
 (~1–2 ms each) it is single-digit milliseconds of database time; across regions
 it degrades linearly and painfully. **Co-locate the app and the database.**
 
-Steps 6 and 8 are the contention point, not step 4: every concurrent bet on the
-same cycle updates the *same* `Cycle` document. Under load this serialises on
-one document, and no amount of horizontal scaling helps. This is the first thing
-a real load test would surface — and the reason a load test is a launch gate
-rather than a nice-to-have.
+**Step 6 is the contention point**, not step 4: every concurrent bet on the same
+cycle updates the *same* `Cycle` document, so those writes serialise on one
+document no matter how many instances are placing them. (Step 8's
+`Transaction.create` inserts a new document per bet and is not part of that
+contention — an earlier version of this note wrongly included it.) Adding
+instances raises throughput for everything else on the path while this one write
+stays serialised. Where that ceiling actually sits is unmeasured, which is
+precisely why a load test is a launch gate rather than a nice-to-have.
 
 ---
 
@@ -113,7 +132,9 @@ Stated plainly, because these are the questions a launch actually turns on:
 - **Where the `Cycle` document contention wall is.** The analysis above says it
   exists; only a test says at what concurrency it bites.
 - **Production database latency.** Everything here assumes same-region. A
-  cross-region hop multiplies steps 1–8 above.
+  cross-region hop adds its higher round-trip time to EACH of the sequential
+  calls above — additive per round trip, so the total grows with how many the
+  path makes, not as a multiplier on the whole request.
 - **Cold start.** Nixpacks/Railway boot time is unmeasured.
 - **Behaviour at the load-shed threshold.** `LOAD_SHED_MAX_INFLIGHT` and
   `LOAD_SHED_MAX_LAG_MS` return 503 past their ceilings; those ceilings have
@@ -121,5 +142,13 @@ Stated plainly, because these are the questions a launch actually turns on:
 
 **To get real numbers**: run a load test against staging that ramps concurrent
 bets on a single cycle, and watch `http_request_duration_seconds`,
-`bb_pg_pool_connections{state="waiting"}` and `bb_requests_shed_total`. Those
-three metrics already exist and will answer every question in this section.
+`bb_pg_pool_connections{state="waiting"}` and `bb_requests_shed_total`.
+
+Those three already exist and answer **several** of the questions above —
+request-latency distribution, Postgres pool pressure, and whether shedding
+engages. They do **not** answer the rest: cold start, production network and
+database latency, MongoDB pool exhaustion (no metric exists), or where the
+`Cycle` document contention wall sits. Those need, respectively, a boot-time
+measurement, production-side database metrics, a new Mongo pool gauge, and a
+test that ramps concurrency on ONE cycle while watching write latency for step 6
+specifically.

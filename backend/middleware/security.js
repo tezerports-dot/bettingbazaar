@@ -108,6 +108,22 @@ export const merchantAuthLimiter = rateLimit({
     legacyHeaders: false,
     skipSuccessfulRequests: true,
     keyGenerator: (req) => ipKeyGenerator(req.ip),
+    handler: (req, res) => {
+        console.error('🚨 SECURITY ALERT: Merchant auth rate limit exceeded', {
+            ip: req.ip, path: req.path, timestamp: new Date().toISOString(),
+        });
+        AuditLog.create({
+            adminId: 'SYSTEM_SECURITY',
+            action: 'MERCHANT_RATE_LIMIT_EXCEEDED',
+            details: `Multiple failed merchant login attempts from ${req.ip}`,
+            ip: req.ip, timestamp: new Date(),
+        }).catch(console.error);
+        res.status(429).json({
+            success: false,
+            message: "Too many failed merchant login attempts. Please try again in an hour.",
+            retryAfter: 3600,
+        });
+    },
 });
 
 // Second-factor submission, once the password has already been accepted.
@@ -127,6 +143,27 @@ export const twoFactorLimiter = rateLimit({
     legacyHeaders: false,
     skipSuccessfulRequests: true,
     keyGenerator: (req) => req.user?.id || req.body?.mobile || ipKeyGenerator(req.ip),
+    // Audited at the loudest level of any limiter here. Tripping THIS one means
+    // the password was already accepted and only the second factor is being
+    // guessed — i.e. a credential is already compromised and a takeover is in
+    // progress. That is a different and more urgent signal than a failed
+    // password, and it should never be inferred from a 429 count alone.
+    handler: (req, res) => {
+        console.error('🚨 SECURITY ALERT: 2FA code rate limit exceeded — possible account takeover in progress', {
+            ip: req.ip, userId: req.user?.id, path: req.path, timestamp: new Date().toISOString(),
+        });
+        AuditLog.create({
+            adminId: 'SYSTEM_SECURITY',
+            action: 'TWO_FACTOR_RATE_LIMIT_EXCEEDED',
+            details: `Repeated invalid 2FA codes from ${req.ip} for account ${req.user?.id || req.body?.mobile || 'unknown'} — password already accepted`,
+            ip: req.ip, timestamp: new Date(),
+        }).catch(console.error);
+        res.status(429).json({
+            success: false,
+            message: "Too many incorrect authentication codes. Please wait before trying again.",
+            retryAfter: 900,
+        });
+    },
 });
 
 export const ipBetLimiter = rateLimit({
