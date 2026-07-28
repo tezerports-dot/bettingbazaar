@@ -197,3 +197,23 @@ that is talking to us would turn a server-side bug into a multi-origin outage.
 This addresses origin availability. It takes no client IP, geo or ISP as an
 input — the candidate order is static and identical for every user — and it is
 not a circumvention mechanism (`04-GOVERNANCE.md` §20, 2026-07-28).
+
+## Two-factor authentication (TOTP)
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `TOTP_ENCRYPTION_KEY` | **yes, once 2FA is enabled** | AES-256-GCM key protecting stored TOTP secrets. Generate with `openssl rand -base64 32`. |
+
+A TOTP secret is a **bearer credential** — anyone holding it can mint valid
+codes indefinitely — and unlike a password it cannot be stored as a one-way
+hash, because the server must recompute codes from it. So secrets are encrypted
+at rest and decrypted only for the duration of a verification. A database dump
+alone does not yield working second factors.
+
+Kept separate from `JWT_SECRET` deliberately: rotating the auth key must not
+silently invalidate every enrolled authenticator, and a leak of one must not
+compromise the other.
+
+**This key has no `_PREVIOUS_` counterpart.** Rotating it makes every stored
+secret undecryptable, which means every user re-enrolling. Treat it as
+permanent; back it up with the same care as the Android keystore.

@@ -15,11 +15,11 @@ import { betBehaviorLimiter } from './behavioralRateLimit.js';
 // Prevents brute force password attacks
 export const authLimiter = rateLimit({
     store: createRateLimitStore('rl:auth:'),
-    ...RATE_LIMIT_TIERS.auth, // 5 / 15 min
+    ...RATE_LIMIT_TIERS.auth, // 4 FAILED / 30 min
     message: { 
         success: false,
-        message: "Too many authentication attempts. Please try again after 15 minutes.",
-        retryAfter: 900 // seconds
+        message: "Too many failed login attempts. Please try again in 30 minutes.",
+        retryAfter: 1800 // seconds
     },
     standardHeaders: true,
     legacyHeaders: false,
@@ -57,11 +57,11 @@ export const authLimiter = rateLimit({
 // Admins need extra protection
 export const adminAuthLimiter = rateLimit({
     store: createRateLimitStore('rl:adminauth:'),
-    ...RATE_LIMIT_TIERS.adminAuth, // 3 / 30 min
+    ...RATE_LIMIT_TIERS.adminAuth, // 4 FAILED / hour
     message: { 
         success: false,
-        message: "Too many admin login attempts. Please try again after 30 minutes.",
-        retryAfter: 1800
+        message: "Too many failed admin login attempts. Please try again in an hour.",
+        retryAfter: 3600
     },
     standardHeaders: true,
     legacyHeaders: false,
@@ -93,6 +93,42 @@ export const adminAuthLimiter = rateLimit({
 
 // Rate limiter for bet placement
 // Prevents rapid-fire betting and potential abuse
+// Merchant login. Deliberately its own limiter rather than sharing the player
+// tier: a merchant account settles real INR and USDT, so a brute-force against
+// it is an attack on the settlement rail, not on one player's balance.
+export const merchantAuthLimiter = rateLimit({
+    store: createRateLimitStore('rl:merchantauth:'),
+    ...RATE_LIMIT_TIERS.merchantAuth, // 4 FAILED / hour
+    message: {
+        success: false,
+        message: "Too many failed merchant login attempts. Please try again in an hour.",
+        retryAfter: 3600
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: true,
+    keyGenerator: (req) => ipKeyGenerator(req.ip),
+});
+
+// Second-factor submission, once the password has already been accepted.
+// Counted separately from the password tier because the search space is very
+// different: six digits is 10^6, so the same allowance that is generous for a
+// password is dangerous for an OTP. Keyed by account where known, so one
+// attacker cannot exhaust a shared-IP office's whole budget.
+export const twoFactorLimiter = rateLimit({
+    store: createRateLimitStore('rl:2fa:'),
+    ...RATE_LIMIT_TIERS.twoFactor, // 5 FAILED / 15 min
+    message: {
+        success: false,
+        message: "Too many incorrect authentication codes. Please wait before trying again.",
+        retryAfter: 900
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: true,
+    keyGenerator: (req) => req.user?.id || req.body?.mobile || ipKeyGenerator(req.ip),
+});
+
 export const ipBetLimiter = rateLimit({
     store: createRateLimitStore('rl:bet:'),
     ...RATE_LIMIT_TIERS.bet, // 30 / min

@@ -90,6 +90,7 @@ import { providerRegistry } from './providers/registry.js';
 import { S3StorageProvider } from './providers/storage/S3StorageProvider.js';
 import { LocalDiskStorageProvider } from './providers/storage/LocalDiskStorageProvider.js';
 import recoveryRoutes     from './routes/account-recovery.routes.js';
+import twoFactorRoutes from './domains/identity/twoFactor.routes.js';
 import winnersRoutes      from './routes/winners.routes.js';
 import appBootstrapRoutes from './routes/app-bootstrap.routes.js';
 
@@ -368,6 +369,10 @@ startIpDefenseConfigRefresh();
 app.use('/api/v1/auth', authLimiter, createSubnetLimiter('auth'), globalSurgeBreaker('auth'), authRoutes);
 // MED-04 FIX: removed /api/auth duplicate mount — it duplicated rate limit slots
 // allowing 2× brute-force attempts. All clients should use /api/v1/auth/*.
+// 2FA enrolment and management (LAUNCH_READINESS §F). Mandatory for admin and
+// sub-admin roles, optional for players; enforcement at login lives in the auth
+// handler, this router only manages enrolment.
+app.use('/api/2fa', twoFactorRoutes);
 app.use('/api', recoveryRoutes);
 app.use('/api', winnersRoutes);
 app.use('/api/app', appBootstrapRoutes);
