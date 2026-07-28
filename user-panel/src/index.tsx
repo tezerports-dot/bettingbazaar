@@ -11,6 +11,20 @@ import './index.css';
 // updates through the Play Store, not through a cached shell.
 const isNativeShell = !!(window as any).Capacitor?.isNativePlatform?.();
 
+// Android freezes a backgrounded app's socket, and on resume it can still
+// report itself connected over a dead WebSocket — socket.io only notices when
+// the server ping times out, tens of seconds later, during which the cycle
+// screen shows pools and odds that stopped updating. Rebuild on every
+// foreground instead of waiting for that. Registers nothing on the web.
+if (isNativeShell) {
+  void Promise.all([
+    import('./services/nativeLifecycle'),
+    import('./services/backend.service'),
+  ]).then(([{ registerNativeLifecycle }, { getBackend }]) =>
+    registerNativeLifecycle(() => getBackend().reconnectRealtime?.()),
+  ).catch((err) => console.warn('[native] lifecycle wiring skipped:', err));
+}
+
 if ('serviceWorker' in navigator && !isNativeShell) {
   const hostname = window.location.hostname;
   const isSandbox = hostname.includes('usercontent.goog') ||

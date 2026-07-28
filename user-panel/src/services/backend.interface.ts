@@ -143,4 +143,11 @@ export interface Backend {
 
 
   manageCycle(adminId: string, action: string, payload: any): Promise<void>;
+
+  /**
+   * Force the realtime connection to rebuild. Optional: only the real backend
+   * holds a socket. Used by the native shell on foreground, where Android can
+   * leave a frozen connection reporting itself as healthy.
+   */
+  reconnectRealtime?(): void;
 }
