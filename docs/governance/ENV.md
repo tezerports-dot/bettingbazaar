@@ -26,6 +26,22 @@ Generate every secret with: `openssl rand -base64 48`
 | `PUBLIC_APP_ORIGIN` | Official public app origin advertised to native clients (a valid `https://…` origin). |
 | `PUBLIC_APP_ALLOWED_ORIGINS` | Public app origin allow-list advertised to native clients (comma-separated origins). |
 
+**`TRUST_PROXY` — set this whenever anything terminates TLS in front of Node.**
+Not in the required table because the app boots without it, but leaving it
+wrong breaks IP attribution in both directions, and every per-IP control
+(`ipDefense`, the rate limiters, audit logs) reads the result.
+
+| Value | Meaning |
+|---|---|
+| *unset* / `false` / `none` | **Default.** `X-Forwarded-*` is ignored — correct for a directly-exposed listener. Behind a proxy this makes every client look like the proxy, so per-IP limits apply to your whole fleet at once. |
+| `1` (or an integer *n*) | Trust *n* proxy hops. Correct for a single known edge (Caddy, one NGINX, one CDN). |
+| `10.0.0.0/8, 172.16.0.0/12` | Trust these addresses/CIDRs only — a comma-separated list is passed through to Express verbatim. **Prefer this** when the upstream ranges are known. |
+| `true` | Trusts every hop. Any client can then forge `X-Forwarded-For` and impersonate an arbitrary IP to `ipDefense`. Do not use in production. |
+
+`PROXY_PROTOCOL_V2` / `PROXY_PROTOCOL_TRUSTED_SUBNETS` are the L4 alternative:
+enable only when this listener sits directly behind internal edge routers that
+prepend PROXY v2.
+
 **Secret-strength rules the gate enforces (production):**
 - `JWT_SECRET`, `PASETO_SECRET_KEY` (if used instead of `JWT_SECRET`), `ORDER_HMAC_SECRET`,
   `AADHAAR_HMAC_SECRET`, `METRICS_TOKEN` must each be **≥ 32 characters and non-placeholder**.
