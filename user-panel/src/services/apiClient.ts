@@ -17,7 +17,12 @@ declare global {
   interface Window { __bbAuthToken__?: string | null; }
 }
 
-const BASE_URL = import.meta.env.VITE_API_URL || '';
+import { currentOrigin, reportOriginUnreachable, failoverAvailable } from './originFailover';
+
+// Resolved per request, not once at module load: when the configured origin
+// stops answering, originFailover adopts the next one and every subsequent
+// request follows without a reload. With a single configured origin this
+// returns exactly what the old `import.meta.env.VITE_API_URL || ''` did.
 const MAX_RETRIES = 2;
 
 // ── In-flight deduplication ───────────────────────────────────────────────────
@@ -51,7 +56,8 @@ async function apiFetch(
   body?: unknown,
   options: { retry?: number; signal?: AbortSignal } = {}
 ): Promise<unknown> {
-  const url     = `${BASE_URL}${path}`;
+  const origin  = currentOrigin();
+  const url     = `${origin}${path}`;
   const attempt = options.retry ?? 0;
   const key     = dedupKey(method, url, body);
 
@@ -79,8 +85,14 @@ async function apiFetch(
   try {
     resp = await fetchPromise;
   } catch (err: unknown) {
-    // Network error — retry with backoff
+    // TRANSPORT failure only — DNS, TLS, connection refused, timeout. An HTTP
+    // error status does not land here, which is deliberate: a 500 means the
+    // origin answered, and abandoning a host that is talking to us would turn
+    // a server-side bug into a multi-origin outage.
     if (attempt < MAX_RETRIES) {
+      // Before retrying, give the failover a chance to move to an origin that
+      // is actually reachable, so the retry is not aimed at the same dead host.
+      if (failoverAvailable()) await reportOriginUnreachable(origin);
       await new Promise(r => setTimeout(r, 300 * 2 ** attempt));
       return apiFetch(method, path, body, { ...options, retry: attempt + 1 });
     }

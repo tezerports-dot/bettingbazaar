@@ -176,3 +176,24 @@ grep -rhoE 'process\.env\.[A-Z][A-Z0-9_]{2,}' backend --include='*.js' | sort -u
 
 **Full annotated reference:** `.env.example` (repo root). **Deploy walkthroughs:** `DEPLOYMENT.md`.
 **Boot-gate source of truth:** `backend/startup/validateEnv.js`.
+
+## Client origin failover (user panel, build-time)
+
+| Variable | Purpose |
+|---|---|
+| `VITE_API_URL` | Absolute API origin. Optional for a same-origin web deploy (relative `/api` works); **mandatory** for the Android build, which has no same-origin backend to fall back on. |
+| `VITE_API_FALLBACK_URLS` | Comma-separated alternate origins serving the SAME deployment, tried in order when the primary does not answer. |
+
+Every listed host must serve the same app — this is the multi-domain redundancy
+in `backend/config/network.config.js` (`DOMAINS`), where each hostname serves
+identical routes and behaviour. The client probes `/health/live` and adopts the
+first origin that responds, remembering it for 30 minutes so a recovered primary
+is eventually retried.
+
+Failover triggers on **transport** failures only (DNS, TLS, connection refused,
+timeout). An HTTP error status means the origin answered, and abandoning a host
+that is talking to us would turn a server-side bug into a multi-origin outage.
+
+This addresses origin availability. It takes no client IP, geo or ISP as an
+input — the candidate order is static and identical for every user — and it is
+not a circumvention mechanism (`04-GOVERNANCE.md` §20, 2026-07-28).

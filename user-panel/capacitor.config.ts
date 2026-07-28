@@ -27,10 +27,6 @@ const config: CapacitorConfig = {
   webDir: 'dist',
 
   android: {
-    // Serve bundled assets over https://localhost rather than the legacy
-    // http://. A secure context is required for crypto.subtle and the storage
-    // APIs the auth layer uses, and it keeps mixed-content rules meaningful.
-    androidScheme: 'https',
     // Every network call must be TLS. The API is HTTPS; nothing in this app has
     // a reason to speak plaintext, so the platform is told to forbid it (and
     // res/xml/network_security_config.xml enforces the same at the OS layer).
@@ -39,8 +35,14 @@ const config: CapacitorConfig = {
   },
 
   server: {
-    // Bundled assets only. Listed explicitly so a future edit that adds a
-    // `url:` here is a visible decision rather than a silent one.
+    // Serve bundled assets over https://localhost rather than the legacy
+    // http://. A secure context is required for crypto.subtle and the storage
+    // APIs the auth layer uses, and it keeps mixed-content rules meaningful.
+    // (androidScheme belongs here, not under `android` — Capacitor's types
+    // reject it there, which is how this was caught.)
+    //
+    // Bundled assets only: no `url:` key. A future edit adding one turns this
+    // back into a thin web view, so its absence is deliberate and load-bearing.
     androidScheme: 'https',
   },
 

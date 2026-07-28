@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "build:native": "node scripts/assert-native-env.mjs && vite build",
     "android:sync": "npm run build:native && cap sync android",
-    "android:open": "cap open android"
+    "android:open": "cap open android",
+    "icons:generate": "node scripts/generate-pwa-icons.mjs",
+    "test": "vitest run"
   },
   "dependencies": {
     "@capacitor/android": "^8.4.2",
@@ -34,6 +36,7 @@
     "postcss": "8.5.19",
     "tailwindcss": "3.4.19",
     "typescript": "^5.9.3",
-    "vite": "7.3.6"
+    "vite": "7.3.6",
+    "vitest": "^4.1.10"
   }
 }

@@ -145,9 +145,12 @@ jobs:
       # registry claims must have its evidence/docs/tests present on disk.
       - name: Capability registry verification
         run: npm run verify:capabilities
-      - name: User panel build
+      # The user panel now carries logic worth testing on its own — origin
+      # failover decides which host the app talks to when one stops answering,
+      # and a silent regression there is an outage the build would not catch.
+      - name: User panel typecheck + unit tests + build
         working-directory: user-panel
-        run: npm ci --legacy-peer-deps && npm run build
+        run: npm ci --legacy-peer-deps && npx tsc --noEmit && npm test && npm run build
       - name: Admin panel typecheck + build
         working-directory: admin-panel
         run: npm ci --legacy-peer-deps && npx tsc --noEmit && npx vite build
