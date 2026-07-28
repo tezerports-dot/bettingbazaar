@@ -27,11 +27,23 @@ dotenv.config();
 // platform safe (missing any is fatal in prod; a loud warning otherwise).
 validateEnv();
 
+// Hybrid money DB: report which store is authoritative for each money path, and
+// refuse to boot on an incoherent cutover (e.g. the accounting ledger moved to
+// Postgres while balances are still in Mongo — a settlement would then span two
+// sources of truth). Silent in the default all-Mongo posture.
+// See postgres/moneyAuthority.js and LAUNCH_READINESS.md §E.
+const moneyAuthorityCheck = reportAuthorityAtBoot();
+if (!moneyAuthorityCheck.ok) {
+  console.error('❌ Refusing to start: the money-authority configuration is inconsistent (see above).');
+  process.exit(1);
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
 // ─── STARTUP MODULES ──────────────────────────────────────────────────────────
 import { validateEnv }        from './startup/validateEnv.js'; // AQ-1: fail-fast env gate
+import { reportAuthorityAtBoot } from './postgres/moneyAuthority.js'; // hybrid money DB: source-of-truth per path
 import { runtimeProfile }     from './startup/runtimeRole.js';
 import { connectMongoDB }     from './startup/mongoConnect.js';
 import { connectRedis }       from './startup/redisConnect.js';
