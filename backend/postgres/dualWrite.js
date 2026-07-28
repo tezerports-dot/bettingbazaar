@@ -51,11 +51,11 @@ const FIELD_COLUMN = {
 export function mirrorWalletLedger(doc) {
   return mirror('wallet_ledger', async () => {
     await pgQuery(
-      `INSERT INTO wallet_ledger (mongo_id, tx_id, user_id, field, amount_paise, balance_after_paise, tx_type, description, ref_id, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,COALESCE($10, now()))
+      `INSERT INTO wallet_ledger (mongo_id, tx_id, user_id, field, amount_paise, balance_before_paise, balance_after_paise, tx_type, description, ref_id, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,COALESCE($11, now()))
        ON CONFLICT (mongo_id) DO NOTHING`,
       [String(doc._id), doc.txId || null, String(doc.userId), doc.field,
-       paise(doc.amount), paise(doc.balanceAfter), doc.type || null,
+       paise(doc.amount), paise(doc.balanceBefore), paise(doc.balanceAfter), doc.type || null,
        doc.reason || null, doc.refId ? String(doc.refId) : null, doc.createdAt || null],
     );
     const col = FIELD_COLUMN[doc.field];

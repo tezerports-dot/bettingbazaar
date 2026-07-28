@@ -36,6 +36,7 @@
  */
 import mongoose from 'mongoose';
 import { paiseToRupees } from '../shared/money.js';
+import { pgQuery } from './pgClient.js';
 
 let failStreak = 0;
 
@@ -78,6 +79,7 @@ const rupees = rupeesFromPaise;
 const FIELD_FROM_COLUMN = {
   deposit_paise: 'depositBalance', winnings_paise: 'winningsBalance',
   token_paise: 'tokenBalance', reserve_paise: 'reserveBalance', locked_paise: 'lockedBalance',
+  locked_deposit_paise: 'lockedDepositAmount', locked_winnings_paise: 'lockedWinningsAmount',
 };
 
 /**
@@ -89,27 +91,51 @@ const FIELD_FROM_COLUMN = {
 export function reverseMirrorWalletLedger(row) {
   return mirrorBack('wallet_ledger', async () => {
     const WalletLedger = mongoose.model('WalletLedger');
+    const amount = rupees(row.amount_paise);
+    const balanceAfter = rupees(row.balance_after_paise);
     const doc = {
       txId: row.tx_id,
       userId: row.user_id,
       field: row.field,
-      amount: rupees(row.amount_paise),
-      balanceAfter: rupees(row.balance_after_paise),
+      amount,
+      // balanceBefore is `required` on the Mongo schema. Rows written since
+      // balance_before_paise was added carry it; older ones are derived — in
+      // PAISE, so the derivation stays exact instead of reintroducing the float
+      // error the integer representation exists to avoid.
+      balanceBefore: rupees(
+        row.balance_before_paise != null
+          ? row.balance_before_paise
+          : (row.tx_type === 'DEBIT'
+              ? Number(row.balance_after_paise) + Number(row.amount_paise)
+              : Number(row.balance_after_paise) - Number(row.amount_paise))
+      ),
+      balanceAfter,
       type: row.tx_type,
-      reason: row.description,
+      reason: row.description || 'Postgres-authoritative movement',
       refId: row.ref_id,
       createdAt: row.created_at,
     };
     // upsert-on-txId: a replay of the same committed movement is a no-op.
     await WalletLedger.updateOne({ txId: row.tx_id }, { $setOnInsert: doc }, { upsert: true });
 
-    // Keep the denormalised balance on User in step with the ledger row, so a
-    // fallback to Mongo reads the same number Postgres last committed.
-    const field = FIELD_FROM_COLUMN[`${row.field}_paise`] || row.field;
-    if (field && row.balance_after_paise != null) {
+    // Keep the denormalised balances on User in step, so a fallback to Mongo
+    // reads the same numbers Postgres last committed.
+    //
+    // The whole snapshot is copied, not just this row's field: one movement can
+    // shift several pockets at once (a withdrawal lock moves winnings AND
+    // locked under a single ledger row), and syncing only the row's own field
+    // would leave the others silently stale — which is precisely the drift the
+    // zero-RPO rollback guarantee cannot afford.
+    const { rows: [wallet] } = await pgQuery(
+      `SELECT ${Object.keys(FIELD_FROM_COLUMN).join(', ')} FROM wallets WHERE user_id = $1`,
+      [row.user_id], 'reverse_wallet_snapshot',
+    );
+    if (wallet) {
       await mongoose.model('User').updateOne(
         { _id: row.user_id },
-        { $set: { [field]: rupees(row.balance_after_paise) } },
+        { $set: Object.fromEntries(
+          Object.entries(FIELD_FROM_COLUMN).map(([column, field]) => [field, rupees(wallet[column])]),
+        ) },
       );
     }
   });

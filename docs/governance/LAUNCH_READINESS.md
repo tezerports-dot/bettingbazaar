@@ -103,6 +103,27 @@ code flip, because it moves the source of truth for money. The sequence
    proven against a real Postgres — row locking, the negative-balance guard and
    the unique-`tx_id` idempotency gate hold under concurrency (`npm run test:pg`).
    **No path is flipped**; every one still resolves to MongoDB.
+0b. ✅ **The wallet path is genuinely routed (2026-07-28), still dormant.**
+   Every operation `walletAuthority.service.js` exposes now has a Postgres
+   implementation behind the switch (`postgres/walletPgAuthority.js`), keyed by
+   byte-identical txIds so a rollback's Mongo idempotency gate still recognises
+   movements Postgres made. Bet placement, which mutated balances with a raw
+   `$inc` inside `domains/markets/bet.routes.js`, was moved behind
+   `lockBetStake`/`unlockBetStake` — until that happened, balances had a second
+   writer the switch could not reach and a flip would have split the source of
+   truth mid-bet. 46 tests cover both layers against a real Postgres.
+   **Two things remain before the wallet path is flippable:**
+   - **Run `npm run pg:seed-locks` immediately before the flip**, while Mongo is
+     still authoritative. `lockedDepositAmount`/`lockedWinningsAmount` are never
+     a ledger row's field, so the forward mirror cannot carry them and the new
+     `wallets.locked_*_paise` columns would be 0 at cutover — the first
+     settlement to release a stake would unwind a split Postgres never learned.
+     (`-- --check` reports drift without writing.)
+   - **Balance READS are still Mongo property access** (~211 sites). They read
+     the copy the reverse mirror keeps current — stale by at most a reconcile
+     pass rather than wrong — but they are not authoritative.
+     `walletAuthority.getBalances()` is the routed read; call sites move to it
+     incrementally, and any NEW balance read must use it.
 1. ✅ **Reconciliation is already scheduled** — the `pg-reconcile` cron
    (`startup/cronJobs.js`) runs every 5 min once `DATABASE_URL` is set,
    leader-locked, detection-only. It exports drift as metrics and pages

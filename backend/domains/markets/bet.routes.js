@@ -3,7 +3,7 @@
 
 import express from 'express';
 import { randomUUID } from 'crypto'; // MED-01: for collision-safe ledger txId
-import { creditWinnings } from '../wallet/walletAuthority.service.js'; // HIGH-03: atomicBet removed (never called; inline atomic pattern used instead)
+import { creditWinnings, lockBetStake, unlockBetStake } from '../wallet/walletAuthority.service.js'; // HIGH-03: atomicBet removed (never called; inline atomic pattern used instead)
 import mongoose from 'mongoose';
 import { authenticate, requireApprovedKyc } from '../identity/auth.middleware.js';
 import { betLimiter } from '../../middleware/security.js';
@@ -138,31 +138,28 @@ router.post('/place', authenticate, requireApprovedKyc, betLimiter, async (req, 
     }
     const { fromDeposit, fromWinnings, fromReserve } = plan;
 
-    // ── Finding 4 / Section 5.3: Three-field atomic check + deduct ──────────
-    // Old: two-field (deposit + winnings). New: three-field adding reserveBalance.
-    // Single findOneAndUpdate: filter encodes all three balance requirements.
-    // If another bet landed between read and write, filter fails → null → 400.
-    const updatedUser = await User.findOneAndUpdate(
-      {
-        _id:             userId,
-        depositBalance:  { $gte: fromDeposit  },
-        winningsBalance: { $gte: fromWinnings },
-        reserveBalance:  { $gte: fromReserve  },
-      },
-      {
-        $inc: {
-          depositBalance:       -fromDeposit,
-          winningsBalance:      -fromWinnings,
-          reserveBalance:       -fromReserve,
-          lockedBalance:         amount,
-          lockedDepositAmount:   fromDeposit,
-          lockedWinningsAmount:  fromWinnings,
-        }
-      },
-      { new: true }
-    );
+    // ── Stake lock (§7: walletAuthority is the sole balance writer) ─────────
+    // This used to be a raw three-field `findOneAndUpdate` plus a
+    // fire-and-forget ledger write, right here in the route. That made
+    // balances have two writers, one of which the money-authority switch
+    // could not reach — so flipping the wallet path to Postgres would have
+    // split the source of truth mid-bet. The authority now owns it, and picks
+    // the store per postgres/moneyAuthority.js.
+    const betTxBase = `bet_${userId}_${randomUUID()}`;
+    const stakeSlices = [
+      { field: 'depositBalance',  suffix: '_dep', amount: fromDeposit,
+        reason: `BET_PLACED deposit portion — ₹${amount} on ${side}` },
+      { field: 'winningsBalance', suffix: '_win', amount: fromWinnings,
+        reason: `BET_PLACED winnings portion — ₹${amount} on ${side}` },
+      { field: 'reserveBalance',  suffix: '_res', amount: fromReserve,
+        reason: `BET_PLACED reserve portion (${plan.reservePercentApplied}%) — ₹${amount} on ${side}` },
+    ].filter((s) => s.amount > 0);
 
-    if (!updatedUser) {
+    const stakeLock = await lockBetStake(userId, {
+      amount, txId: betTxBase, refId: null, slices: stakeSlices,
+    });
+
+    if (!stakeLock.ok) {
       // Concurrent request won the race — our pre-computed split is now stale.
       return res.status(400).json({
         success: false,
@@ -171,50 +168,17 @@ router.post('/place', authenticate, requireApprovedKyc, betLimiter, async (req, 
       });
     }
 
-    // ── WalletLedger audit entries (Section 5.4) ──────────────────────────
+    const updatedUser = stakeLock.balances;
+
+    // SSE: push updated balance to user's personal channel (Finding 3)
     try {
-      const WalletLedger = mongoose.model('WalletLedger');
-      const betTxBase = `bet_${userId}_${randomUUID()}`;
-      const ledgerOps = [];
-      if (fromDeposit > 0) {
-        ledgerOps.push({
-          userId, type: 'DEBIT', field: 'depositBalance',
-          amount: fromDeposit,
-          balanceBefore: availableDeposit,
-          balanceAfter:  availableDeposit - fromDeposit,
-          reason: `BET_PLACED deposit portion — ₹${amount} on ${side}`, refModel: 'Bet',
-          txId: betTxBase + '_dep',
-        });
-      }
-      if (fromWinnings > 0) {
-        ledgerOps.push({
-          userId, type: 'DEBIT', field: 'winningsBalance',
-          amount: fromWinnings,
-          balanceBefore: availableWinnings,
-          balanceAfter:  availableWinnings - fromWinnings,
-          reason: `BET_PLACED winnings portion — ₹${amount} on ${side}`, refModel: 'Bet',
-          txId: betTxBase + '_win',
-        });
-      }
-      if (fromReserve > 0) {
-        ledgerOps.push({
-          userId, type: 'DEBIT', field: 'reserveBalance',
-          amount: fromReserve,
-          balanceBefore: availableReserve,
-          balanceAfter:  availableReserve - fromReserve,
-          reason: `BET_PLACED reserve portion (${plan.reservePercentApplied}%) — ₹${amount} on ${side}`, refModel: 'Bet',
-          txId: betTxBase + '_res',
-        });
-      }
-      if (ledgerOps.length) await WalletLedger.insertMany(ledgerOps, { ordered: false }).catch(() => {});
-      // SSE: push updated balance to user's personal channel (Finding 3)
       global.sseManager?.sendToUser?.(String(userId), 'balance_update', {
         depositBalance:  updatedUser.depositBalance  || 0,
         winningsBalance: updatedUser.winningsBalance || 0,
         reserveBalance:  updatedUser.reserveBalance  || 0,
         totalBalance:    (updatedUser.depositBalance || 0) + (updatedUser.winningsBalance || 0),
       });
-    } catch (_) { /* Ledger/SSE failure never blocks the bet response */ }
+    } catch (_) { /* SSE failure never blocks the bet response */ }
 
     // ── Create bet record ────────────────────────────────────────────────────
     const betDoc = await Bet.create([{
@@ -243,54 +207,17 @@ router.post('/place', authenticate, requireApprovedKyc, betLimiter, async (req, 
       { new: true }
     );
     if (!cycleStillOpen) {
-      // Cycle closed between pre-check and pool commit – atomically restore balance
-      await User.findOneAndUpdate(
-        { _id: userId },
-        { $inc: {
-            depositBalance:       fromDeposit,
-            winningsBalance:      fromWinnings,
-            reserveBalance:       fromReserve,
-            lockedBalance:        -amount,
-            lockedDepositAmount:  -fromDeposit,
-            lockedWinningsAmount: -fromWinnings,
-        }}
-      );
+      // Cycle closed between pre-check and pool commit — atomically restore the
+      // stake through the same authority that took it, so the compensating
+      // CREDIT rows and the balance move stay together (CRIT-03).
+      await unlockBetStake(userId, {
+        amount, txId: `refund_bet_${bet._id}`, refId: bet._id.toString(),
+        slices: stakeSlices.map((s) => ({
+          ...s,
+          reason: `Bet refund — cycle closed during placement (${s.field.replace('Balance', '')} portion)`,
+        })),
+      }).catch(() => { /* restore failure is alerted by reconciliation, never blocks the response */ });
       await Bet.findByIdAndDelete(bet._id).catch(() => {});
-      // CRIT-03 FIX: write compensating CREDIT entries so WalletLedger stays balanced
-      // (DEBIT entries were already written fire-and-forget above before Bet.create)
-      try {
-        const WalletLedger = mongoose.model('WalletLedger');
-        const refundLedgerOps = [];
-        if (fromDeposit > 0) refundLedgerOps.push({
-          userId, type: 'CREDIT', field: 'depositBalance',
-          amount: fromDeposit,
-          balanceBefore: availableDeposit - fromDeposit,
-          balanceAfter:  availableDeposit,
-          reason: 'Bet refund — cycle closed during placement',
-          refModel: 'Bet', refId: bet._id.toString(),
-          txId: `refund_bet_${bet._id}_dep`,
-        });
-        if (fromWinnings > 0) refundLedgerOps.push({
-          userId, type: 'CREDIT', field: 'winningsBalance',
-          amount: fromWinnings,
-          balanceBefore: availableWinnings - fromWinnings,
-          balanceAfter:  availableWinnings,
-          reason: 'Bet refund — cycle closed during placement (winnings portion)',
-          refModel: 'Bet', refId: bet._id.toString(),
-          txId: `refund_bet_${bet._id}_win`,
-        });
-        if (fromReserve > 0) refundLedgerOps.push({
-          userId, type: 'CREDIT', field: 'reserveBalance',
-          amount: fromReserve,
-          balanceBefore: availableReserve - fromReserve,
-          balanceAfter:  availableReserve,
-          reason: 'Bet refund — cycle closed during placement (reserve portion)',
-          refModel: 'Bet', refId: bet._id.toString(),
-          txId: `refund_bet_${bet._id}_res`,
-        });
-        if (refundLedgerOps.length)
-          await WalletLedger.insertMany(refundLedgerOps, { ordered: false }).catch(() => {});
-      } catch (_) { /* ledger refund write failure never blocks the response */ }
       return res.status(400).json({
         success: false,
         message: 'Betting window just closed. Your balance has been fully restored.'

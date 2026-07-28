@@ -29,6 +29,7 @@ describePg('Postgres-authoritative wallet', () => {
     it('reports zeros for a user who has never transacted', async () => {
       expect(await getBalancesPaise(USER)).toEqual({
         depositBalance: 0, winningsBalance: 0, tokenBalance: 0, reserveBalance: 0, lockedBalance: 0,
+        lockedDepositAmount: 0, lockedWinningsAmount: 0,
       });
     });
 
@@ -165,12 +166,16 @@ describePg('Postgres-authoritative wallet', () => {
       expect(balances.winningsBalance).toBe(25000);
       expect(balances.lockedBalance).toBe(15000);
 
+      // Amounts are stored as a positive magnitude with the direction in
+      // tx_type — the convention the forward mirror writes, and the one the
+      // reverse mirror copies straight into WalletLedger.amount (a positive
+      // Number on the Mongo side).
       const { rows } = await pgQuery(
-        'SELECT tx_id, field, amount_paise FROM wallet_ledger WHERE tx_id LIKE $1 ORDER BY tx_id', ['lock-1%'],
+        'SELECT tx_id, field, amount_paise, tx_type FROM wallet_ledger WHERE tx_id LIKE $1 ORDER BY tx_id', ['lock-1%'],
       );
-      expect(rows.map((r) => [r.tx_id, r.field, Number(r.amount_paise)])).toEqual([
-        ['lock-1:from', 'winningsBalance', -15000],
-        ['lock-1:to', 'lockedBalance', 15000],
+      expect(rows.map((r) => [r.tx_id, r.field, Number(r.amount_paise), r.tx_type])).toEqual([
+        ['lock-1:from', 'winningsBalance', 15000, 'WITHDRAWAL_LOCK'],
+        ['lock-1:to', 'lockedBalance', 15000, 'WITHDRAWAL_LOCK'],
       ]);
     });
 
