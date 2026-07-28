@@ -430,11 +430,17 @@ app.use('/api/game',      gameProviderRoutes);
 app.use('/api/game',      gameRegistryRoutes);
 app.use('/api/bet',       betRoutes);
 app.use('/api',           userRoutes);
-// merchantAuthLimiter guards the login route inside this router. Applied at the
-// mount because the limiter itself skips successful requests, so non-login
-// merchant traffic never consumes budget — and a limiter that is exported but
-// never applied is worse than none, since it reads as protection that is not there.
-app.use('/api/merchant',  merchantAuthLimiter, merchantRoutes);
+// Scoped to the login PATH, not the whole merchant router.
+//
+// Mounting it router-wide looked equivalent because the limiter skips
+// successful requests — but skipSuccessfulRequests only skips 2xx. Every
+// ordinary 4xx a working merchant collects (a validation error on an order
+// action, a 404, a stale reference) would have counted against their LOGIN
+// budget, and four of those in an hour would lock them out of signing in
+// entirely. A limiter that bans people for using the product correctly is a
+// worse outage than the brute-force it prevents.
+app.use('/api/merchant/auth/login', merchantAuthLimiter);
+app.use('/api/merchant',  merchantRoutes);
 app.use('/api/payment', paymentRoutes);
 app.use('/api/support',   supportRoutes); // CAP-71: RAG support assistant (dormant until keys set)
 app.use('/api',           uploadRoutes);

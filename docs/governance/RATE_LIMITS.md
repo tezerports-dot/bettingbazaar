@@ -43,6 +43,11 @@ attacker is guessing six digits — a space of 10⁶. An allowance that is gener
 for a password is dangerous for an OTP: 5 attempts is a 1-in-200,000 chance per
 lockout window, where the password tier's arithmetic is very different.
 
+**Scoping note.** Login limiters are mounted on the login PATH, never on a whole
+router. `skipSuccessfulRequests` only skips 2xx, so a router-wide mount would
+let every ordinary 4xx a working user collects — a validation error, a 404 —
+count against their login budget and eventually lock them out of signing in.
+
 **IPv6 note.** `ipKeyGenerator` normalises IPv6 to a /56 block, so one user
 cannot rotate through the addresses their ISP hands them to reset the counter.
 
