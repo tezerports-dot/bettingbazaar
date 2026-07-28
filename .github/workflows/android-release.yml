@@ -1,0 +1,127 @@
+# GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+# Builds the native Android app — a signed APK (sideload / direct download) and
+# a signed AAB (Play Store upload).
+#
+# This runs in CI rather than on a laptop for two reasons: the signing key lives
+# in repository secrets instead of on someone's machine, and the versionCode is
+# derived mechanically. Play permanently rejects a re-upload of a versionCode it
+# has already seen, and a hand-incremented number in a committed file is the
+# classic way to lose an hour on release day.
+name: Android release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: 'Version name shown to users (e.g. 1.4.0)'
+        required: true
+        default: '1.0.0'
+  push:
+    tags: ['android-v*']
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: user-panel
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: user-panel/package-lock.json
+
+      # Capacitor 8 targets a JDK 21 toolchain.
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Install dependencies (reproducible)
+        run: npm ci --legacy-peer-deps
+
+      # VITE_API_URL is mandatory and validated: inside the native shell
+      # `window.location` is https://localhost, so without an absolute API
+      # origin the app silently resolves its backend to the handset itself.
+      # scripts/assert-native-env.mjs fails the build rather than shipping an
+      # APK that installs, opens, and reaches nothing.
+      - name: Build web bundle for the native shell
+        run: npm run build:native
+        env:
+          VITE_API_URL: ${{ vars.ANDROID_API_URL }}
+          VITE_MERCHANT_PANEL_URL: ${{ vars.ANDROID_MERCHANT_PANEL_URL }}
+
+      - name: Sync web assets into the Android project
+        run: npx cap sync android
+
+      # Decoded from a secret to a path outside the workspace so it cannot be
+      # picked up by a later step or archived into an artifact.
+      - name: Decode signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 is not set. A release build must be signed with the upload key — an unsigned or debug-signed artifact cannot be published and cannot update an existing install."
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/upload-keystore.jks"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/upload-keystore.jks" >> "$GITHUB_ENV"
+
+      - name: Resolve version
+        run: |
+          NAME="${{ inputs.version_name }}"
+          if [ -z "$NAME" ]; then NAME="${GITHUB_REF_NAME#android-v}"; fi
+          echo "VERSION_NAME=$NAME" >> "$GITHUB_ENV"
+          # Monotonic across runs and never reused, which is Play's only hard
+          # requirement. github.run_number is per-workflow and only increases.
+          echo "VERSION_CODE=${{ github.run_number }}" >> "$GITHUB_ENV"
+
+      - name: Build signed APK and AAB
+        working-directory: user-panel/android
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          ./gradlew --no-daemon \
+            -PversionCode="$VERSION_CODE" \
+            -PversionName="$VERSION_NAME" \
+            assembleRelease bundleRelease
+
+      # Proves the artifact carries the upload key rather than the debug key —
+      # a debug-signed build installs fine on a test handset and is rejected by
+      # Play, so the check belongs here and not at upload time.
+      - name: Verify the APK is signed with the release key
+        working-directory: user-panel/android
+        run: |
+          APK=app/build/outputs/apk/release/app-release.apk
+          BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BUILD_TOOLS/apksigner" verify --print-certs "$APK"
+          if "$BUILD_TOOLS/apksigner" verify --print-certs "$APK" | grep -qi "CN=Android Debug"; then
+            echo "::error::APK is debug-signed — the release keystore was not applied."
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bettingbazaar-android-${{ env.VERSION_NAME }}
+          path: |
+            user-panel/android/app/build/outputs/apk/release/app-release.apk
+            user-panel/android/app/build/outputs/bundle/release/app-release.aab
+          retention-days: 90
+
+      - name: Remove the keystore from the runner
+        if: always()
+        run: rm -f "$RUNNER_TEMP/upload-keystore.jks"

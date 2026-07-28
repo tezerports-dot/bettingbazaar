@@ -30,11 +30,18 @@ self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => {
   e.waitUntil((async () => {
     const keys = await caches.keys();
-    await Promise.all(
-      keys.filter(k => k !== CACHE_SHELL && k !== CACHE_ASSETS).map(k => caches.delete(k))
-    );
+    const stale = keys.filter(k => k !== CACHE_SHELL && k !== CACHE_ASSETS);
+    await Promise.all(stale.map(k => caches.delete(k)));
     await self.clients.claim();
-    // Tell all open tabs to reload so they get the new bundle immediately
+
+    // Tell open tabs to reload ONLY when this activation actually replaced a
+    // previous build — i.e. there were older caches to purge. On a first-ever
+    // install there is nothing stale, nothing was replaced, and the page
+    // already has the current bundle; telling it to reload there is what made
+    // every new user's first visit flash and reload itself. The client guards
+    // this too (see user-panel/src/index.tsx), deliberately: the reload is
+    // suppressed at both ends so neither side alone can resurrect the loop.
+    if (stale.length === 0) return;
     const clients = await self.clients.matchAll({ type: 'window' });
     clients.forEach(client => client.postMessage({ type: 'SW_UPDATED' }));
   })());

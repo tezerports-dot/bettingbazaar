@@ -1,0 +1,89 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace = "com.bettingbazaar.app"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "com.bettingbazaar.app"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        // Supplied by CI (-PversionCode=… -PversionName=…). The literals are the
+        // local-build fallback: Play rejects a re-upload of a versionCode it has
+        // already seen, so the release workflow derives it from the run number
+        // rather than leaving it to be hand-incremented and forgotten.
+        versionCode project.hasProperty('versionCode') ? project.property('versionCode').toInteger() : 1
+        versionName project.hasProperty('versionName') ? project.property('versionName') : "1.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    // Release signing. The keystore never lives in the repository — CI decodes
+    // it from a secret into this path at build time (see
+    // .github/workflows/android-release.yml). When it is absent, the block is
+    // skipped entirely and Gradle falls back to the debug key, so a local
+    // `assembleDebug` still works for anyone without the signing material.
+    signingConfigs {
+        release {
+            def storePath = System.getenv("ANDROID_KEYSTORE_PATH")
+            if (storePath && file(storePath).exists()) {
+                storeFile     file(storePath)
+                storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias      System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword   System.getenv("ANDROID_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            // R8 stays OFF, deliberately. Capacitor discovers and instantiates
+            // its plugins reflectively, so shrinking needs exactly-right keep
+            // rules or the app compiles cleanly and then fails at runtime on a
+            // real device — the worst possible place to find out. The payoff
+            // here is small in any case: this is a WebView app, so the download
+            // is dominated by the web bundle and the WebView itself, not by the
+            // thin Java layer R8 would shrink. Turn it on only together with
+            // the Capacitor keep rules in proguard-rules.pro AND a smoke test
+            // of the resulting release build on a device.
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+
+            def storePath = System.getenv("ANDROID_KEYSTORE_PATH")
+            if (storePath && file(storePath).exists()) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}

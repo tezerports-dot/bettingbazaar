@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+
+  Android 12+ counterpart to android:allowBackup="false". Both are set: the
+  older attribute governs pre-12 devices, this file governs 12 and later, and a
+  real-money app has to be covered on both.
+
+  Nothing is backed up and nothing transfers to a new device. The WebView's
+  storage holds the session token, so cloud backup would place a live
+  credential in the user's Google Drive, and device-transfer would clone a
+  logged-in session onto hardware the user may no longer control. Re-logging in
+  on a new device is the correct cost.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+        <exclude domain="file" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+        <exclude domain="file" />
+    </device-transfer>
+</data-extraction-rules>

@@ -7,33 +7,64 @@
 # (frontend toolchains never reach the runtime image), and a non-root runtime
 # user (CIS Docker Benchmark; drops the blast radius of any RCE).
 #
+# ── Layer ordering (2026-07-28) ─────────────────────────────────────────────
+# Manifests are copied and installed BEFORE application source. Docker caches
+# per layer and invalidates every layer after the first change, so the previous
+# `COPY . .` ahead of four `npm ci` runs meant a one-character source edit threw
+# away all four dependency installs and re-downloaded them. Dependencies change
+# rarely and sources change constantly, so they are now separate layers: a code
+# push reuses the cached node_modules and only re-runs the builds.
+#
+# Each panel installs independently. They are separate npm projects with their
+# own lockfiles, so a change in one does not invalidate the others.
+#
 # Build:  docker build -t bettingbazaar .
 # Run:    docker run -p 8080:8080 --env-file .env bettingbazaar
 
-# ── Stage 1: build the three frontends (needs devDeps: vite/tsc) ──────────────
+# ── Stage 1: mongodump, extracted away from the runtime image ────────────────
+# services/backup.service.js shells out to `mongodump` for the daily backup. It
+# is fetched here rather than in the runtime stage so that wget, gnupg, the
+# MongoDB apt keyring and the apt lists never exist in the shipped image — the
+# runtime receives the binaries and nothing else. (If this stage is removed the
+# backup job degrades to a logged + alerted skip; it never crashes the app.)
+FROM node:22-slim AS mongotools
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends wget gnupg ca-certificates \
+ && wget -qO- https://pgp.mongodb.com/server-7.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb.gpg \
+ && echo "deb [signed-by=/usr/share/keyrings/mongodb.gpg] http://repo.mongodb.org/apt/debian bookworm/mongodb-org/7.0 main" > /etc/apt/sources.list.d/mongodb.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends mongodb-database-tools \
+ && rm -rf /var/lib/apt/lists/*
+
+# ── Stage 2: build the three frontends (needs devDeps: vite/tsc) ─────────────
 FROM node:22-slim AS builder
 WORKDIR /app
-ENV NODE_ENV=production
-COPY . .
-RUN npm ci --include=dev --legacy-peer-deps \
- && (cd user-panel     && npm ci --include=dev --legacy-peer-deps && npm run build) \
- && (cd admin-panel    && npm ci --include=dev --legacy-peer-deps && npm run build) \
- && (cd merchant-panel && npm ci --include=dev --legacy-peer-deps && npm run build)
+# NOT NODE_ENV=production here: npm would skip devDependencies, and vite/tsc/
+# tailwind are devDependencies. The panels' own builds set their own mode.
 
-# ── Stage 2: lean runtime — prod deps + backend + built dist only ─────────────
+# Dependencies first — these layers survive a source-only change.
+COPY user-panel/package.json     user-panel/package-lock.json*     ./user-panel/
+RUN cd user-panel     && npm ci --include=dev --legacy-peer-deps
+COPY admin-panel/package.json    admin-panel/package-lock.json*    ./admin-panel/
+RUN cd admin-panel    && npm ci --include=dev --legacy-peer-deps
+COPY merchant-panel/package.json merchant-panel/package-lock.json* ./merchant-panel/
+RUN cd merchant-panel && npm ci --include=dev --legacy-peer-deps
+
+# Then the sources. Only these layers rebuild on a code push.
+COPY user-panel     ./user-panel
+COPY admin-panel    ./admin-panel
+COPY merchant-panel ./merchant-panel
+RUN cd user-panel     && npm run build \
+ && cd ../admin-panel && npm run build \
+ && cd ../merchant-panel && npm run build
+
+# ── Stage 3: lean runtime — prod deps + backend + built dist only ────────────
 FROM node:22-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
-# mongodb-database-tools provides `mongodump` for the daily automated backup job
-# (services/backup.service.js). Official MongoDB apt repo (Debian bookworm). If
-# this layer is removed, the backup job degrades to a logged+alerted skip — it
-# never crashes the app.
-RUN apt-get update && apt-get install -y --no-install-recommends wget gnupg ca-certificates \
- && wget -qO- https://pgp.mongodb.com/server-7.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb.gpg \
- && echo "deb [signed-by=/usr/share/keyrings/mongodb.gpg] http://repo.mongodb.org/apt/debian bookworm/mongodb-org/7.0 main" > /etc/apt/sources.list.d/mongodb.list \
- && apt-get update && apt-get install -y --no-install-recommends mongodb-database-tools \
- && apt-get purge -y wget gnupg && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+# Backup tooling, binaries only — no package manager state, no keyring, no wget.
+COPY --from=mongotools /usr/bin/mongodump /usr/bin/mongorestore /usr/bin/
 
 # Production dependencies only — no vite/tsc/vitest/tailwind in the runtime image.
 COPY package.json package-lock.json* ./
