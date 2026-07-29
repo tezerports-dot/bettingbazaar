@@ -25,7 +25,7 @@ const labelStyle: React.CSSProperties = { display: 'block', fontSize: 10, fontWe
 const inputStyle: React.CSSProperties = { width: '100%', height: 46, background: 'var(--surface2)', border: '1px solid var(--line2)', borderRadius: 12, padding: '0 14px', color: 'var(--text)', fontSize: 14, outline: 'none' };
 
 const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
-  const { login, register } = useGame();
+  const { login, register, pendingChallenge, submitTwoFactor, cancelTwoFactor } = useGame();
   const [isLogin, setIsLogin] = useState(initialMode !== 'register');
   const [mobile, setMobile] = useState('');
   const [password, setPassword] = useState('');
@@ -36,6 +36,9 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [logoFailed, setLogoFailed] = useState(false);
+  const [otp, setOtp] = useState('');
+  // Optional at signup; opted-in players are challenged at every login after.
+  const [enable2FA, setEnable2FA] = useState(false);
 
   const generateCaptcha = () => {
     const n1 = Math.floor(Math.random() * 9) + 1;
@@ -52,13 +55,70 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
     setLoading(true);
     try {
       let success = false;
-      if (isLogin) success = await login(mobile, password);
-      else { if (!username.trim()) throw new Error('Username required'); success = await register(username, mobile, password, refCode.trim() || undefined); }
+      if (isLogin) {
+        const r = await login(mobile, password);
+        // Password accepted, OTP owed: swap to the code step. Not a failure,
+        // and deliberately not a closed modal — there is no session yet.
+        if (typeof r === 'object' && r.twoFactorRequired) { setLoading(false); return; }
+        success = r === true;
+      } else {
+        if (!username.trim()) throw new Error('Username required');
+        success = await register(username, mobile, password, refCode.trim() || undefined, enable2FA);
+      }
       if (!success) { setError('Authentication failed. Check credentials.'); generateCaptcha(); }
       else { if (refCode) sessionStorage.removeItem('referral_code'); onClose?.(); }
     } catch (e: any) { setError(e.message || 'Something went wrong. Please try again.'); generateCaptcha(); }
     finally { setLoading(false); }
   };
+
+  const handleOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      await submitTwoFactor(otp.trim());
+      setOtp('');
+      onClose?.();
+    } catch (err: any) {
+      setError(err?.message || 'Invalid authentication code');
+      setOtp('');
+    } finally { setLoading(false); }
+  };
+
+  // ── OTP step ────────────────────────────────────────────────────────────
+  // A separate form, not an extra field: the password was already accepted,
+  // and re-submitting it would restart the login from scratch.
+  if (pendingChallenge) {
+    return (
+      <div style={{ position: 'absolute', inset: 0, zIndex: 200, overflowY: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px 16px', background: 'var(--app-bg)' }}>
+        <form onSubmit={handleOtp} className="bb-rise" style={{ position: 'relative', zIndex: 1, width: '100%', maxWidth: 400, background: 'var(--surface)', border: '1px solid var(--line2)', borderRadius: 22, padding: '26px 22px', boxShadow: 'var(--shadow)' }}>
+          <p style={{ margin: '0 0 6px', textAlign: 'center', fontSize: 11, fontWeight: 800, letterSpacing: '.2em', textTransform: 'uppercase', color: 'var(--gold-ink)' }}>Two-factor code</p>
+          <p style={{ margin: '0 0 18px', textAlign: 'center', fontSize: 12, color: 'var(--text3)' }}>
+            Enter the 6-digit code from your authenticator app.
+          </p>
+          <input
+            value={otp}
+            onChange={e => setOtp(e.target.value.replace(/[^0-9A-Za-z-]/g, '').slice(0, 9))}
+            inputMode="numeric" autoComplete="one-time-code" autoFocus placeholder="000000"
+            className="font-grotesk"
+            style={{ ...inputStyle, height: 54, textAlign: 'center', fontSize: 21, letterSpacing: '.3em' }}
+          />
+          {error && <div style={{ marginTop: 10, fontSize: 12, color: 'var(--danger, #ef4444)', textAlign: 'center' }}>{error}</div>}
+          <button type="submit" disabled={loading || otp.trim().length < 6}
+                  style={{ width: '100%', height: 48, marginTop: 14, borderRadius: 12, border: 'none', cursor: 'pointer', background: 'var(--gold)', color: 'var(--gold-on)', fontWeight: 800, fontSize: 14, opacity: loading || otp.trim().length < 6 ? .6 : 1 }}>
+            {loading ? 'Verifying…' : 'Verify and sign in'}
+          </button>
+          <button type="button" onClick={() => { cancelTwoFactor(); setOtp(''); setError(''); }}
+                  style={{ width: '100%', height: 40, marginTop: 8, background: 'transparent', border: 'none', color: 'var(--text3)', fontSize: 12, cursor: 'pointer' }}>
+            Back to sign in
+          </button>
+          <p style={{ margin: '12px 0 0', fontSize: 11, color: 'var(--text3)', textAlign: 'center', lineHeight: 1.5 }}>
+            Lost your phone? Enter a recovery code instead — each works once.
+          </p>
+        </form>
+      </div>
+    );
+  }
 
   return (
     <div style={{ position: 'absolute', inset: 0, zIndex: 200, overflowY: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px 16px', background: 'var(--app-bg)' }}>
@@ -75,6 +135,22 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
         <div style={{ marginBottom: 11 }}><label style={labelStyle}>Mobile number</label><input value={mobile} onChange={e => setMobile(e.target.value.replace(/[^0-9]/g, '').slice(0, 10))} inputMode="numeric" placeholder="9876543210" autoComplete="tel" className="font-grotesk" style={inputStyle} /></div>
         <div style={{ marginBottom: 11 }}><label style={labelStyle}>Password</label><input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" autoComplete={isLogin ? 'current-password' : 'new-password'} style={inputStyle} /></div>
         {!isLogin && <div style={{ marginBottom: 11 }}><label style={labelStyle}>Referral code <span style={{ color: 'var(--text3)', fontWeight: 600, textTransform: 'none', letterSpacing: 0 }}>(optional)</span></label><input value={refCode} onChange={e => setRefCode(e.target.value.toUpperCase())} placeholder="INVITE CODE" className="font-grotesk" style={{ ...inputStyle, color: 'var(--gold-ink)', letterSpacing: '.14em', textTransform: 'uppercase' }} /></div>}
+
+        {/* Optional for players — mandatory only for staff and merchants.
+            Ticking this mints a PENDING secret; the account stays usable and
+            only starts demanding codes once the QR is actually scanned and a
+            code verified, so a half-finished setup cannot lock anyone out. */}
+        {!isLogin && (
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 12, cursor: 'pointer', background: 'var(--surface2)', border: '1px solid var(--line2)', borderRadius: 12, padding: '11px 13px' }}>
+            <input type="checkbox" checked={enable2FA} onChange={e => setEnable2FA(e.target.checked)} style={{ marginTop: 2 }} />
+            <span>
+              <span style={{ display: 'block', fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>Protect my account with an authenticator app</span>
+              <span style={{ display: 'block', fontSize: 11, color: 'var(--text3)', marginTop: 2, lineHeight: 1.45 }}>
+                We’ll show you a QR code to scan after signup. You’ll then enter a 6-digit code each time you log in.
+              </span>
+            </span>
+          </label>
+        )}
 
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, background: 'var(--surface2)', border: '1px solid var(--line2)', borderRadius: 12, padding: '11px 13px', marginBottom: 12 }}>
           <div><div style={{ fontSize: 8, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--text3)', marginBottom: 2 }}>Security check</div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 17, letterSpacing: '.1em', color: 'var(--gold-ink)' }}>{captcha.q} = ?</div></div>

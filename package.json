@@ -26,7 +26,9 @@
     "pg:seed-locks": "node backend/postgres/seedLockProvenance.js",
     "verify:capabilities": "node scripts/verify-capabilities.mjs",
     "migrate:public-chat-retention": "node backend/scripts/enforce-public-chat-retention.js",
-    "handoff:frontends": "node scripts/create-frontend-handoffs.mjs"
+    "handoff:frontends": "node scripts/create-frontend-handoffs.mjs",
+    "loadtest:seed": "node loadtest/seed-accounts.mjs",
+    "loadtest:bets": "k6 run loadtest/bet-contention.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

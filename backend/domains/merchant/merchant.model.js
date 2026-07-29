@@ -21,6 +21,25 @@ const merchantSchema = new mongoose.Schema({
   mobile: { type: String, index: true },
   email: { type: String },
   password: { type: String, select: false },  // hashed, used for standalone merchant login
+
+  // ── TOTP 2FA (mandatory for merchants, owner directive 2026-07-29) ────────
+  // Deliberately the SAME field names as the User schema. Merchants are a
+  // separate collection with their own login and their own PASETO, but the
+  // second-factor logic (drift window, replay guard, recovery codes) is
+  // identical — identity/verifySecondFactor.js operates on either document.
+  // Naming these differently would have forced a second copy of that logic,
+  // and two copies of an anti-replay guard is how one of them goes stale.
+  //
+  // A merchant account settles real INR and USDT, so it is not a
+  // player-grade credential: enrolment is required before the account can be
+  // used, enforced at login rather than merely offered.
+  twoFactorEnabled: { type: Boolean, default: false },
+  twoFactorSecret:  { type: String, select: false },   // AES-256-GCM ciphertext
+  twoFactorPendingSecret: { type: String, select: false },
+  twoFactorLastCounter:   { type: Number, select: false },
+  twoFactorEnrolledAt:    { type: Date },
+  backupCodes: [{ type: String, select: false }],      // sha256 hashes, single use
+
   status: { type: String, enum: ['ACTIVE', 'SUSPENDED', 'INACTIVE', 'PENDING', 'REJECTED'], default: 'PENDING', index: true },
   suspensionReason: { type: String },
   isOnline: { type: Boolean, default: false, index: true },

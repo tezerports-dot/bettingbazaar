@@ -267,6 +267,14 @@ export interface AuthResponse {
   token: string;
   user?: MerchantProfile;
   merchant?: MerchantProfile;
+  /** Password accepted, second factor still owed. `success` is false here. */
+  twoFactorRequired?: boolean;
+  challengeToken?: string;
+  /** The challenge aged out (5 min) — the password leg must be redone. */
+  twoFactorExpired?: boolean;
+  /** Set when an approved merchant has not yet enrolled a second factor. */
+  mustEnroll2FA?: boolean;
+  message?: string;
 }
 
 export interface LoginCredentials {

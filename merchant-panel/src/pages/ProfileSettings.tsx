@@ -15,6 +15,7 @@ import toast from 'react-hot-toast';
 import { useAuth } from '../services/AuthContext';
 import { api } from '../services/api';
 import { useViewport } from '../hooks/useViewport';
+import TwoFactorEnrol from '../components/TwoFactorEnrol';
 import { SUCCESS_MESSAGES } from '../constants';
 import { formatMoney, formatWallet, isTrc20Address, railCopy, railOf } from '../utils/rail';
 import {
@@ -150,6 +151,11 @@ const ProfileSettings: React.FC = () => {
 
   return (
     <div style={{ maxWidth: 840, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: isMobile ? 14 : 16 }}>
+      {/* Account security first: a merchant who has not enrolled is protected
+          by a password alone on an account that settles real INR and USDT.
+          The login flow routes un-enrolled merchants straight here. */}
+      <TwoFactorEnrol />
+
       {/* Performance */}
       <Card>
         <CardTitle title="Merchant performance" />

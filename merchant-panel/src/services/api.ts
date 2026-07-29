@@ -121,20 +121,53 @@ export const merchantLogin = async (mobile: string, password: string): Promise<A
       body: JSON.stringify({ mobile, password }),
     });
     
+    // 2FA: a 200 with success:false and a challenge. NOT an error — the
+    // password was accepted; the login is half done. Store nothing: the
+    // challenge is not a session and must never reach the Authorization
+    // header, so it is returned to the caller and held in memory only.
+    if (data.twoFactorRequired && data.challengeToken) {
+      return data;
+    }
+
     if (data.token) {
       localStorage.setItem('merchantToken', data.token);
     }
-    
+
     const merchant = data.user || data.merchant;
     if (merchant) {
       setMerchantData(merchant);
     }
-    
+
     return data;
   } catch (error: any) {
     throw new Error(error.message || 'Login failed');
   }
 };
+
+/** Second leg of the merchant login: exchange the challenge for a session. */
+export const merchantLoginTwoFactor = async (challengeToken: string, code: string): Promise<AuthResponse> => {
+  const data = await request<AuthResponse>(ENDPOINTS.AUTH.LOGIN_2FA, {
+    method: 'POST',
+    body: JSON.stringify({ challengeToken, code }),
+  });
+  if (data.token) localStorage.setItem('merchantToken', data.token);
+  const merchant = data.user || data.merchant;
+  if (merchant) setMerchantData(merchant);
+  return data;
+};
+
+// --- 2FA enrolment (merchants are a separate model from users) ---------------
+export const twoFactorStatus = async () =>
+  request<{ success: boolean; enabled: boolean; mandatory: boolean; backupCodesRemaining: number }>(
+    ENDPOINTS.AUTH.TWO_FA_STATUS, { method: 'GET' });
+
+export const twoFactorSetup = async () =>
+  request<{ success: boolean; secret: string; otpauthUri: string; message?: string }>(
+    ENDPOINTS.AUTH.TWO_FA_SETUP, { method: 'POST', body: JSON.stringify({}) });
+
+export const twoFactorActivate = async (code: string) =>
+  request<{ success: boolean; backupCodes: string[]; message?: string }>(
+    ENDPOINTS.AUTH.TWO_FA_ACTIVATE, { method: 'POST', body: JSON.stringify({ code }) });
 
 // FIX 2: New -- allows merchants to self-register; admin must approve before they can login
 export const merchantSignup = async (fields: {
@@ -447,6 +480,10 @@ export const api = {
   isAuthenticated,
   getCurrentMerchant,
   merchantLogin,
+  merchantLoginTwoFactor,
+  twoFactorStatus,
+  twoFactorSetup,
+  twoFactorActivate,
   merchantSignup,
   logout,
   getMerchantProfile,

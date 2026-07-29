@@ -26,6 +26,7 @@ import { setContextUser } from '../../middleware/requestContext.js'; // X-6
 // AQ-2 (2026-07-13): every sign/verify goes through the single PASETO authority —
 // Ed25519 signature verification, iss/aud stamped on sign. No raw token-library calls remain here.
 import { signToken, verifyJwt, JWT_SECRET, JWT_EXPIRES_IN } from './jwt.util.js';
+import { isChallengeToken } from './twoFactorChallenge.js';
 
 // JWT_SECRET / JWT_EXPIRES_IN now come from jwt.util.js (imported above), which
 // fail-fasts on a missing secret and owns the 24h default. Re-exported at the
@@ -96,6 +97,19 @@ const authenticate = async (req, res, next) => {
         });
       }
       throw jwtError; // Re-throw unexpected errors
+    }
+
+    // A 2FA challenge token proves ONLY that a password was accepted — the
+    // second factor has not been presented yet. It is signed by the same key
+    // as a session token, so without this check it would BE a session token
+    // and 2FA would be bypassable by anyone holding just the password: the
+    // exact attack it exists to stop, while appearing to be enforced.
+    if (isChallengeToken(decoded)) {
+      return res.status(401).json({
+        success: false,
+        message: 'Two-factor authentication required. Complete the login before using this token.',
+        twoFactorRequired: true,
+      });
     }
 
     // Check token blacklist (logout invalidation)

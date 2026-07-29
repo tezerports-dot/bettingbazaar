@@ -9,6 +9,10 @@ import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
 // F-3 (2026-07-10): Redis-shared counters with per-instance fallback.
 import { createRateLimitStore } from './middleware/redisRateLimitStore.js';
 import { buildPublicKycData } from './domains/user/kycPublicData.js';
+import { issueChallenge, verifyChallenge, CHALLENGE_AUDIENCE } from './domains/identity/twoFactorChallenge.js';
+import { verifySecondFactor, SECOND_FACTOR_RESULT } from './domains/identity/verifySecondFactor.js';
+import { generateSecret, encryptSecret, buildOtpauthUri } from './domains/identity/totp.service.js';
+import { twoFactorLimiter } from './middleware/security.js';
 
 const router = express.Router();
 
@@ -71,47 +75,139 @@ export async function loginHandler(req, res) {
     if (loginType === 'subadmin'      && !user.isSubAdmin)     return res.status(403).json({ success: false, message: 'Sub-admin access required' });
     if (loginType === 'queue_manager' && !user.isQueueManager) return res.status(403).json({ success: false, message: 'Queue manager access required' });
 
-    let role = 'user';
-    if (user.isAdmin)          role = 'admin';
-    else if (user.isSubAdmin)  role = 'subadmin';
-    else if (user.isQueueManager) role = 'queue_manager';
-    else if (user.isMediator)  role = 'mediator';
+    // ── Second factor ────────────────────────────────────────────────────
+    // The password is correct, but for an enrolled account that is only half
+    // the login. Issue a short-lived challenge INSTEAD of a session token and
+    // stop here. `issueSession` below is unreachable until /login/2fa
+    // redeems that challenge with a valid code.
+    if (user.twoFactorEnabled) {
+      return res.status(200).json({
+        success: false,               // deliberately NOT a logged-in success
+        twoFactorRequired: true,
+        challengeToken: issueChallenge({
+          id: user._id,
+          audience: CHALLENGE_AUDIENCE.USER,
+          loginType: loginType || null,   // re-applied on redemption
+        }),
+        message: 'Enter the code from your authenticator app.',
+      });
+    }
 
-    const token = signToken(
-      { userId: user._id, mobile: user.mobile, role,
-        isAdmin: user.isAdmin || false, isSubAdmin: user.isSubAdmin || false,
-        isQueueManager: user.isQueueManager || false,
-        permissions: user.subAdminPermissions || {} }
-    );
-
-    user.lastLogin = new Date();
-    await user.save();
-
-    const dep = user.depositBalance  || 0;
-    const win = user.winningsBalance || 0;
-    const userPayload = {
-      id: user._id, _id: user._id, username: user.username, mobile: user.mobile,
-      role, isAdmin: user.isAdmin || false, isSubAdmin: user.isSubAdmin || false,
-      isQueueManager: user.isQueueManager || false, permissions: user.subAdminPermissions || {},
-      depositBalance: dep, winningsBalance: win, lockedBalance: user.lockedBalance || 0,
-      walletBalance: dep + win, kycStatus: user.kycStatus,
-      kycData: buildPublicKycData(user),
-      bankDetails: user.bankDetails || null, profilePic: user.profilePic || '',
-      status: user.status || 'ACTIVE', joinedAt: user.joinedAt || null,
-      lastLogin: user.lastLogin, phantomAccess: user.phantomAccess || 'NONE',
-      mustChangePassword: user.mustChangePassword || false,
-    };
-
-    res.cookie('auth_token', token, COOKIE_OPTS);
-    res.json({ success: true, token, user: userPayload });
+    return issueSession(user, res);
   } catch (e) {
     console.error('Login error:', e);
     res.status(500).json({ success: false, message: 'Login failed. Please try again.' });
   }
 }
 
-// Register on the router (handler is also exported for server.js admin login)
+/**
+ * Mint the session and build the client payload.
+ *
+ * Extracted so the password-only path and the post-OTP path cannot drift:
+ * a second factor must change WHEN you get a session, never WHAT it contains.
+ * Two copies of this would be a standing invitation for the 2FA branch to
+ * quietly grant different claims than the normal one.
+ */
+export async function issueSession(user, res) {
+  let role = 'user';
+  if (user.isAdmin)          role = 'admin';
+  else if (user.isSubAdmin)  role = 'subadmin';
+  else if (user.isQueueManager) role = 'queue_manager';
+  else if (user.isMediator)  role = 'mediator';
+
+  const token = signToken(
+    { userId: user._id, mobile: user.mobile, role,
+      isAdmin: user.isAdmin || false, isSubAdmin: user.isSubAdmin || false,
+      isQueueManager: user.isQueueManager || false,
+      permissions: user.subAdminPermissions || {} }
+  );
+
+  user.lastLogin = new Date();
+  await user.save();
+
+  const dep = user.depositBalance  || 0;
+  const win = user.winningsBalance || 0;
+  const userPayload = {
+    id: user._id, _id: user._id, username: user.username, mobile: user.mobile,
+    role, isAdmin: user.isAdmin || false, isSubAdmin: user.isSubAdmin || false,
+    isQueueManager: user.isQueueManager || false, permissions: user.subAdminPermissions || {},
+    depositBalance: dep, winningsBalance: win, lockedBalance: user.lockedBalance || 0,
+    walletBalance: dep + win, kycStatus: user.kycStatus,
+    kycData: buildPublicKycData(user),
+    bankDetails: user.bankDetails || null, profilePic: user.profilePic || '',
+    status: user.status || 'ACTIVE', joinedAt: user.joinedAt || null,
+    lastLogin: user.lastLogin, phantomAccess: user.phantomAccess || 'NONE',
+    mustChangePassword: user.mustChangePassword || false,
+    twoFactorEnabled: user.twoFactorEnabled || false,
+  };
+
+  res.cookie('auth_token', token, COOKIE_OPTS);
+  return res.json({ success: true, token, user: userPayload });
+}
+
+/**
+ * POST /login/2fa — redeem a challenge with an OTP or a recovery code.
+ *
+ * Re-loads and re-checks the account rather than trusting anything cached in
+ * the challenge: between the two legs an admin may have blocked the user, or
+ * the account may have been locked. The challenge proves the password was
+ * right five minutes ago, nothing more.
+ */
+export async function loginTwoFactorHandler(req, res) {
+  try {
+    const { challengeToken, code } = req.body;
+    if (!challengeToken || !code) {
+      return res.status(400).json({ success: false, message: 'Challenge token and code are required' });
+    }
+
+    const challenge = verifyChallenge(challengeToken, CHALLENGE_AUDIENCE.USER);
+    if (!challenge) {
+      return res.status(401).json({ success: false, twoFactorExpired: true,
+        message: 'Login session expired. Please sign in again.' });
+    }
+
+    const User = mongoose.model('User');
+    const user = await User.findById(challenge.id)
+      .select('+twoFactorSecret +twoFactorLastCounter +backupCodes +phantomAccess');
+    if (!user) return res.status(401).json({ success: false, message: 'Invalid credentials' });
+
+    // Re-check the same gates the password leg applied — state can change
+    // between the two requests.
+    if (user.isAccountLocked)
+      return res.status(403).json({ success: false, message: 'Account locked — recovery request pending. Contact support.' });
+    if (user.status === 'BLOCKED' || user.isBlocked)
+      return res.status(403).json({ success: false, message: 'Account blocked. Contact support.' });
+
+    const t = challenge.loginType;
+    if (t === 'admin'         && !user.isAdmin)        return res.status(403).json({ success: false, message: 'Admin access required' });
+    if (t === 'subadmin'      && !user.isSubAdmin)     return res.status(403).json({ success: false, message: 'Sub-admin access required' });
+    if (t === 'queue_manager' && !user.isQueueManager) return res.status(403).json({ success: false, message: 'Queue manager access required' });
+
+    const verdict = await verifySecondFactor(user, code);
+    if (!verdict.ok) {
+      if (verdict.result === SECOND_FACTOR_RESULT.MALFORMED_SECRET) {
+        // Nothing the user types can succeed — do not send them in circles.
+        console.error(`🚨 2FA secret undecryptable for user ${user._id} — check TOTP_ENCRYPTION_KEY`);
+        return res.status(500).json({ success: false,
+          message: 'Two-factor verification is misconfigured on the server. Contact support.' });
+      }
+      return res.status(401).json({ success: false, message: 'Invalid authentication code' });
+    }
+
+    if (verdict.usedBackupCode) {
+      console.warn(`🔐 Recovery code used for user ${user._id} — ${verdict.backupCodesRemaining} remaining`);
+    }
+    const response = await issueSession(user, res);
+    return response;
+  } catch (e) {
+    console.error('2FA login error:', e);
+    res.status(500).json({ success: false, message: 'Login failed. Please try again.' });
+  }
+}
+
+// Register on the router (handlers are also exported for server.js admin login)
 router.post('/login', loginHandler);
+router.post('/login/2fa', twoFactorLimiter, loginTwoFactorHandler);
 
 // ── GET /me — session restore on every page load ─────────────────────────────
 router.get('/me', async (req, res) => {
@@ -160,7 +256,7 @@ router.get('/me', async (req, res) => {
 // ── POST /register ───────────────────────────────────────────────────────────
 router.post('/register', registerLimiter, async (req, res) => {
   try {
-    const { username, mobile, password, referralCode } = req.body;
+    const { username, mobile, password, referralCode, enable2FA } = req.body;
     if (!username || !mobile || !password)
       return res.status(400).json({ success: false, message: 'username, mobile and password are required' });
     const cleanUsername = username.trim();
@@ -205,10 +301,39 @@ router.post('/register', registerLimiter, async (req, res) => {
       depositBalance: 0, winningsBalance: 0, lockedBalance: 0, walletBalance: 0,
       kycStatus: user.kycStatus, kycData: null, bankDetails: null, profilePic: '',
       status: 'ACTIVE', joinedAt: user.joinedAt || null, lastLogin: null, phantomAccess: 'NONE',
+      twoFactorEnabled: false,
     };
 
+    // ── Optional 2FA opt-in at signup ────────────────────────────────────
+    // For players 2FA is a choice, not a requirement. Opting in here mints a
+    // PENDING secret and returns the otpauth URI so the panel can show the QR
+    // straight away, while the account stays fully usable. It only becomes
+    // live — and only then is a code demanded at every login — once the user
+    // proves they scanned it via POST /api/2fa/activate.
+    //
+    // Enabling it here instead would be the lockout trap the enrolment
+    // handshake exists to avoid: a player who closes the tab before scanning
+    // would own an account demanding codes from an authenticator entry that
+    // was never created, on their very first session.
+    let twoFactorSetup = null;
+    if (enable2FA) {
+      try {
+        const secret = generateSecret();
+        user.twoFactorPendingSecret = encryptSecret(secret);
+        await user.save();
+        twoFactorSetup = {
+          secret,
+          otpauthUri: buildOtpauthUri({ secret, label: user.mobile || String(user._id) }),
+        };
+      } catch (e) {
+        // Never fail a registration over the optional extra — the account
+        // exists and works; the user can enrol later from settings.
+        console.error('Signup 2FA opt-in failed (account still created):', e.message);
+      }
+    }
+
     res.cookie('auth_token', token, COOKIE_OPTS);
-    res.json({ success: true, token, user: userPayload });
+    res.json({ success: true, token, user: userPayload, twoFactorSetup });
   } catch (e) {
     console.error('Register error:', e);
     res.status(500).json({ success: false, message: 'Registration failed. Please try again.' });

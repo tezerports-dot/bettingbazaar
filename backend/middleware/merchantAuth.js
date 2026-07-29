@@ -20,6 +20,7 @@
 // AQ-2: verify via the single PASETO authority (Ed25519 signature + iss/aud stamped).
 import { verifyJwt } from '../domains/identity/jwt.util.js';
 import { isTokenRevoked } from '../domains/identity/auth.middleware.js';
+import { isChallengeToken } from '../domains/identity/twoFactorChallenge.js';
 import mongoose from 'mongoose';
 
 /**
@@ -49,6 +50,15 @@ export const merchantAuth = async (req, res, next) => {
     }
     if (await isTokenRevoked(token)) {
       return res.status(401).json({ success: false, message: 'Token has been invalidated. Please login again.' });
+    }
+
+    // A 2FA challenge proves only that the password was accepted. It carries
+    // no isMerchant/merchantId claim, so the guard below would already reject
+    // it — but with a misleading "Merchant token required." Answer the real
+    // question instead, so the panel knows to finish the OTP step.
+    if (isChallengeToken(decoded)) {
+      return res.status(401).json({ success: false, twoFactorRequired: true,
+        message: 'Two-factor authentication required. Complete the login before using this token.' });
     }
 
     if (!decoded.isMerchant || !decoded.merchantId)
