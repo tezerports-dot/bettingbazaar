@@ -11,6 +11,13 @@ import mongoose  from 'mongoose';
 import { signToken } from '../identity/jwt.util.js';
 import { hashPassword, verifyPassword } from '../identity/password.util.js';
 import { merchantAuth } from '../../middleware/merchantAuth.js';
+import { issueChallenge, verifyChallenge, CHALLENGE_AUDIENCE } from '../identity/twoFactorChallenge.js';
+import { verifySecondFactor, SECOND_FACTOR_RESULT } from '../identity/verifySecondFactor.js';
+import { twoFactorLimiter } from '../../middleware/security.js';
+import {
+  generateSecret, buildOtpauthUri, encryptSecret, decryptSecret,
+  verifyToken, generateBackupCodes, hashBackupCode,
+} from '../identity/totp.service.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
 import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import { tryAssignMerchant, buildMerchantSnapshot, updateMerchantStatsOnComplete } from '../payment/paymentProcessing.service.js';
@@ -229,26 +236,187 @@ router.post('/auth/login', async (req, res) => {
                 message: msgs[merchant.status] || msgs[merchant.merchantApprovalStatus] || 'Account not active.' });
         }
 
-        const token = signToken(
-            { merchantId: merchant._id, userId: merchant.userId, mobile: merchant.mobile, isMerchant: true, isAdmin: false }
-        );
+        // ── Second factor ────────────────────────────────────────────────
+        // Password accepted, but for an enrolled merchant that is half the
+        // login. Hand back a five-minute challenge instead of a session; only
+        // /auth/login/2fa can turn it into one.
+        if (merchant.twoFactorEnabled) {
+            return res.status(200).json({
+                success: false,             // deliberately not a logged-in success
+                twoFactorRequired: true,
+                challengeToken: issueChallenge({
+                    id: merchant._id, audience: CHALLENGE_AUDIENCE.MERCHANT,
+                }),
+                message: 'Enter the code from your authenticator app.',
+            });
+        }
 
-        res.json({
-            success: true, token,
-            merchant: {
-                _id: merchant._id, userId: merchant.userId,
-                username: merchant.username, mobile: merchant.mobile, email: merchant.email,
-                status: merchant.status, isOnline: merchant.isOnline,
-                tokenBalance: merchant.tokenBalance || 0,
-                acceptsDeposits: merchant.acceptsDeposits !== false,
-                acceptsWithdrawals: merchant.acceptsWithdrawals !== false,
-            },
-        });
+        // Not yet enrolled. 2FA is mandatory for merchants, so rather than
+        // refuse the login (which would lock out every existing merchant the
+        // moment this deploys) the session is issued with a flag the panel
+        // uses to force enrolment before anything else is reachable.
+        return issueMerchantSession(merchant, res, { mustEnroll2FA: true });
     } catch (error) {
         console.error('Merchant login error:', error);
         res.status(500).json({ success: false, message: 'Login failed. Please try again.' });
     }
 });
+
+/**
+ * Mint the merchant session. Extracted so the password-only path and the
+ * post-OTP path cannot grant different claims — same reasoning as
+ * issueSession in routes.js.
+ */
+function issueMerchantSession(merchant, res, extra = {}) {
+    const token = signToken(
+        { merchantId: merchant._id, userId: merchant.userId, mobile: merchant.mobile, isMerchant: true, isAdmin: false }
+    );
+    return res.json({
+        success: true, token, ...extra,
+        merchant: {
+            _id: merchant._id, userId: merchant.userId,
+            username: merchant.username, mobile: merchant.mobile, email: merchant.email,
+            status: merchant.status, isOnline: merchant.isOnline,
+            tokenBalance: merchant.tokenBalance || 0,
+            acceptsDeposits: merchant.acceptsDeposits !== false,
+            acceptsWithdrawals: merchant.acceptsWithdrawals !== false,
+            twoFactorEnabled: merchant.twoFactorEnabled || false,
+        },
+    });
+}
+
+/**
+ * POST /api/merchant/auth/login/2fa — redeem a merchant challenge.
+ *
+ * Re-loads the merchant and re-applies the approval/status gate: the password
+ * leg proved a password up to five minutes ago, and an admin may have
+ * suspended the account since.
+ */
+router.post('/auth/login/2fa', twoFactorLimiter, async (req, res) => {
+    try {
+        const { challengeToken, code } = req.body;
+        if (!challengeToken || !code)
+            return res.status(400).json({ success: false, message: 'Challenge token and code are required' });
+
+        const challenge = verifyChallenge(challengeToken, CHALLENGE_AUDIENCE.MERCHANT);
+        if (!challenge)
+            return res.status(401).json({ success: false, twoFactorExpired: true,
+                message: 'Login session expired. Please sign in again.' });
+
+        const merchant = await mongoose.model('Merchant').findById(challenge.id)
+            .select('+twoFactorSecret +twoFactorLastCounter +backupCodes');
+        if (!merchant)
+            return res.status(401).json({ success: false, message: 'Invalid credentials' });
+
+        if (merchant.merchantApprovalStatus !== 'APPROVED' || merchant.status !== 'ACTIVE') {
+            const msgs = { PENDING: 'Application pending approval.', REJECTED: 'Application rejected.',
+                           SUSPENDED: 'Account suspended.' };
+            return res.status(403).json({ success: false,
+                message: msgs[merchant.status] || msgs[merchant.merchantApprovalStatus] || 'Account not active.' });
+        }
+
+        const verdict = await verifySecondFactor(merchant, code);
+        if (!verdict.ok) {
+            if (verdict.result === SECOND_FACTOR_RESULT.MALFORMED_SECRET) {
+                console.error(`🚨 2FA secret undecryptable for merchant ${merchant._id} — check TOTP_ENCRYPTION_KEY`);
+                return res.status(500).json({ success: false,
+                    message: 'Two-factor verification is misconfigured on the server. Contact support.' });
+            }
+            return res.status(401).json({ success: false, message: 'Invalid authentication code' });
+        }
+        if (verdict.usedBackupCode) {
+            console.warn(`🔐 Recovery code used for merchant ${merchant._id} — ${verdict.backupCodesRemaining} remaining`);
+        }
+        return issueMerchantSession(merchant, res);
+    } catch (error) {
+        console.error('Merchant 2FA login error:', error);
+        res.status(500).json({ success: false, message: 'Login failed. Please try again.' });
+    }
+});
+
+// ─── 2FA ENROLMENT ───────────────────────────────────────────────────────────
+// Merchants live in their own collection, so they cannot use /api/2fa (which
+// is User-only). Same two-step handshake for the same reason: a secret that
+// goes live before the merchant proves they scanned it locks them out of an
+// account that moves real settlement money.
+
+router.get('/2fa/status', merchantAuth, async (req, res) => {
+    const m = req.merchant;
+    res.json({
+        success: true,
+        enabled: !!m.twoFactorEnabled,
+        mandatory: true,                    // every merchant, no exceptions
+        enrolledAt: m.twoFactorEnrolledAt || null,
+        backupCodesRemaining: (m.backupCodes || []).length,
+    });
+});
+
+router.post('/2fa/setup', merchantAuth, twoFactorLimiter, async (req, res) => {
+    try {
+        const merchant = await mongoose.model('Merchant').findById(req.merchantId).select('+twoFactorSecret');
+        if (merchant.twoFactorEnabled)
+            return res.status(400).json({ success: false,
+                message: 'Two-factor authentication is already active. Disable it first to re-enrol.' });
+
+        const secret = generateSecret();
+        merchant.twoFactorPendingSecret = encryptSecret(secret);   // PENDING, not live
+        await merchant.save();
+
+        res.json({
+            success: true,
+            secret,                                                 // for manual entry
+            otpauthUri: buildOtpauthUri({
+                secret,
+                label: `merchant:${merchant.mobile || merchant.username || merchant._id}`,
+            }),
+            message: 'Scan the QR with your authenticator, then submit a code to activate.',
+        });
+    } catch (e) {
+        console.error('Merchant 2FA setup error:', e);
+        res.status(500).json({ success: false, message: 'Could not start two-factor setup.' });
+    }
+});
+
+router.post('/2fa/activate', merchantAuth, twoFactorLimiter, async (req, res) => {
+    try {
+        const { code } = req.body;
+        if (!code) return res.status(400).json({ success: false, message: 'Code is required' });
+
+        const merchant = await mongoose.model('Merchant').findById(req.merchantId)
+            .select('+twoFactorPendingSecret +twoFactorSecret +twoFactorLastCounter +backupCodes');
+        if (!merchant.twoFactorPendingSecret)
+            return res.status(400).json({ success: false, message: 'Start setup first.' });
+
+        const pending = decryptSecret(merchant.twoFactorPendingSecret);
+        const verdict = verifyToken({ secret: pending, token: String(code) });
+        if (!verdict.valid)
+            return res.status(400).json({ success: false, message: 'That code did not match. Check your authenticator and try again.' });
+
+        // Only now does the secret become live.
+        const codes = generateBackupCodes();
+        merchant.twoFactorSecret = merchant.twoFactorPendingSecret;
+        merchant.twoFactorPendingSecret = undefined;
+        merchant.twoFactorEnabled = true;
+        merchant.twoFactorEnrolledAt = new Date();
+        merchant.twoFactorLastCounter = verdict.counter;   // the activation code is spent
+        merchant.backupCodes = codes.map(hashBackupCode);
+        await merchant.save();
+
+        res.json({
+            success: true,
+            backupCodes: codes,     // shown exactly once — only hashes are stored
+            message: 'Two-factor authentication is active. Save these recovery codes now; they will not be shown again.',
+        });
+    } catch (e) {
+        console.error('Merchant 2FA activate error:', e);
+        res.status(500).json({ success: false, message: 'Could not activate two-factor authentication.' });
+    }
+});
+
+// NOTE: there is deliberately no merchant /2fa/disable. 2FA is mandatory for
+// accounts that settle money, so self-service removal would be a hole in the
+// policy rather than a convenience. A merchant who loses their handset uses a
+// recovery code; if those are gone too, an admin re-enrols them out of band.
 
 // ─── PROFILE ─────────────────────────────────────────────────────────────────
 

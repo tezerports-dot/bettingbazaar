@@ -57,7 +57,7 @@ import { registerFundingEventSubscribers } from './domains/funding/fundingEvents
 import './models/index.js';
 
 // ─── ROUTES ───────────────────────────────────────────────────────────────────
-import authRoutes, { loginHandler } from './routes.js';
+import authRoutes, { loginHandler, loginTwoFactorHandler } from './routes.js';
 import adminRoutes        from './routes/admin/index.js';      // ← new modular index
 import betRoutes          from './domains/markets/bet.routes.js';
 import userRoutes         from './domains/user/user.routes.js';
@@ -100,7 +100,7 @@ import { errorHandler }   from './middleware/errorHandler.js';
 import { requestContext } from './middleware/requestContext.js'; // X-6: correlation ids
 import { tlsFingerprintDefense, startTlsFingerprintDefenseConfigRefresh } from './middleware/tlsFingerprintDefense.js';
 import { rejectAmbiguousFraming } from './middleware/headerNormalization.js';
-import { authLimiter, adminAuthLimiter, merchantAuthLimiter, betLimiter } from './middleware/security.js';
+import { authLimiter, adminAuthLimiter, merchantAuthLimiter, betLimiter, twoFactorLimiter } from './middleware/security.js';
 // Item 12 (2026-07-13): IP-rotation defense — per-subnet backstop + optional
 // global surge breaker on sensitive endpoints, on top of the per-IP limiters.
 import { createSubnetLimiter, globalSurgeBreaker, startIpDefenseConfigRefresh } from './middleware/ipDefense.js';
@@ -381,6 +381,12 @@ app.post('/api/admin/login', adminAuthLimiter, createSubnetLimiter('adminAuth'),
   req.body = { ...req.body, loginType: req.body.loginType || 'admin' };
   next();
 }, loginHandler);
+// Second leg of the admin login. 2FA is MANDATORY for admins and sub-admins
+// (LAUNCH_READINESS §F), so without this route an enrolled admin gets a
+// challenge token from the line above and has nowhere to redeem it. Rate
+// limited on the OTP tier, not the admin-password tier: six digits is a 10^6
+// space, so it warrants its own tighter budget.
+app.post('/api/admin/login/2fa', twoFactorLimiter, loginTwoFactorHandler);
 
 app.use('/api/admin', adminRoutes);   // ← now routes/admin/index.js (13 sub-routers)
 
