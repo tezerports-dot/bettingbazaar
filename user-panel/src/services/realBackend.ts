@@ -174,6 +174,30 @@ export class RealBackend implements Backend {
     });
   }
 
+  /**
+   * Force the realtime socket to rebuild itself.
+   *
+   * socket.io reconnects on its own when it NOTICES a drop, and that covers
+   * ordinary network loss. It does not cover the Android case: while the app is
+   * backgrounded the OS freezes the connection, and on resume the socket can
+   * still report `connected` over a WebSocket that is dead. Detection then
+   * waits on the server's ping timeout — tens of seconds during which a live
+   * cycle screen shows pools and odds that stopped updating, with no visible
+   * sign anything is wrong.
+   *
+   * Tearing it down explicitly costs one reconnect per foreground, which is the
+   * right trade on a screen where stale numbers are what people bet against.
+   */
+  reconnectRealtime(): void {
+    if (!this.socket) {
+      this._connectWebSocket();
+      return;
+    }
+    (this.socket as any).auth = { token: this.getToken() };
+    this.socket.disconnect();
+    this.socket.connect();
+  }
+
   private getToken(): string | null {
     return localStorage.getItem('auth_token');
   }
