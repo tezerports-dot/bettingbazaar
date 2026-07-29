@@ -33,18 +33,34 @@ import {
 import { REVERSE_TABLES } from './reverseMirror.js';
 import { anyPathOnPostgres } from './moneyAuthority.js';
 
-const TABLES = [
-  { name: 'wallet_ledger',          model: 'WalletLedger',         key: '_id',            pgKey: 'mongo_id',        mirror: mirrorWalletLedger },
-  { name: 'accounting_events',      model: 'AccountingEvent',      key: 'idempotencyKey', pgKey: 'idempotency_key', mirror: mirrorAccountingEvent },
-  { name: 'transactions',           model: 'Transaction',          key: '_id',            pgKey: 'mongo_id',        mirror: mirrorTransaction },
-  { name: 'payment_orders',         model: 'PaymentOrder',         key: '_id',            pgKey: 'mongo_id',        mirror: mirrorPaymentOrder },
-  { name: 'utr_registry',           model: 'UTRRegistry',          key: 'utr',            pgKey: 'utr',             mirror: mirrorUtr },
-  { name: 'merchant_wallet_ledger', model: 'MerchantWalletLedger', key: 'txId',           pgKey: 'tx_id',           mirror: mirrorMerchantWalletLedger },
+// `since` names THIS MODEL'S Mongo timestamp field. It is not `createdAt`
+// everywhere: Transaction calls it `timestamp` and UTRRegistry calls it
+// `registeredAt`. This used to be hardcoded to `createdAt` for all six, so an
+// incremental (--since) reconcile of those two matched ZERO documents and
+// reported the table clean while repairing nothing — a silent false negative
+// on the exact check that gates the money cutover (§E). The reverse direction
+// already modelled this correctly via REVERSE_TABLES' own `since`; this is the
+// forward direction catching up. Fixed 2026-07-29.
+export const TABLES = [
+  { name: 'wallet_ledger',          model: 'WalletLedger',         key: '_id',            pgKey: 'mongo_id',        since: 'createdAt',    mirror: mirrorWalletLedger },
+  { name: 'accounting_events',      model: 'AccountingEvent',      key: 'idempotencyKey', pgKey: 'idempotency_key', since: 'createdAt',    mirror: mirrorAccountingEvent },
+  { name: 'transactions',           model: 'Transaction',          key: '_id',            pgKey: 'mongo_id',        since: 'timestamp',    mirror: mirrorTransaction },
+  { name: 'payment_orders',         model: 'PaymentOrder',         key: '_id',            pgKey: 'mongo_id',        since: 'createdAt',    mirror: mirrorPaymentOrder },
+  { name: 'utr_registry',           model: 'UTRRegistry',          key: 'utr',            pgKey: 'utr',             since: 'registeredAt', mirror: mirrorUtr },
+  { name: 'merchant_wallet_ledger', model: 'MerchantWalletLedger', key: 'txId',           pgKey: 'tx_id',           since: 'createdAt',    mirror: mirrorMerchantWalletLedger },
 ];
+
+/** Alias for tests/tooling that assert on the forward reconcile's shape. */
+export { TABLES as RECONCILE_TABLES };
 
 export async function reconcileTable(t, { since = null, backfill = false } = {}) {
   const Model = mongoose.model(t.model);
-  const filter = since ? { createdAt: { $gte: since } } : {};
+  // Fail loudly rather than silently scanning nothing if a table is ever added
+  // to TABLES without declaring which field carries its timestamp.
+  if (since && !t.since) {
+    throw new Error(`reconcileTable(${t.name}): no 'since' field declared — an incremental run would match zero documents`);
+  }
+  const filter = since ? { [t.since]: { $gte: since } } : {};
   const docs = await Model.find(filter).limit(50000).lean();
 
   const keys = docs.map(d => String(d[t.key]));
