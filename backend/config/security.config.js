@@ -52,10 +52,25 @@ export const CORS_SHAPE = {
 export const RATE_LIMIT_TIERS = {
   // Global backstop on /api/* (server.js)
   global:     { windowMs: 15 * 60 * 1000, max: 1000 },
-  // Login/register/recover — brute-force guard
-  auth:       { windowMs: 15 * 60 * 1000, max: 5 },
-  // Admin login — tighter
-  adminAuth:  { windowMs: 30 * 60 * 1000, max: 3 },
+  // ── Login tiers ───────────────────────────────────────────────────────────
+  // IMPORTANT: every login limiter sets `skipSuccessfulRequests: true`, so
+  // these count FAILED attempts only. "4 per 30 minutes" does not stop someone
+  // logging in five times a day — it stops the fifth WRONG password. Counting
+  // successes would lock out the legitimate user who switches devices, while
+  // doing nothing extra against a brute-forcer (who is only ever failing).
+  //
+  // Player login — 4 failures / 30 min (2026-07-28, owner-set).
+  auth:       { windowMs: 30 * 60 * 1000, max: 4 },
+  // Admin and sub-admin login — 4 failures / hour. Privileged accounts move
+  // money and, per §F, are the highest-value credential on the platform.
+  adminAuth:  { windowMs: 60 * 60 * 1000, max: 4 },
+  // Merchant login — 4 failures / hour. Same tier as admin: a merchant account
+  // settles real INR and USDT, so it is not a player-grade credential.
+  merchantAuth: { windowMs: 60 * 60 * 1000, max: 4 },
+  // Second-factor submission, once the password is already correct. Separate
+  // and tighter than the password tier: at this point an attacker is guessing
+  // a 6-digit code, where 10 tries is 1-in-100,000 rather than 1-in-a-million.
+  twoFactor:  { windowMs: 15 * 60 * 1000, max: 5 },
   // Bet placement bursts
   bet:        { windowMs: 1 * 60 * 1000,  max: 30 },
   // Withdrawal creation

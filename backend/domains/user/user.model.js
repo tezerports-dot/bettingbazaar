@@ -124,11 +124,37 @@ const userSchema = new mongoose.Schema({
     canViewAnalytics: { type: Boolean, default: false }
   },
 
-  // 2FA/MFA SUPPORT
-  mfaEnabled: { type: Boolean, default: false },
-  mfaSecret: { type: String, select: false },
-  twoFactorSecret: { type: String, select: false },
+  // ── 2FA (TOTP — RFC 6238) ───────────────────────────────────────────────
+  // Consolidated 2026-07-28. There used to be TWO parallel field pairs here,
+  // `mfaEnabled`/`mfaSecret` and `twoFactorEnabled`/`twoFactorSecret`, and
+  // NEITHER was ever written or read — the README advertised 2FA that did not
+  // exist (LAUNCH_READINESS §F). The mfa* pair is gone; these are the live ones.
+  //
+  // `twoFactorSecret` holds the AES-256-GCM ciphertext from
+  // domains/identity/totp.service.js, never the raw secret: it is a bearer
+  // credential that cannot be hashed, because the server must recompute codes
+  // from it.
   twoFactorEnabled: { type: Boolean, default: false },
+  twoFactorSecret:  { type: String, select: false },
+
+  // Set during enrolment and promoted to twoFactorSecret only once the user
+  // proves they scanned the QR by entering a working code. Without this split,
+  // a failed enrolment would leave an account requiring codes from an
+  // authenticator entry the user never successfully added — a self-inflicted
+  // lockout, and for the main admin an unrecoverable one.
+  twoFactorPendingSecret: { type: String, select: false },
+
+  // Highest TOTP step already spent. A code stays valid for its whole 30s step
+  // plus the drift window, so without this the same six digits work more than
+  // once — the exact window a shoulder-surfed or phished code needs.
+  twoFactorLastCounter: { type: Number, select: false },
+
+  twoFactorEnrolledAt: { type: Date },
+
+  // SHA-256 hashes of single-use recovery codes. Not optional in practice:
+  // 2FA is mandatory for admins, so a lost phone locks someone out of an
+  // account that moves money, and the main admin has nobody above them to
+  // reset it.
   backupCodes: [{ type: String, select: false }],
 
   // ROLES ARRAY (for flexible role management)

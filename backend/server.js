@@ -90,6 +90,7 @@ import { providerRegistry } from './providers/registry.js';
 import { S3StorageProvider } from './providers/storage/S3StorageProvider.js';
 import { LocalDiskStorageProvider } from './providers/storage/LocalDiskStorageProvider.js';
 import recoveryRoutes     from './routes/account-recovery.routes.js';
+import twoFactorRoutes from './domains/identity/twoFactor.routes.js';
 import winnersRoutes      from './routes/winners.routes.js';
 import appBootstrapRoutes from './routes/app-bootstrap.routes.js';
 
@@ -99,7 +100,7 @@ import { errorHandler }   from './middleware/errorHandler.js';
 import { requestContext } from './middleware/requestContext.js'; // X-6: correlation ids
 import { tlsFingerprintDefense, startTlsFingerprintDefenseConfigRefresh } from './middleware/tlsFingerprintDefense.js';
 import { rejectAmbiguousFraming } from './middleware/headerNormalization.js';
-import { authLimiter, adminAuthLimiter, betLimiter } from './middleware/security.js';
+import { authLimiter, adminAuthLimiter, merchantAuthLimiter, betLimiter } from './middleware/security.js';
 // Item 12 (2026-07-13): IP-rotation defense — per-subnet backstop + optional
 // global surge breaker on sensitive endpoints, on top of the per-IP limiters.
 import { createSubnetLimiter, globalSurgeBreaker, startIpDefenseConfigRefresh } from './middleware/ipDefense.js';
@@ -368,6 +369,10 @@ startIpDefenseConfigRefresh();
 app.use('/api/v1/auth', authLimiter, createSubnetLimiter('auth'), globalSurgeBreaker('auth'), authRoutes);
 // MED-04 FIX: removed /api/auth duplicate mount — it duplicated rate limit slots
 // allowing 2× brute-force attempts. All clients should use /api/v1/auth/*.
+// 2FA enrolment and management (LAUNCH_READINESS §F). Mandatory for admin and
+// sub-admin roles, optional for players; enforcement at login lives in the auth
+// handler, this router only manages enrolment.
+app.use('/api/2fa', twoFactorRoutes);
 app.use('/api', recoveryRoutes);
 app.use('/api', winnersRoutes);
 app.use('/api/app', appBootstrapRoutes);
@@ -425,6 +430,16 @@ app.use('/api/game',      gameProviderRoutes);
 app.use('/api/game',      gameRegistryRoutes);
 app.use('/api/bet',       betRoutes);
 app.use('/api',           userRoutes);
+// Scoped to the login PATH, not the whole merchant router.
+//
+// Mounting it router-wide looked equivalent because the limiter skips
+// successful requests — but skipSuccessfulRequests only skips 2xx. Every
+// ordinary 4xx a working merchant collects (a validation error on an order
+// action, a 404, a stale reference) would have counted against their LOGIN
+// budget, and four of those in an hour would lock them out of signing in
+// entirely. A limiter that bans people for using the product correctly is a
+// worse outage than the brute-force it prevents.
+app.use('/api/merchant/auth/login', merchantAuthLimiter);
 app.use('/api/merchant',  merchantRoutes);
 app.use('/api/payment', paymentRoutes);
 app.use('/api/support',   supportRoutes); // CAP-71: RAG support assistant (dormant until keys set)

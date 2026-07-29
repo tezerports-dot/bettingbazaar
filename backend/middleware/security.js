@@ -15,11 +15,11 @@ import { betBehaviorLimiter } from './behavioralRateLimit.js';
 // Prevents brute force password attacks
 export const authLimiter = rateLimit({
     store: createRateLimitStore('rl:auth:'),
-    ...RATE_LIMIT_TIERS.auth, // 5 / 15 min
+    ...RATE_LIMIT_TIERS.auth, // 4 FAILED / 30 min
     message: { 
         success: false,
-        message: "Too many authentication attempts. Please try again after 15 minutes.",
-        retryAfter: 900 // seconds
+        message: "Too many failed login attempts. Please try again in 30 minutes.",
+        retryAfter: 1800 // seconds
     },
     standardHeaders: true,
     legacyHeaders: false,
@@ -47,8 +47,8 @@ export const authLimiter = rateLimit({
         
         res.status(429).json({
             success: false,
-            message: "Too many authentication attempts. Please try again after 15 minutes.",
-            retryAfter: 900
+            message: "Too many failed login attempts. Please try again in 30 minutes.",
+            retryAfter: 1800
         });
     }
 });
@@ -57,11 +57,11 @@ export const authLimiter = rateLimit({
 // Admins need extra protection
 export const adminAuthLimiter = rateLimit({
     store: createRateLimitStore('rl:adminauth:'),
-    ...RATE_LIMIT_TIERS.adminAuth, // 3 / 30 min
+    ...RATE_LIMIT_TIERS.adminAuth, // 4 FAILED / hour
     message: { 
         success: false,
-        message: "Too many admin login attempts. Please try again after 30 minutes.",
-        retryAfter: 1800
+        message: "Too many failed admin login attempts. Please try again in an hour.",
+        retryAfter: 3600
     },
     standardHeaders: true,
     legacyHeaders: false,
@@ -83,8 +83,8 @@ export const adminAuthLimiter = rateLimit({
         
         res.status(429).json({
             success: false,
-            message: "Too many admin login attempts. Account security triggered. Please contact support.",
-            retryAfter: 1800
+            message: "Too many failed admin login attempts. Account security triggered. Please try again in an hour or contact support.",
+            retryAfter: 3600
         });
     }
 });
@@ -93,6 +93,79 @@ export const adminAuthLimiter = rateLimit({
 
 // Rate limiter for bet placement
 // Prevents rapid-fire betting and potential abuse
+// Merchant login. Deliberately its own limiter rather than sharing the player
+// tier: a merchant account settles real INR and USDT, so a brute-force against
+// it is an attack on the settlement rail, not on one player's balance.
+export const merchantAuthLimiter = rateLimit({
+    store: createRateLimitStore('rl:merchantauth:'),
+    ...RATE_LIMIT_TIERS.merchantAuth, // 4 FAILED / hour
+    message: {
+        success: false,
+        message: "Too many failed merchant login attempts. Please try again in an hour.",
+        retryAfter: 3600
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: true,
+    keyGenerator: (req) => ipKeyGenerator(req.ip),
+    handler: (req, res) => {
+        console.error('🚨 SECURITY ALERT: Merchant auth rate limit exceeded', {
+            ip: req.ip, path: req.path, timestamp: new Date().toISOString(),
+        });
+        AuditLog.create({
+            adminId: 'SYSTEM_SECURITY',
+            action: 'MERCHANT_RATE_LIMIT_EXCEEDED',
+            details: `Multiple failed merchant login attempts from ${req.ip}`,
+            ip: req.ip, timestamp: new Date(),
+        }).catch(console.error);
+        res.status(429).json({
+            success: false,
+            message: "Too many failed merchant login attempts. Please try again in an hour.",
+            retryAfter: 3600,
+        });
+    },
+});
+
+// Second-factor submission, once the password has already been accepted.
+// Counted separately from the password tier because the search space is very
+// different: six digits is 10^6, so the same allowance that is generous for a
+// password is dangerous for an OTP. Keyed by account where known, so one
+// attacker cannot exhaust a shared-IP office's whole budget.
+export const twoFactorLimiter = rateLimit({
+    store: createRateLimitStore('rl:2fa:'),
+    ...RATE_LIMIT_TIERS.twoFactor, // 5 FAILED / 15 min
+    message: {
+        success: false,
+        message: "Too many incorrect authentication codes. Please wait before trying again.",
+        retryAfter: 900
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: true,
+    keyGenerator: (req) => req.user?.id || req.body?.mobile || ipKeyGenerator(req.ip),
+    // Audited at the loudest level of any limiter here. Tripping THIS one means
+    // the password was already accepted and only the second factor is being
+    // guessed — i.e. a credential is already compromised and a takeover is in
+    // progress. That is a different and more urgent signal than a failed
+    // password, and it should never be inferred from a 429 count alone.
+    handler: (req, res) => {
+        console.error('🚨 SECURITY ALERT: 2FA code rate limit exceeded — possible account takeover in progress', {
+            ip: req.ip, userId: req.user?.id, path: req.path, timestamp: new Date().toISOString(),
+        });
+        AuditLog.create({
+            adminId: 'SYSTEM_SECURITY',
+            action: 'TWO_FACTOR_RATE_LIMIT_EXCEEDED',
+            details: `Repeated invalid 2FA codes from ${req.ip} for account ${req.user?.id || req.body?.mobile || 'unknown'} — password already accepted`,
+            ip: req.ip, timestamp: new Date(),
+        }).catch(console.error);
+        res.status(429).json({
+            success: false,
+            message: "Too many incorrect authentication codes. Please wait before trying again.",
+            retryAfter: 900,
+        });
+    },
+});
+
 export const ipBetLimiter = rateLimit({
     store: createRateLimitStore('rl:bet:'),
     ...RATE_LIMIT_TIERS.bet, // 30 / min
