@@ -82,14 +82,39 @@ export function mirrorAccountingEvent(doc) {
   ));
 }
 
-/** Transaction doc → transactions row. */
+/**
+ * Best-effort creation time for a mirrored doc.
+ *
+ * Every mirrored PG table declares `created_at TIMESTAMPTZ NOT NULL DEFAULT
+ * now()`, and a column DEFAULT only fires when the column is OMITTED from the
+ * INSERT — passing an explicit NULL defeats it and the row is rejected. The
+ * SQL below therefore wraps the parameter in COALESCE(..., now()), and this
+ * helper makes a NULL unlikely in the first place by falling back to the
+ * ObjectId's embedded creation time, which every Mongo document has.
+ */
+function createdAt(doc, ...candidates) {
+  for (const c of candidates) if (c) return c;
+  return doc?._id?.getTimestamp?.() || null;
+}
+
+/**
+ * Transaction doc → transactions row.
+ *
+ * NOTE the field name: transactionSchema calls its time column `timestamp`,
+ * NOT `createdAt` (models/transaction.model.js), and the schema has no
+ * `timestamps: true`. Reading doc.createdAt here yielded undefined → an
+ * explicit NULL → "null value in column created_at violates not-null
+ * constraint" on EVERY transaction, so the PG table stayed empty while
+ * mirror() swallowed the error. Fixed 2026-07-29.
+ */
 export function mirrorTransaction(doc) {
   return mirror('transactions', () => pgQuery(
     `INSERT INTO transactions (mongo_id, user_id, tx_type, status, amount_paise, description, created_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)
+     VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7, now()))
      ON CONFLICT (mongo_id) DO NOTHING`,
     [String(doc._id), doc.userId ? String(doc.userId) : null, doc.type || null,
-     doc.status || null, paise(doc.amount), doc.description || null, doc.createdAt || null],
+     doc.status || null, paise(doc.amount), doc.description || null,
+     createdAt(doc, doc.timestamp, doc.createdAt)],
   ));
 }
 
@@ -98,13 +123,14 @@ export function mirrorPaymentOrder(doc) {
   if (!doc) return;
   return mirror('payment_orders', () => pgQuery(
     `INSERT INTO payment_orders (mongo_id, order_id, user_id, merchant_id, order_type, status, fiat_amount_paise, token_amount_paise, utr, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now())
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,COALESCE($10, now()),now())
      ON CONFLICT (mongo_id) DO UPDATE SET
        status = EXCLUDED.status, merchant_id = EXCLUDED.merchant_id,
        utr = EXCLUDED.utr, updated_at = now()`,
     [String(doc._id), doc.orderId || null, String(doc.userId), doc.merchantId ? String(doc.merchantId) : null,
      doc.type || 'UNKNOWN', doc.status || 'UNKNOWN',
-     paise(doc.fiatAmount), paise(doc.tokenAmount), doc.utrNumber || null, doc.createdAt || null],
+     paise(doc.fiatAmount), paise(doc.tokenAmount), doc.utrNumber || null,
+     createdAt(doc, doc.createdAt)],
   ));
 }
 

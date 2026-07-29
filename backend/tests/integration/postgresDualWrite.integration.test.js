@@ -11,10 +11,10 @@
 // Skipped cleanly when DATABASE_URL is absent (local dev without Postgres).
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import mongoose from 'mongoose';
-import { WalletLedger, AccountingEvent, UTRRegistry } from '../../models/index.js';
+import { WalletLedger, AccountingEvent, UTRRegistry, Transaction } from '../../models/index.js';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../../postgres/pgClient.js';
-import { mirrorAccountingEvent } from '../../postgres/dualWrite.js';
-import { runReconcile, pgTrialBalance } from '../../postgres/reconcile.js';
+import { mirrorAccountingEvent, mirrorTransaction } from '../../postgres/dualWrite.js';
+import { runReconcile, pgTrialBalance, RECONCILE_TABLES } from '../../postgres/reconcile.js';
 
 const HAS_PG = !!process.env.DATABASE_URL;
 const d = HAS_PG ? describe : describe.skip;
@@ -134,5 +134,103 @@ d('Hybrid money DB (Postgres dual-write)', () => {
     expect(clean.drift).toBe(false);
     const trial = await pgTrialBalance();
     expect(trial.conservesToZero).toBe(true);             // the ledger's core invariant, in PG
+  });
+
+  // ── created_at / `since` field-name mapping (regression, 2026-07-29) ───────
+  // Two bugs, one root cause: not every model calls its timestamp `createdAt`.
+  // Transaction calls it `timestamp`; UTRRegistry calls it `registeredAt`.
+  //   1. mirrorTransaction read doc.createdAt → undefined → explicit NULL →
+  //      "null value in column created_at violates not-null constraint" on
+  //      EVERY transaction. mirror() swallows errors, so the PG table simply
+  //      stayed empty and nothing failed loudly.
+  //   2. reconcileTable hardcoded a { createdAt: { $gte: since } } filter, so
+  //      an incremental run over those two tables matched ZERO documents and
+  //      reported them clean. The scheduled job (cronJobs.js) runs
+  //      { hours: 24 } — the incremental path — so this was the DEFAULT
+  //      behaviour, not an edge case.
+  // The pre-existing reconcile test above only ever passed { all: true },
+  // which skips the `since` filter entirely — which is why this went unseen.
+
+  it('Transaction writes mirror to Postgres, taking created_at from `timestamp`', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    const when = new Date('2026-07-20T10:30:00.000Z');
+    await Transaction.create({
+      userId, type: 'BET_PLACED', amount: 10, status: 'SUCCESS',
+      description: 'created_at regression', timestamp: when,
+    });
+
+    const row = await eventually(async () => {
+      const { rows } = await pgQuery(`SELECT * FROM transactions WHERE user_id=$1`, [String(userId)]);
+      return rows[0];
+    });
+    expect(Number(row.amount_paise)).toBe(1000);
+    // Not merely non-null: it must be the transaction's OWN time. A COALESCE
+    // to now() alone would satisfy NOT NULL while silently losing when the
+    // money actually moved.
+    expect(new Date(row.created_at).toISOString()).toBe(when.toISOString());
+  });
+
+  it('mirrors a doc with no timestamp at all, falling back to the ObjectId time', async () => {
+    // Legacy rows written before the field existed, replayed by --backfill.
+    const _id = new mongoose.Types.ObjectId();
+    await mirrorTransaction({
+      _id, userId: new mongoose.Types.ObjectId(),
+      type: 'ADMIN_ADJUSTMENT', status: 'SUCCESS', amount: 1,
+    });
+    const { rows } = await pgQuery(`SELECT * FROM transactions WHERE mongo_id=$1`, [String(_id)]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].created_at).not.toBeNull();
+    // ObjectIds embed their creation second, so even a field-less doc lands
+    // near its true time rather than at replay time.
+    expect(Math.abs(new Date(rows[0].created_at) - _id.getTimestamp())).toBeLessThan(1000);
+  });
+
+  it('an INCREMENTAL reconcile sees Transaction and UTRRegistry drift', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    await Transaction.create({
+      userId, type: 'BET_WIN', amount: 25, status: 'SUCCESS', timestamp: new Date(),
+    });
+    await UTRRegistry.create({
+      utr: 'UTR90000001', orderId: new mongoose.Types.ObjectId(), userId, amount: 25,
+    });
+    await eventually(async () => {
+      const { rows } = await pgQuery(`SELECT 1 FROM transactions WHERE user_id=$1`, [String(userId)]);
+      return rows[0];
+    });
+    await eventually(async () => {
+      const { rows } = await pgQuery(`SELECT 1 FROM utr_registry WHERE utr='UTR90000001'`);
+      return rows[0];
+    });
+
+    // Wipe the PG side, then reconcile over a 24h WINDOW — the mode the cron
+    // job actually uses. Before the fix both tables reported mongoCount 0 and
+    // missingInPg 0: "clean", having scanned nothing.
+    await pgQuery(`TRUNCATE transactions RESTART IDENTITY CASCADE`);
+    await pgQuery(`TRUNCATE utr_registry RESTART IDENTITY CASCADE`);
+
+    const report = await runReconcile({ hours: 24 });
+    const tx  = report.results.find(r => r.table === 'transactions');
+    const utr = report.results.find(r => r.table === 'utr_registry');
+
+    expect(tx.mongoCount).toBeGreaterThan(0);      // the filter matched documents
+    expect(tx.missingInPg).toBeGreaterThan(0);     // and the drift was detected
+    expect(utr.mongoCount).toBeGreaterThan(0);
+    expect(utr.missingInPg).toBeGreaterThan(0);
+    expect(report.drift).toBe(true);
+
+    // And the incremental backfill repairs it.
+    const after = await runReconcile({ hours: 24, backfill: true });
+    expect(after.results.find(r => r.table === 'transactions').missingInPg).toBe(0);
+    expect(after.results.find(r => r.table === 'utr_registry').missingInPg).toBe(0);
+  });
+
+  it('every reconciled table declares the field its incremental filter uses', async () => {
+    // Guards the class of bug rather than the two instances: adding a table
+    // without a `since` field must fail loudly, not scan nothing.
+    for (const t of RECONCILE_TABLES) {
+      expect(t.since, `${t.name} has no 'since' field`).toBeTruthy();
+      const schemaPaths = mongoose.model(t.model).schema.paths;
+      expect(schemaPaths[t.since], `${t.model}.${t.since} is not a real schema path`).toBeDefined();
+    }
   });
 });
