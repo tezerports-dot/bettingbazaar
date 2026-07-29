@@ -5,6 +5,14 @@ The app is one portable Docker image (see `Dockerfile`, `docs/governance/04-GOVE
 current single Railway service. Nothing here is required while Railway remains
 the deploy target; it exists so a platform move is configuration, not a project.
 
+## Single VPS (Ubuntu) — `VPS_UBUNTU_SETUP.md`
+Everything on one Ubuntu 22.04/24.04 box: Node 22, MongoDB 7 as a single-node
+replica set, PostgreSQL 18 + pgvector, Redis, MinIO, PM2 running the three
+runtime roles, NGINX terminating TLS. Read its §0 before starting — four
+properties of this codebase (the hard boot gate, mandatory object storage,
+TLS-before-login, and `TRUST_PROXY`) each break a generic Node deployment in a
+way that only shows up after you think you have finished.
+
 ## Kubernetes (item 40) — `k8s/deployment.yaml`
 ```
 docker build -t <registry>/bettingbazaar:v1 . && docker push <registry>/bettingbazaar:v1
