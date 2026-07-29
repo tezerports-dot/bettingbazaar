@@ -73,6 +73,21 @@ export const auth = {
     loginType: 'admin' | 'subadmin' | 'queue_manager' = 'admin'
   ) => {
     const res = await api.post<any>('/api/admin/login', { mobile, password, loginType }); // MED-02: use /api/admin/login for adminAuthLimiter
+    // 2FA: the server answers success:false + twoFactorRequired and hands back
+    // a five-minute challenge instead of a session. This is NOT an error —
+    // the password was accepted; the login is simply half done.
+    if (res.data?.twoFactorRequired && res.data?.challengeToken) {
+      return { success: false, twoFactorRequired: true, challengeToken: res.data.challengeToken as string };
+    }
+    if (res.data?.success && res.data?.token) {
+      return { success: true, data: { token: res.data.token, admin: res.data.user } };
+    }
+    return res.data;
+  },
+
+  /** Second leg: exchange the challenge for a real session. */
+  loginTwoFactor: async (challengeToken: string, code: string) => {
+    const res = await api.post<any>('/api/admin/login/2fa', { challengeToken, code });
     if (res.data?.success && res.data?.token) {
       return { success: true, data: { token: res.data.token, admin: res.data.user } };
     }
@@ -821,8 +836,35 @@ export const chat = {
   },
 };
 
+// --- TWO-FACTOR ENROLMENT -----------------------------------------------------
+// Admins and sub-admins live in the User collection, so they use the shared
+// /api/2fa router. Two steps on purpose: /setup stores a PENDING secret and
+// only /activate makes it live, so closing the tab mid-scan cannot leave an
+// account demanding codes from an authenticator entry that was never created.
+export const twoFactor = {
+  status: async () => {
+    const res = await api.get<any>('/api/2fa/status');
+    return res.data;
+  },
+  /** Returns { secret, otpauthUri } — render the URI as a QR. */
+  setup: async () => {
+    const res = await api.post<any>('/api/2fa/setup', {});
+    return res.data;
+  },
+  /** Returns { backupCodes } — shown exactly once, never again. */
+  activate: async (code: string) => {
+    const res = await api.post<any>('/api/2fa/activate', { code });
+    return res.data;
+  },
+  disable: async (code: string) => {
+    const res = await api.post<any>('/api/2fa/disable', { code });
+    return res.data;
+  },
+};
+
 export default {
   auth,
+  twoFactor,
   analytics,
   users,
   merchants,

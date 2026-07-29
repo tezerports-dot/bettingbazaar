@@ -23,6 +23,10 @@ export const ENDPOINTS = {
   AUTH: {
     // FIX 2: Point to merchant-specific endpoints that enforce merchant status checks
     LOGIN: '/api/merchant/auth/login',
+    LOGIN_2FA: '/api/merchant/auth/login/2fa',
+    TWO_FA_STATUS: '/api/merchant/2fa/status',
+    TWO_FA_SETUP: '/api/merchant/2fa/setup',
+    TWO_FA_ACTIVATE: '/api/merchant/2fa/activate',
     SIGNUP: '/api/merchant/auth/signup',
     PROFILE: '/api/merchant/profile',
     STATUS: '/api/merchant/online-status',

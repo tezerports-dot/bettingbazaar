@@ -17,12 +17,13 @@ type Tab = 'login' | 'signup';
 const MIN_PASSWORD_LENGTH = 8; // backend: merchant.routes.js POST /auth/signup
 
 const LoginPage: React.FC = () => {
-  const { merchant, loading: authLoading, login } = useAuth();
+  const { merchant, loading: authLoading, login, pendingChallenge, submitTwoFactor, cancelTwoFactor } = useAuth();
   const [tab, setTab] = useState<Tab>('login');
 
   const [mobile, setMobile] = useState('');
   const [password, setPassword] = useState('');
   const [signingIn, setSigningIn] = useState(false);
+  const [otp, setOtp] = useState('');
 
   const [form, setForm] = useState({ username: '', mobile: '', email: '', password: '', confirmPassword: '' });
   const [applying, setApplying] = useState(false);
@@ -37,6 +38,21 @@ const LoginPage: React.FC = () => {
       await login({ mobile, password });
     } catch {
       // AuthContext surfaces the message; keep the operator on the form.
+    } finally {
+      setSigningIn(false);
+    }
+  };
+
+  const handleOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSigningIn(true);
+    try {
+      await submitTwoFactor(otp.trim());
+      setOtp('');
+    } catch {
+      // AuthContext toasts the reason. Clear the field so a stale wrong code
+      // is not resubmitted by a second Enter press.
+      setOtp('');
     } finally {
       setSigningIn(false);
     }
@@ -99,13 +115,55 @@ const LoginPage: React.FC = () => {
           background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 20,
           boxShadow: 'var(--shadow)', overflow: 'hidden',
         }}>
+          {/* The tab strip is hidden mid-2FA: the password has already been
+              accepted, and letting the operator wander to "Apply as Merchant"
+              would silently abandon a challenge that expires in 5 minutes. */}
+          {!pendingChallenge && (
           <div style={{ display: 'flex', padding: 6, gap: 4, background: 'var(--surface-2)', borderBottom: '1px solid var(--border)' }}>
             <button onClick={() => setTab('login')} style={tabStyle('login')}>Login</button>
             <button onClick={() => setTab('signup')} style={tabStyle('signup')}>Apply as Merchant</button>
           </div>
+          )}
 
           <div style={{ padding: '22px 22px 24px' }}>
-            {tab === 'login' ? (
+            {pendingChallenge ? (
+              <form onSubmit={handleOtp} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 4 }}>Two-factor authentication</div>
+                  <div style={{ fontSize: 12, color: 'var(--muted)' }}>
+                    Enter the 6-digit code from your authenticator app.
+                  </div>
+                </div>
+                <input
+                  value={otp}
+                  onChange={(e) => setOtp(e.target.value.replace(/[^0-9A-Za-z-]/g, '').slice(0, 9))}
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  autoFocus
+                  placeholder="000000"
+                  style={{
+                    width: '100%', height: 52, borderRadius: 10, border: '1px solid var(--border)',
+                    background: 'var(--surface-2)', color: 'var(--text)', textAlign: 'center',
+                    fontSize: 20, letterSpacing: '0.3em', fontFamily: 'monospace', outline: 'none',
+                  }}
+                />
+                <button type="submit" disabled={signingIn || otp.trim().length < 6} style={{
+                  width: '100%', height: 44, borderRadius: 10, border: 'none', cursor: 'pointer',
+                  background: 'var(--accent)', color: 'var(--accent-ink)', fontWeight: 700, fontSize: 14,
+                  opacity: signingIn || otp.trim().length < 6 ? 0.6 : 1,
+                }}>
+                  {signingIn ? 'Verifying…' : 'Verify and sign in'}
+                </button>
+                <button type="button" onClick={() => { cancelTwoFactor(); setOtp(''); }} style={{
+                  background: 'transparent', border: 'none', color: 'var(--muted)', fontSize: 12, cursor: 'pointer',
+                }}>
+                  Back to sign in
+                </button>
+                <div style={{ fontSize: 11, color: 'var(--muted)', lineHeight: 1.5 }}>
+                  Lost your phone? Enter one of your recovery codes instead — each works once.
+                </div>
+              </form>
+            ) : tab === 'login' ? (
               <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                 <Field label="Mobile number">
                   <div style={{ position: 'relative' }}>

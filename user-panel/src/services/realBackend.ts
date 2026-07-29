@@ -297,9 +297,13 @@ export class RealBackend implements Backend {
 
   // -- AUTH -----------------------------------------------------------------
   async login(data: any) {
-    const res = await this.request<{ success: boolean; token: string; user: User }>('/v1/auth/login', {
-      method: 'POST', body: JSON.stringify(data)
-    });
+    const res = await this.request<{ success: boolean; token: string; user: User;
+                                    twoFactorRequired?: boolean; challengeToken?: string }>(
+      '/v1/auth/login', { method: 'POST', body: JSON.stringify(data) });
+    // 2FA owed: a 200 with success:false and a five-minute challenge. Nothing
+    // is stored — the challenge is not a session and must never be used as
+    // one, so it goes back to the caller and is held in memory only.
+    if (res.twoFactorRequired && res.challengeToken) return res;
     if (res.success && res.token) {
       // Cookie set by server (httpOnly). Keep in localStorage only as WS auth fallback.
       setToken(res.token); // single call site — populates in-memory cache + localStorage
@@ -309,6 +313,24 @@ export class RealBackend implements Backend {
         this._connectWebSocket(res.token);
       } else {
         
+        (this.socket as any).auth = { token: res.token };
+        this.socket.disconnect();
+        this.socket.connect();
+      }
+    }
+    return res;
+  }
+
+  /** Second leg of the login: exchange the challenge for a real session. */
+  async loginTwoFactor(challengeToken: string, code: string) {
+    const res = await this.request<{ success: boolean; token: string; user: User;
+                                     twoFactorExpired?: boolean; message?: string }>(
+      '/v1/auth/login/2fa', { method: 'POST', body: JSON.stringify({ challengeToken, code }) });
+    if (res.success && res.token) {
+      setToken(res.token);
+      if (!this.socket) {
+        this._connectWebSocket(res.token);
+      } else {
         (this.socket as any).auth = { token: res.token };
         this.socket.disconnect();
         this.socket.connect();

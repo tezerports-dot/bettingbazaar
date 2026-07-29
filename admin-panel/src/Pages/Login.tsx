@@ -22,8 +22,9 @@ export const Login: React.FC = () => {
   const [password, setPassword] = useState('');
   const [loginType, setLoginType] = useState<LoginType>('admin');
   const [isLoading, setIsLoading] = useState(false);
+  const [otp, setOtp] = useState('');
   const navigate = useNavigate();
-  const { login } = useAuthStore();
+  const { login, submitTwoFactor, cancelTwoFactor, pendingChallenge } = useAuthStore();
   const brand = getBrand();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -31,26 +32,52 @@ export const Login: React.FC = () => {
     setIsLoading(true);
     try {
       await login(mobile, password, loginType);
-      const { admin } = useAuthStore.getState();
-      if (!admin) throw new Error('Login failed');
-
-      if (admin.isAdmin) {
-        navigate('/');
-      } else if (admin.isQueueManager) {
-        navigate('/queue-manager');
-      } else {
-        const perms = (admin.permissions || {}) as import('../types').SubAdminPermissions;
-        if (perms.canViewAnalytics) navigate('/');
-        else if (perms.canManageUsers) navigate('/users');
-        else if (perms.canManageMerchants) navigate('/merchants');
-        else if (perms.canVerifyKYC) navigate('/kyc');
-        else if (perms.canViewTransactions) navigate('/transactions');
-        else if (perms.canManageContent) navigate('/content/faq');
-        else navigate('/login');
-      }
-      toast.success('Login successful!');
+      // Password accepted but a second factor is owed — the form swaps to the
+      // OTP step and this submit is done. Not an error, not a session yet.
+      if (useAuthStore.getState().pendingChallenge) { setIsLoading(false); return; }
+      routeAfterLogin();
     } catch (error: any) {
       toast.error(error.response?.data?.message || 'Login failed. Check your credentials.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  /**
+   * Landing route by role. Shared by the password-only path and the post-OTP
+   * path so a 2FA login cannot land somewhere different from a normal one.
+   */
+  const routeAfterLogin = () => {
+    const { admin } = useAuthStore.getState();
+    if (!admin) throw new Error('Login failed');
+
+    if (admin.isAdmin) {
+      navigate('/');
+    } else if (admin.isQueueManager) {
+      navigate('/queue-manager');
+    } else {
+      const perms = (admin.permissions || {}) as import('../types').SubAdminPermissions;
+      if (perms.canViewAnalytics) navigate('/');
+      else if (perms.canManageUsers) navigate('/users');
+      else if (perms.canManageMerchants) navigate('/merchants');
+      else if (perms.canVerifyKYC) navigate('/kyc');
+      else if (perms.canViewTransactions) navigate('/transactions');
+      else if (perms.canManageContent) navigate('/content/faq');
+      else navigate('/login');
+    }
+    toast.success('Login successful!');
+  };
+
+  const handleOtpSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    try {
+      await submitTwoFactor(otp.trim());
+      setOtp('');
+      routeAfterLogin();
+    } catch (error: any) {
+      toast.error(error?.message || 'Invalid authentication code');
+      setOtp('');
     } finally {
       setIsLoading(false);
     }
@@ -72,6 +99,47 @@ export const Login: React.FC = () => {
         </div>
 
         {/* Card */}
+        {/* ── OTP step ────────────────────────────────────────────────────
+            Swaps the whole card rather than appending a field: the password
+            has already been accepted and re-submitting it would restart the
+            login. Showing it still filled in would invite exactly that. */}
+        {pendingChallenge ? (
+        <div className="card" style={{ padding: 24 }}>
+          <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 4 }}>Two-factor authentication</div>
+          <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 18 }}>
+            Enter the 6-digit code from your authenticator app.
+          </div>
+          <form onSubmit={handleOtpSubmit}>
+            <input
+              value={otp}
+              onChange={(e) => setOtp(e.target.value.replace(/[^0-9A-Za-z-]/g, '').slice(0, 9))}
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              autoFocus
+              placeholder="000000"
+              style={{ ...inputStyle, textAlign: 'center', fontSize: 20, letterSpacing: '0.3em', fontFamily: 'monospace', height: 52 }}
+            />
+            <button
+              type="submit"
+              disabled={isLoading || otp.trim().length < 6}
+              className="btn btn-primary"
+              style={{ width: '100%', height: 42, marginTop: 14, opacity: isLoading || otp.trim().length < 6 ? 0.6 : 1 }}
+            >
+              {isLoading ? 'Verifying…' : 'Verify and sign in'}
+            </button>
+            <button
+              type="button"
+              onClick={() => { cancelTwoFactor(); setOtp(''); }}
+              style={{ width: '100%', height: 38, marginTop: 8, background: 'transparent', border: 'none', color: 'var(--muted)', fontSize: 12, cursor: 'pointer' }}
+            >
+              Back to sign in
+            </button>
+          </form>
+          <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 14, lineHeight: 1.5 }}>
+            Lost your phone? Enter one of your recovery codes instead — each works once.
+          </div>
+        </div>
+        ) : (
         <div className="card" style={{ padding: 24 }}>
           <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 4 }}>Sign in</div>
           <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 18 }}>Choose your role to continue</div>
@@ -138,13 +206,13 @@ export const Login: React.FC = () => {
             </button>
           </form>
         </div>
+        )}
 
-        {/* Says only what is true: admin actions are written to EnhancedAuditLog.
-            This line used to read "Secured by 2FA", which the platform does not
-            implement — there is no TOTP enrolment or challenge anywhere in the
-            codebase (README §Security, LAUNCH_READINESS §F). Telling an operator
-            their session is protected by a control that does not exist is worse
-            than saying nothing. */}
+        {/* Says only what is true. This line previously disclaimed 2FA
+            entirely — correct at the time, since no TOTP challenge existed.
+            It does now (identity/twoFactorChallenge.js), but it is only real
+            for accounts that have ENROLLED, so the wording still promises
+            nothing about this particular session. */}
         <div style={{ textAlign: 'center', fontSize: 11, color: 'var(--muted)', marginTop: 16 }}>
           Sessions and privileged actions are logged to Audit Logs
         </div>

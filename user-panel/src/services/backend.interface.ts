@@ -8,7 +8,11 @@ import {
 export interface Backend {
   // --- AUTH ---
   register(data: any): Promise<{ success: boolean; token: string; user: User }>;
-  login(data: any): Promise<{ success: boolean; token: string; user: User }>;
+  login(data: any): Promise<{ success: boolean; token: string; user: User;
+                              twoFactorRequired?: boolean; challengeToken?: string }>;
+  /** Second leg of a 2FA login: exchange the challenge for a session. */
+  loginTwoFactor(challengeToken: string, code: string): Promise<{
+    success: boolean; token: string; user: User; twoFactorExpired?: boolean; message?: string }>;
   
   // --- CORE SERVICES ---
   getServerTime(): Promise<{ unixtime: number }>;
