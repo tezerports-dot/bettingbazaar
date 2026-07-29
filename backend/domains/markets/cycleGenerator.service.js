@@ -399,50 +399,90 @@ class CycleGenerator {
         }
     }
 
+    /**
+     * runPhantomEqualizer — raise the lower phantom side to match the higher.
+     *
+     * The equalizer's ONLY job is to balance the two phantom pools. It must
+     * never change realDelhi/realBombay: those are the record of actual user
+     * money and are owned exclusively by the bet routes' $inc.
+     *
+     * WHY AN AGGREGATION PIPELINE AND NOT A PLAIN $set (bug fix 2026-07-29):
+     * this ran `totalDelhi: (cycle.realDelhi || 0) + equalizedValue` — an
+     * ABSOLUTE write computed from a `cycle` snapshot the ticker read earlier
+     * in the loop. Phase 2 fires while real betting is still OPEN (see the
+     * `now < betsClosedTime` guard at the call site), so any real bet landing
+     * between that read and this write had its `$inc` on totalDelhi silently
+     * overwritten — the user watched the pool SHRINK just after they bet.
+     * realDelhi kept the money (it is $inc-only and untouched here), so
+     * settlement was never wrong; the displayed pool was, for the rest of the
+     * cycle, and the schema invariant total = real + phantom was broken.
+     *
+     * A pipeline update evaluates `$realDelhi`/`$phantomDelhi` against the
+     * LIVE document, inside the same atomic document write, so a concurrent
+     * bet either lands before this (and is included) or after (and $incs a
+     * correct base). There is no window.
+     *
+     * It also removes a second staleness bug: the old code chose between
+     * "equalize" and "already balanced" from the snapshot, so a phantom bet
+     * arriving mid-tick could leave the pools permanently unequal. `$max`
+     * collapses both branches — when the sides are already equal it is a
+     * no-op, so one code path is correct for both cases.
+     */
     async runPhantomEqualizer(cycle) {
         try {
-            const phantomDelhi  = cycle.phantomDelhi  || 0;
-            const phantomBombay = cycle.phantomBombay || 0;
+            // Guard on phantomBetsClosed rather than a snapshot comparison:
+            // makes the write idempotent if two ticks overlap. `new: false`
+            // returns the PRE-image — the exact document the pipeline ran
+            // against — so the equalized figure and the "was it already
+            // balanced?" decision come from what the write actually saw, in
+            // one round trip and with no second read to go stale.
+            const before = await Cycle.findOneAndUpdate(
+                { _id: cycle._id, phantomBetsClosed: false },
+                [
+                    // Stage 1 — both phantom sides go to the higher of the two.
+                    // Every expression in a $set stage is evaluated against the
+                    // stage's INPUT, so both fields see the original pair.
+                    { $set: { phantomDelhi:  { $max: ['$phantomDelhi', '$phantomBombay'] },
+                              phantomBombay: { $max: ['$phantomDelhi', '$phantomBombay'] } } },
+                    // Stage 2 — restore total = real + phantom against the
+                    // equalized values from stage 1. realDelhi and realBombay
+                    // are READ here and never written: real money belongs to
+                    // the bet routes' $inc alone.
+                    { $set: { totalDelhi:  { $add: ['$realDelhi',  '$phantomDelhi'] },
+                              totalBombay: { $add: ['$realBombay', '$phantomBombay'] },
+                              phantomBetsClosed: true,
+                              phantomBalanced:   true } },
+                ],
+                { new: false }
+            );
 
-            if (phantomDelhi !== phantomBombay) {
-                // Set both sides to the higher value — fully balanced
-                const equalizedValue = Math.max(phantomDelhi, phantomBombay);
+            // Another tick already closed phantom betting — nothing to announce.
+            if (!before) return;
 
-                await Cycle.updateOne(
-                    { _id: cycle._id },
-                    {
-                        phantomDelhi:    equalizedValue,
-                        phantomBombay:   equalizedValue,
-                        totalDelhi:      (cycle.realDelhi  || 0) + equalizedValue,
-                        totalBombay:     (cycle.realBombay || 0) + equalizedValue,
-                        phantomBetsClosed: true,
-                        phantomBalanced:   true
-                    }
-                );
+            const priorDelhi  = before.phantomDelhi  || 0;
+            const priorBombay = before.phantomBombay || 0;
+            const equalizedValue = Math.max(priorDelhi, priorBombay);
+            const cycleType = cycle.type === '30_MIN' ? '30-MIN' : 'FULL-DAY';
 
-                const cycleType = cycle.type === '30_MIN' ? '30-MIN' : 'FULL-DAY';
-
-                // FIX 3 — phantom_equalized → ADMIN ROOM ONLY
-                // Before: this.io.emit('phantom_equalized', ...) → all users saw phantom amounts
-                // After:  this.emitAdmin('phantom_equalized', ...) → admins only
-                this.emitAdmin('phantom_equalized', {
-                    cycleId:       cycle.cycleId,
-                    type:          cycle.type,
-                    phantomDelhi:  equalizedValue,
-                    phantomBombay: equalizedValue,
-                    message:       `${cycleType} phantom pools balanced to ₹${equalizedValue}`,
-                    timestamp:     new Date()
-                });
-
-                console.log(`⚖️  Phantom equalizer: ${cycle.cycleId} (${cycleType}) → ₹${equalizedValue} each side`);
-            } else {
-                // Already equal — just close phantom betting
-                await Cycle.updateOne(
-                    { _id: cycle._id },
-                    { phantomBetsClosed: true, phantomBalanced: true }
-                );
-                console.log(`⚖️  Phantom equalizer: ${cycle.cycleId} — already balanced at ₹${phantomDelhi}`);
+            if (priorDelhi === priorBombay) {
+                // Nothing to balance — the write only closed phantom betting.
+                console.log(`⚖️  Phantom equalizer: ${cycle.cycleId} — already balanced at ₹${equalizedValue}`);
+                return;
             }
+
+            // FIX 3 — phantom_equalized → ADMIN ROOM ONLY
+            // Before: this.io.emit('phantom_equalized', ...) → all users saw phantom amounts
+            // After:  this.emitAdmin('phantom_equalized', ...) → admins only
+            this.emitAdmin('phantom_equalized', {
+                cycleId:       cycle.cycleId,
+                type:          cycle.type,
+                phantomDelhi:  equalizedValue,
+                phantomBombay: equalizedValue,
+                message:       `${cycleType} phantom pools balanced to ₹${equalizedValue}`,
+                timestamp:     new Date()
+            });
+
+            console.log(`⚖️  Phantom equalizer: ${cycle.cycleId} (${cycleType}) → ₹${equalizedValue} each side`);
         } catch (error) {
             console.error('❌ Phantom equalizer error:', error);
         }
