@@ -12,6 +12,8 @@ import { getRiskRules, computeWinningsPayout } from '../risk/riskValidation.serv
 // failure on a declared cycle pages the admin-configured alert webhook.
 import { sendAlert } from '../../services/alerting.service.js';
 import { settlementRuns } from '../../services/metrics.service.js';
+// Derived cycle pools (FLAGS.DERIVED_CYCLE_POOLS, default off).
+import { refreshRealPools, forgetCycle } from './cyclePool.service.js';
 // unlockLostBet and executeSettlementBatch moved to domains/settlement/ on 2026-07-03.
 // processPayoutsOptimized stays here as the orchestrator -- see domains/settlement/README.md.
 
@@ -340,7 +342,24 @@ class GameEngine {
         // retained fee — it reaches PLATFORM_REVENUE through the existing
         // BET_CYCLE_SETTLED posting with no ledger change. The fee fields
         // below itemize it for audit/reporting.
-        const realPool = (cycle.realDelhi || 0) + (cycle.realBombay || 0);
+        // The second place a pool figure becomes money: netProfit is what the
+        // BET_CYCLE_SETTLED ledger posting records as platform revenue. Under
+        // FLAGS.DERIVED_CYCLE_POOLS the stored fields are a periodic projection,
+        // so recompute exactly (no-op with the flag off).
+        //
+        // Unlike winner determination this does not abort on failure: the
+        // payouts above have already been written and the money has moved.
+        // Refusing to finish would leave the cycle un-marked and re-run the
+        // payout pass. The stored fields are the correct fallback here — they
+        // are at worst slightly stale, and the reconciler derives the
+        // authoritative ledger entry from the bets regardless.
+        const settlePools = await refreshRealPools(cycle.cycleId, { exact: true }).catch((e) => {
+            console.error(`[Engine] exact pool refresh failed for ${cycle.cycleId}, using stored:`, e.message);
+            return null;
+        });
+        const realPool = settlePools
+            ? settlePools.realDelhi + settlePools.realBombay
+            : (cycle.realDelhi || 0) + (cycle.realBombay || 0);
         const netProfit = realPool - totalPaidOut;
 
         await Cycle.updateOne(
@@ -356,6 +375,9 @@ class GameEngine {
         );
 
         await CacheService.del('financial_stats');
+        // Drop the freshness memo so a settled cycle can never serve a cached
+        // projection to a later reader.
+        forgetCycle(cycle.cycleId);
 
         console.log(`[Engine] ✅ Cycle ${cycle.cycleId} settled successfully`);
         console.log(`   Winners: ${totalWinners} users`);

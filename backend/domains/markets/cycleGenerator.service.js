@@ -1,6 +1,9 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import { Cycle } from '../../models/index.js';
 import mongoose from 'mongoose';
+// Derived cycle pools (FLAGS.DERIVED_CYCLE_POOLS, default off) — see
+// cyclePool.service.js for why the running total is the scaling ceiling.
+import { derivedPoolsEnabled, refreshRealPools } from './cyclePool.service.js';
 
 // ── CYCLE PHASE OFFSETS (Business Config Audit, 2026-07-11) ───────────────────
 // Seconds BEFORE a cycle's endTime that each phase fires. Previously hardcoded
@@ -294,8 +297,31 @@ class CycleGenerator {
 
     async completeCycle(cycle) {
         try {
-            const realDelhi  = cycle.realDelhi  || 0;
-            const realBombay = cycle.realBombay || 0;
+            // The winner is decided by which real pool is SMALLER, so these two
+            // numbers are the single most consequential read in the platform.
+            // Under FLAGS.DERIVED_CYCLE_POOLS the stored fields are a periodic
+            // projection of the bets and may trail by up to a refresh interval
+            // — bounded staleness that is fine for a live display and not fine
+            // here. Recompute exactly first; no-op when the flag is off.
+            //
+            // If that recompute FAILS while the flag is on, abort the whole
+            // completion rather than falling back to the stored fields. Those
+            // fields are only as fresh as the last successful refresh, and if
+            // refreshes are failing they may be arbitrarily stale — settling on
+            // them would pick a winner from pools that are not the real ones and
+            // pay out accordingly. The cycle stays un-completed and the next
+            // tick retries, which is a delay rather than a mispayment.
+            const derived = await derivedPoolsEnabled();
+            const exactPools = await refreshRealPools(cycle.cycleId, { exact: true }).catch((e) => {
+                console.error(`[Cycle] exact pool refresh failed for ${cycle.cycleId}:`, e.message);
+                return null;
+            });
+            if (derived && !exactPools) {
+                console.error(`[Cycle] ⛔ Refusing to settle ${cycle.cycleId} on unverified pools — retrying next tick.`);
+                return;
+            }
+            const realDelhi  = exactPools ? exactPools.realDelhi  : (cycle.realDelhi  || 0);
+            const realBombay = exactPools ? exactPools.realBombay : (cycle.realBombay || 0);
 
             // Winner = minority real-bet side (platform profits from majority)
             let winner;
@@ -315,8 +341,18 @@ class CycleGenerator {
             const cycleType      = cycle.type === '30_MIN' ? '30-MIN' : 'FULL-DAY';
             // FIX 2 — send combined totals (same numbers users were watching during betting)
             // Old code sent realDelhi/realBombay — users could infer phantom by comparing to totalDelhi
-            const combinedDelhi  = cycle.totalDelhi  || 0;
-            const combinedBombay = cycle.totalBombay || 0;
+            //
+            // Recomputed from the exact pools rather than read off `cycle`: the
+            // refresh above rewrote realDelhi/totalDelhi in the database, but
+            // this in-memory document was loaded before that and still carries
+            // the pre-refresh totals. Publishing those would announce a final
+            // result that disagrees with the settled cycle.
+            const combinedDelhi  = exactPools
+                ? realDelhi  + (cycle.phantomDelhi  || 0)
+                : (cycle.totalDelhi  || 0);
+            const combinedBombay = exactPools
+                ? realBombay + (cycle.phantomBombay || 0)
+                : (cycle.totalBombay || 0);
 
             // Public result — combined pool only
             this.emitPublic('cycle_result', {
