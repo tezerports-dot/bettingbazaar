@@ -16,6 +16,7 @@ The repository is arranged as a modular monolith with separate user, admin, and 
 | File | Purpose |
 |---|---|
 | `04-GOVERNANCE.md` | Binding repository rules + ownership / no-hardcode / no-duplicate rules + event-name authority (§§0–16), **and** the consolidated architecture reference (2026-07-22): Portability (§17), Hybrid Architecture / 1M-DAU plan (§18), Capability Matrix (§19), Enterprise Decision Log (§20), SRE & Operations (§21). |
+| `FULL_STACK_AND_CLIENT_DELIVERY.md` | The whole stack in one page (runtimes, domains, datastores, transports, security, CI/deploy), all three panels side by side, and the **website / PWA / Android delivery matrix** per panel — what ships today, what does not, and the complete per-panel feature inventory. |
 | `LAUNCH_READINESS.md` | "App is ready" vs "infra/ops you must do" launch checklist. |
 | `ENV.md` | Mandatory + optional environment variables — what to set before boot. |
 | `AUTHORIZATION_MATRIX.md` | Role/permission and access-control reference. |

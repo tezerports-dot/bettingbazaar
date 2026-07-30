@@ -125,6 +125,7 @@ grep -rhoE 'process\.env\.[A-Z][A-Z0-9_]{2,}' backend --include='*.js' | sort -u
 | `WORKER_POOL_SIZE` | CPU-derived | Worker thread count. |
 | `SSE_MAX_BUFFERED_BYTES` | see `sseManager.service.js` | Per-client SSE backpressure ceiling before disconnect. |
 | `CSV_OFFLOAD_MIN_ROWS` | see reporting | Row count above which CSV export is offloaded to a worker. |
+| `CYCLE_POOL_REFRESH_MS` | `1000` | Freshness window for the derived cycle-pool projection (`FLAGS.DERIVED_CYCLE_POOLS`). Only consulted when that flag is on; the money-critical reads (winner, netProfit) bypass it. |
 
 **Auth token claims** (defaults are fine for a single deployment):
 

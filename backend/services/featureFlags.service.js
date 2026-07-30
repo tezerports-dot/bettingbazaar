@@ -47,6 +47,12 @@ export const FLAGS = Object.freeze({
   // Security (plan item 24, 2026-07-13) — OWASP-pattern request filter,
   // default-on in production; set FEATURE_WAF_FILTER=false only for emergency false-positive rollback
   WAF_FILTER:           'WAF_FILTER',
+  // Markets — derive the real bet pools from the Bet documents instead of
+  // maintaining a running total on the Cycle document, which serialises every
+  // concurrent bet on one document. See domains/markets/cyclePool.service.js.
+  // Money-path change: leave OFF until loadtest/bet-contention.js has actually
+  // been run and says the contention ceiling is being reached.
+  DERIVED_CYCLE_POOLS:  'DERIVED_CYCLE_POOLS',
 });
 
 // ── Default values ─────────────────────────────────────────────────────────────
@@ -68,6 +74,7 @@ const DEFAULTS = {
   [FLAGS.MULTI_TENANT]:          false,
   [FLAGS.MAINTENANCE_MODE]:      false,
   [FLAGS.WAF_FILTER]:            true,
+  [FLAGS.DERIVED_CYCLE_POOLS]:   false,
 };
 
 const _overrides = new Map();

@@ -12,6 +12,9 @@ import { betLimiter } from '../../middleware/security.js';
 import { assessBet, computeBetFundingPlan } from '../risk/riskValidation.service.js';
 // Shared trading vocabulary (Phase 011) — one source for sides/statuses.
 import { MARKET_SIDES } from '../trading/tradingModels.js';
+// Derived cycle pools (FLAGS.DERIVED_CYCLE_POOLS, default off) — see
+// cyclePool.service.js for why the running total is the scaling ceiling.
+import { derivedPoolsEnabled, refreshRealPools } from './cyclePool.service.js';
 
 const router = express.Router();
 
@@ -195,32 +198,78 @@ router.post('/place', authenticate, requireApprovedKyc, betLimiter, async (req, 
     }]);
     const bet = betDoc[0];
 
-    // ── Update cycle real pools ──────────────────────────────────────────────
-    const poolUpdate = side === 'DELHI'
-      ? { $inc: { realDelhi: amount, totalDelhi: amount } }
-      : { $inc: { realBombay: amount, totalBombay: amount } };
+    // ── Commit the bet against the cycle ─────────────────────────────────────
+    // Two shapes, chosen by FLAGS.DERIVED_CYCLE_POOLS.
+    //
+    // STORED (default): one atomic `findOneAndUpdate` both increments the pool
+    // and proves the cycle was still open (FIX-8a) — the increment IS the
+    // TOCTOU guard. Correct, but it makes every concurrent bet queue on this
+    // one document, which is the scaling ceiling in LATENCY.md.
+    //
+    // DERIVED: the pool is recomputed from the bets, so there is nothing to
+    // increment — and any write to the Cycle document would reintroduce exactly
+    // the contention this removes, including a no-op `$set`. The guard is
+    // therefore a READ (reads do not contend), which reopens the TOCTOU window
+    // the write had closed. It is closed again on the far side: the bet is
+    // already inserted, so we re-read the status and, if the cycle closed
+    // underneath us, take the same compensating path below.
+    //
+    // The compensation is safe against a settlement that ran in that window
+    // because the delete is conditional on the bet still being PENDING — if
+    // settlement already relabelled it WON/LOST, our delete matches nothing and
+    // we must not refund. See the conditional `claimed` delete below.
+    const useDerivedPools = await derivedPoolsEnabled();
 
-    // FIX-8a: atomic conditional update closes TOCTOU window
-    const cycleStillOpen = await Cycle.findOneAndUpdate(
-      { cycleId, status: { $in: ['OPEN', 'MERGED'] } },
-      poolUpdate,
-      { new: true }
-    );
+    let cycleStillOpen;
+    if (useDerivedPools) {
+      cycleStillOpen = await Cycle.findOne({ cycleId, status: { $in: ['OPEN', 'MERGED'] } }).lean();
+    } else {
+      const poolUpdate = side === 'DELHI'
+        ? { $inc: { realDelhi: amount, totalDelhi: amount } }
+        : { $inc: { realBombay: amount, totalBombay: amount } };
+
+      // FIX-8a: atomic conditional update closes TOCTOU window
+      cycleStillOpen = await Cycle.findOneAndUpdate(
+        { cycleId, status: { $in: ['OPEN', 'MERGED'] } },
+        poolUpdate,
+        { new: true }
+      );
+    }
     if (!cycleStillOpen) {
-      // Cycle closed between pre-check and pool commit — atomically restore the
-      // stake through the same authority that took it, so the compensating
-      // CREDIT rows and the balance move stay together (CRIT-03).
-      await unlockBetStake(userId, {
-        amount, txId: `refund_bet_${bet._id}`, refId: bet._id.toString(),
-        slices: stakeSlices.map((s) => ({
-          ...s,
-          reason: `Bet refund — cycle closed during placement (${s.field.replace('Balance', '')} portion)`,
-        })),
-      }).catch(() => { /* restore failure is alerted by reconciliation, never blocks the response */ });
-      await Bet.findByIdAndDelete(bet._id).catch(() => {});
+      // Cycle closed between the pre-check and the commit — restore the stake
+      // through the same authority that took it, so the compensating CREDIT
+      // rows and the balance move stay together (CRIT-03).
+      //
+      // Claim the bet BEFORE refunding, and only refund if the claim succeeded.
+      // Settlement selects on `status: 'PENDING'`, so it can legitimately have
+      // picked this row up in the window we are compensating for. If it did,
+      // it has already paid or consumed the stake — deleting and refunding on
+      // top of that pays the user twice. Conditioning the delete on PENDING
+      // makes the two paths race for the same row and lets exactly one win.
+      //
+      // This ordering also fixes the same latent double-refund on the default
+      // stored-pool path, where the delete was unconditional.
+      const claimed = await Bet.findOneAndDelete({ _id: bet._id, status: 'PENDING' })
+        .catch(() => null);
+
+      if (claimed) {
+        await unlockBetStake(userId, {
+          amount, txId: `refund_bet_${bet._id}`, refId: bet._id.toString(),
+          slices: stakeSlices.map((s) => ({
+            ...s,
+            reason: `Bet refund — cycle closed during placement (${s.field.replace('Balance', '')} portion)`,
+          })),
+        }).catch(() => { /* restore failure is alerted by reconciliation, never blocks the response */ });
+        return res.status(400).json({
+          success: false,
+          message: 'Betting window just closed. Your balance has been fully restored.'
+        });
+      }
+
+      // Settlement won the race and owns this bet now. Do not touch the money.
       return res.status(400).json({
         success: false,
-        message: 'Betting window just closed. Your balance has been fully restored.'
+        message: 'Betting window just closed while your bet was being placed. It was included in the cycle that just settled — check My Bets for the result.'
       });
     }
 
@@ -242,8 +291,38 @@ router.post('/place', authenticate, requireApprovedKyc, betLimiter, async (req, 
       status: 'SUCCESS'
     }]);
 
-    
-    const updatedCycle = cycleStillOpen; // FIX-8b: reuse result from FIX-8a
+    // ── Pool figures for the broadcast ───────────────────────────────────────
+    // STORED: `cycleStillOpen` is the post-increment document — already exact.
+    //
+    // DERIVED: it is a read taken BEFORE this bet existed, so its pools trail by
+    // this stake. `refreshRealPools` recomputes and republishes them, but it is
+    // memoised (CYCLE_POOL_REFRESH_MS, default 1s) precisely so that a burst of
+    // bets does not turn into a burst of writes to the Cycle document — which
+    // is the contention this whole change removes. Most calls therefore return
+    // a cached answer and write nothing.
+    //
+    // The consequence is honest and bounded: a broadcast can trail the very
+    // latest bets by up to one refresh interval. That is acceptable here and
+    // nowhere else — the live pool is a throttled display value, already
+    // rebroadcast on a timer rather than per bet. The two places where the
+    // number becomes money (winner determination, netProfit) call
+    // `refreshRealPools(..., { exact: true })` instead and never read a memo.
+    let updatedCycle = cycleStillOpen; // FIX-8b: reuse result from FIX-8a
+    if (useDerivedPools) {
+      const pools = await refreshRealPools(cycleId).catch(() => null);
+      const realD = pools ? pools.realDelhi : (cycleStillOpen.realDelhi || 0);
+      const realB = pools ? pools.realBombay : (cycleStillOpen.realBombay || 0);
+      const phantomD = cycleStillOpen.phantomDelhi || 0;
+      const phantomB = cycleStillOpen.phantomBombay || 0;
+      updatedCycle = {
+        realDelhi: realD,
+        realBombay: realB,
+        phantomDelhi: phantomD,
+        phantomBombay: phantomB,
+        totalDelhi: realD + phantomD,
+        totalBombay: realB + phantomB,
+      };
+    }
 
     if (global.io || global.sseManager) {
       
@@ -374,6 +453,11 @@ router.post('/phantom', authenticate, async (req, res) => {
     const bet = betDoc[0];
 
     // ── Update phantom pool counters only ─────────────────────────────────
+    // Phantom pools stay STORED under both flag settings. They are not a sum of
+    // phantom Bet rows — `cycleGenerator.equalizePhantomPools` overwrites them
+    // with max(delhi, bombay) — so no aggregation can reproduce them. They also
+    // never needed deriving: these come from a handful of admin agents, not
+    // from thousands of users, so they were never the contention source.
     const phantomPoolUpdate = side === 'DELHI'
       ? { $inc: { phantomDelhi: amount, totalDelhi: amount } }
       : { $inc: { phantomBombay: amount, totalBombay: amount } };

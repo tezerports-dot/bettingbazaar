@@ -1,0 +1,79 @@
+# GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+# ══════════════════════════════════════════════════════════════════════════════
+# VPS edge — automatic HTTPS + routing to the two serving roles.
+#
+# Distinct from the repository-root Caddyfile, which serves `:{$PORT}`
+# host-agnostically for a PaaS that terminates TLS for you. This one owns TLS
+# itself, because on your own VPS nothing else will.
+#
+# SITE_ADDRESS carries every domain this deployment answers on, space separated:
+#
+#     SITE_ADDRESS="bettingbazaar.com www.bettingbazaar.com bettingbazaar.vip"
+#
+# Caddy obtains and renews a certificate for each one automatically, provided
+# its DNS A record already points at this server. A domain whose DNS is not
+# ready yet will fail issuance and hold up the others — add it after DNS
+# propagates, not before.
+#
+# Multi-domain is plain redundancy: every hostname serves the same app, the same
+# routes, the same behaviour (backend/config/network.config.js). Nothing here
+# takes client IP, geo or ISP as an input, and no per-domain logic exists —
+# that constraint is deliberate and load-bearing (04-GOVERNANCE.md §20).
+# ══════════════════════════════════════════════════════════════════════════════
+
+{
+	email {$ACME_EMAIL}
+	# Uncomment to rehearse against Let's Encrypt staging. Do this if you are
+	# unsure about DNS: the production endpoint rate-limits failed issuance to
+	# 5 per hostname per hour, and hitting that costs you the launch window.
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+{$SITE_ADDRESS} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# ── WebSocket → realtime role ────────────────────────────────────────────
+	# The long timeout is not optional. socket.io pings every 25s with a 60s
+	# timeout, and a proxy's usual 60s read timeout severs the connection right
+	# at that boundary — producing intermittent drops that read as an app bug.
+	handle /socket.io/* {
+		reverse_proxy realtime:8080 {
+			transport http {
+				read_timeout 24h
+				write_timeout 24h
+			}
+		}
+	}
+
+	# ── SSE (admin + merchant streams) → realtime role ───────────────────────
+	# flush_interval -1 disables response buffering. Without it Caddy holds
+	# events in a buffer and the admin queue appears frozen until something
+	# else forces a flush.
+	handle /api/sse/* {
+		reverse_proxy realtime:8080 {
+			flush_interval -1
+			transport http {
+				read_timeout 24h
+			}
+		}
+	}
+
+	# ── Prometheus metrics — bearer-protected in the app, still not public ────
+	handle /metrics {
+		respond 404
+	}
+
+	# ── Everything else → api role ───────────────────────────────────────────
+	# The api role serves the REST API *and* the three panel bundles
+	# (/, /admin/, /merchant/), so this single route covers all of them.
+	handle {
+		reverse_proxy api:8080
+	}
+}

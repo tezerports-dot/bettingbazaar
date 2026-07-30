@@ -1,0 +1,197 @@
+# GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+# ══════════════════════════════════════════════════════════════════════════════
+# PRODUCTION STACK — one VPS, one command, automatic HTTPS.
+#
+#   cd deploy/vps && docker compose -f docker-compose.prod.yml up -d --build
+#
+# What runs:
+#   caddy      TLS termination + reverse proxy   (ports 80/443 — the only ones open)
+#   api        BB_RUNTIME_ROLE=api        HTTP + the three panels
+#   realtime   BB_RUNTIME_ROLE=realtime   WebSocket + SSE
+#   scheduler  BB_RUNTIME_ROLE=scheduler  game cycles + cron  (EXACTLY ONE)
+#   mongo      MongoDB 7, single-node replica set (money transactions need one)
+#   postgres   PostgreSQL 18, the money ledger
+#   redis      cache, locks, rate-limit counters, realtime fan-out
+#   minio      S3-compatible storage (OPTIONAL — see the profile note below)
+#
+# Everything except Caddy is on an internal network with no published ports, so
+# the databases are unreachable from the internet even if the firewall lapses.
+#
+# ── Object storage: MinIO or an external bucket ──────────────────────────────
+# server.js REFUSES to boot in production without a fully configured
+# S3-compatible provider — it will not fall back to local disk. Two options:
+#
+#   A) External bucket (RECOMMENDED — Cloudflare R2, Backblaze B2):
+#      set the S3_* values in .env to the provider's, and start normally.
+#      Uploads then survive this server dying, and the disk stops filling.
+#
+#   B) MinIO on this box: start with `--profile minio` and use the S3_* values
+#      shown in .env.template. Simpler to begin with; note that KYC documents
+#      and payment proofs then live on this server's disk and are lost with it.
+# ══════════════════════════════════════════════════════════════════════════════
+
+x-app-base: &app-base
+  build:
+    context: ../..
+    dockerfile: Dockerfile
+  image: bettingbazaar:local
+  restart: unless-stopped
+  env_file: [.env]
+  environment: &app-env
+    NODE_ENV: production
+    # Container hostnames, not localhost — these override anything in .env.
+    MONGODB_URI: mongodb://mongo:27017/bettingbazaar?replicaSet=rs0&directConnection=true
+    DATABASE_URL: postgresql://${POSTGRES_USER:-bb}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bettingbazaar}
+    REDIS_URL: redis://redis:6379
+    # Loopback-equivalent link inside the Docker network — no TLS needed, and
+    # the money DB never leaves the host. NEVER set this against a remote
+    # Postgres; pin the provider CA with PG_CA_CERT there instead.
+    PG_SSL: "false"
+    # Caddy is exactly one proxy hop in front. Without this every visitor looks
+    # like the proxy, and per-IP rate limits then apply to your whole user base
+    # at once — four wrong passwords from anyone would lock out everyone.
+    TRUST_PROXY: "1"
+  depends_on:
+    mongo-init: { condition: service_completed_successfully }
+    postgres:   { condition: service_healthy }
+    redis:      { condition: service_started }
+  networks: [bb]
+
+services:
+  # ── Edge: TLS + routing ─────────────────────────────────────────────────────
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      # Comma-separated in .env → Caddy needs them space-separated.
+      SITE_ADDRESS: ${SITE_ADDRESS}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile.vps:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data          # certificates live here — back this up
+      - caddy-config:/config
+    depends_on: [api, realtime]
+    networks: [bb]
+
+  # ── Application, three runtime roles ────────────────────────────────────────
+  api:
+    <<: *app-base
+    environment:
+      <<: *app-env
+      BB_RUNTIME_ROLE: api
+      PORT: "8080"
+      # Argon2 runs on the libuv threadpool: 4 threads × ~80ms is ~50 logins/sec.
+      # 8 roughly doubles that at ~19 MiB extra per thread. Raise only with RAM
+      # to spare, and measure (docs/governance/LATENCY.md).
+      UV_THREADPOOL_SIZE: "8"
+
+  realtime:
+    <<: *app-base
+    environment:
+      <<: *app-env
+      BB_RUNTIME_ROLE: realtime
+      PORT: "8080"
+
+  # EXACTLY ONE. It owns the game-cycle producer and the cron jobs. They are
+  # Redis leader-locked so a second would not corrupt anything, but running two
+  # is a pointless race. Never set `deploy.replicas` above 1 here.
+  scheduler:
+    <<: *app-base
+    environment:
+      <<: *app-env
+      BB_RUNTIME_ROLE: scheduler
+      PORT: "8080"
+
+  # ── Datastores (no published ports — internal network only) ─────────────────
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    volumes: ["mongo-data:/data/db"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks: [bb]
+
+  # One-shot: promote the standalone node to a single-member replica set, which
+  # is what makes multi-document money transactions possible. Idempotent.
+  mongo-init:
+    image: mongo:7
+    depends_on:
+      mongo: { condition: service_healthy }
+    entrypoint: >
+      mongosh --host mongo --quiet --eval
+      "try { rs.status().ok } catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]}) }"
+    restart: "no"
+    networks: [bb]
+
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-bb}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-bettingbazaar}
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bb} -d ${POSTGRES_DB:-bettingbazaar}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks: [bb]
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: ["redis-data:/data"]
+    networks: [bb]
+
+  # ── Optional object storage (see the header note) ───────────────────────────
+  minio:
+    image: minio/minio:latest
+    profiles: ["minio"]
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+    volumes: ["minio-data:/data"]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks: [bb]
+
+  # Creates the bucket once, then exits.
+  minio-init:
+    image: minio/mc:latest
+    profiles: ["minio"]
+    depends_on:
+      minio: { condition: service_healthy }
+    entrypoint: >
+      sh -c "mc alias set bb http://minio:9000 $$S3_ACCESS_KEY $$S3_SECRET_KEY &&
+             mc mb --ignore-existing bb/$$S3_BUCKET_NAME &&
+             echo 'bucket ready'"
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME}
+    restart: "no"
+    networks: [bb]
+
+networks:
+  bb:
+    driver: bridge
+
+volumes:
+  mongo-data:
+  postgres-data:
+  redis-data:
+  minio-data:
+  caddy-data:
+  caddy-config:
