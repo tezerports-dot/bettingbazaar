@@ -12,6 +12,68 @@ Companion to `docs/RAILWAY_STAGING.md` (staging) and
 
 # Part 1 — MongoDB vs PostgreSQL
 
+## Can Postgres take full authority today? No — and here is the evidence
+
+This was asked directly: *give PostgreSQL full authority over all transactions,
+keep MongoDB limited.* That is the right destination. **The code cannot do it
+today**, and setting the environment variables would create a dangerous illusion
+rather than the outcome.
+
+`postgres/moneyAuthority.js` declares four paths — `WALLET`, `LEDGER`, `ORDERS`,
+`KYC`. Only **one** is wired:
+
+```
+$ grep -rn "isPostgresAuthoritative(" backend --include=*.js | grep -v tests
+backend/domains/wallet/walletAuthority.service.js:49   → MONEY_PATHS.WALLET
+backend/startup/cronJobs.js:208                        → metrics reporting only
+```
+
+Nothing branches on `LEDGER`, `ORDERS` or `KYC`. Setting
+`MONEY_AUTHORITY_LEDGER=postgres` would pass the boot coherence check and change
+**no behaviour at all** — accounting events, payment orders and KYC would keep
+reading and writing MongoDB, while the metrics gauge and the config both claimed
+Postgres was authoritative. That is worse than not flipping: it removes the
+signal that the work is outstanding.
+
+What actually exists for Postgres today:
+
+| Path | Postgres read/write | Status |
+|---|---|---|
+| Wallet balances | `walletPg.js` + `walletPgAuthority.js` | **Implemented** — flippable |
+| Ledger / accounting events | none — `dualWrite.js` mirrors write-only | Mirror only |
+| Payment orders, UTR registry | none — mirror only | Mirror only |
+| User KYC | none — mirror only | Mirror only |
+| **Merchant token wallet** | **none at all** | Mongo-only + mirror |
+
+The merchant wallet is the one to notice. `merchantWallet.service.js` is the sole
+writer of `Merchant.tokenBalance`, and it has **no Postgres counterpart** — not
+even a declared path in `MONEY_PATHS`. Every user↔merchant settlement and
+admin↔merchant token issuance is Mongo-only. So "Postgres authoritative for all
+transactions" cannot include the merchant side however the env vars are set.
+
+### What full authority would actually require
+
+1. A Postgres read/write implementation for merchant tokens, mirroring
+   `walletPg.js` (row lock, negative guard, ledger in the same transaction).
+2. The same for accounting events, payment orders and KYC, each with an
+   authority check at its call sites.
+3. A `MONEY_PATHS.MERCHANT_WALLET` entry with its dependency ordering.
+4. Reconciliation extended to cover each newly authoritative table.
+
+That is substantial work — weeks, not a config change. Until it exists, the
+honest posture is: **wallet is flippable, everything else is Mongo with a
+verified mirror.**
+
+### The wallet flip itself still has a gate
+
+Even for the one implemented path, the recommendation in this document stands
+and the audit strengthened it: the `LIKE`-pattern idempotency bug lived in
+`walletPg.js` and was dormant *because* the flip had not happened, and the
+adversarial pass then found that an unguarded checked-out client crashed the
+process on a Postgres restart. Both are fixed. Both were in the path a flip
+would activate. That is the argument for the reconciliation gate, not against
+Postgres.
+
 ## The recommendation
 
 **PostgreSQL becomes the permanent system of record for money. MongoDB keeps

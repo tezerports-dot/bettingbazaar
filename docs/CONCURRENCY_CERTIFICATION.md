@@ -3,8 +3,9 @@
 The scenarios that ordinary unit and integration tests miss, because those run
 one call at a time and money bugs live in the interleavings.
 
-**Status: PARTIALLY CERTIFIED.** Five scenarios are now covered by automated
-tests. Four need infrastructure this environment does not have and are specified
+**Status: PARTIALLY CERTIFIED.** Eight scenarios are covered — six by automated
+tests against real databases, two by adversarial runs against live services
+(§E). Five need infrastructure this environment does not have and are specified
 below as a staging runbook rather than claimed.
 
 ---
@@ -18,12 +19,16 @@ below as a staging runbook rather than claimed.
 | 3 | Duplicate webhook delivery (×20) | **COVERED** | same |
 | 4 | Deposits/wins interleaved with betting | **COVERED** | same |
 | 5 | Racing writes on one idempotency key | **COVERED** | same |
-| 6 | 100–1000 simultaneous bets, multi-instance | **NOT VERIFIED** | staging — §A |
-| 7 | Process crash between debit and ledger write | **NOT VERIFIED** | staging — §B |
-| 8 | Database failover during settlement | **NOT VERIFIED** | staging — §C |
-| 9 | WebSocket/SSE reconnect during settlement | **NOT VERIFIED** | staging — §D |
+| 6 | Merchant token wallet under concurrency (user↔merchant, admin↔merchant) | **COVERED** | `merchantTokenConcurrency.integration.test.js` |
+| 7 | Postgres killed mid-transaction | **COVERED** | adversarial run — see §E |
+| 8 | Redis killed under a live server | **COVERED** | adversarial run — see §E |
+| 9 | 100–1000 simultaneous bets, multi-instance | **NOT VERIFIED** | staging — §A |
+| 10 | Process crash between debit and ledger write (Mongo) | **NOT VERIFIED** | staging — §B |
+| 11 | MongoDB failover during settlement | **NOT VERIFIED** | staging — §C |
+| 12 | WebSocket/SSE reconnect during settlement | **NOT VERIFIED** | staging — §D |
+| 13 | Application instance / load balancer restart | **NOT VERIFIED** | staging — §F |
 
-### Why 1–5 are covered but 6 is not
+### Why single-process coverage is real, but not the production shape
 
 The automated tests fire concurrent calls **inside one Node process against one
 MongoDB**. That genuinely exercises MongoDB's transaction conflict handling —
@@ -152,3 +157,69 @@ double-charging one — meaning §A will pass and the underlying weakness will n
 show. It is a latent trap for the next caller, not a bug the load test can
 surface. Fix it, or record the decision not to; do not let a green §A read as
 evidence it is safe.
+
+
+---
+
+## §E — Infrastructure restarts already exercised (results)
+
+Run against the real services available in the audit environment. These are
+results, not plans.
+
+### Postgres killed mid-transaction — **found and fixed a crash**
+
+`pg_ctl -m immediate stop` during 60 concurrent debits. Before the fix the whole
+Node process died on an unhandled `'error'` from a checked-out client:
+
+    Emitted 'error' event on Client instance at:
+        at Client._handleErrorEvent (pg/lib/client.js:417:10)
+
+Since Postgres is currently only the dual-write MIRROR, a restart of a database
+the money path does not read from was taking down every app instance. Fixed with
+`connectGuarded()`. After:
+
+    committed=7  rejected=53   (process survived)
+    balance=93000  ledgerDebits=7000  →  93000+7000 == 100000   HOLDS
+
+**No lost money, no duplicated settlement, 53 in-flight operations surfaced as
+errors rather than false successes.**
+
+### Redis killed under a live server — **survives**
+
+`redis-cli shutdown nosave` against a running server, then restart.
+
+    before   /health 503 (Mongo absent in sandbox)   /health/live 200
+    killed   /health 503                             /health/live 200   process ALIVE
+    restart  /health 503                             process ALIVE
+    60 Redis error lines logged, no crash
+
+Two properties confirmed by reading the code this exercised:
+
+- **Rate limiting degrades, it does not fail open.** `redisRateLimitStore.js`
+  falls back to per-instance in-memory counting on a Redis error
+  (`enableOfflineQueue:false` makes it fail fast rather than hang). With N app
+  instances an attacker gets N× the limit during an outage — a real but bounded
+  degradation, and far better than unlimited login attempts.
+- **Redis state does not affect readiness.** `readinessState()` reports Redis but
+  `ready` depends only on Mongo. So a Redis outage keeps the instance in the load
+  balancer. That is defensible (bets still work) but it is a *choice*; if
+  realtime and rate limiting matter more than availability, readiness should
+  include Redis.
+
+### Not exercisable here
+
+MongoDB restart (sandbox cannot run mongod), app-instance restart and load
+balancer failover (single process, no LB), and network partition (no second
+host). §B, §C, §D and §F below remain the staging runbook.
+
+## §F — Application instance and load balancer restart (staging)
+
+**Run.** Under steady bet load with ≥2 instances behind the Hetzner LB:
+restart one instance (`docker restart`), then drain one backend from the LB.
+
+**Expected.** The graceful shutdown fails readiness first, waits for the LB to
+notice, then closes — so in-flight requests finish. Watch for 502s: any means
+the drain window is shorter than the LB's health-check interval.
+
+**Assert.** Ledger explains every balance afterwards; no bet in a state without
+its money movement; `bb_unaudited_money_movements_total` still 0.
