@@ -14,10 +14,13 @@ Most rows below are NOT VERIFIED. That is the honest state of a first audit pass
 against a codebase this size, and the point of separating the column from FAIL
 is so the unknowns stay visible instead of being rounded up to "ready".
 
-**Overall: NOT CERTIFIED FOR REAL MONEY.** Four defects were found and fixed;
-the areas that most need independent verification — the Mongo money paths under
-concurrency, and anything requiring a deployed environment — have not been
-verified at all.
+**Overall: NOT CERTIFIED FOR REAL MONEY.** Nine defects found and fixed across
+two passes — two money bugs (one on each store), CSRF, two deploy blockers, a
+dependency-gate gap, SSRF egress, a silent unaudited-money blind spot, and an
+admin feature that never worked. Three remain open by decision rather than
+oversight (see below), and the areas that most need verification — money under
+real concurrency, and anything needing a deployed environment — are still
+unverified.
 
 ---
 
@@ -27,7 +30,8 @@ verified at all.
 |---|---|---|
 | Game-provider webhook authentication | **PASS** (was FAIL) | Missing-signature bypass fixed; 8 tests, `gameProviderWebhookSignature.test.js` |
 | Constant-time secret comparison | **PASS** | `timingSafeEqual` in webhook, order HMAC, TOTP |
-| CSRF on state-changing requests | **PASS** (was FAIL) | Simple-request parsing removed; 5 tests, `csrfSimpleRequestSurface.test.js` |
+| CSRF vector | **PASS** (was FAIL) | Simple-request parsing removed; 5 tests, `csrfSimpleRequestSurface.test.js` |
+| CSRF structural design | **NOT VERIFIED** | Header-only auth proposed in `AUTH_AND_CSRF_DESIGN.md`; **not implemented** — needs the step-1 measurement first |
 | SQL injection | **PASS** | All Postgres access parameterised; no string-concatenated SQL |
 | LIKE/pattern injection | **PASS** (was FAIL) | Only `LIKE` in the tree was the wallet probe; now `= ANY($2)` |
 | Mongo/NoSQL injection | **PASS** | `mongoSanitize` middleware; admin search escapes regex |
@@ -38,8 +42,8 @@ verified at all.
 | Authorization on admin routes | **PASS** | `router.use(authenticate)` + per-route permission |
 | IDOR on upload endpoints | **PASS** | Ownership checked, 403 on mismatch (`upload.routes.js`) |
 | Dependency vulnerabilities | **PASS** (was FAIL) | 2 high in admin-panel fixed; per-lockfile CI matrix |
-| SSRF egress controls | **FAIL** | `networkClient` has no allowlist or private-IP block. Admin-controlled URLs only, but an admin (or a stolen admin session) can reach cloud metadata. See §Open below |
-| Broken admin branding upload | **FAIL** | `BrandingSettings.tsx` POSTs multipart to `/api/admin/cdn/upload`, which does not exist and has no multipart parser. Feature is broken, not a vulnerability |
+| SSRF egress controls | **PASS** (was FAIL) | `services/outboundGuard.js`: protocol + public-address checks, per-hop redirect re-validation, optional host allow-list; 19 tests |
+| Broken admin branding upload | **PASS** (was FAIL) | Repointed at the existing presigned flow; integration test pins that frontend and backend paths match |
 | XSS (three React panels) | **NOT VERIFIED** | React escapes by default; no `dangerouslySetInnerHTML` audit done |
 | CSP / HSTS / Helmet config | **NOT VERIFIED** | Helmet is mounted; headers not asserted against a live response |
 | Session fixation / hijacking | **NOT VERIFIED** | Rotation-on-login not traced |
@@ -59,7 +63,11 @@ verified at all.
 | Postgres wallet: idempotency | **PASS** (was FAIL) | `LIKE` prefix bug fixed; `walletPgIdempotencyKeys.test.js` |
 | Integer-only arithmetic (paise) | **PASS** | `Number.isInteger` guards at every entry point |
 | Trial-balance / drift metrics exist | **PASS** | `bb_pg_trial_balance_ok`, `bb_pg_drift_rows` in `metrics.service.js` |
-| **Mongo money paths (currently authoritative)** | **NOT VERIFIED** | **The integration suite could not run here — `mongodb-memory-server` cannot fetch `mongod` in this sandbox. This is the single largest gap: the paths actually serving money today are unverified by execution in this audit.** CI runs them |
+| Mongo `debitForBet` replay safety | **PASS** (was FAIL) | Double-charge when a replay re-split pockets; fixed + 4 integration tests. See `MONGO_MONEY_AUDIT.md` M-1 |
+| Mongo bet-stake path idempotency | **FAIL** | `_mongoBetStake` has no idempotency key on the balance move. Not reachable from today's caller (fresh UUID per request); unsafe primitive. M-2, proposed design in the audit doc |
+| Mongo bet-stake atomicity | **FAIL** | Balance and ledger are separate operations; money can move unaudited. M-4, proposed design in the audit doc |
+| Unaudited movements observable | **PASS** (was FAIL) | `bb_unaudited_money_movements_total` + log; was a silent `.catch(() => {})`. M-3 |
+| **Mongo money paths — remaining** | **NOT VERIFIED** | Merchant wallet, payouts, treasury, equalization, disputes, bonus/commission/referral, deposit+withdrawal state machines. **The sandbox cannot run MongoDB** (`fastdl.mongodb.org` 403 via the egress proxy; no apt package), so all Mongo tests are verified by CI |
 | Deposits / withdrawals end-to-end | **NOT VERIFIED** | Needs a deployed environment |
 | Settlement + equalization | **NOT VERIFIED** | Not traced |
 | Bonuses, commissions, referrals | **NOT VERIFIED** | Not traced |
@@ -141,13 +149,16 @@ verified at all.
 
 ## Open items requiring a decision (not safe to patch unilaterally)
 
-1. **SSRF egress policy.** Blocking private/link-local ranges in `networkClient`
-   is a two-line change, but a self-hosted provider inside your Hetzner private
-   network is a legitimate case it would break. Decide: allowlist of provider
-   hosts, or block private ranges with an explicit opt-out.
-2. **Structural CSRF.** The vector is closed; the design is not. Choose
-   token-based CSRF, or drop cookie auth in favour of the `Authorization` header
-   everywhere. Spans three panels plus the Android shell.
+1. **Mongo bet-stake path (M-2, M-4).** The main bet money path has no
+   idempotency key and writes its ledger outside the transaction. Fixing it
+   means putting the hottest path in a transaction and inverting the write
+   order — a latency change under exactly the spiky load bet placement creates.
+   Proposed design in `MONGO_MONEY_AUDIT.md`; measure under
+   `loadtest/bet-contention.js` on staging first.
+2. **Structural CSRF.** The vector is closed; the design is not. Recommendation
+   and migration in `AUTH_AND_CSRF_DESIGN.md` — header-only auth, since every
+   client already sends `Authorization: Bearer` and the cookie serves nobody.
+   Starts with a week of measurement, not a code change.
 3. **Webhook signature payload.** The HMAC covers `JSON.stringify(req.body)` — a
    re-serialisation, not the bytes the provider signed. Key order and unicode
    escaping must coincidentally match. Signing the raw body is correct but
@@ -165,7 +176,9 @@ verified at all.
 
 In order:
 
-1. Deploy to Railway staging. Confirm the integration and E2E suites pass there.
+1. Deploy to Railway staging. Confirm the integration and E2E suites pass there
+   — this is also what finally verifies the Mongo tests written in this audit
+   against a real database rather than CI alone.
 2. Run `loadtest/bet-contention.js` against it. Confirm no double-spend and no
    negative balances under concurrency.
 3. Audit the **Mongo** money paths to the depth the Postgres ones got here —
