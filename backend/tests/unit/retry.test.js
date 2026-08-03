@@ -74,7 +74,7 @@ describe('fetchWithRetry', () => {
       n++;
       return { status: n < 2 ? 503 : 200 };
     });
-    const res = await fetchWithRetry('http://x', {}, { retries: 3, baseMs: 1, capMs: 2, timeoutMs: 50 });
+    const res = await fetchWithRetry('http://1.1.1.1', {}, { retries: 3, baseMs: 1, capMs: 2, timeoutMs: 50 });
     expect(res.status).toBe(200);
     expect(n).toBe(2);
   });
@@ -82,7 +82,7 @@ describe('fetchWithRetry', () => {
   it('does NOT retry a 400 (client error)', async () => {
     let n = 0;
     global.fetch = vi.fn(async () => { n++; return { status: 400 }; });
-    const res = await fetchWithRetry('http://x', {}, { retries: 3, baseMs: 1, timeoutMs: 50 });
+    const res = await fetchWithRetry('http://1.1.1.1', {}, { retries: 3, baseMs: 1, timeoutMs: 50 });
     expect(res.status).toBe(400);
     expect(n).toBe(1);
   });

@@ -78,6 +78,45 @@ a redeploy is not an acceptable degradation.
 | `PG_SSL` | `no-verify` is **refused in production** unless `ALLOW_INSECURE_PG_TLS=true`; `false` is for local plaintext only. |
 | `ALLOW_INSECURE_PG_TLS` | Explicit opt-in to accept `PG_SSL=no-verify` (do not use with a real money DB). |
 
+## 3b. Outbound egress policy (SSRF)
+
+`services/outboundGuard.js` restricts where the server may make HTTP requests.
+Every outbound call through `networkClient` is limited to **http/https**, must
+resolve to a **public** address, and has **every redirect hop re-validated** —
+a permitted host answering `302 → http://169.254.169.254/` is the classic
+metadata bypass and is refused.
+
+No outbound URL comes from an end user. The risk this closes is an **admin**, or
+a stolen admin session, pointing a configurable URL at something only the server
+can reach — cloud metadata, the money datastore on the private network, or a
+loopback admin service.
+
+| Variable | Purpose |
+|---|---|
+| `OUTBOUND_ALLOW_PRIVATE` | `true` permits private/loopback/link-local destinations. Needed only when a provider is **self-hosted inside your private network** (see the Hetzner design). Off by default. |
+| `OUTBOUND_ALLOWED_HOSTS` | Optional comma-separated host allow-list. When set, nothing outside it is reachable. Tightest posture; requires updating when you add a provider. |
+
+### Approved outbound destinations
+
+Everything the backend may legitimately call. Anything not on this list arriving
+in a config value should be treated as a misconfiguration or an attack.
+
+| Destination | Configured by | Caller |
+|---|---|---|
+| Game-provider APIs | `provider.apiUrl` (admin panel) | `domains/casino/gameProvider.routes.js` |
+| SMS gateway | `SMS_API_URL` | `domains/communication/channelRegistry.js` |
+| LLM / embeddings endpoint | RAG provider env | `domains/support/ragService.js` |
+| S3-compatible storage | `S3_ENDPOINT` | AWS SDK (own client, not `networkClient`) |
+| Cloudflare Turnstile | hard-coded constant | `middleware/captcha.js` |
+
+> **Two reviewed exceptions** bypass `networkClient`. The **AWS SDK** manages its
+> own connection pool and signing and cannot practically be routed through it.
+> **`captcha.js`** calls a hard-coded Turnstile URL with its own timeout on the
+> login hot path; it takes no configurable input, so the guard would add a DNS
+> lookup per login for no security gain. Both are constant destinations, which
+> is why they are acceptable — a *configurable* URL must go through
+> `networkClient`.
+
 ## 4. Secret rotation (zero-downtime — set the `*_PREVIOUS_*` var during a rotation)
 
 Move the current value into the `PREVIOUS` var, set a new primary, deploy, then drop the old value
