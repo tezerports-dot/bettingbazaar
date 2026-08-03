@@ -58,6 +58,28 @@ export function registerCronJobs(rebuildLeaderboard) {
     } catch (e) { console.error('[expiry-worker] cron error:', e.message); }
   });
 
+  // ── Withdrawal settlement worker — runs every 60 seconds ────────────────────
+  // Settles confirmed withdrawals whose dispute-hold window has passed: consumes
+  // the player's locked stake and credits the merchant. Until this runs, neither
+  // side has moved, which is what makes a dispute a reversal rather than a
+  // clawback (domains/payment/withdrawalHold.service.js).
+  //
+  // 60s granularity against a hold measured in minutes: a settlement landing up
+  // to a minute late is invisible, and polling faster only adds load for orders
+  // that are, by definition, deliberately waiting.
+  registerRecurring('withdrawal-hold-settle', 60 * 1000, async () => {
+    try {
+      const { settleDueHolds } = await import('../domains/payment/withdrawalHold.service.js');
+      const settled = await settleDueHolds();
+      if (settled > 0) console.log(`[withdrawal-hold] Settled ${settled} withdrawal(s) after hold`);
+    } catch (e) {
+      console.error('[withdrawal-hold] cron error:', e.message);
+      sendAlert('withdrawal-hold-worker-failed',
+        'Withdrawal settlement worker failed — held withdrawals are not settling', { error: e.message })
+        .catch(() => {});
+    }
+  });
+
   // ── Scheduled policy/config apply worker — runs every 60 seconds ────────────
   // Activates DepositPolicy versions and ConfigVersion field changes whose
   // effectiveAt has passed. Both functions process every due item independently

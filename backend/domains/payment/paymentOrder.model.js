@@ -80,6 +80,36 @@ const paymentOrderSchema = new mongoose.Schema({
   // ── Reserve Wallet ───────────────────────────────────────────────────────
   escrowStatus: { type: String, enum: ['NONE', 'LOCKED', 'RELEASED', 'REFUNDED'], default: 'NONE' },
 
+  // ── Withdrawal settlement hold (anti-fraud, 2026-07-30) ──────────────────
+  // On a WITHDRAWAL the merchant sends the player fiat and receives tokens.
+  // Confirming used to do both sides instantly: the player's locked stake was
+  // consumed and the merchant's tokens became spendable in the same request.
+  // A merchant who pressed "confirm" WITHOUT sending the money therefore held
+  // liquid tokens immediately and could convert them through a buy order before
+  // the player noticed nothing had arrived — the platform, not the merchant,
+  // absorbed the loss.
+  //
+  // Confirm now only ASSERTS payment. Both sides stay frozen for a hold window
+  // (SystemConfig.withdrawalHoldMinutes) so the player has time to say the money
+  // never arrived. Nothing is settled until the window passes, so a dispute is a
+  // reversal of something still held rather than a clawback of value already
+  // spent.
+  //
+  // Deliberately symmetric: holding only the merchant's side would leave the
+  // player's stake consumed with nothing to return on a successful dispute.
+  merchantCreditStatus: {
+    type: String,
+    enum: ['NONE', 'HELD', 'RELEASED', 'REVERSED'],
+    default: 'NONE',
+    index: true,
+  },
+  // When the hold expires and the settlement worker may complete the order.
+  merchantCreditHoldUntil: { type: Date },
+  // Set when an admin resolves a dispute against the merchant, so the reversal
+  // is auditable and the settlement worker can never pick the order back up.
+  merchantCreditReversedAt:     { type: Date },
+  merchantCreditReversedReason: { type: String },
+
   // ── User Identity ────────────────────────────────────────────────────────
   userPhone:       String,
   userKycSnapshot: {
@@ -280,6 +310,12 @@ paymentOrderSchema.index({ userId: 1, createdAt: -1, _id: -1 });
 paymentOrderSchema.index({ expiresAt: 1, status: 1 });
 paymentOrderSchema.index({ bulkPayoutDate: 1, type: 1, status: 1 });
 paymentOrderSchema.index({ proofExpiresAt: 1 }, { partialFilterExpression: { proofScreenshot: { $type: 'string' } } });
+// Settlement worker sweep: only ever scans orders actually sitting in the hold,
+// so the index stays tiny regardless of total order volume.
+paymentOrderSchema.index(
+  { merchantCreditHoldUntil: 1 },
+  { partialFilterExpression: { merchantCreditStatus: 'HELD' } },
+);
 
 paymentOrderSchema.statics.scrubExpiredProofs = async function(now = new Date()) {
   const fallbackCutoff = new Date(now.getTime() - PAYMENT_PROOF_RETENTION_MS);

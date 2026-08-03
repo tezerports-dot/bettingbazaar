@@ -21,6 +21,9 @@ import {
 import { releaseUTR } from '../../middleware/utrValidation.js';
 import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import { tryAssignMerchant, buildMerchantSnapshot, updateMerchantStatsOnComplete } from '../payment/paymentProcessing.service.js';
+// Withdrawal settlement hold — confirm asserts payment, the worker settles it
+// once the dispute window passes. See withdrawalHold.service.js.
+import { holdMinutes } from '../payment/withdrawalHold.service.js';
 import { debitMerchantTokens, creditMerchantTokens } from './merchantWallet.service.js';
 import { publish as publishDomainEvent, EVENTS as DOMAIN_EVENTS } from '../../services/eventBus.service.js';
 import { getRiskRules } from '../risk/riskValidation.service.js';
@@ -905,26 +908,48 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             order.status      = 'COMPLETED';
             order.completedAt = new Date();
         } else {
-            // WITHDRAWAL confirm: merchant paid out fiat → auto-complete
-            // GOVERNANCE §7: debitWinningsForWithdrawal is wallet authority
-            // Note: tokens were already locked (escrowed) on order creation.
-            // The escrow debit was already done by debitWinningsForWithdrawal at order creation.
-            // No additional debit needed — winnings already moved to lockedBalance.
-            // Release the locked balance now that the merchant has paid out.
-            // Merchant receives tokens (their balance increases)
-            // GOVERNANCE §1: via merchantWallet.service.js (sole tokenBalance writer)
-            await releaseWithdrawal(order.userId, order.tokenAmount, order._id.toString());
+            // ── WITHDRAWAL confirm: an ASSERTION, not a settlement ─────────────
+            // The merchant is claiming they sent the player fiat. Nothing proves
+            // it yet, so nothing settles yet.
+            //
+            // This branch used to consume the player's locked stake AND credit
+            // the merchant in the same request. A merchant who pressed confirm
+            // without sending the money therefore held spendable tokens
+            // instantly, and could convert them through a buy order before the
+            // player noticed nothing arrived — with the player's stake already
+            // gone, the platform ate the loss and the dispute process arrived
+            // after the value had left.
+            //
+            // Both sides now freeze for SystemConfig.withdrawalHoldMinutes.
+            // Until it expires no value has moved: the player's stake stays
+            // locked exactly as it has since order creation, and the merchant's
+            // tokens do not exist. A dispute inside the window is a reversal of
+            // something still held (withdrawalHold.reverseHold), not a clawback.
+            // See domains/payment/withdrawalHold.service.js.
+            const hold = await holdMinutes();
 
-            await creditMerchantTokens({
-                merchantId: req.merchantId, amount: order.tokenAmount,
-                reason: `Withdrawal ${order.orderId} confirmed — tokens received from user`,
-                refModel: 'PaymentOrder', refId: order._id.toString(),
-                txId: `mw_wd_credit_${order._id}`,
-            }).catch(e => console.error('[Merchant confirm] WITHDRAWAL tokenBalance increment failed:', e.message));
+            if (hold > 0) {
+                order.status                  = 'PAID';   // asserted, awaiting settlement
+                order.merchantCreditStatus    = 'HELD';
+                order.merchantCreditHoldUntil = new Date(Date.now() + hold * 60 * 1000);
+                order.escrowLocked            = true;
+            } else {
+                // Hold disabled by admin — settle inline, the pre-2026-07-30
+                // behaviour. Same canonical txIds, so an order can never be
+                // credited twice across the two paths.
+                await releaseWithdrawal(order.userId, order.tokenAmount, order._id.toString());
+                await creditMerchantTokens({
+                    merchantId: req.merchantId, amount: order.tokenAmount,
+                    reason: `Withdrawal ${order.orderId} confirmed — tokens received from user`,
+                    refModel: 'PaymentOrder', refId: order._id.toString(),
+                    txId: `mw_wd_credit_${order._id}`,
+                }).catch(e => console.error('[Merchant confirm] WITHDRAWAL tokenBalance increment failed:', e.message));
 
-            order.status       = 'COMPLETED';
-            order.completedAt  = new Date();
-            order.escrowLocked = false;
+                order.status         = 'COMPLETED';
+                order.completedAt    = new Date();
+                order.merchantCreditStatus = 'RELEASED';
+                order.escrowLocked   = false;
+            }
 
             // Emit wallet update so user sees updated balance
             await emitWalletUpdate(order.userId);
@@ -960,6 +985,23 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
                     `Your tokens are now available for betting!`,
                     io
                 );
+            } else if (order.merchantCreditStatus === 'HELD') {
+                // The player is the only party who can tell us whether the money
+                // actually arrived, so the message has to say plainly that this
+                // is a claim under review and that saying nothing settles it.
+                // Announcing "COMPLETED" here — as this did before the hold —
+                // would train players to ignore the one notification the whole
+                // anti-fraud window depends on them reading.
+                const mins = Math.max(1, Math.round((order.merchantCreditHoldUntil - Date.now()) / 60000));
+                await sendSystemMessage(oid,
+                    `💸 Merchant has marked your payout as sent\n` +
+                    `UTR / Ref: ${utrNumber || order.utrNumber || 'Provided separately'}\n` +
+                    `📋 Token Sale: ₹${order.fiatAmount} to your bank account\n\n` +
+                    `⏳ Settling in about ${mins} minute(s).\n` +
+                    `If the money has NOT reached your account by then, raise a dispute on this order — ` +
+                    `your tokens are still held and will be returned to you.`,
+                    io
+                );
             } else {
                 await sendSystemMessage(oid,
                     `💸 Merchant has sent your payout\n` +
@@ -971,13 +1013,30 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             }
         } catch(_) {}
 
-        emitOrderUpdate(order.userId.toString(), 'order_completed', {
-            orderId:   order.orderId,
-            _id:       order._id,
-            status:    'COMPLETED',
-            server_ts: Date.now(),
-        });
-        emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'COMPLETED', server_ts: Date.now() });
+        // A held withdrawal is NOT completed — emitting order_completed here would
+        // flip the player's UI to "done" while their tokens are still frozen and
+        // the dispute window is open, which is the one moment they most need an
+        // accurate status. The settlement worker emits order_completed when it
+        // actually settles.
+        if (order.merchantCreditStatus === 'HELD') {
+            emitOrderUpdate(order.userId.toString(), 'order_update', {
+                orderId: order.orderId, _id: order._id, status: order.status,
+                merchantCreditStatus: 'HELD',
+                settlesAt: order.merchantCreditHoldUntil,
+                server_ts: Date.now(),
+            });
+            emitAdminUpdate('queue_order_update', {
+                orderId: order._id, status: order.status, merchantCreditStatus: 'HELD', server_ts: Date.now(),
+            });
+        } else {
+            emitOrderUpdate(order.userId.toString(), 'order_completed', {
+                orderId:   order.orderId,
+                _id:       order._id,
+                status:    'COMPLETED',
+                server_ts: Date.now(),
+            });
+            emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'COMPLETED', server_ts: Date.now() });
+        }
 
         res.json({ success: true, order: sanitizeMerchantOrder(order) });
     } catch (err) {
