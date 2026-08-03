@@ -166,6 +166,97 @@ export function reverseMirrorAccountingEvent(row) {
 }
 
 /** merchant_wallet_ledger row → MerchantWalletLedger doc (keyed on txId). */
+/**
+ * merchant_wallets → Merchant.tokenBalance. The rollback leg for the merchant
+ * path: while Postgres is authoritative this keeps Mongo current, so reverting
+ * the flip is lossless rather than a restore.
+ *
+ * Postgres splits the balance into pockets; Mongo has one number. The whole
+ * position — available + reserved + settlement — maps back to `tokenBalance`,
+ * because reverting means Mongo becomes authoritative again and it must not
+ * silently forget tokens that were reserved or awaiting payout. Mapping only
+ * `available` back would destroy exactly the money a merchant is owed.
+ */
+export function reverseMirrorMerchantBalance(row) {
+  return mirrorBack('merchant_wallets', async () => {
+    const total = Number(row.available_paise ?? 0)
+      + Number(row.reserved_paise ?? 0)
+      + Number(row.settlement_paise ?? 0);
+    await mongoose.model('Merchant').updateOne(
+      { _id: row.merchant_id },
+      { $set: { tokenBalance: rupees(total) } },
+    );
+  });
+}
+
+/**
+ * A committed merchant_wallet_entries movement → MerchantWalletLedger rows +
+ * Merchant.tokenBalance. The live rollback leg for the merchant path, called by
+ * merchantWalletPgAuthority after Postgres commits.
+ *
+ * Mirroring the BALANCE alone would not be enough. Mongo's idempotency gate for
+ * this domain is `MerchantWalletLedger.findOne({ txId })` — so if the ledger
+ * rows did not come back, a fallback to Mongo would no longer recognise the
+ * movements Postgres made, and the first retry of any of them would apply a
+ * second time. The ledger rows are the part that makes a fallback safe; the
+ * balance is only the part that makes it correct.
+ *
+ * Both numbers use the merchant TOTAL (available + reserved + settlement).
+ * Mongo has a single `tokenBalance` and cannot express pockets, and reverting
+ * means Mongo becomes authoritative again — mapping only `available` back would
+ * destroy exactly the tokens a merchant is owed.
+ */
+export function reverseMirrorMerchantMovement({ merchantId, entries = [], balances }) {
+  return mirrorBack('merchant_wallet_entries', async () => {
+    // A multi-leg movement is keyed `<txId>:<pocket>` in Postgres, and Mongo's
+    // gate looks up the bare `txId`. Nothing in production emits one today
+    // (only the unbuilt settlement domain would), so rather than mirror rows
+    // whose keys the Mongo gate cannot match, refuse loudly: the day the
+    // settlement domain is wired, this fails and is fixed, instead of quietly
+    // leaving a double-apply waiting on the other side of a fallback.
+    const suffixed = entries.filter((e) => e.txId.includes(':'));
+    if (suffixed.length) {
+      throw new Error(
+        `multi-leg merchant movement cannot be mirrored to Mongo — its per-pocket keys `
+        + `(${suffixed.map((e) => e.txId).join(', ')}) are invisible to MerchantWalletLedger's `
+        + `bare-txId idempotency gate. Give MerchantWalletLedger a pocket field before `
+        + `enabling multi-leg merchant movements.`,
+      );
+    }
+
+    const total = Number(balances.available ?? 0)
+      + Number(balances.reserved ?? 0)
+      + Number(balances.settlement ?? 0);
+
+    const MerchantWalletLedger = mongoose.model('MerchantWalletLedger');
+    for (const e of entries) {
+      await MerchantWalletLedger.updateOne(
+        { txId: e.txId },
+        {
+          $setOnInsert: {
+            txId: e.txId,
+            merchantId: String(merchantId),
+            type: e.entryType,
+            amount: rupees(Math.abs(e.amountPaise)),
+            // The merchant's balance after, not the pocket's: Mongo's number is
+            // the whole position, so its ledger must describe the same thing.
+            balanceAfter: rupees(total),
+            reason: e.reason || `${e.operation} (Postgres-authoritative movement)`,
+            refModel: e.refModel || undefined,
+            refId: e.refId ? String(e.refId) : undefined,
+          },
+        },
+        { upsert: true },
+      );
+    }
+
+    await mongoose.model('Merchant').updateOne(
+      { _id: merchantId },
+      { $set: { tokenBalance: rupees(total) } },
+    );
+  });
+}
+
 export function reverseMirrorMerchantWalletLedger(row) {
   return mirrorBack('merchant_wallet_ledger', async () => {
     await mongoose.model('MerchantWalletLedger').updateOne(

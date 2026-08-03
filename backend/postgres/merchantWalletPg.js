@@ -229,7 +229,12 @@ export async function applyMerchantMovement({
     if (!await appendEntries(client, mid, entries)) {
       return { commit: false, value: { ok: true, idempotent: true, balances } };
     }
-    return { commit: true, value: { ok: true, idempotent: false, balances: after } };
+    // `entries` travels back out so the caller can mirror exactly what
+    // committed rather than reconstructing it — merchantWalletPgAuthority's
+    // rollback leg copies these rows into Mongo, and a reconstruction that
+    // drifted from what the transaction actually wrote would make the fallback
+    // silently wrong.
+    return { commit: true, value: { ok: true, idempotent: false, balances: after, entries } };
   });
 }
 
@@ -304,21 +309,101 @@ function requirePositive(amountPaise, fn) {
  * a balance moved without its entry, which this module's transaction structure
  * is designed to make impossible; a non-zero result is therefore evidence of
  * something outside it having written.
+ *
+ * ONE such thing exists by design: the Phase A dual-write
+ * (dualWrite.mirrorMerchantBalance) sets available_paise directly from Mongo,
+ * because during Phase A Mongo owns the movement and its ledger. Balances that
+ * arrived that way are unexplained here until recordOpeningBalances() posts the
+ * opening entry — which is the cutover step that makes this check meaningful
+ * from the flip forward. Before that step, drift equal to the mirrored balance
+ * is expected, not a defect.
  */
 export async function reconcileMerchant(merchantId) {
-  const { rows } = await pgQuery(
-    `SELECT pocket,
-            COALESCE(SUM(CASE WHEN entry_type = 'CREDIT' THEN amount_paise ELSE -amount_paise END), 0) AS net
-       FROM merchant_wallet_entries WHERE merchant_id = $1 GROUP BY pocket`,
-    [String(merchantId)], 'merchant_wallet_reconcile',
-  );
-  const fromLedger = Object.fromEntries(ALL_POCKETS.map((p) => [p, 0]));
-  for (const r of rows) fromLedger[r.pocket] = toPaise(r.net);
-
+  const fromLedger = await ledgerSums(merchantId, pgQuery);
   const balances = await getMerchantBalances(merchantId);
   const drift = Object.fromEntries(ALL_POCKETS.map((p) => [p, balances[p] - fromLedger[p]]));
   return {
     ok: ALL_POCKETS.every((p) => drift[p] === 0),
     balances, fromLedger, drift,
   };
+}
+
+/** Net per pocket from the entries, in paise. `run` is pgQuery or a locked client. */
+async function ledgerSums(merchantId, run) {
+  const { rows } = await run(
+    `SELECT pocket,
+            COALESCE(SUM(CASE WHEN entry_type = 'CREDIT' THEN amount_paise ELSE -amount_paise END), 0) AS net
+       FROM merchant_wallet_entries WHERE merchant_id = $1 GROUP BY pocket`,
+    [String(merchantId)], 'merchant_wallet_reconcile',
+  );
+  const sums = Object.fromEntries(ALL_POCKETS.map((p) => [p, 0]));
+  for (const r of rows) sums[r.pocket] = toPaise(r.net);
+  return sums;
+}
+
+/**
+ * recordOpeningBalances — the cutover step that gives the Postgres ledger a
+ * starting point.
+ *
+ * THE ONLY FUNCTION HERE THAT WRITES AN ENTRY WITHOUT MOVING A BALANCE, and it
+ * is deliberate. At cutover, merchant_wallets already holds each merchant's
+ * balance — put there by the Phase A mirror, which is a projection of movements
+ * that were ledgered in MONGO. Postgres has the number but not the history, so
+ * `reconcileMerchant` would report drift equal to the opening balance forever
+ * and the entries-explain-balance invariant could never hold.
+ *
+ * Posting an opening entry per pocket closes that gap the way a ledger
+ * migration is supposed to: the pre-migration history stays where it happened,
+ * and one entry states the position it left behind. From that point every
+ * further movement writes its own entry inside its own transaction, so the
+ * invariant holds from the flip forward.
+ *
+ * Idempotent by construction — `mw_opening_<merchantId>_<pocket>` is UNIQUE, so
+ * a second run inserts nothing. Safe to re-run, and safe to run before the flip.
+ *
+ * @returns {{ merchantId: string, posted: string[], balances: object, conflicts: string[] }}
+ */
+export async function recordOpeningBalances(merchantId, { actor = 'cutover' } = {}) {
+  return withMerchantLock(merchantId, async ({ client, mid, balances }) => {
+    const sums = await ledgerSums(mid, (text, params) => client.query(text, params));
+    const posted = [];
+
+    for (const pocket of ALL_POCKETS) {
+      const delta = balances[pocket] - sums[pocket];
+      // Nothing to open: the ledger already explains this pocket. This is the
+      // ordinary second-run outcome, and it is not a conflict.
+      if (delta === 0) continue;
+
+      const txId = `mw_opening_${mid}_${pocket}`;
+      const ok = await appendEntries(client, mid, [{
+        txId,
+        pocket,
+        amountPaise: delta,
+        // before = what the ledger already explains; after = the real balance.
+        // The arithmetic CHECK holds by construction, and a partially-opened
+        // wallet (some entries already present) opens for the remainder only.
+        balanceBefore: sums[pocket],
+        balanceAfter: balances[pocket],
+        entryType: delta > 0 ? 'CREDIT' : 'DEBIT',
+        operation: 'OPENING_BALANCE',
+        actor,
+        reason: 'Opening balance at PostgreSQL cutover — history predates this ledger',
+      }]);
+
+      // The key collided while the pocket STILL does not reconcile. That is not
+      // a repeat run — it means the balance moved after this pocket was opened,
+      // without writing an entry. Something outside this module wrote. Unwind
+      // and report it rather than papering over it with a second opening entry,
+      // which would silently launder the unexplained movement into the ledger.
+      if (!ok) {
+        return {
+          commit: false,
+          value: { merchantId: mid, posted: [], balances, conflicts: [pocket] },
+        };
+      }
+      posted.push(txId);
+    }
+
+    return { commit: posted.length > 0, value: { merchantId: mid, posted, balances, conflicts: [] } };
+  });
 }

@@ -144,15 +144,55 @@ export function mirrorUtr(doc) {
   ));
 }
 
-/** MerchantWalletLedger doc → merchant_wallet_ledger row. */
+/**
+ * MerchantWalletLedger doc → merchant_wallet_ledger row.
+ *
+ * The ON CONFLICT fills in a NULL balance_after_paise rather than doing
+ * nothing. The merchant service writes its ledger row in two steps — reserve
+ * (balanceAfter null) then complete — and only the first is a document save,
+ * so the post-save hook mirrors the row while its balance is still unknown.
+ * With DO NOTHING the completion could never land, and balance_after_paise
+ * stayed NULL for every merchant movement ever mirrored: the exact column a
+ * rollback reads to restore Merchant.tokenBalance. COALESCE keeps it
+ * write-once — a real value is never overwritten by a later replay, so this
+ * stays idempotent and the append-only intent holds.
+ */
 export function mirrorMerchantWalletLedger(doc) {
   return mirror('merchant_wallet_ledger', () => pgQuery(
     `INSERT INTO merchant_wallet_ledger (mongo_id, tx_id, merchant_id, direction, amount_paise, balance_after_paise, reason, created_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8, now()))
-     ON CONFLICT (tx_id) DO NOTHING`,
+     ON CONFLICT (tx_id) DO UPDATE SET
+       balance_after_paise = COALESCE(merchant_wallet_ledger.balance_after_paise, EXCLUDED.balance_after_paise)`,
     [String(doc._id), doc.txId, String(doc.merchantId), doc.type || doc.direction || null,
      paise(doc.amount), doc.balanceAfter != null ? paise(doc.balanceAfter) : null,
      doc.reason || doc.description || null, doc.createdAt || null],
+  ));
+}
+
+/**
+ * Merchant BALANCE → merchant_wallets.
+ *
+ * mirrorMerchantWalletLedger above mirrors the merchant's ledger ROWS. It does
+ * not mirror the balance, so `merchant_wallets` stayed empty while
+ * `merchant_wallet_ledger` filled up — meaning a cutover to Postgres authority
+ * would have started reading balances of zero. The audit recorded this as the
+ * merchant path's `dualWrite` capability being only half true.
+ *
+ * The Mongo side keeps a single `tokenBalance`; the Postgres side splits it
+ * into available/reserved/settlement pockets. While Mongo is authoritative
+ * there are no reservations in it to mirror, so the whole balance maps to
+ * `available` and the other two stay at whatever Postgres already holds. The
+ * mapping stops being a projection the moment Postgres takes over, which is
+ * exactly why the flip is gated on reconciliation rather than on this write
+ * succeeding.
+ */
+export function mirrorMerchantBalance(doc) {
+  return mirror('merchant_wallets', () => pgQuery(
+    `INSERT INTO merchant_wallets (merchant_id, available_paise, updated_at)
+     VALUES ($1, $2, now())
+     ON CONFLICT (merchant_id) DO UPDATE
+       SET available_paise = EXCLUDED.available_paise, updated_at = now()`,
+    [String(doc._id ?? doc.merchantId), paise(doc.tokenBalance ?? 0)],
   ));
 }
 

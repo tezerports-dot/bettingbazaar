@@ -87,11 +87,27 @@ export async function getPool() {
  * this exists purely so the asynchronous event has a listener and the process
  * survives to serve the error.
  */
+/**
+ * Attached ONCE per underlying connection, not once per checkout.
+ *
+ * A pool hands the same client object back on every checkout, so attaching a
+ * fresh listener each time accumulated them on a long-lived connection — an
+ * unbounded leak, and one that announced itself as `MaxListenersExceededWarning:
+ * 11 error listeners added to [Client]` after only a few hundred transactions
+ * in the test suite. The guard has to survive the client being returned to the
+ * pool and checked out again, which is exactly what a symbol on the client does
+ * and what `once`/`removeListener` on release would not.
+ */
+const GUARDED = Symbol('bb.pgErrorGuard');
+
 export async function connectGuarded(pool) {
   const client = await pool.connect();
-  client.on('error', (e) => {
-    console.error('[pg] checked-out client error (connection lost mid-transaction):', e.message);
-  });
+  if (!client[GUARDED]) {
+    client[GUARDED] = true;
+    client.on('error', (e) => {
+      console.error('[pg] checked-out client error (connection lost mid-transaction):', e.message);
+    });
+  }
   return client;
 }
 

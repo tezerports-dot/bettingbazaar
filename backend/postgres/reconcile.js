@@ -26,12 +26,13 @@
  */
 import mongoose from 'mongoose';
 import { pgConfigured, pgQuery, closePg } from './pgClient.js';
+import { rupeesToPaise } from '../shared/money.js';
 import {
   mirrorWalletLedger, mirrorAccountingEvent, mirrorTransaction,
-  mirrorPaymentOrder, mirrorUtr, mirrorMerchantWalletLedger,
+  mirrorPaymentOrder, mirrorUtr, mirrorMerchantWalletLedger, mirrorMerchantBalance,
 } from './dualWrite.js';
-import { REVERSE_TABLES } from './reverseMirror.js';
-import { anyPathOnPostgres } from './moneyAuthority.js';
+import { REVERSE_TABLES, reverseMirrorMerchantBalance } from './reverseMirror.js';
+import { anyPathOnPostgres, isPostgresAuthoritative, MONEY_PATHS } from './moneyAuthority.js';
 
 // `since` names THIS MODEL'S Mongo timestamp field. It is not `createdAt`
 // everywhere: Transaction calls it `timestamp` and UTRRegistry calls it
@@ -129,6 +130,129 @@ export async function reconcileTableReverse(t, { since = null, repair = false } 
 }
 
 /**
+ * reconcileMerchantBalances — do the two stores agree on what each merchant HAS?
+ *
+ * The row-presence checks above cannot answer this. `merchant_wallet_ledger`
+ * can hold every row Mongo holds, and `merchant_wallets` can hold a row for
+ * every merchant, while the NUMBERS differ — a mirror that dropped one update,
+ * a movement that landed in one store only. Presence reconciliation reports
+ * clean and the cutover gate advances on a balance that is wrong.
+ *
+ * This is the balance equivalent of the trial balance, and it is the check that
+ * `capabilities.merchant_wallet.reconciled` actually means. It runs in both
+ * phases and needs no window: a balance is a current position, not an event, so
+ * "drift in the last 24h" is not a meaningful question — every merchant is
+ * compared, every pass.
+ *
+ * Repair direction follows authority, and is never guessed:
+ *   - `backfill`    Mongo → Postgres (Phase A: Mongo owns the number)
+ *   - `repairMongo` Postgres → Mongo (Phase B: Postgres owns it)
+ * Asking for both is a contradiction and is refused rather than resolved.
+ */
+export async function reconcileMerchantBalances({ backfill = false, repairMongo = false } = {}) {
+  if (backfill && repairMongo) {
+    throw new Error('reconcileMerchantBalances: backfill and repairMongo are opposite directions — pick one');
+  }
+
+  const merchants = await mongoose.model('Merchant').find({})
+    .select('tokenBalance').limit(50000).lean();
+
+  const { rows } = await pgQuery(
+    `SELECT merchant_id, available_paise, reserved_paise, settlement_paise FROM merchant_wallets`,
+    [], 'merchant_balance_reconcile',
+  );
+  const pgById = new Map(rows.map((r) => [String(r.merchant_id), r]));
+
+  const drifted = [];
+  let totalDriftPaise = 0;
+  let repaired = 0;
+
+  for (const m of merchants) {
+    const id = String(m._id);
+    // Mongo stores float rupees; Postgres integer paise. Compare in paise, the
+    // exact representation — comparing in rupees would call a half-paise
+    // difference equality.
+    const mongoPaise = rupeesToPaise(Number(m.tokenBalance) || 0);
+    const row = pgById.get(id);
+    const pgPaise = row
+      ? Number(row.available_paise) + Number(row.reserved_paise) + Number(row.settlement_paise)
+      : 0;
+
+    // A merchant with no wallet row and a zero balance is not drift — Postgres
+    // materialises the row on first movement, and absent means zero.
+    if (mongoPaise === pgPaise) continue;
+
+    drifted.push({ merchantId: id, mongoPaise, pgPaise, deltaPaise: mongoPaise - pgPaise });
+    totalDriftPaise += Math.abs(mongoPaise - pgPaise);
+
+    if (backfill) { await mirrorMerchantBalance(m); repaired++; }
+    else if (repairMongo && row) { await reverseMirrorMerchantBalance(row); repaired++; }
+  }
+
+  // A wallet row whose merchant does not exist in Mongo. Postgres has no
+  // foreign key to the Mongo collection, so this is the only thing that would
+  // notice a typo'd id having minted a wallet — and money sitting in one is
+  // money nobody owns.
+  const mongoIds = new Set(merchants.map((m) => String(m._id)));
+  const orphansInPg = rows
+    .filter((r) => !mongoIds.has(String(r.merchant_id)))
+    .map((r) => String(r.merchant_id));
+
+  return {
+    table: 'merchant_wallets',
+    checked: merchants.length,
+    drifted: backfill || repairMongo ? 0 : drifted.length,
+    driftedBeforeRepair: drifted.length,
+    totalDriftPaise,
+    repaired,
+    orphansInPg: orphansInPg.length,
+    sampleDrift: drifted.slice(0, 5),
+    sampleOrphans: orphansInPg.slice(0, 5),
+  };
+}
+
+/**
+ * Does the PostgreSQL merchant ledger explain the PostgreSQL merchant balances?
+ *
+ * The intra-store invariant, distinct from the cross-store one above. It is
+ * only meaningful once recordOpeningBalances() has run — before that, a
+ * mirrored balance has no entries behind it and every merchant reads as
+ * drifted. `requireOpened: false` (the default) therefore skips merchants with
+ * no entries at all, so the check is honest during Phase A instead of alarming;
+ * the cutover runbook turns it on after opening the ledgers.
+ */
+export async function reconcileMerchantLedgers({ requireOpened = false } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT w.merchant_id,
+            w.available_paise + w.reserved_paise + w.settlement_paise AS balance_paise,
+            COALESCE(SUM(CASE WHEN e.entry_type = 'CREDIT' THEN e.amount_paise ELSE -e.amount_paise END), 0) AS ledger_paise,
+            COUNT(e.id) AS entry_count
+       FROM merchant_wallets w
+       LEFT JOIN merchant_wallet_entries e ON e.merchant_id = w.merchant_id
+      GROUP BY w.merchant_id, balance_paise`,
+    [], 'merchant_ledger_reconcile',
+  );
+
+  const considered = rows.filter((r) => requireOpened || Number(r.entry_count) > 0);
+  const unexplained = considered
+    .map((r) => ({
+      merchantId: String(r.merchant_id),
+      balancePaise: Number(r.balance_paise),
+      ledgerPaise: Number(r.ledger_paise),
+      deltaPaise: Number(r.balance_paise) - Number(r.ledger_paise),
+    }))
+    .filter((r) => r.deltaPaise !== 0);
+
+  return {
+    table: 'merchant_wallet_entries',
+    checked: considered.length,
+    skippedUnopened: rows.length - considered.length,
+    unexplained: unexplained.length,
+    sample: unexplained.slice(0, 5),
+  };
+}
+
+/**
  * Trial balance from the MONGO ledger, in the same shape as pgTrialBalance().
  *
  * DATA_ROLLBACK_PLAN Phase B step 3 requires, before falling back, that "the
@@ -209,7 +333,23 @@ export async function runReconcile({
   for (const t of TABLES) results.push(await reconcileTable(t, { since, backfill }));
 
   const pgTrial = await pgTrialBalance();
-  const forwardDrift = results.some((r) => r.missingInPg > 0) || !pgTrial.conservesToZero;
+
+  // Balance agreement, not just row presence. Repair direction follows the
+  // authority in force: while Mongo owns merchant balances a --backfill repairs
+  // Postgres, and after the flip a --repair-mongo repairs Mongo. Neither runs
+  // unless explicitly asked for — the cron is detection-only.
+  const merchantOnPg = isPostgresAuthoritative(MONEY_PATHS.MERCHANT_WALLET);
+  const merchantBalances = await reconcileMerchantBalances({
+    backfill: backfill && !merchantOnPg,
+    repairMongo: repairMongo && merchantOnPg,
+  });
+  const merchantLedgers = await reconcileMerchantLedgers();
+
+  const forwardDrift = results.some((r) => r.missingInPg > 0)
+    || !pgTrial.conservesToZero
+    || merchantBalances.drifted > 0
+    || merchantBalances.orphansInPg > 0
+    || merchantLedgers.unexplained > 0;
 
   // The reverse direction only means something once Postgres owns a path — or
   // when an operator explicitly asks for it during a drill or a fallback.
@@ -233,11 +373,41 @@ export async function runReconcile({
     window: all ? 'all' : `${hours}h`,
     results,
     trialBalance: pgTrial,
+    merchantBalances,
+    merchantLedgers,
     reverse: reverseResults,
     mongoTrialBalance: mongoTrial,
     ledgersAgree,
     drift: forwardDrift || reverseDrift,
   };
+}
+
+/**
+ * openMerchantLedgers — the cutover step, run once per merchant before the
+ * merchant path flips to Postgres.
+ *
+ * Gives every mirrored balance an opening entry so the Postgres ledger explains
+ * the Postgres balance from the flip forward (see
+ * merchantWalletPg.recordOpeningBalances for why this is the correct shape for
+ * a ledger migration). Idempotent — re-running posts nothing.
+ */
+export async function openMerchantLedgers() {
+  const { recordOpeningBalances } = await import('./merchantWalletPg.js');
+  const merchants = await mongoose.model('Merchant').find({}).select('_id').limit(50000).lean();
+
+  let opened = 0;
+  let alreadySettled = 0;
+  const conflicts = [];
+  for (const m of merchants) {
+    const r = await recordOpeningBalances(m._id);
+    if (r.conflicts.length) conflicts.push({ merchantId: String(m._id), pockets: r.conflicts });
+    else if (r.posted.length) opened++;
+    else alreadySettled++;
+  }
+  // A conflict is a balance that moved without an entry AFTER being opened.
+  // It blocks the cutover: the ledger cannot explain the number it is about to
+  // become authoritative for.
+  return { merchants: merchants.length, opened, alreadySettled, conflicts };
 }
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
@@ -252,6 +422,15 @@ if (isMain) {
 
   await mongoose.connect(process.env.MONGODB_URI);
   await import('../models/index.js');
+
+  // A cutover step, not a check — it writes opening entries and exits, so it
+  // never runs as a side effect of a reconcile pass.
+  if (flag('open-merchant-ledgers')) {
+    console.log(JSON.stringify(await openMerchantLedgers(), null, 2));
+    await mongoose.disconnect(); await closePg();
+    process.exit(0);
+  }
+
   const report = await runReconcile({
     hours: opt('hours', 24), all: flag('all'), backfill: flag('backfill'),
     reverse: flag('reverse'), repairMongo: flag('repair-mongo'),

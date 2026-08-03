@@ -76,6 +76,13 @@ export const MONEY_PATHS = Object.freeze({
   BETS:                    'bets',
   SETTLEMENTS:             'settlements',
   BONUSES_AND_COMMISSIONS: 'bonuses_and_commissions',
+  // Added 2026-08-03. Casino provider callbacks move real money —
+  // domains/casino/gameProvider.routes.js calls debitForGameProviderBet,
+  // creditWinnings and refundOrder — but no path described them, so the
+  // matrix showed ten domains while eleven moved money. Same omission the six
+  // above were added to fix, found the same way: by listing what actually
+  // touches a balance rather than what the registry already knew about.
+  CASINO_SETTLEMENT:       'casino_settlement',
 });
 
 /**
@@ -134,26 +141,22 @@ const CAPABILITIES = Object.freeze({
     notes: 'user_kyc is mirrored only. KYC decisions are Mongo-only.',
   },
   [MONEY_PATHS.MERCHANT_WALLET]: {
-    // STILL false, deliberately. postgres/merchantWalletPg.js now exists — a
-    // real reader and writer, 24 tests green against PostgreSQL 16 — but
-    // `implemented` also requires that production call sites ROUTE through the
-    // authority resolver, and merchantWallet.service.js does not yet consult
-    // it. Flipping this on the strength of the implementation alone would
-    // recreate exactly the false-authority hazard this registry exists to
-    // prevent: code that exists but is not reached is not authority.
-    implemented: false,
-    dualWrite:   true,  // mirrorMerchantWalletLedger — ledger only, not the balance
-    reconciled:  false, // reconcileMerchant() exists per-merchant; not yet in the reconcile pass
-    rollback:    false, // no reverse mirror for merchant balances
-    notes: 'Postgres implementation EXISTS (postgres/merchantWalletPg.js: merchant_wallets + merchant_wallet_entries, row-locked, ledger in the same transaction, append-only, 24 tests). Remaining before cutover: route merchantWallet.service.js through the authority resolver, mirror the BALANCE (only the ledger is mirrored today), add it to the reconcile pass, and build the reverse mirror.',
+    // Flipped 2026-08-03, after all four were separately evidenced — not on the
+    // strength of the implementation alone, which was the reason this stayed
+    // false while merchantWalletPg.js already existed.
+    implemented: true,  // merchantWalletPg.js + merchantWalletPgAuthority.js, routed from merchantWallet.service.js
+    dualWrite:   true,  // mirrorMerchantBalance (balance) + mirrorMerchantWalletLedger (rows)
+    reconciled:  true,  // reconcile.js reconcileMerchantBalances + reconcileMerchantLedgers
+    rollback:    true,  // reverseMirrorMerchantMovement, live per movement
+    notes: 'Merchant token balances. Movements are Postgres-authoritative when flipped: one transaction, row-locked, guard in the UPDATE, entry in the same transaction, UNIQUE tx_id idempotency. READS for display, scoring and assignment eligibility still come from the live-mirrored Mongo document — the authoritative sufficiency check is the debit itself, which refuses transactionally, so a stale read can only misroute an order, never move money wrongly. Reserved/settlement pockets are structurally zero until merchant_settlement lands; that domain must revisit the single-tokenBalance projection before writing them.',
   },
   [MONEY_PATHS.MERCHANT_SETTLEMENT]: {
     implemented: false, dualWrite: false, reconciled: false, rollback: false,
-    notes: 'User↔merchant settlement. No Postgres schema or implementation.',
+    notes: 'User↔merchant settlement lifecycle (reserve/complete/cancel/reverse). The Postgres primitives exist in merchantWalletPg.js, but nothing calls them and MerchantWalletLedger cannot represent a per-pocket movement — the reverse mirror refuses one rather than write keys Mongo\'s idempotency gate cannot match.',
   },
   [MONEY_PATHS.ADMIN_ISSUANCE]: {
     implemented: false, dualWrite: false, reconciled: false, rollback: false,
-    notes: 'Admin↔merchant token issuance and deduction. No Postgres schema or implementation.',
+    notes: 'Admin↔merchant issuance. The MERCHANT side of an issuance already rides on merchant_wallet (admin routes call creditMerchantTokens). What is missing is the TREASURY side: the 10B supply cap reserved by reserveAdminMint has no Postgres ledger, so a mint is only half-recorded there.',
   },
   [MONEY_PATHS.BETS]: {
     implemented: false, dualWrite: false, reconciled: false, rollback: false,
@@ -167,10 +170,65 @@ const CAPABILITIES = Object.freeze({
     implemented: false, dualWrite: false, reconciled: false, rollback: false,
     notes: 'Bonus engine and referral commission. Mongo-only.',
   },
+  [MONEY_PATHS.CASINO_SETTLEMENT]: {
+    implemented: false, dualWrite: false, reconciled: false, rollback: false,
+    notes: 'Casino provider callbacks (BET/WIN/ROLLBACK/REFUND/CANCEL). Mongo-only, and it rides on the user wallet rather than the bets path. A ROLLBACK or REFUND credit does not currently have to prove a matching prior debit — recorded in docs/MONGO_MONEY_AUDIT.md; the Postgres design must require it.',
+  },
 });
 
 /** Every capability flag that must be true before a path may carry authority. */
 const REQUIRED_CAPABILITIES = Object.freeze(['implemented', 'dualWrite', 'reconciled', 'rollback']);
+
+/**
+ * TESTING — evidence that a path has been exercised, as opposed to written.
+ *
+ * Kept SEPARATE from CAPABILITIES on purpose. Capability answers "can this path
+ * carry authority"; testing answers "has anyone proven it survives contact with
+ * reality". A path can be fully implemented, mirrored, reconciled and
+ * rollback-capable — cutover-eligible by every structural measure — and still
+ * never have been run against a concurrent load or a database restart. Merging
+ * the two would let a green cutover gate imply a certification nobody performed.
+ *
+ *   concurrencyTested       raced against itself on a real database: parallel
+ *                           writers on one balance, retry storms on one key
+ *   infrastructureTested    survived the infrastructure failing underneath it:
+ *                           database restart mid-transaction, connection loss,
+ *                           process kill, multi-instance contention
+ *
+ * `evidence` names the file or run that backs the claim. A `true` with no
+ * evidence is a bug in this table.
+ *
+ * infrastructureTested is false for EVERY path, including the two that are
+ * otherwise complete. That is not an oversight — it is the honest state. Those
+ * drills need a running MongoDB, a multi-node deployment and a load balancer to
+ * restart, none of which exist in the environment this code is developed in.
+ * They are staging work, and until they run, nothing here is production
+ * certified. See docs/PRODUCTION_CERTIFICATION_CHECKLIST.md.
+ */
+const TESTING = Object.freeze({
+  [MONEY_PATHS.WALLET]: {
+    concurrencyTested: true,
+    infrastructureTested: false,
+    evidence: 'backend/tests/postgres/walletPg.test.js — 200 racing debits on one balance, 200-copy retry storms, crash-recovery run. Infrastructure drills NOT RUN.',
+  },
+  [MONEY_PATHS.MERCHANT_WALLET]: {
+    concurrencyTested: true,
+    infrastructureTested: false,
+    evidence: 'backend/tests/postgres/merchantWalletPg.test.js (200 racing reservations against a balance that fits 100) + merchantWalletPgAuthority.test.js (200 racing debits through the authority path, 200-copy retry storm on one key). Infrastructure drills NOT RUN.',
+  },
+});
+
+/** The default for a path with no TESTING entry: nothing has been proven. */
+const UNTESTED = Object.freeze({
+  concurrencyTested: false,
+  infrastructureTested: false,
+  evidence: 'No concurrency or infrastructure testing. NOT VERIFIED.',
+});
+
+/** Everything that must hold before a path may be called production certified. */
+const CERTIFICATION_CRITERIA = Object.freeze([
+  ...REQUIRED_CAPABILITIES, 'concurrencyTested', 'infrastructureTested',
+]);
 
 /**
  * capabilityFor — the registry entry for a path, plus the derived eligibility
@@ -190,6 +248,54 @@ export function isCutoverEligible(path) {
 }
 
 /**
+ * certificationFor — everything the go-live checklist asks about one path.
+ *
+ * `certified` is deliberately harder to earn than `cutoverEligible`: it also
+ * requires the path to have been raced and to have survived its infrastructure
+ * failing. `blockedBy` names exactly what is missing, so the checklist never
+ * has to be maintained by hand.
+ */
+export function certificationFor(path) {
+  const capability = capabilityFor(path);
+  const testing = TESTING[path] ?? UNTESTED;
+  const flags = { ...capability, ...testing };
+  const blockedBy = CERTIFICATION_CRITERIA.filter((flag) => !flags[flag]);
+  return {
+    path,
+    describes: PATH_SPEC[path].describes,
+    ...capability,
+    ...testing,
+    blockedBy,
+    certified: blockedBy.length === 0,
+  };
+}
+
+/** The whole per-domain certification table, for the checklist document. */
+export function certificationMatrix() {
+  return ALL_PATHS.map(certificationFor);
+}
+
+/**
+ * The single production-readiness verdict. Certified only when EVERY money path
+ * is — a platform is not production ready in the parts nobody has tested.
+ */
+export function productionCertificationStatus() {
+  const rows = certificationMatrix();
+  const certified = rows.filter((r) => r.certified);
+  return {
+    status: certified.length === rows.length
+      ? 'PRODUCTION_CERTIFIED'
+      : 'NOT PRODUCTION CERTIFIED',
+    ready: certified.length === rows.length,
+    totalPaths: rows.length,
+    certified: certified.map((r) => r.path),
+    cutoverEligible: rows.filter((r) => r.cutoverEligible).map((r) => r.path),
+    concurrencyTested: rows.filter((r) => r.concurrencyTested).map((r) => r.path),
+    infrastructureTested: rows.filter((r) => r.infrastructureTested).map((r) => r.path),
+  };
+}
+
+/**
  * Dependencies of `path` that are NOT yet authoritative in Postgres.
  *
  * Exported so the ordering rule stays directly testable. validateAuthorityConfig
@@ -198,12 +304,19 @@ export function isCutoverEligible(path) {
  * noise — but that short-circuit would otherwise leave this rule uncovered
  * until a second path becomes eligible, which is exactly when a regression
  * would be most expensive.
+ *
+ * `seen` guards the mutual recursion with authorityFor(), which consults this
+ * function to fail safe. PATH_SPEC is a DAG so a cycle cannot occur today; the
+ * guard is here so that introducing one becomes a visible wrong answer rather
+ * than a hung process on a money path.
  */
-export function laggingDependencies(path, env = process.env) {
+export function laggingDependencies(path, env = process.env, seen = new Set()) {
   if (!isKnownPath(path)) {
     throw new Error(`Unknown money path '${path}'. Known paths: ${ALL_PATHS.join(', ')}`);
   }
-  return PATH_SPEC[path].dependsOn.filter((dep) => authorityFor(dep, env) !== STORE.POSTGRES);
+  if (seen.has(path)) return [];
+  const walked = new Set(seen).add(path);
+  return PATH_SPEC[path].dependsOn.filter((dep) => authorityFor(dep, env, walked) !== STORE.POSTGRES);
 }
 
 const PATH_SPEC = Object.freeze({
@@ -215,7 +328,7 @@ const PATH_SPEC = Object.freeze({
   },
   [MONEY_PATHS.LEDGER]: {
     env: 'MONEY_AUTHORITY_LEDGER',
-    order: 2,
+    order: 3,
     // The accounting ledger is derived from completed money movements, so it
     // cannot be authoritative in Postgres while balances still are in Mongo.
     dependsOn: [MONEY_PATHS.WALLET],
@@ -223,13 +336,13 @@ const PATH_SPEC = Object.freeze({
   },
   [MONEY_PATHS.ORDERS]: {
     env: 'MONEY_AUTHORITY_ORDERS',
-    order: 3,
+    order: 4,
     dependsOn: [MONEY_PATHS.WALLET, MONEY_PATHS.LEDGER],
     describes: 'payment orders + UTR registry',
   },
   [MONEY_PATHS.KYC]: {
     env: 'MONEY_AUTHORITY_KYC',
-    order: 4,
+    order: 5,
     // Plan step 7: KYC cuts over LAST, after every money path is settled.
     dependsOn: [MONEY_PATHS.WALLET, MONEY_PATHS.LEDGER, MONEY_PATHS.ORDERS],
     describes: 'KYC submissions and status',
@@ -241,17 +354,33 @@ const PATH_SPEC = Object.freeze({
   // to `postgres` fails the boot instead of doing nothing. None is implemented,
   // so none can currently be flipped.
   //
-  // NOTE on ordering: these follow the existing 1–4 numbering, which flips
-  // WALLET FIRST. A proposal to resequence with the user wallet LAST (ledger →
-  // merchant wallet → orders → bets → bonuses → user wallet) is a defensible
-  // and arguably safer order, but it inverts the `dependsOn` graph above and
-  // would change validation for the one path that is currently eligible. That
-  // resequencing is a decision, not a refactor — see
-  // docs/POSTGRES_FULL_AUTHORITY_PLAN.md.
+  // NOTE on ordering: WALLET stays first. A proposal to resequence with the
+  // user wallet LAST is defensible but inverts this graph, so it remains a
+  // decision rather than a refactor — see docs/POSTGRES_FULL_AUTHORITY_PLAN.md.
+  //
+  // MERCHANT_WALLET moved from order 5 to order 2 on 2026-08-03, and its
+  // dependency changed from LEDGER to WALLET. That edge was wrong as modelled:
+  // a merchant movement writes its OWN ledger (merchant_wallet_entries) inside
+  // its own transaction and never touches accounting_events, so nothing about
+  // it required the double-entry ledger to move first.
+  //
+  // WALLET is the real dependency, and it is a transactional one. A deposit
+  // confirmation debits the merchant and credits the user inside ONE Mongo
+  // session (domains/payment/payment.routes.js, merchant.routes.js) — put those
+  // two balances in different stores and that session no longer covers both, so
+  // an abort between them leaves the merchant debited and the user uncredited.
+  // The deterministic txId makes a RETRY safe, but nothing makes an unretried
+  // failure safe, which is exactly the "one settlement, two sources of truth"
+  // hazard this graph exists to prevent.
+  //
+  // The remaining coupling to LEDGER is a reporting one, not a transactional
+  // one: until accounting_events moves too, a trial balance that includes
+  // merchant tokens spans both stores. reconcile.js compares them account by
+  // account, so it is visible rather than silent.
   [MONEY_PATHS.MERCHANT_WALLET]: {
     env: 'MONEY_AUTHORITY_MERCHANT_WALLET',
-    order: 5,
-    dependsOn: [MONEY_PATHS.LEDGER],
+    order: 2,
+    dependsOn: [MONEY_PATHS.WALLET],
     describes: 'merchant token balances + merchant wallet ledger',
   },
   [MONEY_PATHS.MERCHANT_SETTLEMENT]: {
@@ -276,11 +405,20 @@ const PATH_SPEC = Object.freeze({
     env: 'MONEY_AUTHORITY_SETTLEMENTS',
     order: 9,
     dependsOn: [MONEY_PATHS.BETS, MONEY_PATHS.WALLET, MONEY_PATHS.LEDGER],
-    describes: 'cycle settlement and payout',
+    describes: 'sports/cycle settlement and payout',
+  },
+  // Casino settles through the USER WALLET directly, not through the bets
+  // path — gameProvider.routes.js calls walletAuthority, not the bet engine —
+  // so its dependency is the wallet and the ledger, not BETS.
+  [MONEY_PATHS.CASINO_SETTLEMENT]: {
+    env: 'MONEY_AUTHORITY_CASINO_SETTLEMENT',
+    order: 10,
+    dependsOn: [MONEY_PATHS.WALLET, MONEY_PATHS.LEDGER],
+    describes: 'casino provider callbacks (bet, win, rollback, refund, cancel)',
   },
   [MONEY_PATHS.BONUSES_AND_COMMISSIONS]: {
     env: 'MONEY_AUTHORITY_BONUSES',
-    order: 10,
+    order: 11,
     dependsOn: [MONEY_PATHS.WALLET, MONEY_PATHS.LEDGER],
     describes: 'bonus engine + referral commission',
   },
@@ -313,7 +451,7 @@ function requestedStore(path, env) {
  * configured, this returns MONGO. Returning POSTGRES there would send the app
  * looking for balances in a database it has no connection to.
  */
-export function authorityFor(path, env = process.env) {
+export function authorityFor(path, env = process.env, seen = new Set()) {
   if (!isKnownPath(path)) {
     throw new Error(`Unknown money path '${path}'. Known paths: ${ALL_PATHS.join(', ')}`);
   }
@@ -328,6 +466,13 @@ export function authorityFor(path, env = process.env) {
   // authorityFor() without having gone through boot validation (a script, a
   // test, a worker) still gets the truthful answer.
   if (!isCutoverEligible(path)) return STORE.MONGO;
+  // The ordering gate, for the same reason. A path whose dependency still lives
+  // in Mongo would split one settlement across two sources of truth, and
+  // validateAuthorityConfig only catches that at boot — so a script, worker or
+  // cron that never boots the app would happily act on the incoherent answer.
+  // reconcile.js is exactly that case: it picks its REPAIR DIRECTION from this
+  // resolver, and a wrong answer there overwrites good balances with stale ones.
+  if (laggingDependencies(path, env, seen).length) return STORE.MONGO;
   return STORE.POSTGRES;
 }
 

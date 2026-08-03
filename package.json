@@ -25,6 +25,7 @@
     "pg:migrate:partition": "node backend/postgres/migratePartitions.js",
     "pg:seed-locks": "node backend/postgres/seedLockProvenance.js",
     "verify:capabilities": "node scripts/verify-capabilities.mjs",
+    "certify:report": "node scripts/certification-report.mjs",
     "migrate:public-chat-retention": "node backend/scripts/enforce-public-chat-retention.js",
     "handoff:frontends": "node scripts/create-frontend-handoffs.mjs",
     "loadtest:seed": "node loadtest/seed-accounts.mjs",

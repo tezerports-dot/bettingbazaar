@@ -200,6 +200,7 @@ export function registerCronJobs(rebuildLeaderboard) {
       const {
         pgDriftRows, pgTrialBalanceOk, pgReconcileConsecutiveClean,
         mongoDriftRows, ledgersAgree, moneyAuthorityPostgres,
+        balanceDriftPaise, balanceDriftAccounts,
       } = await import('../services/metrics.service.js');
 
       // Publish the current source-of-truth matrix so the dashboard shows which
@@ -225,17 +226,36 @@ export function registerCronJobs(rebuildLeaderboard) {
       mongoDriftRows.set(missingInMongo);
       ledgersAgree.set(report.ledgersAgree ? (report.ledgersAgree.agree ? 1 : 0) : 1);
 
+      // Balance disagreement, which the row counts above cannot see. An orphan
+      // wallet row counts as a drifted account: it is money in Postgres that no
+      // Mongo merchant owns, and it must not read as clean.
+      const mb = report.merchantBalances;
+      balanceDriftPaise.set({ path: 'merchant_wallet' }, mb.totalDriftPaise);
+      balanceDriftAccounts.set(
+        { path: 'merchant_wallet' },
+        mb.driftedBeforeRepair + mb.orphansInPg + report.merchantLedgers.unexplained,
+      );
+
       if (report.drift) {
         pgReconcileConsecutiveClean.set(0); // any drift breaks the cutover-readiness streak
         console.error(
           `[pg-reconcile] DRIFT: ${missing} row(s) missing in PG, ${missingInMongo} missing in Mongo, ` +
-          `pgTrialBalanceOk=${report.trialBalance.conservesToZero}` +
+          `pgTrialBalanceOk=${report.trialBalance.conservesToZero}, ` +
+          `merchantBalanceDrift=${mb.driftedBeforeRepair} account(s)/${mb.totalDriftPaise}p, ` +
+          `merchantOrphanWallets=${mb.orphansInPg}, unexplainedMerchantBalances=${report.merchantLedgers.unexplained}` +
           (report.ledgersAgree ? `, ledgersAgree=${report.ledgersAgree.agree}` : '')
         );
         sendAlert('pg-drift', 'Hybrid money-DB drift detected (Mongo vs Postgres)', {
           missingInPg: missing,
           missingInMongo,
           trialBalanceOk: report.trialBalance.conservesToZero,
+          merchantBalanceDrift: {
+            accounts: mb.driftedBeforeRepair,
+            totalPaise: mb.totalDriftPaise,
+            orphanWalletsInPg: mb.orphansInPg,
+            sample: mb.sampleDrift,
+          },
+          unexplainedMerchantBalances: report.merchantLedgers.sample,
           // After a cutover, a Mongo shortfall is the more urgent of the two: it
           // is the store the rollback plan falls back to, so every missing row
           // is a write that a fallback would lose.

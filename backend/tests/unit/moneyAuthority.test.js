@@ -33,8 +33,13 @@ describe('default posture', () => {
     for (const path of ALL_PATHS) expect(authorityFor(path, env)).toBe(STORE.MONGO);
   });
 
-  it('keeps the documented flip order at the front: wallet, ledger, orders, kyc last', () => {
-    expect(ALL_PATHS.slice(0, 4)).toEqual(['wallet', 'ledger', 'orders', 'kyc']);
+  it('flips the user wallet first and the merchant wallet second', () => {
+    // merchant_wallet moved ahead of ledger/orders/kyc when its real dependency
+    // was identified: a deposit confirmation debits the merchant and credits
+    // the user in ONE session, so those two balances must live in the same
+    // store. It never touches accounting_events, so it never needed the
+    // double-entry ledger to move first.
+    expect(ALL_PATHS.slice(0, 5)).toEqual(['wallet', 'merchant_wallet', 'ledger', 'orders', 'kyc']);
   });
 
   it('declares the money paths that were previously unmodelled', () => {
@@ -131,9 +136,20 @@ describe('capability gate — authority requires an implementation', () => {
     expect(ledger.cutoverEligible).toBe(false);
     expect(ledger.missing).toContain('implemented');
 
-    const merchant = rows.find((r) => r.path === MONEY_PATHS.MERCHANT_WALLET);
-    expect(merchant.cutoverEligible).toBe(false);
-    expect(merchant.missing).toEqual(expect.arrayContaining(['implemented', 'reconciled', 'rollback']));
+    const settlement = rows.find((r) => r.path === MONEY_PATHS.MERCHANT_SETTLEMENT);
+    expect(settlement.cutoverEligible).toBe(false);
+    expect(settlement.missing).toEqual(
+      expect.arrayContaining(['implemented', 'dualWrite', 'reconciled', 'rollback']));
+  });
+
+  it('reports the merchant wallet as eligible now that all four capabilities hold', () => {
+    // Flipped only after each was separately evidenced: the adapter and its
+    // routing (implemented), mirrorMerchantBalance (dualWrite),
+    // reconcileMerchantBalances (reconciled), reverseMirrorMerchantMovement
+    // (rollback). If any of those is deleted, this test is the alarm.
+    const merchant = authorityMatrix(withPg()).find((r) => r.path === MONEY_PATHS.MERCHANT_WALLET);
+    expect(merchant.cutoverEligible).toBe(true);
+    expect(merchant.missing).toEqual([]);
   });
 
   it('keeps the one implemented path flippable — the gate must not block real work', () => {
@@ -151,11 +167,33 @@ describe('capability gate — authority requires an implementation', () => {
 });
 
 describe('ordering constraints', () => {
-  // The dependency rule is still enforced. It is asserted through
-  // laggingDependencies() because validateAuthorityConfig checks capability
-  // first and stops there — so with only `wallet` implemented today, the
-  // ordering branch is unreachable from the outside and would otherwise go
-  // uncovered until a second path becomes eligible.
+  // The dependency rule is enforced in TWO places, and both matter:
+  // validateAuthorityConfig turns an out-of-order config into a boot failure,
+  // and authorityFor() independently refuses to answer 'postgres' for a path
+  // whose dependency still lives in Mongo. The second exists because scripts,
+  // workers and crons never run boot validation — reconcile.js picks its repair
+  // DIRECTION from the resolver, so a wrong answer there would overwrite good
+  // balances with stale ones.
+
+  it('refuses Postgres at the resolver when a dependency has not cut over', () => {
+    // merchant_wallet is fully eligible, so only the ordering rule can stop it.
+    const env = withPg({ MONEY_AUTHORITY_MERCHANT_WALLET: 'postgres' });
+    expect(authorityFor(MONEY_PATHS.MERCHANT_WALLET, env)).toBe(STORE.MONGO);
+    expect(validateAuthorityConfig(env).ok).toBe(false);
+  });
+
+  it('allows it once the dependency has moved', () => {
+    const env = withPg({
+      MONEY_AUTHORITY_WALLET: 'postgres',
+      MONEY_AUTHORITY_MERCHANT_WALLET: 'postgres',
+    });
+    expect(authorityFor(MONEY_PATHS.MERCHANT_WALLET, env)).toBe(STORE.POSTGRES);
+    expect(validateAuthorityConfig(env).ok).toBe(true);
+  });
+
+  it('names the merchant wallet\'s real dependency as the user wallet', () => {
+    expect(laggingDependencies(MONEY_PATHS.MERCHANT_WALLET, withPg())).toEqual([MONEY_PATHS.WALLET]);
+  });
 
   it('reports a dependency that has not cut over yet', () => {
     const env = withPg(); // nothing on Postgres

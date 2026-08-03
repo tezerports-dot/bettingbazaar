@@ -139,6 +139,48 @@ export const moneyAuthorityPostgres = new client.Gauge({
   registers: [registry],
 });
 
+// ── Per-domain money operations ──────────────────────────────────────────────
+// One counter for every balance mutation, labelled by which money path it
+// belongs to, which store served it, and how it ended. Three separate counters
+// were considered (transactions / retries / idempotent hits) and rejected: they
+// would need identical labels to be comparable, and an outcome label answers
+// all three questions from one series while keeping cardinality bounded (paths
+// and outcomes are both closed sets — never an id, never a merchant).
+//
+// Alert-worthy signals this exposes:
+//   - `idempotent` climbing steeply = a caller is retrying far more than it
+//     should, or two paths share a txId they should not.
+//   - `insufficient` climbing on a path that should never overdraw = an upstream
+//     guard has stopped working.
+//   - `error` at all on a money path = investigate immediately.
+export const moneyOperations = new client.Counter({
+  name: 'bb_money_operations_total',
+  help: 'Balance mutations by money path, serving store and outcome',
+  // outcome: applied | idempotent | insufficient | not_found | error
+  labelNames: ['path', 'store', 'operation', 'outcome'],
+  registers: [registry],
+});
+
+// ── Cross-store balance drift ────────────────────────────────────────────────
+// bb_pg_drift_rows counts rows MISSING from a store. It cannot see the failure
+// that actually matters for a balance: a row present in both stores whose
+// NUMBER differs. These two gauges are that check — the money equivalent of the
+// trial balance, per domain. Both must be zero for a path to be cutover-ready,
+// and staying zero is what the certification checklist means by "reconciled".
+// Alert on `bb_balance_drift_paise != 0`.
+export const balanceDriftPaise = new client.Gauge({
+  name: 'bb_balance_drift_paise',
+  help: 'Absolute Mongo↔Postgres balance disagreement in paise, by money path (0 = agree)',
+  labelNames: ['path'],
+  registers: [registry],
+});
+export const balanceDriftAccounts = new client.Gauge({
+  name: 'bb_balance_drift_accounts',
+  help: 'Number of accounts whose Mongo and Postgres balances disagree, by money path',
+  labelNames: ['path'],
+  registers: [registry],
+});
+
 // Pool-stats provider — registered by pgClient via setPoolStatsProvider() when
 // Postgres is in use. Inversion of control keeps this low-level metrics module
 // free of any dependency on the higher-level pgClient (dependency-cruiser
