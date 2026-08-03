@@ -47,7 +47,7 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6.2.0
 
       - name: Install dependencies (reproducible)
         run: npm ci --legacy-peer-deps
