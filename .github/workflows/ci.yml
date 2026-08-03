@@ -75,15 +75,29 @@ jobs:
   # AQ-7: dependency vulnerability gate. Blocking at HIGH — the tree is clean
   # today (npm audit fix cleared the ws/socket.io chain), so any NEW high/critical
   # advisory fails the build and forces a triage instead of shipping silently.
+  #
+  # The three panels have their OWN package.json and lockfile and are NOT npm
+  # workspaces, so a root `npm audit` does not see them. It reported a clean
+  # tree while admin-panel was carrying two high-severity advisories
+  # (brace-expansion DoS, js-yaml DoS) that GitHub's Dependabot was reporting on
+  # the default branch — the root `overrides` block had been updated and the
+  # panels' had not. Each lockfile is audited on its own below so that drift
+  # fails the build instead of being invisible to it.
   audit:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project: ['.', user-panel, admin-panel, merchant-panel]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with: { node-version: '22', cache: npm }
       - run: npm ci --legacy-peer-deps
+        working-directory: ${{ matrix.project }}
       - name: npm audit (fail on high/critical)
         run: npm audit --audit-level=high
+        working-directory: ${{ matrix.project }}
 
   # 2026 supply-chain: emit a CycloneDX Software Bill of Materials for the
   # production dependency tree and publish it as a build artifact. Uses npm's
