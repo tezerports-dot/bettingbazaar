@@ -48,6 +48,22 @@ export const ledgerReconcileErrors = new client.Counter({
   registers: [registry],
 });
 
+// A balance moved but its audit rows did not land. The Mongo bet-stake path
+// (walletAuthority._mongoBetStake) writes balance and ledger as two separate
+// operations and deliberately lets the money stand if the ledger write fails —
+// stranding a placed bet is judged worse than a missing audit row. That
+// tradeoff is defensible; doing it SILENTLY is not, because the missing row is
+// exactly what reconciliation and the trial balance are computed from.
+//
+// Any non-zero value here means the ledger no longer explains the balances.
+// Alert on it: `increase(bb_unaudited_money_movements_total[15m]) > 0`.
+export const unauditedMoneyMovements = new client.Counter({
+  name: 'bb_unaudited_money_movements_total',
+  help: 'Balance movements whose ledger rows failed to write (money moved unaudited)',
+  labelNames: ['path'],
+  registers: [registry],
+});
+
 export const alertsSent = new client.Counter({
   name: 'bb_alerts_sent_total',
   help: 'Operational alerts dispatched to the configured webhook',

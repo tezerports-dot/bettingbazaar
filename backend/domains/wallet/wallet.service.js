@@ -24,6 +24,35 @@ async function checkIdempotent(txId) {
   return !!(await WalletLedger.findOne({ txId }).lean());
 }
 
+/**
+ * Has ANY row for this movement already landed? Takes every key the movement
+ * could have written, not just one of them.
+ *
+ * This exists because debitForBet's key depends on the SPLIT it chose:
+ * `<base>_dep` when deposit covered part of it, `<base>_win` for the winnings
+ * shortfall, and only the pockets it actually drew from get a row. Checking a
+ * single suffix is therefore not a replay check — it asks "did the original
+ * happen to draw from THIS pocket", which is a different question.
+ *
+ * Pass `session` to run it INSIDE the transaction. The unique txId index is the
+ * durable gate for a key the replay re-writes; it cannot fire for a key the
+ * replay does not write, so a replay that lands on a different pocket needs
+ * this probe to stop it. See the hazard note on debitForBet.
+ */
+async function anyLedgerRowExists(txIds, session = null) {
+  const candidates = txIds.filter(Boolean);
+  if (!candidates.length) return false;
+  const WalletLedger = mongoose.model('WalletLedger');
+  const q = WalletLedger.findOne({ txId: { $in: candidates } }).select('_id');
+  if (session) q.session(session);
+  return !!(await q.lean());
+}
+
+/** Every ledger key a debitForBet movement with this base could produce. */
+function debitBetTxIdCandidates(baseTid) {
+  return [baseTid, `${baseTid}_dep`, `${baseTid}_win`];
+}
+
 // The DURABLE idempotency gate (F-2, 2026-07-10). checkIdempotent above is a
 // fast-path read — two truly concurrent calls can both pass it. What actually
 // prevents double money movement is the WalletLedger's UNIQUE txId index:
@@ -47,13 +76,43 @@ export async function debitForBet(userId, amount, reason, refModel, refId, txId,
   const tid = txId || `debit_${crypto.randomUUID()}`;
 
   const _baseTid = tid.replace(/_dep$/, '').replace(/_win$/, '');
-  if (await checkIdempotent(_baseTid + '_dep') || await checkIdempotent(_baseTid))
-    return { idempotent: true, txId: _baseTid };
+  const _candidates = debitBetTxIdCandidates(_baseTid);
+
+  // Fast path only — cheap enough to skip starting a transaction, but NOT the
+  // guarantee. The probe inside run() is.
+  if (await anyLedgerRowExists(_candidates)) return { idempotent: true, txId: _baseTid };
 
   const User         = mongoose.model('User');
   const WalletLedger = mongoose.model('WalletLedger');
 
   const run = async (session) => {
+    // ── Replay gate (must stay INSIDE the transaction) ───────────────────────
+    // The unique txId index catches a replay only when the replay writes a key
+    // that ALREADY EXISTS. Here the key depends on the split, and the split is
+    // recomputed from the balances as they are NOW — so a replay can legally
+    // land on a different pocket and collide with nothing:
+    //
+    //   original: deposit 0, winnings 100, bet 50 → writes <base>_win only
+    //   …a deposit lands…
+    //   replay:   deposit 100, winnings 50, bet 50 → writes <base>_dep only
+    //
+    // No key repeats, the unique index never fires, the transaction commits,
+    // and the user is charged twice for one bet. The pre-read did not catch it
+    // either, because it only looked for `_dep` and the bare key.
+    //
+    // Probing every candidate key closes it: any one surviving row proves the
+    // movement already ran, whichever pocket it drew from. Inside the
+    // transaction this is durable against an attempt that has already
+    // committed, and concurrent attempts still serialise on the User document
+    // write conflict, after which withTransaction re-runs this callback and the
+    // probe sees the winner's row.
+    //
+    // This is the same hazard postgres/walletPg.js documents on
+    // debitSpendOrderPaise, which solves it with an under-lock probe.
+    if (await anyLedgerRowExists(_candidates, session)) {
+      return { idempotent: true, txId: _baseTid };
+    }
+
     const user = await User.findById(userId).session(session);
     if (!user) throw new Error('User not found');
 

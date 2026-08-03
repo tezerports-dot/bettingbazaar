@@ -32,6 +32,7 @@ import {
 import { rupeesToPaise } from '../../shared/money.js';
 import { isPostgresAuthoritative, MONEY_PATHS } from '../../postgres/moneyAuthority.js';
 import * as pg from '../../postgres/walletPgAuthority.js';
+import { unauditedMoneyMovements } from '../../services/metrics.service.js';
 
 // ── Source-of-truth routing (hybrid money DB, LAUNCH_READINESS.md §E) ────────
 /**
@@ -460,6 +461,16 @@ async function _mongoBetStake(userId, { amount, txId, refId, slices, direction }
   // ledger write failure must not strand a bet that already moved money.
   // (The Postgres path has no such compromise — there the rows are in the same
   // transaction as the balance.)
+  //
+  // That tradeoff is kept, but it is no longer SILENT. The previous
+  // `.catch(() => {})` discarded the only evidence that a balance had moved
+  // without its ledger row — and those rows are precisely what reconciliation
+  // and the trial balance are computed from, so the failure erased its own
+  // symptom. It also swallowed duplicate-key errors, which on this path are the
+  // signature of a replay that has just double-debited (see the design note in
+  // docs/MONGO_MONEY_AUDIT.md). Failures now increment
+  // bb_unaudited_money_movements_total and log, so the drift is visible before
+  // reconciliation has to infer it.
   try {
     const rows = slices.map((slice) => ({
       userId,
@@ -473,8 +484,17 @@ async function _mongoBetStake(userId, { amount, txId, refId, slices, direction }
       refId,
       txId: `${txId}${slice.suffix}`,
     }));
-    if (rows.length) await WalletLedger.insertMany(rows, { ordered: false }).catch(() => {});
-  } catch { /* ledger write failure never blocks the money movement */ }
+    if (rows.length) await WalletLedger.insertMany(rows, { ordered: false });
+  } catch (error) {
+    // Money has already moved; it stays moved. Record that it is unaudited.
+    try {
+      unauditedMoneyMovements.inc({ path: locking ? 'bet_stake_lock' : 'bet_stake_unlock' });
+      console.error(
+        `[wallet] BALANCE MOVED WITHOUT LEDGER ROWS — user=${userId} txId=${txId} ` +
+        `direction=${direction} amount=${amount} code=${error?.code ?? 'n/a'}: ${error?.message}`,
+      );
+    } catch { /* never let telemetry break the money path */ }
+  }
 
   return {
     ok: true,
