@@ -70,7 +70,7 @@
     "dependency-cruiser": "^18.1.0",
     "mongodb-memory-server": "^11.2.0",
     "nodemon": "^3.1.14",
-    "stylelint": "^16.26.1",
+    "stylelint": "^17.14.1",
     "stylelint-config-standard": "^40.0.0",
     "supertest": "^7.2.2",
     "vitest": "^4.1.10"
