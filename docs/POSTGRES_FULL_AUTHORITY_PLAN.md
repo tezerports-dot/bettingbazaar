@@ -112,6 +112,37 @@ npm run reconcile:pg -- --repair-mongo   # backstop for anything the mirror drop
 
 ---
 
+## Next: the one design decision blocking domain 2
+
+Merchant ↔ user settlement needs multi-pocket movements (available → reserved →
+settlement). Postgres expresses one as several entries under
+`<txId>:<pocket>`. Mongo's `MerchantWalletLedger` has no pocket concept and its
+idempotency gate is `findOne({ txId })` on the caller's bare key, so those rows
+are invisible to it — which is why `reverseMirrorMerchantMovement` refuses to
+mirror a multi-leg movement rather than write keys the gate cannot match.
+
+Until that is resolved, settlement can be built in Postgres but has **no
+fallback**: flipping it would be one-way.
+
+**Proposed fix: a `movementId` field**, indexed and NOT unique, carrying the
+caller's logical key, alongside the existing unique per-row `txId`. The gate
+becomes `findOne({ movementId })` — an exact match that finds every leg of a
+movement regardless of how many rows it produced.
+
+**Explicitly rejected: a prefix match** (`findOne({ txId: /^key:/ })` or a SQL
+`LIKE`). This audit already found and fixed exactly that bug in `walletPg`: a
+shorter key silently swallows a longer one, so `bet_1` matches
+`bet_10:available` and a distinct movement reads as already-applied. A prefix is
+not an identity.
+
+This is a change to a live money path's idempotency gate, and verifying it needs
+a running MongoDB, which the development environment cannot provide
+(`fastdl.mongodb.org` returns 403 through the proxy). It is therefore written
+down rather than shipped unverified — **NOT IMPLEMENTED**, and it is the first
+task of domain 2, to be done where the integration suite can run.
+
+---
+
 ## Sequencing
 
 The brief proposes: ledger → merchant wallet → orders → bets → bonuses →
