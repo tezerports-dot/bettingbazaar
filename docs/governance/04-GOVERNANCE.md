@@ -54,7 +54,7 @@ compute, or default this value independently.
 | Which rail an order settles on | `PaymentOrder.currency` — enum `MERCHANT_CURRENCIES`, schema default `'INR'`. Matched against the merchant's rail at assignment and at accept. `PaymentOrder.userUsdtAddress` is the USDT-rail counterpart of `userBankDetails` (withdrawal payout destination). |
 | Merchant token capacity (buy orders) | `Merchant.tokenBalance` (current wallet) |
 | Merchant token capacity (sell orders) | Lifetime initial top-up (tracked in merchant wallet history) |
-| Referral commission rates | `CommissionLevel.f1Rate` only — F2/F3 not implemented (H-03) |
+| Referral commission rates | **REMOVED 2026-07-30** — the referral programme was deleted from the platform (owner decision). `Referral`, `CommissionLevel` and `CommissionRecord`, the `/api/referral` router, the F1 commission engine in `gameEngine.js`, the commission-credit cron and the Invite page are all gone. Do not reintroduce a referral or commission mechanism without a new §1 entry. |
 | Merchant earnings model | **The buy/sell spread is retired (2026-07-08, fixed 1:1 conversion)** — new orders carry `merchantProfit: 0`. `Merchant.commissionRate` remains retired; the interim `DepositPolicy.merchantCommissionPercent` mechanism was removed 2026-07-08 before ever being consumed. The go-forward mechanism is the **Merchant Performance Bonus**: triggered by completed buy+sell cycles (matched volume = `min(deposit, withdrawal)` per merchant), a % of that matched volume, funded from platform revenue, NEVER deducted from users/deposits/withdrawals. **Built** (Phase 008, 2026-07-09): engine `domains/merchant/merchantBonus.service.js` + `MerchantBonusPolicy` (Business Policy, the `bonusPercent`/`enabled` authority) + admin routes (`/api/admin/merchant-bonus-policy`, pool funding) + `MerchantPlatform` admin UI + the 10-min `bonus-engine` cron. Ships **dormant** — the policy is disabled and the `MERCHANT_BONUS_POOL` unfunded until an admin sets `bonusPercent`, enables it, and funds the pool from distributable revenue. See §20 (Decision Log) 2026-07-09 Phase 008. Do not reintroduce `Merchant.commissionRate`, a rate spread, or a deposit-triggered commission. |
 | Sub-admin permission keys | `User.subAdminPermissions` schema — frontend imports from `utils/permissions.ts` |
 | Chat rules (cooldown, length, banned words) | Chat config document via `/api/chat/config` |
@@ -168,8 +168,9 @@ compute, or default this value independently.
 - All wallet balance reads/writes go through `walletAuthority.service.js`.
 - No route handler performs a raw `$inc`, `$set`, or read-then-write on a balance field.
 - Settlement math (`gameEngine.js`) computes amounts; it calls the wallet authority service.
-- **F1 referral commission only:** F2/F3 commission config fields were removed from the schema.
-  `gameEngine.js` pays F1 only. Admin UI shows F1 config only. (H-03)
+- **Referral commission is removed entirely (2026-07-30).** `gameEngine.js` pays no
+  commission of any kind; settlement credits winners and nothing else. The former
+  F1-only note here described a mechanism that no longer exists.
 
 ---
 

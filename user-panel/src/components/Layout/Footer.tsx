@@ -23,8 +23,6 @@ const PAGE_CATALOG: Record<string, { label: string; path: string; icon: string }
   'promo':     { label: 'Pro Tips',  path: '/promo',      icon: '💡' },
   'profile':   { label: 'Profile',   path: '/profile',    icon: '👤' },
   'wallet':    { label: 'Wallet',    path: '/wallet',     icon: '💰' },
-  'invite':    { label: 'Invite',    path: '/invite',     icon: '🤝' },
-  'vip':       { label: 'VIP',       path: '/vip',        icon: '👑' },
   'gift-code': { label: 'Gifts',     path: '/gift-code',  icon: '🎁' },
   'my-bets':   { label: 'My Bets',   path: '/my-bets',    icon: '📜' },
   'history':   { label: 'History',   path: '/history',    icon: '🕘' },

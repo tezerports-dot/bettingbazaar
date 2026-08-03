@@ -7,8 +7,6 @@ import CasinoLobby from './user/CasinoLobby';
 import CrashArena from './user/CrashArena';
 import SportsBook from './user/SportsBook';
 import Wallet from './user/Wallet';
-import Invite from './user/Invite';
-import Vip from './user/Vip';
 import GiftCode from './user/GiftCode';
 import AccountRecovery from './user/AccountRecovery';
 import Profile from './user/Profile';
@@ -63,12 +61,13 @@ import AuditLogs from './admin/AuditLogs';
 import ErrorLogs from './admin/ErrorLogs';
 
 /**
- * Exact 59-view presentation-to-API mapping — 18 player, 6 merchant, 35 admin.
+ * Exact 57-view presentation-to-API mapping — 16 player, 6 merchant, 35 admin.
  * No backend model is imported here.
  *
  * The count is stated because §4 tells you to grep this registry before adding a
  * screen; a registry that misdescribes its own size undermines that instruction.
- * It read "60" until 2026-07-30 while holding 59 entries. Re-derive rather than
+ * It read "60" while holding 59; referral (invite) and VIP were then removed
+ * from the platform on 2026-07-30, taking it to 57. Re-derive rather than
  * trusting the prose — anchored to the entry indentation so the command does not
  * match itself inside this comment and inflate its own answer:
  *   grep -c "^  { key: '" design/visual-mapping/views/UI_PAGE_REGISTRY.js
@@ -79,8 +78,6 @@ export const UI_PAGE_REGISTRY = Object.freeze([
   { key: 'crash_arena', path: '/crash', component: CrashArena, componentName: 'CrashArena', layout: UserPanelShell, layoutName: 'UserPanelShell', apiBinding: '/api/game/launch' },
   { key: 'sports_book', path: '/sports', component: SportsBook, componentName: 'SportsBook', layout: UserPanelShell, layoutName: 'UserPanelShell', apiBinding: '/api/game/games' },
   { key: 'wallet', path: '/wallet', component: Wallet, componentName: 'Wallet', layout: UserPanelShell, layoutName: 'UserPanelShell', apiBinding: '/api/v1/user/profile, /api/payment/orders, /api/v1/wallet/ledger' },
-  { key: 'invite', path: '/invite', component: Invite, componentName: 'Invite', layout: UserPanelShell, layoutName: 'UserPanelShell', apiBinding: '/api/referral/me, /api/referral/team, /api/referral/commissions' },
-  { key: 'vip', path: '/vip', component: Vip, componentName: 'Vip', layout: UserPanelShell, layoutName: 'UserPanelShell', apiBinding: '/api/vip/config, /api/vip/my' },
   { key: 'gift_code', path: '/gift-code', component: GiftCode, componentName: 'GiftCode', layout: UserPanelShell, layoutName: 'UserPanelShell', apiBinding: '/api/giftcode/redeem' },
   { key: 'account_recovery', path: '/recover-account', component: AccountRecovery, componentName: 'AccountRecovery', layout: UserPanelShell, layoutName: 'UserPanelShell', apiBinding: '/api/auth/check-aadhaar, /api/auth/recover' },
   { key: 'profile', path: '/profile', component: Profile, componentName: 'Profile', layout: UserPanelShell, layoutName: 'UserPanelShell', apiBinding: '/api/v1/user/profile, /api/user/:userId/kyc' },

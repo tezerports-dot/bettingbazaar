@@ -537,9 +537,6 @@ export class RealBackend implements Backend {
 
   // -- WINNERS ----------------------------------------------------------------
   // BUG-U12 FIX: Real winners from the server (not mock data in WinnersPage)
-  async applyReferral(code: string) {
-    return this.request('/referral/apply', { method: 'POST', body: JSON.stringify({ code }) });
-  }
 
   async getWinners(period: 'today' | 'week' = 'today', limit = 10) {
     const res = await this.request<{ success: boolean; winners: any[] }>(`/v1/winners?period=${period}&limit=${limit}`);

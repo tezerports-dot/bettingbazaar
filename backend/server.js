@@ -65,7 +65,6 @@ import merchantRoutes     from './domains/merchant/merchant.routes.js';
 import paymentRoutes      from './domains/payment/payment.routes.js';
 import supportRoutes      from './domains/support/support.routes.js'; // CAP-71: RAG support assistant
 import uploadRoutes       from './routes/upload.routes.js';
-import referralRoutes     from './routes/referral.routes.js';
 import paymentCfgRoutes   from './routes/payment-config.routes.js';
 import giftCodeRoutes     from './routes/giftcode.routes.js';
 import retentionRoutes, { rebuildLeaderboard } from './routes/retention.routes.js';
@@ -457,13 +456,12 @@ app.use('/api/merchant',  merchantRoutes);
 app.use('/api/payment', paymentRoutes);
 app.use('/api/support',   supportRoutes); // CAP-71: RAG support assistant (dormant until keys set)
 app.use('/api',           uploadRoutes);
-app.use('/api/referral',  referralRoutes);
 app.use('/api/giftcode',  giftCodeRoutes);
 app.use('/api/payment',   paymentCfgRoutes);
 app.use('/api',           retentionRoutes);
-// /api/vip routes are provided by retentionRoutes above. The legacy
-// vip router was removed to avoid shadowed, schema-incompatible duplicates
-// for /api/vip/config and /api/vip/my.
+// Referral and VIP were removed from the platform on 2026-07-30 (owner
+// decision). No /api/referral or /api/vip routes exist; the models, the
+// commission engine and the panel pages went with them.
 } else {
   app.use('/api', (_req, res) => res.status(404).json({ success: false, message: `API disabled on ${runtime.role} runtime role` }));
 }

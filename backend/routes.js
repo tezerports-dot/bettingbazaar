@@ -259,7 +259,7 @@ router.get('/me', async (req, res) => {
 // ── POST /register ───────────────────────────────────────────────────────────
 router.post('/register', registerLimiter, requireCaptcha('register'), async (req, res) => {
   try {
-    const { username, mobile, password, referralCode, enable2FA } = req.body;
+    const { username, mobile, password, enable2FA } = req.body;
     if (!username || !mobile || !password)
       return res.status(400).json({ success: false, message: 'username, mobile and password are required' });
     const cleanUsername = username.trim();
@@ -277,23 +277,7 @@ router.post('/register', registerLimiter, requireCaptcha('register'), async (req
     if (existing) return res.status(409).json({ success: false, message: 'Mobile number already registered' });
 
     const passwordHash = await hashPassword(password);
-    const user = await User.create({ username: cleanUsername, mobile, passwordHash, status: 'ACTIVE', kycStatus: 'PENDING_SUBMISSION', roles: ['user'], referralCode: null });
-    // Auto-apply referral after account created
-    if (referralCode) {
-      try {
-        const Referral = mongoose.model('Referral');
-        const crypto = await import('crypto');
-        const myCode = crypto.default.createHash('sha256').update(String(user._id) + Date.now()).digest('hex').slice(0,8).toUpperCase();
-        const referrerRef = await Referral.findOne({ inviteCode: referralCode.toUpperCase() });
-        if (referrerRef && String(referrerRef.userId) !== String(user._id)) {
-          await Referral.create({ userId: user._id, inviteCode: myCode, referredBy: referrerRef.userId, appliedCode: referralCode.toUpperCase(), appliedAt: new Date() });
-          await Referral.findByIdAndUpdate(referrerRef._id, { $inc: { totalReferrals: 1 } });
-        } else {
-          await Referral.create({ userId: user._id, inviteCode: myCode });
-        }
-      } catch(refErr) { console.error('Referral apply failed:', refErr.message); }
-    }
-
+    const user = await User.create({ username: cleanUsername, mobile, passwordHash, status: 'ACTIVE', kycStatus: 'PENDING_SUBMISSION', roles: ['user'] });
     const token = signToken(
       { userId: user._id, mobile: user.mobile, role: 'user', isAdmin: false }
     );

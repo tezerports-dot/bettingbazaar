@@ -2,7 +2,7 @@
 import { Cycle, Bet, User } from '../../models/index.js';
 import mongoose from 'mongoose';
 import { CacheService } from '../../services/cache.service.js';
-import { creditWinnings, creditCommission } from '../wallet/walletAuthority.service.js';
+import { creditWinnings } from '../wallet/walletAuthority.service.js';
 import { unlockLostBet, executeSettlementBatch } from '../settlement/settlementService.js';
 import { emitPayoutSuccessBatch } from '../notification/realtimeEmitters.js';
 // Risk Platform (Phase A, 2026-07-10): payout arithmetic authority — winners
@@ -386,13 +386,6 @@ class GameEngine {
         console.log(`   Net Profit: ₹${netProfit.toLocaleString()}`);
         if (realPool > 0) console.log(`   Profit Margin: ${((netProfit / realPool) * 100).toFixed(2)}%`);
 
-        // F1 referral commission (non-blocking — won't affect main settlement)
-        if (winnerPayouts.length > 0) {
-            this.creditF1Commission(winnerPayouts, cycle.cycleId).catch(e =>
-                console.warn('[Commission] background error:', e.message)
-            );
-        }
-
         // Broadcast settlement complete
         this.io?.emit('payout_complete', {
             cycleId: cycle.cycleId,
@@ -412,53 +405,6 @@ class GameEngine {
             winners:     totalWinners,
             server_ts:   Date.now()
         });
-    }
-
-    /**
-     * F1 Referral Commission — 1% of winning bet amount credited to direct referrer.
-     * Rate is admin-configurable via PUT /api/referral/config { f1Rate: 0.01 }
-     */
-    async creditF1Commission(winnerPayouts, cycleId) {
-        try {
-            const CommissionLevel  = mongoose.model('CommissionLevel');
-            const cfg = await CommissionLevel.findOne({ key: 'main' }).lean();
-            if (!cfg || cfg.commissionEnabled === false || !(cfg.f1Rate > 0)) return;
-
-            const Referral         = mongoose.model('Referral');
-            const CommissionRecord = mongoose.model('CommissionRecord');
-
-            const winnerIds = winnerPayouts.map(w => new mongoose.Types.ObjectId(w.userId));
-            const refs = await Referral.find({ userId: { $in: winnerIds }, referredBy: { $ne: null } }).lean();
-            if (!refs.length) return;
-
-            const commOps = [];
-            for (const ref of refs) {
-                const wp = winnerPayouts.find(w => w.userId === String(ref.userId));
-                if (!wp) continue;
-                const commission = Math.round(wp.betAmount * cfg.f1Rate * 100) / 100;
-                if (commission <= 0) continue;
-                commOps.push({ insertOne: { document: {
-                    beneficiaryId: ref.referredBy, fromUserId: ref.userId,
-                    amount: commission, rate: cfg.f1Rate, level: 1,
-                    betAmount: wp.betAmount, cycleId, credited: true, createdAt: new Date()
-                }}});
-            }
-
-            if (commOps.length > 0) {
-                // Credit commissions via WalletAuthority (ledgered, idempotent per cycleId+userId pair)
-                for (const op of commOps) {
-                    const doc = op.insertOne.document;
-                    await creditCommission(
-                        String(doc.beneficiaryId),
-                        doc.amount,
-                        String(doc.fromUserId),
-                        cycleId
-                    ).catch(e => console.warn('[Commission] creditCommission error:', e.message));
-                }
-                await CommissionRecord.bulkWrite(commOps);
-                console.log('[Commission] F1 paid to ' + commOps.length + ' referrers @ ' + (cfg.f1Rate*100).toFixed(1) + '%');
-            }
-        } catch (e) { console.error('[Commission] F1 error:', e.message); }
     }
 
     /**
