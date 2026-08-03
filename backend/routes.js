@@ -13,6 +13,9 @@ import { issueChallenge, verifyChallenge, CHALLENGE_AUDIENCE } from './domains/i
 import { verifySecondFactor, SECOND_FACTOR_RESULT } from './domains/identity/verifySecondFactor.js';
 import { generateSecret, encryptSecret, buildOtpauthUri } from './domains/identity/totp.service.js';
 import { twoFactorLimiter } from './middleware/security.js';
+// Bot-mitigation challenge. Applied to the credential-submitting routes only —
+// never to /me or /logout, which every page load and sign-out depend on.
+import { requireCaptcha } from './middleware/captcha.js';
 
 const router = express.Router();
 
@@ -206,7 +209,7 @@ export async function loginTwoFactorHandler(req, res) {
 }
 
 // Register on the router (handlers are also exported for server.js admin login)
-router.post('/login', loginHandler);
+router.post('/login', requireCaptcha('login'), loginHandler);
 router.post('/login/2fa', twoFactorLimiter, loginTwoFactorHandler);
 
 // ── GET /me — session restore on every page load ─────────────────────────────
@@ -254,7 +257,7 @@ router.get('/me', async (req, res) => {
 });
 
 // ── POST /register ───────────────────────────────────────────────────────────
-router.post('/register', registerLimiter, async (req, res) => {
+router.post('/register', registerLimiter, requireCaptcha('register'), async (req, res) => {
   try {
     const { username, mobile, password, referralCode, enable2FA } = req.body;
     if (!username || !mobile || !password)

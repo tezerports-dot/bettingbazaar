@@ -156,7 +156,7 @@ code flip, because it moves the source of truth for money. The sequence
 | Control | State | Evidence |
 |---|---|---|
 | Two-factor authentication | ✅ **built and enforced** | TOTP, **mandatory** for admins and sub-admins, optional for players, available for merchants. Two-step enrolment (`POST /api/2fa/setup` mints a *pending* secret; only `POST /api/2fa/activate` with a valid code makes it live), one-time recovery codes stored as hashes, secrets AES-256-GCM encrypted at rest under `TOTP_ENCRYPTION_KEY`. Login issues a short-lived challenge instead of a session until the code is redeemed (`routes.js` `loginHandler` → `loginTwoFactorHandler`). Enrolment + OTP UI in all three panels. Files: `domains/identity/{totp.service,twoFactor.routes,twoFactorChallenge,verifySecondFactor}.js`. Own rate-limit tier — `RATE_LIMITS.md`. |
-| CAPTCHA / bot-mitigation challenge | ⛔ **not implemented** | No captcha, Turnstile, reCAPTCHA or hCaptcha integration anywhere. Automated-abuse defence today is rate limiting only (`middleware/security.js`, `ipDefense.js`). |
+| CAPTCHA / bot-mitigation challenge | ✅ **built**, dormant until keyed | Cloudflare Turnstile on player login/register, admin login and merchant login (`middleware/captcha.js`). Pass-through until `TURNSTILE_SECRET_KEY` is set. Applied per-path, never router-wide — gating the whole `/api/v1/auth` router would also gate `GET /me` and 403 every page load. **Fails OPEN when Cloudflare is unreachable** and alerts: an invalid token is refused, but someone else's outage must not become a platform-wide login outage, and an attacker cannot induce that path. |
 
 **History, kept deliberately.** Until 2026-07-27 the repository claimed both
 controls while neither existed; the claims were removed and recorded here as a
@@ -167,10 +167,15 @@ second one and collide with the real implementation, exactly as a control
 documented as present stops anyone asking for it.** Verify before documenting,
 in either direction.
 
-**Remaining owner decision:** CAPTCHA. Rate limiting alone does not stop a
-distributed, low-and-slow credential-stuffing run against the login form. Either
-integrate a challenge (Cloudflare Turnstile is the lightest fit — no visible
-puzzle in the common case) or record an explicit acceptance here.
+**Why a challenge was needed at all:** the login limiters count FAILURES per
+IP, which is the wrong shape for credential stuffing spread across thousands of
+residential addresses — each IP tries three passwords and never reaches a
+counter. A challenge prices the attempt rather than the failure.
+
+**Remaining owner action:** create a Turnstile site at
+dash.cloudflare.com → Turnstile, set `TURNSTILE_SECRET_KEY` on the server and
+`VITE_TURNSTILE_SITE_KEY` at panel build time. Until both are set the gate is
+inert and rate limiting is again the only control.
 
 **`TOTP_ENCRYPTION_KEY` has no rotation path.** It has no `_PREVIOUS_`
 counterpart: rotating it makes every stored secret undecryptable and forces every
@@ -200,8 +205,9 @@ CI green, deploy artifacts committed.
 **Must clear before a real-money launch:**
 - ⛔ Compliance/licensing + third-party pen-test (§G)
 - ⛔ A real load test at target scale (§D)
-- 🟡 Decide on CAPTCHA / bot mitigation — not implemented (§F). Admin 2FA, which
-  previously sat here, is **built and enforced**.
+- 🟡 Key Turnstile to activate the captcha gate (§F). Both controls that sat
+  here — admin 2FA and bot mitigation — are now **built**; 2FA is enforced, the
+  captcha needs its keys.
 - 🟡 Managed clustered datastores + gateway/LB/WAF stood up (§D)
 - 🟡 Restore drill executed at least once; PITR enabled (§C)
 

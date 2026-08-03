@@ -104,6 +104,9 @@ import { authLimiter, adminAuthLimiter, merchantAuthLimiter, betLimiter, twoFact
 // Item 12 (2026-07-13): IP-rotation defense — per-subnet backstop + optional
 // global surge breaker on sensitive endpoints, on top of the per-IP limiters.
 import { createSubnetLimiter, globalSurgeBreaker, startIpDefenseConfigRefresh } from './middleware/ipDefense.js';
+// Bot-mitigation challenge on credential endpoints (LAUNCH_READINESS §F).
+// Pass-through until TURNSTILE_SECRET_KEY is set, like every other integration.
+import { requireCaptcha } from './middleware/captcha.js';
 import GameEngine         from './domains/markets/gameEngine.js';
 import CycleGenerator     from './domains/markets/cycleGenerator.service.js';
 import SSEManager         from './domains/notification/sseManager.service.js';
@@ -366,6 +369,10 @@ app.get('/api/v1/health', legacyHealth);
 // until an admin sets a ceiling) catches distributed rotation across subnets.
 if (runtime.acceptsHttpApi) {
 startIpDefenseConfigRefresh();
+// Captcha is applied INSIDE this router, per-path (routes.js), not here.
+// Mounting it router-wide would also gate GET /me — which every page load
+// calls to restore the session — and 403 every user on every load. Same
+// reasoning as the login rate limiters (RATE_LIMITS.md, "Scoping note").
 app.use('/api/v1/auth', authLimiter, createSubnetLimiter('auth'), globalSurgeBreaker('auth'), authRoutes);
 // MED-04 FIX: removed /api/auth duplicate mount — it duplicated rate limit slots
 // allowing 2× brute-force attempts. All clients should use /api/v1/auth/*.
@@ -377,7 +384,7 @@ app.use('/api', recoveryRoutes);
 app.use('/api', winnersRoutes);
 app.use('/api/app', appBootstrapRoutes);
 
-app.post('/api/admin/login', adminAuthLimiter, createSubnetLimiter('adminAuth'), (req, res, next) => {
+app.post('/api/admin/login', adminAuthLimiter, createSubnetLimiter('adminAuth'), requireCaptcha('admin-login'), (req, res, next) => {
   req.body = { ...req.body, loginType: req.body.loginType || 'admin' };
   next();
 }, loginHandler);
@@ -445,7 +452,7 @@ app.use('/api',           userRoutes);
 // budget, and four of those in an hour would lock them out of signing in
 // entirely. A limiter that bans people for using the product correctly is a
 // worse outage than the brute-force it prevents.
-app.use('/api/merchant/auth/login', merchantAuthLimiter);
+app.use('/api/merchant/auth/login', merchantAuthLimiter, requireCaptcha('merchant-login'));
 app.use('/api/merchant',  merchantRoutes);
 app.use('/api/payment', paymentRoutes);
 app.use('/api/support',   supportRoutes); // CAP-71: RAG support assistant (dormant until keys set)
