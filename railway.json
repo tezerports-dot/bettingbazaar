@@ -15,6 +15,7 @@
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10,
     "healthcheckPath": "/health",
-    "healthcheckTimeout": 60
+    "_healthcheckTimeout_note": "/health is READINESS: it returns 503 until MongoDB attaches. A cold-starting Mongo/Postgres service can take well over 60s on a fresh deploy, and the app retries Mongo for up to ~5.75 minutes before giving up, so the window has to outlast that or a slow database reads as a failed deploy.",
+    "healthcheckTimeout": 360
   }
 }

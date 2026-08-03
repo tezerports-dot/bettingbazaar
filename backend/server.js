@@ -516,6 +516,37 @@ app.use(errorHandler);
 app.set('io', io);
 
 // ─── START ────────────────────────────────────────────────────────────────────
+// Open the listener FIRST, before the datastores are up.
+//
+// This used to live inside the .then() of the Promise.allSettled below, so the
+// port did not open until connectMongoDB() settled. That function retries 10
+// times with serverSelectionTimeoutMS=30000 and a 5s pause between attempts, so
+// a MongoDB that is merely slow to accept connections — a service still
+// starting, the normal case on a fresh Railway/compose deploy — kept the
+// process from binding for up to ~5.75 minutes. Every probe in that window got
+// ECONNREFUSED rather than an answer, which is precisely what Railway's
+// healthcheck (healthcheckPath=/health, healthcheckTimeout=60) reads as "this
+// deploy is dead", and restartPolicyMaxRetries then repeats the whole cycle.
+//
+// The readiness endpoints above were already written for this: /health and
+// /health/ready return 503 with `mongodb: 'disconnected'` until the connection
+// is live. They just could not be reached, because nothing was listening. With
+// the listener open from the start, an orchestrator gets an honest
+// "not ready yet" it can wait on, and a real answer the moment Mongo attaches.
+//
+// Serving before Mongo is up is safe: readiness fails, so a load balancer does
+// not route to this instance, and any request that does arrive fails the same
+// way it would have anyway. Nothing below depends on a datastore — the cron
+// jobs and event subscribers that DO are still registered in the .then().
+activeListener = listenWithOptionalProxyProtocol(server, {
+  port: PORT,
+  host: '0.0.0.0',
+  enabled: network.proxyProtocolV2.enabled,
+  trustedSubnets: network.proxyProtocolV2.trustedSubnets,
+}).on('listening', () => {
+  console.log(`✅ Server listening on port ${PORT} (readiness pending until datastores attach)`);
+});
+
 Promise.allSettled([
   // Load the TLS policy before opening the listener. A failed initial read must
   // fail startup rather than serving requests with the log-only defaults.
@@ -539,8 +570,12 @@ Promise.allSettled([
   import('./services/eventBackbone.js').then(m => m.configureFromEnv()).catch(e => console.error('[backbone] configure failed:', e.message)),
 ]).then((results) => {
   if (results[0].status === 'rejected') {
+    // The listener is already open by this point, so failing startup has to
+    // close it — leaving it bound would keep the process alive and advertise a
+    // port that will never become ready.
     console.error('❌ Startup failed while loading TLS fingerprint policy:', results[0].reason);
     process.exitCode = 1;
+    try { activeListener?.close(); } catch { /* nothing to close */ }
     return;
   }
   console.log('✅ DB services initialized');
@@ -550,14 +585,6 @@ Promise.allSettled([
     console.log(`⏸️ Runtime role ${runtime.role}: cron jobs are not registered.`);
   }
   registerFundingEventSubscribers(); // Funding Platform (Phase 009) — eventBus wiring
-  activeListener = listenWithOptionalProxyProtocol(server, {
-    port: PORT,
-    host: '0.0.0.0',
-    enabled: network.proxyProtocolV2.enabled,
-    trustedSubnets: network.proxyProtocolV2.trustedSubnets,
-  }).on('listening', () => {
-    console.log(`✅ Server listening on port ${PORT}`);
-  });
 });
 
 // AQ-4: real graceful drain. Order matters — fail readiness FIRST so the load
