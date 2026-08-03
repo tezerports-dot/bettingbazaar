@@ -15,7 +15,7 @@ node -e "import('./backend/postgres/moneyAuthority.js').then(m => \
 
 ## `POSTGRES_FULL_FINANCIAL_AUTHORITY = NOT READY`
 
-10 declared paths. **1 implemented. 9 not.** 0 currently on Postgres.
+10 declared paths. **1 implemented, 1 built-but-unrouted, 8 not started.** 0 currently on Postgres.
 
 ## The matrix
 
@@ -25,7 +25,7 @@ node -e "import('./backend/postgres/moneyAuthority.js').then(m => \
 | `ledger` | ❌ | ✅ | ✅ | ✅ | no | mongo |
 | `orders` | ❌ | ✅ | ✅ | ✅ | no | mongo |
 | `kyc` | ❌ | ✅ | ❌ | ✅ | no | mongo |
-| `merchant_wallet` | ❌ | ⚠️ | ❌ | ❌ | no | mongo |
+| `merchant_wallet` | 🟡 | ⚠️ | ❌ | ❌ | no | mongo |
 | `merchant_settlement` | ❌ | ❌ | ❌ | ❌ | no | mongo |
 | `admin_issuance` | ❌ | ❌ | ❌ | ❌ | no | mongo |
 | `bets` | ❌ | ❌ | ❌ | ❌ | no | mongo |
@@ -67,17 +67,35 @@ reconciliation gate should hold until after launch.
 the authority resolver. Setting their env var previously changed nothing while
 the config claimed otherwise; it is now a boot failure.
 
-### `merchant_wallet` — nothing at all
-`domains/merchant/merchantWallet.service.js` is the sole writer of
-`Merchant.tokenBalance` and is entirely Mongo. Its ledger is mirrored; the
-balance is not. This is the **largest single gap** — every user↔merchant
-settlement and admin↔merchant issuance depends on it, so no meaningful
-"Postgres owns the money" claim is possible until it exists.
+### `merchant_wallet` — 🟡 implementation built, routing not wired
+`postgres/merchantWalletPg.js` now exists: `merchant_wallets` (available /
+reserved / settlement pockets, integer paise) + `merchant_wallet_entries`
+(append-only, arithmetic CHECK, UNIQUE `tx_id`). One transaction per movement,
+row locked with `SELECT … FOR UPDATE`, guard in the `UPDATE`'s `WHERE`, entry
+written in the same transaction. **24 tests green against PostgreSQL 16**,
+including 200 racing reservations against a balance that fits 100 (exactly 100
+commit), a 200-way retry storm on one key (applied once), append-only
+enforcement, and reconciliation drift of zero.
 
-Its Mongo implementation is sound: reserve the ledger row (`balanceAfter: null`),
-move the balance, complete the row — so a crash leaves a detectable reservation
-rather than an unaudited movement. Six concurrency tests pass against real
-MongoDB. Port that shape to Postgres; do not port `_mongoBetStake`'s.
+Operations: admin issuance/deduction, reserve, cancel, complete, payout,
+reversal, plus `reconcileMerchant()`.
+
+**Still `implemented: false` in the registry, deliberately.** That flag also
+requires production call sites to route through the authority resolver, and
+`merchantWallet.service.js` does not consult it yet. Code that exists but is not
+reached is not authority — flipping the flag now would recreate the exact hazard
+the registry exists to prevent.
+
+Remaining before this path can cut over:
+1. Route `merchantWallet.service.js` through `isPostgresAuthoritative()`
+2. Mirror the **balance**, not just the ledger
+3. Add it to the reconcile pass
+4. Build the reverse mirror
+
+Note the Mongo original's shape was carried across but expressed properly: its
+reserve→complete used a ledger row with a null `balanceAfter` that a crash could
+strand; here a reservation is a real balance movement inside one transaction, so
+it cannot be half-done.
 
 ### `bets` — Mongo-only, with two known defects to fix in the port
 `_mongoBetStake` has **no idempotency key** on the balance move (M-2) and writes

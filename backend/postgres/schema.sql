@@ -272,3 +272,77 @@ CREATE TABLE IF NOT EXISTS user_kyc (
   rejection_reason TEXT,
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+
+-- ── MERCHANT WALLET (Postgres authority, integer paise) ─────────────────────
+-- The Postgres counterpart of domains/merchant/merchantWallet.service.js, which
+-- is Mongo-only and is the sole writer of Merchant.tokenBalance. Until this
+-- exists there is no meaningful "Postgres owns the money" claim, because every
+-- user↔merchant settlement and admin↔merchant issuance lives on that path.
+--
+-- Pockets, per the financial domain graph:
+--   available_paise   spendable now
+--   reserved_paise    committed to an in-flight settlement, not yet applied
+--   settlement_paise  owed out, awaiting payout
+-- liability = reserved + settlement; a merchant's obligation at any instant.
+--
+-- Integer paise only. The float-rupee round2() pattern stops at this wall, the
+-- same as wallets/wallet_ledger.
+CREATE TABLE IF NOT EXISTS merchant_wallets (
+  merchant_id      TEXT PRIMARY KEY,
+  available_paise  BIGINT NOT NULL DEFAULT 0,
+  reserved_paise   BIGINT NOT NULL DEFAULT 0,
+  settlement_paise BIGINT NOT NULL DEFAULT 0,
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- Reserved and settlement can never go negative: they are counters of
+  -- outstanding obligations, and a negative obligation is not a state that
+  -- exists. `available` is deliberately NOT constrained here — an authorised
+  -- corrective adjustment may drive it below zero, and that decision belongs to
+  -- the caller, recorded in the ledger, not to a constraint that would make the
+  -- correction impossible to record.
+  CONSTRAINT merchant_wallets_reserved_non_negative   CHECK (reserved_paise   >= 0),
+  CONSTRAINT merchant_wallets_settlement_non_negative CHECK (settlement_paise >= 0)
+);
+
+-- Every movement of a merchant pocket, append-only.
+-- `tx_id` UNIQUE is the durable idempotency gate — the same contract the user
+-- wallet uses, so a replay collides inside the transaction rather than relying
+-- on a pre-read that a concurrent caller can pass simultaneously.
+CREATE TABLE IF NOT EXISTS merchant_wallet_entries (
+  id                   BIGSERIAL PRIMARY KEY,
+  tx_id                TEXT NOT NULL UNIQUE,
+  merchant_id          TEXT NOT NULL,
+  pocket               TEXT NOT NULL,
+  amount_paise         BIGINT NOT NULL,
+  balance_before_paise BIGINT NOT NULL,
+  balance_after_paise  BIGINT NOT NULL,
+  entry_type           TEXT NOT NULL,
+  operation            TEXT NOT NULL,
+  actor                TEXT,
+  reason               TEXT,
+  ref_model            TEXT,
+  ref_id               TEXT,
+  correlation_id       TEXT,
+  reverses_tx_id       TEXT,
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT merchant_wallet_entries_pocket_known
+    CHECK (pocket IN ('available', 'reserved', 'settlement')),
+  CONSTRAINT merchant_wallet_entries_type_known
+    CHECK (entry_type IN ('CREDIT', 'DEBIT')),
+  -- Amount is a positive magnitude; direction lives in entry_type. Storing a
+  -- signed amount here would make every sum-based reconciliation disagree with
+  -- the Mongo side, which stores positive amounts.
+  CONSTRAINT merchant_wallet_entries_amount_positive CHECK (amount_paise > 0),
+  -- The arithmetic must be internally consistent: a row that claims a before
+  -- and after which its own amount cannot explain is corrupt on its face.
+  CONSTRAINT merchant_wallet_entries_arithmetic CHECK (
+    (entry_type = 'CREDIT' AND balance_after_paise = balance_before_paise + amount_paise) OR
+    (entry_type = 'DEBIT'  AND balance_after_paise = balance_before_paise - amount_paise)
+  )
+);
+CREATE INDEX IF NOT EXISTS merchant_wallet_entries_merchant_idx
+  ON merchant_wallet_entries (merchant_id, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS merchant_wallet_entries_ref_idx
+  ON merchant_wallet_entries (ref_model, ref_id);
+CREATE OR REPLACE TRIGGER merchant_wallet_entries_append_only
+  BEFORE UPDATE OR DELETE ON merchant_wallet_entries FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();

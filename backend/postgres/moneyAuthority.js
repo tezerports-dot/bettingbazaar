@@ -134,11 +134,18 @@ const CAPABILITIES = Object.freeze({
     notes: 'user_kyc is mirrored only. KYC decisions are Mongo-only.',
   },
   [MONEY_PATHS.MERCHANT_WALLET]: {
+    // STILL false, deliberately. postgres/merchantWalletPg.js now exists — a
+    // real reader and writer, 24 tests green against PostgreSQL 16 — but
+    // `implemented` also requires that production call sites ROUTE through the
+    // authority resolver, and merchantWallet.service.js does not yet consult
+    // it. Flipping this on the strength of the implementation alone would
+    // recreate exactly the false-authority hazard this registry exists to
+    // prevent: code that exists but is not reached is not authority.
     implemented: false,
     dualWrite:   true,  // mirrorMerchantWalletLedger — ledger only, not the balance
-    reconciled:  false,
-    rollback:    false,
-    notes: 'NO Postgres implementation at all. merchantWallet.service.js is the sole writer of Merchant.tokenBalance and is Mongo-only; only its ledger is mirrored, not the balance itself.',
+    reconciled:  false, // reconcileMerchant() exists per-merchant; not yet in the reconcile pass
+    rollback:    false, // no reverse mirror for merchant balances
+    notes: 'Postgres implementation EXISTS (postgres/merchantWalletPg.js: merchant_wallets + merchant_wallet_entries, row-locked, ledger in the same transaction, append-only, 24 tests). Remaining before cutover: route merchantWallet.service.js through the authority resolver, mirror the BALANCE (only the ledger is mirrored today), add it to the reconcile pass, and build the reverse mirror.',
   },
   [MONEY_PATHS.MERCHANT_SETTLEMENT]: {
     implemented: false, dualWrite: false, reconciled: false, rollback: false,
