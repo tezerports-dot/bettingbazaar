@@ -38,6 +38,7 @@ const CasinoPage          = React.lazy(() => import('./pages/CasinoPage'));
 const CrashPage           = React.lazy(() => import('./pages/CrashPage'));
 const SportsPage          = React.lazy(() => import('./pages/SportsPage'));
 const WinnersPage         = React.lazy(() => import('./pages/WinnersPage'));
+const LeaderboardPage     = React.lazy(() => import('./pages/LeaderboardPage'));
 const WalletPage          = React.lazy(() => import('./pages/WalletPage'));
 const InvitePage          = React.lazy(() => import('./pages/InvitePage'));
 const VIPPage             = React.lazy(() => import('./pages/VIPPage'));
@@ -251,6 +252,7 @@ const App: React.FC = () => (
                           <Route path="/support"         element={<SupportPage />} />
 
                           <Route path="/winners"         element={lazy(<WinnersPage />)} />
+                          <Route path="/leaderboard"     element={lazy(<LeaderboardPage />)} />
 
                           {/* Panel redirects */}
                           <Route path="/merchant/*"      element={<MerchantRedirect />} />

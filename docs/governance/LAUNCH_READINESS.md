@@ -151,27 +151,31 @@ code flip, because it moves the source of truth for money. The sequence
 
 ---
 
-## F. Account-security controls — 🟡 two common expectations are NOT built
-
-Verified against the code on 2026-07-27. Both are the kind of control a
-reviewer, auditor or regulator tends to assume is present on a real-money
-platform, so they are called out explicitly rather than left to be discovered.
+## F. Account-security controls — 🟡 one of two is now built
 
 | Control | State | Evidence |
 |---|---|---|
-| Two-factor authentication (any role, admin included) | ⛔ **not implemented** | `User.twoFactorSecret` / `User.twoFactorEnabled` exist in `domains/user/user.model.js` but are **never written and never verified** — no TOTP library is installed, there is no enrolment endpoint and no challenge step. The only code touching them excludes `twoFactorSecret` from admin responses. |
+| Two-factor authentication | ✅ **built and enforced** | TOTP, **mandatory** for admins and sub-admins, optional for players, available for merchants. Two-step enrolment (`POST /api/2fa/setup` mints a *pending* secret; only `POST /api/2fa/activate` with a valid code makes it live), one-time recovery codes stored as hashes, secrets AES-256-GCM encrypted at rest under `TOTP_ENCRYPTION_KEY`. Login issues a short-lived challenge instead of a session until the code is redeemed (`routes.js` `loginHandler` → `loginTwoFactorHandler`). Enrolment + OTP UI in all three panels. Files: `domains/identity/{totp.service,twoFactor.routes,twoFactorChallenge,verifySecondFactor}.js`. Own rate-limit tier — `RATE_LIMITS.md`. |
 | CAPTCHA / bot-mitigation challenge | ⛔ **not implemented** | No captcha, Turnstile, reCAPTCHA or hCaptcha integration anywhere. Automated-abuse defence today is rate limiting only (`middleware/security.js`, `ipDefense.js`). |
 
-Until 2026-07-27 the repository claimed both: `README.md` listed "TOTP 2FA for
-Admins" and "Bot-mitigation captchas" under Security, and the admin login screen
-printed "Secured by 2FA". Those claims were removed — a stated control that does
-not exist is worse than a missing one, because it stops anyone from asking for it.
+**History, kept deliberately.** Until 2026-07-27 the repository claimed both
+controls while neither existed; the claims were removed and recorded here as a
+gap. 2FA was then built (2026-07-28/29) — but this section was not updated with
+it, so for a period the docs understated the platform. Both directions of drift
+are the same defect: **a control documented as missing invites someone to build a
+second one and collide with the real implementation, exactly as a control
+documented as present stops anyone asking for it.** Verify before documenting,
+in either direction.
 
-**Owner decision needed before launch:** admin 2FA is the higher-risk gap of the
-two (privileged accounts that can move money and adjust balances are protected by
-a password alone). The dead schema fields are a usable starting point, but the
-enrolment flow, challenge step, recovery codes and admin-panel UI are all
-unbuilt. Either implement it or record an explicit acceptance here.
+**Remaining owner decision:** CAPTCHA. Rate limiting alone does not stop a
+distributed, low-and-slow credential-stuffing run against the login form. Either
+integrate a challenge (Cloudflare Turnstile is the lightest fit — no visible
+puzzle in the common case) or record an explicit acceptance here.
+
+**`TOTP_ENCRYPTION_KEY` has no rotation path.** It has no `_PREVIOUS_`
+counterpart: rotating it makes every stored secret undecryptable and forces every
+enrolled user — including every admin — to re-enrol, with nobody able to sign in
+meanwhile. Back it up with the same care as the Android signing keystore.
 
 ---
 
@@ -196,7 +200,8 @@ CI green, deploy artifacts committed.
 **Must clear before a real-money launch:**
 - ⛔ Compliance/licensing + third-party pen-test (§G)
 - ⛔ A real load test at target scale (§D)
-- 🟡 Decide on admin 2FA — currently not implemented (§F)
+- 🟡 Decide on CAPTCHA / bot mitigation — not implemented (§F). Admin 2FA, which
+  previously sat here, is **built and enforced**.
 - 🟡 Managed clustered datastores + gateway/LB/WAF stood up (§D)
 - 🟡 Restore drill executed at least once; PITR enabled (§C)
 

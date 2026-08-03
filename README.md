@@ -84,14 +84,19 @@ Implemented and verifiable in the codebase:
 * **Tiered + per-subnet rate limiting**, surge breaker, load-shed and an
   application-side OWASP filter (`middleware/security.js`, `ipDefense.js`).
 * **Admin action audit logging** (`EnhancedAuditLog`) across privileged routes.
+* **TOTP two-factor authentication** — **mandatory** for admins and sub-admins,
+  optional for players, available for merchants. Two-step enrolment (a pending
+  secret only becomes live once a code from the authenticator verifies, so nobody
+  can lock themselves out of an entry they never scanned), one-time recovery
+  codes stored only as hashes, and secrets encrypted at rest with AES-256-GCM
+  under a dedicated `TOTP_ENCRYPTION_KEY` (`domains/identity/totp.service.js`,
+  `twoFactor.routes.js`, `verifySecondFactor.js`). Enrolment and OTP UI ship in
+  all three panels. Second-factor submissions have their own tighter rate-limit
+  tier — see `docs/governance/RATE_LIMITS.md`.
 
 **Not implemented — do not assume these exist** (see
 `docs/governance/LAUNCH_READINESS.md` §F):
 
-* **No two-factor authentication anywhere**, admin included. `User.twoFactorSecret`
-  and `User.twoFactorEnabled` exist in the schema but are never written and never
-  verified; there is no TOTP library, enrolment flow or challenge step. This
-  README previously claimed "TOTP 2FA for Admins" — it was never true.
 * **No CAPTCHA / bot-mitigation challenge** on any form. Rate limiting is the only
   automated-abuse control today.
 

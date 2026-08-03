@@ -62,7 +62,17 @@ import SystemSettings from './admin/SystemSettings';
 import AuditLogs from './admin/AuditLogs';
 import ErrorLogs from './admin/ErrorLogs';
 
-/** Exact 60-view presentation-to-API mapping. No backend model is imported here. */
+/**
+ * Exact 59-view presentation-to-API mapping — 18 player, 6 merchant, 35 admin.
+ * No backend model is imported here.
+ *
+ * The count is stated because §4 tells you to grep this registry before adding a
+ * screen; a registry that misdescribes its own size undermines that instruction.
+ * It read "60" until 2026-07-30 while holding 59 entries. Re-derive rather than
+ * trusting the prose — anchored to the entry indentation so the command does not
+ * match itself inside this comment and inflate its own answer:
+ *   grep -c "^  { key: '" design/visual-mapping/views/UI_PAGE_REGISTRY.js
+ */
 export const UI_PAGE_REGISTRY = Object.freeze([
   { key: 'main_bazaar_stage', path: '/', component: MainBazaarStage, componentName: 'MainBazaarStage', layout: UserPanelShell, layoutName: 'UserPanelShell', apiBinding: '/api/bet/place, /api/sse/events' },
   { key: 'casino_lobby', path: '/casino', component: CasinoLobby, componentName: 'CasinoLobby', layout: UserPanelShell, layoutName: 'UserPanelShell', apiBinding: '/api/game/providers, /api/game/games' },

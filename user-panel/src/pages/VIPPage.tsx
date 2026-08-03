@@ -7,6 +7,7 @@
 import React, { useEffect, useState } from 'react';
 import { fmt } from '../redesign/format';
 import ScreenShell, { card } from '../redesign/Screen';
+import { apiUrl } from '../services/apiUrl';
 
 const FALLBACK_LEVELS = [
   { level: 0, name: 'Bronze', badgeIcon: '🥉', minTotalDeposit: 0, bonusPercent: 5, dailyWithdrawalLimit: 10000 },
@@ -24,8 +25,8 @@ export default function VIPPage() {
     const token = localStorage.getItem('auth_token') || '';
     const h = { Authorization: `Bearer ${token}` };
     Promise.all([
-      fetch('/api/vip/my', { headers: h, credentials: 'include' }).then(r => r.json()).catch(() => ({})),
-      fetch('/api/vip/config').then(r => r.json()).catch(() => ({})),
+      fetch(apiUrl('/api/vip/my'), { headers: h, credentials: 'include' }).then(r => r.json()).catch(() => ({})),
+      fetch(apiUrl('/api/vip/config')).then(r => r.json()).catch(() => ({})),
     ]).then(([v, c]) => { if (v?.success) setData(v); if (c?.success) setConfig(c.config || { levels: [] }); });
   }, []);
 

@@ -9,6 +9,7 @@
 import React, { useEffect, useState } from 'react';
 import { fmt } from '../redesign/format';
 import ScreenShell, { card, capLabel } from '../redesign/Screen';
+import { apiUrl } from '../services/apiUrl';
 
 export default function InvitePage() {
   const [data, setData] = useState<any>(null);
@@ -19,8 +20,8 @@ export default function InvitePage() {
     const token = localStorage.getItem('auth_token') || '';
     const h = { Authorization: `Bearer ${token}` };
     Promise.all([
-      fetch('/api/referral/me', { headers: h, credentials: 'include' }).then(r => r.json()).catch(() => ({})),
-      fetch('/api/referral/team', { headers: h, credentials: 'include' }).then(r => r.json()).catch(() => ({})),
+      fetch(apiUrl('/api/referral/me'), { headers: h, credentials: 'include' }).then(r => r.json()).catch(() => ({})),
+      fetch(apiUrl('/api/referral/team'), { headers: h, credentials: 'include' }).then(r => r.json()).catch(() => ({})),
     ]).then(([me, t]) => { if (me?.success) setData(me); if (t?.success) setTeam(t); });
   }, []);
 
