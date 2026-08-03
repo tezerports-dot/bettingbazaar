@@ -63,7 +63,7 @@ unverified.
 | Postgres wallet: idempotency | **PASS** (was FAIL) | `LIKE` prefix bug fixed; `walletPgIdempotencyKeys.test.js` |
 | Integer-only arithmetic (paise) | **PASS** | `Number.isInteger` guards at every entry point |
 | Trial-balance / drift metrics exist | **PASS** | `bb_pg_trial_balance_ok`, `bb_pg_drift_rows` in `metrics.service.js` |
-| Mongo `debitForBet` replay safety | **PASS** (was FAIL) | Double-charge when a replay re-split pockets; fixed + 4 integration tests. See `MONGO_MONEY_AUDIT.md` M-1 |
+| Mongo `debitForBet` replay safety | **PASS** (was FAIL) | Double-charge when a replay re-split pockets; fixed. **4 tests executed against real MongoDB in CI run 30819385308** (19 files / 85 tests / 0 failures). See `MONGO_MONEY_AUDIT.md` M-1 |
 | Mongo bet-stake path idempotency | **FAIL** | `_mongoBetStake` has no idempotency key on the balance move. Not reachable from today's caller (fresh UUID per request); unsafe primitive. M-2, proposed design in the audit doc |
 | Mongo bet-stake atomicity | **FAIL** | Balance and ledger are separate operations; money can move unaudited. M-4, proposed design in the audit doc |
 | Unaudited movements observable | **PASS** (was FAIL) | `bb_unaudited_money_movements_total` + log; was a silent `.catch(() => {})`. M-3 |
@@ -74,7 +74,11 @@ unverified.
 | Merchant payouts, treasury, disputes | **NOT VERIFIED** | Not traced |
 | Admin balance adjustments | **NOT VERIFIED** | Wrapped in `session.withTransaction()`; not tested |
 | Casino ROLLBACK/REFUND requires prior debit | **FAIL** | Credits without proving a matching debit existed. Not externally reachable now that the signature is enforced, but the model is wrong |
-| Concurrent double-spend under load | **NOT VERIFIED** | `loadtest/bet-contention.js` exists, never run |
+| Mongo money under concurrency | **PASS** | 5 scenarios executed against real MongoDB in CI run 30819385308: 50-copy retry storm, 100 bets racing a balance fitting 10, 20× duplicate webhook, debits interleaved with credits, racing writes on one key. Invariant asserted throughout: the ledger explains the balance |
+| Postgres money under concurrency | **PASS** | Adversarial run against real PG 16: 200 concurrent distinct debits (exactly 100 committed, ledger sums, never negative), 200 concurrent same-txId (charged once), 100 debits × 100 credits interleaved (ledger explains balance) |
+| Survives a Postgres restart mid-transaction | **PASS** (was FAIL) | Unguarded checked-out client crashed the process on an unhandled `'error'`. Fixed via `connectGuarded`; re-run shows process survives, 53 in-flight ops rejected not silently succeeded, and balance+debits reconciles across the crash |
+| Port collision fails readably | **PASS** (was FAIL) | EADDRINUSE was an unhandled `'error'` event and a raw stack trace; now a named FATAL and exit 1 |
+| Concurrent double-spend under multi-instance load | **NOT VERIFIED** | Single-process concurrency is covered above. Multi-instance contention needs `loadtest/bet-contention.js` on staging — §A of `CONCURRENCY_CERTIFICATION.md` |
 | Money conservation across a real cycle | **NOT VERIFIED** | Needs a deployed environment |
 
 ## 3. Deployment reliability
