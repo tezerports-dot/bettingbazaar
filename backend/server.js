@@ -197,7 +197,38 @@ const _tightJson = express.json({ limit: JSON_LIMIT });
 const _assetJson = express.json({ limit: process.env.ASSET_JSON_LIMIT || '8mb' });
 const _ASSET_UPLOAD_PATHS = new Set(['/api/admin/app-assets/upload']);
 app.use((req, res, next) => (_ASSET_UPLOAD_PATHS.has(req.path) ? _assetJson : _tightJson)(req, res, next));
-app.use(express.urlencoded({ extended: true, limit: JSON_LIMIT }));
+// NO urlencoded body parser — deliberately. This is CSRF defence, not cleanup.
+//
+// Auth cookies are issued with `sameSite: 'none'` in production (routes.js),
+// because the Capacitor/Android shell runs on a different origin and would
+// otherwise never receive them. SameSite=None means the browser attaches
+// auth_token to CROSS-SITE requests, and authenticate() accepts the cookie as
+// proof of identity. The only thing then standing between an attacker's page
+// and a money mutation is whether the browser will send a usable request
+// without our permission.
+//
+// CORS does not stop it. For a "simple request" the browser SENDS the request
+// and only withholds the *response* — the mutation has already happened. The
+// simple content types are urlencoded, multipart, and text/plain, so a hidden
+// auto-submitting <form> posting urlencoded was a complete CSRF vector against
+// every authenticated POST, with no preflight to block it.
+//
+// Removing this parser closes that: with only express.json mounted, a
+// urlencoded body is never parsed, so req.body is empty and the handler fails
+// validation. multipart has no parser either, and express.json ignores
+// text/plain. Anything sending real application/json triggers a preflight,
+// which the CORS allow-list then rejects for untrusted origins.
+//
+// Verified before removing: nothing inbound needs it. No route reads a
+// form-encoded body, no panel sends one (the only x-www-form-urlencoded in the
+// tree is OUTBOUND, to Turnstile in middleware/captcha.js), and no test posts
+// one. If a provider callback ever needs form encoding, mount a urlencoded
+// parser ON THAT ROUTE ONLY — never globally — and require a signature on it.
+//
+// This is a vector fix, not a complete CSRF programme. Token-based CSRF, or
+// dropping cookie auth for the Authorization header everywhere, is the
+// structural answer and needs a decision spanning all three panels plus the
+// Android shell. See docs/governance/SECURITY_CODE_REVIEW_CHECKLIST.md.
 app.use(mongoSanitize);
 app.use(cookieParser());
 app.use(requestContext); // X-6: correlation id (before the logger, so it's logged)
