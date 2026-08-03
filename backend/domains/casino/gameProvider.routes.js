@@ -19,6 +19,7 @@ import mongoose from 'mongoose';
 import crypto from 'crypto';
 import { authenticate, isAdmin, isAdminOrSubAdmin } from '../identity/auth.middleware.js';
 import { networkClient } from '../../services/networkClient.js';
+import { verifyWebhookSignature } from './webhookSignature.js';
 
 const router = express.Router();
 
@@ -239,14 +240,8 @@ router.post('/wallet/:providerKey', async (req, res) => {
     const provider = await GameProvider.findOne({ key: providerKey });
     if (!provider) return res.status(404).json({ success: false });
 
-    // Basic signature check (provider-specific in production)
-    if (provider.webhookSecret) {
-      const sig = req.headers['x-signature'] || req.headers['x-hmac'] || '';
-      const expected = crypto.createHmac('sha256', provider.webhookSecret)
-        .update(JSON.stringify(req.body))
-        .digest('hex');
-      if (sig && sig !== expected) return res.status(401).json({ success: false, message: 'Invalid signature' });
-    }
+    const verdict = verifyWebhookSignature(provider.webhookSecret, req.headers, req.body);
+    if (!verdict.ok) return res.status(verdict.status).json({ success: false, message: verdict.message });
 
     // Normalise payload across providers
     const body = req.body;
@@ -255,12 +250,18 @@ router.post('/wallet/:providerKey', async (req, res) => {
     const type    = (body.type || body.action || '').toUpperCase().replace('DEBIT', 'BET').replace('CREDIT', 'WIN');
     const amount  = Math.abs(Number(body.amount || body.bet || 0));
     const roundId = body.roundId || body.round_id || body.gameRound || txId;
+    const gameId  = body.gameId || body.game_id || '';
 
     if (!txId || !userId || !amount || !type) return res.status(400).json({ success: false, message: 'Missing fields' });
 
     // Idempotency — reject duplicate txId
     const dup = await GameTransaction.findOne({ txId });
-    if (dup) return res.json({ success: true, balance: (await User.findById(dup.userId).lean()).depositBalance || 0 });
+    if (dup) {
+      // `.lean()` yields null for a since-deleted player; dereferencing it here
+      // turned a benign replay into a 500.
+      const prior = await User.findById(dup.userId).lean();
+      return res.json({ success: true, balance: prior?.depositBalance || 0 });
+    }
 
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ success: false, message: 'Player not found' });
@@ -271,9 +272,13 @@ router.post('/wallet/:providerKey', async (req, res) => {
       if (balance < amount) return res.status(400).json({ success: false, message: 'Insufficient balance', balance });
       // Deduct from winnings first, then deposit
       // Casino bet: deposit first, winnings covers shortfall — wallet service enforces this
-      await debitForGameProviderBet(userId, amount, `Casino BET: \${gameId} round \${roundId}`, txId);
+      // These two strings used to be escaped (`\${gameId}`), so every casino
+      // ledger row recorded the literal text "${gameId}" instead of the value —
+      // and `gameId` was not in scope, so simply removing the escape would have
+      // thrown. It is derived from the payload above; both now interpolate.
+      await debitForGameProviderBet(userId, amount, `Casino BET: ${gameId} round ${roundId}`, txId);
     } else if (type === 'WIN') {
-      await creditWinnings(userId, amount, `Casino WIN: \${gameId} round \${roundId}`, 'GameTransaction', null, 'win_' + txId);
+      await creditWinnings(userId, amount, `Casino WIN: ${gameId} round ${roundId}`, 'GameTransaction', null, 'win_' + txId);
     } else if (type === 'ROLLBACK' || type === 'REFUND') {
       await refundOrder(userId, amount, roundId, 'depositBalance');
     }
@@ -285,7 +290,7 @@ router.post('/wallet/:providerKey', async (req, res) => {
       roundId, txId, sessionId: body.sessionId || '', userId,
       providerKey, type, amount,
       balanceBefore: balance, balanceAfter: newBalance,
-      gameId: body.gameId || '', gameName: body.gameName || '',
+      gameId, gameName: body.gameName || '',
     });
 
     res.json({ success: true, balance: newBalance, currency: 'INR' });

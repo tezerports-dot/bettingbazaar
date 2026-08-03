@@ -427,9 +427,25 @@ export async function transferPaise({
  * miss the UNIQUE collision that makes a replay a no-op, and debit twice.
  *
  * Under the lock the probe below is exact: if any ledger row already exists
- * with this movement's base key, the movement has happened and we stop. The
- * Mongo path's equivalent pre-read is explicitly documented there as a
- * fast path rather than a guarantee — here it is a guarantee.
+ * for one of the keys THIS movement would write, the movement has happened and
+ * we stop. The Mongo path's equivalent pre-read is explicitly documented there
+ * as a fast path rather than a guarantee — here it is a guarantee.
+ *
+ * ── Why the probe enumerates keys instead of matching a prefix ───────────────
+ * This was `tx_id LIKE '<txId>%'`, which is wrong in two ways that both END IN
+ * AN UNCHARGED DEBIT — the probe reports "already done" and the caller is told
+ * the spend succeeded while no money moved:
+ *   • `%` and `_` are LIKE metacharacters. `debitForBet` is reached from the
+ *     game-provider wallet webhook, whose txId is taken verbatim from the
+ *     provider payload, so a txId of `%` expands to `%%` and matches ANY
+ *     existing row for that user — every bet becomes free.
+ *   • even with inert input it is a PREFIX test, so a later txId that happens
+ *     to be a prefix of an earlier one (`…_b1` arriving after `…_b10`) matches
+ *     a row belonging to a DIFFERENT movement.
+ * The keys this movement can write are known exactly — one per pocket — so the
+ * probe tests for those and nothing else. A pocket the original skipped
+ * (`take === 0`, so no row) is still covered, because any ONE surviving row
+ * proves the movement ran.
  *
  * @param {object} args
  * @param {string} args.userId
@@ -455,10 +471,11 @@ export async function debitSpendOrderPaise({
   for (const pocket of pockets) columnFor(pocket.field);
 
   const outcome = await withWalletLock(userId, async ({ client, uid, balances }) => {
-    // Durable idempotency probe — exact because we hold this user's lock.
+    // Durable idempotency probe — exact because we hold this user's lock, and
+    // literal because it names the keys rather than pattern-matching them.
     const seen = await client.query(
-      `SELECT 1 FROM wallet_ledger WHERE user_id = $1 AND tx_id LIKE $2 LIMIT 1`,
-      [uid, `${txId}%`],
+      `SELECT 1 FROM wallet_ledger WHERE user_id = $1 AND tx_id = ANY($2) LIMIT 1`,
+      [uid, pockets.map((p) => `${txId}${p.suffix}`)],
     );
     if (seen.rows.length) {
       return { commit: false, value: { ok: true, idempotent: true } };
