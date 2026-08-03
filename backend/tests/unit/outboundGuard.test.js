@@ -80,4 +80,32 @@ describe('assertAllowedUrl', () => {
   it('rejects a malformed URL', async () => {
     await expect(assertAllowedUrl('not a url', NO_PRIVATE)).rejects.toThrow(OutboundBlockedError);
   });
+
+  // The spellings people reach for when a naive filter blocks '127.0.0.1'.
+  // Each must be refused BY POLICY (reason 'private-address'), not by accident
+  // of a DNS lookup failing — a resolver that happens to answer differently
+  // would otherwise turn a block into a bypass.
+  it.each([
+    ['localhost',                        'http://localhost/x'],
+    ['localhost. (DNS root form)',       'http://localhost./x'],
+    ['0 (shorthand for 0.0.0.0)',        'http://0/x'],
+    ['0.0.0.0',                          'http://0.0.0.0/x'],
+    ['[::] unspecified IPv6',            'http://[::]/x'],
+    ['[::1] IPv6 loopback',              'http://[::1]/x'],
+    ['127.1 (compressed IPv4)',          'http://127.1/x'],
+    ['2130706433 (decimal IPv4)',        'http://2130706433/x'],
+    ['IPv4-mapped IPv6 loopback',        'http://[0:0:0:0:0:ffff:127.0.0.1]/x'],
+  ])('blocks %s by policy', async (_label, url) => {
+    await expect(assertAllowedUrl(url, NO_PRIVATE))
+      .rejects.toMatchObject({ reason: 'private-address' });
+  });
+
+  it('allows a legitimate PUBLIC IPv6 literal', async () => {
+    // Regression: URL.hostname keeps the brackets on an IPv6 literal, so
+    // dns.lookup('[2606:...]') was ENOTFOUND and every IPv6-only provider was
+    // refused. Failing closed hid it — the block looked correct until you
+    // noticed it applied to public addresses too.
+    await expect(assertAllowedUrl('http://[2606:4700:4700::1111]/x', NO_PRIVATE))
+      .resolves.toBeInstanceOf(URL);
+  });
 });

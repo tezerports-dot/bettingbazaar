@@ -138,6 +138,29 @@ counter names the client to fix first — do not proceed until it is zero.
 Keep *setting* the cookie for one release so a rollback does not log everyone
 out.
 
+**Step 2b — Prove it, per endpoint.** Changing `extractToken` is necessary but
+not sufficient evidence. Middleware accumulates: a route with its own auth
+shim, a merchant or SSE path that reads `req.cookies` directly, or a handler
+that trusts `req.user` populated somewhere else, can each leave a hole that a
+single-function change does not close.
+
+Add a suite that **enumerates the mounted router stack** and, for every
+state-changing route (POST/PUT/PATCH/DELETE), issues a request carrying **only**
+the cookie — no `Authorization` header — and asserts 401/403. Enumerating the
+stack rather than listing paths by hand is the point: a new route added later is
+covered automatically, whereas a hand-written list silently stops covering the
+thing it was written for.
+
+```js
+// Sketch — walk app._router.stack, collect {method, path}, then for each:
+const res = await request(app)[method](path).set('Cookie', `auth_token=${validToken}`);
+expect([401, 403]).toContain(res.status);
+```
+
+Grep as a second check, not the primary one:
+`grep -rn "req.cookies" backend --include=*.js` should return nothing outside
+`cookieParser` setup.
+
 **Step 3 — Stop setting it.** Remove the `res.cookie` calls and `COOKIE_OPTS`.
 Ship a `res.clearCookie('auth_token')` on login and logout for one release so
 stale cookies do not linger in browsers.

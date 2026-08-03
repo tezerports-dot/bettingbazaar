@@ -135,14 +135,40 @@ export async function assertAllowedUrl(rawUrl, env = process.env) {
 
   if (allowsPrivateDestinations(env)) return url; // operator opted in
 
+  // Normalise the host before it is used as a DNS name or parsed as an IP.
+  //
+  //  • IPv6 literals keep their brackets in URL.hostname ('[::1]'), and
+  //    dns.lookup('[::1]') is ENOTFOUND. That fails closed, so nothing unsafe
+  //    got through — but it also rejected LEGITIMATE public IPv6 literals like
+  //    http://[2606:4700:4700::1111]/, which would have broken any provider
+  //    reachable only over IPv6, and it meant '[::1]' was refused by accident
+  //    rather than by policy.
+  //  • A trailing dot ('localhost.') is the DNS root form of the same name.
+  //    Whether it resolves is resolver-dependent, so strip it and judge the
+  //    name itself rather than relying on a lookup failure.
+  const host = url.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '');
+
+  // An IP literal is already an address — check it directly. Sending it to DNS
+  // is both unnecessary and, for IPv6, wrong.
+  if (ipaddr.isValid(host)) {
+    if (isBlockedAddress(host)) {
+      throw new OutboundBlockedError(
+        `Outbound request blocked: ${host} is a non-public address. ` +
+        `Set OUTBOUND_ALLOW_PRIVATE=true only if reaching private hosts is intended.`,
+        { url: url.href, reason: 'private-address' },
+      );
+    }
+    return url;
+  }
+
   // Every address the name resolves to must be acceptable — a name with one
   // public and one private record must not be reachable via the private one.
   let addresses;
   try {
-    addresses = await dns.promises.lookup(url.hostname, { all: true });
+    addresses = await dns.promises.lookup(host, { all: true });
   } catch (error) {
     throw new OutboundBlockedError(
-      `Outbound request blocked: cannot resolve '${url.hostname}' (${error.code || error.message})`,
+      `Outbound request blocked: cannot resolve '${host}' (${error.code || error.message})`,
       { url: url.href, reason: 'dns' },
     );
   }
@@ -150,7 +176,7 @@ export async function assertAllowedUrl(rawUrl, env = process.env) {
   for (const { address } of addresses) {
     if (isBlockedAddress(address)) {
       throw new OutboundBlockedError(
-        `Outbound request blocked: '${url.hostname}' resolves to non-public address ${address}. ` +
+        `Outbound request blocked: '${host}' resolves to non-public address ${address}. ` +
         `Set OUTBOUND_ALLOW_PRIVATE=true only if reaching private hosts is intended.`,
         { url: url.href, reason: 'private-address' },
       );
