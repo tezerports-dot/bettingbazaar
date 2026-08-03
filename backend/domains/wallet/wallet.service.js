@@ -392,60 +392,6 @@ export async function refundOrder(userId, amount, orderId, field = 'depositBalan
   } finally { await session.endSession(); }
 }
 
-// ── ATOMIC BET + DEBIT ────────────────────────────────────────────────────────
-/**
- * atomicBet — debit bet amount AND create Bet document in ONE transaction.
- */
-export async function atomicBet(userId, betData) {
-  const { amount, cycleId, choice, isPhantom = false } = betData;
-  const tid = `bet_${userId}_${cycleId}_${Date.now()}`;
-
-  if (await checkIdempotent(tid + '_dep')) return { idempotent: true };
-
-  const Bet     = mongoose.model('Bet');
-  const session = await mongoose.startSession();
-  try {
-    let result;
-    await session.withTransaction(async () => {
-      const wallet = await debitForBet(
-        userId, amount, `Bet on cycle ${cycleId}`, 'Bet', null, tid, session
-      );
-      const [bet] = await Bet.create([{
-        userId, cycleId, choice,
-        betAmount: amount, isPhantom,
-        timestamp: new Date(), status: 'PENDING',
-      }], { session });
-      result = { bet, wallet };
-    });
-    return result;
-  } finally { await session.endSession(); }
-}
-
-// ── ATOMIC WIN SETTLEMENT ─────────────────────────────────────────────────────
-/**
- * settleWins — credit winnings for all winning bets in one transaction.
- * Called by cycle engine after result is determined.
- * bets = [{ userId, betId, winAmount }]
- */
-export async function settleWins(bets) {
-  const Bet     = mongoose.model('Bet');
-  const session = await mongoose.startSession();
-  try {
-    await session.withTransaction(async () => {
-      for (const { userId, betId, winAmount } of bets) {
-        await creditWinnings(
-          userId, winAmount,
-          'Bet win payout', 'Bet', betId,
-          `win_${betId}`, session
-        );
-        await Bet.findByIdAndUpdate(betId,
-          { isWinner: true, winAmount, status: 'WON', settledAt: new Date() },
-          { session });
-      }
-    });
-  } finally { await session.endSession(); }
-}
-
 // ── ADMIN ADJUSTMENT ──────────────────────────────────────────────────────────
 export async function adminAdjust(userId, type, field, amount, reason, adjustmentId) {
   const tid = `admin_${adjustmentId}`;
