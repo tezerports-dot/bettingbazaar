@@ -9,6 +9,7 @@
 import React, { useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import ScreenShell, { card, goldButton, inputStyle, fieldLabel } from '../redesign/Screen';
+import { apiUrl } from '../services/apiUrl';
 
 type Step = 'aadhaar_check' | 'record_video' | 'details' | 'submitted';
 const STEPS: Step[] = ['aadhaar_check', 'record_video', 'details', 'submitted'];
@@ -40,7 +41,7 @@ export default function AccountRecoveryPage() {
     if (!/^\d{12}$/.test(clean)) { setAadhaarError('Invalid Aadhaar format. Enter 12 digits.'); return; }
     setChecking(true); setAadhaarError('');
     try {
-      const r = await fetch('/api/auth/check-aadhaar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ aadhaarNumber: clean }) });
+      const r = await fetch(apiUrl('/api/auth/check-aadhaar'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ aadhaarNumber: clean }) });
       const d = await r.json();
       if (d.success) setStep('record_video');
       else setAadhaarError(d.message || 'Unable to process request. Please try again.');
@@ -71,7 +72,7 @@ export default function AccountRecoveryPage() {
     if (!videoBlob) return;
     setUploading(true);
     try {
-      const r1 = await fetch('/api/user/kyc/upload-url', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ fileName: 'recovery_video.webm', contentType: 'video/webm', fileSize: videoBlob.size, docType: 'recovery_video' }) });
+      const r1 = await fetch(apiUrl('/api/user/kyc/upload-url'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ fileName: 'recovery_video.webm', contentType: 'video/webm', fileSize: videoBlob.size, docType: 'recovery_video' }) });
       const u = await r1.json();
       if (!u.success) throw new Error(u.message);
       await fetch(u.uploadUrl, { method: 'PUT', body: videoBlob, headers: { 'Content-Type': 'video/webm' } });
@@ -85,7 +86,7 @@ export default function AccountRecoveryPage() {
     if (!form.fullName || !form.dob || !form.mobile) { alert('All fields are required'); return; }
     setSubmitting(true);
     try {
-      const r = await fetch('/api/auth/recover', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ aadhaarNumber: aadhaarNumber.replace(/[\s-]/g, ''), mobile: form.mobile, fullName: form.fullName, dob: form.dob, videoKycUrl: videoS3Url }) });
+      const r = await fetch(apiUrl('/api/auth/recover'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ aadhaarNumber: aadhaarNumber.replace(/[\s-]/g, ''), mobile: form.mobile, fullName: form.fullName, dob: form.dob, videoKycUrl: videoS3Url }) });
       const d = await r.json();
       if (d.success) { setRecoveryId(d.recoveryId); setStatusMsg(d.message); setStep('submitted'); }
       else alert(d.message || 'Submission failed');

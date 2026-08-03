@@ -46,20 +46,3 @@ const paymentGatewayConfigSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now },
 });
 export const PaymentGatewayConfig = mongoose.model('PaymentGatewayConfig', paymentGatewayConfigSchema);
-
-// ---------------------------------------------------------------------------
-// REFERRAL — tracks invite-code tree and commission rates
-// ---------------------------------------------------------------------------
-const referralSchema = new mongoose.Schema({
-  userId:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, unique: true },
-  inviteCode:  { type: String, required: true, unique: true, index: true },
-  referredBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
-  level:       { type: Number, default: 0 },  // 0=root, 1=F1, 2=F2, 3=F3
-  totalReferrals:  { type: Number, default: 0 },
-  activeReferrals: { type: Number, default: 0 },
-  totalEarned:     { type: Number, default: 0 },
-  todayEarned:     { type: Number, default: 0 },
-  lastEarnedDate:  { type: String },  // YYYY-MM-DD
-  createdAt:   { type: Date, default: Date.now },
-});
-

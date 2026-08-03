@@ -6,6 +6,7 @@
 import React, { useState } from 'react';
 import { fmt } from '../redesign/format';
 import ScreenShell, { goldButton } from '../redesign/Screen';
+import { apiUrl } from '../services/apiUrl';
 
 export default function GiftCodePage() {
   const [code, setCode] = useState('');
@@ -17,7 +18,7 @@ export default function GiftCodePage() {
     setLoading(true); setResult(null);
     try {
       const token = localStorage.getItem('auth_token') || '';
-      const r = await fetch('/api/giftcode/redeem', {
+      const r = await fetch(apiUrl('/api/giftcode/redeem'), {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: code.toUpperCase().trim() }),

@@ -151,42 +151,6 @@ router.get('/bonuses/my', authenticate, async (req, res) => {
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
 
-// ── VIP ───────────────────────────────────────────────────────────────────────
-router.get('/vip/config', async (req, res) => {
-  try {
-    const VIPLevelConfig = mongoose.model('VIPLevelConfig');
-    let cfg = await VIPLevelConfig.findOne({ key: 'main' }).lean();
-    if (!cfg) cfg = { levels: [
-      { level:0, name:'Bronze',   minTotalDeposit:0,     dailyWithdrawalLimit:10000, bonusPercent:0,   badgeColor:'#CD7F32', badgeIcon:'🥉' },
-      { level:1, name:'Silver',   minTotalDeposit:1000,  dailyWithdrawalLimit:25000, bonusPercent:1,   badgeColor:'#C0C0C0', badgeIcon:'🥈' },
-      { level:2, name:'Gold',     minTotalDeposit:5000,  dailyWithdrawalLimit:50000, bonusPercent:2,   badgeColor:'#FFD700', badgeIcon:'🥇' },
-      { level:3, name:'Platinum', minTotalDeposit:20000, dailyWithdrawalLimit:100000,bonusPercent:3,   badgeColor:'#E5E4E2', badgeIcon:'💎' },
-      { level:4, name:'Diamond',  minTotalDeposit:100000,dailyWithdrawalLimit:500000,bonusPercent:5,   badgeColor:'#B9F2FF', badgeIcon:'👑' },
-    ]};
-    res.json({ success: true, config: cfg });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
-});
-
-router.get('/vip/my', authenticate, async (req, res) => {
-  try {
-    const UserVIP = mongoose.model('UserVIP');
-    const VIPLevelConfig = mongoose.model('VIPLevelConfig');
-    const [vip, cfg] = await Promise.all([UserVIP.findOne({ userId: req.user._id }), VIPLevelConfig.findOne({ key:'main' })]);
-    const levels = cfg?.levels || [];
-    const current = levels.find(l => l.level === (vip?.currentLevel||0)) || levels[0] || {};
-    const nextLevel = levels.find(l => l.level === (vip?.currentLevel||0) + 1);
-    res.json({ success: true, vip: vip||{ currentLevel:0, totalDeposited:0 }, currentLevelInfo: current, nextLevelInfo: nextLevel||null });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
-});
-
-router.put('/admin/vip/config', authenticate, isAdmin, async (req, res) => {
-  try {
-    const VIPLevelConfig = mongoose.model('VIPLevelConfig');
-    const cfg = await VIPLevelConfig.findOneAndUpdate({ key:'main' }, { levels: req.body.levels, updatedBy: req.user._id, updatedAt: new Date() }, { upsert:true, new:true });
-    res.json({ success: true, config: cfg });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
-});
-
 // ── ADMIN BALANCE ADJUSTMENT ──────────────────────────────────────────────────
 router.post('/admin/balance-adjust', authenticate, isAdmin, async (req, res) => {
   try {

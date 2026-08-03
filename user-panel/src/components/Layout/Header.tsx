@@ -41,8 +41,6 @@ const menuSections: MenuSection[] = [
     items: [
       { label: 'Wallet',         icon: '💳', path: '/wallet',    requireAuth: true },
       { label: 'Gift Code',      icon: '🎁', path: '/gift-code', requireAuth: true },
-      { label: 'VIP Program',    icon: '💎', path: '/vip',       requireAuth: true },
-      { label: 'Invite & Earn',  icon: '🤝', path: '/invite',    requireAuth: true },
     ],
   },
   {

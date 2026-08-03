@@ -38,9 +38,8 @@ const CasinoPage          = React.lazy(() => import('./pages/CasinoPage'));
 const CrashPage           = React.lazy(() => import('./pages/CrashPage'));
 const SportsPage          = React.lazy(() => import('./pages/SportsPage'));
 const WinnersPage         = React.lazy(() => import('./pages/WinnersPage'));
+const LeaderboardPage     = React.lazy(() => import('./pages/LeaderboardPage'));
 const WalletPage          = React.lazy(() => import('./pages/WalletPage'));
-const InvitePage          = React.lazy(() => import('./pages/InvitePage'));
-const VIPPage             = React.lazy(() => import('./pages/VIPPage'));
 const GiftCodePage        = React.lazy(() => import('./pages/GiftCodePage'));
 const AccountRecoveryPage = React.lazy(() => import('./pages/AccountRecoveryPage'));
 import ErrorBoundary from './components/ui/ErrorBoundary';
@@ -231,8 +230,6 @@ const App: React.FC = () => (
 
                           {/* Finance */}
                           <Route path="/wallet"          element={lazy(<WalletPage />)} />
-                          <Route path="/invite"          element={lazy(<InvitePage />)} />
-                          <Route path="/vip"             element={lazy(<VIPPage />)} />
                           <Route path="/gift-code"       element={lazy(<GiftCodePage />)} />
 
                           {/* Community */}
@@ -251,6 +248,7 @@ const App: React.FC = () => (
                           <Route path="/support"         element={<SupportPage />} />
 
                           <Route path="/winners"         element={lazy(<WinnersPage />)} />
+                          <Route path="/leaderboard"     element={lazy(<LeaderboardPage />)} />
 
                           {/* Panel redirects */}
                           <Route path="/merchant/*"      element={<MerchantRedirect />} />

@@ -5,7 +5,6 @@
  * Import and call registerCronJobs(rebuildLeaderboard) from server.js after DB init.
  */
 import mongoose from 'mongoose';
-import { creditWinnings } from '../domains/wallet/walletAuthority.service.js';
 import { emitOrderUpdate, emitAdminUpdate } from '../domains/notification/realtimeEmitters.js';
 // Items 17+56 (2026-07-13): every job runs through the Background Job Platform
 // (services/jobQueue.service.js) — BullMQ repeatables with retry/backoff when
@@ -28,26 +27,6 @@ export function registerCronJobs(rebuildLeaderboard) {
 
   rebuildLeaderboard().catch(e => console.error('Initial leaderboard:', e.message));
 
-  // ── Referral commission credit every 5 minutes ──────────────────────────────
-  registerRecurring('commission-credit', 5 * 60 * 1000, async () => {
-    try {
-      const CommissionRecord = mongoose.model('CommissionRecord');
-      const pending = await CommissionRecord.find({ credited: false }).limit(100);
-      for (const rec of pending) {
-        try {
-          await creditWinnings(
-            rec.beneficiaryId, rec.amount,
-            `F${rec.level} referral commission`, 'Commission', rec._id,
-            `comm_${rec._id}`
-          );
-          await CommissionRecord.findByIdAndUpdate(rec._id, { credited: true, creditedAt: new Date() });
-        } catch (e) { console.error('Commission credit failed:', rec._id, e.message); }
-      }
-      if (pending.length > 0) console.log(`💰 Credited ${pending.length} commission records`);
-    } catch (e) { console.error('Commission credit error:', e.message); }
-  });
-
-
   // ── Order expiry worker — runs every 60 seconds ──────────────────────────────
   // Delegates to paymentProcessing.service.js (domain service owns this logic).
   registerRecurring('order-expiry', 60 * 1000, async () => {
@@ -56,6 +35,28 @@ export function registerCronJobs(rebuildLeaderboard) {
       const count = await expireOrders();
       if (count > 0) console.log(`[expiry-worker] Expired ${count} order(s)`);
     } catch (e) { console.error('[expiry-worker] cron error:', e.message); }
+  });
+
+  // ── Withdrawal settlement worker — runs every 60 seconds ────────────────────
+  // Settles confirmed withdrawals whose dispute-hold window has passed: consumes
+  // the player's locked stake and credits the merchant. Until this runs, neither
+  // side has moved, which is what makes a dispute a reversal rather than a
+  // clawback (domains/payment/withdrawalHold.service.js).
+  //
+  // 60s granularity against a hold measured in minutes: a settlement landing up
+  // to a minute late is invisible, and polling faster only adds load for orders
+  // that are, by definition, deliberately waiting.
+  registerRecurring('withdrawal-hold-settle', 60 * 1000, async () => {
+    try {
+      const { settleDueHolds } = await import('../domains/payment/withdrawalHold.service.js');
+      const settled = await settleDueHolds();
+      if (settled > 0) console.log(`[withdrawal-hold] Settled ${settled} withdrawal(s) after hold`);
+    } catch (e) {
+      console.error('[withdrawal-hold] cron error:', e.message);
+      sendAlert('withdrawal-hold-worker-failed',
+        'Withdrawal settlement worker failed — held withdrawals are not settling', { error: e.message })
+        .catch(() => {});
+    }
   });
 
   // ── Scheduled policy/config apply worker — runs every 60 seconds ────────────

@@ -15,6 +15,9 @@ import { MARKET_SIDES } from '../trading/tradingModels.js';
 // Derived cycle pools (FLAGS.DERIVED_CYCLE_POOLS, default off) — see
 // cyclePool.service.js for why the running total is the scaling ceiling.
 import { derivedPoolsEnabled, refreshRealPools } from './cyclePool.service.js';
+// Pages the operator when a bet's stake cannot be conclusively refunded or
+// released — the one outcome no automated path can resolve on its own.
+import { sendAlert } from '../../services/alerting.service.js';
 
 const router = express.Router();
 
@@ -249,8 +252,33 @@ router.post('/place', authenticate, requireApprovedKyc, betLimiter, async (req, 
       //
       // This ordering also fixes the same latent double-refund on the default
       // stored-pool path, where the delete was unconditional.
-      const claimed = await Bet.findOneAndDelete({ _id: bet._id, status: 'PENDING' })
-        .catch(() => null);
+      //
+      // The claim has THREE outcomes, and collapsing the last two loses money.
+      // A `.catch(() => null)` here would make a thrown query indistinguishable
+      // from "no document matched", sending a transient database error down the
+      // settlement-owns-it branch — which deliberately does not refund. The
+      // stake would stay locked against a bet nobody settles, and the user would
+      // be told it settled, so they would not even report it. Reconciliation
+      // cannot recover it either: both stores agree the debit happened.
+      let claimed;
+      try {
+        claimed = await Bet.findOneAndDelete({ _id: bet._id, status: 'PENDING' });
+      } catch (claimErr) {
+        // Ownership genuinely unknown. Refunding risks paying twice; not
+        // refunding risks locking the stake. Do neither silently — page the
+        // operator with the identifiers needed to resolve it by hand, and tell
+        // the user the truth rather than a comforting guess.
+        console.error(`🚨 Bet ${bet._id} compensation unresolved:`, claimErr.message);
+        sendAlert('bet-compensation-unresolved',
+          'Could not determine bet ownership while refunding a closed-cycle bet', {
+            betId: String(bet._id), userId: String(userId), cycleId, amount,
+            error: claimErr.message,
+          }).catch(() => { /* alerting must never mask the original failure */ });
+        return res.status(500).json({
+          success: false,
+          message: 'Betting closed and we could not confirm your bet. Support has been notified and your balance will be reconciled — please do not retry.',
+        });
+      }
 
       if (claimed) {
         await unlockBetStake(userId, {

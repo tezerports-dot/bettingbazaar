@@ -692,7 +692,7 @@ export const SystemSettings: React.FC = () => {
             const FOOTER_PAGE_OPTIONS: [string, string][] = [
               ['home', '🎲 Game'], ['results', '📊 Results'], ['winners', '🏆 Winners'],
               ['promo', '💡 Pro Tips'], ['profile', '👤 Profile'], ['wallet', '💰 Wallet'],
-              ['invite', '🤝 Invite'], ['vip', '👑 VIP'], ['gift-code', '🎁 Gifts'],
+              ['gift-code', '🎁 Gifts'],
               ['my-bets', '📜 My Bets'], ['history', '🕘 History'], ['rules', '📖 Rules'],
               ['faq', '❓ FAQ'], ['support', '🛟 Support'],
               ['casino', '🎰 Casino'], ['crash', '🚀 Crash'], ['sports', '⚽ Sports'],

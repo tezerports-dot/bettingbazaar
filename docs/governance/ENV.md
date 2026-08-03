@@ -127,6 +127,22 @@ grep -rhoE 'process\.env\.[A-Z][A-Z0-9_]{2,}' backend --include='*.js' | sort -u
 | `CSV_OFFLOAD_MIN_ROWS` | see reporting | Row count above which CSV export is offloaded to a worker. |
 | `CYCLE_POOL_REFRESH_MS` | `1000` | Freshness window for the derived cycle-pool projection (`FLAGS.DERIVED_CYCLE_POOLS`). Only consulted when that flag is on; the money-critical reads (winner, netProfit) bypass it. |
 
+**Bot mitigation (Cloudflare Turnstile)** — dormant until the secret is set:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `TURNSTILE_SECRET_KEY` | unset | Enables the captcha gate on player login/register, admin login and merchant login. Unset = pass-through, exactly as before the middleware existed. |
+| `TURNSTILE_TIMEOUT_MS` | `4000` | How long to wait for Cloudflare before giving up. On timeout the request is **allowed** and an alert fires — a Cloudflare outage must not become a platform-wide login outage. An invalid token is still refused. |
+| `VITE_TURNSTILE_SITE_KEY` | unset | Front-end widget key (public, safe to ship in the bundle). Set per panel at build time. |
+
+Get both keys from the Cloudflare dashboard → Turnstile → Add site. The **site**
+key is public; the **secret** key is a server credential and belongs with
+`JWT_SECRET` in your secret store.
+
+**Withdrawal settlement hold** is a business value, not an env var — it lives in
+`SystemConfig.withdrawalHoldMinutes` (default 60) and is edited from admin
+System Settings.
+
 **Auth token claims** (defaults are fine for a single deployment):
 
 | Variable | Default | Effect |

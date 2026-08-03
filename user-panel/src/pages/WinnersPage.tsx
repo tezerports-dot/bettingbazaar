@@ -6,6 +6,7 @@
 import React, { useEffect, useState } from 'react';
 import { fmt } from '../redesign/format';
 import ScreenShell, { card, capLabel } from '../redesign/Screen';
+import { apiUrl } from '../services/apiUrl';
 
 interface Winner { displayName: string; profilePic?: string; amount: number; betAmount?: number; game?: string; }
 
@@ -24,7 +25,7 @@ export default function WinnersPage() {
 
   useEffect(() => {
     setLoading(true);
-    fetch(`/api/v1/winners?limit=10&period=${period}`)
+    fetch(apiUrl(`/api/v1/winners?limit=10&period=${period}`))
       .then(r => r.json())
       .then(d => { if (d.success) setWinners(d.winners || d.data || []); })
       .catch(() => {})

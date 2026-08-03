@@ -1,22 +1,43 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router';
+import { apiClient } from '../services/apiClient';
 
 type Period = 'daily'|'weekly'|'monthly'|'alltime';
+
+interface LeaderboardEntry {
+  _id?: string; userId?: string; rank?: number; username?: string;
+  netProfit?: number; totalBets?: number; winRate?: number;
+}
 
 export default function LeaderboardPage() {
   const navigate = useNavigate();
   const [period, setPeriod]   = useState<Period>('daily');
-  const [entries, setEntries] = useState<any[]>([]);
+  const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [generated, setGenerated] = useState('');
 
   useEffect(() => {
+    // apiClient, not bare fetch: a relative '/api/...' resolves against the
+    // page origin, which inside the Android shell is https://localhost — the
+    // handset itself. It also skips origin failover and auth header injection.
+    // This page was never routed, so the bug never surfaced.
+    let cancelled = false;
     setLoading(true);
-    fetch(`/api/leaderboard/${period}`)
-      .then(r => r.json())
-      .then(d => { if(d.success){ setEntries(d.entries||[]); setGenerated(d.generatedAt||''); } })
-      .finally(() => setLoading(false));
+    apiClient
+      .get<{ success?: boolean; entries?: LeaderboardEntry[]; generatedAt?: string }>(
+        `/api/leaderboard/${period}`,
+      )
+      .then((d) => {
+        if (cancelled || !d?.success) return;
+        setEntries(d.entries || []);
+        setGenerated(d.generatedAt || '');
+      })
+      .catch(() => { if (!cancelled) setEntries([]); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    // Switching period mid-flight must not let the slower response overwrite
+    // the newer one.
+    return () => { cancelled = true; };
   }, [period]);
 
   const PERIODS: { key: Period; label: string }[] = [

@@ -150,25 +150,6 @@ export async function creditWinnings(userId, amount, reason, refIdOrModel, txIdO
 }
 
 /**
- * Credit F1 referral commission to winningsBalance.
- * Uses unique txId to prevent double-crediting across retries.
- */
-export async function creditCommission(referrerId, amount, fromUserId, cycleId) {
-  const txId = `commission_${referrerId}_${fromUserId}_${cycleId}`;
-  if (onPostgres()) {
-    return pushBalances(referrerId, await pg.creditWinnings(
-      referrerId, amount, `F1 commission from cycle ${cycleId}`, 'Commission', null, txId,
-    ));
-  }
-  return _creditWinnings(
-    referrerId, amount,
-    `F1 commission from cycle ${cycleId}`,
-    'Commission', null,
-    txId
-  );
-}
-
-/**
  * Lock winningsBalance for a pending withdrawal request.
  * Atomically moves amount from winningsBalance → lockedBalance.
  * Writes WalletLedger. Safe to retry (idempotent via withdrawalId).

@@ -30,7 +30,6 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
   const [mobile, setMobile] = useState('');
   const [password, setPassword] = useState('');
   const [username, setUsername] = useState('');
-  const [refCode, setRefCode] = useState(() => sessionStorage.getItem('referral_code') || '');
   const [captcha, setCaptcha] = useState({ q: '', a: 0 });
   const [captchaInput, setCaptchaInput] = useState('');
   const [error, setError] = useState('');
@@ -63,10 +62,10 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
         success = r === true;
       } else {
         if (!username.trim()) throw new Error('Username required');
-        success = await register(username, mobile, password, refCode.trim() || undefined, enable2FA);
+        success = await register(username, mobile, password, enable2FA);
       }
       if (!success) { setError('Authentication failed. Check credentials.'); generateCaptcha(); }
-      else { if (refCode) sessionStorage.removeItem('referral_code'); onClose?.(); }
+      else { onClose?.(); }
     } catch (e: any) { setError(e.message || 'Something went wrong. Please try again.'); generateCaptcha(); }
     finally { setLoading(false); }
   };
@@ -134,7 +133,6 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
         {!isLogin && <div style={{ marginBottom: 11 }}><label style={labelStyle}>Username</label><input value={username} onChange={e => setUsername(e.target.value)} placeholder="PlayerOne" autoComplete="username" style={inputStyle} /></div>}
         <div style={{ marginBottom: 11 }}><label style={labelStyle}>Mobile number</label><input value={mobile} onChange={e => setMobile(e.target.value.replace(/[^0-9]/g, '').slice(0, 10))} inputMode="numeric" placeholder="9876543210" autoComplete="tel" className="font-grotesk" style={inputStyle} /></div>
         <div style={{ marginBottom: 11 }}><label style={labelStyle}>Password</label><input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" autoComplete={isLogin ? 'current-password' : 'new-password'} style={inputStyle} /></div>
-        {!isLogin && <div style={{ marginBottom: 11 }}><label style={labelStyle}>Referral code <span style={{ color: 'var(--text3)', fontWeight: 600, textTransform: 'none', letterSpacing: 0 }}>(optional)</span></label><input value={refCode} onChange={e => setRefCode(e.target.value.toUpperCase())} placeholder="INVITE CODE" className="font-grotesk" style={{ ...inputStyle, color: 'var(--gold-ink)', letterSpacing: '.14em', textTransform: 'uppercase' }} /></div>}
 
         {/* Optional for players — mandatory only for staff and merchants.
             Ticking this mints a PENDING secret; the account stays usable and
@@ -161,7 +159,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
         <button type="submit" disabled={loading} style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 14, letterSpacing: '.08em', color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', boxShadow: '0 8px 22px -8px var(--glow)', opacity: loading ? .6 : 1 }}>{loading ? 'Processing…' : (isLogin ? 'ENTER ARENA' : 'REGISTER NOW')}</button>
 
         <div style={{ textAlign: 'center', marginTop: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <span onClick={() => { setIsLogin(!isLogin); setError(''); setUsername(''); setRefCode(sessionStorage.getItem('referral_code') || ''); }} style={{ fontSize: 12, color: 'var(--text2)', cursor: 'pointer', textDecoration: 'underline' }}>{isLogin ? 'New Player? Create Account' : 'Already have an account? Login'}</span>
+          <span onClick={() => { setIsLogin(!isLogin); setError(''); setUsername(''); }} style={{ fontSize: 12, color: 'var(--text2)', cursor: 'pointer', textDecoration: 'underline' }}>{isLogin ? 'New Player? Create Account' : 'Already have an account? Login'}</span>
           <a href="#/recover-account" onClick={() => onClose?.()} style={{ fontSize: 11, color: 'var(--text3)', cursor: 'pointer', textDecoration: 'underline' }}>Lost access to your account? Recover it here</a>
         </div>
       </form>

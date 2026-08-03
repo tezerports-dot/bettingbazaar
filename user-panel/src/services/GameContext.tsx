@@ -67,7 +67,7 @@ interface GameContextType {
   pendingChallenge: string | null;
   submitTwoFactor: (code: string) => Promise<boolean>;
   cancelTwoFactor: () => void;
-  register: (username: string, mobile: string, pass: string, refCode?: string, enable2FA?: boolean) => Promise<boolean>;
+  register: (username: string, mobile: string, pass: string, enable2FA?: boolean) => Promise<boolean>;
   logout: () => void;
   cycleType: CycleType;
   setCycleType: (type: CycleType) => void;
@@ -133,7 +133,6 @@ const computeWalletBalance = (user: Partial<User>): number =>
 if (typeof window !== 'undefined') {
   const _hashParams = new URLSearchParams(window.location.hash.split('?')[1] || '');
   const _refFromUrl = _hashParams.get('ref');
-  if (_refFromUrl) sessionStorage.setItem('referral_code', _refFromUrl);
 }
 
 export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
@@ -755,11 +754,9 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
 
   const cancelTwoFactor = () => setPendingChallenge(null);
 
-  const register = async (username: string, mobile: string, pass: string, refCode?: string, enable2FA?: boolean) => {
+  const register = async (username: string, mobile: string, pass: string, enable2FA?: boolean) => {
     try {
-      const storedRef = refCode || sessionStorage.getItem('referral_code') || undefined;
-      const res = await backend.register({ username, mobile, password: pass, referralCode: storedRef, enable2FA: !!enable2FA });
-      if (res.success) sessionStorage.removeItem('referral_code');
+      const res = await backend.register({ username, mobile, password: pass, enable2FA: !!enable2FA });
       if (res.success) {
         const u = { ...res.user };
         u.walletBalance = computeWalletBalance(u);

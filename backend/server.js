@@ -65,7 +65,6 @@ import merchantRoutes     from './domains/merchant/merchant.routes.js';
 import paymentRoutes      from './domains/payment/payment.routes.js';
 import supportRoutes      from './domains/support/support.routes.js'; // CAP-71: RAG support assistant
 import uploadRoutes       from './routes/upload.routes.js';
-import referralRoutes     from './routes/referral.routes.js';
 import paymentCfgRoutes   from './routes/payment-config.routes.js';
 import giftCodeRoutes     from './routes/giftcode.routes.js';
 import retentionRoutes, { rebuildLeaderboard } from './routes/retention.routes.js';
@@ -104,6 +103,9 @@ import { authLimiter, adminAuthLimiter, merchantAuthLimiter, betLimiter, twoFact
 // Item 12 (2026-07-13): IP-rotation defense — per-subnet backstop + optional
 // global surge breaker on sensitive endpoints, on top of the per-IP limiters.
 import { createSubnetLimiter, globalSurgeBreaker, startIpDefenseConfigRefresh } from './middleware/ipDefense.js';
+// Bot-mitigation challenge on credential endpoints (LAUNCH_READINESS §F).
+// Pass-through until TURNSTILE_SECRET_KEY is set, like every other integration.
+import { requireCaptcha } from './middleware/captcha.js';
 import GameEngine         from './domains/markets/gameEngine.js';
 import CycleGenerator     from './domains/markets/cycleGenerator.service.js';
 import SSEManager         from './domains/notification/sseManager.service.js';
@@ -366,6 +368,10 @@ app.get('/api/v1/health', legacyHealth);
 // until an admin sets a ceiling) catches distributed rotation across subnets.
 if (runtime.acceptsHttpApi) {
 startIpDefenseConfigRefresh();
+// Captcha is applied INSIDE this router, per-path (routes.js), not here.
+// Mounting it router-wide would also gate GET /me — which every page load
+// calls to restore the session — and 403 every user on every load. Same
+// reasoning as the login rate limiters (RATE_LIMITS.md, "Scoping note").
 app.use('/api/v1/auth', authLimiter, createSubnetLimiter('auth'), globalSurgeBreaker('auth'), authRoutes);
 // MED-04 FIX: removed /api/auth duplicate mount — it duplicated rate limit slots
 // allowing 2× brute-force attempts. All clients should use /api/v1/auth/*.
@@ -377,7 +383,7 @@ app.use('/api', recoveryRoutes);
 app.use('/api', winnersRoutes);
 app.use('/api/app', appBootstrapRoutes);
 
-app.post('/api/admin/login', adminAuthLimiter, createSubnetLimiter('adminAuth'), (req, res, next) => {
+app.post('/api/admin/login', adminAuthLimiter, createSubnetLimiter('adminAuth'), requireCaptcha('admin-login'), (req, res, next) => {
   req.body = { ...req.body, loginType: req.body.loginType || 'admin' };
   next();
 }, loginHandler);
@@ -445,18 +451,17 @@ app.use('/api',           userRoutes);
 // budget, and four of those in an hour would lock them out of signing in
 // entirely. A limiter that bans people for using the product correctly is a
 // worse outage than the brute-force it prevents.
-app.use('/api/merchant/auth/login', merchantAuthLimiter);
+app.use('/api/merchant/auth/login', merchantAuthLimiter, requireCaptcha('merchant-login'));
 app.use('/api/merchant',  merchantRoutes);
 app.use('/api/payment', paymentRoutes);
 app.use('/api/support',   supportRoutes); // CAP-71: RAG support assistant (dormant until keys set)
 app.use('/api',           uploadRoutes);
-app.use('/api/referral',  referralRoutes);
 app.use('/api/giftcode',  giftCodeRoutes);
 app.use('/api/payment',   paymentCfgRoutes);
 app.use('/api',           retentionRoutes);
-// /api/vip routes are provided by retentionRoutes above. The legacy
-// vip router was removed to avoid shadowed, schema-incompatible duplicates
-// for /api/vip/config and /api/vip/my.
+// Referral and VIP were removed from the platform on 2026-07-30 (owner
+// decision). No /api/referral or /api/vip routes exist; the models, the
+// commission engine and the panel pages went with them.
 } else {
   app.use('/api', (_req, res) => res.status(404).json({ success: false, message: `API disabled on ${runtime.role} runtime role` }));
 }

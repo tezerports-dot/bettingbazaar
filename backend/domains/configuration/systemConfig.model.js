@@ -83,6 +83,21 @@ const systemConfigSchema = new mongoose.Schema({
   // recorded by the Revenue & Settlement Platform (PAYOUT_FEES account).
   payoutFeePercent: { type: Number, default: 0, min: 0, max: 100 },
 
+  // Minutes a confirmed WITHDRAWAL stays frozen before the player's locked
+  // stake is consumed and the merchant's tokens become spendable. The window
+  // exists so a merchant who asserts payment without sending it cannot convert
+  // the tokens before the player reports it — see paymentOrder.model.js
+  // `merchantCreditStatus`.
+  //
+  // 0 disables the hold and restores the previous settle-on-confirm behaviour.
+  // That is a deliberate escape hatch, not a recommendation: at 0 a dishonest
+  // merchant holds liquid tokens the instant they press confirm.
+  //
+  // Capped at 1440 (24h) because the player is waiting on money they have
+  // already given up; an unbounded hold would let a misconfiguration strand
+  // every withdrawal on the platform indefinitely.
+  withdrawalHoldMinutes: { type: Number, default: 60, min: 0, max: 1440 },
+
   // USDT buy-only pricing is separate from BB token conversion. BB tokens
   // remain fixed 1:1 internally; these admin-owned prices are consumed by
   // buy-only USDT flows and never define a USDT sell option.

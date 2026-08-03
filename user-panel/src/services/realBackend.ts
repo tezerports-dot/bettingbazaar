@@ -35,6 +35,10 @@ import {
 } from '../types';
 import { io, Socket } from 'socket.io-client';
 import { setToken } from './apiClient'; // GOVERNANCE.md M-9: single write path for auth_token
+// Bot-mitigation token, attached to credential submits only. Resolves null and
+// submits without one when Turnstile is unconfigured or unreachable — the
+// server applies the policy, so an outage there must not block the form here.
+import { getCaptchaToken } from './captcha';
 
 const GLOBAL_CONFIG = (window as any).BAZAAR_CONFIG || {};
 const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
@@ -297,9 +301,13 @@ export class RealBackend implements Backend {
 
   // -- AUTH -----------------------------------------------------------------
   async login(data: any) {
+    // Fetched per submit: Turnstile tokens are single-use, so a cached one
+    // would pass the first attempt and 403 every retry after a wrong password.
+    const captchaToken = await getCaptchaToken();
     const res = await this.request<{ success: boolean; token: string; user: User;
                                     twoFactorRequired?: boolean; challengeToken?: string }>(
-      '/v1/auth/login', { method: 'POST', body: JSON.stringify(data) });
+      '/v1/auth/login', { method: 'POST',
+        body: JSON.stringify(captchaToken ? { ...data, 'cf-turnstile-response': captchaToken } : data) });
     // 2FA owed: a 200 with success:false and a five-minute challenge. Nothing
     // is stored — the challenge is not a session and must never be used as
     // one, so it goes back to the caller and is held in memory only.
@@ -340,8 +348,10 @@ export class RealBackend implements Backend {
   }
 
   async register(data: any) {
+    const captchaToken = await getCaptchaToken();
     const res = await this.request<{ success: boolean; token: string; user: User }>('/v1/auth/register', {
-      method: 'POST', body: JSON.stringify(data)
+      method: 'POST',
+      body: JSON.stringify(captchaToken ? { ...data, 'cf-turnstile-response': captchaToken } : data)
     });
     if (res.success && res.token) {
       // Cookie set by server (httpOnly). Keep in localStorage only as WS auth fallback.
@@ -527,9 +537,6 @@ export class RealBackend implements Backend {
 
   // -- WINNERS ----------------------------------------------------------------
   // BUG-U12 FIX: Real winners from the server (not mock data in WinnersPage)
-  async applyReferral(code: string) {
-    return this.request('/referral/apply', { method: 'POST', body: JSON.stringify({ code }) });
-  }
 
   async getWinners(period: 'today' | 'week' = 'today', limit = 10) {
     const res = await this.request<{ success: boolean; winners: any[] }>(`/v1/winners?period=${period}&limit=${limit}`);

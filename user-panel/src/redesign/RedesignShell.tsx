@@ -72,8 +72,6 @@ const MENU_SECTIONS = [
   { title: 'Finance', items: [
     { label: 'Wallet', icon: '💳', path: '/wallet' },
     { label: 'Gift Code', icon: '🎁', path: '/gift-code' },
-    { label: 'VIP Program', icon: '💎', path: '/vip' },
-    { label: 'Invite & Earn', icon: '🤝', path: '/invite' },
   ] },
   { title: 'Info', items: [
     { label: 'Pro Tips', icon: '💡', path: '/promo' },
@@ -260,7 +258,6 @@ const RedesignShell: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
                 ))}
               </nav>
               <div style={{ flex: 'none', padding: '12px 16px 14px', borderTop: '1px solid var(--line)' }}>
-                <button onClick={() => go('/invite')} style={{ width: '100%', padding: 12, borderRadius: 12, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', boxShadow: '0 6px 18px -8px var(--glow)', marginBottom: 10 }}>📲 Download &amp; Share</button>
                 {!isAuthenticated ? (
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button onClick={() => openAuth('login')} style={{ flex: 1, padding: 11, borderRadius: 12, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))' }}>Sign In</button>
