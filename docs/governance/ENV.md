@@ -22,6 +22,9 @@ Generate every secret with: `openssl rand -base64 48`
 | `REDIS_URL` | Cross-instance rate limits, realtime fan-out, job queue. Required at >1 replica. |
 | `ALLOWED_ORIGINS` | CORS allow-list — production must name trusted origins explicitly (comma-separated). |
 | `S3_BUCKET_NAME` | Durable asset/upload storage (KYC, proofs, branding). Local disk is not production-safe. |
+| `S3_ACCESS_KEY` | S3 credential. Required: production refuses the local-disk fallback. |
+| `S3_SECRET_KEY` | S3 credential. Required: production refuses the local-disk fallback. |
+| `S3_ENDPOINT` | S3-compatible endpoint URL. Required **even on AWS S3** — see §2. |
 | `METRICS_TOKEN` | Bearer token protecting `GET /metrics` from public disclosure. |
 | `PUBLIC_APP_ORIGIN` | Official public app origin advertised to native clients (a valid `https://…` origin). |
 | `PUBLIC_APP_ALLOWED_ORIGINS` | Public app origin allow-list advertised to native clients (comma-separated origins). |
@@ -47,15 +50,24 @@ prepend PROXY v2.
   `AADHAAR_HMAC_SECRET`, `METRICS_TOKEN` must each be **≥ 32 characters and non-placeholder**.
 - `PUBLIC_APP_ORIGIN` / `PUBLIC_APP_ALLOWED_ORIGINS` must be valid **https** origins in production.
 
-## 2. Object storage (S3-compatible) — required alongside `S3_BUCKET_NAME`
+## 2. Object storage (S3-compatible) — all four vars are required
 
 Works with any S3-compatible provider (AWS S3, Cloudflare R2, Backblaze B2, iDrive e2, Vultr, MinIO).
 
+`server.js` refuses to boot production unless `isS3Configured()` is true, and
+that requires **`S3_BUCKET_NAME` + `S3_ACCESS_KEY` + `S3_SECRET_KEY` +
+`S3_ENDPOINT`** all to be set (`services/cdn.service.js`). There is no partial
+configuration and no local-disk fallback in production — losing KYC documents on
+a redeploy is not an acceptable degradation.
+
+> **`S3_ENDPOINT` is required even on AWS S3.** This section previously said to
+> omit it for the AWS default; following that produced a hard boot failure,
+> because the configuration check requires it unconditionally. Use the regional
+> endpoint, e.g. `https://s3.eu-central-1.amazonaws.com`.
+
 | Variable | Purpose |
 |---|---|
-| `S3_ENDPOINT` | Provider endpoint (omit for AWS S3 default). |
 | `S3_REGION` | Bucket region. |
-| `S3_ACCESS_KEY` / `S3_SECRET_KEY` | Credentials. |
 | `CDN_URL` | *(optional)* CDN in front of the bucket for public asset URLs. |
 
 ## 3. Money-DB TLS (Postgres)
