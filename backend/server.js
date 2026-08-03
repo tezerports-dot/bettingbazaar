@@ -576,6 +576,25 @@ activeListener = listenWithOptionalProxyProtocol(server, {
   trustedSubnets: network.proxyProtocolV2.trustedSubnets,
 }).on('listening', () => {
   console.log(`✅ Server listening on port ${PORT} (readiness pending until datastores attach)`);
+}).on('error', (error) => {
+  // Without this listener a bind failure is an unhandled 'error' event, which
+  // Node turns into a raw stack trace and a hard exit. Exiting IS correct — the
+  // process cannot serve traffic — but the operator got
+  // "throw er; // Unhandled 'error' event" instead of the reason.
+  //
+  // EADDRINUSE is the case that actually happens: a rolling deploy where the
+  // previous container has not released the port yet, or two instances sharing
+  // a PORT by misconfiguration. With restartPolicyMaxRetries that crash-loops,
+  // and the logs never say which port or why.
+  if (error.code === 'EADDRINUSE') {
+    console.error(`❌ FATAL: port ${PORT} is already in use. Another instance is bound to it, ` +
+      `or PORT collides with a sibling service. Nothing else can be diagnosed from here.`);
+  } else if (error.code === 'EACCES') {
+    console.error(`❌ FATAL: not permitted to bind port ${PORT}. Ports below 1024 need elevated privileges.`);
+  } else {
+    console.error(`❌ FATAL: could not bind port ${PORT}: ${error.code || ''} ${error.message}`);
+  }
+  process.exit(1);
 });
 
 Promise.allSettled([

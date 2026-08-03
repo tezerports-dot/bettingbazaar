@@ -13,7 +13,7 @@
  * `CREATE EXTENSION vector`). initSchema() creates the extension, table, and
  * index idempotently — see backend/domains/support/README.md.
  */
-import { pgConfigured, pgQuery, getPool } from '../../postgres/pgClient.js';
+import { pgConfigured, pgQuery, getPool , connectGuarded } from '../../postgres/pgClient.js';
 import { embeddingDim } from './embeddings.js';
 
 let _schemaReady = false;
@@ -82,7 +82,7 @@ export async function replaceDocument(docId, records) {
   if (!pgConfigured()) throw Object.assign(new Error('Postgres not configured (DATABASE_URL unset)'), { status: 503 });
   await ensureSchema();
   const pool = await getPool();
-  const client = await pool.connect();
+  const client = await connectGuarded(pool);
   try {
     await client.query('BEGIN');
     await client.query('DELETE FROM support_documents WHERE doc_id = $1', [docId]);

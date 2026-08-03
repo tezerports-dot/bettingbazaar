@@ -37,7 +37,7 @@
  * lesson recorded in GOVERNANCE §20 (2026-07-10): the unique index INSIDE the
  * transaction is the idempotency gate, not a pre-read.
  */
-import { getPool, pgQuery } from './pgClient.js';
+import { getPool, pgQuery, connectGuarded } from './pgClient.js';
 import { rupeesToPaise, paiseToRupees } from '../shared/money.js';
 
 /** Mongo balance field → its paise column on `wallets`. */
@@ -126,7 +126,10 @@ async function withWalletLock(userId, fn) {
   const uid = String(userId);
   const pool = await getPool();
   if (!pool) throw new Error('Postgres not configured (DATABASE_URL unset)');
-  const client = await pool.connect();
+  // connectGuarded, not pool.connect: an unguarded checked-out client turns a
+  // Postgres restart mid-transaction into an unhandled 'error' event and a hard
+  // process crash. See pgClient.connectGuarded.
+  const client = await connectGuarded(pool);
 
   try {
     await client.query('BEGIN');

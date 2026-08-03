@@ -63,6 +63,38 @@ export async function getPool() {
   return pool;
 }
 
+/**
+ * Check out a client with its 'error' event handled.
+ *
+ * `pool.on('error')` above covers clients sitting IDLE in the pool. It does NOT
+ * cover a client you have checked out — and node-postgres emits 'error' on that
+ * client asynchronously when the backend goes away mid-statement (a restart, a
+ * failover, an admin `pg_terminate_backend`, a network drop). An EventEmitter
+ * 'error' with no listener is a hard Node crash, so a checked-out client turned
+ * a database blip into the API process exiting.
+ *
+ * That mattered more than it sounds: Postgres is currently only the dual-write
+ * MIRROR — MongoDB is authoritative — so a restart of a database the money path
+ * does not even read from would take down every app instance. Reproduced by
+ * stopping Postgres with `pg_ctl -m immediate` during concurrent debits:
+ *
+ *     Emitted 'error' event on Client instance at:
+ *         at Client._handleErrorEvent (pg/lib/client.js:417:10)
+ *     …process exits…
+ *
+ * The handler deliberately only records. The in-flight query still rejects
+ * through its own promise, so the caller's catch/ROLLBACK path is unchanged —
+ * this exists purely so the asynchronous event has a listener and the process
+ * survives to serve the error.
+ */
+export async function connectGuarded(pool) {
+  const client = await pool.connect();
+  client.on('error', (e) => {
+    console.error('[pg] checked-out client error (connection lost mid-transaction):', e.message);
+  });
+  return client;
+}
+
 export async function pgQuery(text, params, operation = 'query') {
   const end = pgQueryDuration.startTimer({ operation: String(operation).slice(0, 48) || 'query' });
   try {
