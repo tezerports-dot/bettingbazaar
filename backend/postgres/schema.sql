@@ -597,6 +597,20 @@ CREATE TABLE IF NOT EXISTS bets (
   CONSTRAINT bets_status_check
     CHECK (status IN ('PENDING','WON','LOST','VOID','REFUNDED'))
 );
+-- The Mongo document's _id. Derived from bet_id (see betPgAuthority.mongoIdFor)
+-- rather than generated, because Mongo types _id as an ObjectId and cannot hold
+-- the idempotency key itself — and a freshly generated one per attempt would
+-- let a replay create a SECOND Mongo document behind the one Postgres bet,
+-- which is the very duplication bet_id exists to prevent.
+--
+-- ALTER, not a column in the CREATE above, and it must stay BEFORE anything
+-- that references it. `CREATE TABLE IF NOT EXISTS` is a NO-OP on a table that
+-- already exists, so a column added to it never reaches a deployed database —
+-- exactly how merchant_wallet_entries.movement_id went missing and took its
+-- index down with a 42703.
+ALTER TABLE bets ADD COLUMN IF NOT EXISTS mongo_id TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS bets_mongo_id_key ON bets (mongo_id);
+
 CREATE INDEX IF NOT EXISTS bets_user_idx  ON bets (user_id, placed_at DESC);
 -- The settlement sweep's query: every unsettled bet on one cycle.
 CREATE INDEX IF NOT EXISTS bets_cycle_idx ON bets (cycle_id, status);

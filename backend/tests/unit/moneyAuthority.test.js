@@ -136,9 +136,19 @@ describe('capability gate — authority requires an implementation', () => {
     expect(ledger.cutoverEligible).toBe(false);
     expect(ledger.missing).toContain('implemented');
 
+    // Bets is mirrored, reconciled and rollback-capable now; only `implemented`
+    // is outstanding, because that flag also requires CI evidence for the
+    // cross-store suite. Asserting the exact list rather than "contains
+    // implemented" is deliberate — it is what would catch a capability being
+    // flipped on without the leg behind it actually landing.
     const bets = rows.find((r) => r.path === MONEY_PATHS.BETS);
     expect(bets.cutoverEligible).toBe(false);
-    expect(bets.missing).toEqual(
+    expect(bets.missing).toEqual(['implemented']);
+
+    // A path with genuinely nothing built still reports all four, which is what
+    // makes the list above meaningful rather than vacuous.
+    const casino = rows.find((r) => r.path === MONEY_PATHS.CASINO_SETTLEMENT);
+    expect(casino.missing).toEqual(
       expect.arrayContaining(['implemented', 'dualWrite', 'reconciled', 'rollback']));
   });
 

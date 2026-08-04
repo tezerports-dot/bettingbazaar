@@ -370,6 +370,51 @@ export function reverseMirrorAdminSupply({ minted, cap }) {
   });
 }
 
+/**
+ * A committed bet → the Mongo `Bet` document. Domain 5's rollback leg.
+ *
+ * Keyed on `_id`, which is the caller's bet id in both stores — the same value
+ * `bets.bet_id` holds — so a replay is a no-op and a fallback to Mongo finds
+ * every bet Postgres placed.
+ *
+ * `$setOnInsert` for the immutable facts and `$set` for the lifecycle: a bet's
+ * amount, side and funding split never change, but its status does, and a
+ * mirror that ran twice must not resurrect an older status over a newer one.
+ * The status carried here is always the one the transaction just committed.
+ */
+export function reverseMirrorBet(doc) {
+  return mirrorBack('bets', async () => {
+    const { _id, status, settledAt, payout, ...immutable } = doc;
+    await mongoose.model('Bet').updateOne(
+      { _id },
+      {
+        $set: {
+          status,
+          ...(settledAt ? { settledAt } : {}),
+          ...(payout !== undefined ? { payout } : {}),
+        },
+        $setOnInsert: immutable,
+      },
+      { upsert: true },
+    );
+  });
+}
+
+/** bets row (snake_case, paise) → the Mongo document, for the reconcile repair. */
+export function reverseMirrorBetRow(row) {
+  return reverseMirrorBet({
+    _id: row.mongo_id || row.bet_id,
+    userId: row.user_id,
+    cycleId: row.cycle_id,
+    side: row.side,
+    amount: rupees(row.stake_paise),
+    status: row.status,
+    ...(row.settled_at ? { settledAt: row.settled_at } : {}),
+    ...(Number(row.payout_paise) ? { payout: rupees(row.payout_paise) } : {}),
+    timestamp: row.placed_at,
+  });
+}
+
 /** payment_orders row → PaymentOrder doc. Status transitions overwrite. */
 export function reverseMirrorPaymentOrder(row) {
   return mirrorBack('payment_orders', async () => {
@@ -449,4 +494,5 @@ export const REVERSE_TABLES = Object.freeze([
   // the entry worth having is `repair`, which drives the same reverse mirror the
   // live path uses and so re-applies a state Mongo fell behind on.
   { table: 'merchant_settlements',   model: 'PaymentOrder',         pgKey: 'order_id',        mongoKey: '_id',            since: 'updated_at',    mirror: reverseMirrorMerchantSettlement },
+  { table: 'bets',                   model: 'Bet',                  pgKey: 'bet_id',          mongoKey: '_id',            since: 'updated_at',    mirror: reverseMirrorBetRow },
 ]);

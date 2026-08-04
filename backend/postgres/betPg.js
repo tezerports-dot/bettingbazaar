@@ -91,6 +91,7 @@ function rowToBet(row) {
   if (!row) return null;
   return {
     betId:       row.bet_id,
+    mongoId:     row.mongo_id,
     userId:      row.user_id,
     cycleId:     row.cycle_id,
     side:        row.side,
@@ -215,7 +216,7 @@ const sumSlices = (slices) => slices.reduce((s, x) => s + x.amountPaise, 0);
  *   { ok: false, reason: 'insufficient' }            the guard refused the debit
  */
 export async function placeBet({
-  betId, userId, cycleId, side, slices, actor = null, reason = null,
+  betId, userId, cycleId, side, slices, mongoId = null, actor = null, reason = null,
 }) {
   if (!betId) throw new Error('placeBet requires a betId (idempotency key)');
   if (!Array.isArray(slices) || !slices.length) {
@@ -238,9 +239,9 @@ export async function placeBet({
     }
 
     await ctx.client.query(
-      `INSERT INTO bets (bet_id, user_id, cycle_id, side, stake_paise, status)
-       VALUES ($1,$2,$3,$4,$5,$6)`,
-      [ctx.bid, ctx.uid, String(cycleId), String(side), stakePaise, BET_STATUS.PENDING],
+      `INSERT INTO bets (bet_id, mongo_id, user_id, cycle_id, side, stake_paise, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [ctx.bid, mongoId ? String(mongoId) : null, ctx.uid, String(cycleId), String(side), stakePaise, BET_STATUS.PENDING],
     );
 
     if (!await recordTransition(ctx.client, ctx.bid, {
@@ -279,7 +280,7 @@ export async function placeBet({
       commit: true,
       value: {
         ok: true, idempotent: false,
-        bet: { betId: ctx.bid, userId: ctx.uid, cycleId: String(cycleId), side: String(side), stakePaise, status: BET_STATUS.PENDING },
+        bet: { betId: ctx.bid, mongoId, userId: ctx.uid, cycleId: String(cycleId), side: String(side), stakePaise, status: BET_STATUS.PENDING },
         balances: movement.balancesAfterPaise,
       },
     };

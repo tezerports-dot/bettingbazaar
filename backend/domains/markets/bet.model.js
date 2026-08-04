@@ -39,6 +39,24 @@ const betSchema = new mongoose.Schema({
 betSchema.index({ cycleId: 1, status: 1, side: 1, isPhantom: 1 }); 
 betSchema.index({ userId: 1, timestamp: -1 });
 
+// Hybrid money DB (plan step 2): project the bet LIFECYCLE onto the state
+// machine Postgres owns, so a cutover finds every in-flight bet already there
+// rather than losing the whole PENDING population at the moment of the flip.
+//
+// State only — the stake movement is mirrored by the wallet path, and moving it
+// from two places would double-count. mirrorBet no-ops while Postgres is
+// authoritative; the reverse mirror owns that direction.
+//
+// `updateMany` is deliberately NOT hooked, and it is the settlement path's main
+// shape (gameEngine marks a whole cycle LOST in one statement). Mongoose gives
+// a bulk update no documents to hand a post hook, so there is nothing to mirror
+// from — reconcile.js's cross-store state check is the completeness guarantee
+// for those, exactly as it is for the order paths hooks cannot see.
+import { mirrorBet } from '../../postgres/dualWrite.js';
+
+betSchema.post('save', (doc) => { mirrorBet(doc); });
+betSchema.post('findOneAndUpdate', (doc) => { if (doc) mirrorBet(doc); });
+
 // ════════════════════════════════════════════════════════════════════════════
 // 💰 TRANSACTION SCHEMA - WITH BALANCE TYPE TRACKING (FIX #4)
 // ════════════════════════════════════════════════════════════════════════════

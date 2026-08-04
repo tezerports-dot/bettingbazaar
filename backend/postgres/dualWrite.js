@@ -343,3 +343,64 @@ export function mirrorAdminSupply({
     if (!result.ok) throw new Error(`treasury mirror refused the movement: ${result.reason}`);
   });
 }
+
+/**
+ * Bet doc → `bets`. Domain 5's Mongo→Postgres leg.
+ *
+ * Projects the Mongo lifecycle onto the state machine Postgres owns, so a
+ * cutover finds the in-flight bets already there and the settlement sweep can
+ * advance them — instead of every PENDING bet at the moment of the flip being
+ * invisible to the store that has just become authoritative.
+ *
+ * STATE ONLY, like the settlement mirror. The stake movement is mirrored by the
+ * wallet path (`mirrorWalletLedger`), and moving it from two places would
+ * double-count. Deriving the locked pockets from the outstanding bets is a
+ * cutover step, not a mirror — the same shape as the merchant opening balances.
+ *
+ * `REFUNDED` is Mongo's only non-terminal-loss outcome and maps to REFUNDED
+ * here; Mongo has no VOID, so a voided bet exists only once Postgres owns the
+ * lifecycle. That asymmetry is deliberate rather than an omission: inventing a
+ * Mongo status to round-trip a state it cannot represent would make the
+ * fallback lie about what happened.
+ */
+const BET_STATUS_FROM_MONGO = Object.freeze({
+  PENDING: 'PENDING', WON: 'WON', LOST: 'LOST', REFUNDED: 'REFUNDED',
+});
+
+export function mirrorBet(doc) {
+  if (!doc?._id || !doc?.userId || !doc?.cycleId) return;
+
+  // SYNCHRONOUS at the boundary with every fallible step inside mirror()'s
+  // try/catch — the invariant every mirror here holds. It is invoked unawaited
+  // from a post-save hook, so an `async` version doing work BEFORE entering the
+  // try/catch turns any throw into an unhandled rejection on a path that runs
+  // for every bet.
+  return mirror('bets', async () => {
+    const status = BET_STATUS_FROM_MONGO[doc.status];
+    if (!status) return;
+
+    const stakePaise = Number.isFinite(Number(doc.amount)) ? paise(doc.amount) : 0;
+    // A bet of nothing is not a bet. Guarding here keeps a malformed document
+    // out of the table rather than relying on the CHECK constraint to reject it
+    // once per save, forever.
+    if (stakePaise <= 0) return;
+
+    await pgQuery(
+      `INSERT INTO bets (bet_id, user_id, cycle_id, side, stake_paise, payout_paise, status, placed_at, settled_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8, now()),$9,now())
+       ON CONFLICT (bet_id) DO UPDATE
+         SET status = EXCLUDED.status,
+             payout_paise = EXCLUDED.payout_paise,
+             settled_at = EXCLUDED.settled_at,
+             updated_at = now()`,
+      [
+        String(doc._id), String(doc.userId), String(doc.cycleId), String(doc.side),
+        stakePaise,
+        Number.isFinite(Number(doc.payout)) ? paise(doc.payout) : 0,
+        status,
+        createdAt(doc, doc.timestamp),
+        doc.settledAt || null,
+      ],
+    );
+  });
+}

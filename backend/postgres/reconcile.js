@@ -436,6 +436,73 @@ export async function reconcileMerchantSettlementStates({ backfill = false, repa
 }
 
 /**
+ * reconcileBetStates — do the two stores agree on where each bet IS?
+ *
+ * Nothing else compares them. The row-presence check finds the bet in both
+ * stores and reports clean while one says PENDING and the other says LOST —
+ * which after a fallback means the settlement sweep pays out a bet that was
+ * already settled, or leaves a stake locked forever against one that was not.
+ *
+ * This check matters more here than for any other domain, because the Mongo
+ * settlement path is `Bet.updateMany` — a bulk update Mongoose gives no
+ * documents to hand a post hook, so the forward mirror CANNOT see it. Those
+ * transitions reach Postgres through this reconcile or not at all, which is
+ * why `backfill` is the expected mode during Phase A rather than an emergency
+ * repair.
+ */
+export async function reconcileBetStates({ backfill = false, repairMongo = false, limit = 50000 } = {}) {
+  if (backfill && repairMongo) {
+    throw new Error('reconcileBetStates: backfill and repairMongo are opposite directions — pick one');
+  }
+
+  const { rows } = await pgQuery(
+    `SELECT bet_id, user_id, cycle_id, side, stake_paise, payout_paise, status, placed_at, settled_at, updated_at
+       FROM bets ORDER BY updated_at DESC LIMIT $1`,
+    [limit], 'bet_state_reconcile',
+  );
+  if (!rows.length) return { table: 'bets', checked: 0, disagreeing: 0, settling: 0, repaired: 0, sample: [] };
+
+  const docs = await mongoose.model('Bet')
+    .find({ _id: { $in: rows.map((r) => r.bet_id) } })
+    .select('status').lean();
+  const byId = new Map(docs.map((d) => [String(d._id), d]));
+
+  const { mirrorBet } = await import('./dualWrite.js');
+  const { reverseMirrorBetRow } = await import('./reverseMirror.js');
+
+  const disagreeing = [];
+  let repaired = 0;
+
+  for (const row of rows) {
+    const doc = byId.get(String(row.bet_id));
+    // A Postgres bet with no Mongo document is not a state disagreement — it is
+    // a missing row, which the reverse table check owns. Reporting it here too
+    // would double-count one problem as two.
+    if (!doc) continue;
+    if (doc.status === row.status) continue;
+
+    disagreeing.push({
+      betId: row.bet_id, mongoStatus: doc.status, pgStatus: row.status, at: row.updated_at,
+    });
+
+    if (backfill) { await mirrorBet({ ...doc, _id: row.bet_id, userId: row.user_id, cycleId: row.cycle_id, side: row.side, amount: paiseToRupees(Number(row.stake_paise)) }); repaired++; }
+    else if (repairMongo) { await reverseMirrorBetRow(row); repaired++; }
+  }
+
+  const { settled, settling } = splitBySettling(disagreeing, (r) => r.at);
+
+  return {
+    table: 'bets',
+    checked: rows.length,
+    disagreeing: backfill || repairMongo ? 0 : settled.length,
+    disagreeingBeforeRepair: settled.length,
+    settling: settling.length,
+    repaired,
+    sample: settled.slice(0, 5),
+  };
+}
+
+/**
  * Do the two supply figures agree?
  *
  * `SystemConfig.adminTokenSupply.minted` is a running counter maintained by
@@ -615,6 +682,18 @@ export async function runReconcile({
   const issuanceOnPg = isPostgresAuthoritative(MONEY_PATHS.ADMIN_ISSUANCE);
   const adminSupply = await reconcileAdminSupply({ repairMongo: repairMongo && issuanceOnPg });
 
+  // Domain 5: do the two stores agree on where each bet IS? This one carries
+  // more weight than the other state checks, because the Mongo settlement path
+  // is `Bet.updateMany` — a bulk update Mongoose gives no documents to hand a
+  // post hook, so the forward mirror cannot see it at all. Those transitions
+  // reach Postgres through this pass or not at all, which makes `--backfill`
+  // the expected Phase A mode rather than an emergency repair.
+  const betsOnPg = isPostgresAuthoritative(MONEY_PATHS.BETS);
+  const betStates = await reconcileBetStates({
+    backfill: backfill && !betsOnPg,
+    repairMongo: repairMongo && betsOnPg,
+  });
+
   const forwardDrift = results.some((r) => r.missingInPg > 0)
     || !pgTrial.conservesToZero
     || merchantBalances.drifted > 0
@@ -622,6 +701,7 @@ export async function runReconcile({
     || merchantLedgers.unexplained > 0
     || settlementPockets.length > 0
     || settlementStates.disagreeing > 0
+    || betStates.disagreeing > 0
     || !adminSupply.ok;
 
   // The reverse direction only means something once Postgres owns a path — or
@@ -654,9 +734,10 @@ export async function runReconcile({
     reverse: (reverseResults ?? []).reduce((s, r) => s + (r.settling ?? 0), 0),
     merchantBalances: merchantBalances.settling ?? 0,
     settlementStates: settlementStates.settling ?? 0,
+    betStates: betStates.settling ?? 0,
   };
   settling.total = settling.forward + settling.reverse
-    + settling.merchantBalances + settling.settlementStates;
+    + settling.merchantBalances + settling.settlementStates + settling.betStates;
 
   return {
     window: all ? 'all' : `${hours}h`,
@@ -673,6 +754,7 @@ export async function runReconcile({
       states: settlementStates,
     },
     adminSupply,
+    betStates,
     reverse: reverseResults,
     mongoTrialBalance: mongoTrial,
     ledgersAgree,
