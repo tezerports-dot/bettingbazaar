@@ -54,8 +54,15 @@ async function reversalAllowed({ roundId, userId, amount }) {
   return { ok: true, debited, refunded };
 }
 
+/**
+ * `sessionId` is `required` on the schema — CI caught its absence, which is
+ * exactly what an integration suite is for: the Postgres-side equivalent of
+ * this fixture has no such column, so nothing before this point could have
+ * noticed.
+ */
 const tx = (over = {}) => GameTransaction().create({
   roundId: 'r1', txId: `tx_${Math.random().toString(16).slice(2)}`,
+  sessionId: 'sess_1',
   userId: over.userId, providerKey: 'p1', type: 'BET', amount: 100,
   balanceBefore: 0, balanceAfter: 0, gameId: 'g1', ...over,
 });
