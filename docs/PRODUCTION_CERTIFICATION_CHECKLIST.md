@@ -175,6 +175,34 @@ The platform may be called production ready only when **all** hold:
 - [ ] Continuous reconciliation reports zero drift across every financial ledger
 - [ ] `npm run certify:report` exits 0
 
+## Cross-domain conservation
+
+Domain suites prove a domain in isolation, and every one of them can pass while
+money is lost at the SEAMS between domains — a domain test only ever sees one
+side of a transfer. A merchant debit of ₹2,000 and a user credit of ₹1,900 are
+each individually correct.
+
+`backend/tests/postgres/moneyConservation.test.js` walks the whole chain —
+admin issuance → merchant → user deposit → bet stake → settlement → winnings →
+withdrawal → merchant → payout — and after **every step** asserts:
+
+```
+Σ(merchant pockets) + Σ(user balances) + attributed sinks == total ever issued
+```
+
+Tokens move between holders, enter by explicit issuance, or leave to a named
+sink the test must declare. There is no fourth option. Verified by mutation: a
+₹100 discrepancy at the deposit seam fails the run with the full trail, and
+that check is re-run whenever the file changes.
+
+**What it cannot yet check.** `sink` exists because some value legitimately
+leaves these books — a losing stake to the house, a commission to the platform.
+Neither has a PostgreSQL representation, so the test is *told* about them rather
+than reading them from a ledger. That is exactly the gap the treasury domain
+closes: when it exists, `sink` becomes real accounts and the invariant tightens
+from "the test accounted for it" to "the books account for it". Until then,
+value moving to the house is trusted, not verified.
+
 ## Running the whole suite locally
 
 Every suite, including the Mongo-dependent ones, without GitHub Actions:
