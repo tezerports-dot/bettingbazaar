@@ -108,7 +108,13 @@ async function heldWithdrawal({ tokens = 500, holdUntil = new Date(Date.now() - 
     escrowLocked: true,
   });
 
-  await creditWinnings(user._id.toString(), tokens, 'test seed', 'Bet', `seed_${n}`, `seed_win_${n}`);
+  // refId must be a real ObjectId: WalletLedger types it as one, so a synthetic
+  // string seeds fine in Postgres (text column) and throws a Mongoose
+  // CastError the moment the same fixture runs under Mongo authority. The order
+  // is what the stake is being locked against anyway.
+  await creditWinnings(
+    user._id.toString(), tokens, 'test seed', 'PaymentOrder', order._id, `seed_win_${n}`,
+  );
   await lockWithdrawal(user._id.toString(), tokens, order._id.toString());
 
   if (reserve) {
