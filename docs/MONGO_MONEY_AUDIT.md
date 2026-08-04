@@ -22,6 +22,7 @@ marked PASS on the strength of reading alone.
 | M-3 | `_mongoBetStake` swallows all ledger-write errors, including the duplicate-key that signals M-2 | Medium | **Partly fixed** — now metered and logged |
 | M-4 | `_mongoBetStake` moves money outside a transaction; ledger rows are best-effort | **High** | **Documented, not fixed** — see proposed design |
 | M-5 | `atomicBet` is dead code with a non-functional idempotency key | Low | Documented |
+| M-6 | `reserveAdminMint` combines `$expr` with `upsert`, which MongoDB refuses — admin token issuance threw on every call | **High** | **Fixed** |
 
 ---
 
@@ -164,6 +165,52 @@ Its idempotency key is `bet_<userId>_<cycleId>_<Date.now()>` — a fresh value o
 every call, so its `checkIdempotent` can never match and the check is
 decorative. Harmless while unused; a trap if someone wires it up. Recommend
 deleting it, which is a call for whoever owns that module.
+
+---
+
+## M-6 — `reserveAdminMint` threw on every call (FIXED 2026-08-04)
+
+**Admin token issuance did not work at all.** `merchant.admin.routes.js` combined
+an `$expr` cap guard with `upsert: true` in one `findOneAndUpdate`, and MongoDB
+refuses that combination outright:
+
+```
+MongoServerError: $expr is not allowed in the query predicate for an upsert
+```
+
+Both call sites — `POST /admin/merchants/:merchantId/fund` and
+`POST /admin/merchant-token-orders/:orderId/approve` — therefore returned 500 on
+every attempt, and no merchant inventory could be issued through either.
+
+### Why it survived
+
+Nothing had ever executed this path against a real MongoDB. The routes had no
+integration coverage, and static review reads the query as obviously correct —
+the guard is in the filter, which is exactly where it should be. The defect is
+not in the logic but in a MongoDB restriction that only appears at execution.
+
+It was found by `backend/tests/integration/adminIssuance.integration.test.js`,
+written for the Postgres migration of this domain: the first test that had ever
+called the Mongo branch against a running server. **This is the clearest case in
+the audit for the rule that nothing is marked PASS on code inspection.**
+
+### The fix
+
+The two statements are separated, because one of them needs the upsert and the
+other cannot have it:
+
+1. **the guarded increment** — `$expr` in the filter, no upsert. Still a single
+   atomic compare-and-set, so two concurrent mints cannot both claim headroom
+   only one of them has. That property was never the problem and is unchanged.
+2. **an ordinary upsert** to create `SystemConfig{key:'main'}` when it does not
+   exist — no `$expr`, so the upsert is legal. Runs only when step 1 matched
+   nothing, tolerates a concurrent creator (duplicate key is the outcome it
+   wanted), and step 1 is retried exactly once afterwards. A second miss is a
+   real cap breach; retrying in a loop would turn a clean 400 into a hang.
+
+`backend/tests/unit/adminIssuanceRouting.test.js` pins the invariant with no
+database at all: no query may carry `$expr` and `upsert` together, and both
+halves must still be present.
 
 ---
 

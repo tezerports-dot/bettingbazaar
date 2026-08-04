@@ -69,9 +69,27 @@ const capExceeded = (detail) =>
 
 // ── MongoDB: the original, unchanged in behaviour ────────────────────────────
 
-async function reserveOnMongo(amountTokens) {
-  const SystemConfig = mongoose.model('SystemConfig');
-  const cfg = await SystemConfig.findOneAndUpdate(
+/**
+ * The guarded increment: mint only if the result would stay under the cap.
+ *
+ * The comparison lives in the FILTER, which is what makes it safe — two
+ * concurrent mints cannot both read headroom that only one of them can have,
+ * because only one can match the document. That property is the one thing the
+ * Mongo original gets right and must survive any rewrite of this function.
+ *
+ * NO `upsert` HERE, and that is a bug fix rather than a style choice.
+ * MongoDB refuses `$expr` in the query predicate of an upsert outright:
+ *
+ *     MongoServerError: $expr is not allowed in the query predicate for an upsert
+ *
+ * The original combined the two, so EVERY admin mint threw — `/merchants/:id/fund`
+ * and `/merchant-token-orders/:id/approve` both returned 500 and no tokens
+ * could be issued at all. It survived because nothing ever exercised this path
+ * against a real MongoDB; the cross-store suite added with this domain is what
+ * finally ran it. Recorded here so the two are never recombined.
+ */
+function guardedIncrement(SystemConfig, amountTokens) {
+  return SystemConfig.findOneAndUpdate(
     {
       key: 'main',
       $expr: {
@@ -81,12 +99,35 @@ async function reserveOnMongo(amountTokens) {
         ],
       },
     },
-    {
-      $setOnInsert: { key: 'main', 'adminTokenSupply.cap': DEFAULT_CAP_TOKENS },
-      $inc: { 'adminTokenSupply.minted': amountTokens },
-    },
-    { upsert: true, new: true },
+    { $inc: { 'adminTokenSupply.minted': amountTokens } },
+    { new: true },
   ).lean();
+}
+
+async function reserveOnMongo(amountTokens) {
+  const SystemConfig = mongoose.model('SystemConfig');
+
+  let cfg = await guardedIncrement(SystemConfig, amountTokens);
+
+  // No match means one of two things, and they need telling apart: the cap
+  // would be breached, or the config document does not exist yet. Creating it
+  // is a SEPARATE statement precisely because it needs the upsert that the
+  // guard cannot have.
+  if (!cfg) {
+    await SystemConfig.updateOne(
+      { key: 'main' },
+      { $setOnInsert: { key: 'main', adminTokenSupply: { cap: DEFAULT_CAP_TOKENS, minted: 0 } } },
+      { upsert: true },
+    ).catch((e) => {
+      // A concurrent first mint won the race to create it. That is the outcome
+      // we wanted anyway — retry the guard against the document they made.
+      if (e?.code !== 11000) throw e;
+    });
+    // Retried once, never in a loop: a second null is a real cap breach, and
+    // spinning on it would turn a clean 400 into a hang.
+    cfg = await guardedIncrement(SystemConfig, amountTokens);
+  }
+
   if (!cfg) throw capExceeded(null);
   return cfg.adminTokenSupply;
 }

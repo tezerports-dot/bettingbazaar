@@ -29,12 +29,16 @@ vi.mock('../../postgres/moneyAuthority.js', async (importOriginal) => {
 vi.mock('mongoose', () => ({
   default: {
     model: () => ({
-      findOneAndUpdate: (filter, update) => {
-        calls.push({ op: 'mongo:findOneAndUpdate', filter, update });
+      findOneAndUpdate: (filter, update, options) => {
+        calls.push({ op: 'mongo:findOneAndUpdate', filter, update, options });
         return {
           lean: async () => config.doc,
           catch: async () => {},
         };
+      },
+      updateOne: (filter, update, options) => {
+        calls.push({ op: 'mongo:updateOne', filter, update, options });
+        return { catch: async () => {} };
       },
       findOne: () => ({ select: () => ({ lean: async () => config.doc }) }),
     }),
@@ -75,16 +79,42 @@ beforeEach(() => {
 });
 
 describe('MongoDB authority — the path production runs today', () => {
-  it('increments the counter with the cap guard in the FILTER, not in a read', () => {
-    return reserveAdminMint({ amountTokens: 500, movementId: 'mv1' }).then(() => {
-      const write = calls.find((c) => c.op === 'mongo:findOneAndUpdate');
-      // The guard has to be part of the matched document, or two concurrent
-      // mints both read headroom that only one of them can have. This is the
-      // one thing the Mongo original gets right and the refactor must not lose.
-      expect(write.filter.$expr).toBeDefined();
-      expect(write.update.$inc).toEqual({ 'adminTokenSupply.minted': 500 });
-      expect(ops()).not.toContain('pg:mint');
-    });
+  it('increments the counter with the cap guard in the FILTER, not in a read', async () => {
+    await reserveAdminMint({ amountTokens: 500, movementId: 'mv1' });
+    const write = calls.find((c) => c.op === 'mongo:findOneAndUpdate');
+    // The guard has to be part of the matched document, or two concurrent
+    // mints both read headroom that only one of them can have. This is the
+    // one thing the Mongo original gets right and the refactor must not lose.
+    expect(write.filter.$expr).toBeDefined();
+    expect(write.update.$inc).toEqual({ 'adminTokenSupply.minted': 500 });
+    expect(ops()).not.toContain('pg:mint');
+  });
+
+  it('never combines $expr with upsert — MongoDB refuses that outright', async () => {
+    config.doc = null; // force the create-then-retry path as well
+    await reserveAdminMint({ amountTokens: 500, movementId: 'mv1' }).catch(() => {});
+
+    // The bug this pins down shipped in production and threw on EVERY admin
+    // mint: "$expr is not allowed in the query predicate for an upsert". It
+    // survived because nothing exercised the path against a real MongoDB —
+    // so the invariant is asserted here, where it runs with no database at all.
+    const offenders = calls.filter(
+      (c) => c.filter?.$expr && c.options?.upsert,
+    );
+    expect(offenders).toEqual([]);
+
+    // And the two halves must both still be there: a guarded update with no
+    // upsert, and an upsert with no $expr to create the document.
+    expect(calls.some((c) => c.filter?.$expr && !c.options?.upsert)).toBe(true);
+    expect(calls.some((c) => c.options?.upsert && !c.filter?.$expr)).toBe(true);
+  });
+
+  it('retries the guard exactly once after creating the document', async () => {
+    config.doc = null;
+    await reserveAdminMint({ amountTokens: 500, movementId: 'mv1' }).catch(() => {});
+    // Two guarded attempts, never a loop: a second miss is a real cap breach,
+    // and spinning on it would turn a clean 400 into a hang.
+    expect(calls.filter((c) => c.op === 'mongo:findOneAndUpdate')).toHaveLength(2);
   });
 
   it('returns the {cap, minted} shape the admin panel renders', async () => {
