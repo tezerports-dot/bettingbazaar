@@ -7,6 +7,7 @@ import { creditMerchantTokens, debitMerchantTokens } from './merchantWallet.serv
 import { generateMerchantPublicRef } from './merchant.model.js';
 import { MERCHANT_CURRENCY, MERCHANT_CURRENCIES, merchantTypeOf } from './merchantCurrency.js';
 import * as issuance from '../../postgres/adminIssuanceAuthority.js';
+import { requireIdempotencyKey } from '../../middleware/idempotencyKey.js';
 
 const router = express.Router();
 
@@ -36,19 +37,27 @@ async function createMerchantWithPublicRefRetry(Merchant, payload, retries = 3) 
  * counter this file used to hold inline, and the double-entry treasury. Which
  * one runs is decided per call, and MongoDB is still the default.
  *
- * ── The one contract change ─────────────────────────────────────────────────
- * Every mint now carries a `movementId`, because the operation it keys is not
- * idempotent without one: `reserveAdminMint(amount)` took an amount and nothing
- * else, so two deliveries of one admin request minted twice and nothing could
- * tell that from two legitimate top-ups. The key also ties the mint to the
- * merchant credit that follows it, so the pair can never half-apply.
+ * ── The contract change ─────────────────────────────────────────────────────
+ * Every mint carries a `movementId`, because the operation is not idempotent
+ * without one: `reserveAdminMint(amount)` took an amount and nothing else, so
+ * two deliveries of one admin request minted twice and nothing could tell that
+ * from two legitimate top-ups. The key also ties the mint to the merchant
+ * credit that follows it, so the pair can never half-apply.
  *
- * `/merchant-token-orders/:id/approve` keys on the order, which makes it
- * idempotent across requests. `/merchants/:id/fund` has no natural key and
- * accepts an optional client-supplied one; without it a retry is a SECOND
- * top-up, which is the behaviour that endpoint has always had — see the note
- * there. Making that safe means the caller supplying a key, so the parameter is
- * additive rather than a silent change of meaning.
+ * Where the key comes from differs by endpoint, and the difference is whether a
+ * NATURAL one exists:
+ *
+ *  - `/merchant-token-orders/:id/approve` keys on the ORDER. The order is the
+ *    request; approving it twice is the same act twice. No caller input needed.
+ *  - `/merchants/:id/fund` has no natural key — "top up merchant X by ₹5,000"
+ *    is identical bytes whether it is a retry or a second deliberate top-up —
+ *    so the CALLER must supply one, and a missing key is a 400. Deliberately
+ *    not defaulted: a server-generated fallback is precisely the bug that
+ *    shipped (`mw_topup_${new ObjectId()}`, fresh per delivery), and it is worse
+ *    than no gate because the code reads as though it has one.
+ *
+ * See middleware/idempotencyKey.js for the shape rules and why a key that
+ * reaches a UNIQUE column is validated rather than trusted.
  */
 async function reserveAdminMint(amount, opts) {
   return issuance.reserveAdminMint({ amountTokens: Number(amount), ...opts });
@@ -539,23 +548,18 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
     // treasury cap before crediting the merchant wallet. Roll back the supply
     // reservation if the wallet write fails.
     //
-    // ── On the key, and what it does and does not fix ──────────────────────
-    // ONE id now covers both the mint and the credit, so they can never
-    // half-apply: a retry re-runs both under the same key and both refuse.
-    // Previously the credit generated a FRESH ObjectId per request
-    // (`mw_topup_${new ObjectId()}`), which meant its idempotency key was
-    // unique per attempt — the gate existed but could never fire — and the mint
-    // had no key at all.
+    // ── The key ────────────────────────────────────────────────────────────
+    // REQUIRED from the caller, and one id covers both the mint and the credit
+    // so they can never half-apply.
     //
-    // Cross-request idempotency still needs the CALLER to supply the key,
-    // because nothing about "top up merchant X by 5000" distinguishes a retry
-    // from a second deliberate top-up. `idempotencyKey` in the body is that
-    // hook; omitting it preserves exactly today's behaviour, where a redelivered
-    // request funds the merchant twice. Documented rather than silently changed:
-    // picking a key on the caller's behalf would make two intentional top-ups
-    // collapse into one, which is a worse failure than the one it prevents.
-    const mintKey = String(req.body?.idempotencyKey || '').trim()
-      || `topup_${new mongoose.Types.ObjectId().toString()}`;
+    // What shipped was `mw_topup_${new ObjectId()}` — a fresh key per delivery,
+    // which is `random()`. The UNIQUE gate behind it could never fire, so every
+    // retry funded the merchant a second time while the code read as though it
+    // were protected. Generating a fallback here would restore exactly that
+    // illusion, which is why there is no fallback: only the caller can
+    // distinguish a retry from a deliberate second top-up, so an absent key is
+    // a 400 rather than a guess.
+    const mintKey = requireIdempotencyKey(req);
 
     let supply;
     let creditResult;
