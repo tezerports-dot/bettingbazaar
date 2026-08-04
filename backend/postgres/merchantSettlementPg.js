@@ -57,9 +57,23 @@
  * UNIQUE stops the MONEY moving twice. `merchant_settlement_transitions.tx_id`
  * UNIQUE stops the STATE advancing twice. Both fire inside the transaction, so
  * a duplicate unwinds the whole thing rather than half of it.
+ *
+ * ── The rollback leg ────────────────────────────────────────────────────────
+ * Every committed transition is mirrored back into Mongo, because this module
+ * composes applyMovementWithin DIRECTLY rather than going through
+ * merchantWalletPgAuthority — so it does not inherit that module's reverse
+ * mirror, and without one of its own a settlement would move a merchant's
+ * tokens in Postgres and leave `Merchant.tokenBalance` and the whole
+ * MerchantWalletLedger untouched. Two things break at once if that happens:
+ * falling back to Mongo silently loses the movement, and Mongo's idempotency
+ * gate (`MerchantWalletLedger.findOne({ txId })`) no longer recognises it, so
+ * the first retry after a fallback applies it a SECOND time.
  */
 import { getPool, pgQuery, connectGuarded } from './pgClient.js';
 import { POCKETS, applyMovementWithin } from './merchantWalletPg.js';
+import { moneyOperations } from '../services/metrics.service.js';
+import { isPostgresAuthoritative, MONEY_PATHS } from './moneyAuthority.js';
+import { reverseMirrorMerchantMovement, reverseMirrorMerchantSettlement } from './reverseMirror.js';
 
 export const SETTLEMENT_STATES = Object.freeze({
   RESERVED:  'RESERVED',
@@ -100,6 +114,44 @@ const POCKET_PLAN = Object.freeze({
 });
 
 const toPaise = (v) => Number(v ?? 0);
+
+/** Every exit from a transition is counted, so refusals and replays are visible. */
+function count(operation, outcome) {
+  moneyOperations.inc({
+    path: MONEY_PATHS.MERCHANT_SETTLEMENT, store: 'postgres', operation, outcome,
+  });
+}
+
+/**
+ * Push a committed transition back into Mongo, and count the outcome.
+ *
+ * Runs ONLY while Postgres is authoritative for this path. On a
+ * Mongo-authoritative path the forward mirror (dualWrite) owns the direction and
+ * a reverse write would fight the real one — and it is also what keeps the
+ * Postgres-only test suites, which have no Mongo connection at all, from
+ * logging a mirror failure per assertion.
+ *
+ * Fire-and-forget by design: Postgres has already committed, so a Mongo failure
+ * must not turn a settled transition into a thrown error. mirrorBack() logs,
+ * counts and pages on a streak, and the reverse reconcile repairs the rest.
+ */
+function afterCommit(operation, result) {
+  const outcome = !result?.ok ? (result?.reason ?? 'error')
+    : result.idempotent ? 'idempotent' : 'applied';
+  count(operation, outcome);
+
+  if (!result?.ok || result.idempotent || !isPostgresAuthoritative(MONEY_PATHS.MERCHANT_SETTLEMENT)) {
+    return result;
+  }
+  const s = result.settlement;
+  reverseMirrorMerchantMovement({
+    merchantId: s.merchantId, entries: result.entries ?? [], balances: result.balances,
+  });
+  reverseMirrorMerchantSettlement({
+    order_id: s.orderId, direction: s.direction, state: s.state, updated_at: s.updatedAt,
+  });
+  return result;
+}
 
 function rowToSettlement(row) {
   if (!row) return null;
@@ -230,15 +282,16 @@ export async function openSettlement({
   requirePositive(amountPaise, 'openSettlement');
   if (!settlementId) throw new Error('openSettlement requires a settlementId');
 
-  return withSettlementLock(merchantId, settlementId, async (ctx) => {
+  const result = await withSettlementLock(merchantId, settlementId, async (ctx) => {
     if (ctx.settlement) {
       return { commit: false, value: { ok: true, idempotent: true, settlement: ctx.settlement, balances: ctx.balances } };
     }
 
-    await ctx.client.query(
+    const { rows } = await ctx.client.query(
       `INSERT INTO merchant_settlements
          (settlement_id, merchant_id, order_id, direction, amount_paise, state, reason)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       RETURNING updated_at`,
       [ctx.sid, ctx.mid, String(orderId), direction, amountPaise, SETTLEMENT_STATES.RESERVED, reason],
     );
 
@@ -248,11 +301,13 @@ export async function openSettlement({
       amountPaise,
       from: null,
       to: SETTLEMENT_STATES.RESERVED,
+      updatedAt: rows[0]?.updated_at,
       txId: `${ctx.sid}_reserve`,
       operation: `SETTLEMENT_RESERVE_${direction}`,
       actor, reason, orderId, correlationId,
     });
   });
+  return afterCommit('SETTLEMENT_OPEN', result);
 }
 
 /** RESERVED → SETTLED. The value is applied: dispensed, or made spendable. */
@@ -316,7 +371,7 @@ async function advance(
 ) {
   if (!settlementId) throw new Error(`${spec.transition}Settlement requires a settlementId`);
 
-  return withSettlementLock(merchantId, settlementId, async (ctx) => {
+  const result = await withSettlementLock(merchantId, settlementId, async (ctx) => {
     const s = ctx.settlement;
     if (!s) return { commit: false, value: { ok: false, reason: 'not_found' } };
     if (s.state === spec.to) {
@@ -335,7 +390,8 @@ async function advance(
     // the WHERE gives correctness.
     const moved = await ctx.client.query(
       `UPDATE merchant_settlements SET state = $2, updated_at = now()
-        WHERE settlement_id = $1 AND state = $3`,
+        WHERE settlement_id = $1 AND state = $3
+        RETURNING updated_at`,
       [ctx.sid, spec.to, spec.expect],
     );
     if (!moved.rowCount) {
@@ -348,12 +404,14 @@ async function advance(
       amountPaise: s.amountPaise,
       from: spec.expect,
       to: spec.to,
+      updatedAt: moved.rows[0].updated_at,
       txId: `${ctx.sid}_${spec.suffix}`,
       operation: `${spec.operation}_${s.direction}`,
       allowNegativeAvailable: spec.allowNegativeAvailable ?? false,
       actor, reason, orderId: s.orderId, correlationId,
     });
   });
+  return afterCommit(spec.operation, result);
 }
 
 /**
@@ -365,7 +423,7 @@ async function advance(
  * state behind.
  */
 async function applyTransition(ctx, {
-  transition, direction, amountPaise, from, to, txId, operation,
+  transition, direction, amountPaise, from, to, txId, operation, updatedAt,
   actor, reason, orderId, correlationId, allowNegativeAvailable = false,
 }) {
   if (!await recordTransition(ctx.client, ctx.sid, { txId, from, to, actor, reason })) {
@@ -397,7 +455,17 @@ async function applyTransition(ctx, {
     };
   }
 
-  const settlement = { ...(ctx.settlement ?? {}), settlementId: ctx.sid, merchantId: ctx.mid, direction, amountPaise, state: to };
+  // The whole settlement as it now stands, including the orderId and the
+  // timestamp the transition itself wrote. The mirror needs both — it addresses
+  // the PaymentOrder by id, and stamps `completedAt` from the moment Postgres
+  // decided rather than the moment Mongo caught up — and reading them back off
+  // ctx.settlement would give the values from BEFORE the transition (or, on an
+  // open, no values at all, since there was no row to read).
+  const settlement = {
+    ...(ctx.settlement ?? {}),
+    settlementId: ctx.sid, merchantId: ctx.mid, orderId: String(orderId),
+    direction, amountPaise, state: to, updatedAt: updatedAt ?? new Date(),
+  };
   return {
     commit: true,
     value: {

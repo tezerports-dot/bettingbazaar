@@ -160,18 +160,52 @@ Mirrored (`mirrorMerchantSettlement`), reconciled cross-store
 (`reverseMirrorMerchantSettlement`). `withdrawalHold.service.js` and
 `merchant.routes.js` route through the resolver.
 
-**Blocked on one thing, and it is a real one.** `settleHold` flips
+**The state inversion is DONE** (2026-08-04). `settleHold` used to flip
 `PaymentOrder.merchantCreditStatus` out of `HELD` *before* completing the
-Postgres settlement, because that `findOneAndUpdate` is also its concurrency
-gate. On the Postgres path that inverts authority — Mongo decides, the source of
-truth follows — and it recreates the original stranding window somewhere new: if
-the Postgres complete then fails, the order has already left `HELD`, the sweeper
-will not retry it, and only the reconciler repairs it.
+Postgres settlement, because that `findOneAndUpdate` was also its concurrency
+gate — which inverted authority on the Postgres path (Mongo decided, the source
+of truth followed) and recreated the original stranding window somewhere new.
 
-The fix is to invert the order: the settlement transition first, its own state
-guard serving as the concurrency gate, the order updated afterwards as a mirror.
-That changes a live money path's concurrency gate and needs the integration
-suite, which needs a MongoDB this environment cannot run. **NOT DONE.**
+Now the settlement's own `RESERVED→SETTLED` guard is the gate and Mongo is
+written afterwards as a mirror. Three consequences, each of which is where the
+new tests point:
+
+- **A failed player-side release must be compensated, not sequenced away.** The
+  gate has to come first, so `releaseWithdrawal` can now fail *after* the
+  merchant has been credited. `SETTLED→REVERSED` takes it back as a recorded
+  movement — entries, a history row, and permission to drive the merchant
+  negative because the tokens may already have been spent. The alert says
+  whether the compensation landed, because "merchant credited for a stake the
+  player still holds" is the one genuinely unsafe state left and it must not be
+  folded into a generic failure.
+- **`reverseHold` moved with it, deliberately together.** Leaving the dispute
+  path on Mongo's gate while the sweep moved to Postgres would be worse than
+  moving neither: the two outcomes of one race would then be decided by two
+  different databases, and a dispute and a sweep could each believe they won.
+- **A lagging mirror is now self-healing.** Re-mirroring is exactly what removes
+  an order from the sweeper's queue, so the repair happens on the next pass
+  rather than needing the reconciler.
+
+Mongo's status is still read, for **one** question: may a settlement be *opened*?
+That is what stops a stray sweep manufacturing a liability against an order
+completed long ago under the Mongo path. Once a settlement row exists its own
+state machine decides and Mongo's opinion is ignored — which is what stops a
+lagging mirror stranding a settlement Postgres is holding at `RESERVED`.
+
+Also closed here: the settlement domain composes `applyMovementWithin` directly
+rather than going through `merchantWalletPgAuthority`, so it never inherited that
+module's reverse mirror. Until now a settlement moved a merchant's tokens in
+Postgres and left `Merchant.tokenBalance` and the whole `MerchantWalletLedger`
+untouched — losing the movement on a fallback, and (worse) leaving Mongo's
+`findOne({ txId })` idempotency gate unable to recognise it, so the first retry
+after a fallback would apply it a second time.
+
+**Still not `implemented: true`**, for a narrower reason than before: the suite
+that proves the two stores *agree*
+(`tests/integration/withdrawalHoldPgAuthority.integration.test.js`) needs a
+MongoDB replica set this environment cannot run, so only CI has ever executed it.
+Flipping on the strength of the two suites that do run here would be marking a
+pass on code inspection of the third.
 
 What this domain does add that Mongo cannot express: a withdrawal's owed tokens
 now sit in a pocket the merchant cannot spend. On Mongo they simply do not exist

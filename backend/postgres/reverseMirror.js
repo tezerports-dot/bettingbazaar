@@ -303,24 +303,32 @@ export function reverseMirrorMerchantWalletLedger(row) {
  * Routing it through the guards would re-run them against Mongo's stale state
  * and could refuse a settled fact.
  */
+// Functions of the row, not constants, because SETTLED and CANCELLED carry a
+// TIME as well as a status. The time is taken from the settlement's own
+// `updated_at` — the moment Postgres decided — rather than from `new Date()` at
+// mirror time, so a mirror that runs late (or a reconcile repair that runs days
+// later) writes the same timestamp the first attempt would have, instead of
+// back-dating the decision to whenever Mongo happened to catch up.
 const ORDER_STATE_FROM_SETTLEMENT = {
-  RESERVED:  { merchantCreditStatus: 'HELD' },
-  SETTLED:   { merchantCreditStatus: 'RELEASED', status: 'COMPLETED', escrowLocked: false },
-  CANCELLED: { merchantCreditStatus: 'REVERSED', escrowLocked: false },
+  RESERVED:  () => ({ merchantCreditStatus: 'HELD' }),
+  SETTLED:   (at) => ({ merchantCreditStatus: 'RELEASED', status: 'COMPLETED', escrowLocked: false, completedAt: at }),
+  CANCELLED: (at) => ({ merchantCreditStatus: 'REVERSED', escrowLocked: false, merchantCreditReversedAt: at }),
   // A reversal after settlement is a correction an admin has to see; it does
   // not silently return the order to a pre-settlement status.
-  REVERSED:  { merchantCreditStatus: 'REVERSED', status: 'DISPUTED', escrowLocked: false },
+  REVERSED:  (at) => ({ merchantCreditStatus: 'REVERSED', status: 'DISPUTED', escrowLocked: false, merchantCreditReversedAt: at }),
 };
 
 export function reverseMirrorMerchantSettlement(row) {
   return mirrorBack('merchant_settlements', async () => {
-    const fields = ORDER_STATE_FROM_SETTLEMENT[row.state];
-    if (!fields) throw new Error(`unknown settlement state '${row.state}' — cannot mirror to the order`);
-    // A DEPOSIT never used merchantCreditStatus in Mongo (it has no hold), so
-    // only the order status is meaningful for it. Writing HELD onto a deposit
-    // would put it in the sweeper's query and settle something twice.
+    const build = ORDER_STATE_FROM_SETTLEMENT[row.state];
+    if (!build) throw new Error(`unknown settlement state '${row.state}' — cannot mirror to the order`);
+    const fields = build(row.updated_at ? new Date(row.updated_at) : new Date());
+    // A DEPOSIT never used the merchantCredit* fields in Mongo (it has no
+    // hold), so only the order status and its timestamps are meaningful for it.
+    // Writing HELD onto a deposit would put it in the sweeper's query and
+    // settle something twice.
     const patch = row.direction === 'DEPOSIT'
-      ? Object.fromEntries(Object.entries(fields).filter(([k]) => k !== 'merchantCreditStatus'))
+      ? Object.fromEntries(Object.entries(fields).filter(([k]) => !k.startsWith('merchantCredit')))
       : fields;
     if (!Object.keys(patch).length) return;
 

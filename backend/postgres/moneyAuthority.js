@@ -153,21 +153,23 @@ const CAPABILITIES = Object.freeze({
     notes: 'Merchant token balances. Movements are Postgres-authoritative when flipped: one transaction, row-locked, guard in the UPDATE, entry in the same transaction, UNIQUE tx_id idempotency. READS for display, scoring and assignment eligibility still come from the live-mirrored Mongo document — the authoritative sufficiency check is the debit itself, which refuses transactionally, so a stale read can only misroute an order, never move money wrongly. Reserved/settlement pockets are structurally zero until merchant_settlement lands; that domain must revisit the single-tokenBalance projection before writing them.',
   },
   [MONEY_PATHS.MERCHANT_SETTLEMENT]: {
-    // BUILT and tested, NOT routed. postgres/merchantSettlementPg.js is a real
-    // reader and writer with 24 tests against PostgreSQL; `implemented` also
-    // requires production call sites to consult the authority resolver, and
-    // withdrawalHold.service.js does not yet. Same standard that kept
-    // merchant_wallet at false while its implementation already existed.
-    // Routed, mirrored both ways and reconciled — but `implemented` is still
-    // false, for ONE specific reason recorded in the notes: settleHold advances
-    // the Mongo order BEFORE the Postgres settlement, so on the Postgres path
-    // Mongo leads and the source of truth follows. That is authority in name
-    // only, and flipping this flag would assert otherwise.
+    // The state inversion this flag was blocked on IS DONE (2026-08-04):
+    // settleHold and reverseHold now gate on the settlement's own
+    // expected-previous-state guard and write Mongo afterwards as a mirror.
+    //
+    // `implemented` stays false for a different and much narrower reason: the
+    // suite that proves the two stores AGREE
+    // (tests/integration/withdrawalHoldPgAuthority.integration.test.js) needs a
+    // MongoDB replica set this environment cannot run, so it has only ever been
+    // executed by CI. Flipping on the strength of the two suites that CAN run
+    // here would be marking a pass on code inspection of the third. Flip when
+    // that suite is green — and note it changes nothing on its own either way,
+    // because this path also waits on ORDERS (see dependsOn).
     implemented: false,
     dualWrite:   true,  // dualWrite.mirrorMerchantSettlement, hooked on PaymentOrder
     reconciled:  true,  // reconcile.reconcileMerchantSettlementStates (cross-store) + findUnexplainedSettlementPockets
-    rollback:    true,  // reverseMirror.reverseMirrorMerchantSettlement + REVERSE_TABLES repair
-    notes: 'User↔merchant settlement lifecycle. postgres/merchantSettlementPg.js: merchant_settlements + merchant_settlement_transitions, expected-previous-state guards in the UPDATE, the transition and its pocket movement composed into ONE transaction under a single merchant lock, two UNIQUE idempotency gates, append-only history. 24 tests including a 200-way reservation race, 200-copy retry storms on open and on transition, a racing complete-vs-cancel where exactly one wins, and a backend killed mid-transition. withdrawalHold.service.js and merchant.routes.js now route through the resolver. THE ONE REMAINING BLOCKER: settleHold still flips PaymentOrder.merchantCreditStatus out of HELD *before* completing the Postgres settlement, because that findOneAndUpdate is also its concurrency gate. On the Postgres path that inverts authority — Mongo decides and Postgres follows — and it recreates the original stranding window in a new place: if the Postgres complete then fails, the order has already left HELD so the sweeper will not retry, and only the reconciler repairs it. Inverting the order (settlement transition first, its own state guard as the gate, the order updated as a mirror) is the remaining work; it changes a live money path\'s concurrency gate and needs the integration suite, which requires a MongoDB this environment cannot run.',
+    rollback:    true,  // reverseMirror.reverseMirrorMerchantSettlement + reverseMirrorMerchantMovement, live per transition
+    notes: 'User↔merchant settlement lifecycle. postgres/merchantSettlementPg.js: merchant_settlements + merchant_settlement_transitions, expected-previous-state guards in the UPDATE, the transition and its pocket movement composed into ONE transaction under a single merchant lock, two UNIQUE idempotency gates, append-only history. STATE AUTHORITY IS INVERTED: settleHold completes the settlement FIRST and Mongo follows, so the source of truth decides the race; the price is that a failed player-side release must be compensated, which it is — SETTLED→REVERSED as a recorded movement, allowed to drive the merchant negative because the tokens may already have been spent. reverseHold moved the same way, deliberately together: two outcomes of one race decided by two different databases is worse than either alone. Mongo\'s status is now consulted for ONE thing only — whether a settlement may be OPENED — which is what stops a stray sweep manufacturing a liability against a long-completed order, and a lagging mirror is self-healing because re-mirroring is what removes an order from the sweep queue. 57 tests: 26 against PostgreSQL (200-way reservation race, retry storms, racing complete-vs-cancel, a backend killed mid-transition), 12 on the rollback leg (100 racing completions mirror exactly once; nothing mirrors while Mongo is authoritative; no transition ever holds two pooled connections), and 19 on the routing (call ORDER, the compensating reverse, and that creditMerchantTokens is never called on this path — the settlement IS the credit). Remaining: CI evidence for the cross-store integration suite, then this flag; and the path still waits on ORDERS.',
   },
   [MONEY_PATHS.ADMIN_ISSUANCE]: {
     // BUILT and tested, NOT routed — postgres/treasuryPg.js is a real reader
@@ -258,7 +260,7 @@ const TESTING = Object.freeze({
     // sustained load, no multi-instance contention, no failover. One row is not
     // a certification.
     infrastructureTested: false,
-    evidence: 'backend/tests/postgres/merchantSettlementPg.test.js — 200 concurrent reservations against inventory that fits 100, 200-copy retry storms on both open and transition, racing complete-vs-cancel (exactly one wins), an interleaved storm of every transition type, plus failure injection: a backend terminated mid-transition leaves state and money both untouched and the settlement still advanceable. Full infrastructure drills NOT RUN.',
+    evidence: 'backend/tests/postgres/merchantSettlementPg.test.js — 200 concurrent reservations against inventory that fits 100, 200-copy retry storms on both open and transition, racing complete-vs-cancel (exactly one wins), an interleaved storm of every transition type, plus failure injection: a backend terminated mid-transition leaves state and money both untouched and the settlement still advanceable. merchantSettlementMirror.test.js adds the rollback leg: 100 racing completions hand the mirror EXACTLY ONE committed fact, 60 merchants settling at once leave pool.waitingCount at zero with every client returned, and `max` concurrent transitions complete — which they could not if one transition ever held two pooled connections. Full infrastructure drills NOT RUN.',
   },
 });
 
