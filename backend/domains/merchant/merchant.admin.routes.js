@@ -6,6 +6,7 @@ import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels 
 import { creditMerchantTokens, debitMerchantTokens } from './merchantWallet.service.js';
 import { generateMerchantPublicRef } from './merchant.model.js';
 import { MERCHANT_CURRENCY, MERCHANT_CURRENCIES, merchantTypeOf } from './merchantCurrency.js';
+import * as issuance from '../../postgres/adminIssuanceAuthority.js';
 
 const router = express.Router();
 
@@ -28,29 +29,33 @@ async function createMerchantWithPublicRefRetry(Merchant, payload, retries = 3) 
   }
 }
 
-async function reserveAdminMint(amount) {
-  const SystemConfig = mongoose.model('SystemConfig');
-  const inc = Number(amount);
-  const cfg = await SystemConfig.findOneAndUpdate(
-    {
-      key: 'main',
-      $expr: { $lte: [{ $add: [{ $ifNull: ['$adminTokenSupply.minted', 0] }, inc] }, { $ifNull: ['$adminTokenSupply.cap', 10000000000] }] },
-    },
-    {
-      $setOnInsert: { key: 'main', 'adminTokenSupply.cap': 10000000000 },
-      $inc: { 'adminTokenSupply.minted': inc },
-    },
-    { upsert: true, new: true }
-  ).lean();
-  if (!cfg) throw Object.assign(new Error('Admin token supply cap exceeded'), { status: 400 });
-  return cfg.adminTokenSupply;
+/**
+ * Issuance goes through the authority resolver (postgres/moneyAuthority.js).
+ *
+ * Both implementations live in postgres/adminIssuanceAuthority.js — the Mongo
+ * counter this file used to hold inline, and the double-entry treasury. Which
+ * one runs is decided per call, and MongoDB is still the default.
+ *
+ * ── The one contract change ─────────────────────────────────────────────────
+ * Every mint now carries a `movementId`, because the operation it keys is not
+ * idempotent without one: `reserveAdminMint(amount)` took an amount and nothing
+ * else, so two deliveries of one admin request minted twice and nothing could
+ * tell that from two legitimate top-ups. The key also ties the mint to the
+ * merchant credit that follows it, so the pair can never half-apply.
+ *
+ * `/merchant-token-orders/:id/approve` keys on the order, which makes it
+ * idempotent across requests. `/merchants/:id/fund` has no natural key and
+ * accepts an optional client-supplied one; without it a retry is a SECOND
+ * top-up, which is the behaviour that endpoint has always had — see the note
+ * there. Making that safe means the caller supplying a key, so the parameter is
+ * additive rather than a silent change of meaning.
+ */
+async function reserveAdminMint(amount, opts) {
+  return issuance.reserveAdminMint({ amountTokens: Number(amount), ...opts });
 }
 
-async function rollbackAdminMint(amount) {
-  await mongoose.model('SystemConfig').findOneAndUpdate(
-    { key: 'main' },
-    { $inc: { 'adminTokenSupply.minted': -Number(amount) } }
-  ).catch(() => {});
+async function rollbackAdminMint(amount, opts) {
+  return issuance.rollbackAdminMint({ amountTokens: Number(amount), ...opts });
 }
 
 
@@ -533,18 +538,47 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
     // merchantId = Merchant._id. Admin top-ups mint from the fixed 10B
     // treasury cap before crediting the merchant wallet. Roll back the supply
     // reservation if the wallet write fails.
+    //
+    // ── On the key, and what it does and does not fix ──────────────────────
+    // ONE id now covers both the mint and the credit, so they can never
+    // half-apply: a retry re-runs both under the same key and both refuse.
+    // Previously the credit generated a FRESH ObjectId per request
+    // (`mw_topup_${new ObjectId()}`), which meant its idempotency key was
+    // unique per attempt — the gate existed but could never fire — and the mint
+    // had no key at all.
+    //
+    // Cross-request idempotency still needs the CALLER to supply the key,
+    // because nothing about "top up merchant X by 5000" distinguishes a retry
+    // from a second deliberate top-up. `idempotencyKey` in the body is that
+    // hook; omitting it preserves exactly today's behaviour, where a redelivered
+    // request funds the merchant twice. Documented rather than silently changed:
+    // picking a key on the caller's behalf would make two intentional top-ups
+    // collapse into one, which is a worse failure than the one it prevents.
+    const mintKey = String(req.body?.idempotencyKey || '').trim()
+      || `topup_${new mongoose.Types.ObjectId().toString()}`;
+
     let supply;
     let creditResult;
     try {
-      supply = await reserveAdminMint(tokenAmountNum);
+      supply = await reserveAdminMint(tokenAmountNum, {
+        movementId: `mint_${mintKey}`, merchantId: String(merchantId),
+        actor: String(req.user._id), refModel: 'Merchant', refId: String(merchantId),
+        reason: `Admin wallet top-up${note ? ` — ${note}` : ''}`,
+      });
       creditResult = await creditMerchantTokens({
         merchantId, amount: tokenAmountNum,
         reason: `Admin wallet top-up${note ? ` — ${note}` : ''}`,
         refModel: 'Merchant', refId: String(merchantId),
-        txId: `mw_topup_${new mongoose.Types.ObjectId().toString()}`,
+        txId: `mw_topup_${mintKey}`,
       });
     } catch (mintErr) {
-      if (supply) await rollbackAdminMint(tokenAmountNum);
+      if (supply) {
+        await rollbackAdminMint(tokenAmountNum, {
+          movementId: `mint_${mintKey}`, actor: String(req.user._id),
+          refModel: 'Merchant', refId: String(merchantId),
+          reason: 'Admin wallet top-up failed after minting',
+        }).catch((e) => console.error('[admin fund] mint rollback failed:', e.message));
+      }
       throw mintErr;
     }
     const { merchant } = creditResult;
@@ -609,7 +643,18 @@ router.post('/merchant-token-orders/:orderId/approve', authenticate, isAdmin, as
     if (!order) return res.status(404).json({ success: false, message: 'Pending merchant token order not found' });
     let supply;
     try {
-      supply = await reserveAdminMint(order.tokenAmount);
+      // Keyed on the ORDER, so this endpoint is idempotent across requests as
+      // well as within one: a redelivered approval mints nothing further. The
+      // status guard above already refuses a second approval, but that guard
+      // and this key protect different things — the guard stops the workflow
+      // advancing twice, the key stops the MONEY moving twice, and a rollback
+      // that reset the status (see the catch below) puts the order back in
+      // reach of the guard while the mint stays spent.
+      supply = await reserveAdminMint(order.tokenAmount, {
+        movementId: `mint_order_${order._id}`, merchantId: String(order.merchantId),
+        actor: String(req.user._id), refModel: 'MerchantAdminTokenOrder', refId: String(order._id),
+        reason: `Admin token purchase approved: ${order.orderId}`,
+      });
       const { merchant } = await creditMerchantTokens({
         merchantId: order.merchantId,
         amount: order.tokenAmount,
@@ -620,7 +665,13 @@ router.post('/merchant-token-orders/:orderId/approve', authenticate, isAdmin, as
       });
       return res.json({ success: true, order, merchant, supply });
     } catch (err) {
-      if (supply) await rollbackAdminMint(order.tokenAmount);
+      if (supply) {
+        await rollbackAdminMint(order.tokenAmount, {
+          movementId: `mint_order_${order._id}`, actor: String(req.user._id),
+          refModel: 'MerchantAdminTokenOrder', refId: String(order._id),
+          reason: `Admin token purchase ${order.orderId} failed after minting`,
+        }).catch((e) => console.error('[admin approve] mint rollback failed:', e.message));
+      }
       await MerchantAdminTokenOrder.findByIdAndUpdate(order._id, { $set: { status: 'PENDING', reviewedAt: null, reviewedBy: null, reviewNote: '' } });
       throw err;
     }

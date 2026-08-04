@@ -301,3 +301,45 @@ export function mirrorUserKyc(doc) {
      k.idProofUrl || null, k.photoUrl || null, k.submittedAt || null, k.rejectionReason || null],
   ));
 }
+
+/**
+ * An admin mint (or its rollback) → the treasury ledger. Domain 4's Mongo→PG leg.
+ *
+ * Mongo has no mint DOCUMENT to hang a post-save hook on — issuance is a single
+ * counter on SystemConfig, so there is nothing per-mint for the other mirrors'
+ * pattern to observe. This one is therefore called EXPLICITLY by
+ * adminIssuanceAuthority after the Mongo counter has moved, which is also why it
+ * takes an amount rather than a document.
+ *
+ * A negative `amountPaise` is a rollback, and it mirrors as a BURN rather than
+ * as a negative mint. The distinction is the whole reason this domain is worth
+ * moving: Mongo unwinds by decrementing the counter, which leaves no trace that
+ * a mint ever happened, while the treasury keeps the mint AND its reversal.
+ * Mirroring a rollback as "un-mint" would import the erasure into the store that
+ * exists to prevent it.
+ *
+ * Idempotent on `movementId` (UNIQUE tx_id inside postMovement's transaction),
+ * so a replayed mirror posts nothing.
+ */
+export function mirrorAdminSupply({
+  movementId, amountPaise, merchantId = null, actor = null, reason = null,
+  refModel = 'Merchant', refId = null, correlationId = null,
+}) {
+  return mirror('treasury_entries', async () => {
+    const paiseValue = Number(amountPaise);
+    if (!Number.isInteger(paiseValue) || paiseValue === 0) return;
+
+    const { mintToMerchantFloat, burnFromMerchantFloat } = await import('./treasuryPg.js');
+    const post = paiseValue > 0 ? mintToMerchantFloat : burnFromMerchantFloat;
+    const result = await post(Math.abs(paiseValue), {
+      movementId, actor, reason: reason || 'Mongo-authoritative admin issuance',
+      refModel, refId: refId ?? merchantId, correlationId,
+      // Mongo's own $expr guard already refused anything over the cap, so a
+      // refusal here would mean the two caps disagree — which is a drift the
+      // reconciler must surface, not something the mirror should silently
+      // enforce a second time and then swallow.
+      supplyCapPaise: Number.MAX_SAFE_INTEGER,
+    });
+    if (!result.ok) throw new Error(`treasury mirror refused the movement: ${result.reason}`);
+  });
+}

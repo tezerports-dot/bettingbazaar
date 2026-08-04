@@ -338,6 +338,38 @@ export function reverseMirrorMerchantSettlement(row) {
   });
 }
 
+/**
+ * The treasury's circulating supply → `SystemConfig.adminTokenSupply`.
+ * Domain 4's rollback leg.
+ *
+ * Written as a SET, not an $inc, and that is the point. Mongo's counter is a
+ * running total maintained by increments; the treasury's figure is DERIVED from
+ * double-entry rows. Mirroring increments would make the follower accumulate its
+ * own rounding and its own missed writes, so it would drift away from the number
+ * it is supposed to be following. Copying the total means a mirror that ran late
+ * or twice still lands on exactly the right number — which is what makes a
+ * fallback to Mongo safe rather than approximately safe.
+ *
+ * `cap` is written too, because a fallback must not silently restore an older
+ * ceiling than the one issuance was actually being checked against.
+ */
+export function reverseMirrorAdminSupply({ minted, cap }) {
+  return mirrorBack('admin_token_supply', async () => {
+    if (!Number.isFinite(minted)) throw new Error(`refusing to mirror a non-finite minted total: ${minted}`);
+    await mongoose.model('SystemConfig').updateOne(
+      { key: 'main' },
+      {
+        $set: {
+          'adminTokenSupply.minted': minted,
+          ...(Number.isFinite(cap) ? { 'adminTokenSupply.cap': cap } : {}),
+        },
+        $setOnInsert: { key: 'main' },
+      },
+      { upsert: true },
+    );
+  });
+}
+
 /** payment_orders row → PaymentOrder doc. Status transitions overwrite. */
 export function reverseMirrorPaymentOrder(row) {
   return mirrorBack('payment_orders', async () => {

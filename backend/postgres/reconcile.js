@@ -26,7 +26,7 @@
  */
 import mongoose from 'mongoose';
 import { pgConfigured, pgQuery, closePg } from './pgClient.js';
-import { rupeesToPaise } from '../shared/money.js';
+import { rupeesToPaise, paiseToRupees } from '../shared/money.js';
 import {
   mirrorWalletLedger, mirrorAccountingEvent, mirrorTransaction,
   mirrorPaymentOrder, mirrorUtr, mirrorMerchantWalletLedger, mirrorMerchantBalance,
@@ -62,6 +62,80 @@ export const TABLES = [
 /** Alias for tests/tooling that assert on the forward reconcile's shape. */
 export { TABLES as RECONCILE_TABLES };
 
+/**
+ * ── The settling window ─────────────────────────────────────────────────────
+ *
+ * Every mirror except the admin-issuance one is FIRE-AND-FORGET: the write
+ * commits in the authoritative store, the mirror is dispatched, and the caller
+ * returns without waiting. That is deliberate — a Postgres round-trip inside
+ * every wallet movement is a worse trade than a brief inconsistency, and the
+ * Mongoose post-save hooks the forward mirrors hang off cannot be awaited at
+ * all.
+ *
+ * The consequence is that a reconcile running at the wrong instant sees a row
+ * in one store and not yet the other, and calls it drift. That is a FALSE
+ * POSITIVE on ordinary traffic, and a drift alarm that fires on ordinary
+ * traffic is one an operator learns to ignore — which costs more than the
+ * check is worth.
+ *
+ * So findings younger than this window are reported SEPARATELY as `settling`
+ * rather than counted as drift. Three properties make that safe rather than a
+ * way of hiding problems:
+ *
+ *  1. It is a DELAY, not an exemption. The same row is checked at full strength
+ *     on the next pass, by which time it is older than the window. Nothing is
+ *     permanently excused.
+ *  2. `settling` is REPORTED, not dropped. A mirror that is genuinely broken
+ *     produces a settling count that keeps growing instead of returning to
+ *     zero, which is a stronger and earlier signal than a drift count that was
+ *     always noisy.
+ *  3. The window is bounded to seconds. Anything a mirror has not managed in
+ *     that time is not "in flight", it has failed — and the reconcile is the
+ *     backstop that repairs it.
+ *
+ * Deliberately NOT solved with a retry queue. A durable queue would make the
+ * retry survive a restart, which is worth having eventually, but it does not
+ * remove this window — a queued write is still a write that has not landed, so
+ * the reconciler would need exactly the same tolerance on top of it.
+ */
+export const DEFAULT_SETTLING_WINDOW_MS = 30_000;
+
+/**
+ * Read per call rather than captured at import, so an operator can widen it on
+ * a struggling replica — or a test can set it to 0 — without a restart. This is
+ * a batch reconciler, so the cost of reading an env var per pass is nothing.
+ *
+ * A non-numeric or negative value falls back to the default rather than
+ * disabling the window by accident; 0 is honoured, because "check everything
+ * immediately" is a legitimate thing to ask for.
+ */
+export function settlingWindowMs() {
+  const raw = Number(process.env.RECONCILE_SETTLING_WINDOW_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_SETTLING_WINDOW_MS;
+}
+
+/** The instant before which a missing mirror is a real failure, not lag. */
+const settledBefore = () => new Date(Date.now() - settlingWindowMs());
+
+/**
+ * Split findings into the ones old enough to mean something and the ones still
+ * in flight. `at` extracts the row's own timestamp; a row with no usable
+ * timestamp counts as SETTLED, because "we cannot tell how old this is" must
+ * not silently become "assume it is new and ignore it".
+ */
+function splitBySettling(items, at) {
+  const cutoff = settledBefore();
+  const settled = [];
+  const settling = [];
+  for (const item of items) {
+    const ts = at(item);
+    const date = ts ? new Date(ts) : null;
+    if (date && !Number.isNaN(date.getTime()) && date > cutoff) settling.push(item);
+    else settled.push(item);
+  }
+  return { settled, settling };
+}
+
 export async function reconcileTable(t, { since = null, backfill = false } = {}) {
   const Model = mongoose.model(t.model);
   // Fail loudly rather than silently scanning nothing if a table is ever added
@@ -83,12 +157,19 @@ export async function reconcileTable(t, { since = null, backfill = false } = {})
 
   let backfilled = 0;
   if (backfill && missing.length) {
+    // A backfill repairs everything, in flight or not — it is an explicit
+    // operator action, and re-mirroring a row the async mirror was about to
+    // write is idempotent by every key in this system.
     for (const d of missing) { await t.mirror(d); backfilled++; }
     missing = [];
   }
 
-  return { table: t.name, mongoCount: docs.length, missingInPg: missing.length, backfilled,
-           sampleMissing: missing.slice(0, 5).map(d => String(d[t.key])) };
+  // Rows written moments ago whose mirror has not landed yet are not drift.
+  const { settled, settling } = splitBySettling(missing, (d) => d[t.since]);
+
+  return { table: t.name, mongoCount: docs.length, missingInPg: settled.length, backfilled,
+           settling: settling.length,
+           sampleMissing: settled.slice(0, 5).map(d => String(d[t.key])) };
 }
 
 /**
@@ -131,9 +212,12 @@ export async function reconcileTableReverse(t, { since = null, repair = false } 
     missing = [];
   }
 
+  const { settled, settling } = splitBySettling(missing, (r) => r[t.since]);
+
   return {
-    table: t.table, pgCount: rows.length, missingInMongo: missing.length, repaired,
-    sampleMissing: missing.slice(0, 5).map((r) => String(r[t.pgKey])),
+    table: t.table, pgCount: rows.length, missingInMongo: settled.length, repaired,
+    settling: settling.length,
+    sampleMissing: settled.slice(0, 5).map((r) => String(r[t.pgKey])),
   };
 }
 
@@ -166,13 +250,13 @@ export async function reconcileMerchantBalances({ backfill = false, repairMongo 
     .select('tokenBalance').limit(50000).lean();
 
   const { rows } = await pgQuery(
-    `SELECT merchant_id, available_paise, reserved_paise, settlement_paise FROM merchant_wallets`,
+    `SELECT merchant_id, available_paise, reserved_paise, settlement_paise, updated_at
+       FROM merchant_wallets`,
     [], 'merchant_balance_reconcile',
   );
   const pgById = new Map(rows.map((r) => [String(r.merchant_id), r]));
 
-  const drifted = [];
-  let totalDriftPaise = 0;
+  const found = [];
   let repaired = 0;
 
   for (const m of merchants) {
@@ -190,12 +274,23 @@ export async function reconcileMerchantBalances({ backfill = false, repairMongo 
     // materialises the row on first movement, and absent means zero.
     if (mongoPaise === pgPaise) continue;
 
-    drifted.push({ merchantId: id, mongoPaise, pgPaise, deltaPaise: mongoPaise - pgPaise });
-    totalDriftPaise += Math.abs(mongoPaise - pgPaise);
+    found.push({
+      merchantId: id, mongoPaise, pgPaise, deltaPaise: mongoPaise - pgPaise,
+      // The Mongo document's own mtime is not reliable here (tokenBalance is
+      // moved by $inc, which does not always touch updatedAt), so the age comes
+      // from the Postgres row — the side the mirror writes. A merchant with no
+      // PG row at all has no timestamp and is therefore treated as SETTLED,
+      // which is the conservative direction: a wallet that has never been
+      // mirrored is exactly the case worth reporting.
+      at: row?.updated_at ?? null,
+    });
 
     if (backfill) { await mirrorMerchantBalance(m); repaired++; }
     else if (repairMongo && row) { await reverseMirrorMerchantBalance(row); repaired++; }
   }
+
+  const { settled: drifted, settling } = splitBySettling(found, (r) => r.at);
+  const totalDriftPaise = drifted.reduce((s, r) => s + Math.abs(r.deltaPaise), 0);
 
   // A wallet row whose merchant does not exist in Mongo. Postgres has no
   // foreign key to the Mongo collection, so this is the only thing that would
@@ -211,6 +306,7 @@ export async function reconcileMerchantBalances({ backfill = false, repairMongo 
     checked: merchants.length,
     drifted: backfill || repairMongo ? 0 : drifted.length,
     driftedBeforeRepair: drifted.length,
+    settling: settling.length,
     totalDriftPaise,
     repaired,
     orphansInPg: orphansInPg.length,
@@ -282,7 +378,8 @@ export async function reconcileMerchantSettlementStates({ backfill = false, repa
   }
 
   const { rows } = await pgQuery(
-    `SELECT settlement_id, order_id, direction, state FROM merchant_settlements LIMIT 50000`,
+    `SELECT settlement_id, order_id, direction, state, updated_at
+       FROM merchant_settlements LIMIT 50000`,
     [], 'merchant_settlement_state_reconcile',
   );
   if (!rows.length) return { table: 'merchant_settlements', checked: 0, disagreeing: 0, repaired: 0, sample: [] };
@@ -313,19 +410,84 @@ export async function reconcileMerchantSettlementStates({ backfill = false, repa
     // table models (a deposit still in flight, say). That is not disagreement.
     if (mongoState === null || mongoState === row.state) continue;
 
-    disagreeing.push({ settlementId: row.settlement_id, orderId: String(row.order_id), mongoState, pgState: row.state });
+    disagreeing.push({
+      settlementId: row.settlement_id, orderId: String(row.order_id),
+      mongoState, pgState: row.state, at: row.updated_at,
+    });
 
     if (backfill && order) { await mirrorMerchantSettlement(order); repaired++; }
     else if (repairMongo) { await reverseMirrorMerchantSettlement(row); repaired++; }
   }
 
+  // A settlement that transitioned moments ago has a mirror in flight, and the
+  // sweeper's own self-heal will push it again on the next pass — so a
+  // disagreement this young says nothing.
+  const { settled, settling } = splitBySettling(disagreeing, (r) => r.at);
+
   return {
     table: 'merchant_settlements',
     checked: rows.length,
-    disagreeing: backfill || repairMongo ? 0 : disagreeing.length,
-    disagreeingBeforeRepair: disagreeing.length,
+    disagreeing: backfill || repairMongo ? 0 : settled.length,
+    disagreeingBeforeRepair: settled.length,
+    settling: settling.length,
     repaired,
-    sample: disagreeing.slice(0, 5),
+    sample: settled.slice(0, 5),
+  };
+}
+
+/**
+ * Do the two supply figures agree?
+ *
+ * `SystemConfig.adminTokenSupply.minted` is a running counter maintained by
+ * increments. The treasury's circulating supply is `0 - TOKEN_SUPPLY`, DERIVED
+ * from double-entry rows that each had to sum to zero. They are the same
+ * quantity reached two completely different ways, which is exactly what makes
+ * comparing them worth doing — a counter that can only be checked against
+ * itself cannot be checked at all.
+ *
+ * Any drift means one of a small number of specific things, all of them worth
+ * paging about: a mint that moved one store and not the other, a rollback
+ * applied twice on the Mongo side (its `$inc` is not idempotent), or a mirror
+ * whose `.catch(() => {})` swallowed a failure. `repairMongo` fixes the
+ * follower by copying the derived total over the counter; it is only correct
+ * while Postgres is authoritative, and refuses otherwise rather than
+ * overwriting the source of truth with its own mirror.
+ */
+export async function reconcileAdminSupply({ repairMongo = false } = {}) {
+  const [cfg, balances] = await Promise.all([
+    mongoose.model('SystemConfig').findOne({ key: 'main' }).select('adminTokenSupply').lean(),
+    (await import('./treasuryPg.js')).getTreasuryBalances(),
+  ]);
+  const { ACCOUNTS } = await import('./treasuryPg.js');
+
+  const mongoMintedPaise = rupeesToPaise(cfg?.adminTokenSupply?.minted ?? 0);
+  const pgMintedPaise = 0 - (balances[ACCOUNTS.TOKEN_SUPPLY] ?? 0);
+  const driftPaise = pgMintedPaise - mongoMintedPaise;
+
+  let repaired = 0;
+  if (driftPaise !== 0 && repairMongo) {
+    const { isPostgresAuthoritative, MONEY_PATHS } = await import('./moneyAuthority.js');
+    if (!isPostgresAuthoritative(MONEY_PATHS.ADMIN_ISSUANCE)) {
+      throw new Error(
+        'reconcileAdminSupply: refusing to repair Mongo while Mongo is authoritative for admin_issuance — '
+        + 'that would overwrite the source of truth with its own follower.',
+      );
+    }
+    const { reverseMirrorAdminSupply } = await import('./reverseMirror.js');
+    await reverseMirrorAdminSupply({
+      minted: paiseToRupees(pgMintedPaise),
+      cap: cfg?.adminTokenSupply?.cap,
+    });
+    repaired = 1;
+  }
+
+  return {
+    table: 'admin_token_supply',
+    ok: driftPaise === 0,
+    mongoMintedTokens: paiseToRupees(mongoMintedPaise),
+    pgMintedTokens: paiseToRupees(pgMintedPaise),
+    driftPaise,
+    repaired,
   };
 }
 
@@ -444,13 +606,23 @@ export async function runReconcile({
     repairMongo: repairMongo && settlementOnPg,
   });
 
+  // Domain 4: do the running counter and the derived double-entry total agree?
+  // Checked in BOTH phases, unlike the settlement pockets — the mirror runs in
+  // whichever direction authority points, so the two figures are supposed to
+  // match either way. Repair follows authority for the same reason it does
+  // above, and reconcileAdminSupply refuses a repair that would overwrite the
+  // source of truth rather than trusting the caller to have got it right.
+  const issuanceOnPg = isPostgresAuthoritative(MONEY_PATHS.ADMIN_ISSUANCE);
+  const adminSupply = await reconcileAdminSupply({ repairMongo: repairMongo && issuanceOnPg });
+
   const forwardDrift = results.some((r) => r.missingInPg > 0)
     || !pgTrial.conservesToZero
     || merchantBalances.drifted > 0
     || merchantBalances.orphansInPg > 0
     || merchantLedgers.unexplained > 0
     || settlementPockets.length > 0
-    || settlementStates.disagreeing > 0;
+    || settlementStates.disagreeing > 0
+    || !adminSupply.ok;
 
   // The reverse direction only means something once Postgres owns a path — or
   // when an operator explicitly asks for it during a drill or a fallback.
@@ -470,9 +642,26 @@ export async function runReconcile({
     reverseDrift = reverseResults.some((r) => r.missingInMongo > 0) || !ledgersAgree.agree;
   }
 
+  // Everything the settling window held back this pass. Reported, never
+  // dropped: a mirror that is merely behind produces a number that returns to
+  // zero, while one that is BROKEN produces a number that keeps climbing. That
+  // makes a rising `settling` an earlier and cleaner alarm than the noisy drift
+  // count it replaced — but only if something actually looks at it, which is
+  // why it is surfaced here rather than left inside each check.
+  const settling = {
+    windowMs: settlingWindowMs(),
+    forward: results.reduce((s, r) => s + (r.settling ?? 0), 0),
+    reverse: (reverseResults ?? []).reduce((s, r) => s + (r.settling ?? 0), 0),
+    merchantBalances: merchantBalances.settling ?? 0,
+    settlementStates: settlementStates.settling ?? 0,
+  };
+  settling.total = settling.forward + settling.reverse
+    + settling.merchantBalances + settling.settlementStates;
+
   return {
     window: all ? 'all' : `${hours}h`,
     results,
+    settling,
     trialBalance: pgTrial,
     merchantBalances,
     merchantLedgers,
@@ -483,6 +672,7 @@ export async function runReconcile({
       samplePockets: settlementPockets.slice(0, 5),
       states: settlementStates,
     },
+    adminSupply,
     reverse: reverseResults,
     mongoTrialBalance: mongoTrial,
     ledgersAgree,

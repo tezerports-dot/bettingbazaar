@@ -106,6 +106,22 @@ function mirrorBalanceDirect(id, paise) {
 /** The reverse mirror is fire-and-forget; let its microtasks drain. */
 const settle = () => new Promise((r) => setTimeout(r, 20));
 
+/**
+ * Push a wallet row's mtime past the reconciler's settling window.
+ *
+ * The reconciler ignores disagreements younger than that window, because a
+ * fire-and-forget mirror produces one after every single write. Backdating is
+ * how a test says "this one is not in flight, it is genuinely wrong" without
+ * sleeping for thirty seconds.
+ */
+function ageMerchantWallet(id, minutes = 5) {
+  return pgQuery(
+    `UPDATE merchant_wallets SET updated_at = now() - ($2 || ' minutes')::interval
+      WHERE merchant_id = $1`,
+    [String(id), String(minutes)],
+  );
+}
+
 describePg('Merchant wallet — Postgres authority path', () => {
   beforeAll(async () => { await applySchema(); });
   afterAll(async () => { await closePg(); });
@@ -407,10 +423,62 @@ describePg('Merchant wallet — Postgres authority path', () => {
       // The failure row-presence reconciliation is structurally blind to.
       seedMerchant(M, 500);
       await mirrorBalanceDirect(M, 49900); // ₹1 short
+      // Aged past the settling window. Without this the disagreement is
+      // milliseconds old, and a mirror that has not landed yet is not drift —
+      // see the next test, which asserts exactly that.
+      await ageMerchantWallet(M);
       const r = await reconcileMerchantBalances();
       expect(r.drifted).toBe(1);
+      expect(r.settling).toBe(0);
       expect(r.totalDriftPaise).toBe(100);
       expect(r.sampleDrift[0]).toMatchObject({ merchantId: M, mongoPaise: 50000, pgPaise: 49900 });
+    });
+
+    // ── The settling window ──────────────────────────────────────────────────
+    it('does not call a mirror that is merely milliseconds behind "drift"', async () => {
+      seedMerchant(M, 500);
+      await mirrorBalanceDirect(M, 49900);
+
+      const r = await reconcileMerchantBalances();
+      // Every fire-and-forget mirror produces exactly this state for a moment
+      // after every write. Counting it as drift would make the alarm fire on
+      // ordinary traffic, and an alarm that fires on ordinary traffic is one an
+      // operator learns to ignore.
+      expect(r.drifted).toBe(0);
+      expect(r.settling).toBe(1);
+      expect(r.totalDriftPaise).toBe(0);
+    });
+
+    it('is a DELAY, not an exemption — the same row reports next pass', async () => {
+      seedMerchant(M, 500);
+      await mirrorBalanceDirect(M, 49900);
+      expect((await reconcileMerchantBalances()).drifted).toBe(0);
+
+      // Nothing about the disagreement changed; only its age did. This is the
+      // property that keeps the window from being a way to hide problems.
+      await ageMerchantWallet(M);
+      expect((await reconcileMerchantBalances()).drifted).toBe(1);
+    });
+
+    it('honours a window of zero, so an operator can demand an immediate answer', async () => {
+      seedMerchant(M, 500);
+      await mirrorBalanceDirect(M, 49900);
+      process.env.RECONCILE_SETTLING_WINDOW_MS = '0';
+      try {
+        expect((await reconcileMerchantBalances()).drifted).toBe(1);
+      } finally {
+        delete process.env.RECONCILE_SETTLING_WINDOW_MS;
+      }
+    });
+
+    it('reports a wallet Postgres has never seen, which has no age at all', async () => {
+      // No PG row means no timestamp to judge, and "we cannot tell how old this
+      // is" must not become "assume it is new and ignore it" — a merchant whose
+      // balance was never mirrored is the case most worth reporting.
+      seedMerchant(M, 500);
+      const r = await reconcileMerchantBalances();
+      expect(r.drifted).toBe(1);
+      expect(r.settling).toBe(0);
     });
 
     it('counts reserved and owed-out tokens as part of the merchant position', async () => {
