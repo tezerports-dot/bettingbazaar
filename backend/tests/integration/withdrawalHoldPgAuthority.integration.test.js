@@ -36,17 +36,31 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import mongoose from 'mongoose';
 import '../../models/index.js';
 
+// vi.hoisted, not a plain const: vi.mock is lifted above every import, and this
+// file has STATIC imports (mongoose, models/index.js) that transitively reach
+// moneyAuthority — so the factory can run while a plain `const` below is still
+// in its temporal dead zone.
+//
+// The mock is deliberately blanket rather than per-path. merchant_settlement
+// depends transitively on wallet and merchant_wallet, so "settlement on
+// Postgres, player wallet on Mongo" is not a configuration production can ever
+// reach; testing it would be testing a fiction. Everything on Postgres is the
+// real end state, which is also why the fixture has to build the player's stake
+// through the wallet authority instead of writing it onto the User document.
+const authoritative = vi.hoisted(() => ({ value: true }));
+
 vi.mock('../../postgres/moneyAuthority.js', async (importOriginal) => {
   const actual = await importOriginal();
   return { ...actual, isPostgresAuthoritative: () => authoritative.value };
 });
-const authoritative = { value: true };
 
 const { pgConfigured, pgQuery, applySchema } = await import('../../postgres/pgClient.js');
-const { getMerchantBalances, adminIssueToMerchant } = await import('../../postgres/merchantWalletPg.js');
+const { getMerchantBalances } = await import('../../postgres/merchantWalletPg.js');
 const {
-  DIRECTIONS, SETTLEMENT_STATES, openSettlement, getSettlement, reconcileSettlements,
+  DIRECTIONS, SETTLEMENT_STATES, openSettlement, getSettlement,
+  getSettlementHistory, reconcileSettlements,
 } = await import('../../postgres/merchantSettlementPg.js');
+const { creditWinnings, lockWithdrawal } = await import('../../domains/wallet/walletAuthority.service.js');
 const { settleHold, reverseHold, settleDueHolds } = await import('../../domains/payment/withdrawalHold.service.js');
 
 const hasPg = pgConfigured();
@@ -63,15 +77,29 @@ let seq = 0;
  * A withdrawal frozen exactly as merchant.routes leaves it on confirm: the
  * player's stake already locked since order creation, the order HELD, and the
  * merchant's tokens reserved in a pocket they cannot spend.
+ *
+ * The player's balance is built by CALLING THE WALLET AUTHORITY rather than by
+ * writing the numbers onto the User document. That distinction cost a CI run:
+ * seeding Mongo by hand leaves the Postgres wallet at zero, and under Postgres
+ * authority `releaseWithdrawal` then refuses with "lockedBalance would go
+ * negative: current=0" — a fixture that had never actually locked anything.
+ * Driving the real credit and lock means the stake exists wherever authority
+ * says it should, which is the only version of the fixture that stays correct
+ * as paths flip.
  */
 async function heldWithdrawal({ tokens = 500, holdUntil = new Date(Date.now() - 1000), reserve = true } = {}) {
   const n = ++seq;
+  const owner = await User().create({
+    username: `holdmo${n}`, mobile: `91000${String(n).padStart(5, '0')}`,
+  });
   const merchant = await Merchant().create({
-    name: `Hold M${n}`, username: `holdm${n}`, mobile: `92000${String(n).padStart(5, '0')}`, tokenBalance: 0,
+    name: `Hold M${n}`, username: `holdm${n}`, mobile: `92000${String(n).padStart(5, '0')}`,
+    // `userId` is UNIQUE on the Merchant schema, so leaving it unset makes
+    // every merchant after the first collide on null.
+    userId: owner._id, tokenBalance: 0,
   });
   const user = await User().create({
     username: `holdu${n}`, mobile: `93000${String(n).padStart(5, '0')}`,
-    winningsBalance: 0, lockedBalance: tokens, lockedWinningsAmount: tokens,
   });
   const order = await PaymentOrder().create({
     orderId: `BB-WD-${n}-${Date.now()}`, userId: user._id, merchantId: merchant._id,
@@ -79,6 +107,9 @@ async function heldWithdrawal({ tokens = 500, holdUntil = new Date(Date.now() - 
     status: 'PAID', merchantCreditStatus: 'HELD', merchantCreditHoldUntil: holdUntil,
     escrowLocked: true,
   });
+
+  await creditWinnings(user._id.toString(), tokens, 'test seed', 'Bet', `seed_${n}`, `seed_win_${n}`);
+  await lockWithdrawal(user._id.toString(), tokens, order._id.toString());
 
   if (reserve) {
     const opened = await openSettlement({
@@ -89,6 +120,12 @@ async function heldWithdrawal({ tokens = 500, holdUntil = new Date(Date.now() - 
     expect(opened.ok).toBe(true);
   }
   return { merchant, user, order };
+}
+
+/** The player's balances from whichever store currently owns them. */
+async function playerBalances(userId) {
+  const { getBalances } = await import('../../domains/wallet/walletAuthority.service.js');
+  return getBalances(userId.toString());
 }
 
 const freshOrder = (id) => PaymentOrder().findById(id).lean();
@@ -138,9 +175,7 @@ describePg('withdrawal hold — PostgreSQL authority, both stores', () => {
     expect(o.completedAt).toBeInstanceOf(Date);
 
     // The player's stake was consumed, not merely unlocked.
-    const u = await User().findById(user._id).lean();
-    expect(u.lockedBalance).toBe(0);
-    expect(u.winningsBalance).toBe(0);
+    expect(await playerBalances(user._id)).toMatchObject({ lockedBalance: 0, winningsBalance: 0 });
 
     expect(await reconcileSettlements(merchant._id.toString())).toMatchObject({ ok: true });
   });
@@ -156,7 +191,11 @@ describePg('withdrawal hold — PostgreSQL authority, both stores', () => {
     // The assertion that would fail if the losers wrote anything: 500, never
     // 1000, and never 10_000.
     expect((await freshMerchant(merchant._id)).tokenBalance).toBe(500);
-    expect(await Ledger().countDocuments({ merchantId: merchant._id.toString() })).toBe(2);
+    // One reservation (1 leg) plus one completion (2 legs, settlement→available).
+    // 20 callers, 3 rows: the losers wrote nothing at all.
+    expect(await Ledger().countDocuments({ merchantId: merchant._id.toString() })).toBe(3);
+    // And the state machine advanced exactly once, not twenty times.
+    expect(await getSettlementHistory(`ms_${order._id}`)).toHaveLength(2);
   });
 
   it('a dispute and a sweep racing the same order produce exactly one outcome', async () => {
@@ -173,7 +212,7 @@ describePg('withdrawal hold — PostgreSQL authority, both stores', () => {
     const s = await getSettlement(`ms_${order._id}`);
     const o = await freshOrder(order._id);
     const m = await freshMerchant(merchant._id);
-    const u = await User().findById(user._id).lean();
+    const u = await playerBalances(user._id);
 
     if (settled) {
       expect(s.state).toBe(SETTLEMENT_STATES.SETTLED);
@@ -251,7 +290,14 @@ describePg('withdrawal hold — PostgreSQL authority, both stores', () => {
     // The stake is gone from under the settlement — an inconsistency the
     // release will refuse. Ordering the gate first makes this reachable, so it
     // has to be compensated rather than sequenced away.
-    await User().updateOne({ _id: user._id }, { $set: { lockedBalance: 0, lockedWinningsAmount: 0 } });
+    //
+    // Corrupted in POSTGRES, because that is where authority puts the stake in
+    // this configuration. Zeroing the Mongo document instead would leave the
+    // release perfectly happy and prove nothing.
+    await pgQuery(
+      `UPDATE wallets SET locked_paise = 0, locked_winnings_paise = 0 WHERE user_id = $1`,
+      [user._id.toString()], 'test_corrupt_lock',
+    );
 
     await expect(settleHold(order._id)).rejects.toThrow();
 
@@ -286,13 +332,25 @@ describePg('withdrawal hold — PostgreSQL authority, both stores', () => {
 
   it('leaves the Mongo path exactly as it was', async () => {
     authoritative.value = false;
-    const { merchant, order } = await heldWithdrawal({ tokens: 500, reserve: false });
+    const { merchant, user, order } = await heldWithdrawal({ tokens: 500, reserve: false });
 
     expect(await settleHold(order._id)).toBe(true);
     expect((await freshMerchant(merchant._id)).tokenBalance).toBe(500);
     expect((await freshOrder(order._id)).merchantCreditStatus).toBe('RELEASED');
-    // No settlement was opened or advanced: on Mongo this lifecycle lives on
-    // the order, and nothing about the Postgres domain should be reachable.
-    expect(await getSettlement(`ms_${order._id}`)).toBeNull();
+    expect(await playerBalances(user._id)).toMatchObject({ lockedBalance: 0, winningsBalance: 0 });
+
+    // A merchant_settlements row DOES exist here, and it is not a contradiction:
+    // dualWrite.mirrorMerchantSettlement derives one from every PaymentOrder
+    // save while Mongo is authoritative. What must be true is that it is a
+    // PROJECTION and not an authority.
+    //
+    // Two things say so. The state machine never ran, so there is no transition
+    // history — the forward mirror writes STATE ONLY. And the committed pockets
+    // are untouched: `available` is not asserted because mirrorMerchantBalance
+    // legitimately projects Mongo's single number onto it, but `reserved` and
+    // `settlement` are written by nothing except the state machine.
+    expect(await getSettlementHistory(`ms_${order._id}`)).toEqual([]);
+    expect(await getMerchantBalances(merchant._id.toString()))
+      .toMatchObject({ reserved: 0, settlement: 0 });
   });
 });
