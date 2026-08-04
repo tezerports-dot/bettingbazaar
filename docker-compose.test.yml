@@ -1,0 +1,75 @@
+# GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+#
+# The full test stack, locally. `npm run stack:up && npm run test:all`.
+#
+# ── Why this exists ─────────────────────────────────────────────────────────
+# Until now the Mongo-dependent suites ran ONLY in GitHub Actions, because the
+# build sandbox cannot download a mongod binary. That made CI the first place
+# any Mongo-side change was exercised, and it cost exactly what you would
+# expect: a defect reached CI that a local run would have caught in seconds
+# (test:pg leaves fixtures in the shared Postgres, and the integration suite's
+# hand-maintained truncate list had stopped covering the schema, so a
+# reconciliation assertion failed on stale rows rather than on real drift).
+#
+# A money platform should not have a class of test that only a hosted runner
+# can run.
+#
+# ── The replica set is not optional ─────────────────────────────────────────
+# 31 call sites open a Mongo transaction (session.withTransaction). MongoDB
+# refuses transactions on a standalone server — they need a replica set, even
+# a single-node one. A plain `mongo:8` container therefore passes a smoke test
+# and fails every money path, which is also why the Railway MongoDB plugin is
+# not usable for this application. The initiator below makes rs0 a real (if
+# one-member) replica set, so local runs exercise the same transaction
+# semantics production does.
+services:
+  mongo:
+    image: mongo:8
+    command: ["--replSet", "rs0", "--bind_ip_all", "--quiet"]
+    ports: ["27017:27017"]
+    healthcheck:
+      # Healthy only once the set is INITIATED, not merely once mongod answers.
+      # Waiting on the port alone would let the app start against a server that
+      # still rejects every transaction.
+      test: ["CMD", "mongosh", "--quiet", "--eval", "rs.status().ok"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  mongo-init:
+    image: mongo:8
+    depends_on: { mongo: { condition: service_started } }
+    restart: "no"
+    # Idempotent: re-running against an initiated set is a no-op, so
+    # `stack:up` can be run repeatedly without tearing anything down.
+    entrypoint: >
+      bash -c 'until mongosh --host mongo --quiet --eval "db.adminCommand({ping:1}).ok" >/dev/null 2>&1; do sleep 1; done;
+      mongosh --host mongo --quiet --eval "try { rs.status() } catch (e) { rs.initiate({_id:\"rs0\",members:[{_id:0,host:\"mongo:27017\"}]}) }"'
+
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: bb_test
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+# No named volumes on purpose. This stack is for TESTS: every run should start
+# from an empty database, and a persisted volume is how a passing suite starts
+# depending on rows an earlier run left behind — the same failure mode the
+# truncate list had.

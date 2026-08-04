@@ -297,9 +297,11 @@ export async function reconcileMerchantSettlementStates({ backfill = false, repa
 
   for (const row of rows) {
     const order = byId.get(String(row.order_id));
-    // A settlement whose order has vanished from Mongo is drift in its own
-    // right — the settlement describes money for something that no longer
-    // exists — so it is reported rather than skipped.
+    // A settlement whose order is not in Mongo yields a null state and is
+    // SKIPPED below, not reported. That is deliberate: the order may simply be
+    // outside the window, and calling it drift would make every archived order
+    // a permanent false positive. A settlement with no order at all is a
+    // different concern, and belongs to the orphan check on the wallets.
     const mongoState = order
       ? (order.type === 'WITHDRAWAL'
           ? ORDER_STATE_TO_SETTLEMENT[order.merchantCreditStatus] ?? null

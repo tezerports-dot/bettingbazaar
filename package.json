@@ -29,7 +29,11 @@
     "migrate:public-chat-retention": "node backend/scripts/enforce-public-chat-retention.js",
     "handoff:frontends": "node scripts/create-frontend-handoffs.mjs",
     "loadtest:seed": "node loadtest/seed-accounts.mjs",
-    "loadtest:bets": "k6 run loadtest/bet-contention.js"
+    "loadtest:bets": "k6 run loadtest/bet-contention.js",
+    "stack:up": "docker compose -f docker-compose.test.yml up -d --wait",
+    "stack:down": "docker compose -f docker-compose.test.yml down -v",
+    "stack:logs": "docker compose -f docker-compose.test.yml logs -f",
+    "test:all": "sh -c 'export MONGODB_URI=mongodb://127.0.0.1:27017/bb_test?replicaSet=rs0 DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/bb_test REDIS_URL=redis://127.0.0.1:6379; npm run test:unit && npm run test:pg && npm run test:integration'"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

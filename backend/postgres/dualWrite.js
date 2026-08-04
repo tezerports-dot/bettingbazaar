@@ -243,29 +243,46 @@ function settlementStateFor(doc) {
   return null;
 }
 
-export async function mirrorMerchantSettlement(doc) {
+export function mirrorMerchantSettlement(doc) {
   if (!doc?.merchantId) return; // unassigned orders have no merchant side yet
 
-  // Once Postgres owns this path it also owns the state machine, and a
-  // Mongo-derived overwrite could drag a settlement BACKWARDS through states
-  // the transition guards exist to prevent. The forward mirror stops at the
-  // flip; reverseMirror.js takes over in the other direction.
-  const { isPostgresAuthoritative, MONEY_PATHS } = await import('./moneyAuthority.js');
-  if (isPostgresAuthoritative(MONEY_PATHS.MERCHANT_SETTLEMENT)) return;
+  // SYNCHRONOUS at the boundary, with every fallible step inside mirror()'s
+  // try/catch — the invariant every other mirror in this file holds, and one
+  // this function originally broke. It is invoked unawaited from two Mongoose
+  // post-save hooks, so an `async` version doing work BEFORE entering the
+  // try/catch turns any throw there into an unhandled promise rejection on a
+  // path that runs for every order save. `paise()` alone is enough to cause
+  // one: rupeesToPaise THROWS on a non-finite amount, so a single order
+  // without a tokenAmount would take the process down rather than skipping a
+  // mirror. Fire-and-forget means the failure must stay inside the box.
+  return mirror('merchant_settlements', async () => {
+    // Once Postgres owns this path it also owns the state machine, and a
+    // Mongo-derived overwrite could drag a settlement BACKWARDS through states
+    // the transition guards exist to prevent. The forward mirror stops at the
+    // flip; reverseMirror.js takes over in the other direction.
+    const { isPostgresAuthoritative, MONEY_PATHS } = await import('./moneyAuthority.js');
+    if (isPostgresAuthoritative(MONEY_PATHS.MERCHANT_SETTLEMENT)) return;
 
-  const state = settlementStateFor(doc);
-  if (!state) return;
+    const state = settlementStateFor(doc);
+    if (!state) return;
 
-  return mirror('merchant_settlements', () => pgQuery(
-    `INSERT INTO merchant_settlements
-       (settlement_id, merchant_id, order_id, direction, amount_paise, state, reason, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8, now()),now())
-     ON CONFLICT (settlement_id) DO UPDATE SET state = EXCLUDED.state, updated_at = now()`,
-    [`ms_${doc._id}`, String(doc.merchantId), String(doc._id),
-     doc.type === 'WITHDRAWAL' ? 'WITHDRAWAL' : 'DEPOSIT',
-     paise(doc.tokenAmount), state,
-     doc.merchantCreditReversedReason || null, createdAt(doc, doc.createdAt)],
-  ));
+    // A settlement of nothing is not a settlement. Guarding here keeps a
+    // malformed order out of the table instead of relying on the CHECK
+    // constraint to reject it once per save, forever.
+    const amountPaise = Number.isFinite(Number(doc.tokenAmount)) ? paise(doc.tokenAmount) : 0;
+    if (amountPaise <= 0) return;
+
+    await pgQuery(
+      `INSERT INTO merchant_settlements
+         (settlement_id, merchant_id, order_id, direction, amount_paise, state, reason, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8, now()),now())
+       ON CONFLICT (settlement_id) DO UPDATE SET state = EXCLUDED.state, updated_at = now()`,
+      [`ms_${doc._id}`, String(doc.merchantId), String(doc._id),
+       doc.type === 'WITHDRAWAL' ? 'WITHDRAWAL' : 'DEPOSIT',
+       amountPaise, state,
+       doc.merchantCreditReversedReason || null, createdAt(doc, doc.createdAt)],
+    );
+  });
 }
 
 /** User doc (KYC fields only — plan: split KYC out; cutover LAST). */

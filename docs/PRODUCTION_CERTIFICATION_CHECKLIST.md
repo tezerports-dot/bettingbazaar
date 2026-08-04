@@ -175,8 +175,32 @@ The platform may be called production ready only when **all** hold:
 - [ ] Continuous reconciliation reports zero drift across every financial ledger
 - [ ] `npm run certify:report` exits 0
 
+## Running the whole suite locally
+
+Every suite, including the Mongo-dependent ones, without GitHub Actions:
+
+```bash
+npm run stack:up     # Mongo (single-node replica set), PostgreSQL 18, Redis
+npm run test:all     # unit → postgres → integration, against that stack
+npm run stack:down
+```
+
+The replica set is not decoration: 31 call sites open a Mongo transaction and
+MongoDB refuses those on a standalone server, so a plain `mongo` container
+passes a smoke test and fails every money path. (It is also why the Railway
+MongoDB plugin cannot host this application.)
+
+This exists because "only CI can run these tests" is not an acceptable property
+for the suites that guard money — and it cost exactly what you would expect: a
+defect reached CI that a local run catches in seconds.
+
+**NOT VERIFIED by the author.** The Docker daemon is unreachable in the
+development sandbox, so the compose file has been written but never started.
+First run should be treated as a shakedown.
+
 ## Related
 
+- `docs/MIRROR_EXIT_PLAN.md` — how the dual-write scaffolding gets **removed**, per domain
 - `docs/FINANCIAL_DOMAIN_MATRIX.md` — per-path detail and what each ⏳ needs
 - `docs/POSTGRES_FULL_AUTHORITY_PLAN.md` — the migration sequence
 - `docs/MONGO_MONEY_AUDIT.md` — defects that must be fixed in the port, not carried across

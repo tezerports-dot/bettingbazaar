@@ -19,8 +19,29 @@ import { runReconcile, pgTrialBalance, RECONCILE_TABLES } from '../../postgres/r
 const HAS_PG = !!process.env.DATABASE_URL;
 const d = HAS_PG ? describe : describe.skip;
 
-const PG_TABLES = ['wallet_ledger', 'wallets', 'accounting_events', 'transactions',
-                   'payment_orders', 'utr_registry', 'merchant_wallet_ledger', 'user_kyc'];
+/**
+ * Every money table, read from the SCHEMA rather than listed by hand.
+ *
+ * This used to be a literal array, and it silently stopped covering the schema
+ * the moment a table was added — `merchant_wallets`, `merchant_wallet_entries`,
+ * `merchant_settlements` and `merchant_settlement_transitions` were all absent
+ * from it. That is not a tidiness problem. `test:pg` runs before this suite
+ * against the SAME database and leaves fixtures behind; a table nobody
+ * truncates keeps them, and `runReconcile` then reports those wallets as
+ * orphans (rows with no Mongo merchant) and the drift assertion below fails —
+ * on leftover fixtures, not on any real disagreement. Reproduced exactly:
+ * orphansInPg = 2, the two merchants merchantWalletPgAuthority.test.js seeds
+ * last.
+ *
+ * Deriving the list means adding a table can never again poison a later
+ * assertion, which is the same reason the certification checklist is generated
+ * rather than typed.
+ */
+async function moneyTables() {
+  const { rows } = await pgQuery(
+    `SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename`);
+  return rows.map((r) => r.tablename);
+}
 
 // The mirrors are fire-and-forget from hooks — poll until the row lands.
 async function eventually(fn, ms = 4000) {
@@ -41,7 +62,9 @@ d('Hybrid money DB (Postgres dual-write)', () => {
   });
 
   beforeEach(async () => {
-    for (const t of PG_TABLES) await pgQuery(`TRUNCATE ${t} RESTART IDENTITY CASCADE`);
+    const tables = await moneyTables();
+    // One statement so foreign keys between them cannot order-fail.
+    await pgQuery(`TRUNCATE ${tables.join(', ')} RESTART IDENTITY CASCADE`);
   });
 
   afterAll(async () => { await closePg(); });

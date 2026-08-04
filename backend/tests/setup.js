@@ -12,9 +12,18 @@ process.env.AADHAAR_HMAC_SECRET ||= 'test-only-aadhaar-hmac-secret';
 let replset;
 // Captured in beforeAll when DATABASE_URL is set, so beforeEach can keep the PG
 // money tables cleared in lockstep with the Mongo collections (below).
+//
+// The table list is READ FROM THE SCHEMA, never typed. It used to be a literal
+// array of eight names, and it silently stopped covering the schema the moment
+// a table was added: merchant_wallets, merchant_wallet_entries,
+// merchant_settlements and merchant_settlement_transitions were all missing
+// from it. `test:pg` runs first against the SAME database and leaves fixtures
+// behind, so a table nobody truncates keeps them — and runReconcile then
+// reported those wallets as orphans and failed a drift assertion on stale
+// fixtures rather than on any real disagreement. Reproduced exactly:
+// orphansInPg = 2. Deriving the list means adding a table can never again
+// poison an unrelated suite.
 let pgTruncate = null;
-const PG_MONEY_TABLES = ['wallet_ledger', 'wallets', 'accounting_events', 'transactions',
-                         'payment_orders', 'utr_registry', 'merchant_wallet_ledger', 'user_kyc'];
 
 // Mocking Redis globally for tests
 vi.mock('../../services/cache.service.js', () => ({
@@ -28,15 +37,30 @@ vi.mock('../../services/cache.service.js', () => ({
 }));
 
 beforeAll(async () => {
-  // Replica set so Mongo multi-document transactions work in tests.
-  // Version pinned for reproducibility; MONGOMS_SYSTEM_BINARY (env) lets a
-  // preinstalled mongod be used where the download host is firewalled.
-  replset = await MongoMemoryReplSet.create({
-    replSet: { count: 1, storageEngine: 'wiredTiger' },
-    binary: { version: process.env.MONGOMS_VERSION || '7.0.14' },
-  });
-  const uri = replset.getUri();
-  await mongoose.connect(uri);
+  // An EXTERNAL MongoDB wins when one is offered. `npm run stack:up` starts a
+  // real single-node replica set in Docker, and pointing at it is what lets
+  // these suites run somewhere other than GitHub Actions — the download host
+  // for the in-memory server's binary is firewalled in some environments, and
+  // "only CI can run this" is not an acceptable property for the tests that
+  // guard money.
+  //
+  // It MUST be a replica set either way: 31 call sites open a Mongo
+  // transaction, and MongoDB refuses those on a standalone server. A plain
+  // mongod here would pass a smoke test and fail every money path, which is
+  // also why docker-compose.test.yml initiates rs0 rather than just starting
+  // a container.
+  const external = process.env.MONGODB_URI;
+  if (external) {
+    await mongoose.connect(external);
+  } else {
+    // Version pinned for reproducibility; MONGOMS_SYSTEM_BINARY (env) lets a
+    // preinstalled mongod be used where the download host is firewalled.
+    replset = await MongoMemoryReplSet.create({
+      replSet: { count: 1, storageEngine: 'wiredTiger' },
+      binary: { version: process.env.MONGOMS_VERSION || '7.0.14' },
+    });
+    await mongoose.connect(replset.getUri());
+  }
   // Wait for every model's index builds. The UNIQUE indexes (WalletLedger
   // txId, AccountingEvent idempotencyKey, ...) are the durable idempotency
   // gates the concurrency tests exercise — without this await, a test can
@@ -53,11 +77,13 @@ beforeAll(async () => {
   if (process.env.DATABASE_URL) {
     const { applySchema, pgQuery } = await import('../postgres/pgClient.js');
     await applySchema();
-    pgTruncate = async () => {
-      for (const t of PG_MONEY_TABLES) {
-        await pgQuery(`TRUNCATE ${t} RESTART IDENTITY CASCADE`).catch(() => {});
-      }
-    };
+    const { rows } = await pgQuery(
+      `SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename`);
+    const tables = rows.map((r) => r.tablename);
+    pgTruncate = tables.length
+      // One statement, so foreign keys between the tables cannot order-fail.
+      ? () => pgQuery(`TRUNCATE ${tables.join(', ')} RESTART IDENTITY CASCADE`).catch(() => {})
+      : null;
   }
 });
 
