@@ -70,7 +70,8 @@ Verified by CI.
 
 ---
 
-## M-2 / M-4 — `_mongoBetStake`: no idempotency, no transaction (NOT FIXED)
+## M-2 / M-4 — `_mongoBetStake`: no idempotency, no transaction
+## (RESOLVED IN POSTGRES; the Mongo path is unchanged)
 
 `domains/wallet/walletAuthority.service.js`
 
