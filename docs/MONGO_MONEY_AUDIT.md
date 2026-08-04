@@ -23,7 +23,7 @@ marked PASS on the strength of reading alone.
 | M-4 | `_mongoBetStake` moves money outside a transaction; ledger rows are best-effort | **High** | **Resolved in the Postgres design** (`betPg.js`); Mongo path unchanged |
 | M-5 | `atomicBet` is dead code with a non-functional idempotency key | Low | Documented |
 | M-6 | `reserveAdminMint` combines `$expr` with `upsert`, which MongoDB refuses — admin token issuance threw on every call | **High** | **Fixed** |
-| M-7 | A casino `ROLLBACK`/`REFUND` credits the player without proving a matching prior debit — a provider can mint real money | **High** | **Resolved in the Postgres design** (`casinoPg.js`); Mongo path unchanged |
+| M-7 | A casino `ROLLBACK`/`REFUND` credits the player without proving a matching prior debit — a provider can mint real money | **High** | **FIXED in both paths** — the live Mongo endpoint and `casinoPg.js` |
 
 ---
 
@@ -271,8 +271,23 @@ as the wallet movement, so two concurrent rollbacks cannot both read "nothing
 refunded yet". That case is tested with two *distinct* provider ids, where the
 idempotency gate cannot help and only the lock can.
 
-**The Mongo path is unchanged** — resolved in the store that will carry
-authority, not patched in the one being migrated away from.
+### And fixed on the LIVE Mongo path too — unlike M-2 and M-4
+
+M-2 and M-4 were left in Mongo deliberately: they are latent there, because
+`bet.routes.js` mints a fresh key per request, so the unsafe primitive is not
+currently reachable in a way that loses money.
+
+**M-7 is not latent.** `POST /api/games/wallet` is a live endpoint any
+configured provider can call, and the rollback branch had no guard at all.
+Fixing it only in the store that is *not* authoritative — and will not be on
+launch day — would have left the exploitable version running. The same
+arithmetic now guards the Mongo handler: the reversal is refused unless the
+round has a prior BET for that player, and refused again if the accumulated
+refunds would exceed it.
+
+The lookup is scoped by `userId` as well as `roundId`, because round ids are
+provider-supplied and not guaranteed unique across players — without that, one
+player's bet would authorise another player's refund.
 
 ---
 

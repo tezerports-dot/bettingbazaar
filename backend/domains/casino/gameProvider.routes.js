@@ -280,6 +280,39 @@ router.post('/wallet/:providerKey', async (req, res) => {
     } else if (type === 'WIN') {
       await creditWinnings(userId, amount, `Casino WIN: ${gameId} round ${roundId}`, 'GameTransaction', null, 'win_' + txId);
     } else if (type === 'ROLLBACK' || type === 'REFUND') {
+      // ── M-7: a reversal must prove the debit it reverses ─────────────────
+      // This used to be a bare `refundOrder(...)`: no check that the round was
+      // ever bet on, and no bound on the amount. A provider that is buggy,
+      // replayed, or hostile could therefore CREDIT REAL MONEY by rolling back
+      // a round that never had a bet, or by rolling back more than was staked.
+      //
+      // The duplicate-txId check above does not help. It stops the SAME
+      // callback applying twice; it says nothing about a DIFFERENT callback
+      // that should never have been honoured at all, which is the exposure.
+      //
+      // Both sums are computed over this round's recorded transactions, so
+      // partial rollbacks accumulate correctly — a per-callback check against
+      // the bet alone would let any number of them through.
+      const priorTx = await GameTransaction.find({ roundId, userId })
+        .select('type amount').lean();
+      const debited = priorTx
+        .filter((t) => t.type === 'BET')
+        .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+      const refunded = priorTx
+        .filter((t) => t.type === 'ROLLBACK' || t.type === 'REFUND')
+        .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+
+      if (debited <= 0) {
+        console.error(`[casino] refusing ${type} for round ${roundId} with no prior debit`);
+        return res.status(400).json({ success: false, message: 'No prior debit for this round' });
+      }
+      if (refunded + amount > debited) {
+        console.error(
+          `[casino] refusing ${type} for round ${roundId}: would refund ${refunded + amount} of ${debited} debited`,
+        );
+        return res.status(400).json({ success: false, message: 'Refund exceeds the amount debited for this round' });
+      }
+
       await refundOrder(userId, amount, roundId, 'depositBalance');
     }
 
