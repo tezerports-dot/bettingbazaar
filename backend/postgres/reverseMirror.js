@@ -208,19 +208,22 @@ export function reverseMirrorMerchantBalance(row) {
  */
 export function reverseMirrorMerchantMovement({ merchantId, entries = [], balances }) {
   return mirrorBack('merchant_wallet_entries', async () => {
-    // A multi-leg movement is keyed `<txId>:<pocket>` in Postgres, and Mongo's
-    // gate looks up the bare `txId`. Nothing in production emits one today
-    // (only the unbuilt settlement domain would), so rather than mirror rows
-    // whose keys the Mongo gate cannot match, refuse loudly: the day the
-    // settlement domain is wired, this fails and is fixed, instead of quietly
-    // leaving a double-apply waiting on the other side of a fallback.
-    const suffixed = entries.filter((e) => e.txId.includes(':'));
-    if (suffixed.length) {
+    // A multi-leg movement is keyed `<txId>:<pocket>` in Postgres. Those rows
+    // used to be refused here, because Mongo's gate looked up the bare txId and
+    // could not see them — mirroring them would have left a double-apply
+    // waiting on the other side of a fallback. Every row now carries
+    // `movementId` (the caller's logical key) and the gate matches on either,
+    // so they are safe to mirror and the settlement domain has a rollback path.
+    //
+    // The invariant that replaced the refusal: a row without a movementId is
+    // one the gate can only find by its own txId, which for a multi-leg
+    // movement is the wrong key.
+    const unkeyed = entries.filter((e) => e.txId.includes(':') && !e.movementId);
+    if (unkeyed.length) {
       throw new Error(
-        `multi-leg merchant movement cannot be mirrored to Mongo — its per-pocket keys `
-        + `(${suffixed.map((e) => e.txId).join(', ')}) are invisible to MerchantWalletLedger's `
-        + `bare-txId idempotency gate. Give MerchantWalletLedger a pocket field before `
-        + `enabling multi-leg merchant movements.`,
+        `multi-leg merchant movement is missing movementId on `
+        + `${unkeyed.map((e) => e.txId).join(', ')} — MerchantWalletLedger's idempotency `
+        + `gate would not match these rows, so a fallback to Mongo could double-apply them.`,
       );
     }
 
@@ -235,6 +238,7 @@ export function reverseMirrorMerchantMovement({ merchantId, entries = [], balanc
         {
           $setOnInsert: {
             txId: e.txId,
+            movementId: e.movementId ?? e.txId,
             merchantId: String(merchantId),
             type: e.entryType,
             amount: rupees(Math.abs(e.amountPaise)),

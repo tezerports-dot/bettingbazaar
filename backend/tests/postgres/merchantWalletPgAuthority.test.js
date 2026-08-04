@@ -287,16 +287,36 @@ describePg('Merchant wallet — Postgres authority path', () => {
       expect(mongo.state.merchantUpdates.at(-1).update).toEqual({ $set: { tokenBalance: 100 } });
     });
 
-    it('refuses a multi-leg movement rather than writing keys Mongo cannot match', async () => {
+    it('mirrors a multi-leg movement under the logical key Mongo\'s gate matches', async () => {
       // Postgres keys a multi-pocket movement `<txId>:<pocket>`; Mongo's gate
-      // looks up the bare txId. Mirroring those rows would leave a double-apply
-      // waiting on the other side of a fallback, so the mirror fails loudly
-      // instead. Nothing in production emits one today.
+      // looks up the caller's logical key. Every row carries it as movementId,
+      // so a fallback recognises the movement and a retry is a no-op.
       await reverseMirrorMerchantMovement({
         merchantId: M,
         entries: [
-          { txId: 'res_1:available', pocket: 'available', amountPaise: -1000, balanceBefore: 1000, balanceAfter: 0, entryType: 'DEBIT', operation: 'RESERVE' },
-          { txId: 'res_1:reserved', pocket: 'reserved', amountPaise: 1000, balanceBefore: 0, balanceAfter: 1000, entryType: 'CREDIT', operation: 'RESERVE' },
+          { txId: 'res_1:available', movementId: 'res_1', pocket: 'available', amountPaise: -1000, balanceBefore: 1000, balanceAfter: 0, entryType: 'DEBIT', operation: 'RESERVE' },
+          { txId: 'res_1:reserved', movementId: 'res_1', pocket: 'reserved', amountPaise: 1000, balanceBefore: 0, balanceAfter: 1000, entryType: 'CREDIT', operation: 'RESERVE' },
+        ],
+        balances: { available: 0, reserved: 1000, settlement: 0 },
+      });
+      await settle();
+
+      expect(mongo.state.ledgerUpserts).toHaveLength(2);
+      expect(mongo.state.ledgerUpserts.map((u) => u.update.$setOnInsert.movementId))
+        .toEqual(['res_1', 'res_1']);
+      // The whole position, not one pocket — a reserve does not change what the
+      // merchant holds in total.
+      expect(mongo.state.merchantUpdates.at(-1).update).toEqual({ $set: { tokenBalance: 10 } });
+    });
+
+    it('still refuses a multi-leg movement that arrives without its logical key', async () => {
+      // Without movementId the rows are findable only by their per-pocket txIds,
+      // which is the wrong key — a fallback would not see the movement and the
+      // next retry would apply it twice.
+      await reverseMirrorMerchantMovement({
+        merchantId: M,
+        entries: [
+          { txId: 'res_2:available', pocket: 'available', amountPaise: -1000, balanceBefore: 1000, balanceAfter: 0, entryType: 'DEBIT', operation: 'RESERVE' },
         ],
         balances: { available: 0, reserved: 1000, settlement: 0 },
       });

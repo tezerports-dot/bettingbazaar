@@ -147,24 +147,37 @@ export function mirrorUtr(doc) {
 /**
  * MerchantWalletLedger doc → merchant_wallet_ledger row.
  *
- * The ON CONFLICT fills in a NULL balance_after_paise rather than doing
- * nothing. The merchant service writes its ledger row in two steps — reserve
- * (balanceAfter null) then complete — and only the first is a document save,
- * so the post-save hook mirrors the row while its balance is still unknown.
- * With DO NOTHING the completion could never land, and balance_after_paise
- * stayed NULL for every merchant movement ever mirrored: the exact column a
- * rollback reads to restore Merchant.tokenBalance. COALESCE keeps it
- * write-once — a real value is never overwritten by a later replay, so this
- * stays idempotent and the append-only intent holds.
+ * MIRRORS ONLY COMPLETED ROWS, and the timing is the whole point.
+ *
+ * The merchant service writes its ledger in two steps — reserve (balanceAfter
+ * null) then complete — and only the first is a document save, so a post-save
+ * hook alone mirrors the row while its balance is still unknown and every
+ * mirrored row keeps balance_after_paise = NULL: the exact column a rollback
+ * reads to restore Merchant.tokenBalance.
+ *
+ * The obvious repair, `ON CONFLICT (tx_id) DO UPDATE`, does not work and cannot
+ * be made to: merchant_wallet_ledger carries an append-only trigger, an upsert's
+ * DO UPDATE *is* an UPDATE, and the trigger raises. Because the mirror is
+ * fire-and-forget the raise was swallowed, so the tests stayed green while the
+ * column stayed NULL and Postgres logged an error per movement. Found by
+ * reading the logs of a PASSING CI job.
+ *
+ * So the reservation is not mirrored at all — it is a transient artefact of
+ * Mongo's two-step, and a row that may still be deleted is not a fact worth
+ * copying. merchantWallet.service.completeLedger calls this once the balance is
+ * known, and the INSERT lands cleanly with nothing to update.
  */
 export function mirrorMerchantWalletLedger(doc) {
+  // Reservations carry a null balanceAfter. Skipping them here means the model
+  // hook and the completion path can both call this without the caller having
+  // to know which stage it is at.
+  if (doc?.balanceAfter == null) return;
   return mirror('merchant_wallet_ledger', () => pgQuery(
     `INSERT INTO merchant_wallet_ledger (mongo_id, tx_id, merchant_id, direction, amount_paise, balance_after_paise, reason, created_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8, now()))
-     ON CONFLICT (tx_id) DO UPDATE SET
-       balance_after_paise = COALESCE(merchant_wallet_ledger.balance_after_paise, EXCLUDED.balance_after_paise)`,
+     ON CONFLICT (tx_id) DO NOTHING`,
     [String(doc._id), doc.txId, String(doc.merchantId), doc.type || doc.direction || null,
-     paise(doc.amount), doc.balanceAfter != null ? paise(doc.balanceAfter) : null,
+     paise(doc.amount), paise(doc.balanceAfter),
      doc.reason || doc.description || null, doc.createdAt || null],
   ));
 }

@@ -48,7 +48,12 @@ export const TABLES = [
   { name: 'transactions',           model: 'Transaction',          key: '_id',            pgKey: 'mongo_id',        since: 'timestamp',    mirror: mirrorTransaction },
   { name: 'payment_orders',         model: 'PaymentOrder',         key: '_id',            pgKey: 'mongo_id',        since: 'createdAt',    mirror: mirrorPaymentOrder },
   { name: 'utr_registry',           model: 'UTRRegistry',          key: 'utr',            pgKey: 'utr',             since: 'registeredAt', mirror: mirrorUtr },
-  { name: 'merchant_wallet_ledger', model: 'MerchantWalletLedger', key: 'txId',           pgKey: 'tx_id',           since: 'createdAt',    mirror: mirrorMerchantWalletLedger },
+  // `where` excludes rows the mirror deliberately does not copy. A merchant
+  // ledger row with a null balanceAfter is an in-flight RESERVATION: the
+  // service has not yet learned the resulting balance, and the row may still
+  // be deleted. Without this filter every concurrent reservation would read
+  // as drift and the cutover-readiness streak would reset on ordinary traffic.
+  { name: 'merchant_wallet_ledger', model: 'MerchantWalletLedger', key: 'txId',           pgKey: 'tx_id',           since: 'createdAt',    mirror: mirrorMerchantWalletLedger, where: { balanceAfter: { $ne: null } } },
 ];
 
 /** Alias for tests/tooling that assert on the forward reconcile's shape. */
@@ -61,7 +66,7 @@ export async function reconcileTable(t, { since = null, backfill = false } = {})
   if (since && !t.since) {
     throw new Error(`reconcileTable(${t.name}): no 'since' field declared — an incremental run would match zero documents`);
   }
-  const filter = since ? { [t.since]: { $gte: since } } : {};
+  const filter = { ...(t.where ?? {}), ...(since ? { [t.since]: { $gte: since } } : {}) };
   const docs = await Model.find(filter).limit(50000).lean();
 
   const keys = docs.map(d => String(d[t.key]));
@@ -345,11 +350,19 @@ export async function runReconcile({
   });
   const merchantLedgers = await reconcileMerchantLedgers();
 
+  // Domain 2: are the merchant's COMMITTED pockets explained by settlements
+  // that are actually outstanding? A reserved balance with no settlement behind
+  // it is money frozen for an order that no longer exists, and neither the row
+  // counts nor the balance comparison can see it.
+  const { findUnexplainedSettlementPockets } = await import('./merchantSettlementPg.js');
+  const settlementPockets = await findUnexplainedSettlementPockets();
+
   const forwardDrift = results.some((r) => r.missingInPg > 0)
     || !pgTrial.conservesToZero
     || merchantBalances.drifted > 0
     || merchantBalances.orphansInPg > 0
-    || merchantLedgers.unexplained > 0;
+    || merchantLedgers.unexplained > 0
+    || settlementPockets.length > 0;
 
   // The reverse direction only means something once Postgres owns a path — or
   // when an operator explicitly asks for it during a drill or a fallback.
@@ -375,6 +388,11 @@ export async function runReconcile({
     trialBalance: pgTrial,
     merchantBalances,
     merchantLedgers,
+    merchantSettlements: {
+      table: 'merchant_settlements',
+      unexplainedPockets: settlementPockets.length,
+      sample: settlementPockets.slice(0, 5),
+    },
     reverse: reverseResults,
     mongoTrialBalance: mongoTrial,
     ledgersAgree,

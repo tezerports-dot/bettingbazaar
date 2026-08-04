@@ -151,8 +151,16 @@ const CAPABILITIES = Object.freeze({
     notes: 'Merchant token balances. Movements are Postgres-authoritative when flipped: one transaction, row-locked, guard in the UPDATE, entry in the same transaction, UNIQUE tx_id idempotency. READS for display, scoring and assignment eligibility still come from the live-mirrored Mongo document — the authoritative sufficiency check is the debit itself, which refuses transactionally, so a stale read can only misroute an order, never move money wrongly. Reserved/settlement pockets are structurally zero until merchant_settlement lands; that domain must revisit the single-tokenBalance projection before writing them.',
   },
   [MONEY_PATHS.MERCHANT_SETTLEMENT]: {
-    implemented: false, dualWrite: false, reconciled: false, rollback: false,
-    notes: 'User↔merchant settlement lifecycle (reserve/complete/cancel/reverse). The Postgres primitives exist in merchantWalletPg.js, but nothing calls them and MerchantWalletLedger cannot represent a per-pocket movement — the reverse mirror refuses one rather than write keys Mongo\'s idempotency gate cannot match.',
+    // BUILT and tested, NOT routed. postgres/merchantSettlementPg.js is a real
+    // reader and writer with 24 tests against PostgreSQL; `implemented` also
+    // requires production call sites to consult the authority resolver, and
+    // withdrawalHold.service.js does not yet. Same standard that kept
+    // merchant_wallet at false while its implementation already existed.
+    implemented: false,
+    dualWrite:   false,
+    reconciled:  false,
+    rollback:    false,
+    notes: 'User↔merchant settlement lifecycle. postgres/merchantSettlementPg.js EXISTS: merchant_settlements + merchant_settlement_transitions, expected-previous-state guards in the UPDATE, the transition and its pocket movement composed into ONE transaction under a single merchant lock, two UNIQUE idempotency gates, append-only history. 24 tests green including a 200-way reservation race, 200-copy retry storms on both open and transition, a racing complete-vs-cancel, and a backend killed mid-transition. Remaining: route withdrawalHold.service.js through the resolver; mirror PaymentOrder.merchantCreditStatus into merchant_settlements (dualWrite); write settlement state back onto the order (rollback). `reconciled` stays false deliberately — findUnexplainedSettlementPockets is in the 5-minute pass and proves the POCKETS are explained by the settlements, but that is an intra-Postgres invariant; there is no Mongo settlement table to compare against until the mirror exists.',
   },
   [MONEY_PATHS.ADMIN_ISSUANCE]: {
     implemented: false, dualWrite: false, reconciled: false, rollback: false,
@@ -215,6 +223,16 @@ const TESTING = Object.freeze({
     concurrencyTested: true,
     infrastructureTested: false,
     evidence: 'backend/tests/postgres/merchantWalletPg.test.js (200 racing reservations against a balance that fits 100) + merchantWalletPgAuthority.test.js (200 racing debits through the authority path, 200-copy retry storm on one key). Infrastructure drills NOT RUN.',
+  },
+  [MONEY_PATHS.MERCHANT_SETTLEMENT]: {
+    concurrencyTested: true,
+    // A connection killed mid-transition IS one row of the Phase 3 drill, and
+    // it found a real defect (a dead client returned to the pool poisoning the
+    // next caller). It is not the whole drill: no database restart under
+    // sustained load, no multi-instance contention, no failover. One row is not
+    // a certification.
+    infrastructureTested: false,
+    evidence: 'backend/tests/postgres/merchantSettlementPg.test.js — 200 concurrent reservations against inventory that fits 100, 200-copy retry storms on both open and transition, racing complete-vs-cancel (exactly one wins), an interleaved storm of every transition type, plus failure injection: a backend terminated mid-transition leaves state and money both untouched and the settlement still advanceable. Full infrastructure drills NOT RUN.',
   },
 });
 

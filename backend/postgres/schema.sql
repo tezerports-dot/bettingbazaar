@@ -311,6 +311,14 @@ CREATE TABLE IF NOT EXISTS merchant_wallets (
 CREATE TABLE IF NOT EXISTS merchant_wallet_entries (
   id                   BIGSERIAL PRIMARY KEY,
   tx_id                TEXT NOT NULL UNIQUE,
+  -- The caller's LOGICAL key. A movement that touches several pockets writes
+  -- one row per pocket, each with its own unique tx_id (`<key>:<pocket>`),
+  -- but all of them share this. Without it, "did movement K already happen?"
+  -- could only be asked with a prefix match — and a prefix is not an identity:
+  -- `bet_1` matches `bet_10:available`. That exact bug was found and fixed in
+  -- walletPg during this audit; this column is how the merchant side avoids
+  -- reintroducing it.
+  movement_id          TEXT,
   merchant_id          TEXT NOT NULL,
   pocket               TEXT NOT NULL,
   amount_paise         BIGINT NOT NULL,
@@ -344,5 +352,84 @@ CREATE INDEX IF NOT EXISTS merchant_wallet_entries_merchant_idx
   ON merchant_wallet_entries (merchant_id, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS merchant_wallet_entries_ref_idx
   ON merchant_wallet_entries (ref_model, ref_id);
+-- Existing deployments: the column is additive and nullable, so this is safe to
+-- re-run and safe on a table that already has rows (they keep movement_id NULL,
+-- which is correct — every one of them was a single-leg movement whose tx_id IS
+-- its logical key). It MUST precede the index below: on a table that already
+-- exists, CREATE TABLE IF NOT EXISTS is a no-op, so the column arrives here or
+-- not at all and the index would fail with 42703.
+ALTER TABLE merchant_wallet_entries ADD COLUMN IF NOT EXISTS movement_id TEXT;
+CREATE INDEX IF NOT EXISTS merchant_wallet_entries_movement_idx
+  ON merchant_wallet_entries (movement_id);
 CREATE OR REPLACE TRIGGER merchant_wallet_entries_append_only
   BEFORE UPDATE OR DELETE ON merchant_wallet_entries FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- MERCHANT SETTLEMENT (domain 2)
+--
+-- The lifecycle of one user↔merchant settlement, as a state machine the
+-- database enforces rather than the application remembers.
+--
+-- The Mongo original keeps this state on the PaymentOrder
+-- (`merchantCreditStatus`) and moves the money in SEPARATE operations after the
+-- transition commits. withdrawalHold.settleHold documents the consequence in
+-- its own comment: if the player-side release throws, "the merchant is not
+-- credited and the next sweep cannot retry (the order has left HELD)". The
+-- order is stranded and needs a human.
+--
+-- Here the transition and the merchant-side movement are ONE transaction, so
+-- that window does not exist: either the state advanced and the pockets moved,
+-- or neither did and the retry finds the settlement exactly where it was.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS merchant_settlements (
+  settlement_id TEXT PRIMARY KEY,
+  merchant_id   TEXT NOT NULL,
+  order_id      TEXT NOT NULL,
+  -- DEPOSIT  merchant dispenses tokens to the user (inventory leaves)
+  -- WITHDRAWAL  merchant receives tokens from the user (owed, then spendable)
+  direction     TEXT NOT NULL,
+  amount_paise  BIGINT NOT NULL,
+  state         TEXT NOT NULL DEFAULT 'RESERVED',
+  reason        TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT merchant_settlements_direction_known
+    CHECK (direction IN ('DEPOSIT', 'WITHDRAWAL')),
+  -- The complete set of states. A transition to anything else cannot be
+  -- written, so an application bug becomes a constraint violation rather than a
+  -- settlement sitting in a state nothing knows how to advance.
+  CONSTRAINT merchant_settlements_state_known
+    CHECK (state IN ('RESERVED', 'SETTLED', 'CANCELLED', 'REVERSED')),
+  CONSTRAINT merchant_settlements_amount_positive CHECK (amount_paise > 0)
+);
+CREATE INDEX IF NOT EXISTS merchant_settlements_merchant_idx
+  ON merchant_settlements (merchant_id, state);
+CREATE INDEX IF NOT EXISTS merchant_settlements_order_idx
+  ON merchant_settlements (order_id);
+
+-- Every state change, append-only. The settlements table holds the CURRENT
+-- state; this holds how it got there, and it is the only place a duplicate
+-- transition can be detected durably — `tx_id` UNIQUE is the idempotency gate,
+-- the same contract the wallets use, so a replay collides inside the
+-- transaction rather than relying on a pre-read a concurrent caller can pass.
+CREATE TABLE IF NOT EXISTS merchant_settlement_transitions (
+  id            BIGSERIAL PRIMARY KEY,
+  tx_id         TEXT NOT NULL UNIQUE,
+  settlement_id TEXT NOT NULL REFERENCES merchant_settlements (settlement_id),
+  from_state    TEXT,
+  to_state      TEXT NOT NULL,
+  actor         TEXT,
+  reason        TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT merchant_settlement_transitions_to_state_known
+    CHECK (to_state IN ('RESERVED', 'SETTLED', 'CANCELLED', 'REVERSED')),
+  -- A transition must actually change something. A row claiming X → X is not a
+  -- transition, it is a duplicate that escaped the idempotency gate.
+  CONSTRAINT merchant_settlement_transitions_moves
+    CHECK (from_state IS NULL OR from_state <> to_state)
+);
+CREATE INDEX IF NOT EXISTS merchant_settlement_transitions_settlement_idx
+  ON merchant_settlement_transitions (settlement_id, id);
+CREATE OR REPLACE TRIGGER merchant_settlement_transitions_append_only
+  BEFORE UPDATE OR DELETE ON merchant_settlement_transitions
+  FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();

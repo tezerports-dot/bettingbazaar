@@ -90,11 +90,12 @@ export async function getMerchantBalances(merchantId) {
  * the callback the balances AS OF that lock. Same contract as walletPg's
  * withWalletLock — see there for why the lock rather than a hopeful pre-read.
  */
-async function withMerchantLock(merchantId, fn) {
+export async function withMerchantLock(merchantId, fn) {
   const mid = String(merchantId);
   const pool = await getPool();
   if (!pool) throw new Error('Postgres not configured (DATABASE_URL unset)');
   const client = await connectGuarded(pool);
+  let failure = null;
 
   try {
     await client.query('BEGIN');
@@ -109,10 +110,19 @@ async function withMerchantLock(merchantId, fn) {
     await client.query(commit ? 'COMMIT' : 'ROLLBACK');
     return value;
   } catch (error) {
+    failure = error;
     try { await client.query('ROLLBACK'); } catch { /* already unwound */ }
     throw error;
   } finally {
-    client.release();
+    // Passing the error DESTROYS the client instead of returning it to the
+    // pool. That matters when the backend went away mid-transaction — a
+    // Postgres restart, a failover, an admin pg_terminate_backend: the socket
+    // is dead but a plain release() puts it back in rotation, and the NEXT
+    // caller inherits "terminating connection due to administrator command" on
+    // a query of its own. Found by killing a backend mid-transition in the
+    // settlement suite, where the failure surfaced two statements later in an
+    // unrelated read.
+    client.release(failure ?? undefined);
   }
 }
 
@@ -156,11 +166,12 @@ async function appendEntries(client, mid, entries) {
     for (const e of entries) {
       await client.query(
         `INSERT INTO merchant_wallet_entries
-           (tx_id, merchant_id, pocket, amount_paise, balance_before_paise, balance_after_paise,
+           (tx_id, movement_id, merchant_id, pocket, amount_paise, balance_before_paise, balance_after_paise,
             entry_type, operation, actor, reason, ref_model, ref_id, correlation_id, reverses_tx_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
         [
-          e.txId, mid, e.pocket, Math.abs(e.amountPaise), e.balanceBefore, e.balanceAfter,
+          e.txId, e.movementId ?? e.txId, mid, e.pocket, Math.abs(e.amountPaise),
+          e.balanceBefore, e.balanceAfter,
           e.entryType, e.operation, e.actor ?? null, e.reason ?? null,
           e.refModel ?? null, e.refId ? String(e.refId) : null,
           e.correlationId ?? null, e.reversesTxId ?? null,
@@ -203,39 +214,63 @@ export async function applyMerchantMovement({
     throw new Error('applyMerchantMovement requires at least one non-zero leg');
   }
 
-  return withMerchantLock(merchantId, async ({ client, mid, balances }) => {
-    const after = await movePockets(client, mid, legs, { allowNegativeAvailable });
-    if (!after) {
-      return { commit: false, value: { ok: false, insufficient: true, idempotent: false, balances } };
-    }
-
-    // One entry per pocket that moved, each carrying its own before/after so a
-    // reader never has to recompute them from a running total.
-    const entries = Object.entries(legs)
-      .filter(([, delta]) => delta)
-      .map(([pocket, delta], index) => ({
-        // Per-pocket suffix keeps every entry's tx_id unique while the whole
-        // movement still replays under one caller-supplied key.
-        txId: Object.keys(legs).filter((p) => legs[p]).length > 1 ? `${txId}:${pocket}` : txId,
-        pocket,
-        amountPaise: delta,
-        balanceBefore: balances[pocket],
-        balanceAfter: after[pocket],
-        entryType: delta > 0 ? 'CREDIT' : 'DEBIT',
-        operation, actor, reason, refModel, refId, correlationId,
-        reversesTxId: index === 0 ? reversesTxId : null,
-      }));
-
-    if (!await appendEntries(client, mid, entries)) {
-      return { commit: false, value: { ok: true, idempotent: true, balances } };
-    }
-    // `entries` travels back out so the caller can mirror exactly what
-    // committed rather than reconstructing it — merchantWalletPgAuthority's
-    // rollback leg copies these rows into Mongo, and a reconstruction that
-    // drifted from what the transaction actually wrote would make the fallback
-    // silently wrong.
-    return { commit: true, value: { ok: true, idempotent: false, balances: after, entries } };
+  return withMerchantLock(merchantId, async (ctx) => {
+    const value = await applyMovementWithin(ctx, {
+      txId, operation, legs, actor, reason, refModel, refId,
+      correlationId, reversesTxId, allowNegativeAvailable,
+    });
+    return { commit: value.ok && !value.idempotent, value };
   });
+}
+
+/**
+ * The movement itself, executed inside a lock someone else opened.
+ *
+ * Split out from applyMerchantMovement so a caller that must do MORE than move
+ * pockets — advance a settlement's state, in the same transaction, or not at
+ * all — can compose with it instead of opening a second transaction.
+ * merchantSettlementPg is that caller, and the composition is the whole point:
+ * the Mongo original moves state and money separately and documents the
+ * stranding window that creates.
+ *
+ * Does NOT commit or roll back. The lock holder decides that, because only it
+ * knows whether the rest of the transaction succeeded.
+ */
+export async function applyMovementWithin(
+  { client, mid, balances },
+  {
+    txId, operation, legs, actor = null, reason = null, refModel = null, refId = null,
+    correlationId = null, reversesTxId = null, allowNegativeAvailable = false,
+  },
+) {
+  const after = await movePockets(client, mid, legs, { allowNegativeAvailable });
+  if (!after) return { ok: false, insufficient: true, idempotent: false, balances };
+
+  // One entry per pocket that moved, each carrying its own before/after so a
+  // reader never has to recompute them from a running total.
+  const movedPockets = Object.keys(legs).filter((p) => legs[p]);
+  const entries = movedPockets.map((pocket, index) => ({
+    // Per-pocket suffix keeps every entry's tx_id unique while the whole
+    // movement still replays under one caller-supplied key.
+    txId: movedPockets.length > 1 ? `${txId}:${pocket}` : txId,
+    movementId: txId,
+    pocket,
+    amountPaise: legs[pocket],
+    balanceBefore: balances[pocket],
+    balanceAfter: after[pocket],
+    entryType: legs[pocket] > 0 ? 'CREDIT' : 'DEBIT',
+    operation, actor, reason, refModel, refId, correlationId,
+    reversesTxId: index === 0 ? reversesTxId : null,
+  }));
+
+  if (!await appendEntries(client, mid, entries)) {
+    return { ok: true, idempotent: true, balances };
+  }
+  // `entries` travels back out so the caller can mirror exactly what committed
+  // rather than reconstructing it — merchantWalletPgAuthority's rollback leg
+  // copies these rows into Mongo, and a reconstruction that drifted from what
+  // the transaction actually wrote would make the fallback silently wrong.
+  return { ok: true, idempotent: false, balances: after, entries };
 }
 
 // ── Operations ───────────────────────────────────────────────────────────────

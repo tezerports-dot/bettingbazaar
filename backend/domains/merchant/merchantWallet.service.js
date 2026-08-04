@@ -57,14 +57,33 @@ function mirrorBalance(merchant) {
 
 function sessOpts(session) { return session ? { session } : {}; }
 
+/**
+ * Has this logical operation already been applied?
+ *
+ * Matches on EITHER key. A movement made by the Mongo path writes one row whose
+ * txId is the caller's key; a movement made by the Postgres path and mirrored
+ * back may write several rows, each with a per-pocket txId and all of them
+ * carrying the caller's key as `movementId`. Both must be recognised, or a
+ * fallback to Mongo would fail to see movements Postgres made and the next
+ * retry would apply them a second time.
+ *
+ * An $or over two indexed fields, not a prefix match: `bet_1` would prefix-match
+ * `bet_10:available`, which is the exact class of bug this audit found in
+ * walletPg's LIKE probe.
+ */
 async function alreadyApplied(txId, session) {
-  return MerchantWalletLedger.findOne({ txId }, null, sessOpts(session)).lean();
+  return MerchantWalletLedger.findOne(
+    { $or: [{ txId }, { movementId: txId }] }, null, sessOpts(session),
+  ).lean();
 }
 
 async function reserveLedger({ merchantId, type, amount, reason, refModel, refId, txId }, session) {
   try {
     const [ledger] = await MerchantWalletLedger.create(
-      [{ merchantId, type, amount, balanceAfter: null, reason, refModel, refId, txId }],
+      // movementId == txId on this path: a Mongo movement is always one row, so
+      // its own key IS its logical key. Setting it here keeps the $or gate
+      // above uniform rather than special-casing which store wrote the row.
+      [{ merchantId, type, amount, balanceAfter: null, reason, refModel, refId, txId, movementId: txId }],
       sessOpts(session)
     );
     return { ledger, reserved: true };
@@ -75,15 +94,21 @@ async function reserveLedger({ merchantId, type, amount, reason, refModel, refId
 }
 
 /**
- * Fill in the reservation's balanceAfter, and re-mirror the completed row.
+ * Fill in the reservation's balanceAfter, and mirror the now-complete row.
  *
- * The re-mirror is not optional. The Postgres mirror is hooked on the model's
- * post-save, which fires when reserveLedger CREATES the row — at that moment
- * balanceAfter is still null, and the updateOne below is not a document save so
- * it fires nothing. Every merchant ledger row in Postgres therefore carried
- * balance_after_paise = NULL, which is the one column a rollback reads to
- * restore Merchant.tokenBalance. Passing the completed doc through the mirror
- * again is what makes the merchant path's dual-write actually complete.
+ * This is the ONLY point at which a merchant ledger row reaches Postgres. The
+ * model's post-save hook fires when reserveLedger CREATES the row, when
+ * balanceAfter is still null and the row may yet be deleted — the mirror skips
+ * those. The updateOne below is not a document save, so it fires no hook at
+ * all; without this call the row would never be mirrored and
+ * balance_after_paise, the one column a rollback reads to restore
+ * Merchant.tokenBalance, would stay NULL forever.
+ *
+ * Patching the already-mirrored row instead was tried and cannot work:
+ * merchant_wallet_ledger is append-only at the database level, so an upsert's
+ * DO UPDATE is rejected by the trigger — silently, because the mirror is
+ * fire-and-forget. Mirroring once, at completion, is the shape that respects
+ * the invariant instead of fighting it.
  */
 async function completeLedger(ledger, balanceAfter, session) {
   await MerchantWalletLedger.updateOne(
