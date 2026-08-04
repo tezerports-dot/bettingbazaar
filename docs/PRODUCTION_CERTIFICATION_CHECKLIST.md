@@ -32,9 +32,9 @@ Generated from `backend/postgres/moneyAuthority.js` by `npm run certify:report`.
 | Merchant ↔ User Settlement | ✅ | ✅ | ✅ | ✅ | ⏳ | ⏳ |
 | Admin Treasury / Token Issuance | ✅ | ✅ | ✅ | ✅ | ⏳ | ⏳ |
 | Betting | ⏳ | ✅ | ✅ | ✅ | ⏳ | ⏳ |
-| Sports Settlement | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ |
-| Casino Settlement | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ |
-| Bonuses & Commissions | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ |
+| Sports Settlement | ⏳ | ⏳ | ⏳ | ✅ | ⏳ | ⏳ |
+| Casino Settlement | ⏳ | ⏳ | ⏳ | ✅ | ⏳ | ⏳ |
+| Bonuses & Commissions | ⏳ | ⏳ | ⏳ | ✅ | ⏳ | ⏳ |
 
 ### What is blocking each domain
 
@@ -48,9 +48,9 @@ Generated from `backend/postgres/moneyAuthority.js` by `npm run certify:report`.
 | Merchant ↔ User Settlement | infrastructureTested |
 | Admin Treasury / Token Issuance | infrastructureTested |
 | Betting | implemented, infrastructureTested |
-| Sports Settlement | implemented, dualWrite, reconciled, rollback, concurrencyTested, infrastructureTested |
-| Casino Settlement | implemented, dualWrite, reconciled, rollback, concurrencyTested, infrastructureTested |
-| Bonuses & Commissions | implemented, dualWrite, reconciled, rollback, concurrencyTested, infrastructureTested |
+| Sports Settlement | implemented, dualWrite, reconciled, rollback, infrastructureTested |
+| Casino Settlement | implemented, dualWrite, reconciled, rollback, infrastructureTested |
+| Bonuses & Commissions | implemented, dualWrite, reconciled, rollback, infrastructureTested |
 
 <!-- END GENERATED: certification-matrix -->
 

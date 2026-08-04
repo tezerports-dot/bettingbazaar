@@ -23,6 +23,7 @@ marked PASS on the strength of reading alone.
 | M-4 | `_mongoBetStake` moves money outside a transaction; ledger rows are best-effort | **High** | **Resolved in the Postgres design** (`betPg.js`); Mongo path unchanged |
 | M-5 | `atomicBet` is dead code with a non-functional idempotency key | Low | Documented |
 | M-6 | `reserveAdminMint` combines `$expr` with `upsert`, which MongoDB refuses — admin token issuance threw on every call | **High** | **Fixed** |
+| M-7 | A casino `ROLLBACK`/`REFUND` credits the player without proving a matching prior debit — a provider can mint real money | **High** | **Resolved in the Postgres design** (`casinoPg.js`); Mongo path unchanged |
 
 ---
 
@@ -234,6 +235,44 @@ other cannot have it:
 `backend/tests/unit/adminIssuanceRouting.test.js` pins the invariant with no
 database at all: no query may carry `$expr` and `upsert` together, and both
 halves must still be present.
+
+---
+
+## M-7 — casino rollbacks are unbounded and unproven (RESOLVED IN POSTGRES)
+
+`domains/casino/gameProvider.routes.js`
+
+```js
+} else if (type === 'ROLLBACK' || type === 'REFUND') {
+  await refundOrder(userId, amount, roundId, 'depositBalance');
+}
+```
+
+No check that the round was ever bet on. No bound on the amount. No comparison
+against what the round actually took. A provider that is buggy, replayed, or
+hostile can **credit a player real money** by posting a rollback for a round
+that never had a bet — or a rollback larger than the bet it claims to reverse —
+and nothing in this path can distinguish that from a legitimate reversal.
+
+The `txId` duplicate check above it stops the *same* callback applying twice. It
+does nothing about a *different* callback that should never have been honoured
+at all, which is the actual exposure.
+
+### Resolved in PostgreSQL, 2026-08-04 — `postgres/casinoPg.js`
+
+A reversal must name a round with `debited_paise > 0`, and
+`refunded_paise <= debited_paise` is a **CHECK constraint** — so the bound holds
+against a future code path that forgets to test it. The `if` produces a clean
+refusal; the constraint is what makes the rule a property of the *data* rather
+than of one function.
+
+The running totals move under the round's row lock inside the same transaction
+as the wallet movement, so two concurrent rollbacks cannot both read "nothing
+refunded yet". That case is tested with two *distinct* provider ids, where the
+idempotency gate cannot help and only the lock can.
+
+**The Mongo path is unchanged** — resolved in the store that will carry
+authority, not patched in the one being migrated away from.
 
 ---
 

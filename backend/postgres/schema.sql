@@ -631,3 +631,100 @@ DROP TRIGGER IF EXISTS bet_transitions_append_only ON bet_transitions;
 CREATE TRIGGER bet_transitions_append_only
   BEFORE UPDATE OR DELETE ON bet_transitions
   FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
+-- ── Domain 6: cycle settlement ─────────────────────────────────────────────
+-- The Mongo path settles a cycle by flipping `Cycle.isSettled` and then running
+-- payouts, and it deliberately RE-ADMITS a PROCESSING cycle so a recovery task
+-- can resume an interrupted run. Two passes over one cycle is therefore a
+-- supported scenario, and money safety rests entirely on per-bet idempotency.
+-- That is a correct design, but it leaves nothing that records what a pass
+-- ACTUALLY DID — so a half-finished run cannot be told from a finished one
+-- except by re-deriving it from the bets.
+--
+-- Here a settlement run is a row. It names the cycle, the winning side and the
+-- pass that claimed it, and the per-bet outcomes are attributable to it.
+CREATE TABLE IF NOT EXISTS cycle_settlements (
+  id             BIGSERIAL PRIMARY KEY,
+  settlement_id  TEXT NOT NULL UNIQUE,     -- caller's deterministic key
+  cycle_id       TEXT NOT NULL UNIQUE,     -- one settlement per cycle, ever
+  winning_side   TEXT NOT NULL,
+  status         TEXT NOT NULL,
+  bets_total     INTEGER NOT NULL DEFAULT 0,
+  bets_settled   INTEGER NOT NULL DEFAULT 0,
+  payout_paise   BIGINT  NOT NULL DEFAULT 0 CHECK (payout_paise >= 0),
+  stake_paise    BIGINT  NOT NULL DEFAULT 0 CHECK (stake_paise >= 0),
+  started_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at   TIMESTAMPTZ,
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT cycle_settlements_status_check
+    CHECK (status IN ('RUNNING','COMPLETED','VOIDED'))
+);
+CREATE INDEX IF NOT EXISTS cycle_settlements_status_idx ON cycle_settlements (status, started_at);
+
+-- ── Domain 7: casino provider callbacks ────────────────────────────────────
+-- The defect this table exists to remove (docs/MONGO_MONEY_AUDIT, matrix):
+-- a ROLLBACK or REFUND callback credits the player WITHOUT having to prove a
+-- matching prior debit. A provider that is buggy, replayed, or hostile can
+-- therefore mint real money by sending a rollback for a round that never had a
+-- bet — and nothing in the current path can tell that from a legitimate one.
+--
+-- Every callback is a row keyed on the provider's own tx id, and a rollback
+-- must name the round it reverses. The `debited_paise`/`refunded_paise`
+-- running totals on the ROUND are what make "you cannot give back more than
+-- was taken" checkable inside one transaction.
+CREATE TABLE IF NOT EXISTS casino_rounds (
+  id              BIGSERIAL PRIMARY KEY,
+  round_id        TEXT NOT NULL UNIQUE,
+  user_id         TEXT NOT NULL,
+  provider_key    TEXT NOT NULL,
+  game_id         TEXT,
+  debited_paise   BIGINT NOT NULL DEFAULT 0 CHECK (debited_paise  >= 0),
+  credited_paise  BIGINT NOT NULL DEFAULT 0 CHECK (credited_paise >= 0),
+  refunded_paise  BIGINT NOT NULL DEFAULT 0 CHECK (refunded_paise >= 0),
+  -- The whole point: a round can never give back more than it took.
+  CONSTRAINT casino_rounds_refund_bound CHECK (refunded_paise <= debited_paise),
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS casino_rounds_user_idx ON casino_rounds (user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS casino_transactions (
+  id            BIGSERIAL PRIMARY KEY,
+  tx_id         TEXT NOT NULL UNIQUE,      -- the PROVIDER's id; the idempotency gate
+  round_id      TEXT NOT NULL REFERENCES casino_rounds (round_id) ON DELETE RESTRICT,
+  user_id       TEXT NOT NULL,
+  tx_type       TEXT NOT NULL,
+  amount_paise  BIGINT NOT NULL CHECK (amount_paise > 0),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT casino_transactions_type_check
+    CHECK (tx_type IN ('BET','WIN','ROLLBACK','REFUND'))
+);
+CREATE INDEX IF NOT EXISTS casino_transactions_round_idx ON casino_transactions (round_id, id);
+
+DROP TRIGGER IF EXISTS casino_transactions_append_only ON casino_transactions;
+CREATE TRIGGER casino_transactions_append_only
+  BEFORE UPDATE OR DELETE ON casino_transactions
+  FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
+-- ── Domain 8: bonuses and commissions ──────────────────────────────────────
+-- Both are money the PLATFORM gives away, and the treasury already models the
+-- pools they come out of (BONUS_POOL, REFERRAL_POOL, COMMISSION_POOL). Paying
+-- from a pool rather than crediting from nowhere is what keeps the closed-books
+-- invariant true: a bonus is a transfer, not a mint.
+CREATE TABLE IF NOT EXISTS bonus_grants (
+  id             BIGSERIAL PRIMARY KEY,
+  grant_id       TEXT NOT NULL UNIQUE,     -- caller's deterministic key
+  user_id        TEXT NOT NULL,
+  kind           TEXT NOT NULL,            -- SIGNUP, REFERRAL, CASHBACK, COMMISSION, …
+  pool           TEXT NOT NULL,            -- the treasury account it is paid from
+  amount_paise   BIGINT NOT NULL CHECK (amount_paise > 0),
+  status         TEXT NOT NULL,
+  ref_model      TEXT,
+  ref_id         TEXT,
+  granted_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT bonus_grants_status_check
+    CHECK (status IN ('PAID','CLAWED_BACK'))
+);
+CREATE INDEX IF NOT EXISTS bonus_grants_user_idx ON bonus_grants (user_id, granted_at DESC);
+CREATE INDEX IF NOT EXISTS bonus_grants_kind_idx ON bonus_grants (kind, status);
