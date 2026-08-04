@@ -569,3 +569,51 @@ CREATE INDEX IF NOT EXISTS order_transitions_order_idx  ON order_transitions (or
 CREATE INDEX IF NOT EXISTS order_transitions_ledger_idx ON order_transitions (ledger_key);
 CREATE OR REPLACE TRIGGER order_transitions_append_only
   BEFORE UPDATE OR DELETE ON order_transitions FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
+-- ── Domain 5: bet lifecycle ────────────────────────────────────────────────
+-- The Mongo original keeps a bet's status on the Bet document and moves the
+-- stake separately (walletAuthority._mongoBetStake). Two defects follow from
+-- that split and neither is ported here:
+--   M-2  the balance move has NO idempotency key, so a replayed request
+--        debits twice; and
+--   M-4  the ledger is written outside the transaction, so money can move
+--        unaudited — and the ledger is what reconciliation is computed from,
+--        so the failure erases its own symptom.
+-- Here the bet row, its stake movement and its ledger rows commit together or
+-- not at all, and `bet_id` is UNIQUE so a replay collides inside the
+-- transaction rather than creating a second bet.
+CREATE TABLE IF NOT EXISTS bets (
+  id              BIGSERIAL PRIMARY KEY,
+  bet_id          TEXT NOT NULL UNIQUE,        -- caller's deterministic key
+  user_id         TEXT NOT NULL,
+  cycle_id        TEXT NOT NULL,
+  side            TEXT NOT NULL,
+  stake_paise     BIGINT NOT NULL CHECK (stake_paise > 0),
+  payout_paise    BIGINT NOT NULL DEFAULT 0 CHECK (payout_paise >= 0),
+  status          TEXT NOT NULL,
+  placed_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  settled_at      TIMESTAMPTZ,
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT bets_status_check
+    CHECK (status IN ('PENDING','WON','LOST','VOID','REFUNDED'))
+);
+CREATE INDEX IF NOT EXISTS bets_user_idx  ON bets (user_id, placed_at DESC);
+-- The settlement sweep's query: every unsettled bet on one cycle.
+CREATE INDEX IF NOT EXISTS bets_cycle_idx ON bets (cycle_id, status);
+
+CREATE TABLE IF NOT EXISTS bet_transitions (
+  id           BIGSERIAL PRIMARY KEY,
+  tx_id        TEXT NOT NULL UNIQUE,           -- stops the STATE advancing twice
+  bet_id       TEXT NOT NULL REFERENCES bets (bet_id) ON DELETE RESTRICT,
+  from_status  TEXT,
+  to_status    TEXT NOT NULL,
+  actor        TEXT,
+  reason       TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS bet_transitions_bet_idx ON bet_transitions (bet_id, id);
+
+DROP TRIGGER IF EXISTS bet_transitions_append_only ON bet_transitions;
+CREATE TRIGGER bet_transitions_append_only
+  BEFORE UPDATE OR DELETE ON bet_transitions
+  FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();

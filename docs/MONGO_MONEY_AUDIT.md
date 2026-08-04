@@ -18,9 +18,9 @@ marked PASS on the strength of reading alone.
 | # | Finding | Severity | Status |
 |---|---|---|---|
 | M-1 | `debitForBet` double-charges when a replay recomputes a different pocket split | **High** | **Fixed** |
-| M-2 | `_mongoBetStake` moves balances with no idempotency key at all | **High** | **Documented, not fixed** — see proposed design |
+| M-2 | `_mongoBetStake` moves balances with no idempotency key at all | **High** | **Resolved in the Postgres design** (`betPg.js`); Mongo path unchanged |
 | M-3 | `_mongoBetStake` swallows all ledger-write errors, including the duplicate-key that signals M-2 | Medium | **Partly fixed** — now metered and logged |
-| M-4 | `_mongoBetStake` moves money outside a transaction; ledger rows are best-effort | **High** | **Documented, not fixed** — see proposed design |
+| M-4 | `_mongoBetStake` moves money outside a transaction; ledger rows are best-effort | **High** | **Resolved in the Postgres design** (`betPg.js`); Mongo path unchanged |
 | M-5 | `atomicBet` is dead code with a non-functional idempotency key | Low | Documented |
 | M-6 | `reserveAdminMint` combines `$expr` with `upsert`, which MongoDB refuses — admin token issuance threw on every call | **High** | **Fixed** |
 
@@ -132,6 +132,28 @@ without full atomicity — which fixes the double-charge but leaves M-4 open.
 **Do not ship the cutover assuming this is equivalent to the Postgres path.**
 It is not: `walletPg.applyMovementPaise` puts balance and ledger in one
 transaction under a row lock. This does neither.
+
+### Resolved in PostgreSQL, 2026-08-04 — `postgres/betPg.js`
+
+The design above was taken, minus the fallback. `bets` + append-only
+`bet_transitions`, with the bet row, its stake movement and its ledger rows in
+**one transaction** under a single wallet lock (`walletPg.applyMovementWithin`,
+extracted for exactly this).
+
+- **M-2** — `bet_id` is UNIQUE and the collision happens inside the transaction,
+  so a replayed request debits nothing further. The key must come from stable
+  request identity; `middleware/idempotencyKey.js` is where a caller gets one.
+  A fresh id per attempt is not idempotency, it is a new bet.
+- **M-4** — impossible by construction. A settled bet with no ledger row behind
+  it cannot be produced through this module; `findBetsMissingStakeMovement` is
+  tested against a row inserted by raw SQL, because that is the only way to
+  create the state at all.
+
+**The Mongo path is unchanged.** These defects are resolved *in the store that
+will carry authority*, not patched in the one being migrated away from — the
+latency risk the design note raises is a reason not to rewrite the hot Mongo
+path, and it does not apply to the Postgres one, which already works this way
+for every other domain.
 
 ---
 

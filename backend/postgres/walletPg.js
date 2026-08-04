@@ -122,7 +122,7 @@ function rowToBalances(row = {}) {
  * follow-up read (e.g. fetching what an earlier replay produced) must happen
  * OUTSIDE this helper, after it has returned.
  */
-async function withWalletLock(userId, fn) {
+export async function withWalletLock(userId, fn) {
   const uid = String(userId);
   const pool = await getPool();
   if (!pool) throw new Error('Postgres not configured (DATABASE_URL unset)');
@@ -130,6 +130,7 @@ async function withWalletLock(userId, fn) {
   // Postgres restart mid-transaction into an unhandled 'error' event and a hard
   // process crash. See pgClient.connectGuarded.
   const client = await connectGuarded(pool);
+  let failure = null;
 
   try {
     await client.query('BEGIN');
@@ -151,10 +152,22 @@ async function withWalletLock(userId, fn) {
     await client.query(commit ? 'COMMIT' : 'ROLLBACK');
     return value;
   } catch (error) {
+    failure = error;
     try { await client.query('ROLLBACK'); } catch { /* already unwound */ }
     throw error;
   } finally {
-    client.release();
+    // Passing the error DESTROYS the client instead of returning it to the
+    // pool. It matters when the backend went away mid-transaction — a Postgres
+    // restart, a failover, an admin pg_terminate_backend: the socket is dead
+    // but a plain release() puts it back in rotation and the NEXT caller
+    // inherits "terminating connection due to administrator command" on a query
+    // of its own, two statements later, in unrelated code.
+    //
+    // The merchant modules were fixed when a settlement test killed a backend
+    // mid-transition and the failure surfaced somewhere else entirely. This is
+    // the same bug on the HOTTEST money path, which had simply never been
+    // subjected to that drill.
+    client.release(failure ?? undefined);
   }
 }
 
@@ -309,15 +322,9 @@ export async function applyMovementPaise({ userId, legs, ledger, allowNegative =
   validateLedgerRows(ledger);
   const merged = mergeLegs(legs, allowNegative);
 
-  const outcome = await withWalletLock(userId, async ({ client, uid }) => {
-    const after = await moveBalances(client, uid, merged);
-    if (!after) {
-      return { commit: false, value: { ok: false, insufficient: true, idempotent: false, balancesAfterPaise: null } };
-    }
-    if (!await appendLedgerRows(client, uid, ledger, after)) {
-      return { commit: false, value: { ok: true, idempotent: true, balancesAfterPaise: null } };
-    }
-    return { commit: true, value: { ok: true, idempotent: false, balancesAfterPaise: after } };
+  const outcome = await withWalletLock(userId, async (ctx) => {
+    const value = await applyMovementWithin(ctx, { merged, ledger });
+    return { commit: value.ok && !value.idempotent, value };
   });
 
   // The replay lookup has to happen out here: inside the transaction the
@@ -326,6 +333,46 @@ export async function applyMovementPaise({ userId, legs, ledger, allowNegative =
     outcome.replayedLedger = await replayedBalances(ledger.map((r) => r.txId));
   }
   return outcome;
+}
+
+/**
+ * The movement itself, executed inside a lock someone else opened.
+ *
+ * Split out from applyMovementPaise so a caller that must do MORE than move a
+ * balance — write a bet row and its stake debit, in the same transaction or not
+ * at all — can compose with it instead of opening a second one. betPg is that
+ * caller, and the composition is the entire point of the domain: the Mongo
+ * original writes the bet, moves the balance and appends the ledger as three
+ * separate operations, which is defect M-4 (money moves unaudited when the
+ * ledger write fails, and the ledger is what reconciliation is computed from,
+ * so the failure erases its own symptom).
+ *
+ * Does NOT commit or roll back. The lock holder decides that, because only it
+ * knows whether the rest of the transaction succeeded.
+ *
+ * `merged` is pre-normalised leg output from mergeLegs(); callers outside this
+ * module should pass `legs`/`allowNegative` and let it normalise.
+ */
+export async function applyMovementWithin({ client, uid }, { legs, merged, ledger, allowNegative = false }) {
+  if (!merged) {
+    if (!Array.isArray(legs) || !legs.length) {
+      throw new Error('applyMovementWithin requires at least one balance leg');
+    }
+    if (!Array.isArray(ledger) || !ledger.length) {
+      throw new Error('applyMovementWithin requires at least one ledger row — a balance must never move unaudited');
+    }
+    validateLedgerRows(ledger);
+  }
+  const columns = merged ?? mergeLegs(legs, allowNegative);
+
+  const after = await moveBalances(client, uid, columns);
+  if (!after) {
+    return { ok: false, insufficient: true, idempotent: false, balancesAfterPaise: null };
+  }
+  if (!await appendLedgerRows(client, uid, ledger, after)) {
+    return { ok: true, idempotent: true, balancesAfterPaise: null };
+  }
+  return { ok: true, idempotent: false, balancesAfterPaise: after };
 }
 
 /**
