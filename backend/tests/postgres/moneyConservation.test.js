@@ -47,6 +47,11 @@ import {
 } from '../../postgres/merchantSettlementPg.js';
 import { getBalancesPaise } from '../../postgres/walletPg.js';
 import {
+  ACCOUNTS, trialBalance, getTreasuryBalances,
+  mintToMerchantFloat, merchantDispensedToUser, userPaidMerchant,
+  stakeLostToHouse, housePaidWinnings,
+} from '../../postgres/treasuryPg.js';
+import {
   creditDeposit, creditWinnings, lockBetStake, releaseLockedStake,
   debitWinningsForWithdrawal, releaseWithdrawal, refundWithdrawal,
 } from '../../postgres/walletPgAuthority.js';
@@ -85,7 +90,8 @@ describePg('Cross-domain money conservation', () => {
     await pgQuery(
       `TRUNCATE merchant_settlement_transitions, merchant_settlements,
                 merchant_wallets, merchant_wallet_entries,
-                wallets, wallet_ledger RESTART IDENTITY CASCADE`,
+                wallets, wallet_ledger,
+                treasury_entries, treasury_accounts RESTART IDENTITY CASCADE`,
     );
   });
 
@@ -305,5 +311,112 @@ describePg('Cross-domain money conservation', () => {
     expect(t.userDetail.depositBalance).toBe(300_000);  // once, not twenty times
     expect(t.merchantDetail.available).toBe(700_000);
     expect((await reconcileMerchant(MERCHANT)).ok).toBe(true);
+  });
+
+  // ── The books, closed ──────────────────────────────────────────────────────
+  it('closes the books: the treasury explains every paise the other domains hold', async () => {
+    // The version of the chain with NO `sink` variable. Every movement that
+    // leaves the user/merchant books is posted to a real treasury account, so
+    // the invariant stops being "the test accounted for it" and becomes "the
+    // ledger accounts for it" — checked two ways after every step:
+    //
+    //   1. the treasury trial balance sums to zero (nothing invented)
+    //   2. MERCHANT_FLOAT and USER_FLOAT equal the actual wallet sums
+    //      (the treasury's view agrees with the domains it describes)
+    //
+    // (2) is the one no isolated suite can check: it is precisely the claim
+    // that the platform's own books and its customers' books tell the same
+    // story.
+    const check = async (label) => {
+      const tb = await trialBalance();
+      const total = await systemTotal();
+      const t = tb.balances;
+
+      expect(tb.conservesToZero, `treasury does not close at "${label}": ${JSON.stringify(t)}`).toBe(true);
+      expect(tb.unexplained, `treasury balance without an entry at "${label}"`).toEqual([]);
+      expect(t[ACCOUNTS.MERCHANT_FLOAT], `MERCHANT_FLOAT disagrees with merchant wallets at "${label}"`)
+        .toBe(total.merchant);
+      expect(t[ACCOUNTS.USER_FLOAT], `USER_FLOAT disagrees with user wallets at "${label}"`)
+        .toBe(total.user);
+      return { treasury: t, total };
+    };
+
+    // 1. Mint ₹10,000 into merchant float, and issue the same into the wallet.
+    await mintToMerchantFloat(1_000_000, { movementId: 'cb_mint', actor: 'admin-1' });
+    await adminIssueToMerchant({
+      merchantId: MERCHANT, amountPaise: 1_000_000, txId: 'cb_issue', reason: 'Treasury issuance',
+    });
+    await check('minted and issued');
+
+    // 2. User buys ₹2,000 of tokens: reserve, dispense, credit — with the
+    //    treasury recording the same transfer from merchant float to user float.
+    await openSettlement({
+      settlementId: 'ms_cb', merchantId: MERCHANT, orderId: 'o_cb',
+      direction: DIRECTIONS.DEPOSIT, amountPaise: 200_000,
+    });
+    await completeSettlement({ settlementId: 'ms_cb', merchantId: MERCHANT });
+    await creditDeposit(USER, 2_000, 'o_cb');
+    await merchantDispensedToUser(200_000, { movementId: 'cb_dispense', refModel: 'PaymentOrder', refId: 'o_cb' });
+    let s = await check('deposit dispensed');
+    expect(s.treasury[ACCOUNTS.USER_FLOAT]).toBe(200_000);
+    expect(s.treasury[ACCOUNTS.MERCHANT_FLOAT]).toBe(800_000);
+
+    // 3. Bet lost. The stake goes to the HOUSE — a real account now, not a
+    //    number the test was told to remember.
+    await lockBetStake(USER, {
+      amountPaise: 50_000, txId: 'cb_bet', refId: 'bet-1',
+      slices: [{ field: 'depositBalance', suffix: '_dep', amountPaise: 50_000, reason: 'Bet stake' }],
+    });
+    await check('stake locked');            // internal to the user; nothing moved
+    await releaseLockedStake(USER, {
+      amount: 500, fromDeposit: 500, txId: 'cb_settle', reason: 'Bet lost',
+    });
+    await stakeLostToHouse(50_000, { movementId: 'cb_lost', refModel: 'Bet', refId: 'bet-1' });
+    s = await check('stake lost to house');
+    expect(s.treasury[ACCOUNTS.HOUSE_RESERVE]).toBe(50_000);
+
+    // 4. A win, paid out of the house reserve it was funded by.
+    await creditWinnings(USER, 300, 'Bet win payout', 'Bet', 'bet-2', 'cb_win');
+    await housePaidWinnings(30_000, { movementId: 'cb_paid', refModel: 'Bet', refId: 'bet-2' });
+    s = await check('winnings paid');
+    expect(s.treasury[ACCOUNTS.HOUSE_RESERVE]).toBe(20_000);
+
+    // 5. Withdrawal: user → merchant, both sides recorded.
+    await debitWinningsForWithdrawal(USER, 300, 'o_cb_wd');
+    await openSettlement({
+      settlementId: 'ms_cb_wd', merchantId: MERCHANT, orderId: 'o_cb_wd',
+      direction: DIRECTIONS.WITHDRAWAL, amountPaise: 30_000,
+    });
+    await releaseWithdrawal(USER, 300, 'o_cb_wd');
+    await userPaidMerchant(30_000, { movementId: 'cb_wd', refModel: 'PaymentOrder', refId: 'o_cb_wd' });
+    await completeSettlement({ settlementId: 'ms_cb_wd', merchantId: MERCHANT });
+    s = await check('withdrawal settled');
+
+    // The whole system, closed. Tokens in existence equal what the merchant and
+    // user hold plus what the house took — no residue, nothing unaccounted.
+    const t = s.treasury;
+    expect(t[ACCOUNTS.TOKEN_SUPPLY]).toBe(-1_000_000);
+    expect(
+      t[ACCOUNTS.MERCHANT_FLOAT] + t[ACCOUNTS.USER_FLOAT] + t[ACCOUNTS.HOUSE_RESERVE],
+    ).toBe(1_000_000);
+    expect((await reconcileMerchant(MERCHANT)).ok).toBe(true);
+    expect((await reconcileSettlements(MERCHANT)).ok).toBe(true);
+  });
+
+  it('catches a treasury posting that disagrees with the wallets it describes', async () => {
+    // The failure mode the closed-books check exists for: both ledgers
+    // internally consistent, telling different stories about the same money.
+    await mintToMerchantFloat(500_000, { movementId: 'dis_mint' });
+    await adminIssueToMerchant({ merchantId: MERCHANT, amountPaise: 500_000, txId: 'dis_issue' });
+
+    // A dispense posted to the treasury that never happened in the wallets.
+    await merchantDispensedToUser(100_000, { movementId: 'dis_ghost' });
+
+    const t = await getTreasuryBalances();
+    const total = await systemTotal();
+    expect((await trialBalance()).conservesToZero).toBe(true);   // treasury still closes
+    expect(t[ACCOUNTS.USER_FLOAT]).toBe(100_000);                // but claims the user holds ₹1,000
+    expect(total.user).toBe(0);                                  // and the user holds nothing
+    expect(t[ACCOUNTS.USER_FLOAT]).not.toBe(total.user);
   });
 });

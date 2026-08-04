@@ -433,3 +433,75 @@ CREATE INDEX IF NOT EXISTS merchant_settlement_transitions_settlement_idx
 CREATE OR REPLACE TRIGGER merchant_settlement_transitions_append_only
   BEFORE UPDATE OR DELETE ON merchant_settlement_transitions
   FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- ADMIN TREASURY (domain 3)
+--
+-- The platform's own accounts, as DOUBLE ENTRY. Every movement is a set of legs
+-- that sums to zero, so the whole ledger sums to zero at all times — which is
+-- what turns "the test accounted for that money" into "the books account for
+-- it".
+--
+-- TOKEN_SUPPLY is the contra account and the reason mints conserve. Minting is
+-- not value appearing from nowhere: it is TOKEN_SUPPLY going more negative
+-- while a float account goes up by the same amount. The negative of
+-- TOKEN_SUPPLY is therefore the number of tokens in existence, and a query that
+-- says otherwise means something bypassed this table.
+--
+-- The Mongo original is a single counter — SystemConfig.adminTokenSupply.minted
+-- with a 10B cap — incremented on mint and decremented by a blind, swallowed
+-- $inc on rollback. That counter cannot say WHERE the tokens went, is not
+-- idempotent (a retried rollback decrements twice), and permanently overstates
+-- supply if the rollback's .catch(() => {}) ever fires.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS treasury_accounts (
+  account       TEXT PRIMARY KEY,
+  balance_paise BIGINT NOT NULL DEFAULT 0,
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT treasury_accounts_known CHECK (account IN (
+    'TOKEN_SUPPLY',      -- contra: -(every token in existence)
+    'MERCHANT_FLOAT',    -- tokens held by merchants
+    'USER_FLOAT',        -- tokens held by users
+    'HOUSE_RESERVE',     -- stakes the house won
+    'COMMISSION_POOL',
+    'BONUS_POOL',
+    'REFERRAL_POOL',
+    'OPERATIONAL_FLOAT'
+  ))
+);
+
+-- Every leg of every movement, append-only.
+--
+-- amount_paise is SIGNED here, unlike the wallet ledgers. Those store a
+-- magnitude with the direction in entry_type because Mongo stores positive
+-- amounts and the two had to agree. This table has no Mongo counterpart and is
+-- double-entry, where the sign IS the meaning: the legs of one movement sum to
+-- zero, and a magnitude-plus-direction encoding would make that sum express
+-- nothing.
+CREATE TABLE IF NOT EXISTS treasury_entries (
+  id                   BIGSERIAL PRIMARY KEY,
+  tx_id                TEXT NOT NULL UNIQUE,
+  movement_id          TEXT NOT NULL,
+  account              TEXT NOT NULL,
+  amount_paise         BIGINT NOT NULL,
+  balance_before_paise BIGINT NOT NULL,
+  balance_after_paise  BIGINT NOT NULL,
+  operation            TEXT NOT NULL,
+  actor                TEXT,
+  reason               TEXT,
+  ref_model            TEXT,
+  ref_id               TEXT,
+  correlation_id       TEXT,
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT treasury_entries_nonzero CHECK (amount_paise <> 0),
+  CONSTRAINT treasury_entries_arithmetic
+    CHECK (balance_after_paise = balance_before_paise + amount_paise)
+);
+CREATE INDEX IF NOT EXISTS treasury_entries_account_idx
+  ON treasury_entries (account, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS treasury_entries_movement_idx
+  ON treasury_entries (movement_id);
+CREATE INDEX IF NOT EXISTS treasury_entries_ref_idx
+  ON treasury_entries (ref_model, ref_id);
+CREATE OR REPLACE TRIGGER treasury_entries_append_only
+  BEFORE UPDATE OR DELETE ON treasury_entries FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();

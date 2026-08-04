@@ -30,7 +30,7 @@ Generated from `backend/postgres/moneyAuthority.js` by `npm run certify:report`.
 | Orders | ⏳ | ✅ | ✅ | ⏳ | ⏳ | ⏳ |
 | KYC | ⏳ | ✅ | ⏳ | ⏳ | ⏳ | ⏳ |
 | Merchant ↔ User Settlement | ⏳ | ✅ | ✅ | ✅ | ⏳ | ⏳ |
-| Admin Treasury / Token Issuance | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ |
+| Admin Treasury / Token Issuance | ⏳ | ⏳ | ⏳ | ✅ | ⏳ | ⏳ |
 | Betting | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ |
 | Sports Settlement | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ |
 | Casino Settlement | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ |
@@ -46,7 +46,7 @@ Generated from `backend/postgres/moneyAuthority.js` by `npm run certify:report`.
 | Orders | implemented, concurrencyTested, infrastructureTested |
 | KYC | implemented, reconciled, concurrencyTested, infrastructureTested |
 | Merchant ↔ User Settlement | implemented, infrastructureTested |
-| Admin Treasury / Token Issuance | implemented, dualWrite, reconciled, rollback, concurrencyTested, infrastructureTested |
+| Admin Treasury / Token Issuance | implemented, dualWrite, reconciled, rollback, infrastructureTested |
 | Betting | implemented, dualWrite, reconciled, rollback, concurrencyTested, infrastructureTested |
 | Sports Settlement | implemented, dualWrite, reconciled, rollback, concurrencyTested, infrastructureTested |
 | Casino Settlement | implemented, dualWrite, reconciled, rollback, concurrencyTested, infrastructureTested |
@@ -195,13 +195,19 @@ sink the test must declare. There is no fourth option. Verified by mutation: a
 ₹100 discrepancy at the deposit seam fails the run with the full trail, and
 that check is re-run whenever the file changes.
 
-**What it cannot yet check.** `sink` exists because some value legitimately
-leaves these books — a losing stake to the house, a commission to the platform.
-Neither has a PostgreSQL representation, so the test is *told* about them rather
-than reading them from a ledger. That is exactly the gap the treasury domain
-closes: when it exists, `sink` becomes real accounts and the invariant tightens
-from "the test accounted for it" to "the books account for it". Until then,
-value moving to the house is trusted, not verified.
+**The books now close.** The `sink` variable was a placeholder for value that
+legitimately leaves these books — a losing stake to the house, a commission to
+the platform — with nowhere to go. The treasury domain gave it somewhere, and
+the same file now carries a second scenario with **no sink at all**, checking
+two things after every step:
+
+1. the treasury trial balance sums to zero — nothing was invented
+2. `MERCHANT_FLOAT` and `USER_FLOAT` equal the actual wallet sums — the
+   platform's own books and its customers' books tell the same story
+
+(2) is the claim no isolated suite can make. A companion test demonstrates the
+failure it catches: a treasury posting that never happened in the wallets leaves
+both ledgers internally consistent while they disagree about the same money.
 
 ## Running the whole suite locally
 

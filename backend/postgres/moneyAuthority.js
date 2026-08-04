@@ -168,8 +168,12 @@ const CAPABILITIES = Object.freeze({
     notes: 'User↔merchant settlement lifecycle. postgres/merchantSettlementPg.js: merchant_settlements + merchant_settlement_transitions, expected-previous-state guards in the UPDATE, the transition and its pocket movement composed into ONE transaction under a single merchant lock, two UNIQUE idempotency gates, append-only history. 24 tests including a 200-way reservation race, 200-copy retry storms on open and on transition, a racing complete-vs-cancel where exactly one wins, and a backend killed mid-transition. withdrawalHold.service.js and merchant.routes.js now route through the resolver. THE ONE REMAINING BLOCKER: settleHold still flips PaymentOrder.merchantCreditStatus out of HELD *before* completing the Postgres settlement, because that findOneAndUpdate is also its concurrency gate. On the Postgres path that inverts authority — Mongo decides and Postgres follows — and it recreates the original stranding window in a new place: if the Postgres complete then fails, the order has already left HELD so the sweeper will not retry, and only the reconciler repairs it. Inverting the order (settlement transition first, its own state guard as the gate, the order updated as a mirror) is the remaining work; it changes a live money path\'s concurrency gate and needs the integration suite, which requires a MongoDB this environment cannot run.',
   },
   [MONEY_PATHS.ADMIN_ISSUANCE]: {
+    // BUILT and tested, NOT routed — postgres/treasuryPg.js is a real reader
+    // and writer, but merchant.admin.routes.js still calls reserveAdminMint
+    // against the Mongo counter. Same standard that held merchant_wallet and
+    // merchant_settlement at false while their implementations existed.
     implemented: false, dualWrite: false, reconciled: false, rollback: false,
-    notes: 'Admin↔merchant issuance. The MERCHANT side of an issuance already rides on merchant_wallet (admin routes call creditMerchantTokens). What is missing is the TREASURY side: the 10B supply cap reserved by reserveAdminMint has no Postgres ledger, so a mint is only half-recorded there.',
+    notes: 'Admin treasury and token issuance. postgres/treasuryPg.js EXISTS: treasury_accounts + treasury_entries as DOUBLE ENTRY across TOKEN_SUPPLY / MERCHANT_FLOAT / USER_FLOAT / HOUSE_RESERVE / COMMISSION_POOL / BONUS_POOL / REFERRAL_POOL / OPERATIONAL_FLOAT. Every movement\'s legs sum to zero so the whole ledger sums to zero; minting is TOKEN_SUPPLY going negative rather than value appearing; the supply cap is enforced inside the transaction behind a row lock (holds under 50 concurrent mints); accounts are locked in a fixed order so movements between the same pair in opposite directions cannot deadlock. 15 tests, plus the cross-domain closed-books test proving MERCHANT_FLOAT and USER_FLOAT equal the actual wallet sums at every step. Remaining: route merchant.admin.routes.js off the Mongo SystemConfig counter, mirror it, reconcile the two supply figures, and build the reverse mirror.',
   },
   [MONEY_PATHS.BETS]: {
     implemented: false, dualWrite: false, reconciled: false, rollback: false,
@@ -228,6 +232,11 @@ const TESTING = Object.freeze({
     concurrencyTested: true,
     infrastructureTested: false,
     evidence: 'backend/tests/postgres/merchantWalletPg.test.js (200 racing reservations against a balance that fits 100) + merchantWalletPgAuthority.test.js (200 racing debits through the authority path, 200-copy retry storm on one key). Infrastructure drills NOT RUN.',
+  },
+  [MONEY_PATHS.ADMIN_ISSUANCE]: {
+    concurrencyTested: true,
+    infrastructureTested: false,
+    evidence: 'backend/tests/postgres/treasuryPg.test.js — 50 concurrent mints against a cap that fits 10 (exactly 10 commit), a 100-copy retry storm on one movement key, and 100 movements alternating direction between the same two accounts without deadlocking. Plus moneyConservation.test.js\'s closed-books scenario. Infrastructure drills NOT RUN.',
   },
   [MONEY_PATHS.MERCHANT_SETTLEMENT]: {
     concurrencyTested: true,
