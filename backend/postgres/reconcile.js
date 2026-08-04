@@ -30,8 +30,11 @@ import { rupeesToPaise } from '../shared/money.js';
 import {
   mirrorWalletLedger, mirrorAccountingEvent, mirrorTransaction,
   mirrorPaymentOrder, mirrorUtr, mirrorMerchantWalletLedger, mirrorMerchantBalance,
+  mirrorMerchantSettlement,
 } from './dualWrite.js';
-import { REVERSE_TABLES, reverseMirrorMerchantBalance } from './reverseMirror.js';
+import {
+  REVERSE_TABLES, reverseMirrorMerchantBalance, reverseMirrorMerchantSettlement,
+} from './reverseMirror.js';
 import { anyPathOnPostgres, isPostgresAuthoritative, MONEY_PATHS } from './moneyAuthority.js';
 
 // `since` names THIS MODEL'S Mongo timestamp field. It is not `createdAt`
@@ -258,6 +261,73 @@ export async function reconcileMerchantLedgers({ requireOpened = false } = {}) {
 }
 
 /**
+ * reconcileMerchantSettlementStates — do the two stores agree on where each
+ * settlement IS?
+ *
+ * Mongo keeps this lifecycle on the PaymentOrder; Postgres keeps it in
+ * merchant_settlements. Nothing else compares them: the row-presence check
+ * would find the order in both stores and report clean while one said HELD and
+ * the other said SETTLED — which after a fallback means the sweeper settles an
+ * order a second time.
+ *
+ * Repair direction follows authority, exactly like the balance reconciler.
+ */
+const ORDER_STATE_TO_SETTLEMENT = {
+  HELD: 'RESERVED', RELEASED: 'SETTLED', REVERSED: 'CANCELLED',
+};
+
+export async function reconcileMerchantSettlementStates({ backfill = false, repairMongo = false } = {}) {
+  if (backfill && repairMongo) {
+    throw new Error('reconcileMerchantSettlementStates: backfill and repairMongo are opposite directions — pick one');
+  }
+
+  const { rows } = await pgQuery(
+    `SELECT settlement_id, order_id, direction, state FROM merchant_settlements LIMIT 50000`,
+    [], 'merchant_settlement_state_reconcile',
+  );
+  if (!rows.length) return { table: 'merchant_settlements', checked: 0, disagreeing: 0, repaired: 0, sample: [] };
+
+  const orders = await mongoose.model('PaymentOrder')
+    .find({ _id: { $in: rows.map((r) => r.order_id) } })
+    .select('type status merchantCreditStatus merchantId tokenAmount').lean();
+  const byId = new Map(orders.map((o) => [String(o._id), o]));
+
+  const disagreeing = [];
+  let repaired = 0;
+
+  for (const row of rows) {
+    const order = byId.get(String(row.order_id));
+    // A settlement whose order has vanished from Mongo is drift in its own
+    // right — the settlement describes money for something that no longer
+    // exists — so it is reported rather than skipped.
+    const mongoState = order
+      ? (order.type === 'WITHDRAWAL'
+          ? ORDER_STATE_TO_SETTLEMENT[order.merchantCreditStatus] ?? null
+          : (order.status === 'COMPLETED' ? 'SETTLED'
+            : ['CANCELLED', 'EXPIRED', 'FAILED'].includes(order.status) ? 'CANCELLED' : null))
+      : null;
+
+    // A Mongo state of null means Mongo has not reached a settlement stage this
+    // table models (a deposit still in flight, say). That is not disagreement.
+    if (mongoState === null || mongoState === row.state) continue;
+
+    disagreeing.push({ settlementId: row.settlement_id, orderId: String(row.order_id), mongoState, pgState: row.state });
+
+    if (backfill && order) { await mirrorMerchantSettlement(order); repaired++; }
+    else if (repairMongo) { await reverseMirrorMerchantSettlement(row); repaired++; }
+  }
+
+  return {
+    table: 'merchant_settlements',
+    checked: rows.length,
+    disagreeing: backfill || repairMongo ? 0 : disagreeing.length,
+    disagreeingBeforeRepair: disagreeing.length,
+    repaired,
+    sample: disagreeing.slice(0, 5),
+  };
+}
+
+/**
  * Trial balance from the MONGO ledger, in the same shape as pgTrialBalance().
  *
  * DATA_ROLLBACK_PLAN Phase B step 3 requires, before falling back, that "the
@@ -354,15 +424,31 @@ export async function runReconcile({
   // that are actually outstanding? A reserved balance with no settlement behind
   // it is money frozen for an order that no longer exists, and neither the row
   // counts nor the balance comparison can see it.
+  //
+  // Only meaningful once Postgres owns the path. In Phase A the pockets are a
+  // projection of Mongo's single tokenBalance — everything lands in `available`
+  // — while the settlement STATES are mirrored from the order, so outstanding
+  // settlements legitimately have no matching reserved balance behind them.
+  // Asserting it before the flip would report drift on ordinary traffic and
+  // reset the cutover-readiness streak. Deriving the pockets from the
+  // outstanding settlements is a cutover step, like the opening balances.
+  const settlementOnPg = isPostgresAuthoritative(MONEY_PATHS.MERCHANT_SETTLEMENT);
   const { findUnexplainedSettlementPockets } = await import('./merchantSettlementPg.js');
-  const settlementPockets = await findUnexplainedSettlementPockets();
+  const settlementPockets = settlementOnPg ? await findUnexplainedSettlementPockets() : [];
+  // Cross-store: does each settlement sit in the same state in both? Always
+  // meaningful, unlike the pocket check — the states are mirrored in Phase A.
+  const settlementStates = await reconcileMerchantSettlementStates({
+    backfill: backfill && !settlementOnPg,
+    repairMongo: repairMongo && settlementOnPg,
+  });
 
   const forwardDrift = results.some((r) => r.missingInPg > 0)
     || !pgTrial.conservesToZero
     || merchantBalances.drifted > 0
     || merchantBalances.orphansInPg > 0
     || merchantLedgers.unexplained > 0
-    || settlementPockets.length > 0;
+    || settlementPockets.length > 0
+    || settlementStates.disagreeing > 0;
 
   // The reverse direction only means something once Postgres owns a path — or
   // when an operator explicitly asks for it during a drill or a fallback.
@@ -390,8 +476,10 @@ export async function runReconcile({
     merchantLedgers,
     merchantSettlements: {
       table: 'merchant_settlements',
+      pocketsChecked: settlementOnPg,
       unexplainedPockets: settlementPockets.length,
-      sample: settlementPockets.slice(0, 5),
+      samplePockets: settlementPockets.slice(0, 5),
+      states: settlementStates,
     },
     reverse: reverseResults,
     mongoTrialBalance: mongoTrial,

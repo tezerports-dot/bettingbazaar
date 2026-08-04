@@ -136,10 +136,25 @@ describe('capability gate — authority requires an implementation', () => {
     expect(ledger.cutoverEligible).toBe(false);
     expect(ledger.missing).toContain('implemented');
 
-    const settlement = rows.find((r) => r.path === MONEY_PATHS.MERCHANT_SETTLEMENT);
-    expect(settlement.cutoverEligible).toBe(false);
-    expect(settlement.missing).toEqual(
+    const bets = rows.find((r) => r.path === MONEY_PATHS.BETS);
+    expect(bets.cutoverEligible).toBe(false);
+    expect(bets.missing).toEqual(
       expect.arrayContaining(['implemented', 'dualWrite', 'reconciled', 'rollback']));
+  });
+
+  it('holds merchant settlement on `implemented` alone, and says so precisely', () => {
+    // It is mirrored, reconciled and rollback-capable. What it is NOT is
+    // authoritative: settleHold still advances the Mongo order before the
+    // Postgres settlement, so on the Postgres path Mongo leads and the source
+    // of truth follows. A registry that reported this eligible would be
+    // asserting an authority the call order does not deliver.
+    const settlement = authorityMatrix(withPg())
+      .find((r) => r.path === MONEY_PATHS.MERCHANT_SETTLEMENT);
+    expect(settlement.cutoverEligible).toBe(false);
+    expect(settlement.missing).toEqual(['implemented']);
+    expect(settlement.dualWriteCapable).toBe(true);
+    expect(settlement.reconciled).toBe(true);
+    expect(settlement.rollbackCapable).toBe(true);
   });
 
   it('reports the merchant wallet as eligible now that all four capabilities hold', () => {

@@ -156,11 +156,16 @@ const CAPABILITIES = Object.freeze({
     // requires production call sites to consult the authority resolver, and
     // withdrawalHold.service.js does not yet. Same standard that kept
     // merchant_wallet at false while its implementation already existed.
+    // Routed, mirrored both ways and reconciled — but `implemented` is still
+    // false, for ONE specific reason recorded in the notes: settleHold advances
+    // the Mongo order BEFORE the Postgres settlement, so on the Postgres path
+    // Mongo leads and the source of truth follows. That is authority in name
+    // only, and flipping this flag would assert otherwise.
     implemented: false,
-    dualWrite:   false,
-    reconciled:  false,
-    rollback:    false,
-    notes: 'User↔merchant settlement lifecycle. postgres/merchantSettlementPg.js EXISTS: merchant_settlements + merchant_settlement_transitions, expected-previous-state guards in the UPDATE, the transition and its pocket movement composed into ONE transaction under a single merchant lock, two UNIQUE idempotency gates, append-only history. 24 tests green including a 200-way reservation race, 200-copy retry storms on both open and transition, a racing complete-vs-cancel, and a backend killed mid-transition. Remaining: route withdrawalHold.service.js through the resolver; mirror PaymentOrder.merchantCreditStatus into merchant_settlements (dualWrite); write settlement state back onto the order (rollback). `reconciled` stays false deliberately — findUnexplainedSettlementPockets is in the 5-minute pass and proves the POCKETS are explained by the settlements, but that is an intra-Postgres invariant; there is no Mongo settlement table to compare against until the mirror exists.',
+    dualWrite:   true,  // dualWrite.mirrorMerchantSettlement, hooked on PaymentOrder
+    reconciled:  true,  // reconcile.reconcileMerchantSettlementStates (cross-store) + findUnexplainedSettlementPockets
+    rollback:    true,  // reverseMirror.reverseMirrorMerchantSettlement + REVERSE_TABLES repair
+    notes: 'User↔merchant settlement lifecycle. postgres/merchantSettlementPg.js: merchant_settlements + merchant_settlement_transitions, expected-previous-state guards in the UPDATE, the transition and its pocket movement composed into ONE transaction under a single merchant lock, two UNIQUE idempotency gates, append-only history. 24 tests including a 200-way reservation race, 200-copy retry storms on open and on transition, a racing complete-vs-cancel where exactly one wins, and a backend killed mid-transition. withdrawalHold.service.js and merchant.routes.js now route through the resolver. THE ONE REMAINING BLOCKER: settleHold still flips PaymentOrder.merchantCreditStatus out of HELD *before* completing the Postgres settlement, because that findOneAndUpdate is also its concurrency gate. On the Postgres path that inverts authority — Mongo decides and Postgres follows — and it recreates the original stranding window in a new place: if the Postgres complete then fails, the order has already left HELD so the sweeper will not retry, and only the reconciler repairs it. Inverting the order (settlement transition first, its own state guard as the gate, the order updated as a mirror) is the remaining work; it changes a live money path\'s concurrency gate and needs the integration suite, which requires a MongoDB this environment cannot run.',
   },
   [MONEY_PATHS.ADMIN_ISSUANCE]: {
     implemented: false, dualWrite: false, reconciled: false, rollback: false,

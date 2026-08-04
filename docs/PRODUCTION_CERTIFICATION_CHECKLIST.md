@@ -29,7 +29,7 @@ Generated from `backend/postgres/moneyAuthority.js` by `npm run certify:report`.
 | Accounting Ledger | ⏳ | ✅ | ✅ | ⏳ | ⏳ | ⏳ |
 | Orders | ⏳ | ✅ | ✅ | ⏳ | ⏳ | ⏳ |
 | KYC | ⏳ | ✅ | ⏳ | ⏳ | ⏳ | ⏳ |
-| Merchant ↔ User Settlement | ⏳ | ⏳ | ⏳ | ✅ | ⏳ | ⏳ |
+| Merchant ↔ User Settlement | ⏳ | ✅ | ✅ | ✅ | ⏳ | ⏳ |
 | Admin Treasury / Token Issuance | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ |
 | Betting | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ |
 | Sports Settlement | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ |
@@ -45,7 +45,7 @@ Generated from `backend/postgres/moneyAuthority.js` by `npm run certify:report`.
 | Accounting Ledger | implemented, concurrencyTested, infrastructureTested |
 | Orders | implemented, concurrencyTested, infrastructureTested |
 | KYC | implemented, reconciled, concurrencyTested, infrastructureTested |
-| Merchant ↔ User Settlement | implemented, dualWrite, reconciled, rollback, infrastructureTested |
+| Merchant ↔ User Settlement | implemented, infrastructureTested |
 | Admin Treasury / Token Issuance | implemented, dualWrite, reconciled, rollback, concurrencyTested, infrastructureTested |
 | Betting | implemented, dualWrite, reconciled, rollback, concurrencyTested, infrastructureTested |
 | Sports Settlement | implemented, dualWrite, reconciled, rollback, concurrencyTested, infrastructureTested |

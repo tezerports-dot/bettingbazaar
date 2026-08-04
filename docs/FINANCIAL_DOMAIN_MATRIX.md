@@ -33,7 +33,7 @@ Listed in the order the plan flips them.
 | `ledger` | ❌ | ✅ | ✅ | ✅ | no | mongo |
 | `orders` | ❌ | ✅ | ✅ | ✅ | no | mongo |
 | `kyc` | ❌ | ✅ | ❌ | ✅ | no | mongo |
-| `merchant_settlement` | ❌ | ❌ | ❌ | ❌ | no | mongo |
+| `merchant_settlement` | ❌ | ✅ | ✅ | ✅ | no | mongo |
 | `admin_issuance` | ❌ | ❌ | ❌ | ❌ | no | mongo |
 | `bets` | ❌ | ❌ | ❌ | ❌ | no | mongo |
 | `settlements` | ❌ | ❌ | ❌ | ❌ | no | mongo |
@@ -145,14 +145,41 @@ them across: a bet needs an idempotency key derived from stable request
 identity, not a fresh UUID per attempt — a new UUID on every retry is not
 idempotency, it is a new bet.
 
-### `merchant_settlement`, `admin_issuance`, `settlements`, `bonuses_and_commissions`
+### `merchant_settlement` — three of four, blocked on ONE thing
+`postgres/merchantSettlementPg.js`: `merchant_settlements` +
+`merchant_settlement_transitions`, a state machine the database enforces —
+expected-previous-state guards in the `UPDATE`'s `WHERE`, the transition and its
+pocket movement composed into **one transaction** under a single merchant lock,
+two UNIQUE idempotency gates (one for the money, one for the state), append-only
+history. 24 tests: a 200-way reservation race, 200-copy retry storms on open and
+on transition, a racing complete-vs-cancel where exactly one wins, an interleaved
+storm of every transition type, and a backend killed mid-transition.
+
+Mirrored (`mirrorMerchantSettlement`), reconciled cross-store
+(`reconcileMerchantSettlementStates`) and rollback-capable
+(`reverseMirrorMerchantSettlement`). `withdrawalHold.service.js` and
+`merchant.routes.js` route through the resolver.
+
+**Blocked on one thing, and it is a real one.** `settleHold` flips
+`PaymentOrder.merchantCreditStatus` out of `HELD` *before* completing the
+Postgres settlement, because that `findOneAndUpdate` is also its concurrency
+gate. On the Postgres path that inverts authority — Mongo decides, the source of
+truth follows — and it recreates the original stranding window somewhere new: if
+the Postgres complete then fails, the order has already left `HELD`, the sweeper
+will not retry it, and only the reconciler repairs it.
+
+The fix is to invert the order: the settlement transition first, its own state
+guard serving as the concurrency gate, the order updated afterwards as a mirror.
+That changes a live money path's concurrency gate and needs the integration
+suite, which needs a MongoDB this environment cannot run. **NOT DONE.**
+
+What this domain does add that Mongo cannot express: a withdrawal's owed tokens
+now sit in a pocket the merchant cannot spend. On Mongo they simply do not exist
+during the hold window, so nothing records the liability at all.
+
+### `admin_issuance`, `settlements`, `bonuses_and_commissions`
 No Postgres implementation, mirror or reconciliation. Declared here so the gap is
 visible and so setting their variables fails loudly.
-
-`merchant_settlement` is the nearest: the Postgres primitives it needs
-(`reserveForSettlement`, `cancelReservation`, `completeReservation`,
-`payoutSettlement`, `reverseMovement`) already exist and are tested — nothing
-calls them, and `MerchantWalletLedger` cannot yet represent a per-pocket movement.
 
 `admin_issuance` is half-covered without being eligible: the MERCHANT side of an
 issuance already rides on `merchant_wallet`, because the admin routes call

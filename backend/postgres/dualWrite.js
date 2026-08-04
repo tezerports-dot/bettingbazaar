@@ -209,6 +209,65 @@ export function mirrorMerchantBalance(doc) {
   ));
 }
 
+/**
+ * PaymentOrder → merchant_settlements (domain 2's Mongo→Postgres leg).
+ *
+ * Mongo has no settlement table. It keeps the same lifecycle on the order —
+ * `merchantCreditStatus` for withdrawals, `status` for deposits — so this
+ * PROJECTS those onto the state machine Postgres owns. A cutover then finds the
+ * in-flight settlements already there and the sweeper can advance them, instead
+ * of losing every held withdrawal at the moment of the flip.
+ *
+ * It writes STATE ONLY. Pockets are not touched here: mirrorMerchantBalance
+ * already projects the merchant's single Mongo number, and moving pockets from
+ * two places would double-count. Deriving the pockets from the outstanding
+ * settlements is a cutover step, not a mirror — same shape as the opening
+ * balances (see merchantWalletPg.recordOpeningBalances).
+ *
+ * Only facts Mongo actually asserts are mirrored. A deposit that is merely
+ * assigned has nothing reserved on the Mongo side, so it is not mirrored as
+ * RESERVED — that would be inventing a claim the source store does not make.
+ */
+const SETTLEMENT_STATE_FROM_ORDER = {
+  // Withdrawals carry the lifecycle explicitly.
+  HELD:     'RESERVED',
+  RELEASED: 'SETTLED',
+  REVERSED: 'CANCELLED', // never owed after all — the tokens are taken back
+};
+
+function settlementStateFor(doc) {
+  if (doc.type === 'WITHDRAWAL') return SETTLEMENT_STATE_FROM_ORDER[doc.merchantCreditStatus] ?? null;
+  // A deposit has no reserve step in Mongo: the merchant is debited at confirm.
+  if (doc.status === 'COMPLETED') return 'SETTLED';
+  if (['CANCELLED', 'EXPIRED', 'FAILED'].includes(doc.status)) return 'CANCELLED';
+  return null;
+}
+
+export async function mirrorMerchantSettlement(doc) {
+  if (!doc?.merchantId) return; // unassigned orders have no merchant side yet
+
+  // Once Postgres owns this path it also owns the state machine, and a
+  // Mongo-derived overwrite could drag a settlement BACKWARDS through states
+  // the transition guards exist to prevent. The forward mirror stops at the
+  // flip; reverseMirror.js takes over in the other direction.
+  const { isPostgresAuthoritative, MONEY_PATHS } = await import('./moneyAuthority.js');
+  if (isPostgresAuthoritative(MONEY_PATHS.MERCHANT_SETTLEMENT)) return;
+
+  const state = settlementStateFor(doc);
+  if (!state) return;
+
+  return mirror('merchant_settlements', () => pgQuery(
+    `INSERT INTO merchant_settlements
+       (settlement_id, merchant_id, order_id, direction, amount_paise, state, reason, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8, now()),now())
+     ON CONFLICT (settlement_id) DO UPDATE SET state = EXCLUDED.state, updated_at = now()`,
+    [`ms_${doc._id}`, String(doc.merchantId), String(doc._id),
+     doc.type === 'WITHDRAWAL' ? 'WITHDRAWAL' : 'DEPOSIT',
+     paise(doc.tokenAmount), state,
+     doc.merchantCreditReversedReason || null, createdAt(doc, doc.createdAt)],
+  ));
+}
+
 /** User doc (KYC fields only — plan: split KYC out; cutover LAST). */
 export function mirrorUserKyc(doc) {
   const k = doc.kycData || {};

@@ -37,6 +37,17 @@ import { releaseWithdrawal, refundWithdrawal } from '../wallet/walletAuthority.s
 import { creditMerchantTokens } from '../merchant/merchantWallet.service.js';
 import { emitOrderUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import { sendAlert } from '../../services/alerting.service.js';
+import { rupeesToPaise } from '../../shared/money.js';
+import { isPostgresAuthoritative, MONEY_PATHS } from '../../postgres/moneyAuthority.js';
+import {
+  DIRECTIONS, openSettlement, completeSettlement, cancelSettlement,
+} from '../../postgres/merchantSettlementPg.js';
+
+/** Is Postgres the source of truth for the merchant side of a settlement? */
+const onPostgres = () => isPostgresAuthoritative(MONEY_PATHS.MERCHANT_SETTLEMENT);
+
+/** One deterministic settlement per order, so a retry addresses the same one. */
+const settlementIdFor = (order) => `ms_${order._id}`;
 
 /** Fallback matches the SystemConfig schema default (60). */
 const DEFAULT_HOLD_MINUTES = 60;
@@ -96,14 +107,38 @@ export async function settleHold(orderId) {
   }
 
   try {
-    await creditMerchantTokens({
-      merchantId: order.merchantId, amount: order.tokenAmount,
-      reason: `Withdrawal ${order.orderId} settled after hold — tokens received from user`,
-      refModel: 'PaymentOrder', refId: order._id.toString(),
-      // Same canonical txId the pre-hold path used, so an order settled under
-      // either code path can never be credited twice.
-      txId: `mw_wd_credit_${order._id}`,
-    });
+    if (onPostgres()) {
+      // The settlement was opened when the hold was placed, so the tokens
+      // already exist in the merchant's `settlement` pocket — owed, unspendable.
+      // Completing it moves them to `available` in ONE transaction with the
+      // state change, which is the whole reason this domain exists: the Mongo
+      // branch below flips the order out of HELD first and then credits, so a
+      // failure between the two strands the settlement with no way to retry.
+      //
+      // openSettlement is idempotent, so an order held before the flip (and
+      // therefore never opened in Postgres) is opened here rather than failing.
+      await openSettlement({
+        settlementId: settlementIdFor(order), merchantId: order.merchantId,
+        orderId: order._id.toString(), direction: DIRECTIONS.WITHDRAWAL,
+        amountPaise: rupeesToPaise(order.tokenAmount),
+        reason: `Withdrawal ${order.orderId} held`,
+      });
+      const settled = await completeSettlement({
+        settlementId: settlementIdFor(order), merchantId: order.merchantId,
+        actor: 'withdrawal-hold-sweeper',
+        reason: `Withdrawal ${order.orderId} settled after hold`,
+      });
+      if (!settled.ok) throw new Error(`settlement refused: ${settled.reason} (state=${settled.state ?? 'n/a'})`);
+    } else {
+      await creditMerchantTokens({
+        merchantId: order.merchantId, amount: order.tokenAmount,
+        reason: `Withdrawal ${order.orderId} settled after hold — tokens received from user`,
+        refModel: 'PaymentOrder', refId: order._id.toString(),
+        // Same canonical txId the pre-hold path used, so an order settled under
+        // either code path can never be credited twice.
+        txId: `mw_wd_credit_${order._id}`,
+      });
+    }
   } catch (err) {
     console.error(`[withdrawal-hold] merchant credit failed for ${order.orderId}:`, err.message);
     sendAlert('withdrawal-hold-credit-failed', 'Held withdrawal released the player stake but did not credit the merchant', {
@@ -152,6 +187,18 @@ export async function reverseHold(orderId, { reason = 'Dispute upheld — mercha
   // Return the stake to the player. refundWithdrawal is the authority's inverse
   // of the debit taken at order creation, and is idempotent on its own key.
   await refundWithdrawal(order.userId, order.tokenAmount, order._id.toString());
+
+  // Take back the merchant's owed tokens. Only meaningful on the Postgres path:
+  // on Mongo nothing was ever credited during the hold, so there is nothing to
+  // cancel. Cancelling a settlement that was never opened is a no-op, and a
+  // settlement already SETTLED refuses — correctly, because after settlement a
+  // dispute is a clawback decision for an admin, not an automatic reversal.
+  if (onPostgres()) {
+    await cancelSettlement({
+      settlementId: settlementIdFor(order), merchantId: order.merchantId,
+      actor: by ? String(by) : 'dispute', reason: String(reason).slice(0, 500),
+    }).catch((e) => console.error(`[withdrawal-hold] settlement cancel failed for ${order.orderId}:`, e.message));
+  }
 
   emitOrderUpdate(order.userId.toString(), 'order_update', {
     orderId: order.orderId, _id: order._id, status: 'DISPUTED',

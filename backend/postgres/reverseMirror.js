@@ -287,6 +287,49 @@ export function reverseMirrorMerchantWalletLedger(row) {
   });
 }
 
+/**
+ * merchant_settlements row → the PaymentOrder fields Mongo keeps the lifecycle
+ * in. Domain 2's rollback leg.
+ *
+ * The inverse of dualWrite.mirrorMerchantSettlement, and it has to be, because
+ * a fallback re-reads the lifecycle from the order: settleDueHolds sweeps on
+ * `merchantCreditStatus: 'HELD'`, and settleHold/reverseHold use that same field
+ * as their concurrency gate. A settlement Postgres advanced while it was
+ * authoritative would, without this, still look HELD to Mongo — and the first
+ * sweep after a fallback would settle it a second time.
+ *
+ * Written through updateOne rather than the state machine on purpose: this is a
+ * MIRROR of a decision already committed in Postgres, not a new transition.
+ * Routing it through the guards would re-run them against Mongo's stale state
+ * and could refuse a settled fact.
+ */
+const ORDER_STATE_FROM_SETTLEMENT = {
+  RESERVED:  { merchantCreditStatus: 'HELD' },
+  SETTLED:   { merchantCreditStatus: 'RELEASED', status: 'COMPLETED', escrowLocked: false },
+  CANCELLED: { merchantCreditStatus: 'REVERSED', escrowLocked: false },
+  // A reversal after settlement is a correction an admin has to see; it does
+  // not silently return the order to a pre-settlement status.
+  REVERSED:  { merchantCreditStatus: 'REVERSED', status: 'DISPUTED', escrowLocked: false },
+};
+
+export function reverseMirrorMerchantSettlement(row) {
+  return mirrorBack('merchant_settlements', async () => {
+    const fields = ORDER_STATE_FROM_SETTLEMENT[row.state];
+    if (!fields) throw new Error(`unknown settlement state '${row.state}' — cannot mirror to the order`);
+    // A DEPOSIT never used merchantCreditStatus in Mongo (it has no hold), so
+    // only the order status is meaningful for it. Writing HELD onto a deposit
+    // would put it in the sweeper's query and settle something twice.
+    const patch = row.direction === 'DEPOSIT'
+      ? Object.fromEntries(Object.entries(fields).filter(([k]) => k !== 'merchantCreditStatus'))
+      : fields;
+    if (!Object.keys(patch).length) return;
+
+    await mongoose.model('PaymentOrder').updateOne(
+      { _id: row.order_id }, { $set: { ...patch, updatedAt: new Date() } },
+    );
+  });
+}
+
 /** payment_orders row → PaymentOrder doc. Status transitions overwrite. */
 export function reverseMirrorPaymentOrder(row) {
   return mirrorBack('payment_orders', async () => {
@@ -360,4 +403,10 @@ export const REVERSE_TABLES = Object.freeze([
   { table: 'merchant_wallet_ledger', model: 'MerchantWalletLedger', pgKey: 'tx_id',           mongoKey: 'txId',           since: 'created_at',    mirror: reverseMirrorMerchantWalletLedger },
   { table: 'payment_orders',         model: 'PaymentOrder',         pgKey: 'mongo_id',        mongoKey: '_id',            since: 'created_at',    mirror: reverseMirrorPaymentOrder },
   { table: 'utr_registry',           model: 'UTRRegistry',          pgKey: 'utr',             mongoKey: 'utr',            since: 'registered_at', mirror: reverseMirrorUtr },
+  // merchant_settlements keys on the ORDER, because that is where Mongo keeps
+  // this lifecycle — there is no settlement document to be missing. So the
+  // presence check here is near-vacuous (the order always exists); what makes
+  // the entry worth having is `repair`, which drives the same reverse mirror the
+  // live path uses and so re-applies a state Mongo fell behind on.
+  { table: 'merchant_settlements',   model: 'PaymentOrder',         pgKey: 'order_id',        mongoKey: '_id',            since: 'updated_at',    mirror: reverseMirrorMerchantSettlement },
 ]);
