@@ -505,3 +505,67 @@ CREATE INDEX IF NOT EXISTS treasury_entries_ref_idx
   ON treasury_entries (ref_model, ref_id);
 CREATE OR REPLACE TRIGGER treasury_entries_append_only
   BEFORE UPDATE OR DELETE ON treasury_entries FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- ORDERS (domain 5) — the workflow state machine, and the glue between domains
+--
+-- `payment_orders` above is a MIRROR: a projection of the Mongo document,
+-- overwritten on every change, with no history and no guard on what may follow
+-- what. It answers "where is this order now" and nothing else.
+--
+-- These two tables make the order's LIFECYCLE authoritative. Every transition
+-- names the state it expects to find, so an out-of-order provider callback is
+-- refused rather than obeyed, and every transition is recorded so the sequence
+-- that produced the current state can be read back.
+--
+-- The FK from the transitions to the order is what stops a transition existing
+-- for an order that does not — the mirror has no such constraint, because a
+-- projection cannot have one.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS order_states (
+  order_id           TEXT PRIMARY KEY,
+  user_id            TEXT NOT NULL,
+  merchant_id        TEXT,
+  order_type         TEXT NOT NULL,
+  state              TEXT NOT NULL DEFAULT 'PENDING_QUEUE',
+  token_amount_paise BIGINT NOT NULL,
+  fiat_amount_paise  BIGINT NOT NULL DEFAULT 0,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT order_states_type_known CHECK (order_type IN ('DEPOSIT', 'WITHDRAWAL')),
+  CONSTRAINT order_states_amount_positive CHECK (token_amount_paise > 0),
+  -- The same nine states the Mongo enum declares. Kept identical on purpose:
+  -- during the migration both stores describe the same order, and a state one
+  -- of them cannot represent would make the mirror lossy in one direction.
+  CONSTRAINT order_states_known CHECK (state IN (
+    'PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID', 'COMPLETED',
+    'DISPUTED', 'CANCELLED', 'FAILED', 'REJECTED'
+  ))
+);
+CREATE INDEX IF NOT EXISTS order_states_user_idx     ON order_states (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS order_states_merchant_idx ON order_states (merchant_id, state);
+CREATE INDEX IF NOT EXISTS order_states_state_idx    ON order_states (state, created_at);
+
+-- Every transition, append-only. `tx_id` UNIQUE is the idempotency gate: a
+-- duplicate callback collides inside the transaction and the whole thing
+-- unwinds, rather than advancing the order a second time.
+CREATE TABLE IF NOT EXISTS order_transitions (
+  id          BIGSERIAL PRIMARY KEY,
+  tx_id       TEXT NOT NULL UNIQUE,
+  order_id    TEXT NOT NULL REFERENCES order_states (order_id),
+  from_state  TEXT,
+  to_state    TEXT NOT NULL,
+  actor       TEXT,
+  reason      TEXT,
+  -- The ledger event this transition produced, when it produced one. Null for
+  -- transitions that move workflow without moving money (ASSIGNED, PROCESSING).
+  -- Having it here is what lets an auditor walk from an order to its accounting
+  -- entry without guessing at a key format.
+  ledger_key  TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT order_transitions_moves CHECK (from_state IS NULL OR from_state <> to_state)
+);
+CREATE INDEX IF NOT EXISTS order_transitions_order_idx  ON order_transitions (order_id, id);
+CREATE INDEX IF NOT EXISTS order_transitions_ledger_idx ON order_transitions (ledger_key);
+CREATE OR REPLACE TRIGGER order_transitions_append_only
+  BEFORE UPDATE OR DELETE ON order_transitions FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();

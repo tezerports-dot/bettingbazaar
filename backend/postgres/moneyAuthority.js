@@ -124,14 +124,16 @@ const CAPABILITIES = Object.freeze({
     dualWrite:   true,
     reconciled:  true,
     rollback:    true,
-    notes: 'accounting_events is mirrored and reconciled, but there is no Postgres reader and no call site consults the authority resolver.',
+    notes: 'Global accounting ledger. postgres/ledgerPg.js EXISTS: an authoritative reader and writer over accounting_events, double entry enforced per event by the DATABASE and across the ledger by a derived trial balance, balances never stored, idempotency by a single INSERT … ON CONFLICT DO NOTHING RETURNING with no pre-read to race. reconcileAgainstSubLedgers compares the summary accounts against the actual wallet, merchant and treasury sums — a trial balance proves internal consistency and says nothing about whether the ledger describes reality. 16 tests. Remaining: route revenueSettlement.service.js through the resolver, which is gated on orders becoming authoritative since order state produces most ledger events.',
   },
   [MONEY_PATHS.ORDERS]: {
+    // BUILT and tested, NOT routed — the routes still write Mongo status
+    // directly. Same standard held for every domain before it.
     implemented: false,
     dualWrite:   true,  // mirrorPaymentOrder, mirrorUtr
     reconciled:  true,
     rollback:    true,
-    notes: 'payment_orders + utr_registry are mirrored. No Postgres reader; order state transitions are Mongo-only.',
+    notes: 'Order lifecycle. postgres/orderPg.js EXISTS: order_states + append-only order_transitions, expected-previous-state guards in the UPDATE, and the accounting event posted in the SAME transaction as the state change (the Mongo path writes status first and the event afterwards, so a failure between them leaves an order COMPLETED with nothing in the books). 22 tests including a 100-copy callback storm, a racing complete-vs-dispute, 60 concurrent completions with no pool exhaustion, and both gap checks — orders missing their ledger event, and order-shaped events no transition produced. NOTE payment_orders remains a MIRROR: overwritten in place, no history, no guard. These tables are the authoritative lifecycle; that one is a projection. Remaining: route paymentOrder.routes/merchant.routes through the resolver, and reconcile order_states against the Mongo status.',
   },
   [MONEY_PATHS.KYC]: {
     implemented: false,
@@ -232,6 +234,16 @@ const TESTING = Object.freeze({
     concurrencyTested: true,
     infrastructureTested: false,
     evidence: 'backend/tests/postgres/merchantWalletPg.test.js (200 racing reservations against a balance that fits 100) + merchantWalletPgAuthority.test.js (200 racing debits through the authority path, 200-copy retry storm on one key). Infrastructure drills NOT RUN.',
+  },
+  [MONEY_PATHS.LEDGER]: {
+    concurrencyTested: true,
+    infrastructureTested: false,
+    evidence: 'backend/tests/postgres/ledgerPg.test.js — a 100-copy retry storm on one idempotency key, and an assertion that 100 concurrent writes leave pool.waitingCount at zero. Infrastructure drills NOT RUN.',
+  },
+  [MONEY_PATHS.ORDERS]: {
+    concurrencyTested: true,
+    infrastructureTested: false,
+    evidence: 'backend/tests/postgres/orderPg.test.js — a 100-copy storm of the same callback (applied once), a racing complete-vs-dispute where exactly one wins, 60 concurrent completions with pool.waitingCount at zero and no deadlock, and an interleaved storm of completions and failures where every completion has its ledger entry and every failure has none. Infrastructure drills NOT RUN.',
   },
   [MONEY_PATHS.ADMIN_ISSUANCE]: {
     concurrencyTested: true,

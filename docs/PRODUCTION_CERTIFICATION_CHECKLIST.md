@@ -26,8 +26,8 @@ Generated from `backend/postgres/moneyAuthority.js` by `npm run certify:report`.
 |---|:--:|:--:|:--:|:--:|:--:|:--:|
 | User Wallet | ✅ | ✅ | ✅ | ✅ | ⏳ | ⏳ |
 | Merchant Wallet | ✅ | ✅ | ✅ | ✅ | ⏳ | ⏳ |
-| Accounting Ledger | ⏳ | ✅ | ✅ | ⏳ | ⏳ | ⏳ |
-| Orders | ⏳ | ✅ | ✅ | ⏳ | ⏳ | ⏳ |
+| Accounting Ledger | ⏳ | ✅ | ✅ | ✅ | ⏳ | ⏳ |
+| Orders | ⏳ | ✅ | ✅ | ✅ | ⏳ | ⏳ |
 | KYC | ⏳ | ✅ | ⏳ | ⏳ | ⏳ | ⏳ |
 | Merchant ↔ User Settlement | ⏳ | ✅ | ✅ | ✅ | ⏳ | ⏳ |
 | Admin Treasury / Token Issuance | ⏳ | ⏳ | ⏳ | ✅ | ⏳ | ⏳ |
@@ -42,8 +42,8 @@ Generated from `backend/postgres/moneyAuthority.js` by `npm run certify:report`.
 |---|---|
 | User Wallet | infrastructureTested |
 | Merchant Wallet | infrastructureTested |
-| Accounting Ledger | implemented, concurrencyTested, infrastructureTested |
-| Orders | implemented, concurrencyTested, infrastructureTested |
+| Accounting Ledger | implemented, infrastructureTested |
+| Orders | implemented, infrastructureTested |
 | KYC | implemented, reconciled, concurrencyTested, infrastructureTested |
 | Merchant ↔ User Settlement | implemented, infrastructureTested |
 | Admin Treasury / Token Issuance | implemented, dualWrite, reconciled, rollback, infrastructureTested |
