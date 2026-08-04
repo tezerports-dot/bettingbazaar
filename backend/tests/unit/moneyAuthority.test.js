@@ -142,19 +142,41 @@ describe('capability gate — authority requires an implementation', () => {
       expect.arrayContaining(['implemented', 'dualWrite', 'reconciled', 'rollback']));
   });
 
-  it('holds merchant settlement on `implemented` alone, and says so precisely', () => {
-    // It is mirrored, reconciled and rollback-capable. What it is NOT is
-    // authoritative: settleHold still advances the Mongo order before the
-    // Postgres settlement, so on the Postgres path Mongo leads and the source
-    // of truth follows. A registry that reported this eligible would be
-    // asserting an authority the call order does not deliver.
-    const settlement = authorityMatrix(withPg())
-      .find((r) => r.path === MONEY_PATHS.MERCHANT_SETTLEMENT);
-    expect(settlement.cutoverEligible).toBe(false);
-    expect(settlement.missing).toEqual(['implemented']);
-    expect(settlement.dualWriteCapable).toBe(true);
-    expect(settlement.reconciled).toBe(true);
-    expect(settlement.rollbackCapable).toBe(true);
+  it('holds merchant settlement on its DEPENDENCIES, not on its capabilities', () => {
+    // All four capabilities now hold: the state inversion landed (settleHold
+    // gates on the settlement's own RESERVED→SETTLED guard and writes Mongo
+    // afterwards as a mirror), it is mirrored both ways, and it reconciles.
+    // So the capability gate is satisfied and the path is cutover-ELIGIBLE.
+    const env = withPg();
+    const settlement = authorityMatrix(env).find((r) => r.path === MONEY_PATHS.MERCHANT_SETTLEMENT);
+    expect(settlement.cutoverEligible).toBe(true);
+    expect(settlement.missing).toEqual([]);
+
+    // And it is still Mongo, which is the point of this test. Being ready is
+    // not the same as being next: settlements are composed out of orders, so a
+    // settlement reading Postgres while order state still lived in Mongo would
+    // be authoritative over a lifecycle it cannot see. The ORDERING gate — not
+    // the capability gate — is what holds it, and the two must stay separable
+    // or a flip could be justified by the wrong evidence.
+    //
+    // Both dependencies lag here, and for DIFFERENT reasons: orders is not
+    // eligible at all, while merchant_wallet is eligible but has not been
+    // asked for. Lagging means "not actually on Postgres", not "not ready" —
+    // a dependency nobody flipped is just as absent as one that cannot be.
+    expect(laggingDependencies(MONEY_PATHS.MERCHANT_SETTLEMENT, env))
+      .toEqual([MONEY_PATHS.MERCHANT_WALLET, MONEY_PATHS.ORDERS]);
+    expect(authorityFor(MONEY_PATHS.MERCHANT_SETTLEMENT, env)).toBe(STORE.MONGO);
+
+    // Flip the entire chain that CAN be flipped, and ask for this path
+    // explicitly. Orders is the one thing left, and it is enough — a flag
+    // cannot buy its way past the order.
+    const forced = withPg({
+      MONEY_AUTHORITY_WALLET: 'postgres',
+      MONEY_AUTHORITY_MERCHANT_WALLET: 'postgres',
+      MONEY_AUTHORITY_MERCHANT_SETTLEMENT: 'postgres',
+    });
+    expect(laggingDependencies(MONEY_PATHS.MERCHANT_SETTLEMENT, forced)).toEqual([MONEY_PATHS.ORDERS]);
+    expect(authorityFor(MONEY_PATHS.MERCHANT_SETTLEMENT, forced)).toBe(STORE.MONGO);
   });
 
   it('reports the merchant wallet as eligible now that all four capabilities hold', () => {

@@ -153,19 +153,21 @@ const CAPABILITIES = Object.freeze({
     notes: 'Merchant token balances. Movements are Postgres-authoritative when flipped: one transaction, row-locked, guard in the UPDATE, entry in the same transaction, UNIQUE tx_id idempotency. READS for display, scoring and assignment eligibility still come from the live-mirrored Mongo document — the authoritative sufficiency check is the debit itself, which refuses transactionally, so a stale read can only misroute an order, never move money wrongly. Reserved/settlement pockets are structurally zero until merchant_settlement lands; that domain must revisit the single-tokenBalance projection before writing them.',
   },
   [MONEY_PATHS.MERCHANT_SETTLEMENT]: {
-    // The state inversion this flag was blocked on IS DONE (2026-08-04):
-    // settleHold and reverseHold now gate on the settlement's own
-    // expected-previous-state guard and write Mongo afterwards as a mirror.
+    // Flipped 2026-08-04, on evidence rather than on the implementation.
     //
-    // `implemented` stays false for a different and much narrower reason: the
+    // The state inversion this flag was blocked on is done: settleHold and
+    // reverseHold gate on the settlement's own expected-previous-state guard
+    // and write Mongo afterwards as a mirror. The last thing held back was the
     // suite that proves the two stores AGREE
-    // (tests/integration/withdrawalHoldPgAuthority.integration.test.js) needs a
-    // MongoDB replica set this environment cannot run, so it has only ever been
-    // executed by CI. Flipping on the strength of the two suites that CAN run
-    // here would be marking a pass on code inspection of the third. Flip when
-    // that suite is green — and note it changes nothing on its own either way,
-    // because this path also waits on ORDERS (see dependsOn).
-    implemented: false,
+    // (tests/integration/withdrawalHoldPgAuthority.integration.test.js), which
+    // needs a MongoDB replica set this environment cannot run — so flipping on
+    // the strength of the two suites that DO run here would have been marking a
+    // pass on code inspection of the third. CI ran it green on 1a084a0, having
+    // failed it four times first, every one a real fixture defect.
+    //
+    // This changes no runtime behaviour on its own: the path also waits on
+    // ORDERS (see dependsOn), so authorityFor still resolves to Mongo.
+    implemented: true,
     dualWrite:   true,  // dualWrite.mirrorMerchantSettlement, hooked on PaymentOrder
     reconciled:  true,  // reconcile.reconcileMerchantSettlementStates (cross-store) + findUnexplainedSettlementPockets
     rollback:    true,  // reverseMirror.reverseMirrorMerchantSettlement + reverseMirrorMerchantMovement, live per transition
