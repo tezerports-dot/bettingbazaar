@@ -24,17 +24,22 @@
  * is no fourth option, and a step that quietly creates or destroys value fails
  * here even when every domain suite is green.
  *
- * ── What this test is currently unable to check, and why that matters ───────
- * `sink` exists because some value legitimately leaves the merchant/user books:
- * a losing stake goes to the house, a commission goes to the platform. Neither
- * has a PostgreSQL representation yet — the treasury domain is not built — so
- * this test has to be TOLD about them rather than reading them from a ledger.
+ * ── Two strengths of the same invariant ────────────────────────────────────
+ * The scenarios below come in two kinds, and the difference is the point.
  *
- * That is precisely the gap the treasury domain closes. When it exists, `sink`
- * becomes a real set of accounts and the invariant tightens from "the test
- * accounted for it" to "the books account for it". Until then, an operation
- * that moves value to the house is trusted rather than verified, and this
- * comment is the record of that.
+ * The `sink`-based ones state where value went and check the arithmetic holds.
+ * `sink` was originally a placeholder for money with nowhere to go — a losing
+ * stake to the house, a commission to the platform — so those scenarios prove
+ * only that THE TEST accounted for it. They remain because they exercise the
+ * seams under cancellation, reversal and retry storms, where what matters is
+ * that both legs of a transfer move together.
+ *
+ * The final scenario has NO sink. Every movement that leaves the user/merchant
+ * books is posted to a real treasury account (postgres/treasuryPg.js), so the
+ * invariant tightens to "THE BOOKS account for it" — checked two ways after
+ * every step: the treasury trial balance sums to zero, and MERCHANT_FLOAT /
+ * USER_FLOAT equal the actual wallet sums. The second is the claim no isolated
+ * suite can make, and the test after it demonstrates the failure it catches.
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../../postgres/pgClient.js';
