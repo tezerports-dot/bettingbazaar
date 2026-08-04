@@ -174,14 +174,20 @@ const CAPABILITIES = Object.freeze({
     notes: 'User↔merchant settlement lifecycle. postgres/merchantSettlementPg.js: merchant_settlements + merchant_settlement_transitions, expected-previous-state guards in the UPDATE, the transition and its pocket movement composed into ONE transaction under a single merchant lock, two UNIQUE idempotency gates, append-only history. STATE AUTHORITY IS INVERTED: settleHold completes the settlement FIRST and Mongo follows, so the source of truth decides the race; the price is that a failed player-side release must be compensated, which it is — SETTLED→REVERSED as a recorded movement, allowed to drive the merchant negative because the tokens may already have been spent. reverseHold moved the same way, deliberately together: two outcomes of one race decided by two different databases is worse than either alone. Mongo\'s status is now consulted for ONE thing only — whether a settlement may be OPENED — which is what stops a stray sweep manufacturing a liability against a long-completed order, and a lagging mirror is self-healing because re-mirroring is what removes an order from the sweep queue. 57 tests: 26 against PostgreSQL (200-way reservation race, retry storms, racing complete-vs-cancel, a backend killed mid-transition), 12 on the rollback leg (100 racing completions mirror exactly once; nothing mirrors while Mongo is authoritative; no transition ever holds two pooled connections), and 19 on the routing (call ORDER, the compensating reverse, and that creditMerchantTokens is never called on this path — the settlement IS the credit). Remaining: CI evidence for the cross-store integration suite, then this flag; and the path still waits on ORDERS.',
   },
   [MONEY_PATHS.ADMIN_ISSUANCE]: {
-    // Routed 2026-08-04. merchant.admin.routes.js now calls the resolver
+    // Routed and flipped 2026-08-04, on CI evidence (180f01a) rather than on
+    // the implementation. merchant.admin.routes.js calls the resolver
     // (adminIssuanceAuthority) rather than the Mongo counter inline, and all
-    // three legs — forward mirror, reconciliation, reverse mirror — exist.
+    // three legs — forward mirror, reconciliation, reverse mirror — exist and
+    // are exercised across both stores.
     //
-    // `implemented` waits on the same evidence merchant_settlement waited on:
-    // the cross-store suite runs only in CI, because a MongoDB replica set
-    // cannot run in the build sandbox. Flip when CI is green on it.
-    implemented: false,
+    // That cross-store suite earned its keep before it ever guarded a flip: it
+    // found M-6, a shipped defect that made admin token issuance throw on EVERY
+    // call ($expr combined with upsert, which MongoDB refuses). Nothing had run
+    // that path against a real MongoDB before.
+    //
+    // No runtime change on its own — this path waits on MERCHANT_WALLET, which
+    // is eligible but not flipped, so authorityFor still resolves to Mongo.
+    implemented: true,
     dualWrite:   true,  // dualWrite.mirrorAdminSupply, called by the adapter after the Mongo counter moves
     reconciled:  true,  // reconcile.reconcileAdminSupply — running counter vs derived double-entry total
     rollback:    true,  // reverseMirror.reverseMirrorAdminSupply, live per mint and per burn

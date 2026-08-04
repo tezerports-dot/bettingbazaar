@@ -15,7 +15,12 @@ node -e "import('./backend/postgres/moneyAuthority.js').then(m => \
 
 ## `POSTGRES_FULL_FINANCIAL_AUTHORITY = NOT READY`
 
-11 declared paths. **2 implemented, 9 not started.** 0 currently on Postgres.
+11 declared paths. **4 implemented, 7 not started.** 0 currently on Postgres.
+
+`wallet`, `merchant_wallet`, `merchant_settlement` and `admin_issuance` are all
+cutover-ELIGIBLE. None is flipped, and two of them additionally wait on the
+ordering gate: `merchant_settlement` needs `orders`, and `admin_issuance` needs
+`merchant_wallet` actually flipped rather than merely eligible.
 
 The 11th, `casino_settlement`, was added 2026-08-03: casino provider callbacks
 credit and debit real balances (`gameProvider.routes.js` calls
@@ -33,16 +38,21 @@ Listed in the order the plan flips them.
 | `ledger` | ❌ | ✅ | ✅ | ✅ | no | mongo |
 | `orders` | ❌ | ✅ | ✅ | ✅ | no | mongo |
 | `kyc` | ❌ | ✅ | ❌ | ✅ | no | mongo |
-| `merchant_settlement` | ❌ | ✅ | ✅ | ✅ | no | mongo |
-| `admin_issuance` | ❌ | ❌ | ❌ | ❌ | no | mongo |
+| `merchant_settlement` | ✅ | ✅ | ✅ | ✅ | **YES** | mongo |
+| `admin_issuance` | ✅ | ✅ | ✅ | ✅ | **YES** | mongo |
 | `bets` | ❌ | ❌ | ❌ | ❌ | no | mongo |
 | `settlements` | ❌ | ❌ | ❌ | ❌ | no | mongo |
 | `casino_settlement` | ❌ | ❌ | ❌ | ❌ | no | mongo |
 | `bonuses_and_commissions` | ❌ | ❌ | ❌ | ❌ | no | mongo |
 
-Neither eligible path has been flipped. Eligibility means only that the flip is
+No eligible path has been flipped. Eligibility means only that the flip is
 *permitted*; `docs/PRODUCTION_CERTIFICATION_CHECKLIST.md` covers what is still
-required before it should happen.
+required before it should happen — every one of the four is now blocked on
+`infrastructureTested` alone.
+
+> This table is maintained by hand and has drifted before. The generated one in
+> `PRODUCTION_CERTIFICATION_CHECKLIST.md` is the one to trust when they
+> disagree; the command at the top of this file prints the registry live.
 
 ## What each column means
 
@@ -211,15 +221,42 @@ What this domain does add that Mongo cannot express: a withdrawal's owed tokens
 now sit in a pocket the merchant cannot spend. On Mongo they simply do not exist
 during the hold window, so nothing records the liability at all.
 
-### `admin_issuance`, `settlements`, `bonuses_and_commissions`
+### `admin_issuance` — ✅ complete, eligible, not flipped
+`postgres/treasuryPg.js` (double entry across eight accounts) plus
+`postgres/adminIssuanceAuthority.js`, the routed adapter.
+`merchant.admin.routes.js` consults the resolver on both call sites.
+
+It exists to FIX three defects rather than port them:
+
+1. **No idempotency key.** `reserveAdminMint(amount)` took an amount and nothing
+   else, so two deliveries of one admin request minted twice and nothing could
+   tell that from two legitimate top-ups. Every mint now carries a
+   caller-supplied `movementId` that collides inside the transaction.
+2. **A rollback that erased.** `$inc: { minted: -amount }` under
+   `.catch(() => {})` — a retried rollback invented headroom under the cap, and
+   a swallowed failure left the supply permanently wrong. A rollback is now a
+   BURN: its own key, its own entries, idempotent, and the mint *and* its
+   reversal both survive in the history.
+3. **A counter cannot say where tokens went.** Every movement names the merchant
+   and the order.
+
+`reconcileAdminSupply` compares the running counter against the derived
+double-entry total. That comparison is only *meaningful* because of (2) — a
+counter you can decrement can be made to agree with anything.
+
+**It also found a shipped bug.** The cross-store suite was the first test ever to
+call this path against a real MongoDB, and it threw immediately: `$expr` combined
+with `upsert` is refused by MongoDB, so **admin token issuance had never worked**
+— both routes returned 500 on every call. Recorded as M-6 in
+`MONGO_MONEY_AUDIT.md`. Worth remembering the next time something looks correct
+on inspection.
+
+Blocked on `infrastructureTested`, like every other eligible path, and on the
+ordering gate: `merchant_wallet` must actually be flipped first.
+
+### `settlements`, `bonuses_and_commissions`
 No Postgres implementation, mirror or reconciliation. Declared here so the gap is
 visible and so setting their variables fails loudly.
-
-`admin_issuance` is half-covered without being eligible: the MERCHANT side of an
-issuance already rides on `merchant_wallet`, because the admin routes call
-`creditMerchantTokens`. What is missing is the TREASURY side — the 10B supply cap
-reserved by `reserveAdminMint` has no Postgres ledger, so a mint is only
-half-recorded there.
 
 ## How to read a "no" here
 
