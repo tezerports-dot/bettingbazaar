@@ -48,6 +48,22 @@ export const ledgerReconcileErrors = new client.Counter({
   registers: [registry],
 });
 
+// A balance moved but its audit rows did not land. The Mongo bet-stake path
+// (walletAuthority._mongoBetStake) writes balance and ledger as two separate
+// operations and deliberately lets the money stand if the ledger write fails —
+// stranding a placed bet is judged worse than a missing audit row. That
+// tradeoff is defensible; doing it SILENTLY is not, because the missing row is
+// exactly what reconciliation and the trial balance are computed from.
+//
+// Any non-zero value here means the ledger no longer explains the balances.
+// Alert on it: `increase(bb_unaudited_money_movements_total[15m]) > 0`.
+export const unauditedMoneyMovements = new client.Counter({
+  name: 'bb_unaudited_money_movements_total',
+  help: 'Balance movements whose ledger rows failed to write (money moved unaudited)',
+  labelNames: ['path'],
+  registers: [registry],
+});
+
 export const alertsSent = new client.Counter({
   name: 'bb_alerts_sent_total',
   help: 'Operational alerts dispatched to the configured webhook',
@@ -119,6 +135,48 @@ export const ledgersAgree = new client.Gauge({
 export const moneyAuthorityPostgres = new client.Gauge({
   name: 'bb_money_authority_postgres',
   help: 'Postgres is the source of truth for this money path (1) or MongoDB is (0)',
+  labelNames: ['path'],
+  registers: [registry],
+});
+
+// ── Per-domain money operations ──────────────────────────────────────────────
+// One counter for every balance mutation, labelled by which money path it
+// belongs to, which store served it, and how it ended. Three separate counters
+// were considered (transactions / retries / idempotent hits) and rejected: they
+// would need identical labels to be comparable, and an outcome label answers
+// all three questions from one series while keeping cardinality bounded (paths
+// and outcomes are both closed sets — never an id, never a merchant).
+//
+// Alert-worthy signals this exposes:
+//   - `idempotent` climbing steeply = a caller is retrying far more than it
+//     should, or two paths share a txId they should not.
+//   - `insufficient` climbing on a path that should never overdraw = an upstream
+//     guard has stopped working.
+//   - `error` at all on a money path = investigate immediately.
+export const moneyOperations = new client.Counter({
+  name: 'bb_money_operations_total',
+  help: 'Balance mutations by money path, serving store and outcome',
+  // outcome: applied | idempotent | insufficient | not_found | error
+  labelNames: ['path', 'store', 'operation', 'outcome'],
+  registers: [registry],
+});
+
+// ── Cross-store balance drift ────────────────────────────────────────────────
+// bb_pg_drift_rows counts rows MISSING from a store. It cannot see the failure
+// that actually matters for a balance: a row present in both stores whose
+// NUMBER differs. These two gauges are that check — the money equivalent of the
+// trial balance, per domain. Both must be zero for a path to be cutover-ready,
+// and staying zero is what the certification checklist means by "reconciled".
+// Alert on `bb_balance_drift_paise != 0`.
+export const balanceDriftPaise = new client.Gauge({
+  name: 'bb_balance_drift_paise',
+  help: 'Absolute Mongo↔Postgres balance disagreement in paise, by money path (0 = agree)',
+  labelNames: ['path'],
+  registers: [registry],
+});
+export const balanceDriftAccounts = new client.Gauge({
+  name: 'bb_balance_drift_accounts',
+  help: 'Number of accounts whose Mongo and Postgres balances disagree, by money path',
   labelNames: ['path'],
   registers: [registry],
 });

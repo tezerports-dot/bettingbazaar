@@ -37,7 +37,7 @@
  * lesson recorded in GOVERNANCE §20 (2026-07-10): the unique index INSIDE the
  * transaction is the idempotency gate, not a pre-read.
  */
-import { getPool, pgQuery } from './pgClient.js';
+import { getPool, pgQuery, connectGuarded } from './pgClient.js';
 import { rupeesToPaise, paiseToRupees } from '../shared/money.js';
 
 /** Mongo balance field → its paise column on `wallets`. */
@@ -122,11 +122,15 @@ function rowToBalances(row = {}) {
  * follow-up read (e.g. fetching what an earlier replay produced) must happen
  * OUTSIDE this helper, after it has returned.
  */
-async function withWalletLock(userId, fn) {
+export async function withWalletLock(userId, fn) {
   const uid = String(userId);
   const pool = await getPool();
   if (!pool) throw new Error('Postgres not configured (DATABASE_URL unset)');
-  const client = await pool.connect();
+  // connectGuarded, not pool.connect: an unguarded checked-out client turns a
+  // Postgres restart mid-transaction into an unhandled 'error' event and a hard
+  // process crash. See pgClient.connectGuarded.
+  const client = await connectGuarded(pool);
+  let failure = null;
 
   try {
     await client.query('BEGIN');
@@ -148,10 +152,22 @@ async function withWalletLock(userId, fn) {
     await client.query(commit ? 'COMMIT' : 'ROLLBACK');
     return value;
   } catch (error) {
+    failure = error;
     try { await client.query('ROLLBACK'); } catch { /* already unwound */ }
     throw error;
   } finally {
-    client.release();
+    // Passing the error DESTROYS the client instead of returning it to the
+    // pool. It matters when the backend went away mid-transaction — a Postgres
+    // restart, a failover, an admin pg_terminate_backend: the socket is dead
+    // but a plain release() puts it back in rotation and the NEXT caller
+    // inherits "terminating connection due to administrator command" on a query
+    // of its own, two statements later, in unrelated code.
+    //
+    // The merchant modules were fixed when a settlement test killed a backend
+    // mid-transition and the failure surfaced somewhere else entirely. This is
+    // the same bug on the HOTTEST money path, which had simply never been
+    // subjected to that drill.
+    client.release(failure ?? undefined);
   }
 }
 
@@ -306,15 +322,9 @@ export async function applyMovementPaise({ userId, legs, ledger, allowNegative =
   validateLedgerRows(ledger);
   const merged = mergeLegs(legs, allowNegative);
 
-  const outcome = await withWalletLock(userId, async ({ client, uid }) => {
-    const after = await moveBalances(client, uid, merged);
-    if (!after) {
-      return { commit: false, value: { ok: false, insufficient: true, idempotent: false, balancesAfterPaise: null } };
-    }
-    if (!await appendLedgerRows(client, uid, ledger, after)) {
-      return { commit: false, value: { ok: true, idempotent: true, balancesAfterPaise: null } };
-    }
-    return { commit: true, value: { ok: true, idempotent: false, balancesAfterPaise: after } };
+  const outcome = await withWalletLock(userId, async (ctx) => {
+    const value = await applyMovementWithin(ctx, { merged, ledger });
+    return { commit: value.ok && !value.idempotent, value };
   });
 
   // The replay lookup has to happen out here: inside the transaction the
@@ -323,6 +333,46 @@ export async function applyMovementPaise({ userId, legs, ledger, allowNegative =
     outcome.replayedLedger = await replayedBalances(ledger.map((r) => r.txId));
   }
   return outcome;
+}
+
+/**
+ * The movement itself, executed inside a lock someone else opened.
+ *
+ * Split out from applyMovementPaise so a caller that must do MORE than move a
+ * balance — write a bet row and its stake debit, in the same transaction or not
+ * at all — can compose with it instead of opening a second one. betPg is that
+ * caller, and the composition is the entire point of the domain: the Mongo
+ * original writes the bet, moves the balance and appends the ledger as three
+ * separate operations, which is defect M-4 (money moves unaudited when the
+ * ledger write fails, and the ledger is what reconciliation is computed from,
+ * so the failure erases its own symptom).
+ *
+ * Does NOT commit or roll back. The lock holder decides that, because only it
+ * knows whether the rest of the transaction succeeded.
+ *
+ * `merged` is pre-normalised leg output from mergeLegs(); callers outside this
+ * module should pass `legs`/`allowNegative` and let it normalise.
+ */
+export async function applyMovementWithin({ client, uid }, { legs, merged, ledger, allowNegative = false }) {
+  if (!merged) {
+    if (!Array.isArray(legs) || !legs.length) {
+      throw new Error('applyMovementWithin requires at least one balance leg');
+    }
+    if (!Array.isArray(ledger) || !ledger.length) {
+      throw new Error('applyMovementWithin requires at least one ledger row — a balance must never move unaudited');
+    }
+    validateLedgerRows(ledger);
+  }
+  const columns = merged ?? mergeLegs(legs, allowNegative);
+
+  const after = await moveBalances(client, uid, columns);
+  if (!after) {
+    return { ok: false, insufficient: true, idempotent: false, balancesAfterPaise: null };
+  }
+  if (!await appendLedgerRows(client, uid, ledger, after)) {
+    return { ok: true, idempotent: true, balancesAfterPaise: null };
+  }
+  return { ok: true, idempotent: false, balancesAfterPaise: after };
 }
 
 /**
@@ -427,9 +477,25 @@ export async function transferPaise({
  * miss the UNIQUE collision that makes a replay a no-op, and debit twice.
  *
  * Under the lock the probe below is exact: if any ledger row already exists
- * with this movement's base key, the movement has happened and we stop. The
- * Mongo path's equivalent pre-read is explicitly documented there as a
- * fast path rather than a guarantee — here it is a guarantee.
+ * for one of the keys THIS movement would write, the movement has happened and
+ * we stop. The Mongo path's equivalent pre-read is explicitly documented there
+ * as a fast path rather than a guarantee — here it is a guarantee.
+ *
+ * ── Why the probe enumerates keys instead of matching a prefix ───────────────
+ * This was `tx_id LIKE '<txId>%'`, which is wrong in two ways that both END IN
+ * AN UNCHARGED DEBIT — the probe reports "already done" and the caller is told
+ * the spend succeeded while no money moved:
+ *   • `%` and `_` are LIKE metacharacters. `debitForBet` is reached from the
+ *     game-provider wallet webhook, whose txId is taken verbatim from the
+ *     provider payload, so a txId of `%` expands to `%%` and matches ANY
+ *     existing row for that user — every bet becomes free.
+ *   • even with inert input it is a PREFIX test, so a later txId that happens
+ *     to be a prefix of an earlier one (`…_b1` arriving after `…_b10`) matches
+ *     a row belonging to a DIFFERENT movement.
+ * The keys this movement can write are known exactly — one per pocket — so the
+ * probe tests for those and nothing else. A pocket the original skipped
+ * (`take === 0`, so no row) is still covered, because any ONE surviving row
+ * proves the movement ran.
  *
  * @param {object} args
  * @param {string} args.userId
@@ -455,10 +521,11 @@ export async function debitSpendOrderPaise({
   for (const pocket of pockets) columnFor(pocket.field);
 
   const outcome = await withWalletLock(userId, async ({ client, uid, balances }) => {
-    // Durable idempotency probe — exact because we hold this user's lock.
+    // Durable idempotency probe — exact because we hold this user's lock, and
+    // literal because it names the keys rather than pattern-matching them.
     const seen = await client.query(
-      `SELECT 1 FROM wallet_ledger WHERE user_id = $1 AND tx_id LIKE $2 LIMIT 1`,
-      [uid, `${txId}%`],
+      `SELECT 1 FROM wallet_ledger WHERE user_id = $1 AND tx_id = ANY($2) LIMIT 1`,
+      [uid, pockets.map((p) => `${txId}${p.suffix}`)],
     );
     if (seen.rows.length) {
       return { commit: false, value: { ok: true, idempotent: true } };

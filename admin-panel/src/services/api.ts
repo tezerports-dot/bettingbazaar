@@ -29,6 +29,25 @@ const api: AxiosInstance = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+/**
+ * A fresh idempotency key for one financial intent.
+ *
+ * Financial endpoints that have no natural key of their own require the caller
+ * to name the request, because only the caller can tell a RETRY from a second
+ * deliberate action — "top up merchant X by 5000" is identical bytes either
+ * way. The server refuses to guess and returns 400 without one.
+ *
+ * `randomUUID` is unavailable on insecure origins in some browsers, so there is
+ * a fallback. It only needs to be unique per intent, not unpredictable — the
+ * key is an identifier, not a secret, and the endpoints behind it are already
+ * authenticated.
+ */
+function newIdempotencyKey(): string {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  if (uuid) return uuid;
+  return `k-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 api.interceptors.request.use(
   (config) => {
     let token: string | null = null;
@@ -227,8 +246,23 @@ export const merchants = {
     return res.data;
   },
   // FIX 8: Top up merchant token wallet (backend: POST /merchants/:id/fund)
-  fundWallet: async (merchantId: string, tokenAmount: number, note?: string) => {
-    const res = await api.post(`/api/admin/merchants/${merchantId}/fund`, { tokenAmount, note });
+  //
+  // The Idempotency-Key is REQUIRED — the endpoint returns 400 without one.
+  // Only the caller can tell a retry from a second deliberate top-up, so the
+  // server refuses to guess. One invocation of this function is one intent, so
+  // the key is minted here: a transport-level retry inside axios reuses the
+  // same header and cannot double-fund, while a second click is a genuinely
+  // new request and gets a new key.
+  //
+  // Pass `idempotencyKey` explicitly to retry a call whose response was lost
+  // (a timeout, a dropped connection) — that is the case where reusing the
+  // ORIGINAL key is the whole point.
+  fundWallet: async (merchantId: string, tokenAmount: number, note?: string, idempotencyKey?: string) => {
+    const res = await api.post(
+      `/api/admin/merchants/${merchantId}/fund`,
+      { tokenAmount, note },
+      { headers: { 'Idempotency-Key': idempotencyKey || newIdempotencyKey() } },
+    );
     return res.data;
   },
 

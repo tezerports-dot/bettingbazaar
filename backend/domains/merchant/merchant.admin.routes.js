@@ -6,6 +6,8 @@ import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels 
 import { creditMerchantTokens, debitMerchantTokens } from './merchantWallet.service.js';
 import { generateMerchantPublicRef } from './merchant.model.js';
 import { MERCHANT_CURRENCY, MERCHANT_CURRENCIES, merchantTypeOf } from './merchantCurrency.js';
+import * as issuance from '../../postgres/adminIssuanceAuthority.js';
+import { requireIdempotencyKey } from '../../middleware/idempotencyKey.js';
 
 const router = express.Router();
 
@@ -28,29 +30,41 @@ async function createMerchantWithPublicRefRetry(Merchant, payload, retries = 3) 
   }
 }
 
-async function reserveAdminMint(amount) {
-  const SystemConfig = mongoose.model('SystemConfig');
-  const inc = Number(amount);
-  const cfg = await SystemConfig.findOneAndUpdate(
-    {
-      key: 'main',
-      $expr: { $lte: [{ $add: [{ $ifNull: ['$adminTokenSupply.minted', 0] }, inc] }, { $ifNull: ['$adminTokenSupply.cap', 10000000000] }] },
-    },
-    {
-      $setOnInsert: { key: 'main', 'adminTokenSupply.cap': 10000000000 },
-      $inc: { 'adminTokenSupply.minted': inc },
-    },
-    { upsert: true, new: true }
-  ).lean();
-  if (!cfg) throw Object.assign(new Error('Admin token supply cap exceeded'), { status: 400 });
-  return cfg.adminTokenSupply;
+/**
+ * Issuance goes through the authority resolver (postgres/moneyAuthority.js).
+ *
+ * Both implementations live in postgres/adminIssuanceAuthority.js — the Mongo
+ * counter this file used to hold inline, and the double-entry treasury. Which
+ * one runs is decided per call, and MongoDB is still the default.
+ *
+ * ── The contract change ─────────────────────────────────────────────────────
+ * Every mint carries a `movementId`, because the operation is not idempotent
+ * without one: `reserveAdminMint(amount)` took an amount and nothing else, so
+ * two deliveries of one admin request minted twice and nothing could tell that
+ * from two legitimate top-ups. The key also ties the mint to the merchant
+ * credit that follows it, so the pair can never half-apply.
+ *
+ * Where the key comes from differs by endpoint, and the difference is whether a
+ * NATURAL one exists:
+ *
+ *  - `/merchant-token-orders/:id/approve` keys on the ORDER. The order is the
+ *    request; approving it twice is the same act twice. No caller input needed.
+ *  - `/merchants/:id/fund` has no natural key — "top up merchant X by ₹5,000"
+ *    is identical bytes whether it is a retry or a second deliberate top-up —
+ *    so the CALLER must supply one, and a missing key is a 400. Deliberately
+ *    not defaulted: a server-generated fallback is precisely the bug that
+ *    shipped (`mw_topup_${new ObjectId()}`, fresh per delivery), and it is worse
+ *    than no gate because the code reads as though it has one.
+ *
+ * See middleware/idempotencyKey.js for the shape rules and why a key that
+ * reaches a UNIQUE column is validated rather than trusted.
+ */
+async function reserveAdminMint(amount, opts) {
+  return issuance.reserveAdminMint({ amountTokens: Number(amount), ...opts });
 }
 
-async function rollbackAdminMint(amount) {
-  await mongoose.model('SystemConfig').findOneAndUpdate(
-    { key: 'main' },
-    { $inc: { 'adminTokenSupply.minted': -Number(amount) } }
-  ).catch(() => {});
+async function rollbackAdminMint(amount, opts) {
+  return issuance.rollbackAdminMint({ amountTokens: Number(amount), ...opts });
 }
 
 
@@ -533,18 +547,42 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
     // merchantId = Merchant._id. Admin top-ups mint from the fixed 10B
     // treasury cap before crediting the merchant wallet. Roll back the supply
     // reservation if the wallet write fails.
+    //
+    // ── The key ────────────────────────────────────────────────────────────
+    // REQUIRED from the caller, and one id covers both the mint and the credit
+    // so they can never half-apply.
+    //
+    // What shipped was `mw_topup_${new ObjectId()}` — a fresh key per delivery,
+    // which is `random()`. The UNIQUE gate behind it could never fire, so every
+    // retry funded the merchant a second time while the code read as though it
+    // were protected. Generating a fallback here would restore exactly that
+    // illusion, which is why there is no fallback: only the caller can
+    // distinguish a retry from a deliberate second top-up, so an absent key is
+    // a 400 rather than a guess.
+    const mintKey = requireIdempotencyKey(req);
+
     let supply;
     let creditResult;
     try {
-      supply = await reserveAdminMint(tokenAmountNum);
+      supply = await reserveAdminMint(tokenAmountNum, {
+        movementId: `mint_${mintKey}`, merchantId: String(merchantId),
+        actor: String(req.user._id), refModel: 'Merchant', refId: String(merchantId),
+        reason: `Admin wallet top-up${note ? ` — ${note}` : ''}`,
+      });
       creditResult = await creditMerchantTokens({
         merchantId, amount: tokenAmountNum,
         reason: `Admin wallet top-up${note ? ` — ${note}` : ''}`,
         refModel: 'Merchant', refId: String(merchantId),
-        txId: `mw_topup_${new mongoose.Types.ObjectId().toString()}`,
+        txId: `mw_topup_${mintKey}`,
       });
     } catch (mintErr) {
-      if (supply) await rollbackAdminMint(tokenAmountNum);
+      if (supply) {
+        await rollbackAdminMint(tokenAmountNum, {
+          movementId: `mint_${mintKey}`, actor: String(req.user._id),
+          refModel: 'Merchant', refId: String(merchantId),
+          reason: 'Admin wallet top-up failed after minting',
+        }).catch((e) => console.error('[admin fund] mint rollback failed:', e.message));
+      }
       throw mintErr;
     }
     const { merchant } = creditResult;
@@ -609,7 +647,18 @@ router.post('/merchant-token-orders/:orderId/approve', authenticate, isAdmin, as
     if (!order) return res.status(404).json({ success: false, message: 'Pending merchant token order not found' });
     let supply;
     try {
-      supply = await reserveAdminMint(order.tokenAmount);
+      // Keyed on the ORDER, so this endpoint is idempotent across requests as
+      // well as within one: a redelivered approval mints nothing further. The
+      // status guard above already refuses a second approval, but that guard
+      // and this key protect different things — the guard stops the workflow
+      // advancing twice, the key stops the MONEY moving twice, and a rollback
+      // that reset the status (see the catch below) puts the order back in
+      // reach of the guard while the mint stays spent.
+      supply = await reserveAdminMint(order.tokenAmount, {
+        movementId: `mint_order_${order._id}`, merchantId: String(order.merchantId),
+        actor: String(req.user._id), refModel: 'MerchantAdminTokenOrder', refId: String(order._id),
+        reason: `Admin token purchase approved: ${order.orderId}`,
+      });
       const { merchant } = await creditMerchantTokens({
         merchantId: order.merchantId,
         amount: order.tokenAmount,
@@ -620,7 +669,13 @@ router.post('/merchant-token-orders/:orderId/approve', authenticate, isAdmin, as
       });
       return res.json({ success: true, order, merchant, supply });
     } catch (err) {
-      if (supply) await rollbackAdminMint(order.tokenAmount);
+      if (supply) {
+        await rollbackAdminMint(order.tokenAmount, {
+          movementId: `mint_order_${order._id}`, actor: String(req.user._id),
+          refModel: 'MerchantAdminTokenOrder', refId: String(order._id),
+          reason: `Admin token purchase ${order.orderId} failed after minting`,
+        }).catch((e) => console.error('[admin approve] mint rollback failed:', e.message));
+      }
       await MerchantAdminTokenOrder.findByIdAndUpdate(order._id, { $set: { status: 'PENDING', reviewedAt: null, reviewedBy: null, reviewNote: '' } });
       throw err;
     }

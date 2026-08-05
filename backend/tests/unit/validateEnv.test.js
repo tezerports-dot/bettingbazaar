@@ -10,7 +10,10 @@ const STRONG_ORDER = 'a-strong-random-order-hmac-secret-value';
 
 const full = {
   JWT_SECRET: STRONG_JWT, ORDER_HMAC_SECRET: STRONG_ORDER, AADHAAR_HMAC_SECRET: 'a-secure-aadhaar-hmac-secret-value', MONGODB_URI: 'mongodb://x', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb',
-  REDIS_URL: 'r', ALLOWED_ORIGINS: 'o', S3_BUCKET_NAME: 'b', METRICS_TOKEN: 'a-secure-random-metrics-token-value',
+  REDIS_URL: 'r', ALLOWED_ORIGINS: 'o', METRICS_TOKEN: 'a-secure-random-metrics-token-value',
+  // All four S3 vars: production boot requires isS3Configured(), which needs
+  // bucket + access key + secret key + endpoint, not the bucket alone.
+  S3_BUCKET_NAME: 'b', S3_ACCESS_KEY: 'ak', S3_SECRET_KEY: 'sk', S3_ENDPOINT: 'https://s3.example.test',
   PUBLIC_APP_ORIGIN: 'https://app.example.test', PUBLIC_APP_ALLOWED_ORIGINS: 'https://app.example.test',
 };
 
@@ -72,6 +75,19 @@ describe('validateEnv', () => {
     expect(() => validateEnv({ JWT_SECRET: STRONG_JWT, MONGODB_URI: 'm', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb', NODE_ENV: 'production' }, true))
       .toThrow(/ORDER_HMAC_SECRET[\s\S]*REDIS_URL[\s\S]*ALLOWED_ORIGINS[\s\S]*S3_BUCKET_NAME[\s\S]*METRICS_TOKEN/);
   });
+
+  // server.js throws 'production storage requires a fully configured
+  // S3-compatible provider' unless isS3Configured() sees all four of these.
+  // This gate previously named only S3_BUCKET_NAME, so an operator could
+  // satisfy every variable it printed and still crash-loop on a fresh deploy —
+  // the failure mode a fail-fast env gate exists to prevent.
+  for (const key of ['S3_BUCKET_NAME', 'S3_ACCESS_KEY', 'S3_SECRET_KEY', 'S3_ENDPOINT']) {
+    it(`requires ${key} in production so boot cannot fail after the gate passes`, () => {
+      const { [key]: _omitted, ...withoutOne } = full;
+      expect(() => validateEnv({ ...withoutOne, NODE_ENV: 'production' }, true))
+        .toThrow(new RegExp(key));
+    });
+  }
 
   it('rejects weak or placeholder metrics tokens in production', () => {
     expect(() => validateEnv({ ...full, METRICS_TOKEN: 'change-this-to-a-random-metrics-token', NODE_ENV: 'production' }, true))

@@ -22,6 +22,9 @@ Generate every secret with: `openssl rand -base64 48`
 | `REDIS_URL` | Cross-instance rate limits, realtime fan-out, job queue. Required at >1 replica. |
 | `ALLOWED_ORIGINS` | CORS allow-list — production must name trusted origins explicitly (comma-separated). |
 | `S3_BUCKET_NAME` | Durable asset/upload storage (KYC, proofs, branding). Local disk is not production-safe. |
+| `S3_ACCESS_KEY` | S3 credential. Required: production refuses the local-disk fallback. |
+| `S3_SECRET_KEY` | S3 credential. Required: production refuses the local-disk fallback. |
+| `S3_ENDPOINT` | S3-compatible endpoint URL. Required **even on AWS S3** — see §2. |
 | `METRICS_TOKEN` | Bearer token protecting `GET /metrics` from public disclosure. |
 | `PUBLIC_APP_ORIGIN` | Official public app origin advertised to native clients (a valid `https://…` origin). |
 | `PUBLIC_APP_ALLOWED_ORIGINS` | Public app origin allow-list advertised to native clients (comma-separated origins). |
@@ -47,15 +50,24 @@ prepend PROXY v2.
   `AADHAAR_HMAC_SECRET`, `METRICS_TOKEN` must each be **≥ 32 characters and non-placeholder**.
 - `PUBLIC_APP_ORIGIN` / `PUBLIC_APP_ALLOWED_ORIGINS` must be valid **https** origins in production.
 
-## 2. Object storage (S3-compatible) — required alongside `S3_BUCKET_NAME`
+## 2. Object storage (S3-compatible) — all four vars are required
 
 Works with any S3-compatible provider (AWS S3, Cloudflare R2, Backblaze B2, iDrive e2, Vultr, MinIO).
 
+`server.js` refuses to boot production unless `isS3Configured()` is true, and
+that requires **`S3_BUCKET_NAME` + `S3_ACCESS_KEY` + `S3_SECRET_KEY` +
+`S3_ENDPOINT`** all to be set (`services/cdn.service.js`). There is no partial
+configuration and no local-disk fallback in production — losing KYC documents on
+a redeploy is not an acceptable degradation.
+
+> **`S3_ENDPOINT` is required even on AWS S3.** This section previously said to
+> omit it for the AWS default; following that produced a hard boot failure,
+> because the configuration check requires it unconditionally. Use the regional
+> endpoint, e.g. `https://s3.eu-central-1.amazonaws.com`.
+
 | Variable | Purpose |
 |---|---|
-| `S3_ENDPOINT` | Provider endpoint (omit for AWS S3 default). |
 | `S3_REGION` | Bucket region. |
-| `S3_ACCESS_KEY` / `S3_SECRET_KEY` | Credentials. |
 | `CDN_URL` | *(optional)* CDN in front of the bucket for public asset URLs. |
 
 ## 3. Money-DB TLS (Postgres)
@@ -65,6 +77,45 @@ Works with any S3-compatible provider (AWS S3, Cloudflare R2, Backblaze B2, iDri
 | `PG_CA_CERT` | Provider CA to pin — **verified TLS** (recommended in production). |
 | `PG_SSL` | `no-verify` is **refused in production** unless `ALLOW_INSECURE_PG_TLS=true`; `false` is for local plaintext only. |
 | `ALLOW_INSECURE_PG_TLS` | Explicit opt-in to accept `PG_SSL=no-verify` (do not use with a real money DB). |
+
+## 3b. Outbound egress policy (SSRF)
+
+`services/outboundGuard.js` restricts where the server may make HTTP requests.
+Every outbound call through `networkClient` is limited to **http/https**, must
+resolve to a **public** address, and has **every redirect hop re-validated** —
+a permitted host answering `302 → http://169.254.169.254/` is the classic
+metadata bypass and is refused.
+
+No outbound URL comes from an end user. The risk this closes is an **admin**, or
+a stolen admin session, pointing a configurable URL at something only the server
+can reach — cloud metadata, the money datastore on the private network, or a
+loopback admin service.
+
+| Variable | Purpose |
+|---|---|
+| `OUTBOUND_ALLOW_PRIVATE` | `true` permits private/loopback/link-local destinations. Needed only when a provider is **self-hosted inside your private network** (see the Hetzner design). Off by default. |
+| `OUTBOUND_ALLOWED_HOSTS` | Optional comma-separated host allow-list. When set, nothing outside it is reachable. Tightest posture; requires updating when you add a provider. |
+
+### Approved outbound destinations
+
+Everything the backend may legitimately call. Anything not on this list arriving
+in a config value should be treated as a misconfiguration or an attack.
+
+| Destination | Configured by | Caller |
+|---|---|---|
+| Game-provider APIs | `provider.apiUrl` (admin panel) | `domains/casino/gameProvider.routes.js` |
+| SMS gateway | `SMS_API_URL` | `domains/communication/channelRegistry.js` |
+| LLM / embeddings endpoint | RAG provider env | `domains/support/ragService.js` |
+| S3-compatible storage | `S3_ENDPOINT` | AWS SDK (own client, not `networkClient`) |
+| Cloudflare Turnstile | hard-coded constant | `middleware/captcha.js` |
+
+> **Two reviewed exceptions** bypass `networkClient`. The **AWS SDK** manages its
+> own connection pool and signing and cannot practically be routed through it.
+> **`captcha.js`** calls a hard-coded Turnstile URL with its own timeout on the
+> login hot path; it takes no configurable input, so the guard would add a DNS
+> lookup per login for no security gain. Both are constant destinations, which
+> is why they are acceptable — a *configurable* URL must go through
+> `networkClient`.
 
 ## 4. Secret rotation (zero-downtime — set the `*_PREVIOUS_*` var during a rotation)
 

@@ -197,7 +197,38 @@ const _tightJson = express.json({ limit: JSON_LIMIT });
 const _assetJson = express.json({ limit: process.env.ASSET_JSON_LIMIT || '8mb' });
 const _ASSET_UPLOAD_PATHS = new Set(['/api/admin/app-assets/upload']);
 app.use((req, res, next) => (_ASSET_UPLOAD_PATHS.has(req.path) ? _assetJson : _tightJson)(req, res, next));
-app.use(express.urlencoded({ extended: true, limit: JSON_LIMIT }));
+// NO urlencoded body parser — deliberately. This is CSRF defence, not cleanup.
+//
+// Auth cookies are issued with `sameSite: 'none'` in production (routes.js),
+// because the Capacitor/Android shell runs on a different origin and would
+// otherwise never receive them. SameSite=None means the browser attaches
+// auth_token to CROSS-SITE requests, and authenticate() accepts the cookie as
+// proof of identity. The only thing then standing between an attacker's page
+// and a money mutation is whether the browser will send a usable request
+// without our permission.
+//
+// CORS does not stop it. For a "simple request" the browser SENDS the request
+// and only withholds the *response* — the mutation has already happened. The
+// simple content types are urlencoded, multipart, and text/plain, so a hidden
+// auto-submitting <form> posting urlencoded was a complete CSRF vector against
+// every authenticated POST, with no preflight to block it.
+//
+// Removing this parser closes that: with only express.json mounted, a
+// urlencoded body is never parsed, so req.body is empty and the handler fails
+// validation. multipart has no parser either, and express.json ignores
+// text/plain. Anything sending real application/json triggers a preflight,
+// which the CORS allow-list then rejects for untrusted origins.
+//
+// Verified before removing: nothing inbound needs it. No route reads a
+// form-encoded body, no panel sends one (the only x-www-form-urlencoded in the
+// tree is OUTBOUND, to Turnstile in middleware/captcha.js), and no test posts
+// one. If a provider callback ever needs form encoding, mount a urlencoded
+// parser ON THAT ROUTE ONLY — never globally — and require a signature on it.
+//
+// This is a vector fix, not a complete CSRF programme. Token-based CSRF, or
+// dropping cookie auth for the Authorization header everywhere, is the
+// structural answer and needs a decision spanning all three panels plus the
+// Android shell. See docs/governance/SECURITY_CODE_REVIEW_CHECKLIST.md.
 app.use(mongoSanitize);
 app.use(cookieParser());
 app.use(requestContext); // X-6: correlation id (before the logger, so it's logged)
@@ -516,6 +547,56 @@ app.use(errorHandler);
 app.set('io', io);
 
 // ─── START ────────────────────────────────────────────────────────────────────
+// Open the listener FIRST, before the datastores are up.
+//
+// This used to live inside the .then() of the Promise.allSettled below, so the
+// port did not open until connectMongoDB() settled. That function retries 10
+// times with serverSelectionTimeoutMS=30000 and a 5s pause between attempts, so
+// a MongoDB that is merely slow to accept connections — a service still
+// starting, the normal case on a fresh Railway/compose deploy — kept the
+// process from binding for up to ~5.75 minutes. Every probe in that window got
+// ECONNREFUSED rather than an answer, which is precisely what Railway's
+// healthcheck (healthcheckPath=/health, healthcheckTimeout=60) reads as "this
+// deploy is dead", and restartPolicyMaxRetries then repeats the whole cycle.
+//
+// The readiness endpoints above were already written for this: /health and
+// /health/ready return 503 with `mongodb: 'disconnected'` until the connection
+// is live. They just could not be reached, because nothing was listening. With
+// the listener open from the start, an orchestrator gets an honest
+// "not ready yet" it can wait on, and a real answer the moment Mongo attaches.
+//
+// Serving before Mongo is up is safe: readiness fails, so a load balancer does
+// not route to this instance, and any request that does arrive fails the same
+// way it would have anyway. Nothing below depends on a datastore — the cron
+// jobs and event subscribers that DO are still registered in the .then().
+activeListener = listenWithOptionalProxyProtocol(server, {
+  port: PORT,
+  host: '0.0.0.0',
+  enabled: network.proxyProtocolV2.enabled,
+  trustedSubnets: network.proxyProtocolV2.trustedSubnets,
+}).on('listening', () => {
+  console.log(`✅ Server listening on port ${PORT} (readiness pending until datastores attach)`);
+}).on('error', (error) => {
+  // Without this listener a bind failure is an unhandled 'error' event, which
+  // Node turns into a raw stack trace and a hard exit. Exiting IS correct — the
+  // process cannot serve traffic — but the operator got
+  // "throw er; // Unhandled 'error' event" instead of the reason.
+  //
+  // EADDRINUSE is the case that actually happens: a rolling deploy where the
+  // previous container has not released the port yet, or two instances sharing
+  // a PORT by misconfiguration. With restartPolicyMaxRetries that crash-loops,
+  // and the logs never say which port or why.
+  if (error.code === 'EADDRINUSE') {
+    console.error(`❌ FATAL: port ${PORT} is already in use. Another instance is bound to it, ` +
+      `or PORT collides with a sibling service. Nothing else can be diagnosed from here.`);
+  } else if (error.code === 'EACCES') {
+    console.error(`❌ FATAL: not permitted to bind port ${PORT}. Ports below 1024 need elevated privileges.`);
+  } else {
+    console.error(`❌ FATAL: could not bind port ${PORT}: ${error.code || ''} ${error.message}`);
+  }
+  process.exit(1);
+});
+
 Promise.allSettled([
   // Load the TLS policy before opening the listener. A failed initial read must
   // fail startup rather than serving requests with the log-only defaults.
@@ -539,8 +620,12 @@ Promise.allSettled([
   import('./services/eventBackbone.js').then(m => m.configureFromEnv()).catch(e => console.error('[backbone] configure failed:', e.message)),
 ]).then((results) => {
   if (results[0].status === 'rejected') {
+    // The listener is already open by this point, so failing startup has to
+    // close it — leaving it bound would keep the process alive and advertise a
+    // port that will never become ready.
     console.error('❌ Startup failed while loading TLS fingerprint policy:', results[0].reason);
     process.exitCode = 1;
+    try { activeListener?.close(); } catch { /* nothing to close */ }
     return;
   }
   console.log('✅ DB services initialized');
@@ -550,14 +635,6 @@ Promise.allSettled([
     console.log(`⏸️ Runtime role ${runtime.role}: cron jobs are not registered.`);
   }
   registerFundingEventSubscribers(); // Funding Platform (Phase 009) — eventBus wiring
-  activeListener = listenWithOptionalProxyProtocol(server, {
-    port: PORT,
-    host: '0.0.0.0',
-    enabled: network.proxyProtocolV2.enabled,
-    trustedSubnets: network.proxyProtocolV2.trustedSubnets,
-  }).on('listening', () => {
-    console.log(`✅ Server listening on port ${PORT}`);
-  });
 });
 
 // AQ-4: real graceful drain. Order matters — fail readiness FIRST so the load

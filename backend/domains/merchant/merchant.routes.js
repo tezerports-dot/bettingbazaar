@@ -28,6 +28,14 @@ import { debitMerchantTokens, creditMerchantTokens } from './merchantWallet.serv
 import { publish as publishDomainEvent, EVENTS as DOMAIN_EVENTS } from '../../services/eventBus.service.js';
 import { getRiskRules } from '../risk/riskValidation.service.js';
 import { FLAGS, isEnabled } from '../../services/featureFlags.service.js';
+import { rupeesToPaise } from '../../shared/money.js';
+import { isPostgresAuthoritative, MONEY_PATHS } from '../../postgres/moneyAuthority.js';
+import {
+  DIRECTIONS as SETTLEMENT_DIRECTIONS, openSettlement,
+} from '../../postgres/merchantSettlementPg.js';
+
+/** Is Postgres the source of truth for the merchant side of a settlement? */
+const settlementOnPostgres = () => isPostgresAuthoritative(MONEY_PATHS.MERCHANT_SETTLEMENT);
 import { buildBulkPayoutExportRows } from './bulkPayoutExport.js';
 import { MERCHANT_CURRENCY, isTrc20Address, merchantTypeOf } from './merchantCurrency.js';
 
@@ -933,6 +941,22 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
                 order.merchantCreditStatus    = 'HELD';
                 order.merchantCreditHoldUntil = new Date(Date.now() + hold * 60 * 1000);
                 order.escrowLocked            = true;
+
+                // Record what the platform now OWES this merchant, in a pocket
+                // they cannot spend. On Mongo the tokens simply do not exist
+                // during the hold, so nothing shows the liability; opening the
+                // settlement here makes it visible and gives the sweeper a real
+                // state machine to advance. Idempotent on the order's key, and
+                // fire-and-forget: the hold itself must not fail because the
+                // settlement could not be opened — settleHold opens it lazily.
+                if (settlementOnPostgres()) {
+                    await openSettlement({
+                        settlementId: `ms_${order._id}`, merchantId: req.merchantId,
+                        orderId: order._id.toString(), direction: SETTLEMENT_DIRECTIONS.WITHDRAWAL,
+                        amountPaise: rupeesToPaise(order.tokenAmount),
+                        reason: `Withdrawal ${order.orderId} held pending settlement`,
+                    }).catch(e => console.error('[Merchant confirm] settlement open failed:', e.message));
+                }
             } else {
                 // Hold disabled by admin — settle inline, the pre-2026-07-30
                 // behaviour. Same canonical txIds, so an order can never be

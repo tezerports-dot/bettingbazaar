@@ -19,17 +19,71 @@
 
 import mongoose from 'mongoose';
 import { MerchantWalletLedger } from './merchantWallet.model.js';
+import { isPostgresAuthoritative, MONEY_PATHS } from '../../postgres/moneyAuthority.js';
+import { mirrorMerchantBalance, mirrorMerchantWalletLedger } from '../../postgres/dualWrite.js';
+import { moneyOperations } from '../../services/metrics.service.js';
+import * as pg from '../../postgres/merchantWalletPgAuthority.js';
+
+/** Is Postgres the source of truth for merchant balances right now? */
+const onPostgres = () => isPostgresAuthoritative(MONEY_PATHS.MERCHANT_WALLET);
+
+/**
+ * Count this movement under the SAME metric the Postgres path uses, differing
+ * only in the `store` label. That is what makes a cutover legible: the operation
+ * and outcome series continue across the flip, so a change in the idempotent or
+ * insufficient rate is visible as a change rather than lost when one series
+ * stops and an unrelated one starts.
+ */
+function count(operation, outcome) {
+  moneyOperations.inc({
+    path: MONEY_PATHS.MERCHANT_WALLET, store: 'mongo', operation, outcome,
+  });
+}
+
+/**
+ * Mirror the merchant's balance to Postgres after a Mongo-authoritative move.
+ *
+ * The ledger rows were already mirrored (merchantWallet.model.js post-save);
+ * the BALANCE was not, so merchant_wallets stayed empty while its ledger
+ * filled. A cutover would then have begun reading balances of zero. This is
+ * fire-and-forget for the same reason every other dual-write is: the mirror
+ * must never be able to fail a Mongo money movement that has already
+ * committed. Failures are counted and alerted inside dualWrite.mirror().
+ */
+function mirrorBalance(merchant) {
+  if (merchant) mirrorMerchantBalance(merchant);
+  return merchant;
+}
 
 function sessOpts(session) { return session ? { session } : {}; }
 
+/**
+ * Has this logical operation already been applied?
+ *
+ * Matches on EITHER key. A movement made by the Mongo path writes one row whose
+ * txId is the caller's key; a movement made by the Postgres path and mirrored
+ * back may write several rows, each with a per-pocket txId and all of them
+ * carrying the caller's key as `movementId`. Both must be recognised, or a
+ * fallback to Mongo would fail to see movements Postgres made and the next
+ * retry would apply them a second time.
+ *
+ * An $or over two indexed fields, not a prefix match: `bet_1` would prefix-match
+ * `bet_10:available`, which is the exact class of bug this audit found in
+ * walletPg's LIKE probe.
+ */
 async function alreadyApplied(txId, session) {
-  return MerchantWalletLedger.findOne({ txId }, null, sessOpts(session)).lean();
+  return MerchantWalletLedger.findOne(
+    { $or: [{ txId }, { movementId: txId }] }, null, sessOpts(session),
+  ).lean();
 }
 
 async function reserveLedger({ merchantId, type, amount, reason, refModel, refId, txId }, session) {
   try {
     const [ledger] = await MerchantWalletLedger.create(
-      [{ merchantId, type, amount, balanceAfter: null, reason, refModel, refId, txId }],
+      // movementId == txId on this path: a Mongo movement is always one row, so
+      // its own key IS its logical key. Setting it here keeps the $or gate
+      // above uniform rather than special-casing which store wrote the row.
+      [{ merchantId, type, amount, balanceAfter: null, reason, refModel, refId, txId, movementId: txId }],
       sessOpts(session)
     );
     return { ledger, reserved: true };
@@ -39,8 +93,28 @@ async function reserveLedger({ merchantId, type, amount, reason, refModel, refId
   }
 }
 
-async function completeLedger(txId, balanceAfter, session) {
-  await MerchantWalletLedger.updateOne({ txId }, { $set: { balanceAfter } }, sessOpts(session));
+/**
+ * Fill in the reservation's balanceAfter, and mirror the now-complete row.
+ *
+ * This is the ONLY point at which a merchant ledger row reaches Postgres. The
+ * model's post-save hook fires when reserveLedger CREATES the row, when
+ * balanceAfter is still null and the row may yet be deleted — the mirror skips
+ * those. The updateOne below is not a document save, so it fires no hook at
+ * all; without this call the row would never be mirrored and
+ * balance_after_paise, the one column a rollback reads to restore
+ * Merchant.tokenBalance, would stay NULL forever.
+ *
+ * Patching the already-mirrored row instead was tried and cannot work:
+ * merchant_wallet_ledger is append-only at the database level, so an upsert's
+ * DO UPDATE is rejected by the trigger — silently, because the mirror is
+ * fire-and-forget. Mirroring once, at completion, is the shape that respects
+ * the invariant instead of fighting it.
+ */
+async function completeLedger(ledger, balanceAfter, session) {
+  await MerchantWalletLedger.updateOne(
+    { txId: ledger.txId }, { $set: { balanceAfter } }, sessOpts(session),
+  );
+  mirrorMerchantWalletLedger({ ...(ledger.toObject?.() ?? ledger), balanceAfter });
 }
 
 async function releaseLedgerReservation(txId, session) {
@@ -67,6 +141,12 @@ export async function debitMerchantTokens({
   if (!(amount > 0)) throw new Error(`debitMerchantTokens: amount must be positive, got ${amount}`);
   if (!txId) throw new Error('debitMerchantTokens: txId is required (idempotency).');
 
+  if (onPostgres()) {
+    return pg.debitMerchantTokens({
+      merchantId, amount, reason, refModel, refId, txId, session, allowOverdraft,
+    });
+  }
+
   const reservation = await reserveLedger({
     merchantId, type: 'DEBIT', amount, reason, refModel, refId, txId,
   }, session);
@@ -76,6 +156,7 @@ export async function debitMerchantTokens({
       merchantId, amount, reason, refModel, refId, txId, session, allowOverdraft,
     });
     const merchant = await mongoose.model('Merchant').findById(merchantId, null, sessOpts(session));
+    count('MERCHANT_DEBIT', 'idempotent');
     return { merchant, idempotent: true };
   }
 
@@ -91,12 +172,18 @@ export async function debitMerchantTokens({
   );
   if (!merchant) {
     await releaseLedgerReservation(txId, session);
+    // Mongo cannot tell "no such merchant" from "balance too low" in one
+    // findOneAndUpdate — both miss the filter. The Postgres path separates
+    // them; here the caller does the follow-up lookup, so the counter records
+    // what this layer actually knows.
+    count('MERCHANT_DEBIT', 'insufficient');
     return { merchant: null, idempotent: false };
   }
 
-  await completeLedger(txId, merchant.tokenBalance, session);
+  await completeLedger(reservation.ledger, merchant.tokenBalance, session);
 
-  return { merchant, idempotent: false };
+  count('MERCHANT_DEBIT', 'applied');
+  return { merchant: mirrorBalance(merchant), idempotent: false };
 }
 
 /** creditMerchantTokens — increase a merchant's token balance. */
@@ -105,6 +192,12 @@ export async function creditMerchantTokens({
 }) {
   if (!(amount > 0)) throw new Error(`creditMerchantTokens: amount must be positive, got ${amount}`);
   if (!txId) throw new Error('creditMerchantTokens: txId is required (idempotency).');
+
+  if (onPostgres()) {
+    return pg.creditMerchantTokens({
+      merchantId, amount, reason, refModel, refId, txId, session,
+    });
+  }
 
   const reservation = await reserveLedger({
     merchantId, type: 'CREDIT', amount, reason, refModel, refId, txId,
@@ -115,6 +208,7 @@ export async function creditMerchantTokens({
       merchantId, amount, reason, refModel, refId, txId, session,
     });
     const merchant = await mongoose.model('Merchant').findById(merchantId, null, sessOpts(session));
+    count('MERCHANT_CREDIT', 'idempotent');
     return { merchant, idempotent: true };
   }
 
@@ -126,12 +220,16 @@ export async function creditMerchantTokens({
   );
   if (!merchant) {
     await releaseLedgerReservation(txId, session);
+    // A credit has no sufficiency guard, so the only way to miss here is that
+    // the merchant does not exist.
+    count('MERCHANT_CREDIT', 'not_found');
     return { merchant: null, idempotent: false };
   }
 
-  await completeLedger(txId, merchant.tokenBalance, session);
+  await completeLedger(reservation.ledger, merchant.tokenBalance, session);
 
-  return { merchant, idempotent: false };
+  count('MERCHANT_CREDIT', 'applied');
+  return { merchant: mirrorBalance(merchant), idempotent: false };
 }
 
 /**

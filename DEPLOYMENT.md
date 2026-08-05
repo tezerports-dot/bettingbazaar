@@ -39,6 +39,16 @@ Install with `npm ci` (the user-panel no longer needs `--legacy-peer-deps`).
 
 ## A. Railway (fastest managed path)
 
+> **First time deploying?** Follow **[`docs/RAILWAY_STAGING.md`](docs/RAILWAY_STAGING.md)**
+> instead — the same path written out step by step, with every environment
+> variable, the real error messages and what causes them, and the MongoDB
+> replica-set requirement that a single-node plugin will not satisfy. The six
+> steps below assume you already know Railway.
+>
+> Planning production? **[`docs/PRODUCTION_ARCHITECTURE.md`](docs/PRODUCTION_ARCHITECTURE.md)**
+> covers which database owns which data, Hetzner sizing and cost for ~50k DAU,
+> and why Kubernetes is not recommended at this scale.
+
 `railway.json` + `nixpacks.toml` are already committed (Nixpacks, Node 22, builds all
 three panels, starts `node backend/server.js`, healthcheck `/health`).
 

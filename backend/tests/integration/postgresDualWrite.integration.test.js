@@ -19,8 +19,29 @@ import { runReconcile, pgTrialBalance, RECONCILE_TABLES } from '../../postgres/r
 const HAS_PG = !!process.env.DATABASE_URL;
 const d = HAS_PG ? describe : describe.skip;
 
-const PG_TABLES = ['wallet_ledger', 'wallets', 'accounting_events', 'transactions',
-                   'payment_orders', 'utr_registry', 'merchant_wallet_ledger', 'user_kyc'];
+/**
+ * Every money table, read from the SCHEMA rather than listed by hand.
+ *
+ * This used to be a literal array, and it silently stopped covering the schema
+ * the moment a table was added — `merchant_wallets`, `merchant_wallet_entries`,
+ * `merchant_settlements` and `merchant_settlement_transitions` were all absent
+ * from it. That is not a tidiness problem. `test:pg` runs before this suite
+ * against the SAME database and leaves fixtures behind; a table nobody
+ * truncates keeps them, and `runReconcile` then reports those wallets as
+ * orphans (rows with no Mongo merchant) and the drift assertion below fails —
+ * on leftover fixtures, not on any real disagreement. Reproduced exactly:
+ * orphansInPg = 2, the two merchants merchantWalletPgAuthority.test.js seeds
+ * last.
+ *
+ * Deriving the list means adding a table can never again poison a later
+ * assertion, which is the same reason the certification checklist is generated
+ * rather than typed.
+ */
+async function moneyTables() {
+  const { rows } = await pgQuery(
+    `SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename`);
+  return rows.map((r) => r.tablename);
+}
 
 // The mirrors are fire-and-forget from hooks — poll until the row lands.
 async function eventually(fn, ms = 4000) {
@@ -41,10 +62,26 @@ d('Hybrid money DB (Postgres dual-write)', () => {
   });
 
   beforeEach(async () => {
-    for (const t of PG_TABLES) await pgQuery(`TRUNCATE ${t} RESTART IDENTITY CASCADE`);
+    const tables = await moneyTables();
+    // One statement so foreign keys between them cannot order-fail.
+    await pgQuery(`TRUNCATE ${tables.join(', ')} RESTART IDENTITY CASCADE`);
+
+    // The reconciler ignores disagreements younger than its settling window,
+    // because a fire-and-forget mirror produces one after every write. These
+    // tests create a document and simulate drift SECONDS later, so every
+    // finding here is inside that window — they would all report clean.
+    //
+    // Zeroing it is right rather than a workaround: what these tests are about
+    // is drift DETECTION and repair, not the window. The window has its own
+    // tests (merchantWalletPgAuthority.test.js), and one below proves it
+    // applies to this reconciler too.
+    process.env.RECONCILE_SETTLING_WINDOW_MS = '0';
   });
 
-  afterAll(async () => { await closePg(); });
+  afterAll(async () => {
+    delete process.env.RECONCILE_SETTLING_WINDOW_MS;
+    await closePg();
+  });
 
   it('accounting_events is append-only and postings must conserve to zero (DB-enforced)', async () => {
     await pgQuery(
@@ -222,6 +259,40 @@ d('Hybrid money DB (Postgres dual-write)', () => {
     const after = await runReconcile({ hours: 24, backfill: true });
     expect(after.results.find(r => r.table === 'transactions').missingInPg).toBe(0);
     expect(after.results.find(r => r.table === 'utr_registry').missingInPg).toBe(0);
+  });
+
+  it('a mirror that is merely moments behind is reported as settling, not drift', async () => {
+    // The default window, restored for this one test — the rest of the file
+    // runs at zero so it can test detection.
+    delete process.env.RECONCILE_SETTLING_WINDOW_MS;
+
+    await AccountingEvent.create({
+      idempotencyKey: 'settle-1', eventType: 'DEPOSIT_COMPLETED', amountMinor: 10000,
+      refModel: 'PaymentOrder', refId: 'o-settle', description: 'settling test', occurredAt: new Date(),
+      postings: [{ account: 'EXTERNAL_FIAT', amountMinor: 10000 }, { account: 'USER_FUNDS', amountMinor: -10000 }],
+    });
+    await eventually(async () => {
+      const { rows } = await pgQuery(`SELECT 1 FROM accounting_events WHERE idempotency_key='settle-1'`);
+      return rows[0];
+    });
+    // Exactly the state every fire-and-forget mirror passes through: the Mongo
+    // row exists, the Postgres row does not (yet).
+    await pgQuery(`TRUNCATE accounting_events RESTART IDENTITY CASCADE`);
+
+    const report = await runReconcile({ all: true });
+    const ae = report.results.find(r => r.table === 'accounting_events');
+
+    expect(ae.missingInPg).toBe(0);
+    expect(ae.settling).toBe(1);
+    // Held back, not hidden: the total is surfaced so a mirror that is
+    // genuinely broken shows up as a number that climbs instead of one that
+    // returns to zero.
+    expect(report.settling.forward).toBeGreaterThanOrEqual(1);
+    expect(report.settling.windowMs).toBe(30_000);
+    // And the run is not called dirty on account of it.
+    expect(report.drift).toBe(false);
+
+    process.env.RECONCILE_SETTLING_WINDOW_MS = '0';
   });
 
   it('every reconciled table declares the field its incremental filter uses', async () => {

@@ -8,6 +8,30 @@ import crypto   from 'crypto';
 
 function round2(n) { return Math.round((n || 0) * 100) / 100; }
 
+/**
+ * M-8: `WalletLedger.refId` is typed ObjectId, but not every caller has one.
+ * `gameProvider.routes` passes a PROVIDER-SUPPLIED round id into refundOrder
+ * (`body.roundId || body.round_id || body.gameRound || txId`) — an arbitrary
+ * string. Casting that threw a CastError INSIDE the transaction, so the whole
+ * refund aborted: every casino ROLLBACK/REFUND returned 500 since it shipped.
+ * No money was lost (the transaction unwound the balance change with it), but
+ * no refund ever succeeded either.
+ *
+ * Dropping the value here loses nothing: the id is already in `txId` (which is
+ * also the idempotency key) and in the ledger's reason text. Only the typed
+ * foreign-key column, which cannot hold it, is skipped.
+ *
+ * This is a shared helper rather than a local in each function ON PURPOSE. The
+ * first version of this fix declared `const refId` in refundOrder alone while
+ * rewriting all four call sites to the shorthand, which left `creditDeposit`,
+ * `creditReserve` and `debitWinningsForWithdrawal` throwing ReferenceError —
+ * deposits, reserve allocations and withdrawals all 500ing. CI caught it. One
+ * definition means the next caller cannot repeat that.
+ */
+function asRefId(value) {
+  return mongoose.Types.ObjectId.isValid(value) ? value : null;
+}
+
 export function sseBalancePush(userId, depositBalance, winningsBalance) {
   try {
     global.sseManager?.sendToUser?.(String(userId), 'balance_update', {
@@ -22,6 +46,35 @@ async function checkIdempotent(txId) {
   if (!txId) return false;
   const WalletLedger = mongoose.model('WalletLedger');
   return !!(await WalletLedger.findOne({ txId }).lean());
+}
+
+/**
+ * Has ANY row for this movement already landed? Takes every key the movement
+ * could have written, not just one of them.
+ *
+ * This exists because debitForBet's key depends on the SPLIT it chose:
+ * `<base>_dep` when deposit covered part of it, `<base>_win` for the winnings
+ * shortfall, and only the pockets it actually drew from get a row. Checking a
+ * single suffix is therefore not a replay check — it asks "did the original
+ * happen to draw from THIS pocket", which is a different question.
+ *
+ * Pass `session` to run it INSIDE the transaction. The unique txId index is the
+ * durable gate for a key the replay re-writes; it cannot fire for a key the
+ * replay does not write, so a replay that lands on a different pocket needs
+ * this probe to stop it. See the hazard note on debitForBet.
+ */
+async function anyLedgerRowExists(txIds, session = null) {
+  const candidates = txIds.filter(Boolean);
+  if (!candidates.length) return false;
+  const WalletLedger = mongoose.model('WalletLedger');
+  const q = WalletLedger.findOne({ txId: { $in: candidates } }).select('_id');
+  if (session) q.session(session);
+  return !!(await q.lean());
+}
+
+/** Every ledger key a debitForBet movement with this base could produce. */
+function debitBetTxIdCandidates(baseTid) {
+  return [baseTid, `${baseTid}_dep`, `${baseTid}_win`];
 }
 
 // The DURABLE idempotency gate (F-2, 2026-07-10). checkIdempotent above is a
@@ -47,13 +100,43 @@ export async function debitForBet(userId, amount, reason, refModel, refId, txId,
   const tid = txId || `debit_${crypto.randomUUID()}`;
 
   const _baseTid = tid.replace(/_dep$/, '').replace(/_win$/, '');
-  if (await checkIdempotent(_baseTid + '_dep') || await checkIdempotent(_baseTid))
-    return { idempotent: true, txId: _baseTid };
+  const _candidates = debitBetTxIdCandidates(_baseTid);
+
+  // Fast path only — cheap enough to skip starting a transaction, but NOT the
+  // guarantee. The probe inside run() is.
+  if (await anyLedgerRowExists(_candidates)) return { idempotent: true, txId: _baseTid };
 
   const User         = mongoose.model('User');
   const WalletLedger = mongoose.model('WalletLedger');
 
   const run = async (session) => {
+    // ── Replay gate (must stay INSIDE the transaction) ───────────────────────
+    // The unique txId index catches a replay only when the replay writes a key
+    // that ALREADY EXISTS. Here the key depends on the split, and the split is
+    // recomputed from the balances as they are NOW — so a replay can legally
+    // land on a different pocket and collide with nothing:
+    //
+    //   original: deposit 0, winnings 100, bet 50 → writes <base>_win only
+    //   …a deposit lands…
+    //   replay:   deposit 100, winnings 50, bet 50 → writes <base>_dep only
+    //
+    // No key repeats, the unique index never fires, the transaction commits,
+    // and the user is charged twice for one bet. The pre-read did not catch it
+    // either, because it only looked for `_dep` and the bare key.
+    //
+    // Probing every candidate key closes it: any one surviving row proves the
+    // movement already ran, whichever pocket it drew from. Inside the
+    // transaction this is durable against an attempt that has already
+    // committed, and concurrent attempts still serialise on the User document
+    // write conflict, after which withTransaction re-runs this callback and the
+    // probe sees the winner's row.
+    //
+    // This is the same hazard postgres/walletPg.js documents on
+    // debitSpendOrderPaise, which solves it with an under-lock probe.
+    if (await anyLedgerRowExists(_candidates, session)) {
+      return { idempotent: true, txId: _baseTid };
+    }
+
     const user = await User.findById(userId).session(session);
     if (!user) throw new Error('User not found');
 
@@ -139,7 +222,7 @@ export async function debitWinningsForWithdrawal(userId, amount, orderId, extSes
       userId, type: 'DEBIT', field: 'winningsBalance',
       amount, balanceBefore: winBal, balanceAfter: newWinnings,
       reason: `P2P withdrawal order ${orderId}`,
-      refModel: 'PaymentOrder', refId: orderId, txId: tid,
+      refModel: 'PaymentOrder', refId: asRefId(orderId), txId: tid,
     }], { session });
 
     const newLocked = round2((user.lockedBalance || 0) + amount);
@@ -227,7 +310,7 @@ export async function creditDeposit(userId, amount, orderId, extSession) {
       userId, type: 'CREDIT', field: 'depositBalance',
       amount, balanceBefore: before, balanceAfter: after,
       reason: `P2P deposit confirmed ${orderId}`,
-      refModel: 'PaymentOrder', refId: orderId, txId: tid,
+      refModel: 'PaymentOrder', refId: asRefId(orderId), txId: tid,
     }], { session });
 
     sseBalancePush(userId, after, user.winningsBalance || 0);
@@ -273,7 +356,7 @@ export async function creditReserve(userId, amount, orderId, extSession) {
       userId, type: 'CREDIT', field: 'reserveBalance',
       amount, balanceBefore: before, balanceAfter: after,
       reason: `Deposit reserve allocation ${orderId}`,
-      refModel: 'PaymentOrder', refId: orderId, txId: tid,
+      refModel: 'PaymentOrder', refId: asRefId(orderId), txId: tid,
     }], { session });
 
     return { reserveBefore: before, reserveAfter: after, txId: tid };
@@ -297,6 +380,8 @@ export async function creditReserve(userId, amount, orderId, extSession) {
 export async function refundOrder(userId, amount, orderId, field = 'depositBalance', extSession) {
   amount = round2(amount);
   const tid = `refund_${orderId}`;
+  // M-8 lives here: this is the call site that takes a provider-supplied round
+  // id rather than a PaymentOrder _id. See asRefId at the top of the file.
   if (await checkIdempotent(tid)) return { idempotent: true, txId: tid };
 
   const User         = mongoose.model('User');
@@ -315,7 +400,7 @@ export async function refundOrder(userId, amount, orderId, field = 'depositBalan
       userId, type: 'CREDIT', field,
       amount, balanceBefore: before, balanceAfter: after,
       reason: `Refund for cancelled order ${orderId}`,
-      refModel: 'PaymentOrder', refId: orderId, txId: tid,
+      refModel: 'PaymentOrder', refId: asRefId(orderId), txId: tid,
     }], { session });
 
     const updated = await User.findById(userId).session(session).lean();
@@ -330,60 +415,6 @@ export async function refundOrder(userId, amount, orderId, field = 'depositBalan
   } catch (err) {
     if (isDuplicateTxId(err)) return { idempotent: true, txId: tid }; // concurrent duplicate — see isDuplicateTxId
     throw err;
-  } finally { await session.endSession(); }
-}
-
-// ── ATOMIC BET + DEBIT ────────────────────────────────────────────────────────
-/**
- * atomicBet — debit bet amount AND create Bet document in ONE transaction.
- */
-export async function atomicBet(userId, betData) {
-  const { amount, cycleId, choice, isPhantom = false } = betData;
-  const tid = `bet_${userId}_${cycleId}_${Date.now()}`;
-
-  if (await checkIdempotent(tid + '_dep')) return { idempotent: true };
-
-  const Bet     = mongoose.model('Bet');
-  const session = await mongoose.startSession();
-  try {
-    let result;
-    await session.withTransaction(async () => {
-      const wallet = await debitForBet(
-        userId, amount, `Bet on cycle ${cycleId}`, 'Bet', null, tid, session
-      );
-      const [bet] = await Bet.create([{
-        userId, cycleId, choice,
-        betAmount: amount, isPhantom,
-        timestamp: new Date(), status: 'PENDING',
-      }], { session });
-      result = { bet, wallet };
-    });
-    return result;
-  } finally { await session.endSession(); }
-}
-
-// ── ATOMIC WIN SETTLEMENT ─────────────────────────────────────────────────────
-/**
- * settleWins — credit winnings for all winning bets in one transaction.
- * Called by cycle engine after result is determined.
- * bets = [{ userId, betId, winAmount }]
- */
-export async function settleWins(bets) {
-  const Bet     = mongoose.model('Bet');
-  const session = await mongoose.startSession();
-  try {
-    await session.withTransaction(async () => {
-      for (const { userId, betId, winAmount } of bets) {
-        await creditWinnings(
-          userId, winAmount,
-          'Bet win payout', 'Bet', betId,
-          `win_${betId}`, session
-        );
-        await Bet.findByIdAndUpdate(betId,
-          { isWinner: true, winAmount, status: 'WON', settledAt: new Date() },
-          { session });
-      }
-    });
   } finally { await session.endSession(); }
 }
 

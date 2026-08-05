@@ -7,6 +7,8 @@ import { creditWinnings, lockBetStake, unlockBetStake } from '../wallet/walletAu
 import mongoose from 'mongoose';
 import { authenticate, requireApprovedKyc } from '../identity/auth.middleware.js';
 import { betLimiter } from '../../middleware/security.js';
+import { readIdempotencyKey, assertValidIdempotencyKey } from '../../middleware/idempotencyKey.js';
+import * as betAuthority from '../../postgres/betPgAuthority.js';
 // Risk Platform (Phase 010): the single validation authority for bets.
 // Phase A (2026-07-10): computeBetFundingPlan owns the stake-split arithmetic.
 import { assessBet, computeBetFundingPlan } from '../risk/riskValidation.service.js';
@@ -151,7 +153,25 @@ router.post('/place', authenticate, requireApprovedKyc, betLimiter, async (req, 
     // could not reach — so flipping the wallet path to Postgres would have
     // split the source of truth mid-bet. The authority now owns it, and picks
     // the store per postgres/moneyAuthority.js.
-    const betTxBase = `bet_${userId}_${randomUUID()}`;
+    // ── The bet's identity ─────────────────────────────────────────────────
+    // The idempotency key for BOTH the stake movement and (on Postgres) the bet
+    // row itself, so a redelivered request cannot produce a second of either.
+    //
+    // A client-supplied `Idempotency-Key` is preferred and is the only version
+    // that actually protects a retry: with the generated fallback, a dropped
+    // connection produces a DIFFERENT id, which is a genuinely new bet and a
+    // second debit. That residual is documented in postgres/betPgAuthority.js
+    // rather than papered over — requiring the header outright would break any
+    // client that does not send it, and this is the highest-traffic endpoint in
+    // the system, so switching it on is an operator's decision once they know
+    // every client, not a surprise inside a migration commit.
+    //
+    // Unlike the /fund bug this pattern resembles, the fallback here is not a
+    // gate that cannot fire: the id is genuinely new, and the gate genuinely
+    // fires for the id it is given.
+    const clientKey = readIdempotencyKey(req);
+    if (clientKey) assertValidIdempotencyKey(clientKey);
+    const betTxBase = clientKey ? `bet_${userId}_${clientKey}` : `bet_${userId}_${randomUUID()}`;
     const stakeSlices = [
       { field: 'depositBalance',  suffix: '_dep', amount: fromDeposit,
         reason: `BET_PLACED deposit portion — ₹${amount} on ${side}` },
@@ -161,9 +181,32 @@ router.post('/place', authenticate, requireApprovedKyc, betLimiter, async (req, 
         reason: `BET_PLACED reserve portion (${plan.reservePercentApplied}%) — ₹${amount} on ${side}` },
     ].filter((s) => s.amount > 0);
 
-    const stakeLock = await lockBetStake(userId, {
-      amount, txId: betTxBase, refId: null, slices: stakeSlices,
-    });
+    // ── Stake + bet record ─────────────────────────────────────────────────
+    // On MONGO these are two operations: lock the stake, then insert the bet.
+    // Between them the user's money is locked against a bet that does not
+    // exist, and nothing sweeps that — the stake is attributed to a bet id
+    // never written, so no settlement releases it and no reconciliation can
+    // attribute it. The balance is simply short until a human finds it.
+    //
+    // On POSTGRES both are ONE transaction (betPg.placeBet), so the window
+    // cannot open. Which store runs is the authority resolver's decision.
+    const betsOnPostgres = betAuthority.onPostgres();
+
+    let stakeLock;
+    let pgBet = null;
+    if (betsOnPostgres) {
+      const placed = await betAuthority.placeBet({
+        betId: betTxBase, userId, cycleId, side, amount,
+        slices: stakeSlices,
+        reason: `BET_PLACED — ₹${amount} on ${side}`,
+      });
+      stakeLock = { ok: placed.ok, balances: placed.balances };
+      pgBet = placed.ok ? placed.bet : null;
+    } else {
+      stakeLock = await lockBetStake(userId, {
+        amount, txId: betTxBase, refId: null, slices: stakeSlices,
+      });
+    }
 
     if (!stakeLock.ok) {
       // Concurrent request won the race — our pre-computed split is now stale.
@@ -187,7 +230,10 @@ router.post('/place', authenticate, requireApprovedKyc, betLimiter, async (req, 
     } catch (_) { /* SSE failure never blocks the bet response */ }
 
     // ── Create bet record ────────────────────────────────────────────────────
-    const betDoc = await Bet.create([{
+    // Already written, inside the stake's transaction, when Postgres owns the
+    // lifecycle — and mirrored to Mongo before placeBet returned, so every read
+    // path below (and the client's next fetch) finds it.
+    const betDoc = betsOnPostgres ? [await betAuthority.getBetDoc(pgBet._id)] : await Bet.create([{
       userId,
       cycleId,
       amount,

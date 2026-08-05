@@ -144,16 +144,145 @@ export function mirrorUtr(doc) {
   ));
 }
 
-/** MerchantWalletLedger doc → merchant_wallet_ledger row. */
+/**
+ * MerchantWalletLedger doc → merchant_wallet_ledger row.
+ *
+ * MIRRORS ONLY COMPLETED ROWS, and the timing is the whole point.
+ *
+ * The merchant service writes its ledger in two steps — reserve (balanceAfter
+ * null) then complete — and only the first is a document save, so a post-save
+ * hook alone mirrors the row while its balance is still unknown and every
+ * mirrored row keeps balance_after_paise = NULL: the exact column a rollback
+ * reads to restore Merchant.tokenBalance.
+ *
+ * The obvious repair, `ON CONFLICT (tx_id) DO UPDATE`, does not work and cannot
+ * be made to: merchant_wallet_ledger carries an append-only trigger, an upsert's
+ * DO UPDATE *is* an UPDATE, and the trigger raises. Because the mirror is
+ * fire-and-forget the raise was swallowed, so the tests stayed green while the
+ * column stayed NULL and Postgres logged an error per movement. Found by
+ * reading the logs of a PASSING CI job.
+ *
+ * So the reservation is not mirrored at all — it is a transient artefact of
+ * Mongo's two-step, and a row that may still be deleted is not a fact worth
+ * copying. merchantWallet.service.completeLedger calls this once the balance is
+ * known, and the INSERT lands cleanly with nothing to update.
+ */
 export function mirrorMerchantWalletLedger(doc) {
+  // Reservations carry a null balanceAfter. Skipping them here means the model
+  // hook and the completion path can both call this without the caller having
+  // to know which stage it is at.
+  if (doc?.balanceAfter == null) return;
   return mirror('merchant_wallet_ledger', () => pgQuery(
     `INSERT INTO merchant_wallet_ledger (mongo_id, tx_id, merchant_id, direction, amount_paise, balance_after_paise, reason, created_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8, now()))
      ON CONFLICT (tx_id) DO NOTHING`,
     [String(doc._id), doc.txId, String(doc.merchantId), doc.type || doc.direction || null,
-     paise(doc.amount), doc.balanceAfter != null ? paise(doc.balanceAfter) : null,
+     paise(doc.amount), paise(doc.balanceAfter),
      doc.reason || doc.description || null, doc.createdAt || null],
   ));
+}
+
+/**
+ * Merchant BALANCE → merchant_wallets.
+ *
+ * mirrorMerchantWalletLedger above mirrors the merchant's ledger ROWS. It does
+ * not mirror the balance, so `merchant_wallets` stayed empty while
+ * `merchant_wallet_ledger` filled up — meaning a cutover to Postgres authority
+ * would have started reading balances of zero. The audit recorded this as the
+ * merchant path's `dualWrite` capability being only half true.
+ *
+ * The Mongo side keeps a single `tokenBalance`; the Postgres side splits it
+ * into available/reserved/settlement pockets. While Mongo is authoritative
+ * there are no reservations in it to mirror, so the whole balance maps to
+ * `available` and the other two stay at whatever Postgres already holds. The
+ * mapping stops being a projection the moment Postgres takes over, which is
+ * exactly why the flip is gated on reconciliation rather than on this write
+ * succeeding.
+ */
+export function mirrorMerchantBalance(doc) {
+  return mirror('merchant_wallets', () => pgQuery(
+    `INSERT INTO merchant_wallets (merchant_id, available_paise, updated_at)
+     VALUES ($1, $2, now())
+     ON CONFLICT (merchant_id) DO UPDATE
+       SET available_paise = EXCLUDED.available_paise, updated_at = now()`,
+    [String(doc._id ?? doc.merchantId), paise(doc.tokenBalance ?? 0)],
+  ));
+}
+
+/**
+ * PaymentOrder → merchant_settlements (domain 2's Mongo→Postgres leg).
+ *
+ * Mongo has no settlement table. It keeps the same lifecycle on the order —
+ * `merchantCreditStatus` for withdrawals, `status` for deposits — so this
+ * PROJECTS those onto the state machine Postgres owns. A cutover then finds the
+ * in-flight settlements already there and the sweeper can advance them, instead
+ * of losing every held withdrawal at the moment of the flip.
+ *
+ * It writes STATE ONLY. Pockets are not touched here: mirrorMerchantBalance
+ * already projects the merchant's single Mongo number, and moving pockets from
+ * two places would double-count. Deriving the pockets from the outstanding
+ * settlements is a cutover step, not a mirror — same shape as the opening
+ * balances (see merchantWalletPg.recordOpeningBalances).
+ *
+ * Only facts Mongo actually asserts are mirrored. A deposit that is merely
+ * assigned has nothing reserved on the Mongo side, so it is not mirrored as
+ * RESERVED — that would be inventing a claim the source store does not make.
+ */
+const SETTLEMENT_STATE_FROM_ORDER = {
+  // Withdrawals carry the lifecycle explicitly.
+  HELD:     'RESERVED',
+  RELEASED: 'SETTLED',
+  REVERSED: 'CANCELLED', // never owed after all — the tokens are taken back
+};
+
+function settlementStateFor(doc) {
+  if (doc.type === 'WITHDRAWAL') return SETTLEMENT_STATE_FROM_ORDER[doc.merchantCreditStatus] ?? null;
+  // A deposit has no reserve step in Mongo: the merchant is debited at confirm.
+  if (doc.status === 'COMPLETED') return 'SETTLED';
+  if (['CANCELLED', 'EXPIRED', 'FAILED'].includes(doc.status)) return 'CANCELLED';
+  return null;
+}
+
+export function mirrorMerchantSettlement(doc) {
+  if (!doc?.merchantId) return; // unassigned orders have no merchant side yet
+
+  // SYNCHRONOUS at the boundary, with every fallible step inside mirror()'s
+  // try/catch — the invariant every other mirror in this file holds, and one
+  // this function originally broke. It is invoked unawaited from two Mongoose
+  // post-save hooks, so an `async` version doing work BEFORE entering the
+  // try/catch turns any throw there into an unhandled promise rejection on a
+  // path that runs for every order save. `paise()` alone is enough to cause
+  // one: rupeesToPaise THROWS on a non-finite amount, so a single order
+  // without a tokenAmount would take the process down rather than skipping a
+  // mirror. Fire-and-forget means the failure must stay inside the box.
+  return mirror('merchant_settlements', async () => {
+    // Once Postgres owns this path it also owns the state machine, and a
+    // Mongo-derived overwrite could drag a settlement BACKWARDS through states
+    // the transition guards exist to prevent. The forward mirror stops at the
+    // flip; reverseMirror.js takes over in the other direction.
+    const { isPostgresAuthoritative, MONEY_PATHS } = await import('./moneyAuthority.js');
+    if (isPostgresAuthoritative(MONEY_PATHS.MERCHANT_SETTLEMENT)) return;
+
+    const state = settlementStateFor(doc);
+    if (!state) return;
+
+    // A settlement of nothing is not a settlement. Guarding here keeps a
+    // malformed order out of the table instead of relying on the CHECK
+    // constraint to reject it once per save, forever.
+    const amountPaise = Number.isFinite(Number(doc.tokenAmount)) ? paise(doc.tokenAmount) : 0;
+    if (amountPaise <= 0) return;
+
+    await pgQuery(
+      `INSERT INTO merchant_settlements
+         (settlement_id, merchant_id, order_id, direction, amount_paise, state, reason, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8, now()),now())
+       ON CONFLICT (settlement_id) DO UPDATE SET state = EXCLUDED.state, updated_at = now()`,
+      [`ms_${doc._id}`, String(doc.merchantId), String(doc._id),
+       doc.type === 'WITHDRAWAL' ? 'WITHDRAWAL' : 'DEPOSIT',
+       amountPaise, state,
+       doc.merchantCreditReversedReason || null, createdAt(doc, doc.createdAt)],
+    );
+  });
 }
 
 /** User doc (KYC fields only — plan: split KYC out; cutover LAST). */
@@ -171,4 +300,107 @@ export function mirrorUserKyc(doc) {
      k.nameOnPAN || k.nameOnAadhaar || null, k.panNumber || k.aadhaarNumber || null,
      k.idProofUrl || null, k.photoUrl || null, k.submittedAt || null, k.rejectionReason || null],
   ));
+}
+
+/**
+ * An admin mint (or its rollback) → the treasury ledger. Domain 4's Mongo→PG leg.
+ *
+ * Mongo has no mint DOCUMENT to hang a post-save hook on — issuance is a single
+ * counter on SystemConfig, so there is nothing per-mint for the other mirrors'
+ * pattern to observe. This one is therefore called EXPLICITLY by
+ * adminIssuanceAuthority after the Mongo counter has moved, which is also why it
+ * takes an amount rather than a document.
+ *
+ * A negative `amountPaise` is a rollback, and it mirrors as a BURN rather than
+ * as a negative mint. The distinction is the whole reason this domain is worth
+ * moving: Mongo unwinds by decrementing the counter, which leaves no trace that
+ * a mint ever happened, while the treasury keeps the mint AND its reversal.
+ * Mirroring a rollback as "un-mint" would import the erasure into the store that
+ * exists to prevent it.
+ *
+ * Idempotent on `movementId` (UNIQUE tx_id inside postMovement's transaction),
+ * so a replayed mirror posts nothing.
+ */
+export function mirrorAdminSupply({
+  movementId, amountPaise, merchantId = null, actor = null, reason = null,
+  refModel = 'Merchant', refId = null, correlationId = null,
+}) {
+  return mirror('treasury_entries', async () => {
+    const paiseValue = Number(amountPaise);
+    if (!Number.isInteger(paiseValue) || paiseValue === 0) return;
+
+    const { mintToMerchantFloat, burnFromMerchantFloat } = await import('./treasuryPg.js');
+    const post = paiseValue > 0 ? mintToMerchantFloat : burnFromMerchantFloat;
+    const result = await post(Math.abs(paiseValue), {
+      movementId, actor, reason: reason || 'Mongo-authoritative admin issuance',
+      refModel, refId: refId ?? merchantId, correlationId,
+      // Mongo's own $expr guard already refused anything over the cap, so a
+      // refusal here would mean the two caps disagree — which is a drift the
+      // reconciler must surface, not something the mirror should silently
+      // enforce a second time and then swallow.
+      supplyCapPaise: Number.MAX_SAFE_INTEGER,
+    });
+    if (!result.ok) throw new Error(`treasury mirror refused the movement: ${result.reason}`);
+  });
+}
+
+/**
+ * Bet doc → `bets`. Domain 5's Mongo→Postgres leg.
+ *
+ * Projects the Mongo lifecycle onto the state machine Postgres owns, so a
+ * cutover finds the in-flight bets already there and the settlement sweep can
+ * advance them — instead of every PENDING bet at the moment of the flip being
+ * invisible to the store that has just become authoritative.
+ *
+ * STATE ONLY, like the settlement mirror. The stake movement is mirrored by the
+ * wallet path (`mirrorWalletLedger`), and moving it from two places would
+ * double-count. Deriving the locked pockets from the outstanding bets is a
+ * cutover step, not a mirror — the same shape as the merchant opening balances.
+ *
+ * `REFUNDED` is Mongo's only non-terminal-loss outcome and maps to REFUNDED
+ * here; Mongo has no VOID, so a voided bet exists only once Postgres owns the
+ * lifecycle. That asymmetry is deliberate rather than an omission: inventing a
+ * Mongo status to round-trip a state it cannot represent would make the
+ * fallback lie about what happened.
+ */
+const BET_STATUS_FROM_MONGO = Object.freeze({
+  PENDING: 'PENDING', WON: 'WON', LOST: 'LOST', REFUNDED: 'REFUNDED',
+});
+
+export function mirrorBet(doc) {
+  if (!doc?._id || !doc?.userId || !doc?.cycleId) return;
+
+  // SYNCHRONOUS at the boundary with every fallible step inside mirror()'s
+  // try/catch — the invariant every mirror here holds. It is invoked unawaited
+  // from a post-save hook, so an `async` version doing work BEFORE entering the
+  // try/catch turns any throw into an unhandled rejection on a path that runs
+  // for every bet.
+  return mirror('bets', async () => {
+    const status = BET_STATUS_FROM_MONGO[doc.status];
+    if (!status) return;
+
+    const stakePaise = Number.isFinite(Number(doc.amount)) ? paise(doc.amount) : 0;
+    // A bet of nothing is not a bet. Guarding here keeps a malformed document
+    // out of the table rather than relying on the CHECK constraint to reject it
+    // once per save, forever.
+    if (stakePaise <= 0) return;
+
+    await pgQuery(
+      `INSERT INTO bets (bet_id, user_id, cycle_id, side, stake_paise, payout_paise, status, placed_at, settled_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8, now()),$9,now())
+       ON CONFLICT (bet_id) DO UPDATE
+         SET status = EXCLUDED.status,
+             payout_paise = EXCLUDED.payout_paise,
+             settled_at = EXCLUDED.settled_at,
+             updated_at = now()`,
+      [
+        String(doc._id), String(doc.userId), String(doc.cycleId), String(doc.side),
+        stakePaise,
+        Number.isFinite(Number(doc.payout)) ? paise(doc.payout) : 0,
+        status,
+        createdAt(doc, doc.timestamp),
+        doc.settledAt || null,
+      ],
+    );
+  });
 }

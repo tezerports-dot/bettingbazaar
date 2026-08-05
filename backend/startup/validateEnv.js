@@ -28,7 +28,16 @@ const REQUIRED = [
   ['AADHAAR_HMAC_SECRET', 'dedicated Aadhaar HMAC secret; prevents reversible duplicate-document hashes'],
   ['REDIS_URL',         'cross-instance rate limits, realtime fan-out, and job queue need Redis at >1 replica'],
   ['ALLOWED_ORIGINS',   'CORS allow-list; production must explicitly name trusted origins'],
+  // All four S3 vars, not just the bucket. server.js refuses to boot production
+  // unless isS3Configured() is true (services/cdn.service.js), and that checks
+  // BUCKET + ACCESS_KEY + SECRET_KEY + ENDPOINT. Listing only the bucket here
+  // meant an operator could satisfy every name this gate prints and still crash
+  // seconds later on a different, less specific error — the exact failure this
+  // fail-fast module exists to prevent.
   ['S3_BUCKET_NAME',    'durable asset/upload storage; local disk is not safe for production'],
+  ['S3_ACCESS_KEY',     'S3 credentials; production storage refuses the local-disk fallback'],
+  ['S3_SECRET_KEY',     'S3 credentials; production storage refuses the local-disk fallback'],
+  ['S3_ENDPOINT',       'S3-compatible endpoint URL (e.g. Cloudflare R2, Vultr, AWS)'],
   ['METRICS_TOKEN',     'protects Prometheus metrics from public disclosure'],
   ['PUBLIC_APP_ORIGIN', 'official public application origin advertised to native clients'],
   ['PUBLIC_APP_ALLOWED_ORIGINS', 'explicit public application origin allow-list advertised to native clients'],

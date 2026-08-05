@@ -4,6 +4,64 @@ import { Save, Palette, Eye, RefreshCw, Image as ImageIcon } from 'lucide-react'
 import api from '../../services/api';
 import toast from 'react-hot-toast';
 
+/**
+ * Upload one branding image and resolve to its CDN URL.
+ *
+ * Branding uploads are a THREE-step presigned flow, matching every other upload
+ * in the platform (KYC, chat, payment proof): ask the backend for a presigned
+ * URL, PUT the bytes straight to S3, then tell the backend it landed. The file
+ * never passes through the API server.
+ *
+ * Both inputs on this page previously POSTed multipart to
+ * `/api/admin/cdn/upload`, which has never existed in this repository — and no
+ * multipart parser is mounted anywhere, so it could not have worked even if the
+ * path had matched. They also sent `localStorage.getItem('admin-auth')` as the
+ * bearer token, but that key holds a JSON blob (`{state:{token}}`), not the
+ * token, so the header would have been rejected regardless. Both failures
+ * landed in the same silent `catch`, which is why this looked like a flaky
+ * upload rather than a feature that was never wired up.
+ *
+ * `api` is the shared axios instance; its interceptor extracts the real token
+ * and its baseURL has no `/api` prefix, hence the full path here. The S3 PUT
+ * deliberately does NOT go through it — a presigned URL rejects an unexpected
+ * Authorization header.
+ */
+async function uploadBrandingImage(file: File): Promise<string> {
+  const { data: presign } = await api.post('/api/admin/branding/upload-url', {
+    fileName: file.name,
+    contentType: file.type,
+    fileSize: file.size,
+    category: 'logo',
+  });
+  if (!presign?.uploadUrl) throw new Error(presign?.message || 'Could not get an upload URL');
+
+  const put = await fetch(presign.uploadUrl, {
+    method: 'PUT',
+    body: file,
+    headers: { 'Content-Type': file.type },
+  });
+  if (!put.ok) throw new Error(`Storage rejected the upload (HTTP ${put.status})`);
+
+  await api.post('/api/admin/branding/confirm-upload', {
+    fileKey: presign.fileKey,
+    cdnUrl: presign.cdnUrl,
+    category: 'logo',
+    title: file.name,
+    fileSize: file.size,
+  });
+
+  return presign.cdnUrl as string;
+}
+
+/** Surface the most specific message the failure carries. */
+function uploadErrorMessage(err: unknown): string {
+  return (
+    (err as { response?: { data?: { message?: string } } })?.response?.data?.message ||
+    (err as Error)?.message ||
+    'Upload failed'
+  );
+}
+
 // Image URL preview component
 // C-06 fix: CdnUrlField now supports BOTH URL input and file upload.
 // GOVERNANCE §12: admin branding page must be a single page for all image assets.
@@ -16,17 +74,15 @@ const CdnUrlField: React.FC<{ id: string; name: string; label: string; hint?: st
     if (!file) return;
     setUploading(true);
     try {
-      const fd = new FormData();
-      fd.append('file', file);
-      const res = await fetch('/api/admin/cdn/upload', {
-        method: 'POST', body: fd,
-        headers: { Authorization: `Bearer ${localStorage.getItem('admin-auth')}` },
-      });
-      const data = await res.json();
-      if (data.url) { onChange(data.url); setError(false); }
-      else { alert(data.message || 'Upload failed'); }
-    } catch { alert('Upload error'); }
-    finally { setUploading(false); e.target.value = ''; }
+      onChange(await uploadBrandingImage(file));
+      setError(false);
+      toast.success('Image uploaded');
+    } catch (err: unknown) {
+      toast.error(uploadErrorMessage(err));
+    } finally {
+      setUploading(false);
+      e.target.value = '';
+    }
   };
 
   return (
@@ -67,15 +123,14 @@ const BrandingImageInput: React.FC<{
     if (!file) return;
     setUploading(true);
     try {
-      const fd = new FormData();
-      fd.append('file', file);
-      const res = await fetch('/api/admin/cdn/upload', { method: 'POST', body: fd,
-        headers: { Authorization: `Bearer ${localStorage.getItem('admin-auth')}` } });
-      const data = await res.json();
-      if (data.url) { onChange(data.url); }
-      else { alert(data.message || 'Upload failed'); }
-    } catch { alert('Upload failed'); }
-    finally { setUploading(false); e.target.value = ''; }
+      onChange(await uploadBrandingImage(file));
+      toast.success('Image uploaded');
+    } catch (err: unknown) {
+      toast.error(uploadErrorMessage(err));
+    } finally {
+      setUploading(false);
+      e.target.value = '';
+    }
   };
 
   return (
