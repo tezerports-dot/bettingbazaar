@@ -8,6 +8,30 @@ import crypto   from 'crypto';
 
 function round2(n) { return Math.round((n || 0) * 100) / 100; }
 
+/**
+ * M-8: `WalletLedger.refId` is typed ObjectId, but not every caller has one.
+ * `gameProvider.routes` passes a PROVIDER-SUPPLIED round id into refundOrder
+ * (`body.roundId || body.round_id || body.gameRound || txId`) — an arbitrary
+ * string. Casting that threw a CastError INSIDE the transaction, so the whole
+ * refund aborted: every casino ROLLBACK/REFUND returned 500 since it shipped.
+ * No money was lost (the transaction unwound the balance change with it), but
+ * no refund ever succeeded either.
+ *
+ * Dropping the value here loses nothing: the id is already in `txId` (which is
+ * also the idempotency key) and in the ledger's reason text. Only the typed
+ * foreign-key column, which cannot hold it, is skipped.
+ *
+ * This is a shared helper rather than a local in each function ON PURPOSE. The
+ * first version of this fix declared `const refId` in refundOrder alone while
+ * rewriting all four call sites to the shorthand, which left `creditDeposit`,
+ * `creditReserve` and `debitWinningsForWithdrawal` throwing ReferenceError —
+ * deposits, reserve allocations and withdrawals all 500ing. CI caught it. One
+ * definition means the next caller cannot repeat that.
+ */
+function asRefId(value) {
+  return mongoose.Types.ObjectId.isValid(value) ? value : null;
+}
+
 export function sseBalancePush(userId, depositBalance, winningsBalance) {
   try {
     global.sseManager?.sendToUser?.(String(userId), 'balance_update', {
@@ -198,7 +222,7 @@ export async function debitWinningsForWithdrawal(userId, amount, orderId, extSes
       userId, type: 'DEBIT', field: 'winningsBalance',
       amount, balanceBefore: winBal, balanceAfter: newWinnings,
       reason: `P2P withdrawal order ${orderId}`,
-      refModel: 'PaymentOrder', refId, txId: tid,
+      refModel: 'PaymentOrder', refId: asRefId(orderId), txId: tid,
     }], { session });
 
     const newLocked = round2((user.lockedBalance || 0) + amount);
@@ -286,7 +310,7 @@ export async function creditDeposit(userId, amount, orderId, extSession) {
       userId, type: 'CREDIT', field: 'depositBalance',
       amount, balanceBefore: before, balanceAfter: after,
       reason: `P2P deposit confirmed ${orderId}`,
-      refModel: 'PaymentOrder', refId, txId: tid,
+      refModel: 'PaymentOrder', refId: asRefId(orderId), txId: tid,
     }], { session });
 
     sseBalancePush(userId, after, user.winningsBalance || 0);
@@ -332,7 +356,7 @@ export async function creditReserve(userId, amount, orderId, extSession) {
       userId, type: 'CREDIT', field: 'reserveBalance',
       amount, balanceBefore: before, balanceAfter: after,
       reason: `Deposit reserve allocation ${orderId}`,
-      refModel: 'PaymentOrder', refId, txId: tid,
+      refModel: 'PaymentOrder', refId: asRefId(orderId), txId: tid,
     }], { session });
 
     return { reserveBefore: before, reserveAfter: after, txId: tid };
@@ -356,18 +380,8 @@ export async function creditReserve(userId, amount, orderId, extSession) {
 export async function refundOrder(userId, amount, orderId, field = 'depositBalance', extSession) {
   amount = round2(amount);
   const tid = `refund_${orderId}`;
-  // M-8: `refId` is an ObjectId on the WalletLedger schema, but this function is
-  // also called with a PROVIDER-SUPPLIED round id — gameProvider.routes passes
-  // `body.roundId || body.round_id || body.gameRound || txId`, which is an
-  // arbitrary string. Casting that threw inside the transaction, so the whole
-  // refund aborted: EVERY casino ROLLBACK/REFUND has returned 500 since it
-  // shipped. No money was lost (the transaction unwound the balance change
-  // with it), but no refund ever succeeded either.
-  //
-  // The id is not lost by dropping it here — it is already in `txId`
-  // (`refund_<orderId>`, which is also the idempotency key) and in the reason
-  // text. Only the typed foreign-key column, which cannot hold it, is skipped.
-  const refId = mongoose.Types.ObjectId.isValid(orderId) ? orderId : null;
+  // M-8 lives here: this is the call site that takes a provider-supplied round
+  // id rather than a PaymentOrder _id. See asRefId at the top of the file.
   if (await checkIdempotent(tid)) return { idempotent: true, txId: tid };
 
   const User         = mongoose.model('User');
@@ -386,7 +400,7 @@ export async function refundOrder(userId, amount, orderId, field = 'depositBalan
       userId, type: 'CREDIT', field,
       amount, balanceBefore: before, balanceAfter: after,
       reason: `Refund for cancelled order ${orderId}`,
-      refModel: 'PaymentOrder', refId, txId: tid,
+      refModel: 'PaymentOrder', refId: asRefId(orderId), txId: tid,
     }], { session });
 
     const updated = await User.findById(userId).session(session).lean();

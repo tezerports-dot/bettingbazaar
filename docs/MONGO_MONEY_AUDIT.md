@@ -45,6 +45,35 @@ dropping it: the id is already in `txId` (`refund_<orderId>`, which is also the
 idempotency key) and in the reason text. Only the typed foreign-key column,
 which cannot hold it, is skipped.
 
+### The first fix was wrong, and how that was caught
+
+Worth recording, because the failure mode is more interesting than the bug.
+
+The first attempt rewrote `refId: orderId` to a shorthand `refId` at **all four**
+`WalletLedger.create` call sites but declared the variable in `refundOrder`
+alone. `creditDeposit`, `creditReserve` and `debitWinningsForWithdrawal` then
+threw `ReferenceError: refId is not defined` inside their transactions — so a
+fix for a broken casino refund broke **deposits, reserve allocations and
+withdrawals**, the three paths that matter most.
+
+Nothing local caught it. It is valid syntax, so `node --check` passed. The unit
+suite passed, because those four functions had no unit test. The Postgres suite
+passed, because it does not touch the Mongo path. Only the integration suite
+caught it, and that suite needs a MongoDB replica set the build sandbox cannot
+run — so it was visible only after a push, from CI.
+
+Two things changed as a result:
+
+- `asRefId()` is now a single shared helper at the top of the file instead of a
+  local in one function. There is one definition to get right.
+- `backend/tests/unit/walletLedgerWriters.test.js` exercises all four writers
+  with a fake `mongoose`, asserting the ledger document each one builds. It
+  needs no database, runs in milliseconds, and fails on exactly this mistake —
+  verified by reintroducing it.
+
+The general lesson is about `replace_all`: it is a fine way to apply an
+identical edit and a bad way to apply one that depends on local scope.
+
 ---
 
 ## M-1 — `debitForBet` double-charge on a re-split replay (FIXED)
