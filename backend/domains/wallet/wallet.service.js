@@ -198,7 +198,7 @@ export async function debitWinningsForWithdrawal(userId, amount, orderId, extSes
       userId, type: 'DEBIT', field: 'winningsBalance',
       amount, balanceBefore: winBal, balanceAfter: newWinnings,
       reason: `P2P withdrawal order ${orderId}`,
-      refModel: 'PaymentOrder', refId: orderId, txId: tid,
+      refModel: 'PaymentOrder', refId, txId: tid,
     }], { session });
 
     const newLocked = round2((user.lockedBalance || 0) + amount);
@@ -286,7 +286,7 @@ export async function creditDeposit(userId, amount, orderId, extSession) {
       userId, type: 'CREDIT', field: 'depositBalance',
       amount, balanceBefore: before, balanceAfter: after,
       reason: `P2P deposit confirmed ${orderId}`,
-      refModel: 'PaymentOrder', refId: orderId, txId: tid,
+      refModel: 'PaymentOrder', refId, txId: tid,
     }], { session });
 
     sseBalancePush(userId, after, user.winningsBalance || 0);
@@ -332,7 +332,7 @@ export async function creditReserve(userId, amount, orderId, extSession) {
       userId, type: 'CREDIT', field: 'reserveBalance',
       amount, balanceBefore: before, balanceAfter: after,
       reason: `Deposit reserve allocation ${orderId}`,
-      refModel: 'PaymentOrder', refId: orderId, txId: tid,
+      refModel: 'PaymentOrder', refId, txId: tid,
     }], { session });
 
     return { reserveBefore: before, reserveAfter: after, txId: tid };
@@ -356,6 +356,18 @@ export async function creditReserve(userId, amount, orderId, extSession) {
 export async function refundOrder(userId, amount, orderId, field = 'depositBalance', extSession) {
   amount = round2(amount);
   const tid = `refund_${orderId}`;
+  // M-8: `refId` is an ObjectId on the WalletLedger schema, but this function is
+  // also called with a PROVIDER-SUPPLIED round id — gameProvider.routes passes
+  // `body.roundId || body.round_id || body.gameRound || txId`, which is an
+  // arbitrary string. Casting that threw inside the transaction, so the whole
+  // refund aborted: EVERY casino ROLLBACK/REFUND has returned 500 since it
+  // shipped. No money was lost (the transaction unwound the balance change
+  // with it), but no refund ever succeeded either.
+  //
+  // The id is not lost by dropping it here — it is already in `txId`
+  // (`refund_<orderId>`, which is also the idempotency key) and in the reason
+  // text. Only the typed foreign-key column, which cannot hold it, is skipped.
+  const refId = mongoose.Types.ObjectId.isValid(orderId) ? orderId : null;
   if (await checkIdempotent(tid)) return { idempotent: true, txId: tid };
 
   const User         = mongoose.model('User');
@@ -374,7 +386,7 @@ export async function refundOrder(userId, amount, orderId, field = 'depositBalan
       userId, type: 'CREDIT', field,
       amount, balanceBefore: before, balanceAfter: after,
       reason: `Refund for cancelled order ${orderId}`,
-      refModel: 'PaymentOrder', refId: orderId, txId: tid,
+      refModel: 'PaymentOrder', refId, txId: tid,
     }], { session });
 
     const updated = await User.findById(userId).session(session).lean();

@@ -24,6 +24,26 @@ marked PASS on the strength of reading alone.
 | M-5 | `atomicBet` is dead code with a non-functional idempotency key | Low | Documented |
 | M-6 | `reserveAdminMint` combines `$expr` with `upsert`, which MongoDB refuses — admin token issuance threw on every call | **High** | **Fixed** |
 | M-7 | A casino `ROLLBACK`/`REFUND` credits the player without proving a matching prior debit — a provider can mint real money | **High** | **FIXED in both paths** — the live Mongo endpoint and `casinoPg.js` |
+| M-8 | `refundOrder` writes a provider-supplied round id into `WalletLedger.refId`, which is an ObjectId — every casino rollback/refund threw | **High** | **Fixed** |
+
+---
+
+## M-8 — every casino rollback threw a CastError (FIXED)
+
+`gameProvider.routes.js` calls `refundOrder(userId, amount, roundId, ...)` where
+`roundId` is provider-supplied (`body.roundId || body.round_id || body.gameRound
+|| txId`) — an arbitrary string. `refundOrder` stored it in
+`WalletLedger.refId`, typed `ObjectId`, so any round id that is not 24-hex threw
+a CastError **inside the transaction**. The refund aborted with it.
+
+**No money was lost** — the transaction unwound the balance change too — but no
+casino refund has ever succeeded. Same class as M-6: a path that has never
+worked, found only by executing it. Found by the M-7 test, on its first run.
+
+**Fix.** `refId` is set only when the id is a valid ObjectId. Nothing is lost by
+dropping it: the id is already in `txId` (`refund_<orderId>`, which is also the
+idempotency key) and in the reason text. Only the typed foreign-key column,
+which cannot hold it, is skipped.
 
 ---
 
