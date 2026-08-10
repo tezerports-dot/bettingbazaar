@@ -120,27 +120,32 @@ const CAPABILITIES = Object.freeze({
     notes: 'User balances + wallet_ledger. The only path with a complete implementation.',
   },
   [MONEY_PATHS.LEDGER]: {
-    implemented: false, // dualWrite mirrors accounting_events, but nothing READS Postgres
+    // Flipped on CI evidence at 121a8e5, not on the implementation alone.
+    // revenueSettlement.service.js — the only writer — asks the resolver, and
+    // reads route too: a trial balance derived from Mongo while writes go to
+    // Postgres would read clean the whole time it was wrong.
+    implemented: true,  // postgres/ledgerPgAuthority.js, routed from revenueSettlement.service.js
     dualWrite:   true,
     reconciled:  true,
     rollback:    true,
     notes: 'Global accounting ledger. postgres/ledgerPg.js EXISTS: an authoritative reader and writer over accounting_events, double entry enforced per event by the DATABASE and across the ledger by a derived trial balance, balances never stored, idempotency by a single INSERT … ON CONFLICT DO NOTHING RETURNING with no pre-read to race. reconcileAgainstSubLedgers compares the summary accounts against the actual wallet, merchant and treasury sums — a trial balance proves internal consistency and says nothing about whether the ledger describes reality. 16 tests. Remaining: route revenueSettlement.service.js through the resolver. Gated on ORDERS becoming authoritative — order state produces most ledger events, so routing the consequence while the cause still writes Mongo would post events into Postgres for transitions Postgres never saw. See docs/ORDERS_ROUTING_DESIGN.md.',
   },
   [MONEY_PATHS.ORDERS]: {
-    // BUILT and tested, NOT routed — the routes still write Mongo status
-    // directly. Same standard held for every domain before it.
-    implemented: false,
+    // Flipped on CI evidence at 38f8703 — the commit whose anti-skip guard
+    // proves orderCrossStore.integration.test.js RAN rather than reporting
+    // green by skipping. All 31 status writes go through one guarded seam and
+    // orderPgAuthority routes it; stages 1-3 of docs/ORDERS_ROUTING_DESIGN.md.
+    implemented: true,
     dualWrite:   true,  // mirrorPaymentOrder, mirrorUtr
     reconciled:  true,
     rollback:    true,
     notes: 'Order lifecycle. postgres/orderPg.js EXISTS: order_states + append-only order_transitions, expected-previous-state guards in the UPDATE, and the accounting event posted in the SAME transaction as the state change (the Mongo path writes status first and the event afterwards, so a failure between them leaves an order COMPLETED with nothing in the books). 22 tests including a 100-copy callback storm, a racing complete-vs-dispute, 60 concurrent completions with no pool exhaustion, and both gap checks — orders missing their ledger event, and order-shaped events no transition produced. NOTE payment_orders remains a MIRROR: overwritten in place, no history, no guard. These tables are the authoritative lifecycle; that one is a projection. Remaining: see docs/ORDERS_ROUTING_DESIGN.md. This is NOT a normal routing job and was stopped deliberately rather than started piecemeal: the Mongo order lifecycle has NO choke point — 31 status writes across 8 files — so wiring the resolver into some of them and not others would leave some transitions authoritative in Postgres and others in Mongo, which no reconciliation can tell apart from genuine disagreement. It needs a seam built first (one guarded transition service, stage 1), then routing (stage 2), then cross-store reconcile (stage 3). Stage 1 also closes a LIVE hole: Mongo has no expected-previous-state guard, so a cancelled order can be completed today and only incidental ordering in the routes prevents it. ORDERS is the gate for the whole cutover — six fully-built domains report it as their only blocker.',
   },
   [MONEY_PATHS.KYC]: {
-    // BUILT, routed and reconciled. `implemented` waits on CI evidence for the
-    // suites written alongside it — the same standard every other domain was
-    // held to, and the reason several of them sat at false while their code
-    // already existed.
-    implemented: false,
+    // Flipped on CI evidence at f3f9fec. kycDecision.service.js is the single
+    // seam and kycPgAuthority routes it. KYC still cuts over LAST: dependsOn
+    // holds it behind WALLET, LEDGER and ORDERS.
+    implemented: true,
     dualWrite:   true,  // mirrorUserKyc
     reconciled:  true,  // reconcile.reconcileKycDecisions (cross-store, status AND reason)
     rollback:    true,  // reverseMirror.reverseMirrorUserKycStatus, live per decision
@@ -229,10 +234,10 @@ const CAPABILITIES = Object.freeze({
     notes: 'Bonus engine and referral commission. postgres/bonusPg.js EXISTS: bonus_grants paid FROM the treasury pools that fund them (BONUS_POOL / REFERRAL_POOL / COMMISSION_POOL) rather than credited from nowhere. That is the property the domain is for — a bonus is a TRANSFER, not a mint. A credit from nowhere puts tokens on the user side with nothing on the other, so the closing invariant (User + Merchant + Treasury = Total Supply) stops holding and every downstream conservation check starts failing for a reason unrelated to the bug it was built to catch. Which pool funds which kind is DATA, so a new bonus type cannot quietly be paid from the wrong one. A COMMISSION lands in winnings (earned, withdrawable); a bonus lands in deposit (gifted, not) — a signup bonus that could be withdrawn immediately is a cash-out route, which is the entire reason the two pockets exist. Clawback is a second movement returning it to the pool, and the grant row SURVIVES marked, because "was this user ever given a signup bonus?" is what fraud review asks and deleting the row destroys the answer; it may drive the balance negative, since the money may already be spent and refusing to record a reversal that already happened is worse. The pool moves BEFORE the user credit, deliberately: taking a treasury lock while holding a wallet lock would invert the wallet-first order this codebase holds everywhere and deadlock, and the failure mode of this ordering (pool paid for a grant that does not exist) shows as treasury drift, where the other ordering breaks conservation outright. BUILT AND WIRED, NOT CLAIMED. bonusPgAuthority routes the giveaway and giftcode.routes returns the code to the user when the pool cannot fund it, rather than telling them they were paid. dualWrite.mirrorBonusGrant projects BonusRecord — the one collection every user-side giveaway already writes — WITHOUT paying the pool, because Mongo has already paid and paying again would double-spend it; ADMIN_CREDIT is deliberately unmapped, since a manual adjustment has no pool behind it and inventing one would make the treasury claim it financed something it did not. reverseMirror.reverseMirrorBonusGrant rolls a grant back and records a clawback as its own NEGATIVE record rather than editing the original. bonus_grants is deliberately absent from REVERSE_TABLES: a grant id has two shapes, so the generic one-column presence check would report half the table missing on healthy data. reconcile.reconcileBonusGrants compares per grant, not on a total — the right sum paid to the wrong users is exactly what a total hides — and its forward repair is an explicit UPDATE, because re-running an INSERT ... ON CONFLICT DO NOTHING mirror would report a repair that did not happen. 12 pg + 13 unit tests, three mutations verified. settlementBonusCrossStore.integration.test.js RAN GREEN in CI at 3d416bc, which is what these four flags rest on.',
   },
   [MONEY_PATHS.CASINO_SETTLEMENT]: {
-    // Routed, mirrored, reconciled and reversible. `implemented` waits on CI
-    // evidence for the suites written alongside it, the same standard every
-    // other domain was held to.
-    implemented: false,
+    // Flipped on CI evidence at 9d11b79. gameProvider.routes.js calls
+    // casinoPgAuthority and a refusal is surfaced to the provider — which in
+    // this domain is the product, not a consistency nicety.
+    implemented: true,
     dualWrite:   true,  // dualWrite.mirrorCasinoTransaction, hooked on GameTransaction
     reconciled:  true,  // reconcile.reconcileCasinoRounds (cross-store, per round on all three totals)
     rollback:    true,  // reverseMirror.reverseMirrorCasinoRound, live per callback

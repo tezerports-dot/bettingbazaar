@@ -106,7 +106,11 @@ describe('capability gate — authority requires an implementation', () => {
   // happened. Silent downgrade is a worse failure than refusing to start.
 
   it('refuses to boot when an unimplemented path is set to Postgres', () => {
-    const env = withPg({ MONEY_AUTHORITY_LEDGER: 'postgres' });
+    // BETS is the example because it is the last path still missing a routed
+    // implementation — its settlement side writes Bet.status directly
+    // (docs/BETS_SETTLEMENT_ROUTING.md). LEDGER used to play this role and no
+    // longer can, which is the point of picking the example from reality.
+    const env = withPg({ MONEY_AUTHORITY_BETS: 'postgres' });
     const result = validateAuthorityConfig(env);
     expect(result.ok).toBe(false);
     expect(result.errors[0]).toMatch(/NOT eligible for cutover/);
@@ -116,8 +120,8 @@ describe('capability gate — authority requires an implementation', () => {
   it('resolves an ineligible path to MongoDB at runtime, not just at boot', () => {
     // Anything reaching authorityFor() without boot validation — a script, a
     // worker, a test — must still get the truthful answer.
-    const env = withPg({ MONEY_AUTHORITY_LEDGER: 'postgres' });
-    expect(authorityFor(MONEY_PATHS.LEDGER, env)).toBe(STORE.MONGO);
+    const env = withPg({ MONEY_AUTHORITY_BETS: 'postgres' });
+    expect(authorityFor(MONEY_PATHS.BETS, env)).toBe(STORE.MONGO);
   });
 
   it('never reports Postgres in the matrix for a path whose writes go to Mongo', () => {
@@ -130,11 +134,30 @@ describe('capability gate — authority requires an implementation', () => {
     }
   });
 
+  it('resolves 9 of 11 paths to Postgres when an operator sets every variable', () => {
+    // The end state, pinned. This is the question "is the migration done?"
+    // answered by the resolver rather than by a summary someone maintains.
+    //
+    // BETS is not eligible — its settlement side still writes Bet.status
+    // directly — and SETTLEMENTS depends on BETS, so ONE unrouted domain holds
+    // two paths on Mongo. That is the ordering gate doing its job: a settlement
+    // reading bets from one store and balances from another has no single
+    // source of truth.
+    const env = withPg(Object.fromEntries(
+      ALL_PATHS.map((p) => [`MONEY_AUTHORITY_${p.toUpperCase()}`, 'postgres']),
+    ));
+    env.MONEY_AUTHORITY_BONUSES = 'postgres';   // its variable name differs from the path
+
+    const onMongo = ALL_PATHS.filter((p) => authorityFor(p, env) === STORE.MONGO);
+    expect(onMongo).toEqual([MONEY_PATHS.BETS, MONEY_PATHS.SETTLEMENTS]);
+    expect(laggingDependencies(MONEY_PATHS.SETTLEMENTS, env)).toEqual([MONEY_PATHS.BETS]);
+  });
+
   it('reports every unimplemented path with what it is missing', () => {
     const rows = authorityMatrix(withPg());
-    const ledger = rows.find((r) => r.path === MONEY_PATHS.LEDGER);
-    expect(ledger.cutoverEligible).toBe(false);
-    expect(ledger.missing).toContain('implemented');
+    const bets = rows.find((r) => r.path === MONEY_PATHS.BETS);
+    expect(bets.cutoverEligible).toBe(false);
+    expect(bets.missing).toContain('implemented');
 
     // Every remaining path is mirrored, reconciled and rollback-capable now;
     // only `implemented` is outstanding on each, because that flag also
@@ -146,11 +169,15 @@ describe('capability gate — authority requires an implementation', () => {
     // genuinely nothing built. It has all four legs now, so the control moved
     // to the assertion below: a path with every leg present reports an EMPTY
     // list, which is what keeps these from being vacuously true.
-    for (const path of [MONEY_PATHS.BETS, MONEY_PATHS.CASINO_SETTLEMENT, MONEY_PATHS.KYC]) {
+    // BETS is now the ONLY path still missing a leg. Everything else has all
+    // four, which is why the empty-list assertion below carries the weight the
+    // per-path lists used to.
+    for (const path of [MONEY_PATHS.BETS]) {
       const row = rows.find((r) => r.path === path);
       expect({ path, missing: row.missing }).toEqual({ path, missing: ['implemented'] });
       expect(row.cutoverEligible).toBe(false);
     }
+    expect(rows.filter((r) => !r.cutoverEligible).map((r) => r.path)).toEqual([MONEY_PATHS.BETS]);
 
     // The other side of it: `missing` is empty exactly when all four hold, so
     // the lists above are reporting real absences rather than always non-empty.
