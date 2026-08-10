@@ -188,14 +188,40 @@ has to happen before either side can route.
 Postgres branch would skip. Whether that log should follow authority or stay
 Mongo-side is a decision, not an oversight to paper over.
 
-### Worth checking independently of the migration
+### A concern raised here earlier, now measured and WITHDRAWN
 
-`totalLockedDeposit` / `totalLockedWinnings` are summed from the same two
-projected fields and passed to `releaseLockedStake`. For a bet funded partly
-from `reserveBalance`, those two sum to LESS than the stake. Whether that
-under-releases a winning player's locked stake on the **live Mongo path** is
-worth checking on its own — it has nothing to do with Postgres, and this
-document is not the place to assert it without measuring.
+An earlier version of this section suggested that a bet funded partly from
+`reserveBalance` might have its locked stake under-released on the live Mongo
+path, because `totalLockedDeposit + totalLockedWinnings` sums to less than the
+stake. **That is not a bug, and the reasoning was wrong.**
+
+`releaseLockedStake` releases the stake with `amount`, not with the slices:
+
+```js
+$inc: {
+  lockedBalance:        -amount,            // ← the FULL stake
+  lockedDepositAmount:  -(fromDeposit  || 0),
+  lockedWinningsAmount: -(fromWinnings || 0),
+}
+```
+
+`amount` is `op.totalBetAmount`, summed as `$sum: "$amount"` over the winning
+bets — the whole stake. So the player's locked money comes back in full
+regardless of which pockets funded it.
+
+The two slice arguments only adjust the PROVENANCE counters, and there are
+exactly two of those (`lockedDepositAmount`, `lockedWinningsAmount`). Reserve
+deliberately has none — `betPg`'s `LOCK_PROVENANCE` says so in as many words.
+So the asymmetry is symmetric: the same two counters move on lock and on
+release, and nothing is lost.
+
+Recorded rather than deleted because the mistake is the same shape as the one
+above it — reasoning about the arguments to a call without reading what the call
+does with them.
+
+What remains true is the narrower point: `betPg.settle` requires slices that sum
+to the STAKE, so the missing `fromReserveBalance` in the aggregation still blocks
+routing. That is a constraint of the Postgres path, not a defect in the Mongo one.
 
 ## Until then
 
