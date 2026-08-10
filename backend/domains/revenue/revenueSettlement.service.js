@@ -29,6 +29,13 @@
 
 import mongoose from 'mongoose';
 import { AccountingEvent } from './accountingEvent.model.js';
+// The hybrid-DB resolver. Every function below asks it once and either gets the
+// Postgres answer or falls through to the Mongo implementation it has always
+// had — see postgres/ledgerPgAuthority.js for why reads route as well as writes.
+import {
+  recordEventOnPostgres, trialBalanceOnPostgres,
+  accountBalanceOnPostgres, getLedgerOnPostgres,
+} from '../../postgres/ledgerPgAuthority.js';
 import { ACCOUNTS, ACCOUNT_CODES, EVENT_TYPES, toMinor } from './chartOfAccounts.js';
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -165,6 +172,14 @@ export async function recordAccountingEvent({
   }
   validatePostings(postings);
 
+  // The resolver, asked once. Validation runs FIRST and on both paths: a
+  // malformed event must be refused identically whichever store owns the
+  // ledger, or a cutover would quietly change what the books accept.
+  const routed = await recordEventOnPostgres({
+    eventType, idempotencyKey, postings, refModel, refId, occurredAt, description,
+  });
+  if (routed.handled) return { idempotent: routed.idempotent, event: routed.event };
+
   const existing = await AccountingEvent.findOne({ idempotencyKey }).lean();
   if (existing) return { idempotent: true, event: existing };
 
@@ -196,6 +211,14 @@ export async function recordAccountingEvent({
  * Also returns integrityOk: whether ALL postings across the ledger sum to 0.
  */
 export async function getTrialBalance() {
+  // A trial balance derived from Mongo while writes go to Postgres is a report
+  // about a store that is no longer the source of truth — and it would read
+  // clean the whole time it was wrong.
+  const routed = await trialBalanceOnPostgres();
+  if (routed.handled) {
+    const { handled, ...answer } = routed;
+    return answer;
+  }
   const rows = await AccountingEvent.aggregate([
     { $unwind: '$postings' },
     { $group: { _id: '$postings.account', rawMinor: { $sum: '$postings.amountMinor' }, postings: { $sum: 1 } } },
@@ -223,6 +246,9 @@ export async function getAccountBalanceMinor(accountCode) {
   if (!ACCOUNT_CODES.includes(accountCode)) {
     throw new Error(`Unknown ledger account '${accountCode}'.`);
   }
+  const routed = await accountBalanceOnPostgres(accountCode);
+  if (routed.handled) return routed.reportedMinor;
+
   const [row] = await AccountingEvent.aggregate([
     { $unwind: '$postings' },
     { $match: { 'postings.account': accountCode } },
@@ -244,6 +270,11 @@ export async function getDistributableRevenueMinor() {
 
 /** Paginated ledger read (newest first), optional eventType filter. */
 export async function getLedger({ page = 1, limit = 50, eventType } = {}) {
+  const routed = await getLedgerOnPostgres({ page, limit, eventType: eventType ?? null });
+  if (routed.handled) {
+    const { handled, ...answer } = routed;
+    return answer;
+  }
   const filter = {};
   if (eventType) filter.eventType = eventType;
   const [entries, total] = await Promise.all([
