@@ -571,6 +571,41 @@ export function reverseMirrorPaymentOrder(row) {
   });
 }
 
+/**
+ * order_states row → PaymentOrder.status, plus the fields that belong WITH the
+ * transition that produced it.
+ *
+ * ── Why this is not reverseMirrorPaymentOrder ───────────────────────────────
+ * `payment_orders` is a MIRROR: the Mongo document projected forward on every
+ * save, overwritten in place, with no history and no guard. `order_states` is
+ * the authoritative lifecycle. When Postgres owns the ORDERS path the direction
+ * inverts for the lifecycle only — the state is decided here and Mongo follows —
+ * while `payment_orders` keeps being written the other way by dualWrite. Using
+ * one function for both would send the projection back as though it were the
+ * source of truth and reintroduce exactly the loop the two tables exist to
+ * avoid. They are different tables on purpose.
+ *
+ * `set` carries the transition's own fields (completedAt, cancelReason, a UTR)
+ * because a Mongo document found in the new state without the facts that
+ * justify it is the window the seam's single-update rule exists to close — and
+ * a reverse mirror that only wrote the status would reopen it here.
+ */
+export function reverseMirrorOrderState(row, set = {}) {
+  return mirrorBack('order_states', async () => {
+    await mongoose.model('PaymentOrder').updateOne(
+      { _id: row.order_id },
+      {
+        $set: {
+          status: row.state,
+          ...(row.merchant_id === undefined ? {} : { merchantId: row.merchant_id || null }),
+          ...set,
+          updatedAt: row.updated_at || new Date(),
+        },
+      },
+    );
+  });
+}
+
 /** utr_registry row → UTRRegistry doc (the uniqueness gate, mirrored back). */
 export function reverseMirrorUtr(row) {
   return mirrorBack('utr_registry', async () => {

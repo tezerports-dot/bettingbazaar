@@ -46,6 +46,8 @@
  */
 import mongoose from 'mongoose';
 import { ORDER_STATES, ALLOWED_FROM } from '../../postgres/orderPg.js';
+// Stage 2. This is the ONLY file that may import it — see the header there.
+import { transitionOrderOnPostgres as routeTransition } from '../../postgres/orderPgAuthority.js';
 
 export { ORDER_STATES };
 
@@ -91,9 +93,36 @@ async function describe(orderId, to) {
  * table does not allow is a programming error and throws, rather than quietly
  * widening the machine.
  */
-export async function transitionOrder(orderId, to, { set = {}, expectFrom = null, session = null } = {}) {
+export async function transitionOrder(orderId, to, { set = {}, expectFrom = null, session = null, actor = null, reason = null, txId = null } = {}) {
   const allowed = ALLOWED_FROM[to];
   if (!allowed) throw new Error(`transitionOrder: '${to}' is not a state anything transitions into`);
+
+  // ── Stage 2: the resolver, asked ONCE ────────────────────────────────────
+  // This is the whole reason stage 1 replaced 31 scattered status writes with
+  // one service. When Postgres owns the ORDERS path the transition happens
+  // there — inside a transaction with its accounting event, guarded by the row
+  // lock, recorded in append-only history — and Mongo is updated afterwards as
+  // the mirror everything else reads.
+  //
+  // A refusal from Postgres comes back as a refusal. It is NOT retried against
+  // Mongo: the store that owns the lifecycle saying no, overruled by the store
+  // that has no opinion, is worse than either alone.
+  //
+  // The Postgres path cannot join a Mongo session, so a caller inside a
+  // transaction stays on Mongo. That is not a gap to close later — a
+  // transaction spanning two stores is the "one settlement, two sources of
+  // truth" hazard the ordering gate in moneyAuthority.js exists to prevent, and
+  // the two call sites that pass a session (payment.routes deposit confirm,
+  // merchant.routes approve) both move merchant AND user balances inside it.
+  // ORDERS cannot be authoritative until those balances are too, which the
+  // dependency graph already enforces: ORDERS depends on WALLET and LEDGER.
+  if (!session) {
+    const routed = await routeTransition(orderId, to, { set, expectFrom, actor, reason, txId });
+    if (routed.handled) {
+      const { handled, ...answer } = routed;
+      return answer;
+    }
+  }
 
   let from = allowed;
   if (expectFrom) {
