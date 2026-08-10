@@ -10,6 +10,13 @@ import { withdrawalLimiter } from '../../middleware/security.js';
 // Item 12: per-subnet backstop against IP rotation on withdrawal creation.
 import { createSubnetLimiter, globalSurgeBreaker } from '../../middleware/ipDefense.js';
 import { markOrderPaid, cancelOrder } from './paymentProcessing.service.js';
+// The order state machine. Aliased because this file already imports a
+// `markOrderPaid` and a `cancelOrder` from paymentProcessing — those are the
+// business operations, these are the guarded state transitions underneath.
+import {
+  completeOrder as completeOrderState,
+  disputeOrder  as disputeOrderState,
+} from './orderLifecycle.service.js';
 // Phase 009: money movement enters ONLY via the Funding Platform authority.
 import { requestDeposit, requestWithdrawal } from '../funding/fundingAuthority.service.js';
 import { creditDeposit, creditReserve } from '../wallet/walletAuthority.service.js';
@@ -95,8 +102,26 @@ router.post('/deposit/:orderId/confirm', paymentActorAuth, async (req, res) => {
     // GOVERNANCE §7: reserveBalance is written ONLY via walletAuthority now
     // (was a raw $inc with no ledger trail). Idempotent + ledgered.
     if ((order.reserveAllocation || 0) > 0) await creditReserve(order.userId, order.reserveAllocation, order._id.toString(), session);
-    order.status = 'COMPLETED'; order.completedAt = new Date(); order.approvedBy = req.merchantId || req.user._id; order.approvedAt = new Date(); order.updatedAt = new Date();
-    await order.save(withSession(session));
+    // Guarded transition, inside the same session as the money above — so an
+    // order that is no longer confirmable takes the merchant debit and the user
+    // credit down with it rather than leaving them applied against a status
+    // that never changed.
+    const confirmed = await completeOrderState(order._id, {
+      session,
+      set: {
+        completedAt: new Date(),
+        approvedBy: req.merchantId || req.user._id,
+        approvedAt: new Date(),
+        updatedAt: new Date(),
+      },
+    });
+    if (!confirmed.ok) {
+      await abortOrEnd(session);
+      return res.status(409).json({
+        success: false,
+        message: `Cannot confirm an order that is ${confirmed.status ?? 'missing'}`,
+      });
+    }
     await releaseUTR(order._id);
     await mongoose.model('Transaction').create([{ userId: order.userId, type: 'DEPOSIT', amount: order.tokenAmount, balanceType: 'DEPOSIT', status: 'SUCCESS', referenceId: order._id.toString(), description: `Deposit completed: ${order.tokenAmount} tokens`, timestamp: new Date() }], withSession(session));
     await commitOrEnd(session);
@@ -192,12 +217,20 @@ router.post('/order/:orderId/dispute', authenticate, async (req, res) => {
     if (Date.now() - paidAt < tenMin)
       return res.status(400).json({ success: false, message: 'Please wait at least 10 minutes before raising a dispute' });
 
-    order.status          = 'DISPUTED';
-    order.disputeReason   = reason.trim();
-    order.disputeRaisedAt = new Date();
-    order.disputeRaisedBy = 'user';
-    order.updatedAt       = new Date();
-    await order.save();
+    const raised = await disputeOrderState(order._id, {
+      set: {
+        disputeReason:   reason.trim(),
+        disputeRaisedAt: new Date(),
+        disputeRaisedBy: 'user',
+        updatedAt:       new Date(),
+      },
+    });
+    if (!raised.ok) {
+      return res.status(409).json({
+        success: false,
+        message: `Cannot dispute an order that is ${raised.status ?? 'missing'}`,
+      });
+    }
 
     // Notify admin SSE (GOVERNANCE §11: order_disputed)
     emitAdminUpdate('order_disputed', {
@@ -222,12 +255,24 @@ router.post('/order/:orderId/status', authenticate, async (req, res) => {
     });
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     if (order.status !== 'PAID') return res.status(400).json({ success: false, message: `Cannot transition ${order.status} → ${status}` });
-    order.status = 'DISPUTED';
-    order.disputeReason = String(reason).trim().slice(0, 1000);
-    order.disputeRaisedAt = new Date();
-    order.disputeRaisedBy = 'user';
-    order.updatedAt = new Date();
-    await order.save();
+    // expectFrom narrows the machine's own rule to the one state this endpoint
+    // accepts. The pre-read above stays for the message it produces, but it is
+    // no longer what enforces anything -- the filter is.
+    const disputed = await disputeOrderState(order._id, {
+      expectFrom: 'PAID',
+      set: {
+        disputeReason:   String(reason).trim().slice(0, 1000),
+        disputeRaisedAt: new Date(),
+        disputeRaisedBy: 'user',
+        updatedAt:       new Date(),
+      },
+    });
+    if (!disputed.ok) {
+      return res.status(409).json({
+        success: false,
+        message: `Cannot transition ${disputed.status ?? 'missing'} to DISPUTED`,
+      });
+    }
     emitAdminUpdate('queue_order_update', { orderId: order._id, status: order.status });
     res.json({ success: true, order });
   } catch (err) { res.status(500).json({ success: false, message: 'Failed to update status' }); }
