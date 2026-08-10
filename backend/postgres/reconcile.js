@@ -13,6 +13,11 @@
  *   npm run reconcile:pg                 # verify last 24h; exit 1 on drift
  *   npm run reconcile:pg -- --hours 168  # bigger window
  *   npm run reconcile:pg -- --all --backfill   # initial sync: copy missing Mongo→PG
+ *                                              # (also ADOPTS order_states,
+ *                                              #  user_kyc, casino_* and bets —
+ *                                              #  the tables no other path
+ *                                              #  reaches; see
+ *                                              #  backfillLifecycleTables)
  *   npm run reconcile:pg -- --reverse          # also check PG→Mongo (auto once a path is on PG)
  *   npm run reconcile:pg -- --repair-mongo     # Phase B fallback: write PG-only rows back to Mongo
  *
@@ -433,6 +438,161 @@ export async function reconcileMerchantSettlementStates({ backfill = false, repa
     repaired,
     sample: settled.slice(0, 5),
   };
+}
+
+/**
+ * backfillLifecycleTables — ADOPT the state tables no other backfill reaches.
+ *
+ * ── The gap this closes ─────────────────────────────────────────────────────
+ * `TABLES` above covers six tables, and a cutover needs ten. `order_states`,
+ * `user_kyc`, `casino_rounds`/`casino_transactions` and `bets` were reachable
+ * by NOTHING:
+ *
+ *   - the forward mirrors only fire on a Mongo write, so a document that has
+ *     not been saved since the mirror was added has no Postgres row;
+ *   - `mirrorPaymentOrder` writes `payment_orders`, the PROJECTION — not
+ *     `order_states`, the lifecycle, which has no mirror at all;
+ *   - and every state check starts with `SELECT … FROM <the postgres table>`,
+ *     so it compares rows ALREADY there. A row that was never mirrored is
+ *     invisible to it, and `--backfill` can never create one.
+ *
+ * The consequence was not subtle: flipping any of those paths would have
+ * pointed reads at a table that is empty for all historical data. This is the
+ * step that has to run before a cutover is even possible.
+ *
+ * ── Adoption, not synchronisation ───────────────────────────────────────────
+ * Three rules, and each is a decision rather than an implementation detail.
+ *
+ * 1. NEVER OVERWRITE. Every insert is `ON CONFLICT DO NOTHING`. A Postgres
+ *    lifecycle row that already exists may carry transitions Mongo never knew
+ *    about, and a "backfill" that clobbered it would destroy the history it is
+ *    supposed to be protecting.
+ *
+ * 2. NO INVENTED HISTORY. An adopted order gets its current state and NO
+ *    `order_transitions` rows. It is tempting to synthesise the path that led
+ *    there, and it would be a lie: nobody recorded those transitions, the
+ *    timestamps would be fabricated, and an auditor reading the append-only
+ *    table could not tell manufactured history from the real thing. History
+ *    begins at adoption, and the absence of earlier rows is itself the honest
+ *    signal that this order predates the cutover.
+ *
+ * 3. DIRECTION FOLLOWS AUTHORITY. Each domain is skipped when Postgres already
+ *    owns it. Backfilling Mongo→Postgres for a path Postgres is authoritative
+ *    for would overwrite the source of truth with its own stale mirror.
+ *
+ * Deliberately NOT part of the incremental (`--since`) pass. Adoption is a
+ * one-time cutover step over the whole population; running it on a 24h window
+ * would silently adopt only recent rows and report success.
+ */
+export async function backfillLifecycleTables({ limit = 50000 } = {}) {
+  const out = [];
+
+  // ── Orders: the lifecycle table, which has no mirror ──────────────────────
+  if (!isPostgresAuthoritative(MONEY_PATHS.ORDERS)) {
+    const { openOrder, ORDER_TYPES, ORDER_STATES } = await import('./orderPg.js');
+    const docs = await mongoose.model('PaymentOrder')
+      .find({}).select('userId merchantId type tokenAmount fiatAmount status')
+      .limit(limit).lean();
+
+    let created = 0; let skipped = 0;
+    if (docs.length) {
+      const { rows } = await pgQuery(
+        `SELECT order_id FROM order_states WHERE order_id = ANY($1)`,
+        [docs.map((d) => String(d._id))]);
+      const have = new Set(rows.map((r) => r.order_id));
+
+      for (const doc of docs) {
+        if (have.has(String(doc._id))) { skipped++; continue; }
+        // A malformed document is skipped rather than adopted into a state the
+        // machine cannot represent — it would fail its next transition, which
+        // is the failure mode this whole function exists to prevent.
+        if (!ORDER_TYPES[doc.type] || !ORDER_STATES[doc.status]) { skipped++; continue; }
+        await openOrder({
+          orderId:          String(doc._id),
+          userId:           String(doc.userId),
+          merchantId:       doc.merchantId ? String(doc.merchantId) : null,
+          type:             doc.type,
+          tokenAmountPaise: rupeesToPaise(Number(doc.tokenAmount) || 0),
+          fiatAmountPaise:  rupeesToPaise(Number(doc.fiatAmount) || 0),
+          // AT ITS CURRENT STATE. Adopting at PENDING_QUEUE would refuse the
+          // order's very next transition.
+          state:            doc.status,
+        });
+        created++;
+      }
+    }
+    out.push({ table: 'order_states', scanned: docs.length, created, skipped });
+  } else {
+    out.push({ table: 'order_states', skipped: 'postgres is authoritative' });
+  }
+
+  // ── KYC: mirrorUserKyc writes the whole record, it was just never called ──
+  if (!isPostgresAuthoritative(MONEY_PATHS.KYC)) {
+    const { mirrorUserKyc } = await import('./dualWrite.js');
+    const docs = await mongoose.model('User')
+      .find({}).select('kycStatus kycData').limit(limit).lean();
+    const { rows } = await pgQuery(
+      `SELECT user_id FROM user_kyc WHERE user_id = ANY($1)`,
+      [docs.map((d) => String(d._id))]);
+    const have = new Set(rows.map((r) => r.user_id));
+
+    let created = 0; let skipped = 0;
+    for (const doc of docs) {
+      if (have.has(String(doc._id))) { skipped++; continue; }
+      await mirrorUserKyc(doc);
+      created++;
+    }
+    out.push({ table: 'user_kyc', scanned: docs.length, created, skipped });
+  } else {
+    out.push({ table: 'user_kyc', skipped: 'postgres is authoritative' });
+  }
+
+  // ── Casino: rounds are DERIVED from their callbacks, so replay them ───────
+  // In tx order, because each one advances a running total and the refund bound
+  // is checked against it. Replaying out of order would refuse a legitimate
+  // rollback that arrived before its own debit had been adopted.
+  if (!isPostgresAuthoritative(MONEY_PATHS.CASINO_SETTLEMENT)) {
+    const { mirrorCasinoTransaction } = await import('./dualWrite.js');
+    const docs = await mongoose.model('GameTransaction')
+      .find({}).select('txId roundId userId type amount providerKey gameId createdAt')
+      .sort({ createdAt: 1 }).limit(limit).lean();
+    const { rows } = await pgQuery(
+      `SELECT tx_id FROM casino_transactions WHERE tx_id = ANY($1)`,
+      [docs.map((d) => String(d.txId))]);
+    const have = new Set(rows.map((r) => r.tx_id));
+
+    let created = 0; let skipped = 0;
+    for (const doc of docs) {
+      if (have.has(String(doc.txId))) { skipped++; continue; }
+      await mirrorCasinoTransaction(doc);
+      created++;
+    }
+    out.push({ table: 'casino_transactions', scanned: docs.length, created, skipped });
+  } else {
+    out.push({ table: 'casino_transactions', skipped: 'postgres is authoritative' });
+  }
+
+  // ── Bets ──────────────────────────────────────────────────────────────────
+  if (!isPostgresAuthoritative(MONEY_PATHS.BETS)) {
+    const { mirrorBet } = await import('./dualWrite.js');
+    const docs = await mongoose.model('Bet').find({}).limit(limit).lean();
+    const { rows } = await pgQuery(
+      `SELECT bet_id FROM bets WHERE bet_id = ANY($1)`,
+      [docs.map((d) => String(d._id))]);
+    const have = new Set(rows.map((r) => r.bet_id));
+
+    let created = 0; let skipped = 0;
+    for (const doc of docs) {
+      if (have.has(String(doc._id))) { skipped++; continue; }
+      await mirrorBet(doc);
+      created++;
+    }
+    out.push({ table: 'bets', scanned: docs.length, created, skipped });
+  } else {
+    out.push({ table: 'bets', skipped: 'postgres is authoritative' });
+  }
+
+  return out;
 }
 
 /**
@@ -1182,6 +1342,12 @@ export async function runReconcile({
     repairMongo: repairMongo && betsOnPg,
   });
 
+  // ADOPTION FIRST, when a backfill is asked for. Every state check below
+  // starts with SELECT … FROM its Postgres table, so it can only compare rows
+  // that are already there — running them before adoption would report a clean
+  // pass over an empty table, which is the most dangerous kind of green.
+  const lifecycleBackfill = backfill ? await backfillLifecycleTables() : null;
+
   // Orders: do the two stores agree on where each order IS? Read from
   // order_states — the authoritative lifecycle — and NOT from payment_orders,
   // which is the projection the forward mirror writes from the Mongo document
@@ -1294,6 +1460,7 @@ export async function runReconcile({
     window: all ? 'all' : `${hours}h`,
     results,
     settling,
+    lifecycleBackfill,
     trialBalance: pgTrial,
     merchantBalances,
     merchantLedgers,
