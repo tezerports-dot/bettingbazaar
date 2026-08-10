@@ -436,6 +436,119 @@ export async function reconcileMerchantSettlementStates({ backfill = false, repa
 }
 
 /**
+ * reconcileOrderStates — do the two stores agree on where each ORDER is?
+ *
+ * ── The two tables this must not conflate ───────────────────────────────────
+ * `payment_orders` is a MIRROR: the Mongo document projected forward on every
+ * save, overwritten in place, no history, no guard. `order_states` plus
+ * append-only `order_transitions` are the authoritative lifecycle. This check
+ * reads `order_states`, deliberately.
+ *
+ * Comparing `payment_orders.status` against `PaymentOrder.status` would be
+ * comparing a value against a copy of itself — the forward mirror writes one
+ * from the other, so they agree by construction and the check would report
+ * clean no matter how far the real lifecycle had drifted. It is the difference
+ * between evidence and a tautology.
+ *
+ * ── Why the disagreement matters ────────────────────────────────────────────
+ * The row-presence check finds the order in both stores and reports clean while
+ * one says PROCESSING and the other says COMPLETED. After a fallback that means
+ * the expiry cron cancels an order that was already paid, or the merchant queue
+ * shows work for an order that finished — and on the deposit path a COMPLETED
+ * order with no accounting event behind it is money the books do not know about.
+ *
+ * ── Repair direction follows authority, like every other check here ─────────
+ * `--backfill` (Phase A, Mongo authoritative) replays the Mongo status into
+ * `order_states` through the lifecycle's own transition, NOT with a raw UPDATE:
+ * a repair that bypassed the state machine could write a state the machine
+ * would refuse and leave `order_transitions` with no record of how the order
+ * got there, which is the history the table exists to keep. Where the move is
+ * not legal the row is reported and left alone — an order that reached an
+ * impossible state is a fault to investigate, not one to paper over.
+ *
+ * `--repair-mongo` (Phase B, Postgres authoritative) pushes the authoritative
+ * state back through the reverse mirror.
+ */
+export async function reconcileOrderStates({ backfill = false, repairMongo = false, limit = 50000 } = {}) {
+  if (backfill && repairMongo) {
+    throw new Error('reconcileOrderStates: backfill and repairMongo are opposite directions — pick one');
+  }
+
+  const { rows } = await pgQuery(
+    `SELECT order_id, user_id, merchant_id, order_type, state, token_amount_paise, updated_at
+       FROM order_states ORDER BY updated_at DESC LIMIT $1`,
+    [limit], 'order_state_reconcile',
+  );
+  if (!rows.length) {
+    return { table: 'order_states', checked: 0, disagreeing: 0, settling: 0, repaired: 0, unrepairable: 0, sample: [] };
+  }
+
+  const docs = await mongoose.model('PaymentOrder')
+    .find({ _id: { $in: rows.map((r) => r.order_id) } })
+    .select('status').lean();
+  const byId = new Map(docs.map((d) => [String(d._id), d]));
+
+  const { transition, ALLOWED_FROM } = await import('./orderPg.js');
+  const { reverseMirrorOrderState } = await import('./reverseMirror.js');
+
+  const disagreeing = [];
+  let repaired = 0;
+  let unrepairable = 0;
+
+  for (const row of rows) {
+    const doc = byId.get(String(row.order_id));
+    // A Postgres order with no Mongo document is a missing row, which the
+    // reverse table check owns. Counting it here too would report one problem
+    // as two.
+    if (!doc) continue;
+    if (doc.status === row.state) continue;
+
+    const entry = {
+      orderId: row.order_id, mongoStatus: doc.status, pgStatus: row.state, at: row.updated_at,
+    };
+    disagreeing.push(entry);
+
+    if (backfill) {
+      // Through the state machine, not around it. A repeat visit needs its own
+      // key or the transition is refused as a replay — see
+      // docs/ORDERS_REQUEUE_CYCLE.md — and a reconcile pass is exactly where
+      // one would arrive, since it replays states the order has held before.
+      if (!ALLOWED_FROM[doc.status]?.includes(row.state)) {
+        entry.unrepairable = `Mongo says ${doc.status}, which is not reachable from ${row.state}`;
+        unrepairable++;
+        continue;
+      }
+      const moved = await transition({
+        orderId: row.order_id, to: doc.status, actor: 'reconcile',
+        reason: `backfill: Mongo authoritative at ${row.state}`,
+        txId: `ord_${row.order_id}_${doc.status}_reconcile_${Date.parse(row.updated_at) || Date.now()}`,
+      });
+      if (moved.ok) repaired++;
+      else { entry.unrepairable = moved.reason; unrepairable++; }
+    } else if (repairMongo) {
+      await reverseMirrorOrderState(row);
+      repaired++;
+    }
+  }
+
+  const { settled, settling } = splitBySettling(disagreeing, (r) => r.at);
+
+  return {
+    table: 'order_states',
+    checked: rows.length,
+    disagreeing: backfill || repairMongo ? unrepairable : settled.length,
+    disagreeingBeforeRepair: settled.length,
+    settling: settling.length,
+    repaired,
+    // A repair that could not be performed is NOT clean. Folding it into
+    // `repaired` would let a pass report success while the drift it found is
+    // still there.
+    unrepairable,
+    sample: settled.slice(0, 5),
+  };
+}
+
+/**
  * reconcileBetStates — do the two stores agree on where each bet IS?
  *
  * Nothing else compares them. The row-presence check finds the bet in both
@@ -879,6 +992,16 @@ export async function runReconcile({
     repairMongo: repairMongo && betsOnPg,
   });
 
+  // Orders: do the two stores agree on where each order IS? Read from
+  // order_states — the authoritative lifecycle — and NOT from payment_orders,
+  // which is the projection the forward mirror writes from the Mongo document
+  // and would therefore agree with it by construction.
+  const ordersOnPg = isPostgresAuthoritative(MONEY_PATHS.ORDERS);
+  const orderStates = await reconcileOrderStates({
+    backfill: backfill && !ordersOnPg,
+    repairMongo: repairMongo && ordersOnPg,
+  });
+
   // Domain 6: did each cycle's settlement RUN end the same way in both stores,
   // and did it pay out the same amount? The payout comparison is the one that
   // earns its place — Mongo re-derives its total from the stamped WON bets and
@@ -906,6 +1029,8 @@ export async function runReconcile({
     || merchantLedgers.unexplained > 0
     || settlementPockets.length > 0
     || settlementStates.disagreeing > 0
+    || orderStates.disagreeing > 0
+    || orderStates.unrepairable > 0
     || betStates.disagreeing > 0
     || cycleSettlements.disagreeing > 0
     || bonusGrants.disagreeing > 0
@@ -941,13 +1066,14 @@ export async function runReconcile({
     reverse: (reverseResults ?? []).reduce((s, r) => s + (r.settling ?? 0), 0),
     merchantBalances: merchantBalances.settling ?? 0,
     settlementStates: settlementStates.settling ?? 0,
+    orderStates: orderStates.settling ?? 0,
     betStates: betStates.settling ?? 0,
     cycleSettlements: cycleSettlements.settling ?? 0,
     bonusGrants: bonusGrants.settling ?? 0,
   };
   settling.total = settling.forward + settling.reverse
     + settling.merchantBalances + settling.settlementStates + settling.betStates
-    + settling.cycleSettlements + settling.bonusGrants;
+    + settling.orderStates + settling.cycleSettlements + settling.bonusGrants;
 
   return {
     window: all ? 'all' : `${hours}h`,
@@ -964,6 +1090,7 @@ export async function runReconcile({
       states: settlementStates,
     },
     adminSupply,
+    orderStates,
     betStates,
     cycleSettlements,
     bonusGrants,
