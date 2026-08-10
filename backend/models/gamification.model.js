@@ -74,6 +74,17 @@ const bonusRecordSchema = new mongoose.Schema({
   createdAt:   { type: Date, default: Date.now, index: true },
 });
 bonusRecordSchema.index({ userId: 1, createdAt: -1 });
+
+// Hybrid money DB: BonusRecord is the one place every user-side giveaway is
+// already recorded, which makes it this domain's choke point — the same role
+// WalletLedger plays for the wallet. The mirror records the GRANT only; the
+// money itself travels on the wallet ledger's mirror, and the treasury pool is
+// deliberately left alone because it has already paid on the Mongo side.
+// See mirrorBonusGrant for why ADMIN_CREDIT is not mirrored.
+import { mirrorBonusGrant } from '../postgres/dualWrite.js';
+
+bonusRecordSchema.post('save', (doc) => { mirrorBonusGrant(doc); });
+
 export const BonusRecord = mongoose.model('BonusRecord', bonusRecordSchema);
 
 // ---------------------------------------------------------------------------

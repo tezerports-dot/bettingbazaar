@@ -345,6 +345,147 @@ export function mirrorAdminSupply({
 }
 
 /**
+ * BonusRecord doc → `bonus_grants`. Domain 8's Mongo→Postgres leg.
+ *
+ * `BonusRecord` is the unified bonus history every user-side giveaway already
+ * writes — gift codes, admin credits, referral commissions — which makes it the
+ * one choke point for this domain, the same way WalletLedger is for the wallet.
+ *
+ * ── What this mirror deliberately does NOT do ───────────────────────────────
+ * It does not move treasury money. `bonusPg.grantBonus` pays a grant FROM the
+ * pool that funds it, because a bonus is a transfer and not a mint; but while
+ * Mongo is authoritative the money has ALREADY moved on the Mongo side, and
+ * paying the pool again here would double-spend the treasury. So the row is
+ * recorded and the pool is left alone. Deriving pool balances from outstanding
+ * grants is a cutover step, exactly like the merchant opening balances.
+ *
+ * That is why this writes SQL directly instead of calling grantBonus: the
+ * business function is the money mover, and a mirror must never be one.
+ *
+ * ── The kind mapping, and the one type that is not mirrored ─────────────────
+ * Mongo's BonusRecord types are a superset of the kinds Postgres funds from a
+ * pool. CHECK_IN, LEVEL_UP and FIRST_DEPOSIT are promotional giveaways and map
+ * onto PROMO's pool; REFERRAL_COMMISSION is earned, so it maps to COMMISSION
+ * and lands in winnings on the Postgres side.
+ *
+ * ADMIN_CREDIT is NOT mirrored, and that is the interesting one. An admin
+ * credit is a manual adjustment, not a funded giveaway — it has no pool behind
+ * it, and inventing one would make the treasury claim it financed something it
+ * did not. Those movements reach Postgres as ordinary wallet ledger rows via
+ * mirrorWalletLedger, which is where a manual adjustment honestly belongs.
+ */
+const BONUS_KIND_FROM_RECORD = Object.freeze({
+  GIFT_CODE:           'PROMO',
+  CHECK_IN:            'PROMO',
+  LEVEL_UP:            'PROMO',
+  FIRST_DEPOSIT:       'PROMO',
+  MANUAL:              'PROMO',
+  REFERRAL_COMMISSION: 'COMMISSION',
+  // ADMIN_CREDIT: deliberately absent — see the note above.
+});
+
+export function mirrorBonusGrant(doc) {
+  if (!doc?._id || !doc?.userId) return;
+
+  // SYNCHRONOUS at the boundary — same rule as every other mirror here.
+  return mirror('bonus_grants', async () => {
+    const { isPostgresAuthoritative, MONEY_PATHS } = await import('./moneyAuthority.js');
+    if (isPostgresAuthoritative(MONEY_PATHS.BONUSES_AND_COMMISSIONS)) return;
+
+    const kind = BONUS_KIND_FROM_RECORD[doc.type];
+    if (!kind) return;
+
+    const { BONUS_KIND } = await import('./bonusPg.js');
+    const pool = BONUS_KIND[kind]?.pool;
+    if (!pool) return;
+
+    // A grant of nothing is not a grant, and amount_paise carries a CHECK
+    // (> 0) — guarding here keeps a malformed record out of the table rather
+    // than relying on the constraint to reject it once per save, forever.
+    const amountPaise = Number.isFinite(Number(doc.amount)) ? paise(doc.amount) : 0;
+    if (amountPaise <= 0) return;
+
+    await pgQuery(
+      `INSERT INTO bonus_grants
+         (grant_id, user_id, kind, pool, amount_paise, status, ref_model, ref_id, granted_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,'PAID',$6,$7,COALESCE($8, now()),now())
+       -- DO NOTHING, not DO UPDATE: a BonusRecord is immutable history in
+       -- Mongo, so there is nothing to carry forward, and a re-fired mirror
+       -- must not drag a grant Postgres has since CLAWED_BACK back to PAID.
+       ON CONFLICT (grant_id) DO NOTHING`,
+      [`bg_${doc._id}`, String(doc.userId), kind, pool, amountPaise,
+       'BonusRecord', doc.refId ? String(doc.refId) : null, createdAt(doc, doc.createdAt)],
+    );
+  });
+}
+
+/**
+ * Cycle doc → `cycle_settlements`. Domain 6's Mongo→Postgres leg.
+ *
+ * A settlement RUN, not the per-bet money. `mirrorBet` projects each bet's
+ * outcome and `mirrorWalletLedger` the payouts; mirroring either from here as
+ * well would double-count. What this adds is the thing the Mongo path cannot
+ * state about itself: which pass settled this cycle, against which result, and
+ * whether it finished.
+ *
+ * ── The state mapping, and the one asymmetry in it ──────────────────────────
+ * `isSettled` PENDING means no run exists yet, so nothing is mirrored — an
+ * un-started settlement is not a RUNNING one, and inventing a row would make
+ * `findIncompleteSettlements` report every unsettled cycle as a stalled payout.
+ *
+ * PROCESSING → RUNNING and COMPLETED → COMPLETED. gameEngine deliberately
+ * re-admits a PROCESSING cycle so an interrupted payout can resume, so the
+ * insert is ON CONFLICT DO UPDATE and a resumed pass finds its own row.
+ *
+ * Mongo has no VOIDED, so that state exists only once Postgres owns the
+ * lifecycle. Same deliberate asymmetry as `mirrorBet`'s missing VOID: rather
+ * than invent a Mongo status to round-trip a state it cannot represent, the
+ * fallback stays honest about what the source store actually said.
+ *
+ * ── Why winning_side is never updated here ──────────────────────────────────
+ * The column is written on insert and left alone on conflict, matching
+ * settlementPg's rule. If a cycle's declared result were corrected mid-payout,
+ * letting the mirror rewrite it would make the run claim it settled every bet
+ * against a result that only some of them were settled against.
+ */
+const SETTLEMENT_STATUS_FROM_CYCLE = Object.freeze({
+  PROCESSING: 'RUNNING',
+  COMPLETED:  'COMPLETED',
+});
+
+export function mirrorCycleSettlement(doc) {
+  if (!doc?.cycleId || !doc?.winner) return; // no result declared ⇒ nothing to settle against
+
+  // SYNCHRONOUS at the boundary — same rule as every other mirror here. See
+  // the note on mirrorMerchantSettlement.
+  return mirror('cycle_settlements', async () => {
+    const { isPostgresAuthoritative, MONEY_PATHS } = await import('./moneyAuthority.js');
+    if (isPostgresAuthoritative(MONEY_PATHS.SETTLEMENTS)) return;
+
+    const status = SETTLEMENT_STATUS_FROM_CYCLE[doc.isSettled];
+    if (!status) return;
+
+    // Mongo's totals are the run's payout while Mongo is authoritative: nothing
+    // calls settleBet to accumulate them, so leaving payout_paise at 0 would
+    // make the reconciler report the whole cycle as drift.
+    const payoutPaise = Number.isFinite(Number(doc.totalPaidOut)) ? paise(doc.totalPaidOut) : 0;
+
+    await pgQuery(
+      `INSERT INTO cycle_settlements
+         (settlement_id, cycle_id, winning_side, status, payout_paise, started_at, completed_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,now(),$6,now())
+       ON CONFLICT (cycle_id) DO UPDATE
+         SET status       = EXCLUDED.status,
+             payout_paise = EXCLUDED.payout_paise,
+             completed_at = EXCLUDED.completed_at,
+             updated_at   = now()`,
+      [`cs_${doc.cycleId}`, String(doc.cycleId), String(doc.winner), status,
+       payoutPaise, doc.settledAt || null],
+    );
+  });
+}
+
+/**
  * Bet doc → `bets`. Domain 5's Mongo→Postgres leg.
  *
  * Projects the Mongo lifecycle onto the state machine Postgres owns, so a

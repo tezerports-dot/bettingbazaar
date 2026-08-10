@@ -503,6 +503,191 @@ export async function reconcileBetStates({ backfill = false, repairMongo = false
 }
 
 /**
+ * Do the two stores agree about which bonuses were granted, and for how much?
+ *
+ * Domain 8's cross-store check. The comparison is per-grant rather than on a
+ * total: a total that matches can still hide two grants that are individually
+ * wrong in opposite directions, and a bonus engine that pays the right sum to
+ * the wrong users is the failure this check exists to catch.
+ *
+ * A CLAWED_BACK grant is compared on its amount only. Mongo has no status field
+ * to disagree about — the clawback lives there as a separate negative record —
+ * so asking the two stores to agree about a state only one of them models would
+ * report drift on every reversal, forever.
+ */
+export async function reconcileBonusGrants({ backfill = false, repairMongo = false, limit = 20000 } = {}) {
+  if (backfill && repairMongo) {
+    throw new Error('reconcileBonusGrants: backfill and repairMongo are opposite directions — pick one');
+  }
+
+  const { rows } = await pgQuery(
+    `SELECT grant_id, user_id, kind, pool, amount_paise, status, ref_id, granted_at, updated_at
+       FROM bonus_grants ORDER BY updated_at DESC LIMIT $1`,
+    [limit], 'bonus_grant_reconcile',
+  );
+  if (!rows.length) {
+    return { table: 'bonus_grants', checked: 0, disagreeing: 0, settling: 0, repaired: 0, sample: [] };
+  }
+
+  // Only grants the forward mirror minted can be matched back to a document.
+  // A grant born in Postgres has no Mongo counterpart by definition, and the
+  // reverse table check owns that — counting it here would report the cutover
+  // itself as drift.
+  const mongoIds = rows
+    .filter((r) => String(r.grant_id).startsWith('bg_'))
+    .map((r) => String(r.grant_id).slice(3));
+  const records = mongoIds.length
+    ? await mongoose.model('BonusRecord').find({ _id: { $in: mongoIds } }).select('amount type').lean()
+    : [];
+  const byId = new Map(records.map((d) => [String(d._id), d]));
+
+  const { reverseMirrorBonusGrant } = await import('./reverseMirror.js');
+
+  const disagreeing = [];
+  let repaired = 0;
+
+  for (const row of rows) {
+    if (!String(row.grant_id).startsWith('bg_')) continue;
+    const doc = byId.get(String(row.grant_id).slice(3));
+    if (!doc) continue;                       // missing-row check owns this
+
+    const mongoPaise = rupeesToPaise(Number(doc.amount ?? 0));
+    const pgPaise    = Number(row.amount_paise);
+    if (mongoPaise === pgPaise) continue;
+
+    disagreeing.push({
+      grantId: row.grant_id, userId: String(row.user_id), kind: row.kind,
+      mongoPaise, pgPaise, driftPaise: mongoPaise - pgPaise, at: row.updated_at,
+    });
+
+    // The forward repair CANNOT be "re-run the mirror". mirrorBonusGrant is
+    // INSERT … ON CONFLICT DO NOTHING — correctly so, since a re-fired mirror
+    // must not drag a clawed-back grant back to PAID — which means re-running
+    // it against a row that already exists changes nothing and would report a
+    // repair that did not happen. The corrective UPDATE is written out here
+    // instead, and it is deliberately narrow: the amount only, and only while
+    // Mongo is the source of truth for this domain.
+    if (backfill) {
+      await pgQuery(
+        `UPDATE bonus_grants SET amount_paise = $2, updated_at = now() WHERE grant_id = $1`,
+        [row.grant_id, mongoPaise], 'bonus_grant_repair',
+      );
+      repaired++;
+    } else if (repairMongo) { await reverseMirrorBonusGrant(row); repaired++; }
+  }
+
+  const { settled, settling } = splitBySettling(disagreeing, (r) => r.at);
+
+  return {
+    table: 'bonus_grants',
+    checked: rows.length,
+    disagreeing: backfill || repairMongo ? 0 : settled.length,
+    disagreeingBeforeRepair: settled.length,
+    settling: settling.length,
+    repaired,
+    sample: settled.slice(0, 5),
+  };
+}
+
+/**
+ * Do the two stores agree about how each cycle's settlement RUN went?
+ *
+ * Domain 6's cross-store check. Two things are compared, and the second is the
+ * one worth having:
+ *
+ *  - **State.** Mongo's `Cycle.isSettled` against `cycle_settlements.status`. A
+ *    disagreement means one store thinks a payout is still running and the
+ *    other thinks it finished, which decides whether `payoutRecoveryTask` will
+ *    pick the cycle up and re-run it.
+ *
+ *  - **Payout total.** Mongo's `totalPaidOut` against the run's
+ *    `payout_paise`. This is the money statement: the two figures are reached
+ *    completely differently — Mongo re-derives its total by aggregating the
+ *    stamped WON bets, Postgres accumulates it one settled bet at a time — so
+ *    agreement between them is real evidence rather than a value compared with
+ *    a copy of itself.
+ *
+ * A cycle Postgres has no run for is not reported here. That is the table
+ * check's job (`reconcileTableReverse`), and counting one missing row as two
+ * different problems makes a clean report impossible to recognise.
+ *
+ * VOIDED has no Mongo counterpart, so a voided run is skipped rather than
+ * called drift — the asymmetry is documented on both mirrors and reporting it
+ * every pass would train an operator to ignore this check.
+ */
+export async function reconcileCycleSettlements({ backfill = false, repairMongo = false, limit = 20000 } = {}) {
+  if (backfill && repairMongo) {
+    throw new Error('reconcileCycleSettlements: backfill and repairMongo are opposite directions — pick one');
+  }
+
+  const { rows } = await pgQuery(
+    `SELECT cycle_id, winning_side, status, payout_paise, completed_at, updated_at
+       FROM cycle_settlements ORDER BY updated_at DESC LIMIT $1`,
+    [limit], 'cycle_settlement_reconcile',
+  );
+  if (!rows.length) {
+    return { table: 'cycle_settlements', checked: 0, disagreeing: 0, settling: 0, repaired: 0, sample: [] };
+  }
+
+  const cycles = await mongoose.model('Cycle')
+    .find({ cycleId: { $in: rows.map((r) => r.cycle_id) } })
+    .select('cycleId isSettled winner totalPaidOut settledAt').lean();
+  const byCycle = new Map(cycles.map((c) => [String(c.cycleId), c]));
+
+  const { mirrorCycleSettlement } = await import('./dualWrite.js');
+  const { reverseMirrorCycleSettlement } = await import('./reverseMirror.js');
+
+  const disagreeing = [];
+  let repaired = 0;
+
+  for (const row of rows) {
+    const cycle = byCycle.get(String(row.cycle_id));
+    if (!cycle) continue;                       // missing-row check owns this
+    if (row.status === 'VOIDED') continue;      // no Mongo counterpart, by design
+
+    const expectedStatus = cycle.isSettled === 'COMPLETED' ? 'COMPLETED'
+      : cycle.isSettled === 'PROCESSING' ? 'RUNNING' : null;
+    // PENDING in Mongo with a run in Postgres is not drift while Postgres is
+    // authoritative — it is the flip's whole point. It IS drift the other way
+    // round, which the state comparison below catches on its own.
+    if (expectedStatus === null) continue;
+
+    const mongoPayout = rupeesToPaise(Number(cycle.totalPaidOut ?? 0));
+    const pgPayout    = Number(row.payout_paise);
+    const statusDrift = expectedStatus !== row.status;
+    // Compare the payout only on a run both stores call finished. A run still
+    // in flight has a total that is legitimately mid-flight in one store and
+    // not yet written in the other.
+    const payoutDrift = !statusDrift && row.status === 'COMPLETED' && mongoPayout !== pgPayout;
+
+    if (!statusDrift && !payoutDrift) continue;
+
+    disagreeing.push({
+      cycleId: row.cycle_id,
+      mongoStatus: cycle.isSettled, pgStatus: row.status,
+      mongoPayoutPaise: mongoPayout, pgPayoutPaise: pgPayout,
+      driftPaise: mongoPayout - pgPayout,
+      at: row.updated_at,
+    });
+
+    if (backfill) { await mirrorCycleSettlement(cycle); repaired++; }
+    else if (repairMongo) { await reverseMirrorCycleSettlement(row); repaired++; }
+  }
+
+  const { settled, settling } = splitBySettling(disagreeing, (r) => r.at);
+
+  return {
+    table: 'cycle_settlements',
+    checked: rows.length,
+    disagreeing: backfill || repairMongo ? 0 : settled.length,
+    disagreeingBeforeRepair: settled.length,
+    settling: settling.length,
+    repaired,
+    sample: settled.slice(0, 5),
+  };
+}
+
+/**
  * Do the two supply figures agree?
  *
  * `SystemConfig.adminTokenSupply.minted` is a running counter maintained by
@@ -694,6 +879,26 @@ export async function runReconcile({
     repairMongo: repairMongo && betsOnPg,
   });
 
+  // Domain 6: did each cycle's settlement RUN end the same way in both stores,
+  // and did it pay out the same amount? The payout comparison is the one that
+  // earns its place — Mongo re-derives its total from the stamped WON bets and
+  // Postgres accumulates it per settled bet, so the two figures agreeing is
+  // evidence rather than a value checked against a copy of itself.
+  const settlementsOnPg = isPostgresAuthoritative(MONEY_PATHS.SETTLEMENTS);
+  const cycleSettlements = await reconcileCycleSettlements({
+    backfill: backfill && !settlementsOnPg,
+    repairMongo: repairMongo && settlementsOnPg,
+  });
+
+  // Domain 8: does every mirrored grant carry the same amount in both stores?
+  // Per-grant rather than on a total, because a bonus engine paying the right
+  // sum to the wrong users is exactly what a matching total would hide.
+  const bonusesOnPg = isPostgresAuthoritative(MONEY_PATHS.BONUSES_AND_COMMISSIONS);
+  const bonusGrants = await reconcileBonusGrants({
+    backfill: backfill && !bonusesOnPg,
+    repairMongo: repairMongo && bonusesOnPg,
+  });
+
   const forwardDrift = results.some((r) => r.missingInPg > 0)
     || !pgTrial.conservesToZero
     || merchantBalances.drifted > 0
@@ -702,6 +907,8 @@ export async function runReconcile({
     || settlementPockets.length > 0
     || settlementStates.disagreeing > 0
     || betStates.disagreeing > 0
+    || cycleSettlements.disagreeing > 0
+    || bonusGrants.disagreeing > 0
     || !adminSupply.ok;
 
   // The reverse direction only means something once Postgres owns a path — or
@@ -735,9 +942,12 @@ export async function runReconcile({
     merchantBalances: merchantBalances.settling ?? 0,
     settlementStates: settlementStates.settling ?? 0,
     betStates: betStates.settling ?? 0,
+    cycleSettlements: cycleSettlements.settling ?? 0,
+    bonusGrants: bonusGrants.settling ?? 0,
   };
   settling.total = settling.forward + settling.reverse
-    + settling.merchantBalances + settling.settlementStates + settling.betStates;
+    + settling.merchantBalances + settling.settlementStates + settling.betStates
+    + settling.cycleSettlements + settling.bonusGrants;
 
   return {
     window: all ? 'all' : `${hours}h`,
@@ -755,6 +965,8 @@ export async function runReconcile({
     },
     adminSupply,
     betStates,
+    cycleSettlements,
+    bonusGrants,
     reverse: reverseResults,
     mongoTrialBalance: mongoTrial,
     ledgersAgree,

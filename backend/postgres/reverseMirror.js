@@ -400,6 +400,136 @@ export function reverseMirrorBet(doc) {
   });
 }
 
+/**
+ * A bonus_grants row → the Mongo `BonusRecord` document. Domain 8's rollback leg.
+ *
+ * Keyed on the `bg_<mongoId>` grant id the forward mirror mints, so a grant
+ * that originated in Mongo round-trips onto its own document rather than a
+ * duplicate. A grant that originated in POSTGRES has no such id embedded, and
+ * that case is what `upsert` is for: those are precisely the rows that would be
+ * lost on a fallback, which is the whole reason this direction exists.
+ *
+ * ── A clawback becomes a second record, not an edit ─────────────────────────
+ * Mongo's BonusRecord is append-only history with no status field, so there is
+ * nowhere to write CLAWED_BACK. Rewriting the original row's amount to zero
+ * would destroy the answer to "was this user ever given a signup bonus?" —
+ * which is the question fraud review actually asks, and the reason bonusPg
+ * keeps the clawed-back grant instead of deleting it.
+ *
+ * So a clawback mirrors as its own NEGATIVE record, keyed `<grantId>:clawback`.
+ * The history then reads the way it happened: granted, then taken back.
+ */
+export function reverseMirrorBonusGrant(row) {
+  if (!row?.grant_id || !row?.user_id) return;
+  return mirrorBack('bonus_grants', async () => {
+    const BonusRecord = mongoose.model('BonusRecord');
+    const amount = rupees(row.amount_paise);
+    if (amount === undefined) return;
+
+    const type = row.kind === 'COMMISSION' ? 'REFERRAL_COMMISSION' : 'MANUAL';
+
+    // The upsert FILTER has to be stable across replays, and the two grant-id
+    // shapes need different ones.
+    //
+    // `bg_<mongoId>` came from Mongo, so its document already exists and is
+    // found by `_id`. A grant born in Postgres has no Mongo id — and minting a
+    // fresh ObjectId for the filter would be a duplicate-insert generator: the
+    // filter would match nothing on EVERY pass, so each reconcile run would add
+    // another copy of the same grant. Keying on the grant id itself is what
+    // makes the second run a no-op.
+    //
+    // `mongoose.Types.ObjectId.isValid` guards the `_id` branch because `_id`
+    // is a typed field: a malformed key would throw a CastError rather than
+    // miss, which is M-8's failure mode.
+    const embedded = String(row.grant_id).startsWith('bg_') ? String(row.grant_id).slice(3) : null;
+    const fromMongo = Boolean(embedded) && mongoose.Types.ObjectId.isValid(embedded);
+    const filter = fromMongo ? { _id: embedded } : { refId: `grant:${row.grant_id}` };
+    const refId = fromMongo ? (row.ref_id ? String(row.ref_id) : null) : `grant:${row.grant_id}`;
+
+    await BonusRecord.updateOne(
+      filter,
+      {
+        $setOnInsert: {
+          userId: row.user_id, type, amount,
+          description: `${row.kind} grant from ${row.pool}`,
+          ...(refId ? { refId } : {}),
+          createdAt: row.granted_at || new Date(),
+        },
+      },
+      { upsert: true },
+    );
+
+    if (row.status !== 'CLAWED_BACK') return;
+
+    // The reversal, as its own row. `refId` carries the grant it undoes so the
+    // pair can be matched without inferring it from amounts and timestamps.
+    await BonusRecord.updateOne(
+      { refId: `${row.grant_id}:clawback` },
+      {
+        $setOnInsert: {
+          userId: row.user_id, type: 'MANUAL', amount: 0 - amount,
+          description: `Clawback of ${row.kind} grant ${row.grant_id}`,
+          refId: `${row.grant_id}:clawback`,
+          createdAt: row.updated_at || new Date(),
+        },
+      },
+      { upsert: true },
+    );
+  });
+}
+
+/**
+ * A cycle_settlements row → the Mongo `Cycle` document. Domain 6's rollback leg.
+ *
+ * The inverse of dualWrite.mirrorCycleSettlement, and it carries the settlement
+ * RUN only: which pass owns the cycle and whether it finished. The per-bet
+ * outcomes travel on reverseMirrorBet and the money on
+ * reverseMirrorWalletLedger — projecting them from here too would double-count
+ * in the direction where double-counting is hardest to see.
+ *
+ * ── VOIDED is written into Mongo even though its enum has no such value ─────
+ * Deliberate, and the alternatives are worse. Mongo's `isSettled` is
+ * PENDING|PROCESSING|COMPLETED, so a run Postgres voided has nowhere honest to
+ * land. Mapping it to COMPLETED would claim bets were paid that were refunded.
+ * Leaving it at PROCESSING is the dangerous one: `payoutRecoveryTask` sweeps
+ * every PROCESSING cycle and re-runs its payout, so a fallback to Mongo would
+ * resurrect the payout of a cycle that was deliberately voided.
+ *
+ * `updateOne` does not run enum validators, so the true state is what gets
+ * stored, and a cycle in that state matches none of the engine's queries —
+ * which is exactly the behaviour wanted from a run that must not be resumed.
+ * Same principle as reverseMirrorBet's VOID: the rollback record must not lie
+ * about what the authoritative store decided.
+ */
+const CYCLE_SETTLED_FROM_STATUS = Object.freeze({
+  RUNNING:   'PROCESSING',
+  COMPLETED: 'COMPLETED',
+  VOIDED:    'VOIDED',
+});
+
+export function reverseMirrorCycleSettlement(row) {
+  if (!row?.cycle_id) return;
+  return mirrorBack('cycle_settlements', async () => {
+    const isSettled = CYCLE_SETTLED_FROM_STATUS[row.status];
+    if (!isSettled) return;
+
+    const payout = rupees(row.payout_paise);
+    await mongoose.model('Cycle').updateOne(
+      { cycleId: String(row.cycle_id) },
+      {
+        $set: {
+          isSettled,
+          ...(row.completed_at ? { settledAt: row.completed_at } : {}),
+          ...(payout !== undefined ? { totalPaidOut: payout } : {}),
+        },
+      },
+      // No upsert. A cycle exists because the engine created it; conjuring one
+      // from a settlement row would produce a Cycle with no type, no start time
+      // and no pools, which the engine would then try to run.
+    );
+  });
+}
+
 /** bets row (snake_case, paise) → the Mongo document, for the reconcile repair. */
 export function reverseMirrorBetRow(row) {
   return reverseMirrorBet({
@@ -495,4 +625,21 @@ export const REVERSE_TABLES = Object.freeze([
   // live path uses and so re-applies a state Mongo fell behind on.
   { table: 'merchant_settlements',   model: 'PaymentOrder',         pgKey: 'order_id',        mongoKey: '_id',            since: 'updated_at',    mirror: reverseMirrorMerchantSettlement },
   { table: 'bets',                   model: 'Bet',                  pgKey: 'bet_id',          mongoKey: '_id',            since: 'updated_at',    mirror: reverseMirrorBetRow },
+  // cycle_settlements keys on the CYCLE for the same reason merchant_settlements
+  // keys on the order: Mongo has no settlement document, it has a Cycle with an
+  // `isSettled` field. The presence check is therefore near-vacuous and the
+  // value is in `repair`, which pushes a run's state and payout back onto the
+  // cycle Mongo would fall back to.
+  { table: 'cycle_settlements',      model: 'Cycle',                pgKey: 'cycle_id',        mongoKey: 'cycleId',        since: 'updated_at',    mirror: reverseMirrorCycleSettlement },
+  // bonus_grants is DELIBERATELY ABSENT from this list, and the reason is worth
+  // writing down. A grant id has two shapes: `bg_<mongoId>` for one mirrored
+  // out of Mongo, and a caller's own deterministic key for one born in
+  // Postgres. The generic check above compares ONE Postgres column against ONE
+  // Mongo field, so whichever shape it was pointed at, the other half of the
+  // table would report as missing on healthy data — and a check that fires on
+  // healthy data is worse than no check, because it teaches an operator to
+  // ignore the one that matters.
+  //
+  // reconcile.js's reconcileBonusGrants understands both shapes and owns this
+  // domain's cross-store comparison instead.
 ]);
