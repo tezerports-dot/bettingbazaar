@@ -436,6 +436,81 @@ export async function reconcileMerchantSettlementStates({ backfill = false, repa
 }
 
 /**
+ * reconcileKycDecisions — do the two stores agree about who is approved?
+ *
+ * Domain 11's cross-store check, and the last one. A KYC status that disagrees
+ * is not a reporting problem: `requireApprovedKyc` gates deposits and
+ * withdrawals on it, so after a fallback a user approved in one store is
+ * refused by the other — or, the direction that matters, a user REJECTED in the
+ * authoritative store is still approved in the one the middleware reads.
+ *
+ * The REASON is compared too, not just the status. A rejection whose reason did
+ * not survive the mirror leaves the user staring at a refusal with no
+ * explanation, which is the exact defect this domain was built to remove; a
+ * check comparing only statuses would call that clean.
+ */
+export async function reconcileKycDecisions({ backfill = false, repairMongo = false, limit = 50000 } = {}) {
+  if (backfill && repairMongo) {
+    throw new Error('reconcileKycDecisions: backfill and repairMongo are opposite directions — pick one');
+  }
+
+  const { rows } = await pgQuery(
+    `SELECT user_id, kyc_status, rejection_reason, reviewed_by, reviewed_at, updated_at
+       FROM user_kyc ORDER BY updated_at DESC LIMIT $1`,
+    [limit], 'kyc_reconcile',
+  );
+  if (!rows.length) return { table: 'user_kyc', checked: 0, disagreeing: 0, settling: 0, repaired: 0, sample: [] };
+
+  const docs = await mongoose.model('User')
+    .find({ _id: { $in: rows.map((r) => r.user_id) } })
+    .select('kycStatus kycData.rejectionReason').lean();
+  const byId = new Map(docs.map((d) => [String(d._id), d]));
+
+  const { mirrorUserKyc } = await import('./dualWrite.js');
+  const { reverseMirrorUserKycStatus } = await import('./reverseMirror.js');
+
+  const disagreeing = [];
+  let repaired = 0;
+
+  for (const row of rows) {
+    const doc = byId.get(String(row.user_id));
+    // A Postgres row with no Mongo user is a missing document, which the
+    // reverse table check owns.
+    if (!doc) continue;
+
+    const mongoReason = doc.kycData?.rejectionReason ?? null;
+    const pgReason = row.rejection_reason ?? null;
+    const statusDiffers = doc.kycStatus !== row.kyc_status;
+    // Only meaningful on a rejection — the field is cleared otherwise, so
+    // comparing two nulls everywhere else would be noise.
+    const reasonDiffers = row.kyc_status === 'REJECTED' && (mongoReason ?? '') !== (pgReason ?? '');
+    if (!statusDiffers && !reasonDiffers) continue;
+
+    disagreeing.push({
+      userId: row.user_id,
+      mongoStatus: doc.kycStatus, pgStatus: row.kyc_status,
+      ...(reasonDiffers ? { mongoReason, pgReason } : {}),
+      at: row.updated_at,
+    });
+
+    if (backfill) { await mirrorUserKyc({ _id: row.user_id, kycStatus: doc.kycStatus, kycData: doc.kycData ?? {} }); repaired++; }
+    else if (repairMongo) { await reverseMirrorUserKycStatus(row); repaired++; }
+  }
+
+  const { settled, settling } = splitBySettling(disagreeing, (r) => r.at);
+
+  return {
+    table: 'user_kyc',
+    checked: rows.length,
+    disagreeing: backfill || repairMongo ? 0 : settled.length,
+    disagreeingBeforeRepair: settled.length,
+    settling: settling.length,
+    repaired,
+    sample: settled.slice(0, 5),
+  };
+}
+
+/**
  * reconcileOrderStates — do the two stores agree on where each ORDER is?
  *
  * ── The two tables this must not conflate ───────────────────────────────────
@@ -1002,6 +1077,15 @@ export async function runReconcile({
     repairMongo: repairMongo && ordersOnPg,
   });
 
+  // Domain 11, the last: do the two stores agree about who is APPROVED? This
+  // one gates money rather than moving it — requireApprovedKyc reads the status
+  // — so a disagreement refuses a legitimate user or admits a rejected one.
+  const kycOnPg = isPostgresAuthoritative(MONEY_PATHS.KYC);
+  const kycDecisions = await reconcileKycDecisions({
+    backfill: backfill && !kycOnPg,
+    repairMongo: repairMongo && kycOnPg,
+  });
+
   // Domain 6: did each cycle's settlement RUN end the same way in both stores,
   // and did it pay out the same amount? The payout comparison is the one that
   // earns its place — Mongo re-derives its total from the stamped WON bets and
@@ -1031,6 +1115,7 @@ export async function runReconcile({
     || settlementStates.disagreeing > 0
     || orderStates.disagreeing > 0
     || orderStates.unrepairable > 0
+    || kycDecisions.disagreeing > 0
     || betStates.disagreeing > 0
     || cycleSettlements.disagreeing > 0
     || bonusGrants.disagreeing > 0
@@ -1067,13 +1152,15 @@ export async function runReconcile({
     merchantBalances: merchantBalances.settling ?? 0,
     settlementStates: settlementStates.settling ?? 0,
     orderStates: orderStates.settling ?? 0,
+    kycDecisions: kycDecisions.settling ?? 0,
     betStates: betStates.settling ?? 0,
     cycleSettlements: cycleSettlements.settling ?? 0,
     bonusGrants: bonusGrants.settling ?? 0,
   };
   settling.total = settling.forward + settling.reverse
     + settling.merchantBalances + settling.settlementStates + settling.betStates
-    + settling.orderStates + settling.cycleSettlements + settling.bonusGrants;
+    + settling.orderStates + settling.kycDecisions
+    + settling.cycleSettlements + settling.bonusGrants;
 
   return {
     window: all ? 'all' : `${hours}h`,
@@ -1091,6 +1178,7 @@ export async function runReconcile({
     },
     adminSupply,
     orderStates,
+    kycDecisions,
     betStates,
     cycleSettlements,
     bonusGrants,

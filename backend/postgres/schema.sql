@@ -273,6 +273,42 @@ CREATE TABLE IF NOT EXISTS user_kyc (
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- WHO decided, and WHEN. The Mongo route intended to record both — it assigns
+-- to `user.kyc.reviewedBy` — but the User schema has no `kyc` subdocument, only
+-- `kycData`, so the guarded block never executes and nothing is stored. A KYC
+-- approval with no reviewer is not auditable, which is the one thing a KYC
+-- decision has to be.
+ALTER TABLE user_kyc ADD COLUMN IF NOT EXISTS reviewed_by TEXT;
+ALTER TABLE user_kyc ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
+-- Where the documents actually live. `id_proof_url`/`photo_url` are CDN URLs,
+-- which are a delivery detail and can change with the CDN; the object key is
+-- the durable identity of the blob in object storage. Kept separately so a
+-- bucket or CDN migration does not lose the reference to the file itself.
+ALTER TABLE user_kyc ADD COLUMN IF NOT EXISTS id_proof_key TEXT;
+ALTER TABLE user_kyc ADD COLUMN IF NOT EXISTS photo_key    TEXT;
+
+-- Every KYC decision, append-only. The Mongo path has no history at all: the
+-- status is a string on the User document, so "was this user ever rejected, and
+-- why?" — the question every compliance review asks — cannot be answered from
+-- it once a resubmission overwrites the field.
+--
+-- `tx_id` UNIQUE is the idempotency gate, same as order_transitions: a double
+-- clicked approve collides inside the transaction and unwinds.
+CREATE TABLE IF NOT EXISTS kyc_transitions (
+  id          BIGSERIAL PRIMARY KEY,
+  tx_id       TEXT NOT NULL UNIQUE,
+  user_id     TEXT NOT NULL REFERENCES user_kyc (user_id),
+  from_status TEXT,
+  to_status   TEXT NOT NULL,
+  actor       TEXT,
+  reason      TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT kyc_transitions_moves CHECK (from_status IS NULL OR from_status <> to_status)
+);
+CREATE INDEX IF NOT EXISTS kyc_transitions_user_idx ON kyc_transitions (user_id, id);
+CREATE OR REPLACE TRIGGER kyc_transitions_append_only
+  BEFORE UPDATE OR DELETE ON kyc_transitions FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
 
 -- ── MERCHANT WALLET (Postgres authority, integer paise) ─────────────────────
 -- The Postgres counterpart of domains/merchant/merchantWallet.service.js, which

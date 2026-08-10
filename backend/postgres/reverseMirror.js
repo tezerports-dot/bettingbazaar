@@ -606,6 +606,37 @@ export function reverseMirrorOrderState(row, set = {}) {
   });
 }
 
+/**
+ * user_kyc row → the User document's KYC decision fields. The rollback leg for
+ * domain 11.
+ *
+ * Separate from reverseMirrorUserKyc, which pushes the whole record back
+ * including the submitted documents. This one carries a DECISION — status,
+ * reason, reviewer — and is called per transition while Postgres is
+ * authoritative, so an approval is visible to every KYC gate in the app
+ * immediately rather than at the next sweep.
+ *
+ * The reason lands in `kycData.rejectionReason`, which is the field
+ * domains/user/kycPublicData.js actually reads. The Mongo route intended to
+ * write `user.kyc.rejectionReason` — a path the schema does not have — so
+ * mirroring to the same wrong place would faithfully reproduce the bug.
+ */
+export function reverseMirrorUserKycStatus(row) {
+  return mirrorBack('user_kyc', async () => {
+    const set = { kycStatus: row.kyc_status };
+    if (row.reviewed_by) set['kycData.reviewedBy'] = row.reviewed_by;
+    if (row.reviewed_at) set['kycData.reviewedAt'] = row.reviewed_at;
+    const update = { $set: set };
+    // An approved user must not keep the reason they were once refused — the
+    // projection shows it whenever the status is REJECTED, and a stale value
+    // would reappear the next time they were rejected for something else.
+    if (row.rejection_reason) set['kycData.rejectionReason'] = row.rejection_reason;
+    else update.$unset = { 'kycData.rejectionReason': '' };
+
+    await mongoose.model('User').updateOne({ _id: row.user_id }, update);
+  });
+}
+
 /** utr_registry row → UTRRegistry doc (the uniqueness gate, mirrored back). */
 export function reverseMirrorUtr(row) {
   return mirrorBack('utr_registry', async () => {

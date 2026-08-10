@@ -136,11 +136,15 @@ const CAPABILITIES = Object.freeze({
     notes: 'Order lifecycle. postgres/orderPg.js EXISTS: order_states + append-only order_transitions, expected-previous-state guards in the UPDATE, and the accounting event posted in the SAME transaction as the state change (the Mongo path writes status first and the event afterwards, so a failure between them leaves an order COMPLETED with nothing in the books). 22 tests including a 100-copy callback storm, a racing complete-vs-dispute, 60 concurrent completions with no pool exhaustion, and both gap checks — orders missing their ledger event, and order-shaped events no transition produced. NOTE payment_orders remains a MIRROR: overwritten in place, no history, no guard. These tables are the authoritative lifecycle; that one is a projection. Remaining: see docs/ORDERS_ROUTING_DESIGN.md. This is NOT a normal routing job and was stopped deliberately rather than started piecemeal: the Mongo order lifecycle has NO choke point — 31 status writes across 8 files — so wiring the resolver into some of them and not others would leave some transitions authoritative in Postgres and others in Mongo, which no reconciliation can tell apart from genuine disagreement. It needs a seam built first (one guarded transition service, stage 1), then routing (stage 2), then cross-store reconcile (stage 3). Stage 1 also closes a LIVE hole: Mongo has no expected-previous-state guard, so a cancelled order can be completed today and only incidental ordering in the routes prevents it. ORDERS is the gate for the whole cutover — six fully-built domains report it as their only blocker.',
   },
   [MONEY_PATHS.KYC]: {
+    // BUILT, routed and reconciled. `implemented` waits on CI evidence for the
+    // suites written alongside it — the same standard every other domain was
+    // held to, and the reason several of them sat at false while their code
+    // already existed.
     implemented: false,
     dualWrite:   true,  // mirrorUserKyc
-    reconciled:  false,
-    rollback:    true,
-    notes: 'user_kyc is mirrored only. KYC decisions are Mongo-only.',
+    reconciled:  true,  // reconcile.reconcileKycDecisions (cross-store, status AND reason)
+    rollback:    true,  // reverseMirror.reverseMirrorUserKycStatus, live per decision
+    notes: 'KYC decisions. postgres/kycPg.js EXISTS: user_kyc + append-only kyc_transitions, expected-previous-status guards in the UPDATE, and the reviewer and reason written in the SAME statement as the status. It exists to remove three defects rather than port them. (1) NO GUARD: routes/admin/kyc.admin.routes.js read the user, assigned kycStatus and saved — a read-modify-write on a stale read, so two reviewers acting at once both passed and the last save won with no record that the other decision happened. (2) THE REJECTION REASON WAS DISCARDED: that route assigned it to `user.kyc.rejectionReason`, and the User schema has NO `kyc` subdocument — only `kycData` — so `user.kyc` was undefined and the guarded block NEVER RAN. Verified against the compiled schema: `kyc.rejectionReason` is not a path, `kycData.rejectionReason` is, and the latter is what domains/user/kycPublicData.js shows the user. Every rejected user was told they were rejected and never told why, so they could not fix the submission. (3) NO REVIEWER AND NO HISTORY: reviewedBy/reviewedAt were lost to the same dead branch, so every approval on the Mongo path is anonymous, and a single status field cannot answer "was this user ever rejected, and why?" once a resubmission overwrites it. A REJECTED decision with no reason is now refused rather than defaulted, because inventing "Rejected by admin" satisfies the constraint and tells the user nothing. 18 tests including a racing approve-vs-reject where exactly one wins and the stored record matches whichever did, a 100-copy approval storm applied once, 60 users decided at once with pool.waitingCount at zero and every rejection keeping its reason, and a 40-copy resubmission storm. Resubmission makes PENDING_APPROVAL and REJECTED reachable twice, so a repeat decision needs its own key — same derivation as the order lifecycle, docs/ORDERS_REQUEUE_CYCLE.md. domains/user/kycDecision.service.js is the single seam and kycPgAuthority.js the routed adapter; the seam ALSO fixes the live Mongo bug by writing the reason to kycData.rejectionReason. Documents: services/kycDocuments.service.js puts them in a PRIVATE R2 bucket with per-review presigned reads — see docs/KYC_DOCUMENT_STORAGE.md, and note the migration steps there are NOT done, so the existing public CDN URLs still resolve. Remaining: CI evidence, then this flag; and KYC waits on WALLET, LEDGER and ORDERS by design.',
   },
   [MONEY_PATHS.MERCHANT_WALLET]: {
     // Flipped 2026-08-03, after all four were separately evidenced — not on the
@@ -306,6 +310,13 @@ const TESTING = Object.freeze({
     concurrencyTested: true,
     infrastructureTested: false,
     evidence: 'backend/tests/postgres/betPg.test.js — a 100-copy placement storm of one request (exactly one bet, one transition, one debit), 60 concurrent bets against a balance that fits 20 (exactly 20 commit, 40 refused, reconciliation clean), racing win-vs-lose where exactly one wins and the books match whichever did, 50 users placing at once with pool.waitingCount at zero and every client returned, and `max` concurrent placements completing — which they could not if one placement ever held two pooled connections. Infrastructure drills NOT RUN.',
+  },
+  [MONEY_PATHS.KYC]: {
+    // The last domain to get one. KYC was the only path in the matrix still
+    // reporting concurrencyTested: false.
+    concurrencyTested: true,
+    infrastructureTested: false,
+    evidence: 'backend/tests/postgres/kycPg.test.js — a racing approve-vs-reject where exactly ONE wins and the stored reviewer and reason match whichever did (the Mongo path resolves that race by last-write-wins and records neither), a 100-copy storm of one approval applied exactly once, 60 users decided at once with pool.waitingCount at zero and every rejection still carrying its reason, and a 40-copy resubmission storm producing one new PENDING_APPROVAL rather than forty. Infrastructure drills NOT RUN.',
   },
   [MONEY_PATHS.MERCHANT_SETTLEMENT]: {
     concurrencyTested: true,
