@@ -266,8 +266,19 @@ async function withOrderLock(orderId, fn) {
  */
 export async function openOrder({
   orderId, userId, merchantId = null, type, tokenAmountPaise, fiatAmountPaise = 0,
+  state = ORDER_STATES.PENDING_QUEUE,
 }) {
   if (!orderId) throw new Error('openOrder requires an orderId');
+  // ADOPTION. A cutover has to take on orders that are already in flight, and
+  // they are not at the start of the lifecycle — an order sitting at PAID in
+  // Mongo must be adopted AT PAID. Opening it at PENDING_QUEUE instead would
+  // make its very next transition illegal (COMPLETED accepts PAID/PROCESSING/
+  // DISPUTED), so the merchant's confirm would be refused and the order would
+  // strand with the money unmoved. Every in-flight order would break that way
+  // at the moment of the flip.
+  if (!ORDER_STATES[state]) {
+    throw new Error(`openOrder: unknown state '${state}'. Known: ${Object.keys(ORDER_STATES).join(', ')}`);
+  }
   if (!ORDER_TYPES[type]) {
     throw new Error(`Unknown order type '${type}'. Known: ${Object.keys(ORDER_TYPES).join(', ')}`);
   }
@@ -282,7 +293,7 @@ export async function openOrder({
      ON CONFLICT (order_id) DO NOTHING
      RETURNING *`,
     [String(orderId), String(userId), merchantId ? String(merchantId) : null,
-     type, ORDER_STATES.PENDING_QUEUE, tokenAmountPaise, fiatAmountPaise],
+     type, state, tokenAmountPaise, fiatAmountPaise],
     'order_open',
   );
 

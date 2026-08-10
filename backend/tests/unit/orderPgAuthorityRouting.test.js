@@ -215,6 +215,33 @@ describe('the lifecycle row is opened lazily', () => {
     expect(orderPg.transition).toHaveBeenCalled();
   });
 
+  it('adopts an in-flight order AT ITS CURRENT STATUS, not at the start', async () => {
+    // REGRESSION, and the one that would have broken a cutover outright. An
+    // order sitting at PAID adopted as PENDING_QUEUE has its next transition
+    // refused — the merchant's confirm asks for COMPLETED, which accepts
+    // PAID/PROCESSING/DISPUTED — so every order in flight at the moment of the
+    // flip would strand with the money unmoved.
+    orderPg.getOrder.mockResolvedValue(null);
+    mongoReturns({ ...ORDER_DOC, status: ORDER_STATES.PAID });
+
+    await transitionOrderOnPostgres('o1', ORDER_STATES.COMPLETED, {});
+
+    expect(orderPg.openOrder).toHaveBeenCalledWith(
+      expect.objectContaining({ orderId: 'o1', state: ORDER_STATES.PAID }));
+  });
+
+  it('carries whatever status the order is in, not just PAID', async () => {
+    for (const status of [ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING, ORDER_STATES.DISPUTED]) {
+      vi.clearAllMocks();
+      orderPg.getOrder.mockResolvedValue(null);
+      orderPg.openOrder.mockResolvedValue({ ok: true, idempotent: false });
+      mongoReturns({ ...ORDER_DOC, status });
+
+      await transitionOrderOnPostgres('o1', ORDER_STATES.COMPLETED, {});
+      expect(orderPg.openOrder).toHaveBeenCalledWith(expect.objectContaining({ state: status }));
+    }
+  });
+
   it('does not re-open a row that already exists', async () => {
     await transitionOrderOnPostgres('o1', ORDER_STATES.COMPLETED, {});
     expect(orderPg.openOrder).not.toHaveBeenCalled();

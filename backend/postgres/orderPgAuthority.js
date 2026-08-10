@@ -107,15 +107,22 @@ async function keyForRepeatableMove(orderId, to, txId) {
  * lifecycle row, and its first transition would come back `not_found` and be
  * surfaced to the user as a missing order.
  *
- * So the row is opened lazily from the Mongo document, at PENDING_QUEUE, and
- * the transition then advances it. `openOrder` is `ON CONFLICT DO NOTHING`, so
- * concurrent first-transitions on one order open it once.
+ * So the row is opened lazily from the Mongo document, AT THE STATUS THE ORDER
+ * IS ACTUALLY IN. `openOrder` is `ON CONFLICT DO NOTHING`, so concurrent
+ * first-transitions on one order open it once.
+ *
+ * Adopting at the current status rather than at PENDING_QUEUE is the whole
+ * point, and getting it wrong is not subtle: an order sitting at PAID would be
+ * adopted as PENDING_QUEUE, and its next transition — the merchant's confirm —
+ * asks for COMPLETED, which accepts PAID/PROCESSING/DISPUTED. Refused. Every
+ * order in flight at the moment of a cutover would strand that way, with the
+ * money unmoved and the merchant looking at a 409.
  */
 async function ensureLifecycleRow(orderId) {
   if (await pgGetOrder(orderId)) return true;
 
   const doc = await mongoose.model('PaymentOrder').findById(orderId)
-    .select('orderId userId merchantId type tokenAmount fiatAmount').lean();
+    .select('orderId userId merchantId type tokenAmount fiatAmount status').lean();
   if (!doc) return false;
   if (!ORDER_TYPES[doc.type]) return false;
 
@@ -126,6 +133,8 @@ async function ensureLifecycleRow(orderId) {
     type:             doc.type,
     tokenAmountPaise: rupeesToPaise(Number(doc.tokenAmount) || 0),
     fiatAmountPaise:  rupeesToPaise(Number(doc.fiatAmount) || 0),
+    // AT ITS CURRENT STATUS, not at the start of the lifecycle. See openOrder.
+    state:            doc.status,
   });
   return true;
 }
