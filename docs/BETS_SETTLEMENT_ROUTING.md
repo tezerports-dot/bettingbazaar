@@ -159,6 +159,44 @@ keeps the wallet-lock-per-transaction invariant intact.
 Recommended: implement B, and benchmark against a cycle with a realistic winner
 count before flipping anything.
 
+## Attempted, reverted, and what actually blocks it
+
+`settleBetOnPostgres` is BUILT (`postgres/betPgAuthority.js`) and both call sites
+were wired, then reverted. Three obstacles turned up in the wiring that the
+design above did not anticipate, and shipping past them would have been worse
+than not shipping.
+
+**1. The winner aggregation does not carry the funding provenance the settle
+needs.** `gameEngine` groups winners with:
+
+```js
+bets: { $push: { betId: "$_id", amount: "$amount",
+                 fromDeposit: "$fromDepositBalance",
+                 fromWinnings: "$fromWinningsBalance" } }
+```
+
+Two problems. The field names are not the Bet document's, so `slicesFromBet`
+reads `undefined` from them. And **`fromReserveBalance` is not projected at
+all** — `betPg.settle`'s `requireSlices` demands the slices sum exactly to the
+stake, so a reserve-funded bet would throw rather than settle.
+
+**2. `betStamps` carries `{betId, payout, platformFee}` and no bet.** The
+adapter needs the document for its slices. Plumbing it through is small, but it
+has to happen before either side can route.
+
+**3. The winning path also writes a `Transaction` log** (`txOps`) that the
+Postgres branch would skip. Whether that log should follow authority or stay
+Mongo-side is a decision, not an oversight to paper over.
+
+### Worth checking independently of the migration
+
+`totalLockedDeposit` / `totalLockedWinnings` are summed from the same two
+projected fields and passed to `releaseLockedStake`. For a bet funded partly
+from `reserveBalance`, those two sum to LESS than the stake. Whether that
+under-releases a winning player's locked stake on the **live Mongo path** is
+worth checking on its own — it has nothing to do with Postgres, and this
+document is not the place to assert it without measuring.
+
 ## Until then
 
 `BETS` stays `implemented: false`. The other three legs are real — mirrored,
