@@ -1,145 +1,182 @@
-# Handoff — next session
+# Next session handoff
 
-Paste the block at the bottom as your opening message. Everything above it is
-context you may want to read first, but the prompt is self-contained.
+Branch: `claude/postgres-migration-orders-ledger-kyc-fn9hq8` · PR #121 (draft)
 
----
-
-## Where things stand
-
-**6 of 11 money domains** are fully built, routed, reconciled and reversible:
-wallet, merchant wallet, merchant settlement, admin issuance, sports settlement,
-bonuses & commissions.
-
-**0 of 11 are certified**, for two independent reasons:
-
-1. **Orders is not routed.** The authority resolver refuses Postgres for any
-   path whose dependencies are still on Mongo, and Orders sits under Bets,
-   Settlements and Ledger. It is the gate for the whole cutover.
-2. **`infrastructureTested` is false everywhere.** That needs a staging
-   environment and six drills (`docs/GO_LIVE_RUNBOOK.md` §2.2). It is not a
-   coding task and no amount of code will clear it.
-
-**Launching does not depend on either.** Every money path defaults to MongoDB
-and works. `GO_LIVE_RUNBOOK.md` Part 1 is the launch checklist.
-
-## What was done in the last session
-
-- Sports Settlement and Bonuses: mirror, reconcile, reverse mirror, routing —
-  flipped on CI evidence
-- Orders **stage 1 seam** built: `domains/payment/orderLifecycle.service.js`
-- **1 of 26** order status call sites converted
-- `docs/ORDERS_ROUTING_DESIGN.md` — the three-stage plan, written after finding
-  that Orders has no choke point
-- nanoid advisory fixed across all four lockfiles; 3 Dependabot PRs merged
-
-## The live bug worth knowing about
-
-Mongo's order path had **no state machine**. `PaymentOrder.status` is a string
-that 26 sites assign directly, mostly `order.status = 'X'; order.save()` — a
-read-modify-write on a stale read. A cancelled order can be completed; a failed
-one can be paid. What prevents it today is the order in which route handlers
-happen to run, and ordering is not an invariant.
-
-`orderLifecycle.service.js` is the fix. Converting the remaining 25 sites is
-what makes it real.
-
-## Why converting sites is safe to do incrementally
-
-This is the distinction that matters, and it is the opposite of the rule for
-routing:
-
-- **Guarding (stage 1) is monotonic.** Every converted site is still writing to
-  the same store. A partially guarded path is strictly safer than an unguarded
-  one.
-- **Routing (stage 2) is not.** A partial conversion leaves some transitions
-  authoritative in Postgres and others in Mongo, and no reconciliation can tell
-  that apart from the two stores genuinely disagreeing.
-
-So stage 1 can be split across sessions. Stage 2 cannot.
+Read this file, then `docs/BETS_SETTLEMENT_ROUTING.md`. Everything else is
+reachable from those two.
 
 ---
 
-# THE PROMPT — paste this
+## 1. Where the migration stands
+
+**10 of 11 money paths are cutover-eligible.** All eleven have dual-write,
+reconciliation and rollback. Only BETS is short, and only on `implemented`.
+
+Read the live state, never a summary — including this one:
+
+```bash
+npm run certify:report
+```
+
+With every `MONEY_AUTHORITY_*` set to `postgres`, the resolver today gives:
 
 ```
-Continue the PostgreSQL migration on branch claude/enterprise-golive-audit-w52sz7.
-
-Read these first, in order:
-  docs/ORDERS_ROUTING_DESIGN.md          the three-stage plan and why
-  backend/domains/payment/orderLifecycle.service.js   the seam, already built
-  backend/tests/unit/orderLifecycle.test.js           its 13 tests
-  backend/postgres/moneyAuthority.js     the registry — the source of truth
-
-Do these in order. Commit and push after each numbered item so nothing is lost
-if the session ends early.
-
-1. ORDERS STAGE 1 — convert the remaining 25 call sites.
-   Find them with:
-     grep -rn "order\.status *= *'" backend/domains --include=*.js | grep -v tests
-   They are in: merchant.routes.js (10), paymentProcessing.service.js (5),
-   payment.routes.js (3), merchant.assignment.routes.js (3),
-   disputeResolution.admin.routes.js (1), paymentOrder.routes.js (2 remaining).
-
-   For each site: read the surrounding logic, decide which named transition it
-   is, and replace `order.status = 'X'; ... order.save()` with the matching
-   call. Fields that belong WITH the transition go in `set` so they land in the
-   same update. If money moves, the transition must come FIRST and gate it —
-   see the converted site in paymentOrder.routes.js for the shape.
-
-   Watch for: `const order` being reassigned (use a new variable for the
-   post-transition document), sites already inside a mongoose session (pass it
-   through), and handlers that returned 400 for "already X" where 409 is now
-   more accurate.
-
-2. ORDERS STAGE 2 — backend/postgres/orderPgAuthority.js.
-   Follow backend/postgres/settlementPgAuthority.js exactly: onPostgres()
-   decides, orderPg.transition() runs when Postgres owns the path, the reverse
-   mirror keeps PaymentOrder.status current, a refusal is surfaced not
-   swallowed. Only orderLifecycle.service.js should call it — that is the whole
-   point of stage 1.
-
-3. ORDERS STAGE 3 — reconcileOrderStates in backend/postgres/reconcile.js
-   comparing order_states.state against PaymentOrder.status, with --backfill
-   and --repair-mongo following authority like every other check there. Add the
-   cross-store integration test. Model it on
-   backend/tests/integration/settlementBonusCrossStore.integration.test.js.
-   NOTE: payment_orders stays a MIRROR (overwritten, no history); order_states
-   plus order_transitions are the authoritative lifecycle. Do not conflate them.
-
-4. LEDGER ROUTING — route revenueSettlement.service.js through the resolver.
-   Unblocked once Orders is authoritative, because order state produces most
-   ledger events.
-
-5. TASK H — KYC, the eleventh and last domain. Two parts:
-   (a) the Postgres KYC authority with concurrency tests and a reconcile leg —
-       it is the only domain with concurrencyTested: false;
-   (b) move the actual KYC documents to Cloudflare R2 or another
-       S3-compatible store. Neither database should hold blobs.
-   KYC cuts over LAST by design; do not reorder it.
-
-RULES THAT ARE NOT NEGOTIABLE — they found four real bugs in this codebase:
-  - Never mark an item PASS based only on code inspection. Run it.
-  - Mark anything unverified as NOT VERIFIED rather than assuming success.
-  - Do not change an authority flag until the implementation, tests,
-    reconciliation, observability and rollback path all exist AND CI has run
-    green. CI evidence, not local evidence.
-  - Mutation-test every fix: break the code, confirm a test fails, restore it.
-    Report which mutation failed which test.
-  - Any new transaction block needs a concurrency test for deadlocks and pool
-    exhaustion.
-  - Do not hide incomplete work behind configuration flags.
-  - Do NOT disable the ordering gate in moneyAuthority.js. It is what stops a
-    bet living in Postgres while the order that funded it lives in Mongo.
-    Completing the domains opens it; forcing it hides that they are not done.
-  - If you find an architectural decision likely to cause failures at scale,
-    stop and document it with a proposed design before implementing.
-
-Two traps that cost CI runs last session:
-  - Fire-and-forget mirrors mean tests must POLL, not read once. Waiting for
-    the first of two ordered async writes does not mean the second landed.
-  - The sandbox cannot run MongoDB, so integration tests are unverifiable
-    locally and WILL need fixture fixes on their first CI run. Expect it.
-
-Tell me at the end: what you ran, what passed, and what you did NOT verify.
+9/11 resolve to postgres
+mongo  bets          not eligible
+mongo  settlements   blocked by: bets      ← one unrouted domain holds two paths
 ```
+
+**Nothing is authoritative in Postgres right now.** No environment variable is
+set, and that is correct for launch day — `docs/GO_LIVE_RUNBOOK.md` opens by
+saying the migration is not a launch blocker.
+
+## 2. THE job: finish BETS settlement routing
+
+`postgres/betPgAuthority.js` → `settleBetOnPostgres()` is **built and unused**.
+Both call sites were wired and reverted. Three blockers, all in
+`domains/markets/gameEngine.js`:
+
+**(a) The winner aggregation loses the funding provenance.** Around line 255:
+
+```js
+bets: { $push: { betId: "$_id", amount: "$amount",
+                 fromDeposit: "$fromDepositBalance",
+                 fromWinnings: "$fromWinningsBalance" } }
+```
+
+The names are not the Bet document's, so `slicesFromBet` reads `undefined`, and
+**`fromReserveBalance` is not projected at all**. `betPg.settle`'s
+`requireSlices` demands the slices sum exactly to the stake, so a reserve-funded
+bet throws. Project all three under their real names.
+
+**(b) `betStamps` carries `{betId, payout, platformFee}` and no bet document.**
+The adapter needs the document for its slices. One-line change at ~line 284.
+
+**(c) The winning path writes a `Transaction` log (`txOps`)** that a Postgres
+branch would skip. Decide whether that log follows authority or stays Mongo-side.
+It is a decision, not an oversight.
+
+### Rules for this change
+
+- **All or nothing.** Routing the losing side and not the winning side leaves
+  half the lifecycle authoritative in each store — the split no reconciliation
+  can tell apart from real disagreement. This is why ORDERS was done as one seam.
+- The per-bet loop **already exists** on both sides (`for (const bet of
+  losingBets) await unlockLostBet(...)`). Routing does not introduce an N; it
+  replaces N wallet ops + a bulk stamp with N atomic transactions. An earlier
+  analysis in the design doc said otherwise and is corrected in place.
+- The bulk `updateMany` / `bulkWrite` must NOT run on the Postgres branch — the
+  reverse mirror has already written each status, and re-stamping would
+  overwrite bets Postgres deliberately refused, turning a reported failure into
+  a silent one.
+
+Then flip `implemented: true` for BETS on CI evidence → 11/11 eligible.
+
+## 3. Then the flip
+
+In this order. Steps 2–4 are deploy actions, not code.
+
+1. `npm run reconcile:pg -- --all --backfill` — **run this first.** It now calls
+   `backfillLifecycleTables()`, which adopts `order_states`, `user_kyc`,
+   `casino_transactions` and `bets`. Before that existed these four were
+   reachable by nothing, and flipping pointed reads at empty tables. Adoption
+   never overwrites, invents no history, and is safe to re-run.
+2. Confirm `reconcile:pg` reports clean, repeatedly.
+3. Set `MONEY_AUTHORITY_*=postgres` per path, **in dependency order** — wallet
+   first. Boot refuses an incoherent combination by design.
+4. Watch `bb_money_authority_postgres`, `bb_pg_drift_rows`,
+   `bb_pg_reconcile_consecutive_clean`.
+
+Rolling back is a redeploy: unset the variable. The reverse mirrors keep Mongo
+current while Postgres is authoritative, which is what makes that lossless.
+
+## 4. Open findings — NOT actioned, NOT verified
+
+**The deposit/reserve credit sites disagree with each other.** Three sites, three
+fallbacks:
+
+| Site | Expression |
+|---|---|
+| `merchant.routes.js:979` | `order.depositAllocation ?? order.tokenAmount` |
+| `merchant.routes.js:1847` | `order.depositAllocation` — no fallback |
+| `payment.routes.js:111` | `order.depositAllocation \|\| order.tokenAmount` |
+
+`||` treats `0` as absent. Under a policy with `reserveAllocationPercent: 100`,
+`depositAllocation` is `0`, and that site would credit the **full token amount**
+to deposit *and* the reserve separately. `??` does not have that problem, and
+the third site credits `undefined` for an order predating the fields.
+
+The policy percentages themselves ARE validated to sum to 100
+(`depositPolicy.service.js`), so the ratio is sound — the inconsistency is in
+the three readers. **I have not tested any of this.** Verify before changing.
+
+**KYC documents are still at permanent public CDN URLs.** The private R2 store
+is built (`services/kycDocuments.service.js`) and tested, but the migration is
+not done: objects not copied, panels not repointed, and **the originals not
+deleted from the public bucket**. Until that last step the exposure is
+unchanged. `docs/KYC_DOCUMENT_STORAGE.md` has the sequence.
+
+**`infrastructureTested` is 0/11.** One staging campaign unblocks all eleven —
+`GO_LIVE_RUNBOOK.md` §2.2. Restart Postgres under load, restart Mongo's primary,
+kill a backend mid-transaction, run two app instances.
+
+**Nobody has run the app.** No boot, no smoke test, no `stack:up`. The runbook's
+item 4 (hand smoke-test on staging) and item 2 (`npm run test:all` against real
+services, never once executed) are the highest-value unstarted work in the repo.
+
+## 5. What this session changed on the LIVE Mongo path
+
+These are real fixes sitting in a draft PR. Merging is worth doing on its own,
+independent of the migration:
+
+- **Admin dispute resolution always returned 409.** `DISPUTED` had no outgoing
+  edge in the shared rule table, so both resolve routes refused the one status
+  they exist to handle. Shipped in #119; live until #121 merges.
+- **Every rejected KYC user was told nothing.** The reason was written to
+  `user.kyc.rejectionReason`; the schema has no `kyc` subdocument, only
+  `kycData`. The block never ran.
+- **Nine sites moved money before the status guard**, so concurrent
+  approve/reject ran both.
+- Order status writes are now guarded in the update's filter, everywhere.
+
+## 6. Environment notes
+
+- **PostgreSQL runs locally.** `/usr/lib/postgresql/16/bin`, start it as the
+  `postgres` user. `test:pg` runs in the sandbox — use it, it catches real bugs.
+  CI uses PG 18; local is 16.
+- **MongoDB does NOT run here.** `fastdl.mongodb.org` is blocked by network
+  policy, so `test:integration` is CI-only. Integration suites now **throw**
+  rather than skip when `CI=true` and `DATABASE_URL` is unset, so a green CI run
+  proves they actually executed.
+- Local Postgres died three times during the session. Restart it and re-run;
+  it is not a code failure.
+
+## 7. Standards this branch has held to
+
+Keep these. They caught most of what was found.
+
+- **Never mark PASS on inspection. Run it.** Two of this session's three worst
+  bugs were found by running something, not by reading it.
+- **Mutation-test every fix**: break it, confirm a test fails, restore, and say
+  which. Nineteen mutations this session; every one killed its intended test.
+- **No authority flag moves** until implementation, tests, reconciliation,
+  observability and rollback all exist AND CI is green.
+- **Mark anything unverified as NOT VERIFIED.** Section 4 above is written that
+  way on purpose.
+- **Stop and document architectural decisions likely to fail at scale** rather
+  than implementing them under pressure.
+
+## 8. Two corrections recorded in this branch, both mine
+
+Both are in `docs/BETS_SETTLEMENT_ROUTING.md`, left visible rather than deleted:
+
+1. I claimed routing bet settlement replaced one bulk statement with N
+   transactions on a hot path. The per-bet loop already existed one function
+   above. I reasoned about the statement, not the loop around it.
+2. I claimed a reserve-funded bet might have its locked stake under-released on
+   the live path. Measured: `releaseLockedStake` releases with `amount`, the
+   full stake — the slices only move provenance counters, and reserve has none
+   by design. Not a bug.
+
+Same shape both times: reasoning about a call's arguments without reading what
+the call does with them. Worth knowing about the analysis in this branch.
