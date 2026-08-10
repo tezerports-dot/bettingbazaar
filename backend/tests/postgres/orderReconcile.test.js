@@ -42,6 +42,11 @@ import { pgConfigured, pgQuery, applySchema, closePg } from '../../postgres/pgCl
 import { ORDER_STATES, ORDER_TYPES, openOrder, transition, getOrder, getOrderHistory } from '../../postgres/orderPg.js';
 import { reconcileOrderStates } from '../../postgres/reconcile.js';
 
+// Same reason as the cross-store suite: in CI Postgres is always provisioned,
+// so a skip there is a misconfiguration reporting green for a check nobody ran.
+if (process.env.CI && !pgConfigured()) {
+  throw new Error('orderReconcile.test.js: DATABASE_URL is unset in CI — this suite must not skip silently.');
+}
 const describePg = pgConfigured() ? describe : describe.skip;
 
 /** Open an order in Postgres and tell the fake Mongo what IT thinks the status is. */

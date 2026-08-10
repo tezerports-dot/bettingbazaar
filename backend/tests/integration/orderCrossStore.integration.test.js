@@ -44,6 +44,25 @@ import { reverseMirrorOrderState } from '../../postgres/reverseMirror.js';
 import { reconcileOrderStates } from '../../postgres/reconcile.js';
 
 const HAS_PG = !!process.env.DATABASE_URL;
+
+/**
+ * A cross-store suite that silently skips is worse than one that fails: it
+ * reports green for a check nobody ran, and this is the suite the `reconciled`
+ * and `rollback` claims for ORDERS rest on. Locally, skipping is correct —
+ * there is no PostgreSQL. In CI both databases are always provisioned, so
+ * skipping there is a misconfiguration and must be loud.
+ *
+ * This is not hypothetical caution. Verifying from the job logs that a suite
+ * actually executed is impractical once a service container's output buries it,
+ * and "the step exited 0" cannot distinguish a suite that passed from one that
+ * never ran.
+ */
+if (process.env.CI && !HAS_PG) {
+  throw new Error(
+    'orderCrossStore.integration.test.js: DATABASE_URL is unset in CI. This suite is the evidence ' +
+    'behind ORDERS reconciled/rollback and must never skip silently — provision Postgres or remove the claim.',
+  );
+}
 const d = HAS_PG ? describe : describe.skip;
 
 const PaymentOrder = () => mongoose.model('PaymentOrder');
