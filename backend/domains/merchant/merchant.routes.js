@@ -21,6 +21,12 @@ import {
 import { releaseUTR } from '../../middleware/utrValidation.js';
 import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import { tryAssignMerchant, buildMerchantSnapshot, updateMerchantStatsOnComplete } from '../payment/paymentProcessing.service.js';
+// The order state machine. Every status change is a guarded transition, and
+// where money moves the transition runs FIRST and gates it.
+import {
+  startOrder, markOrderPaid as markOrderPaidState, completeOrder,
+  disputeOrder, cancelOrder as cancelOrderState, requeueOrder,
+} from '../payment/orderLifecycle.service.js';
 // Withdrawal settlement hold — confirm asserts payment, the worker settles it
 // once the dispute window passes. See withdrawalHold.service.js.
 import { holdMinutes } from '../payment/withdrawalHold.service.js';
@@ -753,23 +759,40 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         // via the Payment domain's single builder — this route used to re-implement
         // it inline, which is how the USDT address would have been missed on the
         // accept path while assignment carried it (GOVERNANCE §4).
-        order.merchantId      = req.merchantId;
-        order.status          = 'PROCESSING';
-        order.assignedAt      = order.assignedAt || now;
-        order.processingAt    = now;
-        order.expiresAt       = expiresAt;
-        order.merchantSnapshot = buildMerchantSnapshot(merchant, expiresAt);
+        // Rolling avgResponseMinutes: EMA with α=0.2. Computed before the
+        // transition, applied after it — a merchant who lost the accept race
+        // should not have their response time recorded for an order they did
+        // not get.
+        const responseMinutes = order.assignedAt ? (now - new Date(order.assignedAt)) / 60000 : null;
 
-        // Update rolling avgResponseMinutes: EMA with α=0.2
-        if (order.assignedAt) {
-            const responseMinutes = (now - new Date(order.assignedAt)) / 60000;
-            order.merchantResponseMinutes = responseMinutes;
+        const accepted = await startOrder(order._id, {
+            set: {
+                merchantId:       req.merchantId,
+                assignedAt:       order.assignedAt || now,
+                processingAt:     now,
+                expiresAt,
+                merchantSnapshot: buildMerchantSnapshot(merchant, expiresAt),
+                ...(responseMinutes === null ? {} : { merchantResponseMinutes: responseMinutes }),
+            },
+        });
+        if (!accepted.ok || accepted.idempotent) {
+            // Two merchants racing the same queued order both used to pass the
+            // status read above and both used to save; the second overwrote the
+            // first's merchantId and snapshot, so the user was shown one
+            // merchant's payment details while the other held the order.
+            return res.status(409).json({
+                success: false,
+                message: `Order is ${accepted.status ?? 'missing'} and cannot be accepted.`,
+            });
+        }
+        Object.assign(order, accepted.order);
+
+        if (responseMinutes !== null) {
             const oldAvg = merchant.avgResponseMinutes ?? 2; // schema default: 2
             const newAvg = (oldAvg * 0.8) + (responseMinutes * 0.2);
             await Merchant.findByIdAndUpdate(req.merchantId, { $set: { avgResponseMinutes: newAvg } });
         }
 
-        await order.save();
         if (!wasAssigned) await Merchant.findByIdAndUpdate(req.merchantId, { $inc: { activeOrderCount: 1 } });
 
         const io = global.io;
@@ -857,8 +880,64 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             }
         }
 
-        if (proof)     order.proofScreenshot = proof;
-        if (utrNumber) order.utrNumber       = utrNumber.trim();
+        // THE TRANSITION IS THE GATE, and it runs before the money.
+        //
+        // Every branch below moves value — a merchant debit and a user credit on
+        // deposits, a stake release and a merchant credit on withdrawals — and
+        // all of it used to run BEFORE the status was set, guarded only by the
+        // `order.status` read above. A merchant double-tapping confirm put two
+        // debits in flight; only the canonical txIds on the wallet calls stopped
+        // the second one, which means the protection lived in a different domain
+        // from the decision. Now exactly one caller matches a row, and only that
+        // caller goes on to move money.
+        //
+        // Which target this is depends on the branch: a deposit completes, a
+        // withdrawal under hold only reaches PAID (asserted, not settled), and a
+        // withdrawal with the hold disabled completes inline.
+        const holdFor = isDeposit ? 0 : await holdMinutes();
+        const carried = {
+            ...(proof     ? { proofScreenshot: proof }          : {}),
+            ...(utrNumber ? { utrNumber: utrNumber.trim() }     : {}),
+        };
+
+        let moved;
+        if (isDeposit) {
+            moved = await completeOrder(order._id, {
+                expectFrom: 'PAID',
+                set: { ...carried, completedAt: new Date() },
+            });
+        } else if (holdFor > 0) {
+            moved = await markOrderPaidState(order._id, {
+                expectFrom: ['PROCESSING', 'ASSIGNED'],
+                set: {
+                    ...carried,
+                    merchantCreditStatus:    'HELD',
+                    merchantCreditHoldUntil: new Date(Date.now() + holdFor * 60 * 1000),
+                    escrowLocked:            true,
+                },
+            });
+        } else {
+            moved = await completeOrder(order._id, {
+                expectFrom: 'PROCESSING',
+                set: {
+                    ...carried, completedAt: new Date(),
+                    merchantCreditStatus: 'RELEASED', escrowLocked: false,
+                },
+            });
+        }
+        if (!moved.ok) {
+            return res.status(409).json({
+                success: false,
+                message: `Order is ${moved.status ?? 'missing'} and cannot be confirmed.`,
+            });
+        }
+        if (moved.idempotent) {
+            // A previous delivery already confirmed this order, and the money
+            // moved with it. Re-running the wallet calls would be harmless (they
+            // are keyed) but not re-running them is clearer about what happened.
+            return res.json({ success: true, message: 'Order already confirmed', order: sanitizeMerchantOrder(moved.order ?? order) });
+        }
+        Object.assign(order, moved.order);
 
         // FIX (2026-07-09): was '../models/' (nonexistent domains/models/) so
         // the import ALWAYS threw and fell back to the mongoose lookup — the
@@ -912,9 +991,6 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
                 }).catch(e => console.error('[Merchant confirm] CRITICAL: merchant refund failed, manual reconcile needed:', e.message));
                 return res.status(500).json({ success: false, message: 'Wallet credit failed. Please retry.' });
             }
-
-            order.status      = 'COMPLETED';
-            order.completedAt = new Date();
         } else {
             // ── WITHDRAWAL confirm: an ASSERTION, not a settlement ─────────────
             // The merchant is claiming they sent the player fiat. Nothing proves
@@ -934,14 +1010,11 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             // tokens do not exist. A dispute inside the window is a reversal of
             // something still held (withdrawalHold.reverseHold), not a clawback.
             // See domains/payment/withdrawalHold.service.js.
-            const hold = await holdMinutes();
-
-            if (hold > 0) {
-                order.status                  = 'PAID';   // asserted, awaiting settlement
-                order.merchantCreditStatus    = 'HELD';
-                order.merchantCreditHoldUntil = new Date(Date.now() + hold * 60 * 1000);
-                order.escrowLocked            = true;
-
+            //
+            // The status, the HELD marker and the hold deadline were written by
+            // the transition above — this branch is now only the side effects
+            // that follow it.
+            if (holdFor > 0) {
                 // Record what the platform now OWES this merchant, in a pocket
                 // they cannot spend. On Mongo the tokens simply do not exist
                 // during the hold, so nothing shows the liability; opening the
@@ -968,18 +1041,11 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
                     refModel: 'PaymentOrder', refId: order._id.toString(),
                     txId: `mw_wd_credit_${order._id}`,
                 }).catch(e => console.error('[Merchant confirm] WITHDRAWAL tokenBalance increment failed:', e.message));
-
-                order.status         = 'COMPLETED';
-                order.completedAt    = new Date();
-                order.merchantCreditStatus = 'RELEASED';
-                order.escrowLocked   = false;
             }
 
             // Emit wallet update so user sees updated balance
             await emitWalletUpdate(order.userId);
         }
-
-        await order.save();
 
         // Funding event (Phase 009): lets the ledger reconciler pick this
         // completion up within seconds. Non-blocking — never affects the flow.
@@ -1085,7 +1151,30 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
             return res.status(400).json({ success: false, message: `Order can only be rejected in ASSIGNED status. Current: ${order.status}` });
         }
 
-        // Decrement merchant activeOrderCount
+        // THE REQUEUE IS THE GATE, and it runs first.
+        //
+        // This is the transition that made PENDING_QUEUE a state the rule table
+        // has to be able to enter — see docs/ORDERS_REQUEUE_CYCLE.md. It also
+        // has to be COMMITTED before tryAssignMerchant runs, not just set on the
+        // in-memory document: that function now performs its own guarded
+        // PENDING_QUEUE→ASSIGNED update, so an unsaved requeue would leave the
+        // database still reading ASSIGNED and the reassignment would match no
+        // row. The old code relied on tryAssignMerchant's trailing save() to
+        // persist both at once, which is also why a failed reassignment left the
+        // order's requeue unsaved unless the else-branch happened to save it.
+        const requeued = await requeueOrder(order._id, {
+            set: { merchantId: null, merchantSnapshot: null, expiresAt: null, rejectedReason: reason },
+        });
+        if (!requeued.ok) {
+            return res.status(409).json({
+                success: false,
+                message: `Order can only be rejected in ASSIGNED status. Current: ${requeued.status ?? 'missing'}`,
+            });
+        }
+        Object.assign(order, requeued.order);
+
+        // Decrement merchant activeOrderCount. After the transition, so a
+        // merchant who lost the race does not decrement a count they still hold.
         await Merchant.findByIdAndUpdate(req.merchantId, {
             $inc: { totalOrdersAll: 1, activeOrderCount: -1 },
         });
@@ -1101,14 +1190,8 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
         }
 
         // Try re-assignment to next-best merchant
-        order.merchantId       = null;
-        order.merchantSnapshot = null;
-        order.expiresAt        = null;
-        order.status           = 'PENDING_QUEUE';
-
         const reAssigned = await tryAssignMerchant(order);
         if (reAssigned) {
-            await order.save();
             emitAdminUpdate('queue_order_update', {
                 orderId: order._id, status: order.status, server_ts: Date.now(),
             });
@@ -1122,8 +1205,8 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
             });
             res.json({ success: true, message: 'Order rejected and re-assigned to another merchant.', order: sanitizeMerchantOrder(order) });
         } else {
-            order.rejectedReason = reason;
-            await order.save();
+            // rejectedReason was written with the requeue, so there is nothing
+            // left to save — the order is already committed in PENDING_QUEUE.
             emitOrderUpdate(order.userId.toString(), 'order_update', {
                 orderId:   order.orderId,
                 _id:       order._id,
@@ -1164,16 +1247,24 @@ router.post('/order/:id/dispute', merchantAuth, async (req, res) => {
         const order = await PaymentOrder.findOne({ _id: req.params.id, merchantId: req.merchantId });
         if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
 
-        if (!['PROCESSING', 'ASSIGNED'].includes(order.status)) {
-            return res.status(400).json({ success: false, message: `Cannot raise dispute in ${order.status} status.` });
+        // ASSIGNED is deliberately absent: the rule table admits a dispute from
+        // PROCESSING, PAID or COMPLETED only, and an order nobody has started
+        // working on has nothing to dispute yet. This route accepted ASSIGNED
+        // and Postgres would have refused it — the disagreement no
+        // reconciliation can tell apart from real drift.
+        const disputed = await disputeOrder(order._id, {
+            expectFrom: 'PROCESSING',
+            set: {
+                disputeReason:   reason.trim(),
+                disputeRaisedAt: new Date(),
+                disputeRaisedBy: 'merchant',
+                updatedAt:       new Date(),
+            },
+        });
+        if (!disputed.ok) {
+            return res.status(409).json({ success: false, message: `Cannot raise dispute in ${disputed.status ?? 'unknown'} status.` });
         }
-
-        order.status          = 'DISPUTED';
-        order.disputeReason   = reason.trim();
-        order.disputeRaisedAt = new Date();
-        order.disputeRaisedBy = 'merchant';
-        order.updatedAt       = new Date();
-        await order.save();
+        Object.assign(order, disputed.order);
 
         // Notify admin SSE (GOVERNANCE §11: order_disputed)
         emitAdminUpdate('order_disputed', {
@@ -1338,14 +1429,25 @@ router.post('/orders/:id/red-flag', merchantAuth, async (req, res) => {
             return res.status(400).json({ success: false, message: 'Cannot red-flag a completed or cancelled order.' });
         }
 
-        order.redFlagged   = true;
-        order.redFlagReason = reason.trim();
-        order.redFlaggedBy = req.userId;
-        order.redFlaggedAt = new Date();
-        // Automatically move to DISPUTED so admin queue picks it up
-        order.status       = 'DISPUTED';
-        order.disputeReason = `Red-flagged by merchant: ${reason.trim()}`;
-        await order.save();
+        // The red flag and the DISPUTED move land in ONE update. Writing the
+        // flag separately would leave an order flagged but not disputed if the
+        // second write failed, which is the state the admin queue cannot see.
+        const flagged = await disputeOrder(order._id, {
+            set: {
+                redFlagged:     true,
+                redFlagReason:  reason.trim(),
+                redFlaggedBy:   req.userId,
+                redFlaggedAt:   new Date(),
+                disputeReason:  `Red-flagged by merchant: ${reason.trim()}`,
+            },
+        });
+        if (!flagged.ok) {
+            return res.status(409).json({
+                success: false,
+                message: `Cannot red-flag an order that is ${flagged.status ?? 'missing'}.`,
+            });
+        }
+        Object.assign(order, flagged.order);
 
         
         try {
@@ -1674,21 +1776,22 @@ router.post('/orders/:id/approve', merchantAuth, async (req, res) => {
         const { id }      = req.params;
 
         // ── Idempotency: atomic status guard — only PAID orders can be approved ──
-        // findOneAndUpdate with { status: 'PAID' } filter: concurrent approvals
-        // both execute, but only the first returns non-null. Second → 409.
-        const order = await PaymentOrder.findOneAndUpdate(
-            { _id: id, status: 'PAID' },
-            { $set: { status: 'COMPLETED', approvedBy: req.merchantId, approvedAt: new Date(), updatedAt: new Date() } },
-            { ...withSession(session), new: true }
-        );
-        if (!order) {
+        // This route already had the right shape: the expected state in the
+        // filter, so concurrent approvals both execute and only the first
+        // returns non-null. Routing it through the seam changes nothing about
+        // that and makes it the same one place every other status change goes.
+        const approved = await completeOrder(id, {
+            expectFrom: 'PAID',
+            set: { approvedBy: req.merchantId, approvedAt: new Date(), updatedAt: new Date() },
+            session,
+        });
+        if (!approved.ok || approved.idempotent) {
             await abortOrEnd(session);
-            // Either order not found, not PAID, or already approved (concurrent)
-            const existing = await PaymentOrder.findById(id).lean();
-            if (!existing) return res.status(404).json({ success: false, message: 'Order not found' });
-            if (existing.status === 'COMPLETED') return res.status(409).json({ success: false, message: 'Order already approved' });
-            return res.status(400).json({ success: false, message: `Cannot approve order in ${existing.status} status` });
+            if (approved.reason === 'not_found') return res.status(404).json({ success: false, message: 'Order not found' });
+            if (approved.idempotent) return res.status(409).json({ success: false, message: 'Order already approved' });
+            return res.status(400).json({ success: false, message: `Cannot approve order in ${approved.status} status` });
         }
+        const order = approved.order;
 
         // Ownership check — merchant can only approve their own orders
         if (order.merchantId?.toString() !== req.merchantId?.toString()) {
@@ -1708,8 +1811,22 @@ router.post('/orders/:id/approve', merchantAuth, async (req, res) => {
             txId: `mw_dep_deduct_${order._id}`, session,
         });
         if (!updatedMerchant) {
-            // Rollback status change
-            await PaymentOrder.findByIdAndUpdate(id, { $set: { status: 'PAID', approvedBy: null, approvedAt: null } }, withSession(session));
+            // COMPENSATION, not a transition — and deliberately outside the
+            // state machine. There is no COMPLETED→PAID edge in ALLOWED_FROM and
+            // there should not be: an edge that walks a completed order
+            // backwards would be reachable from every other caller too, and
+            // "undo" is not a state an order can be in.
+            //
+            // Only needed when there is no session to abort. With one, the
+            // rollback below already unwinds this write, and re-issuing it would
+            // be a second write inside a transaction that is about to be thrown
+            // away.
+            if (!session) {
+                await PaymentOrder.updateOne(
+                    { _id: id, status: 'COMPLETED' },
+                    { $set: { status: 'PAID', approvedBy: null, approvedAt: null } },
+                );
+            }
             await abortOrEnd(session);
             return res.status(400).json({
                 success: false,
@@ -1811,22 +1928,29 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
             return res.status(403).json({ success: false, message: 'This order is not assigned to you' });
         }
 
-        if (!['PAID', 'PROCESSING'].includes(order.status)) {
-            return res.status(400).json({
+        // ── Transition order to CANCELLED (with rejection metadata) ───────────
+        // The guard is the transition. Everything after this point — the user's
+        // warning count, the payment flag, the auto-block — is a consequence of
+        // the rejection, and a merchant retrying a failed request used to run
+        // all of it a second time and increment the warning count again.
+        const rejected = await cancelOrderState(order._id, {
+            expectFrom: ['PAID', 'PROCESSING'],
+            set: {
+                rejectedBy:     req.merchantId,
+                rejectedAt:     new Date(),
+                rejectedReason: reason || 'Rejected by merchant',
+                cancelReason:   'MERCHANT_REJECTED',
+                cancelledAt:    new Date(),
+                updatedAt:      new Date(),
+            },
+        });
+        if (!rejected.ok || rejected.idempotent) {
+            return res.status(409).json({
                 success: false,
-                message: `Cannot reject order in ${order.status} status`,
+                message: `Cannot reject order in ${rejected.status ?? 'unknown'} status`,
             });
         }
-
-        // ── Transition order to CANCELLED (with rejection metadata) ───────────
-        order.status       = 'CANCELLED';
-        order.rejectedBy   = req.merchantId;
-        order.rejectedAt   = new Date();
-        order.rejectedReason = reason || 'Rejected by merchant';
-        order.cancelReason = 'MERCHANT_REJECTED';
-        order.cancelledAt  = new Date();
-        order.updatedAt    = new Date();
-        await order.save();
+        Object.assign(order, rejected.order);
 
         // ── Warning engine + payment-complaint flag (Section 13.2; owner
         //    directive 2026-07-14) ──────────────────────────────────────────────

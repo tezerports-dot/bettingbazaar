@@ -15,6 +15,12 @@ import { merchantTypeOf } from '../merchant/merchantCurrency.js';
 // Risk Platform (Phase 010): the single validation authority for funding orders.
 import { assessFundingOrder, getRiskRules, computePayoutFeeMinor } from '../risk/riskValidation.service.js';
 import { markUTRAsUsed }   from '../../middleware/utrValidation.js';
+// The order state machine. Every status change goes through here so an illegal
+// move is refused by the database rather than by whichever check ran first.
+import {
+  assignOrder as assignOrderState, markOrderPaid as markOrderPaidState,
+  cancelOrder as cancelOrderState,
+} from './orderLifecycle.service.js';
 import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import cdnService from '../../services/cdn.service.js';
 
@@ -104,13 +110,31 @@ async function tryAssignMerchant(order) {
   if (!merchant) return false;
 
   const expiresAt = new Date(Date.now() + await getOrderExpiryMs()); // admin-configurable window
+  const snapshot  = buildMerchantSnapshot(merchant, expiresAt);
+
+  // The transition is the gate. Two assignment passes racing the same queued
+  // order — the synchronous attempt at creation and the retry loop, which do
+  // overlap — both used to pass the `status === 'PENDING_QUEUE'` read above and
+  // both used to save, so the second silently overwrote the first merchant's
+  // assignment and left that merchant holding an activeOrderCount for an order
+  // they no longer had. Exactly one caller now matches a row.
+  const moved = await assignOrderState(order._id, {
+    set: {
+      merchantId:       merchant._id,
+      assignedAt:       new Date(),
+      expiresAt,
+      merchantSnapshot: snapshot,
+    },
+  });
+  if (!moved.ok || moved.idempotent) return false;
+
+  // Keep the caller's in-memory document consistent with what was written, so
+  // the emitters below describe the row that exists rather than a hoped-for one.
   order.merchantId       = merchant._id;
   order.status           = 'ASSIGNED';
-  order.assignedAt       = new Date();
+  order.assignedAt       = moved.order.assignedAt;
   order.expiresAt        = expiresAt;
-  order.merchantSnapshot = buildMerchantSnapshot(merchant, expiresAt);
-
-  await order.save();
+  order.merchantSnapshot = snapshot;
 
   // Increment merchant activeOrderCount
   await Merchant.findByIdAndUpdate(merchant._id, { $inc: { activeOrderCount: 1 } });
@@ -158,12 +182,15 @@ function startPendingRetryLoop(orderId) {
       }
 
       if (attempts >= MAX_RETRIES) {
-        // Expire the order
-        order.status       = 'CANCELLED';
-        order.cancelReason = 'EXPIRED';
-        order.cancelledAt  = new Date();
-        order.updatedAt    = new Date();
-        await order.save();
+        // Expire the order. The transition gates the refund: this loop and the
+        // expireOrders cron can both reach the same order, and only the caller
+        // that actually moved it may release the escrow.
+        const expired = await cancelOrderState(order._id, {
+          expectFrom: 'PENDING_QUEUE',
+          set: { cancelReason: 'EXPIRED', cancelledAt: new Date(), updatedAt: new Date() },
+        });
+        if (!expired.ok || expired.idempotent) return;
+        order.status = 'CANCELLED';
 
         // Release escrow if WITHDRAWAL
         if (order.type === 'WITHDRAWAL' && order.escrowLocked) {
@@ -454,12 +481,31 @@ export async function markOrderPaid(userId, orderId, utrNumber, proofFileKey, pr
     throw err;
   }
 
+  // The UTR was consumed above and is not returnable, so the transition being
+  // refused here means the order moved under us between the status read and
+  // now — a 409, not a 400: the request was understood and is no longer valid.
+  const paid = await markOrderPaidState(order._id, {
+    expectFrom: ['ASSIGNED', 'PROCESSING'],
+    set: {
+      utrNumber:       normalizedUTR,
+      proofScreenshot: verifiedProof.cdnUrl,
+      paidAt:          new Date(),
+      updatedAt:       new Date(),
+    },
+  });
+  if (!paid.ok) {
+    throw Object.assign(
+      new Error(`Cannot mark paid — order is in ${paid.status ?? 'unknown'} status`),
+      { status: 409, code: paid.reason },
+    );
+  }
+  // The POST-transition document. Returning the stale `order` would report a
+  // PAID order still showing its previous status and no UTR.
+  const paidOrder = paid.order ?? order;
   order.status          = 'PAID';
   order.utrNumber       = normalizedUTR;
   order.proofScreenshot = verifiedProof.cdnUrl;
-  order.paidAt          = new Date();
-  order.updatedAt       = new Date();
-  await order.save();
+  order.paidAt          = paidOrder.paidAt;
 
   if (order.merchantId) {
     emitMerchantUpdate(order.merchantId.toString(), 'order_paid', {
@@ -513,18 +559,32 @@ export async function cancelOrder(actorId, isAdmin, orderId) {
   if (order.status !== 'PENDING_QUEUE')
     throw Object.assign(new Error('Order cannot be cancelled at this stage'), { status: 400 });
 
-  if (order.type === 'WITHDRAWAL' && order.escrowLocked) {
-    await refundWithdrawal(order.userId, order.tokenAmount, order._id.toString());
-    order.escrowLocked = false;
+  // ORDER INVERTED, deliberately. This refunded the escrow FIRST and set the
+  // status afterwards, guarded only by the `order.status` read above — stale by
+  // the time it mattered. A user double-tapping cancel put two refunds in
+  // flight, and only refundWithdrawal's own idempotency key stopped the second
+  // credit, which means the protection lived in a different domain from the
+  // decision. The transition decides now, and only the winner refunds.
+  const cancelled = await cancelOrderState(order._id, {
+    expectFrom: 'PENDING_QUEUE',
+    set: {
+      cancelReason:  'USER_CANCELLED',
+      cancelledAt:   new Date(),
+      updatedAt:     new Date(),
+      ...(order.type === 'WITHDRAWAL' && order.escrowLocked ? { escrowLocked: false } : {}),
+    },
+  });
+  if (!cancelled.ok) {
+    throw Object.assign(
+      new Error('Order cannot be cancelled at this stage'),
+      { status: 409, code: cancelled.reason },
+    );
   }
-
-  order.status       = 'CANCELLED';
-  order.cancelReason = 'USER_CANCELLED';
-  order.cancelledAt  = new Date();
-  order.updatedAt    = new Date();
-  await order.save();
+  if (!cancelled.idempotent && order.type === 'WITHDRAWAL' && order.escrowLocked) {
+    await refundWithdrawal(order.userId, order.tokenAmount, order._id.toString());
+  }
   await emitWalletUpdate(order.userId);
-  return order;
+  return cancelled.order ?? order;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -542,11 +602,15 @@ export async function expireOrders() {
   let count = 0;
   for (const order of expired) {
     try {
-      order.status       = 'CANCELLED';
-      order.cancelReason = 'EXPIRED';
-      order.cancelledAt  = now;
-      order.updatedAt    = now;
-      await order.save();
+      // Two instances running this cron both read the same expired batch. The
+      // transition is what makes the refund happen once: the loser gets
+      // `idempotent` and skips the release rather than racing it.
+      const expired = await cancelOrderState(order._id, {
+        expectFrom: ['ASSIGNED', 'PROCESSING'],
+        set: { cancelReason: 'EXPIRED', cancelledAt: now, updatedAt: now },
+      });
+      if (!expired.ok || expired.idempotent) continue;
+      order.status = 'CANCELLED';
 
       // Release escrow if WITHDRAWAL
       if (order.type === 'WITHDRAWAL' && order.escrowLocked) {
