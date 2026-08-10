@@ -286,6 +286,58 @@ export function mirrorMerchantSettlement(doc) {
 }
 
 /** User doc (KYC fields only — plan: split KYC out; cutover LAST). */
+/**
+ * A GameTransaction → the casino round and its callback. Domain 9's Mongo→PG leg.
+ *
+ * `tx_id` is the PROVIDER's id and is UNIQUE, so a replayed webhook mirrors
+ * once. The round's running totals are advanced here rather than recomputed,
+ * because recomputing them from the mirrored rows would make the mirror's view
+ * of the bound depend on whether every earlier row had already arrived.
+ *
+ * Deliberately does NOT move money. Mongo has already paid, and paying again
+ * from the mirror would double-spend it — the same rule mirrorBonusGrant follows.
+ */
+export function mirrorCasinoTransaction(doc) {
+  if (!doc?.txId || !doc?.roundId || !doc?.userId || !doc?.type) return;
+  return mirror('casino_transactions', async () => {
+    // While Postgres owns the path the adapter writes the round directly and
+    // the reverse mirror creates this document — so mirroring from here as well
+    // would advance the running totals a second time and break the refund bound
+    // against a round that was perfectly correct.
+    const { isPostgresAuthoritative, MONEY_PATHS } = await import('./moneyAuthority.js');
+    if (isPostgresAuthoritative(MONEY_PATHS.CASINO_SETTLEMENT)) return;
+
+    const column = { BET: 'debited_paise', WIN: 'credited_paise', ROLLBACK: 'refunded_paise', REFUND: 'refunded_paise' }[doc.type];
+    if (!column) return;                       // not a money-moving callback
+    const amountPaise = paise(doc.amount);
+    if (!Number.isInteger(amountPaise) || amountPaise <= 0) return;
+
+    await pgQuery(
+      `INSERT INTO casino_rounds (round_id, user_id, provider_key, game_id)
+       VALUES ($1,$2,$3,$4) ON CONFLICT (round_id) DO NOTHING`,
+      [String(doc.roundId), String(doc.userId), doc.providerKey || 'unknown', doc.gameId || null],
+    );
+
+    // ON CONFLICT DO NOTHING, then advance the total only when the row is NEW —
+    // otherwise a redelivered webhook would inflate the running totals while the
+    // transaction row correctly refused to duplicate.
+    const { rows } = await pgQuery(
+      `INSERT INTO casino_transactions (tx_id, round_id, user_id, tx_type, amount_paise)
+       VALUES ($1,$2,$3,$4,$5) ON CONFLICT (tx_id) DO NOTHING RETURNING id`,
+      [String(doc.txId), String(doc.roundId), String(doc.userId), doc.type, amountPaise],
+    );
+    if (!rows.length) return;
+
+    // The bound is a CHECK CONSTRAINT, so a mirrored refund that exceeds its
+    // debit is REFUSED here rather than written. That is correct: it means Mongo
+    // let through something Postgres will not, which is a finding, not a row.
+    await pgQuery(
+      `UPDATE casino_rounds SET ${column} = ${column} + $2, updated_at = now() WHERE round_id = $1`,
+      [String(doc.roundId), amountPaise],
+    );
+  });
+}
+
 export function mirrorUserKyc(doc) {
   const k = doc.kycData || {};
   return mirror('user_kyc', () => pgQuery(

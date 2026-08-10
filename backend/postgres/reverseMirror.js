@@ -637,6 +637,41 @@ export function reverseMirrorUserKycStatus(row) {
   });
 }
 
+/**
+ * A casino round + its callback → the GameTransaction document. Domain 9's
+ * rollback leg.
+ *
+ * Keyed on the PROVIDER's tx id, which is the same idempotency gate the forward
+ * mirror and `casinoPg.recordCallback` use — so a redelivered webhook produces
+ * one document however many times it arrives and whichever direction is live.
+ *
+ * `balanceBefore`/`balanceAfter` are deliberately NOT reconstructed. They are a
+ * snapshot of the wallet at the instant the callback ran, and the wallet is a
+ * different path with its own authority flag; inventing them here from a later
+ * read would write a number that was never true. The player's balance comes
+ * from the wallet's own mirror.
+ */
+export function reverseMirrorCasinoRound({ round, transaction }) {
+  return mirrorBack('casino_rounds', async () => {
+    if (!transaction?.tx_id) return;
+    await mongoose.model('GameTransaction').updateOne(
+      { txId: String(transaction.tx_id) },
+      {
+        $setOnInsert: {
+          txId:        String(transaction.tx_id),
+          roundId:     String(transaction.round_id),
+          userId:      transaction.user_id,
+          type:        transaction.tx_type,
+          amount:      rupees(transaction.amount_paise),
+          providerKey: transaction.provider_key ?? round?.providerKey ?? 'unknown',
+          gameId:      transaction.game_id ?? round?.gameId ?? '',
+        },
+      },
+      { upsert: true },
+    );
+  });
+}
+
 /** utr_registry row → UTRRegistry doc (the uniqueness gate, mirrored back). */
 export function reverseMirrorUtr(row) {
   return mirrorBack('utr_registry', async () => {

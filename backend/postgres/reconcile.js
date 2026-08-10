@@ -436,6 +436,121 @@ export async function reconcileMerchantSettlementStates({ backfill = false, repa
 }
 
 /**
+ * reconcileCasinoRounds — do the two stores agree about what each round took
+ * and gave back?
+ *
+ * Domain 9's cross-store check. The comparison is per ROUND on the three
+ * running totals, not per transaction: a transaction-count check would pass
+ * while the totals disagreed, and it is the totals the refund bound is enforced
+ * against. A round whose Postgres `refunded` exceeds Mongo's is the shape of the
+ * exposure this domain was built around — a reversal Mongo honoured that
+ * Postgres would have refused.
+ *
+ * There is no `--backfill` money movement here and there must not be: both
+ * stores have already paid, and a repair that moved value would double-spend
+ * the round. Repair rewrites the RECORD in whichever direction authority
+ * points, and the wallet paths own the balances.
+ */
+export async function reconcileCasinoRounds({ backfill = false, repairMongo = false, limit = 20000 } = {}) {
+  if (backfill && repairMongo) {
+    throw new Error('reconcileCasinoRounds: backfill and repairMongo are opposite directions — pick one');
+  }
+
+  const { rows } = await pgQuery(
+    `SELECT round_id, user_id, provider_key, game_id, debited_paise, credited_paise, refunded_paise, updated_at
+       FROM casino_rounds ORDER BY updated_at DESC LIMIT $1`,
+    [limit], 'casino_round_reconcile',
+  );
+  if (!rows.length) return { table: 'casino_rounds', checked: 0, disagreeing: 0, settling: 0, repaired: 0, overRefunded: 0, sample: [] };
+
+  const GameTransaction = mongoose.model('GameTransaction');
+  const docs = await GameTransaction
+    .find({ roundId: { $in: rows.map((r) => r.round_id) } })
+    .select('roundId type amount').lean();
+
+  // Mongo's totals, derived the way the route derives them.
+  const mongoTotals = new Map();
+  for (const d of docs) {
+    const t = mongoTotals.get(String(d.roundId)) ?? { debited: 0, credited: 0, refunded: 0 };
+    const amount = Number(d.amount) || 0;
+    if (d.type === 'BET') t.debited += amount;
+    else if (d.type === 'WIN') t.credited += amount;
+    else if (d.type === 'ROLLBACK' || d.type === 'REFUND') t.refunded += amount;
+    mongoTotals.set(String(d.roundId), t);
+  }
+
+  const { mirrorCasinoTransaction } = await import('./dualWrite.js');
+  const { reverseMirrorCasinoRound } = await import('./reverseMirror.js');
+
+  const disagreeing = [];
+  let repaired = 0;
+  let overRefunded = 0;
+
+  for (const row of rows) {
+    const mongo = mongoTotals.get(String(row.round_id));
+    // A Postgres round Mongo has never heard of is a missing document, which
+    // the reverse table check owns.
+    if (!mongo) continue;
+
+    const pg = {
+      debited:  paiseToRupees(Number(row.debited_paise)),
+      credited: paiseToRupees(Number(row.credited_paise)),
+      refunded: paiseToRupees(Number(row.refunded_paise)),
+    };
+    if (mongo.debited === pg.debited && mongo.credited === pg.credited && mongo.refunded === pg.refunded) continue;
+
+    // The finding that matters most: Mongo gave back more than it took. The
+    // Postgres CHECK constraint makes that unreachable there, so this can only
+    // ever be reported from the Mongo side — which is precisely why it is worth
+    // reporting rather than assuming the constraint covers both stores.
+    const mongoOverRefunded = mongo.refunded > mongo.debited;
+    if (mongoOverRefunded) overRefunded++;
+
+    disagreeing.push({
+      roundId: row.round_id, userId: row.user_id,
+      mongo, pg, ...(mongoOverRefunded ? { mongoOverRefunded } : {}),
+      at: row.updated_at,
+    });
+
+    if (backfill) {
+      for (const d of docs.filter((x) => String(x.roundId) === String(row.round_id))) {
+        await mirrorCasinoTransaction({
+          txId: d.txId, roundId: d.roundId, userId: row.user_id, type: d.type,
+          amount: d.amount, providerKey: row.provider_key, gameId: row.game_id,
+        });
+      }
+      repaired++;
+    } else if (repairMongo) {
+      const { rows: txs } = await pgQuery(
+        `SELECT tx_id, round_id, user_id, tx_type, amount_paise FROM casino_transactions WHERE round_id = $1`,
+        [row.round_id]);
+      for (const tx of txs) {
+        await reverseMirrorCasinoRound({
+          round: { providerKey: row.provider_key, gameId: row.game_id },
+          transaction: { ...tx, provider_key: row.provider_key, game_id: row.game_id },
+        });
+      }
+      repaired++;
+    }
+  }
+
+  const { settled, settling } = splitBySettling(disagreeing, (r) => r.at);
+
+  return {
+    table: 'casino_rounds',
+    checked: rows.length,
+    disagreeing: backfill || repairMongo ? 0 : settled.length,
+    disagreeingBeforeRepair: settled.length,
+    settling: settling.length,
+    repaired,
+    // Counted separately and NEVER cleared by a repair: a round that gave back
+    // more than it took is money already gone, not a record to rewrite.
+    overRefunded,
+    sample: settled.slice(0, 5),
+  };
+}
+
+/**
  * reconcileKycDecisions — do the two stores agree about who is approved?
  *
  * Domain 11's cross-store check, and the last one. A KYC status that disagrees
@@ -1086,6 +1201,16 @@ export async function runReconcile({
     repairMongo: repairMongo && kycOnPg,
   });
 
+  // Domain 9: do the two stores agree about what each casino round took and
+  // gave back? The refund bound is a CHECK CONSTRAINT in Postgres and a
+  // read-then-compare in Mongo, so an over-refunded round can only ever appear
+  // on the Mongo side — which is exactly why this asks.
+  const casinoOnPg = isPostgresAuthoritative(MONEY_PATHS.CASINO_SETTLEMENT);
+  const casinoRounds = await reconcileCasinoRounds({
+    backfill: backfill && !casinoOnPg,
+    repairMongo: repairMongo && casinoOnPg,
+  });
+
   // Domain 6: did each cycle's settlement RUN end the same way in both stores,
   // and did it pay out the same amount? The payout comparison is the one that
   // earns its place — Mongo re-derives its total from the stamped WON bets and
@@ -1116,6 +1241,8 @@ export async function runReconcile({
     || orderStates.disagreeing > 0
     || orderStates.unrepairable > 0
     || kycDecisions.disagreeing > 0
+    || casinoRounds.disagreeing > 0
+    || casinoRounds.overRefunded > 0
     || betStates.disagreeing > 0
     || cycleSettlements.disagreeing > 0
     || bonusGrants.disagreeing > 0
@@ -1153,13 +1280,14 @@ export async function runReconcile({
     settlementStates: settlementStates.settling ?? 0,
     orderStates: orderStates.settling ?? 0,
     kycDecisions: kycDecisions.settling ?? 0,
+    casinoRounds: casinoRounds.settling ?? 0,
     betStates: betStates.settling ?? 0,
     cycleSettlements: cycleSettlements.settling ?? 0,
     bonusGrants: bonusGrants.settling ?? 0,
   };
   settling.total = settling.forward + settling.reverse
     + settling.merchantBalances + settling.settlementStates + settling.betStates
-    + settling.orderStates + settling.kycDecisions
+    + settling.orderStates + settling.kycDecisions + settling.casinoRounds
     + settling.cycleSettlements + settling.bonusGrants;
 
   return {
@@ -1179,6 +1307,7 @@ export async function runReconcile({
     adminSupply,
     orderStates,
     kycDecisions,
+    casinoRounds,
     betStates,
     cycleSettlements,
     bonusGrants,
