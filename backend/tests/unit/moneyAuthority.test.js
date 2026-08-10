@@ -136,20 +136,27 @@ describe('capability gate — authority requires an implementation', () => {
     expect(ledger.cutoverEligible).toBe(false);
     expect(ledger.missing).toContain('implemented');
 
-    // Bets is mirrored, reconciled and rollback-capable now; only `implemented`
-    // is outstanding, because that flag also requires CI evidence for the
-    // cross-store suite. Asserting the exact list rather than "contains
+    // Every remaining path is mirrored, reconciled and rollback-capable now;
+    // only `implemented` is outstanding on each, because that flag also
+    // requires CI evidence. Asserting the EXACT list rather than "contains
     // implemented" is deliberate — it is what would catch a capability being
     // flipped on without the leg behind it actually landing.
-    const bets = rows.find((r) => r.path === MONEY_PATHS.BETS);
-    expect(bets.cutoverEligible).toBe(false);
-    expect(bets.missing).toEqual(['implemented']);
+    //
+    // casino_settlement used to be the control here, as the one path with
+    // genuinely nothing built. It has all four legs now, so the control moved
+    // to the assertion below: a path with every leg present reports an EMPTY
+    // list, which is what keeps these from being vacuously true.
+    for (const path of [MONEY_PATHS.BETS, MONEY_PATHS.CASINO_SETTLEMENT, MONEY_PATHS.KYC]) {
+      const row = rows.find((r) => r.path === path);
+      expect({ path, missing: row.missing }).toEqual({ path, missing: ['implemented'] });
+      expect(row.cutoverEligible).toBe(false);
+    }
 
-    // A path with genuinely nothing built still reports all four, which is what
-    // makes the list above meaningful rather than vacuous.
-    const casino = rows.find((r) => r.path === MONEY_PATHS.CASINO_SETTLEMENT);
-    expect(casino.missing).toEqual(
-      expect.arrayContaining(['implemented', 'dualWrite', 'reconciled', 'rollback']));
+    // The other side of it: `missing` is empty exactly when all four hold, so
+    // the lists above are reporting real absences rather than always non-empty.
+    const wallet = rows.find((r) => r.path === MONEY_PATHS.WALLET);
+    expect(wallet.missing).toEqual([]);
+    expect(wallet.cutoverEligible).toBe(true);
   });
 
   it('holds merchant settlement on its DEPENDENCIES, not on its capabilities', () => {
