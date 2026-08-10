@@ -7,6 +7,9 @@
 
 import { express, mongoose, authenticate, hasPermission, getModels } from '../../routes/admin/_adminShared.js';
 import { creditDeposit, creditWinnings } from '../wallet/walletAuthority.service.js';
+// The order state machine. Every status change goes through here so an illegal
+// move is refused by the database rather than by whichever check ran first.
+import { completeOrder, cancelOrder } from './orderLifecycle.service.js';
 import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
 import { emitAdminUpdate, emitOrderUpdate, emitWalletUpdate } from '../notification/realtimeEmitters.js';
 
@@ -66,27 +69,56 @@ router.post('/payment-orders/:orderId/action', authenticate, hasPermission('canR
       return res.status(400).json({ success: false, message: `Order already ${order.status}` });
     }
 
+    // The TRANSITION IS THE GATE, and it runs before the money.
+    //
+    // This used to credit first and set the status afterwards, guarded only by
+    // the `order.status` read above — a stale value by the time `save()` ran.
+    // Two admins double-clicking APPROVE both passed that read; only
+    // creditDeposit's own idempotency key stopped the second credit, which
+    // means the protection lived in a different domain from the decision.
+    //
+    // Now the guarded update decides. Exactly one caller matches a row, and
+    // only that caller goes on to move money.
+    let moved;
     if (action === 'APPROVE') {
-      if (order.type === 'DEPOSIT') {
-        await creditDeposit(order.userId, order.tokenAmount, `Admin-approved deposit: ${order.orderId}`);
-      }
-      order.status      = 'COMPLETED';
-      order.completedAt = new Date();
-      order.adminNote   = reason || 'Force-approved by admin';
-      await order.save();
+      moved = await completeOrder(order._id, {
+        set: { completedAt: new Date(), adminNote: reason || 'Force-approved by admin' },
+      });
     } else {
-      if (order.type === 'WITHDRAWAL') {
-        await creditWinnings(order.userId, order.tokenAmount, `Cancelled withdrawal refund: ${order.orderId}`);
-      }
-      order.status          = 'CANCELLED';
-      order.cancelledAt     = new Date();
-      order.cancelReason    = reason || 'Rejected by admin';
-      order.adminNote       = reason || 'Rejected by admin';
-      await order.save();
+      moved = await cancelOrder(order._id, {
+        set: {
+          cancelledAt: new Date(),
+          cancelReason: reason || 'Rejected by admin',
+          adminNote: reason || 'Rejected by admin',
+        },
+      });
     }
 
-    emitAdminUpdate('queue_order_update', { orderId: order._id, status: order.status });
-    res.json({ success: true, message: `Order ${action}D successfully`, order });
+    if (!moved.ok) {
+      // An illegal move is a 409, not a 500: the request was understood and
+      // refused because the order is not in a state this action is valid from.
+      return res.status(409).json({
+        success: false,
+        message: `Cannot ${action} an order that is ${moved.status ?? 'missing'}`,
+        reason: moved.reason,
+      });
+    }
+
+    // `idempotent` means a previous delivery already made this move. The money
+    // side is idempotent on its own key, so re-running it is harmless — but not
+    // re-running it is clearer about what actually happened.
+    if (!moved.idempotent) {
+      if (action === 'APPROVE' && order.type === 'DEPOSIT') {
+        await creditDeposit(order.userId, order.tokenAmount, `Admin-approved deposit: ${order.orderId}`);
+      } else if (action !== 'APPROVE' && order.type === 'WITHDRAWAL') {
+        await creditWinnings(order.userId, order.tokenAmount, `Cancelled withdrawal refund: ${order.orderId}`);
+      }
+    }
+
+    const settled = moved.order ?? order;
+    emitAdminUpdate('queue_order_update', { orderId: settled._id, status: moved.status });
+    // The POST-transition document, not the stale one read at the top.
+    res.json({ success: true, message: `Order ${action}D successfully`, order: settled });
   } catch (err) {
     console.error('POST /p2p-orders/:orderId/action error:', err);
     res.status(500).json({ success: false, message: 'Failed to process order action' });

@@ -112,7 +112,18 @@ d('Hybrid money DB (Postgres dual-write)', () => {
     });
     expect(Number(row.amount_paise)).toBe(9999);          // ₹99.99 → 9999 paise, exactly
     expect(Number(row.balance_after_paise)).toBe(14999);
-    const { rows: [w] } = await pgQuery(`SELECT * FROM wallets WHERE user_id=$1`, [String(userId)]);
+
+    // The wallets snapshot needs its OWN wait, and this is the subtle part:
+    // mirrorWalletLedger writes wallet_ledger and THEN wallets, in that order,
+    // inside one fire-and-forget call. So the ledger row appearing does not
+    // mean the snapshot has landed — waiting for the first and then reading the
+    // second directly is a race that resolves correctly almost every time and
+    // fails when the runner is loaded. CI caught it doing exactly that:
+    // `Cannot read properties of undefined (reading 'deposit_paise')`.
+    const w = await eventually(async () => {
+      const { rows } = await pgQuery(`SELECT * FROM wallets WHERE user_id=$1`, [String(userId)]);
+      return rows[0];
+    });
     expect(Number(w.deposit_paise)).toBe(14999);          // snapshot follows balanceAfter
   });
 

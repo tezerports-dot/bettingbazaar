@@ -64,7 +64,16 @@ export const ORDER_TYPES = Object.freeze({ DEPOSIT: 'DEPOSIT', WITHDRAWAL: 'WITH
  * A terminal state accepts nothing — there is no entry for PENDING_QUEUE
  * because nothing transitions INTO it; that is where an order is opened.
  */
-const ALLOWED_FROM = Object.freeze({
+/**
+ * EXPORTED so the Mongo-side seam (domains/payment/orderLifecycle.service.js)
+ * guards with the SAME table rather than a copy of it.
+ *
+ * Two tables would be two rules, and they would drift the first time someone
+ * added a state to one of them — leaving a transition Postgres refuses and
+ * Mongo permits, which is the exact class of disagreement no reconciliation can
+ * distinguish from real drift. One definition, both stores.
+ */
+export const ALLOWED_FROM = Object.freeze({
   [ORDER_STATES.ASSIGNED]:   [ORDER_STATES.PENDING_QUEUE],
   [ORDER_STATES.PROCESSING]: [ORDER_STATES.ASSIGNED],
   [ORDER_STATES.PAID]:       [ORDER_STATES.PROCESSING, ORDER_STATES.ASSIGNED],

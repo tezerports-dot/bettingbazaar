@@ -75,6 +75,24 @@ const cycleSchema = new mongoose.Schema({
 // this index to enforce uniqueness atomically.
 cycleSchema.index({ type: 1, startTime: 1 }, { unique: true, name: 'cycle_type_start_unique' });
 
+// Hybrid money DB: project the settlement RUN onto the table Postgres owns, so
+// a cutover can tell a finished payout from one that stopped half way. State
+// and totals only — the per-bet outcomes come from the Bet mirror and the money
+// from the wallet ledger's, and mirroring either from here too would
+// double-count.
+//
+// These hooks are a safety net, not the mechanism. gameEngine takes the
+// settlement lock with `findOneAndUpdate` WITHOUT `new: true` (so the hook is
+// handed the PRE-update document, which still reads PENDING) and finishes with
+// `updateOne` (which hands a post hook nothing at all). Both points therefore
+// call mirrorCycleSettlement explicitly with the state they just wrote. The
+// hooks catch every other path that saves a Cycle; the mirror is idempotent on
+// cycle_id, so the two overlapping is harmless.
+import { mirrorCycleSettlement } from '../../postgres/dualWrite.js';
+
+cycleSchema.post('save', (doc) => { mirrorCycleSettlement(doc); });
+cycleSchema.post('findOneAndUpdate', (doc) => { if (doc) mirrorCycleSettlement(doc); });
+
 // ════════════════════════════════════════════════════════════════════════════
 // 🎲 BET SCHEMA - WITH BALANCE SOURCE TRACKING (FIX #4)
 // ════════════════════════════════════════════════════════════════════════════

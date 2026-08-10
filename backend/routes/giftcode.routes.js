@@ -1,5 +1,6 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import { creditWinnings, creditDeposit } from '../domains/wallet/walletAuthority.service.js';
+import { grant as grantBonus } from '../postgres/bonusPgAuthority.js';
 import express from 'express';
 import mongoose from 'mongoose';
 import { authenticate, isAdmin, isAdminOrSubAdmin } from '../domains/identity/auth.middleware.js';
@@ -44,10 +45,36 @@ router.post('/redeem', authenticate, async (req, res) => {
     // Gift code credits: WINNINGS_BALANCE → creditWinnings, others → depositBalance
     // NOTE: Only winningsBalance is withdrawable; DEPOSIT type goes to non-withdrawable deposit balance
     const txId = `giftcode_${consumed.code}_${req.user._id}`;
-    if (consumed.bonusType === 'WINNINGS_BALANCE' || consumed.bonusType === 'TOKENS') {
-      await creditWinnings(req.user._id, consumed.amount, `Gift code: ${consumed.code}`, 'GiftCode', consumed._id, txId);
-    } else {
-      await creditDeposit(req.user._id, consumed.amount, txId);
+
+    // Hybrid money DB: once Postgres owns bonuses, the giveaway is paid FROM the
+    // pool that funds it in one movement, rather than credited from nowhere.
+    // `grant` no-ops and reports source 'mongo' until that flag is flipped, so
+    // the two branches below stay the live path in the meantime.
+    const granted = await grantBonus({
+      grantId: txId, userId: req.user._id, recordType: 'GIFT_CODE',
+      amountRupees: consumed.amount, refModel: 'GiftCode', refId: consumed._id,
+      reason: `Gift code: ${consumed.code}`,
+    });
+
+    // A refused grant means the promotion is not funded. Give the code back
+    // rather than telling the user they were paid — the redemption row and the
+    // usedCount increment both have to come off, or the code is burned for
+    // nothing.
+    if (!granted.ok) {
+      await GiftCodeRedemption.deleteOne({ codeId: consumed._id, userId: req.user._id }).catch(() => {});
+      await GiftCode.findByIdAndUpdate(consumed._id, { $inc: { usedCount: -1 } }).catch(() => {});
+      return res.status(503).json({
+        success: false,
+        message: 'This reward is temporarily unavailable. Your code has not been used — please try again later.',
+      });
+    }
+
+    if (!granted.applied) {
+      if (consumed.bonusType === 'WINNINGS_BALANCE' || consumed.bonusType === 'TOKENS') {
+        await creditWinnings(req.user._id, consumed.amount, `Gift code: ${consumed.code}`, 'GiftCode', consumed._id, txId);
+      } else {
+        await creditDeposit(req.user._id, consumed.amount, txId);
+      }
     }
     await BonusRecord.create({ userId: req.user._id, type: 'GIFT_CODE', amount: consumed.amount, description: `Gift code: ${consumed.code}`, refId: consumed.code });
 

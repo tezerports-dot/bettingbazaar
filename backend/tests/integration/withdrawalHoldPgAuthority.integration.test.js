@@ -137,6 +137,39 @@ async function playerBalances(userId) {
 const freshOrder = (id) => PaymentOrder().findById(id).lean();
 const freshMerchant = (id) => Merchant().findById(id).lean();
 
+/**
+ * Poll a Mongo-side value until it settles, instead of reading it once.
+ *
+ * The reverse mirror is FIRE-AND-FORGET on purpose: Postgres has already
+ * committed, so a Mongo write must never be able to turn a settled transition
+ * into a thrown error. That is a deliberate design property, and it means the
+ * Mongo document is eventually consistent with Postgres — never synchronously
+ * so.
+ *
+ * Reading it once therefore asserts a timing guarantee the system does not
+ * make. It passes almost always and fails when the runner is loaded, which is
+ * the worst possible failure mode: a red build that says nothing about the
+ * code. CI caught exactly that on the REVERSED case — Postgres had reversed the
+ * settlement correctly and the Mongo mirror simply had not landed yet.
+ *
+ * Bounded, so a mirror that never runs still fails the test rather than hanging.
+ */
+async function settles(read, expected, ms = 4000) {
+  const start = Date.now();
+  let last;
+  for (;;) {
+    last = await read();
+    if (last === expected) return last;
+    if (Date.now() - start > ms) return last; // let the assertion report the diff
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
+const merchantTokens = (id, expected) =>
+  settles(async () => (await freshMerchant(id))?.tokenBalance, expected);
+const orderCreditStatus = (id, expected) =>
+  settles(async () => (await freshOrder(id))?.merchantCreditStatus, expected);
+
 describePg('withdrawal hold — PostgreSQL authority, both stores', () => {
   beforeEach(async () => {
     await applySchema();
@@ -163,7 +196,7 @@ describePg('withdrawal hold — PostgreSQL authority, both stores', () => {
       .toMatchObject({ available: 50_000, settlement: 0, liability: 0 });
 
     // Mongo: the same movement, in rupees, on the single field it has.
-    expect((await freshMerchant(merchant._id)).tokenBalance).toBe(500);
+    expect(await merchantTokens(merchant._id, 500)).toBe(500);
 
     // …and the LEDGER rows, which are the part that makes a fallback safe.
     // Mongo's idempotency gate is MerchantWalletLedger.findOne({ txId }); with
@@ -196,7 +229,7 @@ describePg('withdrawal hold — PostgreSQL authority, both stores', () => {
     expect(await getMerchantBalances(merchant._id.toString())).toMatchObject({ available: 50_000 });
     // The assertion that would fail if the losers wrote anything: 500, never
     // 1000, and never 10_000.
-    expect((await freshMerchant(merchant._id)).tokenBalance).toBe(500);
+    expect(await merchantTokens(merchant._id, 500)).toBe(500);
     // One reservation (1 leg) plus one completion (2 legs, settlement→available).
     // 20 callers, 3 rows: the losers wrote nothing at all.
     expect(await Ledger().countDocuments({ merchantId: merchant._id.toString() })).toBe(3);
@@ -248,7 +281,7 @@ describePg('withdrawal hold — PostgreSQL authority, both stores', () => {
     // The settlement is still RESERVED, so the settlement still decides.
     expect(await settleHold(order._id)).toBe(true);
     expect((await getSettlement(`ms_${order._id}`)).state).toBe(SETTLEMENT_STATES.SETTLED);
-    expect((await freshMerchant(merchant._id)).tokenBalance).toBe(500);
+    expect(await merchantTokens(merchant._id, 500)).toBe(500);
   });
 
   it('repairs a lagging mirror rather than re-offering the order forever', async () => {
@@ -267,7 +300,7 @@ describePg('withdrawal hold — PostgreSQL authority, both stores', () => {
     expect(o.merchantCreditStatus).toBe('RELEASED');
     expect(o.status).toBe('COMPLETED');
     // And the repair did not pay anyone a second time.
-    expect((await freshMerchant(merchant._id)).tokenBalance).toBe(500);
+    expect(await merchantTokens(merchant._id, 500)).toBe(500);
   });
 
   it('opens lazily for an order that was held before the flip', async () => {
@@ -278,7 +311,7 @@ describePg('withdrawal hold — PostgreSQL authority, both stores', () => {
 
     expect(await settleHold(order._id)).toBe(true);
     expect((await getSettlement(`ms_${order._id}`)).state).toBe(SETTLEMENT_STATES.SETTLED);
-    expect((await freshMerchant(merchant._id)).tokenBalance).toBe(500);
+    expect(await merchantTokens(merchant._id, 500)).toBe(500);
   });
 
   it('will not conjure a settlement for an order that already left the hold', async () => {
@@ -287,7 +320,7 @@ describePg('withdrawal hold — PostgreSQL authority, both stores', () => {
 
     expect(await settleHold(order._id)).toBe(false);
     expect(await getSettlement(`ms_${order._id}`)).toBeNull();
-    expect((await freshMerchant(merchant._id)).tokenBalance).toBe(0);
+    expect(await merchantTokens(merchant._id, 0)).toBe(0);
   });
 
   // ── Compensation ──────────────────────────────────────────────────────────
@@ -313,8 +346,8 @@ describePg('withdrawal hold — PostgreSQL authority, both stores', () => {
     // history says why — rather than a silent undo that leaves the merchant
     // credited for a stake the player still holds.
     expect(await getMerchantBalances(merchant._id.toString())).toMatchObject({ available: 0 });
-    expect((await freshMerchant(merchant._id)).tokenBalance).toBe(0);
-    expect((await freshOrder(order._id)).merchantCreditStatus).toBe('REVERSED');
+    expect(await merchantTokens(merchant._id, 0)).toBe(0);
+    expect(await orderCreditStatus(order._id, 'REVERSED')).toBe('REVERSED');
   });
 
   // ── The sweeper, and the pool ─────────────────────────────────────────────
@@ -326,8 +359,8 @@ describePg('withdrawal hold — PostgreSQL authority, both stores', () => {
     expect(settled).toBe(30);
 
     for (const { merchant, order } of seeded) {
-      expect((await freshMerchant(merchant._id)).tokenBalance).toBe(100);
-      expect((await freshOrder(order._id)).merchantCreditStatus).toBe('RELEASED');
+      expect(await merchantTokens(merchant._id, 100)).toBe(100);
+      expect(await orderCreditStatus(order._id, 'RELEASED')).toBe('RELEASED');
     }
     // Every settlement explained by its pockets — the reconciliation hook, run
     // over the whole batch rather than one fixture.
@@ -341,8 +374,8 @@ describePg('withdrawal hold — PostgreSQL authority, both stores', () => {
     const { merchant, user, order } = await heldWithdrawal({ tokens: 500, reserve: false });
 
     expect(await settleHold(order._id)).toBe(true);
-    expect((await freshMerchant(merchant._id)).tokenBalance).toBe(500);
-    expect((await freshOrder(order._id)).merchantCreditStatus).toBe('RELEASED');
+    expect(await merchantTokens(merchant._id, 500)).toBe(500);
+    expect(await orderCreditStatus(order._id, 'RELEASED')).toBe('RELEASED');
     expect(await playerBalances(user._id)).toMatchObject({ lockedBalance: 0, winningsBalance: 0 });
 
     // A merchant_settlements row DOES exist here, and it is not a contradiction:
