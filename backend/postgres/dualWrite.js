@@ -569,6 +569,18 @@ export function mirrorBet(doc) {
   // try/catch turns any throw into an unhandled rejection on a path that runs
   // for every bet.
   return mirror('bets', async () => {
+    // While Postgres owns the path it decides the bet's state and the reverse
+    // mirror writes Mongo. Mirroring forward as well would send the projection
+    // back as though it were the source of truth — and because reverseMirrorBet
+    // updates the Mongo document, a forward mirror racing it can overwrite a
+    // Postgres state with the value it is in the middle of replacing.
+    //
+    // bet.model.js has claimed this no-ops under Postgres authority since it was
+    // written; the gate the other three mirrors carry was simply missing here,
+    // so the comment was false.
+    const { isPostgresAuthoritative, MONEY_PATHS } = await import('./moneyAuthority.js');
+    if (isPostgresAuthoritative(MONEY_PATHS.BETS)) return;
+
     const status = BET_STATUS_FROM_MONGO[doc.status];
     if (!status) return;
 

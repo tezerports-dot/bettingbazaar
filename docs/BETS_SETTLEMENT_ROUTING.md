@@ -28,6 +28,54 @@ many bets are in it. `Bet.find({cycleId, …})` immediately above the first one
 loads that same set, so the population is already known to be unbounded in the
 code's own shape.
 
+## CORRECTION — the scale argument below was wrong
+
+**Added after re-reading `gameEngine.js`. The paragraphs that follow overstate
+the problem, and the correction makes this job considerably smaller.**
+
+The claim was that routing replaces *one statement* with *N transactions*. That
+is not what the code does. The per-bet loop **already exists**, immediately
+above the bulk update:
+
+```js
+const losingBets = await Bet.find({ cycleId, side: { $ne: winner }, status: 'PENDING' });
+
+for (const bet of losingBets) {                    // ← N sequential awaited
+  await unlockLostBet(bet.userId, bet.amount, …);  //   wallet operations, today
+}
+
+await Bet.updateMany(…, { $set: { status: 'LOST' } });   // ← only the status stamp
+```
+
+So the Mongo path already performs N awaited wallet operations per cycle. The
+`updateMany` is a status stamp layered on top of work that is already per-bet.
+
+Routing to `betPg.loseBet` therefore replaces **N wallet ops + 1 bulk stamp**
+with **N transactions that do both atomically**. That is the same order of work
+and arguably fewer round trips, not a new N. The throughput objection does not
+hold, and neither does the "hot path of a game loop" framing — the loop is
+already there.
+
+What remains true and still matters:
+
+- **It must be all-or-nothing.** Routing the losing side and not the winning
+  side leaves some bet transitions authoritative in Postgres and others in
+  Mongo — the exact split `docs/ORDERS_ROUTING_DESIGN.md` exists to prevent, and
+  which no reconciliation can tell apart from genuine disagreement.
+- **Option B below is still the better shape**, now for atomicity rather than
+  throughput: one transaction per user, locking that user's wallet once, keeps
+  the state change and the payout together without inverting the lock ordering.
+- **`slicesFromBet` is required on every settle.** `betPg.settle` refuses to
+  return a stake without its funding provenance, deliberately — returning a
+  deposit-funded stake into `winningsBalance` is a cash-out route.
+
+I am leaving the original analysis below rather than deleting it, because the
+mistake is instructive: I reasoned about the shape of the *statement* rather
+than the shape of the *loop around it*, and concluded a tractable change was
+dangerous. Reading one function further up would have shown it.
+
+---
+
 ## Why this is not the same job as the other domains
 
 Every settlement path routed so far moved a bounded number of rows per call —
