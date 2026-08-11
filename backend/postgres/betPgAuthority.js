@@ -42,7 +42,7 @@ import mongoose from 'mongoose';
 import { rupeesToPaise, paiseToRupees } from '../shared/money.js';
 import { isPostgresAuthoritative, MONEY_PATHS } from './moneyAuthority.js';
 import {
-  placeBet as placeBetPg, BET_STATUS, winBet, loseBet, voidBet, refundBet,
+  placeBet as placeBetPg, BET_STATUS, winBet, loseBet, voidBet, refundBet, resolveBetId,
 } from './betPg.js';
 import { reverseMirrorBet, reverseMirrorBetRow } from './reverseMirror.js';
 
@@ -148,14 +148,27 @@ export async function settleBetOnPostgres({
   const spec = { WON: winBet, LOST: loseBet, VOID: voidBet, REFUNDED: refundBet }[outcome];
   if (!spec) return { handled: true, ok: false, reason: 'unknown_outcome', outcome };
 
-  const betId = String(bet._id ?? bet.betId);
+  // The id the CALLER holds is always Mongo's, because every settlement path
+  // reads its bets from Mongo. It is not necessarily the Postgres key — see
+  // betPg.resolveBetId for why a placed bet and a mirrored bet carry it in
+  // different columns.
+  const mongoId = String(bet._id ?? bet.betId);
   const slices = slicesFromBet(bet);
   // Legacy bets carry 0/0/0 provenance, from before the split was recorded.
   // Refusing is deliberate: `settle` would throw on the mismatch anyway, and a
   // caller that silently skipped would report a clean settlement pass over bets
   // whose stakes are still locked.
   if (!slices.length) {
-    return { handled: true, ok: false, reason: 'no_funding_slices', betId };
+    return { handled: true, ok: false, reason: 'no_funding_slices', betId: mongoId };
+  }
+
+  const betId = await resolveBetId(mongoId);
+  if (!betId) {
+    // Not in Postgres at all. Reported rather than skipped: under Postgres
+    // authority this bet cannot be settled and its stake stays locked, which is
+    // precisely what findIncompleteSettlements exists to surface. `--backfill`
+    // is the repair — adoption is step 1 of the cutover for this reason.
+    return { handled: true, ok: false, reason: 'not_found', betId: mongoId };
   }
 
   const result = await spec({
@@ -172,9 +185,15 @@ export async function settleBetOnPostgres({
 
   // Mongo follows. AWAITED — the settlement pass reads bet status back to decide
   // what still needs paying, and the recovery task sweeps on it.
+  //
+  // `mongo_id` is the MONGO id, not the Postgres key: reverseMirrorBetRow uses
+  // it as the document's `_id`, and for a bet placed on Postgres those two are
+  // different strings. Writing the Postgres key there would upsert a SECOND
+  // Mongo document under an id nothing else refers to, leaving the real one at
+  // PENDING — a settled bet the whole system still believes is open.
   if (!result.idempotent && result.bet) {
     await reverseMirrorBetRow({
-      bet_id: betId, mongo_id: betId,
+      bet_id: betId, mongo_id: mongoId,
       user_id: String(bet.userId), cycle_id: bet.cycleId, side: bet.side,
       stake_paise: rupeesToPaise(Number(bet.amount) || 0),
       payout_paise: rupeesToPaise(Number(payoutRupees) || 0),

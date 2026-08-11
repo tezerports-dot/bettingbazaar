@@ -257,6 +257,29 @@ const MUTATIONS = [
     from: `    notAdopted: attempted.length - landed.size,`,
     to: `    notAdopted: 0,`,
   },
+
+  // ── A bet's two identities ────────────────────────────────────────────────
+  {
+    id: 'M28', file: 'backend/postgres/betPgAuthority.js', config: UNIT,
+    test: 'backend/tests/unit/betPgAuthorityRouting.test.js',
+    why: 'settlement uses the Mongo id as the Postgres key — every placed bet refused',
+    from: `  const betId = await resolveBetId(mongoId);`,
+    to: `  const betId = mongoId;`,
+  },
+  {
+    id: 'M29', file: 'backend/postgres/betPgAuthority.js', config: UNIT,
+    test: 'backend/tests/unit/betPgAuthorityRouting.test.js',
+    why: 'the reverse mirror writes the Postgres key as the Mongo _id — a second document',
+    from: `      bet_id: betId, mongo_id: mongoId,`,
+    to: `      bet_id: betId, mongo_id: betId,`,
+  },
+  {
+    id: 'M30', file: 'backend/postgres/betPg.js', config: PG,
+    test: 'backend/tests/postgres/betSettlementPg.test.js',
+    why: 'resolveBetId stops looking at mongo_id, so a placed bet is unreachable',
+    from: `    \`SELECT bet_id FROM bets WHERE bet_id = $1 OR mongo_id = $1 LIMIT 1\`,`,
+    to: `    \`SELECT bet_id FROM bets WHERE bet_id = $1 LIMIT 1\`,`,
+  },
 ];
 
 const only = process.argv[2];

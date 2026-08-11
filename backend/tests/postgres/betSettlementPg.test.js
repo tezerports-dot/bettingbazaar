@@ -21,8 +21,9 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../../postgres/pgClient.js';
 import { applyDeltaPaise } from '../../postgres/walletPg.js';
-import { BET_STATUS, placeBet, winBet, loseBet, getBet } from '../../postgres/betPg.js';
+import { BET_STATUS, placeBet, winBet, loseBet, getBet, resolveBetId } from '../../postgres/betPg.js';
 import { reconcileBetStates } from '../../postgres/reconcile.js';
+import { mongoIdFor } from '../../postgres/betPgAuthority.js';
 
 const hasPg = pgConfigured();
 const describePg = hasPg ? describe : describe.skip;
@@ -146,6 +147,88 @@ describePg('the retained platform fee (PostgreSQL)', () => {
     // new column. No Mongo here, so it can only report; that is enough to
     // prove the SELECT is valid SQL against the deployed schema.
     await expect(reconcileBetStates({ limit: 10 })).rejects.toThrow();
+  });
+});
+
+/**
+ * A bet has two identities, and settlement only ever holds one of them.
+ *
+ * Every settlement path reads its bets from MONGO — gameEngine's `Bet.find` for
+ * the losing side and its aggregation for the winners — so the id it hands to
+ * the authority is always the Mongo `_id`. But a bet PLACED under Postgres
+ * authority has `bet_id` = the idempotency key and `mongo_id` = the ObjectId
+ * derived from it, while a bet MIRRORED from Mongo has `bet_id` = the Mongo
+ * `_id` and no `mongo_id` at all.
+ *
+ * So settling by the Mongo id alone matched nothing for every bet the routed
+ * placement path had created: refused `not_found`, stake still locked, on
+ * exactly the configuration the routing exists to support. These pin the
+ * translation, in both directions of origin.
+ */
+describePg('resolving a bet by whichever id the caller holds', () => {
+  beforeAll(async () => { await applySchema(); });
+
+  beforeEach(async () => {
+    await pgQuery('TRUNCATE bet_transitions, bets, wallet_ledger, wallets RESTART IDENTITY CASCADE');
+    await fund('depositBalance', 1_000_000, 'fee_seed');
+  });
+
+  it('finds a POSTGRES-placed bet by its derived Mongo _id', async () => {
+    const key = 'bet_pgfee_placed';
+    const mongoId = mongoIdFor(key);
+    await placeBet({
+      betId: key, mongoId, userId: U, cycleId: 'fee-cycle', side: 'DELHI',
+      slices: [{ field: 'depositBalance', amountPaise: 10_000 }],
+    });
+
+    // The two are genuinely different strings — otherwise this proves nothing.
+    expect(mongoId).not.toBe(key);
+    expect(await resolveBetId(mongoId)).toBe(key);
+    // …and by its own key, for any caller that already holds it.
+    expect(await resolveBetId(key)).toBe(key);
+  });
+
+  it('finds a MIRRORED bet, whose bet_id IS the Mongo _id and whose mongo_id is null', async () => {
+    const { mirrorBet } = await import('../../postgres/dualWrite.js');
+    await mirrorBet({
+      _id: '507f1f77bcf86cd799439011', userId: U, cycleId: 'fee-cycle',
+      side: 'DELHI', amount: 100, status: 'PENDING', timestamp: new Date(),
+    });
+
+    expect(await resolveBetId('507f1f77bcf86cd799439011')).toBe('507f1f77bcf86cd799439011');
+  });
+
+  it('returns null for a bet Postgres has never seen', async () => {
+    // Not an error: it is what tells the settlement pass to REPORT the bet
+    // rather than settle it, so `--backfill` can adopt it.
+    expect(await resolveBetId('507f1f77bcf86cd799439099')).toBeNull();
+    expect(await resolveBetId(null)).toBeNull();
+  });
+
+  it('SETTLES a Postgres-placed bet addressed by its Mongo _id', async () => {
+    // The end-to-end shape of the bug: this is exactly what gameEngine does.
+    const key = 'bet_pgfee_settle';
+    const mongoId = mongoIdFor(key);
+    await placeBet({
+      betId: key, mongoId, userId: U, cycleId: 'fee-cycle', side: 'DELHI',
+      slices: [{ field: 'depositBalance', amountPaise: 10_000 }],
+    });
+
+    // Before the fix this returned { ok: false, reason: 'not_found' }.
+    const resolved = await resolveBetId(mongoId);
+    const r = await winBet({
+      betId: resolved, userId: U,
+      slices: [{ field: 'depositBalance', amountPaise: 10_000 }],
+      payoutPaise: 19_800, platformFeePaise: 200,
+    });
+
+    expect(r).toMatchObject({ ok: true, idempotent: false });
+    expect((await getBet(key)).status).toBe(BET_STATUS.WON);
+
+    // And the stake actually left `locked` — a settle that reported success
+    // without moving money would satisfy the status assertion alone.
+    const { rows } = await pgQuery(`SELECT locked_paise FROM wallets WHERE user_id = $1`, [U]);
+    expect(Number(rows[0].locked_paise)).toBe(0);
   });
 });
 

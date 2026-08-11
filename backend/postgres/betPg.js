@@ -113,6 +113,37 @@ export async function getBet(betId) {
   return rowToBet(rows[0]);
 }
 
+/**
+ * The canonical `bet_id` for a key that may be either one — or null.
+ *
+ * A bet has TWO identities and which one you hold depends on where it was born:
+ *
+ *   placed on Postgres   bet_id = the idempotency key (`bet_<user>_<key>`)
+ *                        mongo_id = the ObjectId DERIVED from that key
+ *   mirrored from Mongo  bet_id = the Mongo `_id`, mongo_id = NULL
+ *
+ * Settlement reads its bets from MONGO in both cases — gameEngine's `Bet.find`
+ * and its winner aggregation — so the id it holds is always the Mongo `_id`,
+ * which matches `bet_id` for a mirrored bet and `mongo_id` for a placed one.
+ * Settling by the Mongo id alone therefore found nothing for every bet the
+ * routed placement path had created, and refused it as `not_found` with the
+ * stake still locked. Verified against a real PostgreSQL before it was fixed;
+ * `betSettlementPg.test.js` keeps it verified.
+ *
+ * One indexed lookup per settle. Both columns carry a UNIQUE index, and there
+ * is no way to avoid it: Mongo does not store the Postgres key, so the
+ * translation has to happen somewhere.
+ */
+export async function resolveBetId(idOrMongoId) {
+  if (!idOrMongoId) return null;
+  const key = String(idOrMongoId);
+  const { rows } = await pgQuery(
+    `SELECT bet_id FROM bets WHERE bet_id = $1 OR mongo_id = $1 LIMIT 1`,
+    [key], 'bet_resolve_id',
+  );
+  return rows[0]?.bet_id ?? null;
+}
+
 /** Its transition history, oldest first. Append-only in the database. */
 export async function getBetHistory(betId) {
   const { rows } = await pgQuery(

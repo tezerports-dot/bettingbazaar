@@ -26,17 +26,25 @@ vi.mock('../../postgres/moneyAuthority.js', async (importOriginal) => {
   return { ...actual, isPostgresAuthoritative: () => authoritative.value };
 });
 
+const settlePg = vi.hoisted(() => ({ calls: [], result: null, resolved: undefined }));
+
 vi.mock('../../postgres/betPg.js', () => ({
   BET_STATUS: { PENDING: 'PENDING', WON: 'WON', LOST: 'LOST', VOID: 'VOID', REFUNDED: 'REFUNDED' },
   placeBet: (args) => { pg.calls.push(args); return pg.result; },
+  resolveBetId: async (id) => (settlePg.resolved === undefined ? String(id) : settlePg.resolved),
+  winBet: async (args) => { settlePg.calls.push({ op: 'win', ...args }); return settlePg.result; },
+  loseBet: async (args) => { settlePg.calls.push({ op: 'lose', ...args }); return settlePg.result; },
+  voidBet: async (args) => { settlePg.calls.push({ op: 'void', ...args }); return settlePg.result; },
+  refundBet: async (args) => { settlePg.calls.push({ op: 'refund', ...args }); return settlePg.result; },
 }));
 
 const reverseMirrorBet = vi.fn();
-vi.mock('../../postgres/reverseMirror.js', () => ({ reverseMirrorBet }));
+const reverseMirrorBetRow = vi.fn();
+vi.mock('../../postgres/reverseMirror.js', () => ({ reverseMirrorBet, reverseMirrorBetRow }));
 vi.mock('mongoose', () => ({ default: { model: () => ({ findById: () => ({ lean: async () => null }) }) } }));
 
 const {
-  placeBet, mongoIdFor, sourcesFromSlices, slicesFromBet, onPostgres,
+  placeBet, mongoIdFor, sourcesFromSlices, slicesFromBet, onPostgres, settleBetOnPostgres,
 } = await import('../../postgres/betPgAuthority.js');
 
 const slices = [
@@ -47,12 +55,86 @@ const slices = [
 beforeEach(() => {
   vi.clearAllMocks();
   pg.calls.length = 0;
+  settlePg.calls.length = 0;
+  settlePg.resolved = undefined;
+  settlePg.result = { ok: true, idempotent: false, bet: { status: 'WON', settledAt: new Date(9) } };
   authoritative.value = true;
   pg.result = {
     ok: true, idempotent: false,
     bet: { betId: 'bet_u1_k1', placedAt: new Date(5) },
     balances: { depositBalance: 70_000, winningsBalance: 40_000, lockedBalance: 30_000 },
   };
+});
+
+describe('settling: the two identities a bet carries', () => {
+  const mongoDoc = (over = {}) => ({
+    _id: mongoIdFor('bet_u1_k1'), userId: 'u1', cycleId: 'c1', side: 'DELHI',
+    amount: 100, fromDepositBalance: 100, fromWinningsBalance: 0, fromReserveBalance: 0,
+    timestamp: new Date(1), ...over,
+  });
+
+  it('settles the POSTGRES key, not the Mongo id it was handed', async () => {
+    // Every settlement path reads its bets from Mongo, so the id the caller
+    // holds is the Mongo `_id`. A bet placed under Postgres authority is keyed
+    // on the idempotency key instead, with the Mongo id in `mongo_id` — so
+    // settling by the id in hand matched no row and refused `not_found` with
+    // the stake still locked.
+    settlePg.resolved = 'bet_u1_k1';
+    const r = await settleBetOnPostgres({ bet: mongoDoc(), outcome: 'WON', payoutRupees: 198, platformFeeRupees: 2 });
+
+    expect(r).toMatchObject({ handled: true, ok: true });
+    expect(settlePg.calls[0]).toMatchObject({ op: 'win', betId: 'bet_u1_k1', payoutPaise: 19_800, platformFeePaise: 200 });
+  });
+
+  it('mirrors back to the MONGO id, not the Postgres key', async () => {
+    // reverseMirrorBetRow uses `mongo_id` as the document's `_id`. Writing the
+    // Postgres key there would upsert a SECOND document under an id nothing
+    // refers to, leaving the real one PENDING — a settled bet the rest of the
+    // system still believes is open.
+    settlePg.resolved = 'bet_u1_k1';
+    await settleBetOnPostgres({ bet: mongoDoc(), outcome: 'WON', payoutRupees: 198, platformFeeRupees: 2 });
+
+    expect(reverseMirrorBetRow).toHaveBeenCalledWith(expect.objectContaining({
+      bet_id: 'bet_u1_k1',
+      mongo_id: mongoIdFor('bet_u1_k1'),
+      platform_fee_paise: 200,
+    }));
+  });
+
+  it('REFUSES a bet Postgres has never seen rather than settling something else', async () => {
+    settlePg.resolved = null;
+    const r = await settleBetOnPostgres({ bet: mongoDoc(), outcome: 'LOST' });
+
+    expect(r).toMatchObject({ handled: true, ok: false, reason: 'not_found' });
+    expect(settlePg.calls).toHaveLength(0);
+    expect(reverseMirrorBetRow).not.toHaveBeenCalled();
+  });
+
+  it('refuses a bet with no funding slices BEFORE spending a lookup on it', async () => {
+    const r = await settleBetOnPostgres({
+      bet: mongoDoc({ fromDepositBalance: 0, fromWinningsBalance: 0, fromReserveBalance: 0 }),
+      outcome: 'LOST',
+    });
+
+    expect(r).toMatchObject({ handled: true, ok: false, reason: 'no_funding_slices' });
+    expect(settlePg.calls).toHaveLength(0);
+  });
+
+  it('reports handled:false while MongoDB owns the path, touching nothing', async () => {
+    authoritative.value = false;
+    const r = await settleBetOnPostgres({ bet: mongoDoc(), outcome: 'LOST' });
+
+    expect(r).toEqual({ handled: false });
+    expect(settlePg.calls).toHaveLength(0);
+  });
+
+  it('does not re-mirror a settlement that had already happened', async () => {
+    settlePg.result = { ok: true, idempotent: true, bet: { status: 'WON' } };
+    const r = await settleBetOnPostgres({ bet: mongoDoc(), outcome: 'WON', payoutRupees: 198 });
+
+    expect(r).toMatchObject({ ok: true, idempotent: true });
+    expect(reverseMirrorBetRow).not.toHaveBeenCalled();
+  });
 });
 
 describe('the Mongo _id derived from the idempotency key', () => {
