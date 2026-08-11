@@ -13,10 +13,12 @@ import { signToken } from '../../domains/identity/paseto.util.js';
 import mongoose from 'mongoose';
 import '../../models/index.js';
 import merchantRoutes from '../../domains/merchant/merchant.routes.js';
+import paymentRoutes from '../../domains/payment/payment.routes.js';
 
 const app = express();
 app.use(express.json());
 app.use('/api/merchant', merchantRoutes); // mirror server.js
+app.use('/api/payment', paymentRoutes);
 
 const Merchant     = () => mongoose.model('Merchant');
 const User         = () => mongoose.model('User');
@@ -99,6 +101,64 @@ describe('merchant deposit completion funds reserve (Phase X)', () => {
     expect(u.depositBalance).toBe(order.depositAllocation); // 900
     expect(u.reserveBalance).toBe(order.reserveAllocation); // 100 — was 0 before the fix
     expect(u.depositBalance + u.reserveBalance).toBe(order.tokenAmount);
+  });
+
+  // ── The third route, and the one that did not conserve ────────────────────
+  //
+  // payment.routes.js POST /deposit/:orderId/confirm debited the merchant
+  // `depositAllocation || tokenAmount` and credited the user
+  // `depositAllocation + reserveAllocation`. Under the default 90/10 policy
+  // that is 900 out of the merchant and 1000 into the user — 100 tokens per
+  // ₹1000 deposit appearing from nowhere, on the live path, breaking the
+  // closing invariant every conservation check is built on.
+  //
+  // The unit test drives the handler with the services stubbed; this one runs
+  // it against real balances, which is what makes the arithmetic above a
+  // measurement rather than a reading.
+  it('PAYMENT CONFIRM path: debits the merchant exactly what it credits the user', async () => {
+    const { merchant, user, order } = await seed();
+    expect(order.reserveAllocation).toBeGreaterThan(0); // otherwise this proves nothing
+
+    const res = await request(app)
+      .post(`/api/payment/deposit/${order.orderId}/confirm`)
+      .set('Authorization', merchantToken(merchant._id))
+      .send({});
+    expect(res.status).toBe(200);
+
+    const u = await User().findById(user._id).lean();
+    const m = await Merchant().findById(merchant._id).lean();
+
+    const credited = u.depositBalance + u.reserveBalance;
+    const debited  = 100000 - m.tokenBalance;
+
+    expect(u.depositBalance).toBe(order.depositAllocation);
+    expect(u.reserveBalance).toBe(order.reserveAllocation);
+    expect(credited).toBe(order.tokenAmount);
+    // The assertion the bug failed: tokens are MOVED, never created.
+    expect(debited).toBe(credited);
+  });
+
+  it('PAYMENT CONFIRM path conserves for an order with no recorded split', async () => {
+    // An order predating the split fields reads 0/0 through a hydrated
+    // document. Crediting that literally would debit the merchant in full and
+    // credit the user nothing — burning tokens rather than creating them, which
+    // is the same invariant broken in the other direction.
+    const { merchant, user, order } = await seed();
+    await PaymentOrder().updateOne(
+      { _id: order._id }, { $set: { depositAllocation: 0, reserveAllocation: 0 } },
+    );
+
+    const res = await request(app)
+      .post(`/api/payment/deposit/${order.orderId}/confirm`)
+      .set('Authorization', merchantToken(merchant._id))
+      .send({});
+    expect(res.status).toBe(200);
+
+    const u = await User().findById(user._id).lean();
+    const m = await Merchant().findById(merchant._id).lean();
+
+    expect(u.depositBalance + u.reserveBalance).toBe(order.tokenAmount);
+    expect(100000 - m.tokenBalance).toBe(order.tokenAmount);
   });
 
   it('X-9: two concurrent approvals settle exactly once (no double-credit)', async () => {

@@ -384,7 +384,7 @@ export function reverseMirrorAdminSupply({ minted, cap }) {
  */
 export function reverseMirrorBet(doc) {
   return mirrorBack('bets', async () => {
-    const { _id, status, settledAt, payout, ...immutable } = doc;
+    const { _id, status, settledAt, payout, platformFee, ...immutable } = doc;
     await mongoose.model('Bet').updateOne(
       { _id },
       {
@@ -392,6 +392,11 @@ export function reverseMirrorBet(doc) {
           status,
           ...(settledAt ? { settledAt } : {}),
           ...(payout !== undefined ? { payout } : {}),
+          // Written alongside the payout because the settlement decided both at
+          // once. `Cycle.totalPlatformFees` sums this over the cycle's WON bets,
+          // so a mirror that carried the payout and not the fee would leave the
+          // accounting itemisation reading zero on every Postgres-settled cycle.
+          ...(platformFee !== undefined ? { platformFee } : {}),
         },
         $setOnInsert: immutable,
       },
@@ -541,6 +546,13 @@ export function reverseMirrorBetRow(row) {
     status: row.status,
     ...(row.settled_at ? { settledAt: row.settled_at } : {}),
     ...(Number(row.payout_paise) ? { payout: rupees(row.payout_paise) } : {}),
+    // Guarded on the column being PRESENT rather than non-zero, unlike the
+    // payout above: a settlement that legitimately retained nothing (0% fee)
+    // must still be able to write 0 over a stale value, and a row selected
+    // without the column must not write `undefined` over a real one.
+    ...(row.platform_fee_paise !== undefined && row.platform_fee_paise !== null
+      ? { platformFee: rupees(row.platform_fee_paise) }
+      : {}),
     timestamp: row.placed_at,
   });
 }
@@ -564,6 +576,107 @@ export function reverseMirrorPaymentOrder(row) {
           fiatAmount: rupees(row.fiat_amount_paise),
           tokenAmount: rupees(row.token_amount_paise),
           createdAt: row.created_at,
+        },
+      },
+      { upsert: true },
+    );
+  });
+}
+
+/**
+ * order_states row → PaymentOrder.status, plus the fields that belong WITH the
+ * transition that produced it.
+ *
+ * ── Why this is not reverseMirrorPaymentOrder ───────────────────────────────
+ * `payment_orders` is a MIRROR: the Mongo document projected forward on every
+ * save, overwritten in place, with no history and no guard. `order_states` is
+ * the authoritative lifecycle. When Postgres owns the ORDERS path the direction
+ * inverts for the lifecycle only — the state is decided here and Mongo follows —
+ * while `payment_orders` keeps being written the other way by dualWrite. Using
+ * one function for both would send the projection back as though it were the
+ * source of truth and reintroduce exactly the loop the two tables exist to
+ * avoid. They are different tables on purpose.
+ *
+ * `set` carries the transition's own fields (completedAt, cancelReason, a UTR)
+ * because a Mongo document found in the new state without the facts that
+ * justify it is the window the seam's single-update rule exists to close — and
+ * a reverse mirror that only wrote the status would reopen it here.
+ */
+export function reverseMirrorOrderState(row, set = {}) {
+  return mirrorBack('order_states', async () => {
+    await mongoose.model('PaymentOrder').updateOne(
+      { _id: row.order_id },
+      {
+        $set: {
+          status: row.state,
+          ...(row.merchant_id === undefined ? {} : { merchantId: row.merchant_id || null }),
+          ...set,
+          updatedAt: row.updated_at || new Date(),
+        },
+      },
+    );
+  });
+}
+
+/**
+ * user_kyc row → the User document's KYC decision fields. The rollback leg for
+ * domain 11.
+ *
+ * Separate from reverseMirrorUserKyc, which pushes the whole record back
+ * including the submitted documents. This one carries a DECISION — status,
+ * reason, reviewer — and is called per transition while Postgres is
+ * authoritative, so an approval is visible to every KYC gate in the app
+ * immediately rather than at the next sweep.
+ *
+ * The reason lands in `kycData.rejectionReason`, which is the field
+ * domains/user/kycPublicData.js actually reads. The Mongo route intended to
+ * write `user.kyc.rejectionReason` — a path the schema does not have — so
+ * mirroring to the same wrong place would faithfully reproduce the bug.
+ */
+export function reverseMirrorUserKycStatus(row) {
+  return mirrorBack('user_kyc', async () => {
+    const set = { kycStatus: row.kyc_status };
+    if (row.reviewed_by) set['kycData.reviewedBy'] = row.reviewed_by;
+    if (row.reviewed_at) set['kycData.reviewedAt'] = row.reviewed_at;
+    const update = { $set: set };
+    // An approved user must not keep the reason they were once refused — the
+    // projection shows it whenever the status is REJECTED, and a stale value
+    // would reappear the next time they were rejected for something else.
+    if (row.rejection_reason) set['kycData.rejectionReason'] = row.rejection_reason;
+    else update.$unset = { 'kycData.rejectionReason': '' };
+
+    await mongoose.model('User').updateOne({ _id: row.user_id }, update);
+  });
+}
+
+/**
+ * A casino round + its callback → the GameTransaction document. Domain 9's
+ * rollback leg.
+ *
+ * Keyed on the PROVIDER's tx id, which is the same idempotency gate the forward
+ * mirror and `casinoPg.recordCallback` use — so a redelivered webhook produces
+ * one document however many times it arrives and whichever direction is live.
+ *
+ * `balanceBefore`/`balanceAfter` are deliberately NOT reconstructed. They are a
+ * snapshot of the wallet at the instant the callback ran, and the wallet is a
+ * different path with its own authority flag; inventing them here from a later
+ * read would write a number that was never true. The player's balance comes
+ * from the wallet's own mirror.
+ */
+export function reverseMirrorCasinoRound({ round, transaction }) {
+  return mirrorBack('casino_rounds', async () => {
+    if (!transaction?.tx_id) return;
+    await mongoose.model('GameTransaction').updateOne(
+      { txId: String(transaction.tx_id) },
+      {
+        $setOnInsert: {
+          txId:        String(transaction.tx_id),
+          roundId:     String(transaction.round_id),
+          userId:      transaction.user_id,
+          type:        transaction.tx_type,
+          amount:      rupees(transaction.amount_paise),
+          providerKey: transaction.provider_key ?? round?.providerKey ?? 'unknown',
+          gameId:      transaction.game_id ?? round?.gameId ?? '',
         },
       },
       { upsert: true },

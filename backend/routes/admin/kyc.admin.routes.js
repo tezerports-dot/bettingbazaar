@@ -1,6 +1,10 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** kyc.admin.routes.js — KYC queue, approve, reject */
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, hasPermission, getModels } from './_adminShared.js';
+// The KYC state machine. Every decision goes through here, so an illegal one is
+// refused by the database rather than by whichever request finished last — and
+// the reason and reviewer land in the fields that are actually read.
+import { approveKyc, rejectKyc } from '../../domains/user/kycDecision.service.js';
 
 const router = express.Router();
 
@@ -34,12 +38,20 @@ router.post('/kyc/:userId/approve', authenticate, hasPermission('canVerifyKYC'),
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    user.kycStatus = 'APPROVED';
-    if (user.kyc) {
-      user.kyc.reviewedBy = req.user._id;
-      user.kyc.reviewedAt = new Date();
+    // THE DECISION IS THE GATE. This used to read the user, assign the status
+    // and save — a read-modify-write on a stale read, so two reviewers acting
+    // at once both passed and the last save won with no record of the other.
+    //
+    // The reviewer is now recorded, which it was not: `user.kyc` is not a path
+    // on the User schema (only `kycData` is), so the block that set reviewedBy
+    // never executed and every approval on this route was anonymous.
+    const decided = await approveKyc(user._id, { actor: req.user._id });
+    if (!decided.ok) {
+      return res.status(409).json({
+        success: false,
+        message: `Cannot approve KYC from ${decided.status ?? 'unknown'} status`,
+      });
     }
-    await user.save();
 
     // REALTIME: Notify admin room and user
     if (global.io) {
@@ -73,7 +85,7 @@ router.post('/kyc/:userId/approve', authenticate, hasPermission('canVerifyKYC'),
     } catch (auditErr) {
       console.error('[KYC audit] Failed to write audit log:', auditErr.message);
     }
-    res.json({ success: true, message: 'KYC approved successfully', user });
+    res.json({ success: true, message: 'KYC approved successfully', user: decided.user ?? user });
   } catch (error) {
     console.error('Approve KYC error:', error);
     res.status(500).json({ success: false, message: 'Failed to approve KYC' });
@@ -91,13 +103,23 @@ router.post('/kyc/:userId/reject', authenticate, hasPermission('canVerifyKYC'), 
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    user.kycStatus = 'REJECTED';
-    if (user.kyc) {
-      user.kyc.reviewedBy = req.user._id;
-      user.kyc.reviewedAt = new Date();
-      user.kyc.rejectionReason = reason;
+    // The reason is REQUIRED and is written to `kycData.rejectionReason` — the
+    // field domains/user/kycPublicData.js actually shows the user.
+    //
+    // It was assigned to `user.kyc.rejectionReason`, and the User schema has no
+    // `kyc` subdocument, so the guarded block never ran and the reason was
+    // dropped. Every rejected user was told they were rejected and never told
+    // why, which left them unable to fix the submission and resubmit.
+    if (!reason?.trim()) {
+      return res.status(400).json({ success: false, message: 'A rejection reason is required — it is what the user is shown.' });
     }
-    await user.save();
+    const decided = await rejectKyc(user._id, { actor: req.user._id, reason: reason.trim() });
+    if (!decided.ok) {
+      return res.status(409).json({
+        success: false,
+        message: `Cannot reject KYC from ${decided.status ?? 'unknown'} status`,
+      });
+    }
 
     // REALTIME: Notify admin room and user
     if (global.io) {
@@ -114,7 +136,7 @@ router.post('/kyc/:userId/reject', authenticate, hasPermission('canVerifyKYC'), 
       });
     }
 
-    res.json({ success: true, message: 'KYC rejected', user });
+    res.json({ success: true, message: 'KYC rejected', user: decided.user ?? user });
   } catch (error) {
     console.error('Reject KYC error:', error);
     res.status(500).json({ success: false, message: 'Failed to reject KYC' });

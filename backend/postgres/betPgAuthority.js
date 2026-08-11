@@ -41,8 +41,10 @@ import { createHash } from 'crypto';
 import mongoose from 'mongoose';
 import { rupeesToPaise, paiseToRupees } from '../shared/money.js';
 import { isPostgresAuthoritative, MONEY_PATHS } from './moneyAuthority.js';
-import { placeBet as placeBetPg, BET_STATUS } from './betPg.js';
-import { reverseMirrorBet } from './reverseMirror.js';
+import {
+  placeBet as placeBetPg, BET_STATUS, winBet, loseBet, voidBet, refundBet, resolveBetId,
+} from './betPg.js';
+import { reverseMirrorBet, reverseMirrorBetRow } from './reverseMirror.js';
 
 /** Is Postgres the source of truth for the bet lifecycle? */
 export const onPostgres = () => isPostgresAuthoritative(MONEY_PATHS.BETS);
@@ -99,6 +101,110 @@ export function slicesFromBet(bet) {
       amountPaise: rupeesToPaise(Number(bet?.[betField]) || 0),
     }))
     .filter((s) => s.amountPaise > 0);
+}
+
+/**
+ * Settle ONE bet, with Postgres deciding when it owns the path.
+ *
+ * The other half of the domain. Placement has routed through `placeBet` for a
+ * while; settlement still wrote `Bet.status` directly in two places, which left
+ * half the lifecycle authoritative in one store and half in the other — the
+ * split docs/ORDERS_ROUTING_DESIGN.md exists to prevent.
+ *
+ * ── Why per bet is not a regression ─────────────────────────────────────────
+ * The Mongo path ALREADY settles per bet: gameEngine loops
+ * `await unlockLostBet(...)` over the losing side, and settlementService loops
+ * `creditWinnings` + `releaseLockedStake` per winner. The bulk `updateMany` /
+ * `bulkWrite` that follows is only the status stamp on top of work that is
+ * already N-at-a-time.
+ *
+ * So routing replaces *N wallet operations plus a bulk stamp* with *N
+ * transactions that do both atomically*. Same order of work, and the state and
+ * the money now commit together instead of the status being stamped after the
+ * money moved. docs/BETS_SETTLEMENT_ROUTING.md carries the correction — an
+ * earlier draft of this reasoning had it wrong.
+ *
+ * ── The funding slices are required, not defaulted ──────────────────────────
+ * `betPg.settle` refuses to settle without them, and this passes them through
+ * rather than inventing a default. Returning a deposit-funded stake into
+ * `winningsBalance` would silently convert non-withdrawable money into
+ * withdrawable, which is a cash-out route rather than a rounding error. A bet
+ * whose slices do not add up is REFUSED and reported, so the settlement pass
+ * leaves it for a human instead of guessing.
+ *
+ * ── The retained fee travels WITH the transition ────────────────────────────
+ * `platformFeeRupees` is not decoration. The Mongo path stamps status, payout
+ * and fee in one `$set`, and `Cycle.totalPlatformFees` is summed from
+ * `Bet.platformFee` over the cycle's WON bets. Routing the status and the
+ * payout while leaving the fee to a second writer would make that sum read zero
+ * for every Postgres-settled cycle — an accounting number quietly going to
+ * zero, which is the failure mode this migration exists to avoid.
+ */
+export async function settleBetOnPostgres({
+  bet, outcome, payoutRupees = 0, platformFeeRupees = 0, reason = null,
+}) {
+  if (!onPostgres()) return { handled: false };
+
+  const spec = { WON: winBet, LOST: loseBet, VOID: voidBet, REFUNDED: refundBet }[outcome];
+  if (!spec) return { handled: true, ok: false, reason: 'unknown_outcome', outcome };
+
+  // The id the CALLER holds is always Mongo's, because every settlement path
+  // reads its bets from Mongo. It is not necessarily the Postgres key — see
+  // betPg.resolveBetId for why a placed bet and a mirrored bet carry it in
+  // different columns.
+  const mongoId = String(bet._id ?? bet.betId);
+  const slices = slicesFromBet(bet);
+  // Legacy bets carry 0/0/0 provenance, from before the split was recorded.
+  // Refusing is deliberate: `settle` would throw on the mismatch anyway, and a
+  // caller that silently skipped would report a clean settlement pass over bets
+  // whose stakes are still locked.
+  if (!slices.length) {
+    return { handled: true, ok: false, reason: 'no_funding_slices', betId: mongoId };
+  }
+
+  const betId = await resolveBetId(mongoId);
+  if (!betId) {
+    // Not in Postgres at all. Reported rather than skipped: under Postgres
+    // authority this bet cannot be settled and its stake stays locked, which is
+    // precisely what findIncompleteSettlements exists to surface. `--backfill`
+    // is the repair — adoption is step 1 of the cutover for this reason.
+    return { handled: true, ok: false, reason: 'not_found', betId: mongoId };
+  }
+
+  const result = await spec({
+    betId,
+    userId: String(bet.userId),
+    slices,
+    payoutPaise: rupeesToPaise(Number(payoutRupees) || 0),
+    platformFeePaise: rupeesToPaise(Number(platformFeeRupees) || 0),
+    actor: 'settlement',
+    reason,
+  });
+
+  if (!result.ok) return { handled: true, ...result, betId };
+
+  // Mongo follows. AWAITED — the settlement pass reads bet status back to decide
+  // what still needs paying, and the recovery task sweeps on it.
+  //
+  // `mongo_id` is the MONGO id, not the Postgres key: reverseMirrorBetRow uses
+  // it as the document's `_id`, and for a bet placed on Postgres those two are
+  // different strings. Writing the Postgres key there would upsert a SECOND
+  // Mongo document under an id nothing else refers to, leaving the real one at
+  // PENDING — a settled bet the whole system still believes is open.
+  if (!result.idempotent && result.bet) {
+    await reverseMirrorBetRow({
+      bet_id: betId, mongo_id: mongoId,
+      user_id: String(bet.userId), cycle_id: bet.cycleId, side: bet.side,
+      stake_paise: rupeesToPaise(Number(bet.amount) || 0),
+      payout_paise: rupeesToPaise(Number(payoutRupees) || 0),
+      platform_fee_paise: rupeesToPaise(Number(platformFeeRupees) || 0),
+      status: result.bet.status,
+      settled_at: result.bet.settledAt ?? new Date(),
+      placed_at: bet.timestamp,
+    });
+  }
+
+  return { handled: true, ok: true, idempotent: Boolean(result.idempotent), betId };
 }
 
 /**

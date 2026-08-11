@@ -9,6 +9,9 @@
 
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels, isAdminOrSubAdminOrQueueManager } from '../../routes/admin/_adminShared.js';
 import { creditDeposit, creditWinnings } from '../wallet/walletAuthority.service.js';
+// The order state machine — the expected state is in the update's filter, so
+// two admins assigning the same order produce one winner, not a silent overwrite.
+import { assignOrder, reassignOrder } from '../payment/orderLifecycle.service.js';
 import { emitAdminUpdate, emitMerchantUpdate, emitOrderUpdate, emitWalletUpdate } from '../notification/realtimeEmitters.js';
 
 const router = express.Router();
@@ -90,13 +93,23 @@ router.post('/payment-orders/:id/assign', authenticate, isAdmin, async (req, res
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min (Section 8)
 
     // ── Snapshot: freeze payment details at assignment time (Section 8.3) ─
-    order.merchantId       = merchant._id;
-    order.merchantSnapshot = buildSnapshot(merchant, expiresAt);
-    order.status           = 'ASSIGNED';
-    order.assignedAt       = new Date();
-    order.assignedBy       = req.user._id;
-    order.expiresAt        = expiresAt;
-    await order.save();
+    const assigned = await assignOrder(order._id, {
+      set: {
+        merchantId:       merchant._id,
+        merchantSnapshot: buildSnapshot(merchant, expiresAt),
+        assignedAt:       new Date(),
+        assignedBy:       req.user._id,
+        expiresAt,
+      },
+    });
+    if (!assigned.ok || assigned.idempotent) {
+      // The automatic assigner reaches the same queued orders this route does.
+      return res.status(409).json({
+        success: false,
+        message: `Order is ${assigned.status ?? 'missing'}, cannot assign`,
+      });
+    }
+    Object.assign(order, assigned.order);
 
     // ── SSE notifications (Finding 3) ─────────────────────────────────────
     emitMerchantUpdate(merchant._id.toString(), 'new_order', {
@@ -172,13 +185,20 @@ router.post('/payment-orders/:id/reassign', authenticate, isAdminOrSubAdminOrQue
 
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-    order.merchantId       = merchant._id;
-    order.merchantSnapshot = buildSnapshot(merchant, expiresAt);   // overwrite old snapshot
-    order.status           = 'ASSIGNED';
-    order.assignedAt       = new Date();
-    order.assignedBy       = req.user._id;
-    order.expiresAt        = expiresAt;
-    await order.save();
+    // An assignee change, not a lifecycle move — see reassignOrder's comment.
+    const moved = await reassignOrder(order._id, {
+      set: {
+        merchantId:       merchant._id,
+        merchantSnapshot: buildSnapshot(merchant, expiresAt),   // overwrite old snapshot
+        assignedAt:       new Date(),
+        assignedBy:       req.user._id,
+        expiresAt,
+      },
+    });
+    if (!moved.ok) {
+      return res.status(409).json({ success: false, message: `Order is ${moved.status ?? 'missing'}, cannot reassign` });
+    }
+    Object.assign(order, moved.order);
 
     emitMerchantUpdate(merchant._id.toString(), 'new_order', {
       orderId: order._id, orderStrId: order.orderId,
@@ -467,13 +487,22 @@ router.post('/queue/assign/:orderId', authenticate, isAdminOrSubAdminOrQueueMana
 
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-    order.merchantId       = merchantDoc._id;
-    order.merchantSnapshot = buildSnapshot(merchantDoc, expiresAt);
-    order.status           = 'ASSIGNED';
-    order.assignedAt       = new Date();
-    order.assignedBy       = req.user._id;
-    order.expiresAt        = expiresAt;
-    await order.save();
+    const queueAssigned = await assignOrder(order._id, {
+      set: {
+        merchantId:       merchantDoc._id,
+        merchantSnapshot: buildSnapshot(merchantDoc, expiresAt),
+        assignedAt:       new Date(),
+        assignedBy:       req.user._id,
+        expiresAt,
+      },
+    });
+    if (!queueAssigned.ok || queueAssigned.idempotent) {
+      return res.status(409).json({
+        success: false,
+        message: `Order status is ${queueAssigned.status ?? 'missing'}, cannot assign`,
+      });
+    }
+    Object.assign(order, queueAssigned.order);
 
     if (!merchantDoc.merchantStats) merchantDoc.merchantStats = {};
     merchantDoc.merchantStats.totalOrdersProcessed = (merchantDoc.merchantStats.totalOrdersProcessed || 0) + 1;

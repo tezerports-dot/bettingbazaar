@@ -10,9 +10,14 @@ import { withdrawalLimiter } from '../../middleware/security.js';
 // Item 12: per-subnet backstop against IP rotation on withdrawal creation.
 import { createSubnetLimiter, globalSurgeBreaker } from '../../middleware/ipDefense.js';
 import { markOrderPaid, cancelOrder } from './paymentProcessing.service.js';
+// The order state machine — every status change is a guarded transition.
+import { completeOrder, disputeOrder } from './orderLifecycle.service.js';
 // Phase 009: money movement enters ONLY via the Funding Platform authority.
 import { requestDeposit, requestWithdrawal } from '../funding/fundingAuthority.service.js';
 import { creditDeposit, creditReserve } from '../wallet/walletAuthority.service.js';
+// One rule for how a confirmed deposit splits across the user's two pockets,
+// and for what the merchant is debited against it.
+import { depositCreditSplit } from './depositCredit.js';
 import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
 import { emitWalletUpdate, emitAdminUpdate, emitOrderUpdate } from '../notification/realtimeEmitters.js';
@@ -79,29 +84,60 @@ router.post('/deposit/:orderId/confirm', paymentActorAuth, async (req, res) => {
     const PaymentOrder = mongoose.model('PaymentOrder');
     const order = await PaymentOrder.findOne({ orderId: req.params.orderId }, null, withSession(session));
     if (!order || order.type !== 'DEPOSIT') { await abortOrEnd(session); return res.status(404).json({ success: false, message: 'Order not found' }); }
-    if (!['PAID','PROCESSING'].includes(order.status)) { await abortOrEnd(session); return res.status(400).json({ success: false, message: `Cannot confirm in ${order.status} status` }); }
     if (isMerchantActor && order.merchantId?.toString() !== req.merchantId.toString()) { await abortOrEnd(session); return res.status(403).json({ success: false, message: 'This order is not assigned to you' }); }
-    const depositTokens = order.depositAllocation || order.tokenAmount;
+
+    // THE TRANSITION IS THE GATE, and it runs before the money — inside the
+    // session, so an abort below unwinds it with everything else.
+    //
+    // This used to debit the merchant, credit the user and only then set the
+    // status, guarded by the `order.status` read above. Two confirms in flight
+    // (a merchant clicking while an admin force-approves is the real case) both
+    // passed that read; only the canonical txIds on the two wallet calls stopped
+    // the money moving twice. Now exactly one caller matches a row.
+    const confirmed = await completeOrder(order._id, {
+      expectFrom: ['PAID', 'PROCESSING'],
+      set: {
+        completedAt: new Date(), approvedBy: req.merchantId || req.user._id,
+        approvedAt: new Date(), updatedAt: new Date(),
+      },
+      session,
+    });
+    if (!confirmed.ok) {
+      await abortOrEnd(session);
+      return res.status(409).json({ success: false, message: `Cannot confirm in ${confirmed.status ?? 'unknown'} status` });
+    }
+    if (confirmed.idempotent) {
+      // Already completed by a previous delivery. The money moved with it.
+      await abortOrEnd(session);
+      return res.json({ success: true, message: 'Deposit already completed', order: isMerchantActor ? sanitizeOrderForMerchant(order) : order });
+    }
+    // The user's pockets are split; the merchant's side is not. This route used
+    // to debit `depositAllocation || tokenAmount` and then credit
+    // `depositAllocation + reserveAllocation` — so every deposit with a reserve
+    // share credited more than it debited, and the same canonical txId was used
+    // for two different amounts across routes. domains/payment/depositCredit.js
+    // has the rule and why it is one rule.
+    const { depositCredit, reserveCredit, total } = depositCreditSplit(order);
     // GOVERNANCE §1: via merchantWallet.service.js (sole tokenBalance writer);
     // canonical txId shared with every other deposit-deduction path.
     const { merchant: updatedMerchant } = await debitMerchantTokens({
-      merchantId: order.merchantId, amount: depositTokens,
+      merchantId: order.merchantId, amount: total,
       reason: `Deposit ${order.orderId} confirmed — tokens dispensed to user`,
       refModel: 'PaymentOrder', refId: order._id.toString(),
       txId: `mw_dep_deduct_${order._id}`, session,
     });
     if (!updatedMerchant) { await abortOrEnd(session); return res.status(400).json({ success: false, message: 'Merchant insufficient token balance' }); }
-    await creditDeposit(order.userId, depositTokens, order._id.toString(), session);
+    if (depositCredit > 0) await creditDeposit(order.userId, depositCredit, order._id.toString(), session);
     // GOVERNANCE §7: reserveBalance is written ONLY via walletAuthority now
     // (was a raw $inc with no ledger trail). Idempotent + ledgered.
-    if ((order.reserveAllocation || 0) > 0) await creditReserve(order.userId, order.reserveAllocation, order._id.toString(), session);
-    order.status = 'COMPLETED'; order.completedAt = new Date(); order.approvedBy = req.merchantId || req.user._id; order.approvedAt = new Date(); order.updatedAt = new Date();
-    await order.save(withSession(session));
+    if (reserveCredit > 0) await creditReserve(order.userId, reserveCredit, order._id.toString(), session);
     await releaseUTR(order._id);
     await mongoose.model('Transaction').create([{ userId: order.userId, type: 'DEPOSIT', amount: order.tokenAmount, balanceType: 'DEPOSIT', status: 'SUCCESS', referenceId: order._id.toString(), description: `Deposit completed: ${order.tokenAmount} tokens`, timestamp: new Date() }], withSession(session));
     await commitOrEnd(session);
     await emitWalletUpdate(order.userId);
-    res.json({ success: true, message: 'Deposit completed', order: isMerchantActor ? sanitizeOrderForMerchant(order) : order });
+    // The POST-transition document, not the stale one read at the top.
+    const settled = confirmed.order ?? order;
+    res.json({ success: true, message: 'Deposit completed', order: isMerchantActor ? sanitizeOrderForMerchant(settled) : settled });
   } catch (err) { await abortOrEnd(session); res.status(500).json({ success: false, message: 'Failed to confirm deposit' }); }
 });
 
@@ -186,18 +222,28 @@ router.post('/order/:orderId/dispute', authenticate, async (req, res) => {
     if (order.status !== 'PAID')
       return res.status(400).json({ success: false, message: 'Can only dispute PAID orders' });
 
-    // Require at least 10 minutes since paidAt before dispute is allowed
+    // Require at least 10 minutes since paidAt before dispute is allowed.
+    // This check stays a pre-read: it is a policy about elapsed time, not about
+    // the state, and the transition below is what settles the race.
     const paidAt   = order.paidAt ? new Date(order.paidAt).getTime() : 0;
     const tenMin   = 10 * 60 * 1000;
     if (Date.now() - paidAt < tenMin)
       return res.status(400).json({ success: false, message: 'Please wait at least 10 minutes before raising a dispute' });
 
-    order.status          = 'DISPUTED';
-    order.disputeReason   = reason.trim();
-    order.disputeRaisedAt = new Date();
-    order.disputeRaisedBy = 'user';
-    order.updatedAt       = new Date();
-    await order.save();
+    const disputed = await disputeOrder(order._id, {
+      expectFrom: 'PAID',
+      set: {
+        disputeReason:   reason.trim(),
+        disputeRaisedAt: new Date(),
+        disputeRaisedBy: 'user',
+        updatedAt:       new Date(),
+      },
+    });
+    if (!disputed.ok) {
+      // 409, not 400: understood and refused because the order moved on — a
+      // merchant confirming while the user was typing is the ordinary case.
+      return res.status(409).json({ success: false, message: `Cannot dispute an order that is ${disputed.status ?? 'missing'}` });
+    }
 
     // Notify admin SSE (GOVERNANCE §11: order_disputed)
     emitAdminUpdate('order_disputed', {
@@ -207,7 +253,7 @@ router.post('/order/:orderId/dispute', authenticate, async (req, res) => {
       server_ts: Date.now(),
     });
 
-    res.json({ success: true, message: 'Dispute raised. Admin will review shortly.', order });
+    res.json({ success: true, message: 'Dispute raised. Admin will review shortly.', order: disputed.order ?? order });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
 
@@ -221,15 +267,20 @@ router.post('/order/:orderId/status', authenticate, async (req, res) => {
       userId: req.user._id,
     });
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (order.status !== 'PAID') return res.status(400).json({ success: false, message: `Cannot transition ${order.status} → ${status}` });
-    order.status = 'DISPUTED';
-    order.disputeReason = String(reason).trim().slice(0, 1000);
-    order.disputeRaisedAt = new Date();
-    order.disputeRaisedBy = 'user';
-    order.updatedAt = new Date();
-    await order.save();
-    emitAdminUpdate('queue_order_update', { orderId: order._id, status: order.status });
-    res.json({ success: true, order });
+    const moved = await disputeOrder(order._id, {
+      expectFrom: 'PAID',
+      set: {
+        disputeReason:   String(reason).trim().slice(0, 1000),
+        disputeRaisedAt: new Date(),
+        disputeRaisedBy: 'user',
+        updatedAt:       new Date(),
+      },
+    });
+    if (!moved.ok) {
+      return res.status(409).json({ success: false, message: `Cannot transition ${moved.status ?? 'unknown'} → ${status}` });
+    }
+    emitAdminUpdate('queue_order_update', { orderId: order._id, status: moved.status });
+    res.json({ success: true, order: moved.order ?? order });
   } catch (err) { res.status(500).json({ success: false, message: 'Failed to update status' }); }
 });
 

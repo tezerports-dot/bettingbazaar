@@ -26,15 +26,15 @@ Generated from `backend/postgres/moneyAuthority.js` by `npm run certify:report`.
 |---|:--:|:--:|:--:|:--:|:--:|:--:|
 | User Wallet | ✅ | ✅ | ✅ | ✅ | ⏳ | ⏳ |
 | Merchant Wallet | ✅ | ✅ | ✅ | ✅ | ⏳ | ⏳ |
-| Accounting Ledger | ⏳ | ✅ | ✅ | ✅ | ⏳ | ⏳ |
-| Orders | ⏳ | ✅ | ✅ | ✅ | ⏳ | ⏳ |
-| KYC | ⏳ | ✅ | ⏳ | ⏳ | ⏳ | ⏳ |
+| Accounting Ledger | ✅ | ✅ | ✅ | ✅ | ⏳ | ⏳ |
+| Orders | ✅ | ✅ | ✅ | ✅ | ⏳ | ⏳ |
+| KYC | ✅ | ✅ | ✅ | ✅ | ⏳ | ⏳ |
 | Merchant ↔ User Settlement | ✅ | ✅ | ✅ | ✅ | ⏳ | ⏳ |
 | Admin Treasury / Token Issuance | ✅ | ✅ | ✅ | ✅ | ⏳ | ⏳ |
-| Betting | ⏳ | ✅ | ✅ | ✅ | ⏳ | ⏳ |
-| Sports Settlement | ⏳ | ⏳ | ⏳ | ✅ | ⏳ | ⏳ |
-| Casino Settlement | ⏳ | ⏳ | ⏳ | ✅ | ⏳ | ⏳ |
-| Bonuses & Commissions | ⏳ | ⏳ | ⏳ | ✅ | ⏳ | ⏳ |
+| Betting | ✅ | ✅ | ✅ | ✅ | ⏳ | ⏳ |
+| Sports Settlement | ✅ | ✅ | ✅ | ✅ | ⏳ | ⏳ |
+| Casino Settlement | ✅ | ✅ | ✅ | ✅ | ⏳ | ⏳ |
+| Bonuses & Commissions | ✅ | ✅ | ✅ | ✅ | ⏳ | ⏳ |
 
 ### What is blocking each domain
 
@@ -42,15 +42,15 @@ Generated from `backend/postgres/moneyAuthority.js` by `npm run certify:report`.
 |---|---|
 | User Wallet | infrastructureTested |
 | Merchant Wallet | infrastructureTested |
-| Accounting Ledger | implemented, infrastructureTested |
-| Orders | implemented, infrastructureTested |
-| KYC | implemented, reconciled, concurrencyTested, infrastructureTested |
+| Accounting Ledger | infrastructureTested |
+| Orders | infrastructureTested |
+| KYC | infrastructureTested |
 | Merchant ↔ User Settlement | infrastructureTested |
 | Admin Treasury / Token Issuance | infrastructureTested |
-| Betting | implemented, infrastructureTested |
-| Sports Settlement | implemented, dualWrite, reconciled, rollback, infrastructureTested |
-| Casino Settlement | implemented, dualWrite, reconciled, rollback, infrastructureTested |
-| Bonuses & Commissions | implemented, dualWrite, reconciled, rollback, infrastructureTested |
+| Betting | infrastructureTested |
+| Sports Settlement | infrastructureTested |
+| Casino Settlement | infrastructureTested |
+| Bonuses & Commissions | infrastructureTested |
 
 <!-- END GENERATED: certification-matrix -->
 

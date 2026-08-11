@@ -53,6 +53,17 @@ const gameTransactionSchema = new mongoose.Schema({
   createdAt:   { type: Date, default: Date.now, index: true },
 });
 gameTransactionSchema.index({ userId: 1, createdAt: -1 });
+
+// Domain 9's forward mirror. Hung off the model rather than called from the
+// route, so a callback recorded by any future path reaches Postgres too — the
+// omission that left casino_settlement with no dualWrite leg at all.
+//
+// mirrorCasinoTransaction no-ops while Postgres is authoritative, because the
+// adapter writes the round directly and mirroring from here as well would
+// advance the running totals twice.
+import { mirrorCasinoTransaction } from '../../postgres/dualWrite.js';
+gameTransactionSchema.post('save', (doc) => { mirrorCasinoTransaction(doc); });
+
 export const GameTransaction = mongoose.model('GameTransaction', gameTransactionSchema);
 
 

@@ -60,9 +60,6 @@ export const ORDER_TYPES = Object.freeze({ DEPOSIT: 'DEPOSIT', WITHDRAWAL: 'WITH
 /**
  * Which states each target accepts. Kept as DATA rather than branching, so the
  * whole rule can be read at once and compared against the diagram above.
- *
- * A terminal state accepts nothing — there is no entry for PENDING_QUEUE
- * because nothing transitions INTO it; that is where an order is opened.
  */
 /**
  * EXPORTED so the Mongo-side seam (domains/payment/orderLifecycle.service.js)
@@ -72,21 +69,104 @@ export const ORDER_TYPES = Object.freeze({ DEPOSIT: 'DEPOSIT', WITHDRAWAL: 'WITH
  * added a state to one of them — leaving a transition Postgres refuses and
  * Mongo permits, which is the exact class of disagreement no reconciliation can
  * distinguish from real drift. One definition, both stores.
+ *
+ * ── PENDING_QUEUE is re-enterable, and used not to be ───────────────────────
+ * This table said "nothing transitions INTO PENDING_QUEUE; that is where an
+ * order is opened", and two tests asserted it. The live Mongo path disagreed:
+ * merchant.routes.js's reject handler sets an ASSIGNED order back to
+ * PENDING_QUEUE and immediately looks for another merchant. That is the whole
+ * point of rejecting — the order returns to the queue.
+ *
+ * So the rule table was wrong, not the route. Adding the edge is what lets the
+ * seam guard that site at all; without it `transitionOrder(id,'PENDING_QUEUE')`
+ * throws and the one remaining unguarded status write would have had to stay
+ * unguarded. See docs/ORDERS_REQUEUE_CYCLE.md for the consequence it exposed.
  */
 export const ALLOWED_FROM = Object.freeze({
+  // The requeue edge. An ASSIGNED order whose merchant declines goes back to
+  // the queue to be offered to someone else.
+  [ORDER_STATES.PENDING_QUEUE]: [ORDER_STATES.ASSIGNED],
   [ORDER_STATES.ASSIGNED]:   [ORDER_STATES.PENDING_QUEUE],
-  [ORDER_STATES.PROCESSING]: [ORDER_STATES.ASSIGNED],
+  // PENDING_QUEUE is here because a merchant can take an order straight out of
+  // the open pool without it ever having been assigned to them —
+  // merchant.routes.js's accept handler admits both, and the rail is re-checked
+  // at that moment precisely because the order arrived unassigned.
+  [ORDER_STATES.PROCESSING]: [ORDER_STATES.ASSIGNED, ORDER_STATES.PENDING_QUEUE],
   [ORDER_STATES.PAID]:       [ORDER_STATES.PROCESSING, ORDER_STATES.ASSIGNED],
-  [ORDER_STATES.COMPLETED]:  [ORDER_STATES.PAID, ORDER_STATES.PROCESSING],
+  // DISPUTED is here because resolving a dispute IS this transition. Without
+  // it, DISPUTED had no outgoing edges at all and every admin resolution
+  // refused itself: the resolve routes confirm the order is DISPUTED and then
+  // ask for COMPLETED or CANCELLED, so the guarded update matched no row and
+  // returned 409 for the one status those routes exist to handle. A disputed
+  // order could be created and never resolved.
+  [ORDER_STATES.COMPLETED]:  [ORDER_STATES.PAID, ORDER_STATES.PROCESSING, ORDER_STATES.DISPUTED],
   // A dispute can be raised on anything not yet final, including COMPLETED —
   // that is precisely when disputes happen.
   [ORDER_STATES.DISPUTED]:   [ORDER_STATES.PROCESSING, ORDER_STATES.PAID, ORDER_STATES.COMPLETED],
   // Abandonment paths. An order that has already COMPLETED cannot be cancelled;
   // undoing settled value is a reversal, which is the settlement domain's job.
-  [ORDER_STATES.CANCELLED]:  [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING],
+  // PAID is here to match what the merchant reject route already does. The
+  // table's own distinction would put it in FAILED — CANCELLED for an order
+  // abandoned before payment was asserted, FAILED for one where payment WAS
+  // asserted and did not check out — and that is the better model. Changing
+  // which status a rejected PAID order lands in is a user-visible change to
+  // every panel, filter and count that reads it, so it is deliberately NOT
+  // bundled into a stage whose contract is "no behaviour change". Tracked in
+  // docs/ORDERS_REQUEUE_CYCLE.md as follow-up.
+  // DISPUTED, for the same reason as COMPLETED above: a dispute resolved in the
+  // payer's favour cancels the order and refunds it.
+  [ORDER_STATES.CANCELLED]:  [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING, ORDER_STATES.PAID, ORDER_STATES.DISPUTED],
   [ORDER_STATES.FAILED]:     [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING, ORDER_STATES.PAID],
   [ORDER_STATES.REJECTED]:   [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING],
 });
+
+/**
+ * REVISITABLE — the states an order can legally reach MORE THAN ONCE, derived
+ * from the graph rather than listed by hand so adding an edge cannot leave this
+ * silently stale.
+ *
+ * ── Why this exists ─────────────────────────────────────────────────────────
+ * The default transition key is `ord_<order>_<state>` and `tx_id` is UNIQUE, so
+ * it does two jobs at once: it is the idempotency gate for a duplicate
+ * callback, AND the uniqueness key for the row. On an acyclic graph those two
+ * jobs agree. The moment the graph has a cycle they conflict, because the same
+ * (order, target state) pair is now reachable twice for two genuinely different
+ * reasons.
+ *
+ * Measured, not assumed: with the requeue edge added and no explicit key, the
+ * second assignment of a rejected order collided on
+ * `ord_<order>_ASSIGNED`, was reported `{ok: true, idempotent: true}` — the
+ * "someone already did this" answer — and the order stayed in PENDING_QUEUE
+ * still carrying the FIRST merchant's id. A rejected order would never be
+ * reassigned, and nothing would raise an error.
+ *
+ * ── The decision ────────────────────────────────────────────────────────────
+ * The idempotency key must describe THE EVENT, not the destination. Only the
+ * caller knows whether two arrivals at ASSIGNED are one merchant's double-click
+ * or two different merchants being offered the order in turn — that difference
+ * is not visible from (order, state).
+ *
+ * So on these edges an explicit `txId` is REQUIRED and its absence throws. A
+ * loud refusal at the call site is the only option that cannot be mistaken for
+ * success; minting a unique key by default would silently drop the retry
+ * protection that every other edge relies on.
+ */
+export const REVISITABLE = Object.freeze(
+  Object.keys(ORDER_STATES).filter((start) => {
+    // Depth-first: can `start` be reached again after leaving it?
+    const forward = (from) => Object.keys(ALLOWED_FROM).filter((to) => ALLOWED_FROM[to].includes(from));
+    const seen = new Set();
+    const stack = forward(start);
+    while (stack.length) {
+      const s = stack.pop();
+      if (s === start) return true;
+      if (seen.has(s)) continue;
+      seen.add(s);
+      stack.push(...forward(s));
+    }
+    return false;
+  })
+);
 
 /**
  * The accounting event a transition produces, if any.
@@ -186,8 +266,19 @@ async function withOrderLock(orderId, fn) {
  */
 export async function openOrder({
   orderId, userId, merchantId = null, type, tokenAmountPaise, fiatAmountPaise = 0,
+  state = ORDER_STATES.PENDING_QUEUE,
 }) {
   if (!orderId) throw new Error('openOrder requires an orderId');
+  // ADOPTION. A cutover has to take on orders that are already in flight, and
+  // they are not at the start of the lifecycle — an order sitting at PAID in
+  // Mongo must be adopted AT PAID. Opening it at PENDING_QUEUE instead would
+  // make its very next transition illegal (COMPLETED accepts PAID/PROCESSING/
+  // DISPUTED), so the merchant's confirm would be refused and the order would
+  // strand with the money unmoved. Every in-flight order would break that way
+  // at the moment of the flip.
+  if (!ORDER_STATES[state]) {
+    throw new Error(`openOrder: unknown state '${state}'. Known: ${Object.keys(ORDER_STATES).join(', ')}`);
+  }
   if (!ORDER_TYPES[type]) {
     throw new Error(`Unknown order type '${type}'. Known: ${Object.keys(ORDER_TYPES).join(', ')}`);
   }
@@ -202,7 +293,7 @@ export async function openOrder({
      ON CONFLICT (order_id) DO NOTHING
      RETURNING *`,
     [String(orderId), String(userId), merchantId ? String(merchantId) : null,
-     type, ORDER_STATES.PENDING_QUEUE, tokenAmountPaise, fiatAmountPaise],
+     type, state, tokenAmountPaise, fiatAmountPaise],
     'order_open',
   );
 
@@ -235,6 +326,7 @@ export async function transition({
   if (!allowedFrom) {
     throw new Error(`Nothing may transition INTO '${to}' — an order is opened there, not moved there.`);
   }
+  const mayRepeat = REVISITABLE.includes(to);
 
   return withOrderLock(orderId, async ({ client, oid, order }) => {
     if (!order) return { commit: false, value: { ok: false, reason: 'not_found' } };
@@ -246,6 +338,33 @@ export async function transition({
         commit: false,
         value: { ok: false, reason: 'invalid_transition', state: order.state, allowedFrom },
       };
+    }
+
+    // ── The default key is only safe on a FIRST visit ────────────────────────
+    // `ord_<order>_<state>` is fine until the order reaches that state a second
+    // time, which the requeue and dispute cycles both allow. The second visit
+    // would collide with the first's key, unwind the transaction, and be
+    // reported `{ok: true, idempotent: true}` — the "already done" answer — so
+    // the order would silently fail to move and nothing would raise a fault.
+    //
+    // Checked here rather than statically so the common case stays ergonomic: a
+    // caller completing an order for the first time needs no key, and only a
+    // genuine repeat visit is asked for one. The row lock is held, so no
+    // concurrent transition can add the row between this read and the insert.
+    // See docs/ORDERS_REQUEUE_CYCLE.md.
+    if (!txId && mayRepeat) {
+      const prior = await client.query(
+        `SELECT 1 FROM order_transitions WHERE order_id = $1 AND to_state = $2 LIMIT 1`,
+        [oid, to],
+      );
+      if (prior.rowCount) {
+        throw new Error(
+          `transition to '${to}' on order ${oid} requires an explicit txId: the order has been ` +
+          `in '${to}' before, so the default key ord_${oid}_${to} is already taken and this move ` +
+          `would be reported as an idempotent replay rather than applied. Pass a txId identifying ` +
+          `THIS event (states that can repeat: ${REVISITABLE.join(', ')}).`,
+        );
+      }
     }
 
     // The guard is in the WHERE clause, not in the check above: between reading
@@ -264,11 +383,26 @@ export async function transition({
       return { commit: false, value: { ok: false, reason: 'invalid_transition', state: order.state, allowedFrom } };
     }
 
-    // One transition per order per target state. A duplicate callback collides
-    // here, INSIDE the transaction, so the state change unwinds with it.
+    // A duplicate callback collides here, INSIDE the transaction, so the state
+    // change unwinds with it.
     const transitionTxId = txId || `ord_${oid}_${to}`;
+
+    // ── The accounting key is NOT the transition key ─────────────────────────
+    // It used to be `acct_${transitionTxId}`, which was the same thing while
+    // every state was reachable once. It is not the same thing now, and the
+    // difference is money: an order that completes, is disputed, and is then
+    // resolved back to COMPLETED performs a SECOND transition — with its own
+    // key, necessarily, or it could not be applied at all — and a ledger key
+    // derived from it posted a SECOND DEPOSIT_COMPLETED. Measured: USER_FUNDS
+    // went to 140000 on a 70000 deposit.
+    //
+    // A transition is an event and may legitimately repeat. The accounting fact
+    // "this order's deposit completed" happens once per order, however many
+    // times the state machine passes back through COMPLETED. So the ledger key
+    // stays derived from the ORDER and the STATE, and the ON CONFLICT DO
+    // NOTHING below turns the repeat into the no-op it should be.
     const spec = LEDGER_EVENT[to]?.[order.type];
-    const ledgerKey = spec ? `acct_${transitionTxId}` : null;
+    const ledgerKey = spec ? `acct_ord_${oid}_${to}` : null;
 
     try {
       await client.query(

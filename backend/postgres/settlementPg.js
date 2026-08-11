@@ -119,6 +119,16 @@ export async function openSettlement({ cycleId, winningSide, betsTotal = 0, stak
  * bet it already settled moves no money. The run's counters are advanced ONLY
  * when the transition actually happened, which is what keeps `betsSettled`
  * meaningful across a resume instead of inflating on every pass.
+ *
+ * ── `betId` here is the POSTGRES key, and no caller is likely to hold it ─────
+ * This function and `voidSettlement` are exercised only by tests today;
+ * gameEngine settles through betPgAuthority instead. If either is ever wired to
+ * a production path, note that every settlement path reads its bets from MONGO,
+ * and a bet placed under Postgres authority is keyed on its idempotency key
+ * with the Mongo id in `mongo_id` — so the id the caller holds is NOT this one.
+ * Run it through `betPg.resolveBetId` first. Passing the Mongo id straight
+ * through is exactly the defect fixed in betPgAuthority at 2be4452: it matched
+ * no row, refused `not_found`, and left the stake locked.
  */
 export async function settleBet({
   settlementId, cycleId, betId, userId, slices, won, payoutPaise = 0, actor = 'settlement',

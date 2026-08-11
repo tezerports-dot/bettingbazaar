@@ -15,6 +15,10 @@
  */
 import express from 'express';
 import { debitForGameProviderBet, creditWinnings, refundOrder } from '../wallet/walletAuthority.service.js';
+// Domain 9's resolver. When Postgres owns the path the round's running totals
+// move under its row lock in the SAME transaction as the wallet movement, and
+// the refund bound is a CHECK CONSTRAINT rather than a read-then-compare.
+import { applyCallbackOnPostgres } from '../../postgres/casinoPgAuthority.js';
 import mongoose from 'mongoose';
 import crypto from 'crypto';
 import { authenticate, isAdmin, isAdminOrSubAdmin } from '../identity/auth.middleware.js';
@@ -267,6 +271,32 @@ router.post('/wallet/:providerKey', async (req, res) => {
     if (!user) return res.status(404).json({ success: false, message: 'Player not found' });
 
     const balance = (user.depositBalance || 0) + (user.winningsBalance || 0);
+
+    // ── The resolver, asked once ─────────────────────────────────────────
+    // Returns handled:false while Mongo owns the path, and the branch below
+    // runs unchanged. When Postgres owns it, a REFUSAL IS SURFACED to the
+    // provider rather than retried against Mongo — in this domain the refusal
+    // is the product: it is what stops a buggy or hostile provider minting
+    // money by rolling back a round that never had a bet.
+    const routed = await applyCallbackOnPostgres({
+      txId, roundId, userId, type, amountRupees: amount,
+      providerKey, gameId,
+      reason: `Casino ${type}: ${gameId} round ${roundId}`,
+    });
+    if (routed.handled) {
+      if (!routed.ok) {
+        const message = routed.reason === 'no_prior_debit'
+          ? 'No prior debit for this round'
+          : routed.reason === 'refund_exceeds_debit'
+            ? 'Refund exceeds the amount debited for this round'
+            : `Callback refused: ${routed.reason}`;
+        console.error(`[casino] refusing ${type} for round ${roundId}: ${routed.reason}`);
+        return res.status(400).json({ success: false, message });
+      }
+      // The GameTransaction document is written by the reverse mirror, so the
+      // record exists in both stores without this route writing it twice.
+      return res.json({ success: true, balance: routed.balanceRupees, currency: 'INR' });
+    }
 
     if (type === 'BET') {
       if (balance < amount) return res.status(400).json({ success: false, message: 'Insufficient balance', balance });

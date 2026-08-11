@@ -120,27 +120,36 @@ const CAPABILITIES = Object.freeze({
     notes: 'User balances + wallet_ledger. The only path with a complete implementation.',
   },
   [MONEY_PATHS.LEDGER]: {
-    implemented: false, // dualWrite mirrors accounting_events, but nothing READS Postgres
+    // Flipped on CI evidence at 121a8e5, not on the implementation alone.
+    // revenueSettlement.service.js — the only writer — asks the resolver, and
+    // reads route too: a trial balance derived from Mongo while writes go to
+    // Postgres would read clean the whole time it was wrong.
+    implemented: true,  // postgres/ledgerPgAuthority.js, routed from revenueSettlement.service.js
     dualWrite:   true,
     reconciled:  true,
     rollback:    true,
     notes: 'Global accounting ledger. postgres/ledgerPg.js EXISTS: an authoritative reader and writer over accounting_events, double entry enforced per event by the DATABASE and across the ledger by a derived trial balance, balances never stored, idempotency by a single INSERT … ON CONFLICT DO NOTHING RETURNING with no pre-read to race. reconcileAgainstSubLedgers compares the summary accounts against the actual wallet, merchant and treasury sums — a trial balance proves internal consistency and says nothing about whether the ledger describes reality. 16 tests. Remaining: route revenueSettlement.service.js through the resolver. Gated on ORDERS becoming authoritative — order state produces most ledger events, so routing the consequence while the cause still writes Mongo would post events into Postgres for transitions Postgres never saw. See docs/ORDERS_ROUTING_DESIGN.md.',
   },
   [MONEY_PATHS.ORDERS]: {
-    // BUILT and tested, NOT routed — the routes still write Mongo status
-    // directly. Same standard held for every domain before it.
-    implemented: false,
+    // Flipped on CI evidence at 38f8703 — the commit whose anti-skip guard
+    // proves orderCrossStore.integration.test.js RAN rather than reporting
+    // green by skipping. All 31 status writes go through one guarded seam and
+    // orderPgAuthority routes it; stages 1-3 of docs/ORDERS_ROUTING_DESIGN.md.
+    implemented: true,
     dualWrite:   true,  // mirrorPaymentOrder, mirrorUtr
     reconciled:  true,
     rollback:    true,
     notes: 'Order lifecycle. postgres/orderPg.js EXISTS: order_states + append-only order_transitions, expected-previous-state guards in the UPDATE, and the accounting event posted in the SAME transaction as the state change (the Mongo path writes status first and the event afterwards, so a failure between them leaves an order COMPLETED with nothing in the books). 22 tests including a 100-copy callback storm, a racing complete-vs-dispute, 60 concurrent completions with no pool exhaustion, and both gap checks — orders missing their ledger event, and order-shaped events no transition produced. NOTE payment_orders remains a MIRROR: overwritten in place, no history, no guard. These tables are the authoritative lifecycle; that one is a projection. Remaining: see docs/ORDERS_ROUTING_DESIGN.md. This is NOT a normal routing job and was stopped deliberately rather than started piecemeal: the Mongo order lifecycle has NO choke point — 31 status writes across 8 files — so wiring the resolver into some of them and not others would leave some transitions authoritative in Postgres and others in Mongo, which no reconciliation can tell apart from genuine disagreement. It needs a seam built first (one guarded transition service, stage 1), then routing (stage 2), then cross-store reconcile (stage 3). Stage 1 also closes a LIVE hole: Mongo has no expected-previous-state guard, so a cancelled order can be completed today and only incidental ordering in the routes prevents it. ORDERS is the gate for the whole cutover — six fully-built domains report it as their only blocker.',
   },
   [MONEY_PATHS.KYC]: {
-    implemented: false,
+    // Flipped on CI evidence at f3f9fec. kycDecision.service.js is the single
+    // seam and kycPgAuthority routes it. KYC still cuts over LAST: dependsOn
+    // holds it behind WALLET, LEDGER and ORDERS.
+    implemented: true,
     dualWrite:   true,  // mirrorUserKyc
-    reconciled:  false,
-    rollback:    true,
-    notes: 'user_kyc is mirrored only. KYC decisions are Mongo-only.',
+    reconciled:  true,  // reconcile.reconcileKycDecisions (cross-store, status AND reason)
+    rollback:    true,  // reverseMirror.reverseMirrorUserKycStatus, live per decision
+    notes: 'KYC decisions. postgres/kycPg.js EXISTS: user_kyc + append-only kyc_transitions, expected-previous-status guards in the UPDATE, and the reviewer and reason written in the SAME statement as the status. It exists to remove three defects rather than port them. (1) NO GUARD: routes/admin/kyc.admin.routes.js read the user, assigned kycStatus and saved — a read-modify-write on a stale read, so two reviewers acting at once both passed and the last save won with no record that the other decision happened. (2) THE REJECTION REASON WAS DISCARDED: that route assigned it to `user.kyc.rejectionReason`, and the User schema has NO `kyc` subdocument — only `kycData` — so `user.kyc` was undefined and the guarded block NEVER RAN. Verified against the compiled schema: `kyc.rejectionReason` is not a path, `kycData.rejectionReason` is, and the latter is what domains/user/kycPublicData.js shows the user. Every rejected user was told they were rejected and never told why, so they could not fix the submission. (3) NO REVIEWER AND NO HISTORY: reviewedBy/reviewedAt were lost to the same dead branch, so every approval on the Mongo path is anonymous, and a single status field cannot answer "was this user ever rejected, and why?" once a resubmission overwrites it. A REJECTED decision with no reason is now refused rather than defaulted, because inventing "Rejected by admin" satisfies the constraint and tells the user nothing. 18 tests including a racing approve-vs-reject where exactly one wins and the stored record matches whichever did, a 100-copy approval storm applied once, 60 users decided at once with pool.waitingCount at zero and every rejection keeping its reason, and a 40-copy resubmission storm. Resubmission makes PENDING_APPROVAL and REJECTED reachable twice, so a repeat decision needs its own key — same derivation as the order lifecycle, docs/ORDERS_REQUEUE_CYCLE.md. domains/user/kycDecision.service.js is the single seam and kycPgAuthority.js the routed adapter; the seam ALSO fixes the live Mongo bug by writing the reason to kycData.rejectionReason. Documents: services/kycDocuments.service.js puts them in a PRIVATE R2 bucket with per-review presigned reads — see docs/KYC_DOCUMENT_STORAGE.md, and note the migration steps there are NOT done, so the existing public CDN URLs still resolve. Remaining: CI evidence, then this flag; and KYC waits on WALLET, LEDGER and ORDERS by design.',
   },
   [MONEY_PATHS.MERCHANT_WALLET]: {
     // Flipped 2026-08-03, after all four were separately evidenced — not on the
@@ -194,22 +203,38 @@ const CAPABILITIES = Object.freeze({
     notes: 'Admin treasury and token issuance. postgres/treasuryPg.js: treasury_accounts + treasury_entries as DOUBLE ENTRY across TOKEN_SUPPLY / MERCHANT_FLOAT / USER_FLOAT / HOUSE_RESERVE / COMMISSION_POOL / BONUS_POOL / REFERRAL_POOL / OPERATIONAL_FLOAT. Every movement\'s legs sum to zero so the whole ledger sums to zero; minting is TOKEN_SUPPLY going negative rather than value appearing; the supply cap is enforced inside the transaction behind a row lock; accounts are locked in a fixed order so movements between the same pair in opposite directions cannot deadlock. postgres/adminIssuanceAuthority.js is the routed adapter, and it exists to FIX three defects rather than port them: (1) the Mongo original\'s reserveAdminMint(amount) has NO idempotency key, so two deliveries of one admin request mint twice — every mint here carries a caller-supplied movementId that collides inside the transaction; (2) its rollback is `$inc: {minted: -amount}` with `.catch(() => {})`, so a retried rollback invents headroom under the cap and a swallowed failure is unrecoverable — here a rollback is a BURN with its own key, idempotent, and the mint AND its reversal both stay in the history; (3) a counter cannot say where tokens went — every movement names the merchant and the order. reconcileAdminSupply compares the running counter against the derived total, which is only meaningful BECAUSE the rollback is a burn rather than an erasure. The /fund route\'s credit also had a fresh ObjectId per attempt as its txId, so its idempotency gate could never fire; mint and credit now share one key. Remaining: CI evidence for the cross-store suite, then this flag.',
   },
   [MONEY_PATHS.BETS]: {
-    // Routed 2026-08-04: bet.routes.js consults the resolver, and all three
-    // legs exist.
+    // Flipped on CI evidence at 1bd5de8 (run 31456526949) — the commit that
+    // routed SETTLEMENT, the half of the lifecycle that was still writing
+    // Bet.status directly. Placement had been routed since 2026-08-04; a
+    // routing that covered half the lifecycle was deliberately not called
+    // `implemented`.
     //
-    // `implemented` waits on a cross-store suite THAT DOES NOT EXIST YET.
-    // merchant_settlement and admin_issuance each got one, and each time it
-    // caught something the single-store suites structurally could not — the
-    // second of them found M-6, a shipped defect that made admin issuance throw
-    // on every call. Writing one here before flipping is the same standard, not
-    // extra caution: the two-store claims this domain now makes (a derived
-    // ObjectId that must stay stable, a forward mirror blind to
-    // Bet.updateMany) are exactly the kind only a two-store test can check.
-    implemented: false,
+    // THAT RUN WAS GREEN OVER A SHOWSTOPPER, and the correction is worth more
+    // than the citation. A bet placed under Postgres authority is keyed on its
+    // idempotency key with the Mongo id in `mongo_id`; settlement reads its
+    // bets from Mongo, so it held the wrong key and every such bet was refused
+    // `not_found` with its stake still locked. Three suites passed over it
+    // because each watched one side of the seam — the unit suites mocked
+    // betPg, the Postgres suites settled with the key they had just placed
+    // with, the cross-store suite exercised mirrors and not the engine.
+    //
+    // Fixed at 2be4452. The evidence this flag actually rests on is
+    // **run 31474679018 at 49bc466**, which is green over the fixed code AND
+    // over betSettlementAuthority.integration.test.js — the first test that
+    // drives the real engine across a real cycle with MONEY_AUTHORITY_WALLET,
+    // _LEDGER and _BETS genuinely set, and asserts the stake actually left
+    // `locked` on both sides.
+    //
+    // Both sides move together, from ONE decision read once per settlement
+    // pass and passed down — the losing side in gameEngine and the winning side
+    // in settlementService. Routing one and not the other would leave some bet
+    // transitions authoritative in Postgres and others in Mongo, which is the
+    // split no reconciliation can tell apart from genuine disagreement.
+    implemented: true,
     dualWrite:   true,  // dualWrite.mirrorBet, hooked on the Bet model
     reconciled:  true,  // reconcile.reconcileBetStates (cross-store)
     rollback:    true,  // reverseMirror.reverseMirrorBet, live per placement, + REVERSE_TABLES repair
-    notes: 'Bet lifecycle and stake reservation. postgres/betPg.js EXISTS: bets + append-only bet_transitions, expected-previous-state guards in the UPDATE, and the bet row, its stake movement and its ledger rows composed into ONE transaction under a single wallet lock via walletPg.applyMovementWithin. It exists to REMOVE the two Mongo defects rather than port them. M-2 (no idempotency key on the balance move): bet_id is UNIQUE and collides inside the transaction, so a replayed request debits nothing further — the Mongo call site hides the defect by minting bet_<userId>_<randomUUID()> per request, but a fresh id per attempt is not idempotency, it is a NEW BET, so a dropped connection leaves the user with two bets and two debits. M-4 (ledger written outside the transaction): impossible here by construction; a settled bet with no ledger row behind it can only be manufactured by raw INSERT, which is how findBetsMissingStakeMovement is tested. Returns go back to the pockets the stake CAME from, and settling without the funding slices is refused rather than defaulted — returning a deposit-funded stake into winningsBalance would silently convert non-withdrawable money into withdrawable, which is a cash-out route. A win credits its payout as a SEPARATE movement so the books distinguish "stake consumed" from "house paid out". 25 tests including a 100-copy placement storm (exactly one bet), 60 concurrent bets against a balance that fits 20 (exactly 20), racing win-vs-lose, and 50 users placing at once with pool.waitingCount at zero. postgres/betPgAuthority.js is the routed adapter; bet.routes.js calls it and the Mongo two-step is the other branch. The Mongo document\'s _id is DERIVED from the idempotency key (sha256, first 24 hex) rather than generated, because Mongo types _id as an ObjectId and a fresh one per attempt would let a replay create a SECOND Mongo document behind the one Postgres bet. THE ONE THING STILL OPEN, documented rather than hidden: bet.routes.js prefers a client-supplied Idempotency-Key but falls back to a random UUID, so without the header a retry is still a second bet — unlike the /fund bug this resembles, the fallback id is genuinely new and the gate genuinely fires for the id it is given, and enforcing the header outright would break any client that does not send it on the highest-traffic endpoint in the system. reconcileBetStates carries more weight than the other state checks because the Mongo settlement path is Bet.updateMany, a bulk update Mongoose gives no documents to hand a post hook — those transitions reach Postgres through the reconcile or not at all. Remaining: a cross-store integration suite (NOT YET WRITTEN — the single-store suites cannot check the derived-ObjectId stability or the updateMany blind spot), then this flag; and routing the SETTLEMENT side, since gameEngine/settlementService still write Bet.status directly.',
+    notes: 'Bet lifecycle and stake reservation. postgres/betPg.js EXISTS: bets + append-only bet_transitions, expected-previous-state guards in the UPDATE, and the bet row, its stake movement and its ledger rows composed into ONE transaction under a single wallet lock via walletPg.applyMovementWithin. It exists to REMOVE the two Mongo defects rather than port them. M-2 (no idempotency key on the balance move): bet_id is UNIQUE and collides inside the transaction, so a replayed request debits nothing further — the Mongo call site hides the defect by minting bet_<userId>_<randomUUID()> per request, but a fresh id per attempt is not idempotency, it is a NEW BET, so a dropped connection leaves the user with two bets and two debits. M-4 (ledger written outside the transaction): impossible here by construction; a settled bet with no ledger row behind it can only be manufactured by raw INSERT, which is how findBetsMissingStakeMovement is tested. Returns go back to the pockets the stake CAME from, and settling without the funding slices is refused rather than defaulted — returning a deposit-funded stake into winningsBalance would silently convert non-withdrawable money into withdrawable, which is a cash-out route. A win credits its payout as a SEPARATE movement so the books distinguish "stake consumed" from "house paid out". 25 tests including a 100-copy placement storm (exactly one bet), 60 concurrent bets against a balance that fits 20 (exactly 20), racing win-vs-lose, and 50 users placing at once with pool.waitingCount at zero. postgres/betPgAuthority.js is the routed adapter; bet.routes.js calls it and the Mongo two-step is the other branch. The Mongo document\'s _id is DERIVED from the idempotency key (sha256, first 24 hex) rather than generated, because Mongo types _id as an ObjectId and a fresh one per attempt would let a replay create a SECOND Mongo document behind the one Postgres bet. THE ONE THING STILL OPEN, documented rather than hidden: bet.routes.js prefers a client-supplied Idempotency-Key but falls back to a random UUID, so without the header a retry is still a second bet — unlike the /fund bug this resembles, the fallback id is genuinely new and the gate genuinely fires for the id it is given, and enforcing the header outright would break any client that does not send it on the highest-traffic endpoint in the system. reconcileBetStates carries more weight than the other state checks because the Mongo settlement path is Bet.updateMany, a bulk update Mongoose gives no documents to hand a post hook — those transitions reach Postgres through the reconcile or not at all. The cross-store suite EXISTS now (tests/integration/betCrossStore.integration.test.js): it pins the derived ObjectId\'s stability, proves a replayed placement collides rather than creating a second Mongo document, and asserts the updateMany blind spot directly — that the forward mirror does not see a bulk settlement, that reconcileBetStates reports the resulting disagreement, and that --backfill closes it. SETTLEMENT IS NOW ROUTED TOO, both sides from one decision per pass: gameEngine loops settleBetOnPostgres over the losing bets instead of unlockLostBet + updateMany, and executeSettlementBatch settles each winner\'s bets instead of creditWinnings + releaseLockedStake + bulkWrite. The earlier "one statement becomes N transactions" objection was WITHDRAWN and the correction is in docs/BETS_SETTLEMENT_ROUTING.md: the per-bet loop already existed one function above the bulk statement, so routing replaces N wallet operations plus a bulk stamp with N transactions that do both atomically — the same order of work, with the state and the money now committing together. On the Postgres branch the bulk updateMany/bulkWrite are SUPPRESSED, because the reverse mirror has already written each status and re-stamping would overwrite the bets Postgres deliberately refused, turning a reported failure into a silent one; refusals are collected, paged, and left for findIncompleteSettlements as the second detector. Three things had to be fixed before either side could route, all of them recorded as blockers rather than discovered late: the winner aggregation projected the funding split under names that were not the Bet document\'s and omitted fromReserveBalance entirely (so slicesFromBet read undefined and a reserve-funded bet threw against requireSlices); betStamps carried three scalars and no bet document; and the Transaction log needed a decision, which is that it stays Mongo-side and runs on BOTH branches — it is the user\'s history feed, not the ledger, and the auditable record is wallet_ledger + accounting_events which betPg writes inside the settling transaction. A FOURTH turned up in the wiring: bets now carries platform_fee_paise, because the Mongo path stamps status, payout and fee in one $set and Cycle.totalPlatformFees is summed from Bet.platformFee, so routing the first two and not the third would make that accounting number read zero for every Postgres-settled cycle with every state check still green. Phantom bets are no longer mirrored at all — synthetic, zero funding provenance, unsettleable by betPg, and they inflated reconcileUserStakes against a lockedBalance that never moved. And reconcileBetStates\' backfill leg fetched documents with .select(\'status\') and handed them to mirrorBet, whose ON CONFLICT DO UPDATE writes what it is given, so repairing a status disagreement ZEROED that bet\'s payout and fee — demonstrated against a real PostgreSQL in betSettlementPg.test.js rather than argued. 33 new tests (14 routing, 12 engine, 6 mirror, 8 pg) plus 4 cross-store cases; 21 mutations applied and killed, one of which survived first and exposed a real hole (the mid-cursor batch flush was never exercised, so that call site could lose its routing argument unnoticed).',
   },
   [MONEY_PATHS.SETTLEMENTS]: {
     // Routed, mirrored, reconciled and reversible — CI evidence at 3d416bc,
@@ -225,10 +250,14 @@ const CAPABILITIES = Object.freeze({
     notes: 'Bonus engine and referral commission. postgres/bonusPg.js EXISTS: bonus_grants paid FROM the treasury pools that fund them (BONUS_POOL / REFERRAL_POOL / COMMISSION_POOL) rather than credited from nowhere. That is the property the domain is for — a bonus is a TRANSFER, not a mint. A credit from nowhere puts tokens on the user side with nothing on the other, so the closing invariant (User + Merchant + Treasury = Total Supply) stops holding and every downstream conservation check starts failing for a reason unrelated to the bug it was built to catch. Which pool funds which kind is DATA, so a new bonus type cannot quietly be paid from the wrong one. A COMMISSION lands in winnings (earned, withdrawable); a bonus lands in deposit (gifted, not) — a signup bonus that could be withdrawn immediately is a cash-out route, which is the entire reason the two pockets exist. Clawback is a second movement returning it to the pool, and the grant row SURVIVES marked, because "was this user ever given a signup bonus?" is what fraud review asks and deleting the row destroys the answer; it may drive the balance negative, since the money may already be spent and refusing to record a reversal that already happened is worse. The pool moves BEFORE the user credit, deliberately: taking a treasury lock while holding a wallet lock would invert the wallet-first order this codebase holds everywhere and deadlock, and the failure mode of this ordering (pool paid for a grant that does not exist) shows as treasury drift, where the other ordering breaks conservation outright. BUILT AND WIRED, NOT CLAIMED. bonusPgAuthority routes the giveaway and giftcode.routes returns the code to the user when the pool cannot fund it, rather than telling them they were paid. dualWrite.mirrorBonusGrant projects BonusRecord — the one collection every user-side giveaway already writes — WITHOUT paying the pool, because Mongo has already paid and paying again would double-spend it; ADMIN_CREDIT is deliberately unmapped, since a manual adjustment has no pool behind it and inventing one would make the treasury claim it financed something it did not. reverseMirror.reverseMirrorBonusGrant rolls a grant back and records a clawback as its own NEGATIVE record rather than editing the original. bonus_grants is deliberately absent from REVERSE_TABLES: a grant id has two shapes, so the generic one-column presence check would report half the table missing on healthy data. reconcile.reconcileBonusGrants compares per grant, not on a total — the right sum paid to the wrong users is exactly what a total hides — and its forward repair is an explicit UPDATE, because re-running an INSERT ... ON CONFLICT DO NOTHING mirror would report a repair that did not happen. 12 pg + 13 unit tests, three mutations verified. settlementBonusCrossStore.integration.test.js RAN GREEN in CI at 3d416bc, which is what these four flags rest on.',
   },
   [MONEY_PATHS.CASINO_SETTLEMENT]: {
-    // BUILT and tested, NOT routed. gameProvider.routes.js still calls the
-    // wallet authority directly with no round accounting behind it.
-    implemented: false, dualWrite: false, reconciled: false, rollback: false,
-    notes: 'Casino provider callbacks (BET/WIN/ROLLBACK/REFUND). postgres/casinoPg.js EXISTS, and it is built to remove the defect the matrix recorded: a ROLLBACK or REFUND credit does not have to prove a matching prior debit. gameProvider.routes.js handles a rollback with refundOrder(userId, amount, roundId, \'depositBalance\') — no check that the round was ever bet on, and no bound on the amount — so a provider that is buggy, replayed or hostile can MINT REAL MONEY by rolling back a round that never had a bet, or by rolling back more than was staked. Here a reversal must name a round with debited_paise > 0, and refunded_paise <= debited_paise is a CHECK CONSTRAINT so the bound holds against a future code path that forgets to test it — the `if` gives a clean refusal, the constraint makes the rule a property of the DATA. Running totals move under the round\'s row lock inside the same transaction as the wallet movement, so two concurrent rollbacks cannot both read "nothing refunded yet" (tested with two distinct provider ids, where idempotency cannot help). The provider\'s own tx id is the idempotency gate, which matters more here than anywhere else because providers retry hard and duplicate callbacks are routine. Remaining: route gameProvider.routes.js through the resolver, mirror, reconcile cross-store, reverse mirror.',
+    // Flipped on CI evidence at 9d11b79. gameProvider.routes.js calls
+    // casinoPgAuthority and a refusal is surfaced to the provider — which in
+    // this domain is the product, not a consistency nicety.
+    implemented: true,
+    dualWrite:   true,  // dualWrite.mirrorCasinoTransaction, hooked on GameTransaction
+    reconciled:  true,  // reconcile.reconcileCasinoRounds (cross-store, per round on all three totals)
+    rollback:    true,  // reverseMirror.reverseMirrorCasinoRound, live per callback
+    notes: 'Casino provider callbacks (BET/WIN/ROLLBACK/REFUND). postgres/casinoPg.js EXISTS, and it is built to remove the defect the matrix recorded: a ROLLBACK or REFUND credit does not have to prove a matching prior debit. gameProvider.routes.js handles a rollback with refundOrder(userId, amount, roundId, \'depositBalance\') — no check that the round was ever bet on, and no bound on the amount — so a provider that is buggy, replayed or hostile can MINT REAL MONEY by rolling back a round that never had a bet, or by rolling back more than was staked. Here a reversal must name a round with debited_paise > 0, and refunded_paise <= debited_paise is a CHECK CONSTRAINT so the bound holds against a future code path that forgets to test it — the `if` gives a clean refusal, the constraint makes the rule a property of the DATA. Running totals move under the round\'s row lock inside the same transaction as the wallet movement, so two concurrent rollbacks cannot both read "nothing refunded yet" (tested with two distinct provider ids, where idempotency cannot help). The provider\'s own tx id is the idempotency gate, which matters more here than anywhere else because providers retry hard and duplicate callbacks are routine. postgres/casinoPgAuthority.js is the routed adapter and gameProvider.routes.js calls it; a REFUSAL IS SURFACED to the provider rather than retried against Mongo, which in this domain is the product rather than a consistency nicety — it is what stops the mint. The Mongo route does have the refund bound now, but it enforces it by summing GameTransaction documents AFTER reading them, outside any lock, so two concurrent rollbacks with DIFFERENT provider tx ids both read "nothing refunded yet" and both pass; the duplicate-txId check cannot help, because it stops one callback applying twice and says nothing about two distinct callbacks that should not both be honoured. dualWrite.mirrorCasinoTransaction is hooked on the GameTransaction model rather than called from the route, so a callback recorded by any future path still reaches Postgres, and it advances a round total ONLY when the transaction row is new — otherwise a redelivered webhook would inflate the totals while the row correctly refused to duplicate. reconcile.reconcileCasinoRounds compares per ROUND on all three totals rather than per transaction, because it is the totals the bound is enforced against, and it counts over-refunded Mongo rounds SEPARATELY in a counter no repair can clear — money already gone is not a record to rewrite. 18 tests: 11 routing, 7 reconcile against a real PostgreSQL including the CHECK constraint asserted directly. Remaining: CI evidence, then this flag.',
   },
 });
 
@@ -306,6 +335,13 @@ const TESTING = Object.freeze({
     concurrencyTested: true,
     infrastructureTested: false,
     evidence: 'backend/tests/postgres/betPg.test.js — a 100-copy placement storm of one request (exactly one bet, one transition, one debit), 60 concurrent bets against a balance that fits 20 (exactly 20 commit, 40 refused, reconciliation clean), racing win-vs-lose where exactly one wins and the books match whichever did, 50 users placing at once with pool.waitingCount at zero and every client returned, and `max` concurrent placements completing — which they could not if one placement ever held two pooled connections. Infrastructure drills NOT RUN.',
+  },
+  [MONEY_PATHS.KYC]: {
+    // The last domain to get one. KYC was the only path in the matrix still
+    // reporting concurrencyTested: false.
+    concurrencyTested: true,
+    infrastructureTested: false,
+    evidence: 'backend/tests/postgres/kycPg.test.js — a racing approve-vs-reject where exactly ONE wins and the stored reviewer and reason match whichever did (the Mongo path resolves that race by last-write-wins and records neither), a 100-copy storm of one approval applied exactly once, 60 users decided at once with pool.waitingCount at zero and every rejection still carrying its reason, and a 40-copy resubmission storm producing one new PENDING_APPROVAL rather than forty. Infrastructure drills NOT RUN.',
   },
   [MONEY_PATHS.MERCHANT_SETTLEMENT]: {
     concurrencyTested: true,
@@ -529,6 +565,19 @@ export const ALL_PATHS = Object.freeze(
   Object.keys(PATH_SPEC).sort((a, b) => PATH_SPEC[a].order - PATH_SPEC[b].order)
 );
 
+/**
+ * path → the environment variable that flips it, in flip order.
+ *
+ * Exported so tooling can PRINT the cutover sequence rather than hard-coding a
+ * second copy of it. Three of these do not follow the path name
+ * (MONEY_AUTHORITY_BONUSES for bonuses_and_commissions is the one that has
+ * caught people), and a hand-maintained list in a runbook is exactly how an
+ * operator ends up setting a variable that nothing reads.
+ */
+export const PATH_ENV = Object.freeze(
+  Object.fromEntries(ALL_PATHS.map((p) => [p, PATH_SPEC[p].env]))
+);
+
 function isKnownPath(path) {
   return Object.prototype.hasOwnProperty.call(PATH_SPEC, path);
 }
@@ -655,8 +704,22 @@ export function fullFinancialAuthorityStatus(env = process.env) {
  *
  * Returns { ok, errors[], warnings[] } rather than throwing, so the caller
  * decides whether this is fatal (production boot) or a warning (a test).
+ *
+ * ── Why `capabilityOf` is injectable ────────────────────────────────────────
+ * The capability gate's whole job is to refuse a path that has no
+ * implementation. Testing that it refuses requires a path that has none — and
+ * as of 1bd5de8 every declared path is implemented, so there is no longer a
+ * real one to borrow. Each time a domain landed, this test moved to whichever
+ * path was still incomplete (ledger → casino_settlement → bets); with the last
+ * one gone the test would have to be deleted, and the gate that exists to stop
+ * a FALSE CUTOVER would ship untested until someone adds a twelfth path.
+ *
+ * So the lookup is a parameter, defaulted to the real registry. Production
+ * passes nothing and reads the truth; the test passes a stub with one path
+ * ineligible and proves the refusal still fires. Nothing else is injectable —
+ * the ordering check below deliberately uses the real resolver.
  */
-export function validateAuthorityConfig(env = process.env) {
+export function validateAuthorityConfig(env = process.env, capabilityOf = capabilityFor) {
   const errors = [];
   const warnings = [];
 
@@ -678,7 +741,7 @@ export function validateAuthorityConfig(env = process.env) {
     // config, the boot log and the metrics gauge all claiming a cutover that
     // had not happened. Refusing to start is the only response that cannot be
     // mistaken for success.
-    const capability = capabilityFor(path);
+    const capability = capabilityOf(path);
     if (!capability.cutoverEligible) {
       errors.push(
         `${PATH_SPEC[path].env}=postgres but '${path}' is NOT eligible for cutover — missing: ` +

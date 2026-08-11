@@ -148,6 +148,35 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
 
     const now = new Date();
 
+    // THE TRANSITION IS THE GATE, and it runs before the money — the same shape
+    // as the /action handler above, for the same reason. Both branches below
+    // moved value first and set the status afterwards, guarded only by the
+    // `order.status !== 'DISPUTED'` read above; two admins resolving one dispute
+    // in opposite directions ran BOTH, because the per-call idempotency keys
+    // protect a call against itself and not against its opposite.
+    const resolved = await (resolution === 'release' ? completeOrder : cancelOrder)(order._id, {
+      expectFrom: 'DISPUTED',
+      set: {
+        disputeResolvedAt: now,
+        disputeResolvedBy: req.user._id,
+        disputeResolution: resolution === 'release' ? 'released' : 'refunded',
+        resolutionNotes:   reason.trim(),
+        updatedAt:         now,
+        ...(resolution === 'release'
+          ? { completedAt: now }
+          : { cancelReason: 'DISPUTE_REFUNDED', cancelledAt: now }),
+      },
+    });
+    if (!resolved.ok) {
+      return res.status(409).json({
+        success: false,
+        message: `Can only resolve DISPUTED orders. Current: ${resolved.status ?? 'missing'}`,
+      });
+    }
+    if (resolved.idempotent) {
+      return res.json({ success: true, message: 'Dispute already resolved', order: resolved.order ?? order });
+    }
+
     if (resolution === 'release') {
       // Release: complete the order — credit tokens to user (DEPOSIT) or mark complete (WITHDRAWAL)
       if (order.type === 'DEPOSIT') {
@@ -173,14 +202,10 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
         }).catch(e => console.error('[dispute resolve] tokenBalance decrement:', e.message));
       }
 
-      order.status            = 'COMPLETED';
-      order.completedAt       = now;
-      order.disputeResolvedAt = now;
-      order.disputeResolvedBy = req.user._id;
-      order.disputeResolution = 'released';
-      order.resolutionNotes   = reason.trim();
-      order.updatedAt         = now;
-      await order.save();
+      // The order was written by the transition above, resolution fields and
+      // all — there is no second save, and therefore no window in which the
+      // tokens have moved but the order does not yet say so.
+      Object.assign(order, resolved.order);
 
       // Merchant stats: success
       if (order.merchantId) {
@@ -208,15 +233,7 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
         }
       }
 
-      order.status            = 'CANCELLED';
-      order.cancelReason      = 'DISPUTE_REFUNDED';
-      order.cancelledAt       = now;
-      order.disputeResolvedAt = now;
-      order.disputeResolvedBy = req.user._id;
-      order.disputeResolution = 'refunded';
-      order.resolutionNotes   = reason.trim();
-      order.updatedAt         = now;
-      await order.save();
+      Object.assign(order, resolved.order);
 
       // Merchant stats: failure
       if (order.merchantId) {

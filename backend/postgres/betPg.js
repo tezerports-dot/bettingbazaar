@@ -97,6 +97,7 @@ function rowToBet(row) {
     side:        row.side,
     stakePaise:  toPaise(row.stake_paise),
     payoutPaise: toPaise(row.payout_paise),
+    platformFeePaise: toPaise(row.platform_fee_paise),
     status:      row.status,
     placedAt:    row.placed_at,
     settledAt:   row.settled_at,
@@ -110,6 +111,37 @@ export async function getBet(betId) {
     `SELECT * FROM bets WHERE bet_id = $1`, [String(betId)], 'bet_read',
   );
   return rowToBet(rows[0]);
+}
+
+/**
+ * The canonical `bet_id` for a key that may be either one — or null.
+ *
+ * A bet has TWO identities and which one you hold depends on where it was born:
+ *
+ *   placed on Postgres   bet_id = the idempotency key (`bet_<user>_<key>`)
+ *                        mongo_id = the ObjectId DERIVED from that key
+ *   mirrored from Mongo  bet_id = the Mongo `_id`, mongo_id = NULL
+ *
+ * Settlement reads its bets from MONGO in both cases — gameEngine's `Bet.find`
+ * and its winner aggregation — so the id it holds is always the Mongo `_id`,
+ * which matches `bet_id` for a mirrored bet and `mongo_id` for a placed one.
+ * Settling by the Mongo id alone therefore found nothing for every bet the
+ * routed placement path had created, and refused it as `not_found` with the
+ * stake still locked. Verified against a real PostgreSQL before it was fixed;
+ * `betSettlementPg.test.js` keeps it verified.
+ *
+ * One indexed lookup per settle. Both columns carry a UNIQUE index, and there
+ * is no way to avoid it: Mongo does not store the Postgres key, so the
+ * translation has to happen somewhere.
+ */
+export async function resolveBetId(idOrMongoId) {
+  if (!idOrMongoId) return null;
+  const key = String(idOrMongoId);
+  const { rows } = await pgQuery(
+    `SELECT bet_id FROM bets WHERE bet_id = $1 OR mongo_id = $1 LIMIT 1`,
+    [key], 'bet_resolve_id',
+  );
+  return rows[0]?.bet_id ?? null;
 }
 
 /** Its transition history, oldest first. Append-only in the database. */
@@ -299,12 +331,19 @@ export async function placeBet({
  * one number nobody can audit.
  */
 async function settle(
-  { betId, userId, slices, payoutPaise = 0, actor = null, reason = null },
+  { betId, userId, slices, payoutPaise = 0, platformFeePaise = 0, actor = null, reason = null },
   spec,
 ) {
   if (!betId) throw new Error(`${spec.name}Bet requires a betId`);
   if (!Number.isInteger(payoutPaise) || payoutPaise < 0) {
     throw new TypeError(`${spec.name}Bet: payoutPaise must be a non-negative integer, got ${payoutPaise}`);
+  }
+  // The fee is RETAINED, not paid, so it moves no money here — it is recorded
+  // because the settlement decided it, and `Cycle.totalPlatformFees` is summed
+  // from it. Validated exactly like the payout so a float rupee value cannot
+  // reach the column and be silently truncated.
+  if (!Number.isInteger(platformFeePaise) || platformFeePaise < 0) {
+    throw new TypeError(`${spec.name}Bet: platformFeePaise must be a non-negative integer, got ${platformFeePaise}`);
   }
 
   const result = await withBetLock(userId, betId, async (ctx) => {
@@ -325,10 +364,11 @@ async function settle(
     // the database can settle that race. The read gives a good error message;
     // the WHERE gives correctness.
     const moved = await ctx.client.query(
-      `UPDATE bets SET status = $2, payout_paise = $3, settled_at = now(), updated_at = now()
+      `UPDATE bets SET status = $2, payout_paise = $3, platform_fee_paise = $5,
+                       settled_at = now(), updated_at = now()
         WHERE bet_id = $1 AND status = $4
         RETURNING updated_at`,
-      [ctx.bid, spec.to, payoutPaise, spec.expect],
+      [ctx.bid, spec.to, payoutPaise, spec.expect, platformFeePaise],
     );
     if (!moved.rowCount) {
       return { commit: false, value: { ok: false, reason: 'invalid_transition', status: bet.status, expected: spec.expect } };
@@ -386,7 +426,7 @@ async function settle(
       commit: true,
       value: {
         ok: true, idempotent: false,
-        bet: { ...bet, status: spec.to, payoutPaise, updatedAt: moved.rows[0].updated_at },
+        bet: { ...bet, status: spec.to, payoutPaise, platformFeePaise, updatedAt: moved.rows[0].updated_at },
         balances: movement.balancesAfterPaise,
       },
     };

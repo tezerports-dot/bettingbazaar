@@ -13,6 +13,11 @@
  *   npm run reconcile:pg                 # verify last 24h; exit 1 on drift
  *   npm run reconcile:pg -- --hours 168  # bigger window
  *   npm run reconcile:pg -- --all --backfill   # initial sync: copy missing Mongo→PG
+ *                                              # (also ADOPTS order_states,
+ *                                              #  user_kyc, casino_* and bets —
+ *                                              #  the tables no other path
+ *                                              #  reaches; see
+ *                                              #  backfillLifecycleTables)
  *   npm run reconcile:pg -- --reverse          # also check PG→Mongo (auto once a path is on PG)
  *   npm run reconcile:pg -- --repair-mongo     # Phase B fallback: write PG-only rows back to Mongo
  *
@@ -436,6 +441,514 @@ export async function reconcileMerchantSettlementStates({ backfill = false, repa
 }
 
 /**
+ * backfillLifecycleTables — ADOPT the state tables no other backfill reaches.
+ *
+ * ── The gap this closes ─────────────────────────────────────────────────────
+ * `TABLES` above covers six tables, and a cutover needs ten. `order_states`,
+ * `user_kyc`, `casino_rounds`/`casino_transactions` and `bets` were reachable
+ * by NOTHING:
+ *
+ *   - the forward mirrors only fire on a Mongo write, so a document that has
+ *     not been saved since the mirror was added has no Postgres row;
+ *   - `mirrorPaymentOrder` writes `payment_orders`, the PROJECTION — not
+ *     `order_states`, the lifecycle, which has no mirror at all;
+ *   - and every state check starts with `SELECT … FROM <the postgres table>`,
+ *     so it compares rows ALREADY there. A row that was never mirrored is
+ *     invisible to it, and `--backfill` can never create one.
+ *
+ * The consequence was not subtle: flipping any of those paths would have
+ * pointed reads at a table that is empty for all historical data. This is the
+ * step that has to run before a cutover is even possible.
+ *
+ * ── Adoption, not synchronisation ───────────────────────────────────────────
+ * Three rules, and each is a decision rather than an implementation detail.
+ *
+ * 1. NEVER OVERWRITE. Every insert is `ON CONFLICT DO NOTHING`. A Postgres
+ *    lifecycle row that already exists may carry transitions Mongo never knew
+ *    about, and a "backfill" that clobbered it would destroy the history it is
+ *    supposed to be protecting.
+ *
+ * 2. NO INVENTED HISTORY. An adopted order gets its current state and NO
+ *    `order_transitions` rows. It is tempting to synthesise the path that led
+ *    there, and it would be a lie: nobody recorded those transitions, the
+ *    timestamps would be fabricated, and an auditor reading the append-only
+ *    table could not tell manufactured history from the real thing. History
+ *    begins at adoption, and the absence of earlier rows is itself the honest
+ *    signal that this order predates the cutover.
+ *
+ * 3. DIRECTION FOLLOWS AUTHORITY. Each domain is skipped when Postgres already
+ *    owns it. Backfilling Mongo→Postgres for a path Postgres is authoritative
+ *    for would overwrite the source of truth with its own stale mirror.
+ *
+ * Deliberately NOT part of the incremental (`--since`) pass. Adoption is a
+ * one-time cutover step over the whole population; running it on a 24h window
+ * would silently adopt only recent rows and report success.
+ */
+/**
+ * Which of the keys we tried to adopt are ACTUALLY in the table now.
+ *
+ * The adoption legs below used to report `created` by incrementing a counter
+ * after calling a mirror — and the mirrors are fire-and-forget by contract:
+ * `dualWrite.mirror()` catches, logs, counts and returns undefined, and a
+ * mirror may also decline to write at all (mirrorBet skips phantom bets, which
+ * carry no funding provenance and cannot be settled by betPg). So `created`
+ * counted ATTEMPTS, and a pass that adopted nothing at all would report a full
+ * house.
+ *
+ * That number is not decoration. `--backfill` is step 1 of the cutover and its
+ * report is the evidence an operator reads before pointing money at Postgres —
+ * the one place a count that flatters itself does the most damage. So it is
+ * re-read from the table instead of accumulated.
+ *
+ * `table` and `column` are module-internal literals, never caller input.
+ */
+async function landedKeys(table, column, keys) {
+  if (!keys.length) return new Set();
+  const { rows } = await pgQuery(
+    `SELECT ${column} AS k FROM ${table} WHERE ${column} = ANY($1)`,
+    [keys], 'backfill_verify',
+  );
+  return new Set(rows.map((r) => String(r.k)));
+}
+
+/** The report row for one adoption leg, counted from what is in the table. */
+async function adoptionReport({ table, column, scanned, attempted, skipped }) {
+  const landed = await landedKeys(table, column, attempted);
+  return {
+    table,
+    scanned,
+    created: landed.size,
+    skipped,
+    // Attempted and not present afterwards: a mirror that threw and was
+    // swallowed, or one that declined the row on purpose. Either way the
+    // operator needs to see it rather than infer it from a total that adds up.
+    notAdopted: attempted.length - landed.size,
+  };
+}
+
+export async function backfillLifecycleTables({ limit = 50000 } = {}) {
+  const out = [];
+
+  // ── Orders: the lifecycle table, which has no mirror ──────────────────────
+  if (!isPostgresAuthoritative(MONEY_PATHS.ORDERS)) {
+    const { openOrder, ORDER_TYPES, ORDER_STATES } = await import('./orderPg.js');
+    const docs = await mongoose.model('PaymentOrder')
+      .find({}).select('userId merchantId type tokenAmount fiatAmount status')
+      .limit(limit).lean();
+
+    const attempted = []; let skipped = 0;
+    if (docs.length) {
+      const { rows } = await pgQuery(
+        `SELECT order_id FROM order_states WHERE order_id = ANY($1)`,
+        [docs.map((d) => String(d._id))]);
+      const have = new Set(rows.map((r) => r.order_id));
+
+      for (const doc of docs) {
+        if (have.has(String(doc._id))) { skipped++; continue; }
+        // A malformed document is skipped rather than adopted into a state the
+        // machine cannot represent — it would fail its next transition, which
+        // is the failure mode this whole function exists to prevent.
+        if (!ORDER_TYPES[doc.type] || !ORDER_STATES[doc.status]) { skipped++; continue; }
+        await openOrder({
+          orderId:          String(doc._id),
+          userId:           String(doc.userId),
+          merchantId:       doc.merchantId ? String(doc.merchantId) : null,
+          type:             doc.type,
+          tokenAmountPaise: rupeesToPaise(Number(doc.tokenAmount) || 0),
+          fiatAmountPaise:  rupeesToPaise(Number(doc.fiatAmount) || 0),
+          // AT ITS CURRENT STATE. Adopting at PENDING_QUEUE would refuse the
+          // order's very next transition.
+          state:            doc.status,
+        });
+        attempted.push(String(doc._id));
+      }
+    }
+    out.push(await adoptionReport({
+      table: 'order_states', column: 'order_id', scanned: docs.length, attempted, skipped,
+    }));
+  } else {
+    out.push({ table: 'order_states', skipped: 'postgres is authoritative' });
+  }
+
+  // ── KYC: mirrorUserKyc writes the whole record, it was just never called ──
+  if (!isPostgresAuthoritative(MONEY_PATHS.KYC)) {
+    const { mirrorUserKyc } = await import('./dualWrite.js');
+    const docs = await mongoose.model('User')
+      .find({}).select('kycStatus kycData').limit(limit).lean();
+    const { rows } = await pgQuery(
+      `SELECT user_id FROM user_kyc WHERE user_id = ANY($1)`,
+      [docs.map((d) => String(d._id))]);
+    const have = new Set(rows.map((r) => r.user_id));
+
+    const attempted = []; let skipped = 0;
+    for (const doc of docs) {
+      if (have.has(String(doc._id))) { skipped++; continue; }
+      await mirrorUserKyc(doc);
+      attempted.push(String(doc._id));
+    }
+    out.push(await adoptionReport({
+      table: 'user_kyc', column: 'user_id', scanned: docs.length, attempted, skipped,
+    }));
+  } else {
+    out.push({ table: 'user_kyc', skipped: 'postgres is authoritative' });
+  }
+
+  // ── Casino: rounds are DERIVED from their callbacks, so replay them ───────
+  // In tx order, because each one advances a running total and the refund bound
+  // is checked against it. Replaying out of order would refuse a legitimate
+  // rollback that arrived before its own debit had been adopted.
+  if (!isPostgresAuthoritative(MONEY_PATHS.CASINO_SETTLEMENT)) {
+    const { mirrorCasinoTransaction } = await import('./dualWrite.js');
+    const docs = await mongoose.model('GameTransaction')
+      .find({}).select('txId roundId userId type amount providerKey gameId createdAt')
+      .sort({ createdAt: 1 }).limit(limit).lean();
+    const { rows } = await pgQuery(
+      `SELECT tx_id FROM casino_transactions WHERE tx_id = ANY($1)`,
+      [docs.map((d) => String(d.txId))]);
+    const have = new Set(rows.map((r) => r.tx_id));
+
+    const attempted = []; let skipped = 0;
+    for (const doc of docs) {
+      if (have.has(String(doc.txId))) { skipped++; continue; }
+      await mirrorCasinoTransaction(doc);
+      attempted.push(String(doc.txId));
+    }
+    out.push(await adoptionReport({
+      table: 'casino_transactions', column: 'tx_id', scanned: docs.length, attempted, skipped,
+    }));
+  } else {
+    out.push({ table: 'casino_transactions', skipped: 'postgres is authoritative' });
+  }
+
+  // ── Bets ──────────────────────────────────────────────────────────────────
+  if (!isPostgresAuthoritative(MONEY_PATHS.BETS)) {
+    const { mirrorBet } = await import('./dualWrite.js');
+    const docs = await mongoose.model('Bet').find({}).limit(limit).lean();
+    const { rows } = await pgQuery(
+      `SELECT bet_id FROM bets WHERE bet_id = ANY($1)`,
+      [docs.map((d) => String(d._id))]);
+    const have = new Set(rows.map((r) => r.bet_id));
+
+    const attempted = []; let skipped = 0;
+    for (const doc of docs) {
+      if (have.has(String(doc._id))) { skipped++; continue; }
+      await mirrorBet(doc);
+      attempted.push(String(doc._id));
+    }
+    out.push(await adoptionReport({
+      table: 'bets', column: 'bet_id', scanned: docs.length, attempted, skipped,
+    }));
+  } else {
+    out.push({ table: 'bets', skipped: 'postgres is authoritative' });
+  }
+
+  return out;
+}
+
+/**
+ * reconcileCasinoRounds — do the two stores agree about what each round took
+ * and gave back?
+ *
+ * Domain 9's cross-store check. The comparison is per ROUND on the three
+ * running totals, not per transaction: a transaction-count check would pass
+ * while the totals disagreed, and it is the totals the refund bound is enforced
+ * against. A round whose Postgres `refunded` exceeds Mongo's is the shape of the
+ * exposure this domain was built around — a reversal Mongo honoured that
+ * Postgres would have refused.
+ *
+ * There is no `--backfill` money movement here and there must not be: both
+ * stores have already paid, and a repair that moved value would double-spend
+ * the round. Repair rewrites the RECORD in whichever direction authority
+ * points, and the wallet paths own the balances.
+ */
+export async function reconcileCasinoRounds({ backfill = false, repairMongo = false, limit = 20000 } = {}) {
+  if (backfill && repairMongo) {
+    throw new Error('reconcileCasinoRounds: backfill and repairMongo are opposite directions — pick one');
+  }
+
+  const { rows } = await pgQuery(
+    `SELECT round_id, user_id, provider_key, game_id, debited_paise, credited_paise, refunded_paise, updated_at
+       FROM casino_rounds ORDER BY updated_at DESC LIMIT $1`,
+    [limit], 'casino_round_reconcile',
+  );
+  if (!rows.length) return { table: 'casino_rounds', checked: 0, disagreeing: 0, settling: 0, repaired: 0, overRefunded: 0, sample: [] };
+
+  const GameTransaction = mongoose.model('GameTransaction');
+  const docs = await GameTransaction
+    .find({ roundId: { $in: rows.map((r) => r.round_id) } })
+    .select('roundId type amount').lean();
+
+  // Mongo's totals, derived the way the route derives them.
+  const mongoTotals = new Map();
+  for (const d of docs) {
+    const t = mongoTotals.get(String(d.roundId)) ?? { debited: 0, credited: 0, refunded: 0 };
+    const amount = Number(d.amount) || 0;
+    if (d.type === 'BET') t.debited += amount;
+    else if (d.type === 'WIN') t.credited += amount;
+    else if (d.type === 'ROLLBACK' || d.type === 'REFUND') t.refunded += amount;
+    mongoTotals.set(String(d.roundId), t);
+  }
+
+  const { mirrorCasinoTransaction } = await import('./dualWrite.js');
+  const { reverseMirrorCasinoRound } = await import('./reverseMirror.js');
+
+  const disagreeing = [];
+  let repaired = 0;
+  let overRefunded = 0;
+
+  for (const row of rows) {
+    const mongo = mongoTotals.get(String(row.round_id));
+    // A Postgres round Mongo has never heard of is a missing document, which
+    // the reverse table check owns.
+    if (!mongo) continue;
+
+    const pg = {
+      debited:  paiseToRupees(Number(row.debited_paise)),
+      credited: paiseToRupees(Number(row.credited_paise)),
+      refunded: paiseToRupees(Number(row.refunded_paise)),
+    };
+    if (mongo.debited === pg.debited && mongo.credited === pg.credited && mongo.refunded === pg.refunded) continue;
+
+    // The finding that matters most: Mongo gave back more than it took. The
+    // Postgres CHECK constraint makes that unreachable there, so this can only
+    // ever be reported from the Mongo side — which is precisely why it is worth
+    // reporting rather than assuming the constraint covers both stores.
+    const mongoOverRefunded = mongo.refunded > mongo.debited;
+    if (mongoOverRefunded) overRefunded++;
+
+    disagreeing.push({
+      roundId: row.round_id, userId: row.user_id,
+      mongo, pg, ...(mongoOverRefunded ? { mongoOverRefunded } : {}),
+      at: row.updated_at,
+    });
+
+    if (backfill) {
+      for (const d of docs.filter((x) => String(x.roundId) === String(row.round_id))) {
+        await mirrorCasinoTransaction({
+          txId: d.txId, roundId: d.roundId, userId: row.user_id, type: d.type,
+          amount: d.amount, providerKey: row.provider_key, gameId: row.game_id,
+        });
+      }
+      repaired++;
+    } else if (repairMongo) {
+      const { rows: txs } = await pgQuery(
+        `SELECT tx_id, round_id, user_id, tx_type, amount_paise FROM casino_transactions WHERE round_id = $1`,
+        [row.round_id]);
+      for (const tx of txs) {
+        await reverseMirrorCasinoRound({
+          round: { providerKey: row.provider_key, gameId: row.game_id },
+          transaction: { ...tx, provider_key: row.provider_key, game_id: row.game_id },
+        });
+      }
+      repaired++;
+    }
+  }
+
+  const { settled, settling } = splitBySettling(disagreeing, (r) => r.at);
+
+  return {
+    table: 'casino_rounds',
+    checked: rows.length,
+    disagreeing: backfill || repairMongo ? 0 : settled.length,
+    disagreeingBeforeRepair: settled.length,
+    settling: settling.length,
+    repaired,
+    // Counted separately and NEVER cleared by a repair: a round that gave back
+    // more than it took is money already gone, not a record to rewrite.
+    overRefunded,
+    sample: settled.slice(0, 5),
+  };
+}
+
+/**
+ * reconcileKycDecisions — do the two stores agree about who is approved?
+ *
+ * Domain 11's cross-store check, and the last one. A KYC status that disagrees
+ * is not a reporting problem: `requireApprovedKyc` gates deposits and
+ * withdrawals on it, so after a fallback a user approved in one store is
+ * refused by the other — or, the direction that matters, a user REJECTED in the
+ * authoritative store is still approved in the one the middleware reads.
+ *
+ * The REASON is compared too, not just the status. A rejection whose reason did
+ * not survive the mirror leaves the user staring at a refusal with no
+ * explanation, which is the exact defect this domain was built to remove; a
+ * check comparing only statuses would call that clean.
+ */
+export async function reconcileKycDecisions({ backfill = false, repairMongo = false, limit = 50000 } = {}) {
+  if (backfill && repairMongo) {
+    throw new Error('reconcileKycDecisions: backfill and repairMongo are opposite directions — pick one');
+  }
+
+  const { rows } = await pgQuery(
+    `SELECT user_id, kyc_status, rejection_reason, reviewed_by, reviewed_at, updated_at
+       FROM user_kyc ORDER BY updated_at DESC LIMIT $1`,
+    [limit], 'kyc_reconcile',
+  );
+  if (!rows.length) return { table: 'user_kyc', checked: 0, disagreeing: 0, settling: 0, repaired: 0, sample: [] };
+
+  const docs = await mongoose.model('User')
+    .find({ _id: { $in: rows.map((r) => r.user_id) } })
+    .select('kycStatus kycData.rejectionReason').lean();
+  const byId = new Map(docs.map((d) => [String(d._id), d]));
+
+  const { mirrorUserKyc } = await import('./dualWrite.js');
+  const { reverseMirrorUserKycStatus } = await import('./reverseMirror.js');
+
+  const disagreeing = [];
+  let repaired = 0;
+
+  for (const row of rows) {
+    const doc = byId.get(String(row.user_id));
+    // A Postgres row with no Mongo user is a missing document, which the
+    // reverse table check owns.
+    if (!doc) continue;
+
+    const mongoReason = doc.kycData?.rejectionReason ?? null;
+    const pgReason = row.rejection_reason ?? null;
+    const statusDiffers = doc.kycStatus !== row.kyc_status;
+    // Only meaningful on a rejection — the field is cleared otherwise, so
+    // comparing two nulls everywhere else would be noise.
+    const reasonDiffers = row.kyc_status === 'REJECTED' && (mongoReason ?? '') !== (pgReason ?? '');
+    if (!statusDiffers && !reasonDiffers) continue;
+
+    disagreeing.push({
+      userId: row.user_id,
+      mongoStatus: doc.kycStatus, pgStatus: row.kyc_status,
+      ...(reasonDiffers ? { mongoReason, pgReason } : {}),
+      at: row.updated_at,
+    });
+
+    if (backfill) { await mirrorUserKyc({ _id: row.user_id, kycStatus: doc.kycStatus, kycData: doc.kycData ?? {} }); repaired++; }
+    else if (repairMongo) { await reverseMirrorUserKycStatus(row); repaired++; }
+  }
+
+  const { settled, settling } = splitBySettling(disagreeing, (r) => r.at);
+
+  return {
+    table: 'user_kyc',
+    checked: rows.length,
+    disagreeing: backfill || repairMongo ? 0 : settled.length,
+    disagreeingBeforeRepair: settled.length,
+    settling: settling.length,
+    repaired,
+    sample: settled.slice(0, 5),
+  };
+}
+
+/**
+ * reconcileOrderStates — do the two stores agree on where each ORDER is?
+ *
+ * ── The two tables this must not conflate ───────────────────────────────────
+ * `payment_orders` is a MIRROR: the Mongo document projected forward on every
+ * save, overwritten in place, no history, no guard. `order_states` plus
+ * append-only `order_transitions` are the authoritative lifecycle. This check
+ * reads `order_states`, deliberately.
+ *
+ * Comparing `payment_orders.status` against `PaymentOrder.status` would be
+ * comparing a value against a copy of itself — the forward mirror writes one
+ * from the other, so they agree by construction and the check would report
+ * clean no matter how far the real lifecycle had drifted. It is the difference
+ * between evidence and a tautology.
+ *
+ * ── Why the disagreement matters ────────────────────────────────────────────
+ * The row-presence check finds the order in both stores and reports clean while
+ * one says PROCESSING and the other says COMPLETED. After a fallback that means
+ * the expiry cron cancels an order that was already paid, or the merchant queue
+ * shows work for an order that finished — and on the deposit path a COMPLETED
+ * order with no accounting event behind it is money the books do not know about.
+ *
+ * ── Repair direction follows authority, like every other check here ─────────
+ * `--backfill` (Phase A, Mongo authoritative) replays the Mongo status into
+ * `order_states` through the lifecycle's own transition, NOT with a raw UPDATE:
+ * a repair that bypassed the state machine could write a state the machine
+ * would refuse and leave `order_transitions` with no record of how the order
+ * got there, which is the history the table exists to keep. Where the move is
+ * not legal the row is reported and left alone — an order that reached an
+ * impossible state is a fault to investigate, not one to paper over.
+ *
+ * `--repair-mongo` (Phase B, Postgres authoritative) pushes the authoritative
+ * state back through the reverse mirror.
+ */
+export async function reconcileOrderStates({ backfill = false, repairMongo = false, limit = 50000 } = {}) {
+  if (backfill && repairMongo) {
+    throw new Error('reconcileOrderStates: backfill and repairMongo are opposite directions — pick one');
+  }
+
+  const { rows } = await pgQuery(
+    `SELECT order_id, user_id, merchant_id, order_type, state, token_amount_paise, updated_at
+       FROM order_states ORDER BY updated_at DESC LIMIT $1`,
+    [limit], 'order_state_reconcile',
+  );
+  if (!rows.length) {
+    return { table: 'order_states', checked: 0, disagreeing: 0, settling: 0, repaired: 0, unrepairable: 0, sample: [] };
+  }
+
+  const docs = await mongoose.model('PaymentOrder')
+    .find({ _id: { $in: rows.map((r) => r.order_id) } })
+    .select('status').lean();
+  const byId = new Map(docs.map((d) => [String(d._id), d]));
+
+  const { transition, ALLOWED_FROM } = await import('./orderPg.js');
+  const { reverseMirrorOrderState } = await import('./reverseMirror.js');
+
+  const disagreeing = [];
+  let repaired = 0;
+  let unrepairable = 0;
+
+  for (const row of rows) {
+    const doc = byId.get(String(row.order_id));
+    // A Postgres order with no Mongo document is a missing row, which the
+    // reverse table check owns. Counting it here too would report one problem
+    // as two.
+    if (!doc) continue;
+    if (doc.status === row.state) continue;
+
+    const entry = {
+      orderId: row.order_id, mongoStatus: doc.status, pgStatus: row.state, at: row.updated_at,
+    };
+    disagreeing.push(entry);
+
+    if (backfill) {
+      // Through the state machine, not around it. A repeat visit needs its own
+      // key or the transition is refused as a replay — see
+      // docs/ORDERS_REQUEUE_CYCLE.md — and a reconcile pass is exactly where
+      // one would arrive, since it replays states the order has held before.
+      if (!ALLOWED_FROM[doc.status]?.includes(row.state)) {
+        entry.unrepairable = `Mongo says ${doc.status}, which is not reachable from ${row.state}`;
+        unrepairable++;
+        continue;
+      }
+      const moved = await transition({
+        orderId: row.order_id, to: doc.status, actor: 'reconcile',
+        reason: `backfill: Mongo authoritative at ${row.state}`,
+        txId: `ord_${row.order_id}_${doc.status}_reconcile_${Date.parse(row.updated_at) || Date.now()}`,
+      });
+      if (moved.ok) repaired++;
+      else { entry.unrepairable = moved.reason; unrepairable++; }
+    } else if (repairMongo) {
+      await reverseMirrorOrderState(row);
+      repaired++;
+    }
+  }
+
+  const { settled, settling } = splitBySettling(disagreeing, (r) => r.at);
+
+  return {
+    table: 'order_states',
+    checked: rows.length,
+    disagreeing: backfill || repairMongo ? unrepairable : settled.length,
+    disagreeingBeforeRepair: settled.length,
+    settling: settling.length,
+    repaired,
+    // A repair that could not be performed is NOT clean. Folding it into
+    // `repaired` would let a pass report success while the drift it found is
+    // still there.
+    unrepairable,
+    sample: settled.slice(0, 5),
+  };
+}
+
+/**
  * reconcileBetStates — do the two stores agree on where each bet IS?
  *
  * Nothing else compares them. The row-presence check finds the bet in both
@@ -456,15 +969,22 @@ export async function reconcileBetStates({ backfill = false, repairMongo = false
   }
 
   const { rows } = await pgQuery(
-    `SELECT bet_id, user_id, cycle_id, side, stake_paise, payout_paise, status, placed_at, settled_at, updated_at
+    `SELECT bet_id, user_id, cycle_id, side, stake_paise, payout_paise, platform_fee_paise,
+            status, placed_at, settled_at, updated_at
        FROM bets ORDER BY updated_at DESC LIMIT $1`,
     [limit], 'bet_state_reconcile',
   );
   if (!rows.length) return { table: 'bets', checked: 0, disagreeing: 0, settling: 0, repaired: 0, sample: [] };
 
+  // `status` is what the comparison needs; `payout`, `platformFee` and
+  // `settledAt` are what the BACKFILL repair below needs. Selecting only
+  // `status` made the repair hand `mirrorBet` a document with no payout, and
+  // the mirror's `ON CONFLICT DO UPDATE` writes what it is given — so repairing
+  // a settled bet's status ZEROED its payout and fee in Postgres. The check that
+  // exists to close a disagreement was opening a bigger one.
   const docs = await mongoose.model('Bet')
     .find({ _id: { $in: rows.map((r) => r.bet_id) } })
-    .select('status').lean();
+    .select('status payout platformFee settledAt isPhantom').lean();
   const byId = new Map(docs.map((d) => [String(d._id), d]));
 
   const { mirrorBet } = await import('./dualWrite.js');
@@ -879,6 +1399,41 @@ export async function runReconcile({
     repairMongo: repairMongo && betsOnPg,
   });
 
+  // ADOPTION FIRST, when a backfill is asked for. Every state check below
+  // starts with SELECT … FROM its Postgres table, so it can only compare rows
+  // that are already there — running them before adoption would report a clean
+  // pass over an empty table, which is the most dangerous kind of green.
+  const lifecycleBackfill = backfill ? await backfillLifecycleTables() : null;
+
+  // Orders: do the two stores agree on where each order IS? Read from
+  // order_states — the authoritative lifecycle — and NOT from payment_orders,
+  // which is the projection the forward mirror writes from the Mongo document
+  // and would therefore agree with it by construction.
+  const ordersOnPg = isPostgresAuthoritative(MONEY_PATHS.ORDERS);
+  const orderStates = await reconcileOrderStates({
+    backfill: backfill && !ordersOnPg,
+    repairMongo: repairMongo && ordersOnPg,
+  });
+
+  // Domain 11, the last: do the two stores agree about who is APPROVED? This
+  // one gates money rather than moving it — requireApprovedKyc reads the status
+  // — so a disagreement refuses a legitimate user or admits a rejected one.
+  const kycOnPg = isPostgresAuthoritative(MONEY_PATHS.KYC);
+  const kycDecisions = await reconcileKycDecisions({
+    backfill: backfill && !kycOnPg,
+    repairMongo: repairMongo && kycOnPg,
+  });
+
+  // Domain 9: do the two stores agree about what each casino round took and
+  // gave back? The refund bound is a CHECK CONSTRAINT in Postgres and a
+  // read-then-compare in Mongo, so an over-refunded round can only ever appear
+  // on the Mongo side — which is exactly why this asks.
+  const casinoOnPg = isPostgresAuthoritative(MONEY_PATHS.CASINO_SETTLEMENT);
+  const casinoRounds = await reconcileCasinoRounds({
+    backfill: backfill && !casinoOnPg,
+    repairMongo: repairMongo && casinoOnPg,
+  });
+
   // Domain 6: did each cycle's settlement RUN end the same way in both stores,
   // and did it pay out the same amount? The payout comparison is the one that
   // earns its place — Mongo re-derives its total from the stamped WON bets and
@@ -906,6 +1461,11 @@ export async function runReconcile({
     || merchantLedgers.unexplained > 0
     || settlementPockets.length > 0
     || settlementStates.disagreeing > 0
+    || orderStates.disagreeing > 0
+    || orderStates.unrepairable > 0
+    || kycDecisions.disagreeing > 0
+    || casinoRounds.disagreeing > 0
+    || casinoRounds.overRefunded > 0
     || betStates.disagreeing > 0
     || cycleSettlements.disagreeing > 0
     || bonusGrants.disagreeing > 0
@@ -941,18 +1501,23 @@ export async function runReconcile({
     reverse: (reverseResults ?? []).reduce((s, r) => s + (r.settling ?? 0), 0),
     merchantBalances: merchantBalances.settling ?? 0,
     settlementStates: settlementStates.settling ?? 0,
+    orderStates: orderStates.settling ?? 0,
+    kycDecisions: kycDecisions.settling ?? 0,
+    casinoRounds: casinoRounds.settling ?? 0,
     betStates: betStates.settling ?? 0,
     cycleSettlements: cycleSettlements.settling ?? 0,
     bonusGrants: bonusGrants.settling ?? 0,
   };
   settling.total = settling.forward + settling.reverse
     + settling.merchantBalances + settling.settlementStates + settling.betStates
+    + settling.orderStates + settling.kycDecisions + settling.casinoRounds
     + settling.cycleSettlements + settling.bonusGrants;
 
   return {
     window: all ? 'all' : `${hours}h`,
     results,
     settling,
+    lifecycleBackfill,
     trialBalance: pgTrial,
     merchantBalances,
     merchantLedgers,
@@ -964,6 +1529,9 @@ export async function runReconcile({
       states: settlementStates,
     },
     adminSupply,
+    orderStates,
+    kycDecisions,
+    casinoRounds,
     betStates,
     cycleSettlements,
     bonusGrants,

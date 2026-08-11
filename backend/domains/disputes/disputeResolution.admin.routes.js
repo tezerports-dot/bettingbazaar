@@ -2,6 +2,9 @@
 
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, hasPermission, getModels } from '../../routes/admin/_adminShared.js';
 import { creditDeposit, creditWinnings } from '../wallet/walletAuthority.service.js';
+// The order state machine. Resolving a dispute is a guarded transition, and it
+// runs BEFORE any money moves so that it is what decides the race.
+import { completeOrder, cancelOrder } from '../payment/orderLifecycle.service.js';
 
 const router = express.Router();
 
@@ -149,20 +152,55 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, isAdmin, async (re
 
     const adminName = req.user?.username || req.user?.mobile || 'Admin';
     let systemMessage = '';
-    let newStatus = 'CANCELLED';
+
+    // ── THE TRANSITION IS THE GATE, and it runs before the money ─────────────
+    //
+    // Every branch below moves value — creditDeposit, settleHold, reverseHold,
+    // creditWinnings — and all of it used to run BEFORE `order.status` was
+    // assigned, guarded only by the status read above. Two admins resolving the
+    // same dispute both passed that read and both moved money; what stopped the
+    // duplicate was the idempotency key on each individual wallet call, which
+    // means the protection lived in a different domain from the decision, and
+    // the two directions (release vs refund) were not protected against each
+    // other at all — one admin releasing while another refunded ran BOTH.
+    //
+    // The outcome is a pure function of the order type and the decision, so it
+    // can be settled first and then gate everything that follows.
+    const releasesToUser     = order.type === 'DEPOSIT'    && decision === 'RELEASE_TO_USER';
+    const releasesToMerchant = order.type === 'WITHDRAWAL' && decision === 'RELEASE_TO_MERCHANT';
+    const newStatus = (releasesToUser || releasesToMerchant) ? 'COMPLETED' : 'CANCELLED';
+
+    const moved = await (newStatus === 'COMPLETED' ? completeOrder : cancelOrder)(order._id, {
+      set: {
+        disputeDecision:   decision,
+        disputeResolution: resolution,
+        resolvedAt:        new Date(),
+        resolvedBy:        req.user._id,
+        ...(newStatus === 'COMPLETED' ? { completedAt: new Date() } : { cancelledAt: new Date() }),
+      },
+    });
+    if (!moved.ok) {
+      // 409, not 400: understood and refused because the order is no longer in
+      // a state this resolution applies to.
+      return res.status(409).json({
+        success: false,
+        message: `Cannot resolve order in status: ${moved.status ?? 'missing'}`,
+      });
+    }
+    if (moved.idempotent) {
+      return res.json({ success: true, message: 'Dispute already resolved', order: moved.order ?? order });
+    }
 
     // ── Apply token movement based on decision + order type ──────────────────
     if (order.type === 'DEPOSIT') {
       if (decision === 'RELEASE_TO_USER') {
         await creditDeposit(order.userId, order.tokenAmount,
           `Dispute resolved — deposit credited: ${order.orderId}`);
-        newStatus = 'COMPLETED';
         systemMessage = `✅ Admin Decision: DEPOSIT APPROVED\n` +
           `${order.tokenAmount} tokens credited to user deposit balance.\n` +
           `Resolution: ${resolution}`;
       } else {
         // RELEASE_TO_MERCHANT or CANCEL — user did not pay; no token movement
-        newStatus = 'CANCELLED';
         systemMessage = `❌ Admin Decision: DEPOSIT REJECTED\n` +
           `No payment confirmed. Order cancelled. No token movement.\n` +
           `Resolution: ${resolution}`;
@@ -192,12 +230,10 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, isAdmin, async (re
           // tokens at all, so an admin ruling for the merchant left the player's
           // stake locked forever and the merchant never paid.
           await settleHold(order._id);
-          newStatus = 'COMPLETED';
           systemMessage = `✅ Admin Decision: WITHDRAWAL COMPLETED\n` +
             `Payment confirmed. ${order.tokenAmount} tokens released to the merchant.\n` +
             `Resolution: ${resolution}`;
         } else {
-          newStatus = 'COMPLETED';
           systemMessage = `✅ Admin Decision: WITHDRAWAL COMPLETED\n` +
             `Merchant confirmed payment was sent. Already settled — no further token movement.\n` +
             `Resolution: ${resolution}`;
@@ -209,7 +245,6 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, isAdmin, async (re
           reason: `Dispute resolved by ${adminName}: ${resolution}`,
           by: req.user._id,
         });
-        newStatus = 'CANCELLED';
         systemMessage = `🔄 Admin Decision: WITHDRAWAL REVERSED\n` +
           `Payment was not received. ${order.tokenAmount} tokens returned to your balance.\n` +
           `Resolution: ${resolution}`;
@@ -225,7 +260,6 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, isAdmin, async (re
           `Dispute resolved — withdrawal refunded: ${order.orderId}`,
           'PaymentOrder', order._id, `dispute_wd_refund_${order._id}`,
         );
-        newStatus = 'CANCELLED';
         systemMessage = `🔄 Admin Decision: WITHDRAWAL REFUNDED\n` +
           `${order.tokenAmount} tokens returned to user winnings balance.\n` +
           `Resolution: ${resolution}`;
@@ -243,15 +277,10 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, isAdmin, async (re
       systemMessage += `\n⚠️ Merchant penalty noted: ${penaltyMerchant} tokens (manual action required)`;
     }
 
-    // ── Update order ─────────────────────────────────────────────────────────
-    order.status            = newStatus;
-    order.disputeDecision   = decision;
-    order.disputeResolution = resolution;
-    order.resolvedAt        = new Date();
-    order.resolvedBy        = req.user._id;
-    if (newStatus === 'COMPLETED') order.completedAt = new Date();
-    if (newStatus === 'CANCELLED') order.cancelledAt = new Date();
-    await order.save();
+    // The order was written by the transition above, decision fields and all —
+    // there is no second save, and therefore no window in which the money has
+    // moved but the order does not yet say so.
+    Object.assign(order, moved.order);
 
     
     await ChatMessage.create({

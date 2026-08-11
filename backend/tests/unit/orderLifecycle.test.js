@@ -15,6 +15,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import mongoose from 'mongoose';
 import {
   transitionOrder, completeOrder, cancelOrder, assignOrder, markOrderPaid,
+  requeueOrder, reassignOrder,
   canTransition, nextStates, ORDER_STATES, LIFECYCLE,
 } from '../../domains/payment/orderLifecycle.service.js';
 
@@ -57,7 +58,7 @@ describe('the guard goes into the query, not a pre-read', () => {
     // test below passes anyway — which is why the filter itself is asserted.
     expect(lastFilter).toEqual({
       _id: 'o1',
-      status: { $in: [ORDER_STATES.PAID, ORDER_STATES.PROCESSING] },
+      status: { $in: [ORDER_STATES.PAID, ORDER_STATES.PROCESSING, ORDER_STATES.DISPUTED] },
     });
   });
 
@@ -140,8 +141,89 @@ describe('expectFrom narrows, and can never widen', () => {
   });
 
   it('throws on a state nothing transitions into', async () => {
-    await expect(transitionOrder('o1', 'PENDING_QUEUE'))
+    // Every one of the nine real states is now reachable — PENDING_QUEUE became
+    // so when the requeue edge was added (docs/ORDERS_REQUEUE_CYCLE.md), which
+    // is what this used to assert against. A typo'd state is what remains, and
+    // it is the case that actually matters: the machine must refuse a target it
+    // has no rule for rather than invent one.
+    await expect(transitionOrder('o1', 'ELSEWHERE'))
       .rejects.toThrow(/not a state anything transitions into/);
+  });
+
+  it('lets a rejected order return to the queue', async () => {
+    // The transition the rule table used to deny while the merchant reject
+    // route performed it anyway.
+    updateResult = { _id: 'o1', status: ORDER_STATES.PENDING_QUEUE, merchantId: null };
+    const back = await requeueOrder('o1', { set: { merchantId: null } });
+    expect(back).toMatchObject({ ok: true, reason: LIFECYCLE.APPLIED, status: ORDER_STATES.PENDING_QUEUE });
+    // Only an ASSIGNED order may be requeued — a PROCESSING one is already
+    // being worked on and a finished one is finished.
+    expect(lastFilter.status.$in).toEqual([ORDER_STATES.ASSIGNED]);
+  });
+});
+
+describe('a dispute can be resolved', () => {
+  // REGRESSION. DISPUTED had no outgoing edges at all — nextStates(DISPUTED)
+  // was [] — so every admin dispute resolution refused itself. Both resolve
+  // routes read the order, confirm it is DISPUTED, and then ask for COMPLETED
+  // or CANCELLED; the rule table admitted COMPLETED only from PAID/PROCESSING
+  // and CANCELLED only from the pre-payment states, so the guarded update
+  // matched no row and the handler returned 409 for the one status it is built
+  // to handle. A disputed order could be created and never resolved.
+  it('releases a disputed order to COMPLETED', async () => {
+    updateResult = { _id: 'o1', status: ORDER_STATES.COMPLETED };
+    storedStatus = ORDER_STATES.DISPUTED;
+    const released = await completeOrder('o1', { set: { completedAt: new Date() } });
+    expect(released).toMatchObject({ ok: true, status: ORDER_STATES.COMPLETED });
+    expect(lastFilter.status.$in).toContain(ORDER_STATES.DISPUTED);
+  });
+
+  it('refunds a disputed order to CANCELLED', async () => {
+    updateResult = { _id: 'o1', status: ORDER_STATES.CANCELLED };
+    storedStatus = ORDER_STATES.DISPUTED;
+    const refunded = await cancelOrder('o1', { set: { cancelReason: 'DISPUTE_REFUNDED' } });
+    expect(refunded).toMatchObject({ ok: true, status: ORDER_STATES.CANCELLED });
+    expect(lastFilter.status.$in).toContain(ORDER_STATES.DISPUTED);
+  });
+
+  it('leaves no state an order can enter but never leave', () => {
+    // The property, rather than the two instances of it. A terminal state is a
+    // deliberate choice; a state that is terminal by ACCIDENT is a stuck order.
+    const settled = [ORDER_STATES.CANCELLED, ORDER_STATES.FAILED, ORDER_STATES.REJECTED];
+    for (const state of Object.values(ORDER_STATES)) {
+      if (settled.includes(state)) continue;
+      expect({ state, next: nextStates(state) }).toMatchObject({ state });
+      expect(nextStates(state).length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('reassignment is guarded, but is not a lifecycle transition', () => {
+  it('accepts the live states and normalises to ASSIGNED', async () => {
+    updateResult = { _id: 'o1', status: ORDER_STATES.ASSIGNED, merchantId: 'm2' };
+    const moved = await reassignOrder('o1', { set: { merchantId: 'm2' } });
+    expect(moved).toMatchObject({ ok: true, status: ORDER_STATES.ASSIGNED });
+    // The states are in the FILTER, which is what makes two admins reassigning
+    // the same order produce one winner instead of a last-write-wins overwrite.
+    expect(lastFilter).toEqual({
+      _id: 'o1',
+      status: { $in: [ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING] },
+    });
+  });
+
+  it('refuses an order that has already finished', async () => {
+    updateResult = null;                       // filter matched nothing
+    storedStatus = ORDER_STATES.COMPLETED;
+    const moved = await reassignOrder('o1', { set: { merchantId: 'm2' } });
+    expect(moved).toMatchObject({
+      ok: false, reason: LIFECYCLE.ILLEGAL_TRANSITION, status: ORDER_STATES.COMPLETED,
+    });
+  });
+
+  it('reports a missing order as missing, not as illegal', async () => {
+    updateResult = null;
+    storedStatus = null;
+    expect(await reassignOrder('gone', {})).toMatchObject({ ok: false, reason: LIFECYCLE.NOT_FOUND });
   });
 });
 
@@ -153,13 +235,18 @@ describe('the rule table is shared with Postgres, not copied', () => {
     // real drift. This asserts there is only one.
     expect(canTransition(ORDER_STATES.PAID, ORDER_STATES.COMPLETED)).toBe(true);
     expect(canTransition(ORDER_STATES.CANCELLED, ORDER_STATES.COMPLETED)).toBe(false);
-    expect(ALLOWED_FROM[ORDER_STATES.COMPLETED]).toEqual([ORDER_STATES.PAID, ORDER_STATES.PROCESSING]);
+    expect(ALLOWED_FROM[ORDER_STATES.COMPLETED])
+      .toEqual([ORDER_STATES.PAID, ORDER_STATES.PROCESSING, ORDER_STATES.DISPUTED]);
   });
 
   it('knows where an order can go from here', () => {
     expect(nextStates(ORDER_STATES.PENDING_QUEUE).sort())
-      .toEqual(['ASSIGNED', 'CANCELLED', 'FAILED', 'REJECTED']);
+      // PROCESSING because a merchant may take an order straight out of the
+      // open pool without it having been assigned to them first.
+      .toEqual(['ASSIGNED', 'CANCELLED', 'FAILED', 'PROCESSING', 'REJECTED']);
     // Nothing leaves COMPLETED except a dispute. Everything else is a reversal.
     expect(nextStates(ORDER_STATES.COMPLETED)).toEqual(['DISPUTED']);
+    // ...and a dispute resolves in exactly two directions.
+    expect(nextStates(ORDER_STATES.DISPUTED).sort()).toEqual(['CANCELLED', 'COMPLETED']);
   });
 });

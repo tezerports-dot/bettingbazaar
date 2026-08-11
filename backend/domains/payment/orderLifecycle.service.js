@@ -46,6 +46,8 @@
  */
 import mongoose from 'mongoose';
 import { ORDER_STATES, ALLOWED_FROM } from '../../postgres/orderPg.js';
+// Stage 2. This is the ONLY file that may import it — see the header there.
+import { transitionOrderOnPostgres as routeTransition } from '../../postgres/orderPgAuthority.js';
 
 export { ORDER_STATES };
 
@@ -91,9 +93,36 @@ async function describe(orderId, to) {
  * table does not allow is a programming error and throws, rather than quietly
  * widening the machine.
  */
-export async function transitionOrder(orderId, to, { set = {}, expectFrom = null, session = null } = {}) {
+export async function transitionOrder(orderId, to, { set = {}, expectFrom = null, session = null, actor = null, reason = null, txId = null } = {}) {
   const allowed = ALLOWED_FROM[to];
   if (!allowed) throw new Error(`transitionOrder: '${to}' is not a state anything transitions into`);
+
+  // ── Stage 2: the resolver, asked ONCE ────────────────────────────────────
+  // This is the whole reason stage 1 replaced 31 scattered status writes with
+  // one service. When Postgres owns the ORDERS path the transition happens
+  // there — inside a transaction with its accounting event, guarded by the row
+  // lock, recorded in append-only history — and Mongo is updated afterwards as
+  // the mirror everything else reads.
+  //
+  // A refusal from Postgres comes back as a refusal. It is NOT retried against
+  // Mongo: the store that owns the lifecycle saying no, overruled by the store
+  // that has no opinion, is worse than either alone.
+  //
+  // The Postgres path cannot join a Mongo session, so a caller inside a
+  // transaction stays on Mongo. That is not a gap to close later — a
+  // transaction spanning two stores is the "one settlement, two sources of
+  // truth" hazard the ordering gate in moneyAuthority.js exists to prevent, and
+  // the two call sites that pass a session (payment.routes deposit confirm,
+  // merchant.routes approve) both move merchant AND user balances inside it.
+  // ORDERS cannot be authoritative until those balances are too, which the
+  // dependency graph already enforces: ORDERS depends on WALLET and LEDGER.
+  if (!session) {
+    const routed = await routeTransition(orderId, to, { set, expectFrom, actor, reason, txId });
+    if (routed.handled) {
+      const { handled, ...answer } = routed;
+      return answer;
+    }
+  }
 
   let from = allowed;
   if (expectFrom) {
@@ -125,6 +154,16 @@ export async function transitionOrder(orderId, to, { set = {}, expectFrom = null
 // a string literal that could be typed wrong.
 
 export const assignOrder    = (id, o) => transitionOrder(id, ORDER_STATES.ASSIGNED, o);
+/**
+ * Back to the queue, because the assigned merchant declined.
+ *
+ * The one transition that moves an order BACKWARDS, and the reason
+ * PENDING_QUEUE had to become a state the rule table can enter. On the Mongo
+ * side it needs nothing special — the guard is `status: {$in: ['ASSIGNED']}` in
+ * the filter like every other transition. On the Postgres side it made the
+ * lifecycle cyclic, which is a larger story: docs/ORDERS_REQUEUE_CYCLE.md.
+ */
+export const requeueOrder   = (id, o) => transitionOrder(id, ORDER_STATES.PENDING_QUEUE, o);
 export const startOrder     = (id, o) => transitionOrder(id, ORDER_STATES.PROCESSING, o);
 export const markOrderPaid  = (id, o) => transitionOrder(id, ORDER_STATES.PAID, o);
 export const completeOrder  = (id, o) => transitionOrder(id, ORDER_STATES.COMPLETED, o);
@@ -132,6 +171,48 @@ export const disputeOrder   = (id, o) => transitionOrder(id, ORDER_STATES.DISPUT
 export const cancelOrder    = (id, o) => transitionOrder(id, ORDER_STATES.CANCELLED, o);
 export const failOrder      = (id, o) => transitionOrder(id, ORDER_STATES.FAILED, o);
 export const rejectOrder    = (id, o) => transitionOrder(id, ORDER_STATES.REJECTED, o);
+
+/**
+ * Hand a LIVE order to a different merchant.
+ *
+ * ── Why this is not transitionOrder ─────────────────────────────────────────
+ * Admin reassignment (merchant.assignment.routes.js) accepts an order that is
+ * ASSIGNED *or* PROCESSING and leaves it ASSIGNED to someone else. Neither is a
+ * lifecycle move: ASSIGNED→ASSIGNED does not change the state at all, and the
+ * rule table only admits ASSIGNED from PENDING_QUEUE, so `expectFrom` cannot
+ * express it either — it may only ever NARROW what ALLOWED_FROM already permits.
+ *
+ * Forcing it through the state machine would mean widening ALLOWED_FROM to
+ * accept ASSIGNED from ASSIGNED and PROCESSING, which would also let the
+ * ordinary assignment path silently re-assign an order already being worked on.
+ * Splitting it into requeue-then-assign is worse: between the two writes the
+ * order sits in PENDING_QUEUE with no session around them, where the automatic
+ * assigner can and will pick it up and hand it to a third merchant.
+ *
+ * So this is what it actually is — a guarded change of assignee that happens to
+ * normalise the state — and it still gets the property that matters: the
+ * expected states are in the FILTER, so two admins reassigning the same order
+ * at once produce one winner rather than a last-write-wins overwrite.
+ *
+ * Stage 2 must model this explicitly on the Postgres side; `order_states`
+ * carries merchant_id, so it is a column update plus a recorded transition, not
+ * a state change. See docs/ORDERS_REQUEUE_CYCLE.md for the neighbouring
+ * decision about keys on repeatable edges.
+ */
+export async function reassignOrder(orderId, { set = {}, from = [ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING], session = null } = {}) {
+  const q = PaymentOrder().findOneAndUpdate(
+    { _id: orderId, status: { $in: from } },
+    { $set: { status: ORDER_STATES.ASSIGNED, ...set } },
+    { new: true },
+  );
+  if (session) q.session(session);
+  const updated = await q.lean();
+  if (updated) return { ok: true, idempotent: false, reason: LIFECYCLE.APPLIED, status: ORDER_STATES.ASSIGNED, order: updated };
+
+  const current = await PaymentOrder().findById(orderId).select('status').lean();
+  if (!current) return { ok: false, reason: LIFECYCLE.NOT_FOUND };
+  return { ok: false, reason: LIFECYCLE.ILLEGAL_TRANSITION, status: current.status, attempted: ORDER_STATES.ASSIGNED, allowedFrom: from };
+}
 
 /**
  * Is this move legal from where the order stands right now?
