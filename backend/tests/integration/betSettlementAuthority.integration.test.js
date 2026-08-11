@@ -50,7 +50,14 @@ const Cycle = () => mongoose.model('Cycle');
 /** BETS dependsOn WALLET and LEDGER, and LEDGER dependsOn WALLET. */
 const AUTHORITY_VARS = ['MONEY_AUTHORITY_WALLET', 'MONEY_AUTHORITY_LEDGER', 'MONEY_AUTHORITY_BETS'];
 
-const CYCLE = 'auth_cycle_1';
+// Every identifier is unique per test, and nothing here TRUNCATES. The
+// integration files share one PostgreSQL and run serially, so a truncate in
+// this file would delete another file's fixtures between its hooks — and
+// `bet_transitions` carries an append-only trigger, so the usual targeted
+// DELETE is refused by the database anyway. Unique keys sidestep both.
+let RUN = 0;
+const uid = () => `auth_${Date.now().toString(36)}_${RUN}`;
+let CYCLE;
 
 async function seedStake(userId, paise, key) {
   await applyDeltaPaise({
@@ -80,9 +87,8 @@ d('a cycle settled with Postgres authoritative for bets', () => {
     saved = Object.fromEntries(AUTHORITY_VARS.map((v) => [v, process.env[v]]));
     for (const v of AUTHORITY_VARS) process.env[v] = 'postgres';
 
-    await pgQuery('TRUNCATE bet_transitions, bets, wallet_ledger, wallets RESTART IDENTITY CASCADE');
-    await Bet().deleteMany({ cycleId: CYCLE });
-    await Cycle().deleteMany({ cycleId: CYCLE });
+    RUN += 1;
+    CYCLE = `${uid()}_cycle`;
     engine = new GameEngine(null);
     // Stop the timers immediately. The constructor starts a 1s tick that
     // sweeps exactly the cycles these tests create, so leaving it running would
@@ -107,10 +113,10 @@ d('a cycle settled with Postgres authoritative for bets', () => {
   });
 
   it('settles both sides in Postgres and leaves no stake locked', async () => {
-    const winner = 'auth_u_win';
-    const loser  = 'auth_u_lose';
-    await seedStake(winner, 100_00, 'auth_f1');
-    await seedStake(loser,  100_00, 'auth_f2');
+    const winner = `${uid()}_win`;
+    const loser  = `${uid()}_lose`;
+    await seedStake(winner, 100_00, `${winner}_fund`);
+    await seedStake(loser,  100_00, `${loser}_fund`);
 
     // The identities that broke it: the Postgres key and the Mongo _id are
     // DIFFERENT strings for a routed placement, and settlement only ever holds
@@ -129,7 +135,8 @@ d('a cycle settled with Postgres authoritative for bets', () => {
 
     // ── Postgres: the authoritative lifecycle ────────────────────────────────
     const { rows } = await pgQuery(
-      `SELECT bet_id, status, payout_paise, platform_fee_paise FROM bets ORDER BY bet_id`);
+      `SELECT bet_id, status, payout_paise, platform_fee_paise FROM bets WHERE cycle_id = $1 ORDER BY bet_id`,
+      [CYCLE]);
     const byId = Object.fromEntries(rows.map((r) => [r.bet_id, r]));
     expect(byId[winKey].status).toBe('WON');
     expect(byId[loseKey].status).toBe('LOST');
@@ -157,8 +164,8 @@ d('a cycle settled with Postgres authoritative for bets', () => {
   });
 
   it('carries the retained fee onto the Mongo document, so the cycle total is real', async () => {
-    const u = 'auth_u_fee';
-    await seedStake(u, 100_00, 'auth_f3');
+    const u = `${uid()}_fee`;
+    await seedStake(u, 100_00, `${u}_fund`);
     const key = `bet_${u}_k1`;
     await place(u, 'DELHI', 100, key);
 
@@ -182,9 +189,10 @@ d('a cycle settled with Postgres authoritative for bets', () => {
     // payoutRecoveryTask re-admits a PROCESSING cycle on purpose, so two passes
     // over one cycle is a supported scenario and money safety rests on the
     // per-bet guard being real rather than on the pass running once.
-    const u = 'auth_u_rerun';
-    await seedStake(u, 100_00, 'auth_f4');
-    await place(u, 'DELHI', 100, `bet_${u}_k1`);
+    const u = `${uid()}_rerun`;
+    const key = `bet_${u}_k1`;
+    await seedStake(u, 100_00, `${u}_fund`);
+    await place(u, 'DELHI', 100, key);
 
     const cycle = await makeCycle();
     await engine.processPayoutsOptimized(cycle);
@@ -197,8 +205,10 @@ d('a cycle settled with Postgres authoritative for bets', () => {
       winningsBalance: after.winningsBalance,
       lockedBalance: after.lockedBalance,
     });
-    const { rows } = await pgQuery(`SELECT count(*)::int AS n FROM bet_transitions`);
-    // place + win. A third row would mean the guard let the same bet settle twice.
+    const { rows } = await pgQuery(
+      `SELECT count(*)::int AS n FROM bet_transitions WHERE bet_id = $1`, [key]);
+    // place + win, for THIS bet. A third row would mean the guard let the same
+    // bet settle twice.
     expect(rows[0].n).toBe(2);
   });
 });
