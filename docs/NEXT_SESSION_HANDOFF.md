@@ -86,6 +86,17 @@ zero for every Postgres-settled cycle with every state check still green.
 
 **A live money bug on the Mongo path (`4f548fe`).** See §4.
 
+**A showstopper in that routing, found by re-reading it (`2be4452`).** A bet
+carries TWO ids: placed on Postgres it is keyed on the idempotency key with the
+derived ObjectId in `mongo_id`; mirrored from Mongo it is keyed on the Mongo
+`_id` with `mongo_id` null. Settlement reads its bets from Mongo in both cases,
+so the id it holds is always the Mongo one — and the first version passed that
+straight through as the Postgres key. It worked for mirrored bets and matched
+nothing for every bet the routed placement path had created: refused
+`not_found`, stake still locked, on exactly the configuration the routing exists
+to support. `betPg.resolveBetId` translates. The reverse mirror had the mirror
+image of the same confusion and would have written a SECOND Mongo document.
+
 **Three smaller things, each found by running something:**
 
 - `reconcileBetStates`' backfill leg fetched documents with `.select('status')`
@@ -188,15 +199,27 @@ Keep these. They found everything worth finding.
 - **Do not disable the ordering gate.** It opened this session because the
   domains were finished, which is the only way it is supposed to open.
 
-## 8. One correction recorded in this branch
+## 8. Two corrections recorded in this branch
 
-The previous session's §4 said the deposit/reserve problem was an inconsistency
-between three readers. It is not — or not mainly. The readers did disagree, but
-the defect that mattered was a mismatch between what one route DEBITED and what
-it CREDITED, which no amount of staring at the three reader expressions would
-have surfaced. The finding was written from reading the three lines the note
-listed rather than the routes around them.
+**1. The deposit finding was mis-diagnosed.** The previous session's §4 called
+it an inconsistency between three readers. The readers did disagree, but the
+defect that mattered was a mismatch between what one route DEBITED and what it
+CREDITED — which no amount of staring at the three reader expressions would have
+surfaced. The note was written from the three lines it listed rather than from
+the routes around them.
 
-Same shape as the two corrections recorded in the previous session, and worth
-the same caution: the analysis in these documents is reliable about the code it
-quotes and unreliable about the code it does not.
+**2. The bet settlement routing shipped with a showstopper, and the tests it
+shipped with did not catch it.** Every unit test mocked `betPg`, so the id
+`settleBetOnPostgres` passed down was never checked against a real `bets` table;
+every Postgres test called `winBet` directly with a key it had just used to
+place. The gap was exactly between the two layers, which is where each suite
+assumed the other was looking. It was caught by re-reading the shipped diff and
+then confirmed by running it — and the confirmation mattered, because the
+reading alone could as easily have been another false alarm like the reserve
+one.
+
+Three of these across two sessions, all the same shape: **reasoning about a
+value without following it into the code that consumes it.** The reserve-stake
+concern, the deposit finding, and now the bet id. Worth the same caution about
+everything in these documents — they are reliable about the code they quote and
+unreliable about the code they do not.
