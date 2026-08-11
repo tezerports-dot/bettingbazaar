@@ -62,6 +62,10 @@ let RUN = 0;
 // returns. The placement then reports success with no Mongo document behind it,
 // and the engine (which reads its bets from Mongo) finds nothing to settle.
 // Postgres stores user_id as TEXT and does not care either way.
+// Returned BARE, never with a suffix appended. `${uid()}_win` is not an
+// ObjectId, and that is exactly how this broke twice: the CastError happens
+// inside mirrorBack, which catches by design, so the placement reports success
+// with no Mongo document behind it.
 const uid = () => new mongoose.Types.ObjectId().toString();
 const tag = () => `auth_${Date.now().toString(36)}_${RUN}`;
 let CYCLE;
@@ -133,8 +137,8 @@ d('a cycle settled with Postgres authoritative for bets', () => {
   });
 
   it('settles both sides in Postgres and leaves no stake locked', async () => {
-    const winner = `${uid()}_win`;
-    const loser  = `${uid()}_lose`;
+    const winner = uid();
+    const loser  = uid();
     await seedStake(winner, 100_00, `${winner}_fund`);
     await seedStake(loser,  100_00, `${loser}_fund`);
 
@@ -184,7 +188,7 @@ d('a cycle settled with Postgres authoritative for bets', () => {
   });
 
   it('carries the retained fee onto the Mongo document, so the cycle total is real', async () => {
-    const u = `${uid()}_fee`;
+    const u = uid();
     await seedStake(u, 100_00, `${u}_fund`);
     const key = `bet_${u}_k1`;
     await place(u, 'DELHI', 100, key);
@@ -209,7 +213,7 @@ d('a cycle settled with Postgres authoritative for bets', () => {
     // payoutRecoveryTask re-admits a PROCESSING cycle on purpose, so two passes
     // over one cycle is a supported scenario and money safety rests on the
     // per-bet guard being real rather than on the pass running once.
-    const u = `${uid()}_rerun`;
+    const u = uid();
     const key = `bet_${u}_k1`;
     await seedStake(u, 100_00, `${u}_fund`);
     await place(u, 'DELHI', 100, key);
