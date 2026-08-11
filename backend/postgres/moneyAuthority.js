@@ -203,11 +203,27 @@ const CAPABILITIES = Object.freeze({
     notes: 'Admin treasury and token issuance. postgres/treasuryPg.js: treasury_accounts + treasury_entries as DOUBLE ENTRY across TOKEN_SUPPLY / MERCHANT_FLOAT / USER_FLOAT / HOUSE_RESERVE / COMMISSION_POOL / BONUS_POOL / REFERRAL_POOL / OPERATIONAL_FLOAT. Every movement\'s legs sum to zero so the whole ledger sums to zero; minting is TOKEN_SUPPLY going negative rather than value appearing; the supply cap is enforced inside the transaction behind a row lock; accounts are locked in a fixed order so movements between the same pair in opposite directions cannot deadlock. postgres/adminIssuanceAuthority.js is the routed adapter, and it exists to FIX three defects rather than port them: (1) the Mongo original\'s reserveAdminMint(amount) has NO idempotency key, so two deliveries of one admin request mint twice — every mint here carries a caller-supplied movementId that collides inside the transaction; (2) its rollback is `$inc: {minted: -amount}` with `.catch(() => {})`, so a retried rollback invents headroom under the cap and a swallowed failure is unrecoverable — here a rollback is a BURN with its own key, idempotent, and the mint AND its reversal both stay in the history; (3) a counter cannot say where tokens went — every movement names the merchant and the order. reconcileAdminSupply compares the running counter against the derived total, which is only meaningful BECAUSE the rollback is a burn rather than an erasure. The /fund route\'s credit also had a fresh ObjectId per attempt as its txId, so its idempotency gate could never fire; mint and credit now share one key. Remaining: CI evidence for the cross-store suite, then this flag.',
   },
   [MONEY_PATHS.BETS]: {
-    // Flipped on CI evidence at 1bd5de8 (run 31456526949, all 8 jobs green
-    // including the integration leg) — the commit that routed SETTLEMENT, the
-    // half of the lifecycle that was still writing Bet.status directly.
-    // Placement had been routed since 2026-08-04; a routing that covered half
-    // the lifecycle was deliberately not called `implemented`.
+    // Flipped on CI evidence at 1bd5de8 (run 31456526949) — the commit that
+    // routed SETTLEMENT, the half of the lifecycle that was still writing
+    // Bet.status directly. Placement had been routed since 2026-08-04; a
+    // routing that covered half the lifecycle was deliberately not called
+    // `implemented`.
+    //
+    // THAT RUN WAS GREEN OVER A SHOWSTOPPER, and the correction is worth more
+    // than the citation. A bet placed under Postgres authority is keyed on its
+    // idempotency key with the Mongo id in `mongo_id`; settlement reads its
+    // bets from Mongo, so it held the wrong key and every such bet was refused
+    // `not_found` with its stake still locked. Three suites passed over it
+    // because each watched one side of the seam — the unit suites mocked
+    // betPg, the Postgres suites settled with the key they had just placed
+    // with, the cross-store suite exercised mirrors and not the engine.
+    //
+    // Fixed at 2be4452. The evidence this flag actually rests on is
+    // **run 31474679018 at 49bc466**, which is green over the fixed code AND
+    // over betSettlementAuthority.integration.test.js — the first test that
+    // drives the real engine across a real cycle with MONEY_AUTHORITY_WALLET,
+    // _LEDGER and _BETS genuinely set, and asserts the stake actually left
+    // `locked` on both sides.
     //
     // Both sides move together, from ONE decision read once per settlement
     // pass and passed down — the losing side in gameEngine and the winning side
@@ -547,6 +563,19 @@ const PATH_SPEC = Object.freeze({
 
 export const ALL_PATHS = Object.freeze(
   Object.keys(PATH_SPEC).sort((a, b) => PATH_SPEC[a].order - PATH_SPEC[b].order)
+);
+
+/**
+ * path → the environment variable that flips it, in flip order.
+ *
+ * Exported so tooling can PRINT the cutover sequence rather than hard-coding a
+ * second copy of it. Three of these do not follow the path name
+ * (MONEY_AUTHORITY_BONUSES for bonuses_and_commissions is the one that has
+ * caught people), and a hand-maintained list in a runbook is exactly how an
+ * operator ends up setting a variable that nothing reads.
+ */
+export const PATH_ENV = Object.freeze(
+  Object.fromEntries(ALL_PATHS.map((p) => [p, PATH_SPEC[p].env]))
 );
 
 function isKnownPath(path) {
