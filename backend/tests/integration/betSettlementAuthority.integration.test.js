@@ -80,6 +80,19 @@ async function place(userId, side, rupees, key) {
     slices: [{ field: 'depositBalance', amount: rupees }],
   });
   expect(r.ok).toBe(true);
+  // Asserted here rather than left to a later countDocuments, because these
+  // two are the only ways the bet can fail to reach Mongo and they need
+  // telling apart. placeBet mirrors back ONLY when the placement was new, and
+  // reverseMirrorBet swallows its own failures by design — so an idempotent
+  // result and a failed mirror both surface as "no document" several
+  // assertions later, pointing at the engine instead of at the placement.
+  expect({ key, idempotent: r.idempotent }).toEqual({ key, idempotent: false });
+  const { rows } = await pgQuery('SELECT bet_id, mongo_id FROM bets WHERE bet_id = $1', [key]);
+  expect({ key, rows: rows.length }).toEqual({ key, rows: 1 });
+  expect(rows[0].mongo_id).toBe(mongoIdFor(key));
+
+  const doc = await Bet().findById(mongoIdFor(key)).lean();
+  expect({ key, mirrored: Boolean(doc) }).toEqual({ key, mirrored: true });
   return r;
 }
 
