@@ -1,9 +1,105 @@
 # Routing bet settlement: one bulk statement vs. N transactions
 
-**Status: proposed design. NOT implemented.** Written under the standing rule —
-*if you discover an architectural decision likely to cause failures at scale,
-stop and document it with a proposed design before implementing a fix.* This is
-one, and it is the last thing standing between BETS and `implemented: true`.
+**Status: IMPLEMENTED.** Shipped at `1bd5de8`; `BETS.implemented` flipped on the
+CI evidence of run 31456526949, all eight jobs green including the integration
+leg. The rest of this document is kept as written — the design, the objection
+that turned out to be wrong, and the three blockers — because the record of what
+was believed before the work is more useful than a tidy summary after it.
+
+## What was actually built
+
+Both sides route from **one decision, read once per settlement pass** and passed
+down. `gameEngine.processPayoutsOptimized` calls `onPostgres()` a single time
+and hands the answer to `executeSettlementBatch`; the winning side never asks
+again. That is what makes all-or-nothing structural rather than a convention —
+and it is tested, including on the mid-cursor batch flush, which a mutation
+found was not covered at first.
+
+| | Mongo branch | Postgres branch |
+|---|---|---|
+| losing side | `unlockLostBet` per bet, then one `updateMany` | `settleBetOnPostgres(LOST)` per bet |
+| winning side | `creditWinnings` + `releaseLockedStake` per user, then `bulkWrite` | `settleBetOnPostgres(WON)` per bet |
+| `Transaction` log | written | written |
+| phantom bets | `updateMany` | `updateMany` |
+
+The bulk statements and the wallet calls are **suppressed** on the Postgres
+branch, not merely redundant there. `betPg` composes the transition and the
+money into one transaction, so calling the wallet helpers as well would move the
+money twice; and the reverse mirror has already written each status, so
+re-stamping would overwrite the bets Postgres deliberately REFUSED — turning a
+reported failure into a silent one, and marking WON a bet whose payout never
+moved.
+
+### The three blockers, resolved
+
+**(a)** The aggregation projects the funding split under the Bet document's own
+names now, `fromReserveBalance` included. The readers of `totalLockedDeposit` /
+`totalLockedWinnings` moved with it — a mutation confirms that renaming one
+without the other is caught.
+
+**(b)** `betStamps` carries the bet document. The fields the aggregation cannot
+know per bet (user, cycle, side) come from the group key and the cycle.
+
+**(c) DECIDED: the `Transaction` log stays Mongo-side and runs on both
+branches.** It is the user's history feed, not the ledger. Double entry lives in
+`accounting_events` and the per-wallet movement in `wallet_ledger`, and on the
+Postgres branch `betPg` writes both inside the settling transaction — so the
+auditable record of the payout is already authoritative there. Skipping it under
+Postgres authority would buy no consistency and would delete winners' payouts
+from their own transaction history. It reaches Postgres by the ordinary
+dual-write leg (`mirrorTransaction`), which is the right relationship for a
+projection.
+
+> **Known and unchanged by this routing:** those are bare inserts with no
+> idempotency key and no unique index, so a settlement resumed mid-batch writes
+> a second `BET_WIN` row for users the first pass already credited. The money is
+> safe — `creditWinnings` is keyed — only the history duplicates. Not fixed
+> here because the honest fix is a product decision rather than a key: a resumed
+> pass pays a *different, smaller* amount for the remaining bets, so upserting
+> on (user, cycle) would replace the first row with a partial one, which is
+> worse than a duplicate.
+
+### A fourth blocker, found in the wiring
+
+The Mongo path stamps `status`, `payout` and `platformFee` in one `$set`, and
+`Cycle.totalPlatformFees` is derived by summing `Bet.platformFee` over the
+cycle's WON bets. Routing the first two and leaving the third would make that
+number read **zero for every Postgres-settled cycle**, with every state check
+still green because no state check looks at the fee.
+
+`bets` therefore carries `platform_fee_paise`. The settling `UPDATE` writes it,
+both mirrors carry it, and `reconcileBetStates` selects it so `--repair-mongo`
+can restore it. A fractional or negative fee is refused by the code *and* by a
+CHECK constraint, on the casino-refund-bound principle: the `if` gives a clean
+refusal, the constraint makes the rule a property of the data.
+
+### Two more things running it found
+
+**Phantom bets were being mirrored into Postgres.** They are synthetic —
+positive `amount`, zero funding provenance, no balance deduction — so
+`betPg.settle` can never settle one (it requires slices summing to the stake).
+A mirrored phantom bet would sit PENDING in Postgres forever while Mongo stamped
+it LOST, reporting as drift on every cycle, and it inflated
+`reconcileUserStakes`' outstanding total against a `lockedBalance` that never
+moved. `mirrorBet` skips them, which is what makes the engine's phantom
+`updateMany` correctly Mongo-only on both branches.
+
+**`reconcileBetStates`' backfill leg was destroying what it repaired.** It
+fetched the Mongo documents with `.select('status')` and handed them to
+`mirrorBet`, whose `ON CONFLICT DO UPDATE` writes what it is given — so
+repairing a status disagreement **zeroed that bet's payout and retained fee** in
+Postgres. Demonstrated against a real PostgreSQL in `betSettlementPg.test.js`
+rather than argued; the fix is in the SELECT.
+
+### What was NOT built, and why that is not a gap
+
+Option B below — one transaction per *user* rather than per bet — is still the
+better shape at scale and is **not** implemented. Per-bet is what makes "a
+settled bet with no ledger row" structurally unrepresentable, and the corrected
+analysis shows per-bet is the same order of work the Mongo path already does.
+Batching by user is a throughput optimisation to make when a measurement asks
+for it, not on an assumption — the last assumption in this document about
+settlement throughput was wrong in the other direction.
 
 ---
 
@@ -223,9 +319,18 @@ What remains true is the narrower point: `betPg.settle` requires slices that sum
 to the STAKE, so the missing `fromReserveBalance` in the aggregation still blocks
 routing. That is a constraint of the Postgres path, not a defect in the Mongo one.
 
-## Until then
+## ~~Until then~~ — resolved, see the top of this file
 
-`BETS` stays `implemented: false`. The other three legs are real — mirrored,
-reconciled cross-store, reverse-mirrored — and placement is routed. What is
-missing is precisely this, and the flag says so rather than claiming a routing
-that covers half the lifecycle.
+> `BETS` stays `implemented: false`. The other three legs are real — mirrored,
+> reconciled cross-store, reverse-mirrored — and placement is routed. What is
+> missing is precisely this, and the flag says so rather than claiming a routing
+> that covers half the lifecycle.
+
+All three blockers are cleared and settlement is routed on both sides.
+`implemented: true` at `1bd5de8`, on CI run 31456526949.
+
+With that, **11 of 11 money paths are cutover-eligible** and the resolver
+returns Postgres for all eleven when every `MONEY_AUTHORITY_*` is set — the
+ordering gate satisfied by completing the domains rather than by being
+disabled. `infrastructureTested` remains 0/11 and is the only thing between
+eligible and *certified*; it is a staging campaign, not code.
