@@ -241,6 +241,22 @@ const MUTATIONS = [
     from: `  if (!usable) return { depositCredit: total, reserveCredit: 0, total, split: false };`,
     to: `  if (!usable) return { depositCredit: 0, reserveCredit: 0, total, split: false };`,
   },
+
+  // ── The cutover's step-1 report must count what landed, not what it tried ──
+  {
+    id: 'M26', file: 'backend/postgres/reconcile.js', config: PG,
+    test: 'backend/tests/postgres/lifecycleBackfill.test.js',
+    why: 'adoption reports ATTEMPTS again, so a pass that adopted nothing reports a full house',
+    from: `    created: landed.size,`,
+    to: `    created: attempted.length,`,
+  },
+  {
+    id: 'M27', file: 'backend/postgres/reconcile.js', config: PG,
+    test: 'backend/tests/postgres/lifecycleBackfill.test.js',
+    why: 'rows that did not land are not reported as such',
+    from: `    notAdopted: attempted.length - landed.size,`,
+    to: `    notAdopted: 0,`,
+  },
 ];
 
 const only = process.argv[2];

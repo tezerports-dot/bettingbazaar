@@ -484,6 +484,48 @@ export async function reconcileMerchantSettlementStates({ backfill = false, repa
  * one-time cutover step over the whole population; running it on a 24h window
  * would silently adopt only recent rows and report success.
  */
+/**
+ * Which of the keys we tried to adopt are ACTUALLY in the table now.
+ *
+ * The adoption legs below used to report `created` by incrementing a counter
+ * after calling a mirror — and the mirrors are fire-and-forget by contract:
+ * `dualWrite.mirror()` catches, logs, counts and returns undefined, and a
+ * mirror may also decline to write at all (mirrorBet skips phantom bets, which
+ * carry no funding provenance and cannot be settled by betPg). So `created`
+ * counted ATTEMPTS, and a pass that adopted nothing at all would report a full
+ * house.
+ *
+ * That number is not decoration. `--backfill` is step 1 of the cutover and its
+ * report is the evidence an operator reads before pointing money at Postgres —
+ * the one place a count that flatters itself does the most damage. So it is
+ * re-read from the table instead of accumulated.
+ *
+ * `table` and `column` are module-internal literals, never caller input.
+ */
+async function landedKeys(table, column, keys) {
+  if (!keys.length) return new Set();
+  const { rows } = await pgQuery(
+    `SELECT ${column} AS k FROM ${table} WHERE ${column} = ANY($1)`,
+    [keys], 'backfill_verify',
+  );
+  return new Set(rows.map((r) => String(r.k)));
+}
+
+/** The report row for one adoption leg, counted from what is in the table. */
+async function adoptionReport({ table, column, scanned, attempted, skipped }) {
+  const landed = await landedKeys(table, column, attempted);
+  return {
+    table,
+    scanned,
+    created: landed.size,
+    skipped,
+    // Attempted and not present afterwards: a mirror that threw and was
+    // swallowed, or one that declined the row on purpose. Either way the
+    // operator needs to see it rather than infer it from a total that adds up.
+    notAdopted: attempted.length - landed.size,
+  };
+}
+
 export async function backfillLifecycleTables({ limit = 50000 } = {}) {
   const out = [];
 
@@ -494,7 +536,7 @@ export async function backfillLifecycleTables({ limit = 50000 } = {}) {
       .find({}).select('userId merchantId type tokenAmount fiatAmount status')
       .limit(limit).lean();
 
-    let created = 0; let skipped = 0;
+    const attempted = []; let skipped = 0;
     if (docs.length) {
       const { rows } = await pgQuery(
         `SELECT order_id FROM order_states WHERE order_id = ANY($1)`,
@@ -518,10 +560,12 @@ export async function backfillLifecycleTables({ limit = 50000 } = {}) {
           // order's very next transition.
           state:            doc.status,
         });
-        created++;
+        attempted.push(String(doc._id));
       }
     }
-    out.push({ table: 'order_states', scanned: docs.length, created, skipped });
+    out.push(await adoptionReport({
+      table: 'order_states', column: 'order_id', scanned: docs.length, attempted, skipped,
+    }));
   } else {
     out.push({ table: 'order_states', skipped: 'postgres is authoritative' });
   }
@@ -536,13 +580,15 @@ export async function backfillLifecycleTables({ limit = 50000 } = {}) {
       [docs.map((d) => String(d._id))]);
     const have = new Set(rows.map((r) => r.user_id));
 
-    let created = 0; let skipped = 0;
+    const attempted = []; let skipped = 0;
     for (const doc of docs) {
       if (have.has(String(doc._id))) { skipped++; continue; }
       await mirrorUserKyc(doc);
-      created++;
+      attempted.push(String(doc._id));
     }
-    out.push({ table: 'user_kyc', scanned: docs.length, created, skipped });
+    out.push(await adoptionReport({
+      table: 'user_kyc', column: 'user_id', scanned: docs.length, attempted, skipped,
+    }));
   } else {
     out.push({ table: 'user_kyc', skipped: 'postgres is authoritative' });
   }
@@ -561,13 +607,15 @@ export async function backfillLifecycleTables({ limit = 50000 } = {}) {
       [docs.map((d) => String(d.txId))]);
     const have = new Set(rows.map((r) => r.tx_id));
 
-    let created = 0; let skipped = 0;
+    const attempted = []; let skipped = 0;
     for (const doc of docs) {
       if (have.has(String(doc.txId))) { skipped++; continue; }
       await mirrorCasinoTransaction(doc);
-      created++;
+      attempted.push(String(doc.txId));
     }
-    out.push({ table: 'casino_transactions', scanned: docs.length, created, skipped });
+    out.push(await adoptionReport({
+      table: 'casino_transactions', column: 'tx_id', scanned: docs.length, attempted, skipped,
+    }));
   } else {
     out.push({ table: 'casino_transactions', skipped: 'postgres is authoritative' });
   }
@@ -581,13 +629,15 @@ export async function backfillLifecycleTables({ limit = 50000 } = {}) {
       [docs.map((d) => String(d._id))]);
     const have = new Set(rows.map((r) => r.bet_id));
 
-    let created = 0; let skipped = 0;
+    const attempted = []; let skipped = 0;
     for (const doc of docs) {
       if (have.has(String(doc._id))) { skipped++; continue; }
       await mirrorBet(doc);
-      created++;
+      attempted.push(String(doc._id));
     }
-    out.push({ table: 'bets', scanned: docs.length, created, skipped });
+    out.push(await adoptionReport({
+      table: 'bets', column: 'bet_id', scanned: docs.length, attempted, skipped,
+    }));
   } else {
     out.push({ table: 'bets', skipped: 'postgres is authoritative' });
   }

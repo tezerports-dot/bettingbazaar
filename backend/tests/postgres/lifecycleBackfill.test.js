@@ -181,5 +181,82 @@ describePg('backfillLifecycleTables (real PostgreSQL, stubbed Mongo)', () => {
       const round = await pgQuery(`SELECT debited_paise FROM casino_rounds WHERE round_id = 'bf_r2'`);
       expect(Number(round.rows[0].debited_paise)).toBe(7_000);
     });
+
+    // ── What adoption must carry, now that bets are settled in Postgres ─────
+    //
+    // `reconcile:pg -- --all --backfill` is step 1 of the cutover, and it is
+    // what puts historical bets into the table the flip is about to make
+    // authoritative. Two things it must get right, both introduced when
+    // settlement was routed.
+
+    it('adopts an ALREADY-SETTLED bet with its payout AND its retained fee', async () => {
+      // A bet settled on the Mongo path before the cutover carries a real fee.
+      // Adopting it with a zero would hand the store that is about to become
+      // authoritative a number that is wrong — and the reverse mirror would
+      // then write that zero back over the correct Mongo value, so the error
+      // would propagate rather than sit still. Cycle.totalPlatformFees is
+      // summed from exactly this field.
+      mongo.User = []; mongo.GameTransaction = []; mongo.PaymentOrder = [];
+      mongo.Bet = [{
+        _id: 'bf_won', userId: 'bf_u9', cycleId: 'bf_c9', side: 'DELHI',
+        amount: 100, payout: 198, platformFee: 2, status: 'WON',
+        settledAt: new Date(), timestamp: new Date(),
+      }];
+
+      const report = byTable(await backfillLifecycleTables());
+      expect(report.bets).toMatchObject({ created: 1 });
+
+      const { rows } = await pgQuery(
+        `SELECT status, payout_paise, platform_fee_paise FROM bets WHERE bet_id = 'bf_won'`,
+      );
+      expect(rows[0]).toMatchObject({
+        status: 'WON', payout_paise: '19800', platform_fee_paise: '200',
+      });
+    });
+
+    it('does NOT adopt a phantom bet', async () => {
+      // Phantom bets are synthetic: a positive amount with zero funding
+      // provenance and no balance deduction. betPg.settle requires slices that
+      // sum to the stake, so an adopted phantom bet could never be settled
+      // through the authoritative path — it would sit PENDING in Postgres
+      // forever while Mongo stamped it LOST, reporting as drift on every cycle,
+      // and it inflates reconcileUserStakes' outstanding total against a
+      // lockedBalance that never moved.
+      mongo.User = []; mongo.GameTransaction = []; mongo.PaymentOrder = [];
+      mongo.Bet = [
+        { _id: 'bf_ph', userId: 'bf_u8', cycleId: 'bf_c8', side: 'DELHI', amount: 50, status: 'PENDING', isPhantom: true, timestamp: new Date() },
+        { _id: 'bf_real', userId: 'bf_u8', cycleId: 'bf_c8', side: 'DELHI', amount: 50, status: 'PENDING', isPhantom: false, timestamp: new Date() },
+      ];
+
+      const report = byTable(await backfillLifecycleTables());
+
+      const { rows } = await pgQuery(`SELECT bet_id FROM bets WHERE bet_id LIKE 'bf_%' ORDER BY bet_id`);
+      expect(rows.map((r) => r.bet_id)).toEqual(['bf_real']);
+      // And the REPORT says so. `created` used to be a counter incremented after
+      // calling a mirror that catches its own failures and may decline the row
+      // outright — so it counted attempts, and this pass reported 2. It is
+      // re-read from the table now, because `--backfill`'s report is what an
+      // operator reads before pointing money at Postgres.
+      expect(report.bets).toMatchObject({ scanned: 2, created: 1, notAdopted: 1 });
+    });
+
+    it('reports created from the TABLE, so a failing mirror cannot report success', async () => {
+      // The general case behind the phantom one. A mirror that throws is
+      // logged, counted and swallowed by design — a dual-write failure must
+      // never break the money path it hangs off. The consequence is that the
+      // adoption loop cannot learn about it from the call, so it asks the table.
+      mongo.User = []; mongo.GameTransaction = []; mongo.PaymentOrder = [];
+      // A bet with no amount: mirrorBet guards `stakePaise <= 0` and returns
+      // without writing, exactly as a caught failure would.
+      mongo.Bet = [
+        { _id: 'bf_zero', userId: 'bf_u7', cycleId: 'bf_c7', side: 'DELHI', amount: 0, status: 'PENDING', timestamp: new Date() },
+      ];
+
+      const report = byTable(await backfillLifecycleTables());
+      expect(report.bets).toMatchObject({ scanned: 1, created: 0, notAdopted: 1 });
+
+      const { rows } = await pgQuery(`SELECT bet_id FROM bets WHERE bet_id = 'bf_zero'`);
+      expect(rows).toHaveLength(0);
+    });
   });
 });
