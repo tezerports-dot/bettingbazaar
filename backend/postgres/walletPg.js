@@ -9,15 +9,18 @@
  * authoritative, integer paise is the only representation money has at rest".
  * The float-rupee round2() pattern stops at this wall.
  *
- * ── Why this is not secureBetPlacement.js ───────────────────────────────────
- * That file is a reference implementation on a DIFFERENT table set
- * (`user_wallets` NUMERIC / ISO-4217 currency, `financial_ledger`,
- * `operational_bet_outbox`). It demonstrates the serializable-with-outbox
- * pattern but was never wired to the app, and its tables do not hold the
- * balances the dual-write mirror has been populating. The authoritative path
- * has to operate on the tables that already carry the mirrored money —
- * `wallets` + `wallet_ledger`, BIGINT paise — or a cutover would silently
- * switch to an empty set of balances.
+ * ── The reference implementation that used to sit beside this ───────────────
+ * `secureBetPlacement.js` demonstrated the serializable-with-outbox pattern on
+ * a DIFFERENT table set (`user_wallets` NUMERIC / ISO-4217 currency,
+ * `financial_ledger`, `operational_bet_outbox`) and on a string-decimal money
+ * model rather than integer paise. It was never wired to anything, and its
+ * tables never held the balances the dual-write mirror populates — so an
+ * authoritative path built on it would have switched to an empty set of
+ * balances at cutover.
+ *
+ * Deleted 2026-08-11 rather than left as a second, plausible-looking money
+ * path for a reader to mistake for the real one. The pattern it showed is
+ * worth knowing; the file was a trap. See docs/DEAD_CODE_AUDIT.md.
  *
  * ── Concurrency ─────────────────────────────────────────────────────────────
  * Every mutation runs in one transaction that:

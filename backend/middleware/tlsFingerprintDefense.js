@@ -53,8 +53,6 @@ export async function startTlsFingerprintDefenseConfigRefresh(everyMs = 30_000) 
   if (refreshTimer.unref) refreshTimer.unref();
 }
 
-export function _tlsFingerprintDefenseConfig() { return { ...cfg, blockJa3Hashes: [...cfg.blockJa3Hashes] }; }
-export function _setTlsFingerprintDefenseConfig(p) { cfg = { ...cfg, ...p, blockJa3Hashes: normalizeHashes(p?.blockJa3Hashes ?? cfg.blockJa3Hashes) }; }
 
 function violation(res, reason) {
   if (cfg.logOnly) return false;
