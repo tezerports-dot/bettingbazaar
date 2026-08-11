@@ -53,7 +53,7 @@ import mongoose from 'mongoose';
 import { paiseToRupees, rupeesToPaise } from '../shared/money.js';
 import { moneyOperations } from '../services/metrics.service.js';
 import { POCKETS, applyMerchantMovement, getMerchantBalances } from './merchantWalletPg.js';
-import { MONEY_PATHS } from './moneyAuthority.js';
+import { MONEY_PATHS, isPostgresAuthoritative } from './moneyAuthority.js';
 import { reverseMirrorMerchantMovement } from './reverseMirror.js';
 
 /** Every exit from move() is counted, so retries and refusals are visible. */
@@ -186,7 +186,27 @@ export function creditMerchantTokens({
   });
 }
 
-/** The merchant's spendable balance in rupees — the Mongo field's meaning. */
+/**
+ * The merchant's spendable balance in rupees — the Mongo field's meaning.
+ *
+ * FOLLOWS AUTHORITY, and it did not until 2026-08-11. It read Postgres
+ * unconditionally, which is why nothing called it: while MongoDB owns this path
+ * the Postgres row is a mirror that may be stale or, for a merchant created
+ * before the mirror existed, absent — so an eligibility gate wired to the old
+ * version would have refused assignments on a balance the merchant actually
+ * has. A reader that ignores the resolver is not safe to convert a call site to;
+ * it is the same false-authority failure the capability gate exists to prevent,
+ * one layer down.
+ *
+ * With the check, converting a read site is MONOTONIC: the site returns the
+ * Mongo value today and the Postgres value after a flip, so the conversion
+ * changes nothing now and is correct later. That is what makes the read
+ * migration safe to do incrementally — see docs/MONEY_READS_MIGRATION.md.
+ */
 export async function getMerchantTokenBalance(merchantId) {
+  if (!isPostgresAuthoritative(MONEY_PATHS.MERCHANT_WALLET)) {
+    const merchant = await loadMerchant(merchantId);
+    return Number(merchant?.tokenBalance) || 0;
+  }
   return spendable(await getMerchantBalances(merchantId));
 }
