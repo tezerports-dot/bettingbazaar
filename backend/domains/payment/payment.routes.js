@@ -15,6 +15,9 @@ import { completeOrder, disputeOrder } from './orderLifecycle.service.js';
 // Phase 009: money movement enters ONLY via the Funding Platform authority.
 import { requestDeposit, requestWithdrawal } from '../funding/fundingAuthority.service.js';
 import { creditDeposit, creditReserve } from '../wallet/walletAuthority.service.js';
+// One rule for how a confirmed deposit splits across the user's two pockets,
+// and for what the merchant is debited against it.
+import { depositCreditSplit } from './depositCredit.js';
 import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
 import { emitWalletUpdate, emitAdminUpdate, emitOrderUpdate } from '../notification/realtimeEmitters.js';
@@ -108,20 +111,26 @@ router.post('/deposit/:orderId/confirm', paymentActorAuth, async (req, res) => {
       await abortOrEnd(session);
       return res.json({ success: true, message: 'Deposit already completed', order: isMerchantActor ? sanitizeOrderForMerchant(order) : order });
     }
-    const depositTokens = order.depositAllocation || order.tokenAmount;
+    // The user's pockets are split; the merchant's side is not. This route used
+    // to debit `depositAllocation || tokenAmount` and then credit
+    // `depositAllocation + reserveAllocation` — so every deposit with a reserve
+    // share credited more than it debited, and the same canonical txId was used
+    // for two different amounts across routes. domains/payment/depositCredit.js
+    // has the rule and why it is one rule.
+    const { depositCredit, reserveCredit, total } = depositCreditSplit(order);
     // GOVERNANCE §1: via merchantWallet.service.js (sole tokenBalance writer);
     // canonical txId shared with every other deposit-deduction path.
     const { merchant: updatedMerchant } = await debitMerchantTokens({
-      merchantId: order.merchantId, amount: depositTokens,
+      merchantId: order.merchantId, amount: total,
       reason: `Deposit ${order.orderId} confirmed — tokens dispensed to user`,
       refModel: 'PaymentOrder', refId: order._id.toString(),
       txId: `mw_dep_deduct_${order._id}`, session,
     });
     if (!updatedMerchant) { await abortOrEnd(session); return res.status(400).json({ success: false, message: 'Merchant insufficient token balance' }); }
-    await creditDeposit(order.userId, depositTokens, order._id.toString(), session);
+    if (depositCredit > 0) await creditDeposit(order.userId, depositCredit, order._id.toString(), session);
     // GOVERNANCE §7: reserveBalance is written ONLY via walletAuthority now
     // (was a raw $inc with no ledger trail). Idempotent + ledgered.
-    if ((order.reserveAllocation || 0) > 0) await creditReserve(order.userId, order.reserveAllocation, order._id.toString(), session);
+    if (reserveCredit > 0) await creditReserve(order.userId, reserveCredit, order._id.toString(), session);
     await releaseUTR(order._id);
     await mongoose.model('Transaction').create([{ userId: order.userId, type: 'DEPOSIT', amount: order.tokenAmount, balanceType: 'DEPOSIT', status: 'SUCCESS', referenceId: order._id.toString(), description: `Deposit completed: ${order.tokenAmount} tokens`, timestamp: new Date() }], withSession(session));
     await commitOrEnd(session);

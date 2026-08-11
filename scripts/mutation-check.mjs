@@ -209,6 +209,38 @@ const MUTATIONS = [
     from: `             platform_fee_paise = EXCLUDED.platform_fee_paise,`,
     to: '',
   },
+
+  // ── A deposit moves tokens; it must not create or destroy them ────────────
+  {
+    id: 'M22', file: 'backend/domains/payment/payment.routes.js', config: UNIT,
+    test: 'backend/tests/unit/depositCreditConservation.test.js',
+    why: 'the merchant is debited the DEPOSIT SHARE while the user is credited the whole amount',
+    from: `      merchantId: order.merchantId, amount: total,`,
+    to: `      merchantId: order.merchantId, amount: depositCredit,`,
+  },
+  {
+    id: 'M23', file: 'backend/domains/payment/depositCredit.js', config: UNIT,
+    test: 'backend/tests/unit/depositCreditSplit.test.js',
+    why: 'the `||` fallback is back — a legal 0 deposit share reads as absent',
+    from: `  if (!usable) return { depositCredit: total, reserveCredit: 0, total, split: false };
+  return { depositCredit: deposit, reserveCredit: reserve, total, split: true };`,
+    to: `  if (!usable) return { depositCredit: total, reserveCredit: 0, total, split: false };
+  return { depositCredit: deposit || total, reserveCredit: reserve, total, split: true };`,
+  },
+  {
+    id: 'M24', file: 'backend/domains/payment/depositCredit.js', config: UNIT,
+    test: 'backend/tests/unit/depositCreditSplit.test.js',
+    why: 'a partial split is accepted, so part of the deposit goes unaccounted for',
+    from: `    && Math.abs((deposit + reserve) - total) < 1e-9;`,
+    to: `    && true;`,
+  },
+  {
+    id: 'M25', file: 'backend/domains/payment/depositCredit.js', config: UNIT,
+    test: 'backend/tests/unit/depositCreditConservation.test.js',
+    why: 'the fallback credits nothing instead of the whole amount — tokens burned',
+    from: `  if (!usable) return { depositCredit: total, reserveCredit: 0, total, split: false };`,
+    to: `  if (!usable) return { depositCredit: 0, reserveCredit: 0, total, split: false };`,
+  },
 ];
 
 const only = process.argv[2];

@@ -30,6 +30,8 @@ import {
 // Withdrawal settlement hold — confirm asserts payment, the worker settles it
 // once the dispute window passes. See withdrawalHold.service.js.
 import { holdMinutes } from '../payment/withdrawalHold.service.js';
+// One rule for how a confirmed deposit splits across the user's two pockets.
+import { depositCreditSplit } from '../payment/depositCredit.js';
 import { debitMerchantTokens, creditMerchantTokens } from './merchantWallet.service.js';
 import { publish as publishDomainEvent, EVENTS as DOMAIN_EVENTS } from '../../services/eventBus.service.js';
 import { getRiskRules } from '../risk/riskValidation.service.js';
@@ -976,10 +978,16 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             // paymentOrder pre-save hook from the active DepositPolicy (logged
             // 90/10 fallback if none configured). Both credits are idempotent
             // via their canonical keys (dep_complete_/reserve_credit_<orderId>).
-            const depositCredit = order.depositAllocation ?? order.tokenAmount;
-            const reserveCredit = order.reserveAllocation ?? 0;
+            //
+            // The `?? order.tokenAmount` this used to carry never fired: a
+            // hydrated Mongoose document applies the schema default, so a legacy
+            // order reads 0 rather than undefined — while the same order read
+            // `.lean()` reads undefined and DOES fire it. domains/payment/
+            // depositCredit.js states the rule once so the answer stops
+            // depending on how the order was fetched.
+            const { depositCredit, reserveCredit } = depositCreditSplit(order);
             try {
-                await creditDeposit(order.userId, depositCredit, order._id.toString());
+                if (depositCredit > 0) await creditDeposit(order.userId, depositCredit, order._id.toString());
                 if (reserveCredit > 0) await creditReserve(order.userId, reserveCredit, order._id.toString());
             } catch (walletErr) {
                 console.error('[Merchant confirm] user credit failed — refunding merchant:', walletErr.message);
@@ -1844,8 +1852,15 @@ router.post('/orders/:id/approve', merchantAuth, async (req, res) => {
         // designated single-writer service"). depositAllocation already
         // includes the floor() remainder (Spec 4.4: remainder goes to
         // deposit, never reserve — see the pre-save hook).
-        const depositCredit = order.depositAllocation;
-        const reserveCredit = order.reserveAllocation;
+        //
+        // Read through the shared rule rather than off the order directly: an
+        // order with no recorded split (one predating the fields, or a type the
+        // pre-save hook never ran for) reads 0/0 here, and crediting 0 while the
+        // merchant is debited the full tokenAmount BURNS tokens as surely as the
+        // other direction creates them. depositCredit.js falls back to the whole
+        // amount into `depositBalance`, which is where it went before the split
+        // existed.
+        const { depositCredit, reserveCredit } = depositCreditSplit(order);
 
         // ── User balance credit — via the wallet authority (Phase X fix X-3,
         // 2026-07-10). This route previously credited via a raw $inc + a
