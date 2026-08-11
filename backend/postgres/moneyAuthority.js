@@ -675,8 +675,22 @@ export function fullFinancialAuthorityStatus(env = process.env) {
  *
  * Returns { ok, errors[], warnings[] } rather than throwing, so the caller
  * decides whether this is fatal (production boot) or a warning (a test).
+ *
+ * ── Why `capabilityOf` is injectable ────────────────────────────────────────
+ * The capability gate's whole job is to refuse a path that has no
+ * implementation. Testing that it refuses requires a path that has none — and
+ * as of 1bd5de8 every declared path is implemented, so there is no longer a
+ * real one to borrow. Each time a domain landed, this test moved to whichever
+ * path was still incomplete (ledger → casino_settlement → bets); with the last
+ * one gone the test would have to be deleted, and the gate that exists to stop
+ * a FALSE CUTOVER would ship untested until someone adds a twelfth path.
+ *
+ * So the lookup is a parameter, defaulted to the real registry. Production
+ * passes nothing and reads the truth; the test passes a stub with one path
+ * ineligible and proves the refusal still fires. Nothing else is injectable —
+ * the ordering check below deliberately uses the real resolver.
  */
-export function validateAuthorityConfig(env = process.env) {
+export function validateAuthorityConfig(env = process.env, capabilityOf = capabilityFor) {
   const errors = [];
   const warnings = [];
 
@@ -698,7 +712,7 @@ export function validateAuthorityConfig(env = process.env) {
     // config, the boot log and the metrics gauge all claiming a cutover that
     // had not happened. Refusing to start is the only response that cannot be
     // mistaken for success.
-    const capability = capabilityFor(path);
+    const capability = capabilityOf(path);
     if (!capability.cutoverEligible) {
       errors.push(
         `${PATH_SPEC[path].env}=postgres but '${path}' is NOT eligible for cutover — missing: ` +

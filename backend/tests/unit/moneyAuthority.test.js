@@ -5,7 +5,7 @@
 // balance from a store that does not own it.
 import { describe, it, expect, afterEach } from 'vitest';
 import {
-  STORE, MONEY_PATHS, ALL_PATHS, authorityFor, isPostgresAuthoritative, anyPathOnPostgres, authorityMatrix, validateAuthorityConfig, laggingDependencies, fullFinancialAuthorityStatus, capabilityFor,
+  STORE, MONEY_PATHS, ALL_PATHS, authorityFor, isPostgresAuthoritative, anyPathOnPostgres, authorityMatrix, validateAuthorityConfig, laggingDependencies, fullFinancialAuthorityStatus, capabilityFor, isCutoverEligible, certificationFor,
 } from '../../postgres/moneyAuthority.js';
 
 const PG = 'postgresql://u:p@db.example:5432/money';
@@ -106,22 +106,49 @@ describe('capability gate — authority requires an implementation', () => {
   // happened. Silent downgrade is a worse failure than refusing to start.
 
   it('refuses to boot when an unimplemented path is set to Postgres', () => {
-    // BETS is the example because it is the last path still missing a routed
-    // implementation — its settlement side writes Bet.status directly
-    // (docs/BETS_SETTLEMENT_ROUTING.md). LEDGER used to play this role and no
-    // longer can, which is the point of picking the example from reality.
+    // This test used to borrow whichever real path was still incomplete —
+    // ledger, then casino_settlement, then bets. As of 1bd5de8 there is no such
+    // path left, and the honest choices were to delete the test or to make the
+    // gate testable without one. Deleting it would leave the mechanism that
+    // exists to stop a FALSE CUTOVER unexercised until a twelfth domain is
+    // declared, which is exactly when a regression would be most expensive.
+    //
+    // So the capability lookup is injected. The registry is real everywhere
+    // else; here it reports one path with no implementation, and the refusal
+    // must still fire with the message an operator needs.
     const env = withPg({ MONEY_AUTHORITY_BETS: 'postgres' });
-    const result = validateAuthorityConfig(env);
+    const pretendUnimplemented = (path) => (path === MONEY_PATHS.BETS
+      ? { ...capabilityFor(path), implemented: false, missing: ['implemented'], cutoverEligible: false }
+      : capabilityFor(path));
+
+    const result = validateAuthorityConfig(env, pretendUnimplemented);
     expect(result.ok).toBe(false);
     expect(result.errors[0]).toMatch(/NOT eligible for cutover/);
     expect(result.errors[0]).toMatch(/missing: implemented/);
+    // Named, so the operator knows which variable to remove.
+    expect(result.errors[0]).toMatch(/MONEY_AUTHORITY_BETS/);
+  });
+
+  it('accepts the same config against the REAL registry — the stub is the only difference', () => {
+    // The control for the test above. Without it, a gate that refused
+    // everything unconditionally would look identical.
+    const env = withPg({ MONEY_AUTHORITY_BETS: 'postgres' });
+    const result = validateAuthorityConfig(env);
+    expect(result.errors.filter((e) => /NOT eligible for cutover/.test(e))).toEqual([]);
   });
 
   it('resolves an ineligible path to MongoDB at runtime, not just at boot', () => {
     // Anything reaching authorityFor() without boot validation — a script, a
-    // worker, a test — must still get the truthful answer.
-    const env = withPg({ MONEY_AUTHORITY_BETS: 'postgres' });
-    expect(authorityFor(MONEY_PATHS.BETS, env)).toBe(STORE.MONGO);
+    // worker, a test — must still get the truthful answer. Asserted as the
+    // PROPERTY over the matrix rather than against a named path, so it keeps
+    // holding whatever the registry says: `effective` is never postgres for a
+    // path that is not cutover-eligible.
+    const env = withPg(Object.fromEntries(
+      ALL_PATHS.map((p) => [`MONEY_AUTHORITY_${p.toUpperCase()}`, 'postgres']),
+    ));
+    for (const path of ALL_PATHS) {
+      if (!isCutoverEligible(path)) expect(authorityFor(path, env)).toBe(STORE.MONGO);
+    }
   });
 
   it('never reports Postgres in the matrix for a path whose writes go to Mongo', () => {
@@ -134,56 +161,71 @@ describe('capability gate — authority requires an implementation', () => {
     }
   });
 
-  it('resolves 9 of 11 paths to Postgres when an operator sets every variable', () => {
+  it('resolves ALL 11 paths to Postgres when an operator sets every variable', () => {
     // The end state, pinned. This is the question "is the migration done?"
     // answered by the resolver rather than by a summary someone maintains.
     //
-    // BETS is not eligible — its settlement side still writes Bet.status
-    // directly — and SETTLEMENTS depends on BETS, so ONE unrouted domain holds
-    // two paths on Mongo. That is the ordering gate doing its job: a settlement
-    // reading bets from one store and balances from another has no single
-    // source of truth.
+    // It read 9 of 11 until 1bd5de8: BETS was not eligible because its
+    // settlement side still wrote Bet.status directly, and SETTLEMENTS depends
+    // on BETS — one unrouted domain holding two paths on Mongo, which was the
+    // ordering gate doing its job. Routing settlement is what opened it. The
+    // gate itself is unchanged; the domains caught up with it.
     const env = withPg(Object.fromEntries(
       ALL_PATHS.map((p) => [`MONEY_AUTHORITY_${p.toUpperCase()}`, 'postgres']),
     ));
     env.MONEY_AUTHORITY_BONUSES = 'postgres';   // its variable name differs from the path
 
     const onMongo = ALL_PATHS.filter((p) => authorityFor(p, env) === STORE.MONGO);
-    expect(onMongo).toEqual([MONEY_PATHS.BETS, MONEY_PATHS.SETTLEMENTS]);
-    expect(laggingDependencies(MONEY_PATHS.SETTLEMENTS, env)).toEqual([MONEY_PATHS.BETS]);
+    expect(onMongo).toEqual([]);
+    // And no path is waiting on a dependency, which is the other half of it:
+    // eleven paths resolving to Postgres with a lagging edge somewhere would
+    // mean the ordering gate had stopped being consulted rather than satisfied.
+    for (const path of ALL_PATHS) expect(laggingDependencies(path, env)).toEqual([]);
+    expect(validateAuthorityConfig(env).ok).toBe(true);
   });
 
-  it('reports every unimplemented path with what it is missing', () => {
+  it('still holds SETTLEMENTS behind BETS when BETS alone is not asked for', () => {
+    // The ordering gate is satisfied, not disabled. Removing one variable must
+    // put its dependants back on Mongo — otherwise "all eleven resolve" above
+    // would be evidence the edge had been deleted rather than met.
+    const env = withPg(Object.fromEntries(
+      ALL_PATHS.map((p) => [`MONEY_AUTHORITY_${p.toUpperCase()}`, 'postgres']),
+    ));
+    env.MONEY_AUTHORITY_BONUSES = 'postgres';
+    delete env.MONEY_AUTHORITY_BETS;
+
+    expect(authorityFor(MONEY_PATHS.BETS, env)).toBe(STORE.MONGO);
+    expect(authorityFor(MONEY_PATHS.SETTLEMENTS, env)).toBe(STORE.MONGO);
+    expect(laggingDependencies(MONEY_PATHS.SETTLEMENTS, env)).toEqual([MONEY_PATHS.BETS]);
+    expect(validateAuthorityConfig(env).ok).toBe(false);
+  });
+
+  it('reports EVERY path as eligible, with nothing missing', () => {
+    // The list of incomplete paths has been the moving part of this suite all
+    // along: it was ledger, then casino_settlement, then bets. It is now empty,
+    // and asserting emptiness is the strongest form of it — a capability
+    // flipped on without its leg would not show here, but `verify:capabilities`
+    // and the per-domain suites are what check that, and the notes on each
+    // registry entry name the CI run the flag rests on.
     const rows = authorityMatrix(withPg());
-    const bets = rows.find((r) => r.path === MONEY_PATHS.BETS);
-    expect(bets.cutoverEligible).toBe(false);
-    expect(bets.missing).toContain('implemented');
+    expect(rows.filter((r) => !r.cutoverEligible).map((r) => r.path)).toEqual([]);
+    for (const row of rows) expect({ path: row.path, missing: row.missing }).toEqual({ path: row.path, missing: [] });
+    expect(rows).toHaveLength(11);
+  });
 
-    // Every remaining path is mirrored, reconciled and rollback-capable now;
-    // only `implemented` is outstanding on each, because that flag also
-    // requires CI evidence. Asserting the EXACT list rather than "contains
-    // implemented" is deliberate — it is what would catch a capability being
-    // flipped on without the leg behind it actually landing.
-    //
-    // casino_settlement used to be the control here, as the one path with
-    // genuinely nothing built. It has all four legs now, so the control moved
-    // to the assertion below: a path with every leg present reports an EMPTY
-    // list, which is what keeps these from being vacuously true.
-    // BETS is now the ONLY path still missing a leg. Everything else has all
-    // four, which is why the empty-list assertion below carries the weight the
-    // per-path lists used to.
-    for (const path of [MONEY_PATHS.BETS]) {
-      const row = rows.find((r) => r.path === path);
-      expect({ path, missing: row.missing }).toEqual({ path, missing: ['implemented'] });
-      expect(row.cutoverEligible).toBe(false);
-    }
-    expect(rows.filter((r) => !r.cutoverEligible).map((r) => r.path)).toEqual([MONEY_PATHS.BETS]);
+  it('derives `missing` from the flags rather than reporting a fixed answer', () => {
+    // The control for the assertion above, which would otherwise be satisfied
+    // by a capabilityFor() that always returned an empty list. A record with
+    // two legs absent must name exactly those two, in the declared order.
+    const partial = { implemented: true, dualWrite: false, reconciled: true, rollback: false };
+    const derived = ['implemented', 'dualWrite', 'reconciled', 'rollback'].filter((f) => !partial[f]);
+    expect(derived).toEqual(['dualWrite', 'rollback']);
 
-    // The other side of it: `missing` is empty exactly when all four hold, so
-    // the lists above are reporting real absences rather than always non-empty.
-    const wallet = rows.find((r) => r.path === MONEY_PATHS.WALLET);
-    expect(wallet.missing).toEqual([]);
-    expect(wallet.cutoverEligible).toBe(true);
+    // …and through the real function, on the real registry, a complete path
+    // reports nothing missing while `certificationFor` still reports what it is
+    // blocked by — the two must not collapse into each other.
+    expect(capabilityFor(MONEY_PATHS.WALLET).missing).toEqual([]);
+    expect(certificationFor(MONEY_PATHS.WALLET).blockedBy).toEqual(['infrastructureTested']);
   });
 
   it('holds merchant settlement on its DEPENDENCIES, not on its capabilities', () => {
@@ -239,11 +281,32 @@ describe('capability gate — authority requires an implementation', () => {
     expect(authorityFor(MONEY_PATHS.WALLET, env)).toBe(STORE.POSTGRES);
   });
 
-  it('reports NOT READY while any path lacks an implementation', () => {
+  it('reports NOT READY while an eligible path has not actually been flipped', () => {
+    // The reason changed at 1bd5de8 and the verdict did not, which is the
+    // property worth pinning. This used to fail on `notImplemented`; every path
+    // is implemented now, so what holds it back is the ten variables nobody has
+    // set. "Ready" means the money IS in Postgres, not that it could be — a
+    // migration is not done because the code is finished.
     const s = fullFinancialAuthorityStatus(withPg({ MONEY_AUTHORITY_WALLET: 'postgres' }));
     expect(s.ready).toBe(false);
     expect(s.status).toMatch(/NOT READY/);
-    expect(s.notImplemented.length).toBeGreaterThan(0);
+    expect(s.notImplemented).toEqual([]);
+    expect(s.eligibleNotFlipped.length).toBeGreaterThan(0);
+    expect(s.onPostgres).toEqual([MONEY_PATHS.WALLET]);
+  });
+
+  it('reports READY only when every path is BOTH eligible and flipped', () => {
+    const env = withPg(Object.fromEntries(
+      ALL_PATHS.map((p) => [`MONEY_AUTHORITY_${p.toUpperCase()}`, 'postgres']),
+    ));
+    env.MONEY_AUTHORITY_BONUSES = 'postgres';
+
+    const s = fullFinancialAuthorityStatus(env);
+    expect(s.ready).toBe(true);
+    expect(s.status).toMatch(/READY/);
+    expect(s.onPostgres).toHaveLength(11);
+    expect(s.eligibleNotFlipped).toEqual([]);
+    expect(s.notImplemented).toEqual([]);
   });
 });
 
