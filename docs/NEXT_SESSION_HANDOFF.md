@@ -150,6 +150,13 @@ resumed pass pays a different, smaller amount for the remaining bets, so
 upserting on (user, cycle) would replace the first row with a partial one.
 Recorded in `docs/BETS_SETTLEMENT_ROUTING.md`.
 
+**`settlementPg.settleBet` and `voidSettlement` are built but unwired.** Only
+tests call them; gameEngine settles through `betPgAuthority` instead. They take
+a Postgres `bet_id`, and any production caller would hold the Mongo one — the
+same trap fixed at `2be4452`. There is a comment at the source saying so. Not
+changed, because changing an unwired function to suit a caller that does not
+exist is guessing at what it will need.
+
 **`/orders/:id/approve` does not filter on `order.type`.** It gates on status
 `PAID` only, then runs the deposit credit path unconditionally. Whether a
 WITHDRAWAL order can reach `PAID` was NOT investigated. Noticed while reading
