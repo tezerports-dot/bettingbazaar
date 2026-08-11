@@ -280,6 +280,24 @@ const MUTATIONS = [
     from: `    \`SELECT bet_id FROM bets WHERE bet_id = $1 OR mongo_id = $1 LIMIT 1\`,`,
     to: `    \`SELECT bet_id FROM bets WHERE bet_id = $1 LIMIT 1\`,`,
   },
+
+  // ── Money-domain READS follow authority (docs/MONEY_READS_MIGRATION.md) ───
+  {
+    id: 'M31', file: 'backend/postgres/merchantWalletPgAuthority.js', config: UNIT,
+    test: 'backend/tests/unit/merchantEligibilityReads.test.js',
+    why: 'the eligibility reader ignores the resolver and reads a mirror that may be empty',
+    from: `  if (!isPostgresAuthoritative(MONEY_PATHS.MERCHANT_WALLET)) {`,
+    to: `  if (false) {`,
+  },
+  {
+    id: 'M32', file: 'backend/domains/merchant/merchant.assignment.routes.js', config: UNIT,
+    test: 'backend/tests/unit/merchantEligibilityReads.test.js',
+    why: 'an eligibility gate goes back to reading the Mongo document directly',
+    from: `    const balance_pa = await getMerchantTokenBalance(merchant._id);
+    if (balance_pa < order.tokenAmount) {`,
+    to: `    const balance_pa = merchant.tokenBalance;
+    if (merchant.tokenBalance < order.tokenAmount) {`,
+  },
 ];
 
 const only = process.argv[2];

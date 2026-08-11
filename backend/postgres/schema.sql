@@ -182,80 +182,19 @@ CREATE INDEX IF NOT EXISTS merchant_wallet_ledger_cursor_idx ON merchant_wallet_
 CREATE OR REPLACE TRIGGER merchant_wallet_ledger_append_only
   BEFORE UPDATE OR DELETE ON merchant_wallet_ledger FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
 
-
-
--- ── STRICT NUMERIC WALLET LEDGER (authoritative financial block) ───────────
--- Wallets use fixed NUMERIC(20,8); ledger values remain unconstrained NUMERIC
--- so explicit constraints validate submitted precision before any typmod coercion.
-CREATE TABLE IF NOT EXISTS user_wallets (
-  user_id    VARCHAR(255) PRIMARY KEY,
-  balance    NUMERIC(20, 8) NOT NULL DEFAULT 0.00000000,
-  currency   VARCHAR(3) NOT NULL DEFAULT 'USD',
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT user_wallets_balance_cannot_be_negative CHECK (balance >= 0.00000000),
-  CONSTRAINT user_wallets_currency_iso3 CHECK (currency ~ '^[A-Z]{3}$')
-);
-
-CREATE TABLE IF NOT EXISTS financial_ledger (
-  id               BIGSERIAL PRIMARY KEY,
-  user_id          VARCHAR(255) NOT NULL REFERENCES user_wallets(user_id),
-  transaction_type VARCHAR(50) NOT NULL,
-  amount           NUMERIC NOT NULL,
-  running_balance  NUMERIC NOT NULL,
-  currency         VARCHAR(3) NOT NULL,
-  reference_id     VARCHAR(255) UNIQUE NOT NULL,
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT financial_ledger_amount_non_zero CHECK (amount <> 0),
-  CONSTRAINT financial_ledger_running_balance_non_negative CHECK (running_balance >= 0),
-  CONSTRAINT financial_ledger_amount_scale CHECK (scale(amount) <= 8),
-  CONSTRAINT financial_ledger_running_balance_scale CHECK (scale(running_balance) <= 8),
-  CONSTRAINT financial_ledger_amount_precision CHECK (abs(amount) < 1000000000000),
-  CONSTRAINT financial_ledger_running_balance_precision CHECK (abs(running_balance) < 1000000000000),
-  CONSTRAINT financial_ledger_currency_iso3 CHECK (currency ~ '^[A-Z]{3}$')
-);
--- Migrate pre-existing deployments from NUMERIC(20,8) and backfill the ledger currency.
-ALTER TABLE financial_ledger ALTER COLUMN amount TYPE NUMERIC;
-ALTER TABLE financial_ledger ALTER COLUMN running_balance TYPE NUMERIC;
-ALTER TABLE financial_ledger ADD COLUMN IF NOT EXISTS currency VARCHAR(3);
-UPDATE financial_ledger AS ledger
-   SET currency = wallet.currency
-  FROM user_wallets AS wallet
- WHERE ledger.user_id = wallet.user_id
-   AND ledger.currency IS NULL;
-ALTER TABLE financial_ledger ALTER COLUMN currency SET NOT NULL;
-ALTER TABLE financial_ledger DROP CONSTRAINT IF EXISTS financial_ledger_amount_non_zero;
-ALTER TABLE financial_ledger DROP CONSTRAINT IF EXISTS financial_ledger_running_balance_non_negative;
-ALTER TABLE financial_ledger DROP CONSTRAINT IF EXISTS financial_ledger_amount_scale;
-ALTER TABLE financial_ledger DROP CONSTRAINT IF EXISTS financial_ledger_running_balance_scale;
-ALTER TABLE financial_ledger DROP CONSTRAINT IF EXISTS financial_ledger_amount_finite;
-ALTER TABLE financial_ledger DROP CONSTRAINT IF EXISTS financial_ledger_running_balance_finite;
-ALTER TABLE financial_ledger DROP CONSTRAINT IF EXISTS financial_ledger_amount_precision;
-ALTER TABLE financial_ledger DROP CONSTRAINT IF EXISTS financial_ledger_running_balance_precision;
-ALTER TABLE financial_ledger DROP CONSTRAINT IF EXISTS financial_ledger_currency_iso3;
-ALTER TABLE financial_ledger ADD CONSTRAINT financial_ledger_amount_non_zero CHECK (amount <> 0);
-ALTER TABLE financial_ledger ADD CONSTRAINT financial_ledger_running_balance_non_negative CHECK (running_balance >= 0);
-ALTER TABLE financial_ledger ADD CONSTRAINT financial_ledger_amount_scale CHECK (scale(amount) <= 8);
-ALTER TABLE financial_ledger ADD CONSTRAINT financial_ledger_running_balance_scale CHECK (scale(running_balance) <= 8);
-ALTER TABLE financial_ledger ADD CONSTRAINT financial_ledger_amount_precision CHECK (abs(amount) < 1000000000000);
-ALTER TABLE financial_ledger ADD CONSTRAINT financial_ledger_running_balance_precision CHECK (abs(running_balance) < 1000000000000);
-ALTER TABLE financial_ledger ADD CONSTRAINT financial_ledger_currency_iso3 CHECK (currency ~ '^[A-Z]{3}$');
-
-CREATE TABLE IF NOT EXISTS operational_bet_outbox (
-  reference_id    VARCHAR(255) PRIMARY KEY REFERENCES financial_ledger(reference_id),
-  user_id         VARCHAR(255) NOT NULL,
-  amount          NUMERIC NOT NULL,
-  running_balance NUMERIC NOT NULL,
-  currency        VARCHAR(3) NOT NULL,
-  attempts        INTEGER NOT NULL DEFAULT 0,
-  last_error      TEXT,
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  processed_at    TIMESTAMPTZ
-);
-CREATE INDEX IF NOT EXISTS operational_bet_outbox_pending_idx ON operational_bet_outbox (created_at) WHERE processed_at IS NULL;
-
-CREATE INDEX IF NOT EXISTS financial_ledger_user_idx ON financial_ledger (user_id, created_at DESC);
-CREATE OR REPLACE TRIGGER financial_ledger_append_only
-  BEFORE UPDATE OR DELETE ON financial_ledger FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+-- ── REMOVED 2026-08-11: the strict-NUMERIC wallet block ─────────────────────
+-- `user_wallets`, `financial_ledger` and `operational_bet_outbox` were the
+-- table set for postgres/secureBetPlacement.js — a reference implementation of
+-- the serializable-with-outbox pattern on a string-decimal money model. That
+-- module was imported by nothing and is deleted; these tables were created on
+-- every boot for it and never held a balance the application read.
+--
+-- The authoritative money tables are `wallets` + `wallet_ledger`, BIGINT paise.
+-- Do not resurrect these: two wallet table sets in one schema is how a cutover
+-- silently switches to an empty set of balances. See docs/DEAD_CODE_AUDIT.md.
+--
+-- Existing databases keep the (empty) tables; `CREATE TABLE IF NOT EXISTS` only
+-- stops making new ones. Dropping them is a manual, deliberate step.
 
 -- ── USER KYC (split OUT of user.model.js per the plan — identity documents
 -- need ACID + compliance guarantees; the rest of the user stays on Mongo).

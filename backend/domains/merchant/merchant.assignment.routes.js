@@ -13,6 +13,13 @@ import { creditDeposit, creditWinnings } from '../wallet/walletAuthority.service
 // two admins assigning the same order produce one winner, not a silent overwrite.
 import { assignOrder, reassignOrder } from '../payment/orderLifecycle.service.js';
 import { emitAdminUpdate, emitMerchantUpdate, emitOrderUpdate, emitWalletUpdate } from '../notification/realtimeEmitters.js';
+// Inventory eligibility is a MONEY read, so it follows the money. The Mongo
+// document is a live mirror and stale by at most a reconcile pass; the gates
+// below decide whether an order may be handed to a merchant, and a stale answer
+// there misroutes it. getMerchantTokenBalance returns the Mongo value while
+// Mongo owns the path, so converting a gate is monotonic — strictly more
+// correct under either store, never a behaviour change on the current one.
+import { getMerchantTokenBalance } from '../../postgres/merchantWalletPgAuthority.js';
 
 const router = express.Router();
 
@@ -81,11 +88,13 @@ router.post('/payment-orders/:id/assign', authenticate, isAdmin, async (req, res
     }
 
     // ── Finding 5: Inventory check before assignment ───────────────────────
-    if (merchant.tokenBalance < order.tokenAmount) {
+    // Read from whichever store owns the merchant wallet, not from the mirror.
+    const balance_pa = await getMerchantTokenBalance(merchant._id);
+    if (balance_pa < order.tokenAmount) {
       return res.status(400).json({
         success: false,
-        message: `Merchant has insufficient inventory (${merchant.tokenBalance} < ${order.tokenAmount}). Top up merchant inventory first.`,
-        merchantBalance: merchant.tokenBalance,
+        message: `Merchant has insufficient inventory (${balance_pa} < ${order.tokenAmount}). Top up merchant inventory first.`,
+        merchantBalance: balance_pa,
         required:        order.tokenAmount,
       });
     }
@@ -174,11 +183,12 @@ router.post('/payment-orders/:id/reassign', authenticate, isAdminOrSubAdminOrQue
     }
 
     // ── Finding 5: Inventory check ─────────────────────────────────────────
-    if (merchant.tokenBalance < order.tokenAmount) {
+    const balance_pr = await getMerchantTokenBalance(merchant._id);
+    if (balance_pr < order.tokenAmount) {
       return res.status(400).json({
         success: false,
-        message: `Merchant has insufficient inventory (${merchant.tokenBalance} < ${order.tokenAmount}).`,
-        merchantBalance: merchant.tokenBalance,
+        message: `Merchant has insufficient inventory (${balance_pr} < ${order.tokenAmount}).`,
+        merchantBalance: balance_pr,
         required:        order.tokenAmount,
       });
     }
@@ -478,10 +488,11 @@ router.post('/queue/assign/:orderId', authenticate, isAdminOrSubAdminOrQueueMana
     }
 
     // Finding 5: inventory check
-    if (merchantDoc.tokenBalance < order.tokenAmount) {
+    const balance_qa = await getMerchantTokenBalance(merchantDoc._id);
+    if (balance_qa < order.tokenAmount) {
       return res.status(400).json({
         success: false,
-        message: `Merchant inventory insufficient (${merchantDoc.tokenBalance} tokens, need ${order.tokenAmount}).`,
+        message: `Merchant inventory insufficient (${balance_qa} tokens, need ${order.tokenAmount}).`,
       });
     }
 

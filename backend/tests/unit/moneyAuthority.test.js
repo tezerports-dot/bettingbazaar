@@ -4,8 +4,9 @@
 // postgres/DATA_ROLLBACK_PLAN.md — mis-answering any of them means reading a
 // balance from a store that does not own it.
 import { describe, it, expect, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
-  STORE, MONEY_PATHS, ALL_PATHS, authorityFor, isPostgresAuthoritative, anyPathOnPostgres, authorityMatrix, validateAuthorityConfig, laggingDependencies, fullFinancialAuthorityStatus, capabilityFor, isCutoverEligible, certificationFor,
+  STORE, MONEY_PATHS, ALL_PATHS, authorityFor, isPostgresAuthoritative, anyPathOnPostgres, authorityMatrix, validateAuthorityConfig, laggingDependencies, fullFinancialAuthorityStatus, capabilityFor, isCutoverEligible, certificationFor, PATH_ENV,
 } from '../../postgres/moneyAuthority.js';
 
 const PG = 'postgresql://u:p@db.example:5432/money';
@@ -365,5 +366,35 @@ describe('authorityMatrix', () => {
     const wallet = authorityMatrix(env).find((r) => r.path === 'wallet');
     expect(wallet.requested).toBe(STORE.POSTGRES);
     expect(wallet.effective).toBe(STORE.MONGO);
+  });
+});
+
+describe('deploy/money-authority.postgres.env stays in step with the registry', () => {
+  // The file an operator pastes into a deploy environment. A path added to the
+  // registry and forgotten here means a cutover that silently leaves one money
+  // path on MongoDB — and the boot validation would ACCEPT it, because a path
+  // nobody asked for is not an incoherent request, just an incomplete one.
+  const envFile = readFileSync(
+    new URL('../../../deploy/money-authority.postgres.env', import.meta.url), 'utf8',
+  );
+
+  it('lists every path, and only real ones', () => {
+    const listed = [...envFile.matchAll(/^(MONEY_AUTHORITY_\w+)=postgres$/gm)].map((m) => m[1]);
+    const expected = ALL_PATHS.map((p) => PATH_ENV[p]);
+
+    expect(listed).toEqual(expected);          // same set AND same flip order
+    expect(new Set(listed).size).toBe(listed.length);
+  });
+
+  it('does not promise that MongoDB can be removed', () => {
+    // The misreading this whole file exists to prevent. Reads still come from
+    // Mongo under Postgres authority and the reverse mirror still writes it.
+    expect(envFile).toMatch(/READS still come from Mongo/);
+    expect(envFile).toMatch(/Do not delete the Mongo wiring/);
+  });
+
+  it('sends the operator to the preflight before setting anything', () => {
+    expect(envFile).toMatch(/npm run preflight:flip/);
+    expect(envFile).toMatch(/reconcile:pg -- --all --backfill/);
   });
 });

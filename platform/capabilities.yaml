@@ -107,6 +107,14 @@ capabilities:
     owner: app
     implementation_status: decision
     activation_status: 'n/a'
+    # DECIDED 2026-08-11: keep application dual-write; do NOT adopt CDC.
+    # CDC (Debezium tailing the oplog into Kafka) solves "the mirror missed a
+    # write under sustained load at scale". The mirrors are fire-and-forget and
+    # reconcile.js is their backstop, which is sufficient at this volume — and
+    # CAP-74, the Kafka backbone CDC would need, is architecture-ready and
+    # unprovisioned. Revisit if reconcile reports drift the settling window
+    # does not explain.
+    decision_outcome: keep-dual-write
     docs: [docs/governance/04-GOVERNANCE.md]
   - id: CAP-12
     name: Dual-Write Migration
@@ -201,6 +209,15 @@ capabilities:
     owner: app
     implementation_status: decision
     activation_status: 'n/a'
+    # DECIDED 2026-08-11: stay stateless (PASETO/JWT, short TTL, refresh flow).
+    # Server-side sessions buy INSTANT REVOCATION, which matters in this
+    # industry for self-exclusion and fraud signals — but they make Redis a hard
+    # dependency of authentication, and CAP-27 (Redis HA) is architecture-ready,
+    # i.e. a single point of failure today. Trading "revocation is delayed by one
+    # token TTL" for "a Redis outage logs everyone out" is the wrong way round
+    # while HA is unprovisioned. REVISIT IF a regulator requires instant session
+    # termination — and do CAP-27 first when revisiting.
+    decision_outcome: stateless-tokens
     docs: [docs/governance/04-GOVERNANCE.md]
   - id: CAP-24
     name: Queue Coordination

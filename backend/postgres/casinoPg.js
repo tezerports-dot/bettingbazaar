@@ -262,12 +262,6 @@ export async function recordCallback({
   return result;
 }
 
-/** A WIN credits winnings rather than deposit — the Mongo path does the same. */
-export async function recordWin(args) {
-  const result = await recordCallback({ ...args, type: CASINO_TX.WIN });
-  return result;
-}
-
 // ── Reconciliation ───────────────────────────────────────────────────────────
 
 /**
