@@ -56,7 +56,14 @@ const AUTHORITY_VARS = ['MONEY_AUTHORITY_WALLET', 'MONEY_AUTHORITY_LEDGER', 'MON
 // `bet_transitions` carries an append-only trigger, so the usual targeted
 // DELETE is refused by the database anyway. Unique keys sidestep both.
 let RUN = 0;
-const uid = () => `auth_${Date.now().toString(36)}_${RUN}`;
+// User ids must be castable to an ObjectId. `Bet.userId` is typed
+// Schema.Types.ObjectId, and reverseMirrorBet writes through the model — so an
+// arbitrary string throws a CastError INSIDE mirrorBack, which catches, logs and
+// returns. The placement then reports success with no Mongo document behind it,
+// and the engine (which reads its bets from Mongo) finds nothing to settle.
+// Postgres stores user_id as TEXT and does not care either way.
+const uid = () => new mongoose.Types.ObjectId().toString();
+const tag = () => `auth_${Date.now().toString(36)}_${RUN}`;
 let CYCLE;
 
 async function seedStake(userId, paise, key) {
@@ -88,7 +95,7 @@ d('a cycle settled with Postgres authoritative for bets', () => {
     for (const v of AUTHORITY_VARS) process.env[v] = 'postgres';
 
     RUN += 1;
-    CYCLE = `${uid()}_cycle`;
+    CYCLE = `${tag()}_cycle`;
     engine = new GameEngine(null);
     // Stop the timers immediately. The constructor starts a 1s tick that
     // sweeps exactly the cycles these tests create, so leaving it running would

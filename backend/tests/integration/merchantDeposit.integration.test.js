@@ -120,7 +120,7 @@ describe('merchant deposit completion funds reserve (Phase X)', () => {
     expect(order.reserveAllocation).toBeGreaterThan(0); // otherwise this proves nothing
 
     const res = await request(app)
-      .post(`/api/payment/deposit/${order._id}/confirm`)
+      .post(`/api/payment/deposit/${order.orderId}/confirm`)
       .set('Authorization', merchantToken(merchant._id))
       .send({});
     expect(res.status).toBe(200);
@@ -149,7 +149,7 @@ describe('merchant deposit completion funds reserve (Phase X)', () => {
     );
 
     const res = await request(app)
-      .post(`/api/payment/deposit/${order._id}/confirm`)
+      .post(`/api/payment/deposit/${order.orderId}/confirm`)
       .set('Authorization', merchantToken(merchant._id))
       .send({});
     expect(res.status).toBe(200);
