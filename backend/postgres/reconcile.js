@@ -573,8 +573,13 @@ export async function backfillLifecycleTables({ limit = 50000 } = {}) {
   // ── KYC: mirrorUserKyc writes the whole record, it was just never called ──
   if (!isPostgresAuthoritative(MONEY_PATHS.KYC)) {
     const { mirrorUserKyc } = await import('./dualWrite.js');
+    // The document keys are `select: false` on the schema — selecting the
+    // parent `kycData` does NOT bring them, so they are named explicitly.
+    // Without this the adoption sweep would write rows with a null key and an
+    // admin could not open a document that exists.
     const docs = await mongoose.model('User')
-      .find({}).select('kycStatus kycData').limit(limit).lean();
+      .find({}).select('kycStatus kycData +kycData.idProofKey +kycData.photoKey')
+      .limit(limit).lean();
     const { rows } = await pgQuery(
       `SELECT user_id FROM user_kyc WHERE user_id = ANY($1)`,
       [docs.map((d) => String(d._id))]);

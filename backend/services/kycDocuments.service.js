@@ -84,6 +84,28 @@ const ALLOWED = Object.freeze({
 
 const MAX_BYTES = 10 * 1024 * 1024;
 
+/**
+ * The document types this store holds, and the names the HTTP layer uses.
+ *
+ * Two vocabularies exist because the routes were named before this module was:
+ * the panels ask for `id-proof` and `selfie`, the keys and the Postgres columns
+ * say `id_proof` and `photo`. Mapping them HERE, next to `keyFor`, is what stops
+ * a route from inventing a third spelling and writing a key nothing can parse.
+ */
+export const DOC_TYPES = Object.freeze({
+  'id-proof': 'id_proof',
+  'selfie':   'photo',
+  // Accepted verbatim so an internal caller need not know the URL spelling.
+  'id_proof': 'id_proof',
+  'photo':    'photo',
+  'address_proof': 'address_proof',
+});
+
+/** Route spelling → key spelling, or null if it is not a KYC document type. */
+export function normaliseDocType(docType) {
+  return DOC_TYPES[String(docType || '')] ?? null;
+}
+
 let client = null;
 function s3() {
   if (client) return client;
@@ -116,6 +138,49 @@ function keyFor(userId, docType, contentType) {
   return `kyc/${String(userId)}/${docType}/${Date.now()}-${nonce}.${ext}`;
 }
 
+/**
+ * Read a key back into the facts it encodes: whose document it is, and which.
+ *
+ * The key is the ONLY thing the submit route receives from the client, so this
+ * is where "is this yours?" gets answered. Returns null for anything that is not
+ * one of ours — a key from another prefix, a traversal attempt, a fabrication.
+ *
+ * The old CDN path answered the same question with `expectedUserId` /
+ * `expectedCategory`. Dropping it while moving to a private bucket would trade
+ * one exposure for a worse one: user A submitting user B's key, and an admin
+ * reviewing B's Aadhaar card as A's identity.
+ */
+export function parseKey(key) {
+  const parts = String(key || '').split('/');
+  if (parts.length !== 4) return null;
+  const [prefix, userId, docType, filename] = parts;
+  if (prefix !== 'kyc' || !userId || !filename) return null;
+  if (!Object.values(DOC_TYPES).includes(docType)) return null;
+  // `.` and `..` never reach here (they are not document types), but a filename
+  // may not smuggle a separator or an empty segment past the length check.
+  if (userId === '.' || userId === '..') return null;
+  return { userId, docType, filename };
+}
+
+/**
+ * The key belongs to this user and this document type — or it is refused.
+ * `expectedUserId` is required by every caller that takes a key from a request.
+ */
+function assertKeyBelongsTo(key, { expectedUserId = null, expectedDocType = null } = {}) {
+  const parsed = parseKey(key);
+  if (!parsed) throw Object.assign(new Error('Not a KYC document key'), { status: 400 });
+  if (expectedUserId !== null && parsed.userId !== String(expectedUserId)) {
+    throw Object.assign(new Error('This KYC document belongs to another user'), { status: 403 });
+  }
+  const wanted = expectedDocType === null ? null : normaliseDocType(expectedDocType);
+  if (wanted !== null && parsed.docType !== wanted) {
+    throw Object.assign(
+      new Error(`This key is a ${parsed.docType}, not a ${wanted}`), { status: 400 },
+    );
+  }
+  return parsed;
+}
+
 function validate({ contentType, fileSize, docType }) {
   if (!ALLOWED[contentType]) {
     throw Object.assign(
@@ -139,9 +204,12 @@ function validate({ contentType, fileSize, docType }) {
  */
 export async function presignUpload({ userId, docType, contentType, fileSize }) {
   if (!configured()) throw Object.assign(new Error('KYC document storage is not configured'), { status: 503 });
-  validate({ contentType, fileSize, docType });
+  // Normalise before validating, so the route's `id-proof` and the key's
+  // `id_proof` cannot diverge into two document types that look like one.
+  const kind = normaliseDocType(docType);
+  validate({ contentType, fileSize, docType: kind });
 
-  const key = keyFor(userId, docType, contentType);
+  const key = keyFor(userId, kind, contentType);
   const url = await getSignedUrl(s3(), new PutObjectCommand({
     Bucket: BUCKET,
     Key: key,
@@ -162,11 +230,11 @@ export async function presignUpload({ userId, docType, contentType, fileSize }) 
  * at an object that does not exist, which a reviewer discovers as a broken
  * image and cannot distinguish from a storage fault.
  */
-export async function verifyUploaded({ key, contentType = null }) {
+export async function verifyUploaded({
+  key, contentType = null, expectedUserId = null, expectedDocType = null,
+}) {
   if (!configured()) throw Object.assign(new Error('KYC document storage is not configured'), { status: 503 });
-  if (!key || !String(key).startsWith('kyc/')) {
-    throw Object.assign(new Error('Not a KYC document key'), { status: 400 });
-  }
+  const parsed = assertKeyBelongsTo(key, { expectedUserId, expectedDocType });
   try {
     const head = await s3().send(new HeadObjectCommand({ Bucket: BUCKET, Key: key }));
     if (contentType && head.ContentType && head.ContentType !== contentType) {
@@ -178,7 +246,7 @@ export async function verifyUploaded({ key, contentType = null }) {
     if (head.ContentLength > MAX_BYTES) {
       throw Object.assign(new Error('Uploaded KYC document exceeds the size limit'), { status: 400 });
     }
-    return { key, contentType: head.ContentType, size: head.ContentLength };
+    return { key, docType: parsed.docType, contentType: head.ContentType, size: head.ContentLength };
   } catch (err) {
     if (err.status) throw err;
     throw Object.assign(new Error('KYC document was not uploaded'), { status: 400, cause: err });
@@ -196,11 +264,12 @@ export async function verifyUploaded({ key, contentType = null }) {
  * Callers must not persist the result. There is no way for this module to
  * enforce that, which is why the KEY is what every other layer handles.
  */
-export async function presignReview({ key, expiresIn = REVIEW_TTL_SECONDS }) {
+export async function presignReview({ key, expiresIn = REVIEW_TTL_SECONDS, expectedUserId = null }) {
   if (!configured()) throw Object.assign(new Error('KYC document storage is not configured'), { status: 503 });
-  if (!key || !String(key).startsWith('kyc/')) {
-    throw Object.assign(new Error('Not a KYC document key'), { status: 400 });
-  }
+  // `expectedUserId` is how the admin route says "this key came out of THIS
+  // user's record". A key that disagrees means the record is wrong, and the
+  // right answer is to refuse rather than to show a reviewer someone else's ID.
+  assertKeyBelongsTo(key, { expectedUserId });
   // Bounded regardless of what a caller asks for: a "convenient" hour-long
   // review link is the failure this replaces, in a smaller form.
   const ttl = Math.min(Math.max(Number(expiresIn) || REVIEW_TTL_SECONDS, 30), 600);
@@ -212,11 +281,9 @@ export async function presignReview({ key, expiresIn = REVIEW_TTL_SECONDS }) {
  * Delete a user's document. For erasure requests, and for replacing a
  * superseded submission so a rejected user's old ID does not linger.
  */
-export async function deleteDocument(key) {
+export async function deleteDocument(key, { expectedUserId = null } = {}) {
   if (!configured()) throw Object.assign(new Error('KYC document storage is not configured'), { status: 503 });
-  if (!key || !String(key).startsWith('kyc/')) {
-    throw Object.assign(new Error('Not a KYC document key'), { status: 400 });
-  }
+  assertKeyBelongsTo(key, { expectedUserId });
   await s3().send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }));
   return { key, deleted: true };
 }

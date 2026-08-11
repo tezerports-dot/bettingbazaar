@@ -1,7 +1,9 @@
 # KYC documents: a public CDN URL is not an access-control model
 
-**Status: the private store is BUILT and tested. The migration is a deployment
-sequence, and it has NOT been run — see "What has not happened yet".**
+**Status: BUILT AND WIRED. Every KYC document path now goes to a private
+bucket, and no code path can produce a public URL for one. What remains is
+creating the bucket and setting four variables — until then the KYC routes
+return 503 rather than falling back. See "What is left".**
 
 Task H(b) asked for KYC documents to move to Cloudflare R2, on the principle
 that neither database should hold blobs. Neither database ever did. The finding
@@ -59,8 +61,8 @@ taken at review time by an authenticated admin — auditable and revocable —
 instead of a property of a string written into two databases years earlier.
 
 `user_kyc` gained `id_proof_key` and `photo_key` for this. The URL columns stay
-during the migration; the key is the durable identity of the blob and survives a
-bucket or CDN change, which the URL does not.
+so a record written before the cutover still renders; nothing writes them any
+more.
 
 ### Deliberately a separate module and client
 
@@ -70,59 +72,154 @@ it would mean one misrouted category silently republishing identity documents,
 which is the failure this module exists to prevent. Different safety property,
 different client.
 
+---
+
+## The wiring (2026-08-11)
+
+The module above was built and tested some time ago and **nothing called it**.
+A tested module that is not wired in protects nothing: the upload route still
+went to `cdn.service`, the submit route stored the resulting public URL in
+`kycData.idProofUrl`, and the admin queue shipped that URL to every reviewer's
+browser for every user in the queue. That is what this change closes.
+
+### Upload — `routes/upload.routes.js`
+
+`POST /api/upload/user/kyc/:docType/upload-url` mints a presigned PUT against
+the private bucket. The response carries `key` and **no `cdnUrl`** — there is no
+public address for an Aadhaar card to hand back, and the client must not receive
+something shaped like one.
+
+**It fails closed.** Every other upload category degrades to 503 when storage is
+unconfigured, and that is fine — a missing chat attachment is an inconvenience.
+Here, "fall back to the old path" means publishing a government ID, so an
+unconfigured private store refuses the upload instead. KYC submission is a
+separate flow from registration and sign-in, so this blocks verification alone.
+
+### Submission — `domains/user/user.routes.js`
+
+`POST /api/user/:userId/kyc` verifies both keys through
+`kycDocuments.verifyUploaded` and writes `kycData.idProofKey` /
+`kycData.photoKey`. No URL is written.
+
+The key is the only thing the client supplies, so the route checks that it
+**belongs to the submitting user and is the document type claimed**. The old CDN
+path checked `expectedUserId`; losing that while moving to a private bucket
+would have traded one exposure for a worse one — user A submitting user B's key,
+and a reviewer approving B's Aadhaar card as A's identity. `parseKey` reads the
+owner and type back out of the key, and `presignReview` re-checks the owner
+against the record the key came from.
+
+`user.routes.js` no longer imports `cdn.service.js` at all. A module that cannot
+reach the public CDN cannot publish an identity document by any future edit, and
+there is a test asserting the import stays gone.
+
+### Review — `routes/admin/kyc.admin.routes.js`
+
+`GET /api/admin/kyc/:userId/document/:docType`, behind `canVerifyKYC`, mints a
+120-second presigned GET for one document and writes a `KYC_DOCUMENT_VIEWED`
+audit row. The audit records the **key**, never the minted URL: an audit log is
+the one store designed never to be deleted from, and putting a live credential
+in it would undo the expiry.
+
+The queue no longer carries any document reference at all. `idProofKey`,
+`photoKey` and the legacy URL fields are `select: false` on the schema — the
+same treatment `aadhaarNumber` already had, for the same reason: several admin
+routes return whole user documents, and a field that ships by default ends up in
+API responses, browser history and support tickets.
+
+### Panels
+
+`KYCQueue.tsx` fetches a grant when a reviewer clicks a document tile and drops
+the image when the grant expires, instead of rendering a stored URL into an
+`<img>`. `KYCModal.tsx` submits keys only, and its file picker now offers only
+the three formats the store accepts — it previously offered `.pdf`, which the
+private store refuses, so the user waited through an upload that was always
+going to be rejected.
+
+### Mirrors
+
+`mirrorUserKyc` carries both keys, and the document columns are **COALESCEd**:
+absent means unchanged. The mirror is called with whole documents from the
+adoption sweep and with partial ones from the reconcile repair path, which
+selects only `kycStatus` and `kycData.rejectionReason`. A plain `EXCLUDED`
+assignment let the second call null out a key the first had stored — a silent
+loss discovered weeks later by a reviewer with no document to open, at which
+point it is indistinguishable from an upload that never happened.
+`rejection_reason` deliberately keeps last-write-wins, because clearing it on
+approval is meaningful.
+
+---
+
 ## Verification
 
-All **run**, 13 tests in `backend/tests/unit/kycDocuments.test.js`:
+**Run**, not inspected:
 
-- no ACL is ever set on an upload (the one line that could republish a document)
-- review grants default to 120s and are **bounded to 600s** however the caller
-  asks — a "convenient" hour-long link is the same failure in a smaller form
-- images only; PDFs, archives, HTML and `image/svg+xml` are refused
-- content type and length are pinned into the upload grant, so a grant for a 2KB
-  JPEG cannot be spent on something else
-- keys outside `kyc/` are refused for both review and deletion, so the module
-  cannot become a general-purpose read oracle for the bucket
-- keys are namespaced per user, so an erasure request can enumerate one subject
-
-Mutations, each reverted after:
-
-| Mutation | Test killed |
+| suite | count |
 |---|---|
-| `ACL: 'public-read'` on upload | *NEVER sets an ACL* |
-| review TTL honoured unbounded instead of clamped | *BOUNDS what a caller may ask for* |
+| `backend/tests/unit/kycDocuments.test.js` — the module's safety logic | 13 |
+| `backend/tests/unit/kycPrivateRouting.test.js` — the wiring | 26 |
+| `backend/tests/postgres/kycDocumentKeyMirror.test.js` — real Postgres | 5 |
 
-## What has NOT happened yet
+Mutations M33–M40, each applied, tested, reverted — **8/8 killed** (40/40 for
+the branch):
 
-**NOT VERIFIED — none of this has run against a real R2 bucket.** The S3 client
-is mocked in the tests; what is proven is the module's own safety logic, not
-that R2 accepts these calls. No credentials exist in this environment.
+| Mutation | Killed by |
+|---|---|
+| upload route goes back to `cdn.service` | *routes KYC at the private store* |
+| unconfigured store falls through instead of refusing | *FAILS CLOSED* |
+| submission stores a URL again | *writes the KEY into kycData* |
+| ownership check removed | *refuses another user's key* |
+| `select: false` dropped from `idProofKey` | *does not leave the database by default* |
+| review grant minted without the owner check | *mints the grant per view* |
+| mirror stops COALESCEing the key | *does NOT lose the keys on a partial repair* |
+| `rejection_reason` becomes sticky | *still clears a rejection reason on approval* |
 
-The remaining work is a deployment sequence, not code:
+Several of the wiring assertions read source text rather than making HTTP calls.
+That is deliberate: the properties are negative ("this file cannot reach the
+public CDN"), the alternative needs Mongo and so runs only in CI, and a source
+assertion fails exactly when someone adds a fourth call site the old way — which
+is the regression worth catching.
 
-1. Create the private R2 bucket. **Public access disabled, no custom domain, no
-   CDN binding.** Everything above depends on this and none of it is enforced
-   from application code.
-2. Set `KYC_S3_BUCKET`, `KYC_S3_ENDPOINT`, `KYC_S3_ACCESS_KEY`,
-   `KYC_S3_SECRET_KEY`. Until all four are set, `configured()` is false and the
-   existing path is used unchanged — a KYC submission that started failing on a
-   missing environment variable would take registration down, so this falls back
-   rather than failing closed.
-3. Route `user.routes.js`'s KYC submission at the new service, and add an
-   admin review endpoint that mints a presigned GET per request. **Not done in
-   this change** — it needs the panel to fetch a URL at view time instead of
-   reading one from the record, which is a frontend change in three repos.
-4. Copy existing objects into the private bucket, populate `id_proof_key` /
-   `photo_key`, and only then stop writing the URL columns.
-5. **Delete the originals from the public bucket.** Until this step the old URLs
-   still work, so the exposure above is unchanged no matter what the new code
-   does. This is the step that actually fixes it.
+**NOT VERIFIED:** none of this has run against a real R2 bucket. The S3 client is
+mocked; what is proven is the application's own logic, not that R2 accepts these
+calls. No credentials exist in this environment.
 
-Step 5 is the one that matters, and steps 3–5 are not in this change.
+---
 
-## The live exposure, stated plainly
+## What is left
 
-Every KYC document uploaded so far is reachable at a permanent, unauthenticated
-URL by anyone who has ever seen that URL — including anyone with a copy of a
-database backup, since the URL is a column in both stores. That is true today
-and stays true until step 5 runs. It is not a regression introduced here; it is
-the state this document exists to get changed.
+Deployment, not code:
+
+1. **Create the private R2 bucket.** Public access **disabled**, no custom
+   domain, no CDN binding. Everything above depends on this and **none of it is
+   enforceable from application code** — it is a property of how the bucket is
+   created. It must be a different bucket from `S3_BUCKET_NAME`.
+2. **Set `KYC_S3_ENDPOINT`, `KYC_S3_BUCKET`, `KYC_S3_ACCESS_KEY`,
+   `KYC_S3_SECRET_KEY`** (and `KYC_S3_REGION=auto` for R2). They are in
+   `.env.example` and `deploy/vps/.env.template` with this rationale attached.
+   Scope the API token to the private bucket only. **Until all four are set, KYC
+   upload and submission return 503** — verification is unavailable, and no
+   document is published.
+3. **Verify against the real bucket once, before opening signups:** submit a KYC
+   document, confirm the object lands in the private bucket, confirm the admin
+   review link renders it, and confirm the same URL 404s or 403s after two
+   minutes. That last check is the one that proves the expiry is real rather
+   than configured.
+
+### The migration steps that no longer apply
+
+Earlier revisions of this document listed "copy existing objects into the
+private bucket" and "delete the originals from the public bucket" as steps 4 and
+5, and called step 5 the one that actually fixes the exposure.
+
+**Neither applies: the platform has not launched.** There is no production
+deployment and no staging, so no user has ever submitted a KYC document and
+there is nothing in the shared bucket to migrate or delete. The exposure
+described at the top of this document was real as a property of the code and is
+now closed before any document ever passed through it.
+
+One caveat, and it is the only one: **if any KYC document was uploaded during
+development or manual testing against a real shared bucket, delete it from that
+bucket.** The application no longer writes there, but the object and its
+permanent URL would survive this change untouched. Nothing in the codebase can
+tell you whether such an object exists — check the bucket.

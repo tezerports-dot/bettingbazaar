@@ -338,19 +338,43 @@ export function mirrorCasinoTransaction(doc) {
   });
 }
 
+/**
+ * A User's KYC fields → user_kyc. Carries the private-store KEYS.
+ *
+ * ── Why the document columns are COALESCEd and the rest are not ─────────────
+ * This mirror is called with WHOLE documents from the adoption sweep and with
+ * PARTIAL ones from the repair path (reconcile.js selects only `kycStatus` and
+ * `kycData.rejectionReason` there, because status is what it is repairing).
+ * With a plain `EXCLUDED` assignment the partial call would write NULL over
+ * `id_proof_key`, and the first status repair after a submission would leave a
+ * record whose document an admin can no longer open — a silent loss discovered
+ * only when someone tries to review it.
+ *
+ * So for the document references, ABSENT MEANS UNCHANGED. Nothing clears them
+ * by writing null: a re-submission supplies a new non-null key, which wins.
+ * Status and rejection_reason keep last-write-wins, because clearing those IS
+ * meaningful — an approval legitimately empties the rejection reason.
+ */
 export function mirrorUserKyc(doc) {
   const k = doc.kycData || {};
   return mirror('user_kyc', () => pgQuery(
-    `INSERT INTO user_kyc (user_id, kyc_status, name_on_pan, pan_number, id_proof_url, photo_url, submitted_at, rejection_reason, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now())
+    `INSERT INTO user_kyc (user_id, kyc_status, name_on_pan, pan_number, id_proof_url, photo_url, id_proof_key, photo_key, submitted_at, rejection_reason, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now())
      ON CONFLICT (user_id) DO UPDATE SET
-       kyc_status = EXCLUDED.kyc_status, name_on_pan = EXCLUDED.name_on_pan,
-       pan_number = EXCLUDED.pan_number, id_proof_url = EXCLUDED.id_proof_url,
-       photo_url = EXCLUDED.photo_url, submitted_at = EXCLUDED.submitted_at,
+       kyc_status = EXCLUDED.kyc_status,
+       name_on_pan = COALESCE(EXCLUDED.name_on_pan, user_kyc.name_on_pan),
+       pan_number = COALESCE(EXCLUDED.pan_number, user_kyc.pan_number),
+       id_proof_url = COALESCE(EXCLUDED.id_proof_url, user_kyc.id_proof_url),
+       photo_url = COALESCE(EXCLUDED.photo_url, user_kyc.photo_url),
+       id_proof_key = COALESCE(EXCLUDED.id_proof_key, user_kyc.id_proof_key),
+       photo_key = COALESCE(EXCLUDED.photo_key, user_kyc.photo_key),
+       submitted_at = COALESCE(EXCLUDED.submitted_at, user_kyc.submitted_at),
        rejection_reason = EXCLUDED.rejection_reason, updated_at = now()`,
     [String(doc._id), doc.kycStatus || null,
      k.nameOnPAN || k.nameOnAadhaar || null, k.panNumber || k.aadhaarNumber || null,
-     k.idProofUrl || null, k.photoUrl || null, k.submittedAt || null, k.rejectionReason || null],
+     k.idProofUrl || null, k.photoUrl || null,
+     k.idProofKey || null, k.photoKey || null,
+     k.submittedAt || null, k.rejectionReason || null],
   ));
 }
 

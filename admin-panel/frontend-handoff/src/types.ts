@@ -68,8 +68,9 @@ export interface User {
   kycData?: {
     nameOnAadhaar: string;
     aadhaarNumber: string;
-    idProofUrl: string;
-    photoUrl: string;
+    // No document URL. KYC documents are in a private bucket and the queue
+    // response deliberately omits every reference to them; a reviewer fetches a
+    // short-lived link for one document at a time via `api.kyc.viewDocument`.
     submittedAt: string;
     rejectionReason?: string;
   };

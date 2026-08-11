@@ -42,17 +42,26 @@ const KYCModal: React.FC<KYCModalProps> = ({ onClose }) => {
 
     setIsProcessing(true); setUploadProgress('uploading');
     try {
+      // The document goes to a PRIVATE bucket and the response carries a key,
+      // not a URL. There is no public address for an Aadhaar card to hand back,
+      // and nothing here should hold one: the key is a reference, and viewing
+      // the document later is a decision an authenticated reviewer makes.
       const uploadKycFile = async (docType: 'id-proof' | 'selfie', file: File) => {
         const urlRes: any = await apiClient.post(`/api/upload/user/kyc/${docType}/upload-url`, { fileName: file.name, contentType: file.type, fileSize: file.size });
-        await fetch(urlRes.uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type } });
-        if (!urlRes.fileKey || !urlRes.cdnUrl) throw new Error('Upload response missing file key');
-        return { fileKey: urlRes.fileKey, cdnUrl: urlRes.cdnUrl };
+        if (!urlRes.uploadUrl || !urlRes.key) throw new Error('Upload response missing file key');
+        const put = await fetch(urlRes.uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type } });
+        // The grant pins content type and length, so a mismatch is rejected by
+        // storage. Failing here rather than submitting a key to an object that
+        // was never written is what stops a reviewer seeing a broken tile they
+        // cannot distinguish from a storage fault.
+        if (!put.ok) throw new Error('Upload failed. Please check your connection and try again.');
+        return { key: urlRes.key };
       };
       const [idProof, photo] = await Promise.all([uploadKycFile('id-proof', files.idProof), uploadKycFile('selfie', files.photo)]);
       setUploadProgress('done');
       await backend.uploadKYC(user.id, {
         nameOnAadhaar: kycData.nameOnAadhaar.trim().toUpperCase(), aadhaarNumber: kycData.aadhaarNumber.trim(),
-        idProofKey: idProof.fileKey, idProofCdnUrl: idProof.cdnUrl, photoKey: photo.fileKey, photoCdnUrl: photo.cdnUrl,
+        idProofKey: idProof.key, photoKey: photo.key,
       });
       alert('✅ KYC Documents Submitted Successfully.\n\nOur compliance team will review your application within 24 hours.');
       onClose();
@@ -64,7 +73,10 @@ const KYCModal: React.FC<KYCModalProps> = ({ onClose }) => {
     const has = !!files[type];
     return (
       <label style={{ border: `2px dashed ${has ? 'var(--green)' : 'var(--line2)'}`, borderRadius: 12, padding: '16px 8px', textAlign: 'center', background: has ? 'color-mix(in srgb,var(--green) 10%,transparent)' : 'var(--surface2)', cursor: 'pointer', display: 'block' }}>
-        <input type="file" style={{ display: 'none' }} accept={type === 'idProof' ? 'image/*,.pdf' : 'image/*'} onChange={e => handleFileChange(type, e)} />
+        {/* Images only, and specifically these three. The private store refuses
+            PDFs and SVGs; offering `.pdf` in the picker only produced a file the
+            server would reject after the user had already waited for it. */}
+        <input type="file" style={{ display: 'none' }} accept="image/jpeg,image/png,image/webp" onChange={e => handleFileChange(type, e)} />
         <div style={{ fontSize: 22 }}>{has ? '✅' : icon}</div>
         <div style={{ fontSize: 9, fontWeight: 800, textTransform: 'uppercase', color: has ? 'var(--green)' : 'var(--text2)', marginTop: 4 }}>{has ? (files[type]!.name.slice(0, 14) + '…') : label}</div>
         <div style={{ fontSize: 8, color: 'var(--text3)' }}>{formats}</div>
@@ -88,7 +100,7 @@ const KYCModal: React.FC<KYCModalProps> = ({ onClose }) => {
           <div><label style={labelStyle}>Name on Aadhaar <span style={{ color: 'var(--red)' }}>*</span></label><input value={kycData.nameOnAadhaar} onChange={e => setKycData({ ...kycData, nameOnAadhaar: e.target.value.toUpperCase() })} placeholder="e.g. RAHUL SHARMA" style={{ ...inputStyle, textTransform: 'uppercase' }} /></div>
           <div><label style={labelStyle}>Aadhaar number <span style={{ color: 'var(--red)' }}>*</span></label><input value={kycData.aadhaarNumber} onChange={e => setKycData({ ...kycData, aadhaarNumber: e.target.value.replace(/\D/g, '').slice(0, 12) })} inputMode="numeric" placeholder="1234 5678 9012" className="font-grotesk" style={{ ...inputStyle, letterSpacing: '.12em' }} /></div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            {uploadTile('idProof', '📄', 'Aadhaar Front', 'JPG · PNG · PDF')}
+            {uploadTile('idProof', '📄', 'Aadhaar Front', 'JPG · PNG · WEBP')}
             {uploadTile('photo', '🤳', 'Selfie', 'JPG · PNG')}
           </div>
 
