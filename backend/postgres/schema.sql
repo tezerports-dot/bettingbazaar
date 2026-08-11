@@ -647,6 +647,21 @@ CREATE TABLE IF NOT EXISTS bets (
 ALTER TABLE bets ADD COLUMN IF NOT EXISTS mongo_id TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS bets_mongo_id_key ON bets (mongo_id);
 
+-- The winnings platform fee retained from THIS bet's gross payout.
+--
+-- Not a display field. `Cycle.totalPlatformFees` is derived by summing
+-- `Bet.platformFee` over the cycle's WON bets, so a store that owns the
+-- settlement but not the fee cannot answer what it retained — and the Mongo
+-- path writes the fee in the SAME statement as the status and the payout
+-- (settlementService's stampOps). Splitting them across stores would put the
+-- accounting number behind a second writer, so a crash between the two leaves a
+-- WON bet with a zero fee and silently understates platform revenue.
+--
+-- payout_paise is NET of this, so gross = payout_paise + platform_fee_paise.
+-- Zero for every non-winning transition, and for pre-fee bets.
+ALTER TABLE bets ADD COLUMN IF NOT EXISTS platform_fee_paise BIGINT NOT NULL DEFAULT 0
+  CONSTRAINT bets_platform_fee_check CHECK (platform_fee_paise >= 0);
+
 CREATE INDEX IF NOT EXISTS bets_user_idx  ON bets (user_id, placed_at DESC);
 -- The settlement sweep's query: every unsettled bet on one cycle.
 CREATE INDEX IF NOT EXISTS bets_cycle_idx ON bets (cycle_id, status);

@@ -97,6 +97,7 @@ function rowToBet(row) {
     side:        row.side,
     stakePaise:  toPaise(row.stake_paise),
     payoutPaise: toPaise(row.payout_paise),
+    platformFeePaise: toPaise(row.platform_fee_paise),
     status:      row.status,
     placedAt:    row.placed_at,
     settledAt:   row.settled_at,
@@ -299,12 +300,19 @@ export async function placeBet({
  * one number nobody can audit.
  */
 async function settle(
-  { betId, userId, slices, payoutPaise = 0, actor = null, reason = null },
+  { betId, userId, slices, payoutPaise = 0, platformFeePaise = 0, actor = null, reason = null },
   spec,
 ) {
   if (!betId) throw new Error(`${spec.name}Bet requires a betId`);
   if (!Number.isInteger(payoutPaise) || payoutPaise < 0) {
     throw new TypeError(`${spec.name}Bet: payoutPaise must be a non-negative integer, got ${payoutPaise}`);
+  }
+  // The fee is RETAINED, not paid, so it moves no money here — it is recorded
+  // because the settlement decided it, and `Cycle.totalPlatformFees` is summed
+  // from it. Validated exactly like the payout so a float rupee value cannot
+  // reach the column and be silently truncated.
+  if (!Number.isInteger(platformFeePaise) || platformFeePaise < 0) {
+    throw new TypeError(`${spec.name}Bet: platformFeePaise must be a non-negative integer, got ${platformFeePaise}`);
   }
 
   const result = await withBetLock(userId, betId, async (ctx) => {
@@ -325,10 +333,11 @@ async function settle(
     // the database can settle that race. The read gives a good error message;
     // the WHERE gives correctness.
     const moved = await ctx.client.query(
-      `UPDATE bets SET status = $2, payout_paise = $3, settled_at = now(), updated_at = now()
+      `UPDATE bets SET status = $2, payout_paise = $3, platform_fee_paise = $5,
+                       settled_at = now(), updated_at = now()
         WHERE bet_id = $1 AND status = $4
         RETURNING updated_at`,
-      [ctx.bid, spec.to, payoutPaise, spec.expect],
+      [ctx.bid, spec.to, payoutPaise, spec.expect, platformFeePaise],
     );
     if (!moved.rowCount) {
       return { commit: false, value: { ok: false, reason: 'invalid_transition', status: bet.status, expected: spec.expect } };
@@ -386,7 +395,7 @@ async function settle(
       commit: true,
       value: {
         ok: true, idempotent: false,
-        bet: { ...bet, status: spec.to, payoutPaise, updatedAt: moved.rows[0].updated_at },
+        bet: { ...bet, status: spec.to, payoutPaise, platformFeePaise, updatedAt: moved.rows[0].updated_at },
         balances: movement.balancesAfterPaise,
       },
     };

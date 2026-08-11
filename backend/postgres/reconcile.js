@@ -919,15 +919,22 @@ export async function reconcileBetStates({ backfill = false, repairMongo = false
   }
 
   const { rows } = await pgQuery(
-    `SELECT bet_id, user_id, cycle_id, side, stake_paise, payout_paise, status, placed_at, settled_at, updated_at
+    `SELECT bet_id, user_id, cycle_id, side, stake_paise, payout_paise, platform_fee_paise,
+            status, placed_at, settled_at, updated_at
        FROM bets ORDER BY updated_at DESC LIMIT $1`,
     [limit], 'bet_state_reconcile',
   );
   if (!rows.length) return { table: 'bets', checked: 0, disagreeing: 0, settling: 0, repaired: 0, sample: [] };
 
+  // `status` is what the comparison needs; `payout`, `platformFee` and
+  // `settledAt` are what the BACKFILL repair below needs. Selecting only
+  // `status` made the repair hand `mirrorBet` a document with no payout, and
+  // the mirror's `ON CONFLICT DO UPDATE` writes what it is given — so repairing
+  // a settled bet's status ZEROED its payout and fee in Postgres. The check that
+  // exists to close a disagreement was opening a bigger one.
   const docs = await mongoose.model('Bet')
     .find({ _id: { $in: rows.map((r) => r.bet_id) } })
-    .select('status').lean();
+    .select('status payout platformFee settledAt isPhantom').lean();
   const byId = new Map(docs.map((d) => [String(d._id), d]));
 
   const { mirrorBet } = await import('./dualWrite.js');

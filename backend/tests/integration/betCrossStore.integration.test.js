@@ -171,4 +171,95 @@ d('bets across MongoDB and PostgreSQL', () => {
         .rejects.toThrow(/opposite directions/);
     });
   });
+
+  // ── Claim 3: the repair must not destroy what it is repairing ────────────
+
+  describe('what a --backfill repair carries with the status', () => {
+    it('preserves a settled bet\'s payout and retained fee', async () => {
+      // The repair fetches the Mongo document and hands it to `mirrorBet`,
+      // whose `ON CONFLICT DO UPDATE` writes what it is given. It used to fetch
+      // with `.select('status')`, so the document arrived with a status and
+      // nothing else — and repairing a status disagreement ZEROED the payout
+      // and the fee in Postgres. betSettlementPg.test.js proves the mirror
+      // behaves that way; this proves the reconcile no longer feeds it a
+      // document that triggers it.
+      const doc = await mongoBet('xs_repair_keeps', {
+        status: 'WON', payout: 198, platformFee: 2, settledAt: new Date(),
+      });
+      await eventually(async () => (await pgBet(String(doc._id))) !== null);
+
+      // Drive the two stores apart on STATUS only, leaving the money fields
+      // correct on the Mongo side.
+      await pgQuery(`UPDATE bets SET status = 'PENDING' WHERE bet_id = $1`, [String(doc._id)]);
+
+      const repaired = await reconcileBetStates({ backfill: true });
+      expect(repaired.repaired).toBeGreaterThan(0);
+
+      const row = await pgBet(String(doc._id));
+      expect(row.status).toBe('WON');
+      expect(Number(row.payout_paise)).toBe(19_800);
+      expect(Number(row.platform_fee_paise)).toBe(200);
+    });
+  });
+
+  // ── Claim 4: the fee round-trips, so cycle revenue cannot read zero ──────
+
+  describe('the retained platform fee across both stores', () => {
+    it('reaches the Mongo document through the reverse mirror', async () => {
+      // `Cycle.totalPlatformFees` is summed from `Bet.platformFee` over the
+      // cycle's WON bets. Once Postgres settles the bet, the reverse mirror is
+      // the ONLY thing that puts the fee back on the document — so without this
+      // leg every Postgres-settled cycle reports zero platform revenue while
+      // every state check stays green, because no state check looks at the fee.
+      const { reverseMirrorBetRow } = await import('../../postgres/reverseMirror.js');
+      const doc = await mongoBet('xs_fee_reverse');
+
+      await reverseMirrorBetRow({
+        bet_id: String(doc._id), mongo_id: String(doc._id),
+        user_id: String(doc.userId), cycle_id: doc.cycleId, side: doc.side,
+        stake_paise: 10_000, payout_paise: 19_800, platform_fee_paise: 200,
+        status: 'WON', settled_at: new Date(), placed_at: doc.timestamp,
+      });
+
+      const after = await eventually(async () => {
+        const b = await Bet().findById(doc._id).lean();
+        return b?.status === 'WON' ? b : null;
+      });
+      expect(after.payout).toBe(198);
+      expect(after.platformFee).toBe(2);
+    });
+
+    it('and a cycle total derived from Mongo then agrees with what Postgres retained', async () => {
+      // The number that actually ships: gameEngine derives totalPlatformFees by
+      // aggregating the stamped WON bets. This is that aggregation, over bets
+      // whose fees arrived only via the reverse mirror.
+      const { reverseMirrorBetRow } = await import('../../postgres/reverseMirror.js');
+      const cycleId = 'xs_fee_cycle';
+      const made = [];
+      for (const [i, fee] of [200, 100, 0].entries()) {
+        const doc = await mongoBet(`xs_fee_total_${i}`, { cycleId });
+        made.push({ doc, fee });
+      }
+      for (const { doc, fee } of made) {
+        await reverseMirrorBetRow({
+          bet_id: String(doc._id), mongo_id: String(doc._id),
+          user_id: String(doc.userId), cycle_id: cycleId, side: doc.side,
+          stake_paise: 10_000, payout_paise: 20_000 - fee, platform_fee_paise: fee,
+          status: 'WON', settled_at: new Date(), placed_at: doc.timestamp,
+        });
+      }
+
+      await eventually(async () =>
+        (await Bet().countDocuments({ cycleId, status: 'WON' })) === 3 || null);
+
+      const [totals] = await Bet().aggregate([
+        { $match: { cycleId, status: 'WON', isPhantom: false } },
+        { $group: { _id: null, fees: { $sum: '$platformFee' }, paid: { $sum: '$payout' } } },
+      ]);
+      // ₹2.00 + ₹1.00 + ₹0.00 — the third is the one a truthiness guard would
+      // have dropped, leaving a bet WON with a stale fee under it.
+      expect(Math.round(totals.fees * 100) / 100).toBe(3);
+      expect(Math.round(totals.paid * 100) / 100).toBe(597);
+    });
+  });
 });

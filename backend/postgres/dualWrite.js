@@ -581,6 +581,27 @@ export function mirrorBet(doc) {
     const { isPostgresAuthoritative, MONEY_PATHS } = await import('./moneyAuthority.js');
     if (isPostgresAuthoritative(MONEY_PATHS.BETS)) return;
 
+    // A PHANTOM bet is not a bet Postgres can hold. It is synthetic — created
+    // with `fromDepositBalance: 0, fromWinningsBalance: 0` and no balance
+    // deduction — so it has a positive `amount` and NO funding provenance
+    // behind it. Two things follow, and both are why this returns rather than
+    // filters downstream:
+    //
+    //  - `betPg.settle` requires slices that sum to the stake, so a phantom bet
+    //    mirrored here can never be settled through the authoritative path. It
+    //    would sit PENDING in Postgres forever while Mongo stamps it LOST, and
+    //    `reconcileBetStates` would report that as drift on every cycle.
+    //  - `reconcileUserStakes` compares outstanding stakes against
+    //    `lockedBalance`. A phantom stake counts in the first and not the
+    //    second, so mirroring it makes a healthy wallet report a shortfall —
+    //    the one condition that module says its transaction structure makes
+    //    impossible.
+    //
+    // Phantom bets stay a Mongo-side pool-display artifact, settled by the
+    // engine's own `updateMany`, which is correct precisely because no money
+    // is involved.
+    if (doc.isPhantom) return;
+
     const status = BET_STATUS_FROM_MONGO[doc.status];
     if (!status) return;
 
@@ -591,11 +612,12 @@ export function mirrorBet(doc) {
     if (stakePaise <= 0) return;
 
     await pgQuery(
-      `INSERT INTO bets (bet_id, user_id, cycle_id, side, stake_paise, payout_paise, status, placed_at, settled_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8, now()),$9,now())
+      `INSERT INTO bets (bet_id, user_id, cycle_id, side, stake_paise, payout_paise, platform_fee_paise, status, placed_at, settled_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$10,$7,COALESCE($8, now()),$9,now())
        ON CONFLICT (bet_id) DO UPDATE
          SET status = EXCLUDED.status,
              payout_paise = EXCLUDED.payout_paise,
+             platform_fee_paise = EXCLUDED.platform_fee_paise,
              settled_at = EXCLUDED.settled_at,
              updated_at = now()`,
       [
@@ -605,6 +627,10 @@ export function mirrorBet(doc) {
         status,
         createdAt(doc, doc.timestamp),
         doc.settledAt || null,
+        // Carried forward so an ADOPTED bet (backfillLifecycleTables) arrives
+        // with the fee its Mongo settlement already stamped, rather than a zero
+        // the reverse mirror would later write back over the real value.
+        Number.isFinite(Number(doc.platformFee)) ? paise(doc.platformFee) : 0,
       ],
     );
   });

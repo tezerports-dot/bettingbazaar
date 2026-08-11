@@ -384,7 +384,7 @@ export function reverseMirrorAdminSupply({ minted, cap }) {
  */
 export function reverseMirrorBet(doc) {
   return mirrorBack('bets', async () => {
-    const { _id, status, settledAt, payout, ...immutable } = doc;
+    const { _id, status, settledAt, payout, platformFee, ...immutable } = doc;
     await mongoose.model('Bet').updateOne(
       { _id },
       {
@@ -392,6 +392,11 @@ export function reverseMirrorBet(doc) {
           status,
           ...(settledAt ? { settledAt } : {}),
           ...(payout !== undefined ? { payout } : {}),
+          // Written alongside the payout because the settlement decided both at
+          // once. `Cycle.totalPlatformFees` sums this over the cycle's WON bets,
+          // so a mirror that carried the payout and not the fee would leave the
+          // accounting itemisation reading zero on every Postgres-settled cycle.
+          ...(platformFee !== undefined ? { platformFee } : {}),
         },
         $setOnInsert: immutable,
       },
@@ -541,6 +546,13 @@ export function reverseMirrorBetRow(row) {
     status: row.status,
     ...(row.settled_at ? { settledAt: row.settled_at } : {}),
     ...(Number(row.payout_paise) ? { payout: rupees(row.payout_paise) } : {}),
+    // Guarded on the column being PRESENT rather than non-zero, unlike the
+    // payout above: a settlement that legitimately retained nothing (0% fee)
+    // must still be able to write 0 over a stale value, and a row selected
+    // without the column must not write `undefined` over a real one.
+    ...(row.platform_fee_paise !== undefined && row.platform_fee_paise !== null
+      ? { platformFee: rupees(row.platform_fee_paise) }
+      : {}),
     timestamp: row.placed_at,
   });
 }

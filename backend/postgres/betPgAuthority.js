@@ -131,8 +131,18 @@ export function slicesFromBet(bet) {
  * withdrawable, which is a cash-out route rather than a rounding error. A bet
  * whose slices do not add up is REFUSED and reported, so the settlement pass
  * leaves it for a human instead of guessing.
+ *
+ * ── The retained fee travels WITH the transition ────────────────────────────
+ * `platformFeeRupees` is not decoration. The Mongo path stamps status, payout
+ * and fee in one `$set`, and `Cycle.totalPlatformFees` is summed from
+ * `Bet.platformFee` over the cycle's WON bets. Routing the status and the
+ * payout while leaving the fee to a second writer would make that sum read zero
+ * for every Postgres-settled cycle — an accounting number quietly going to
+ * zero, which is the failure mode this migration exists to avoid.
  */
-export async function settleBetOnPostgres({ bet, outcome, payoutRupees = 0, reason = null }) {
+export async function settleBetOnPostgres({
+  bet, outcome, payoutRupees = 0, platformFeeRupees = 0, reason = null,
+}) {
   if (!onPostgres()) return { handled: false };
 
   const spec = { WON: winBet, LOST: loseBet, VOID: voidBet, REFUNDED: refundBet }[outcome];
@@ -153,6 +163,7 @@ export async function settleBetOnPostgres({ bet, outcome, payoutRupees = 0, reas
     userId: String(bet.userId),
     slices,
     payoutPaise: rupeesToPaise(Number(payoutRupees) || 0),
+    platformFeePaise: rupeesToPaise(Number(platformFeeRupees) || 0),
     actor: 'settlement',
     reason,
   });
@@ -167,6 +178,7 @@ export async function settleBetOnPostgres({ bet, outcome, payoutRupees = 0, reas
       user_id: String(bet.userId), cycle_id: bet.cycleId, side: bet.side,
       stake_paise: rupeesToPaise(Number(bet.amount) || 0),
       payout_paise: rupeesToPaise(Number(payoutRupees) || 0),
+      platform_fee_paise: rupeesToPaise(Number(platformFeeRupees) || 0),
       status: result.bet.status,
       settled_at: result.bet.settledAt ?? new Date(),
       placed_at: bet.timestamp,
