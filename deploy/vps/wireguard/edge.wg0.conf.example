@@ -1,0 +1,29 @@
+# /etc/wireguard/wg0.conf — EDGE (clean-IP VPS, in front of the origin)
+# ─────────────────────────────────────────────────────────────────────────────
+# The edge terminates public TLS (behind Cloudflare) and reverse-proxies to the
+# origin ACROSS this tunnel. Its own public IP is the only one DNS/Cloudflare
+# ever points at; the origin's IP appears nowhere public.
+#
+# Generate the keypair on THIS box:
+#   umask 077
+#   wg genkey | tee edge.private | wg pubkey > edge.public
+# Put edge.private below. Give edge.public to the origin (its [Peer] block).
+# ─────────────────────────────────────────────────────────────────────────────
+
+[Interface]
+# The edge's address inside the tunnel. Caddy proxies to 10.10.0.2 (the origin).
+Address = 10.10.0.1/32
+PrivateKey = <EDGE_PRIVATE_KEY>
+
+[Peer]
+# The origin in Malaysia.
+PublicKey = <ORIGIN_PUBLIC_KEY>
+# The edge dials the origin, so it needs the origin's PUBLIC ip:port here. This
+# is the ONE place the origin's real address is written down — on the edge, in a
+# root-only file, never in DNS.
+Endpoint = <ORIGIN_PUBLIC_IP>:51820
+# Only tunnel traffic to the origin's tunnel address goes down this peer. This
+# is NOT 0.0.0.0/0 — the edge does not route its whole outbound through Malaysia,
+# only the proxied app calls.
+AllowedIPs = 10.10.0.2/32
+PersistentKeepalive = 25

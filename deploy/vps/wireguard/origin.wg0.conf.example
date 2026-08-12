@@ -1,0 +1,36 @@
+# /etc/wireguard/wg0.conf — ORIGIN (Shinjiru, Malaysia)
+# ─────────────────────────────────────────────────────────────────────────────
+# The origin holds the app, the databases and the market/odds engine. It must
+# NOT serve a public web port: the only inbound traffic it accepts is this
+# WireGuard tunnel from the edge, and SSH from your management IP. Public HTTPS
+# is terminated at the edge, which reaches the app across this tunnel.
+#
+# Generate the keypair on THIS box, never anywhere else:
+#   umask 077
+#   wg genkey | tee origin.private | wg pubkey > origin.public
+# Put origin.private below. Give origin.public to the edge (its [Peer] block).
+#
+# The tunnel subnet here is 10.10.0.0/24 — a private range that exists only
+# inside the tunnel. Change it only if it collides with something you already
+# run; it is never routed on the public internet.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[Interface]
+# The origin's address INSIDE the tunnel. The app binds here (not 0.0.0.0).
+Address = 10.10.0.2/32
+ListenPort = 51820
+PrivateKey = <ORIGIN_PRIVATE_KEY>
+
+# No routing tricks and no NAT: this interface carries app traffic only, so it
+# does not become a default route for the box. Nothing here forwards packets.
+
+[Peer]
+# The edge. This is the only peer, so the tunnel accepts the edge and nothing
+# else — a second machine cannot join without being added here explicitly.
+PublicKey = <EDGE_PUBLIC_KEY>
+# Accept tunnel packets only from the edge's tunnel address. A packet claiming
+# any other source inside the tunnel is dropped.
+AllowedIPs = 10.10.0.1/32
+# The edge dials the origin, so the origin does not need the edge's Endpoint.
+# Keepalive holds the path open through the origin's NAT/firewall if any.
+PersistentKeepalive = 25

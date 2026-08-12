@@ -1,0 +1,87 @@
+# GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+# ══════════════════════════════════════════════════════════════════════════════
+# EDGE Caddyfile — public TLS at the edge, app reached over the WireGuard tunnel.
+#
+# This runs on the EDGE VPS (clean IP), NOT on the origin. It is the public face:
+# Cloudflare points at this box, this box terminates TLS, and every request is
+# reverse-proxied to the origin across WireGuard (10.10.0.2). The origin's real
+# IP appears nowhere here — only its tunnel address does.
+#
+# Difference from deploy/vps/Caddyfile.vps (which runs ON a single origin box):
+# there the upstreams are `api:8080` / `realtime:8080` on the same host; here
+# they are the origin's TUNNEL address, and the app is not reachable any other
+# way.
+#
+# SITE_ADDRESS carries every public hostname, space separated. Multi-domain is
+# plain redundancy — same app on every host, no per-domain logic, no client
+# IP/geo/ISP input (backend/config/network.config.js). Automatic rotation on a
+# block is deliberately NOT part of this; see EDGE_ORIGIN_HARDENING.md.
+# ══════════════════════════════════════════════════════════════════════════════
+
+{
+	email {$ACME_EMAIL}
+	# If Cloudflare is in front in "Full (strict)" mode, this edge still needs a
+	# publicly-trusted cert. Caddy gets one over HTTP-01/TLS-ALPN as usual, or
+	# use the DNS challenge if the edge is not directly reachable on 80/443.
+}
+
+# The tunnel address of the origin's two serving roles. Same process, two ports
+# (see ecosystem.config.cjs): api on 8080-equivalent, realtime on its own.
+(origin_api) {
+	reverse_proxy 10.10.0.2:3000
+}
+(origin_realtime) {
+	reverse_proxy 10.10.0.2:3001
+}
+
+{$SITE_ADDRESS} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# ── WebSocket → realtime role, over the tunnel ───────────────────────────
+	# The 24h timeout is not optional: socket.io pings every 25s with a 60s
+	# timeout, and a proxy's default 60s read timeout severs the connection at
+	# exactly that boundary — intermittent drops that read as an app bug.
+	handle /socket.io/* {
+		reverse_proxy 10.10.0.2:3001 {
+			transport http {
+				read_timeout 24h
+				write_timeout 24h
+				# ── OPTIONAL, recommended: mTLS to the origin ────────────────
+				# The app can REQUIRE a client certificate (server.js reads
+				# BACKEND_MTLS_CERT/KEY/CA and then rejects any connection
+				# without one). WireGuard already encrypts the hop; this adds
+				# "even inside the tunnel, only THIS edge is accepted". Enable
+				# by pointing the app at its CA and uncommenting here:
+				# tls_client_auth /etc/caddy/edge-client.crt /etc/caddy/edge-client.key
+				# tls_trusted_ca_certs /etc/caddy/origin-ca.crt
+			}
+		}
+	}
+
+	# ── SSE (admin + merchant streams) → realtime role ───────────────────────
+	handle /api/sse/* {
+		reverse_proxy 10.10.0.2:3001 {
+			flush_interval -1
+			transport http {
+				read_timeout 24h
+			}
+		}
+	}
+
+	# ── Prometheus metrics — bearer-protected in the app, still not public ────
+	handle /metrics {
+		respond 404
+	}
+
+	# ── Everything else → api role (REST + the three panel bundles) ──────────
+	handle {
+		import origin_api
+	}
+}
