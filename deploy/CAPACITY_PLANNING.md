@@ -141,13 +141,15 @@ is small):
 2. **Add one integration test** (real Mongo): derived and stored pick the **same
    winner and netProfit** for identical bets, and winner determination **refuses
    to settle** when the exact refresh fails.
-3. **Fix a load side-effect the spike found:** `refreshRealPools` writes with
-   `Cycle.findOneAndUpdate`, which trips `cycle.model.js:94`
-   `post('findOneAndUpdate') → mirrorCycleSettlement` on **every ~1s refresh per
-   active cycle**. It is idempotent, so it is not a correctness bug — but it is
-   needless Postgres write churn in a change whose whole purpose is to cut write
-   load. Gate that hook to fire only on a settlement-state transition (or refresh
-   via a path that does not trip the settlement mirror) before flipping the flag.
+3. ~~Fix a mirror-hook churn side-effect.~~ **Checked — not a problem.** The
+   spike first flagged that `refreshRealPools`' `Cycle.findOneAndUpdate` trips
+   `cycle.model.js:94` `post('findOneAndUpdate') → mirrorCycleSettlement` on every
+   ~1s refresh. On closer reading `mirrorCycleSettlement`'s first line is
+   `if (!doc?.cycleId || !doc?.winner) return;` — during OPEN betting `winner` is
+   null, so the hook fires but the mirror **returns before any Postgres write**.
+   The per-bet `$inc` and the pool refreshes therefore do not churn PG; the only
+   cost is a no-op function call per `findOneAndUpdate`, which is negligible.
+   Nothing to fix here — recorded so the claim is not repeated.
 
 **Why not the other two options.** A **sharded Mongo counter** (N sub-docs summed
 on read) also removes the single-doc queue, but settlement already aggregates the
