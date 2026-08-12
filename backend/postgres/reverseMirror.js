@@ -695,23 +695,30 @@ export function reverseMirrorUtr(row) {
   });
 }
 
-/** user_kyc row → User KYC fields. Cuts over last (plan step 7). */
+/**
+ * user_kyc row → User KYC fields. Cuts over last (plan step 7).
+ *
+ * Carries the private-store KEYS. The legacy `id_proof_url` / `photo_url`
+ * columns are written back only when they hold something, so a row that has
+ * been through the private store does not get a stale public URL reinstated on
+ * the document — the URL columns exist to keep pre-cutover records readable,
+ * not to be re-established.
+ */
 export function reverseMirrorUserKyc(row) {
   return mirrorBack('user_kyc', async () => {
-    await mongoose.model('User').updateOne(
-      { _id: row.user_id },
-      {
-        $set: {
-          kycStatus: row.kyc_status,
-          'kycData.nameOnPAN': row.name_on_pan,
-          'kycData.panNumber': row.pan_number,
-          'kycData.idProofUrl': row.id_proof_url,
-          'kycData.photoUrl': row.photo_url,
-          'kycData.submittedAt': row.submitted_at,
-          'kycData.rejectionReason': row.rejection_reason,
-        },
-      },
-    );
+    const set = {
+      kycStatus: row.kyc_status,
+      'kycData.nameOnPAN': row.name_on_pan,
+      'kycData.panNumber': row.pan_number,
+      'kycData.submittedAt': row.submitted_at,
+      'kycData.rejectionReason': row.rejection_reason,
+    };
+    if (row.id_proof_key) set['kycData.idProofKey'] = row.id_proof_key;
+    if (row.photo_key) set['kycData.photoKey'] = row.photo_key;
+    if (row.id_proof_url) set['kycData.idProofUrl'] = row.id_proof_url;
+    if (row.photo_url) set['kycData.photoUrl'] = row.photo_url;
+
+    await mongoose.model('User').updateOne({ _id: row.user_id }, { $set: set });
   });
 }
 

@@ -298,6 +298,103 @@ const MUTATIONS = [
     to: `    const balance_pa = merchant.tokenBalance;
     if (merchant.tokenBalance < order.tokenAmount) {`,
   },
+  // ── KYC documents: the private store, and the wiring that uses it ─────────
+  // The module was built and tested a while ago and nothing called it. These
+  // mutations target the WIRING, because that is what was actually missing.
+  {
+    id: 'M33', file: 'backend/routes/upload.routes.js', config: UNIT,
+    test: 'backend/tests/unit/kycPrivateRouting.test.js',
+    why: 'the KYC upload route goes back to the public CDN — the original exposure',
+    from: `    const grant = await kycDocuments.presignUpload({
+      userId: req.user._id.toString(),
+      docType, contentType: String(contentType).toLowerCase().split(';')[0].trim(), fileSize,
+    });`,
+    to: `    const grant = await cdnService.generatePresignedUploadUrl({
+      fileName, contentType, fileSize,
+      category: \`kyc/\${docType}\`, userId: req.user._id.toString(),
+    });`,
+  },
+  {
+    id: 'M34', file: 'backend/routes/upload.routes.js', config: UNIT,
+    test: 'backend/tests/unit/kycPrivateRouting.test.js',
+    why: 'an unconfigured private store silently falls through instead of refusing',
+    from: `    if (!kycDocuments.configured()) {
+      return res.status(503).json({
+        success: false,
+        message: 'Identity verification is temporarily unavailable. Please try again later.',
+      });
+    }
+
+    const grant = await kycDocuments.presignUpload({`,
+    to: `    const grant = await kycDocuments.presignUpload({`,
+  },
+  {
+    id: 'M35', file: 'backend/domains/user/user.routes.js', config: UNIT,
+    test: 'backend/tests/unit/kycPrivateRouting.test.js',
+    why: 'submission stores a public URL again instead of the object key',
+    from: `          idProofKey: idProof.key,
+          photoKey: photo.key,`,
+    to: `          idProofUrl: idProof.key,
+          photoUrl: photo.key,`,
+  },
+  {
+    id: 'M36', file: 'backend/services/kycDocuments.service.js', config: UNIT,
+    test: 'backend/tests/unit/kycPrivateRouting.test.js',
+    why: 'the ownership check goes away — user A can submit user B’s identity document',
+    from: `  if (expectedUserId !== null && parsed.userId !== String(expectedUserId)) {`,
+    to: `  if (false) {`,
+  },
+  {
+    id: 'M37', file: 'backend/domains/user/user.model.js', config: UNIT,
+    test: 'backend/tests/unit/kycPrivateRouting.test.js',
+    why: 'the document key ships by default in every response that returns a user',
+    from: `    idProofKey: { type: String, select: false },`,
+    to: `    idProofKey: { type: String },`,
+  },
+  {
+    id: 'M38', file: 'backend/routes/admin/kyc.admin.routes.js', config: UNIT,
+    test: 'backend/tests/unit/kycPrivateRouting.test.js',
+    why: 'the review grant is minted without checking the key belongs to that user',
+    from: `    const grant = await kycDocuments.presignReview({ key, expectedUserId: String(userId) });`,
+    to: `    const grant = await kycDocuments.presignReview({ key });`,
+  },
+  {
+    id: 'M39', file: 'backend/postgres/dualWrite.js', config: PG,
+    test: 'backend/tests/postgres/kycDocumentKeyMirror.test.js',
+    why: 'a partial repair mirror nulls the document key — the submission becomes unreviewable',
+    from: `       id_proof_key = COALESCE(EXCLUDED.id_proof_key, user_kyc.id_proof_key),
+       photo_key = COALESCE(EXCLUDED.photo_key, user_kyc.photo_key),`,
+    to: `       id_proof_key = EXCLUDED.id_proof_key,
+       photo_key = EXCLUDED.photo_key,`,
+  },
+  {
+    id: 'M40', file: 'backend/postgres/dualWrite.js', config: PG,
+    test: 'backend/tests/postgres/kycDocumentKeyMirror.test.js',
+    why: 'rejection_reason becomes sticky, so an approved user still sees why they were rejected',
+    from: `       rejection_reason = EXCLUDED.rejection_reason, updated_at = now()`,
+    to: `       rejection_reason = COALESCE(EXCLUDED.rejection_reason, user_kyc.rejection_reason), updated_at = now()`,
+  },
+  // The one that escaped to CI: a select string that reads correctly but that
+  // MongoDB refuses. Only a real Mongo query saw it, so the check is now on the
+  // projection Mongoose builds rather than on the string.
+  {
+    id: 'M41', file: 'backend/domains/user/kycFieldSelection.js', config: UNIT,
+    test: 'backend/tests/unit/kycFieldSelection.test.js',
+    why: 'the adoption sweep asks for a parent AND its child — every KYC reconcile throws',
+    from: `export const KYC_MIRROR_SELECT = [
+  'kycStatus',`,
+    to: `export const KYC_MIRROR_SELECT = [
+  'kycStatus',
+  'kycData',`,
+  },
+  {
+    id: 'M42', file: 'backend/domains/user/kycFieldSelection.js', config: UNIT,
+    test: 'backend/tests/unit/kycFieldSelection.test.js',
+    why: 'the sweep stops asking for the document keys, so the mirror stores nulls',
+    from: `  'kycData.idProofKey',
+  'kycData.photoKey',`,
+    to: '',
+  },
 ];
 
 const only = process.argv[2];

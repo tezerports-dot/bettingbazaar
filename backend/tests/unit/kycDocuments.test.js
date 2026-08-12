@@ -108,9 +108,9 @@ describe('review grants', () => {
   it('BOUNDS what a caller may ask for', async () => {
     // A "convenient" hour-long review link is the failure this replaces, in a
     // smaller form. Ten minutes is the ceiling however the caller asks.
-    expect((await presignReview({ key: 'kyc/u1/a.jpg', expiresIn: 86_400 })).expiresIn).toBe(600);
-    expect((await presignReview({ key: 'kyc/u1/a.jpg', expiresIn: 1 })).expiresIn).toBe(30);
-    expect((await presignReview({ key: 'kyc/u1/a.jpg', expiresIn: 'forever' })).expiresIn).toBe(120);
+    expect((await presignReview({ key: 'kyc/u1/id_proof/1-abc.jpg', expiresIn: 86_400 })).expiresIn).toBe(600);
+    expect((await presignReview({ key: 'kyc/u1/id_proof/1-abc.jpg', expiresIn: 1 })).expiresIn).toBe(30);
+    expect((await presignReview({ key: 'kyc/u1/id_proof/1-abc.jpg', expiresIn: 'forever' })).expiresIn).toBe(120);
   });
 
   it('refuses a key from outside the KYC namespace', async () => {

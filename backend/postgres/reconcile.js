@@ -41,6 +41,7 @@ import {
   REVERSE_TABLES, reverseMirrorMerchantBalance, reverseMirrorMerchantSettlement,
 } from './reverseMirror.js';
 import { anyPathOnPostgres, isPostgresAuthoritative, MONEY_PATHS } from './moneyAuthority.js';
+import { KYC_MIRROR_SELECT } from '../domains/user/kycFieldSelection.js';
 
 // `since` names THIS MODEL'S Mongo timestamp field. It is not `createdAt`
 // everywhere: Transaction calls it `timestamp` and UTRRegistry calls it
@@ -573,8 +574,12 @@ export async function backfillLifecycleTables({ limit = 50000 } = {}) {
   // ── KYC: mirrorUserKyc writes the whole record, it was just never called ──
   if (!isPostgresAuthoritative(MONEY_PATHS.KYC)) {
     const { mirrorUserKyc } = await import('./dualWrite.js');
+    // Leaves, not the parent — see domains/user/kycFieldSelection.js. The
+    // document keys are `select: false`, so selecting `kycData` does NOT bring
+    // them and the sweep would write rows with a null key; but asking for the
+    // parent AND the child is a projection MongoDB refuses outright.
     const docs = await mongoose.model('User')
-      .find({}).select('kycStatus kycData').limit(limit).lean();
+      .find({}).select(KYC_MIRROR_SELECT).limit(limit).lean();
     const { rows } = await pgQuery(
       `SELECT user_id FROM user_kyc WHERE user_id = ANY($1)`,
       [docs.map((d) => String(d._id))]);

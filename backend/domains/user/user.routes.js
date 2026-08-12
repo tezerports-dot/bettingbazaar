@@ -43,7 +43,10 @@ import { withdrawalLimiter } from '../../middleware/security.js';
 import { createSubnetLimiter, globalSurgeBreaker } from '../../middleware/ipDefense.js';
 import { authenticate } from '../identity/auth.middleware.js';
 import { lockWithdrawal, getUserLedger } from '../wallet/walletAuthority.service.js';
-import cdnService from '../../services/cdn.service.js';
+// The public CDN service is deliberately NOT imported here. KYC submission was
+// its last caller in this file, and a module that cannot reach cdn.service
+// cannot accidentally publish an identity document.
+import * as kycDocuments from '../../services/kycDocuments.service.js';
 import { hashAadhaar, hashAadhaarCandidates } from '../identity/aadhaarHash.util.js';
 import { buildPublicKycData } from './kycPublicData.js';
 
@@ -426,12 +429,23 @@ router.post('/user/:userId/kyc', authenticate, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
 
-    const { nameOnAadhaar, aadhaarNumber, idProofKey, idProofCdnUrl, photoKey, photoCdnUrl } = req.body;
+    const { nameOnAadhaar, aadhaarNumber, idProofKey, photoKey } = req.body;
     const normalizedNameOnAadhaar = String(nameOnAadhaar || '').trim().toUpperCase();
     const normalizedAadhaarNumber = normalizeSubmittedAadhaar(aadhaarNumber);
     if (!normalizedNameOnAadhaar || !normalizedAadhaarNumber || !idProofKey || !photoKey) {
       await abortOrEnd(session);
       return res.status(400).json({ success: false, message: 'All KYC fields and uploaded document file keys are required' });
+    }
+
+    // The private store is a hard requirement on this path, not a preference.
+    // Falling back to the public-CDN path here would publish the very documents
+    // this route exists to protect, so an unconfigured store refuses.
+    if (!kycDocuments.configured()) {
+      await abortOrEnd(session);
+      return res.status(503).json({
+        success: false,
+        message: 'Identity verification is temporarily unavailable. Please try again later.',
+      });
     }
 
     const User = mongoose.model('User');
@@ -445,14 +459,18 @@ router.post('/user/:userId/kyc', authenticate, async (req, res) => {
       return res.status(409).json({ success: false, message: 'Approved KYC cannot be changed' });
     }
 
+    // Both keys must name an object that exists, belongs to THIS user, and is
+    // the document type claimed. The ownership check is not incidental: the key
+    // is the only thing the client supplies, so without it user A could submit
+    // user B's key and a reviewer would approve B's Aadhaar card as A's.
     const [idProof, photo] = await Promise.all([
-      cdnService.verifyUploadedObject({
-        fileKey: idProofKey, cdnUrl: idProofCdnUrl || undefined,
-        expectedUserId: req.user._id.toString(), expectedCategory: 'kyc/id-proof'
+      kycDocuments.verifyUploaded({
+        key: idProofKey,
+        expectedUserId: req.user._id.toString(), expectedDocType: 'id-proof',
       }),
-      cdnService.verifyUploadedObject({
-        fileKey: photoKey, cdnUrl: photoCdnUrl || undefined,
-        expectedUserId: req.user._id.toString(), expectedCategory: 'kyc/selfie'
+      kycDocuments.verifyUploaded({
+        key: photoKey,
+        expectedUserId: req.user._id.toString(), expectedDocType: 'selfie',
       }),
     ]);
 
@@ -473,8 +491,13 @@ router.post('/user/:userId/kyc', authenticate, async (req, res) => {
         kycData: {
           nameOnAadhaar: normalizedNameOnAadhaar,
           aadhaarNumber: maskAadhaar(normalizedAadhaarNumber),
-          idProofUrl: idProof.cdnUrl,
-          photoUrl: photo.cdnUrl,
+          // The KEY, and no URL. What lands in the database is a reference that
+          // grants nothing on its own; viewing the document is a decision taken
+          // at review time by an authenticated admin, which is auditable and
+          // expires. A URL here would be a permanent unauthenticated grant
+          // sitting in every backup of both stores.
+          idProofKey: idProof.key,
+          photoKey: photo.key,
           submittedAt: new Date(),
           rejectionReason: ''
         },

@@ -22,6 +22,76 @@ const AV = [
 ];
 const initials = (name?: string) => (name || '?').trim().split(/\s+/).map((w) => w[0]).join('').toUpperCase().slice(0, 2);
 
+const TILE: React.CSSProperties = {
+  height: 158, borderRadius: 12, border: '1px solid var(--border)',
+  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+  gap: 8, color: 'var(--muted)',
+  background: 'repeating-linear-gradient(45deg,var(--surface-2),var(--surface-2) 11px,var(--hover) 11px,var(--hover) 22px)',
+};
+
+/**
+ * One identity document, fetched only when a reviewer asks for it.
+ *
+ * The queue used to carry a permanent, public, never-expiring CDN URL per
+ * document and render it straight into an <img>. That put a link to a
+ * government ID — one that needs no authentication and cannot be revoked — into
+ * every reviewer's browser history, for every user in the queue, whether or not
+ * anyone looked at it.
+ *
+ * Now the bucket is private and the queue carries no reference at all. A
+ * reviewer clicks, the server mints a grant that expires in about two minutes
+ * and records who opened what, and this tile drops the image when the grant
+ * lapses rather than leaving a decoded identity document sitting in the DOM.
+ */
+const DocTile: React.FC<{
+  userId: string; docType: 'id-proof' | 'selfie'; label: string; isPhoto: boolean;
+}> = ({ userId, docType, label, isPhoto }) => {
+  const [grant, setGrant] = useState<{ url: string; expiresIn: number } | null>(null);
+  const [isOpening, setIsOpening] = useState(false);
+  const [error, setError] = useState('');
+
+  // Selecting another user is another document. Without this the tile would go
+  // on showing the previous applicant's ID under the new applicant's name.
+  useEffect(() => { setGrant(null); setError(''); }, [userId, docType]);
+
+  useEffect(() => {
+    if (!grant) return;
+    const t = setTimeout(() => setGrant(null), grant.expiresIn * 1000);
+    return () => clearTimeout(t);
+  }, [grant]);
+
+  const open = async () => {
+    setIsOpening(true); setError('');
+    try {
+      const res = await api.kyc.viewDocument(userId, docType);
+      if (res.success && res.url) setGrant({ url: res.url, expiresIn: res.expiresIn || 120 });
+      else setError(res.message || 'Document unavailable');
+    } catch (e: any) {
+      setError(e.response?.data?.message || 'Failed to open document');
+    } finally {
+      setIsOpening(false);
+    }
+  };
+
+  if (grant) {
+    return (
+      <a href={grant.url} target="_blank" rel="noreferrer" style={{ display: 'block' }}>
+        <img src={grant.url} alt={label} style={{ width: '100%', height: 158, objectFit: 'cover', borderRadius: 12, border: '1px solid var(--border)' }} />
+      </a>
+    );
+  }
+
+  return (
+    <button onClick={open} disabled={isOpening} style={{ ...TILE, width: '100%', cursor: isOpening ? 'wait' : 'pointer' }}>
+      {isPhoto ? <UserIcon size={26} /> : <ImageIcon size={26} />}
+      <span className="font-mono" style={{ fontSize: 10.5, fontWeight: 600 }}>{label}</span>
+      <span style={{ fontSize: 10, fontWeight: 700, color: error ? 'var(--danger)' : 'var(--text-2)', padding: '0 10px', textAlign: 'center' }}>
+        {error || (isOpening ? 'Opening…' : 'Click to view · expires in 2 min')}
+      </span>
+    </button>
+  );
+};
+
 export const KYCQueue: React.FC = () => {
   const [pendingKYC, setPendingKYC] = useState<User[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -94,19 +164,6 @@ export const KYCQueue: React.FC = () => {
     return <div className="flex items-center justify-center py-12"><div className="w-8 h-8 border-4 border-dark-600 border-t-gold-500 rounded-full animate-spin" /></div>;
   }
 
-  const docTile = (url: string | undefined, label: string, isPhoto: boolean) => (
-    url ? (
-      <a href={url} target="_blank" rel="noreferrer" style={{ display: 'block' }}>
-        <img src={url} alt={label} style={{ width: '100%', height: 158, objectFit: 'cover', borderRadius: 12, border: '1px solid var(--border)' }} />
-      </a>
-    ) : (
-      <div style={{ height: 158, borderRadius: 12, border: '1px solid var(--border)', background: 'repeating-linear-gradient(45deg,var(--surface-2),var(--surface-2) 11px,var(--hover) 11px,var(--hover) 22px)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, color: 'var(--muted)' }}>
-        {isPhoto ? <UserIcon size={26} /> : <ImageIcon size={26} />}
-        <span className="font-mono" style={{ fontSize: 10.5, fontWeight: 600 }}>{label}</span>
-      </div>
-    )
-  );
-
   return (
     <div className="om-fade" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {/* KPI row — real figures only */}
@@ -163,8 +220,8 @@ export const KYCQueue: React.FC = () => {
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 6 }}>
-                {docTile(selected.kycData?.idProofUrl, 'ID_PROOF', false)}
-                {docTile(selected.kycData?.photoUrl, 'SELFIE', true)}
+                <DocTile userId={selected._id} docType="id-proof" label="ID_PROOF" isPhoto={false} />
+                <DocTile userId={selected._id} docType="selfie" label="SELFIE" isPhoto />
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px', paddingTop: 8 }}>

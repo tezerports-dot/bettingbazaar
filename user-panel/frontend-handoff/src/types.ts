@@ -48,8 +48,9 @@ export interface User {
   kycData?: {
     nameOnAadhaar: string;
     aadhaarNumber: string;
-    idProofUrl: string;
-    photoUrl: string;
+    // No document URL. Documents live in a private bucket keyed by an opaque
+    // reference the user panel never sees; the API returns only the
+    // resubmission reason (see backend domains/user/kycPublicData.js).
     submittedAt: number;
     rejectionReason?: string;
   };
