@@ -80,37 +80,85 @@ opens, 3,000 people sign in in a minute), not steady-state RPS.
 > revocation set in Redis (short TTL) so the bet path is not gated on a Mongo
 > lookup. Confirm whether it is on every request before prioritising.
 
-### 1.2 The Cycle document is the real contention point  🔴 — highest-value redesign
+### 1.2 The Cycle document is the real contention point — and the fix is already built, dormant  🟡
 
-This matters more than any Mongo box you could buy. Every bet does a
-read-modify-write on **one** document:
+This matters more than any Mongo box you could buy, and a spike into it
+(2026-08-12) found the redesign **already implemented behind a flag**, not
+missing. The contention is the **real user-bet** path — one document,
+read-modify-write, per bet:
 
 ```
-bet.routes.js:281   cycleStillOpen = await Cycle.findOneAndUpdate({ cycleId }, …)   // open-gate
-bet.routes.js:538   updatedCycle   = await Cycle.findOneAndUpdate({ cycleId }, phantomPoolUpdate, …)  // $inc pools
+bet.routes.js:281   Cycle.findOneAndUpdate({cycleId, status:OPEN|MERGED}, {$inc:{realDelhi, totalDelhi}})
 ```
 
-Concurrent bets on the same cycle **serialize on that document** — WiredTiger
-gives document-level concurrency, so same-document `$inc`es queue. A 16-core Mongo
-box does not remove the queue; it just serves the queue slightly faster. This is
-the ceiling `docs/governance/LATENCY.md` names, and it arrives before Postgres
-saturation does.
+Concurrent bets on the same cycle **serialize on that document** — WiredTiger is
+document-level, so same-document `$inc`es queue; adding app nodes does not help,
+they queue on the same doc. That is the `docs/governance/LATENCY.md` ceiling, and
+it arrives before Postgres saturation. (The phantom path at `bet.routes.js:538`
+looks identical but is **not** the contention source — a handful of admin agents,
+and the equalizer overwrites those pools with `$max`, so they can't be derived
+and never needed to be.)
 
-Options, each of which **must preserve the phantom-equalizer invariant** (the
-equalizer reads the live pool to decide phantom bets, so the pool cannot become
-eventually-consistent under it):
+**What exists:** `domains/markets/cyclePool.service.js`, gated on
+`FLAGS.DERIVED_CYCLE_POOLS` (default **off**, a proven no-op when off). It takes
+the "append + derive" path — the one that matches the money ledger's own rule,
+*balances are derived from postings, never stored* (`04-GOVERNANCE.md` §1):
 
-- **Shard the counter:** N sub-documents (`cycle:123:shard:k`), each taking a
-  slice of the `$inc` load; sum on read. Removes the single-doc queue; the
-  equalizer reads the sum. Bounded, no new store.
-- **Move the running pool to Postgres:** a row with proper locking, which is
-  built for high-write counters — and is *already* where the money is going. The
-  bet's pool update and its ledger entry then share one store and one transaction.
-- **Append + derive:** append immutable bet rows, compute pool totals as a
-  derived/partitioned aggregate. Largest change; strongest decoupling.
+```
+realDelhi  = SUM(Bet.amount) WHERE cycleId, side=DELHI,  isPhantom=false, status≠REFUNDED
+```
 
-Do this behind a **design spike with an invariant proof**, not a blind split. It
-is the one item here that genuinely earns a redesign before hardware.
+Each bet is an independent insert that contends with nothing; the pool becomes a
+projection recomputed from the bets, refreshed on a throttled tick for display
+and **exactly** (majority read) at the two moments it turns into money.
+
+**Where the invariant has to hold — and does.** The single rule: *any read of the
+real pool that decides an outcome or becomes money must be freshly derived under
+majority read, and must fail closed if it can't be.*
+
+| Moment | Requirement | Status in code |
+|---|---|---|
+| **Winner = minority real side** | exact pool; **refuse to settle** if refresh fails | ✅ `cycleGenerator.js:314-322` aborts and retries next tick — never settles on stale fields |
+| **Payout amounts** | must not come from the pool at all | ✅ settlement pays per **Bet row** (`gameEngine.processPayouts`); pool staleness cannot mispay |
+| **netProfit (house accounting)** | exact; may fall back | ✅ `gameEngine.js:513-519` exact, falls back to stored on failure — payouts already moved and the **ledger** is authoritative, so this is a reporting-only staleness |
+| **TOCTOU open-gate** | closed under both modes | ✅ stored: the `$inc` is the gate; derived: gate is a read, window re-closed by re-reading status post-insert + a conditional-delete that races settlement for the row (`bet.routes.js:258-348`) |
+| **Phantom equalizer** | must not corrupt real pools | ✅ reads `realDelhi` for the display total only, never writes it; `$max` decision is phantom-only (`cycleGenerator.js:475-493`) |
+| **Refund accounting** | refunded stake leaves the pool | ✅ `computeRealPools` excludes `REFUNDED`, counts `WON/LOST/PENDING` (money was staked) |
+
+So the invariant is not an open question — it is already located at exactly these
+seams and enforced. The derived path is correct **by inspection.**
+
+**The gate before flipping the flag** (this is the actual remaining work, and it
+is small):
+
+1. **Run `loadtest/bet-contention.js`** flag-off vs flag-on. The module's own
+   header forbids enabling it in production first — it is a money path, and the
+   load test is what proves both that the ceiling is real *and* that parallel
+   inserts sum loss-free. The unit test (`tests/unit/cyclePool.test.js`) proves
+   the logic (the off-state no-op, read-concern selection, the memo) but mocks
+   Mongo, so the no-lost-updates and majority-visibility properties are only
+   proven under real concurrency.
+2. **Add one integration test** (real Mongo): derived and stored pick the **same
+   winner and netProfit** for identical bets, and winner determination **refuses
+   to settle** when the exact refresh fails.
+3. **Fix a load side-effect the spike found:** `refreshRealPools` writes with
+   `Cycle.findOneAndUpdate`, which trips `cycle.model.js:94`
+   `post('findOneAndUpdate') → mirrorCycleSettlement` on **every ~1s refresh per
+   active cycle**. It is idempotent, so it is not a correctness bug — but it is
+   needless Postgres write churn in a change whose whole purpose is to cut write
+   load. Gate that hook to fire only on a settlement-state transition (or refresh
+   via a path that does not trip the settlement mirror) before flipping the flag.
+
+**Why not the other two options.** A **sharded Mongo counter** (N sub-docs summed
+on read) also removes the single-doc queue, but settlement already aggregates the
+bets, so deriving reuses work the system does anyway — the shard counter is
+strictly more moving parts for no gain here. A **Postgres counter row** is the
+*better end state* — once money authority is on PG (§0), the bet's debit, its
+ledger entry, and its pool update become **one ACID transaction in one store** —
+but only after the flip; before it, a PG pool splits the pool from
+Mongo-authoritative money and adds a cross-store write. Sequence: **ship the
+derived-from-bets flag now** (after the gate above), **migrate the pool into the
+money transaction on Postgres after the authority cutover.**
 
 ### 1.3 Postgres connections — PgBouncer, and it's safe here  🟢
 
@@ -195,7 +243,7 @@ Scale on a firing metric, not on a user-count milestone. Each row says what to d
 |---|---|---|---|
 | App / api | event-loop lag; threadpool saturation; login p95 | lag >50 ms sustained, or login p95 climbing | raise `UV_THREADPOOL_SIZE`; add an api node behind the edge |
 | Realtime | WS/node; Redis pub/sub throughput; fan-out latency | fan-out latency rising with a second RT node | split Redis (§1.4); then add RT node |
-| Mongo | **Cycle doc write-lock % / `findOneAndUpdate` latency on the bet path** | bet-path write latency rising under concurrency | **do the §1.2 redesign — not a bigger box** |
+| Mongo | **Cycle doc write-lock % / `findOneAndUpdate` latency on the bet path** | bet-path write latency rising under concurrency | **flip the already-built derived-pools flag (§1.2) after its gate — not a bigger box** |
 | Postgres | connections vs `max_connections`; commit latency; IOPS | connections >70% of max | **PgBouncer (§1.3)**; then a read replica for reporting |
 | Redis | CPU; blocked clients; pub/sub backlog | control load interfering with RT | logical split → own instance (§1.4) |
 | Queue | backlog depth; worker lag | backlog growing between ticks | add worker processes (they scale horizontally freely) |
@@ -211,7 +259,7 @@ the ordering is that **most of section 1 is done before any of this is bought.**
 | Stage | App | Postgres | Other | ~VPS/mo | Do the app-side work first |
 |---|---|---|---|---|---|
 | **Launch** | 1 × 8/8 | 1 × 8/8 | 1 × 4/4 Mongo+Redis+workers | ~RM476 (≈ ₹9k) | §1.1 threadpool, §1.3 PgBouncer, §1.6 CF cache, §1.7 keep sync path lean — all before you need stage 2 |
-| **10–25k** | 2 × 8/8 | 1 × 10/10 | Redis onto own box (§1.4); Mongo 4/4 | ~RM859 | §1.2 **Cycle spike** should land here; §1.5 deltas |
+| **10–25k** | 2 × 8/8 | 1 × 10/10 | Redis onto own box (§1.4); Mongo 4/4 | ~RM859 | §1.2 derived-pools flag flip (after the load test) should land here; §1.5 deltas |
 | **25–50k** | 2–3 × 8/8 | 10/10 primary + 8/8 replica | dedicated Redis; Mongo 4–8/… | ~RM1,041 | replica is for reporting/read-scaling, not write throughput |
 | **50–100k+** | +app nodes | larger primary + replica(s) | separate RT-Redis / control-Redis / Mongo / workers | load-test-driven | only after §1.2 is done — otherwise the Cycle doc caps you regardless |
 
