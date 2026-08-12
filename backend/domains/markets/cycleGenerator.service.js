@@ -4,6 +4,9 @@ import mongoose from 'mongoose';
 // Derived cycle pools (FLAGS.DERIVED_CYCLE_POOLS, default off) — see
 // cyclePool.service.js for why the running total is the scaling ceiling.
 import { derivedPoolsEnabled, refreshRealPools } from './cyclePool.service.js';
+// Public cycle payloads must never carry real/phantom pools (they reveal the
+// minority-side winner). assertPublicCycleSafe throws if one slips in.
+import { assertPublicCycleSafe } from './cyclePublicView.js';
 
 // ── CYCLE PHASE OFFSETS (Business Config Audit, 2026-07-11) ───────────────────
 // Seconds BEFORE a cycle's endTime that each phase fires. Previously hardcoded
@@ -354,8 +357,9 @@ class CycleGenerator {
                 ? realBombay + (cycle.phantomBombay || 0)
                 : (cycle.totalBombay || 0);
 
-            // Public result — combined pool only
-            this.emitPublic('cycle_result', {
+            // Public result — combined pool only, guarded against a real/phantom
+            // field being added here later.
+            this.emitPublic('cycle_result', assertPublicCycleSafe({
                 cycleId:   cycle.cycleId,
                 type:      cycle.type,
                 winner,
@@ -363,7 +367,7 @@ class CycleGenerator {
                 bombayPool: combinedBombay,
                 message:   `${cycleType} Winner: ${winner}!`,
                 timestamp: new Date()
-            });
+            }));
 
             // Admin result — full breakdown
             this.emitAdmin('admin_cycle_result', {
@@ -810,7 +814,11 @@ class CycleGenerator {
             const combinedDelhi  = (cycle.realDelhi  || 0) + (cycle.phantomDelhi  || 0);
             const combinedBombay = (cycle.realBombay || 0) + (cycle.phantomBombay || 0);
 
-            snapshot[type] = {
+            // Wrapped: this is the live state pushed to every connecting client,
+            // so it is the highest-value place to prove no real/phantom pool
+            // leaks. It carries timing fields publicCycleView does not, so it is
+            // hand-built and guarded rather than produced by the serializer.
+            snapshot[type] = assertPublicCycleSafe({
                 cycleId:         cycle.cycleId,
                 type:            cycle.type,
                 status:          cycle.status,
@@ -829,7 +837,7 @@ class CycleGenerator {
                 winner:          cycle.winner    || null,
                 isSettled:       cycle.isSettled || 'PENDING',
                 timestamp:       now,
-            };
+            });
         }
 
         return snapshot;

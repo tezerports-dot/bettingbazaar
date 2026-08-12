@@ -49,6 +49,9 @@ import { lockWithdrawal, getUserLedger } from '../wallet/walletAuthority.service
 import * as kycDocuments from '../../services/kycDocuments.service.js';
 import { hashAadhaar, hashAadhaarCandidates } from '../identity/aadhaarHash.util.js';
 import { buildPublicKycData } from './kycPublicData.js';
+// The one public projection of a cycle. Real/phantom pools reveal the winner,
+// so every user-facing cycle response goes through here (cyclePublicView.js).
+import { publicCycleView } from '../markets/cyclePublicView.js';
 
 const router = express.Router();
 
@@ -89,36 +92,14 @@ async function abortOrEnd(session) {
 // ─────────────────────────────────────────────────────────────────────────────
 // sanitiseCycleForUser()
 //
-// Strips ALL real/phantom breakdown fields before sending to the user.
-// Returns BOTH delhiPool and totalDelhi (aliases) so any frontend version works.
-// Admin routes still have full access to the raw DB fields.
+// Strips ALL real/phantom breakdown fields before sending to the user — the
+// winner is the minority REAL side, so realDelhi/realBombay would reveal the
+// result. Delegates to the single public projection so this file has exactly
+// one definition of "what a user may see about a cycle", shared with the live
+// broadcasts and guarded by cyclePublicView.test.js. Admin routes keep the raw
+// fields.
 // ─────────────────────────────────────────────────────────────────────────────
-function sanitiseCycleForUser(cycle) {
-  const delhiPool  = cycle.totalDelhi  || 0;
-  const bombayPool = cycle.totalBombay || 0;
-  // BUG-DATE FIX: Always return ms timestamps, NEVER Date objects or ISO strings.
-  // getPhaseStatus() does (endTimeMs - nowMs). If endTimeMs is a Date or ISO string
-  // the subtraction returns NaN and the countdown shows fake/frozen values.
-  const toMs = (d) => (d instanceof Date ? d.getTime() : Number(d));
-  return {
-    id:          cycle.cycleId,
-    type:        cycle.type,
-    status:      cycle.status,
-    startTime:   toMs(cycle.startTime),
-    endTime:     toMs(cycle.endTime),
-    // Both alias names — BUG-U2 fix: no more "always 0" on HistoryPage
-    delhiPool,
-    bombayPool,
-    totalDelhi:  delhiPool,   // alias for frontend that reads totalDelhi
-    totalBombay: bombayPool,  // alias for frontend that reads totalBombay
-    totalPool:   delhiPool + bombayPool,
-    winner:      cycle.winner    || null,
-    isSettled:   cycle.isSettled || 'PENDING'
-    // NEVER included:
-    //   realDelhi, realBombay, phantomDelhi, phantomBombay,
-    //   phantomBetsClosed, phantomBalanced
-  };
-}
+const sanitiseCycleForUser = publicCycleView;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/cycles/active  (public)
@@ -211,27 +192,9 @@ router.get('/v1/game/cycles/history', async (req, res) => {
       .limit(parsedLimit)
       .lean();
 
-    res.json({
-      success: true,
-      cycles: cycles.map(c => {
-        const delhiPool  = c.totalDelhi  || 0;
-        const bombayPool = c.totalBombay || 0;
-        return {
-          id:          c.cycleId,
-          type:        c.type,
-          startTime:   c.startTime,
-          endTime:     c.endTime,
-          winner:      c.winner,
-          // BUG-U2 fix — both field name variants so either frontend version works
-          delhiPool,
-          bombayPool,
-          totalDelhi:  delhiPool,
-          totalBombay: bombayPool,
-          totalPool:   delhiPool + bombayPool,
-          status:      c.status
-        };
-      })
-    });
+    // Same single public projection as every other user-facing cycle route —
+    // no second hand-written whitelist to forget a field in.
+    res.json({ success: true, cycles: cycles.map(publicCycleView) });
   } catch (error) {
     console.error('Cycle history error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch cycle history' });

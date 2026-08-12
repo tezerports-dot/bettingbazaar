@@ -138,9 +138,14 @@ is small):
    the logic (the off-state no-op, read-concern selection, the memo) but mocks
    Mongo, so the no-lost-updates and majority-visibility properties are only
    proven under real concurrency.
-2. **Add one integration test** (real Mongo): derived and stored pick the **same
-   winner and netProfit** for identical bets, and winner determination **refuses
-   to settle** when the exact refresh fails.
+2. ~~Add one integration test.~~ **Done** —
+   `tests/integration/derivedCyclePools.integration.test.js` proves, against real
+   Mongo, that the derived pool equals the stored `$inc` for identical bets (so
+   winner and netProfit are identical, both being pure functions of it), that
+   REFUNDED is excluded and every other status counts, and that the flag-off path
+   is a no-op. The one part it does not drive end to end is the fail-closed branch
+   in `completeCycle` (it is verified by inspection; injecting a refresh failure
+   wants the settlement engine running against staging).
 3. ~~Fix a mirror-hook churn side-effect.~~ **Checked — not a problem.** The
    spike first flagged that `refreshRealPools`' `Cycle.findOneAndUpdate` trips
    `cycle.model.js:94` `post('findOneAndUpdate') → mirrorCycleSettlement` on every
@@ -227,7 +232,28 @@ The guardrail is a discipline, not a change: **no new feature adds synchronous
 work to the bet path.** A "log this to Mongo before responding" added to bet
 placement is how the sync path silently regrows.
 
-### 1.8 The scheduler is a non-scaling singleton  ✅
+### 1.8 The real pools never cross the public boundary  ✅ (structural)
+
+Not a capacity item — a correctness/fairness one that the pool work made worth
+locking down. The winner is the **minority real-bet side**, so `realDelhi` /
+`realBombay` **disclose the result before it is declared**; `phantomDelhi` /
+`phantomBombay` expose the house's balancing. The frontend is public code, so a
+field in an HTTP body or socket payload is exposed whether or not the panel
+renders it. Users may see **combined totals only** (`totalDelhi` / `totalBombay`
+= real + phantom), which is what they watched during betting and reveals nothing.
+
+This was already true, but by convention — three hand-written whitelists and
+careful `emitPublic`-vs-`emitAdmin` discipline. It is now **structural**:
+`domains/markets/cyclePublicView.js` is the one public projection every
+user-facing HTTP route goes through, `assertPublicCycleSafe` wraps the live emits
+(`cycle_snapshot`, public `cycle_result`, public `bet_placed`) so a forbidden
+field throws instead of shipping, and `tests/unit/cyclePublicView.test.js` fails
+CI if any public path names a real/phantom field. The boundary is
+**store-independent** — it projects whatever the cycle object carries — so it
+holds identically whether the pool comes from Mongo `$inc`, the derived
+projection, or a Postgres counter after the money-authority flip.
+
+### 1.9 The scheduler is a non-scaling singleton  ✅
 
 Exactly one **scheduler** process is active (game-cycle producer + cron),
 Redis-leader-locked; its load is independent of DAU. The pattern is **1 active +
