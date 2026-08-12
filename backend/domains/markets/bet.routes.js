@@ -17,6 +17,9 @@ import { MARKET_SIDES } from '../trading/tradingModels.js';
 // Derived cycle pools (FLAGS.DERIVED_CYCLE_POOLS, default off) — see
 // cyclePool.service.js for why the running total is the scaling ceiling.
 import { derivedPoolsEnabled, refreshRealPools } from './cyclePool.service.js';
+// Real/phantom pools reveal the minority-side winner — the public bet broadcast
+// must carry totals only. assertPublicCycleSafe throws if one slips in.
+import { assertPublicCycleSafe } from './cyclePublicView.js';
 // Pages the operator when a bet's stake cannot be conclusively refunded or
 // released — the one outcome no automated path can resolve on its own.
 import { sendAlert } from '../../services/alerting.service.js';
@@ -402,13 +405,16 @@ router.post('/place', authenticate, requireApprovedKyc, betLimiter, async (req, 
       
       // Must use both channels: SSE for anonymous/public stream clients,
       
-      const publicBetPayload = {
+      // Totals only — the admin_bet_placed emit below carries the real/phantom
+      // breakdown and goes to admin-room alone. Guarded so a real/phantom field
+      // added here throws instead of broadcasting the winner to every client.
+      const publicBetPayload = assertPublicCycleSafe({
         cycleId,
         side,
         cycleType:      cycle.type,
         newTotalDelhi:  updatedCycle.totalDelhi,
         newTotalBombay: updatedCycle.totalBombay,
-      };
+      });
       if (global.sseManager) {
         global.sseManager.broadcast('bet_placed', publicBetPayload);
       }
