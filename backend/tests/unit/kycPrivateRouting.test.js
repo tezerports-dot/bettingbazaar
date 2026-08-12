@@ -253,8 +253,13 @@ describe('the document reference does not leave the database by default', () => 
     expect(audit).not.toMatch(/url/);
   });
 
-  it('opts in explicitly where it genuinely needs the key', () => {
-    expect(admin).toMatch(/\+kycData\.idProofKey \+kycData\.photoKey/);
+  it('opts in explicitly where it genuinely needs the key, and nowhere else', () => {
+    // The projection itself is validated against the real schema in
+    // kycFieldSelection.test.js — a select string that reads correctly can
+    // still be one MongoDB refuses. What matters here is that the review
+    // endpoint is the only place that asks.
+    expect(admin).toMatch(/\.select\(KYC_DOCUMENT_KEY_SELECT\)/);
+    expect([...admin.matchAll(/KYC_DOCUMENT_KEY_SELECT/g)]).toHaveLength(2); // import + use
   });
 });
 

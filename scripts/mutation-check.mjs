@@ -374,6 +374,27 @@ const MUTATIONS = [
     from: `       rejection_reason = EXCLUDED.rejection_reason, updated_at = now()`,
     to: `       rejection_reason = COALESCE(EXCLUDED.rejection_reason, user_kyc.rejection_reason), updated_at = now()`,
   },
+  // The one that escaped to CI: a select string that reads correctly but that
+  // MongoDB refuses. Only a real Mongo query saw it, so the check is now on the
+  // projection Mongoose builds rather than on the string.
+  {
+    id: 'M41', file: 'backend/domains/user/kycFieldSelection.js', config: UNIT,
+    test: 'backend/tests/unit/kycFieldSelection.test.js',
+    why: 'the adoption sweep asks for a parent AND its child — every KYC reconcile throws',
+    from: `export const KYC_MIRROR_SELECT = [
+  'kycStatus',`,
+    to: `export const KYC_MIRROR_SELECT = [
+  'kycStatus',
+  'kycData',`,
+  },
+  {
+    id: 'M42', file: 'backend/domains/user/kycFieldSelection.js', config: UNIT,
+    test: 'backend/tests/unit/kycFieldSelection.test.js',
+    why: 'the sweep stops asking for the document keys, so the mirror stores nulls',
+    from: `  'kycData.idProofKey',
+  'kycData.photoKey',`,
+    to: '',
+  },
 ];
 
 const only = process.argv[2];

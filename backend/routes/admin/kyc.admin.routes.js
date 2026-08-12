@@ -6,6 +6,7 @@ import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, hasPermiss
 // the reason and reviewer land in the fields that are actually read.
 import { approveKyc, rejectKyc } from '../../domains/user/kycDecision.service.js';
 import * as kycDocuments from '../../services/kycDocuments.service.js';
+import { KYC_DOCUMENT_KEY_SELECT } from '../../domains/user/kycFieldSelection.js';
 
 const router = express.Router();
 
@@ -59,11 +60,13 @@ router.get('/kyc/:userId/document/:docType', authenticate, hasPermission('canVer
     }
 
     const { User } = getModels();
-    // Explicit opt-in: the keys are `select: false` precisely so that no other
-    // route can return them by accident.
-    const user = await User.findById(userId)
-      .select('kycData.idProofKey kycData.photoKey +kycData.idProofKey +kycData.photoKey')
-      .lean();
+    // Explicit opt-in, and ONLY the two keys: they are `select: false` precisely
+    // so no other route returns them by accident, and this one has no business
+    // pulling the rest of a user document to mint one grant. Naming the leaf in
+    // an inclusive projection is what includes it — adding a `+` spelling of the
+    // same path as well is how a parent/child collision gets reintroduced
+    // (domains/user/kycFieldSelection.js).
+    const user = await User.findById(userId).select(KYC_DOCUMENT_KEY_SELECT).lean();
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
     const key = docType === 'id-proof' ? user.kycData?.idProofKey : user.kycData?.photoKey;

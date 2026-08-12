@@ -158,9 +158,32 @@ approval is meaningful.
 |---|---|
 | `backend/tests/unit/kycDocuments.test.js` — the module's safety logic | 13 |
 | `backend/tests/unit/kycPrivateRouting.test.js` — the wiring | 26 |
+| `backend/tests/unit/kycFieldSelection.test.js` — the projections | 8 |
 | `backend/tests/postgres/kycDocumentKeyMirror.test.js` — real Postgres | 5 |
 
-Mutations M33–M40, each applied, tested, reverted — **8/8 killed** (40/40 for
+### The one that escaped to CI
+
+Making the keys `select: false` meant every query wanting them had to say so,
+and the natural way to write that —
+
+```js
+.select('kycStatus kycData +kycData.idProofKey')
+```
+
+— compiles to `{kycStatus: 1, kycData: 1, 'kycData.idProofKey': 1}`, which
+**MongoDB 4.4+ refuses**: a projection may not contain both a path and its
+prefix. It throws at query time against a real server only. Unit passed, the
+Postgres suite passed (it runs no Mongo queries), and CI's integration step was
+the first thing to execute it.
+
+A source-text assertion would not have caught it — the string reads correctly.
+`domains/user/kycFieldSelection.js` now holds both projections as named
+constants, and `kycFieldSelection.test.js` compiles them against the real schema
+and asserts no key is a prefix of another. Its first test feeds the exact broken
+string through the same check, so a detector that always passed would itself
+fail.
+
+Mutations M33–M42, each applied, tested, reverted — **10/10 killed** (42/42 for
 the branch):
 
 | Mutation | Killed by |
@@ -173,6 +196,8 @@ the branch):
 | review grant minted without the owner check | *mints the grant per view* |
 | mirror stops COALESCEing the key | *does NOT lose the keys on a partial repair* |
 | `rejection_reason` becomes sticky | *still clears a rejection reason on approval* |
+| the sweep asks for a parent AND its child | *names no parent alongside its child* |
+| the sweep stops asking for the keys | *brings the document keys, which are select:false* |
 
 Several of the wiring assertions read source text rather than making HTTP calls.
 That is deliberate: the properties are negative ("this file cannot reach the
