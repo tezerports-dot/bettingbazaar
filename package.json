@@ -31,6 +31,7 @@
     "handoff:frontends": "node scripts/create-frontend-handoffs.mjs",
     "loadtest:seed": "node loadtest/seed-accounts.mjs",
     "loadtest:bets": "k6 run loadtest/bet-contention.js",
+    "loadtest:realtime": "node loadtest/realtime-connections.mjs",
     "stack:up": "docker compose -f docker-compose.test.yml up -d --wait",
     "stack:down": "docker compose -f docker-compose.test.yml down -v",
     "stack:logs": "docker compose -f docker-compose.test.yml logs -f",

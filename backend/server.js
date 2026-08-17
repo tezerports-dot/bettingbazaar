@@ -50,6 +50,7 @@ import { connectRedis }       from './startup/redisConnect.js';
 import { seedAdminAccount }   from './startup/seedAdmin.js';
 import { registerCronJobs }   from './startup/cronJobs.js';
 import { attachSocketHandlers } from './startup/socketHandlers.js';
+import { cycleSnapshotPublisher } from './domains/markets/cycleSnapshotPublisher.js';
 import { initRealtimeBridge } from './startup/realtimeBridge.js'; // Phase X: multi-instance real-time
 import { registerFundingEventSubscribers } from './domains/funding/fundingEvents.js';
 
@@ -71,7 +72,7 @@ import retentionRoutes, { rebuildLeaderboard } from './routes/retention.routes.j
 import gameProviderRoutes from './domains/casino/gameProvider.routes.js';
 import gameRegistryRoutes from './domains/gameRegistry/gameRegistry.routes.js';
 import { seedGameRegistry } from './domains/gameRegistry/gameRegistry.seed.js';
-import { httpMetrics, metricsHandler } from './services/metrics.service.js';
+import { httpMetrics, metricsHandler, setRealtimeStatsProvider } from './services/metrics.service.js';
 // Plan items 19/21/28/24/4/51 (2026-07-13): central security + network config,
 // OWASP filter, service registry, storage abstraction.
 import { HELMET_OPTIONS, CORS_SHAPE, RATE_LIMIT_TIERS, isPhantomBetPlacement } from './config/security.config.js';
@@ -514,6 +515,21 @@ if (runtime.acceptsRealtime) {
   app.use('/api/sse', initSSERoutes(sseManager, cycleGenerator));
   attachSocketHandlers(io, cycleGenerator, gameEngine);
 
+  // Realtime cost/concurrency fix: coalesce per-bet pool broadcasts into ≤1
+  // snapshot/sec/cycle. One publisher per process; on a single-server deploy
+  // that is exactly one, with the true DB-authoritative total. Across instances
+  // the Socket.IO Redis adapter delivers the room emit to every watcher, and
+  // each process publishes valid recent totals (display converges sub-second).
+  cycleSnapshotPublisher.attach({ io, sseManager }).start();
+
+  // Expose realtime delivery gauges on /metrics (connected sockets + publisher
+  // stats). Event-loop lag is already a default metric. IoC so metrics.service
+  // imports neither io nor the publisher.
+  setRealtimeStatsProvider(() => ({
+    connectedSockets: io?.engine?.clientsCount ?? 0,
+    ...cycleSnapshotPublisher.stats(),
+  }));
+
   // Cross-instance real-time bridge (Phase X): fan out socket.io + SSE events
   // across all realtime instances via Redis. No-op without REDIS_URL.
   initRealtimeBridge(io, sseManager);
@@ -644,6 +660,7 @@ Promise.allSettled([
 // kept accepting new requests through the whole grace window and then killed
 // them mid-flight on process.exit — rolling deploys dropped requests.
 async function closeResources() {
+  try { cycleSnapshotPublisher.stop(); } catch (_) {}                            // stop the 1s snapshot timer
   await Promise.allSettled([
     import('./services/jobQueue.service.js').then(m => m.closeJobQueue()),      // 17+56: finish/close queue
     import('./services/eventBackbone.js').then(m => m.resetBackbone()),         // CAP-74: disconnect Kafka producer
