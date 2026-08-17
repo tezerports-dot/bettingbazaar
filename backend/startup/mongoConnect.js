@@ -4,6 +4,9 @@
  * Single responsibility: connect to MongoDB, nothing else.
  */
 import mongoose from 'mongoose';
+// Apply process-global Mongoose options (e.g. updatePipeline) before the app
+// opens its connection, so no request can race an unset option.
+import './mongooseGlobalOptions.js';
 
 export async function connectMongoDB() {
   let attempts = 0;

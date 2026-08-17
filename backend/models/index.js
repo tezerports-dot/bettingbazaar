@@ -8,6 +8,10 @@
  * Import pattern: import { User } from '../models/index.js';
  * Dynamic access:  mongoose.model('User')  — works after this barrel is loaded.
  */
+// Global Mongoose options (Mongoose 9 requires updatePipeline for pipeline
+// updates) — must load before any model runs a query. Imported here so every
+// consumer of a model, in the app or a test, gets it for free.
+import '../startup/mongooseGlobalOptions.js';
 export * from '../domains/user/user.model.js';
 // Markets Platform (BBEPS Phase 011) — formerly domains/game + domains/betting
 export * from '../domains/markets/cycle.model.js';

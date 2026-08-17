@@ -89,13 +89,15 @@ accountingEventSchema.index({ 'postings.account': 1 });
 // entry is a bug — fail loudly rather than corrupting the audit trail.
 const IMMUTABLE_MSG = 'AccountingEvent is append-only — corrections are new ADJUSTMENT entries, never edits (Revenue & Settlement Platform invariant).';
 
-accountingEventSchema.pre('save', function (next) {
-  if (!this.isNew) return next(new Error(IMMUTABLE_MSG));
-  next();
+// Mongoose 9 (kareem 3) removed the next() callback from middleware — a
+// synchronous pre-hook signals rejection by THROWING, and returning normally is
+// success. (Pre-9 this was `function (next) { …; next(); }`.)
+accountingEventSchema.pre('save', function () {
+  if (!this.isNew) throw new Error(IMMUTABLE_MSG);
 });
 for (const op of ['updateOne', 'updateMany', 'findOneAndUpdate', 'findOneAndReplace',
                   'replaceOne', 'deleteOne', 'deleteMany', 'findOneAndDelete']) {
-  accountingEventSchema.pre(op, function (next) { next(new Error(IMMUTABLE_MSG)); });
+  accountingEventSchema.pre(op, function () { throw new Error(IMMUTABLE_MSG); });
 }
 
 // Hybrid money DB (plan step 2): mirror every posting to Postgres

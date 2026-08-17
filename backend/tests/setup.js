@@ -2,6 +2,10 @@
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 import { vi } from 'vitest';
+// Same process-global Mongoose options the app applies (updatePipeline etc.), so
+// integration tests exercise the pipeline-update paths under the real setting
+// regardless of how each test file imports its models.
+import '../startup/mongooseGlobalOptions.js';
 
 // Test-only env — must exist BEFORE any test file imports app modules:
 // backend/routes.js throws at import time if JWT_SECRET is missing.
