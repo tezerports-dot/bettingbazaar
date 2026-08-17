@@ -46,7 +46,7 @@
     "argon2": "^0.45.1",
     "bcryptjs": "^2.4.3",
     "body-parser": "^2.3.0",
-    "bullmq": "^5.81.2",
+    "bullmq": "^6.1.2",
     "compression": "^1.7.4",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",

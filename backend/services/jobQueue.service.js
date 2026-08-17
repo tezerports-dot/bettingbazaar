@@ -7,11 +7,19 @@
  * scheduled job: retries with exponential backoff, persistence across restarts,
  * single-execution semantics across instances, and inspectable job state.
  *
+ * BullMQ v6 note: repeating jobs are declared through a JOB SCHEDULER
+ * (`queue.upsertJobScheduler`). The v5 pattern — `queue.add(name, data,
+ * { repeat })` — was removed in v6, and because it fails silently (the option
+ * is ignored, so a recurring job runs once and never repeats), the migration is
+ * load-bearing: every cron on this platform, including settlement and
+ * reconciliation, is scheduled here. There is a unit test asserting the removed
+ * API is not used.
+ *
  * GRACEFUL DEGRADATION (same philosophy as rate limiting / the SSE bridge):
  * without REDIS_URL, registerRecurring falls back to the EXACT pre-existing
  * pattern — setInterval + withLeaderLock — so a Redis-less deploy behaves
  * precisely as before this platform existed. With Redis, jobs run as BullMQ
- * repeatables; the processor still wraps withLeaderLock as defense-in-depth
+ * scheduled jobs; the processor still wraps withLeaderLock as defense-in-depth
  * (harmless: every job is already idempotent by design).
  *
  * Money-path note: this platform does not change WHAT jobs do — settlement,
@@ -69,17 +77,29 @@ export async function registerRecurring(name, everyMs, fn) {
   if (redisConfigured()) {
     try {
       const q = await ensureQueue();
-      await q.add(name, { __ttlMs: everyMs }, {
-        repeat: { every: everyMs },
-        jobId: `recurring:${name}`,
-        attempts: 3,
-        // Item 3 (2026-07-13): jitter:1 = FULL jitter — a failed dependency
-        // makes every instance's retry land at a RANDOM point in [0, 2^n·30s)
-        // instead of all firing at 30s/60s/120s together (thundering herd).
-        backoff: { type: 'exponential', delay: 30 * 1000, jitter: 1 },
-        removeOnComplete: 100,
-        removeOnFail: 500,
-      });
+      // v6 Job Scheduler. Keyed by `recurring:${name}` and UPSERTED, so calling
+      // this on every boot re-uses the one schedule rather than stacking
+      // duplicates — the property the old repeatable `jobId` gave us. The
+      // produced jobs carry `name`, so the worker's `processors.get(job.name)`
+      // dispatch is unchanged, and the per-run options (retries, backoff,
+      // history caps) move into the template's `opts`.
+      await q.upsertJobScheduler(
+        `recurring:${name}`,
+        { every: everyMs },
+        {
+          name,
+          data: { __ttlMs: everyMs },
+          opts: {
+            attempts: 3,
+            // Item 3 (2026-07-13): jitter:1 = FULL jitter — a failed dependency
+            // makes every instance's retry land at a RANDOM point in [0, 2^n·30s)
+            // instead of all firing at 30s/60s/120s together (thundering herd).
+            backoff: { type: 'exponential', delay: 30 * 1000, jitter: 1 },
+            removeOnComplete: 100,
+            removeOnFail: 500,
+          },
+        },
+      );
       return;
     } catch (e) {
       console.warn(`[jobQueue] BullMQ unavailable for '${name}' (${e.message}) — falling back to interval cron`);
