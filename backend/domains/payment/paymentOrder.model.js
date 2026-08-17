@@ -239,11 +239,12 @@ const paymentOrderSchema = new mongoose.Schema({
 
 // ── HMAC binding (cryptographic order integrity) ──────────────────────────────
 paymentOrderSchema.add({ orderHmac: { type: String, select: false } });
-paymentOrderSchema.pre('save', function(next) {
+// Mongoose 9 (kareem 3) dropped the next() callback — synchronous hooks mutate
+// the doc and return.
+paymentOrderSchema.pre('save', function() {
   if (this.isModified('proofScreenshot')) {
     this.proofExpiresAt = this.proofScreenshot ? new Date(Date.now() + PAYMENT_PROOF_RETENTION_MS) : undefined;
   }
-  next();
 });
 paymentOrderSchema.pre('save', setOrderHmacHook);
 
@@ -264,41 +265,39 @@ paymentOrderSchema.pre('save', setOrderHmacHook);
 // configured yet for this currency (fresh install, before an admin has
 // created the first version) — logged loudly since this should be a
 // transient bootstrap state, not steady-state behavior.
-paymentOrderSchema.pre('save', async function (next) {
-  try {
-    if (this.fiatAmount !== undefined) {
-      this.amount = this.fiatAmount;
-    }
-    if (this.isNew && this.type === 'DEPOSIT') {
-      // The order's own rail — DepositPolicy is versioned per currency.
-      const currency = this.currency || MERCHANT_CURRENCY.INR; // schema default: 'INR'
-      const policy = await getActivePolicy(currency);
+// Mongoose 9 (kareem 3) dropped the next() callback — an async hook returns a
+// promise, and a THROW rejects it (mongoose surfaces the error), so the old
+// try/catch → next(err) plumbing is no longer needed.
+paymentOrderSchema.pre('save', async function () {
+  if (this.fiatAmount !== undefined) {
+    this.amount = this.fiatAmount;
+  }
+  if (this.isNew && this.type === 'DEPOSIT') {
+    // The order's own rail — DepositPolicy is versioned per currency.
+    const currency = this.currency || MERCHANT_CURRENCY.INR; // schema default: 'INR'
+    const policy = await getActivePolicy(currency);
 
-      let depositPercent, reservePercent, policyVersionId;
-      if (policy) {
-        depositPercent    = policy.depositAllocationPercent;
-        reservePercent    = policy.reserveAllocationPercent;
-        policyVersionId   = policy._id;
-      } else {
-        console.warn(`⚠️  No active DepositPolicy for ${currency} — falling back to 90/10. Configure one via PUT /api/admin/deposit-policy/${currency}.`);
-        depositPercent = 90; reservePercent = 10;
-      }
-
-      // Spec 4.4 rounding rule — owned by the Risk Platform since Phase 010:
-      // reserve share floored, remainder to deposit, full amount conserved.
-      const split = computeReserveSplit(this.tokenAmount, reservePercent);
-      this.depositAllocation = split.depositAllocation;
-      this.reserveAllocation = split.reserveAllocation;
-      this.depositPolicySnapshot = {
-        policyVersionId,
-        currency,
-        depositAllocationPercent: depositPercent,
-        reserveAllocationPercent: reservePercent,
-      };
+    let depositPercent, reservePercent, policyVersionId;
+    if (policy) {
+      depositPercent    = policy.depositAllocationPercent;
+      reservePercent    = policy.reserveAllocationPercent;
+      policyVersionId   = policy._id;
+    } else {
+      console.warn(`⚠️  No active DepositPolicy for ${currency} — falling back to 90/10. Configure one via PUT /api/admin/deposit-policy/${currency}.`);
+      depositPercent = 90; reservePercent = 10;
     }
-    next();
-  } catch (err) {
-    next(err);
+
+    // Spec 4.4 rounding rule — owned by the Risk Platform since Phase 010:
+    // reserve share floored, remainder to deposit, full amount conserved.
+    const split = computeReserveSplit(this.tokenAmount, reservePercent);
+    this.depositAllocation = split.depositAllocation;
+    this.reserveAllocation = split.reserveAllocation;
+    this.depositPolicySnapshot = {
+      policyVersionId,
+      currency,
+      depositAllocationPercent: depositPercent,
+      reserveAllocationPercent: reservePercent,
+    };
   }
 });
 

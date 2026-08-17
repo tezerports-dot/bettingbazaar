@@ -8,6 +8,9 @@
  * modeled separately and keep their independent support-ticket retention.
  */
 import mongoose from 'mongoose';
+// This script issues a pipeline updateMany below; Mongoose 9 requires the global
+// updatePipeline option for that (see startup/mongooseGlobalOptions.js).
+import '../startup/mongooseGlobalOptions.js';
 import { PublicChatMsg, PUBLIC_CHAT_RETENTION_MS } from '../models/social.model.js';
 
 const mongoUri = process.env.MONGO_URI || process.env.MONGODB_URI;

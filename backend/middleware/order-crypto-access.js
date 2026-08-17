@@ -18,7 +18,9 @@ export function deriveOrderHmac(orderId){return orderHmacWith(currentOrderSecret
 // candidate is evaluated (no early return) so timing never reveals which matched.
 export function verifyOrderHmac(orderId,stored){if(!stored)return false;const p=Buffer.from(String(stored));let ok=false;for(const s of orderVerifySecrets()){const e=Buffer.from(orderHmacWith(s,orderId));if(e.length===p.length&&crypto.timingSafeEqual(e,p))ok=true;}return ok;}
 
-export async function setOrderHmacHook(next){if(this.isNew||!this.orderHmac)this.orderHmac=deriveOrderHmac(this.orderId);next();}
+// Mongoose 9 (kareem 3) dropped the next() callback from middleware; this is a
+// synchronous pre('save') hook, so it mutates the doc and returns.
+export function setOrderHmacHook(){if(this.isNew||!this.orderHmac)this.orderHmac=deriveOrderHmac(this.orderId);}
 
 export async function orderAccessGuard(req,res,next){
   try{

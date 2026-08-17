@@ -156,9 +156,10 @@ merchantSchema.virtual('merchantType').get(function () {
 merchantSchema.set('toObject', { virtuals: true });
 merchantSchema.set('toJSON',   { virtuals: true });
 
-merchantSchema.pre('validate', function ensurePublicRef(next) {
+// Mongoose 9 (kareem 3) dropped the next() callback — a synchronous hook just
+// mutates the doc and returns.
+merchantSchema.pre('validate', function ensurePublicRef() {
   if (!this.publicRef) this.publicRef = generateMerchantPublicRef();
-  next();
 });
 
 merchantSchema.index({ publicRef: 1 }, { unique: true, name: 'publicRef_1' });
