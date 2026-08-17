@@ -44,7 +44,7 @@ const AssetCard: React.FC<{
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-white font-semibold text-sm truncate">{slot.label}</span>
-            {slot.uploaded && <CheckCircle size={14} className="text-green-400 flex-shrink-0" />}
+            {slot.uploaded && <CheckCircle size={14} className="text-green-400 shrink-0" />}
           </div>
           <div className="text-[11px] text-slate-500 font-mono mt-0.5">{slot.name}</div>
           <div className="text-[10px] text-slate-600 mt-1">
@@ -54,14 +54,14 @@ const AssetCard: React.FC<{
         </div>
         {slot.uploaded && (
           <button onClick={() => onDelete(slot.name)} disabled={uploading}
-            className="flex-shrink-0 p-1.5 rounded-lg bg-red-900/30 hover:bg-red-900/50 text-red-400 transition-colors disabled:opacity-40">
+            className="shrink-0 p-1.5 rounded-lg bg-red-900/30 hover:bg-red-900/50 text-red-400 transition-colors disabled:opacity-40">
             <Trash2 size={13} />
           </button>
         )}
       </div>
 
       <div
-        className={`relative cursor-pointer group ${isWide ? 'h-24' : 'h-36'} bg-[repeating-conic-gradient(#1e293b_0%_25%,#0f172a_0%_50%)] bg-[length:16px_16px]`}
+        className={`relative cursor-pointer group ${isWide ? 'h-24' : 'h-36'} bg-[repeating-conic-gradient(#1e293b_0%_25%,#0f172a_0%_50%)] bg-size-[16px_16px]`}
         onClick={() => !uploading && inputRef.current?.click()}
         onDragOver={e => e.preventDefault()}
         onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) handleFile(f); }}
@@ -85,7 +85,7 @@ const AssetCard: React.FC<{
       </div>
 
       <div className="px-4 py-2 border-t border-slate-800 flex items-start gap-1.5">
-        <Info size={11} className="text-slate-600 mt-0.5 flex-shrink-0" />
+        <Info size={11} className="text-slate-600 mt-0.5 shrink-0" />
         <span className="text-[10px] text-slate-600 leading-relaxed">{slot.hint}</span>
       </div>
 

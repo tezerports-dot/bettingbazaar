@@ -40,7 +40,7 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({ src, name, size = 'md' }
 
   return (
     <div
-      className={`${sizeClasses[size]} rounded-full bg-gradient-to-br from-gold-400 to-gold-600 flex items-center justify-center font-semibold text-dark-900`}
+      className={`${sizeClasses[size]} rounded-full bg-linear-to-br from-gold-400 to-gold-600 flex items-center justify-center font-semibold text-dark-900`}
     >
       {initials || <User size={iconSizes[size]} />}
     </div>

@@ -109,7 +109,7 @@ export const FakeWinnersManager: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <span className="font-semibold text-sm">{w.displayName}</span>
                   {w.city && <span className="text-xs text-gray-500">📍{w.city}</span>}
-                  {w.badge && <span className="text-xs bg-yellow-500/20 text-yellow-400 px-1.5 py-0.5 rounded">{w.badge}</span>}
+                  {w.badge && <span className="text-xs bg-yellow-500/20 text-yellow-400 px-1.5 py-0.5 rounded-sm">{w.badge}</span>}
                 </div>
                 <div className="flex items-center gap-3 text-xs text-gray-400 mt-0.5">
                   <span className="text-green-400 font-bold">₹{Number(w.amount).toLocaleString()}</span>
@@ -119,11 +119,11 @@ export const FakeWinnersManager: React.FC = () => {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <button onClick={()=>togglePublic(w)} className={`p-1.5 rounded ${w.isPublic?'text-green-400 hover:text-green-300':'text-gray-600 hover:text-gray-400'}`}>
+                <button onClick={()=>togglePublic(w)} className={`p-1.5 rounded-sm ${w.isPublic?'text-green-400 hover:text-green-300':'text-gray-600 hover:text-gray-400'}`}>
                   {w.isPublic ? <Eye size={15}/> : <EyeOff size={15}/>}
                 </button>
-                <button onClick={()=>edit(w)} className="p-1.5 rounded text-blue-400 hover:text-blue-300"><Edit2 size={15}/></button>
-                <button onClick={()=>del(w._id)} className="p-1.5 rounded text-red-400 hover:text-red-300"><Trash2 size={15}/></button>
+                <button onClick={()=>edit(w)} className="p-1.5 rounded-sm text-blue-400 hover:text-blue-300"><Edit2 size={15}/></button>
+                <button onClick={()=>del(w._id)} className="p-1.5 rounded-sm text-red-400 hover:text-red-300"><Trash2 size={15}/></button>
               </div>
             </div>
           ))}

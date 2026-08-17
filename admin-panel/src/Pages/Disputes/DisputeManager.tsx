@@ -191,12 +191,12 @@ export const DisputeManager: React.FC = () => {
             {msg.senderName || msg.senderType}
           </p>
           <div className={`rounded-lg px-3 py-2 text-sm ${isMerchant ? 'bg-blue-600 text-white' : 'bg-dark-600 text-gray-100'}`}>
-            {text && <p className="whitespace-pre-wrap break-words">{text}</p>}
+            {text && <p className="whitespace-pre-wrap wrap-break-word">{text}</p>}
             {msg.attachmentUrl && (
               <div className="mt-2">
                 <img
                   src={msg.attachmentUrl} alt="Attachment"
-                  className="rounded max-w-full cursor-pointer hover:opacity-90"
+                  className="rounded-sm max-w-full cursor-pointer hover:opacity-90"
                   onClick={() => window.open(msg.attachmentUrl!, '_blank')}
                 />
                 <p className="text-[10px] mt-1 opacity-70 flex items-center gap-1">
@@ -289,7 +289,7 @@ export const DisputeManager: React.FC = () => {
         <Modal isOpen onClose={() => setSelected(null)} title={`Dispute — ${selected.orderId}`}>
           <div className="flex flex-col" style={{ height: '70vh' }}>
             {/* Order summary */}
-            <div className="bg-dark-700 rounded-lg p-3 text-sm space-y-1 mb-3 flex-shrink-0">
+            <div className="bg-dark-700 rounded-lg p-3 text-sm space-y-1 mb-3 shrink-0">
               <div className="grid grid-cols-2 gap-x-4 gap-y-1">
                 <div className="flex justify-between"><span className="text-gray-400">Amount</span><span className="font-bold">{formatters.currency(selected.fiatAmount || selected.amount)}</span></div>
                 <div className="flex justify-between"><span className="text-gray-400">Type</span><span>{selected.type}</span></div>
@@ -305,7 +305,7 @@ export const DisputeManager: React.FC = () => {
             </div>
 
             {/* Tabs */}
-            <div className="flex border-b border-dark-600 mb-3 flex-shrink-0">
+            <div className="flex border-b border-dark-600 mb-3 shrink-0">
               <button
                 onClick={() => setActiveTab('chat')}
                 className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'chat' ? 'border-gold-500 text-gold-500' : 'border-transparent text-gray-400 hover:text-gray-200'}`}
@@ -342,7 +342,7 @@ export const DisputeManager: React.FC = () => {
                 </div>
                 {/* Admin reply box */}
                 {selected.status === 'DISPUTED' && (
-                  <div className="flex-shrink-0 border-t border-dark-600 pt-3 mt-2">
+                  <div className="shrink-0 border-t border-dark-600 pt-3 mt-2">
                     <p className="text-xs text-gray-500 mb-1">Post admin mediation message (visible to both parties):</p>
                     <div className="flex gap-2">
                       <textarea
@@ -355,7 +355,7 @@ export const DisputeManager: React.FC = () => {
                         disabled={sendingMsg}
                       />
                       <button onClick={handleSendAdminMsg} disabled={!adminMsg.trim() || sendingMsg}
-                        className="px-3 py-2 bg-gold-500 text-black rounded-lg hover:bg-gold-400 disabled:opacity-50 flex-shrink-0">
+                        className="px-3 py-2 bg-gold-500 text-black rounded-lg hover:bg-gold-400 disabled:opacity-50 shrink-0">
                         {sendingMsg ? <Clock className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                       </button>
                     </div>

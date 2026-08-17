@@ -89,7 +89,7 @@ export const FAQManager: React.FC = () => {
       key: 'category',
       label: 'Category',
       render: (faq: FAQ) => (
-        <span className="px-2 py-1 rounded text-xs font-medium bg-blue-500/20 text-blue-500">
+        <span className="px-2 py-1 rounded-sm text-xs font-medium bg-blue-500/20 text-blue-500">
           {faq.category}
         </span>
       ),

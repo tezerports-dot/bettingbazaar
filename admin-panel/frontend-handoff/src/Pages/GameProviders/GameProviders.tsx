@@ -21,7 +21,7 @@ const Field = ({ label, value, onChange, type = 'text', placeholder = '', help =
     <input
       type={type} value={value || ''} onChange={e => onChange(e.target.value)}
       placeholder={placeholder}
-      className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:border-yellow-500/50 outline-none"
+      className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:border-yellow-500/50 outline-hidden"
     />
     {help && <p className="text-[10px] text-gray-600 mt-0.5">{help}</p>}
   </div>
@@ -144,7 +144,7 @@ export const GameProviders: React.FC = () => {
                 <label className="text-xs text-gray-400 mb-1 block">Category</label>
                 <select value={newProv.category}
                   onChange={e => setNewProv(p => ({ ...p, category: e.target.value }))}
-                  className="w-full bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white outline-none">
+                  className="w-full bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white outline-hidden">
                   {CATEGORIES.map(c => <option key={c} value={c}>{CATEGORY_META[c]?.label || c}</option>)}
                 </select>
               </div>
@@ -191,8 +191,8 @@ export const GameProviders: React.FC = () => {
                         <h3 className="font-semibold">{p.name}</h3>
                         <span className="text-xs font-mono text-gray-600">{p.key}</span>
                         {edit.enabled
-                          ? <span className="px-2 py-0.5 rounded text-xs bg-green-500/20 text-green-400 font-medium">● LIVE</span>
-                          : <span className="px-2 py-0.5 rounded text-xs bg-dark-600 text-gray-500">○ Coming Soon</span>}
+                          ? <span className="px-2 py-0.5 rounded-sm text-xs bg-green-500/20 text-green-400 font-medium">● LIVE</span>
+                          : <span className="px-2 py-0.5 rounded-sm text-xs bg-dark-600 text-gray-500">○ Coming Soon</span>}
                         {isReady && !edit.enabled && <span className="text-xs text-yellow-400">Credentials set — toggle ON to go live</span>}
                       </div>
                       <p className="text-xs text-gray-500 mt-0.5">{p.description}</p>

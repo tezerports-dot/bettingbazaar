@@ -68,7 +68,7 @@ export const AccountRecoveryAdmin: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <span className="font-mono text-yellow-400 text-lg font-bold tracking-wider">{approved.tempPassword}</span>
                   <button onClick={() => { navigator.clipboard.writeText(approved.tempPassword); toast.success('Copied!'); }}
-                    className="text-xs text-gray-500 hover:text-white border border-dark-600 px-2 py-1 rounded">Copy</button>
+                    className="text-xs text-gray-500 hover:text-white border border-dark-600 px-2 py-1 rounded-sm">Copy</button>
                 </div>
               </div>
             </div>
@@ -112,7 +112,7 @@ export const AccountRecoveryAdmin: React.FC = () => {
                     <div className="space-y-1">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-mono text-xs text-gray-500">{req.recoveryId}</span>
-                        <span className={`px-2 py-0.5 rounded text-xs font-medium ${req.status==='pending'?'bg-yellow-500/20 text-yellow-400':req.status==='approved'?'bg-green-500/20 text-green-400':'bg-red-500/20 text-red-400'}`}>
+                        <span className={`px-2 py-0.5 rounded-sm text-xs font-medium ${req.status==='pending'?'bg-yellow-500/20 text-yellow-400':req.status==='approved'?'bg-green-500/20 text-green-400':'bg-red-500/20 text-red-400'}`}>
                           {req.status.toUpperCase()}
                         </span>
                       </div>

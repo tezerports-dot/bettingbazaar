@@ -123,7 +123,7 @@ export const Reports: React.FC = () => {
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
             {(financial.eventTypes || []).map((e: any) => (
-              <span key={e.eventType} className="px-2 py-1 bg-dark-800 rounded text-xs text-gray-400">
+              <span key={e.eventType} className="px-2 py-1 bg-dark-800 rounded-sm text-xs text-gray-400">
                 {e.eventType}: <span className="text-gray-200">{e.events}</span>
               </span>
             ))}
@@ -149,7 +149,7 @@ export const Reports: React.FC = () => {
                   <td className="py-2">
                     <div className="flex flex-wrap gap-2">
                       {(d.byEventType || []).map((e: any) => (
-                        <span key={e.eventType} className="px-2 py-0.5 bg-dark-800 rounded text-xs">
+                        <span key={e.eventType} className="px-2 py-0.5 bg-dark-800 rounded-sm text-xs">
                           <span className="text-gray-400">{e.eventType}</span>{' '}
                           <span className="text-gray-200">×{e.events}</span>{' '}
                           <span className="text-gold-400/90 font-mono">{inr(e.gross)}</span>

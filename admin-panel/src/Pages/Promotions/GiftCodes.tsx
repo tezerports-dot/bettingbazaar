@@ -92,7 +92,7 @@ export const GiftCodes: React.FC = () => {
                 <td className="text-center text-xs text-gray-400">{c.bonusType.replace('_',' ')}</td>
                 <td className="text-center">{c.usedCount}/{c.maxUses}</td>
                 <td className="text-center text-xs text-gray-400">{c.expiresAt ? new Date(c.expiresAt).toLocaleDateString() : '—'}</td>
-                <td className="text-center"><span className={`px-2 py-0.5 rounded text-xs ${c.isActive && (!c.expiresAt||new Date(c.expiresAt)>new Date()) && c.usedCount<c.maxUses ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>{c.isActive&&c.usedCount<c.maxUses?'Active':'Exhausted'}</span></td>
+                <td className="text-center"><span className={`px-2 py-0.5 rounded-sm text-xs ${c.isActive && (!c.expiresAt||new Date(c.expiresAt)>new Date()) && c.usedCount<c.maxUses ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>{c.isActive&&c.usedCount<c.maxUses?'Active':'Exhausted'}</span></td>
                 <td className="text-center"><button onClick={() => del(c._id)} className="text-red-400 hover:text-red-300"><Trash2 size={14}/></button></td>
               </tr>
             ))}

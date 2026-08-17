@@ -196,7 +196,7 @@ export default function TwoFactorSetup() {
               type="checkbox"
               checked={savedConfirmed}
               onChange={(e) => setSavedConfirmed(e.target.checked)}
-              className="h-4 w-4 rounded"
+              className="h-4 w-4 rounded-sm"
             />
             I have saved these recovery codes.
           </label>

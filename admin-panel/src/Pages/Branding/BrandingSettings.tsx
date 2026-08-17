@@ -100,7 +100,7 @@ const CdnUrlField: React.FC<{ id: string; name: string; label: string; hint?: st
         </label>
       </div>
       {value && !error && (
-        <img src={value} alt={label} className="h-12 object-contain rounded border border-dark-600"
+        <img src={value} alt={label} className="h-12 object-contain rounded-sm border border-dark-600"
           onError={() => setError(true)} />
       )}
       {value && error && (
@@ -150,7 +150,7 @@ const BrandingImageInput: React.FC<{
         </label>
       </div>
       {value && (
-        <img src={value} alt={label} className="mt-2 h-12 object-contain rounded border border-dark-600" onError={e => (e.currentTarget.style.display = 'none')} />
+        <img src={value} alt={label} className="mt-2 h-12 object-contain rounded-sm border border-dark-600" onError={e => (e.currentTarget.style.display = 'none')} />
       )}
       {hint && <p className="text-xs text-gray-400 mt-1">{hint}</p>}
     </div>
@@ -306,7 +306,7 @@ export const BrandingSettings: React.FC = () => {
                 <div key={c.key}>
                   <label htmlFor={c.id} className="label">{c.label}</label>
                   <div className="flex items-center gap-2">
-                    <input id={c.id} name={c.name} type="color" value={(formData as any)[c.key]} onChange={(e) => set(c.key, e.target.value)} className="w-12 h-9 rounded border border-dark-600 cursor-pointer bg-transparent" />
+                    <input id={c.id} name={c.name} type="color" value={(formData as any)[c.key]} onChange={(e) => set(c.key, e.target.value)} className="w-12 h-9 rounded-sm border border-dark-600 cursor-pointer bg-transparent" />
                     <input type="text" value={(formData as any)[c.key]} onChange={(e) => set(c.key, e.target.value)} className="input font-mono flex-1" />
                   </div>
                 </div>
@@ -333,7 +333,7 @@ export const BrandingSettings: React.FC = () => {
                 <input id="primaryColor" name="primaryColor" type="color"
                   value={formData.primaryColor}
                   onChange={e => set('primaryColor', e.target.value)}
-                  className="h-10 w-full rounded border border-gray-600 bg-transparent cursor-pointer" />
+                  className="h-10 w-full rounded-sm border border-gray-600 bg-transparent cursor-pointer" />
                 <p className="text-xs text-gray-400 mt-1">e.g. gold accent — sets --brand-primary CSS var</p>
               </div>
               <div>
@@ -341,14 +341,14 @@ export const BrandingSettings: React.FC = () => {
                 <input id="secondaryColor" name="secondaryColor" type="color"
                   value={formData.secondaryColor}
                   onChange={e => set('secondaryColor', e.target.value)}
-                  className="h-10 w-full rounded border border-gray-600 bg-transparent cursor-pointer" />
+                  className="h-10 w-full rounded-sm border border-gray-600 bg-transparent cursor-pointer" />
               </div>
               <div>
                 <label className="label" htmlFor="accentColor">Accent Colour</label>
                 <input id="accentColor" name="accentColor" type="color"
                   value={formData.accentColor}
                   onChange={e => set('accentColor', e.target.value)}
-                  className="h-10 w-full rounded border border-gray-600 bg-transparent cursor-pointer" />
+                  className="h-10 w-full rounded-sm border border-gray-600 bg-transparent cursor-pointer" />
               </div>
             </div>
             <div>
@@ -421,7 +421,7 @@ export const BrandingSettings: React.FC = () => {
               <input id="home-popup-link" name="homePopupLinkUrl" type="url" value={formData.homePopupLinkUrl} onChange={(e) => set('homePopupLinkUrl', e.target.value)} className="input" placeholder="https://... (where popup click goes)" />
             </div>
             <div className="flex items-center gap-3">
-              <input id="home-popup-enabled" name="homePopupEnabled" type="checkbox" checked={formData.homePopupEnabled} onChange={(e) => set('homePopupEnabled', e.target.checked)} className="w-4 h-4 rounded" />
+              <input id="home-popup-enabled" name="homePopupEnabled" type="checkbox" checked={formData.homePopupEnabled} onChange={(e) => set('homePopupEnabled', e.target.checked)} className="w-4 h-4 rounded-sm" />
               <label htmlFor="home-popup-enabled" className="text-sm">Enable home popup</label>
             </div>
           </div>

@@ -58,9 +58,9 @@ export const CycleHistory: React.FC = () => {
 
   const getCycleTypeBadge = (type: string) =>
     type === '30_MIN' ? (
-      <span className="px-2 py-1 rounded text-xs font-medium bg-blue-500/20 text-blue-500">30 MIN</span>
+      <span className="px-2 py-1 rounded-sm text-xs font-medium bg-blue-500/20 text-blue-500">30 MIN</span>
     ) : (
-      <span className="px-2 py-1 rounded text-xs font-medium bg-purple-500/20 text-purple-500">FULL DAY</span>
+      <span className="px-2 py-1 rounded-sm text-xs font-medium bg-purple-500/20 text-purple-500">FULL DAY</span>
     );
 
   const columns = [

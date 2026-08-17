@@ -149,7 +149,7 @@ export const SubAdminsList: React.FC = () => {
               <span className="text-xs text-gray-500">None assigned</span>
             ) : (
               activePerms.map((k) => (
-                <span key={k} className="px-1.5 py-0.5 rounded text-xs bg-purple-500/20 text-purple-400">
+                <span key={k} className="px-1.5 py-0.5 rounded-sm text-xs bg-purple-500/20 text-purple-400">
                   {permLabel(k)}
                 </span>
               ))
@@ -311,7 +311,7 @@ export const SubAdminsList: React.FC = () => {
                         permissions: { ...formData.permissions, [perm.key]: e.target.checked },
                       })
                     }
-                    className="w-4 h-4 mt-0.5 flex-shrink-0"
+                    className="w-4 h-4 mt-0.5 shrink-0"
                   />
                   <div>
                     <p className="text-sm font-medium">{perm.label}</p>
@@ -351,7 +351,7 @@ export const SubAdminsList: React.FC = () => {
                     onChange={(e) =>
                       setEditPermissions({ ...editPermissions, [perm.key]: e.target.checked })
                     }
-                    className="w-4 h-4 mt-0.5 flex-shrink-0 accent-purple-500"
+                    className="w-4 h-4 mt-0.5 shrink-0 accent-purple-500"
                   />
                   <div>
                     <p className="text-sm font-medium">{perm.label}</p>

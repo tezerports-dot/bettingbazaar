@@ -64,7 +64,7 @@ export const TransactionsList: React.FC = () => {
     };
 
     return (
-      <span className={`px-2 py-1 rounded text-xs font-medium ${colors[type] || colors.DEPOSIT}`}>
+      <span className={`px-2 py-1 rounded-sm text-xs font-medium ${colors[type] || colors.DEPOSIT}`}>
         {type.replace(/_/g, ' ')}
       </span>
     );

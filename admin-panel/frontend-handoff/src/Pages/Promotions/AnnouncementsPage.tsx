@@ -54,12 +54,12 @@ export const AnnouncementsPage: React.FC = () => {
       <div className="space-y-3">
         {items.map(item => (
           <div key={item._id} className="card flex items-start gap-4">
-            <Bell size={20} className="text-yellow-400 mt-0.5 flex-shrink-0"/>
+            <Bell size={20} className="text-yellow-400 mt-0.5 shrink-0"/>
             <div className="flex-1">
               <div className="flex items-center gap-2 mb-1 flex-wrap">
                 <span className="font-semibold">{item.title}</span>
-                <span className={`px-2 py-0.5 rounded text-xs ${typeColor[item.type]||typeColor.INFO}`}>{item.type}</span>
-                <span className={`px-2 py-0.5 rounded text-xs ${item.isActive?'bg-green-500/20 text-green-400':'bg-gray-500/20 text-gray-400'}`}>{item.isActive?'Active':'Inactive'}</span>
+                <span className={`px-2 py-0.5 rounded-sm text-xs ${typeColor[item.type]||typeColor.INFO}`}>{item.type}</span>
+                <span className={`px-2 py-0.5 rounded-sm text-xs ${item.isActive?'bg-green-500/20 text-green-400':'bg-gray-500/20 text-gray-400'}`}>{item.isActive?'Active':'Inactive'}</span>
               </div>
               <p className="text-sm text-gray-400">{item.body}</p>
               <p className="text-xs text-gray-600 mt-1">{new Date(item.createdAt).toLocaleString()}{item.expiresAt&&` · Expires ${new Date(item.expiresAt).toLocaleString()}`}</p>

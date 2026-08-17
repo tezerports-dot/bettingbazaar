@@ -110,14 +110,14 @@ const ErrorLogs: React.FC = () => {
                   onClick={() => setExpanded(expanded === r._id ? null : r._id)}>
                   <div className="flex items-center gap-3 min-w-0">
                     {expanded === r._id
-                      ? <ChevronDown  size={14} className="text-slate-400 flex-shrink-0" />
-                      : <ChevronRight size={14} className="text-slate-400 flex-shrink-0" />}
-                    <span className={`text-[10px] font-mono px-2 py-0.5 rounded border flex-shrink-0 ${badge.cls}`}>
+                      ? <ChevronDown  size={14} className="text-slate-400 shrink-0" />
+                      : <ChevronRight size={14} className="text-slate-400 shrink-0" />}
+                    <span className={`text-[10px] font-mono px-2 py-0.5 rounded-sm border shrink-0 ${badge.cls}`}>
                       {badge.label}
                     </span>
                     <span className="text-red-400 font-mono text-sm truncate">{r.message}</span>
                   </div>
-                  <span className="text-[10px] text-slate-500 font-mono flex-shrink-0 ml-4">
+                  <span className="text-[10px] text-slate-500 font-mono shrink-0 ml-4">
                     {new Date(r.ts).toLocaleString()}
                   </span>
                 </div>
