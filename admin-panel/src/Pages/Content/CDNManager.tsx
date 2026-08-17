@@ -124,13 +124,13 @@ export const CDNManager: React.FC = () => {
 
               <div className="flex items-center gap-2">
                 <p className="flex-1 text-xs font-mono text-gray-500 truncate">{img.url}</p>
-                <button onClick={() => copyUrl(img.url)} className="p-1.5 hover:bg-dark-700 rounded text-gray-400 hover:text-white" title="Copy URL"><Copy size={13}/></button>
-                <button onClick={() => setConfirmDelete(img)} className="p-1.5 hover:bg-red-600/20 rounded text-red-400" title="Delete"><Trash2 size={13}/></button>
+                <button onClick={() => copyUrl(img.url)} className="p-1.5 hover:bg-dark-700 rounded-sm text-gray-400 hover:text-white" title="Copy URL"><Copy size={13}/></button>
+                <button onClick={() => setConfirmDelete(img)} className="p-1.5 hover:bg-red-600/20 rounded-sm text-red-400" title="Delete"><Trash2 size={13}/></button>
               </div>
 
               {img.tags && img.tags.length > 0 && (
                 <div className="flex flex-wrap gap-1">
-                  {img.tags.slice(0, 3).map((tag, i) => <span key={i} className="text-xs px-1.5 py-0.5 bg-dark-800 text-gray-400 rounded">{tag}</span>)}
+                  {img.tags.slice(0, 3).map((tag, i) => <span key={i} className="text-xs px-1.5 py-0.5 bg-dark-800 text-gray-400 rounded-sm">{tag}</span>)}
                 </div>
               )}
             </div>
@@ -158,7 +158,7 @@ export const CDNManager: React.FC = () => {
               <div className="bg-dark-800 rounded-lg p-3">
                 <p className="text-xs text-gray-400 mb-2">Preview:</p>
                 <img src={form.url} alt="Preview" onError={() => setPreviewError(true)}
-                  className="max-h-32 max-w-full rounded object-contain mx-auto" />
+                  className="max-h-32 max-w-full rounded-sm object-contain mx-auto" />
               </div>
             )}
             {previewError && <p className="text-xs text-red-400">⚠️ Could not preview this URL. Make sure it's a valid public image URL.</p>}

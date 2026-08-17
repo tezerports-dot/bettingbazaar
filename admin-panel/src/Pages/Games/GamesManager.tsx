@@ -31,7 +31,7 @@ const BLANK_GAME: Game = {
 const STRATEGIES = ['PROVIDER_GAME', 'PROVIDER_LOBBY', 'INTERNAL_ROUTE', 'EXTERNAL_URL'];
 const STATUSES = ['ACTIVE', 'MAINTENANCE', 'INACTIVE'];
 
-const inp = 'w-full bg-[#0B0E14] border border-[#1e2736] rounded-lg p-2 text-sm text-white outline-none focus:border-yellow-500';
+const inp = 'w-full bg-[#0B0E14] border border-[#1e2736] rounded-lg p-2 text-sm text-white outline-hidden focus:border-yellow-500';
 const lbl = 'text-[10px] text-slate-500 uppercase font-bold mb-1 block';
 
 export const GamesManager: React.FC = () => {

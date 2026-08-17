@@ -184,7 +184,7 @@ export const SystemSettings: React.FC = () => {
       {formData.maintenanceMode && (
         <div className="bg-orange-500/10 border-2 border-orange-500/50 rounded-lg p-4">
           <div className="flex items-start space-x-3">
-            <AlertTriangle className="text-orange-500 flex-shrink-0 mt-0.5" size={24} />
+            <AlertTriangle className="text-orange-500 shrink-0 mt-0.5" size={24} />
             <div className="flex-1">
               <p className="font-semibold text-orange-400 mb-1">
                 [!] MAINTENANCE MODE ACTIVE
@@ -259,13 +259,13 @@ export const SystemSettings: React.FC = () => {
               }
               className="sr-only peer"
             />
-            <div className="w-11 h-6 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gold-500"></div>
+            <div className="w-11 h-6 bg-gray-700 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gold-500"></div>
           </label>
         </div>
 
         {!formData.registrationEnabled && (
           <div className="mt-3 flex items-center space-x-2 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
-            <AlertTriangle className="text-yellow-500 flex-shrink-0" size={16} />
+            <AlertTriangle className="text-yellow-500 shrink-0" size={16} />
             <p className="text-sm text-yellow-400">
               New user registrations are currently disabled
             </p>
@@ -332,7 +332,7 @@ export const SystemSettings: React.FC = () => {
 
         {formData.minBet > formData.maxBet && (
           <div className="mt-3 flex items-center space-x-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
-            <AlertTriangle className="text-red-500 flex-shrink-0" size={16} />
+            <AlertTriangle className="text-red-500 shrink-0" size={16} />
             <p className="text-sm text-red-400">
               Minimum bet amount cannot be greater than maximum bet amount!
             </p>

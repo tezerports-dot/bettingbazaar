@@ -186,7 +186,7 @@ export const ContentSlideManager: React.FC = () => {
       {loading ? (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
           {[...Array(4)].map((_, i) => (
-            <div key={i} className="aspect-[9/16] bg-dark-700 rounded-xl animate-pulse" />
+            <div key={i} className="aspect-9/16 bg-dark-700 rounded-xl animate-pulse" />
           ))}
         </div>
       ) : slides.length === 0 ? (
@@ -206,7 +206,7 @@ export const ContentSlideManager: React.FC = () => {
                   : 'border-dark-600 opacity-50 grayscale'}`}
             >
               {/* Image */}
-              <div className="aspect-[9/16] bg-dark-800">
+              <div className="aspect-9/16 bg-dark-800">
                 {slide.fileUrl ? (
                   <img
                     src={slide.fileUrl}
@@ -222,7 +222,7 @@ export const ContentSlideManager: React.FC = () => {
               </div>
 
               {/* Overlay controls */}
-              <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent flex flex-col justify-end p-2 gap-1">
+              <div className="absolute inset-0 bg-linear-to-t from-black/80 via-transparent to-transparent flex flex-col justify-end p-2 gap-1">
                 {slide.title && (
                   <p className="text-white text-xs font-medium truncate">{slide.title}</p>
                 )}
@@ -231,14 +231,14 @@ export const ContentSlideManager: React.FC = () => {
                   <div className="flex gap-0.5">
                     <button
                       onClick={() => changePriority(slide, 1)}
-                      className="p-1 bg-dark-700/80 rounded hover:bg-dark-600"
+                      className="p-1 bg-dark-700/80 rounded-sm hover:bg-dark-600"
                       title="Move up"
                     >
                       <ArrowUp size={10} />
                     </button>
                     <button
                       onClick={() => changePriority(slide, -1)}
-                      className="p-1 bg-dark-700/80 rounded hover:bg-dark-600"
+                      className="p-1 bg-dark-700/80 rounded-sm hover:bg-dark-600"
                       title="Move down"
                     >
                       <ArrowDown size={10} />
@@ -248,14 +248,14 @@ export const ContentSlideManager: React.FC = () => {
                   <div className="flex gap-0.5">
                     <button
                       onClick={() => toggleStatus(slide)}
-                      className={`p-1 rounded ${slide.status === 'ACTIVE' ? 'bg-green-600/60 hover:bg-green-600' : 'bg-gray-600/60 hover:bg-gray-600'}`}
+                      className={`p-1 rounded-sm ${slide.status === 'ACTIVE' ? 'bg-green-600/60 hover:bg-green-600' : 'bg-gray-600/60 hover:bg-gray-600'}`}
                       title={slide.status === 'ACTIVE' ? 'Hide from users' : 'Publish'}
                     >
                       {slide.status === 'ACTIVE' ? <Eye size={10} /> : <EyeOff size={10} />}
                     </button>
                     <button
                       onClick={() => setConfirmDel(slide)}
-                      className="p-1 bg-red-600/60 hover:bg-red-600 rounded"
+                      className="p-1 bg-red-600/60 hover:bg-red-600 rounded-sm"
                       title="Delete"
                     >
                       <Trash2 size={10} />

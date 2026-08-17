@@ -106,7 +106,7 @@ export const AuditLogs: React.FC = () => {
       key: 'category',
       label: 'Category',
       render: (log: AuditLog) => (
-        <span className="text-xs bg-dark-700 text-gray-300 px-2 py-0.5 rounded font-mono">
+        <span className="text-xs bg-dark-700 text-gray-300 px-2 py-0.5 rounded-sm font-mono">
           {log.category || '--'}
         </span>
       ),

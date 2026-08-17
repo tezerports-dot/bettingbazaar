@@ -147,7 +147,7 @@ export const ProfitLoss: React.FC = () => {
             </div>
           )}
 
-          <div className="card bg-gradient-to-r from-gold-500/10 to-gold-600/10 border-gold-500/30">
+          <div className="card bg-linear-to-r from-gold-500/10 to-gold-600/10 border-gold-500/30">
             <div className="grid grid-cols-3 gap-6 text-center">
               <div><p className="text-xs text-gray-400 mb-1">Total In</p><p className="text-xl font-bold text-green-500">{fmt((stats.deposits?.amount||0)+(stats.bets?.amount||0))}</p></div>
               <div><p className="text-xs text-gray-400 mb-1">Total Out</p><p className="text-xl font-bold text-red-500">{fmt((stats.withdrawals?.amount||0)+(stats.payouts?.amount||0))}</p></div>

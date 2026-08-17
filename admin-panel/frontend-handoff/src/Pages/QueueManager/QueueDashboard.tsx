@@ -169,10 +169,10 @@ export const QueueDashboard: React.FC = () => {
       COMPLETED:     'bg-green-500/20  text-green-400',  DISPUTED: 'bg-red-500/20 text-red-400',
       CANCELLED:     'bg-gray-500/20   text-gray-400',   FAILED:   'bg-red-800/20 text-red-500',
     };
-    return <span className={`px-2 py-0.5 rounded text-xs font-medium ${m[s]||m.PENDING_QUEUE}`}>{s.replace(/_/g,' ')}</span>;
+    return <span className={`px-2 py-0.5 rounded-sm text-xs font-medium ${m[s]||m.PENDING_QUEUE}`}>{s.replace(/_/g,' ')}</span>;
   };
   const tBadge = (t: string) => (
-    <span className={`px-2 py-0.5 rounded text-xs font-medium ${t==='DEPOSIT'?'bg-green-500/20 text-green-400':'bg-red-500/20 text-red-400'}`}>{t}</span>
+    <span className={`px-2 py-0.5 rounded-sm text-xs font-medium ${t==='DEPOSIT'?'bg-green-500/20 text-green-400':'bg-red-500/20 text-red-400'}`}>{t}</span>
   );
 
   const filteredPending = pendingOrders.filter(o => filterType==='ALL' || o.type===filterType);
@@ -207,29 +207,29 @@ export const QueueDashboard: React.FC = () => {
               <option value="">{grouped ? 'Reassign to merchant…' : 'Assign to merchant…'}</option>
               {merchants.map(m => <option key={m._id} value={m._id}>{m.name} {m.isOnline?'🟢':'🔴'}</option>)}
             </select>
-            {assigningId===id && <RefreshCw className="animate-spin text-yellow-400 flex-shrink-0" size={18}/>}
+            {assigningId===id && <RefreshCw className="animate-spin text-yellow-400 shrink-0" size={18}/>}
           </div>
         )}
         {/* Admin action buttons — visible on ALL orders regardless of status */}
         <div className="flex flex-wrap gap-1.5 pt-2 border-t border-dark-600 mt-2">
           <button
             onClick={() => handleOrderAction(id, 'APPROVE')}
-            className="px-3 py-1.5 bg-green-600 hover:bg-green-500 text-white text-xs font-bold rounded transition-colors"
+            className="px-3 py-1.5 bg-green-600 hover:bg-green-500 text-white text-xs font-bold rounded-sm transition-colors"
             title="Force-complete this order and credit the user"
           >✅ Approve</button>
           <button
             onClick={() => handleOrderAction(id, 'REJECT')}
-            className="px-3 py-1.5 bg-red-700 hover:bg-red-600 text-white text-xs font-bold rounded transition-colors"
+            className="px-3 py-1.5 bg-red-700 hover:bg-red-600 text-white text-xs font-bold rounded-sm transition-colors"
             title="Reject and cancel this order"
           >❌ Reject</button>
           <button
             onClick={() => handleOrderAction(id, 'CANCEL')}
-            className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white text-xs font-bold rounded transition-colors"
+            className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white text-xs font-bold rounded-sm transition-colors"
             title="Cancel this order"
           >🚫 Cancel</button>
           <button
             onClick={() => handleOrderAction(id, 'VIDEO_KYC')}
-            className="px-3 py-1.5 bg-purple-700 hover:bg-purple-600 text-white text-xs font-bold rounded transition-colors"
+            className="px-3 py-1.5 bg-purple-700 hover:bg-purple-600 text-white text-xs font-bold rounded-sm transition-colors"
             title="Require video KYC before releasing funds"
           >📹 Video KYC</button>
         </div>
@@ -266,7 +266,7 @@ export const QueueDashboard: React.FC = () => {
             <span className="text-sm text-gray-400">Filter:</span>
             {(['ALL', 'DEPOSIT', 'WITHDRAWAL'] as const).map((f) => (
               <button key={f} onClick={() => setFilterType(f)}
-                className="px-3 py-1.5 rounded text-sm font-medium transition-colors"
+                className="px-3 py-1.5 rounded-sm text-sm font-medium transition-colors"
                 style={filterType === f ? { background: 'var(--warning-bg)', color: 'var(--warning)' } : { background: 'var(--surface-2)', color: 'var(--text-2)' }}>{f}</button>
             ))}
           </div>
@@ -329,7 +329,7 @@ export const QueueDashboard: React.FC = () => {
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
                   ${allStatusFilter===s.key ? 'bg-dark-700 ring-1 ring-white/20' : 'bg-dark-800 text-gray-400 hover:bg-dark-700'}`}>
                 <span className={s.color}>{s.label}</span>
-                <span className="bg-dark-600 text-xs px-1.5 py-0.5 rounded">{s.count||0}</span>
+                <span className="bg-dark-600 text-xs px-1.5 py-0.5 rounded-sm">{s.count||0}</span>
               </button>
             ))}
           </div>
@@ -373,7 +373,7 @@ export const QueueDashboard: React.FC = () => {
                             <p className="font-medium">{m.name}</p>
                             <p className="text-xs text-gray-400">{m.mobile || '—'} · {(m.tokenBalance||0).toLocaleString()} BB</p>
                           </div>
-                          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${m.isOnline?'bg-green-500':'bg-gray-500'}`}/>
+                          <span className={`w-2 h-2 rounded-full shrink-0 ${m.isOnline?'bg-green-500':'bg-gray-500'}`}/>
                         </div>
                       ))}
                     </div>}
@@ -412,7 +412,7 @@ export const QueueDashboard: React.FC = () => {
                           >
                             <div className="flex items-center justify-between">
                               <p className="font-medium">{m.name}</p>
-                              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${m.isOnline?'bg-green-500':'bg-gray-500'}`}/>
+                              <span className={`w-2 h-2 rounded-full shrink-0 ${m.isOnline?'bg-green-500':'bg-gray-500'}`}/>
                             </div>
                             <p className="text-xs text-gray-400">{m.mobile || '—'} · {(m.tokenBalance||0).toLocaleString()} BB · {m.totalOrdersProcessed||0} orders</p>
                           </button>

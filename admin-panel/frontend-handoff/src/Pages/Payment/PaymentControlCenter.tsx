@@ -97,7 +97,7 @@ const DisputeResolutionPanel: React.FC = () => {
               )}
               {order.proofScreenshot && (
                 <a href={order.proofScreenshot} target="_blank" rel="noreferrer">
-                  <img src={order.proofScreenshot} alt="proof" className="w-20 h-20 object-cover rounded border border-white/20 hover:opacity-80 cursor-pointer" />
+                  <img src={order.proofScreenshot} alt="proof" className="w-20 h-20 object-cover rounded-sm border border-white/20 hover:opacity-80 cursor-pointer" />
                 </a>
               )}
 
@@ -197,7 +197,7 @@ export const PaymentControlCenter: React.FC = () => {
                 <p className="text-xs text-gray-400">Current active system</p>
               </div>
             </div>
-            {isP2P && <CheckCircle size={20} className="text-green-400 flex-shrink-0" />}
+            {isP2P && <CheckCircle size={20} className="text-green-400 shrink-0" />}
           </div>
           <p className="text-sm text-gray-300 leading-relaxed">
             All deposits and withdrawals are handled by verified merchants.
@@ -227,7 +227,7 @@ export const PaymentControlCenter: React.FC = () => {
                 <p className="text-xs text-gray-400">Future integration</p>
               </div>
             </div>
-            {!isP2P && <CheckCircle size={20} className="text-yellow-400 flex-shrink-0" />}
+            {!isP2P && <CheckCircle size={20} className="text-yellow-400 shrink-0" />}
           </div>
           <p className="text-sm text-gray-300 leading-relaxed">
             Route deposits through a payment gateway API (Razorpay, Cashfree, etc.).
@@ -278,7 +278,7 @@ export const PaymentControlCenter: React.FC = () => {
                 value={cfg[f.key] || ''}
                 onChange={e => set(f.key, e.target.value)}
                 placeholder={f.ph}
-                className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:border-yellow-500/50 outline-none"
+                className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:border-yellow-500/50 outline-hidden"
               />
             </div>
           ))}

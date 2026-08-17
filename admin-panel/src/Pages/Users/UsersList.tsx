@@ -128,16 +128,16 @@ export const UsersList: React.FC = () => {
       key: 'actions', label: '',
       render: (u: User) => (
         <div className="flex items-center justify-end space-x-1">
-          <button onClick={() => openUserDetails(u, 'profile')} className="p-1.5 hover:bg-dark-700 rounded" title="Details"><Eye size={14} /></button>
-          <button onClick={() => openBalanceModal(u, 'add')}    className="p-1.5 hover:bg-green-600/20 text-green-500 rounded" title="Add Balance"><Plus size={14} /></button>
-          <button onClick={() => openBalanceModal(u, 'deduct')} className="p-1.5 hover:bg-red-600/20   text-red-400   rounded" title="Deduct"><Minus size={14} /></button>
-          <button onClick={() => openUserDetails(u, 'history')} className="p-1.5 hover:bg-blue-600/20  text-blue-400  rounded" title="Tx History"><History size={14} /></button>
-          <button onClick={() => openUserDetails(u, 'bank')}    className="p-1.5 hover:bg-purple-600/20 text-purple-400 rounded" title="Bank"><CreditCard size={14} /></button>
-          <button onClick={() => { setPhantomUser(u); setPhantomLevel((u as any).phantomAccess || 'NONE'); }} className="p-1.5 hover:bg-yellow-600/20 text-yellow-400 rounded" title="Phantom Access"><Ghost size={14} /></button>
+          <button onClick={() => openUserDetails(u, 'profile')} className="p-1.5 hover:bg-dark-700 rounded-sm" title="Details"><Eye size={14} /></button>
+          <button onClick={() => openBalanceModal(u, 'add')}    className="p-1.5 hover:bg-green-600/20 text-green-500 rounded-sm" title="Add Balance"><Plus size={14} /></button>
+          <button onClick={() => openBalanceModal(u, 'deduct')} className="p-1.5 hover:bg-red-600/20   text-red-400   rounded-sm" title="Deduct"><Minus size={14} /></button>
+          <button onClick={() => openUserDetails(u, 'history')} className="p-1.5 hover:bg-blue-600/20  text-blue-400  rounded-sm" title="Tx History"><History size={14} /></button>
+          <button onClick={() => openUserDetails(u, 'bank')}    className="p-1.5 hover:bg-purple-600/20 text-purple-400 rounded-sm" title="Bank"><CreditCard size={14} /></button>
+          <button onClick={() => { setPhantomUser(u); setPhantomLevel((u as any).phantomAccess || 'NONE'); }} className="p-1.5 hover:bg-yellow-600/20 text-yellow-400 rounded-sm" title="Phantom Access"><Ghost size={14} /></button>
           {u.status === 'BLOCKED' ? (
-            <button onClick={() => setConfirmAction({ type: 'unblock', user: u })} className="p-1.5 hover:bg-green-600/20 text-green-500 rounded" title="Unblock"><CheckCircle size={14} /></button>
+            <button onClick={() => setConfirmAction({ type: 'unblock', user: u })} className="p-1.5 hover:bg-green-600/20 text-green-500 rounded-sm" title="Unblock"><CheckCircle size={14} /></button>
           ) : (
-            <button onClick={() => setConfirmAction({ type: 'block', user: u })}   className="p-1.5 hover:bg-red-600/20   text-red-500   rounded" title="Block"><Ban size={14} /></button>
+            <button onClick={() => setConfirmAction({ type: 'block', user: u })}   className="p-1.5 hover:bg-red-600/20   text-red-500   rounded-sm" title="Block"><Ban size={14} /></button>
           )}
         </div>
       ),

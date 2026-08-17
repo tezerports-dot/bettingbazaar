@@ -295,19 +295,19 @@ export const MerchantsList: React.FC = () => {
       key: 'actions', label: 'Actions',
       render: (m: Merchant) => (
         <div className="flex items-center space-x-1">
-          <button onClick={() => openDetails(m._id, 'info')}    className="p-1.5 hover:bg-dark-700 rounded" title="Details"><Eye size={14}/></button>
-          <button onClick={() => openDetails(m._id, 'limits')}  className="p-1.5 hover:bg-blue-600/20 text-blue-400 rounded" title="Limits"><Settings size={14}/></button>
-          <button onClick={() => openDetails(m._id, 'history')} className="p-1.5 hover:bg-purple-600/20 text-purple-400 rounded" title="Orders"><History size={14}/></button>
+          <button onClick={() => openDetails(m._id, 'info')}    className="p-1.5 hover:bg-dark-700 rounded-sm" title="Details"><Eye size={14}/></button>
+          <button onClick={() => openDetails(m._id, 'limits')}  className="p-1.5 hover:bg-blue-600/20 text-blue-400 rounded-sm" title="Limits"><Settings size={14}/></button>
+          <button onClick={() => openDetails(m._id, 'history')} className="p-1.5 hover:bg-purple-600/20 text-purple-400 rounded-sm" title="Orders"><History size={14}/></button>
           {m.merchantApprovalStatus === 'PENDING' && (
-            <button onClick={() => handleApproveMerchant(m._id)} className="px-2 py-1 bg-gold-500/20 text-gold-400 hover:bg-gold-500/30 rounded text-xs font-medium">Approve</button>
+            <button onClick={() => handleApproveMerchant(m._id)} className="px-2 py-1 bg-gold-500/20 text-gold-400 hover:bg-gold-500/30 rounded-sm text-xs font-medium">Approve</button>
           )}
           {m.merchantApprovalStatus === 'PENDING' && (
-            <button onClick={() => handleRejectMerchant(m._id)} className="px-2 py-1 bg-red-600/20 text-red-400 hover:bg-red-600/30 rounded text-xs font-medium">Reject</button>
+            <button onClick={() => handleRejectMerchant(m._id)} className="px-2 py-1 bg-red-600/20 text-red-400 hover:bg-red-600/30 rounded-sm text-xs font-medium">Reject</button>
           )}
           {m.status !== 'SUSPENDED' ? (
-            <button onClick={() => setConfirmAction({ type: 'suspend', merchant: m })} className="p-1.5 hover:bg-red-600/20 text-red-500 rounded" title="Suspend"><Ban size={14}/></button>
+            <button onClick={() => setConfirmAction({ type: 'suspend', merchant: m })} className="p-1.5 hover:bg-red-600/20 text-red-500 rounded-sm" title="Suspend"><Ban size={14}/></button>
           ) : (
-            <button onClick={() => setConfirmAction({ type: 'activate', merchant: m })} className="p-1.5 hover:bg-green-600/20 text-green-500 rounded" title="Activate"><CheckCircle size={14}/></button>
+            <button onClick={() => setConfirmAction({ type: 'activate', merchant: m })} className="p-1.5 hover:bg-green-600/20 text-green-500 rounded-sm" title="Activate"><CheckCircle size={14}/></button>
           )}
         </div>
       ),

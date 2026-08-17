@@ -278,7 +278,7 @@ export const DepositPolicy: React.FC = () => {
 
       <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4">
         <div className="flex items-start space-x-3">
-          <Info className="text-blue-500 mt-0.5 flex-shrink-0" size={20} />
+          <Info className="text-blue-500 mt-0.5 shrink-0" size={20} />
           <div className="text-sm">
             <p className="font-semibold text-blue-400 mb-1">What This Policy Governs</p>
             <ul className="space-y-1 text-gray-300">
@@ -414,7 +414,7 @@ export const DepositPolicy: React.FC = () => {
           </div>
           {Math.abs(parseFloat(form.depositAllocationPercent || '0') + parseFloat(form.reserveAllocationPercent || '0') - 100) > 0.01 && (
             <div className="flex items-center space-x-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
-              <AlertTriangle className="text-red-500 flex-shrink-0" size={16} />
+              <AlertTriangle className="text-red-500 shrink-0" size={16} />
               <p className="text-sm text-red-400">Deposit % + Reserve % must equal 100</p>
             </div>
           )}
@@ -430,7 +430,7 @@ export const DepositPolicy: React.FC = () => {
                   onChange={(e) => setForm((f) => ({ ...f, withdrawable: e.target.checked }))}
                   className="sr-only peer"
                 />
-                <div className="w-11 h-6 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gold-500"></div>
+                <div className="w-11 h-6 bg-gray-700 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gold-500"></div>
               </label>
             </div>
             <div className="flex items-center justify-between">
@@ -442,7 +442,7 @@ export const DepositPolicy: React.FC = () => {
                   onChange={(e) => setForm((f) => ({ ...f, settlementBuffer: e.target.checked }))}
                   className="sr-only peer"
                 />
-                <div className="w-11 h-6 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gold-500"></div>
+                <div className="w-11 h-6 bg-gray-700 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gold-500"></div>
               </label>
             </div>
             <div>
