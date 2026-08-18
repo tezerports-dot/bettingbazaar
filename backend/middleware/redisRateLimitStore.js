@@ -55,6 +55,7 @@ function getClient() {
   sharedClient = new Redis(process.env.REDIS_URL, {
     // Separate connection from the cache client on purpose: a slow cache
     // pipeline must never delay auth/bet rate decisions, and vice versa.
+    protocol: 2, // ioredis 6: RESP2 so the Lua rate-limit replies parse as on v5
     maxRetriesPerRequest: 1,
     enableOfflineQueue: false, // fail fast to the memory fallback when down
     retryStrategy: (times) => Math.min(times * 200, 5000), // keep reconnecting forever

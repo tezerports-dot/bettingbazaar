@@ -41,7 +41,7 @@ async function ensureQueue() {
     import('bullmq'), import('ioredis'),
   ]);
   // BullMQ requires maxRetriesPerRequest: null on its blocking connections.
-  connection = new IORedis(process.env.REDIS_URL, { maxRetriesPerRequest: null, enableReadyCheck: false });
+  connection = new IORedis(process.env.REDIS_URL, { protocol: 2, maxRetriesPerRequest: null, enableReadyCheck: false }); // protocol:2 = RESP2 for BullMQ (ioredis 6)
   connection.on('error', (e) => console.warn('[jobQueue] redis error:', e.message));
   queue = new Queue(QUEUE_NAME, { connection });
   worker = new Worker(QUEUE_NAME, async (job) => {

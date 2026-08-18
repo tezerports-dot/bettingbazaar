@@ -8,6 +8,11 @@ import Redis from 'ioredis';
 export async function connectRedis() {
   try {
     const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {
+      // ioredis 6 defaults to RESP3; pin RESP2 so the wire behaviour is byte-for-
+      // byte identical to v5 across the whole app, BullMQ and the socket.io Redis
+      // adapter (all validated on RESP2). The v6 upgrade is for Node-20+ support
+      // and maintenance, NOT a protocol change — adopt RESP3 later, deliberately.
+      protocol: 2,
       maxRetriesPerRequest: 3,
       enableReadyCheck:     true,
       lazyConnect:          true
