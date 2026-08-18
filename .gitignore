@@ -32,3 +32,12 @@ tmp/
 
 user-panel/dist/
 user-panel/node_modules/
+
+# Non-deployed lockfiles — Dependabot scanned these and raised alerts against
+# code that is never built or served. The app deploys from the ROOT
+# package-lock.json (Dockerfile runs `npm ci` at /app, which carries every
+# backend dep), so these only produced noise + a stale-dependency trap.
+#   - backend/package-lock.json: vestigial; root install is authoritative.
+#   - */frontend-handoff/package-lock.json: generated snapshots (npm run handoff:frontends).
+backend/package-lock.json
+**/frontend-handoff/package-lock.json
