@@ -1,16 +1,15 @@
 # deploy/ — deployment targets & strategies (plan items 40, 41, 43, 44, 29)
 
 The app is one portable Docker image (see `Dockerfile`, `docs/governance/04-GOVERNANCE.md` §17) and a
-**verified-stateless app tier** — these files are how you run it beyond the
-current single Railway service. Nothing here is required while Railway remains
-the deploy target; it exists so a platform move is configuration, not a project.
+**verified-stateless app tier** — these files are how you run it. The current
+plan is a **single Shinjiru dedicated box** (`VPS_UBUNTU_SETUP.md`); the rest
+exist so a platform move is configuration, not a project.
 
-## Launch plan — `LAUNCH_PLAN.md`
-Start here if you are going live. Two stages: prove the software on Railway
-(click to add the databases, walk the whole money loop, find bugs while nothing
-is at stake), then run it on Hetzner. Includes real cost figures, what to buy at
-each size, the seven-step money-loop verification, and what actually has to
-change to scale horizontally toward 1M DAU.
+## Going live — start at `../docs/GO_LIVE_RUNBOOK.md`
+The ordered, non-coder runbook: a Shinjiru dedicated box, PostgreSQL as the
+money authority from day one, the built-in manual (merchant) payment system, the
+load test, and the Android app. It sequences `VPS_UBUNTU_SETUP.md` (below) and
+the capacity docs for you.
 
 ## Single VPS (Ubuntu) — `VPS_UBUNTU_SETUP.md`
 Everything on one Ubuntu 22.04/24.04 box: Node 22, MongoDB 7 as a single-node

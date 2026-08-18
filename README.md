@@ -37,7 +37,7 @@ deliberate. Read the runbook's Phase 0 before you rent anything.
 * `/merchant-panel`: Merchant React/Vite application.
 * `/backend`: Node.js/Express API and bounded domain services for the modular monolith.
 * `/docs/governance`: Single governance hub for enterprise decisions, authorization, SRE, disaster recovery, retention, launch checks, and the monolith-to-microservices migration plan.
-* `/design`: UI/UX blueprint and the `visual-mapping/` screen sketch — reference material, not build targets.
+* `/design`: UI/UX product blueprint (`BettingBazaar_UIUX_Product_Blueprint.md`) — reference material, not a build target.
 * `/platform`: Capability inventory used by governance verification.
 * `/deploy`: Deployment notes and environment-specific runbooks (k8s, Compose, Grafana, HAProxy).
 * `/e2e`, `/scripts`, `/tools`: Playwright specs, maintenance scripts, and developer tooling.

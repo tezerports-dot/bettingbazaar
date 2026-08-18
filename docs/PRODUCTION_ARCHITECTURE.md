@@ -5,8 +5,10 @@ Answers two questions that need deciding before production:
 1. **Which database owns which data, permanently?**
 2. **What hardware does ~50,000 DAU need, and what does it cost?**
 
-Companion to `docs/RAILWAY_STAGING.md` (staging) and
-`docs/governance/LAUNCH_READINESS.md` (what gates a launch).
+Companion to `docs/GO_LIVE_RUNBOOK.md` (the ordered launch runbook —
+Shinjiru dedicated box) and `docs/governance/LAUNCH_READINESS.md` (what gates a
+launch). The Hetzner figures below are sizing/cost *reference*; the current plan
+runs on a single Shinjiru dedicated box (`deploy/VPS_UBUNTU_SETUP.md`).
 
 ---
 

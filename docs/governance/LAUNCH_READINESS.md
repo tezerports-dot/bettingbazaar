@@ -81,9 +81,18 @@ needed (`04-GOVERNANCE.md` §18).
 
 ---
 
-## E. Postgres money cutover — 🟡 deliberately NOT done (gated)
+## E. Postgres money cutover — gated; the launch plan flips it ON at go-live
 
-**State today:** Postgres is a **fully-wired, verified _shadow_.** Every
+> **Launch decision (2026-08):** the platform launches with Postgres as the money
+> authority from day one (`MONEY_AUTHORITY_*=postgres`). See
+> `docs/GO_LIVE_RUNBOOK.md` Phase 4. This does **not** bypass the gate below — you
+> still pass `npm run preflight:flip` before taking money. What makes the direct
+> flip low-risk is that a **fresh launch has no existing money data to migrate**:
+> Postgres starts empty and authoritative, MongoDB mirrors it. The description
+> below is the mechanism and the gate; it remains exact.
+
+**State today (code default, flags unset):** Postgres is a **fully-wired,
+verified _shadow_.** Every
 money mutation dual-writes to it (`postgres/dualWrite.js`, hooked on all seven
 money collections) and a reconcile job detects/repairs drift
 (`postgres/reconcile.js`). **MongoDB is still authoritative** for reads and
