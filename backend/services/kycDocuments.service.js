@@ -223,6 +223,32 @@ export async function presignUpload({ userId, docType, contentType, fileSize }) 
 }
 
 /**
+ * Server-side upload of one document from bytes already in hand.
+ *
+ * This is the MIGRATION path — pulling a legacy public-CDN document into this
+ * private bucket — and any future admin-side ingestion. It is NOT reachable from
+ * a user request: users always get a presigned PUT (presignUpload) so their
+ * bytes never transit the app. Same key scheme, same validation, same private
+ * bucket as every other write. Returns the stored key.
+ */
+export async function putDocumentObject({ userId, docType, contentType, body }) {
+  if (!configured()) throw Object.assign(new Error('KYC document storage is not configured'), { status: 503 });
+  const kind = normaliseDocType(docType);
+  if (!kind) throw Object.assign(new Error(`Unknown KYC document type '${docType}'`), { status: 400 });
+  const size = body?.length ?? body?.byteLength ?? 0;
+  validate({ contentType, fileSize: size, docType: kind });
+  const key = keyFor(userId, kind, contentType);
+  await s3().send(new PutObjectCommand({
+    Bucket: BUCKET,
+    Key: key,
+    Body: body,
+    ContentType: contentType,
+    // No ACL — the bucket is private and objects inherit that.
+  }));
+  return { key, docType: kind, contentType, size };
+}
+
+/**
  * Did the object actually arrive, and is it what was declared?
  *
  * A presigned PUT is a grant, not a promise — a client can take one and upload
