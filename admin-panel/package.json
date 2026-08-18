@@ -10,7 +10,7 @@
     "lint": "eslint \"src/**/*.{ts,tsx}\" \"*.ts\" --report-unused-disable-directives --max-warnings 0"
   },
   "dependencies": {
-    "@hookform/resolvers": "^3.3.2",
+    "@hookform/resolvers": "^5.9.0",
     "axios": "^1.19.0",
     "clsx": "^2.0.0",
     "date-fns": "^3.0.6",
