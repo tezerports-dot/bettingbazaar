@@ -493,9 +493,12 @@ Honest limits, so they are decisions rather than surprises:
 - **No PITR by default.** Enable Postgres WAL archiving and Mongo oplog backups
   off-box, or you can only restore to the last daily dump.
 - **Backups on the same disk are not backups.** Ship the bucket off-host.
-- **The Postgres money cutover stays off.** Every `MONEY_AUTHORITY_*` variable
-  stays unset; Postgres runs as a verified shadow with reconciliation. Flipping
-  authority is an owner-gated sequence (`LAUNCH_READINESS.md` §E).
+- **The Postgres money cutover is an owner decision.** By default (flags unset)
+  Postgres runs as a verified shadow with reconciliation. The **current launch
+  plan flips it ON** — `MONEY_AUTHORITY_*=postgres` — from day one, after the
+  readiness gate passes (`docs/GO_LIVE_RUNBOOK.md` Phase 4; the gate is
+  `LAUNCH_READINESS.md` §E and `npm run preflight:flip`). On a fresh database
+  there is no data to migrate, which is what makes the direct flip low-risk.
 - Deploying updates means downtime unless you add a second process and shift the
   upstream. The app drains gracefully on SIGTERM, so `pm2 reload` is close.
 

@@ -222,6 +222,35 @@ export const pgQueryDuration = new client.Histogram({
   registers: [registry],
 });
 
+// ── Realtime delivery (cost / concurrency) ───────────────────────────────────
+// The snapshot publisher (domains/markets/cycleSnapshotPublisher.js) coalesces
+// per-bet pool broadcasts into ≤1 snapshot/sec/cycle. These make the win
+// measurable: snapshots_published should track (live cycles × 1/sec) no matter
+// how high the bet rate climbs, while connected_sockets shows fan-out scope.
+// Event-loop lag — the thing that actually degrades under realtime overload — is
+// already exported by collectDefaultMetrics as nodejs_eventloop_lag_seconds.
+// IoC provider like the PG pool above: this module imports neither io nor the
+// publisher, so no dependency cycle forms.
+let realtimeStatsProvider = null;
+/** server.js registers a getter returning {connectedSockets, trackedCycles, snapshotsPublished, betsCoalesced}. */
+export function setRealtimeStatsProvider(fn) { realtimeStatsProvider = typeof fn === 'function' ? fn : null; }
+export const realtimeStats = new client.Gauge({
+  name: 'bb_realtime_stats',
+  help: 'Realtime delivery gauges (connected_sockets|tracked_cycles|snapshots_published|bets_coalesced)',
+  labelNames: ['metric'],
+  registers: [registry],
+  collect() {
+    try {
+      const s = realtimeStatsProvider ? realtimeStatsProvider() : null;
+      if (!s) return;
+      if (typeof s.connectedSockets === 'number')   this.set({ metric: 'connected_sockets' },   s.connectedSockets);
+      if (typeof s.trackedCycles === 'number')      this.set({ metric: 'tracked_cycles' },      s.trackedCycles);
+      if (typeof s.snapshotsPublished === 'number') this.set({ metric: 'snapshots_published' }, s.snapshotsPublished);
+      if (typeof s.betsCoalesced === 'number')      this.set({ metric: 'bets_coalesced' },      s.betsCoalesced);
+    } catch { /* unavailable — emit nothing */ }
+  },
+});
+
 /** GET /metrics handler. */
 export async function metricsHandler(req, res) {
   try {

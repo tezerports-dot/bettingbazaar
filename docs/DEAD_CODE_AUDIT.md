@@ -89,3 +89,28 @@ State the corpus you searched. Prefer moving something to the "kept, and why"
 table over deleting it — a wrong deletion in this repository is a money path or
 a safety check, and the tests that would catch it are frequently the very thing
 being deleted alongside it.
+
+---
+
+## 2026-08-18 — go-live cleanup (pre-launch pivot)
+
+Removed, with confidence (not "looks unused" — provably not built/served):
+
+- **`*/frontend-handoff/` (189 files) + `scripts/create-frontend-handoffs.mjs` +
+  the `handoff:frontends` npm script.** Auto-generated standalone snapshots of
+  each panel, never built or served; they existed only to be copied out, and
+  produced Dependabot alerts against dead code. Regeneration is no longer wired.
+- **`backend/package.json` (+ its already-untracked lockfile).** The backend has
+  never been installed on its own — the Docker image runs `npm ci` at `/app`
+  from the ROOT lockfile (which carries every backend dep), and `backend/*.js`
+  resolve ESM via the root's `"type":"module"`. The stray manifest was a second,
+  drifting dependency source (root=mongoose 9, stray=mongoose 8).
+- **`docs/NEXT_SESSION_HANDOFF.md`** — a transient AI-session handoff pinned to a
+  merged PR (#121) and a deleted branch. Superseded by `docs/GO_LIVE_RUNBOOK.md`.
+- **`docs/RAILWAY_STAGING.md`** — Railway is off-plan; the platform now self-hosts
+  on a Shinjiru dedicated box (`deploy/VPS_UBUNTU_SETUP.md`).
+
+NOT removed (and why the warning at the top of this file still holds): backend
+source modules flagged as "unreferenced" by a static scan were left alone — some
+are called by name from outside the codebase, and this is a money platform where
+a wrong deletion is not caught by any test.

@@ -352,6 +352,30 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
       return () => sseBridge.removeEventListener(event, wrapped);
     };
 
+    // ── Cycle-room watching (realtime cost fix) ──────────────────────────────
+    // We tell the server which cycle(s) we are viewing so it can scope the
+    // coalesced pool_update snapshot to watchers instead of broadcasting to
+    // every connection. `desired` is the id per cycle type; `watched` is what
+    // we've actually joined. syncWatched(patch) reconciles the two — join new,
+    // leave stale — and is called whenever the live cycles change.
+    const desired: Record<string, string | undefined> = {};
+    const watched = new Set<string>();
+    const syncWatched = (patch: Record<string, string | undefined>) => {
+      Object.assign(desired, patch);
+      if (!socket) return;
+      const want = new Set(Object.values(desired).filter(Boolean) as string[]);
+      for (const id of Array.from(watched)) {
+        if (!want.has(id)) { socket.emit('unwatch_cycle', { cycleId: id }); watched.delete(id); }
+      }
+      for (const id of want) {
+        if (!watched.has(id)) { socket.emit('watch_cycle', { cycleId: id }); watched.add(id); }
+      }
+    };
+    const typeKeyOf = (raw: any, cycleId?: string): string =>
+      raw === '30_MIN' ? '30_MIN'
+      : raw === 'FULL_DAY' ? 'FULL_DAY'
+      : (typeof cycleId === 'string' && cycleId.includes('30MIN')) ? '30_MIN' : 'FULL_DAY';
+
     // ── cycle_snapshot: authoritative init pushed by server on connect ───────
     // Arrives via SSE on every connection (SSE sends it on connect).
     
@@ -397,12 +421,17 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
 
       applySnapshotType('30_MIN',   CycleType.THIRTY_MIN);
       applySnapshotType('FULL_DAY', CycleType.FULL_DAY);
+      // Watch exactly the two live cycles the snapshot just described.
+      syncWatched({ '30_MIN': map['30_MIN']?.cycleId, 'FULL_DAY': map['FULL_DAY']?.cycleId });
       setIsOnline(true);
     };
 
     // Request snapshot on every (re)connect so cycles are never stale after a
-    // server restart or temporary network drop.
+    // server restart or temporary network drop. The server drops our room
+    // membership on disconnect, so forget what we thought we were watching and
+    // let the fresh snapshot re-join us.
     const handleReconnect = () => {
+      watched.clear();
       socket?.emit('request_cycle_snapshot');
     };
 
@@ -454,6 +483,20 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
       }
     };
 
+    // pool_update is the canonical coalesced snapshot (≤1/sec/cycle), delivered
+    // to the cycle room we watch. It carries the same absolute totals as the
+    // legacy per-bet bet_placed, so we normalise the field names and reuse the
+    // exact same applier — no separate code path, no double logic.
+    const handlePoolUpdate = (data: any) => {
+      if (typeof data?.cycleId !== 'string' || !data.cycleId) return;
+      handleBetPlaced({
+        cycleId:        data.cycleId,
+        cycleType:      data.cycleType,
+        newTotalDelhi:  data.totalDelhi,
+        newTotalBombay: data.totalBombay,
+      });
+    };
+
     const handleNewCycle = (data: any) => {
       // Server created a fresh cycle (sent 12s after cycle_result).
       const ct = data.type === '30_MIN'
@@ -490,6 +533,8 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
           declaredAt:      undefined,
         }
       }));
+      // Switch our watch to the fresh cycle for this type (leaves the old one).
+      syncWatched({ [typeKeyOf(data.type, data.cycleId)]: data.cycleId });
     };
 
     const handleCycleResult = (data: any) => {
@@ -632,6 +677,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     // Listen to both so admin wallet top-ups reflect instantly without refresh.
     socket.on('user_update',         handleUserBalanceUpdate);
     socket.on('bet_placed',          handleBetPlaced);
+    socket.on('pool_update',         handlePoolUpdate);
     socket.on('new_cycle',           handleNewCycle);
     socket.on('cycle_result',        handleCycleResult);
     socket.on('cycle_phase',         handleCyclePhase);
@@ -649,6 +695,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
         socket.off('cycle_snapshot',      handleCycleSnapshot);
         socket.off('connect',             handleReconnect);
         socket.off('bet_placed',          handleBetPlaced);
+        socket.off('pool_update',         handlePoolUpdate);
         socket.off('new_cycle',           handleNewCycle);
         socket.off('cycle_result',        handleCycleResult);
         socket.off('payout_complete',     handlePayoutComplete);

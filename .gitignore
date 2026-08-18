@@ -32,3 +32,9 @@ tmp/
 
 user-panel/dist/
 user-panel/node_modules/
+
+# The backend deploys from the ROOT package-lock.json (Dockerfile runs `npm ci`
+# at /app, which carries every backend dep). backend/ has no manifest of its own;
+# this guards against a stray `npm install` inside backend/ re-introducing a
+# second, drifting lockfile (and the Dependabot noise that came with it).
+backend/package-lock.json

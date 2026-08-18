@@ -33,7 +33,7 @@ export function initRealtimeBridge(io, sseManager) {
   }
 
   try {
-    const opts = { maxRetriesPerRequest: null, enableReadyCheck: true };
+    const opts = { protocol: 2, maxRetriesPerRequest: null, enableReadyCheck: true }; // protocol:2 = RESP2 (ioredis 6; see redisConnect.js)
     const pub      = new Redis(process.env.REDIS_URL, opts);
     const subSocket = new Redis(process.env.REDIS_URL, opts);
     const subSSE    = new Redis(process.env.REDIS_URL, opts);

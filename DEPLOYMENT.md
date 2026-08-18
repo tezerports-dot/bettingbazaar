@@ -37,15 +37,16 @@ Install with `npm ci` (the user-panel no longer needs `--legacy-peer-deps`).
 
 ---
 
-## A. Railway (fastest managed path)
+## A. Railway (legacy managed path — not the current plan)
 
-> **First time deploying?** Follow **[`docs/RAILWAY_STAGING.md`](docs/RAILWAY_STAGING.md)**
-> instead — the same path written out step by step, with every environment
-> variable, the real error messages and what causes them, and the MongoDB
-> replica-set requirement that a single-node plugin will not satisfy. The six
-> steps below assume you already know Railway.
+> **Going live?** The current plan is a **Shinjiru dedicated box** — follow
+> **[`docs/GO_LIVE_RUNBOOK.md`](docs/GO_LIVE_RUNBOOK.md)** (the ordered non-coder
+> runbook) and **[`deploy/VPS_UBUNTU_SETUP.md`](deploy/VPS_UBUNTU_SETUP.md)** (every
+> command). The Railway steps below are kept only as a generic managed-PaaS
+> reference; note Railway's single-node MongoDB plugin does **not** satisfy the
+> replica-set requirement, so it cannot run the money paths as-is.
 >
-> Planning production? **[`docs/PRODUCTION_ARCHITECTURE.md`](docs/PRODUCTION_ARCHITECTURE.md)**
+> Architecture/sizing reference: **[`docs/PRODUCTION_ARCHITECTURE.md`](docs/PRODUCTION_ARCHITECTURE.md)**
 > covers which database owns which data, Hetzner sizing and cost for ~50k DAU,
 > and why Kubernetes is not recommended at this scale.
 

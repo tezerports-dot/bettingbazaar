@@ -4,42 +4,25 @@ Bet on Delhi vs Bombay in real time, with a P2P merchant settlement network and
 algorithmic game cycles. The player app is a React SPA; there is no 3D renderer
 in it (the three.js dependency was removed 2026-07-27 — nothing imported it).
 
-## 🚀 Deployment Guide (For No-Coders)
+## 🚀 Going Live (For No-Coders)
 
-### 1. Database Setup (MongoDB)
-* Create a free account at [mongodb.com](https://www.mongodb.com/).
-* Create a Cluster and a Database User (keep the password safe).
-* In "Network Access", allow only the backend host's outbound IPs or private
-  VPC subnet. Avoid `0.0.0.0/0` for production because it exposes the database
-  endpoint to the entire internet.
-* Copy your Connection String (looks like `mongodb+srv://...`).
+**Start here: [`docs/GO_LIVE_RUNBOOK.md`](docs/GO_LIVE_RUNBOOK.md)** — the ordered,
+do-this-then-that guide to launching on a Shinjiru dedicated server with
+PostgreSQL as the money authority and the built-in manual (merchant) payment
+system. It sequences the deep guides for you:
 
-### 2. Hosting Setup (Railway)
-* Go to [railway.app](https://railway.app/) and login with GitHub.
-* Click "+ New Project" -> "Deploy from GitHub repo".
-* Select the `betting-bazaar` repository.
-* Keep Railway's root directory pointed at the repository root so it uses the root
-  `railway.json` build/start commands.
-* Go to the **Variables** tab in Railway and add the production variables from
-  `.env.example`. The backend refuses to boot in production unless these minimum
-  required values are present:
-  * `NODE_ENV`: `production`
-  * `MONGODB_URI`: Paste your MongoDB connection string here.
-  * `JWT_SECRET`: Long random secret used to sign auth tokens.
-  * `ORDER_HMAC_SECRET`: Long random secret dedicated to payment-order HMACs.
-  * `AADHAAR_HMAC_SECRET`: Long random secret dedicated to Aadhaar duplicate-detection HMACs.
-  * `REDIS_URL`: Railway-managed Redis URL or another Redis connection string.
-  * `ALLOWED_ORIGINS`: Comma-separated trusted frontend origins, including schemes, for each deployed user/admin/merchant panel (for example `https://app.example.com,https://admin.example.com,https://merchant.example.com`). Do not use the backend/API URL unless it is also a browser frontend origin.
-  * `DATABASE_URL`: PostgreSQL connection string for the hybrid money datastore.
-  * `S3_BUCKET_NAME`: Durable upload bucket name.
-  * `METRICS_TOKEN`: Bearer token required for Prometheus metrics.
-  * `PUBLIC_APP_ORIGIN`: Official public HTTPS app origin.
-  * `PUBLIC_APP_ALLOWED_ORIGINS`: Comma-separated public app origin allow-list.
-* Also set the supporting S3/CDN values shown in `.env.example`
-  (`S3_ENDPOINT`, `S3_REGION`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, and `CDN_URL`)
-  before enabling production uploads.
+- **Build the server:** [`deploy/VPS_UBUNTU_SETUP.md`](deploy/VPS_UBUNTU_SETUP.md)
+  — one Ubuntu box: Node 22, MongoDB 7 (replica set), PostgreSQL 18, Redis,
+  MinIO, PM2, NGINX + TLS.
+- **Every environment variable:** [`docs/governance/ENV.md`](docs/governance/ENV.md)
+  and the annotated `.env.example`.
+- **The Android app / APK:** [`docs/governance/ANDROID_RELEASE_SETUP.md`](docs/governance/ANDROID_RELEASE_SETUP.md).
 
-### 3. Local Development
+The stack self-hosts every datastore (no MongoDB Atlas, no Railway) — the app
+boot-gate refuses to start on an incomplete or insecure config, which is
+deliberate. Read the runbook's Phase 0 before you rent anything.
+
+### Local Development
 1. Open your Chromebook Terminal.
 2. `cd betting-bazaar`
 3. `npm ci --legacy-peer-deps`
@@ -54,7 +37,7 @@ in it (the three.js dependency was removed 2026-07-27 — nothing imported it).
 * `/merchant-panel`: Merchant React/Vite application.
 * `/backend`: Node.js/Express API and bounded domain services for the modular monolith.
 * `/docs/governance`: Single governance hub for enterprise decisions, authorization, SRE, disaster recovery, retention, launch checks, and the monolith-to-microservices migration plan.
-* `/design`: UI/UX blueprint and the `visual-mapping/` screen sketch — reference material, not build targets.
+* `/design`: UI/UX product blueprint (`BettingBazaar_UIUX_Product_Blueprint.md`) — reference material, not a build target.
 * `/platform`: Capability inventory used by governance verification.
 * `/deploy`: Deployment notes and environment-specific runbooks (k8s, Compose, Grafana, HAProxy).
 * `/e2e`, `/scripts`, `/tools`: Playwright specs, maintenance scripts, and developer tooling.

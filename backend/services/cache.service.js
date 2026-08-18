@@ -35,6 +35,7 @@ export const initCache = async () => {
 
     try {
         client = new Redis(REDIS_URL, {
+            protocol: 2, // ioredis 6: keep RESP2 wire behaviour (see redisConnect.js)
             retryStrategy: (times) => {
                 // Give up after 3 retries
                 if (times > 3) {

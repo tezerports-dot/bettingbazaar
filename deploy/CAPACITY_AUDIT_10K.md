@@ -127,7 +127,7 @@ repo recommends **8**, `VPS_UBUNTU_SETUP.md:274,288`). **Memory per concurrent h
 
 **Per-hash wall time is UNKNOWN — requires load testing.** The repo's own estimate is
 **~80 ms**, giving **~50 logins/sec per process** at threadpool 4
-(`LAUNCH_PLAN.md:152`, `VPS_UBUNTU_SETUP.md:288`); `LATENCY.md:45` explicitly says
+(`VPS_UBUNTU_SETUP.md:288`); `LATENCY.md:45` explicitly says
 benchmark before trusting it. Using that estimate:
 
 | Scenario | Rate | Vs ~50/s/proc ceiling |

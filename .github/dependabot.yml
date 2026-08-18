@@ -28,6 +28,16 @@ updates:
       minor-and-patch:
         update-types: [minor, patch]
 
+  # user-panel was previously UNMANAGED — its deps drifted silently. Now tracked
+  # like the other panels.
+  - package-ecosystem: npm
+    directory: "/user-panel"
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 3
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
   - package-ecosystem: github-actions
     directory: "/"
     schedule: { interval: weekly }

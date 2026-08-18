@@ -3,6 +3,12 @@
 import mongoose from 'mongoose';
 // AQ-2: verify via the single PASETO authority (Ed25519 signature + iss/aud stamped).
 import { verifyJwt } from '../domains/identity/jwt.util.js';
+import { cycleSnapshotPublisher } from '../domains/markets/cycleSnapshotPublisher.js';
+
+// Public cycle-room id guard: the room name is client-supplied, so bound it to
+// the shape a real cycleId has (no auth needed — pool totals are public — but a
+// client must not be able to join arbitrary or oversized room names).
+const isValidCycleId = (id) => typeof id === 'string' && id.length > 0 && id.length <= 64 && /^[A-Za-z0-9:_-]+$/.test(id);
 
 export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
 
@@ -139,6 +145,26 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
     socket.on('request_game_state', async () => {
       const gameState = await gameEngine.getGameState();
       socket.emit('game_state', gameState);
+    });
+
+    // ── Public cycle rooms (realtime cost/concurrency fix) ────────────────────
+    // A client joins only the cycle(s) it is actually viewing; the coalesced
+    // `pool_update` snapshot then reaches watchers of THIS cycle instead of every
+    // connected socket. Membership is Socket.IO's own (no Redis watcher list),
+    // and the Redis adapter fans `io.to('cycle:X')` across instances for free.
+    socket.on('watch_cycle', (payload) => {
+      const cycleId = typeof payload === 'string' ? payload : payload?.cycleId;
+      if (!isValidCycleId(cycleId)) return;
+      socket.join(`cycle:${cycleId}`);
+      // Seed the joiner with the current snapshot so pools aren't blank until the
+      // next 1s tick.
+      const snap = cycleSnapshotPublisher.peek(cycleId);
+      if (snap) socket.emit('pool_update', snap);
+    });
+    socket.on('unwatch_cycle', (payload) => {
+      const cycleId = typeof payload === 'string' ? payload : payload?.cycleId;
+      if (!isValidCycleId(cycleId)) return;
+      socket.leave(`cycle:${cycleId}`);
     });
 
     const socketToken = () => {

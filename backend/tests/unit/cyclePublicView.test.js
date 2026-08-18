@@ -126,15 +126,22 @@ describe('the public code paths cannot name a real/phantom field', () => {
     expect(gen).toMatch(/emitAdmin\('admin_cycle_result'/);
   });
 
-  it('the public bet broadcast carries totals only, under the guard', () => {
+  it('the public pool broadcast is coalesced through the guarded publisher, totals only', () => {
     const bet = src('domains/markets/bet.routes.js');
-    expect(bet).toMatch(/const publicBetPayload = assertPublicCycleSafe\(/);
-    // The real/phantom breakdown in this file appears only in the admin_bet_placed
-    // emit (to admin-room) and the derived-pool math — never in publicBetPayload.
-    const payloadBlock = bet.slice(
-      bet.indexOf('const publicBetPayload'),
-      bet.indexOf("emit('bet_placed'"),
-    );
-    expect(payloadBlock).not.toMatch(/real|phantom/i);
+    // bet.routes no longer fans a public bet event out itself — it hands the
+    // snapshot publisher the post-$inc totals, which the publisher coalesces and
+    // guards. Every recordBet call carries totalDelhi/totalBombay ONLY; the
+    // real/phantom breakdown in this file survives solely in the admin_bet_placed
+    // emit (to admin-room).
+    const recordCalls = [...bet.matchAll(/recordBet\(\s*cycleId\s*,\s*\{([\s\S]*?)\}\s*\)/g)];
+    expect(recordCalls.length).toBeGreaterThan(0);
+    for (const m of recordCalls) expect(m[1]).not.toMatch(/real|phantom/i);
+
+    // The guard now lives at the single publish boundary: the publisher builds
+    // every payload through assertPublicCycleSafe, so a forbidden field added to
+    // the snapshot throws at runtime instead of shipping to every watcher.
+    const pub = src('domains/markets/cycleSnapshotPublisher.js');
+    expect(pub).toMatch(/assertPublicCycleSafe\(/);
+    expect(pub).toMatch(/buildPayload\(cycleId, snap\)/);
   });
 });

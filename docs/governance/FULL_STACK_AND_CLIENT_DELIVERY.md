@@ -536,10 +536,12 @@ Neither exists. Ranked by value:
 
 # Part 4 — Complete feature inventory
 
-The authoritative machine-readable map is
-`design/visual-mapping/views/UI_PAGE_REGISTRY.js` — each entry carries a route,
-component, layout shell and API binding. It is the file to update when a screen is
-added. What follows is that registry expanded with delivery-target availability.
+The screen-level reference is `design/BettingBazaar_UIUX_Product_Blueprint.md`
+(the UI/UX blueprint) alongside `platform/capabilities.yaml` (the machine-checked
+capability inventory). What follows is the feature inventory with delivery-target
+availability. (An older `design/visual-mapping/views/UI_PAGE_REGISTRY.js` map was
+removed in the 2026-08-18 cleanup — it was planning-only and read by no code; the
+inventory below is now the maintained list.)
 
 It currently holds **59 entries** — 18 player, 6 merchant, 35 admin — while its own
 header comment still says "Exact 60-view … mapping". Correct the comment (or the
@@ -802,5 +804,4 @@ do not revisit without an explicit owner reversal).
 **Related reading:** `04-GOVERNANCE.md` (rules §§0–16; architecture §§17–21) ·
 `LAUNCH_READINESS.md` · `ENV.md` · `RATE_LIMITS.md` · `LATENCY.md` ·
 `ANDROID_RELEASE_SETUP.md` · `NATIVE_APP_DISTRIBUTION_POLICY.md` ·
-`design/BettingBazaar_UIUX_Product_Blueprint.md` ·
-`design/visual-mapping/views/UI_PAGE_REGISTRY.js` · `platform/capabilities.yaml`
+`design/BettingBazaar_UIUX_Product_Blueprint.md` · `platform/capabilities.yaml`

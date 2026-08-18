@@ -20,6 +20,9 @@ import { derivedPoolsEnabled, refreshRealPools } from './cyclePool.service.js';
 // Real/phantom pools reveal the minority-side winner — the public bet broadcast
 // must carry totals only. assertPublicCycleSafe throws if one slips in.
 import { assertPublicCycleSafe } from './cyclePublicView.js';
+// Coalesces per-bet pool changes into one snapshot/sec/cycle instead of a
+// per-bet fan-out to every connected client (cycleSnapshotPublisher.js).
+import { cycleSnapshotPublisher } from './cycleSnapshotPublisher.js';
 // Pages the operator when a bet's stake cannot be conclusively refunded or
 // released — the one outcome no automated path can resolve on its own.
 import { sendAlert } from '../../services/alerting.service.js';
@@ -401,27 +404,20 @@ router.post('/place', authenticate, requireApprovedKyc, betLimiter, async (req, 
       };
     }
 
-    if (global.io || global.sseManager) {
-      
-      // Must use both channels: SSE for anonymous/public stream clients,
-      
-      // Totals only — the admin_bet_placed emit below carries the real/phantom
-      // breakdown and goes to admin-room alone. Guarded so a real/phantom field
-      // added here throws instead of broadcasting the winner to every client.
-      const publicBetPayload = assertPublicCycleSafe({
-        cycleId,
-        side,
-        cycleType:      cycle.type,
-        newTotalDelhi:  updatedCycle.totalDelhi,
-        newTotalBombay: updatedCycle.totalBombay,
+    {
+      // PUBLIC pool update — coalesced. Instead of fanning a `bet_placed` out to
+      // every connected client on every bet (~500–800/sec × all users), hand the
+      // post-$inc totals to the snapshot publisher, which emits at most one
+      // update per cycle per second. Totals only; the publisher re-guards with
+      // assertPublicCycleSafe so no real/phantom field can ever leak.
+      cycleSnapshotPublisher.recordBet(cycleId, {
+        cycleType:  cycle.type,
+        totalDelhi: updatedCycle.totalDelhi,
+        totalBombay: updatedCycle.totalBombay,
       });
-      if (global.sseManager) {
-        global.sseManager.broadcast('bet_placed', publicBetPayload);
-      }
-      
-      global.io?.emit('bet_placed', publicBetPayload);
 
-      
+      // ADMINS get the full real/phantom breakdown, per bet, on admin-room only
+      // (few admins — per-bet detail here is cheap and useful).
       global.io?.to('admin-room').emit('admin_bet_placed', {
         cycleId,
         side,
@@ -544,22 +540,17 @@ router.post('/phantom', authenticate, async (req, res) => {
     const updatedCycle = await Cycle.findOneAndUpdate({ cycleId }, phantomPoolUpdate, { new: true });
 
     
-    if (global.io || global.sseManager) {
-      
-      const publicPhantomPayload = {
-        cycleId,
-        side,
-        cycleType:      cycle.type,
-        newTotalDelhi:  updatedCycle.totalDelhi,
-        newTotalBombay: updatedCycle.totalBombay,
-      };
-      if (global.sseManager) {
-        global.sseManager.broadcast('bet_placed', publicPhantomPayload);
-      }
-      
-      global.io?.emit('bet_placed', publicPhantomPayload);
+    {
+      // PUBLIC pool update — coalesced (same path as a real bet). A phantom bet
+      // only moves the phantom pool, but the PUBLIC number is the total, so the
+      // publisher carries the updated total exactly as it does for a real bet.
+      cycleSnapshotPublisher.recordBet(cycleId, {
+        cycleType:  cycle.type,
+        totalDelhi: updatedCycle.totalDelhi,
+        totalBombay: updatedCycle.totalBombay,
+      });
 
-      
+      // ADMINS see the phantom breakdown per bet on admin-room only.
       global.io?.to('admin-room').emit('admin_bet_placed', {
         cycleId,
         side,
