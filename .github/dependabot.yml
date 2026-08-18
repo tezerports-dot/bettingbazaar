@@ -29,8 +29,7 @@ updates:
         update-types: [minor, patch]
 
   # user-panel was previously UNMANAGED — its deps drifted silently. Now tracked
-  # like the other panels. (frontend-handoff snapshots are gitignored, so their
-  # stale locks no longer generate alerts.)
+  # like the other panels.
   - package-ecosystem: npm
     directory: "/user-panel"
     schedule: { interval: weekly }
