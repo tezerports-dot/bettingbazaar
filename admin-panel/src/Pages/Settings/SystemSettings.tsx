@@ -821,9 +821,9 @@ export const SystemSettings: React.FC = () => {
               value={formData.webUrl}
               onChange={(e) => setFormData({ ...formData, webUrl: e.target.value })}
               className="input"
-              placeholder="https://your-user-panel.up.railway.app"
+              placeholder="https://your-domain.example"
             />
-            <p className="text-xs text-gray-500 mt-1">The link users share via the "Share Link" button. Update here when you change your Railway domain.</p>
+            <p className="text-xs text-gray-500 mt-1">The link users share via the "Share Link" button. Update here when your public domain changes.</p>
           </div>
 
           <div>

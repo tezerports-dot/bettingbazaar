@@ -18,7 +18,7 @@ import type {
 const _adminViteUrl = import.meta.env.VITE_API_URL as string | undefined;
 const _adminIsLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 if (!_adminViteUrl && !_adminIsLocal) {
-  throw new Error('[FATAL] VITE_API_URL not set in Railway admin-panel service. Set it to the backend URL.');
+  throw new Error('[FATAL] VITE_API_URL is not set for the admin panel. Set it (at build time) to the backend URL, e.g. https://your-domain.example — see docs/GO_LIVE_RUNBOOK.md.');
 }
 const API_URL = _adminViteUrl?.replace(/\/$/, '') || 'http://localhost:8080';
 

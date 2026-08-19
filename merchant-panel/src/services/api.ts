@@ -8,18 +8,19 @@ import {
 } from '../types';
 import { ENDPOINTS, ERROR_MESSAGES } from '../constants';
 
-// BUG FIX: Was returning window.location.origin in production.
-// In Railway's 4-service deployment, the merchant panel runs on its own Caddy domain
-// (e.g. merchant-panel.up.railway.app) which is NOT the backend domain.
-// Returning window.location.origin caused every API call to hit Caddy -> 404.
-// Fix: read VITE_API_URL (set in Railway -> merchant-panel service -> Variables).
+// URL resolution. On a SPLIT-ORIGIN deploy the merchant panel is served from a
+// different host than the backend, so window.location.origin is the panel's host,
+// not the API — every call would 404. Set VITE_API_URL (at build time) to the
+// backend URL for that case. On the default single-origin launch (NGINX serves
+// the panel and proxies /api to the backend) the origin fallback is correct and
+// no env var is needed.
 const getAPIBaseURL = (): string => {
   const hostname = window.location.hostname;
   if (hostname === 'localhost' || hostname === '127.0.0.1') {
     return (import.meta.env.VITE_API_URL as string) || 'http://localhost:8080';
   }
-  // Production: MUST use VITE_API_URL env var.
-  // Set VITE_API_URL = https://your-backend.up.railway.app in Railway Variables.
+  // Split-origin: set VITE_API_URL to the backend URL. Same-origin: fall back to
+  // the current origin (NGINX proxies /api).
   return (import.meta.env.VITE_API_URL as string) || window.location.origin;
 };
 

@@ -32,7 +32,6 @@ import {
 import { rupeesToPaise } from '../../shared/money.js';
 import { isPostgresAuthoritative, MONEY_PATHS } from '../../postgres/moneyAuthority.js';
 import * as pg from '../../postgres/walletPgAuthority.js';
-import { unauditedMoneyMovements } from '../../services/metrics.service.js';
 
 // ── Source-of-truth routing (hybrid money DB, LAUNCH_READINESS.md §E) ────────
 /**
@@ -444,6 +443,37 @@ async function _mongoBetStake(userId, { amount, txId, refId, slices, direction }
   const locking = direction === 'LOCK';
   const sign = locking ? -1 : 1;   // sign applied to the source pockets
 
+  // ── Idempotency fast-path (M-2) ─────────────────────────────────────────
+  // Each slice's ledger row is `${txId}${suffix}` under a UNIQUE index, so a
+  // REDELIVERED request (same txId) has already moved this money. Return the
+  // current balances and move NOTHING again — the same guard lockWithdrawal /
+  // releaseLockedStake above already apply to their own txIds. This is what
+  // closes the double-debit the audit recorded as M-2 (`docs/MONGO_MONEY_AUDIT.md`):
+  // now that the id is the caller's `Idempotency-Key`, a retry reuses it and this
+  // gate fires. The residual is the same one every best-effort-ledger mover has —
+  // if the ledger write itself failed on the first delivery (metered as an
+  // unaudited movement) there is no row to find, and only then can a retry move
+  // the money twice; the Postgres path has no such window and is the launch path.
+  if (slices.length) {
+    const prior = await WalletLedger.findOne({ txId: `${txId}${slices[0].suffix}` })
+      .select('_id').lean();
+    if (prior) {
+      const u = await User.findById(userId)
+        .select('depositBalance winningsBalance reserveBalance lockedBalance').lean();
+      return {
+        ok: true,
+        idempotent: true,
+        txId,
+        balances: {
+          depositBalance:  round2(u?.depositBalance  || 0),
+          winningsBalance: round2(u?.winningsBalance || 0),
+          reserveBalance:  round2(u?.reserveBalance  || 0),
+          lockedBalance:   round2(u?.lockedBalance   || 0),
+        },
+      };
+    }
+  }
+
   const inc = { lockedBalance: locking ? amount : -amount };
   const filter = { _id: userId };
   for (const slice of slices) {
@@ -453,59 +483,88 @@ async function _mongoBetStake(userId, { amount, txId, refId, slices, direction }
     if (locking) filter[slice.field] = { $gte: slice.amount };
   }
 
-  const before = await User.findById(userId).lean();
-  const updated = await User.findOneAndUpdate(filter, { $inc: inc }, { new: true });
-  if (!updated) return { ok: false, insufficient: true, txId };
-
-  // Audit rows are best-effort here, exactly as they were in the route: a
-  // ledger write failure must not strand a bet that already moved money.
-  // (The Postgres path has no such compromise — there the rows are in the same
-  // transaction as the balance.)
-  //
-  // That tradeoff is kept, but it is no longer SILENT. The previous
-  // `.catch(() => {})` discarded the only evidence that a balance had moved
-  // without its ledger row — and those rows are precisely what reconciliation
-  // and the trial balance are computed from, so the failure erased its own
-  // symptom. It also swallowed duplicate-key errors, which on this path are the
-  // signature of a replay that has just double-debited (see the design note in
-  // docs/MONGO_MONEY_AUDIT.md). Failures now increment
-  // bb_unaudited_money_movements_total and log, so the drift is visible before
-  // reconciliation has to infer it.
+  // ── Atomic move: ledger FIRST, then the balance, in ONE transaction ──────
+  // This is the exact shape releaseLockedStake / lockWithdrawal use above, and
+  // the shape the Postgres path has by construction. Two guarantees fall out of
+  // the ordering, and they are M-4 and the concurrent half of M-2:
+  //   • The per-slice txId UNIQUE index is the race gate. A concurrent delivery
+  //     of the same key throws 11000 on the ledger insert and aborts the WHOLE
+  //     transaction, so the `$inc` cannot run twice — no double debit even when
+  //     two requests slip past the fast-path above at the same instant.
+  //   • Balance and ledger commit together or not at all. The old best-effort
+  //     write — money moved, rows attempted afterwards, a failure only METERED
+  //     as an unaudited movement — is gone: there is no window where a stake can
+  //     move without the postings the trial balance is computed from.
+  const session = await mongoose.startSession();
   try {
-    const rows = slices.map((slice) => ({
-      userId,
-      type: locking ? 'DEBIT' : 'CREDIT',
-      field: slice.field,
-      amount: slice.amount,
-      balanceBefore: round2(before?.[slice.field] || 0),
-      balanceAfter:  round2(updated[slice.field] || 0),
-      reason: slice.reason,
-      refModel: 'Bet',
-      refId,
-      txId: `${txId}${slice.suffix}`,
-    }));
-    if (rows.length) await WalletLedger.insertMany(rows, { ordered: false });
-  } catch (error) {
-    // Money has already moved; it stays moved. Record that it is unaudited.
-    try {
-      unauditedMoneyMovements.inc({ path: locking ? 'bet_stake_lock' : 'bet_stake_unlock' });
-      console.error(
-        `[wallet] BALANCE MOVED WITHOUT LEDGER ROWS — user=${userId} txId=${txId} ` +
-        `direction=${direction} amount=${amount} code=${error?.code ?? 'n/a'}: ${error?.message}`,
-      );
-    } catch { /* never let telemetry break the money path */ }
-  }
+    let result;
+    await session.withTransaction(async () => {
+      const before = await User.findById(userId).session(session).lean();
+      if (!before) { const e = new Error('User not found'); e.__notFound = true; throw e; }
 
-  return {
-    ok: true,
-    txId,
-    balances: {
-      depositBalance:  round2(updated.depositBalance  || 0),
-      winningsBalance: round2(updated.winningsBalance || 0),
-      reserveBalance:  round2(updated.reserveBalance  || 0),
-      lockedBalance:   round2(updated.lockedBalance   || 0),
-    },
-  };
+      // Sufficiency (LOCK only) against the transaction snapshot: a concurrent
+      // bet may have drained a pocket since the caller computed the split.
+      const balanceAfter = {};
+      for (const slice of slices) {
+        const cur = round2(before[slice.field] || 0);
+        if (locking && cur < slice.amount) { const e = new Error('insufficient'); e.__insufficient = true; throw e; }
+        balanceAfter[slice.field] = round2(cur + sign * slice.amount);
+      }
+
+      // 1. Ledger rows first — the UNIQUE txId index is the idempotency gate.
+      const rows = slices.map((slice) => ({
+        userId,
+        type: locking ? 'DEBIT' : 'CREDIT',
+        field: slice.field,
+        amount: slice.amount,
+        balanceBefore: round2(before[slice.field] || 0),
+        balanceAfter:  balanceAfter[slice.field],
+        reason: slice.reason,
+        refModel: 'Bet',
+        refId,
+        txId: `${txId}${slice.suffix}`,
+      }));
+      if (rows.length) await WalletLedger.insertMany(rows, { session, ordered: true });
+
+      // 2. Balance move, still guarded by $gte so a race the snapshot read
+      //    missed cannot over-draw. No match ⇒ insufficient ⇒ abort.
+      const updated = await User.findOneAndUpdate(filter, { $inc: inc }, { new: true, session });
+      if (!updated) { const e = new Error('insufficient'); e.__insufficient = true; throw e; }
+
+      result = {
+        ok: true,
+        txId,
+        balances: {
+          depositBalance:  round2(updated.depositBalance  || 0),
+          winningsBalance: round2(updated.winningsBalance || 0),
+          reserveBalance:  round2(updated.reserveBalance  || 0),
+          lockedBalance:   round2(updated.lockedBalance   || 0),
+        },
+      };
+    });
+    return result;
+  } catch (err) {
+    if (err?.__insufficient) return { ok: false, insufficient: true, txId };
+    if (err?.__notFound)     return { ok: false, insufficient: true, txId };
+    if (err?.code === 11000 || /duplicate key/i.test(err?.message || '')) {
+      // A concurrent delivery of the same txId committed first: the money moved
+      // exactly once (theirs). Report ours as the idempotent replay it is.
+      const u = await User.findById(userId)
+        .select('depositBalance winningsBalance reserveBalance lockedBalance').lean();
+      return {
+        ok: true, idempotent: true, txId,
+        balances: {
+          depositBalance:  round2(u?.depositBalance  || 0),
+          winningsBalance: round2(u?.winningsBalance || 0),
+          reserveBalance:  round2(u?.reserveBalance  || 0),
+          lockedBalance:   round2(u?.lockedBalance   || 0),
+        },
+      };
+    }
+    throw err;
+  } finally {
+    await session.endSession();
+  }
 }
 
 /**

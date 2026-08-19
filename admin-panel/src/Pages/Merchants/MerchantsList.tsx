@@ -76,8 +76,8 @@ export const MerchantsList: React.FC = () => {
   const [rail, setRail] = useState<'INR' | 'USDT'>('INR');
   const [isSavingRail, setIsSavingRail] = useState(false);
 
-  // Merchant panel URL comes from admin panel env var VITE_MERCHANT_PANEL_URL
-  // Set this in Railway → admin-panel service → Variables
+  // Merchant panel URL comes from the admin panel build-time env var
+  // VITE_MERCHANT_PANEL_URL (only needed if the merchant panel is on its own host).
   const merchantPanelUrl = (import.meta as any).env?.VITE_MERCHANT_PANEL_URL || '';
 
   const { page, limit, setPage } = usePagination();

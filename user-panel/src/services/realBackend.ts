@@ -43,36 +43,34 @@ import { getCaptchaToken } from './captcha';
 const GLOBAL_CONFIG = (window as any).BAZAAR_CONFIG || {};
 const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 
-// --- CRITICAL FIX: USER PANEL URL RESOLUTION ----------------------------------
-// This project deploys as 4 SEPARATE Railway services. Relative URLs like '/api'
-// resolve to the USER PANEL'S Caddy server, NOT the Express backend.
+// --- USER PANEL URL RESOLUTION ------------------------------------------------
+// The default launch (docs/GO_LIVE_RUNBOOK.md) serves the user panel and the
+// Express backend from the SAME origin behind NGINX, so a relative '/api' just
+// works and no env var is needed — that is the last fallback below.
 //
-// Railway env var: VITE_API_URL = https://betting-bazaar-backend.up.railway.app
-// (no trailing slash, no /api suffix)
-//
-// We append '/api' because realBackend.ts uses short paths (/auth/login, /v1/..., /admin/...):
-//   VITE_API_URL + /api = https://backend.railway.app/api
-//   + /auth/login       = https://backend.railway.app/api/auth/login          ?
-//   + /v1/system/config = https://backend.railway.app/api/v1/system/config     ?
-//   + /admin/users      = https://backend.railway.app/api/admin/users          ?
+// SPLIT-ORIGIN deploys (panel on a different host than the API, or the Capacitor
+// Android shell whose origin is https://localhost) instead set, at BUILD time:
+//   VITE_API_URL = https://your-backend-domain   (no trailing slash, no /api)
+// and we append '/api' because this file uses short paths (/auth/login, /v1/...,
+// /admin/...). Native builds are additionally guarded by scripts/assert-native-env.mjs.
 //
 
 // -------------------------------------------------------------------------------
 const _viteApiUrl: string | undefined = (import.meta as any).env?.VITE_API_URL;
 
 const API_BASE_URL: string =
-  (_viteApiUrl ? _viteApiUrl.replace(/\/$/, '') + '/api' : null) ||   // Railway: absolute backend URL
-  GLOBAL_CONFIG.API_URL ||                                               
-  (isLocal ? 'http://localhost:8080/api' : '/api');
+  (_viteApiUrl ? _viteApiUrl.replace(/\/$/, '') + '/api' : null) ||   // split-origin: absolute backend URL
+  GLOBAL_CONFIG.API_URL ||
+  (isLocal ? 'http://localhost:8080/api' : '/api');                   // same-origin default
 
 const SOCKET_URL: string =
-  (_viteApiUrl ? _viteApiUrl.replace(/\/$/, '') : null) ||             // Railway: backend origin for WS
+  (_viteApiUrl ? _viteApiUrl.replace(/\/$/, '') : null) ||             // split-origin: backend origin for WS
   GLOBAL_CONFIG.SOCKET_URL ||
-  (isLocal ? 'http://localhost:8080' : window.location.origin);
+  (isLocal ? 'http://localhost:8080' : window.location.origin);       // same-origin default
 
-// MERCHANT_PANEL_URL_FIX: merchant panel may be a separate Railway service.
-// Read VITE_MERCHANT_PANEL_URL if set, otherwise fall back to same-domain /merchant path.
-// In Railway → User Panel → Variables: VITE_MERCHANT_PANEL_URL=https://your-merchant-panel.up.railway.app
+// The merchant panel may live on a different host than the user panel. If so,
+// set VITE_MERCHANT_PANEL_URL at build time; otherwise it falls back to the
+// same-domain /merchant path.
 const _merchantPanelUrl: string | undefined = (import.meta as any).env?.VITE_MERCHANT_PANEL_URL;
 export const MERCHANT_PANEL_ORIGIN: string =
   (_merchantPanelUrl ? _merchantPanelUrl.replace(/\/+$/, '') : null) ||
@@ -489,13 +487,33 @@ export class RealBackend implements Backend {
   }
 
   // -- BETTING ---------------------------------------------------------------
+  /**
+   * A fresh idempotency key per user action (per tap). It is generated ONCE here
+   * and — because request() reuses the same `options` across its internal 500/
+   * network retries — every retry of THIS bet carries the SAME key, so a flaky
+   * mobile connection can never turn one tap into two bets. A separate tap is a
+   * separate call, gets a new key, and is a genuinely new bet. The backend
+   * requires this header on /bet/place and returns the original bet for any
+   * redelivery (no second debit, no doubled pool, no duplicate transaction).
+   */
+  private newIdempotencyKey(): string {
+    try {
+      if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return crypto.randomUUID();
+      }
+    } catch { /* older webview — fall through to the manual key */ }
+    return `bk-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  }
+
   // BUG-U4: Response type updated -- balance object matches what backend actually sends
   async placeBet(userId: string, cycleId: string, amount: number, side: BettingSide) {
     return this.request<{
       bet: Bet,
       balance: { deposit: number, winnings: number, locked: number, total: number }
     }>('/bet/place', {
-      method: 'POST', body: JSON.stringify({ userId, cycleId, amount, side })
+      method: 'POST',
+      headers: { 'Idempotency-Key': this.newIdempotencyKey() },
+      body: JSON.stringify({ userId, cycleId, amount, side })
     });
   }
   async placePhantomBet(userId: string, cycleId: string, amount: number, side: BettingSide) {

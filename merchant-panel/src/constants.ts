@@ -1,9 +1,10 @@
 /**
  * BB TOKEN MERCHANT PANEL - CONSTANTS & CONFIGURATION (FIXED)
  *
- * FIX: Production URL was falling back to window.location.origin
- * which is the merchant panel's own Caddy domain, not the backend.
- * Now uses VITE_API_URL env var which is set in Railway to the backend URL.
+ * On a split-origin deploy the merchant panel is served from a different host
+ * than the backend, so window.location.origin is not the API. Set VITE_API_URL
+ * (at build time) to the backend URL; on the default single-origin launch NGINX
+ * proxies /api and no env var is needed.
  */
 
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
@@ -12,7 +13,7 @@ const getAPIBaseURL = (): string => {
   if (hostname === 'localhost' || hostname === '127.0.0.1') {
     return import.meta.env.VITE_API_URL || 'http://localhost:8080';
   }
-  // Production: use VITE_API_URL env var (set in Railway to backend URL)
+  // Split-origin: set VITE_API_URL to the backend URL.
   // Fallback to empty string at build time; the runtime guard in sse.ts catches missing env at runtime
   return (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') ?? '';
 };
