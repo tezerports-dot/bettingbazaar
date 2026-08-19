@@ -489,13 +489,33 @@ export class RealBackend implements Backend {
   }
 
   // -- BETTING ---------------------------------------------------------------
+  /**
+   * A fresh idempotency key per user action (per tap). It is generated ONCE here
+   * and — because request() reuses the same `options` across its internal 500/
+   * network retries — every retry of THIS bet carries the SAME key, so a flaky
+   * mobile connection can never turn one tap into two bets. A separate tap is a
+   * separate call, gets a new key, and is a genuinely new bet. The backend
+   * requires this header on /bet/place and returns the original bet for any
+   * redelivery (no second debit, no doubled pool, no duplicate transaction).
+   */
+  private newIdempotencyKey(): string {
+    try {
+      if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return crypto.randomUUID();
+      }
+    } catch { /* older webview — fall through to the manual key */ }
+    return `bk-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  }
+
   // BUG-U4: Response type updated -- balance object matches what backend actually sends
   async placeBet(userId: string, cycleId: string, amount: number, side: BettingSide) {
     return this.request<{
       bet: Bet,
       balance: { deposit: number, winnings: number, locked: number, total: number }
     }>('/bet/place', {
-      method: 'POST', body: JSON.stringify({ userId, cycleId, amount, side })
+      method: 'POST',
+      headers: { 'Idempotency-Key': this.newIdempotencyKey() },
+      body: JSON.stringify({ userId, cycleId, amount, side })
     });
   }
   async placePhantomBet(userId: string, cycleId: string, amount: number, side: BettingSide) {

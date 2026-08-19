@@ -36,8 +36,21 @@ const betSchema = new mongoose.Schema({
 });
 
 // CRITICAL PERFORMANCE INDEXES
-betSchema.index({ cycleId: 1, status: 1, side: 1, isPhantom: 1 }); 
+betSchema.index({ cycleId: 1, status: 1, side: 1, isPhantom: 1 });
 betSchema.index({ userId: 1, timestamp: -1 });
+
+// Derived-pool aggregation (cyclePool.service.computeRealPools) — the query that
+// REPLACES the per-bet `$inc` on the Cycle document once FEATURE_DERIVED_CYCLE_POOLS
+// is on. It matches {cycleId, isPhantom:false, status≠REFUNDED} and groups by side
+// summing amount. Ordering the index equality-first (cycleId, isPhantom), then the
+// group key (side), then the filtered field (status), and finally `amount` makes
+// that sum an index-only scan: the hot per-second aggregation never touches a bet
+// document. This is what keeps the derived path's own cost bounded at 10k DAU —
+// the whole point of removing the hot counter is not to trade it for a full-scan.
+betSchema.index(
+  { cycleId: 1, isPhantom: 1, side: 1, status: 1, amount: 1 },
+  { name: 'derived_pool_sum' },
+);
 
 // Hybrid money DB (plan step 2): project the bet LIFECYCLE onto the state
 // machine Postgres owns, so a cutover finds every in-flight bet already there

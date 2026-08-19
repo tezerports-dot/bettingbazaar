@@ -97,6 +97,18 @@ MONEY_AUTHORITY_ORDERS=postgres
 MONEY_AUTHORITY_KYC=postgres
 ```
 
+And one line that lifts the concurrency ceiling — the single most important
+setting for handling many players at once on one box:
+
+```ini
+# Sum the live pool from the bets instead of a per-bet write to one Cycle row.
+# Without this, every bet on a cycle queues behind the one before it and a bigger
+# (or second) server does NOT help — they all queue on the same row. With it,
+# bets contend with nothing. Correctness is identical; validate with the load
+# test in Phase 5. Remove the line to revert instantly.
+FEATURE_DERIVED_CYCLE_POOLS=true
+```
+
 > **Do not just paste these and hope.** After the app boots (Phase 3), run the
 > readiness check in Phase 4 — it refuses to let a money path go live on Postgres
 > unless the code, the reconciliation query and the rollback path all line up. If
@@ -245,12 +257,17 @@ above — get the website solid first.
   justifies it.
 - **Deploys mean brief downtime** unless you run a second app process and shift
   NGINX to it (`pm2 reload` gets close — the app drains gracefully).
-- **The write ceiling on a single cycle.** Every bet on a cycle updates the same
-  row/document; Phase 6 tells you where that tops out. It's the one limit you
-  can't fix by adding a second server.
-- **A retried bet on a flaky mobile network can become a second bet** until the
-  app sends an `Idempotency-Key` on money requests (the backend already accepts
-  it). Add it to the app — highest-value correctness fix for mobile.
+- **The write ceiling on a single cycle** — *now lifted, if you set the flag.*
+  Without `FEATURE_DERIVED_CYCLE_POOLS=true` (Phase 2), every bet on a cycle
+  updates the same row and they queue one behind another — the one limit a second
+  server can't fix. With it on, the pool is summed from the bets and they contend
+  with nothing. Phase 5's load test tells you where the new ceiling sits. Leave it
+  on for launch; it's the cheapest capacity you will ever buy.
+- **A retried bet on a flaky mobile network can no longer become a second bet.**
+  The backend now *requires* an `Idempotency-Key` on `POST /bet/place` and returns
+  the original bet for any redelivery — no second debit, no doubled pool, no
+  duplicate transaction — and the app already sends a fresh key per tap and reuses
+  it on retry. Nothing to do; just don't strip the header at your edge/proxy.
 
 ---
 

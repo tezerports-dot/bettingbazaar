@@ -2,12 +2,11 @@
 
 
 import express from 'express';
-import { randomUUID } from 'crypto'; // MED-01: for collision-safe ledger txId
-import { creditWinnings, lockBetStake, unlockBetStake } from '../wallet/walletAuthority.service.js'; // HIGH-03: atomicBet removed (never called; inline atomic pattern used instead)
+import { creditWinnings, lockBetStake, unlockBetStake, getBalances } from '../wallet/walletAuthority.service.js'; // HIGH-03: atomicBet removed (never called; inline atomic pattern used instead)
 import mongoose from 'mongoose';
 import { authenticate, requireApprovedKyc } from '../identity/auth.middleware.js';
 import { betLimiter } from '../../middleware/security.js';
-import { readIdempotencyKey, assertValidIdempotencyKey } from '../../middleware/idempotencyKey.js';
+import { requireIdempotencyKey, IdempotencyKeyError } from '../../middleware/idempotencyKey.js';
 import * as betAuthority from '../../postgres/betPgAuthority.js';
 // Risk Platform (Phase 010): the single validation authority for bets.
 // Phase A (2026-07-10): computeBetFundingPlan owns the stake-split arithmetic.
@@ -53,6 +52,44 @@ async function abortOrEnd(session) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// idempotentBetResponse — the success body for a bet that ALREADY exists, i.e. a
+// redelivered POST /place. It carries the original bet and the user's CURRENT
+// balances, so a client that retried (its own 500/network retry, a double-tap, a
+// proxy replay) gets the same "placed" answer it would have gotten the first
+// time — and never a second bet, a second debit, a doubled pool or a duplicate
+// Transaction row. Balances are read live because what the client needs is "what
+// is my balance now", not the balance captured at first placement.
+// ─────────────────────────────────────────────────────────────────────────────
+async function idempotentBetResponse(bet, userId, type) {
+  let balance = null;
+  try {
+    const b = await getBalances(userId);
+    balance = {
+      deposit:  b.depositBalance,
+      winnings: b.winningsBalance,
+      reserve:  b.reserveBalance || 0,
+      locked:   b.lockedBalance,
+      total:    (b.depositBalance || 0) + (b.winningsBalance || 0),
+    };
+  } catch { /* the balance echo is a convenience; its absence never fails a replay */ }
+  return {
+    success: true,
+    message: 'Bet already placed',
+    idempotent: true,
+    bet: {
+      id:       bet._id,
+      cycleId:  bet.cycleId,
+      side:     bet.side,
+      amount:   bet.amount,
+      status:   bet.status || 'PENDING',
+      type,
+      placedAt: bet.timestamp,
+    },
+    balance,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // POST /api/bet/place
 // Places a real bet. Deducts from winnings first, then deposits.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -71,6 +108,35 @@ router.post('/place', authenticate, requireApprovedKyc, betLimiter, async (req, 
     const Bet          = mongoose.model('Bet');
     const Transaction  = mongoose.model('Transaction');
     const SystemConfig = mongoose.model('SystemConfig');
+
+    // ── Server-enforced idempotency (M-2) ────────────────────────────────────
+    // The bet's identity comes from the caller's Idempotency-Key, REQUIRED here.
+    // The server cannot invent one: a fresh id per delivery is not idempotency,
+    // it is a second bet — and this is the endpoint where a retry (the client's
+    // own 500/network retry, a double-tap, a proxy replay) must never place two.
+    // `bet_<userId>_<key>` is the stake movement's txId and, via a stable derived
+    // ObjectId, the Bet row's _id on BOTH stores, so the gate is the unique index
+    // rather than a convention. See middleware/idempotencyKey.js.
+    let clientKey;
+    try {
+      clientKey = requireIdempotencyKey(req);
+    } catch (keyErr) {
+      if (keyErr instanceof IdempotencyKeyError) {
+        return res.status(keyErr.status || 400).json({ success: false, message: keyErr.message });
+      }
+      throw keyErr;
+    }
+    const betTxBase  = `bet_${userId}_${clientKey}`;
+    const betMongoId = betAuthority.mongoIdFor(betTxBase);
+
+    // Fast replay gate: this exact request already produced a bet. Answer with it
+    // and touch NOTHING — no stake move, no pool change, no second Transaction
+    // row, no double broadcast. This resolves the common (sequential) retry before
+    // any work, on both stores, with one primary-key lookup.
+    const priorBet = await Bet.findById(betMongoId).lean();
+    if (priorBet) {
+      return res.json(await idempotentBetResponse(priorBet, userId, type));
+    }
 
     // ── FIX A: DB-driven limits ──────────────────────────────────────────────
     // Old: const minBet = type === 'FULL_DAY' ? 100 : 10;  ← always hardcoded
@@ -159,25 +225,11 @@ router.post('/place', authenticate, requireApprovedKyc, betLimiter, async (req, 
     // could not reach — so flipping the wallet path to Postgres would have
     // split the source of truth mid-bet. The authority now owns it, and picks
     // the store per postgres/moneyAuthority.js.
-    // ── The bet's identity ─────────────────────────────────────────────────
-    // The idempotency key for BOTH the stake movement and (on Postgres) the bet
-    // row itself, so a redelivered request cannot produce a second of either.
-    //
-    // A client-supplied `Idempotency-Key` is preferred and is the only version
-    // that actually protects a retry: with the generated fallback, a dropped
-    // connection produces a DIFFERENT id, which is a genuinely new bet and a
-    // second debit. That residual is documented in postgres/betPgAuthority.js
-    // rather than papered over — requiring the header outright would break any
-    // client that does not send it, and this is the highest-traffic endpoint in
-    // the system, so switching it on is an operator's decision once they know
-    // every client, not a surprise inside a migration commit.
-    //
-    // Unlike the /fund bug this pattern resembles, the fallback here is not a
-    // gate that cannot fire: the id is genuinely new, and the gate genuinely
-    // fires for the id it is given.
-    const clientKey = readIdempotencyKey(req);
-    if (clientKey) assertValidIdempotencyKey(clientKey);
-    const betTxBase = clientKey ? `bet_${userId}_${clientKey}` : `bet_${userId}_${randomUUID()}`;
+    // ── The stake, split across pockets ─────────────────────────────────────
+    // The bet's identity (betTxBase / betMongoId) was established at the top of
+    // the handler from the REQUIRED Idempotency-Key. It is the txId of every
+    // slice's ledger row and the Bet row's _id, so on both stores the unique
+    // index — not a convention — is what makes a redelivery idempotent.
     const stakeSlices = [
       { field: 'depositBalance',  suffix: '_dep', amount: fromDeposit,
         reason: `BET_PLACED deposit portion — ₹${amount} on ${side}` },
@@ -200,6 +252,14 @@ router.post('/place', authenticate, requireApprovedKyc, betLimiter, async (req, 
 
     let stakeLock;
     let pgBet = null;
+    // moneyMoved IS the idempotency decision: true only for the single delivery
+    // that actually debited. placeBet (Postgres) and lockBetStake (Mongo) are
+    // both idempotent on the key, so every other delivery reports idempotent and
+    // moved nothing — and must not run the pool increment, the Transaction row or
+    // the broadcast. The invariant is "the delivery that moved the money owns the
+    // side-effects", and it deliberately does NOT depend on who wins the bet-row
+    // insert race below (a money-mover that loses that race still owns them).
+    let moneyMoved = false;
     if (betsOnPostgres) {
       const placed = await betAuthority.placeBet({
         betId: betTxBase, userId, cycleId, side, amount,
@@ -208,10 +268,12 @@ router.post('/place', authenticate, requireApprovedKyc, betLimiter, async (req, 
       });
       stakeLock = { ok: placed.ok, balances: placed.balances };
       pgBet = placed.ok ? placed.bet : null;
+      moneyMoved = placed.ok && placed.idempotent !== true;
     } else {
       stakeLock = await lockBetStake(userId, {
-        amount, txId: betTxBase, refId: null, slices: stakeSlices,
+        amount, txId: betTxBase, refId: betMongoId, slices: stakeSlices,
       });
+      moneyMoved = stakeLock.ok && stakeLock.idempotent !== true;
     }
 
     if (!stakeLock.ok) {
@@ -221,6 +283,48 @@ router.post('/place', authenticate, requireApprovedKyc, betLimiter, async (req, 
         message: 'Insufficient balance. Please try again.',
         balance: { deposit: availableDeposit, winnings: availableWinnings, reserve: availableReserve, total: totalAvailable }
       });
+    }
+
+    // ── The bet record (deterministic _id) ───────────────────────────────────
+    // On Postgres it is already written inside the stake's transaction and
+    // mirrored to Mongo before placeBet returned. On Mongo it is inserted here
+    // under the DETERMINISTIC _id derived from the idempotency key, so a delivery
+    // that raced past the fast gate collides on the primary key (11000) and
+    // ADOPTS the existing row rather than writing a second. Adopting the row does
+    // not change who moved the money — `moneyMoved` alone gates the side-effects.
+    let bet;
+    if (betsOnPostgres) {
+      bet = await betAuthority.getBetDoc(pgBet._id);
+    } else {
+      try {
+        const created = await Bet.create([{
+          _id: betMongoId,
+          userId,
+          cycleId,
+          amount,
+          side,
+          fromDepositBalance:  fromDeposit,
+          fromWinningsBalance: fromWinnings,
+          fromReserveBalance:  fromReserve,   // Section 6.2: stored for exact refund
+          status:    'PENDING',
+          isPhantom: false,
+          timestamp: new Date()
+        }]);
+        bet = created[0];
+      } catch (createErr) {
+        if (createErr?.code === 11000) {
+          bet = await Bet.findById(betMongoId).lean();
+        } else {
+          throw createErr;
+        }
+      }
+    }
+
+    // Every delivery except the one that moved the money is a replay: the bet
+    // exists once, the money moved at most once, and the pool / Transaction /
+    // broadcast must run at most once. Return the existing bet and stop.
+    if (!moneyMoved) {
+      return res.json(await idempotentBetResponse(bet, userId, type));
     }
 
     const updatedUser = stakeLock.balances;
@@ -234,24 +338,6 @@ router.post('/place', authenticate, requireApprovedKyc, betLimiter, async (req, 
         totalBalance:    (updatedUser.depositBalance || 0) + (updatedUser.winningsBalance || 0),
       });
     } catch (_) { /* SSE failure never blocks the bet response */ }
-
-    // ── Create bet record ────────────────────────────────────────────────────
-    // Already written, inside the stake's transaction, when Postgres owns the
-    // lifecycle — and mirrored to Mongo before placeBet returned, so every read
-    // path below (and the client's next fetch) finds it.
-    const betDoc = betsOnPostgres ? [await betAuthority.getBetDoc(pgBet._id)] : await Bet.create([{
-      userId,
-      cycleId,
-      amount,
-      side,
-      fromDepositBalance:  fromDeposit,
-      fromWinningsBalance: fromWinnings,
-      fromReserveBalance:  fromReserve,   // Section 6.2: stored for exact refund
-      status:    'PENDING',
-      isPhantom: false,
-      timestamp: new Date()
-    }]);
-    const bet = betDoc[0];
 
     // ── Commit the bet against the cycle ─────────────────────────────────────
     // Two shapes, chosen by FLAGS.DERIVED_CYCLE_POOLS.

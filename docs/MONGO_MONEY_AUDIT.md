@@ -18,9 +18,9 @@ marked PASS on the strength of reading alone.
 | # | Finding | Severity | Status |
 |---|---|---|---|
 | M-1 | `debitForBet` double-charges when a replay recomputes a different pocket split | **High** | **Fixed** |
-| M-2 | `_mongoBetStake` moves balances with no idempotency key at all | **High** | **Resolved in the Postgres design** (`betPg.js`); Mongo path unchanged |
-| M-3 | `_mongoBetStake` swallows all ledger-write errors, including the duplicate-key that signals M-2 | Medium | **Partly fixed** — now metered and logged |
-| M-4 | `_mongoBetStake` moves money outside a transaction; ledger rows are best-effort | **High** | **Resolved in the Postgres design** (`betPg.js`); Mongo path unchanged |
+| M-2 | `_mongoBetStake` moves balances with no idempotency key at all | **High** | **Resolved** — Postgres (`betPg.js`) + Mongo (ledger-first txn + required `Idempotency-Key`), 2026-08-19 |
+| M-3 | `_mongoBetStake` swallows all ledger-write errors, including the duplicate-key that signals M-2 | Medium | **Resolved** — ledger and balance now commit in one transaction, so there is no swallowed-error window left |
+| M-4 | `_mongoBetStake` moves money outside a transaction; ledger rows are best-effort | **High** | **Resolved** — Postgres (`betPg.js`) + Mongo (`session.withTransaction`, ledger-first), 2026-08-19 |
 | M-5 | `atomicBet` is dead code with a non-functional idempotency key | Low | Documented |
 | M-6 | `reserveAdminMint` combines `$expr` with `upsert`, which MongoDB refuses — admin token issuance threw on every call | **High** | **Fixed** |
 | M-7 | A casino `ROLLBACK`/`REFUND` credits the player without proving a matching prior debit — a provider can mint real money | **High** | **FIXED in both paths** — the live Mongo endpoint and `casinoPg.js` |
@@ -121,7 +121,7 @@ Verified by CI.
 ---
 
 ## M-2 / M-4 — `_mongoBetStake`: no idempotency, no transaction
-## (RESOLVED IN POSTGRES; the Mongo path is unchanged)
+## (RESOLVED IN POSTGRES 2026-08-04; RESOLVED ON THE MONGO PATH 2026-08-19)
 
 `domains/wallet/walletAuthority.service.js`
 
@@ -199,6 +199,44 @@ extracted for exactly this).
   it cannot be produced through this module; `findBetsMissingStakeMovement` is
   tested against a row inserted by raw SQL, because that is the only way to
   create the state at all.
+
+### Resolved on the LIVE Mongo path too, 2026-08-19 — proposal (1)+(2) taken
+
+The fallback was not needed after all: the launch runs on the Postgres money
+authority, so `_mongoBetStake` is no longer the hot path, and the latency
+objection that argued for shipping only proposal (1) no longer applies. Both
+were taken.
+
+- **`_mongoBetStake` is now ledger-first inside `session.withTransaction`**
+  (`domains/wallet/walletAuthority.service.js`), the exact shape
+  `releaseLockedStake` / `lockWithdrawal` already use in the same file. The
+  per-slice `txId` UNIQUE index is the gate: a concurrent duplicate throws 11000
+  on the ledger insert and aborts the whole transaction, so the `$inc` never runs
+  twice (**M-2**, concurrent), and balance + ledger commit together or not at all
+  (**M-4**). The old best-effort ledger write — and the
+  `bb_unaudited_money_movements_total{path="bet_stake_*"}` counter that only
+  METERED the window — are gone; there is no longer a window to meter. A cheap
+  fast-path (ledger-row lookup) short-circuits the common *sequential* replay
+  before it even opens a transaction.
+
+- **The route now REQUIRES the `Idempotency-Key`** on `POST /bet/place`
+  (`domains/markets/bet.routes.js`): `betTxBase = bet_<userId>_<key>` is the
+  stake txId, and its derived deterministic ObjectId (`mongoIdFor`) is the Bet
+  row `_id` on both stores — so the unique index, not the caller's discipline, is
+  what makes a redelivery idempotent. A fast primary-key gate returns the
+  original bet for a sequential retry; the money-mover — not the winner of the
+  bet-row insert race — owns the pool increment and the Transaction row, so a
+  concurrent duplicate can neither double-count the pool nor duplicate the log.
+  The user-panel sends one key per tap and reuses it across its own 500/network
+  retries. `tests/integration/betIdempotency.integration.test.js` proves the four
+  deliveries (sequential retry, distinct key, missing key, concurrent burst) end
+  to end.
+
+The residual that remains Postgres-only: on Mongo the bet ROW is still a separate
+insert from the stake transaction (two steps), so the "money locked against a
+not-yet-written bet" window is narrowed (the deterministic `_id` lets a retry
+heal it) but not closed by construction the way `betPg.placeBet` closes it in one
+transaction. The launch path is Postgres, where it does not exist.
 
 **The Mongo path is unchanged.** These defects are resolved *in the store that
 will carry authority*, not patched in the one being migrated away from — the
@@ -320,13 +358,16 @@ as the wallet movement, so two concurrent rollbacks cannot both read "nothing
 refunded yet". That case is tested with two *distinct* provider ids, where the
 idempotency gate cannot help and only the lock can.
 
-### And fixed on the LIVE Mongo path too — unlike M-2 and M-4
+### And fixed on the LIVE Mongo path too — as M-2 and M-4 now are
 
-M-2 and M-4 were left in Mongo deliberately: they are latent there, because
-`bet.routes.js` mints a fresh key per request, so the unsafe primitive is not
-currently reachable in a way that loses money.
+M-2 and M-4 were, at the time this was written, left latent in Mongo because
+`bet.routes.js` minted a fresh key per request, so the unsafe primitive was not
+reachable in a way that lost money. That is no longer the state of the code: as
+of 2026-08-19 the key is REQUIRED and the Mongo primitive is transactional and
+idempotent (see "Resolved on the LIVE Mongo path too" above), so both are closed
+on both stores rather than latent on one.
 
-**M-7 is not latent.** `POST /api/games/wallet` is a live endpoint any
+**M-7 was not latent either.** `POST /api/games/wallet` is a live endpoint any
 configured provider can call, and the rollback branch had no guard at all.
 Fixing it only in the store that is *not* authoritative — and will not be on
 launch day — would have left the exploitable version running. The same

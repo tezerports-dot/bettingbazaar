@@ -65,12 +65,14 @@ describe('Phase A money flow: split → settle → ledger', () => {
     // ── Place both bets through the REAL route ────────────────────────────
     const resA = await request(app).post('/api/bet/place')
       .set('Authorization', authFor(alice))
+      .set('Idempotency-Key', 'flow-alice-bet-1')
       .send({ cycleId: cycle.cycleId, side: 'DELHI', amount: 10, type: '30_MIN' });
     expect(resA.status).toBe(200);
     expect(resA.body.success).toBe(true);
 
     const resB = await request(app).post('/api/bet/place')
       .set('Authorization', authFor(bob))
+      .set('Idempotency-Key', 'flow-bob-bet-1')
       .send({ cycleId: cycle.cycleId, side: 'BOMBAY', amount: 10, type: '30_MIN' });
     expect(resB.status).toBe(200);
 
@@ -152,6 +154,7 @@ describe('Phase A money flow: split → settle → ledger', () => {
 
     const res = await request(app).post('/api/bet/place')
       .set('Authorization', authFor(user))
+      .set('Idempotency-Key', `flow-single-${user._id}`)
       .send({ cycleId: cycle.cycleId, side: 'DELHI', amount: 10, type: '30_MIN' });
 
     expect(res.status).toBe(400);
@@ -181,6 +184,7 @@ describe('Phase A money flow: split → settle → ledger', () => {
 
     const res = await request(app).post('/api/bet/place')
       .set('Authorization', authFor(user))
+      .set('Idempotency-Key', `flow-single-${user._id}`)
       .send({ cycleId: cycle.cycleId, side: 'DELHI', amount: 10, type: '30_MIN' });
     expect(res.status).toBe(200);
 
