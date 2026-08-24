@@ -38,16 +38,16 @@
     "test:all": "sh -c 'export MONGODB_URI=mongodb://127.0.0.1:27017/bb_test?replicaSet=rs0 DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/bb_test REDIS_URL=redis://127.0.0.1:6379; npm run test:unit && npm run test:pg && npm run test:integration'"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.117.1",
-    "@aws-sdk/client-s3": "^3.1111.0",
-    "@aws-sdk/lib-storage": "^3.1111.0",
-    "@aws-sdk/s3-request-presigner": "^3.1111.0",
+    "@anthropic-ai/sdk": "^0.120.0",
+    "@aws-sdk/client-s3": "^3.1115.0",
+    "@aws-sdk/lib-storage": "^3.1115.0",
+    "@aws-sdk/s3-request-presigner": "^3.1115.0",
     "@socket.io/redis-adapter": "^8.3.0",
     "@types/three": "^0.185.4",
     "argon2": "^0.45.1",
     "bcryptjs": "^2.4.3",
     "body-parser": "^2.3.0",
-    "bullmq": "^6.1.2",
+    "bullmq": "^6.2.0",
     "compression": "^1.7.4",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
@@ -60,7 +60,7 @@
     "ipaddr.js": "^2.5.0",
     "jsonwebtoken": "^9.0.2",
     "kafkajs": "^2.2.4",
-    "mongoose": "^9.9.2",
+    "mongoose": "^9.9.3",
     "nodemailer": "^9.0.5",
     "path-to-regexp": "^8.4.2",
     "pg": "^8.23.0",
@@ -80,7 +80,7 @@
     "stylelint": "^17.14.1",
     "stylelint-config-standard": "^40.0.0",
     "supertest": "^7.2.2",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "engines": {
     "node": ">=22.0.0"
