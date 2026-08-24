@@ -502,6 +502,16 @@ router.post('/withdrawal-requests/:id/approve', authenticate, isAdmin, async (re
     const wr = await WithdrawalRequest.findById(req.params.id);
     if (!wr) return res.status(404).json({ success: false, message: 'Request not found' });
     if (wr.status !== 'PENDING') return res.status(400).json({ success: false, message: 'Request is not pending' });
+    // Never pay out an unfunded instrument. Requests are created only after their
+    // funds are reserved, so a missing reservation means this row predates that
+    // rule or was written outside the route — either way the money was never
+    // taken from the player's balance and paying it would be a pure loss.
+    if (!wr.reservationTxId) {
+      return res.status(409).json({
+        success: false,
+        message: 'This request carries no proof of reserved funds and cannot be approved. Do not pay it — escalate for reconciliation.',
+      });
+    }
 
     await releaseWithdrawal(String(wr.userId), wr.amount, String(wr._id));
     await WithdrawalRequest.findByIdAndUpdate(wr._id, {
@@ -520,9 +530,21 @@ router.post('/withdrawal-requests/:id/reject', authenticate, isAdmin, async (req
     if (!wr) return res.status(404).json({ success: false, message: 'Request not found' });
     if (wr.status !== 'PENDING') return res.status(400).json({ success: false, message: 'Request is not pending' });
 
-    await refundWithdrawal(String(wr.userId), wr.amount, String(wr._id));
+    // The refund RETURNS reserved money to the player, so it must run only when
+    // money was actually reserved. Refunding a request with no reservation would
+    // credit a balance that was never debited — minting — and, worse, the
+    // aggregate `lockedBalance` guard inside refundWithdrawal would happily
+    // consume a DIFFERENT request's reservation to do it. Closing an unfunded
+    // row moves no money by definition.
+    if (wr.reservationTxId) {
+      await refundWithdrawal(String(wr.userId), wr.amount, String(wr._id));
+    } else {
+      console.warn(`[withdrawal] rejecting unfunded request ${wr._id} — no reservation to return`);
+    }
     await WithdrawalRequest.findByIdAndUpdate(wr._id, {
-      status: 'REJECTED', adminNote: note, processedBy: req.user._id, processedAt: new Date()
+      status: 'REJECTED',
+      adminNote: wr.reservationTxId ? note : `${note || ''} [no reserved funds to return]`.trim(),
+      processedBy: req.user._id, processedAt: new Date()
     });
     if (global.io) global.io.to(`user-${wr.userId}`).emit('withdrawal_rejected', { requestId: wr._id, amount: wr.amount, reason: note });
     res.json({ success: true, message: 'Withdrawal rejected and balance restored' });

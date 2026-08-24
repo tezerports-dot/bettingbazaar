@@ -191,6 +191,30 @@ export const unauthenticatedBetIpLimiter = rateLimit({
 
 export const betLimiter = [ipBetLimiter, betBehaviorLimiter];
 
+// ==================== ACCOUNT RECOVERY RATE LIMITER ====================
+
+/**
+ * Guards the Aadhaar-keyed recovery endpoints.
+ *
+ * Keyed on the IP (normalised for IPv6 like the auth tiers), NOT on any field
+ * from the request. The previous guard was an in-process Map keyed on the
+ * `mobile` value the CALLER supplies, which failed three ways at once: the
+ * caller chose their own bucket, the counters were invisible to the other PM2
+ * workers, and a restart cleared them. Backed by the shared Redis store so the
+ * limit is one budget across every process on the box.
+ */
+export const accountRecoveryLimiter = rateLimit({
+    store: createRateLimitStore('rl:recovery:'),
+    ...RATE_LIMIT_TIERS.accountRecovery,
+    message: {
+        success: false,
+        message: 'Too many recovery attempts. Please try again later.',
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => ipKeyGenerator(req.ip),
+});
+
 // ==================== WITHDRAWAL RATE LIMITERS ====================
 
 // Rate limiter for withdrawal requests

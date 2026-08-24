@@ -25,6 +25,9 @@ marked PASS on the strength of reading alone.
 | M-6 | `reserveAdminMint` combines `$expr` with `upsert`, which MongoDB refuses — admin token issuance threw on every call | **High** | **Fixed** |
 | M-7 | A casino `ROLLBACK`/`REFUND` credits the player without proving a matching prior debit — a provider can mint real money | **High** | **FIXED in both paths** — the live Mongo endpoint and `casinoPg.js` |
 | M-8 | `refundOrder` writes a provider-supplied round id into `WalletLedger.refId`, which is an ObjectId — every casino rollback/refund threw | **High** | **Fixed** |
+| M-9 | `POST /v1/user/withdraw` created the PENDING request BEFORE reserving funds, so a failed reservation left an unfunded payable row an operator would pay by hand | **Critical** | **Fixed 2026-08-24** — reserve-then-create, `reservationTxId` required+unique, DB-enforced single open payout, payout side refuses unbacked rows |
+| M-10 | `/auth/recover` revealed whether an Aadhaar had an account, and its rate limit was keyed on the caller-supplied `mobile` (in-process, per-worker) | Medium | **Fixed 2026-08-24** — one neutral response for every caller; IP-keyed, Redis-backed `accountRecoveryLimiter` |
+| M-11 | The `AccountRecovery` model described a different flow than the route and both panels — every recovery submission failed validation, so locked-out players had no route back to their balance | **High** | **Fixed 2026-08-24** — model aligned to the live Aadhaar + video-KYC contract |
 
 ---
 
@@ -405,3 +408,88 @@ Still **NOT VERIFIED** — listed so the gaps stay visible:
 - Concurrent double-spend under real load (`loadtest/bet-contention.js` has
   never been run)
 - Money conservation across a full settlement cycle
+
+---
+
+## M-9 — an unfunded withdrawal request is a payable instrument (FIXED)
+
+`domains/user/user.routes.js`, `POST /api/v1/user/withdraw`
+
+The route created the `PENDING` `WithdrawalRequest` and reserved the funds
+**afterwards**:
+
+```js
+const wr = await WithdrawalRequest.create({ …status: 'PENDING' });
+await lockWithdrawal(String(req.user._id), amount, String(wr._id));  // ← can throw
+```
+
+Both stores throw when the balance cannot cover the reservation, and the outer
+`catch` answered 500 — but nothing removed the request. It survived as a
+`PENDING` row with **no money behind it**.
+
+**Why that is worse here than a wrong balance.** Payouts are MANUAL. An operator
+reads the pending queue, sends real INR by hand, and only then records the
+approval. An unfunded row is indistinguishable from a funded one in that queue,
+so the cash leaves first and the failure surfaces second. The ledger guards were
+never wrong; the loss happens outside them.
+
+Reaching the state took no exotic timing — the balance check and the
+"already have a pending one?" check were both reads, so a player firing the
+five requests the rate limit allows had one reserve and four become orphans,
+each worth a full manual payout.
+
+**The fix, in the order it matters.**
+
+1. **Reserve, then create.** The money leaves the withdrawable balance before
+   anything payable exists, so the dangerous state is unrepresentable rather
+   than merely unlikely. This is the ordering the P2P path already used
+   (`paymentProcessing.createWithdrawalOrder` debits escrow and saves the order
+   in one transaction); the two paths now agree.
+2. **`reservationTxId`, required and unique.** The request names the movement
+   that funds it. Required, so a request that names no reservation cannot be
+   stored; unique, so one reservation can never back two payable rows.
+3. **A partial unique index** (`one_pending_withdrawal_per_user`) makes "one
+   open payout per player" the database's rule instead of a read-then-write two
+   concurrent callers both pass.
+4. **The payout side refuses unbacked rows.** Approve returns 409 without a
+   reservation, and — the subtler half — reject refunds *only* when one exists:
+   the guard inside `refundWithdrawal` is an AGGREGATE check on `lockedBalance`,
+   so an unfunded refund would have been satisfied out of a *different*
+   request's reservation, converting an orphan into minted balance.
+5. **Compensation, and a page when it fails.** If the record cannot be written
+   the reservation is released; if that release also fails, the operator is
+   paged rather than the money being left silently stranded.
+
+Covered by `tests/integration/withdrawalReservation.integration.test.js` (the
+five-request burst included) and `tests/unit/withdrawalPayoutGuards.test.js`.
+
+## M-10 / M-11 — account recovery: an Aadhaar oracle on a flow that never ran (FIXED)
+
+`routes/account-recovery.routes.js`, `models/accountRecovery.model.js`
+
+**M-10.** `/auth/recover` answered "No account found with this Aadhaar" when the
+lookup missed and proceeded when it hit — an oracle for *does this person gamble
+here*, which is sensitive on its own and is the kind of profiling India's DPDP
+Act exists to prevent. Its rate limit made the oracle practical rather than
+theoretical: an in-process `Map` keyed on the **`mobile` value from the request
+body**, so a caller varying that field chose their own budget, the counters were
+invisible to the other PM2 workers, and a restart cleared them.
+
+Now: one `neutral` response object returned on every path — matched, unmatched,
+duplicate — and the shared, IP-keyed, Redis-backed `accountRecoveryLimiter`. An
+unmatched submission is still recorded with `userId` unset, so someone who
+mistyped their Aadhaar reaches a human instead of vanishing into a silent
+success; the operator, not the endpoint, distinguishes the cases.
+
+**M-11**, found while fixing M-10: the `AccountRecovery` model described a
+PAN-based flow (`requestId`, `panHash`, `panLast4` all required, uppercase
+`PENDING_VIDEO`/`UNDER_REVIEW` statuses) while the route and BOTH panels speak an
+Aadhaar + video-KYC contract (`recoveryId`, `fullName`, `dob`, `videoKycUrl`,
+lowercase statuses). Nothing reconciled them, so every submission failed schema
+validation and returned 500, the status lookup queried a field that did not
+exist, and an approval could not save. **Account recovery — the only route back
+to their balance for a locked-out player — did not work at all.**
+
+The route and the panels agree with each other, so the model moved. Fields are
+optional unless the flow genuinely cannot proceed without them, so a partially
+filled request stays reviewable by a human rather than rejected by the database.

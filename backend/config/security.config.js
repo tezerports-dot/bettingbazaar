@@ -75,6 +75,13 @@ export const RATE_LIMIT_TIERS = {
   bet:        { windowMs: 1 * 60 * 1000,  max: 30 },
   // Withdrawal creation
   withdrawal: { windowMs: 60 * 60 * 1000, max: 5 },
+  // Account recovery / Aadhaar lookup. These endpoints take a national ID and
+  // are the one place the platform can be asked "does THIS person have an
+  // account here?" — on a gambling site that answer is sensitive on its own,
+  // independently of any balance. Tight, and keyed on IP: keying on a field
+  // from the request body (the mobile number) let a caller reset their own
+  // budget at will, which is no limit at all.
+  accountRecovery: { windowMs: 60 * 60 * 1000, max: 5 },
   // General API tier used by security.js's apiLimiter
   api:        { windowMs: 1 * 60 * 1000,  max: 100 },
 };
