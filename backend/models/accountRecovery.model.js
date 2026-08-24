@@ -34,7 +34,11 @@ const accountRecoverySchema = new mongoose.Schema({
   // account is still recorded, so the response can stay neutral (never
   // confirming whether an Aadhaar is registered here) while a human still sees
   // the request and can help someone who simply mistyped.
-  userId:        { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
+  // Not `index: true` — the partial unique index below already covers
+  // { userId: 1 }. Two index declarations on one key pattern with different
+  // options is the shape MongoDB rejects, and it is invisible until something
+  // actually builds the indexes.
+  userId:        { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   // Video KYC proof
   videoKycUrl:   { type: String, default: '' },      // S3 CDN URL
   videoKycKey:   { type: String, default: '' },      // S3 key

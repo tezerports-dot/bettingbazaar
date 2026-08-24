@@ -50,7 +50,10 @@ const telegramConfigSchema = new mongoose.Schema({
   channelUsername:   { type: String, trim: true, default: '' },
   channelInviteLink: { type: String, trim: true, default: '' },
 
-  active:     { type: Boolean, default: false, index: true },
+  // No `index: true` here: the partial unique index below already covers
+  // { active: 1 }. Declaring both creates two indexes with the SAME key pattern
+  // and different options, which MongoDB refuses with IndexOptionsConflict.
+  active:     { type: Boolean, default: false },
   activatedAt: { type: Date },
   activatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   // Why this generation replaced the previous one — read during incident review.
@@ -88,7 +91,8 @@ const telegramIdentitySchema = new mongoose.Schema({
   // and it is Telegram's own verified number for that account — which is why it
   // can stand in for an SMS OTP. Normalised to digits, no country prefix
   // punctuation, so it compares to User.mobile.
-  phone:           { type: String, required: true, index: true },
+  // Indexed by the partial unique index below, not here — same key pattern.
+  phone:           { type: String, required: true },
   contactSharedAt: { type: Date, required: true },
   // Cleared if the person later revokes/changes their number — payout
   // eligibility requires this to still be true.
@@ -153,7 +157,8 @@ const telegramPendingLinkSchema = new mongoose.Schema({
   createdAt:        { type: Date, default: Date.now },
   // TTL: an abandoned onboarding disappears after 24h rather than holding a
   // phone or an Aadhaar hash indefinitely.
-  expiresAt:        { type: Date, default: () => new Date(Date.now() + 24 * 60 * 60 * 1000), index: true },
+  // The TTL index below owns { expiresAt: 1 }; a plain index here would collide.
+  expiresAt:        { type: Date, default: () => new Date(Date.now() + 24 * 60 * 60 * 1000) },
 }, { collection: 'telegram_pending_links' });
 
 telegramPendingLinkSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
