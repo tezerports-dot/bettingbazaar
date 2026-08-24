@@ -153,6 +153,20 @@ export async function creditWinnings(userId, amount, reason, refIdOrModel, txIdO
  * Lock winningsBalance for a pending withdrawal request.
  * Atomically moves amount from winningsBalance → lockedBalance.
  * Writes WalletLedger. Safe to retry (idempotent via withdrawalId).
+ *
+ * ⚠️ NO PRODUCTION CALLER as of 2026-08-24. Its only one was the parallel
+ * withdrawal system removed that day (see domains/user/user.routes.js). The
+ * LIVE P2P path performs the identical movement — winnings → locked, one ledger
+ * row — through `debitWinningsForWithdrawal` (txId `wd_<orderId>`, refModel
+ * PaymentOrder), called from paymentProcessing.createWithdrawalOrder.
+ *
+ * Two primitives for one movement is what let a reviewer harden the withdrawal
+ * path nobody used, so DO NOT build on this one: new work belongs on
+ * `debitWinningsForWithdrawal`. It is kept only because three integration suites
+ * use it to set up a locked balance for the release/refund tests, and its
+ * Postgres twin carries the concurrency coverage in walletPgAuthority.test.js.
+ * Retiring it means repointing those suites — worth doing, but as its own change
+ * with CI to prove it, not folded into an unrelated one.
  */
 export async function lockWithdrawal(userId, amount, withdrawalId) {
   const txId = `wd_lock_${withdrawalId}`;

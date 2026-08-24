@@ -42,5 +42,10 @@ export * from '../domains/gameRegistry/game.model.js';
 export * from '../domains/wallet/wallet.model.js';
 export * from './social.model.js';
 export * from './accountRecovery.model.js';
+// Telegram-based player identity (bot + channel), the Aadhaar KYC record it
+// feeds, and the referral programme keyed on joining order.
+export * from '../domains/telegram/telegram.model.js';
+export * from '../domains/identity/kycVerification.model.js';
+export * from '../domains/referral/referral.model.js';
 // UTR global uniqueness registry — Section 9 of Migration Spec
 export * from './utrRegistry.model.js';

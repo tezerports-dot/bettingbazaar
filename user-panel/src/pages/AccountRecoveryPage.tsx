@@ -72,6 +72,22 @@ export default function AccountRecoveryPage() {
     if (!videoBlob) return;
     setUploading(true);
     try {
+      // ⚠️ THIS CALL CANNOT SUCCEED AGAINST THE CURRENT BACKEND (2026-08-24).
+      // It was written for the OLD public-CDN KYC design and was never updated
+      // when KYC documents moved to a private bucket. Four separate mismatches,
+      // any one of which is fatal:
+      //   1. The route is `/api/user/kyc/:docType/upload-url` — docType lives in
+      //      the PATH. This URL omits it entirely, so it 404s before anything else.
+      //   2. It sends docType 'recovery_video'; the route accepts only
+      //      'id-proof' and 'selfie'.
+      //   3. It sends video/webm; the KYC document service takes images.
+      //   4. It reads `u.cdnUrl`; that route deliberately returns only `key`,
+      //      because a private identity document has no public address.
+      // Recovery video capture therefore needs its own upload path with its own
+      // size and retention rules — a product decision, not a URL fix, so it is
+      // left visible here rather than papered over. Pairs with the model/route
+      // mismatch recorded as M-11 in docs/MONGO_MONEY_AUDIT.md: account recovery
+      // has never worked end to end.
       const r1 = await fetch(apiUrl('/api/user/kyc/upload-url'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ fileName: 'recovery_video.webm', contentType: 'video/webm', fileSize: videoBlob.size, docType: 'recovery_video' }) });
       const u = await r1.json();
       if (!u.success) throw new Error(u.message);

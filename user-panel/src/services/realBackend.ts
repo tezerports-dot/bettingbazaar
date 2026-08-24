@@ -524,16 +524,8 @@ export class RealBackend implements Backend {
   async getBetHistory(userId: string) { return this.request<Bet[]>(`/user/${userId}/bets`); }
 
   // -- WALLET -----------------------------------------------------------------
-  async deposit(userId: string, amount: number) {
-    return this.request<{ transaction: Transaction }>('/p2p/deposit/create', {
-      method: 'POST', body: JSON.stringify({ tokenAmount: amount }) // UTR removed
-    });
-  }
-  async withdraw(userId: string, amount: number) {
-    return this.request<{ transaction: Transaction }>('/p2p/withdrawal/create', {
-      method: 'POST', body: JSON.stringify({ tokenAmount: amount })
-    });
-  }
+  // deposit() / withdraw() removed 2026-08-24 — dead, and pointed at the retired
+  // `/api/p2p/*` prefix. WalletPage.tsx owns this flow via apiClient.
   async getTransactionHistory(userId: string) {
     const res = await this.request<{ success: boolean; transactions: Transaction[] }>(`/user/${userId}/transactions`);
     return (res as any).transactions || (Array.isArray(res) ? res : []);
@@ -687,84 +679,18 @@ export class RealBackend implements Backend {
   }
 
   
-  async createPaymentOrder(userId: string, type: 'DEPOSIT' | 'WITHDRAWAL', amount: number) {
-    const normalizedType = type.toLowerCase() as 'deposit' | 'withdrawal';
-    const endpoint = normalizedType === 'deposit' ? '/p2p/deposit/create' : '/p2p/withdrawal/create';
-    const result = await this.request<{ success: boolean; order: any }>(endpoint, {
-      method: 'POST', body: JSON.stringify({ tokenAmount: amount })
-    });
-    return this.normalizeOrder((result as any).order || result);
-  }
-  async getPaymentOrder(orderId: string) {
-    const orders = await this.request<{ success: boolean; orders: PaymentOrder[] }>('/p2p/orders');
-    const order = (orders as any).orders?.find((o: any) => o.orderId === orderId || o._id === orderId);
-    if (!order) throw new Error('Order not found');
-    return order;
-  }
-  async cancelPaymentOrder(userId: string, orderId: string) {
-    await this.request('/p2p/order/cancel', { method: 'POST', body: JSON.stringify({ userId, orderId }) });
-  }
-  async confirmPayment(userId: string, orderId: string) {
-    await this.request(`/p2p/deposit/${orderId}/confirm`, { method: 'POST', body: JSON.stringify({ userId }) });
-  }
-  async completePaymentOrder(merchantId: string, orderId: string) {
-    // BUG FIX: Was POST /merchant/order/complete (route doesn't exist -> 404).
-    // Backend route is POST /merchant/confirm/:orderId (orderId in URL, proof optional).
-    await this.request(`/merchant/confirm/${orderId}`, { method: 'POST', body: JSON.stringify({ merchantId }) });
-  }
-  private normalizeOrder(o: any): any {
-    if (!o) return o;
-    return {
-      ...o,
-      id:     o.id || o.orderId || o._id?.toString(),
-      amount: o.amount ?? o.tokenAmount ?? 0,
-      status: o.status === 'PENDING_QUEUE' ? 'QUEUED' : o.status,
-      type:   o.type?.toUpperCase(),
-      createdAt: o.createdAt ? new Date(o.createdAt).getTime() : Date.now(),
-      updatedAt: o.updatedAt ? new Date(o.updatedAt).getTime() : Date.now(),
-    };
-  }
-
-  async getUserPaymentOrders(userId: string): Promise<PaymentOrder[]> {
-    try {
-      const response = await this.request<{ success: boolean; orders: any[] }>('/p2p/orders');
-      return ((response as any).orders || []).map((o: any) => this.normalizeOrder(o));
-    } catch (error) { return []; }
-  }
-  async getAllPaymentOrders(): Promise<PaymentOrder[]> {
-    try {
-      const response = await this.request<{ success: boolean; orders: PaymentOrder[] }>('/admin/p2p-queue'); 
-      return (response as any).orders || [];
-    } catch (error) { return []; }
-  }
-
-  
-  async sendChatMessage(orderId: string, senderId: string, message: string, isSystem?: boolean, attachmentUrl?: string) {
-    return this.request<ChatMessage>('/p2p/chat/send', {
-      method: 'POST', body: JSON.stringify({ orderId, senderId, message, attachmentUrl })
-    });
-  }
-  async getChatHistory(orderId: string) {
-    return this.request<ChatMessage[]>(`/p2p/chat/${orderId}`);
-  }
-  async getOrderChat(orderId: string): Promise<any[]> {
-    try {
-      const result = await this.request<{ success: boolean; messages: any[] }>(`/p2p/chat/${orderId}`);
-      return (result as any).messages || (result as any) || [];
-    } catch { return []; }
-  }
-  // FIX U2: Accept utrNumber + proofScreenshot for PAID transitions (Batch 1 backend requirement)
-  async updateOrderStatus(
-    orderId: string,
-    status: string,
-    actionBy: string,
-    // extra param removed — UTR removed
-  ): Promise<any> {
-    return this.request(`/p2p/order/${orderId}/status`, {
-      method: 'POST',
-      body: JSON.stringify({ status, actionBy })
-    });
-  }
+  // ── Payment-order + order-chat API removed 2026-08-24 ─────────────────────
+  // createPaymentOrder / getPaymentOrder / cancelPaymentOrder / confirmPayment /
+  // completePaymentOrder / getUserPaymentOrders / getAllPaymentOrders /
+  // sendChatMessage / getChatHistory / getOrderChat / updateOrderStatus and the
+  // normalizeOrder helper all addressed an `/api/p2p/*` prefix that no longer
+  // exists — the backend serves these under `/api/payment/*`. Nothing called
+  // them, so the mismatch stayed invisible: each would have 404'd on first use.
+  //
+  // The live wallet flow is WalletPage.tsx talking to apiClient directly
+  // (`/api/payment/deposit/create`, `/withdrawal/create`, `/orders`,
+  // `/order/:id/mark-paid`, `/order/cancel`). Keep it that way — a second client
+  // surface for the same endpoints is what let these rot unnoticed.
 
   // -- AUDIT -------------------------------------------------------------------
   // FE 4.4 FIX: was sending POST to a GET route -> always 404

@@ -20,7 +20,8 @@
  *   - Aadhaar stored as HMAC-SHA-256 only (one-way, can't be reversed)
  *   - temp password shown to admin ONCE then cleared from DB
  *   - Video KYC URL is required (prevents pure text-based impersonation)
- *   - Rate limited: max 3 recovery attempts per mobile per 24h
+ *   - Rate limited PER IP via the shared Redis store (accountRecoveryLimiter)
+ *   - Responses never reveal whether an Aadhaar is registered here
  *   - All actions logged to AuditLog
  */
 import express   from 'express';
@@ -30,6 +31,8 @@ import { hashAadhaar, hashAadhaarCandidates } from '../domains/identity/aadhaarH
 // AQ-8: hash via the password authority (argon2id).
 import { hashPassword } from '../domains/identity/password.util.js';
 import { authenticate, isAdmin, isAdminOrSubAdmin } from '../domains/identity/auth.middleware.js';
+// IP-keyed, Redis-backed limiter shared by every process on the box.
+import { accountRecoveryLimiter } from '../middleware/security.js';
 
 const router = express.Router();
 
@@ -48,17 +51,15 @@ function generateTemporaryPassword(length = 16) {
   return Array.from({ length }, () => chars[crypto.randomInt(0, chars.length)]).join('');
 }
 
-// In-memory rate limiter for recovery attempts (mobile → [{ts}])
-const recoveryAttempts = new Map();
-function checkRecoveryRateLimit(mobile) {
-  const now  = Date.now();
-  const key  = String(mobile);
-  const list = (recoveryAttempts.get(key) || []).filter(ts => now - ts < 86400000);
-  if (list.length >= 3) return false;
-  list.push(now);
-  recoveryAttempts.set(key, list);
-  return true;
-}
+// Rate limiting for these endpoints is the shared, IP-keyed
+// `accountRecoveryLimiter` (middleware/security.js), applied as route
+// middleware below.
+//
+// It replaces an in-process Map keyed on the `mobile` field FROM THE REQUEST
+// BODY. That guard could be stepped around by simply varying the mobile value
+// between calls — the caller picked their own counter — and it was invisible to
+// the other PM2 workers and reset on every restart. It also grew without bound,
+// one entry per distinct value a caller cared to send.
 
 // ════════════════════════════════════════════════════════════════════════════
 // PUBLIC — USER-FACING ENDPOINTS
@@ -76,11 +77,7 @@ async function checkAadhaarRecovery(req, res) {
     if (!aadhaarNumber) return res.status(400).json({ success: false, message: 'Aadhaar number required' });
     if (!isValidAadhaar(aadhaarNumber)) return res.status(400).json({ success: false, message: 'Invalid Aadhaar format (expected: 12 digits)' });
 
-    // Rate limit check
-    const clientIp = req.ip || req.connection?.remoteAddress || 'unknown';
-    if (!checkRecoveryRateLimit(clientIp)) {
-      return res.status(429).json({ success: false, message: 'Too many attempts. Please try again later.' });
-    }
+    // Rate limiting is applied as route middleware (accountRecoveryLimiter).
 
     // Return neutral response regardless of account existence
     res.json({
@@ -92,7 +89,7 @@ async function checkAadhaarRecovery(req, res) {
   }
 }
 
-router.post('/auth/check-aadhaar', checkAadhaarRecovery);
+router.post('/auth/check-aadhaar', accountRecoveryLimiter, checkAadhaarRecovery);
 
 /**
  * POST /api/auth/recover
@@ -107,7 +104,7 @@ router.post('/auth/check-aadhaar', checkAadhaarRecovery);
  *   selfieUrl        -- optional still selfie
  * }
  */
-router.post('/auth/recover', async (req, res) => {
+router.post('/auth/recover', accountRecoveryLimiter, async (req, res) => {
   try {
     const { aadhaarNumber } = req.body;
     const { mobile, fullName, dob, videoKycUrl, videoKycKey, selfieUrl } = req.body;
@@ -119,48 +116,63 @@ router.post('/auth/recover', async (req, res) => {
     if (!isValidAadhaar(aadhaarNumber)) return res.status(400).json({ success: false, message: 'Invalid Aadhaar format (12 digits)' });
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dob)) return res.status(400).json({ success: false, message: 'dob must be YYYY-MM-DD' });
 
-    // Rate limit: 3 attempts per mobile per 24h
-    if (!checkRecoveryRateLimit(mobile)) {
-      return res.status(429).json({ success: false, message: 'Too many recovery attempts. Please wait 24 hours before trying again.' });
-    }
+    // Rate limiting is applied as route middleware (accountRecoveryLimiter),
+    // keyed on the IP rather than on a field the caller controls.
 
     const User = mongoose.model('User');
     const AccountRecovery = mongoose.model('AccountRecovery');
 
-    // Find account via Aadhaar hash
+    // Find account via Aadhaar hash. Whether this matches is NEVER revealed to
+    // the caller — see the neutral response below.
     const aadhaarHashes = hashAadhaarCandidates(aadhaarNumber);
     const user = await User.findOne({ aadhaarHash: { $in: aadhaarHashes } }).select('_id mobile status').lean();
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'No account found with this Aadhaar. If you have not completed KYC yet, your Aadhaar may not be linked.' });
-    }
-
-    // Check for pending recovery request
-    const existing = await AccountRecovery.findOne({ userId: user._id, status: 'pending' });
-    if (existing) {
-      return res.status(400).json({ success: false, message: 'A recovery request for this account is already under review. Our team will contact you within 24 hours.' });
-    }
 
     const recoveryId = 'REC-' + crypto.randomBytes(5).toString('hex').toUpperCase();
 
-    await AccountRecovery.create({
+    // ── ONE ANSWER FOR EVERY CALLER ────────────────────────────────────────
+    // This endpoint takes a national identity number and used to answer
+    // "no account found with this Aadhaar" — turning it into an oracle for the
+    // question *does this person gamble here*, which is sensitive on its own and
+    // is exactly the sort of profiling India's DPDP Act exists to prevent. The
+    // reply is now identical whether or not the Aadhaar matches, whether or not
+    // a review is already open, and whether or not the submission is a duplicate.
+    //
+    // An unmatched submission is still RECORDED (userId simply stays unset), so
+    // someone who mistyped their Aadhaar reaches a human instead of vanishing
+    // into a silent success — and the operator, not the endpoint, is what
+    // distinguishes the cases.
+    const neutral = {
+      success: true,
       recoveryId,
-      userId:       user._id,
-      mobile:       String(mobile),
-      fullName:     String(fullName).slice(0, 100),
-      dob,
-      videoKycUrl:  String(videoKycUrl),
-      videoKycKey:  videoKycKey || '',
-      selfieUrl:    selfieUrl || '',
-    });
+      message: 'Recovery request submitted. If the details match an account, our team will review your Aadhaar card video within 24 hours. Make sure your Aadhaar card was clearly visible in the video.',
+    };
+
+    try {
+      await AccountRecovery.create({
+        recoveryId,
+        userId:       user?._id,          // unset when nothing matched
+        mobile:       String(mobile),
+        fullName:     String(fullName).slice(0, 100),
+        dob,
+        aadhaarLast4: String(aadhaarNumber).slice(-4),
+        videoKycUrl:  String(videoKycUrl),
+        videoKycKey:  videoKycKey || '',
+        selfieUrl:    selfieUrl || '',
+        requestIp:    req.ip || '',
+      });
+    } catch (createErr) {
+      // A review is already open for this account (the partial unique index).
+      // That is not an error the CALLER may learn about — telling them would
+      // re-open the oracle from a different angle — so it answers exactly as a
+      // fresh submission does.
+      if (createErr?.code !== 11000) throw createErr;
+      return res.json(neutral);
+    }
 
     // Notify admins via SSE
     global.sseManager?.broadcastToAdmins('recovery_request', { recoveryId, mobile });
 
-    res.json({
-      success: true,
-      recoveryId,
-      message: 'Recovery request submitted. Our team will review your Aadhaar card video within 24 hours. Make sure your Aadhaar card was clearly visible in the video.',
-    });
+    res.json(neutral);
   } catch (err) {
     console.error('Account recovery submit error:', err);
     res.status(500).json({ success: false, message: err.message });

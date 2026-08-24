@@ -25,21 +25,10 @@ notificationSchema.index({ userId: 1, isRead: 1, createdAt: -1 });
 // ════════════════════════════════════════════════════════════════════════════
 // EXPORT ALL MODELS
 // ════════════════════════════════════════════════════════════════════════════
-const withdrawalRequestSchema = new mongoose.Schema({
-  userId:        { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-  amount:        { type: Number, required: true },
-  method:        { type: String, enum: ['UPI','BANK'], default: 'UPI' },
-  upiId:         { type: String },
-  bankName:      { type: String },
-  accountNumber: { type: String },
-  ifscCode:      { type: String },
-  status:        { type: String, enum: ['PENDING','APPROVED','REJECTED','PAID'], default: 'PENDING', index: true },
-  adminNote:     { type: String },
-  processedBy:   { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  processedAt:   { type: Date },
-  createdAt:     { type: Date, default: Date.now, index: true },
-});
-withdrawalRequestSchema.index({ userId: 1, status: 1 });
+// `WithdrawalRequest` was removed on 2026-08-24 along with the parallel
+// withdrawal system it backed (POST /v1/user/withdraw and the admin
+// /withdrawal-requests routes). Nothing called them, no admin screen could
+// display them, and they duplicated the P2P flow — see the note in
+// domains/user/user.routes.js. Withdrawals are PaymentOrders.
 
-export const Notification      = mongoose.model('Notification',      notificationSchema);
-export const WithdrawalRequest = mongoose.model('WithdrawalRequest', withdrawalRequestSchema);
+export const Notification = mongoose.model('Notification', notificationSchema);

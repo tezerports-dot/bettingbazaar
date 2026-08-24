@@ -827,22 +827,33 @@ export const appAssets = {
 
 // Payment Order Actions — approve / reject / cancel / video-KYC
 // FIX: was orphaned label-statement; esbuild rejected TS type annotations in label blocks
+// The path segment is `payment-orders`, NOT `p2p-orders`. It was the latter here
+// until 2026-08-24, which meant every approve / reject / cancel from the queue
+// dashboard 404'd — the buttons looked live and did nothing. The backend route is
+// domains/payment/paymentOrder.routes.js `POST /payment-orders/:orderId/action`,
+// mounted at `/` under /api/admin (routes/admin/index.js), and its body contract
+// ({ action: 'APPROVE'|'REJECT'|'CANCEL', reason }) already matched.
 export const orderActions = {
   approve: async (orderId: string, reason: string) => {
-      const res = await api.post(`/api/admin/p2p-orders/${orderId}/action`, { action: 'APPROVE', reason });
+      const res = await api.post(`/api/admin/payment-orders/${orderId}/action`, { action: 'APPROVE', reason });
       return res.data;
     },
     reject: async (orderId: string, reason: string) => {
-      const res = await api.post(`/api/admin/p2p-orders/${orderId}/action`, { action: 'REJECT', reason });
+      const res = await api.post(`/api/admin/payment-orders/${orderId}/action`, { action: 'REJECT', reason });
       return res.data;
     },
     cancel: async (orderId: string, reason: string) => {
-      const res = await api.post(`/api/admin/p2p-orders/${orderId}/action`, { action: 'CANCEL', reason });
+      const res = await api.post(`/api/admin/payment-orders/${orderId}/action`, { action: 'CANCEL', reason });
       return res.data;
     },
-    requireVideoKYC: async (orderId: string) => {
-      const res = await api.post(`/api/admin/p2p-orders/${orderId}/video-kyc`);
-      return res.data;
+    // NOT IMPLEMENTED SERVER-SIDE. There is no video-KYC route on payment orders
+    // in the backend — this called `/p2p-orders/:id/video-kyc`, which never
+    // existed under any prefix. Left throwing rather than silently 404-ing so the
+    // gap is visible to whoever wires the feature up; the caller in
+    // QueueDashboard surfaces the message. Building it is a product decision
+    // (what the operator sends, how the player responds), not a path fix.
+    requireVideoKYC: async (_orderId: string) => {
+      throw new Error('Video-KYC on payment orders is not implemented on the server yet.');
     },
 };
 

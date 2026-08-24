@@ -19,7 +19,7 @@ import { ACCOUNTS, EVENT_TYPES } from '../../domains/revenue/chartOfAccounts.js'
 const User = () => mongoose.model('User');
 
 describe('withdrawal lock lifecycle (walletAuthority)', () => {
-  // Production passes WithdrawalRequest._id strings — WalletLedger.refId is
+  // Production passes PaymentOrder._id strings — WalletLedger.refId is
   // ObjectId-typed, so the ids here must be ObjectId strings too.
   const reqId = () => new mongoose.Types.ObjectId().toString();
 

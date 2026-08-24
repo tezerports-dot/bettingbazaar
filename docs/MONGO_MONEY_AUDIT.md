@@ -25,6 +25,9 @@ marked PASS on the strength of reading alone.
 | M-6 | `reserveAdminMint` combines `$expr` with `upsert`, which MongoDB refuses — admin token issuance threw on every call | **High** | **Fixed** |
 | M-7 | A casino `ROLLBACK`/`REFUND` credits the player without proving a matching prior debit — a provider can mint real money | **High** | **FIXED in both paths** — the live Mongo endpoint and `casinoPg.js` |
 | M-8 | `refundOrder` writes a provider-supplied round id into `WalletLedger.refId`, which is an ObjectId — every casino rollback/refund threw | **High** | **Fixed** |
+| M-9 | `POST /v1/user/withdraw` created the PENDING request BEFORE reserving funds, so a failed reservation left an unfunded payable row an operator would pay by hand | **Critical** | **Resolved 2026-08-24 by REMOVAL** — the endpoint was one half of a second, unreachable withdrawal system (no client called it, no admin screen could approve it). Deleted rather than hardened; the live P2P path already reserves inside the order transaction |
+| M-10 | `/auth/recover` revealed whether an Aadhaar had an account, and its rate limit was keyed on the caller-supplied `mobile` (in-process, per-worker) | Medium | **Fixed 2026-08-24** — one neutral response for every caller; IP-keyed, Redis-backed `accountRecoveryLimiter` |
+| M-11 | The `AccountRecovery` model described a different flow than the route and both panels — every recovery submission failed validation, so locked-out players had no route back to their balance | **High** | **Fixed 2026-08-24** — model aligned to the live Aadhaar + video-KYC contract |
 
 ---
 
@@ -405,3 +408,91 @@ Still **NOT VERIFIED** — listed so the gaps stay visible:
 - Concurrent double-spend under real load (`loadtest/bet-contention.js` has
   never been run)
 - Money conservation across a full settlement cycle
+
+---
+
+## M-9 — a SECOND withdrawal system, unreachable and unfunded (REMOVED)
+
+`domains/user/user.routes.js`, `POST /api/v1/user/withdraw` — deleted 2026-08-24.
+
+The bug found first: the route created the `PENDING` `WithdrawalRequest` and
+reserved the funds **afterwards**.
+
+```js
+const wr = await WithdrawalRequest.create({ …status: 'PENDING' });
+await lockWithdrawal(String(req.user._id), amount, String(wr._id));  // ← can throw
+```
+
+Both stores throw when the balance cannot cover the reservation, and the outer
+`catch` answered 500 — but nothing removed the request, so it survived as a
+payable row with no money behind it. Since payouts are MANUAL, an operator would
+wire real INR against it and discover the problem only when the approve click
+failed. Both pre-checks were reads, so a player firing the five requests the rate
+limit allows had one reserve and four become orphans.
+
+### The finding underneath the finding
+
+Hardening that ordering was the obvious fix, and it was the wrong one. Asking
+which client calls the endpoint showed why:
+
+- **No client calls it.** Every panel withdraws through the P2P path,
+  `POST /api/p2p/withdrawal/create` → `fundingAuthority` → `PaymentOrder`.
+- **No admin screen served its approve/reject routes.** A request created here
+  locked the player's winnings into a record no operator could see, approve or
+  reject — the money simply stopped existing for them. The orphan bug was the
+  smaller of the two problems.
+- **It duplicated the P2P escrow down to the wallet primitive.**
+  `lockWithdrawal` and `debitWinningsForWithdrawal` perform the identical
+  movement (winnings → locked, one ledger row); they differ only in txId prefix.
+
+So this was not one endpoint with a bug. It was a second, parallel withdrawal
+implementation that had drifted out of use while remaining mounted and reachable
+by anyone holding a valid player token. It was removed entire: the two user
+routes, the three admin routes, and the `WithdrawalRequest` model.
+
+**The live path was already correct.** `paymentProcessing.createWithdrawalOrder`
+debits escrow and saves the order inside ONE transaction, so a failed debit means
+no order — the invariant the deleted route violated. It also carries
+`requireApprovedKyc`, which the deleted route did not.
+
+`lockWithdrawal` survives with no production caller, kept only because three
+integration suites use it to set up a locked balance for the release/refund
+tests. It is documented at its definition as not-for-new-work, pointing at
+`debitWinningsForWithdrawal`. Retiring it means repointing those suites, which
+belongs in its own change with CI to prove it.
+
+**The general lesson**, and the reason this entry is longer than the bug
+deserved: two implementations of one money path do not merely duplicate effort —
+they route review attention to whichever one a reader finds first. The audit that
+produced M-9 hardened the dead one and would have shipped that as a fix.
+
+## M-10 / M-11 — account recovery: an Aadhaar oracle on a flow that never ran (FIXED)
+
+`routes/account-recovery.routes.js`, `models/accountRecovery.model.js`
+
+**M-10.** `/auth/recover` answered "No account found with this Aadhaar" when the
+lookup missed and proceeded when it hit — an oracle for *does this person gamble
+here*, which is sensitive on its own and is the kind of profiling India's DPDP
+Act exists to prevent. Its rate limit made the oracle practical rather than
+theoretical: an in-process `Map` keyed on the **`mobile` value from the request
+body**, so a caller varying that field chose their own budget, the counters were
+invisible to the other PM2 workers, and a restart cleared them.
+
+Now: one `neutral` response object returned on every path — matched, unmatched,
+duplicate — and the shared, IP-keyed, Redis-backed `accountRecoveryLimiter`. An
+unmatched submission is still recorded with `userId` unset, so someone who
+mistyped their Aadhaar reaches a human instead of vanishing into a silent
+success; the operator, not the endpoint, distinguishes the cases.
+
+**M-11**, found while fixing M-10: the `AccountRecovery` model described a
+PAN-based flow (`requestId`, `panHash`, `panLast4` all required, uppercase
+`PENDING_VIDEO`/`UNDER_REVIEW` statuses) while the route and BOTH panels speak an
+Aadhaar + video-KYC contract (`recoveryId`, `fullName`, `dob`, `videoKycUrl`,
+lowercase statuses). Nothing reconciled them, so every submission failed schema
+validation and returned 500, the status lookup queried a field that did not
+exist, and an approval could not save. **Account recovery — the only route back
+to their balance for a locked-out player — did not work at all.**
+
+The route and the panels agree with each other, so the model moved. Fields are
+optional unless the flow genuinely cannot proceed without them, so a partially
+filled request stays reviewable by a human rather than rejected by the database.

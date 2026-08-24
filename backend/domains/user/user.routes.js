@@ -38,11 +38,12 @@
 
 import express from 'express';
 import mongoose from 'mongoose';
-import { withdrawalLimiter } from '../../middleware/security.js';
-// Item 12: per-subnet backstop against IP rotation on withdrawal creation.
-import { createSubnetLimiter, globalSurgeBreaker } from '../../middleware/ipDefense.js';
 import { authenticate } from '../identity/auth.middleware.js';
-import { lockWithdrawal, getUserLedger } from '../wallet/walletAuthority.service.js';
+import { getUserLedger } from '../wallet/walletAuthority.service.js';
+// The withdrawal rate limiters (withdrawalLimiter, createSubnetLimiter,
+// globalSurgeBreaker) and the alerting import were removed with the withdrawal
+// routes on 2026-08-24 — they guarded only those. The live P2P withdrawal
+// endpoint keeps its own copies of the same three in domains/payment/.
 // The public CDN service is deliberately NOT imported here. KYC submission was
 // its last caller in this file, and a module that cannot reach cdn.service
 // cannot accidentally publish an identity document.
@@ -830,77 +831,22 @@ router.get('/v1/branding', async (req, res) => {
   }
 });
 
-// ── POST /api/v1/user/withdraw — request a withdrawal ───────────────────────
-router.post('/v1/user/withdraw', withdrawalLimiter, createSubnetLimiter('withdrawal'), globalSurgeBreaker('withdrawal'), authenticate, async (req, res) => {
-  try {
-    const { amount, method = 'UPI', upiId, bankName, accountNumber, ifscCode } = req.body;
-    const User              = mongoose.model('User');
-    const SystemConfig      = mongoose.model('SystemConfig');
-    const WithdrawalRequest = mongoose.model('WithdrawalRequest');
-
-    // Validate amount
-    const config = await SystemConfig.findOne({ key: 'main' }).lean();
-    const minW = config?.minWithdrawal || 500  /* schema default — was incorrectly 100 (GOVERNANCE.md M-5) */;
-    const maxW = config?.maxWithdrawal || 50000;
-
-    if (!amount || isNaN(amount) || amount < minW)
-      return res.status(400).json({ success: false, message: `Minimum withdrawal is ₹${minW}` });
-    if (amount > maxW)
-      return res.status(400).json({ success: false, message: `Maximum withdrawal is ₹${maxW}` });
-
-    // KYC check
-    const user = await User.findById(req.user._id);
-    if (user.kycStatus !== 'APPROVED')
-      return res.status(403).json({ success: false, message: 'KYC verification required before withdrawals' });
-
-    // Balance check — only winnings are withdrawable
-    if ((user.winningsBalance || 0) < amount)
-      return res.status(400).json({ success: false, message: 'Insufficient winnings balance. Only winnings can be withdrawn.' });
-
-    // No pending withdrawal already
-    const pendingExists = await WithdrawalRequest.findOne({ userId: req.user._id, status: 'PENDING' }).lean();
-    if (pendingExists)
-      return res.status(400).json({ success: false, message: 'You already have a pending withdrawal request. Please wait for it to be processed.' });
-
-    // Validate payment details
-    if (method === 'UPI' && !upiId)
-      return res.status(400).json({ success: false, message: 'UPI ID is required' });
-    if (method === 'BANK' && (!bankName || !accountNumber || !ifscCode))
-      return res.status(400).json({ success: false, message: 'Bank name, account number and IFSC are required' });
-
-    // Create withdrawal request first so we have its ID for idempotent lock
-    const wr = await WithdrawalRequest.create({
-      userId: req.user._id, amount, method,
-      upiId, bankName, accountNumber, ifscCode,
-      status: 'PENDING',
-    });
-
-    // Lock winningsBalance via WalletAuthority (writes WalletLedger, idempotent)
-    await lockWithdrawal(String(req.user._id), amount, String(wr._id));
-
-    
-    if (global.io) {
-      global.io.to('admin-room').emit('new_withdrawal_request', {
-        requestId: wr._id, userId: req.user._id,
-        username: user.username, amount, method, createdAt: wr.createdAt,
-      });
-    }
-
-    res.json({ success: true, message: 'Withdrawal request submitted. Processing within 24 hours.', requestId: wr._id });
-  } catch (e) {
-    res.status(500).json({ success: false, message: e.message });
-  }
-});
-
-// GET /api/v1/user/withdrawals — list own withdrawal requests
-router.get('/v1/user/withdrawals', authenticate, async (req, res) => {
-  try {
-    const WithdrawalRequest = mongoose.model('WithdrawalRequest');
-    const requests = await WithdrawalRequest.find({ userId: req.user._id })
-      .sort({ createdAt: -1 }).limit(20).lean();
-    res.json({ success: true, requests });
-  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
-});
+// ── Withdrawals live in the P2P funding platform, not here ──────────────────
+// A second, parallel withdrawal implementation used to sit at this spot:
+// POST /v1/user/withdraw + GET /v1/user/withdrawals, backed by a
+// `WithdrawalRequest` collection and its own admin approve/reject pair. It was
+// removed on 2026-08-24 because it was BOTH redundant and unreachable-by-design:
+//
+//   - No client ever called it. Every panel uses the P2P path
+//     (`POST /api/p2p/withdrawal/create` → fundingAuthority → PaymentOrder).
+//   - No admin UI existed for its approve/reject routes, so a request created
+//     here locked the player's winnings into a record no operator could see,
+//     approve or reject — the money simply stopped existing for them.
+//   - It duplicated the P2P escrow down to the wallet primitive: `lockWithdrawal`
+//     and `debitWinningsForWithdrawal` performed the same movement.
+//
+// Keeping two withdrawal systems is how a reviewer ends up hardening the one
+// nobody uses. The P2P path is the single one; see domains/payment/.
 
 
 // ── WALLET LEDGER — user's personal transaction history ──────────────────────
