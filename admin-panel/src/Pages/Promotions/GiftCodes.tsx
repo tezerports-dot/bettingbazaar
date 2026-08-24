@@ -11,7 +11,11 @@ export const GiftCodes: React.FC = () => {
   const [showForm, setShowForm] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  const load = async () => { setLoading(true); try { const r = await api.get('/api/admin/giftcodes'); if(r.data.success) setCodes(r.data.codes); } catch{} finally{setLoading(false)}; };
+  // These live under /api/giftcode (routes/giftcode.routes.js is mounted there),
+  // not /api/admin — the router simply happens to declare admin-only paths.
+  // The panel called /api/admin/giftcodes until 2026-08-24, so listing,
+  // creating and deleting gift codes all 404'd.
+  const load = async () => { setLoading(true); try { const r = await api.get('/api/giftcode/admin/giftcodes'); if(r.data.success) setCodes(r.data.codes); } catch{} finally{setLoading(false)}; };
   useEffect(() => { load(); }, []);
 
   const generate = () => setForm(f => ({ ...f, code: Math.random().toString(36).slice(2,10).toUpperCase() }));
@@ -19,14 +23,14 @@ export const GiftCodes: React.FC = () => {
   const create = async () => {
     if (!form.code || !form.amount) return toast.error('Code and amount required');
     try {
-      const r = await api.post('/api/admin/giftcodes', { ...form, amount: Number(form.amount), maxUses: Number(form.maxUses) });
+      const r = await api.post('/api/giftcode/admin/giftcodes', { ...form, amount: Number(form.amount), maxUses: Number(form.maxUses) });
       if (r.data.success) { toast.success('Gift code created!'); setShowForm(false); setForm({code:'',amount:'',bonusType:'DEPOSIT_BALANCE',maxUses:'1',expiresAt:'',note:''}); load(); }
     } catch (e:any) { toast.error(e.response?.data?.message || 'Error'); }
   };
 
   const del = async (id: string) => {
     if (!confirm('Delete this code?')) return;
-    await api.delete(`/api/admin/giftcodes/${id}`);
+    await api.delete(`/api/giftcode/admin/giftcodes/${id}`);
     load(); toast.success('Deleted');
   };
 

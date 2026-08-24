@@ -47,7 +47,11 @@ const KYCModal: React.FC<KYCModalProps> = ({ onClose }) => {
       // and nothing here should hold one: the key is a reference, and viewing
       // the document later is a decision an authenticated reviewer makes.
       const uploadKycFile = async (docType: 'id-proof' | 'selfie', file: File) => {
-        const urlRes: any = await apiClient.post(`/api/upload/user/kyc/${docType}/upload-url`, { fileName: file.name, contentType: file.type, fileSize: file.size });
+        // `/api/user/...`, NOT `/api/upload/user/...` — routes/upload.routes.js is
+        // mounted at `/api` (server.js), so its own paths already begin `/user/`.
+        // The extra segment was here until 2026-08-24 and made every KYC document
+        // upload 404 before the file was ever read.
+        const urlRes: any = await apiClient.post(`/api/user/kyc/${docType}/upload-url`, { fileName: file.name, contentType: file.type, fileSize: file.size });
         if (!urlRes.uploadUrl || !urlRes.key) throw new Error('Upload response missing file key');
         const put = await fetch(urlRes.uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type } });
         // The grant pins content type and length, so a mismatch is rejected by

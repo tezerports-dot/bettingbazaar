@@ -127,7 +127,11 @@ function BuyPaymentUI({ order, onPaid, onExpire }: { order: PaymentOrder; onPaid
     if (!file) return;
     setUploading(true); setError('');
     try {
-      const urlRes: any = await apiClient.post(`/api/upload/user/payment-proof/${order.orderId}/upload-url`, { fileName: file.name, contentType: file.type, fileSize: file.size });
+      // `/api/user/...`, NOT `/api/upload/user/...` — upload.routes.js is mounted
+      // at `/api`, so its paths already start `/user/`. The extra segment 404'd
+      // every payment-proof upload, which blocks the manual deposit flow at the
+      // point where the player proves they paid.
+      const urlRes: any = await apiClient.post(`/api/user/payment-proof/${order.orderId}/upload-url`, { fileName: file.name, contentType: file.type, fileSize: file.size });
       await fetch(urlRes.uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type } });
       if (!urlRes.fileKey || !urlRes.cdnUrl) throw new Error('Upload response missing file key');
       setScreenshot({ cdnUrl: urlRes.cdnUrl, fileKey: urlRes.fileKey });
