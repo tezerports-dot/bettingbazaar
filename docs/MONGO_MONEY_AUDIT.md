@@ -25,7 +25,7 @@ marked PASS on the strength of reading alone.
 | M-6 | `reserveAdminMint` combines `$expr` with `upsert`, which MongoDB refuses — admin token issuance threw on every call | **High** | **Fixed** |
 | M-7 | A casino `ROLLBACK`/`REFUND` credits the player without proving a matching prior debit — a provider can mint real money | **High** | **FIXED in both paths** — the live Mongo endpoint and `casinoPg.js` |
 | M-8 | `refundOrder` writes a provider-supplied round id into `WalletLedger.refId`, which is an ObjectId — every casino rollback/refund threw | **High** | **Fixed** |
-| M-9 | `POST /v1/user/withdraw` created the PENDING request BEFORE reserving funds, so a failed reservation left an unfunded payable row an operator would pay by hand | **Critical** | **Fixed 2026-08-24** — reserve-then-create, `reservationTxId` required+unique, DB-enforced single open payout, payout side refuses unbacked rows |
+| M-9 | `POST /v1/user/withdraw` created the PENDING request BEFORE reserving funds, so a failed reservation left an unfunded payable row an operator would pay by hand | **Critical** | **Resolved 2026-08-24 by REMOVAL** — the endpoint was one half of a second, unreachable withdrawal system (no client called it, no admin screen could approve it). Deleted rather than hardened; the live P2P path already reserves inside the order transaction |
 | M-10 | `/auth/recover` revealed whether an Aadhaar had an account, and its rate limit was keyed on the caller-supplied `mobile` (in-process, per-worker) | Medium | **Fixed 2026-08-24** — one neutral response for every caller; IP-keyed, Redis-backed `accountRecoveryLimiter` |
 | M-11 | The `AccountRecovery` model described a different flow than the route and both panels — every recovery submission failed validation, so locked-out players had no route back to their balance | **High** | **Fixed 2026-08-24** — model aligned to the live Aadhaar + video-KYC contract |
 
@@ -411,12 +411,12 @@ Still **NOT VERIFIED** — listed so the gaps stay visible:
 
 ---
 
-## M-9 — an unfunded withdrawal request is a payable instrument (FIXED)
+## M-9 — a SECOND withdrawal system, unreachable and unfunded (REMOVED)
 
-`domains/user/user.routes.js`, `POST /api/v1/user/withdraw`
+`domains/user/user.routes.js`, `POST /api/v1/user/withdraw` — deleted 2026-08-24.
 
-The route created the `PENDING` `WithdrawalRequest` and reserved the funds
-**afterwards**:
+The bug found first: the route created the `PENDING` `WithdrawalRequest` and
+reserved the funds **afterwards**.
 
 ```js
 const wr = await WithdrawalRequest.create({ …status: 'PENDING' });
@@ -424,44 +424,47 @@ await lockWithdrawal(String(req.user._id), amount, String(wr._id));  // ← can 
 ```
 
 Both stores throw when the balance cannot cover the reservation, and the outer
-`catch` answered 500 — but nothing removed the request. It survived as a
-`PENDING` row with **no money behind it**.
+`catch` answered 500 — but nothing removed the request, so it survived as a
+payable row with no money behind it. Since payouts are MANUAL, an operator would
+wire real INR against it and discover the problem only when the approve click
+failed. Both pre-checks were reads, so a player firing the five requests the rate
+limit allows had one reserve and four become orphans.
 
-**Why that is worse here than a wrong balance.** Payouts are MANUAL. An operator
-reads the pending queue, sends real INR by hand, and only then records the
-approval. An unfunded row is indistinguishable from a funded one in that queue,
-so the cash leaves first and the failure surfaces second. The ledger guards were
-never wrong; the loss happens outside them.
+### The finding underneath the finding
 
-Reaching the state took no exotic timing — the balance check and the
-"already have a pending one?" check were both reads, so a player firing the
-five requests the rate limit allows had one reserve and four become orphans,
-each worth a full manual payout.
+Hardening that ordering was the obvious fix, and it was the wrong one. Asking
+which client calls the endpoint showed why:
 
-**The fix, in the order it matters.**
+- **No client calls it.** Every panel withdraws through the P2P path,
+  `POST /api/p2p/withdrawal/create` → `fundingAuthority` → `PaymentOrder`.
+- **No admin screen served its approve/reject routes.** A request created here
+  locked the player's winnings into a record no operator could see, approve or
+  reject — the money simply stopped existing for them. The orphan bug was the
+  smaller of the two problems.
+- **It duplicated the P2P escrow down to the wallet primitive.**
+  `lockWithdrawal` and `debitWinningsForWithdrawal` perform the identical
+  movement (winnings → locked, one ledger row); they differ only in txId prefix.
 
-1. **Reserve, then create.** The money leaves the withdrawable balance before
-   anything payable exists, so the dangerous state is unrepresentable rather
-   than merely unlikely. This is the ordering the P2P path already used
-   (`paymentProcessing.createWithdrawalOrder` debits escrow and saves the order
-   in one transaction); the two paths now agree.
-2. **`reservationTxId`, required and unique.** The request names the movement
-   that funds it. Required, so a request that names no reservation cannot be
-   stored; unique, so one reservation can never back two payable rows.
-3. **A partial unique index** (`one_pending_withdrawal_per_user`) makes "one
-   open payout per player" the database's rule instead of a read-then-write two
-   concurrent callers both pass.
-4. **The payout side refuses unbacked rows.** Approve returns 409 without a
-   reservation, and — the subtler half — reject refunds *only* when one exists:
-   the guard inside `refundWithdrawal` is an AGGREGATE check on `lockedBalance`,
-   so an unfunded refund would have been satisfied out of a *different*
-   request's reservation, converting an orphan into minted balance.
-5. **Compensation, and a page when it fails.** If the record cannot be written
-   the reservation is released; if that release also fails, the operator is
-   paged rather than the money being left silently stranded.
+So this was not one endpoint with a bug. It was a second, parallel withdrawal
+implementation that had drifted out of use while remaining mounted and reachable
+by anyone holding a valid player token. It was removed entire: the two user
+routes, the three admin routes, and the `WithdrawalRequest` model.
 
-Covered by `tests/integration/withdrawalReservation.integration.test.js` (the
-five-request burst included) and `tests/unit/withdrawalPayoutGuards.test.js`.
+**The live path was already correct.** `paymentProcessing.createWithdrawalOrder`
+debits escrow and saves the order inside ONE transaction, so a failed debit means
+no order — the invariant the deleted route violated. It also carries
+`requireApprovedKyc`, which the deleted route did not.
+
+`lockWithdrawal` survives with no production caller, kept only because three
+integration suites use it to set up a locked balance for the release/refund
+tests. It is documented at its definition as not-for-new-work, pointing at
+`debitWinningsForWithdrawal`. Retiring it means repointing those suites, which
+belongs in its own change with CI to prove it.
+
+**The general lesson**, and the reason this entry is longer than the bug
+deserved: two implementations of one money path do not merely duplicate effort —
+they route review attention to whichever one a reader finds first. The audit that
+produced M-9 hardened the dead one and would have shipped that as a fix.
 
 ## M-10 / M-11 — account recovery: an Aadhaar oracle on a flow that never ran (FIXED)
 

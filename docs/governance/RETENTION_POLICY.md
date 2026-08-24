@@ -31,7 +31,9 @@ worker's prunable plan — that is a structural guarantee, not a config choice:
 - `AccountingEvent` — the append-only double-entry ledger (immutable by design).
 - `WalletLedger`, `MerchantWalletLedger` — per-account money movements.
 - `Transaction` — user-facing money history.
-- `PaymentOrder`, `WithdrawalRequest` — deposit/withdrawal records.
+- `PaymentOrder` — deposit AND withdrawal records (both are orders; the separate
+  `WithdrawalRequest` collection was removed 2026-08-24 with the parallel
+  withdrawal system it backed).
 - `EnhancedAuditLog`, `AuditLog` — the audit trail.
 - `User`, `Merchant`, `CommissionRecord`, policy/config documents.
 

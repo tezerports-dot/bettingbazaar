@@ -38,14 +38,12 @@
 
 import express from 'express';
 import mongoose from 'mongoose';
-import { withdrawalLimiter } from '../../middleware/security.js';
-// Item 12: per-subnet backstop against IP rotation on withdrawal creation.
-import { createSubnetLimiter, globalSurgeBreaker } from '../../middleware/ipDefense.js';
 import { authenticate } from '../identity/auth.middleware.js';
-import { lockWithdrawal, refundWithdrawal, getUserLedger } from '../wallet/walletAuthority.service.js';
-// Pages the operator when reserved funds cannot be returned — the one withdrawal
-// outcome no automated path can resolve on its own.
-import { sendAlert } from '../../services/alerting.service.js';
+import { getUserLedger } from '../wallet/walletAuthority.service.js';
+// The withdrawal rate limiters (withdrawalLimiter, createSubnetLimiter,
+// globalSurgeBreaker) and the alerting import were removed with the withdrawal
+// routes on 2026-08-24 — they guarded only those. The live P2P withdrawal
+// endpoint keeps its own copies of the same three in domains/payment/.
 // The public CDN service is deliberately NOT imported here. KYC submission was
 // its last caller in this file, and a module that cannot reach cdn.service
 // cannot accidentally publish an identity document.
@@ -833,136 +831,22 @@ router.get('/v1/branding', async (req, res) => {
   }
 });
 
-// ── POST /api/v1/user/withdraw — request a withdrawal ───────────────────────
-router.post('/v1/user/withdraw', withdrawalLimiter, createSubnetLimiter('withdrawal'), globalSurgeBreaker('withdrawal'), authenticate, async (req, res) => {
-  try {
-    const { amount, method = 'UPI', upiId, bankName, accountNumber, ifscCode } = req.body;
-    const User              = mongoose.model('User');
-    const SystemConfig      = mongoose.model('SystemConfig');
-    const WithdrawalRequest = mongoose.model('WithdrawalRequest');
-
-    // Validate amount
-    const config = await SystemConfig.findOne({ key: 'main' }).lean();
-    const minW = config?.minWithdrawal || 500  /* schema default — was incorrectly 100 (GOVERNANCE.md M-5) */;
-    const maxW = config?.maxWithdrawal || 50000;
-
-    if (!amount || isNaN(amount) || amount < minW)
-      return res.status(400).json({ success: false, message: `Minimum withdrawal is ₹${minW}` });
-    if (amount > maxW)
-      return res.status(400).json({ success: false, message: `Maximum withdrawal is ₹${maxW}` });
-
-    // KYC check
-    const user = await User.findById(req.user._id);
-    if (user.kycStatus !== 'APPROVED')
-      return res.status(403).json({ success: false, message: 'KYC verification required before withdrawals' });
-
-    // Balance check — only winnings are withdrawable
-    if ((user.winningsBalance || 0) < amount)
-      return res.status(400).json({ success: false, message: 'Insufficient winnings balance. Only winnings can be withdrawn.' });
-
-    // Cheap pre-check. NOT the guarantee — two concurrent requests both pass a
-    // read like this. The `one_pending_withdrawal_per_user` partial unique index
-    // is the real gate; this exists only to answer the common case with a clear
-    // message instead of a constraint violation.
-    const pendingExists = await WithdrawalRequest.findOne({ userId: req.user._id, status: 'PENDING' }).lean();
-    if (pendingExists)
-      return res.status(400).json({ success: false, message: 'You already have a pending withdrawal request. Please wait for it to be processed.' });
-
-    // Validate payment details
-    if (method === 'UPI' && !upiId)
-      return res.status(400).json({ success: false, message: 'UPI ID is required' });
-    if (method === 'BANK' && (!bankName || !accountNumber || !ifscCode))
-      return res.status(400).json({ success: false, message: 'Bank name, account number and IFSC are required' });
-
-    // ── RESERVE FIRST, THEN CREATE THE PAYABLE RECORD ───────────────────────
-    // Order matters, and getting it wrong loses real cash. This route used to
-    // create the PENDING request and THEN lock the funds. When the lock threw —
-    // which is exactly what happens when a player fires several withdrawals at
-    // once, since only the first can reserve the balance — the request survived
-    // as an orphan: a payable record with no money behind it, indistinguishable
-    // in the admin queue from a funded one. Payouts here are MANUAL, so an
-    // operator would wire the money by hand and only discover the problem when
-    // the approve click failed, after the cash was gone.
-    //
-    // Reserving first makes that state unrepresentable: the money moves out of
-    // the withdrawable balance before anything payable exists. This is the same
-    // ordering the P2P withdrawal path already uses (paymentProcessing.service
-    // .createWithdrawalOrder debits escrow, then saves the order, in one
-    // transaction); this route is now consistent with it.
-    //
-    // The id is minted up front so the reservation can be keyed to the request
-    // it will fund, keeping `wd_lock_<id>` idempotent on retry.
-    const withdrawalId  = new mongoose.Types.ObjectId();
-    const reservationTxId = `wd_lock_${withdrawalId}`;
-
-    try {
-      // Throws on insufficient balance (both stores) — nothing payable exists yet.
-      await lockWithdrawal(String(req.user._id), amount, String(withdrawalId));
-    } catch (lockErr) {
-      return res.status(400).json({
-        success: false,
-        message: 'Insufficient withdrawable balance. Please try again.',
-      });
-    }
-
-    let wr;
-    try {
-      wr = await WithdrawalRequest.create({
-        _id: withdrawalId,
-        userId: req.user._id, amount, method,
-        upiId, bankName, accountNumber, ifscCode,
-        status: 'PENDING',
-        reservationTxId,
-      });
-    } catch (createErr) {
-      // The record could not be written, but the money is already reserved.
-      // COMPENSATE — return it to the player, or the balance is silently short.
-      // refundWithdrawal is idempotent on `refund_<id>`, so a retry of this
-      // compensation cannot credit twice.
-      try {
-        await refundWithdrawal(String(req.user._id), amount, String(withdrawalId));
-      } catch (compErr) {
-        // Reserved money we could not return. Never silent: this is the one
-        // outcome that needs a human, and reconciliation would otherwise have to
-        // infer it from a balance that simply looks wrong.
-        console.error(`🚨 Withdrawal reservation stranded — user=${req.user._id} txId=${reservationTxId} amount=${amount}: ${compErr.message}`);
-        sendAlert('withdrawal-reservation-stranded',
-          'Funds were reserved for a withdrawal whose request could not be created, and the release also failed', {
-            userId: String(req.user._id), withdrawalId: String(withdrawalId),
-            reservationTxId, amount, error: compErr.message,
-          }).catch(() => { /* alerting must never mask the original failure */ });
-      }
-      // E11000 on the partial unique index = a concurrent request already opened
-      // one. That is the race this index exists to lose safely.
-      if (createErr?.code === 11000) {
-        return res.status(400).json({ success: false, message: 'You already have a pending withdrawal request. Please wait for it to be processed.' });
-      }
-      throw createErr;
-    }
-
-
-    if (global.io) {
-      global.io.to('admin-room').emit('new_withdrawal_request', {
-        requestId: wr._id, userId: req.user._id,
-        username: user.username, amount, method, createdAt: wr.createdAt,
-      });
-    }
-
-    res.json({ success: true, message: 'Withdrawal request submitted. Processing within 24 hours.', requestId: wr._id });
-  } catch (e) {
-    res.status(500).json({ success: false, message: e.message });
-  }
-});
-
-// GET /api/v1/user/withdrawals — list own withdrawal requests
-router.get('/v1/user/withdrawals', authenticate, async (req, res) => {
-  try {
-    const WithdrawalRequest = mongoose.model('WithdrawalRequest');
-    const requests = await WithdrawalRequest.find({ userId: req.user._id })
-      .sort({ createdAt: -1 }).limit(20).lean();
-    res.json({ success: true, requests });
-  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
-});
+// ── Withdrawals live in the P2P funding platform, not here ──────────────────
+// A second, parallel withdrawal implementation used to sit at this spot:
+// POST /v1/user/withdraw + GET /v1/user/withdrawals, backed by a
+// `WithdrawalRequest` collection and its own admin approve/reject pair. It was
+// removed on 2026-08-24 because it was BOTH redundant and unreachable-by-design:
+//
+//   - No client ever called it. Every panel uses the P2P path
+//     (`POST /api/p2p/withdrawal/create` → fundingAuthority → PaymentOrder).
+//   - No admin UI existed for its approve/reject routes, so a request created
+//     here locked the player's winnings into a record no operator could see,
+//     approve or reject — the money simply stopped existing for them.
+//   - It duplicated the P2P escrow down to the wallet primitive: `lockWithdrawal`
+//     and `debitWinningsForWithdrawal` performed the same movement.
+//
+// Keeping two withdrawal systems is how a reviewer ends up hardening the one
+// nobody uses. The P2P path is the single one; see domains/payment/.
 
 
 // ── WALLET LEDGER — user's personal transaction history ──────────────────────

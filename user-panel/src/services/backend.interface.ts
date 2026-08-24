@@ -83,15 +83,14 @@ export interface Backend {
   getMerchantList(): Promise<MerchantProfile[]>;
   
   // Payment Order Flow
-  createPaymentOrder(userId: string, type: 'DEPOSIT' | 'WITHDRAWAL', amount: number): Promise<PaymentOrder>;
-  getUserPaymentOrders(userId: string): Promise<PaymentOrder[]>;
-  getAllPaymentOrders(): Promise<PaymentOrder[]>;
-  
+  // createPaymentOrder / getUserPaymentOrders / getAllPaymentOrders /
+  // updateOrderStatus / sendChatMessage / getOrderChat were removed 2026-08-24:
+  // no screen implemented them and every one addressed the retired `/api/p2p/*`
+  // prefix, so they would have 404'd on first use. The player wallet talks to
+  // `/api/payment/*` through apiClient from WalletPage.tsx — see the note in
+  // realBackend.ts. Do not re-declare these here without a caller.
   getMerchantPaymentOrders(merchantId: string, type?: string): Promise<PaymentOrder[]>;
-  updateOrderStatus(orderId: string, status: string, actionBy: string): Promise<PaymentOrder>;
-  sendChatMessage(orderId: string, senderId: string, message: string, isSystem?: boolean, attachmentUrl?: string): Promise<ChatMessage>;
-  getOrderChat(orderId: string): Promise<any[]>;
-  
+
   // Files
   
   
