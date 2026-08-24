@@ -29,8 +29,25 @@
  * the outage began — a cache that was already stale does not earn a fresh grace
  * period by being read during an outage.
  */
-import { TelegramIdentity } from '../domains/telegram/telegram.model.js';
-import { membershipFor, joinPrompt } from '../domains/telegram/telegramMembership.js';
+/**
+ * The Telegram model and membership layer are imported LAZILY, inside the
+ * handler, rather than at module load.
+ *
+ * Defining a Mongoose schema is a side effect that needs a real `mongoose`.
+ * This middleware is mounted on bet.routes and payment.routes, whose unit tests
+ * substitute a light mongoose stub — a top-level import would drag schema
+ * definition into every one of those suites and fail on the stub, for a module
+ * the test never intended to exercise. Requiring it at call time keeps the
+ * dependency where it is actually used; Node caches modules, so this is a map
+ * lookup after the first request.
+ */
+async function deps() {
+  const [{ TelegramIdentity }, membership] = await Promise.all([
+    import('../domains/telegram/telegram.model.js'),
+    import('../domains/telegram/telegramMembership.js'),
+  ]);
+  return { TelegramIdentity, membershipFor: membership.membershipFor, joinPrompt: membership.joinPrompt };
+}
 
 /** How long a last-known membership is honoured while Telegram is unreachable. */
 const GRACE_MS = Number(process.env.TELEGRAM_MEMBERSHIP_GRACE_MS || 24 * 60 * 60 * 1000);
@@ -63,6 +80,8 @@ export function requireChannelMembership({ action = 'continue' } = {}) {
         return res.status(401).json({ success: false, message: 'Authentication required' });
       }
       if (isStaff(req.user)) return next();
+
+      const { TelegramIdentity, membershipFor, joinPrompt } = await deps();
 
       const identity = await TelegramIdentity.findOne({ userId: req.user._id })
         .select('telegramUserId channelStatus channelCheckedAt channelGeneration contactActive')

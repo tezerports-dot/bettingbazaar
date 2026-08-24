@@ -163,6 +163,36 @@ const telegramPendingLinkSchema = new mongoose.Schema({
 
 telegramPendingLinkSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// LOGIN TOKEN — the bridge from a Telegram chat to a browser session
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * The bot cannot hand the browser a session directly, so it sends a link
+ * carrying a one-time token which the site exchanges for a real session.
+ *
+ * That link is a bearer credential for the seconds it lives, and it travels
+ * through a chat the player might forward, so it is deliberately hostile to
+ * reuse: single-use (`consumedAt` is set inside the same atomic update that
+ * reads it), short-lived (minutes, via TTL), and bound to the Telegram account
+ * it was issued to so a stolen link cannot mint a session for anyone else.
+ *
+ * The token itself is stored as a SHA-256 hash. A database dump therefore
+ * yields nothing usable, exactly as with a password — the plaintext exists only
+ * in the message Telegram delivered.
+ */
+const telegramLoginTokenSchema = new mongoose.Schema({
+  tokenHash:      { type: String, required: true, unique: true, index: true },
+  telegramUserId: { type: String, required: true, index: true },
+  userId:         { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  consumedAt:     { type: Date, default: null },
+  createdAt:      { type: Date, default: Date.now },
+  // The TTL index owns { expiresAt: 1 } — no field-level index here.
+  expiresAt:      { type: Date, required: true },
+}, { collection: 'telegram_login_tokens' });
+
+telegramLoginTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
+export const TelegramLoginToken  = mongoose.model('TelegramLoginToken', telegramLoginTokenSchema);
 export const TelegramConfig      = mongoose.model('TelegramConfig', telegramConfigSchema);
 export const TelegramIdentity    = mongoose.model('TelegramIdentity', telegramIdentitySchema);
 export const TelegramPendingLink = mongoose.model('TelegramPendingLink', telegramPendingLinkSchema);

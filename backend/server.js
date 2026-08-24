@@ -61,6 +61,10 @@ import './models/index.js';
 import authRoutes, { loginHandler, loginTwoFactorHandler } from './routes.js';
 import adminRoutes        from './routes/admin/index.js';      // ← new modular index
 import betRoutes          from './domains/markets/bet.routes.js';
+// Telegram bot webhook + the one-time-link session exchange. Public by design:
+// the caller is Telegram, and the webhook authenticates on the secret token
+// Telegram echoes, not on a session.
+import telegramRoutes     from './domains/telegram/telegram.routes.js';
 import userRoutes         from './domains/user/user.routes.js';
 import merchantRoutes     from './domains/merchant/merchant.routes.js';
 import paymentRoutes      from './domains/payment/payment.routes.js';
@@ -472,6 +476,7 @@ app.use('/api/game',      gameProviderRoutes);
 // (/games, /categories, /admin/games, /admin/categories) don't collide with the
 // provider router's (/providers, /launch, /admin/game-providers).
 app.use('/api/game',      gameRegistryRoutes);
+app.use('/api/telegram',  telegramRoutes);
 app.use('/api/bet',       betRoutes);
 app.use('/api',           userRoutes);
 // Scoped to the login PATH, not the whole merchant router.

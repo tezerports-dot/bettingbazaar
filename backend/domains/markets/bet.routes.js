@@ -6,6 +6,11 @@ import { creditWinnings, lockBetStake, unlockBetStake, getBalances } from '../wa
 import mongoose from 'mongoose';
 import { authenticate, requireApprovedKyc } from '../identity/auth.middleware.js';
 import { betLimiter } from '../../middleware/security.js';
+// Betting is for members of the official Telegram channel. The gate serves a
+// cache kept current by chat_member events, so this costs a lookup, not a
+// Telegram round-trip — see middleware/requireChannelMembership.js for the
+// bounded-window policy when Telegram is unreachable.
+import { requireChannelMembership } from '../../middleware/requireChannelMembership.js';
 import { requireIdempotencyKey, IdempotencyKeyError } from '../../middleware/idempotencyKey.js';
 import * as betAuthority from '../../postgres/betPgAuthority.js';
 // Risk Platform (Phase 010): the single validation authority for bets.
@@ -93,7 +98,7 @@ async function idempotentBetResponse(bet, userId, type) {
 // POST /api/bet/place
 // Places a real bet. Deducts from winnings first, then deposits.
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/place', authenticate, requireApprovedKyc, betLimiter, async (req, res) => {
+router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership({ action: 'place a bet' }), betLimiter, async (req, res) => {
   // NOTE: No session opened here — the critical balance step is a single atomic
   // findOneAndUpdate (see FIX B). Remaining writes (Bet, Cycle pool, Transaction)
   // are idempotent/append-only and do not need a multi-document transaction.
