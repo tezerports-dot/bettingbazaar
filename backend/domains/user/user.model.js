@@ -4,10 +4,32 @@ import { setOrderHmacHook } from '../../middleware/order-crypto-access.js';
 
 const userSchema = new mongoose.Schema({
   username: { type: String, required: true, trim: true },
-  mobile: { type: String, required: true, unique: true, index: true }, 
-  
+  mobile: { type: String, required: true, unique: true, index: true },
+
+  // Players authenticate through Telegram and never set one; this stays for
+  // admins, sub-admins and merchants, whose credentials must not depend on a
+  // third party that can suspend an account. Absent = "cannot log in with a
+  // password", which is the correct state for a player.
   passwordHash: { type: String, select: false },
-  
+
+  // ── Referral programme identity ─────────────────────────────────────────
+  // Assigned once, when onboarding COMPLETES (contact shared + channel joined),
+  // never at first contact — a half-finished signup must not consume a number.
+  //
+  // The payout queue is ordered by this, so it must be unique and strictly
+  // increasing; it comes from an atomic counter, not from a count of documents.
+  // `sparse` because accounts that predate the programme (and admin/merchant
+  // rows) legitimately have none, and a plain unique index would collide on
+  // every one of those nulls.
+  joiningNumber: { type: Number, unique: true, sparse: true, index: true },
+  // What a player shares. Distinct from joiningNumber so the public link does
+  // not leak the platform's exact member count or a person's position in it.
+  referralCode:  { type: String, unique: true, sparse: true, index: true },
+  // Who referred them — the level-1 edge of the referral tree. The level-2 edge
+  // is this user's referrer's own referredBy, walked at earning time.
+  // (An index for this existed below long before the field itself did.)
+  referredBy:    { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+
   // ✅ DUAL BALANCE SYSTEM (CRITICAL FIX #4)
   // depositBalance: NON-WITHDRAWABLE (can only be used for betting)
   // winningsBalance: WITHDRAWABLE (from bet payouts)
