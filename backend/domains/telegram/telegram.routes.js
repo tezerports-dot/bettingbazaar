@@ -210,6 +210,102 @@ async function sendLoginLink({ chatId, telegramUserId, userId, cfg }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// POST /api/telegram/recovery/webhook — the SECOND bot
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * Separate token, separate secret, separate endpoint. A compromised primary bot
+ * must not be able to hand out other people's accounts, which it could if
+ * recovery shared its credentials.
+ *
+ * The conversation is deliberately tiny: Aadhaar, then contact. There is no
+ * channel step and no referral payload — this is not a signup.
+ */
+const recoverySessions = new Map();   // telegramUserId -> { aadhaar, at }
+const RECOVERY_SESSION_MS = 10 * 60 * 1000;
+
+function rememberRecovery(id, aadhaar) {
+  // Bounded: a chat that stops halfway must not pin an Aadhaar in memory, and
+  // the map must not grow without limit under a flood of /start messages.
+  const now = Date.now();
+  for (const [k, v] of recoverySessions) if (now - v.at > RECOVERY_SESSION_MS) recoverySessions.delete(k);
+  if (recoverySessions.size > 10_000) recoverySessions.clear();
+  recoverySessions.set(String(id), { aadhaar, at: now });
+}
+
+router.post('/recovery/webhook', async (req, res) => {
+  const cfg = await activeConfig();
+  if (!cfg?.recoveryWebhookSecret) return res.status(503).json({ ok: false });
+  if (!secretMatches(req.get('X-Telegram-Bot-Api-Secret-Token'), cfg.recoveryWebhookSecret)) {
+    return res.status(401).json({ ok: false });
+  }
+  res.json({ ok: true });
+
+  try {
+    const message = req.body?.message;
+    if (!message?.from || message.from.is_bot) return;
+    const telegramUserId = String(message.from.id);
+    const chatId = message.chat.id;
+    const { sendRecoveryMessage } = await import('./telegramClient.js');
+    const { attemptRecovery } = await import('./telegramRecovery.service.js');
+
+    if (message.contact) {
+      const held = recoverySessions.get(telegramUserId);
+      if (!held) {
+        return sendRecoveryMessage(chatId, 'Please send your 12-digit Aadhaar number first.');
+      }
+      const result = await attemptRecovery({
+        newTelegramUserId: telegramUserId,
+        phone: message.contact.phone_number,
+        contactUserId: message.contact.user_id,
+        aadhaar: held.aadhaar,
+      });
+      recoverySessions.delete(telegramUserId);
+
+      if (!result.ok) {
+        const copy = {
+          not_own_contact: 'Please share YOUR OWN contact using the button.',
+          invalid_phone: 'We could not read that number. Please try again.',
+          blocked: 'This account is blocked. Please contact support.',
+          telegram_already_linked: 'This Telegram account is already linked to a different account.',
+          // Every genuine mismatch lands here with one message, on purpose.
+          no_match: 'We could not verify these details. The Aadhaar and the mobile number must both '
+            + 'match the account exactly, and you must be messaging from the number the account uses.',
+        }[result.reason] || 'We could not complete recovery. Please contact support.';
+        return sendRecoveryMessage(chatId, copy, { reply_markup: { remove_keyboard: true } });
+      }
+
+      const { url } = await issueLoginToken({ userId: result.userId, telegramUserId });
+      return sendRecoveryMessage(chatId,
+        `✅ Account recovered.\n\n<a href="${url}">Tap here to sign in</a>\n\n`
+        + 'Your balance, history and referrals are unchanged. '
+        + 'Use the main bot from now on.',
+        { reply_markup: { remove_keyboard: true } });
+    }
+
+    const text = String(message.text || '').trim();
+    if (text.startsWith('/start')) {
+      return sendRecoveryMessage(chatId,
+        '<b>Account recovery</b>\n\n'
+        + 'Use this only if you have lost the Telegram account you signed up with, '
+        + 'but still use the same mobile number.\n\n'
+        + 'Send your <b>12-digit Aadhaar number</b> to begin.');
+    }
+
+    if (isValidAadhaar(text)) {
+      rememberRecovery(telegramUserId, text);
+      return sendRecoveryMessage(chatId,
+        'Now tap the button below to share the contact of <b>this</b> Telegram account. '
+        + 'It must be the same mobile number your account uses.',
+        { reply_markup: contactKeyboard });
+    }
+
+    return sendRecoveryMessage(chatId, 'Please send your 12-digit Aadhaar number, or /start to begin again.');
+  } catch (err) {
+    console.error('[telegram] recovery handling failed:', err.message);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // POST /api/telegram/exchange — the browser trades the link for a session
 // ═══════════════════════════════════════════════════════════════════════════
 /**
