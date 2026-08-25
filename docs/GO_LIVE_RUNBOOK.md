@@ -117,6 +117,20 @@ FEATURE_DERIVED_CYCLE_POOLS=true
 Generate every secret with `openssl rand -base64 48`. Back up `TOTP_ENCRYPTION_KEY`
 and the admin keystore **off the box** — they cannot be rotated.
 
+`IDENTITY_ENCRYPTION_KEY` must decode to exactly **32 bytes**, so generate that
+one with `openssl rand -base64 32`. The server refuses to boot in production
+without it and refuses a wrong-length value at the gate rather than failing later
+on the first Aadhaar it cannot read. It *can* be rotated, but only by keeping the
+old value in `IDENTITY_ENCRYPTION_PREVIOUS_KEYS` until every row is re-encrypted
+— back it up anyway.
+
+**The bot is not configured here.** Telegram bot tokens, webhook secrets and the
+channel id live in the database, not in `.env`, so that a suspended bot can be
+replaced from the admin panel without a deploy. After the app is live, sign in to
+the admin panel → **Telegram Setup** and activate generation 1; until you do,
+`/api/telegram/public-config` returns 503 and nobody can sign up. See
+`docs/IDENTITY_AND_REFERRALS.md` §7.
+
 ---
 
 ## Phase 3 — Deploy the app
@@ -124,6 +138,39 @@ and the admin keystore **off the box** — they cannot be rotated.
 Still in `deploy/VPS_UBUNTU_SETUP.md`: §7 (build), §9 (PM2 three roles), §10
 (NGINX + TLS), §11 (firewall), §12 (verify). At the end you have a live HTTPS
 site — but **do not open it to real players yet.** Phases 4–6 come first.
+
+---
+
+## Phase 3.5 — Create the bots and activate them (nobody can sign up until you do)
+
+Five minutes, in Telegram and then in the admin panel. Skipping it leaves a site
+where every "Sign in" button says the service is being configured.
+
+**In Telegram, talk to `@BotFather`:**
+
+1. `/newbot` → name it → **copy the token**. This is the sign-in bot.
+2. `/newbot` again → a second, differently-named bot → **copy that token**. This
+   is the recovery bot. A separate one on purpose: a compromised sign-in bot must
+   not be able to hand out other people's accounts.
+3. Create your public **channel**, add the sign-in bot to it **as an
+   administrator** (it cannot read join/leave events otherwise), and copy the
+   channel id — forward any channel post to `@userinfobot` if you do not know it.
+
+**In the admin panel → Telegram Setup:**
+
+4. Paste both tokens and the channel id, add the invite link and your public URL,
+   write a reason, and **Activate**. The token is checked against Telegram before
+   anything is stored, so a mistyped value is refused here instead of silently
+   taking sign-in down.
+5. Confirm the result says the webhook is **registered**. If it says otherwise,
+   the most common cause is a `webhookBaseUrl` Telegram cannot reach over public
+   HTTPS. Fix it and activate again — activating a second time is safe and simply
+   creates generation 2.
+
+> **Keep BotFather access.** Telegram suspends gambling bots, and when it happens
+> this same screen is how you recover: make a new bot, activate it, and existing
+> players keep their accounts — identities key on each *player's* Telegram id, not
+> on your bot. That is a 5-minute fix, not a redeploy.
 
 ---
 
@@ -181,17 +228,28 @@ the money land correctly in both the wallet and the ledger:
 - [ ] **Place a bet, let the cycle settle, confirm winnings credit.**
 - [ ] **Manual withdrawal end-to-end:** request → merchant pays out → the hold
       window behaves → balance is debited exactly once.
-- [ ] **Upload a KYC document, approve it in admin** — the image opens for the
-      reviewer via a private, short-lived link (never a public URL).
+- [ ] **Sign up through the bot end to end** — `/start`, send a test Aadhaar,
+      share the contact, join the channel, then tap the link it sends. You should
+      land in the app already signed in.
+- [ ] **The player appears in admin → KYC Queue** as awaiting a verdict, with
+      only the last four Aadhaar digits shown.
+- [ ] **Export and re-import one row** in admin → Bulk KYC. Put `YES` in the
+      verdict column; the player's status should become APPROVED and both the
+      export and the import should appear in the batch history naming you.
+- [ ] **Try to place a bet after leaving the channel** — refused. Re-join and it
+      is allowed again (the `chat_member` event updates the cache; no restart).
+- [ ] **Recover an account** on the second bot with the registered phone and the
+      right Aadhaar; confirm the balance and history survive, and that a *wrong*
+      Aadhaar gives the same message as an unknown number.
 - [ ] **A dispute inside the withdrawal hold window** resolves correctly.
 
 **If anything is wrong:** paste what you saw + the relevant `pm2 logs` line here.
 
-> **KYC note (your pivot):** because this is a fresh launch, there are no old
-> KYC documents to migrate — every new upload is private-by-default. If your
-> *staging test data* has any documents left on a public URL from earlier
-> testing, run `npm run migrate:kyc-private` (add `--apply` after a dry run) on
-> the box to move them; on a clean database it simply reports "nothing to do".
+> **There are no KYC documents to migrate.** The upload path was removed on
+> 2026-08-25 — KYC is an Aadhaar number captured by the bot and verified in bulk,
+> so there is no bucket to configure and nothing to move. If you are reading an
+> older copy of this runbook that mentions `migrate:kyc-private`, that script no
+> longer exists. See `docs/IDENTITY_AND_REFERRALS.md` §6.
 
 ---
 

@@ -639,10 +639,12 @@ hidden from default navigation until Payments Operations approves the rollout.
 |---|---|
 | Users — search, detail, roles, block/unblock, phantom access, transactions | `/admin/#/users` |
 | Merchants — directory, approval/suspension, limits, capabilities, funding | `/admin/#/merchants` |
-| KYC queue — documents, approve/reject with mandatory reason | `/admin/#/kyc` |
+| KYC queue — verification state, approve/reject with mandatory reason (the exception path; the bulk import decides the rest) | `/admin/#/kyc` |
+| Bulk KYC — audited Aadhaar export, YES/NO import | `/admin/#/kyc/bulk` |
+| Telegram setup — replace the sign-in bot or channel without a deploy | `/admin/#/telegram` |
+| Referral programme — fund the payout queue in joining order | `/admin/#/referrals` |
 | Queue manager — assignment queue, available merchants, manual assign/reassign | `/admin/#/queue-manager` |
 | Disputes — list, chat/evidence, resolve/escalate | `/admin/#/disputes` |
-| Account recovery queue — approve/reject, KYC document linking | `/admin/#/account-recovery` |
 | Sub-admins — invite/create, permission matrix, revoke | `/admin/#/sub-admins` |
 
 **Merchant platform**

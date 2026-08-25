@@ -251,7 +251,6 @@ reuse a name on a different transport for a different meaning.
 | `new_withdrawal_request` | socket.io | server→admin | `domains/user/user.routes.js` |
 | `withdrawal_approved` | socket.io | server→user | `system.admin.routes.js` |
 | `withdrawal_rejected` | socket.io | server→user | `system.admin.routes.js` |
-| `recovery_request` | SSE | server→admin | `routes/account-recovery.routes.js` |
 | `kyc_update` | socket.io | server→admin | `kyc.admin.routes.js` |
 
 ### Payment orders (P2P)

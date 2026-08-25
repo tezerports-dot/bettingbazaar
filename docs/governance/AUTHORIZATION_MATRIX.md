@@ -56,7 +56,17 @@ verification + account-status checks (blocked/suspended/approved).
 
 All GET unless noted; all read-only:
 
-- `POST /api/v1/auth/login`, `POST /logout`, `GET /me`, `GET /health`
+- `POST /api/v1/auth/logout`, `GET /me`, `GET /health` — session lifecycle.
+  `/login` and `/register` were removed 2026-08-25: players sign in through
+  the Telegram bot, and staff use `/api/admin/login` (below)
+- `POST /api/telegram/webhook`, `/recovery/webhook` — unauthenticated by
+  necessity (the caller is Telegram, not a session). Guarded by a constant-time
+  check of the secret token Telegram echoes, done before any body parse or
+  database read
+- `POST /api/telegram/exchange` — trades a one-time bot link for a session;
+  single-use enforced inside the redeeming `findOneAndUpdate`
+- `GET /api/telegram/public-config` — the bot's `@username` and channel invite
+  link, which are public the moment the bot exists. Carries no secret
 - `GET /api/cycles/active`, `/cycles/:id`, `/v1/game/cycle/:type/:startTime`,
   `/v1/game/cycles/history` — public game state
 - `GET /api/v1/system/config`, `/v1/system/time` — public config/time
