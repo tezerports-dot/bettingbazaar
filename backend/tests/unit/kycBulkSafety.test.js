@@ -99,3 +99,41 @@ describe('importing verdicts', () => {
     expect(occurrences.length).toBe(1);
   });
 });
+
+describe('a batch decision is still a KYC decision', () => {
+  it('goes through the state machine, never a bulk write on kycStatus', () => {
+    // decideKyc owns legal transitions, the rejection reason landing in the same
+    // update as the status, and the Mongo/Postgres authority resolution. A batch
+    // is not a reason to skip that — it is a reason to apply it ten thousand
+    // times. A raw updateMany here would be a second way to decide KYC that
+    // honours none of it.
+    expect(code).toMatch(/decideKyc\(row\.userId, to/);
+    expect(code).not.toMatch(/User\.updateMany[\s\S]*?kycStatus/);
+    expect(code).not.toMatch(/\$set: \{ kycStatus/);
+  });
+
+  it('mirrors a FAILED verdict too, not only VERIFIED', () => {
+    // Otherwise a player whose Aadhaar did not check out keeps
+    // PENDING_APPROVAL forever: never able to withdraw, never told why, and
+    // absent from the pending queue because their row says the batch handled
+    // them.
+    expect(code).toMatch(/status: \{ \$in: \['VERIFIED', 'FAILED'\] \}/);
+    expect(code).toMatch(/KYC_STATES\.APPROVED : KYC_STATES\.REJECTED/);
+  });
+
+  it('carries the verifier’s reason through to the rejection', () => {
+    // decideKyc REFUSES a rejection with no reason, so an empty failureReason
+    // would throw the row away rather than reject the user.
+    expect(code).toMatch(/row\.failureReason \|\| 'Identity verification failed'/);
+  });
+
+  it('reports a user the batch could not move instead of dropping it', () => {
+    expect(code).toMatch(/if \(!out\.ok\) problems\.push/);
+  });
+
+  it('counts only the users this batch actually approved', () => {
+    // Counting rows instead would let a re-import inflate the cap.
+    expect(code).toMatch(/!out\.idempotent\) approved \+= 1/);
+    expect(code).toMatch(/\$inc: \{ verifiedMembers: approved \}/);
+  });
+});

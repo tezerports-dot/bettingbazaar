@@ -495,9 +495,6 @@ export class RealBackend implements Backend {
   }
 
   // -- KYC & BANKING ----------------------------------------------------------
-  async uploadKYC(userId: string, data: any) {
-    return this.request<{ success: boolean; kycStatus: string }>(`/user/${userId}/kyc`, { method: 'POST', body: JSON.stringify(data) });
-  }
   async approveKYC(adminId: string, userId: string, status: 'APPROVED' | 'REJECTED', reason?: string) {
     const endpoint = status === 'APPROVED'
       ? `/admin/kyc/${userId}/approve`

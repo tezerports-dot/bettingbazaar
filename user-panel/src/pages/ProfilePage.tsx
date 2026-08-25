@@ -53,7 +53,6 @@ const ProfilePage: React.FC = () => {
 
   const initials = (user?.username || 'U').slice(0, 2).toUpperCase();
   const kyc = kycMeta[user?.kycStatus || 'PENDING_SUBMISSION'] || kycMeta.PENDING_SUBMISSION;
-  const canVerify = user?.kycStatus !== 'APPROVED' && user?.kycStatus !== 'PENDING_APPROVAL';
 
   const openBank = () => {
     const d = user?.bankDetails as any;
@@ -120,9 +119,9 @@ const ProfilePage: React.FC = () => {
       </div>
 
       {/* KYC */}
-      <button onClick={() => canVerify && setKycOpen(true)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, background: 'var(--surface)', border: '1px solid var(--line2)', borderRadius: 16, padding: '14px 15px', boxShadow: 'var(--shadow-sm)', marginBottom: 14, cursor: canVerify ? 'pointer' : 'default', textAlign: 'left' }}>
+      <button onClick={() => setKycOpen(true)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, background: 'var(--surface)', border: '1px solid var(--line2)', borderRadius: 16, padding: '14px 15px', boxShadow: 'var(--shadow-sm)', marginBottom: 14, cursor: 'pointer', textAlign: 'left' }}>
         <span style={{ width: 40, height: 40, flex: 'none', borderRadius: 11, background: 'color-mix(in srgb,var(--gold) 12%,var(--surface3))', border: '1px solid var(--line2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>🪪</span>
-        <span style={{ flex: 1 }}><span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>KYC Verification</span><span style={{ display: 'block', fontSize: 11, color: 'var(--text3)' }}>Verify to unlock token selling</span></span>
+        <span style={{ flex: 1 }}><span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>KYC Verification</span><span style={{ display: 'block', fontSize: 11, color: 'var(--text3)' }}>Aadhaar verification status</span></span>
         <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.06em', padding: '4px 10px', borderRadius: 999, color: kyc.color, background: kyc.bg }}>{kyc.label}</span>
       </button>
 

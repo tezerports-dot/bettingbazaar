@@ -62,7 +62,6 @@ async function requireBulkPayoutsEnabled(req, res, next) {
 
 function sanitizeMerchantOrder(order) {
     const plain = typeof order?.toObject === 'function' ? order.toObject() : { ...(order || {}) };
-    delete plain.userKycSnapshot;
     delete plain.userPhone;
     delete plain.merchantSnapshot;
     if (plain.type === 'DEPOSIT') {

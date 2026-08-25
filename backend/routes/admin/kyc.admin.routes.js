@@ -1,114 +1,75 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-/** kyc.admin.routes.js — KYC queue, approve, reject */
+/**
+ * kyc.admin.routes.js — the KYC queue and the per-user override.
+ *
+ * ── What changed, and why there is no document viewer any more ───────────────
+ * KYC used to mean an uploaded Aadhaar card and a selfie, presigned into a
+ * private bucket and reviewed by eye. That whole path is gone. The Telegram bot
+ * now captures the Aadhaar NUMBER, holds it encrypted, and verification runs in
+ * bulk against the issuing authority (domains/identity/kycBulk.service.js).
+ * There is nothing to look at, which is the point: the safest identity document
+ * is the one never collected, and an operator who cannot open an Aadhaar card
+ * cannot leak one.
+ *
+ * ── Why approve/reject survive the batch ────────────────────────────────────
+ * The batch decides the overwhelming majority. These two remain as the
+ * exception path an operator needs when a batch got one wrong or a case has to
+ * be settled before the next run — the same posture licensed operators take,
+ * with the manual action audited precisely because it is the unusual one. Both
+ * go through the same state machine the batch does, so there is exactly one
+ * place a KYC status can change.
+ */
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, hasPermission, getModels } from './_adminShared.js';
 // The KYC state machine. Every decision goes through here, so an illegal one is
 // refused by the database rather than by whichever request finished last — and
 // the reason and reviewer land in the fields that are actually read.
 import { approveKyc, rejectKyc } from '../../domains/user/kycDecision.service.js';
-import * as kycDocuments from '../../services/kycDocuments.service.js';
-import { KYC_DOCUMENT_KEY_SELECT } from '../../domains/user/kycFieldSelection.js';
+import { KycVerification } from '../../domains/identity/kycVerification.model.js';
 
 const router = express.Router();
 
+/**
+ * GET /api/admin/kyc/queue — who is still waiting on a verdict.
+ *
+ * Joined to the KycVerification row so a reviewer can see WHY someone is
+ * waiting — never submitted, exported and awaiting the verifier, or failed and
+ * needing a second look — which is the only question this screen can answer now
+ * that there is no document to inspect.
+ *
+ * The Aadhaar itself is NOT here. `aadhaarEncrypted` is select:false and this
+ * route does not ask for it; a queue of dozens of users is the last place a
+ * national identity number should be shipped to a browser. The bulk export is
+ * the one audited path that releases them.
+ */
 router.get('/kyc/queue', authenticate, hasPermission('canVerifyKYC'), async (req, res) => {
   try {
     const { User } = getModels();
 
-    // FIX 9: New users start with kycStatus='PENDING_SUBMISSION'. The queue was
-    // filtering only PENDING_APPROVAL — so the queue always appeared empty.
-    // Now we include both so admins can see all users awaiting KYC review.
-    //
-    // The document fields are NOT in this response. `idProofKey`/`photoKey` are
-    // `select: false` on the schema so they never arrive here by default, and
-    // the queue lists dozens of users at a time — shipping every reference to
-    // every reviewer's browser to render two thumbnails is the shape of the
-    // problem this replaced. A reviewer asks for one document, for one user,
-    // and gets a grant that expires; see the review route below.
+    // New users start at PENDING_SUBMISSION and the bot moves them to
+    // PENDING_APPROVAL, so both belong in the queue.
     const pendingKYC = await User.find({
-      kycStatus: { $in: ['PENDING_SUBMISSION', 'PENDING_APPROVAL'] }
+      kycStatus: { $in: ['PENDING_SUBMISSION', 'PENDING_APPROVAL'] },
     })
-      .select('-passwordHash -twoFactorSecret -kycData.idProofUrl -kycData.photoUrl')
-      .sort({ 'kyc.submittedAt': 1, createdAt: 1 });
+      .select('-passwordHash -twoFactorSecret')
+      .sort({ createdAt: 1 })
+      .limit(500)
+      .lean();
 
-    res.json({ success: true, queue: pendingKYC });
+    // One query for the whole page rather than one per row.
+    const verifications = await KycVerification.find({
+      userId: { $in: pendingKYC.map((u) => u._id) },
+    }).select('userId status aadhaarLast4 exportBatchId failureReason updatedAt').lean();
+
+    const byUser = new Map(verifications.map((v) => [String(v.userId), v]));
+    const queue = pendingKYC.map((u) => ({
+      ...u,
+      verification: byUser.get(String(u._id)) || null,
+    }));
+
+    res.json({ success: true, queue });
   } catch (error) {
     console.error('KYC queue error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch KYC queue' });
-  }
-});
-
-/**
- * GET /api/admin/kyc/:userId/document/:docType — view ONE document, once.
- *
- * The whole point of the private store. Access to an identity document is a
- * decision taken here, at review time, by an authenticated admin holding
- * `canVerifyKYC` — auditable, attributable and expiring in two minutes —
- * instead of a permanent property of a URL written into two databases.
- *
- * The grant is minted per request and never persisted, never mirrored and never
- * logged. The response carries `expiresIn` so the panel can drop the image when
- * it goes stale rather than showing a reviewer a broken tile.
- */
-router.get('/kyc/:userId/document/:docType', authenticate, hasPermission('canVerifyKYC'), async (req, res) => {
-  try {
-    const { userId, docType } = req.params;
-    if (!['id-proof', 'selfie'].includes(docType)) {
-      return res.status(400).json({ success: false, message: 'Invalid KYC document type' });
-    }
-    if (!kycDocuments.configured()) {
-      return res.status(503).json({ success: false, message: 'KYC document storage is not configured' });
-    }
-
-    const { User } = getModels();
-    // Explicit opt-in, and ONLY the two keys: they are `select: false` precisely
-    // so no other route returns them by accident, and this one has no business
-    // pulling the rest of a user document to mint one grant. Naming the leaf in
-    // an inclusive projection is what includes it — adding a `+` spelling of the
-    // same path as well is how a parent/child collision gets reintroduced
-    // (domains/user/kycFieldSelection.js).
-    const user = await User.findById(userId).select(KYC_DOCUMENT_KEY_SELECT).lean();
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
-
-    const key = docType === 'id-proof' ? user.kycData?.idProofKey : user.kycData?.photoKey;
-    if (!key) {
-      // A record written before the private store existed has no key. Say so
-      // plainly — a reviewer who sees "not found" would otherwise assume the
-      // upload failed and reject a submission that was fine.
-      return res.status(404).json({
-        success: false,
-        message: 'No document is stored for this user. It predates the private KYC store and must be re-submitted.',
-      });
-    }
-
-    // `expectedUserId` re-checks that the key read out of THIS user's record
-    // really is theirs. If a mirror or a migration ever crossed two records,
-    // the right answer is to refuse rather than show a reviewer the wrong ID.
-    const grant = await kycDocuments.presignReview({ key, expectedUserId: String(userId) });
-
-    try {
-      await mongoose.model('EnhancedAuditLog').create({
-        performedBy:     req.user._id,
-        performedByName: req.user.username || req.user.mobile || 'admin',
-        performedByRole: req.user.isAdmin ? 'admin' : 'subadmin',
-        action:          'KYC_DOCUMENT_VIEWED',
-        category:        'USER_MANAGEMENT',
-        targetId:        userId,
-        targetModel:     'User',
-        // The key, not the grant. Recording the URL would put a live (if
-        // short-lived) credential in the audit log, which is a store that by
-        // design nobody deletes from.
-        metadata:        { docType, key },
-        success:         true,
-        timestamp:       new Date(),
-      });
-    } catch (auditErr) {
-      console.error('[KYC audit] Failed to log document view:', auditErr.message);
-    }
-
-    res.json({ success: true, url: grant.url, expiresIn: grant.expiresIn });
-  } catch (error) {
-    console.error('KYC document view error:', error.message);
-    res.status(error.status || 500).json({ success: false, message: error.message || 'Failed to open document' });
   }
 });
 

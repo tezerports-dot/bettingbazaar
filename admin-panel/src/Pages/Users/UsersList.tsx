@@ -203,14 +203,18 @@ export const UsersList: React.FC = () => {
                 <div><p className="text-xs text-gray-400 mb-1">KYC</p><StatusBadge status={selectedUser.kycStatus} type="kyc" /></div>
               </div>
 
-              {selectedUser.kycData && (
+              {(selectedUser.verification || selectedUser.kycData?.rejectionReason) && (
                 <div className="bg-dark-700 rounded-lg p-4 text-sm">
-                  <p className="font-semibold mb-3 text-gray-300">KYC Data</p>
+                  <p className="font-semibold mb-3 text-gray-300">Identity verification</p>
                   <div className="grid grid-cols-2 gap-2">
-                    <div><p className="text-gray-400">Name</p><p>{selectedUser.kycData.nameOnAadhaar}</p></div>
-                    <div><p className="text-gray-400">Aadhaar</p><p className="font-mono">XXXX-{selectedUser.kycData.aadhaarNumber?.slice(-4)}</p></div>
-                    <div><p className="text-gray-400">Submitted</p><p>{formatters.date(selectedUser.kycData.submittedAt)}</p></div>
+                    <div><p className="text-gray-400">Aadhaar</p><p className="font-mono">{selectedUser.verification?.aadhaarLast4 ? `XXXX-${selectedUser.verification.aadhaarLast4}` : '—'}</p></div>
+                    <div><p className="text-gray-400">Verifier</p><p className="font-mono">{selectedUser.verification?.status || '—'}</p></div>
+                    <div><p className="text-gray-400">Batch</p><p className="font-mono">{selectedUser.verification?.exportBatchId || 'Not exported'}</p></div>
+                    <div><p className="text-gray-400">Submitted</p><p>{selectedUser.kycData?.submittedAt ? formatters.date(selectedUser.kycData.submittedAt) : '—'}</p></div>
                   </div>
+                  {selectedUser.kycData?.rejectionReason && (
+                    <p className="mt-3 text-red-400">{selectedUser.kycData.rejectionReason}</p>
+                  )}
                 </div>
               )}
 

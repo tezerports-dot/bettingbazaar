@@ -213,9 +213,8 @@ export async function applyImport({ csv, actorId }) {
     }
   }
 
-  // Approved players are usable immediately: kycStatus is what the existing
-  // requireApprovedKyc gate reads, so this is the line that lets them bet.
-  if (verified) await syncApprovedUsers(batchId);
+  // Mirror the verdicts onto the User documents the rest of the platform reads.
+  if (verified || failed) errors.push(...await syncDecidedUsers(batchId));
 
   await KycBatch.create({
     batchId, kind: 'IMPORT', actorId,
@@ -227,27 +226,67 @@ export async function applyImport({ csv, actorId }) {
 }
 
 /**
- * Mirror a batch's verdicts onto the User documents the rest of the platform
- * reads, and keep the programme's verified-member counter honest.
+ * Mirror a batch's verdicts onto the User documents, and keep the programme's
+ * verified-member counter honest.
+ *
+ * ── Why this goes through decideKyc rather than an updateMany ────────────────
+ * `kycStatus` has a state machine (domains/user/kycDecision.service.js): legal
+ * transitions only, the rejection reason written in the SAME update as the
+ * status, the reviewer recorded, and the Postgres/Mongo authority resolved in
+ * one place. A bulk `updateMany` here would be a second way to decide KYC that
+ * honours none of that — the exact duplicate-decision-path shape this codebase
+ * has been paying for elsewhere. A batch is not a reason to skip the rules; it
+ * is a reason to apply them ten thousand times.
+ *
+ * A FAILED verdict is mirrored too. Without it a player whose Aadhaar did not
+ * check out keeps `kycStatus: PENDING_APPROVAL` forever: never allowed to
+ * withdraw, never told why, and invisible in the pending queue because the
+ * KycVerification row says the batch already dealt with them.
+ *
+ * @returns {Promise<string[]>} per-user problems, folded into the batch report
  */
-async function syncApprovedUsers(batchId) {
-  const mongoose = (await import('mongoose')).default;
-  const User = mongoose.model('User');
+async function syncDecidedUsers(batchId) {
+  const { decideKyc, KYC_STATES } = await import('../user/kycDecision.service.js');
   const { ReferralProgramme } = await import('../referral/referral.model.js');
 
-  const approved = await KycVerification.find({ importBatchId: batchId, status: 'VERIFIED' })
-    .select('userId').lean();
-  if (!approved.length) return;
+  const decided = await KycVerification.find({ importBatchId: batchId, status: { $in: ['VERIFIED', 'FAILED'] } })
+    .select('userId status failureReason').lean();
+  if (!decided.length) return [];
 
-  const ids = approved.map((r) => r.userId);
-  await User.updateMany({ _id: { $in: ids } }, { $set: { kycStatus: 'APPROVED' } });
+  const problems = [];
+  let approved = 0;
 
-  // The 8-crore cap counts VERIFIED members, so it moves here and only here.
-  await ReferralProgramme.updateOne(
-    { key: 'main' },
-    { $inc: { verifiedMembers: ids.length }, $set: { updatedAt: new Date() } },
-    { upsert: true },
-  );
+  for (const row of decided) {
+    const to = row.status === 'VERIFIED' ? KYC_STATES.APPROVED : KYC_STATES.REJECTED;
+    try {
+      const out = await decideKyc(row.userId, to, {
+        actor: null,   // a batch has no individual reviewer; the KycBatch names the admin
+        reason: to === KYC_STATES.REJECTED
+          ? (row.failureReason || 'Identity verification failed')
+          : null,
+      });
+      // `idempotent` is a re-import landing on a settled user, which is fine.
+      // A genuine refusal means the user was not where the batch assumed, and
+      // that is worth surfacing rather than silently dropping.
+      if (!out.ok) problems.push(`user ${row.userId}: ${out.reason} (is ${out.status})`);
+      else if (to === KYC_STATES.APPROVED && !out.idempotent) approved += 1;
+    } catch (err) {
+      problems.push(`user ${row.userId}: ${err.message}`);
+    }
+  }
+
+  // The 8-crore cap counts VERIFIED members, so it moves here and only here —
+  // and counts only the users this batch actually moved, so a re-import does
+  // not inflate it.
+  if (approved) {
+    await ReferralProgramme.updateOne(
+      { key: 'main' },
+      { $inc: { verifiedMembers: approved }, $set: { updatedAt: new Date() } },
+      { upsert: true },
+    );
+  }
+
+  return problems;
 }
 
 /** Counts for the admin dashboard. */

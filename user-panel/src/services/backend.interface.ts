@@ -37,7 +37,9 @@ export interface Backend {
   getAIAnalysis(): Promise<{ text: string, cached: boolean }>;
 
   // KYC & BANKING
-  uploadKYC(userId: string, data: any): Promise<{ success: boolean; kycStatus: string }>;
+  // uploadKYC removed 2026-08-25 with POST /api/user/:userId/kyc. The bot takes
+  // the Aadhaar number before the account exists; there is nothing for a
+  // signed-in player to submit.
   approveKYC(adminId: string, userId: string, status: 'APPROVED' | 'REJECTED', reason?: string): Promise<void>;
   updateBankDetails(userId: string, details: User['bankDetails']): Promise<User>;
 

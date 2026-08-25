@@ -465,19 +465,9 @@ export const kyc = {
     return res.data;
   },
 
-  /**
-   * A short-lived link to ONE identity document.
-   *
-   * KYC documents live in a private bucket and the queue no longer carries a
-   * URL for them, because a URL in a list response is a permanent grant sitting
-   * in browser history. The link this returns expires in ~2 minutes and is
-   * minted per view, so it is fetched when a reviewer opens a document and is
-   * never stored.
-   */
-  viewDocument: async (userId: string, docType: 'id-proof' | 'selfie') => {
-    const res = await api.get<any>(`/api/admin/kyc/${userId}/document/${docType}`);
-    return res.data as { success: boolean; url?: string; expiresIn?: number; message?: string };
-  },
+  // viewDocument removed 2026-08-25 with GET /api/admin/kyc/:userId/document/:docType.
+  // There are no KYC documents: the bot takes the Aadhaar number and it is
+  // verified in bulk, so nothing is uploaded and nothing is presigned for review.
 };
 
 // --- SUB ADMINS ---------------------------------------------------------------

@@ -45,7 +45,6 @@ async function abortOrEnd(s)  { if (!s) return; try { await s.abortTransaction()
 function withSession(s) { return s ? { session: s } : {}; }
 function sanitizeOrderForMerchant(order) {
   const plain = typeof order?.toObject === 'function' ? order.toObject() : { ...(order || {}) };
-  delete plain.userKycSnapshot;
   delete plain.userPhone;
   delete plain.merchantSnapshot;
   delete plain.userBankDetails;

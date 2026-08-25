@@ -102,12 +102,6 @@ function rowToKyc(row) {
   return {
     userId:          row.user_id,
     status:          row.kyc_status,
-    nameOnPan:       row.name_on_pan,
-    panNumber:       row.pan_number,
-    idProofUrl:      row.id_proof_url,
-    photoUrl:        row.photo_url,
-    idProofKey:      row.id_proof_key,
-    photoKey:        row.photo_key,
     submittedAt:     row.submitted_at,
     rejectionReason: row.rejection_reason,
     reviewedBy:      row.reviewed_by,
@@ -238,20 +232,17 @@ export async function transitionKyc({ userId, to, actor = null, reason = null, t
               reviewed_by = COALESCE($3, reviewed_by),
               reviewed_at = CASE WHEN $3 IS NULL THEN reviewed_at ELSE now() END,
               rejection_reason = $4,
-              name_on_pan  = COALESCE($5, name_on_pan),
-              pan_number   = COALESCE($6, pan_number),
-              id_proof_url = COALESCE($7, id_proof_url),
-              photo_url    = COALESCE($8, photo_url),
-              id_proof_key = COALESCE($9, id_proof_key),
-              photo_key    = COALESCE($10, photo_key),
-              submitted_at = COALESCE($11, submitted_at)
-        WHERE user_id = $1 AND kyc_status = ANY($12)
+              submitted_at = COALESCE($5, submitted_at)
+        WHERE user_id = $1 AND kyc_status = ANY($6)
         RETURNING *`,
+      // name_on_pan, pan_number and the four document columns are no longer
+      // written: nothing collects a name, a PAN or a document since the
+      // Telegram/bulk cutover (2026-08-25). The COLUMNS stay — a mirror keeps
+      // its history, and dropping them is a migration with no benefit — but
+      // passing dead parameters through here made this statement read as though
+      // fields still existed that do not.
       [uid, to, actor ? String(actor) : null,
        to === KYC_STATES.REJECTED ? reason : null,
-       set.nameOnPan ?? null, set.panNumber ?? null,
-       set.idProofUrl ?? null, set.photoUrl ?? null,
-       set.idProofKey ?? null, set.photoKey ?? null,
        set.submittedAt ?? null,
        allowedFrom],
     );

@@ -92,34 +92,26 @@ const userSchema = new mongoose.Schema({
   status: { type: String, enum: ['ACTIVE', 'BLOCKED', 'SUSPENDED', 'PENDING_KYC', 'DELETED'], default: 'ACTIVE', index: true },
   
   kycStatus: { type: String, enum: ['PENDING_SUBMISSION', 'PENDING_APPROVAL', 'APPROVED', 'REJECTED'], default: 'PENDING_SUBMISSION' },
+  // ── KYC decision metadata, and nothing else ──────────────────────────────
+  // The identity data itself lives in KycVerification (domains/identity/): the
+  // Aadhaar as an HMAC for uniqueness plus an AES-256-GCM ciphertext for the
+  // bulk export, both on a separate collection with its own access path. What
+  // remains here is only what the platform reads to decide whether this user
+  // may play and what to tell them if not.
+  //
+  // Removed 2026-08-25 along with the document-upload path: nameOnAadhaar,
+  // aadhaarNumber, nameOnPAN, panNumber, idProofKey, photoKey, idProofUrl,
+  // photoUrl. Nothing collects a name, a PAN, or a document any more — the bot
+  // asks for the Aadhaar number and that is the whole submission.
   kycData: {
-    nameOnAadhaar: String,   
-    aadhaarNumber: { type: String, select: false },   
-    nameOnPAN: String,
-    panNumber: String,
-    // ── Document references ──────────────────────────────────────────────
-    // KEYS into the private KYC bucket, not URLs. The URL fields below are the
-    // old public-CDN path: nothing writes them any more, and they are kept only
-    // so a record written before the cutover still renders.
-    //
-    // `select: false` for the same reason as `aadhaarNumber` directly above —
-    // several admin routes return whole user documents, and a key that shipped
-    // by default would put the document reference back into API responses,
-    // browser history and support tickets. Readers opt in explicitly with
-    // `.select('+kycData.idProofKey')`; the only one that should is the review
-    // endpoint that mints a short-lived grant.
-    idProofKey: { type: String, select: false },
-    photoKey:   { type: String, select: false },
-    idProofUrl: { type: String, select: false },
-    photoUrl:   { type: String, select: false },
     submittedAt: Date,
-    rejectionReason: String
-  },
-  // Keyed HMAC-SHA-256 of normalized Aadhaar; never store plaintext outside KYC data.
-  aadhaarHash: { type: String, unique: true, sparse: true, select: false },
-  aadhaarHashMigration: {
-    status: { type: String, enum: ['INVALID_AADHAAR', 'DUPLICATE_HASH'], default: undefined, index: true },
-    reason: String,
+    rejectionReason: String,
+    // reviewedBy was MISSING from this schema while kycDecision.service.js and
+    // reverseMirror.js both wrote `kycData.reviewedBy`. Mongoose drops an
+    // unknown path in strict mode without erroring, so every approval stayed
+    // anonymous — the precise defect kycDecision.service.js was written to fix,
+    // fixed at the write and never at the schema.
+    reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     reviewedAt: Date
   },
 

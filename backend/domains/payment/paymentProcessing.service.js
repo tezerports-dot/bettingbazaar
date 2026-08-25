@@ -326,7 +326,7 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
     // min/max, velocity — the single validation authority.
     await assessFundingOrder({ userId, tokenAmount, type: 'WITHDRAWAL', min: minWithdraw, max: maxWithdraw });
 
-    const user = await User.findById(userId, null, withSession(session)).select('+kycData.aadhaarNumber');
+    const user = await User.findById(userId, null, withSession(session));
     if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
     if (user.isBlocked)
       throw Object.assign(new Error('Your account has been suspended due to payment violations. Contact support.'), { status: 403, code: 'USER_BLOCKED' });
@@ -376,11 +376,12 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
       createdAt:       new Date(),
       escrowLocked:    true,
       escrowAmount:    tokenAmount,
-      userKycSnapshot: {
-        aadhaar: user.kycData?.aadhaarNumber ? `XXXX-XXXX-${String(user.kycData.aadhaarNumber).slice(-4)}` : '',
-        pan: user.kycData?.panNumber || '',
-        name: user.kycData?.nameOnAadhaar || user.kycData?.nameOnPAN || user.username || '',
-      },
+      // userKycSnapshot removed 2026-08-25. It was write-only three times over:
+      // sanitizeOrderForMerchant and sanitizeMerchantOrder both delete it before
+      // any response, its `aadhaar` field was never a path on the PaymentOrder
+      // schema so Mongoose dropped it silently, and `pan`/`nameOnAadhaar` are no
+      // longer collected at all. A merchant verifies a payout against
+      // userBankDetails, which is real and is sent.
       userBankDetails: {
         accountNumber:     user.bankDetails?.accountNumber || '',
         ifscCode:          user.bankDetails?.ifscCode      || '',
