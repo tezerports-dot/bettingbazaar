@@ -87,8 +87,28 @@ export function requireChannelMembership({ action = 'continue' } = {}) {
         .select('telegramUserId channelStatus channelCheckedAt channelGeneration contactActive')
         .lean();
 
-      // No linked Telegram account. For a player this is an unfinished signup,
-      // not a permission problem — send them to the bot rather than a dead end.
+      // ASKED BEFORE the player is blamed for anything, including before "you
+      // have no Telegram account linked". `membershipFor` accepts a null
+      // identity precisely so this ordering is possible.
+      //
+      // The reverse order was a bug: an unlinked player was refused with "link
+      // your Telegram account" even when the platform had NO bot configured, so
+      // the prompt could not name one and the instruction was unfollowable. That
+      // is the exact state a fresh deployment sits in between deploying and
+      // activating generation 1, and it made the gate blame the player for an
+      // operator's unfinished setup.
+      const verdict = await membershipFor(identity);
+
+      // No channel configured at all. That is an operator problem the player can
+      // do nothing about, so the gate does not enforce a rule that does not yet
+      // exist. Loud, because it means membership is currently unenforced.
+      if (verdict.unconfigured) {
+        console.error('[channel-gate] no active Telegram config — membership cannot be enforced');
+        return next();
+      }
+
+      // A channel DOES exist and this account is not linked to it. Now the
+      // message is actionable, and `joinPrompt()` can name the bot to use.
       if (!identity) {
         const prompt = await joinPrompt();
         return res.status(403).json({
@@ -97,16 +117,6 @@ export function requireChannelMembership({ action = 'continue' } = {}) {
           message: `Link your Telegram account to ${action}.`,
           telegram: prompt,
         });
-      }
-
-      const verdict = await membershipFor(identity);
-
-      // The platform has no channel configured. That is an operator problem and
-      // the player can do nothing about it, so it must not read as "you were
-      // refused" — 503, and the gate does not block play on a config gap.
-      if (verdict.unconfigured) {
-        console.error('[channel-gate] no active Telegram config — membership cannot be enforced');
-        return next();
       }
 
       if (verdict.joined) {
