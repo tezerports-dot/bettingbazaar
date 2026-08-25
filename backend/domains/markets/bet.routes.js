@@ -223,7 +223,10 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
         balance: {
           deposit: availableDeposit, winnings: availableWinnings,
           reserve: availableReserve, total: totalAvailable,
-          maxStake, reservePercent,
+          // How much of the reserve this wallet cannot reach yet. The client
+          // shows it so the gap between "I hold ₹9" and "I may bet ₹7.21" is
+          // explained rather than left as an apparently arbitrary limit.
+          maxStake, reservePercent, reserveLocked,
         },
       });
     }
