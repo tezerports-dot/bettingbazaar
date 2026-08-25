@@ -11,7 +11,7 @@ import {
   UserCheck, FileText, Palette, Settings, ChevronLeft, ChevronRight,
   TrendingUp, ShieldCheck, HelpCircle, Image as ImageIcon,
   MessageCircle, Shield, History, Scale, Upload, Search, Sun, Moon, Bell,
-  Zap, Gift, SlidersHorizontal, Trophy, Star, Gamepad2,
+  Zap, Gift, SlidersHorizontal, Trophy, Star, Gamepad2, Bot, FileSpreadsheet, Share2,
   type LucideIcon,
 } from 'lucide-react';
 import { useAuthStore } from '../services/auth';
@@ -59,7 +59,16 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/users',               icon: Users,            label: 'Users',          title: 'Users',              sub: 'Player accounts, balances, status & KYC', permission: 'canManageUsers' },
     { path: '/users/balance-adjust',icon: SlidersHorizontal,label: 'Balance Adjust', title: 'Balance Adjustment', sub: 'Manual credit / debit with mandatory audit note', permission: 'canManageUsers' },
     { path: '/merchants',           icon: Store,            label: 'Merchants',      title: 'Merchants',          sub: 'P2P payment merchants, limits & availability', permission: 'canManageMerchants' },
-    { path: '/kyc',                 icon: UserCheck,        label: 'KYC Queue',      title: 'KYC Queue',          sub: 'Aadhaar verification review & decisions', permission: 'canVerifyKYC', badge: 'kyc' },
+    { path: '/kyc',                 icon: UserCheck,        label: 'KYC Queue',      title: 'KYC Queue',          sub: 'Accounts awaiting an Aadhaar verdict', permission: 'canVerifyKYC', badge: 'kyc' },
+  ] },
+  // Identity and payout control plane. Full admins only — these release
+  // national identity numbers, replace the platform's identity root, and pay
+  // real money. Admin 2FA is mandatory, so adminOnly also means a second
+  // factor was proved.
+  { key: 'identity', label: 'Identity & Growth', items: [
+    { path: '/telegram',  icon: Bot,             label: 'Telegram Setup',  title: 'Telegram Setup',      sub: 'Replace the sign-in bot or channel without a deploy', adminOnly: true },
+    { path: '/kyc/bulk',  icon: FileSpreadsheet, label: 'Bulk KYC',        title: 'Bulk KYC',            sub: 'Export Aadhaar numbers for verification, import verdicts', adminOnly: true },
+    { path: '/referrals', icon: Share2,          label: 'Referrals',       title: 'Referral Programme',  sub: 'Fund the payout queue in joining order', adminOnly: true },
   ] },
   { key: 'payments', label: 'Payments & Queue', items: [
     { path: '/queue-manager',   icon: Layers,   label: 'Queue Manager',  title: 'Queue Manager', sub: 'Live payment order queue & merchant assignment', queueManagerAccess: true, badge: 'queue' },

@@ -470,6 +470,126 @@ export const kyc = {
   // verified in bulk, so nothing is uploaded and nothing is presigned for review.
 };
 
+// --- TELEGRAM, BULK KYC & REFERRALS -------------------------------------------
+/**
+ * The identity and payout control plane. Every endpoint behind these is
+ * `isAdmin`, never `isAdminOrSubAdmin`: they move the platform's identity root
+ * and release national identity numbers, and admin 2FA is mandatory, so
+ * "isAdmin" also means "proved a second factor".
+ */
+export const telegram = {
+  getConfig: async () => {
+    const res = await api.get<any>('/api/admin/telegram/config');
+    return res.data as {
+      success: boolean;
+      active?: {
+        generation: number; botUsername: string; recoveryBotUsername?: string;
+        channelId: string; channelUsername?: string; channelInviteLink?: string;
+        botTokenConfigured: boolean; recoveryBotConfigured: boolean;
+      } | null;
+      history?: Array<{
+        generation: number; botUsername: string; channelId: string; channelUsername?: string;
+        active: boolean; activatedAt: string; reason?: string;
+        activatedBy?: { username?: string } | null;
+      }>;
+      message?: string;
+    };
+  },
+
+  /**
+   * Activate a new generation.
+   *
+   * Tokens are write-only by design: there is no read path for one, so an
+   * operator changing a bot supplies a fresh value rather than editing what is
+   * stored. The server verifies it against Telegram BEFORE storing, because a
+   * config with a dead token takes signup and login down until someone notices.
+   */
+  activate: async (body: {
+    botToken: string; recoveryBotToken?: string; channelId: string;
+    channelUsername?: string; channelInviteLink?: string; webhookBaseUrl?: string; reason?: string;
+  }) => {
+    const res = await api.post<any>('/api/admin/telegram/config', body);
+    return res.data as {
+      success: boolean; generation?: number; botUsername?: string;
+      webhook?: string; message?: string;
+    };
+  },
+};
+
+export const kycBulk = {
+  stats: async () => {
+    const res = await api.get<any>('/api/admin/kyc/bulk/stats');
+    return res.data as {
+      success: boolean;
+      pending?: number;
+      verified?: number;
+      failed?: number;
+      recentBatches?: Array<{
+        batchId: string; kind: 'EXPORT' | 'IMPORT'; rowCount: number;
+        verified?: number; failed?: number; skipped?: number;
+        actor?: string; at?: string; note?: string;
+      }>;
+      message?: string;
+    };
+  },
+
+  /**
+   * Download the pending rows as CSV.
+   *
+   * Fetched as text and handed to the browser as a Blob rather than opened as a
+   * link: the request needs the Authorization header, and a plain <a href> would
+   * not carry it. The file is never written server-side, and every call writes
+   * an audit row naming the admin.
+   */
+  exportCsv: async (limit = 10000) => {
+    const res = await api.get<string>(`/api/admin/kyc/bulk/export?limit=${limit}`, {
+      responseType: 'text',
+      headers: { Accept: 'text/csv' },
+    });
+    return res.data;
+  },
+
+  importCsv: async (csv: string) => {
+    const res = await api.post<any>('/api/admin/kyc/bulk/import', { csv });
+    return res.data as {
+      success: boolean; batchId?: string;
+      verified?: number; failed?: number; skipped?: number;
+      errors?: string[]; message?: string;
+    };
+  },
+};
+
+export const referrals = {
+  stats: async () => {
+    const res = await api.get<any>('/api/admin/referral/stats');
+    return res.data as {
+      success: boolean;
+      budget?: number; disbursed?: number; remaining?: number;
+      pendingCount?: number; pendingValue?: number;
+      blockedCount?: number; blockedValue?: number;
+      memberCap?: number; verifiedMembers?: number;
+      nextQueuePosition?: number; active?: boolean;
+      message?: string;
+    };
+  },
+
+  /**
+   * Fund the queue with a pool.
+   *
+   * The amount is the ONLY input. Who gets paid is never chosen by hand — the
+   * queue pays strictly in joining order — which is what makes the programme
+   * defensible to everyone still waiting in it, and stops a disbursal from
+   * being a discretionary favour.
+   */
+  disburse: async (amount: number) => {
+    const res = await api.post<any>('/api/admin/referral/disburse', { amount });
+    return res.data as {
+      success: boolean; batchId?: string; paid?: number; blocked?: number;
+      spent?: number; unspent?: number; paidUpToJoiner?: number; message?: string;
+    };
+  },
+};
+
 // --- SUB ADMINS ---------------------------------------------------------------
 
 export const subAdmins = {
@@ -921,6 +1041,9 @@ export default {
   depositPolicy,
   queueManager,
   kyc,
+  telegram,
+  kycBulk,
+  referrals,
   subAdmins,
   finance,
   branding,

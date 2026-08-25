@@ -48,4 +48,16 @@ export const formatters = {
     if (num >= 1000) return `${(num / 1000).toFixed(2)}K`;
     return num.toString();
   },
+
+  /**
+   * An exact count, grouped the Indian way (1,00,000 rather than 100,000).
+   *
+   * Distinct from shortNumber on purpose: an approximation is right for a
+   * dashboard headline and wrong for a queue length or a member count, where
+   * the operator is reconciling against something and needs the digits.
+   */
+  number: (value: number | undefined | null): string => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n.toLocaleString('en-IN') : '0';
+  },
 };

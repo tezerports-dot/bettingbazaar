@@ -14,6 +14,9 @@ import { TransactionsList } from './Pages/Finance/TransactionsList';
 import { ProfitLoss } from './Pages/Finance/ProfitLoss';
 import { QueueDashboard } from './Pages/QueueManager/QueueDashboard';
 import { KYCQueue } from './Pages/KYC/KYCQueue';
+import { KycBulk } from './Pages/KYC/KycBulk';
+import { TelegramConfig } from './Pages/Telegram/TelegramConfig';
+import { ReferralProgramme } from './Pages/Referrals/ReferralProgramme';
 import { SubAdminsList } from './Pages/SubAdmins/SubAdminsList';
 import { BrandingSettings } from './Pages/Branding/BrandingSettings';
 import { FAQManager } from './Pages/Content/FAQManager';
@@ -204,6 +207,20 @@ const App: React.FC = () => {
           <PermRoute permission="canVerifyKYC">
             <Layout><KYCQueue /></Layout>
           </PermRoute>
+        } />
+
+        {/* Identity and payout control plane — AdminOnly, never PermRoute.
+            These release national identity numbers, move the platform's
+            identity root, and pay real money. Admin 2FA is mandatory, so
+            AdminOnly also means a second factor was proved. */}
+        <Route path="/kyc/bulk" element={
+          <AdminOnly><Layout><KycBulk /></Layout></AdminOnly>
+        } />
+        <Route path="/telegram" element={
+          <AdminOnly><Layout><TelegramConfig /></Layout></AdminOnly>
+        } />
+        <Route path="/referrals" element={
+          <AdminOnly><Layout><ReferralProgramme /></Layout></AdminOnly>
         } />
 
         {/* Transactions — canViewTransactions */}
