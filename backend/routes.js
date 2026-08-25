@@ -1,31 +1,36 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+/**
+ * routes.js — session lifecycle, and the STAFF password login.
+ *
+ * ── Players do not have passwords ───────────────────────────────────────────
+ * Player signup and login run entirely through Telegram
+ * (domains/telegram/*): the bot proves the phone number via a contact share,
+ * hands out a one-time link, and POST /api/telegram/exchange trades that link
+ * for a session by calling `issueSession` below. There is no player password
+ * to guess, reset, phish, or reuse from another breach, so there is no player
+ * `/register`, `/login`, or password-reset surface — those were removed rather
+ * than left mounted, because a second way in is a second thing to defend.
+ *
+ * What remains here:
+ *   • `issueSession`  — the ONE place a session is minted, for staff and for
+ *                       Telegram players alike.
+ *   • `loginHandler` / `loginTwoFactorHandler`
+ *                     — STAFF ONLY (admin, sub-admin, queue manager, mediator),
+ *                       mounted by server.js at /api/admin/login. Merchants have
+ *                       their own equivalent under /api/merchant/auth.
+ *   • `/me`, `/logout`, `/health` — used by every panel on every page load.
+ */
 import express     from 'express';
 // AQ-2: sign/verify via the single PASETO authority (PASETO/Ed25519, iss/aud stamped).
 import { signToken, verifyJwt, decodeTokenClaims } from './domains/identity/jwt.util.js';
 // AQ-8: password hashing authority (argon2id + bcrypt verify-fallback).
 import { hashPassword, verifyPassword } from './domains/identity/password.util.js';
 import mongoose    from 'mongoose';
-import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
-// F-3 (2026-07-10): Redis-shared counters with per-instance fallback.
-import { createRateLimitStore } from './middleware/redisRateLimitStore.js';
 import { buildPublicKycData } from './domains/user/kycPublicData.js';
 import { issueChallenge, verifyChallenge, CHALLENGE_AUDIENCE } from './domains/identity/twoFactorChallenge.js';
 import { verifySecondFactor, SECOND_FACTOR_RESULT } from './domains/identity/verifySecondFactor.js';
-import { generateSecret, encryptSecret, buildOtpauthUri } from './domains/identity/totp.service.js';
-import { twoFactorLimiter } from './middleware/security.js';
-// Bot-mitigation challenge. Applied to the credential-submitting routes only —
-// never to /me or /logout, which every page load and sign-out depend on.
-import { requireCaptcha } from './middleware/captcha.js';
 
 const router = express.Router();
-
-const registerLimiter = rateLimit({
-  store: createRateLimitStore('rl:register:'),
-  windowMs: 60 * 60 * 1000, max: 5,
-  message: { success: false, message: 'Too many registration attempts. Try again in 1 hour.' },
-  standardHeaders: true, legacyHeaders: false,
-  keyGenerator: (req) => ipKeyGenerator(req.ip), // AQ-6: IPv6-safe key (v8)
-});
 
 // PASETO secret + expiry are owned by paseto.util.js (imported above); importing it
 // already fail-fasts on a missing secret, so no local re-declaration is needed.
@@ -46,7 +51,20 @@ function extractToken(req) {
     || null;
 }
 
-// ── POST /login ──────────────────────────────────────────────────────────────
+/**
+ * True for an account that is allowed to use the password door at all.
+ *
+ * Since players moved to Telegram this is the whole guest list. It matters more
+ * than it looks: legacy player rows still carry a `passwordHash`, and without
+ * this check a caller could post `loginType: 'user'` to /api/admin/login and
+ * walk in on one of them — none of the three role checks below would fire,
+ * because each only tests the role it names.
+ */
+function isStaffAccount(user) {
+  return Boolean(user?.isAdmin || user?.isSubAdmin || user?.isQueueManager || user?.isMediator);
+}
+
+// ── POST /api/admin/login (staff only) ───────────────────────────────────────
 export async function loginHandler(req, res) {
   // Extracted as named export — allows server.js to import directly
   // instead of splicing Express internal router stack (CRIT-05 fix).
@@ -60,8 +78,6 @@ export async function loginHandler(req, res) {
     if (!user)
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
 
-    if (user.isAccountLocked)
-      return res.status(403).json({ success: false, message: 'Account locked — recovery request pending. Contact support.' });
     if (user.status === 'BLOCKED' || user.isBlocked)
       return res.status(403).json({ success: false, message: 'Account blocked. Contact support.' });
 
@@ -72,6 +88,13 @@ export async function loginHandler(req, res) {
     // login. Persisted by the existing user.save() below (lastLogin update).
     if (needsRehash) {
       try { user.passwordHash = await hashPassword(password); } catch { /* best-effort upgrade */ }
+    }
+
+    // Checked AFTER the password, so a wrong password and a non-staff account
+    // are indistinguishable to a caller probing for which numbers are staff.
+    if (!isStaffAccount(user)) {
+      console.warn(`[auth] password login refused for non-staff account ${user._id}`);
+      return res.status(403).json({ success: false, message: 'This account signs in through Telegram.' });
     }
 
     if (loginType === 'admin'         && !user.isAdmin)        return res.status(403).json({ success: false, message: 'Admin access required' });
@@ -106,10 +129,12 @@ export async function loginHandler(req, res) {
 /**
  * Mint the session and build the client payload.
  *
- * Extracted so the password-only path and the post-OTP path cannot drift:
- * a second factor must change WHEN you get a session, never WHAT it contains.
- * Two copies of this would be a standing invitation for the 2FA branch to
- * quietly grant different claims than the normal one.
+ * The ONE place a session comes into existence. Three callers reach it — the
+ * staff password leg, the staff post-OTP leg, and the Telegram exchange — and
+ * they share this function rather than each building their own, because
+ * proving who you are must change WHEN you get a session, never WHAT it
+ * contains. Three copies of this would be a standing invitation for one door
+ * to quietly grant claims the others refuse.
  */
 export async function issueSession(user, res) {
   let role = 'user';
@@ -140,7 +165,6 @@ export async function issueSession(user, res) {
     bankDetails: user.bankDetails || null, profilePic: user.profilePic || '',
     status: user.status || 'ACTIVE', joinedAt: user.joinedAt || null,
     lastLogin: user.lastLogin, phantomAccess: user.phantomAccess || 'NONE',
-    mustChangePassword: user.mustChangePassword || false,
     twoFactorEnabled: user.twoFactorEnabled || false,
   };
 
@@ -149,12 +173,12 @@ export async function issueSession(user, res) {
 }
 
 /**
- * POST /login/2fa — redeem a challenge with an OTP or a recovery code.
+ * POST /api/admin/login/2fa — redeem a challenge with an OTP or a recovery code.
  *
  * Re-loads and re-checks the account rather than trusting anything cached in
- * the challenge: between the two legs an admin may have blocked the user, or
- * the account may have been locked. The challenge proves the password was
- * right five minutes ago, nothing more.
+ * the challenge: between the two legs an admin may have been blocked, or have
+ * had their staff role taken away. The challenge proves the password was right
+ * five minutes ago, nothing more.
  */
 export async function loginTwoFactorHandler(req, res) {
   try {
@@ -176,10 +200,10 @@ export async function loginTwoFactorHandler(req, res) {
 
     // Re-check the same gates the password leg applied — state can change
     // between the two requests.
-    if (user.isAccountLocked)
-      return res.status(403).json({ success: false, message: 'Account locked — recovery request pending. Contact support.' });
     if (user.status === 'BLOCKED' || user.isBlocked)
       return res.status(403).json({ success: false, message: 'Account blocked. Contact support.' });
+    if (!isStaffAccount(user))
+      return res.status(403).json({ success: false, message: 'This account signs in through Telegram.' });
 
     const t = challenge.loginType;
     if (t === 'admin'         && !user.isAdmin)        return res.status(403).json({ success: false, message: 'Admin access required' });
@@ -208,9 +232,10 @@ export async function loginTwoFactorHandler(req, res) {
   }
 }
 
-// Register on the router (handlers are also exported for server.js admin login)
-router.post('/login', requireCaptcha('login'), loginHandler);
-router.post('/login/2fa', twoFactorLimiter, loginTwoFactorHandler);
+// The two handlers above are NOT registered on this router. They are mounted by
+// server.js at /api/admin/login and /api/admin/login/2fa, on the admin rate
+// limit tier. /api/v1/auth/login and /api/v1/auth/register used to exist here
+// for players and are gone: a player's only door is the Telegram bot.
 
 // ── GET /me — session restore on every page load ─────────────────────────────
 router.get('/me', async (req, res) => {
@@ -253,77 +278,6 @@ router.get('/me', async (req, res) => {
   } catch (e) {
     console.error('Auth check error:', e);
     res.status(401).json({ success: false, message: 'Invalid or expired token' });
-  }
-});
-
-// ── POST /register ───────────────────────────────────────────────────────────
-router.post('/register', registerLimiter, requireCaptcha('register'), async (req, res) => {
-  try {
-    const { username, mobile, password, enable2FA } = req.body;
-    if (!username || !mobile || !password)
-      return res.status(400).json({ success: false, message: 'username, mobile and password are required' });
-    const cleanUsername = username.trim();
-    if (cleanUsername.length < 3 || cleanUsername.length > 20)
-      return res.status(400).json({ success: false, message: 'Username must be 3–20 characters' });
-    if (!/^[a-zA-Z0-9_]+$/.test(cleanUsername))
-      return res.status(400).json({ success: false, message: 'Username may only contain letters, numbers, and underscores' });
-    if (!/^[6-9]\d{9}$/.test(mobile))
-      return res.status(400).json({ success: false, message: 'Enter a valid 10-digit Indian mobile number' });
-    if (password.length < 8)
-      return res.status(400).json({ success: false, message: 'Password must be at least 8 characters' });
-
-    const User = mongoose.model('User');
-    const existing = await User.findOne({ mobile: String(mobile) });
-    if (existing) return res.status(409).json({ success: false, message: 'Mobile number already registered' });
-
-    const passwordHash = await hashPassword(password);
-    const user = await User.create({ username: cleanUsername, mobile, passwordHash, status: 'ACTIVE', kycStatus: 'PENDING_SUBMISSION', roles: ['user'] });
-    const token = signToken(
-      { userId: user._id, mobile: user.mobile, role: 'user', isAdmin: false }
-    );
-
-    const userPayload = {
-      id: user._id, _id: user._id, username: cleanUsername, mobile, role: 'user',
-      isAdmin: false, isSubAdmin: false, isQueueManager: false, permissions: {},
-      depositBalance: 0, winningsBalance: 0, lockedBalance: 0, walletBalance: 0,
-      kycStatus: user.kycStatus, kycData: null, bankDetails: null, profilePic: '',
-      status: 'ACTIVE', joinedAt: user.joinedAt || null, lastLogin: null, phantomAccess: 'NONE',
-      twoFactorEnabled: false,
-    };
-
-    // ── Optional 2FA opt-in at signup ────────────────────────────────────
-    // For players 2FA is a choice, not a requirement. Opting in here mints a
-    // PENDING secret and returns the otpauth URI so the panel can show the QR
-    // straight away, while the account stays fully usable. It only becomes
-    // live — and only then is a code demanded at every login — once the user
-    // proves they scanned it via POST /api/2fa/activate.
-    //
-    // Enabling it here instead would be the lockout trap the enrolment
-    // handshake exists to avoid: a player who closes the tab before scanning
-    // would own an account demanding codes from an authenticator entry that
-    // was never created, on their very first session.
-    let twoFactorSetup = null;
-    if (enable2FA) {
-      try {
-        const secret = generateSecret();
-        user.twoFactorPendingSecret = encryptSecret(secret);
-        await user.save();
-        twoFactorSetup = {
-          secret,
-          otpauthUri: buildOtpauthUri({ secret, label: user.mobile || String(user._id) }),
-        };
-      } catch (e) {
-        // Never fail a registration over the optional extra — the account
-        // exists and works; the user can enrol later from settings.
-        console.error('Signup 2FA opt-in failed (account still created):', e.message);
-      }
-    }
-
-    res.cookie('auth_token', token, COOKIE_OPTS);
-    res.json({ success: true, token, user: userPayload, twoFactorSetup });
-  } catch (e) {
-    console.error('Register error:', e);
-    res.status(500).json({ success: false, message: 'Registration failed. Please try again.' });
   }
 });
 

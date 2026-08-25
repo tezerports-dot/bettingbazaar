@@ -95,7 +95,6 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/app-assets',      icon: Upload,        label: 'App Assets (PWA)', title: 'App Assets (PWA)',sub: 'Icons, splash & install assets', adminOnly: true },
   ] },
   { key: 'admin', label: 'Admin', items: [
-    { path: '/account-recovery', icon: ShieldCheck, label: 'Account Recovery', title: 'Account Recovery', sub: 'User recovery requests & identity checks', adminOnly: true },
     { path: '/sub-admins',       icon: ShieldCheck, label: 'Sub-Admins',       title: 'Sub-Admins',       sub: 'Roles, permissions & access control', adminOnly: true },
     { path: '/settings',         icon: Settings,    label: 'System Settings',  title: 'System Settings',  sub: 'Platform configuration', adminOnly: true },
     { path: '/audit-logs',       icon: Shield,      label: 'Audit Logs',       title: 'Audit Logs',       sub: 'Administrative action trail', adminOnly: true },

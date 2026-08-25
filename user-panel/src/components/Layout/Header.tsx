@@ -56,7 +56,6 @@ const menuSections: MenuSection[] = [
       { label: 'Rules & How to Play', icon: '📋', path: '/rules' },
       { label: 'FAQ / Help',          icon: '❓', path: '/faq' },
       { label: 'Support',             icon: '💬', path: '/support' },
-      { label: 'Recover Account',     icon: '🔑', path: '/recover-account' },
     ],
   },
 ];

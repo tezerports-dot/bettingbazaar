@@ -177,8 +177,8 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
     const loadActiveUser = async (decoded) => {
       if (!decoded?.userId) return null;
       const User = mongoose.model('User');
-      const user = await User.findById(decoded.userId).select('isAdmin isSubAdmin isBlocked status isAccountLocked').lean();
-      if (!user || user.isBlocked || user.status === 'BLOCKED' || user.isAccountLocked) return null;
+      const user = await User.findById(decoded.userId).select('isAdmin isSubAdmin isBlocked status').lean();
+      if (!user || user.isBlocked || user.status === 'BLOCKED') return null;
       return user;
     };
 

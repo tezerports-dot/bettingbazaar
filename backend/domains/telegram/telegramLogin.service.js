@@ -41,8 +41,13 @@ export async function issueLoginToken({ userId, telegramUserId, baseUrl }) {
     expiresAt,
   });
 
+  // The token rides in the FRAGMENT, not the query string. A fragment is never
+  // sent to the server, so the one credential in this link stays out of access
+  // logs, out of any reverse proxy's request log, and out of the Referer header
+  // the browser attaches to whatever the page loads next. The panel is a
+  // HashRouter, so this is also just its ordinary route form.
   const root = String(baseUrl || process.env.PUBLIC_APP_ORIGIN || '').replace(/\/+$/, '');
-  return { token, url: `${root}/auth/telegram?token=${token}`, expiresAt };
+  return { token, url: `${root}/#/auth/telegram?token=${token}`, expiresAt };
 }
 
 /**

@@ -33,7 +33,6 @@ import { AnnouncementsPage } from './Pages/Promotions/AnnouncementsPage';
 import { BalanceAdjustment } from './Pages/Users/BalanceAdjustment';
 import { GameProviders }           from './Pages/GameProviders/GameProviders';
 import { GamesManager }            from './Pages/Games/GamesManager';
-import { AccountRecoveryAdmin } from './Pages/AccountRecovery/AccountRecoveryAdmin';
 import { FakeWinnersManager }  from './Pages/Winners/FakeWinnersManager';
 import { ChatSupport }         from './Pages/Chat/ChatSupport';
 // ── ENTERPRISE PLATFORM CONSOLES (Phase C, 2026-07-10) ─────────────────────
@@ -301,10 +300,11 @@ const App: React.FC = () => {
         } />
         {/* UTR REMOVED: route /utr-monitor stripped per product decision */}
 
-        {/* ── ACCOUNT RECOVERY */}
-        <Route path="/account-recovery" element={
-          <AdminOnly><Layout><AccountRecoveryAdmin /></Layout></AdminOnly>
-        } />
+        {/* Account recovery is no longer an admin queue. It runs unattended on a
+            second Telegram bot that requires BOTH the registered phone (proved
+            by a contact share) and the Aadhaar on file — see
+            backend/domains/telegram/telegramRecovery.service.js. Every grant
+            raises an alert. */}
 
         {/* ── WINNERS MANAGEMENT */}
         <Route path="/winners-manager" element={

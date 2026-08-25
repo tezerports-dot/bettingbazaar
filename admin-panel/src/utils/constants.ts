@@ -37,7 +37,6 @@ export const ADMIN_ROUTES = {
   AUDIT_LOGS:      '/audit-logs',
   ERROR_LOGS:      '/error-logs',
   DISPUTES:        '/disputes',
-  ACCOUNT_RECOVERY:'/account-recovery',
   WINNERS_MANAGER: '/winners-manager',
   CHAT_MANAGEMENT: '/chat-management',
   GAME_PROVIDERS:  '/game-providers',

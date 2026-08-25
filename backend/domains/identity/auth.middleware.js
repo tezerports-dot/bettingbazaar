@@ -134,14 +134,6 @@ const authenticate = async (req, res, next) => {
         message: 'Your account has been blocked. Please contact support.' 
       });
     }
-    // HIGH-06 FIX: also check isAccountLocked — a locked user with a valid PASETO
-    // could bypass the login-time check without this middleware guard.
-    if (user.isAccountLocked) {
-      return res.status(403).json({
-        success: false,
-        message: 'Account locked — recovery request pending. Contact support.'
-      });
-    }
 
     // Attach user to request object for use in subsequent middleware/routes
     req.user = user;

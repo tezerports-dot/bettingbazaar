@@ -306,6 +306,41 @@ router.post('/recovery/webhook', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// GET /api/telegram/public-config — where the sign-in button points
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * Public and unauthenticated, because it is what an anonymous visitor needs in
+ * order to sign in at all. It carries only what is already public the moment
+ * the bot exists: its @username, the recovery bot's, and the channel's invite
+ * link. No token, no secret, no channel id.
+ *
+ * It exists so that replacing a suspended bot is a database write and nothing
+ * more. Baking @username into the panel would mean a rebuild and a redeploy of
+ * three applications before anyone could sign up again — during an outage where
+ * nobody can.
+ */
+router.get('/public-config', async (req, res) => {
+  try {
+    const cfg = await activeConfig();
+    if (!cfg?.botUsername) {
+      return res.status(503).json({ success: false, message: 'Sign-in is being configured. Please try again shortly.' });
+    }
+    // Short cache: a bot replacement should reach visitors in about a minute,
+    // but this must not be a per-page-load database read at 10k DAU.
+    res.setHeader('Cache-Control', 'public, max-age=60');
+    return res.json({
+      success: true,
+      botUsername: cfg.botUsername,
+      recoveryBotUsername: cfg.recoveryBotUsername || '',
+      channelInviteLink: cfg.channelInviteLink || '',
+      channelUsername: cfg.channelUsername || '',
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: 'Could not load sign-in details.' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // POST /api/telegram/exchange — the browser trades the link for a session
 // ═══════════════════════════════════════════════════════════════════════════
 /**

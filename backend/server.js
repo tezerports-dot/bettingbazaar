@@ -93,7 +93,6 @@ import { registerService } from './services/serviceRegistry.js';
 import { providerRegistry } from './providers/registry.js';
 import { S3StorageProvider } from './providers/storage/S3StorageProvider.js';
 import { LocalDiskStorageProvider } from './providers/storage/LocalDiskStorageProvider.js';
-import recoveryRoutes     from './routes/account-recovery.routes.js';
 import twoFactorRoutes from './domains/identity/twoFactor.routes.js';
 import winnersRoutes      from './routes/winners.routes.js';
 import appBootstrapRoutes from './routes/app-bootstrap.routes.js';
@@ -404,18 +403,19 @@ app.get('/api/v1/health', legacyHealth);
 // until an admin sets a ceiling) catches distributed rotation across subnets.
 if (runtime.acceptsHttpApi) {
 startIpDefenseConfigRefresh();
-// Captcha is applied INSIDE this router, per-path (routes.js), not here.
-// Mounting it router-wide would also gate GET /me — which every page load
-// calls to restore the session — and 403 every user on every load. Same
-// reasoning as the login rate limiters (RATE_LIMITS.md, "Scoping note").
+// Session lifecycle only: /me, /logout, /health. No captcha here — every page
+// load calls /me to restore the session, so gating this router would 403 every
+// user on every load. The credential-submitting routes that captcha DID guard
+// (/login, /register) no longer exist for players; the staff password door is
+// mounted separately below and carries its own captcha.
 app.use('/api/v1/auth', authLimiter, createSubnetLimiter('auth'), globalSurgeBreaker('auth'), authRoutes);
-// MED-04 FIX: removed /api/auth duplicate mount — it duplicated rate limit slots
-// allowing 2× brute-force attempts. All clients should use /api/v1/auth/*.
+// Player signup and login are NOT here — they run through the Telegram bot
+// webhooks and the one-time-link exchange, mounted at /api/telegram below.
 // 2FA enrolment and management (LAUNCH_READINESS §F). Mandatory for admin and
-// sub-admin roles, optional for players; enforcement at login lives in the auth
-// handler, this router only manages enrolment.
+// sub-admin roles; players do not have passwords and so have no second factor
+// to enrol. Enforcement at login lives in the auth handler, this router only
+// manages enrolment.
 app.use('/api/2fa', twoFactorRoutes);
-app.use('/api', recoveryRoutes);
 app.use('/api', winnersRoutes);
 app.use('/api/app', appBootstrapRoutes);
 
