@@ -76,10 +76,14 @@ describe('Phase A money flow: split → settle → ledger', () => {
       .send({ cycleId: cycle.cycleId, side: 'BOMBAY', amount: 10, type: '30_MIN' });
     expect(resB.status).toBe(200);
 
-    // ── Split assertions: 9.70 deposit / 0.30 reserve (default 3%) ────────
+    // ── Split assertions: 9.90 deposit / 0.10 reserve (default 1%) ────────
+    // The owner's rule — a stake draws 1% from reserve and the rest from
+    // deposit, then winnings. These are the numbers that DEFINE the rule, so
+    // changing betReservePercent must break this test loudly rather than
+    // letting a money split drift silently.
     const aliceAfterBet = await User.findById(alice._id).lean();
-    expect(aliceAfterBet.depositBalance).toBeCloseTo(90.3, 9);
-    expect(aliceAfterBet.reserveBalance).toBeCloseTo(9.7, 9);
+    expect(aliceAfterBet.depositBalance).toBeCloseTo(90.1, 9);
+    expect(aliceAfterBet.reserveBalance).toBeCloseTo(9.9, 9);
     expect(aliceAfterBet.winningsBalance).toBe(0);
     expect(aliceAfterBet.lockedBalance).toBe(10);
     // Conservation: nothing minted or lost by placing the bet.
@@ -88,8 +92,8 @@ describe('Phase A money flow: split → settle → ledger', () => {
     ).toBeCloseTo(110, 9);
 
     const aliceBet = await Bet.findOne({ userId: alice._id }).lean();
-    expect(aliceBet.fromDepositBalance).toBeCloseTo(9.7, 9);
-    expect(aliceBet.fromReserveBalance).toBeCloseTo(0.3, 9);
+    expect(aliceBet.fromDepositBalance).toBeCloseTo(9.9, 9);
+    expect(aliceBet.fromReserveBalance).toBeCloseTo(0.1, 9);
     expect(aliceBet.fromWinningsBalance).toBe(0);
 
     // Pools reflect both stakes.
@@ -109,7 +113,7 @@ describe('Phase A money flow: split → settle → ledger', () => {
     const aliceSettled = await User.findById(alice._id).lean();
     expect(aliceSettled.winningsBalance).toBe(19.8);
     expect(aliceSettled.lockedBalance).toBe(0);
-    expect(aliceSettled.depositBalance).toBeCloseTo(90.3, 9); // stake stays consumed
+    expect(aliceSettled.depositBalance).toBeCloseTo(90.1, 9); // stake stays consumed
 
     const aliceBetSettled = await Bet.findOne({ userId: alice._id }).lean();
     expect(aliceBetSettled.status).toBe('WON');
@@ -184,9 +188,15 @@ describe('Phase A money flow: split → settle → ledger', () => {
     expect(await Bet.countDocuments({ userId: user._id })).toBe(0);
   });
 
-  it('falls back reserve→deposit and deposit→winnings when buckets run short', async () => {
-    // reserve 0.10 (short of 0.30) and deposit 5 (short of the 9.90 adjusted
-    // main) → winnings covers the overflow. Total 15.10 > 10 stake.
+  it('falls back deposit→winnings when a bucket runs short', async () => {
+    // At the 1% share a ₹10 stake wants 0.10 from reserve, which this wallet
+    // has exactly — so the reserve leg is satisfied and only the deposit→
+    // winnings overflow fires: deposit 5 covers part of the 9.90 main leg and
+    // winnings covers the remaining 4.90. Total 15.10 > 10 stake.
+    //
+    // The outcome is identical to what the 3% default produced (0.10 / 5 /
+    // 4.90) because the reserve shortfall simply shifted to main there, which
+    // is why this test kept passing across the change.
     const user = await User.create({
       username: 'fallback', mobile: '9100000004', kycStatus: 'APPROVED',
       depositBalance: 5, winningsBalance: 10, reserveBalance: 0.1,

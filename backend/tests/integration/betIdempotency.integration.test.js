@@ -71,10 +71,10 @@ describe('server-enforced bet idempotency (M-2), through the real route', () => 
     expect(await Bet.countDocuments({ userId: user._id })).toBe(1);
     expect(await mongoose.model('Transaction').countDocuments({ userId: user._id, type: 'BET_PLACED' })).toBe(1);
 
-    // Debited once: 9.70 deposit + 0.30 reserve → 10 locked.
+    // Debited once: 9.90 deposit + 0.10 reserve → 10 locked (1% reserve share).
     const after = await User.findById(user._id).lean();
-    expect(after.depositBalance).toBeCloseTo(90.3, 9);
-    expect(after.reserveBalance).toBeCloseTo(9.7, 9);
+    expect(after.depositBalance).toBeCloseTo(90.1, 9);
+    expect(after.reserveBalance).toBeCloseTo(9.9, 9);
     expect(after.lockedBalance).toBeCloseTo(10, 9);
 
     // Pool counted once, not twice (stored-pool path under NODE_ENV=test).
@@ -94,7 +94,7 @@ describe('server-enforced bet idempotency (M-2), through the real route', () => 
 
     expect(await Bet.countDocuments({ userId: user._id })).toBe(2);
     const after = await User.findById(user._id).lean();
-    expect(after.depositBalance).toBeCloseTo(80.6, 9);   // debited twice
+    expect(after.depositBalance).toBeCloseTo(80.2, 9);   // debited twice (2 × 9.90)
     expect(after.lockedBalance).toBeCloseTo(20, 9);
   });
 
@@ -122,7 +122,7 @@ describe('server-enforced bet idempotency (M-2), through the real route', () => 
     // The gate held under contention: one bet, one debit.
     expect(await Bet.countDocuments({ userId: user._id })).toBe(1);
     const after = await User.findById(user._id).lean();
-    expect(after.depositBalance).toBeCloseTo(90.3, 9);
+    expect(after.depositBalance).toBeCloseTo(90.1, 9);
     expect(after.lockedBalance).toBeCloseTo(10, 9);
   });
 });
