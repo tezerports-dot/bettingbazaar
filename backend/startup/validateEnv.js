@@ -26,6 +26,12 @@ const REQUIRED = [
   ['DATABASE_URL', 'PostgreSQL money datastore — required for active MongoDB + Postgres hybrid dual-write'],
   ['ORDER_HMAC_SECRET', 'dedicated payment-order HMAC secret; prevents JWT key reuse for order signing'],
   ['AADHAAR_HMAC_SECRET', 'dedicated Aadhaar HMAC secret; prevents reversible duplicate-document hashes'],
+  // Encrypts the values that must be RECOVERABLE rather than merely comparable:
+  // Aadhaar numbers (the outside verifier needs the number) and Telegram bot
+  // tokens (whoever holds one can speak as the platform). Missing it does not
+  // fail at boot without this line — it fails at the first signup, which is a
+  // far worse place to discover it.
+  ['IDENTITY_ENCRYPTION_KEY', 'AES-256 key for Aadhaar + bot-token ciphertext; a wrong or absent key makes every stored identity unreadable'],
   ['REDIS_URL',         'cross-instance rate limits, realtime fan-out, and job queue need Redis at >1 replica'],
   ['ALLOWED_ORIGINS',   'CORS allow-list; production must explicitly name trusted origins'],
   // All four S3 vars, not just the bucket. server.js refuses to boot production
@@ -76,6 +82,22 @@ function hasWeakSigningSecret(value) {
 function hasWeakMetricsToken(value) {
   const token = String(value || '').trim();
   return token.length < 32 || METRICS_TOKEN_PLACEHOLDERS.has(token.toLowerCase());
+}
+
+/**
+ * The identity key is not a passphrase — it must decode to exactly 32 bytes.
+ *
+ * Checked at boot rather than at first use because the failure mode is
+ * asymmetric: a bad key that is caught here costs a restart, while one that is
+ * caught later has already encrypted records nobody can read back.
+ */
+function hasBadIdentityKey(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return true;
+  try {
+    const key = Buffer.from(raw, /^[0-9a-f]{64}$/i.test(raw) ? 'hex' : 'base64');
+    return key.length !== 32;
+  } catch { return true; }
 }
 
 function hasWeakAadhaarHmacSecret(value) {
@@ -133,6 +155,9 @@ export function validateEnv(env = process.env, isProd = env.NODE_ENV === 'produc
   }
   if (weakAadhaarHmacSecret && !missing.includes('AADHAAR_HMAC_SECRET') && isProd) {
     throw new Error('FATAL: AADHAAR_HMAC_SECRET must be a non-placeholder secret of at least 32 characters');
+  }
+  if (hasBadIdentityKey(env.IDENTITY_ENCRYPTION_KEY) && !missing.includes('IDENTITY_ENCRYPTION_KEY') && isProd) {
+    throw new Error('FATAL: IDENTITY_ENCRYPTION_KEY must decode to exactly 32 bytes. Generate one with: openssl rand -base64 32');
   }
   if (weakMetricsToken && !missing.includes('METRICS_TOKEN') && isProd) {
     throw new Error('FATAL: METRICS_TOKEN must be a non-placeholder token of at least 32 characters');
