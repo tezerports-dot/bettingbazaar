@@ -26,7 +26,7 @@ export const SystemSettings: React.FC = () => {
     maxWinningsWithdrawal: 500000,
     // ── Money rules (Phase A + Risk Platform) — consumed by bet.routes.js,
     //    gameEngine.js and riskValidation.service.js on the backend ──────────
-    betReservePercent: 3,      // schema default: 3
+    betReservePercent: 1,      // schema default: 1
     winningsFeePercent: 1,     // schema default: 1
     payoutFeePercent: 0,       // schema default: 0
     usdtPricing: { userMerchantBuyInr: 0, merchantAdminBuyInr: 1 },
@@ -82,7 +82,7 @@ export const SystemSettings: React.FC = () => {
           max30MinBet: response.data.max30MinBet || 50000,
           maxFullDayBet: response.data.maxFullDayBet || 100000,
           maxWinningsWithdrawal: response.data.maxWinningsWithdrawal || 500000,
-          betReservePercent:  response.data.betReservePercent  ?? 3, // schema default: 3
+          betReservePercent:  response.data.betReservePercent  ?? 1, // schema default: 1
           winningsFeePercent: response.data.winningsFeePercent ?? 1, // schema default: 1
           payoutFeePercent:   response.data.payoutFeePercent   ?? 0, // schema default: 0
           usdtPricing: {

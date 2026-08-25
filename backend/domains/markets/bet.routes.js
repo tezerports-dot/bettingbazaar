@@ -193,7 +193,7 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
     const availableReserve  = user.reserveBalance   || 0;
     const totalAvailable    = availableDeposit + availableWinnings + availableReserve;
 
-    const reservePercent = config?.betReservePercent ?? 3; // schema default: 3
+    const reservePercent = config?.betReservePercent ?? 1; // schema default: 1
 
     // ── The affordability check, against the TRUE ceiling ────────────────────
     // This used to compare the stake to deposit + winnings + reserve, which is

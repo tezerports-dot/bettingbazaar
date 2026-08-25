@@ -94,20 +94,30 @@ describe('the reported maximum is exactly the fundable maximum', () => {
 describe('the case from the report', () => {
   const bal = { dep: 100, win: 100, res: 800 };
 
-  it('is ₹206.18 at the 3% default, not the ₹1,000 the wallet showed', () => {
-    // 0.97 × 206.18 = 200.00 exactly — the deposit and winnings pockets, drained.
+  it('is ₹202.02 at the 1% default, not the ₹1,000 the wallet showed', () => {
+    // 0.99 × 202.02 = 200.00 exactly — the deposit and winnings pockets, drained.
     // The remaining ₹800 of reserve is unreachable without more deposit.
-    expect(maxOf(bal, 3).maxStake).toBe(206.18);
+    expect(maxOf(bal, 1).maxStake).toBe(202.02);
+  });
+
+  it('splits a ₹200 stake 100/98/2 — the owner rule, exactly', () => {
+    // "if a bet is placed of 200 then 198 will be from deposit and winnings and
+    // 2 will be from reserve." Deposit is drained first, winnings covers the
+    // overflow, and the reserve contributes its 1%.
+    const p = plans(200, bal, 1);
+    expect(p.fromDeposit).toBe(100);
+    expect(p.fromWinnings).toBe(98);
+    expect(p.fromReserve).toBe(2);
   });
 
   it('refuses the ₹500 bet the old total implied was affordable', () => {
-    expect(() => plans(500, bal, 3)).toThrow(/Insufficient/);
+    expect(() => plans(500, bal, 1)).toThrow(/Insufficient/);
   });
 
   it('rises when the reserve share rises, because reserve becomes more usable', () => {
     // Sanity on the direction: a bigger reserve percentage lets a bigger stake
     // lean on the reserve, so the ceiling goes UP, not down.
-    expect(maxOf(bal, 10).maxStake).toBeGreaterThan(maxOf(bal, 3).maxStake);
+    expect(maxOf(bal, 10).maxStake).toBeGreaterThan(maxOf(bal, 1).maxStake);
     expect(maxOf(bal, 50).maxStake).toBeGreaterThan(maxOf(bal, 10).maxStake);
   });
 });

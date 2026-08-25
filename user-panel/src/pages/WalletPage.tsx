@@ -18,7 +18,23 @@ import { normalizeTransaction } from '../services/walletTransactionDTO';
 import ScreenShell, { card, capLabel } from '../redesign/Screen';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
-interface Balances { depositBalance: number; winningsBalance: number; lockedBalance: number; }
+interface Balances { depositBalance: number; winningsBalance: number; lockedBalance: number; reserveBalance: number; }
+
+/**
+ * What the server says this wallet can actually stake right now.
+ *
+ * Fetched rather than computed here on purpose. The reserve is not freely
+ * spendable — only `reservePercent` of a stake may come from it — so the
+ * ceiling is a money rule, and a second copy of it in the panel would drift
+ * from the one bet.routes enforces. GET /api/user/bet-limits runs the same
+ * function the bet route does.
+ */
+interface BetLimits {
+  maxStake: number;
+  reservePercent: number;
+  reserveLocked: number;
+  total: number;
+}
 interface LedgerEntry { _id: string; type: string; field: string; amount: number; balanceBefore: number; balanceAfter: number; reason: string; createdAt: string; }
 interface MerchantSnapshot {
   merchantId?: string; merchantName?: string; upiId?: string; qrCodeUrl?: string;
@@ -226,7 +242,8 @@ function BuyPaymentUI({ order, onPaid, onExpire }: { order: PaymentOrder; onPaid
 
 // ── Main WalletPage ───────────────────────────────────────────────────────────
 const WalletPage: React.FC = () => {
-  const [balances, setBalances]         = useState<Balances>({ depositBalance: 0, winningsBalance: 0, lockedBalance: 0 });
+  const [balances, setBalances]         = useState<Balances>({ depositBalance: 0, winningsBalance: 0, lockedBalance: 0, reserveBalance: 0 });
+  const [limits, setLimits]             = useState<BetLimits | null>(null);
   const [userProfile, setUserProfile]   = useState<UserProfile | null>(null);
   const [ledger, setLedger]             = useState<LedgerEntry[]>([]);
   const [paymentOrders, setPaymentOrders] = useState<PaymentOrder[]>([]);
@@ -256,7 +273,25 @@ const WalletPage: React.FC = () => {
       const u = prof?.user;
       if (u) {
         setUserProfile({ id: u._id || u.id, username: u.username || u.mobile || 'User', bankDetails: u.bankDetails });
-        setBalances({ depositBalance: u.depositBalance ?? 0, winningsBalance: u.winningsBalance ?? 0, lockedBalance: u.lockedBalance ?? 0 });
+      }
+
+      // Balances come from the LIMITS endpoint, not the profile: it reads all
+      // four pockets straight from the wallet and returns the stake ceiling
+      // computed by the same rule the bet route enforces. Taking the numbers
+      // and the ceiling from one response also means they cannot disagree with
+      // each other on screen.
+      const lim: any = await apiClient.get('/api/user/bet-limits');
+      if (lim?.success) {
+        setBalances({
+          depositBalance: lim.deposit ?? 0, winningsBalance: lim.winnings ?? 0,
+          lockedBalance: lim.locked ?? 0, reserveBalance: lim.reserve ?? 0,
+        });
+        setLimits({
+          maxStake: lim.maxStake ?? 0,
+          reservePercent: lim.reservePercent ?? 0,
+          reserveLocked: lim.reserveLocked ?? 0,
+          total: lim.total ?? 0,
+        });
       }
     } catch (err: unknown) { console.error('[WalletPage/loadMeta]', err instanceof Error ? err.message : err); }
   }, []);
@@ -349,7 +384,12 @@ const WalletPage: React.FC = () => {
     finally { setSellLoading(false); }
   };
 
-  const total = r2(balances.depositBalance + balances.winningsBalance);
+  // What the player OWNS, all four pockets. Distinct from what they can stake
+  // right now, which is `limits.maxStake` — conflating the two is the bug this
+  // screen exists to stop repeating.
+  const total = r2(balances.depositBalance + balances.winningsBalance + balances.reserveBalance);
+  const maxStake = limits?.maxStake ?? 0;
+  const reserveLocked = limits?.reserveLocked ?? 0;
 
   const tabBtn = (k: TabKey, label: string) => (
     <button onClick={() => setTab(k)} style={{ flex: 'none', padding: '9px 16px', borderRadius: 11, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 800, background: tab === k ? 'var(--gold)' : 'var(--surface3)', color: tab === k ? '#1a1200' : 'var(--text2)' }}>{label}</button>
@@ -363,12 +403,38 @@ const WalletPage: React.FC = () => {
           <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.16em', textTransform: 'uppercase', color: '#C9A94A' }}>Token balance</span>
           <span style={{ fontSize: 9, fontWeight: 700, color: '#9c9484', background: 'rgba(255,255,255,.05)', border: '1px solid rgba(255,255,255,.08)', borderRadius: 999, padding: '3px 9px' }}>1 T = ₹1</span>
         </div>
-        <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 38, color: '#F5E6BD', textShadow: '0 2px 20px rgba(212,175,55,.3)', margin: '2px 0 14px' }}>{r2(total).toLocaleString('en-IN')} <span style={{ fontSize: 20, color: '#C9A94A' }}>T</span></div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8 }}>
-          <div style={{ background: 'rgba(255,255,255,.05)', border: '1px solid rgba(255,255,255,.08)', borderRadius: 11, padding: '9px 11px' }}><div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.08em', color: '#9c9484' }}>DEPOSIT</div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: '#EAE3CE' }}>{fmtT(balances.depositBalance)}</div></div>
-          <div style={{ background: 'rgba(212,175,55,.1)', border: '1px solid rgba(212,175,55,.25)', borderRadius: 11, padding: '9px 11px' }}><div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.08em', color: '#e0c060' }}>IN PLAY</div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: '#f0d488' }}>{fmtT(balances.lockedBalance)}</div></div>
-          <div style={{ background: 'rgba(49,196,110,.1)', border: '1px solid rgba(49,196,110,.25)', borderRadius: 11, padding: '9px 11px' }}><div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.08em', color: '#4bd486' }}>WINNINGS</div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: '#8ff0b6' }}>{fmtT(balances.winningsBalance)}</div></div>
+        <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 38, color: '#F5E6BD', textShadow: '0 2px 20px rgba(212,175,55,.3)', margin: '2px 0 2px' }}>{r2(total).toLocaleString('en-IN')} <span style={{ fontSize: 20, color: '#C9A94A' }}>T</span></div>
+
+        {/* ── What you can actually stake, stated separately ─────────────────
+            The headline above is what the player OWNS. It is not what they can
+            bet: only `reservePercent` of a stake may come from the reserve, so
+            a wallet holding 1,000 with most of it in reserve may have a
+            two-figure ceiling. Showing only the total is what sent players into
+            a refused bet and a support ticket. */}
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+          <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase', color: '#9c9484' }}>Available to bet</span>
+          <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 17, color: maxStake > 0 ? '#8ff0b6' : '#e08a8a' }}>
+            {limits ? `${fmtT(maxStake)} T` : '—'}
+          </span>
         </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 8 }}>
+          <div style={{ background: 'rgba(255,255,255,.05)', border: '1px solid rgba(255,255,255,.08)', borderRadius: 11, padding: '9px 11px' }}><div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.08em', color: '#9c9484' }}>DEPOSIT</div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: '#EAE3CE' }}>{fmtT(balances.depositBalance)}</div></div>
+          <div style={{ background: 'rgba(49,196,110,.1)', border: '1px solid rgba(49,196,110,.25)', borderRadius: 11, padding: '9px 11px' }}><div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.08em', color: '#4bd486' }}>WINNINGS</div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: '#8ff0b6' }}>{fmtT(balances.winningsBalance)}</div></div>
+          {/* Its own tile, never folded into DEPOSIT — they spend differently. */}
+          <div style={{ background: 'rgba(120,150,255,.09)', border: '1px solid rgba(120,150,255,.25)', borderRadius: 11, padding: '9px 11px' }}><div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.08em', color: '#93a8f0' }}>RESERVE</div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: '#b9c8ff' }}>{fmtT(balances.reserveBalance)}</div></div>
+          <div style={{ background: 'rgba(212,175,55,.1)', border: '1px solid rgba(212,175,55,.25)', borderRadius: 11, padding: '9px 11px' }}><div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.08em', color: '#e0c060' }}>IN PLAY</div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: '#f0d488' }}>{fmtT(balances.lockedBalance)}</div></div>
+        </div>
+
+        {/* Only when it actually bites. A player whose reserve is fully usable
+            does not need a paragraph explaining a limit they will never hit. */}
+        {reserveLocked > 0 && (
+          <div style={{ marginTop: 10, padding: '9px 11px', borderRadius: 11, background: 'rgba(120,150,255,.07)', border: '1px solid rgba(120,150,255,.18)', fontSize: 11, lineHeight: 1.55, color: '#a9b6e0' }}>
+            <strong style={{ color: '#c3cdf5' }}>{fmtT(reserveLocked)} T</strong> of your reserve is not available for betting yet.
+            Each bet may draw only {limits?.reservePercent}% from reserve — the rest comes from deposit and winnings, so
+            adding to your deposit raises this limit.
+          </div>
+        )}
       </div>
 
       {/* Tabs */}

@@ -145,9 +145,9 @@ describe('Phase A money flow: split → settle → ledger', () => {
     // deposit 4 + winnings 3 + reserve 2 = ₹9, and the stake is ₹10.
     //
     // The refusal used to say "Insufficient balance. Available: ₹9" — which was
-    // still a lie, just a smaller one: at the 3% reserve share only ₹0.21 of a
-    // ₹7.21 stake may come from the reserve, so ₹7.21 is the real ceiling and
-    // ₹1.79 of the ₹2 reserve is unreachable until the player deposits more.
+    // still a lie, just a smaller one: at the 1% reserve share only ₹0.07 of a
+    // ₹7.07 stake may come from the reserve, so ₹7.07 is the real ceiling and
+    // ₹1.93 of the ₹2 reserve is unreachable until the player deposits more.
     // The message now says that, and this test pins it — a refusal that quotes
     // a number the engine would also refuse is the bug, not the wording.
     const user = await User.create({
@@ -169,12 +169,12 @@ describe('Phase A money flow: split → settle → ledger', () => {
     expect(res.body.success).toBe(false);
     expect(res.body.code).toBe('STAKE_EXCEEDS_FUNDABLE');
     // The quoted ceiling must be the one the engine actually honours.
-    expect(res.body.balance.maxStake).toBe(7.21);
-    expect(res.body.message).toContain('₹7.21');
+    expect(res.body.balance.maxStake).toBe(7.07);
+    expect(res.body.message).toContain('₹7.07');
     // …and it must explain where the rest of the money went, or the player is
-    // left staring at a ₹9 balance wondering why ₹7.21 is the limit.
+    // left staring at a ₹9 balance wondering why ₹7.07 is the limit.
     expect(res.body.message).toContain('reserve');
-    expect(res.body.balance.reserveLocked).toBe(1.79);
+    expect(res.body.balance.reserveLocked).toBe(1.93);
 
     const fresh = await User.findById(user._id).lean();
     expect(fresh.depositBalance).toBe(4);

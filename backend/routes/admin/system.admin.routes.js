@@ -116,7 +116,7 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
           maxAdminTokenPurchaseUsdt: config.merchantOrderLimits?.maxAdminTokenPurchaseUsdt ?? 0,   // 0 = unlimited
         },
         // Bet funding split (Phase A) — % of each stake from reserveBalance
-        betReservePercent:     config.betReservePercent ?? 3, // schema default: 3
+        betReservePercent:     config.betReservePercent ?? 1, // schema default: 1
         // Winnings platform fee (Phase A) — % of gross 2x retained at settlement
         winningsFeePercent:    config.winningsFeePercent ?? 1, // schema default: 1
         // Cycle duration (Phase X X-5) — short-block betting window length

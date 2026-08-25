@@ -324,8 +324,8 @@ async function getRiskRules() {
     payoutFeePercent: cfg?.payoutFeePercent ?? 0,
     // schema default: 1 (Phase A owner spec — 1% platform fee on winnings)
     winningsFeePercent: cfg?.winningsFeePercent ?? 1,
-    // schema default: 3 (Phase A — % of each bet stake from reserveBalance)
-    betReservePercent: cfg?.betReservePercent ?? 3,
+    // schema default: 1 — % of each bet stake drawn from reserveBalance
+    betReservePercent: cfg?.betReservePercent ?? 1,
     // schema default: 2 (2x payout; Business Config Audit 2026-07-11)
     payoutMultiplier: cfg?.payoutMultiplier ?? 2,
   };
