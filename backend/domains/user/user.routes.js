@@ -426,6 +426,25 @@ router.put('/user/:userId/bank-details', authenticate, async (req, res) => {
 // BUG-U11 FIX: Transaction history for WalletModal
 // ─────────────────────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
+// GET /api/user/referrals — a referrer's own report
+//
+// Deliberately NOT on the wallet screen. Only the DISBURSED portion ever
+// reaches the winnings wallet; the rest is a promise whose value depends on
+// other people's KYC, and mixing an unrealised promise into a balance is how a
+// player comes to believe they hold money they cannot withdraw.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/user/referrals', authenticate, async (req, res) => {
+  try {
+    const { referralSummaryFor } = await import('../referral/referral.service.js');
+    const summary = await referralSummaryFor(req.user._id);
+    return res.json({ success: true, ...summary });
+  } catch (error) {
+    console.error('Referral summary error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to load your referral report' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GET /api/user/bet-limits — what this wallet can actually stake right now
 //
 // Exists because "how much can I bet" is NOT deposit + winnings + reserve, and

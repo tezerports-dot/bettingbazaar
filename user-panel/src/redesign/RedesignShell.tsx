@@ -75,6 +75,7 @@ const MENU_SECTIONS = [
   ] },
   { title: 'Info', items: [
     { label: 'Pro Tips', icon: '💡', path: '/promo' },
+    { label: 'Refer & Earn', icon: '🎁', path: '/referrals' },
     { label: 'Rules & How to Play', icon: '📋', path: '/rules' },
     { label: 'FAQ / Help', icon: '❓', path: '/faq' },
     { label: 'Support', icon: '🛟', path: '/support' },

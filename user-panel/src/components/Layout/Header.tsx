@@ -53,6 +53,7 @@ const menuSections: MenuSection[] = [
   {
     title: 'INFO',
     items: [
+      { label: 'Refer & Earn',        icon: '🎁', path: '/referrals' },
       { label: 'Rules & How to Play', icon: '📋', path: '/rules' },
       { label: 'FAQ / Help',          icon: '❓', path: '/faq' },
       { label: 'Support',             icon: '💬', path: '/support' },

@@ -325,26 +325,103 @@ export async function programmeStats() {
 }
 
 /** One player's referral report, including WHY anything is unpaid. */
-export async function earningsFor(userId, { page = 1, limit = 50 } = {}) {
-  const skip = (Math.max(1, page) - 1) * limit;
-  const [rows, total] = await Promise.all([
-    ReferralEarning.find({ earnerId: userId })
-      .sort({ queuePosition: 1, level: 1 })
-      .skip(skip).limit(limit)
-      .populate('sourceUserId', 'username joiningNumber')
-      .lean(),
-    ReferralEarning.countDocuments({ earnerId: userId }),
-  ]);
-  return {
-    total,
-    rows: rows.map((r) => ({
+/**
+ * A referrer's own report: what they are owed, what has been paid, and why any
+ * of it is waiting.
+ *
+ * ── What a referrer may see about the people they invited ───────────────────
+ * Their JOINING NUMBER and nothing else. Not a username, not a phone, not an
+ * Aadhaar — a referrer has no business identifying the people beneath them, and
+ * a leaderboard of "who did I recruit" is exactly the data a scraped referral
+ * tree would want. The joining number is already the queue key, so it is the
+ * one identifier that has to be visible for the ordering to be checkable.
+ *
+ * ── Why an earning is not income until the JOINER's KYC clears ──────────────
+ * `eligibilityFor` refuses to pay a row whose source user is not VERIFIED, and
+ * voids it outright on FAILED. Counting those ₹25s as "earned" would show a
+ * referrer a number they may never receive, so they are reported separately as
+ * awaiting verification.
+ */
+export async function referralSummaryFor(userId, { limit = 200 } = {}) {
+  const mongooseLib = (await import('mongoose')).default;
+  const User = mongooseLib.model('User');
+  const { KycVerification } = await import('../identity/kycVerification.model.js');
+
+  const me = await User.findById(userId).select('referralCode joiningNumber').lean();
+
+  const rows = await ReferralEarning.find({ earnerId: userId })
+    .sort({ queuePosition: 1, level: 1 })
+    .limit(limit)
+    .select('level amountPaise status blockedReason queuePosition sourceUserId disbursedAt')
+    .lean();
+
+  // One query for every source, rather than one per row.
+  const sourceIds = [...new Set(rows.map((r) => String(r.sourceUserId)))];
+  const kycRows = sourceIds.length
+    ? await KycVerification.find({ userId: { $in: sourceIds } }).select('userId status').lean()
+    : [];
+  const kycBySource = new Map(kycRows.map((k) => [String(k.userId), k.status]));
+
+  // Per level, and per state within it. `confirmed` is the only figure a
+  // referrer should treat as theirs.
+  const empty = () => ({ count: 0, confirmedPaise: 0, awaitingKycPaise: 0, disbursedPaise: 0, blockedPaise: 0 });
+  const byLevel = { 1: empty(), 2: empty() };
+
+  const detail = rows.map((r) => {
+    const sourceKyc = kycBySource.get(String(r.sourceUserId)) || 'PENDING_VERIFICATION';
+    const bucket = byLevel[r.level] || (byLevel[r.level] = empty());
+    bucket.count += 1;
+
+    if (r.status === 'DISBURSED') {
+      bucket.disbursedPaise += r.amountPaise;
+      bucket.confirmedPaise += r.amountPaise;
+    } else if (r.status === 'BLOCKED' || sourceKyc === 'FAILED') {
+      bucket.blockedPaise += r.amountPaise;
+    } else if (sourceKyc === 'VERIFIED') {
+      bucket.confirmedPaise += r.amountPaise;
+    } else {
+      bucket.awaitingKycPaise += r.amountPaise;
+    }
+
+    return {
+      // The invited player's joining number — the ONLY thing identifying them.
+      joiningNumber: r.queuePosition,
       level: r.level,
       amount: paiseToRupees(r.amountPaise),
+      kyc: sourceKyc,
       status: r.status,
       reason: r.blockedReason || '',
-      queuePosition: r.queuePosition,
-      referred: r.sourceUserId?.username || 'a player',
       disbursedAt: r.disbursedAt || null,
-    })),
+    };
+  });
+
+  const sum = (k) => (byLevel[1][k] || 0) + (byLevel[2][k] || 0);
+  const level = (n) => ({
+    count: byLevel[n].count,
+    confirmed:    paiseToRupees(byLevel[n].confirmedPaise),
+    awaitingKyc:  paiseToRupees(byLevel[n].awaitingKycPaise),
+    disbursed:    paiseToRupees(byLevel[n].disbursedPaise),
+    blocked:      paiseToRupees(byLevel[n].blockedPaise),
+  });
+
+  return {
+    referralCode: me?.referralCode || '',
+    joiningNumber: me?.joiningNumber ?? null,
+    rewardPerReferral: paiseToRupees(REFERRAL_REWARD_PAISE),
+    level1: level(1),
+    level2: level(2),
+    totals: {
+      referrals:   detail.length,
+      // Earned and confirmed — the joiner's KYC came back verified.
+      confirmed:   paiseToRupees(sum('confirmedPaise')),
+      // Already paid into the winnings wallet.
+      disbursed:   paiseToRupees(sum('disbursedPaise')),
+      // Confirmed but not yet paid — this is what the next disbursal draws on.
+      nextDisbursal: paiseToRupees(sum('confirmedPaise') - sum('disbursedPaise')),
+      // Waiting on the invited player's KYC. Not yours yet.
+      awaitingKyc: paiseToRupees(sum('awaitingKycPaise')),
+      blocked:     paiseToRupees(sum('blockedPaise')),
+    },
+    rows: detail,
   };
 }
