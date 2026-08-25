@@ -160,6 +160,12 @@ export async function issueSession(user, res) {
     role, isAdmin: user.isAdmin || false, isSubAdmin: user.isSubAdmin || false,
     isQueueManager: user.isQueueManager || false, permissions: user.subAdminPermissions || {},
     depositBalance: dep, winningsBalance: win, lockedBalance: user.lockedBalance || 0,
+    // Sent separately, and never folded into walletBalance. The reserve is NOT
+    // freely spendable — only `betReservePercent` of a stake may come from it —
+    // so adding it to a headline "available" figure is what made players try
+    // bets the engine then refused. GET /api/user/bet-limits publishes the true
+    // ceiling, computed by the same rule the bet route enforces.
+    reserveBalance: user.reserveBalance || 0,
     walletBalance: dep + win, kycStatus: user.kycStatus,
     kycData: buildPublicKycData(user),
     bankDetails: user.bankDetails || null, profilePic: user.profilePic || '',
@@ -268,6 +274,7 @@ router.get('/me', async (req, res) => {
         role: decoded.role, isAdmin: user.isAdmin || false, isSubAdmin: user.isSubAdmin || false,
         isQueueManager: user.isQueueManager || false, permissions: user.subAdminPermissions || {},
         depositBalance: dep, winningsBalance: win, lockedBalance: user.lockedBalance || 0,
+        reserveBalance: user.reserveBalance || 0,
         walletBalance: dep + win, kycStatus: user.kycStatus,
         kycData: buildPublicKycData(user),
         bankDetails: user.bankDetails || null, profilePic: user.profilePic || '',

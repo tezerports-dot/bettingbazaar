@@ -425,6 +425,61 @@ router.put('/user/:userId/bank-details', authenticate, async (req, res) => {
 // GET /api/user/:userId/transactions  (auth required)
 // BUG-U11 FIX: Transaction history for WalletModal
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/user/bet-limits — what this wallet can actually stake right now
+//
+// Exists because "how much can I bet" is NOT deposit + winnings + reserve, and
+// showing that sum is what made players attempt bets the engine then refused
+// with "Insufficient balance. Available: ₹1000". Only `betReservePercent` of a
+// stake may come from the reserve; the rest must come from deposit + winnings,
+// and a reserve shortfall shifts to main while a main shortfall has nowhere to
+// go.
+//
+// The ceiling is computed HERE, server-side, by computeMaxStake — the same
+// expression bet.routes.js enforces with. Recomputing it in the panel would be
+// a second copy of a money rule, and the first divergence would show a player a
+// maximum that gets refused.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/user/bet-limits', authenticate, async (req, res) => {
+  try {
+    const { computeMaxStake } = await import('../risk/riskValidation.service.js');
+    const { getRiskRules } = await import('../risk/riskValidation.service.js');
+
+    const User = mongoose.model('User');
+    const user = await User.findById(req.user._id)
+      .select('depositBalance winningsBalance reserveBalance lockedBalance').lean();
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    const deposit  = user.depositBalance  || 0;
+    const winnings = user.winningsBalance || 0;
+    const reserve  = user.reserveBalance  || 0;
+    const { betReservePercent } = await getRiskRules();
+
+    const { maxStake } = computeMaxStake({
+      reservePercent: betReservePercent,
+      availableDeposit: deposit, availableWinnings: winnings, availableReserve: reserve,
+    });
+
+    // Integer paise — the operands are stored floats and subtracting the exact
+    // maxStake from their sum yields 793.8199999999999.
+    const totalMinor = Math.round(deposit * 100) + Math.round(winnings * 100) + Math.round(reserve * 100);
+    const reserveLocked = (totalMinor - Math.round(maxStake * 100)) / 100;
+
+    return res.json({
+      success: true,
+      deposit, winnings, reserve,
+      locked: user.lockedBalance || 0,
+      total: totalMinor / 100,
+      maxStake,
+      reservePercent: betReservePercent,
+      reserveLocked: reserveLocked > 0 ? reserveLocked : 0,
+    });
+  } catch (error) {
+    console.error('Bet limits error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to load bet limits' });
+  }
+});
+
 router.get('/user/:userId/transactions', authenticate, async (req, res) => {
   try {
     const { userId } = req.params;

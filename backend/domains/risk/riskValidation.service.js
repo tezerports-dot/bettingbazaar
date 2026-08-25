@@ -194,6 +194,82 @@ export function computeBetFundingPlan({ amount, reservePercent, availableDeposit
 }
 
 /**
+ * How much of `adjustedMain` a stake of `amountMinor` needs from the deposit and
+ * winnings pockets, given the reserve available.
+ *
+ * Extracted so `computeMaxStake` and `computeBetFundingPlan` cannot disagree
+ * about the rule. The whole point of publishing a maximum is that the number
+ * shown is the number the engine will accept; two expressions of "how much main
+ * does this stake need" would drift the first time either is touched, and the
+ * symptom would be a player told they can bet ₹206 being refused at ₹206.
+ */
+function mainNeededForMinor(amountMinor, reserveBp, availResMinor) {
+  const reserveTargetMinor = Math.floor(amountMinor * reserveBp / 10000);
+  return amountMinor - Math.min(reserveTargetMinor, availResMinor);
+}
+
+/**
+ * computeMaxStake — the largest bet these balances can actually fund.
+ *
+ * ── The bug this exists for ─────────────────────────────────────────────────
+ * The wallet showed a single total and `bet.routes.js` pre-checked against
+ * `deposit + winnings + reserve`. Both are wrong, because the reserve is NOT
+ * freely spendable: only `reservePercent` of a stake may come from it, and the
+ * REST must come from deposit+winnings. Reserve shortfall shifts to main
+ * (Spec 5.2C); main shortfall has nowhere to go.
+ *
+ * So a player holding ₹100 deposit, ₹100 winnings and ₹800 reserve was shown
+ * "₹1,000 available", tried to bet ₹500, passed the total pre-check, and was
+ * then refused by `computeBetFundingPlan` with the message
+ * "Insufficient balance. Available: ₹1000" — telling them they had the money
+ * while refusing to take it. At 3% their true maximum is ₹206.18.
+ *
+ * ── Why a search rather than algebra ────────────────────────────────────────
+ * `A − floor(A·bp/10000)` is monotonic but not invertible in closed form once
+ * the floor and the `min(reserveTarget, availRes)` clamp are both in play, and
+ * the regimes cross over at `availRes·10000/bp`. A closed form would need three
+ * cases and would be the kind of arithmetic that is subtly wrong at the
+ * boundary — which is exactly where it matters, because the boundary is the
+ * number shown to the player. Monotonicity makes a binary search exact in ~40
+ * integer steps, and it reuses the same expression the funding plan applies.
+ *
+ * @returns {{maxStakeMinor: number, maxStake: number, reservePercentApplied: number}}
+ */
+export function computeMaxStake({ reservePercent, availableDeposit, availableWinnings, availableReserve }) {
+  if (typeof reservePercent !== 'number' || !Number.isFinite(reservePercent) ||
+      reservePercent < 0 || reservePercent > 100) {
+    throw reject('betReservePercent must be between 0 and 100.');
+  }
+  const availDepMinor = Math.round(Math.max(0, availableDeposit  || 0) * 100);
+  const availWinMinor = Math.round(Math.max(0, availableWinnings || 0) * 100);
+  const availResMinor = Math.round(Math.max(0, availableReserve  || 0) * 100);
+
+  const reserveBp    = Math.round(reservePercent * 100);
+  const totalMinor   = availDepMinor + availWinMinor + availResMinor;
+  const mainAvailMinor = availDepMinor + availWinMinor;
+
+  let maxStakeMinor = 0;
+  if (totalMinor > 0) {
+    // Largest A in [0, total] with mainNeededFor(A) <= mainAvail. `mainNeededFor`
+    // is non-decreasing in A, so the predicate is monotone and the search exact.
+    let lo = 0;
+    let hi = totalMinor;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (mainNeededForMinor(mid, reserveBp, availResMinor) <= mainAvailMinor) lo = mid;
+      else hi = mid - 1;
+    }
+    maxStakeMinor = lo;
+  }
+
+  return {
+    maxStakeMinor,
+    maxStake: maxStakeMinor / 100,
+    reservePercentApplied: reserveBp / 100,
+  };
+}
+
+/**
  * computeWinningsPayout — THE settlement payout rule (Phase A, 2026-07-10).
  * Winning bets pay gross = stake × multiplier (2x), minus the platform fee
  * on winnings (owner spec §6: bet 100 → win 200 → ~2 fee → 198 net).
