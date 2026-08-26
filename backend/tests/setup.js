@@ -19,6 +19,19 @@ process.env.AADHAAR_HMAC_SECRET ||= 'test-only-aadhaar-hmac-secret';
 // by another in the same run.
 process.env.IDENTITY_ENCRYPTION_KEY ||= 'dGVzdC1vbmx5LWlkZW50aXR5LWtleS0zMi1ieXRlcyE=';
 
+/**
+ * Imported lazily inside the hook, not at module scope.
+ *
+ * Loading telegramClient here would pull its model definitions into every
+ * integration file at setup time, including the ones that substitute a light
+ * mongoose stub. Node caches the module, so after the first call this is a map
+ * lookup — the same reasoning the channel-gate middleware uses.
+ */
+async function invalidateTelegramConfigCache() {
+  const mod = await import('../domains/telegram/telegramClient.js').catch(() => null);
+  mod?.invalidateConfigCache?.();
+}
+
 let replset;
 // Captured in beforeAll when DATABASE_URL is set, so beforeEach can keep the PG
 // money tables cleared in lockstep with the Mongo collections (below).
@@ -110,4 +123,27 @@ beforeEach(async () => {
   // Keep Postgres money tables cleared in lockstep with Mongo so no
   // integration file inherits stray mirrored rows from a prior test.
   if (pgTruncate) await pgTruncate();
+
+  /*
+   * The Telegram config is CACHED IN MEMORY for 30 seconds, and wiping the
+   * collections does not touch that cache.
+   *
+   * Deleting a row is not the same as forgetting it. `activeConfig()` holds the
+   * last read for TELEGRAM_CONFIG_TTL_MS so that the bot token is not re-read
+   * on every request in production — which means a test file that activates a
+   * config leaves the NEXT file believing a bot and channel exist long after
+   * the documents are gone.
+   *
+   * That is not hypothetical, and the blast radius is unrelated suites: with no
+   * config the channel gate reads `unconfigured` and lets every request
+   * through, but with a stale cached one it finds no TelegramIdentity for the
+   * user and answers 403 TELEGRAM_NOT_LINKED. Every money-path test that places
+   * a bet would fail, in a file that never mentions Telegram, for a reason
+   * nothing in that file could explain.
+   *
+   * Cleared centrally rather than in whichever file happens to create a config,
+   * because "remember to invalidate" is exactly the kind of instruction that
+   * holds until someone writes the next test.
+   */
+  await invalidateTelegramConfigCache();
 });
