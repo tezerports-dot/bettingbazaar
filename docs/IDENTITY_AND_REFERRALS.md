@@ -545,6 +545,8 @@ non-staff.
 | `telegramFleet.test.js` | One live bot per singular role, via the derived `liveSlot` and its sparse unique index; outbound-only roles get no webhook; a template Telegram would refuse is caught on save; a player-chosen name cannot become markup |
 | `channelGateOrdering.test.js` | The gate asks whether a channel exists *before* blaming the player for not having joined one |
 | `referralLinkStability.test.js` | A shared link follows a bot swap; the redirect is never cacheable and never an open redirect; the panel does not mint a `t.me/<bot>` link |
+| `schemaPathWrites.test.js` | No update writes to a path its schema does not declare — the class Mongoose strict mode discards silently, which has caused six bugs here |
+| `telegramSignupJourney.integration.test.js` | The launch path against real MongoDB: referral link → `/start` → Aadhaar → contact → channel join → login link → session, plus the forged webhook, the duplicate Aadhaar, the forwarded contact card, both sides of the flip-storm branch, and a channel replacement leaving balances and referral positions untouched |
 
 Most of these assert **absence**, which no feature test can do: a happy-path
 suite for bulk verification passes perfectly well with an upload endpoint still
