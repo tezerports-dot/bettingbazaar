@@ -155,20 +155,25 @@ browser instead of the app.
 
 ### Try it without the keystore first
 
-If you want to see an APK on a handset before generating a signing key, run
-**`Actions → Android build check → Run workflow`**. It needs no secrets — it
-produces a *debug-signed* APK, which sideloads exactly like a release build.
+**Android build check** produces a *debug-signed* APK, which sideloads exactly
+like a release build. It needs no secrets — Gradle falls back to the local debug
+key — so it is the fastest way to get something onto a handset and run the
+on-device checks below.
 
 - Set `ANDROID_API_URL` and `ANDROID_APP_ORIGIN` first (§2) or the artifact is
   a compile check only and will reach nothing. The run's summary tells you
   which of the two you got.
 - A debug APK **cannot** be published, and cannot update a release-signed
-  install later. It is for testing, and it is the fastest way to run the
-  on-device checks below.
+  install later. It is for testing only.
 
-That workflow also runs automatically on any pull request touching the Android
-project, so a change that breaks the build is caught there rather than on
-release day.
+It runs automatically on any pull request touching the Android project, so a
+change that breaks the build is caught there rather than on release day.
+
+> **`Actions → Android build check → Run workflow` only appears once this
+> workflow is on `main`.** GitHub lists a `workflow_dispatch` workflow from the
+> default branch only — so before it merges, the way to get the artifact is
+> from the checks on the pull request that introduces it, not from the Actions
+> tab.
 
 ### The real thing
 
