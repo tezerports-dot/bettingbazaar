@@ -1,6 +1,10 @@
 # Betting Bazaar — Complete UI/UX Product Blueprint
 
 > **Designer hand-off / AI design prompt source.** This is the single source file for redesigning the currently implemented **Player**, **Merchant**, and **Admin** panels. It is intentionally structured for direct upload/paste into Claude, FigJam, Figma Make, or another AI-assisted design workflow. A native `.fig` binary cannot be generated safely outside Figma; import this document as the product specification, or paste its sections into Figma Make to generate editable frames.
+> **Identity, KYC and referrals were rebuilt on 2026-08-25.** Players sign in
+> through a Telegram bot — no password form, no document upload, no admin recovery
+> queue. `docs/IDENTITY_AND_REFERRALS.md` is authoritative for that flow and this
+> document defers to it wherever the two disagree.
 > **Scope:** actual repository state, not aspirational marketing copy. Every current page, shell, modal, realtime behavior, logo location, and backend route is mapped below. Every backend-supported capability below has an explicit UI/UX decision: visible designed surface, intentionally hidden/internal surface, or deferred behind a named capability flag with owner approval required before exposure.
 
 ---
@@ -56,7 +60,7 @@ For every frame, include **default, loading, empty, validation error, server err
 | Live layers | footer is z-40; game chat modal must remain z-50 | Modal/drawer layer system: base 0; sticky nav 40; modal 50; auth emergency dialog 200. |
 
 ### Shared component inventory
-Create reusable variants for: `AppLogo`, `Avatar`, `StatusBadge`, `RiskBadge`, `MoneyValue`, `ReferenceId`, `PrimaryButton`, `SecondaryButton`, `DangerButton`, `IconButton`, `TextInput`, `MoneyInput`, `PasswordInput`, `OTP/CaptchaInput`, `Search`, `DateRange`, `Select`, `Combobox`, `Tabs`, `SegmentedControl`, `Toast`, `Banner`, `EmptyState`, `ErrorState`, `LoadingSkeleton`, `DataTable`, `Pagination`, `SideDrawer`, `ConfirmDialog`, `BottomSheet`, `Dialog`, `ChatThread`, `FileUploader`, `KycDocumentCard`, `Timeline`, `AuditTrail`, `RealtimeIndicator`, and `PermissionGate`.
+Create reusable variants for: `AppLogo`, `Avatar`, `StatusBadge`, `RiskBadge`, `MoneyValue`, `ReferenceId`, `PrimaryButton`, `SecondaryButton`, `DangerButton`, `IconButton`, `TextInput`, `MoneyInput`, `PasswordInput`, `OTP/CaptchaInput`, `Search`, `DateRange`, `Select`, `Combobox`, `Tabs`, `SegmentedControl`, `Toast`, `Banner`, `EmptyState`, `ErrorState`, `LoadingSkeleton`, `DataTable`, `Pagination`, `SideDrawer`, `ConfirmDialog`, `BottomSheet`, `Dialog`, `ChatThread`, `FileUploader`, `Timeline`, `AuditTrail`, `RealtimeIndicator`, and `PermissionGate`.
 
 ### Universal status vocabulary
 Use a consistent chip system: `OPEN / ACTIVE` green; `PENDING / QUEUED` amber; `PROCESSING` blue; `COMPLETED / APPROVED` green; `REJECTED / FAILED / BLOCKED` red; `CANCELLED / EXPIRED` gray; `RESULT DECLARED` purple/gold. Always pair color with text/icon.
@@ -85,7 +89,7 @@ Use a consistent chip system: `OPEN / ACTIVE` green; `PENDING / QUEUED` amber; `
 | `#/vip` | `VIPPage` | current tier/progress, benefits, VIP configuration disclosure | `/api/vip/config`, `/api/vip/my`, `/api/bonuses/my` |
 | `#/gift-code` | `GiftCodePage` | code input, redeem CTA, success summary, redemption error | `POST /api/giftcode/redeem` |
 | `#/recover-account` | `AccountRecoveryPage` | masked Aadhaar check with confirmation, generic anti-enumeration result, recovery request, status polling, safe recovery explanation; raw Aadhaar is POST-body only, never placed in URLs, browser storage, analytics, error telemetry, request metadata, or logs, and must be cleared from component state immediately after submission | `/api/auth/check-aadhaar`, `/recover`, and `/recover/status` must be privacy-safe: strict rate limit, generic responses where applicable, masked Aadhaar input confirmation, no raw Aadhaar in URLs/storage/analytics/telemetry/metadata/server logs, and immediate Aadhaar clearing after each submit |
-| `#/profile` | `ProfilePage` | profile fields, avatar upload, bank/UPI details, KYC CTA/status, password/session actions where supported | profile, KYC, bank, upload endpoints |
+| `#/profile` | `ProfilePage` | username (the only editable field — no email, no password; Aadhaar and mobile are proved, not typed), avatar upload, bank/UPI details, KYC **status only** (there is nothing to submit — the bot took the Aadhaar before the account existed), sign-out | profile, bank, upload endpoints |
 | `#/history` | `HistoryPage` | payment/order timeline, filters, order detail, proof/chat/dispute links | `/api/payment/orders`, `/api/payment/order/:id`, status endpoints |
 | `#/my-bets` | `MyBetsPage` | bet list, cycle/side/amount/status filters, reference IDs | `GET /api/user/:userId/bets` |
 | `#/results` | `ResultsPage` | result timeline/table, cycle filter, winner/pool summary | cycle history + winners sources |
@@ -99,9 +103,9 @@ Use a consistent chip system: `OPEN / ACTIVE` green; `PENDING / QUEUED` amber; `
 ### 3.3 Player modal specifications
 | Modal | Trigger | States / fields | Actions / API |
 |---|---|---|---|
-| Auth | protected CTA/header | login: mobile, password, math captcha; register: username, mobile, password, optional referral, captcha; lockout/rate-limit state; recovery link | `/api/v1/auth/login`, `/register`, `/logout`, `/me` |
+| Auth | protected CTA/header | **No form.** A single "Sign in with Telegram" action deep-links to the bot (carrying any held `?ref=` code); the bot verifies identity and sends a one-time link that lands on `#/auth/telegram`. Design the bot-handoff explainer, the "signing you in…" state, and the one indistinguishable failure state | `/api/telegram/public-config`, `/api/telegram/exchange`, `/api/v1/auth/logout`, `/me` |
 | Wallet | wallet CTA / game funding CTA | balance strip; Add Funds/Withdraw tabs; amount; 1:1 token/₹ preview; saved bank details; queued/complete/failed order state | deposit create; withdrawal create; order polling |
-| KYC | profile/withdraw eligibility | requirement explainer; document type; upload progress; submitted/reviewed/rejected states | user KYC + upload URL endpoints |
+| KYC | profile/withdraw eligibility | **status only — there is nothing to submit.** The bot takes the Aadhaar NUMBER before the account exists; no document, no selfie, no upload progress. Design the "being verified, nothing for you to do" state and the rejected/contact-support state | user profile (`kycStatus`) |
 | Share | referral/winner/promo CTA | native share, copy link, QR/visual fallback, success toast | referral data; client share APIs |
 | Place bet confirmation | recommended addition before irrevocable submission | cycle, side, amount, balances, risk notice, confirm/cancel; idempotent pending state | `POST /api/bet/place` |
 | Payment order detail | history/wallet | timeline, assigned merchant state, chat/proof/dispute CTA, reference ID | payment order, upload, dispute endpoints |
@@ -113,7 +117,7 @@ Use a consistent chip system: `OPEN / ACTIVE` green; `PENDING / QUEUED` amber; `
 2. **Add funds:** Wallet → Add Funds → amount → create payment order → queued → merchant assigned/accepted → chat/proof as available → completed → balance refresh and receipt.
 3. **Withdraw winnings:** Wallet → Withdraw → validate saved bank details and winnings balance → review → create withdrawal → queued/processing → completion or rejected explanation.
 4. **Account recovery:** auth modal link → Aadhaar check → recovery form → submitted → status screen → approved/rejected communication.
-5. **KYC:** profile/wallet eligibility prompt → consent + document selection → upload → submission receipt → review status → resolve rejection with actionable reason.
+5. **KYC:** there is no in-app KYC journey to design. The Aadhaar NUMBER is taken by the Telegram bot before the account exists, and verification runs in bulk on the operator's schedule. The app shows STATUS only — design the "being verified, nothing for you to do" state (which every new player sees) and the rejected → contact-support state. No consent screen, no document selection, no upload progress, no submission receipt.
 
 ---
 
@@ -165,7 +169,7 @@ Use a consistent chip system: `OPEN / ACTIVE` green; `PENDING / QUEUED` amber; `
 | `#/users` | UsersList | searchable user table, detail drawer, role/block/transactions actions |
 | `#/users/balance-adjust` | BalanceAdjustment | strongly audited adjustment form, review/confirm, immutable receipt |
 | `#/merchants` | MerchantsList | merchant directory, approval/suspension, limits/capabilities/funding/detail tabs |
-| `#/kyc` | KYCQueue | document queue, user detail, approve/reject with mandatory reason |
+| `#/kyc` | KYCQueue | who is still awaiting a verdict and **why** (never exported / with the verifier / failed); approve/reject with mandatory reason as the exception path. No documents — only the Aadhaar's last four digits reach this screen |
 | `#/transactions` | TransactionsList | transaction table, filters, order/ledger detail |
 | `#/queue-manager` | QueueDashboard | assignment queue, available merchants, pending orders, manual assign/reassign |
 | `#/payment-control` | PaymentControlCenter | gateway configuration/test, withdrawal approval/rejection, health/controls |
@@ -177,7 +181,9 @@ Use a consistent chip system: `OPEN / ACTIVE` green; `PENDING / QUEUED` amber; `
 | `#/merchant-platform` | MerchantPlatform | merchant leaderboard/performance/wallet ledger/bonus engine |
 | `#/games` | GamesManager | games/categories CRUD, safety confirmation on delete |
 | `#/game-providers` | GameProviders | provider CRUD, test connection, transaction monitor |
-| `#/account-recovery` | AccountRecoveryAdmin | recovery queue, approve/reject, KYC document linking |
+| `#/kyc/bulk` | KycBulk | audited Aadhaar export + YES/NO import; batch history. Design the export as a boundary, not a download button |
+| `#/telegram` | TelegramConfig | replace the sign-in bot or channel without a deploy; generation history |
+| `#/referrals` | ReferralProgramme | fund the payout queue (amount only — never a person); pending vs blocked; disbursal report |
 | `#/winners-manager` | FakeWinnersManager | fake-winner CRUD, preview, delete confirmation |
 | `#/chat-management` | SupportOperations | designed support operations workspace for knowledge-base ingestion/document management, support status, delete confirmation, permission denial, loading/error/empty states, and audit-friendly document detail |
 | `#/promotions/announcements` | AnnouncementsPage | announcement list/editor/publish/delete |
@@ -256,13 +262,6 @@ Show a subtle “Live” state, a reconnecting banner after disconnect, and a no
 - `backend/routes/winners.routes.js:103` — `router.post('/admin/fake-winners', authenticate, isAdmin, async (req, res) => {`
 - `backend/routes/winners.routes.js:121` — `router.put('/admin/fake-winners/:id', authenticate, isAdmin, async (req, res) => {`
 - `backend/routes/winners.routes.js:136` — `router.delete('/admin/fake-winners/:id', authenticate, isAdmin, async (req, res) => {`
-- `backend/routes/account-recovery.routes.js:75` — `router.post('/auth/check-aadhaar', async (req, res) => {`
-- `backend/routes/account-recovery.routes.js:112` — `router.post('/auth/recover', async (req, res) => {`
-- `backend/routes/account-recovery.routes.js:175` — `router.get('/auth/recover/status', async (req, res) => {`
-- `backend/routes/account-recovery.routes.js:198` — `router.get('/admin/account-recovery', authenticate, isAdminOrSubAdmin, async (req, res) => {`
-- `backend/routes/account-recovery.routes.js:223` — `router.post('/admin/account-recovery/:id/approve', authenticate, isAdmin, async (req, res) => {`
-- `backend/routes/account-recovery.routes.js:293` — `router.post('/admin/account-recovery/:id/reject', authenticate, isAdmin, async (req, res) => {`
-- `backend/routes/account-recovery.routes.js:328` — `router.post('/admin/kyc/link-documents', authenticate, isAdmin, async (req, res) => {`
 - `backend/routes/giftcode.routes.js:9` — `router.post('/redeem', authenticate, async (req, res) => {`
 - `backend/routes/giftcode.routes.js:62` — `router.get('/admin/giftcodes', authenticate, isAdminOrSubAdmin, async (req, res) => {`
 - `backend/routes/giftcode.routes.js:71` — `router.post('/admin/giftcodes', authenticate, isAdmin, async (req, res) => {`
@@ -281,7 +280,6 @@ Show a subtle “Live” state, a reconnecting banner after disconnect, and a no
 - `backend/routes/upload.routes.js:151` — `router.post('/merchant/chat/:orderId/confirm-upload', merchantAuth, async (req, res) => {`
 - `backend/routes/upload.routes.js:199` — `router.post('/user/payment-proof/:orderId/upload-url', authenticate, async (req, res) => {`
 - `backend/routes/upload.routes.js:246` — `router.post('/user/payment-proof/:orderId/confirm-upload', authenticate, async (req, res) => {`
-- `backend/routes/upload.routes.js:278` — `router.post('/user/kyc/:docType/upload-url', authenticate, async (req, res) => {`
 - `backend/routes/upload.routes.js:299` — `router.post('/user/profile/picture/upload-url', authenticate, async (req, res) => {`
 - `backend/routes/upload.routes.js:321` — `router.post('/user/profile/picture/confirm-upload', authenticate, async (req, res) => {`
 - `backend/routes/upload.routes.js:339` — `router.post('/merchant/qr/upload-url', merchantAuth, async (req, res) => {`
@@ -302,6 +300,11 @@ Show a subtle “Live” state, a reconnecting banner after disconnect, and a no
 - `backend/routes/admin/kyc.admin.routes.js:7` — `router.get('/kyc/queue', authenticate, hasPermission('canVerifyKYC'), async (req, res) => {`
 - `backend/routes/admin/kyc.admin.routes.js:28` — `router.post('/kyc/:userId/approve', authenticate, hasPermission('canVerifyKYC'), async (req, res) => {`
 - `backend/routes/admin/kyc.admin.routes.js:84` — `router.post('/kyc/:userId/reject', authenticate, hasPermission('canVerifyKYC'), async (req, res) => {`
+- `backend/routes/admin/telegram.admin.routes.js` — `GET|POST /telegram/config`,
+  `GET /kyc/bulk/stats`, `GET /kyc/bulk/export`, `POST /kyc/bulk/import`,
+  `GET /referral/stats`, `POST /referral/disburse` — all `isAdmin`, never
+  `isAdminOrSubAdmin`: they move the identity root, release Aadhaar numbers, and
+  pay real money
 - `backend/routes/admin/audit.admin.routes.js:8` — `router.get('/audit-logs', authenticate, isAdmin, async (req, res) => {`
 - `backend/routes/admin/utr.admin.routes.js:16` — `router.get('/utr-registry', authenticate, isAdmin, async (req, res) => {`
 - `backend/routes/admin/utr.admin.routes.js:42` — `router.get('/utr-registry/:utr', authenticate, isAdmin, async (req, res) => {`
@@ -357,9 +360,12 @@ Show a subtle “Live” state, a reconnecting banner after disconnect, and a no
 - `backend/routes/payment-config.routes.js:24` — `router.get('/admin/config', authenticate, isAdminOrSubAdmin, async (req, res) => {`
 - `backend/routes/payment-config.routes.js:42` — `router.put('/admin/config', authenticate, isAdmin, async (req, res) => {`
 - `backend/routes/payment-config.routes.js:62` — `router.post('/admin/test-gateway', authenticate, isAdmin, async (req, res) => {`
-- `backend/routes.js:112` — `router.post('/login', loginHandler)`
+- `backend/routes.js` — `loginHandler` / `loginTwoFactorHandler` are exported but NOT
+  registered here; server.js mounts them at `/api/admin/login` for **staff only**
+- `backend/domains/telegram/telegram.routes.js` — `POST /webhook` (primary bot),
+  `POST /recovery/webhook` (second bot), `POST /exchange` (one-time link → session),
+  `GET /public-config` (bot @username + channel invite link, public)
 - `backend/routes.js:115` — `router.get('/me', async (req, res) => {`
-- `backend/routes.js:158` — `router.post('/register', registerLimiter, async (req, res) => {`
 - `backend/routes.js:216` — `router.post('/logout', async (req, res) => {`
 - `backend/routes.js:234` — `router.get('/health', (_, res) => res.json({ success: true, status: 'ok', timestamp: new Date().toISOString() }))`
 - `backend/domains/revenue/revenue.admin.routes.js:25` — `router.get('/revenue/summary', authenticate, isAdminOrSubAdmin, async (req, res) => {`
@@ -480,7 +486,6 @@ Show a subtle “Live” state, a reconnecting banner after disconnect, and a no
 - `backend/domains/user/user.routes.js:237` — `router.get('/user/:userId/bets', authenticate, async (req, res) => {`
 - `backend/domains/user/user.routes.js:288` — `router.get('/v1/user/:id/data', authenticate, async (req, res) => {`
 - `backend/domains/user/user.routes.js:373` — `router.put('/user/:userId/profile', authenticate, async (req, res) => {`
-- `backend/domains/user/user.routes.js:412` — `router.post('/user/:userId/kyc', authenticate, async (req, res) => {`
 - `backend/domains/user/user.routes.js:467` — `router.put('/user/:userId/bank-details', authenticate, async (req, res) => {`
 - `backend/domains/user/user.routes.js:502` — `router.get('/user/:userId/transactions', authenticate, async (req, res) => {`
 - `backend/domains/user/user.routes.js:552` — `router.get('/v1/system/config', async (req, res) => {`
@@ -537,7 +542,7 @@ Show a subtle “Live” state, a reconnecting banner after disconnect, and a no
 For every mutating endpoint: `idle → validate locally → submitting → success | recoverable error | auth expired | rate limited`. Disable only the action that is in flight; retain other safe navigation. Use an idempotency/reference label in financial flows where available.
 
 ### File upload pattern
-For user chat, merchant chat, payment proof, KYC, profile picture, merchant QR, branding, and app assets: design `select → file validation → upload URL request → upload progress → confirm upload → preview → remove/retry`. Include type/size errors, expired URL, connectivity failure, and sensitive-document privacy language.
+For user chat, merchant chat, payment proof, profile picture, merchant QR, branding, and app assets: design `select → file validation → upload URL request → upload progress → confirm upload → preview → remove/retry`. Include type/size errors, expired URL, and connectivity failure. **KYC is not in this list and must not be added to it** — no identity document is ever uploaded.
 
 ### Tables
 Admin and merchant tables need column visibility, sortable columns where meaningful, filter chips, date range, pagination/loading skeleton, empty-state CTA, reference ID copy, row click to detail drawer, and no-data/export behavior.

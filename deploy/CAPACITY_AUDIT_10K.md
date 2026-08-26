@@ -85,7 +85,7 @@ planning band, consistent with the app's own docs: **normal ~50–100 API RPS, p
 
 **Static assets:** the `api` role serves the three SPA bundles from disk
 (`VPS_UBUNTU_SETUP.md:212-224`); uploads bypass the app entirely via presigned S3 PUTs
-(`routes/upload.routes.js`, `services/kycDocuments.service.js`). Put the bundles behind
+(`routes/upload.routes.js`). Put the bundles behind
 Cloudflare cache and this load leaves the origin (`CAPACITY_PLANNING.md` §1.6).
 
 **Top CPU-heavy operations** (by inspection; magnitudes **UNKNOWN — requires load

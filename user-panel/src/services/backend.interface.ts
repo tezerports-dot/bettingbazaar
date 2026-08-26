@@ -7,13 +7,15 @@ import {
 
 export interface Backend {
   // --- AUTH ---
-  register(data: any): Promise<{ success: boolean; token: string; user: User }>;
-  login(data: any): Promise<{ success: boolean; token: string; user: User;
-                              twoFactorRequired?: boolean; challengeToken?: string }>;
-  /** Second leg of a 2FA login: exchange the challenge for a session. */
-  loginTwoFactor(challengeToken: string, code: string): Promise<{
-    success: boolean; token: string; user: User; twoFactorExpired?: boolean; message?: string }>;
-  
+  /**
+   * The ONLY way a player gets a session. The bot verifies identity in Telegram
+   * and sends back a single-use link; this trades that link's token for a
+   * session. There is no register(), no login(), and no password — those were
+   * removed along with the endpoints behind them.
+   */
+  exchangeTelegramToken(token: string): Promise<{
+    success: boolean; token?: string; user?: User; message?: string }>;
+
   // --- CORE SERVICES ---
   getServerTime(): Promise<{ unixtime: number }>;
   
@@ -35,7 +37,9 @@ export interface Backend {
   getAIAnalysis(): Promise<{ text: string, cached: boolean }>;
 
   // KYC & BANKING
-  uploadKYC(userId: string, data: any): Promise<{ success: boolean; kycStatus: string }>;
+  // uploadKYC removed 2026-08-25 with POST /api/user/:userId/kyc. The bot takes
+  // the Aadhaar number before the account exists; there is nothing for a
+  // signed-in player to submit.
   approveKYC(adminId: string, userId: string, status: 'APPROVED' | 'REJECTED', reason?: string): Promise<void>;
   updateBankDetails(userId: string, details: User['bankDetails']): Promise<User>;
 
@@ -99,16 +103,11 @@ export interface Backend {
   uploadFile(file: File): Promise<string>;
 
   // --- ADMIN & SECURITY SERVICES ---
-  adminLogin(key: string): Promise<{ success: boolean; requires2FA: boolean; admin?: AdminUser }>;
-  changeAdminPassword(current: string, newPwd: string): Promise<boolean>;
-  verifyLogin2FA(token: string): Promise<{ success: boolean; admin?: AdminUser }>;
-  useBackupCode(code: string): Promise<{ success: boolean; admin?: AdminUser }>;
-  resetAdminPassword(token: string): Promise<boolean>;
-  
-  generate2FASecret(): Promise<{ secret: string; otpauth_url: string }>;
-  enable2FA(secret: string, token: string): Promise<{ success: boolean; backupCodes: string[] }>;
-  disable2FA(): Promise<void>;
-  
+  // Admin sign-in is NOT here. The admin panel is a separate application with
+  // its own API layer and talks to /api/admin/login directly; the stubs that
+  // used to shadow it in this file had no callers and half of them lied about
+  // succeeding.
+
   logAudit(adminId: string, action: string, details: string, targetId?: string): Promise<void>;
 
 

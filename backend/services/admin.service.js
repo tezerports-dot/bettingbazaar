@@ -273,136 +273,24 @@ class AdminService {
 
   /**
    * ════════════════════════════════════════════════════════════════════════════
-   * ✅ KYC MANAGEMENT
+   * ✅ KYC MANAGEMENT — REMOVED 2026-08-25
    * ════════════════════════════════════════════════════════════════════════════
+   *
+   * approveKYC, rejectKYC and getKYCQueue lived here with NO CALLERS, as a third
+   * implementation beside routes/admin/kyc.admin.routes.js and the bulk import.
+   * They were not merely redundant:
+   *
+   *   - both decisions did `user.kycStatus = …; await user.save()` — the exact
+   *     read-modify-write on a stale read that domains/user/kycDecision.service.js
+   *     was written to eliminate, so two reviewers acting at once both passed;
+   *   - approveKYC wrote the RAW Aadhaar number into an audit log, a store
+   *     nothing ever deletes from;
+   *   - getKYCQueue filtered on `kycData.submittedAt` existing, which the
+   *     Telegram signup path never sets, so it would have returned an empty
+   *     queue forever.
+   *
+   * The live path is decideKyc(), the only place a KYC status changes.
    */
-
-  /**
-   * Approve KYC submission
-   * @param {string} userId - User ID
-   * @param {string} adminId - ID of admin performing action
-   * @returns {Object} Updated user
-   */
-  async approveKYC(userId, adminId) {
-    try {
-      const user = await User.findById(userId).select('+kycData.aadhaarNumber');
-      if (!user) {
-        throw new Error('User not found');
-      }
-
-      if (user.kycStatus === 'APPROVED') {
-        throw new Error('KYC is already approved');
-      }
-
-      if (user.kycStatus !== 'PENDING_APPROVAL') {
-        throw new Error('KYC is not ready for approval');
-      }
-
-      user.kycStatus = 'APPROVED';
-      if (user.status === 'PENDING_KYC') {
-        user.status = 'ACTIVE';
-      }
-      await user.save();
-
-      // Log action
-      await this.createAuditLog({
-        performedBy: adminId,
-        action: 'KYC_APPROVED',
-        category: 'KYC',
-        targetType: 'User',
-        targetId: userId,
-        targetName: user.kycData?.nameOnAadhaar || user.username,
-        details: {
-          aadhaarNumber: user.kycData?.aadhaarNumber,
-          panNumber: user.kycData?.panNumber
-        }
-      });
-
-      // Send notification to user
-      await notify({
-        userId,
-        type: 'SUCCESS',
-        title: 'KYC Approved',
-        message: 'Your KYC verification has been approved. You can now access all features.',
-        relatedType: 'KYC'
-      });
-
-      return user;
-    } catch (error) {
-      throw new Error(`Failed to approve KYC: ${error.message}`);
-    }
-  }
-
-  /**
-   * Reject KYC submission
-   * @param {string} userId - User ID
-   * @param {string} reason - Rejection reason
-   * @param {string} adminId - ID of admin performing action
-   * @returns {Object} Updated user
-   */
-  async rejectKYC(userId, reason, adminId) {
-    try {
-      const user = await User.findById(userId);
-      if (!user) {
-        throw new Error('User not found');
-      }
-
-      if (user.kycStatus === 'APPROVED') {
-        throw new Error('Cannot reject already approved KYC');
-      }
-
-      user.kycStatus = 'REJECTED';
-      if (!user.kycData) {
-        user.kycData = {};
-      }
-      user.kycData.rejectionReason = reason;
-      await user.save();
-
-      // Log action
-      await this.createAuditLog({
-        performedBy: adminId,
-        action: 'KYC_REJECTED',
-        category: 'KYC',
-        targetType: 'User',
-        targetId: userId,
-        targetName: user.kycData?.nameOnAadhaar || user.username,
-        details: { reason }
-      });
-
-      // Send notification to user
-      await notify({
-        userId,
-        type: 'ERROR',
-        title: 'KYC Rejected',
-        message: `Your KYC verification has been rejected. Reason: ${reason}. Please resubmit with correct information.`,
-        relatedType: 'KYC'
-      });
-
-      return user;
-    } catch (error) {
-      throw new Error(`Failed to reject KYC: ${error.message}`);
-    }
-  }
-
-  /**
-   * Get KYC queue (pending approvals)
-   * @returns {Array} List of users pending KYC
-   */
-  async getKYCQueue() {
-    try {
-      const queue = await User.find({
-        kycStatus: 'PENDING_APPROVAL',
-        'kycData.submittedAt': { $exists: true }
-      })
-        .select('username mobile kycData profilePic joinedAt +kycData.aadhaarNumber')
-        .sort({ 'kycData.submittedAt': 1 })
-        .limit(100);
-
-      return queue;
-    } catch (error) {
-      throw new Error(`Failed to get KYC queue: ${error.message}`);
-    }
-  }
 
   /**
    * ════════════════════════════════════════════════════════════════════════════

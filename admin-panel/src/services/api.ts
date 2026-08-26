@@ -465,18 +465,237 @@ export const kyc = {
     return res.data;
   },
 
+  // viewDocument removed 2026-08-25 with GET /api/admin/kyc/:userId/document/:docType.
+  // There are no KYC documents: the bot takes the Aadhaar number and it is
+  // verified in bulk, so nothing is uploaded and nothing is presigned for review.
+};
+
+// --- TELEGRAM, BULK KYC & REFERRALS -------------------------------------------
+/**
+ * The identity and payout control plane. Every endpoint behind these is
+ * `isAdmin`, never `isAdminOrSubAdmin`: they move the platform's identity root
+ * and release national identity numbers, and admin 2FA is mandatory, so
+ * "isAdmin" also means "proved a second factor".
+ */
+export const telegram = {
+  getConfig: async () => {
+    const res = await api.get<any>('/api/admin/telegram/config');
+    return res.data as {
+      success: boolean;
+      active?: {
+        generation: number; botUsername: string; recoveryBotUsername?: string;
+        channelId: string; channelUsername?: string; channelInviteLink?: string;
+        botTokenConfigured: boolean; recoveryBotConfigured: boolean;
+        /** Whether the live credential comes from the bot registry or from the generation. */
+        signinSource?: 'registry' | 'generation';
+        recoverySource?: 'registry' | 'generation' | 'none';
+      } | null;
+      history?: Array<{
+        generation: number; botUsername: string; channelId: string; channelUsername?: string;
+        active: boolean; activatedAt: string; reason?: string;
+        activatedBy?: { username?: string } | null;
+      }>;
+      message?: string;
+    };
+  },
+
   /**
-   * A short-lived link to ONE identity document.
+   * Activate a new generation.
    *
-   * KYC documents live in a private bucket and the queue no longer carries a
-   * URL for them, because a URL in a list response is a permanent grant sitting
-   * in browser history. The link this returns expires in ~2 minutes and is
-   * minted per view, so it is fetched when a reviewer opens a document and is
-   * never stored.
+   * Tokens are write-only by design: there is no read path for one, so an
+   * operator changing a bot supplies a fresh value rather than editing what is
+   * stored. The server verifies it against Telegram BEFORE storing, because a
+   * config with a dead token takes signup and login down until someone notices.
    */
-  viewDocument: async (userId: string, docType: 'id-proof' | 'selfie') => {
-    const res = await api.get<any>(`/api/admin/kyc/${userId}/document/${docType}`);
-    return res.data as { success: boolean; url?: string; expiresIn?: number; message?: string };
+  activate: async (body: {
+    botToken: string; recoveryBotToken?: string; channelId: string;
+    channelUsername?: string; channelInviteLink?: string; webhookBaseUrl?: string; reason?: string;
+  }) => {
+    const res = await api.post<any>('/api/admin/telegram/config', body);
+    return res.data as {
+      success: boolean; generation?: number; botUsername?: string;
+      webhook?: string; message?: string;
+    };
+  },
+
+  /**
+   * Replace the CHANNEL only, carrying the current bots forward.
+   *
+   * Separate from `activate` because in an incident the two are almost never
+   * the same event: a channel is deleted while the bot is fine. Requiring a
+   * working bot token to be re-pasted to fix an unrelated channel is one more
+   * way to fail under pressure.
+   *
+   * Every player is asked to join the new channel on their next protected
+   * action; nothing else about their account moves.
+   */
+  replaceChannel: async (body: {
+    channelId: string; channelUsername?: string; channelInviteLink?: string; reason?: string;
+  }) => {
+    const res = await api.post<any>('/api/admin/telegram/channel', body);
+    return res.data as {
+      success: boolean; generation?: number;
+      channelId?: string; channelUsername?: string; message?: string;
+    };
+  },
+};
+
+/** A bot in the fleet, as the panel sees it — never with a token. */
+export interface FleetBot {
+  id: string;
+  label: string;
+  role: 'signin' | 'recovery' | 'broadcast' | 'moderation' | 'generic';
+  botId: string;
+  username: string;
+  status: 'ACTIVE' | 'STANDBY' | 'RETIRED';
+  live: boolean;
+  webhookUrl: string;
+  webhookRegisteredAt: string | null;
+  lastError: string;
+  addedAt: string;
+  activatedAt: string | null;
+  retiredAt: string | null;
+  notes: string;
+}
+
+/**
+ * The bot fleet.
+ *
+ * Spares are registered and verified while everything is calm, and sit on
+ * STANDBY. When Telegram suspends the live bot, `promote` is the whole incident
+ * response — no token to find, no @BotFather to open, no deploy.
+ */
+export const telegramBots = {
+  list: async () => {
+    const res = await api.get<any>('/api/admin/telegram/bots');
+    return res.data as { success: boolean; bots?: FleetBot[]; message?: string };
+  },
+
+  register: async (body: { label: string; role: FleetBot['role']; token: string; notes?: string }) => {
+    const res = await api.post<any>('/api/admin/telegram/bots', body);
+    return res.data as { success: boolean; bot?: FleetBot; message?: string };
+  },
+
+  promote: async (id: string, webhookBaseUrl?: string) => {
+    const res = await api.post<any>(`/api/admin/telegram/bots/${id}/promote`, { webhookBaseUrl });
+    return res.data as {
+      success: boolean; bot?: FleetBot; displaced?: FleetBot | null;
+      webhook?: string; alreadyLive?: boolean; message?: string;
+    };
+  },
+
+  retryWebhook: async (id: string, webhookBaseUrl?: string) => {
+    const res = await api.post<any>(`/api/admin/telegram/bots/${id}/webhook`, { webhookBaseUrl });
+    return res.data as { success: boolean; bot?: FleetBot; message?: string };
+  },
+
+  retire: async (id: string) => {
+    const res = await api.post<any>(`/api/admin/telegram/bots/${id}/retire`, {});
+    return res.data as { success: boolean; bot?: FleetBot; message?: string };
+  },
+};
+
+export interface BotTemplate {
+  key: string;
+  body: string;
+  default: string;
+  customised: boolean;
+  variables: string[];
+  updatedAt: string | null;
+}
+
+/**
+ * What the bot says.
+ *
+ * The welcome message is the first sentence anyone reads from this platform and
+ * carries the requirement that their Telegram account be on the Aadhaar-linked
+ * mobile. Getting it wrong shows up weeks later as failed verifications, so it
+ * is editable here rather than in a deploy.
+ */
+export const telegramTemplates = {
+  list: async () => {
+    const res = await api.get<any>('/api/admin/telegram/templates');
+    return res.data as { success: boolean; templates?: BotTemplate[]; message?: string };
+  },
+
+  /** An empty body reverts the key to the shipped wording. */
+  save: async (key: string, body: string) => {
+    const res = await api.put<any>(`/api/admin/telegram/templates/${key}`, { body });
+    return res.data as { success: boolean; template?: BotTemplate; message?: string };
+  },
+};
+
+export const kycBulk = {
+  stats: async () => {
+    const res = await api.get<any>('/api/admin/kyc/bulk/stats');
+    return res.data as {
+      success: boolean;
+      pending?: number;
+      verified?: number;
+      failed?: number;
+      recentBatches?: Array<{
+        batchId: string; kind: 'EXPORT' | 'IMPORT'; rowCount: number;
+        verified?: number; failed?: number; skipped?: number;
+        actor?: string; at?: string; note?: string;
+      }>;
+      message?: string;
+    };
+  },
+
+  /**
+   * Download the pending rows as CSV.
+   *
+   * Fetched as text and handed to the browser as a Blob rather than opened as a
+   * link: the request needs the Authorization header, and a plain <a href> would
+   * not carry it. The file is never written server-side, and every call writes
+   * an audit row naming the admin.
+   */
+  exportCsv: async (limit = 10000) => {
+    const res = await api.get<string>(`/api/admin/kyc/bulk/export?limit=${limit}`, {
+      responseType: 'text',
+      headers: { Accept: 'text/csv' },
+    });
+    return res.data;
+  },
+
+  importCsv: async (csv: string) => {
+    const res = await api.post<any>('/api/admin/kyc/bulk/import', { csv });
+    return res.data as {
+      success: boolean; batchId?: string;
+      verified?: number; failed?: number; skipped?: number;
+      errors?: string[]; message?: string;
+    };
+  },
+};
+
+export const referrals = {
+  stats: async () => {
+    const res = await api.get<any>('/api/admin/referral/stats');
+    return res.data as {
+      success: boolean;
+      budget?: number; disbursed?: number; remaining?: number;
+      pendingCount?: number; pendingValue?: number;
+      blockedCount?: number; blockedValue?: number;
+      memberCap?: number; verifiedMembers?: number;
+      nextQueuePosition?: number; active?: boolean;
+      message?: string;
+    };
+  },
+
+  /**
+   * Fund the queue with a pool.
+   *
+   * The amount is the ONLY input. Who gets paid is never chosen by hand — the
+   * queue pays strictly in joining order — which is what makes the programme
+   * defensible to everyone still waiting in it, and stops a disbursal from
+   * being a discretionary favour.
+   */
+  disburse: async (amount: number) => {
+    const res = await api.post<any>('/api/admin/referral/disburse', { amount });
+    return res.data as {
+      success: boolean; batchId?: string; paid?: number; blocked?: number;
+      spent?: number; unspent?: number; paidUpToJoiner?: number; message?: string;
+    };
   },
 };
 
@@ -931,6 +1150,11 @@ export default {
   depositPolicy,
   queueManager,
   kyc,
+  telegram,
+  telegramBots,
+  telegramTemplates,
+  kycBulk,
+  referrals,
   subAdmins,
   finance,
   branding,

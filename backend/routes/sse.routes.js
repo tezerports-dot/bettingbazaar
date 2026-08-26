@@ -234,8 +234,8 @@ export function initSSERoutes(sseManager, cycleGenerator) {
 
         const mongoose = await import('mongoose');
         const User = mongoose.default.model('User');
-        const adminUser = await User.findById(decoded.userId).select('isAdmin isSubAdmin isQueueManager isBlocked isAccountLocked subAdminPermissions').lean();
-        if (!adminUser || adminUser.isBlocked || adminUser.isAccountLocked ||
+        const adminUser = await User.findById(decoded.userId).select('isAdmin isSubAdmin isQueueManager isBlocked subAdminPermissions').lean();
+        if (!adminUser || adminUser.isBlocked ||
             (!adminUser.isAdmin && !adminUser.isSubAdmin && !adminUser.isQueueManager)) {
             return res.status(403).json({ success: false, message: 'Admin access required' });
         }

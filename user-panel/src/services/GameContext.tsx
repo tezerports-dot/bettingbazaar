@@ -62,12 +62,12 @@ interface GameContextType {
   user: User | null;
   isAuthenticated: boolean;
   isOnline: boolean;
-  login: (mobile: string, pass: string) => Promise<true | { twoFactorRequired: true }>;
-  /** Non-null while a password has been accepted but an OTP is still owed. */
-  pendingChallenge: string | null;
-  submitTwoFactor: (code: string) => Promise<boolean>;
-  cancelTwoFactor: () => void;
-  register: (username: string, mobile: string, pass: string, enable2FA?: boolean) => Promise<boolean>;
+  /**
+   * Redeem a bot login link. The single entry point to an authenticated
+   * session — there is no password login and no registration, because a
+   * player's identity is established inside Telegram before this is reached.
+   */
+  completeTelegramLogin: (token: string) => Promise<void>;
   logout: () => void;
   cycleType: CycleType;
   setCycleType: (type: CycleType) => void;
@@ -140,7 +140,6 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
   const [user, setUser]             = useState<User | null>(null);
   // Memory only, never localStorage: a 5-minute half-authenticated credential
   // surviving a reload is a stale secret, not a convenience.
-  const [pendingChallenge, setPendingChallenge] = useState<string | null>(null);
   const [isOnline, setIsOnline]     = useState(true);
   const [cycleType, setCycleType]   = useState<CycleType>(CycleType.THIRTY_MIN);
   const [isGhostMode, setIsGhostMode] = useState(false);
@@ -756,62 +755,26 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
 
   // ── AUTH ──────────────────────────────────────────────────────────────────
   /**
-   * Password leg. Returns true on a completed login, or
-   * { twoFactorRequired: true } when the account holds a second factor —
-   * the caller then collects a code and calls submitTwoFactor. The challenge
-   * lives in React state only; it is a five-minute half-authenticated
-   * credential, not something to persist.
+   * Redeem a one-time bot link and adopt the session it grants.
+   *
+   * There is no password leg and no OTP leg any more: the bot proved the phone
+   * number with a contact share and took the Aadhaar before it ever issued this
+   * token, so by the time it arrives the only question left is whether the
+   * token is still good. The server answers that, sets the httpOnly cookie, and
+   * hands back the player — this just seats them.
+   *
+   * Throws on failure so the calling screen can show why; every failure reason
+   * comes back as one message on purpose, and the fix is always a fresh /start.
    */
-  const login = async (mobile: string, pass: string): Promise<true | { twoFactorRequired: true }> => {
-    try {
-      const res = await backend.login({ mobile, password: pass });
-      if ((res as any).twoFactorRequired && (res as any).challengeToken) {
-        setPendingChallenge((res as any).challengeToken);
-        return { twoFactorRequired: true };
-      }
-      if (res.success) {
-        // BUG-U6 fix: compute walletBalance on login
-        const u = { ...res.user };
-        u.walletBalance = computeWalletBalance(u);
-        setUser(u);
-        return true;
-      }
-      throw new Error((res as any).message || 'Invalid credentials. Please check your mobile and password.');
-    } catch (e: any) { throw e; }
-  };
-
-  const submitTwoFactor = async (code: string) => {
-    if (!pendingChallenge) throw new Error('Login session expired. Please sign in again.');
-    const res = await backend.loginTwoFactor(pendingChallenge, code);
-    if (res.success) {
-      const u = { ...res.user };
-      u.walletBalance = computeWalletBalance(u);
-      setUser(u);
-      setPendingChallenge(null);
-      return true;
+  const completeTelegramLogin = async (token: string): Promise<void> => {
+    const res = await backend.exchangeTelegramToken(token);
+    if (!res.success || !res.user) {
+      throw new Error(res.message
+        || 'This sign-in link is no longer valid. Send /start to the bot for a new one.');
     }
-    // An expired challenge cannot be retried with a fresh code — the password
-    // leg has to happen again, so clear it rather than leaving a dead form.
-    if ((res as any).twoFactorExpired) {
-      setPendingChallenge(null);
-      throw new Error('Login session expired. Please sign in again.');
-    }
-    throw new Error((res as any).message || 'Invalid authentication code');
-  };
-
-  const cancelTwoFactor = () => setPendingChallenge(null);
-
-  const register = async (username: string, mobile: string, pass: string, enable2FA?: boolean) => {
-    try {
-      const res = await backend.register({ username, mobile, password: pass, enable2FA: !!enable2FA });
-      if (res.success) {
-        const u = { ...res.user };
-        u.walletBalance = computeWalletBalance(u);
-        setUser(u);
-        return true;
-      }
-      throw new Error((res as any).message || 'Registration failed. Mobile may already be registered.');
-    } catch (e: any) { throw e; }
+    const u = { ...res.user } as User;
+    u.walletBalance = computeWalletBalance(u);
+    setUser(u);
   };
 
   const logout = () => {
@@ -898,8 +861,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
 
   return (
     <GameContext.Provider value={{
-      user, isAuthenticated: !!user, isOnline, login, register, logout,
-      pendingChallenge, submitTwoFactor, cancelTwoFactor,
+      user, isAuthenticated: !!user, isOnline, completeTelegramLogin, logout,
       cycleType, setCycleType, cycles, currentCycle: cycles[cycleType],
       pastCycles, gameState: cycles[cycleType].status, serverTimeOffset,
       placeBet, placePhantomBet, userBets, history, triggerAdminAction, formatTime,

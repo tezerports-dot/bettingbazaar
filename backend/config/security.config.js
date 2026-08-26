@@ -81,7 +81,6 @@ export const RATE_LIMIT_TIERS = {
   // independently of any balance. Tight, and keyed on IP: keying on a field
   // from the request body (the mobile number) let a caller reset their own
   // budget at will, which is no limit at all.
-  accountRecovery: { windowMs: 60 * 60 * 1000, max: 5 },
   // General API tier used by security.js's apiLimiter
   api:        { windowMs: 1 * 60 * 1000,  max: 100 },
 };

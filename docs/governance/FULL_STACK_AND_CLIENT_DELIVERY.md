@@ -156,7 +156,7 @@ no placeholder code. This is deliberate (repo rule since Phase 003).
 | **MongoDB 7** (replica set required) | Everything: users, cycles, bets, orders, content, logs, and money | **Yes, for every path** |
 | **PostgreSQL 18** | Financial integrity — wallets, ledger, orders, KYC in integer paise, append-only + conserve-to-zero DB triggers, RANGE partitioning ready. Also hosts **pgvector** for RAG. | **No — verified shadow** |
 | **Redis 8** | Cache · distributed locks (cron leader) · rate-limit counters · realtime pub/sub fan-out · BullMQ job queue | n/a |
-| **S3-compatible** | KYC documents, payment proofs, branding images, app assets. Presigned direct-to-bucket uploads. | n/a |
+| **S3-compatible** | Payment proofs, P2P chat attachments, branding images, app assets. Presigned direct-to-bucket uploads. **No identity documents** — KYC is an Aadhaar number. | n/a |
 
 **Money precision is integer paise everywhere** (`backend/shared/money.js`);
 percentages are integer basis points; floats appear only in storage, never in math.
@@ -563,8 +563,8 @@ Anything in the user panel is W+P+A today; merchant and admin are W only.
 | Referral / invite — code, share, team, commissions (**F1 only**) | `/invite` | `/api/referral/me`, `/team`, `/commissions`, `/apply` | — |
 | VIP — tier, progress, benefits | `/vip` | `/api/vip/config`, `/api/vip/my`, `/api/bonuses/my` | — |
 | Gift code redemption | `/gift-code` | `POST /api/giftcode/redeem` | — |
-| **Account recovery** — masked Aadhaar check, anti-enumeration, status polling | `/recover-account` | `/api/auth/check-aadhaar`, `/recover`, `/recover/status` | `recovery_request` → admin |
-| Profile — fields, avatar, bank/UPI, KYC status, password/session | `/profile` | profile, KYC, bank, upload endpoints | `kyc_update` |
+| **Account recovery** — REMOVED 2026-08-25. There is no in-app recovery screen and no `/api/auth/check-aadhaar`, `/recover` or `/recover/status`. Recovery runs entirely in a SECOND Telegram bot and requires the same mobile AND the same Aadhaar to match. | — | — | — |
+| Profile — username, avatar, bank/UPI, KYC status, sign-out. **No password, no email** — the only editable field is the username; Aadhaar and mobile are proved, not typed. | `/profile` | profile, bank, avatar-upload endpoints | `kyc_update` |
 | Transaction / order history — timeline, filters, proof & dispute links | `/history` | `/api/payment/orders`, `/order/:id` | `order_update` |
 | My bets — list, cycle/side/amount/status filters | `/my-bets` | `GET /api/user/:userId/bets` | `bet_placed` |
 | Results — cycle timeline, winner/pool summary | `/results` | `/api/v1/game/cycles/history` | `cycle_result` |
@@ -574,9 +574,11 @@ Anything in the user panel is W+P+A today; merchant and admin are W only.
 | FAQ | `/faq` | `/api/v1/content/faq` | — |
 | **Support** — links + AI assistant | `/support` | `/api/v1/content/support-links`, `POST /api/support/ask` | `support_reply` |
 
-**Modals:** Auth (login / register / 2FA OTP / math captcha) · Wallet (add funds /
-withdraw, 1:1 token preview, saved bank) · KYC (document type, upload progress,
-review status) · Share (native share, copy, QR) · Place-bet confirmation ·
+**Modals:** Auth (**no form** — one "Sign in with Telegram" action; players have
+no password, no OTP and no captcha) · Channel gate (mandatory join prompt, not
+dismissible) · Wallet (add funds / withdraw, 1:1 token preview, saved bank) ·
+KYC (**status only** — nothing to submit; the bot took the Aadhaar before the
+account existed) · Share (native share, copy, QR) · Place-bet confirmation ·
 Payment-order detail (timeline, merchant, proof, dispute) · Bank details ·
 Global maintenance / update-required.
 
@@ -639,10 +641,12 @@ hidden from default navigation until Payments Operations approves the rollout.
 |---|---|
 | Users — search, detail, roles, block/unblock, phantom access, transactions | `/admin/#/users` |
 | Merchants — directory, approval/suspension, limits, capabilities, funding | `/admin/#/merchants` |
-| KYC queue — documents, approve/reject with mandatory reason | `/admin/#/kyc` |
+| KYC queue — verification state, approve/reject with mandatory reason (the exception path; the bulk import decides the rest) | `/admin/#/kyc` |
+| Bulk KYC — audited Aadhaar export, YES/NO import | `/admin/#/kyc/bulk` |
+| Telegram setup — replace the sign-in bot or channel without a deploy | `/admin/#/telegram` |
+| Referral programme — fund the payout queue in joining order | `/admin/#/referrals` |
 | Queue manager — assignment queue, available merchants, manual assign/reassign | `/admin/#/queue-manager` |
 | Disputes — list, chat/evidence, resolve/escalate | `/admin/#/disputes` |
-| Account recovery queue — approve/reject, KYC document linking | `/admin/#/account-recovery` |
 | Sub-admins — invite/create, permission matrix, revoke | `/admin/#/sub-admins` |
 
 **Merchant platform**

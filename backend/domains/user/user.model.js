@@ -25,6 +25,16 @@ const userSchema = new mongoose.Schema({
   // What a player shares. Distinct from joiningNumber so the public link does
   // not leak the platform's exact member count or a person's position in it.
   referralCode:  { type: String, unique: true, sparse: true, index: true },
+  // How many distinct people opened this user's referral link (deduplicated per
+  // viewer per day by ReferralClick). Held here rather than derived, because the
+  // rows it counts are deleted continuously by TTL — the aggregate is the thing
+  // that must survive, not the evidence.
+  //
+  // DECLARED, and that word is load-bearing: Mongoose strict mode strips
+  // undeclared paths out of update operators without complaint, so a `$inc` on a
+  // field that is not in this schema increments nothing and reports success.
+  // Four separate bugs in this codebase have been exactly that.
+  referralClicks: { type: Number, default: 0 },
   // Who referred them — the level-1 edge of the referral tree. The level-2 edge
   // is this user's referrer's own referredBy, walked at earning time.
   // (An index for this existed below long before the field itself did.)
@@ -84,43 +94,63 @@ const userSchema = new mongoose.Schema({
   walletAddress: { type: String, unique: true, sparse: true }, 
   profilePic: { type: String, default: '' },
 
-  // Optional contact email (Phase E, 2026-07-10) — delivery target for the
-  // Communication Platform's EMAIL channel. Not collected at registration
-  // (mobile is the identity); users without one are skipped by the adapter.
-  email: { type: String, trim: true, lowercase: true, default: '' },
-  
+  /*
+   * REMOVED 2026-08-26 — `email`.
+   *
+   * A player's identity is their Aadhaar and the mobile behind their Telegram
+   * account, and nothing else. The bot never asks for an email, so this field
+   * was empty for every player who could ever exist; the only way to set one
+   * was a profile form nobody had a reason to fill in.
+   *
+   * The Communication Platform's EMAIL channel went with it — a delivery
+   * adapter whose only possible answer was "user has no email on file" is not
+   * a channel, and keeping it meant carrying SMTP configuration and the
+   * `nodemailer` dependency for a path that could not fire.
+   *
+   * Do not reintroduce a player email. Reaching a player means Telegram or an
+   * in-app notification. `SupportLinks.email` is a different thing entirely —
+   * that is the platform's own public contact address and it stays.
+   */
+
   status: { type: String, enum: ['ACTIVE', 'BLOCKED', 'SUSPENDED', 'PENDING_KYC', 'DELETED'], default: 'ACTIVE', index: true },
   
   kycStatus: { type: String, enum: ['PENDING_SUBMISSION', 'PENDING_APPROVAL', 'APPROVED', 'REJECTED'], default: 'PENDING_SUBMISSION' },
+  // ── KYC decision metadata, and nothing else ──────────────────────────────
+  // The identity data itself lives in KycVerification (domains/identity/): the
+  // Aadhaar as an HMAC for uniqueness plus an AES-256-GCM ciphertext for the
+  // bulk export, both on a separate collection with its own access path. What
+  // remains here is only what the platform reads to decide whether this user
+  // may play and what to tell them if not.
+  //
+  // Removed 2026-08-25 along with the document-upload path: nameOnAadhaar,
+  // aadhaarNumber, nameOnPAN, panNumber, idProofKey, photoKey, idProofUrl,
+  // photoUrl. Nothing collects a name, a PAN, or a document any more — the bot
+  // asks for the Aadhaar number and that is the whole submission.
   kycData: {
-    nameOnAadhaar: String,   
-    aadhaarNumber: { type: String, select: false },   
-    nameOnPAN: String,
-    panNumber: String,
-    // ── Document references ──────────────────────────────────────────────
-    // KEYS into the private KYC bucket, not URLs. The URL fields below are the
-    // old public-CDN path: nothing writes them any more, and they are kept only
-    // so a record written before the cutover still renders.
-    //
-    // `select: false` for the same reason as `aadhaarNumber` directly above —
-    // several admin routes return whole user documents, and a key that shipped
-    // by default would put the document reference back into API responses,
-    // browser history and support tickets. Readers opt in explicitly with
-    // `.select('+kycData.idProofKey')`; the only one that should is the review
-    // endpoint that mints a short-lived grant.
-    idProofKey: { type: String, select: false },
-    photoKey:   { type: String, select: false },
-    idProofUrl: { type: String, select: false },
-    photoUrl:   { type: String, select: false },
     submittedAt: Date,
-    rejectionReason: String
-  },
-  // Keyed HMAC-SHA-256 of normalized Aadhaar; never store plaintext outside KYC data.
-  aadhaarHash: { type: String, unique: true, sparse: true, select: false },
-  aadhaarHashMigration: {
-    status: { type: String, enum: ['INVALID_AADHAAR', 'DUPLICATE_HASH'], default: undefined, index: true },
-    reason: String,
-    reviewedAt: Date
+    rejectionReason: String,
+    // reviewedBy was MISSING from this schema while kycDecision.service.js and
+    // reverseMirror.js both wrote `kycData.reviewedBy`. Mongoose drops an
+    // unknown path in strict mode without erroring, so every approval stayed
+    // anonymous — the precise defect kycDecision.service.js was written to fix,
+    // fixed at the write and never at the schema.
+    reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    reviewedAt: Date,
+    /*
+     * How many Aadhaar numbers this account has submitted, ever.
+     *
+     * A rejected player may reapply through the bot — a mistyped digit must not
+     * be a dead account — but the retry has to be bounded, because
+     * "submit a number, be told whether it is already registered" is an
+     * enumeration oracle if it can be repeated freely. The cap turns it into a
+     * correction path and not a probe.
+     *
+     * DECLARED, and that word is load-bearing here of all places: `kycData`
+     * already lost `reviewedBy` to exactly this trap, and every approval stayed
+     * anonymous because Mongoose drops an undeclared path from an update
+     * without erroring.
+     */
+    submissionCount: { type: Number, default: 0 },
   },
 
   bankDetails: {

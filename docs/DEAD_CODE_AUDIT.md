@@ -5,9 +5,16 @@ references it: read this file first.** Most of the unreferenced exports in this
 repository are unreferenced on purpose, and three of them are called by name by
 something outside the codebase. Deleting them breaks things that no test covers.
 
-Audit run 2026-08-11 over all 360 tracked JS files. Method: every
+**How this file is maintained:** it describes the codebase as it is NOW, not a
+history of clean-ups. There is one list of what has been removed and one list of
+what only looks removable. When something is removed, add a row — do not append
+a new dated section, because the reader needs "what is true today", and a pile
+of dated sections makes them reconstruct it.
+
+Last full scan: 2026-08-11 over all 360 tracked JS files — every
 `export function` / `export async function`, checked against every other source
-module and separately against the test tree.
+module and separately against the test tree. Removals since then are recorded
+below as they happen.
 
     exported and referenced by NO other source module     47
       …of those, referenced by nothing at all             13
@@ -25,13 +32,44 @@ Acting on that list would have deleted the database connection.
 A reference count is evidence about the corpus you searched, not about the
 program. Anything acting on one needs to state what it searched.
 
-## Removed
+## Removed — and must not come back
 
-| What | Where | Why it was safe |
+| What | Where | Why it was safe, and why it stays gone |
 |---|---|---|
 | `secureBetPlacement.js` (whole module, 111 lines) | `backend/postgres/` | A reference implementation of the serializable-with-outbox pattern on a **different table set** (`user_wallets` NUMERIC, `financial_ledger`, `operational_bet_outbox`) and a **string-decimal money model** rather than integer paise. Nothing imported it. Its tables never held the balances the dual-write mirror populates, so an authoritative path built on it would have switched to an empty set of balances at cutover. It was a second, plausible-looking money path sitting next to the real one. |
 | `_tlsFingerprintDefenseConfig`, `_setTlsFingerprintDefenseConfig` | `backend/middleware/tlsFingerprintDefense.js` | Underscore-prefixed test seams with **no test anywhere**. The sibling middlewares (`ipDefense`, `loadShed`) have the same pair and theirs *are* used, which is what made these look load-bearing. |
 | `recordWin` | `backend/postgres/casinoPg.js` | A two-line wrapper: `recordCallback({ ...args, type: CASINO_TX.WIN })`. `casinoPgAuthority` imports `recordCallback` directly. Superseded, not dead-on-arrival. |
+
+| `generateKYCUploadUrl` | `backend/services/cdn.service.js` | Minted a **writable** S3 URL under a `kyc/` prefix. Its route and service were removed 2026-08-25; this survived with no caller, which is exactly what made it dangerous — an unused working tool for collecting identity documents is how document collection returns without a decision being taken. The platform collects a 12-digit Aadhaar NUMBER and nothing else. Constraints for any future proposal: `IDENTITY_AND_REFERRALS.md` §6a. |
+| `generateDisputeUploadUrl`, `generateProfilePictureUploadUrl`, `generatePromoUploadUrl` | `backend/services/cdn.service.js` | No caller anywhere in the repo — the live routes call `generatePresignedUploadUrl` directly. **Note the trap:** all four were still listed in the file's `export default` after their definitions went, which is a ReferenceError at module load in a file every upload route imports. Removing a function means removing it from the barrel too. |
+| `User.email`, the `EMAIL` communication channel, `nodemailer`, `SMTP_*` | `user.model.js`, `communication/channelRegistry.js`, `package.json` | The bot never asks for an email, so the field was empty for every player who could exist and the adapter's only reachable answer was "user has no email on file". Removed the dependency and the production credentials with it. `SupportLinks.email` and `Merchant.email` are different things and remain. |
+
+
+## Also removed: whole files and directories
+
+Not "looks unused" — provably not built or served:
+
+- **`*/frontend-handoff/` (189 files) + `scripts/create-frontend-handoffs.mjs` +
+  the `handoff:frontends` npm script.** Auto-generated standalone snapshots of
+  each panel, never built or served; they existed only to be copied out, and
+  produced Dependabot alerts against dead code. Regeneration is no longer wired.
+- **`backend/package.json` (+ its already-untracked lockfile).** The backend has
+  never been installed on its own — the Docker image runs `npm ci` at `/app`
+  from the ROOT lockfile (which carries every backend dep), and `backend/*.js`
+  resolve ESM via the root's `"type":"module"`. The stray manifest was a second,
+  drifting dependency source (root=mongoose 9, stray=mongoose 8).
+- **`docs/NEXT_SESSION_HANDOFF.md`** — a transient AI-session handoff pinned to a
+  merged PR (#121) and a deleted branch. Superseded by `docs/GO_LIVE_RUNBOOK.md`.
+- **`docs/RAILWAY_STAGING.md`** — Railway is off-plan; the platform now self-hosts
+  on a Shinjiru dedicated box (`deploy/VPS_UBUNTU_SETUP.md`).
+
+NOT removed (and why the warning at the top of this file still holds): backend
+source modules flagged as "unreferenced" by a static scan were left alone — some
+are called by name from outside the codebase, and this is a money platform where
+a wrong deletion is not caught by any test.
+
+
+---
 
 ## KEPT — and here is why each one is not a bug
 
@@ -89,28 +127,3 @@ State the corpus you searched. Prefer moving something to the "kept, and why"
 table over deleting it — a wrong deletion in this repository is a money path or
 a safety check, and the tests that would catch it are frequently the very thing
 being deleted alongside it.
-
----
-
-## 2026-08-18 — go-live cleanup (pre-launch pivot)
-
-Removed, with confidence (not "looks unused" — provably not built/served):
-
-- **`*/frontend-handoff/` (189 files) + `scripts/create-frontend-handoffs.mjs` +
-  the `handoff:frontends` npm script.** Auto-generated standalone snapshots of
-  each panel, never built or served; they existed only to be copied out, and
-  produced Dependabot alerts against dead code. Regeneration is no longer wired.
-- **`backend/package.json` (+ its already-untracked lockfile).** The backend has
-  never been installed on its own — the Docker image runs `npm ci` at `/app`
-  from the ROOT lockfile (which carries every backend dep), and `backend/*.js`
-  resolve ESM via the root's `"type":"module"`. The stray manifest was a second,
-  drifting dependency source (root=mongoose 9, stray=mongoose 8).
-- **`docs/NEXT_SESSION_HANDOFF.md`** — a transient AI-session handoff pinned to a
-  merged PR (#121) and a deleted branch. Superseded by `docs/GO_LIVE_RUNBOOK.md`.
-- **`docs/RAILWAY_STAGING.md`** — Railway is off-plan; the platform now self-hosts
-  on a Shinjiru dedicated box (`deploy/VPS_UBUNTU_SETUP.md`).
-
-NOT removed (and why the warning at the top of this file still holds): backend
-source modules flagged as "unreferenced" by a static scan were left alone — some
-are called by name from outside the codebase, and this is a money platform where
-a wrong deletion is not caught by any test.

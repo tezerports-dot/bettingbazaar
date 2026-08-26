@@ -4,10 +4,6 @@
 import express from 'express';
 import mongoose from 'mongoose';
 import cdnService from '../services/cdn.service.js';
-// A separate module and a separate S3 client on purpose: cdn.service exists to
-// make objects PUBLIC and fast, and sharing it would mean one misrouted
-// category silently republishing an identity document.
-import * as kycDocuments from '../services/kycDocuments.service.js';
 import { authenticate, isAdmin } from '../domains/identity/auth.middleware.js';
 import { merchantAuth } from '../middleware/merchantAuth.js';
 
@@ -276,57 +272,20 @@ router.post('/user/payment-proof/:orderId/confirm-upload', authenticate, async (
     res.status(500).json({ success: false, message: error.message || 'Failed to confirm upload' });
   }
 });
-
-
 // ═══════════════════════════════════════════════════════════════════════
-// 🪪 KYC DOCUMENTS — PRIVATE BUCKET, NEVER THE CDN
+// 🪪 KYC DOCUMENTS — REMOVED 2026-08-25
 //
-// This route used to call cdnService, which put Aadhaar cards, PAN cards and
-// selfies in the SAME bucket as branding images and returned a public BunnyCDN
-// URL. That URL never expired, needed no authentication, and was then written
-// into two databases — so it lived in every backup, every admin API response
-// and every screenshot. An unguessable path is not an access-control model for
-// government identity documents.
+// POST /user/kyc/:docType/upload-url presigned a PUT into a private bucket
+// for an Aadhaar card and a selfie, which an admin then reviewed by eye.
+// KYC no longer works that way: the Telegram bot captures the Aadhaar NUMBER,
+// it is held encrypted, and verification happens in bulk against the issuing
+// authority (domains/identity/kycBulk.service.js). There is no document to
+// upload, so there is no bucket to presign into — and the safest identity
+// document is the one never collected.
 //
-// Now: a presigned PUT against a separate private bucket, and the response
-// carries a KEY, not a URL. A key is a reference; a URL is a grant.
-//
-// FAILS CLOSED. Every other upload category degrades to 503 when storage is
-// unconfigured and that is fine — a missing chat attachment is an inconvenience.
-// Here, "fall back to the old path" would mean publishing an identity document,
-// so an unconfigured private store refuses the upload instead. KYC submission
-// is a separate flow from registration and sign-in, so this blocks verification
-// alone; docs/KYC_DOCUMENT_STORAGE.md lists the four settings it needs.
+// Do not re-add an upload endpoint here without the private-store guarantees
+// that used to sit on this one; docs/IDENTITY_AND_REFERRALS.md §6a records them.
 // ═══════════════════════════════════════════════════════════════════════
-router.post('/user/kyc/:docType/upload-url', authenticate, async (req, res) => {
-  try {
-    const { docType } = req.params;
-    if (!['id-proof', 'selfie'].includes(docType)) {
-      return res.status(400).json({ success: false, message: 'Invalid KYC document type' });
-    }
-    const { fileName, contentType, fileSize } = req.body;
-    if (!hasValidUploadInput(fileName, contentType, fileSize))
-      return res.status(400).json({ success: false, message: 'fileName, contentType and fileSize required' });
-
-    if (!kycDocuments.configured()) {
-      return res.status(503).json({
-        success: false,
-        message: 'Identity verification is temporarily unavailable. Please try again later.',
-      });
-    }
-
-    const grant = await kycDocuments.presignUpload({
-      userId: req.user._id.toString(),
-      docType, contentType: String(contentType).toLowerCase().split(';')[0].trim(), fileSize,
-    });
-    // `key`, and deliberately no cdnUrl: there is no public URL for this object
-    // and the client must not be handed something that looks like one.
-    res.json({ success: true, key: grant.key, uploadUrl: grant.uploadUrl, expiresIn: grant.expiresIn });
-  } catch (err) {
-    console.error('KYC upload-url error:', err.message);
-    res.status(err.status || 500).json({ success: false, message: err.message || 'Failed to generate upload URL' });
-  }
-});
 
 // ── Profile picture upload (used by profile page) ────────────────────────────
 router.post('/user/profile/picture/upload-url', authenticate, async (req, res) => {

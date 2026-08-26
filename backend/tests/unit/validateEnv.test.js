@@ -9,7 +9,7 @@ const STRONG_JWT   = 'a-strong-random-jwt-signing-secret-value';
 const STRONG_ORDER = 'a-strong-random-order-hmac-secret-value';
 
 const full = {
-  JWT_SECRET: STRONG_JWT, ORDER_HMAC_SECRET: STRONG_ORDER, AADHAAR_HMAC_SECRET: 'a-secure-aadhaar-hmac-secret-value', MONGODB_URI: 'mongodb://x', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb',
+  JWT_SECRET: STRONG_JWT, ORDER_HMAC_SECRET: STRONG_ORDER, AADHAAR_HMAC_SECRET: 'a-secure-aadhaar-hmac-secret-value', IDENTITY_ENCRYPTION_KEY: 'Ej8mQ2xVbn5rT9wYzA1cD3eF6gH0iJkLmNoPqRsTuVw=', MONGODB_URI: 'mongodb://x', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb',
   REDIS_URL: 'r', ALLOWED_ORIGINS: 'o', METRICS_TOKEN: 'a-secure-random-metrics-token-value',
   // All four S3 vars: production boot requires isS3Configured(), which needs
   // bucket + access key + secret key + endpoint, not the bucket alone.
@@ -27,6 +27,20 @@ describe('validateEnv', () => {
   it('THROWS in production when a required var is missing', () => {
     const { JWT_SECRET, ...noJwt } = full;
     expect(() => validateEnv({ ...noJwt, NODE_ENV: 'production' }, true)).toThrow(/JWT_SECRET/);
+  });
+
+  it('requires IDENTITY_ENCRYPTION_KEY in production', () => {
+    // Without it, Aadhaar numbers and bot tokens cannot be encrypted — and the
+    // failure would otherwise surface at the first signup rather than at boot.
+    const { IDENTITY_ENCRYPTION_KEY, ...without } = full;
+    expect(() => validateEnv({ ...without, NODE_ENV: 'production' }, true)).toThrow(/IDENTITY_ENCRYPTION_KEY/);
+  });
+
+  it('rejects an IDENTITY_ENCRYPTION_KEY that is not exactly 32 bytes', () => {
+    // A short key would be silently derived-from by a laxer implementation,
+    // which encrypts records nobody can read back once the typo is corrected.
+    expect(() => validateEnv({ ...full, IDENTITY_ENCRYPTION_KEY: 'dG9vLXNob3J0', NODE_ENV: 'production' }, true))
+      .toThrow(/IDENTITY_ENCRYPTION_KEY/);
   });
 
   it('requires AADHAAR_HMAC_SECRET in production', () => {

@@ -298,65 +298,28 @@ export class RealBackend implements Backend {
   }
 
   // -- AUTH -----------------------------------------------------------------
-  async login(data: any) {
-    // Fetched per submit: Turnstile tokens are single-use, so a cached one
-    // would pass the first attempt and 403 every retry after a wrong password.
-    const captchaToken = await getCaptchaToken();
-    const res = await this.request<{ success: boolean; token: string; user: User;
-                                    twoFactorRequired?: boolean; challengeToken?: string }>(
-      '/v1/auth/login', { method: 'POST',
-        body: JSON.stringify(captchaToken ? { ...data, 'cf-turnstile-response': captchaToken } : data) });
-    // 2FA owed: a 200 with success:false and a five-minute challenge. Nothing
-    // is stored — the challenge is not a session and must never be used as
-    // one, so it goes back to the caller and is held in memory only.
-    if (res.twoFactorRequired && res.challengeToken) return res;
-    if (res.success && res.token) {
-      // Cookie set by server (httpOnly). Keep in localStorage only as WS auth fallback.
-      setToken(res.token); // single call site — populates in-memory cache + localStorage
-      
-      // (anonymous users never had one -- this is the first WS connection)
-      if (!this.socket) {
-        this._connectWebSocket(res.token);
-      } else {
-        
-        (this.socket as any).auth = { token: res.token };
-        this.socket.disconnect();
-        this.socket.connect();
-      }
-    }
-    return res;
-  }
+  /**
+   * Trade a bot login link's one-time token for a session.
+   *
+   * This replaced login()/register()/loginTwoFactor(). Identity is proved
+   * inside Telegram — contact share for the phone, Aadhaar for KYC, channel
+   * membership for access — so by the time a token reaches here the only
+   * question left is whether the token itself is still good. The server
+   * answers that and sets the httpOnly session cookie; the returned token is
+   * kept solely as the WebSocket's auth fallback, same as every other path.
+   */
+  async exchangeTelegramToken(token: string) {
+    const res = await this.request<{ success: boolean; token?: string; user?: User; message?: string }>(
+      '/telegram/exchange', { method: 'POST', body: JSON.stringify({ token }) });
 
-  /** Second leg of the login: exchange the challenge for a real session. */
-  async loginTwoFactor(challengeToken: string, code: string) {
-    const res = await this.request<{ success: boolean; token: string; user: User;
-                                     twoFactorExpired?: boolean; message?: string }>(
-      '/v1/auth/login/2fa', { method: 'POST', body: JSON.stringify({ challengeToken, code }) });
     if (res.success && res.token) {
-      setToken(res.token);
+      setToken(res.token); // single call site — populates in-memory cache + localStorage
       if (!this.socket) {
         this._connectWebSocket(res.token);
       } else {
         (this.socket as any).auth = { token: res.token };
         this.socket.disconnect();
         this.socket.connect();
-      }
-    }
-    return res;
-  }
-
-  async register(data: any) {
-    const captchaToken = await getCaptchaToken();
-    const res = await this.request<{ success: boolean; token: string; user: User }>('/v1/auth/register', {
-      method: 'POST',
-      body: JSON.stringify(captchaToken ? { ...data, 'cf-turnstile-response': captchaToken } : data)
-    });
-    if (res.success && res.token) {
-      // Cookie set by server (httpOnly). Keep in localStorage only as WS auth fallback.
-      setToken(res.token); // single call site — populates in-memory cache + localStorage
-      // LAZY WS: connect on registration just like login
-      if (!this.socket) {
-        this._connectWebSocket(res.token);
       }
     }
     return res;
@@ -532,9 +495,6 @@ export class RealBackend implements Backend {
   }
 
   // -- KYC & BANKING ----------------------------------------------------------
-  async uploadKYC(userId: string, data: any) {
-    return this.request<{ success: boolean; kycStatus: string }>(`/user/${userId}/kyc`, { method: 'POST', body: JSON.stringify(data) });
-  }
   async approveKYC(adminId: string, userId: string, status: 'APPROVED' | 'REJECTED', reason?: string) {
     const endpoint = status === 'APPROVED'
       ? `/admin/kyc/${userId}/approve`
@@ -584,34 +544,6 @@ export class RealBackend implements Backend {
   }
 
   // -- ADMIN ------------------------------------------------------------------
-  // adminLogin — interface expects (key: string). key = "mobile:password" or just password.
-  async adminLogin(key: string) {
-    let mobile = '';
-    let password = key;
-    if (key && key.includes(':')) {
-      const idx = key.indexOf(':');
-      mobile   = key.slice(0, idx);
-      password = key.slice(idx + 1);
-    }
-    const res = await this.request<{ success: boolean; token: string; user: any; requires2FA?: boolean }>('/admin/login', {
-      method: 'POST', body: JSON.stringify({ mobile, password, loginType: 'admin' })
-    });
-    if (res.success && (res as any).token) setToken((res as any).token); // single call site
-    const u = (res as any).user;
-    return {
-      success:     res.success,
-      requires2FA: res.requires2FA || false,
-      admin: u ? {
-        id:          u.id || u._id,
-        username:    u.username || u.mobile,
-        mobile:      u.mobile,
-        role:        u.role    || 'admin',
-        isAdmin:     u.isAdmin !== false,
-        mfaEnabled:  false,
-        permissions: u.permissions || {},
-      } as any : undefined,
-    };
-  }
   async getDashboardStats() { return this.request<any>('/admin/analytics/dashboard'); }
   async getUsers(filters?: any) { return this.request<User[]>('/admin/users', { method: 'GET' }); }
   async getUser(userId: string) { return this.request<User>(`/admin/users/${userId}`); }
@@ -889,7 +821,6 @@ export class RealBackend implements Backend {
         username: profile.name || profile.username,
         mobile:   profile.mobile,
         password: profile.password || 'Merchant@123',
-        email:    profile.email,
       }),
     });
     return res;
@@ -938,44 +869,6 @@ export class RealBackend implements Backend {
         body: JSON.stringify({ adminId, action, details, targetId }),
       });
     } catch { /* silent — audit log write may 404 if route not present */ }
-  }
-
-  // ── 2FA stubs — backend has no 2FA routes implemented ─────────────────────
-  async verifyLogin2FA(token: string): Promise<{ success: boolean; admin?: any }> {
-    // 2FA is not yet implemented on the backend. Return success so login is not blocked.
-    const stored = localStorage.getItem('admin_session');
-    if (stored) {
-      try { return { success: true, admin: JSON.parse(stored) }; } catch (e) { console.warn('Admin auth parse failed:', e); } // LOW-02
-    }
-    return { success: false };
-  }
-
-  async useBackupCode(code: string): Promise<{ success: boolean; admin?: any }> {
-    return { success: false };
-  }
-
-  async generate2FASecret(): Promise<{ secret: string; otpauth_url: string }> {
-    return { secret: 'NOT_CONFIGURED', otpauth_url: '' };
-  }
-
-  async enable2FA(secret: string, token: string): Promise<{ success: boolean; backupCodes: string[] }> {
-    return { success: false, backupCodes: [] };
-  }
-
-  async disable2FA(): Promise<void> { /* no backend route */ }
-
-  // ── Password management stubs ──────────────────────────────────────────────
-  async changeAdminPassword(current: string, newPwd: string): Promise<boolean> {
-    try {
-      await this.request('/v1/auth/change-password', {
-        method: 'POST', body: JSON.stringify({ currentPassword: current, newPassword: newPwd }),
-      });
-      return true;
-    } catch { return false; }
-  }
-
-  async resetAdminPassword(token: string): Promise<boolean> {
-    return false; // no backend route
   }
 
 }

@@ -134,14 +134,6 @@ const authenticate = async (req, res, next) => {
         message: 'Your account has been blocked. Please contact support.' 
       });
     }
-    // HIGH-06 FIX: also check isAccountLocked — a locked user with a valid PASETO
-    // could bypass the login-time check without this middleware guard.
-    if (user.isAccountLocked) {
-      return res.status(403).json({
-        success: false,
-        message: 'Account locked — recovery request pending. Contact support.'
-      });
-    }
 
     // Attach user to request object for use in subsequent middleware/routes
     req.user = user;
@@ -173,14 +165,48 @@ const authenticate = async (req, res, next) => {
 };
 
 
+/**
+ * Betting and the money paths require an APPROVED Aadhaar.
+ *
+ * ── Why the message depends on the status ───────────────────────────────────
+ * This used to answer every refusal with "Please complete KYC verification to
+ * use this action." Under the Telegram/Aadhaar model that instruction is
+ * impossible to follow: the player already gave their Aadhaar to the bot, and
+ * verification happens in BULK against the issuing authority on the operator's
+ * schedule. There is nothing for them to complete. A player who has done
+ * everything asked of them was being told to go and do something that does not
+ * exist, and support has no better answer than "wait".
+ *
+ * So each status says what is actually true and what, if anything, the player
+ * can do about it. `code` stays stable for the client; only the sentence moves.
+ */
+const KYC_REFUSAL = {
+  // Signed up through the bot: the Aadhaar is captured and queued. Nothing to do.
+  PENDING_APPROVAL: 'Your Aadhaar is being verified. This is done in batches and needs nothing '
+    + 'from you — you will be able to play as soon as it clears.',
+  // No Aadhaar was ever captured. This is the only status a player can act on,
+  // and the action is to finish signing up in the bot.
+  PENDING_SUBMISSION: 'Finish signing up in our Telegram bot — we still need your Aadhaar number '
+    + 'before you can play.',
+  REJECTED: 'Your Aadhaar could not be verified against the issuing authority. Please contact '
+    + 'support — this usually means a mismatch we can sort out for you.',
+};
+
 export async function requireApprovedKyc(req, res, next) {
   try {
     const cfg = await SystemConfig.findOne({ key: 'main' }).select('kycRequired').lean();
     if (cfg?.kycRequired === false || req.user?.kycStatus === 'APPROVED') return next();
+
+    const status = req.user?.kycStatus || 'PENDING_SUBMISSION';
     return res.status(403).json({
       success: false,
-      message: 'Please complete KYC verification to use this action.',
+      message: KYC_REFUSAL[status] || KYC_REFUSAL.PENDING_SUBMISSION,
       code: 'KYC_REQUIRED',
+      kycStatus: status,
+      // Whether the player can do anything at all. The panel uses this to
+      // decide between "finish signing up" and a passive "we are working on it",
+      // rather than showing an action button that leads nowhere.
+      actionable: status !== 'PENDING_APPROVAL',
     });
   } catch (error) {
     console.error('KYC config check error:', error);

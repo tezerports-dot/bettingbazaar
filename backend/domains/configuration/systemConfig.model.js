@@ -160,7 +160,9 @@ const systemConfigSchema = new mongoose.Schema({
   // (was hardcoded Math.round(amount*0.97)/(amount*0.03) in bet.routes.js).
   // Read by bet.routes.js; arithmetic in riskValidation.computeBetFundingPlan.
   // Used at basis-point precision (max 2 decimals).
-  betReservePercent: { type: Number, default: 3, min: 0, max: 100 },
+  // 1% of every stake comes from the reserve; the other 99% from deposit,
+  // then winnings. Owner rule 2026-08-25: a ₹200 bet draws ₹2 from reserve.
+  betReservePercent: { type: Number, default: 1, min: 0, max: 100 },
 
   // ── WINNINGS PLATFORM FEE (Phase A, 2026-07-10) ──────────────────────────
   // % platform fee on gross winnings at cycle settlement (owner spec §6:

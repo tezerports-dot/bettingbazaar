@@ -1,30 +1,52 @@
 # KYC — identity verification
 
-KYC (Know Your Customer) verification confirms your identity. It is required
-before you can **withdraw** funds.
+KYC confirms your identity. It is required before you can **bet, add funds or
+withdraw**.
 
-## What you submit
+## What you give us
 
-- **Aadhaar**: the name as printed on your Aadhaar and your Aadhaar number.
-- An **ID proof image** and a **photo**, as prompted in the app.
+**Your 12-digit Aadhaar number. That is all.**
 
-Enter details exactly as they appear on the documents. Mismatched names are the
-most common reason a submission is rejected.
+You send it to our Telegram bot when you first sign up — it is the very first
+thing the bot asks for, before your account is even created.
+
+There is **nothing to upload**. No photo of your Aadhaar card, no selfie, no
+address proof, no video call. We do not collect, store or ask for identity
+documents of any kind, and support will never ask you to send one.
+
+## The one thing that must match
+
+Sign up from the Telegram account registered on **the same mobile number that is
+linked to your Aadhaar**.
+
+That is the single most common reason verification fails. Your number is proved
+by Telegram when you tap "Share my contact" — we check that it matches the
+Aadhaar you gave.
 
 ## Status meanings
 
-- **Pending submission** — you have not submitted KYC yet.
-- **Pending approval** — submitted and waiting for review.
-- **Approved** — verified; withdrawals are unlocked (subject to other checks).
-- **Rejected** — something did not match. A reason is shown; correct it and
-  resubmit.
+- **Pending approval** — we have your Aadhaar and it is queued for checking.
+  **There is nothing for you to do.** Verification is done in batches against
+  the issuing authority, not one at a time, so it is not instant.
+- **Approved** — verified. Betting, deposits and withdrawals are unlocked
+  (subject to other checks).
+- **Rejected** — the Aadhaar could not be verified, usually a mismatch between
+  the number and the mobile it is linked to. **If you mistyped it, you can send
+  the correct number to the bot and we will check it again** — open the bot and
+  send /start. You get a small number of attempts; after that, contact support.
 
-## Tips
+## Things worth knowing
 
-- Use clear, uncropped images where all text is readable.
-- The name on your bank/UPI account used for withdrawals should match your
-  KYC identity.
-- KYC review is done by the platform's team; approval is not instant.
+- Once your Aadhaar is **approved** it cannot be changed — it is what your
+  account *is*. Before that, a rejected number can be corrected (see above).
+  Your mobile can never be changed. Opening a second account will not work:
+  one Aadhaar can hold one account only.
+- A number that failed verification is **not kept**. We delete it, which is also
+  what frees it for whoever it really belongs to if you mistyped someone else's.
+- The name on the bank or UPI account you withdraw to should match your Aadhaar
+  identity.
+- We never see or keep a copy of your Aadhaar card. The number itself is stored
+  encrypted, and it is never shown back to you or to support in full.
 
-Your KYC documents are handled as sensitive data. Never share your Aadhaar, Aadhaar,
-OTP, or password with anyone — support will never ask for your password or OTP.
+**Never share your Aadhaar number or a login link with anyone.** Support will
+never ask you for either, and a login link sent to you works only once.

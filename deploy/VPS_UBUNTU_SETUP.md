@@ -264,6 +264,15 @@ TRUST_PROXY=1
 # ── 2FA. Back this up like the Android keystore — it has no _PREVIOUS_ ──────
 TOTP_ENCRYPTION_KEY=<openssl rand -base64 32>
 
+# ── Identity at rest. Must decode to EXACTLY 32 bytes, or the boot gate refuses
+#    (a wrong length is caught here rather than on the first unreadable Aadhaar).
+IDENTITY_ENCRYPTION_KEY=<openssl rand -base64 32>
+AADHAAR_HMAC_SECRET=<openssl rand -base64 48>
+
+# ── Telegram. Bot TOKENS are NOT here — they live in the database so a
+#    suspended bot can be replaced from the admin panel without a deploy.
+PUBLIC_APP_ORIGIN=https://yourdomain.com
+
 # ── First-boot admin. Change the password immediately after first login ─────
 DEFAULT_ADMIN_MOBILE=9999999999
 DEFAULT_ADMIN_PASSWORD=<strong temporary password>
@@ -285,6 +294,14 @@ Notes that cost people hours:
 - **`TOTP_ENCRYPTION_KEY` is permanent.** It has no `_PREVIOUS_` counterpart;
   rotating it makes every stored TOTP secret undecryptable and forces every
   enrolled user to re-enrol. Back it up off the box.
+- **`IDENTITY_ENCRYPTION_KEY` is rotatable, but only deliberately.** Put the old
+  value in `IDENTITY_ENCRYPTION_PREVIOUS_KEYS` (decrypt-only) before switching, or
+  every stored Aadhaar and every stored bot token becomes unreadable. Same for
+  `AADHAAR_HMAC_SECRET` → `AADHAAR_HMAC_PREVIOUS_SECRETS`, which is what keeps
+  existing players able to recover their accounts after a rotation.
+- **Nobody can sign up until the bot is configured.** That is an admin-panel step
+  after deploy (**Telegram Setup**), not an env var — see
+  `docs/IDENTITY_AND_REFERRALS.md` §7.
 - **`UV_THREADPOOL_SIZE`** — at 4 threads and ~80 ms per Argon2 verify, one
   process tops out near 50 logins/second. Raising it costs ~19 MiB of hashing
   memory per thread; benchmark rather than guessing
@@ -369,8 +386,9 @@ server {
 
     client_max_body_size 10m;   # app caps JSON at 1m / 8m; this is the outer wall
 
-    # KYC documents and payment proofs upload direct to the bucket via presigned
-    # URLs, so large bodies never traverse this proxy.
+    # Payment proofs, chat attachments and branding assets upload direct to the
+    # bucket via presigned URLs, so large bodies never traverse this proxy.
+    # (There are no KYC documents — KYC is an Aadhaar number, not a file.)
 
     location / {
         proxy_pass http://bb_api;
@@ -466,7 +484,8 @@ Then the checks that actually prove it works end to end:
    process and the WebSocket path together.
 4. **Open the admin panel and confirm the SSE stream stays connected past 60
    seconds** — that proves `proxy_read_timeout`.
-5. **Submit a KYC document or upload an asset** — that proves the bucket.
+5. **Upload a branding asset from the admin panel** — that proves the bucket.
+   (Not a KYC document: none exist. KYC is an Aadhaar number typed into the bot.)
 
 ## 13. After first boot
 

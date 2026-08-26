@@ -14,6 +14,9 @@ import { TransactionsList } from './Pages/Finance/TransactionsList';
 import { ProfitLoss } from './Pages/Finance/ProfitLoss';
 import { QueueDashboard } from './Pages/QueueManager/QueueDashboard';
 import { KYCQueue } from './Pages/KYC/KYCQueue';
+import { KycBulk } from './Pages/KYC/KycBulk';
+import { TelegramConfig } from './Pages/Telegram/TelegramConfig';
+import { ReferralProgramme } from './Pages/Referrals/ReferralProgramme';
 import { SubAdminsList } from './Pages/SubAdmins/SubAdminsList';
 import { BrandingSettings } from './Pages/Branding/BrandingSettings';
 import { FAQManager } from './Pages/Content/FAQManager';
@@ -33,7 +36,6 @@ import { AnnouncementsPage } from './Pages/Promotions/AnnouncementsPage';
 import { BalanceAdjustment } from './Pages/Users/BalanceAdjustment';
 import { GameProviders }           from './Pages/GameProviders/GameProviders';
 import { GamesManager }            from './Pages/Games/GamesManager';
-import { AccountRecoveryAdmin } from './Pages/AccountRecovery/AccountRecoveryAdmin';
 import { FakeWinnersManager }  from './Pages/Winners/FakeWinnersManager';
 import { ChatSupport }         from './Pages/Chat/ChatSupport';
 // ── ENTERPRISE PLATFORM CONSOLES (Phase C, 2026-07-10) ─────────────────────
@@ -207,6 +209,20 @@ const App: React.FC = () => {
           </PermRoute>
         } />
 
+        {/* Identity and payout control plane — AdminOnly, never PermRoute.
+            These release national identity numbers, move the platform's
+            identity root, and pay real money. Admin 2FA is mandatory, so
+            AdminOnly also means a second factor was proved. */}
+        <Route path="/kyc/bulk" element={
+          <AdminOnly><Layout><KycBulk /></Layout></AdminOnly>
+        } />
+        <Route path="/telegram" element={
+          <AdminOnly><Layout><TelegramConfig /></Layout></AdminOnly>
+        } />
+        <Route path="/referrals" element={
+          <AdminOnly><Layout><ReferralProgramme /></Layout></AdminOnly>
+        } />
+
         {/* Transactions — canViewTransactions */}
         <Route path="/transactions" element={
           <PermRoute permission="canViewTransactions">
@@ -301,10 +317,11 @@ const App: React.FC = () => {
         } />
         {/* UTR REMOVED: route /utr-monitor stripped per product decision */}
 
-        {/* ── ACCOUNT RECOVERY */}
-        <Route path="/account-recovery" element={
-          <AdminOnly><Layout><AccountRecoveryAdmin /></Layout></AdminOnly>
-        } />
+        {/* Account recovery is no longer an admin queue. It runs unattended on a
+            second Telegram bot that requires BOTH the registered phone (proved
+            by a contact share) and the Aadhaar on file — see
+            backend/domains/telegram/telegramRecovery.service.js. Every grant
+            raises an alert. */}
 
         {/* ── WINNERS MANAGEMENT */}
         <Route path="/winners-manager" element={

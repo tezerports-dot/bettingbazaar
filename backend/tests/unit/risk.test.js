@@ -67,7 +67,7 @@ describe('payout fee (floored paise, never rounds up against the user)', () => {
 describe('bet funding plan (Phase A — paise-exact, admin-editable reserve %)', () => {
   const ample = { availableDeposit: 100000, availableWinnings: 100000, availableReserve: 100000 };
 
-  it('₹10 @ 3% pulls 9.70 deposit / 0.30 reserve — the owner-intended split', () => {
+  it('₹10 @ 3% pulls 9.70 deposit / 0.30 reserve — arithmetic at an explicit percent', () => {
     const p = computeBetFundingPlan({ amount: 10, reservePercent: 3, ...ample });
     expect(p.fromReserve).toBe(0.3);
     expect(p.fromDeposit).toBe(9.7);

@@ -140,7 +140,6 @@ after the overlap (token TTL / order lifetime). Verification accepts current **o
 | `APP_BASE_URL` / `CANONICAL_HOST` | Public URL; optional canonical-host 301. |
 | `ALERT_WEBHOOK_URL` | Fallback money-path alert sink (or set `SystemConfig.alertWebhookUrl` in-app). |
 | `DEFAULT_ADMIN_MOBILE` / `DEFAULT_ADMIN_PASSWORD` | First-boot admin bootstrap — **change the password immediately after first login**. |
-| `SMTP_HOST` / `SMTP_FROM` / `SMTP_*` | Enables the EMAIL channel when set (no delivery until then). |
 | `MONGO_AUTO_INDEX` | `true` (build indexes at boot). Set `false` + run `npm run sync:indexes` in the pipeline to avoid boot-time builds on a scaled fleet. |
 | `PG_POOL_SIZE` | Postgres pool per instance. Keep `instances × (Mongo pool + PG pool) ≤` the DB tier's connection cap (§21). |
 | `ARGON2_MEMORY_KIB` / `ARGON2_TIME_COST` / `ARGON2_PARALLELISM` | Password-hash cost (OWASP minimum by default; raise on capable hardware). |
@@ -265,6 +264,38 @@ that is talking to us would turn a server-side bug into a multi-origin outage.
 This addresses origin availability. It takes no client IP, geo or ISP as an
 input — the candidate order is static and identical for every user — and it is
 not a circumvention mechanism (`04-GOVERNANCE.md` §20, 2026-07-28).
+
+## Identity at rest (Aadhaar, bot tokens)
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `IDENTITY_ENCRYPTION_KEY` | **yes — the server refuses to boot in production without it** | AES-256-GCM key over the stored Aadhaar ciphertext and the Telegram bot tokens. Must decode to exactly **32 bytes**: `openssl rand -base64 32`. A wrong or absent key makes every stored identity unreadable. |
+| `IDENTITY_ENCRYPTION_PREVIOUS_KEYS` | no | Comma-separated retired keys, **decrypt-only**. Their presence is what makes a rotation possible without a migration window. |
+| `AADHAAR_HMAC_SECRET` | yes | Keyed hash enforcing one account per Aadhaar. Not reversible — it cannot serve the bulk export, which is why the ciphertext exists too. |
+| `AADHAAR_HMAC_PREVIOUS_SECRETS` | no | Comma-separated rotation candidates, checked on lookup so a rotation does not lock existing players out of account recovery. |
+
+**Why two forms of the same number.** The HMAC is one-way, so it cannot produce
+the value the verification provider needs; GCM is randomised, so the same Aadhaar
+encrypts differently every time and cannot back a unique index. One does
+uniqueness, the other does export.
+
+**Rotating `IDENTITY_ENCRYPTION_KEY`:** move the current value into
+`IDENTITY_ENCRYPTION_PREVIOUS_KEYS`, set the new one, redeploy, then re-encrypt
+at leisure with `rewrapField()` and drop the old entry. Unlike
+`TOTP_ENCRYPTION_KEY` below, this key *can* be rotated — but only if the previous
+value is kept until the re-encryption finishes.
+
+**Bot tokens are NOT environment variables.** They live in `TelegramConfig` so a
+suspended bot can be replaced from the admin panel without a deploy — see
+`docs/IDENTITY_AND_REFERRALS.md` §7.
+
+## Telegram
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `PUBLIC_APP_ORIGIN` | yes | Where bot login links point, and the base for the webhook URL registered with Telegram. |
+| `TELEGRAM_LOGIN_TTL_MS` | no | Lifetime of a one-time login link (default 5 min). |
+| `TELEGRAM_MEMBERSHIP_GRACE_MS` | no | How long a money action is still allowed when Telegram is unreachable, measured **from the last confirmed membership** (default 24h). Fail-closed would stop the platform taking money during a Telegram outage; fail-open forever would silently retire the gate. |
 
 ## Two-factor authentication (TOTP)
 

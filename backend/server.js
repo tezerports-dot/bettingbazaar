@@ -61,6 +61,11 @@ import './models/index.js';
 import authRoutes, { loginHandler, loginTwoFactorHandler } from './routes.js';
 import adminRoutes        from './routes/admin/index.js';      // ← new modular index
 import betRoutes          from './domains/markets/bet.routes.js';
+// Telegram bot webhook + the one-time-link session exchange. Public by design:
+// the caller is Telegram, and the webhook authenticates on the secret token
+// Telegram echoes, not on a session.
+import telegramRoutes     from './domains/telegram/telegram.routes.js';
+import referralRedirect   from './routes/referralRedirect.routes.js';
 import userRoutes         from './domains/user/user.routes.js';
 import merchantRoutes     from './domains/merchant/merchant.routes.js';
 import paymentRoutes      from './domains/payment/payment.routes.js';
@@ -89,7 +94,6 @@ import { registerService } from './services/serviceRegistry.js';
 import { providerRegistry } from './providers/registry.js';
 import { S3StorageProvider } from './providers/storage/S3StorageProvider.js';
 import { LocalDiskStorageProvider } from './providers/storage/LocalDiskStorageProvider.js';
-import recoveryRoutes     from './routes/account-recovery.routes.js';
 import twoFactorRoutes from './domains/identity/twoFactor.routes.js';
 import winnersRoutes      from './routes/winners.routes.js';
 import appBootstrapRoutes from './routes/app-bootstrap.routes.js';
@@ -320,6 +324,13 @@ registerService('alerting', { send: (...a) => import('./services/alerting.servic
 // glassmorphism.css with .glass-overlay { position:fixed; inset:0 }) to load
 // inside admin and merchant panels — creating a full-screen transparent overlay
 // that blocked all clicks on those panels.
+// Referral links: /r/<code> → whichever sign-up bot is live right now.
+//
+// Mounted HERE, above the static middleware and far above the SPA catch-all,
+// because both of those would otherwise answer /r/<code> with index.html. This
+// is a redirect, not a page — the visitor must never see the app shell.
+app.use('/', referralRedirect);
+
 app.use('/', (req, res, next) => {
   if (req.path.startsWith('/admin') || req.path.startsWith('/merchant') || req.path.startsWith('/api')) {
     return next(); // never serve user panel assets to other panels
@@ -400,18 +411,19 @@ app.get('/api/v1/health', legacyHealth);
 // until an admin sets a ceiling) catches distributed rotation across subnets.
 if (runtime.acceptsHttpApi) {
 startIpDefenseConfigRefresh();
-// Captcha is applied INSIDE this router, per-path (routes.js), not here.
-// Mounting it router-wide would also gate GET /me — which every page load
-// calls to restore the session — and 403 every user on every load. Same
-// reasoning as the login rate limiters (RATE_LIMITS.md, "Scoping note").
+// Session lifecycle only: /me, /logout, /health. No captcha here — every page
+// load calls /me to restore the session, so gating this router would 403 every
+// user on every load. The credential-submitting routes that captcha DID guard
+// (/login, /register) no longer exist for players; the staff password door is
+// mounted separately below and carries its own captcha.
 app.use('/api/v1/auth', authLimiter, createSubnetLimiter('auth'), globalSurgeBreaker('auth'), authRoutes);
-// MED-04 FIX: removed /api/auth duplicate mount — it duplicated rate limit slots
-// allowing 2× brute-force attempts. All clients should use /api/v1/auth/*.
+// Player signup and login are NOT here — they run through the Telegram bot
+// webhooks and the one-time-link exchange, mounted at /api/telegram below.
 // 2FA enrolment and management (LAUNCH_READINESS §F). Mandatory for admin and
-// sub-admin roles, optional for players; enforcement at login lives in the auth
-// handler, this router only manages enrolment.
+// sub-admin roles; players do not have passwords and so have no second factor
+// to enrol. Enforcement at login lives in the auth handler, this router only
+// manages enrolment.
 app.use('/api/2fa', twoFactorRoutes);
-app.use('/api', recoveryRoutes);
 app.use('/api', winnersRoutes);
 app.use('/api/app', appBootstrapRoutes);
 
@@ -472,6 +484,7 @@ app.use('/api/game',      gameProviderRoutes);
 // (/games, /categories, /admin/games, /admin/categories) don't collide with the
 // provider router's (/providers, /launch, /admin/game-providers).
 app.use('/api/game',      gameRegistryRoutes);
+app.use('/api/telegram',  telegramRoutes);
 app.use('/api/bet',       betRoutes);
 app.use('/api',           userRoutes);
 // Scoped to the login PATH, not the whole merchant router.

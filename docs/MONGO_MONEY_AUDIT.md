@@ -26,8 +26,8 @@ marked PASS on the strength of reading alone.
 | M-7 | A casino `ROLLBACK`/`REFUND` credits the player without proving a matching prior debit — a provider can mint real money | **High** | **FIXED in both paths** — the live Mongo endpoint and `casinoPg.js` |
 | M-8 | `refundOrder` writes a provider-supplied round id into `WalletLedger.refId`, which is an ObjectId — every casino rollback/refund threw | **High** | **Fixed** |
 | M-9 | `POST /v1/user/withdraw` created the PENDING request BEFORE reserving funds, so a failed reservation left an unfunded payable row an operator would pay by hand | **Critical** | **Resolved 2026-08-24 by REMOVAL** — the endpoint was one half of a second, unreachable withdrawal system (no client called it, no admin screen could approve it). Deleted rather than hardened; the live P2P path already reserves inside the order transaction |
-| M-10 | `/auth/recover` revealed whether an Aadhaar had an account, and its rate limit was keyed on the caller-supplied `mobile` (in-process, per-worker) | Medium | **Fixed 2026-08-24** — one neutral response for every caller; IP-keyed, Redis-backed `accountRecoveryLimiter` |
-| M-11 | The `AccountRecovery` model described a different flow than the route and both panels — every recovery submission failed validation, so locked-out players had no route back to their balance | **High** | **Fixed 2026-08-24** — model aligned to the live Aadhaar + video-KYC contract |
+| M-10 | `/auth/recover` revealed whether an Aadhaar had an account, and its rate limit was keyed on the caller-supplied `mobile` (in-process, per-worker) | Medium | **Fixed 2026-08-24**, then **resolved 2026-08-25 by REMOVAL** — the whole flow issued a temporary *password*, so it was dead by construction once players stopped having one. Replaced by the recovery bot |
+| M-11 | The `AccountRecovery` model described a different flow than the route and both panels — every recovery submission failed validation, so locked-out players had no route back to their balance | **High** | **Fixed 2026-08-24**, then **removed 2026-08-25** with the flow it described |
 
 ---
 
@@ -496,3 +496,27 @@ to their balance for a locked-out player — did not work at all.**
 The route and the panels agree with each other, so the model moved. Fields are
 optional unless the flow genuinely cannot proceed without them, so a partially
 filled request stays reviewable by a human rather than rejected by the database.
+
+### Postscript, 2026-08-25: removed rather than kept
+
+Both fixes were correct and both are now gone, along with
+`routes/account-recovery.routes.js`, `models/accountRecovery.model.js`, the
+`accountRecoveryLimiter`, and the two panel screens.
+
+The approval step issued the player a **temporary password**. When players moved
+to Telegram sign-in they stopped having passwords at all, so the flow could no
+longer return anyone to their balance no matter how correct its model was — dead
+by construction, the same way M-9's withdrawal endpoint was.
+
+What replaces it is a second Telegram bot requiring BOTH the registered phone
+(proved by Telegram's own contact share, not typed) and the Aadhaar on file, with
+one indistinguishable failure reason so neither factor can be used to probe for
+the other. The oracle M-10 identified is closed more thoroughly than the neutral
+response closed it: the account is found **by phone**, and the Aadhaar is only
+ever compared against the account the phone already resolved to, so there is no
+Aadhaar lookup to be an oracle. See `IDENTITY_AND_REFERRALS.md` §8 and
+`backend/tests/unit/telegramRecoverySafety.test.js`.
+
+The pattern is now three for three in this audit — M-9, M-10/M-11 — and worth
+stating plainly: **a defect in a system nobody can reach is a signal about the
+system, not a bug to fix.** Hardening the dead one is the expensive mistake.

@@ -706,17 +706,17 @@ export function reverseMirrorUtr(row) {
  */
 export function reverseMirrorUserKyc(row) {
   return mirrorBack('user_kyc', async () => {
+    // Only the paths that still exist on the User schema. Mongoose drops an
+    // unknown path in strict mode WITHOUT erroring, so mirroring back a column
+    // whose Mongo field was removed is a write that silently does nothing —
+    // which reads, in the reconciliation report, exactly like a write that
+    // worked. The name, PAN and document columns are in that category since
+    // 2026-08-25.
     const set = {
       kycStatus: row.kyc_status,
-      'kycData.nameOnPAN': row.name_on_pan,
-      'kycData.panNumber': row.pan_number,
       'kycData.submittedAt': row.submitted_at,
       'kycData.rejectionReason': row.rejection_reason,
     };
-    if (row.id_proof_key) set['kycData.idProofKey'] = row.id_proof_key;
-    if (row.photo_key) set['kycData.photoKey'] = row.photo_key;
-    if (row.id_proof_url) set['kycData.idProofUrl'] = row.id_proof_url;
-    if (row.photo_url) set['kycData.photoUrl'] = row.photo_url;
 
     await mongoose.model('User').updateOne({ _id: row.user_id }, { $set: set });
   });

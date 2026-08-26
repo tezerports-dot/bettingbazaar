@@ -112,10 +112,6 @@ const paymentOrderSchema = new mongoose.Schema({
 
   // ── User Identity ────────────────────────────────────────────────────────
   userPhone:       String,
-  userKycSnapshot: {
-    pan:  String,
-    name: String,
-  },
   userBankDetails: {
     accountNumber:     String,
     ifscCode:          String,

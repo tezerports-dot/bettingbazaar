@@ -41,7 +41,6 @@ export * from '../domains/casino/gameProvider.model.js';
 export * from '../domains/gameRegistry/game.model.js';
 export * from '../domains/wallet/wallet.model.js';
 export * from './social.model.js';
-export * from './accountRecovery.model.js';
 // Telegram-based player identity (bot + channel), the Aadhaar KYC record it
 // feeds, and the referral programme keyed on joining order.
 export * from '../domains/telegram/telegram.model.js';

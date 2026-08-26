@@ -41,7 +41,8 @@ const WinnersPage         = React.lazy(() => import('./pages/WinnersPage'));
 const LeaderboardPage     = React.lazy(() => import('./pages/LeaderboardPage'));
 const WalletPage          = React.lazy(() => import('./pages/WalletPage'));
 const GiftCodePage        = React.lazy(() => import('./pages/GiftCodePage'));
-const AccountRecoveryPage = React.lazy(() => import('./pages/AccountRecoveryPage'));
+const TelegramAuthPage = React.lazy(() => import('./pages/TelegramAuthPage'));
+const ReferralPage = React.lazy(() => import('./pages/ReferralPage'));
 import ErrorBoundary from './components/ui/ErrorBoundary';
 import { getBackend } from './services/backend.service';
 const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? '0.0.0';
@@ -232,8 +233,14 @@ const App: React.FC = () => (
                           <Route path="/wallet"          element={lazy(<WalletPage />)} />
                           <Route path="/gift-code"       element={lazy(<GiftCodePage />)} />
 
-                          {/* Community */}
-                          <Route path="/recover-account" element={lazy(<AccountRecoveryPage />)} />
+                          {/* Where a bot login link lands. Recovery is no longer a
+                              page in this app — it is a second Telegram bot. */}
+                          <Route path="/auth/telegram"   element={lazy(<TelegramAuthPage />)} />
+
+                          {/* Referral earnings live HERE, not on the wallet:
+                              only the disbursed part reaches the winnings
+                              balance, and the rest is a promise. */}
+                          <Route path="/referrals"       element={lazy(<ReferralPage />)} />
 
                           {/* Account */}
                           <Route path="/profile"         element={<ProfilePage />} />

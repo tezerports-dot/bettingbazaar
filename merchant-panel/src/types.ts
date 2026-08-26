@@ -43,11 +43,6 @@ export interface BankDetails {
   accountHolderName: string;
 }
 
-export interface KYCSnapshot {
-  pan: string;
-  name: string;
-}
-
 export interface User {
   _id: string;
   id?: string;
@@ -105,7 +100,6 @@ export interface PaymentOrder {
   userId: string | User;
   user?: User;
   userPhone?: string;
-  userKycSnapshot?: KYCSnapshot;
   userBankDetails?: BankDetails;
   upiId?: string; // user UPI ID stored on WITHDRAWAL orders
   // TRC-20 payout address on USDT WITHDRAWAL orders — the crypto counterpart

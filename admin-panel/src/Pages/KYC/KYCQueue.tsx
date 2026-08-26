@@ -1,12 +1,19 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 //
-// KYC Queue — Command Center design (handoff "Betting Bazaar Admin.dc.html").
-// Two-panel review: queue list + document/detail panel. Data + actions
-// (getQueue / approve / reject) and the SSE wiring are unchanged; only the
-// presentation is rebuilt. No fabricated risk score — the backend does not
-// provide one, so risk badges are omitted rather than invented.
+// KYC Queue — the manual exception path.
+//
+// There are no documents to review any more. The bot takes the Aadhaar NUMBER
+// before an account exists, it is held encrypted, and verification runs in bulk
+// against the issuing authority — so what this screen shows is WHY someone is
+// still waiting (never exported, out with the verifier, or failed), and the two
+// buttons are for settling the cases the batch got wrong or that cannot wait for
+// the next run. Both go through the same state machine the batch does.
+//
+// The Aadhaar itself is deliberately absent: only its last four digits reach
+// this panel. The audited bulk export is the one path that releases the numbers.
+// No fabricated risk score — the backend does not provide one.
 import React, { useEffect, useMemo, useState } from 'react';
-import { Image as ImageIcon, User as UserIcon, Check, X } from 'lucide-react';
+import { User as UserIcon, Check, X } from 'lucide-react';
 import { Modal } from '../../components/Modal';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { formatters } from '../../utils/formatters';
@@ -29,68 +36,25 @@ const TILE: React.CSSProperties = {
   background: 'repeating-linear-gradient(45deg,var(--surface-2),var(--surface-2) 11px,var(--hover) 11px,var(--hover) 22px)',
 };
 
-/**
- * One identity document, fetched only when a reviewer asks for it.
- *
- * The queue used to carry a permanent, public, never-expiring CDN URL per
- * document and render it straight into an <img>. That put a link to a
- * government ID — one that needs no authentication and cannot be revoked — into
- * every reviewer's browser history, for every user in the queue, whether or not
- * anyone looked at it.
- *
- * Now the bucket is private and the queue carries no reference at all. A
- * reviewer clicks, the server mints a grant that expires in about two minutes
- * and records who opened what, and this tile drops the image when the grant
- * lapses rather than leaving a decoded identity document sitting in the DOM.
- */
-const DocTile: React.FC<{
-  userId: string; docType: 'id-proof' | 'selfie'; label: string; isPhoto: boolean;
-}> = ({ userId, docType, label, isPhoto }) => {
-  const [grant, setGrant] = useState<{ url: string; expiresIn: number } | null>(null);
-  const [isOpening, setIsOpening] = useState(false);
-  const [error, setError] = useState('');
-
-  // Selecting another user is another document. Without this the tile would go
-  // on showing the previous applicant's ID under the new applicant's name.
-  useEffect(() => { setGrant(null); setError(''); }, [userId, docType]);
-
-  useEffect(() => {
-    if (!grant) return;
-    const t = setTimeout(() => setGrant(null), grant.expiresIn * 1000);
-    return () => clearTimeout(t);
-  }, [grant]);
-
-  const open = async () => {
-    setIsOpening(true); setError('');
-    try {
-      const res = await api.kyc.viewDocument(userId, docType);
-      if (res.success && res.url) setGrant({ url: res.url, expiresIn: res.expiresIn || 120 });
-      else setError(res.message || 'Document unavailable');
-    } catch (e: any) {
-      setError(e.response?.data?.message || 'Failed to open document');
-    } finally {
-      setIsOpening(false);
-    }
-  };
-
-  if (grant) {
-    return (
-      <a href={grant.url} target="_blank" rel="noreferrer" style={{ display: 'block' }}>
-        <img src={grant.url} alt={label} style={{ width: '100%', height: 158, objectFit: 'cover', borderRadius: 12, border: '1px solid var(--border)' }} />
-      </a>
-    );
-  }
-
-  return (
-    <button onClick={open} disabled={isOpening} style={{ ...TILE, width: '100%', cursor: isOpening ? 'wait' : 'pointer' }}>
-      {isPhoto ? <UserIcon size={26} /> : <ImageIcon size={26} />}
-      <span className="font-mono" style={{ fontSize: 10.5, fontWeight: 600 }}>{label}</span>
-      <span style={{ fontSize: 10, fontWeight: 700, color: error ? 'var(--danger)' : 'var(--text-2)', padding: '0 10px', textAlign: 'center' }}>
-        {error || (isOpening ? 'Opening…' : 'Click to view · expires in 2 min')}
-      </span>
-    </button>
-  );
+/** The KycVerification row the queue endpoint joins onto each user, if any. */
+type Verification = {
+  status?: string; aadhaarLast4?: string; exportBatchId?: string | null; failureReason?: string;
 };
+const v = (u: any): Verification | null => (u?.verification as Verification) || null;
+
+/**
+ * Why this person is still in the queue, in a sentence.
+ *
+ * This is the only thing a reviewer can act on now: there is no document to
+ * judge, so the useful question is whether the batch has reached them yet.
+ */
+function verificationBlurb(u: any): string {
+  const rec = v(u);
+  if (!rec) return 'No Aadhaar on file for this account — unusual, since the bot asks for one before creating it. Worth checking with the player before deciding.';
+  if (rec.status === 'FAILED') return `The verifier returned a failure${rec.failureReason ? `: ${rec.failureReason}` : ''}.`;
+  if (rec.exportBatchId) return `Sent to the verifier in batch ${rec.exportBatchId}. A verdict is expected on the next import.`;
+  return 'Awaiting the next export to the verifier. Approving here settles it early and is recorded against you.';
+}
 
 export const KYCQueue: React.FC = () => {
   const [pendingKYC, setPendingKYC] = useState<User[]>([]);
@@ -148,7 +112,7 @@ export const KYCQueue: React.FC = () => {
   );
 
   const oldest = pendingKYC
-    .map((u) => (u.kycData?.submittedAt ? new Date(u.kycData.submittedAt).getTime() : Infinity))
+    .map((u: any) => (u.createdAt ? new Date(u.createdAt).getTime() : Infinity))
     .reduce((a, b) => Math.min(a, b), Infinity);
   const relTime = (ms: number): string => {
     const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
@@ -219,17 +183,19 @@ export const KYCQueue: React.FC = () => {
                 </span>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 6 }}>
-                <DocTile userId={selected._id} docType="id-proof" label="ID_PROOF" isPhoto={false} />
-                <DocTile userId={selected._id} docType="selfie" label="SELFIE" isPhoto />
+              <div style={{ ...TILE, marginBottom: 14, padding: '0 18px' }}>
+                <UserIcon size={24} />
+                <span style={{ fontSize: 11.5, fontWeight: 700, textAlign: 'center', maxWidth: 420, lineHeight: 1.5 }}>
+                  {verificationBlurb(selected)}
+                </span>
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px', paddingTop: 8 }}>
                 {[
-                  { label: 'Name on Aadhaar', value: selected.kycData?.nameOnAadhaar || '—', mono: true },
-                  { label: 'Aadhaar number', value: selected.kycData?.aadhaarNumber || '—', mono: true },
+                  { label: 'Aadhaar (last 4)', value: v(selected)?.aadhaarLast4 ? `•••• •••• ${v(selected)!.aadhaarLast4}` : '—', mono: true },
+                  { label: 'Verification', value: v(selected)?.status || 'Not started', mono: true },
                   { label: 'Mobile', value: formatters.phone(selected.mobile), mono: true },
-                  { label: 'Submitted', value: selected.kycData?.submittedAt ? formatters.datetime(selected.kycData.submittedAt) : '—', mono: false },
+                  { label: 'Export batch', value: v(selected)?.exportBatchId || 'Not exported yet', mono: true },
                 ].map((f) => (
                   <div key={f.label} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '11px 0', borderBottom: '1px solid var(--border)' }}>
                     <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>{f.label}</span>
@@ -266,7 +232,7 @@ export const KYCQueue: React.FC = () => {
       {rejectUser && (
         <Modal isOpen={!!rejectUser} onClose={() => { setRejectUser(null); setRejectReason(''); }} title="Reject KYC">
           <div className="space-y-4">
-            <p className="text-gray-400">Rejecting KYC for <strong>{rejectUser.username}</strong>. They will be asked to resubmit documents.</p>
+            <p className="text-gray-400">Rejecting KYC for <strong>{rejectUser.username}</strong>. They will be told the reason and asked to contact support.</p>
             <div>
               <label className="label">Rejection Reason *</label>
               <textarea value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} className="input min-h-[100px]" placeholder="Please provide a clear reason for rejection…" required />

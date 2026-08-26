@@ -35,7 +35,6 @@ export interface Admin {
   id?: string;
   username: string;
   mobile: string;
-  email?: string;
   role: 'admin' | 'subadmin' | 'queue_manager';
   isAdmin: boolean;
   isSubAdmin: boolean;
@@ -51,7 +50,6 @@ export interface User {
   _id: string;
   username: string;
   mobile: string;
-  email?: string;
 
   depositBalance: number;
   winningsBalance: number;
@@ -65,14 +63,21 @@ export interface User {
   status: 'ACTIVE' | 'BLOCKED' | 'SUSPENDED' | 'PENDING_KYC';
   kycStatus: 'PENDING_SUBMISSION' | 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED';
 
+  // Decision metadata only. There is no name, Aadhaar number or document here:
+  // identity lives in KycVerification and reaches this panel as `verification`
+  // below, masked to its last four digits.
   kycData?: {
-    nameOnAadhaar: string;
-    aadhaarNumber: string;
-    // No document URL. KYC documents are in a private bucket and the queue
-    // response deliberately omits every reference to them; a reviewer fetches a
-    // short-lived link for one document at a time via `api.kyc.viewDocument`.
-    submittedAt: string;
+    submittedAt?: string;
     rejectionReason?: string;
+    reviewedAt?: string;
+  };
+
+  /** Joined by GET /api/admin/kyc/queue — why this user is still waiting. */
+  verification?: {
+    status?: 'PENDING_VERIFICATION' | 'VERIFIED' | 'FAILED';
+    aadhaarLast4?: string;
+    exportBatchId?: string | null;
+    failureReason?: string;
   };
 
   bankDetails?: {

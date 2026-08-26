@@ -100,7 +100,7 @@ export const OperationsOverview: React.FC = () => {
             <KV k="Multiples of 10" v={overview.risk.enforceMultiplesOf10 ? 'ON' : 'off'} />
             <KV k="Opposite-side block" v={overview.risk.blockOppositeSideBetting ? 'ON' : 'off'} />
             <KV k="Funding velocity/hour" v={overview.risk.maxFundingOrdersPerHour || 'off'} />
-            <KV k="Bet reserve %" v={`${overview.risk.betReservePercent ?? 3}%`} />
+            <KV k="Bet reserve %" v={`${overview.risk.betReservePercent ?? 1}%`} />
             <KV k="Winnings fee %" v={`${overview.risk.winningsFeePercent ?? 1}%`} />
             <KV k="Payout fee %" v={`${overview.risk.payoutFeePercent ?? 0}%`} />
           </Section>

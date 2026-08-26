@@ -6,11 +6,16 @@ import { creditWinnings, lockBetStake, unlockBetStake, getBalances } from '../wa
 import mongoose from 'mongoose';
 import { authenticate, requireApprovedKyc } from '../identity/auth.middleware.js';
 import { betLimiter } from '../../middleware/security.js';
+// Betting is for members of the official Telegram channel. The gate serves a
+// cache kept current by chat_member events, so this costs a lookup, not a
+// Telegram round-trip — see middleware/requireChannelMembership.js for the
+// bounded-window policy when Telegram is unreachable.
+import { requireChannelMembership } from '../../middleware/requireChannelMembership.js';
 import { requireIdempotencyKey, IdempotencyKeyError } from '../../middleware/idempotencyKey.js';
 import * as betAuthority from '../../postgres/betPgAuthority.js';
 // Risk Platform (Phase 010): the single validation authority for bets.
 // Phase A (2026-07-10): computeBetFundingPlan owns the stake-split arithmetic.
-import { assessBet, computeBetFundingPlan } from '../risk/riskValidation.service.js';
+import { assessBet, computeBetFundingPlan, computeMaxStake } from '../risk/riskValidation.service.js';
 // Shared trading vocabulary (Phase 011) — one source for sides/statuses.
 import { MARKET_SIDES } from '../trading/tradingModels.js';
 // Derived cycle pools (FLAGS.DERIVED_CYCLE_POOLS, default off) — see
@@ -93,7 +98,7 @@ async function idempotentBetResponse(bet, userId, type) {
 // POST /api/bet/place
 // Places a real bet. Deducts from winnings first, then deposits.
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/place', authenticate, requireApprovedKyc, betLimiter, async (req, res) => {
+router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership({ action: 'place a bet' }), betLimiter, async (req, res) => {
   // NOTE: No session opened here — the critical balance step is a single atomic
   // findOneAndUpdate (see FIX B). Remaining writes (Bet, Cycle pool, Transaction)
   // are idempotent/append-only and do not need a multi-document transaction.
@@ -188,11 +193,41 @@ router.post('/place', authenticate, requireApprovedKyc, betLimiter, async (req, 
     const availableReserve  = user.reserveBalance   || 0;
     const totalAvailable    = availableDeposit + availableWinnings + availableReserve;
 
-    if (totalAvailable < amount) {
+    const reservePercent = config?.betReservePercent ?? 1; // schema default: 1
+
+    // ── The affordability check, against the TRUE ceiling ────────────────────
+    // This used to compare the stake to deposit + winnings + reserve, which is
+    // not what the wallet can fund: only `reservePercent` of a stake may come
+    // from the reserve, and the rest must come from deposit + winnings. So a
+    // player with ₹100 + ₹100 + ₹800 was refused a ₹500 bet by the funding plan
+    // below with the message "Insufficient balance. Available: ₹1000" — told
+    // they had the money while being refused it.
+    //
+    // computeMaxStake applies the same expression the funding plan does, so the
+    // number in this message is exactly the number that would succeed.
+    const { maxStake } = computeMaxStake({
+      reservePercent, availableDeposit, availableWinnings, availableReserve,
+    });
+
+    if (amount > maxStake) {
+      // Integer paise: `totalAvailable` is a sum of stored floats, so subtracting
+      // the exact maxStake from it directly yields 793.8199999999999.
+      const reserveLocked = (Math.round(totalAvailable * 100) - Math.round(maxStake * 100)) / 100;
       return res.status(400).json({
         success: false,
-        message: `Insufficient balance. Available: ₹${totalAvailable}`,
-        balance: { deposit: availableDeposit, winnings: availableWinnings, reserve: availableReserve, total: totalAvailable }
+        code: 'STAKE_EXCEEDS_FUNDABLE',
+        message: reserveLocked > 0
+          ? `You can bet up to ₹${maxStake} right now. ₹${reserveLocked} of your reserve `
+            + `can only be used ${reservePercent}% at a time, so add to your deposit to bet more.`
+          : `You can bet up to ₹${maxStake} right now.`,
+        balance: {
+          deposit: availableDeposit, winnings: availableWinnings,
+          reserve: availableReserve, total: totalAvailable,
+          // How much of the reserve this wallet cannot reach yet. The client
+          // shows it so the gap between "I hold ₹9" and "I may bet ₹7.21" is
+          // explained rather than left as an apparently arbitrary limit.
+          maxStake, reservePercent, reserveLocked,
+        },
       });
     }
 
@@ -202,7 +237,6 @@ router.post('/place', authenticate, requireApprovedKyc, betLimiter, async (req, 
     // wasn't configurable, rounded 9.7/0.3 to 10/0, and could over-deduct
     // (₹50 → 49+2 = ₹51). Paise-exact: parts always conserve the stake.
     // Fallbacks preserved: reserve short → main; deposit short → winnings.
-    const reservePercent = config?.betReservePercent ?? 3; // schema default: 3
     let plan;
     try {
       plan = computeBetFundingPlan({

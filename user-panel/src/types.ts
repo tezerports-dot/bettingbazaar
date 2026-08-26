@@ -25,7 +25,6 @@ export interface User {
   id: string;
   mobile: string;
   username: string;
-  email?: string;              // optional contact email (notifications)
   walletBalance: number;       
   lockedBalance: number;
 
@@ -45,13 +44,11 @@ export interface User {
   mfaSecret?: string;
 
   kycStatus: 'PENDING_SUBMISSION' | 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED';
+  // The API sends only the rejection reason, and only when the status is
+  // REJECTED — see backend domains/user/kycPublicData.js. There is no name,
+  // Aadhaar number or document reference to send: identity is captured by the
+  // Telegram bot and held in a separate collection this panel never reads.
   kycData?: {
-    nameOnAadhaar: string;
-    aadhaarNumber: string;
-    // No document URL. Documents live in a private bucket keyed by an opaque
-    // reference the user panel never sees; the API returns only the
-    // resubmission reason (see backend domains/user/kycPublicData.js).
-    submittedAt: number;
     rejectionReason?: string;
   };
 

@@ -44,28 +44,16 @@ import { getUserLedger } from '../wallet/walletAuthority.service.js';
 // globalSurgeBreaker) and the alerting import were removed with the withdrawal
 // routes on 2026-08-24 — they guarded only those. The live P2P withdrawal
 // endpoint keeps its own copies of the same three in domains/payment/.
-// The public CDN service is deliberately NOT imported here. KYC submission was
-// its last caller in this file, and a module that cannot reach cdn.service
-// cannot accidentally publish an identity document.
-import * as kycDocuments from '../../services/kycDocuments.service.js';
-import { hashAadhaar, hashAadhaarCandidates } from '../identity/aadhaarHash.util.js';
+// Neither the public CDN service nor the private KYC document store is imported
+// here any more: KYC submission was the last caller of both in this file, and a
+// module that cannot reach them cannot accidentally publish or presign an
+// identity document.
 import { buildPublicKycData } from './kycPublicData.js';
 // The one public projection of a cycle. Real/phantom pools reveal the winner,
 // so every user-facing cycle response goes through here (cyclePublicView.js).
 import { publicCycleView } from '../markets/cyclePublicView.js';
 
 const router = express.Router();
-
-function normalizeSubmittedAadhaar(raw) {
-  const value = String(raw || '').trim();
-  if (!/^[\d -]+$/.test(value)) return null;
-  const normalized = value.replace(/[ -]/g, '');
-  return /^\d{12}$/.test(normalized) ? normalized : null;
-}
-
-function maskAadhaar(normalized) {
-  return `XXXX-XXXX-${normalized.slice(-4)}`;
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // safeSession — works on both standalone MongoDB and Replica Sets.
@@ -276,7 +264,7 @@ router.get('/v1/user/:id/data', authenticate, async (req, res) => {
 
     const [user, recentBets] = await Promise.all([
       User.findById(id).select(
-        'username mobile email depositBalance winningsBalance lockedBalance kycStatus kycData bankDetails profilePic joinedAt lastLogin roles isAdmin phantomAccess'
+        'username mobile depositBalance winningsBalance lockedBalance kycStatus kycData bankDetails profilePic joinedAt lastLogin roles isAdmin phantomAccess'
       ).lean(),
       Bet.find({ userId: new mongoose.Types.ObjectId(id), isPhantom: false })
         .sort({ timestamp: -1 })
@@ -313,7 +301,6 @@ router.get('/v1/user/:id/data', authenticate, async (req, res) => {
         id:               user._id,
         username:         user.username,
         mobile:           user.mobile,
-        email:            user.email || '',
         depositBalance,
         winningsBalance,
         lockedBalance,
@@ -354,25 +341,33 @@ router.put('/user/:userId/profile', authenticate, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
 
-    const { username, email } = req.body;
+    /*
+     * `username` is the ONLY thing a player may change about themselves.
+     *
+     * Everything else that identifies them is proved rather than typed: the
+     * mobile comes from Telegram's contact share and the Aadhaar is verified in
+     * bulk, so neither is editable here or anywhere else — see §1 of the
+     * governance doc. `email` was removed on 2026-08-26 along with the channel
+     * that was its only consumer.
+     *
+     * This stays an explicit allow-list rather than a `req.body` spread. A
+     * spread here would let a caller set `kycStatus`, `mobile` or a balance,
+     * and strict mode would not save us — those are all declared paths.
+     */
+    const { username } = req.body;
     const User    = mongoose.model('User');
     const updates = {};
-    if (username)   updates.username   = username.trim();
-    // Optional contact email (Phase E) — the EMAIL notification channel delivers
-    // only to users who set one. Accept a valid address, or '' to clear it.
-    if (email !== undefined) {
-      const trimmed = String(email).trim().toLowerCase();
-      if (trimmed !== '' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
-        await abortOrEnd(session);
-        return res.status(400).json({ success: false, message: 'Please enter a valid email address.' });
-      }
-      updates.email = trimmed;
+    if (username) updates.username = username.trim();
+
+    if (!Object.keys(updates).length) {
+      await abortOrEnd(session);
+      return res.status(400).json({ success: false, message: 'Nothing to update.' });
     }
 
     const updatedUser = await User.findByIdAndUpdate(userId, updates, { new: true, session }).lean();
     await commitOrEnd(session);
 
-    res.json({ success: true, user: { id: updatedUser._id, username: updatedUser.username, profilePic: updatedUser.profilePic, email: updatedUser.email || '' } });
+    res.json({ success: true, user: { id: updatedUser._id, username: updatedUser.username, profilePic: updatedUser.profilePic } });
   } catch (error) {
     await abortOrEnd(session);
     console.error('Update profile error:', error);
@@ -381,108 +376,23 @@ router.put('/user/:userId/profile', authenticate, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST /api/user/:userId/kyc  (auth required, atomic)
-// Requires verified upload file keys; user-supplied document URLs are rejected.
+// POST /api/user/:userId/kyc — REMOVED 2026-08-25
+//
+// Took an Aadhaar number plus two verified upload keys (an ID-proof scan and a
+// selfie) and moved the user to PENDING_APPROVAL for a human reviewer.
+//
+// KYC is no longer submitted from the app at all. The Telegram bot asks for the
+// Aadhaar NUMBER before the account exists — it is a precondition of signing up,
+// not a later step a player can skip — and holds it encrypted
+// (domains/identity/kycVerification.model.js). Verification runs in bulk
+// against the issuing authority; approve/reject in the admin panel remains as
+// the exception path.
+//
+// One-account-per-Aadhaar is enforced by the unique index on
+// KycVerification.aadhaarHash rather than by the courtesy lookup this route
+// did, so a race between two simultaneous signups is refused by the database
+// instead of by whichever request read first.
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/user/:userId/kyc', authenticate, async (req, res) => {
-  const session = await safeSession();
-  try {
-    const { userId } = req.params;
-    if (req.user._id.toString() !== userId) {
-      await abortOrEnd(session);
-      return res.status(403).json({ success: false, message: 'Access denied' });
-    }
-
-    const { nameOnAadhaar, aadhaarNumber, idProofKey, photoKey } = req.body;
-    const normalizedNameOnAadhaar = String(nameOnAadhaar || '').trim().toUpperCase();
-    const normalizedAadhaarNumber = normalizeSubmittedAadhaar(aadhaarNumber);
-    if (!normalizedNameOnAadhaar || !normalizedAadhaarNumber || !idProofKey || !photoKey) {
-      await abortOrEnd(session);
-      return res.status(400).json({ success: false, message: 'All KYC fields and uploaded document file keys are required' });
-    }
-
-    // The private store is a hard requirement on this path, not a preference.
-    // Falling back to the public-CDN path here would publish the very documents
-    // this route exists to protect, so an unconfigured store refuses.
-    if (!kycDocuments.configured()) {
-      await abortOrEnd(session);
-      return res.status(503).json({
-        success: false,
-        message: 'Identity verification is temporarily unavailable. Please try again later.',
-      });
-    }
-
-    const User = mongoose.model('User');
-    const currentUser = await User.findById(userId).session(session).select('kycStatus').lean();
-    if (!currentUser) {
-      await abortOrEnd(session);
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-    if (currentUser.kycStatus === 'APPROVED') {
-      await abortOrEnd(session);
-      return res.status(409).json({ success: false, message: 'Approved KYC cannot be changed' });
-    }
-
-    // Both keys must name an object that exists, belongs to THIS user, and is
-    // the document type claimed. The ownership check is not incidental: the key
-    // is the only thing the client supplies, so without it user A could submit
-    // user B's key and a reviewer would approve B's Aadhaar card as A's.
-    const [idProof, photo] = await Promise.all([
-      kycDocuments.verifyUploaded({
-        key: idProofKey,
-        expectedUserId: req.user._id.toString(), expectedDocType: 'id-proof',
-      }),
-      kycDocuments.verifyUploaded({
-        key: photoKey,
-        expectedUserId: req.user._id.toString(), expectedDocType: 'selfie',
-      }),
-    ]);
-
-    const aadhaarHash = hashAadhaar(normalizedAadhaarNumber);
-    const existingAadhaar = await User.findOne({
-      _id: { $ne: userId },
-      aadhaarHash: { $in: hashAadhaarCandidates(normalizedAadhaarNumber) }
-    }).session(session).select('_id').lean();
-    if (existingAadhaar) {
-      await abortOrEnd(session);
-      return res.status(409).json({ success: false, message: 'Aadhaar already linked to another account' });
-    }
-
-    const updatedUser = await User.findOneAndUpdate(
-      { _id: userId, kycStatus: { $ne: 'APPROVED' } },
-      {
-        kycStatus: 'PENDING_APPROVAL',
-        kycData: {
-          nameOnAadhaar: normalizedNameOnAadhaar,
-          aadhaarNumber: maskAadhaar(normalizedAadhaarNumber),
-          // The KEY, and no URL. What lands in the database is a reference that
-          // grants nothing on its own; viewing the document is a decision taken
-          // at review time by an authenticated admin, which is auditable and
-          // expires. A URL here would be a permanent unauthenticated grant
-          // sitting in every backup of both stores.
-          idProofKey: idProof.key,
-          photoKey: photo.key,
-          submittedAt: new Date(),
-          rejectionReason: ''
-        },
-        aadhaarHash
-      },
-      { new: true, session }
-    ).lean();
-
-    if (!updatedUser) {
-      await abortOrEnd(session);
-      return res.status(409).json({ success: false, message: 'Approved KYC cannot be changed' });
-    }
-
-    await commitOrEnd(session);
-    res.json({ success: true, kycStatus: updatedUser.kycStatus });
-  } catch (error) {
-    await abortOrEnd(session);
-    console.error('KYC submit error:', error);
-    res.status(500).json({ success: false, message: 'Failed to submit KYC' });
-  }
-});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PUT /api/user/:userId/bank-details  (auth required, atomic)
@@ -522,6 +432,80 @@ router.put('/user/:userId/bank-details', authenticate, async (req, res) => {
 // GET /api/user/:userId/transactions  (auth required)
 // BUG-U11 FIX: Transaction history for WalletModal
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/user/referrals — a referrer's own report
+//
+// Deliberately NOT on the wallet screen. Only the DISBURSED portion ever
+// reaches the winnings wallet; the rest is a promise whose value depends on
+// other people's KYC, and mixing an unrealised promise into a balance is how a
+// player comes to believe they hold money they cannot withdraw.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/user/referrals', authenticate, async (req, res) => {
+  try {
+    const { referralSummaryFor } = await import('../referral/referral.service.js');
+    const summary = await referralSummaryFor(req.user._id);
+    return res.json({ success: true, ...summary });
+  } catch (error) {
+    console.error('Referral summary error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to load your referral report' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/user/bet-limits — what this wallet can actually stake right now
+//
+// Exists because "how much can I bet" is NOT deposit + winnings + reserve, and
+// showing that sum is what made players attempt bets the engine then refused
+// with "Insufficient balance. Available: ₹1000". Only `betReservePercent` of a
+// stake may come from the reserve; the rest must come from deposit + winnings,
+// and a reserve shortfall shifts to main while a main shortfall has nowhere to
+// go.
+//
+// The ceiling is computed HERE, server-side, by computeMaxStake — the same
+// expression bet.routes.js enforces with. Recomputing it in the panel would be
+// a second copy of a money rule, and the first divergence would show a player a
+// maximum that gets refused.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/user/bet-limits', authenticate, async (req, res) => {
+  try {
+    const { computeMaxStake } = await import('../risk/riskValidation.service.js');
+    const { getRiskRules } = await import('../risk/riskValidation.service.js');
+
+    const User = mongoose.model('User');
+    const user = await User.findById(req.user._id)
+      .select('depositBalance winningsBalance reserveBalance lockedBalance').lean();
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    const deposit  = user.depositBalance  || 0;
+    const winnings = user.winningsBalance || 0;
+    const reserve  = user.reserveBalance  || 0;
+    const { betReservePercent } = await getRiskRules();
+
+    const { maxStake } = computeMaxStake({
+      reservePercent: betReservePercent,
+      availableDeposit: deposit, availableWinnings: winnings, availableReserve: reserve,
+    });
+
+    // Integer paise — the operands are stored floats and subtracting the exact
+    // maxStake from their sum yields 793.8199999999999.
+    const totalMinor = Math.round(deposit * 100) + Math.round(winnings * 100) + Math.round(reserve * 100);
+    const reserveLocked = (totalMinor - Math.round(maxStake * 100)) / 100;
+
+    return res.json({
+      success: true,
+      deposit, winnings, reserve,
+      locked: user.lockedBalance || 0,
+      total: totalMinor / 100,
+      maxStake,
+      reservePercent: betReservePercent,
+      reserveLocked: reserveLocked > 0 ? reserveLocked : 0,
+    });
+  } catch (error) {
+    console.error('Bet limits error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to load bet limits' });
+  }
+});
+
 router.get('/user/:userId/transactions', authenticate, async (req, res) => {
   try {
     const { userId } = req.params;
@@ -644,18 +628,19 @@ router.get('/v1/content/promo/:location', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/v1/content/faq', async (req, res) => {
   try {
-    // FAQs may be stored in SystemConfig, a dedicated FAQ model, or PromoContent.
-    // We try dedicated model first, then fall back to SystemConfig key 'faq'.
-    let faqs = [];
-    try {
-      const FAQ = mongoose.model('FAQ');
-      faqs = await FAQ.find({ isPublished: true }).sort({ category: 1, order: 1 }).lean();
-    } catch {
-      // Model doesn't exist yet — try SystemConfig
-      const SystemConfig = mongoose.model('SystemConfig');
-      const cfg = await SystemConfig.findOne({ key: 'faq' }).lean();
-      faqs = cfg?.value || [];
-    }
+    /*
+     * The FAQ model is the only store. A `SystemConfig({ key: 'faq' })`
+     * fallback used to sit here and was unreachable: `SystemConfig.key`
+     * defaults to 'main' and is unique, nothing has ever written another key,
+     * and `value` is not a declared path on that schema — so the fallback read
+     * a field that could not exist on a document that could not exist.
+     *
+     * It was also reachable only from a `catch` around `mongoose.model('FAQ')`,
+     * which throws solely when the model is unregistered — a startup fault, not
+     * a data condition. Swallowing that told the caller "no FAQs" instead.
+     */
+    const FAQ = mongoose.model('FAQ');
+    const faqs = await FAQ.find({ isPublished: true }).sort({ category: 1, order: 1 }).lean();
 
     res.json({
       success: true,
@@ -918,7 +903,7 @@ router.get('/v1/user/profile', authenticate, async (req, res) => {
   try {
     const User = mongoose.model('User');
     const user = await User.findById(req.user._id)
-      .select('username mobile email depositBalance winningsBalance lockedBalance kycStatus bankDetails profilePic joinedAt')
+      .select('username mobile depositBalance winningsBalance lockedBalance kycStatus bankDetails profilePic joinedAt')
       .lean();
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     res.json({
@@ -927,7 +912,6 @@ router.get('/v1/user/profile', authenticate, async (req, res) => {
         id:               user._id,
         username:         user.username,
         mobile:           user.mobile,
-        email:            user.email || '',
         depositBalance:   user.depositBalance  || 0,
         winningsBalance:  user.winningsBalance || 0,
         lockedBalance:    user.lockedBalance   || 0,
