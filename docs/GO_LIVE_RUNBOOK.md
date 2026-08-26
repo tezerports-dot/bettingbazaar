@@ -323,11 +323,25 @@ Follow **`docs/governance/ANDROID_RELEASE_SETUP.md`** — it is the complete,
 non-coder APK guide. In short:
 1. Generate a signing keystore on your own machine and **back it up off the box**
    (lose it and you can never update the app).
-2. Put 4 secrets + 2 variables into GitHub (the keystore, its passwords, and your
-   API/merchant URLs).
-3. `Actions → Android Release → Run workflow`, enter a version like `1.0.0`.
-4. Download the APK artifact, install on a real phone, and run the on-device
-   checks (login reaches the backend, live cycles resume after backgrounding).
+2. Put 4 secrets + 3 variables into GitHub (the keystore, its passwords, your
+   API/merchant URLs, and your public site origin).
+3. Set `ANDROID_PACKAGE_ID` and `ANDROID_SHA256_CERT_FINGERPRINTS` on the
+   backend, then confirm `https://<your-domain>/.well-known/assetlinks.json`
+   returns JSON and not a 404.
+4. `Actions → Android Release → Run workflow`, enter a version like `1.0.0`.
+5. Download the APK artifact, install on a real phone, and run the on-device
+   checks in that document.
+
+**Nothing here has ever been built.** The release workflow has zero runs, so
+this is a first run in every sense. If you want an APK on a phone before
+generating a keystore, `Actions → Android build check → Run workflow` produces
+a sideloadable debug build with no secrets at all.
+
+**The check that matters is sign-in.** Players never type a password — the bot
+sends a one-time link, and if Android does not route that link into the app, the
+browser takes the session and the app stays signed out. Step 3 is what makes
+that routing work, and it is easy to skip because the app installs and opens
+perfectly without it.
 
 The app talks to the same backend you just deployed, so it inherits everything
 above — get the website solid first.

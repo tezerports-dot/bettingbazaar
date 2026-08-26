@@ -62,6 +62,29 @@ jobs:
         env:
           VITE_API_URL: ${{ vars.ANDROID_API_URL }}
           VITE_MERCHANT_PANEL_URL: ${{ vars.ANDROID_MERCHANT_PANEL_URL }}
+          # The public origin the bot builds sign-in links against. Its host is
+          # what the App Link filter claims, and player auth is Telegram-only —
+          # so an APK built without it is an APK nobody can sign in to.
+          VITE_APP_ORIGIN: ${{ vars.ANDROID_APP_ORIGIN }}
+
+      # The manifest placeholder is the App Link host, and it must be the same
+      # host the web bundle was just told to trust. Deriving it here from the
+      # one variable, rather than adding a second one to keep in step, is what
+      # stops the two halves of the sign-in fix from silently disagreeing.
+      - name: Resolve the App Link host
+        env:
+          O: ${{ vars.ANDROID_APP_ORIGIN }}
+        run: |
+          if [ -z "$O" ]; then
+            echo "::error::The ANDROID_APP_ORIGIN repository variable is not set. It is your public site origin (the same value as the backend's PUBLIC_APP_ORIGIN), e.g. https://yourdomain.com — its host is what the app claims so the bot's sign-in links open the app instead of a browser. Without it players cannot sign in to the APK at all. See docs/governance/ANDROID_RELEASE_SETUP.md section 2."
+            exit 1
+          fi
+          if ! HOST=$(node -e 'process.stdout.write(new URL(process.env.O).hostname)' 2>/dev/null); then
+            echo "::error::ANDROID_APP_ORIGIN is not a valid URL: '$O'. Use an origin only, e.g. https://yourdomain.com (no path, no trailing slash)."
+            exit 1
+          fi
+          echo "APP_LINK_HOST=$HOST" >> "$GITHUB_ENV"
+          echo "App Link host: $HOST"
 
       - name: Sync web assets into the Android project
         run: npx cap sync android
@@ -98,7 +121,28 @@ jobs:
           ./gradlew --no-daemon \
             -PversionCode="$VERSION_CODE" \
             -PversionName="$VERSION_NAME" \
+            -PappLinkHost="$APP_LINK_HOST" \
             assembleRelease bundleRelease
+
+      # An App Link that resolves to "localhost" is the build.gradle fallback,
+      # which means ANDROID_APP_ORIGIN never reached Gradle. The APK would
+      # install, open, and quietly refuse every sign-in link — exactly the class
+      # of failure that only shows up on a handset, so it is caught here.
+      - name: Verify the App Link host reached the manifest
+        working-directory: user-panel/android
+        run: |
+          MANIFEST=app/build/intermediates/merged_manifests/release/processReleaseManifest/AndroidManifest.xml
+          [ -f "$MANIFEST" ] || MANIFEST=$(find app/build/intermediates -name AndroidManifest.xml -path '*merged*release*' | head -1)
+          if [ -z "$MANIFEST" ] || [ ! -f "$MANIFEST" ]; then
+            echo "::error::Could not find the merged release manifest to verify the App Link host."
+            exit 1
+          fi
+          echo "Checking $MANIFEST"
+          if ! grep -q "android:host=\"$APP_LINK_HOST\"" "$MANIFEST"; then
+            echo "::error::The merged manifest does not claim $APP_LINK_HOST. Set the ANDROID_APP_ORIGIN repository variable — without it players cannot sign in to the app."
+            grep -o 'android:host="[^"]*"' "$MANIFEST" || true
+            exit 1
+          fi
 
       # Proves the artifact carries the upload key rather than the debug key —
       # a debug-signed build installs fine on a test handset and is rejected by

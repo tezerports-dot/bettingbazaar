@@ -97,6 +97,7 @@ import { LocalDiskStorageProvider } from './providers/storage/LocalDiskStoragePr
 import twoFactorRoutes from './domains/identity/twoFactor.routes.js';
 import winnersRoutes      from './routes/winners.routes.js';
 import appBootstrapRoutes from './routes/app-bootstrap.routes.js';
+import wellKnownRoutes from './routes/wellKnown.routes.js';
 
 
 import { requestLogger }  from './middleware/requestLogger.js';
@@ -330,6 +331,14 @@ registerService('alerting', { send: (...a) => import('./services/alerting.servic
 // because both of those would otherwise answer /r/<code> with index.html. This
 // is a redirect, not a page — the visitor must never see the app shell.
 app.use('/', referralRedirect);
+
+// Android reads /.well-known/assetlinks.json to decide whether this origin
+// really vouches for the APK claiming its links. Mounted above the static
+// middleware and the SPA catch-all for the same reason as the redirect above:
+// the catch-all would answer it with JSON that is not a Digital Asset Links
+// document, and a malformed answer is indistinguishable from a hostile one as
+// far as App Link verification is concerned — it just fails.
+app.use('/.well-known', wellKnownRoutes);
 
 app.use('/', (req, res, next) => {
   if (req.path.startsWith('/admin') || req.path.startsWith('/merchant') || req.path.startsWith('/api')) {
