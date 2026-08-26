@@ -82,7 +82,20 @@ export async function beginOnboarding({ telegramUserId, username, firstName, ref
 
   // Already has an account? Then this is a login, not a signup.
   const existing = await TelegramIdentity.findOne({ telegramUserId: String(telegramUserId) }).lean();
-  if (existing) return { alreadyLinked: true, userId: existing.userId };
+  if (existing) {
+    // A rejected player is not asking to log in — they are stuck, and the only
+    // useful thing the bot can do is take a corrected Aadhaar. Reported here so
+    // the route does not have to re-read the user to find out.
+    const User = mongoose.model('User');
+    const u = await User.findById(existing.userId).select('kycStatus kycData').lean();
+    return {
+      alreadyLinked: true,
+      userId: existing.userId,
+      kycStatus: u?.kycStatus || null,
+      canReapply: u?.kycStatus === 'REJECTED'
+        && (u?.kycData?.submissionCount || 0) < MAX_KYC_SUBMISSIONS,
+    };
+  }
 
   await TelegramPendingLink.findOneAndUpdate(
     { telegramUserId: String(telegramUserId) },
@@ -220,6 +233,11 @@ export async function completeContactShare({ telegramUserId, phone, contactUserI
         status: 'PENDING_VERIFICATION',
       }], { session });
 
+      // The signup IS submission one. Counting it here keeps the reapply cap
+      // honest — otherwise MAX_KYC_SUBMISSIONS would silently allow one more
+      // attempt than it says.
+      await User.updateOne({ _id: user._id }, { $set: { 'kycData.submissionCount': 1 } }, { session });
+
       created = user;
     });
 
@@ -238,6 +256,94 @@ export async function completeContactShare({ telegramUserId, phone, contactUserI
   } finally {
     await session.endSession();
   }
+}
+
+// ── Reapply: a rejected player sends a different Aadhaar ───────────────────
+
+/**
+ * How many Aadhaar numbers one account may ever submit.
+ *
+ * The first is the signup. The rest are corrections. Bounded because
+ * "submit a number, be told whether it is already registered" is an enumeration
+ * oracle the moment it can be repeated freely — the cap is what keeps this a
+ * correction path rather than a probe. Someone who genuinely exhausts it has a
+ * problem support should look at anyway.
+ */
+export const MAX_KYC_SUBMISSIONS = 3;
+
+/**
+ * Replace a rejected Aadhaar with a new one.
+ *
+ * ── Why this has to exist ───────────────────────────────────────────────────
+ * The Aadhaar is immutable once verified, which is correct. But a player who
+ * mistyped a digit is rejected through no fault of the design, and without this
+ * their account is permanently dead: the signup conversation is over, so
+ * sending a new number did nothing, and support had no code path either.
+ *
+ * ── Why the old row is gone by the time we get here ─────────────────────────
+ * `releaseFailedSubmissions` (kycBulk) deletes a failed submission once the
+ * verdict is on the user. That releases the unique `aadhaarHash` — which is
+ * what makes a re-submission possible at all, and also un-breaks the stranger
+ * whose Aadhaar the typo was occupying.
+ *
+ * @returns {Promise<{ok: true, last4: string} | {ok: false, reason: string}>}
+ */
+export async function resubmitAadhaar({ userId, aadhaar }) {
+  const User = mongoose.model('User');
+  const user = await User.findById(userId).select('kycStatus kycData').lean();
+  if (!user) return { ok: false, reason: 'no_user' };
+
+  // Only a rejected account may resubmit. An APPROVED Aadhaar is immutable, and
+  // a PENDING one is already queued — letting either through would be a way to
+  // change a verified identity, which is the thing the whole model forbids.
+  if (user.kycStatus !== 'REJECTED') return { ok: false, reason: 'not_rejected' };
+
+  if ((user.kycData?.submissionCount || 0) >= MAX_KYC_SUBMISSIONS) {
+    return { ok: false, reason: 'too_many_attempts' };
+  }
+  if (!isValidAadhaar(aadhaar)) return { ok: false, reason: 'invalid_format' };
+
+  const normalised = String(aadhaar).replace(/[\s-]/g, '');
+  const hash = hashAadhaar(normalised);
+
+  const taken = await KycVerification.findOne({
+    aadhaarHash: { $in: hashAadhaarCandidates(normalised) },
+  }).select('_id userId').lean();
+  // Their own live row would mean the release did not happen; anyone else's
+  // means the number genuinely belongs to another account.
+  if (taken) return { ok: false, reason: 'already_registered' };
+
+  const identity = await TelegramIdentity.findOne({ userId }).select('phone').lean();
+
+  try {
+    await KycVerification.create({
+      userId,
+      aadhaarHash: hash,
+      aadhaarEncrypted: encryptField(normalised),
+      aadhaarLast4: normalised.slice(-4),
+      phone: identity?.phone || '',
+      status: 'PENDING_VERIFICATION',
+    });
+  } catch (err) {
+    // 11000 on userId means a row already exists — the previous one was not
+    // released, so this is a state problem rather than a duplicate Aadhaar.
+    if (err?.code === 11000) return { ok: false, reason: 'already_registered' };
+    throw err;
+  }
+
+  // Back into the queue, through the state machine rather than a raw write, so
+  // the transition is checked and recorded like every other KYC decision.
+  const { submitKycForReview } = await import('../user/kycDecision.service.js');
+  const moved = await submitKycForReview(userId, { reason: null });
+  if (!moved.ok) {
+    // Do not strand a submission the user cannot see the status of.
+    await KycVerification.deleteOne({ userId, status: 'PENDING_VERIFICATION' }).catch(() => {});
+    return { ok: false, reason: 'state_refused' };
+  }
+
+  await User.updateOne({ _id: userId }, { $inc: { 'kycData.submissionCount': 1 } });
+
+  return { ok: true, last4: normalised.slice(-4) };
 }
 
 // ── Step 4: channel joined → onboarding complete ────────────────────────────

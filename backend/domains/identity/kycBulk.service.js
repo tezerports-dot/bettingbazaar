@@ -29,6 +29,7 @@
  * survive into a backup, and answer to no access control.
  */
 import crypto from 'crypto';
+import mongoose from 'mongoose';
 import { KycVerification, KycBatch } from './kycVerification.model.js';
 import { decryptField } from './fieldCrypto.util.js';
 
@@ -286,6 +287,64 @@ async function syncDecidedUsers(batchId) {
     );
   }
 
+  problems.push(...await releaseFailedSubmissions(batchId));
+  return problems;
+}
+
+/**
+ * Delete the submission rows of everyone this batch FAILED.
+ *
+ * ── The reason that is not about storage ────────────────────────────────────
+ * `aadhaarHash` carries a UNIQUE index — one Aadhaar, one account. That is
+ * correct while a submission is live, and actively harmful once it has failed:
+ * a player who mistyped one digit has parked a stranger's Aadhaar in that
+ * index, and the stranger is then refused at signup with "already registered"
+ * for a number they never gave us. The typo locks out its real owner, silently,
+ * forever. Releasing the row is what makes the reapply path in the bot possible
+ * AND what un-breaks whoever actually holds the mistyped number.
+ *
+ * ── What is kept ────────────────────────────────────────────────────────────
+ * The verdict, which is what anyone actually needs later: `User.kycStatus` is
+ * REJECTED with the reason on `kycData.rejectionReason`, and the `KycBatch`
+ * records how many failed and who imported the file. What goes is the identity
+ * data — the hash, the ciphertext and the last four digits of a number that did
+ * not check out. There is no reason to hold an Aadhaar the platform has just
+ * decided it cannot verify, and every reason not to.
+ *
+ * ── Ordering ────────────────────────────────────────────────────────────────
+ * Strictly AFTER the verdicts are mirrored onto the users. `syncDecidedUsers`
+ * finds its work by querying these rows, so deleting them first would leave
+ * every failed player stuck on PENDING_APPROVAL with nothing left to explain
+ * why — the exact bug this file already carries a comment about.
+ */
+async function releaseFailedSubmissions(batchId) {
+  const problems = [];
+  try {
+    // Only rows this batch failed AND whose user actually reached REJECTED. A
+    // decision that did not land (`problems` above) must keep its evidence.
+    const failedRows = await KycVerification
+      .find({ importBatchId: batchId, status: 'FAILED' })
+      .select('_id userId').lean();
+    if (!failedRows.length) return problems;
+
+    const User = mongoose.model('User');
+    const rejected = await User
+      .find({ _id: { $in: failedRows.map((r) => r.userId) }, kycStatus: 'REJECTED' })
+      .select('_id').lean();
+    const rejectedIds = new Set(rejected.map((u) => String(u._id)));
+
+    const releasable = failedRows.filter((r) => rejectedIds.has(String(r.userId)));
+    if (!releasable.length) return problems;
+
+    const res = await KycVerification.deleteMany({ _id: { $in: releasable.map((r) => r._id) } });
+    console.warn(`[kyc] released ${res.deletedCount} failed submission(s) from batch ${batchId} — `
+      + 'the Aadhaar numbers are no longer held and are free to be used by their real owners');
+  } catch (err) {
+    // Never fails the import: the verdicts are already applied, and a retained
+    // row is a smaller problem than an import that reports failure after doing
+    // most of its work.
+    problems.push(`releasing failed submissions: ${err.message}`);
+  }
   return problems;
 }
 
@@ -296,10 +355,15 @@ export async function kycStats() {
     KycBatch.find({}).sort({ createdAt: -1 }).limit(20).populate('actorId', 'username').lean(),
   ]);
   const counts = Object.fromEntries(byStatus.map((r) => [r._id, r.count]));
+  // FAILED is counted from the USERS, not from KycVerification. A failed
+  // submission's row is deleted so the Aadhaar it holds is released (see
+  // releaseFailedSubmissions), which means counting rows here would report zero
+  // failures no matter how many there were. The verdict lives on the user.
+  const failed = await mongoose.model('User').countDocuments({ kycStatus: 'REJECTED' });
   return {
     pending:  counts.PENDING_VERIFICATION || 0,
     verified: counts.VERIFIED || 0,
-    failed:   counts.FAILED || 0,
+    failed,
     recentBatches: batches.map((b) => ({
       batchId: b.batchId, kind: b.kind, rowCount: b.rowCount,
       verified: b.verifiedCount, failed: b.failedCount, skipped: b.skippedCount,

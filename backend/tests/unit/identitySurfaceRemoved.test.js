@@ -117,6 +117,53 @@ describe('no KYC document can be uploaded, because none is collected', () => {
   });
 });
 
+describe('a failed Aadhaar does not stay held', () => {
+  /**
+   * `aadhaarHash` is UNIQUE. That is correct while a submission is live and
+   * actively harmful once it has failed: a player who mistyped one digit has
+   * parked a STRANGER's Aadhaar in that index, and the stranger is then refused
+   * at signup with "already registered" for a number they never gave us.
+   *
+   * Asserted against the source because the behaviour needs a real database to
+   * exercise (the integration suite does that); what is pinned here is that the
+   * release exists at all, runs in the right order, and is bounded.
+   */
+  const bulk = readFileSync(join(repo, 'backend/domains/identity/kycBulk.service.js'), 'utf8');
+
+  it('deletes the submission rows a batch failed', () => {
+    expect(bulk).toMatch(/releaseFailedSubmissions/);
+    expect(bulk).toMatch(/KycVerification\.deleteMany/);
+  });
+
+  it('releases only AFTER the verdicts reach the users', () => {
+    // syncDecidedUsers finds its work by querying these rows. Deleting first
+    // would leave every failed player stuck on PENDING_APPROVAL with nothing
+    // left to explain why.
+    const sync = bulk.indexOf('await syncDecidedUsers(batchId)');
+    const release = bulk.indexOf('releaseFailedSubmissions(batchId)');
+    expect(sync).toBeGreaterThan(-1);
+    expect(release).toBeGreaterThan(sync);
+  });
+
+  it('counts failures from the users, not from the deleted rows', () => {
+    // Counting KycVerification rows would report zero failures forever.
+    expect(bulk).toMatch(/countDocuments\(\{ kycStatus: 'REJECTED' \}\)/);
+  });
+
+  it('bounds how many Aadhaar numbers one account may submit', async () => {
+    const { MAX_KYC_SUBMISSIONS } = await import('../../domains/telegram/telegramOnboarding.service.js');
+    // "Submit a number, be told whether it is registered" is an enumeration
+    // oracle if it can be repeated freely.
+    expect(MAX_KYC_SUBMISSIONS).toBeGreaterThan(1);
+    expect(MAX_KYC_SUBMISSIONS).toBeLessThanOrEqual(5);
+  });
+
+  it('declares the attempt counter, so the cap is not silently dropped', () => {
+    // kycData already lost `reviewedBy` to exactly this trap.
+    expect(mongoose.models.User.schema.path('kycData.submissionCount')).toBeDefined();
+  });
+});
+
 describe('the scan can actually fail', () => {
   // A detector that cannot report anything is decoration.
   it('reads real source, not an empty list', () => {

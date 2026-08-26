@@ -27,6 +27,7 @@ import { applyMemberUpdate, isJoinedStatus, joinPrompt, membershipFor } from './
 import { authenticate } from '../identity/auth.middleware.js';
 import {
   beginOnboarding, submitAadhaar, completeContactShare, completeOnboarding, isValidAadhaar,
+  resubmitAadhaar, MAX_KYC_SUBMISSIONS,
 } from './telegramOnboarding.service.js';
 import { issueLoginToken } from './telegramLogin.service.js';
 import { sendTemplate } from './telegramTemplates.service.js';
@@ -158,6 +159,22 @@ async function handleMessage(message, cfg) {
     });
 
     if (begun.alreadyLinked) {
+      // A rejected player is not asking to log in — they are stuck. Handing
+      // them a session would drop them into an app that refuses every action
+      // with "your Aadhaar could not be verified" and offers nothing to do
+      // about it. The useful reply is to take a corrected number.
+      if (begun.canReapply) {
+        return sendMessage(chatId,
+          'Your Aadhaar could not be verified.\n\n'
+          + 'If you mistyped it, send the correct <b>12-digit Aadhaar number</b> now and '
+          + 'we will check it again.\n\n'
+          + 'It must be the Aadhaar linked to this Telegram account\u2019s mobile number.');
+      }
+      if (begun.kycStatus === 'REJECTED') {
+        return sendMessage(chatId,
+          'Your Aadhaar could not be verified, and you have used all '
+          + `${MAX_KYC_SUBMISSIONS} attempts.\n\nPlease contact support — they can help sort this out.`);
+      }
       // An existing player pressing /start is asking to log in.
       return sendLoginLink({ chatId, telegramUserId, userId: begun.userId, cfg });
     }
@@ -171,6 +188,13 @@ async function handleMessage(message, cfg) {
   // Anything else, while a signup is open, is treated as the Aadhaar attempt.
   const pending = await TelegramPendingLink.findOne({ telegramUserId }).select('step').lean();
   if (!pending) {
+    // No signup in progress. If this is a REJECTED player sending a corrected
+    // Aadhaar, that is the reapply path — their signup conversation ended long
+    // ago, which is exactly why sending a new number used to do nothing at all.
+    if (isValidAadhaar(text)) {
+      const linked = await TelegramIdentity.findOne({ telegramUserId }).select('userId').lean();
+      if (linked) return handleReapply({ chatId, userId: linked.userId, aadhaar: text });
+    }
     return sendMessage(chatId, 'Send /start to begin.');
   }
 
@@ -242,6 +266,38 @@ async function handleContact({ message, telegramUserId, chatId, cfg }) {
     },
     extra: { reply_markup: { remove_keyboard: true } },
   });
+}
+
+/**
+ * A rejected player submits a different Aadhaar.
+ *
+ * Every refusal below is deliberately specific EXCEPT `already_registered`,
+ * which is the one an attacker would want: repeated submissions that report
+ * whether a number is on the platform is an enumeration oracle. It is bounded
+ * by MAX_KYC_SUBMISSIONS rather than made vague, because a player who really
+ * did mistype needs to be told the difference between "wrong number" and
+ * "that one belongs to somebody else".
+ */
+async function handleReapply({ chatId, userId, aadhaar }) {
+  const result = await resubmitAadhaar({ userId, aadhaar });
+
+  if (result.ok) {
+    return sendMessage(chatId,
+      `\u2705 Received \u2014 Aadhaar ending <b>${result.last4}</b>.\n\n`
+      + 'It is queued for verification. This is done in batches, so it is not instant, '
+      + 'and there is nothing more for you to do. We will let you know.');
+  }
+
+  const copy = {
+    not_rejected: 'Your Aadhaar is not awaiting a correction. Send /start to sign in.',
+    too_many_attempts: `You have used all ${MAX_KYC_SUBMISSIONS} attempts. Please contact support.`,
+    invalid_format: 'That does not look like a 12-digit Aadhaar number. Please send just the 12 digits.',
+    already_registered: 'That Aadhaar is already registered to another account. '
+      + 'Each Aadhaar can hold one account.',
+    state_refused: 'We could not accept that right now. Please try again shortly.',
+  }[result.reason] || 'We could not accept that Aadhaar number. Please check it and try again.';
+
+  return sendMessage(chatId, copy);
 }
 
 // ── chat_member: the membership cache's primary writer ─────────────────────

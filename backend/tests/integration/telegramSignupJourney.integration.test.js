@@ -565,3 +565,146 @@ describe('replacing the channel', () => {
     expect(await TelegramIdentity.countDocuments({ userId: u._id })).toBe(1);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+describe('a failed Aadhaar is released, and the player can try again', () => {
+  /**
+   * THE TWO THINGS THIS PINS
+   *
+   * 1. A failed submission's row is DELETED. `aadhaarHash` is unique, so a
+   *    player who mistyped one digit has parked a stranger's Aadhaar in that
+   *    index — and the stranger is then refused at signup with "already
+   *    registered" for a number they never gave us. The typo locks out its real
+   *    owner, silently, forever.
+   * 2. The player is not stuck. Before this, their signup conversation was over,
+   *    so sending a new number did nothing and support had no code path either.
+   */
+  async function rejectedPlayer(telegramId, mobile, aadhaar) {
+    const { hashAadhaar } = await import('../../domains/identity/aadhaarHash.util.js');
+    const u = await User.create({
+      username: 'Mistyped', mobile,
+      kycStatus: 'REJECTED', kycData: { submissionCount: 1, rejectionReason: 'Verification failed' },
+    });
+    await TelegramIdentity.create({
+      telegramUserId: String(telegramId), userId: u._id,
+      phone: mobile, contactSharedAt: new Date(), contactActive: true,
+      channelGeneration: 1, linkedGeneration: 1,
+    });
+    // The wrong number's row is already gone — that is what the release does.
+    void hashAadhaar(aadhaar);
+    return u;
+  }
+
+  it('takes a corrected number from /start and re-queues it', async () => {
+    const u = await rejectedPlayer(55601, '9800000201', '111111111111');
+
+    let mark = sent.length;
+    await update({ message: { message_id: 1, chat: { id: 55601 }, from: { id: 55601 }, text: '/start' } });
+    const prompt = await until(() => sentAfter(mark, 55601));
+    // NOT a login link: a session would drop them into an app that refuses
+    // every action and offers nothing to do about it.
+    expect(prompt.text).toMatch(/could not be verified/i);
+    expect(prompt.text).not.toMatch(/token=/);
+
+    mark = sent.length;
+    await update({ message: { message_id: 2, chat: { id: 55601 }, from: { id: 55601 }, text: '222222222222' } });
+    const accepted = await until(() => sentAfter(mark, 55601));
+    expect(accepted.text).toMatch(/2222/);
+
+    const kyc = await until(() => KycVerification.findOne({ userId: u._id }).lean());
+    expect(kyc.status).toBe('PENDING_VERIFICATION');
+    expect(kyc.aadhaarLast4).toBe('2222');
+
+    const after = await User.findById(u._id).lean();
+    expect(after.kycStatus, 'back in the queue, through the state machine').toBe('PENDING_APPROVAL');
+    expect(after.kycData.submissionCount).toBe(2);
+  });
+
+  it('frees the mistyped Aadhaar for whoever actually owns it', async () => {
+    // The stranger signs up with the number the typo had been holding.
+    await rejectedPlayer(55602, '9800000202', '333333333333');
+
+    await update({ message: { message_id: 1, chat: { id: 55603 }, from: { id: 55603, first_name: 'RealOwner' }, text: '/start' } });
+    await until(() => TelegramPendingLink.findOne({ telegramUserId: '55603' }).lean());
+
+    const mark = sent.length;
+    await update({ message: { message_id: 2, chat: { id: 55603 }, from: { id: 55603 }, text: '333333333333' } });
+    const reply = await until(() => sentAfter(mark, 55603));
+
+    expect(reply.text, 'the real owner must not be refused').not.toMatch(/already registered/i);
+    const pending = await TelegramPendingLink.findOne({ telegramUserId: '55603' }).lean();
+    expect(pending.step).toBe('AWAITING_CONTACT');
+  });
+
+  it('refuses an Aadhaar that genuinely belongs to another account', async () => {
+    const { hashAadhaar } = await import('../../domains/identity/aadhaarHash.util.js');
+    const other = await User.create({ username: 'Other', mobile: '9800000204' });
+    await KycVerification.create({
+      userId: other._id,
+      aadhaarHash: hashAadhaar('444444444444'),
+      aadhaarEncrypted: encryptField('444444444444'),
+      aadhaarLast4: '4444', phone: '9800000204', status: 'VERIFIED',
+    });
+
+    const u = await rejectedPlayer(55604, '9800000205', '555555555555');
+
+    const mark = sent.length;
+    await update({ message: { message_id: 1, chat: { id: 55604 }, from: { id: 55604 }, text: '444444444444' } });
+    const reply = await until(() => sentAfter(mark, 55604));
+    expect(reply.text).toMatch(/already registered/i);
+
+    // Unchanged — a refused reapply must not consume the attempt or move status.
+    const after = await User.findById(u._id).lean();
+    expect(after.kycStatus).toBe('REJECTED');
+    expect(after.kycData.submissionCount).toBe(1);
+  });
+
+  it('stops after the attempt cap, so it cannot become an enumeration oracle', async () => {
+    const u = await User.create({
+      username: 'Exhausted', mobile: '9800000206',
+      kycStatus: 'REJECTED', kycData: { submissionCount: 3 },
+    });
+    await TelegramIdentity.create({
+      telegramUserId: '55605', userId: u._id,
+      phone: '9800000206', contactSharedAt: new Date(), contactActive: true,
+      channelGeneration: 1, linkedGeneration: 1,
+    });
+
+    const mark = sent.length;
+    await update({ message: { message_id: 1, chat: { id: 55605 }, from: { id: 55605 }, text: '666666666666' } });
+    const reply = await until(() => sentAfter(mark, 55605));
+    expect(reply.text).toMatch(/contact support/i);
+    // Crucially: it does NOT say whether that number is registered.
+    expect(reply.text).not.toMatch(/already registered/i);
+    expect(await KycVerification.countDocuments({ userId: u._id })).toBe(0);
+  });
+
+  it('refuses to replace an APPROVED Aadhaar', async () => {
+    // The whole immutability rule. Without this branch, "reapply" would be a
+    // way to change a verified identity.
+    const { hashAadhaar } = await import('../../domains/identity/aadhaarHash.util.js');
+    const u = await User.create({
+      username: 'Verified', mobile: '9800000207',
+      kycStatus: 'APPROVED', kycData: { submissionCount: 1 },
+    });
+    await KycVerification.create({
+      userId: u._id,
+      aadhaarHash: hashAadhaar('777777777777'),
+      aadhaarEncrypted: encryptField('777777777777'),
+      aadhaarLast4: '7777', phone: '9800000207', status: 'VERIFIED',
+    });
+    await TelegramIdentity.create({
+      telegramUserId: '55606', userId: u._id,
+      phone: '9800000207', contactSharedAt: new Date(), contactActive: true,
+      channelGeneration: 1, linkedGeneration: 1,
+    });
+
+    const { resubmitAadhaar } = await import('../../domains/telegram/telegramOnboarding.service.js');
+    const res = await resubmitAadhaar({ userId: u._id, aadhaar: '888888888888' });
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('not_rejected');
+
+    const kyc = await KycVerification.findOne({ userId: u._id }).lean();
+    expect(kyc.aadhaarLast4, 'the verified Aadhaar is unchanged').toBe('7777');
+  });
+});

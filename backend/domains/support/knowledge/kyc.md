@@ -31,13 +31,18 @@ Aadhaar you gave.
 - **Approved** — verified. Betting, deposits and withdrawals are unlocked
   (subject to other checks).
 - **Rejected** — the Aadhaar could not be verified, usually a mismatch between
-  the number and the mobile it is linked to. Contact support.
+  the number and the mobile it is linked to. **If you mistyped it, you can send
+  the correct number to the bot and we will check it again** — open the bot and
+  send /start. You get a small number of attempts; after that, contact support.
 
 ## Things worth knowing
 
-- Your Aadhaar and mobile **cannot be changed** once your account exists. They
-  are what your account *is*. If either is wrong, contact support — opening a
-  second account will not work, because one Aadhaar can hold one account only.
+- Once your Aadhaar is **approved** it cannot be changed — it is what your
+  account *is*. Before that, a rejected number can be corrected (see above).
+  Your mobile can never be changed. Opening a second account will not work:
+  one Aadhaar can hold one account only.
+- A number that failed verification is **not kept**. We delete it, which is also
+  what frees it for whoever it really belongs to if you mistyped someone else's.
 - The name on the bank or UPI account you withdraw to should match your Aadhaar
   identity.
 - We never see or keep a copy of your Aadhaar card. The number itself is stored

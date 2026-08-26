@@ -135,7 +135,22 @@ const userSchema = new mongoose.Schema({
     // anonymous — the precise defect kycDecision.service.js was written to fix,
     // fixed at the write and never at the schema.
     reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    reviewedAt: Date
+    reviewedAt: Date,
+    /*
+     * How many Aadhaar numbers this account has submitted, ever.
+     *
+     * A rejected player may reapply through the bot — a mistyped digit must not
+     * be a dead account — but the retry has to be bounded, because
+     * "submit a number, be told whether it is already registered" is an
+     * enumeration oracle if it can be repeated freely. The cap turns it into a
+     * correction path and not a probe.
+     *
+     * DECLARED, and that word is load-bearing here of all places: `kycData`
+     * already lost `reviewedBy` to exactly this trap, and every approval stayed
+     * anonymous because Mongoose drops an undeclared path from an update
+     * without erroring.
+     */
+    submissionCount: { type: Number, default: 0 },
   },
 
   bankDetails: {
