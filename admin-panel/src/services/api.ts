@@ -486,6 +486,9 @@ export const telegram = {
         generation: number; botUsername: string; recoveryBotUsername?: string;
         channelId: string; channelUsername?: string; channelInviteLink?: string;
         botTokenConfigured: boolean; recoveryBotConfigured: boolean;
+        /** Whether the live credential comes from the bot registry or from the generation. */
+        signinSource?: 'registry' | 'generation';
+        recoverySource?: 'registry' | 'generation' | 'none';
       } | null;
       history?: Array<{
         generation: number; botUsername: string; channelId: string; channelUsername?: string;
@@ -513,6 +516,112 @@ export const telegram = {
       success: boolean; generation?: number; botUsername?: string;
       webhook?: string; message?: string;
     };
+  },
+
+  /**
+   * Replace the CHANNEL only, carrying the current bots forward.
+   *
+   * Separate from `activate` because in an incident the two are almost never
+   * the same event: a channel is deleted while the bot is fine. Requiring a
+   * working bot token to be re-pasted to fix an unrelated channel is one more
+   * way to fail under pressure.
+   *
+   * Every player is asked to join the new channel on their next protected
+   * action; nothing else about their account moves.
+   */
+  replaceChannel: async (body: {
+    channelId: string; channelUsername?: string; channelInviteLink?: string; reason?: string;
+  }) => {
+    const res = await api.post<any>('/api/admin/telegram/channel', body);
+    return res.data as {
+      success: boolean; generation?: number;
+      channelId?: string; channelUsername?: string; message?: string;
+    };
+  },
+};
+
+/** A bot in the fleet, as the panel sees it — never with a token. */
+export interface FleetBot {
+  id: string;
+  label: string;
+  role: 'signin' | 'recovery' | 'broadcast' | 'moderation' | 'generic';
+  botId: string;
+  username: string;
+  status: 'ACTIVE' | 'STANDBY' | 'RETIRED';
+  live: boolean;
+  webhookUrl: string;
+  webhookRegisteredAt: string | null;
+  lastError: string;
+  addedAt: string;
+  activatedAt: string | null;
+  retiredAt: string | null;
+  notes: string;
+}
+
+/**
+ * The bot fleet.
+ *
+ * Spares are registered and verified while everything is calm, and sit on
+ * STANDBY. When Telegram suspends the live bot, `promote` is the whole incident
+ * response — no token to find, no @BotFather to open, no deploy.
+ */
+export const telegramBots = {
+  list: async () => {
+    const res = await api.get<any>('/api/admin/telegram/bots');
+    return res.data as { success: boolean; bots?: FleetBot[]; message?: string };
+  },
+
+  register: async (body: { label: string; role: FleetBot['role']; token: string; notes?: string }) => {
+    const res = await api.post<any>('/api/admin/telegram/bots', body);
+    return res.data as { success: boolean; bot?: FleetBot; message?: string };
+  },
+
+  promote: async (id: string, webhookBaseUrl?: string) => {
+    const res = await api.post<any>(`/api/admin/telegram/bots/${id}/promote`, { webhookBaseUrl });
+    return res.data as {
+      success: boolean; bot?: FleetBot; displaced?: FleetBot | null;
+      webhook?: string; alreadyLive?: boolean; message?: string;
+    };
+  },
+
+  retryWebhook: async (id: string, webhookBaseUrl?: string) => {
+    const res = await api.post<any>(`/api/admin/telegram/bots/${id}/webhook`, { webhookBaseUrl });
+    return res.data as { success: boolean; bot?: FleetBot; message?: string };
+  },
+
+  retire: async (id: string) => {
+    const res = await api.post<any>(`/api/admin/telegram/bots/${id}/retire`, {});
+    return res.data as { success: boolean; bot?: FleetBot; message?: string };
+  },
+};
+
+export interface BotTemplate {
+  key: string;
+  body: string;
+  default: string;
+  customised: boolean;
+  variables: string[];
+  updatedAt: string | null;
+}
+
+/**
+ * What the bot says.
+ *
+ * The welcome message is the first sentence anyone reads from this platform and
+ * carries the requirement that their Telegram account be on the Aadhaar-linked
+ * mobile. Getting it wrong shows up weeks later as failed verifications, so it
+ * is editable here rather than in a deploy.
+ */
+export const telegramTemplates = {
+  list: async () => {
+    const res = await api.get<any>('/api/admin/telegram/templates');
+    return res.data as { success: boolean; templates?: BotTemplate[]; message?: string };
+  },
+
+  /** An empty body reverts the key to the shipped wording. */
+  save: async (key: string, body: string) => {
+    const res = await api.put<any>(`/api/admin/telegram/templates/${key}`, { body });
+    return res.data as { success: boolean; template?: BotTemplate; message?: string };
   },
 };
 
@@ -1042,6 +1151,8 @@ export default {
   queueManager,
   kyc,
   telegram,
+  telegramBots,
+  telegramTemplates,
   kycBulk,
   referrals,
   subAdmins,

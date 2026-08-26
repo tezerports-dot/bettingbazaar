@@ -23,11 +23,13 @@ import crypto from 'crypto';
 import mongoose from 'mongoose';
 import { TelegramIdentity, TelegramPendingLink } from './telegram.model.js';
 import { activeConfig, sendMessage } from './telegramClient.js';
-import { applyMemberUpdate, isJoinedStatus, joinPrompt } from './telegramMembership.js';
+import { applyMemberUpdate, isJoinedStatus, joinPrompt, membershipFor } from './telegramMembership.js';
+import { authenticate } from '../identity/auth.middleware.js';
 import {
   beginOnboarding, submitAadhaar, completeContactShare, completeOnboarding, isValidAadhaar,
 } from './telegramOnboarding.service.js';
 import { issueLoginToken } from './telegramLogin.service.js';
+import { sendTemplate } from './telegramTemplates.service.js';
 
 const router = express.Router();
 
@@ -39,19 +41,16 @@ function secretMatches(provided, expected) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-// ── Copy shown to players ───────────────────────────────────────────────────
-
-const ASK_AADHAAR =
-  'Welcome to <b>Betting Bazaar</b>.\n\n'
-  + 'To create your account, send your <b>12-digit Aadhaar number</b>.\n\n'
-  + '⚠️ Sign up with the Telegram account registered on the <b>same mobile number '
-  + 'that is linked to this Aadhaar</b>. They must match, or verification will fail.';
-
-const ASK_CONTACT =
-  'Thank you. Now tap the <b>Share my contact</b> button below.\n\n'
-  + 'We use it to confirm your number — it must be the mobile linked to the '
-  + 'Aadhaar you just sent.';
-
+/**
+ * Copy the bot sends lives in telegramTemplates.service.js, where an admin can
+ * edit it without a deploy — the shipped wording is the fallback there, so this
+ * module no longer holds any player-facing sentence that is subject to change.
+ *
+ * The short operational replies below stay inline on purpose: they answer a
+ * specific malformed input ("that is not 12 digits"), they are not the first
+ * thing anyone reads, and making every one of them a row an operator can blank
+ * out adds ways to break the conversation without adding anything worth having.
+ */
 const contactKeyboard = {
   keyboard: [[{ text: '📱 Share my contact', request_contact: true }]],
   resize_keyboard: true,
@@ -106,6 +105,11 @@ async function handleMessage(message, cfg) {
 
   if (text.startsWith('/start')) {
     // Referral attribution rides in the deep link: t.me/<bot>?start=<code>
+    //
+    // Telegram delivers the payload as the argument to /start the moment the
+    // conversation opens, which is why a referral link needs no code entry and
+    // no instructions: the referred player taps the link and the bot already
+    // knows who sent them. This is the ONLY message that carries it.
     const payload = text.split(/\s+/)[1] || null;
     const begun = await beginOnboarding({
       telegramUserId,
@@ -118,7 +122,11 @@ async function handleMessage(message, cfg) {
       // An existing player pressing /start is asking to log in.
       return sendLoginLink({ chatId, telegramUserId, userId: begun.userId, cfg });
     }
-    return sendMessage(chatId, ASK_AADHAAR);
+    return sendTemplate({
+      chatId,
+      key: 'welcome',
+      vars: { firstName: from.first_name || '', botUsername: cfg.botUsername || '' },
+    });
   }
 
   // Anything else, while a signup is open, is treated as the Aadhaar attempt.
@@ -140,11 +148,17 @@ async function handleMessage(message, cfg) {
       }
       return sendMessage(chatId, 'We could not accept that Aadhaar number. Please check it and try again.');
     }
-    return sendMessage(chatId, ASK_CONTACT, { reply_markup: contactKeyboard });
+    return sendTemplate({
+      chatId, key: 'ask_contact', vars: { firstName: from.first_name || '' },
+      extra: { reply_markup: contactKeyboard },
+    });
   }
 
   if (pending.step === 'AWAITING_CONTACT') {
-    return sendMessage(chatId, ASK_CONTACT, { reply_markup: contactKeyboard });
+    return sendTemplate({
+      chatId, key: 'ask_contact', vars: { firstName: from.first_name || '' },
+      extra: { reply_markup: contactKeyboard },
+    });
   }
 
   return sendMessage(chatId, 'Please join our channel to finish signing up.');
@@ -170,12 +184,16 @@ async function handleContact({ message, telegramUserId, chatId, cfg }) {
   }
 
   const prompt = await joinPrompt();
-  const link = prompt?.inviteLink || '';
-  return sendMessage(chatId,
-    '✅ Number confirmed.\n\n'
-    + `<b>Last step:</b> join our official channel${link ? ` — ${link}` : ''}\n\n`
-    + 'Come back here once you have joined and I will send your login link.',
-    { reply_markup: { remove_keyboard: true } });
+  return sendTemplate({
+    chatId,
+    key: 'contact_confirmed',
+    vars: {
+      inviteLink: prompt?.inviteLink || '',
+      channelUsername: prompt?.channelUsername || '',
+      firstName: message.from?.first_name || '',
+    },
+    extra: { reply_markup: { remove_keyboard: true } },
+  });
 }
 
 // ── chat_member: the membership cache's primary writer ─────────────────────
@@ -203,10 +221,7 @@ async function handleChatMember(chatMember, cfg) {
 async function sendLoginLink({ chatId, telegramUserId, userId, cfg }) {
   const { url, expiresAt } = await issueLoginToken({ userId, telegramUserId });
   const minutes = Math.max(1, Math.round((expiresAt - Date.now()) / 60000));
-  return sendMessage(chatId,
-    `🎉 You are all set.\n\n<a href="${url}">Tap here to open Betting Bazaar</a>\n\n`
-    + `This link signs you in automatically and expires in ${minutes} minutes. `
-    + 'Send /start any time for a new one.');
+  return sendTemplate({ chatId, key: 'login_link', vars: { loginUrl: url, minutes } });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -284,11 +299,10 @@ router.post('/recovery/webhook', async (req, res) => {
 
     const text = String(message.text || '').trim();
     if (text.startsWith('/start')) {
-      return sendRecoveryMessage(chatId,
-        '<b>Account recovery</b>\n\n'
-        + 'Use this only if you have lost the Telegram account you signed up with, '
-        + 'but still use the same mobile number.\n\n'
-        + 'Send your <b>12-digit Aadhaar number</b> to begin.');
+      return sendTemplate({
+        chatId, key: 'recovery_welcome', role: 'recovery',
+        vars: { firstName: message.from?.first_name || '' },
+      });
     }
 
     if (isValidAadhaar(text)) {
@@ -337,6 +351,69 @@ router.get('/public-config', async (req, res) => {
     });
   } catch (err) {
     return res.status(500).json({ success: false, message: 'Could not load sign-in details.' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET /api/telegram/membership — "have I joined yet?"
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * What the join prompt asks after the player says they have joined.
+ *
+ * ── Why this reads the cache first ──────────────────────────────────────────
+ * Replacing the channel makes every cached membership stale in one instant, so
+ * on a flip the prompt appears for every logged-in player at once. If each
+ * "I've joined" tap forced a getChatMember, a flip would aim the entire active
+ * user base at the Bot API in the same few seconds and rate-limit the bot that
+ * everyone is simultaneously trying to sign in through.
+ *
+ * It does not need to. Joining a channel emits a `chat_member` update, and that
+ * webhook writes the cache within about a second of the tap — for free. So the
+ * default read is cache-only, and a live check is something the client asks for
+ * explicitly, once, after giving the webhook a moment to arrive.
+ *
+ * The live check is additionally floored per user, because the button is a
+ * button and people press buttons.
+ */
+const lastLiveCheck = new Map();  // userId -> epoch ms
+const LIVE_CHECK_FLOOR_MS = 20_000;
+
+function mayCheckLive(userId) {
+  const now = Date.now();
+  // Bounded, same posture as the recovery session map above: a large logged-in
+  // population must not be able to grow this without limit.
+  if (lastLiveCheck.size > 50_000) lastLiveCheck.clear();
+  const last = lastLiveCheck.get(String(userId)) || 0;
+  if (now - last < LIVE_CHECK_FLOOR_MS) return false;
+  lastLiveCheck.set(String(userId), now);
+  return true;
+}
+
+router.get('/membership', authenticate, async (req, res) => {
+  try {
+    const identity = await TelegramIdentity.findOne({ userId: req.user._id })
+      .select('telegramUserId channelStatus channelCheckedAt channelGeneration')
+      .lean();
+
+    const wantsLive = req.query.verify === '1';
+    const refresh = wantsLive && mayCheckLive(req.user._id);
+    const verdict = await membershipFor(identity, { refresh });
+
+    const prompt = await joinPrompt();
+    return res.json({
+      success: true,
+      joined: Boolean(verdict.joined),
+      linked: Boolean(identity),
+      unconfigured: Boolean(verdict.unconfigured),
+      // True when a live check was ASKED for and declined by the floor, so the
+      // client can say "checking again shortly" instead of "you have not joined".
+      throttled: wantsLive && !refresh,
+      checked: Boolean(verdict.checked),
+      telegram: prompt,
+    });
+  } catch (err) {
+    console.error('[telegram] membership check failed:', err.message);
+    if (!res.headersSent) res.status(503).json({ success: false, message: 'Could not check your membership right now.' });
   }
 });
 

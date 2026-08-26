@@ -24,11 +24,13 @@
  * configured, which is the one thing this screen needs to know.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { Bot, RefreshCw, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { Bot, RefreshCw, AlertTriangle, CheckCircle2, Radio } from 'lucide-react';
 import { Kpis } from '../../components/design';
 import { formatters } from '../../utils/formatters';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
+import BotFleet from './BotFleet';
+import BotMessages from './BotMessages';
 
 type Active = NonNullable<Awaited<ReturnType<typeof api.telegram.getConfig>>['active']>;
 type HistoryRow = NonNullable<Awaited<ReturnType<typeof api.telegram.getConfig>>['history']>[number];
@@ -46,6 +48,8 @@ const EMPTY = {
   channelInviteLink: '', webhookBaseUrl: '', reason: '',
 };
 
+const EMPTY_CHANNEL = { channelId: '', channelUsername: '', channelInviteLink: '', reason: '' };
+
 export const TelegramConfig: React.FC = () => {
   const [active, setActive] = useState<Active | null>(null);
   const [history, setHistory] = useState<HistoryRow[]>([]);
@@ -54,6 +58,9 @@ export const TelegramConfig: React.FC = () => {
   const [form, setForm] = useState({ ...EMPTY });
   const [isSaving, setIsSaving] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [channelForm, setChannelForm] = useState({ ...EMPTY_CHANNEL });
+  const [flipping, setFlipping] = useState(false);
+  const [confirmingFlip, setConfirmingFlip] = useState(false);
 
   const load = useCallback(async () => {
     setIsLoading(true); setLoadError('');
@@ -109,6 +116,31 @@ export const TelegramConfig: React.FC = () => {
     }
   };
 
+  const flipChannel = async () => {
+    if (!channelForm.channelId.trim()) {
+      toast.error('A channel id is required.');
+      return;
+    }
+    setFlipping(true);
+    try {
+      const res = await api.telegram.replaceChannel({
+        channelId: channelForm.channelId.trim(),
+        channelUsername: channelForm.channelUsername.trim() || undefined,
+        channelInviteLink: channelForm.channelInviteLink.trim() || undefined,
+        reason: channelForm.reason.trim() || undefined,
+      });
+      if (!res.success) { toast.error(res.message || 'The channel could not be replaced.'); return; }
+      toast.success(res.message || `Generation ${res.generation} is live.`, { duration: 8000 });
+      setChannelForm({ ...EMPTY_CHANNEL });
+      setConfirmingFlip(false);
+      await load();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.message || 'The channel could not be replaced.');
+    } finally {
+      setFlipping(false);
+    }
+  };
+
   if (isLoading) {
     return <div className="flex items-center justify-center py-12"><div className="w-8 h-8 border-4 border-dark-600 border-t-gold-500 rounded-full animate-spin" /></div>;
   }
@@ -117,7 +149,11 @@ export const TelegramConfig: React.FC = () => {
     <div className="om-fade" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <Kpis items={[
         { label: 'Active generation', value: active ? `#${active.generation}` : '—', tone: active ? 'var(--success)' : 'var(--danger)' },
-        { label: 'Sign-in bot', value: active?.botUsername ? `@${active.botUsername}` : 'Not configured', tone: active ? undefined : 'var(--danger)' },
+        {
+          label: active?.signinSource === 'registry' ? 'Sign-in bot (fleet)' : 'Sign-in bot',
+          value: active?.botUsername ? `@${active.botUsername}` : 'Not configured',
+          tone: active ? undefined : 'var(--danger)',
+        },
         { label: 'Recovery bot', value: active?.recoveryBotUsername ? `@${active.recoveryBotUsername}` : 'None', tone: active?.recoveryBotConfigured ? undefined : 'var(--warning)' },
         { label: 'Channel', value: active?.channelUsername ? `@${active.channelUsername}` : (active?.channelId || '—') },
       ]} />
@@ -260,6 +296,106 @@ export const TelegramConfig: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* ── Replace the channel only ───────────────────────────────────── */}
+      <div className="card" style={{ padding: 22 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+          <Radio size={18} style={{ color: 'var(--gold-ink)' }} />
+          <div style={{ fontSize: 15, fontWeight: 800 }}>Replace the channel</div>
+        </div>
+        <p style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.65, marginBottom: 16, maxWidth: 680 }}>
+          For when the channel is deleted or lost but the bots are fine — no token to re-paste.
+          The current bots carry forward and a new generation goes live immediately.
+        </p>
+
+        <div style={{ display: 'flex', gap: 10, padding: '12px 14px', marginBottom: 18, borderRadius: 10, border: '1px solid var(--warning)', background: 'color-mix(in srgb, var(--warning) 8%, transparent)' }}>
+          <AlertTriangle size={17} style={{ color: 'var(--warning)', flex: 'none', marginTop: 1 }} />
+          <div style={{ fontSize: 12, lineHeight: 1.65 }}>
+            <strong>Every logged-in player will be asked to join the new channel</strong> the next time they
+            bet, play or open their wallet — a prompt they cannot dismiss, carrying the new invite link.
+            Accounts, balances, KYC status, referral positions and joining numbers are all unchanged;
+            nothing has to be migrated. Add the bot to the new channel <strong>as an administrator</strong>
+            first, or it cannot read join events and the prompt will never clear.
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))', gap: 14 }}>
+          <div>
+            <label style={label}>New channel id <span style={{ color: 'var(--danger)' }}>*</span></label>
+            <input
+              value={channelForm.channelId}
+              onChange={(e) => setChannelForm({ ...channelForm, channelId: e.target.value })}
+              placeholder="-1001234567890" className="font-mono" style={input}
+            />
+          </div>
+          <div>
+            <label style={label}>Channel @username</label>
+            <input
+              value={channelForm.channelUsername}
+              onChange={(e) => setChannelForm({ ...channelForm, channelUsername: e.target.value })}
+              placeholder="bettingbazaar" style={input}
+            />
+          </div>
+          <div>
+            <label style={label}>Invite link</label>
+            <input
+              value={channelForm.channelInviteLink}
+              onChange={(e) => setChannelForm({ ...channelForm, channelInviteLink: e.target.value })}
+              placeholder="https://t.me/+…" style={input}
+            />
+            <div style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 5 }}>
+              What players are sent to. Falls back to the @username if left blank.
+            </div>
+          </div>
+          <div>
+            <label style={label}>Reason</label>
+            <input
+              value={channelForm.reason}
+              onChange={(e) => setChannelForm({ ...channelForm, reason: e.target.value })}
+              placeholder="e.g. old channel deleted" style={input}
+            />
+          </div>
+        </div>
+
+        <div style={{ marginTop: 18, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          {!confirmingFlip ? (
+            <button
+              onClick={() => setConfirmingFlip(true)}
+              disabled={!channelForm.channelId.trim()}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8, height: 40, padding: '0 18px', borderRadius: 9,
+                background: 'var(--gold)', color: 'var(--gold-on)', fontSize: 13, fontWeight: 700, border: 'none',
+                cursor: channelForm.channelId.trim() ? 'pointer' : 'not-allowed',
+                opacity: channelForm.channelId.trim() ? 1 : .5,
+              }}
+            >
+              <Radio size={15} />Replace channel
+            </button>
+          ) : (
+            <>
+              <span style={{ fontSize: 12.5, color: 'var(--warning)', fontWeight: 600 }}>
+                Every player gets the join prompt on their next action. Continue?
+              </span>
+              <button
+                onClick={flipChannel} disabled={flipping}
+                style={{ height: 40, padding: '0 18px', borderRadius: 9, background: 'var(--danger)', color: '#fff', fontSize: 13, fontWeight: 700, border: 'none', cursor: 'pointer', opacity: flipping ? .6 : 1 }}
+              >
+                {flipping ? 'Replacing…' : 'Yes, replace it'}
+              </button>
+              <button
+                onClick={() => setConfirmingFlip(false)} disabled={flipping}
+                style={{ height: 40, padding: '0 16px', borderRadius: 9, background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}
+              >
+                Cancel
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* ── The fleet, and what it says ────────────────────────────────── */}
+      <BotFleet webhookBaseUrl={form.webhookBaseUrl} onChanged={load} />
+      <BotMessages />
 
       {/* ── History ────────────────────────────────────────────────────── */}
       <div className="card" style={{ padding: 22 }}>

@@ -172,6 +172,44 @@ where every "Sign in" button says the service is being configured.
 > players keep their accounts — identities key on each *player's* Telegram id, not
 > on your bot. That is a 5-minute fix, not a redeploy.
 
+### 3.5a — Do this now, not during the outage: register a spare bot
+
+Same screen, **Bot fleet** section. Make one more bot in `@BotFather`, register
+it here with role **Sign-in**, and leave it on `STANDBY`.
+
+It costs a minute now. Without it, the day Telegram suspends your live bot you
+are creating a bot from scratch while nobody can sign up or log in; with it, the
+fix is the **Make live** button on a row that is already verified. Promoting a
+spare does not touch a single player account, balance, KYC record or referral
+position, and — unlike changing the channel — nobody has to re-join anything.
+
+The panel warns you whenever there is no standby sign-in bot, which is the state
+you are in right after Phase 3.5.
+
+### 3.5b — Optional: change what the bot says
+
+Same screen, **Bot messages**. The welcome message is the first thing any player
+reads and is where the "your Telegram must be on the same mobile as your Aadhaar"
+warning lives. Edits apply to the next message the bot sends — no restart. Clear
+a box to go back to the shipped wording.
+
+Markup is Telegram's HTML (`<b>`, `<i>`, `<a href>`); anything Telegram would
+refuse is rejected when you save, and if a saved message somehow still fails, the
+bot sends the default rather than nothing.
+
+### 3.5c — If you ever lose the channel
+
+**Replace the channel** on the same screen — channel id only, no tokens.
+
+Create the new channel, **add the sign-in bot to it as an administrator** (or it
+cannot read join events and the prompt below will never clear), then paste the
+new channel id and replace.
+
+Every logged-in player is then shown a prompt they cannot dismiss, carrying the
+new invite link, the next time they bet, play or open their wallet. Their
+balances, KYC status, referral positions and joining numbers are all unchanged —
+they join the new channel and carry on. Nothing has to be migrated.
+
 ---
 
 ## Phase 4 — Turn on Postgres money authority (the readiness gate)

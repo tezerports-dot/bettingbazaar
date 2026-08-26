@@ -253,6 +253,98 @@ needs in order to sign in at all, and it carries nothing that is not already
 public the moment the bot exists. Baking the username into the frontend would
 mean a rebuild before anyone could sign up again.
 
+### 7a. The bot fleet — spares registered before the incident
+
+`domains/telegram/telegramBots.service.js`, `TelegramBot`.
+
+The activation form above can replace a dead bot **only if the operator already
+has a working token in hand.** At 3am that means opening @BotFather, creating a
+bot, naming it, copying a token and pasting it — with signup and login dead
+throughout.
+
+The fleet moves all of that to *before* the incident. A spare is registered and
+**verified against Telegram** while everything is calm, and parked as `STANDBY`.
+The incident response is then `promote(id)`: one click.
+
+Roles: `signin`, `recovery`, `broadcast`, `moderation`, `generic`. Sign-in and
+recovery are **singular** — exactly one of each may be live, because both are
+addressed by an inbound webhook whose updates are authenticated against *the*
+live bot's secret, and two live bots would mean the check compared against
+whichever row a non-deterministic read returned first. That is enforced by the
+database: a derived `liveSlot` field, maintained by a pre-validate hook, under a
+sparse unique index. Broadcast, moderation and generic bots are outbound-only, so
+any number may be live.
+
+Consequences worth knowing:
+
+- **Promotion never bumps the generation.** A bot swap invalidates nothing —
+  identities key on the *person's* Telegram id — so forcing every player to
+  re-join the channel to fix a problem that never touched the channel would be
+  pure damage. Only a **channel** change bumps the generation.
+- **The registry wins over the credentials embedded in a generation.** Both can
+  name a sign-in bot; they answer different questions ("what was live when this
+  generation was created" vs "what is live now"). `activeConfig()` reads the
+  registry first and falls back to the embedded fields, which is what an install
+  that never registered a spare has.
+- **Writers must use `.save()`, not `updateOne`.** Mongoose runs no middleware
+  for update operations, so an `updateOne` that changed `status` would leave a
+  stale `liveSlot` behind and the index would guard nothing.
+- **Database first, webhook second.** The two writes cannot be made atomic across
+  two systems. Webhook-first would leave Telegram delivering as the new bot while
+  we authenticate against the old secret — every update rejected 401, with the
+  panel showing the old bot as live and nothing revealing the cause.
+  Database-first leaves a correct row with no delivery: loud, obvious, and fixed
+  by a retry button.
+
+### 7b. Replacing the channel alone
+
+`POST /api/admin/telegram/channel`.
+
+In an incident the bot and the channel are almost never the same event — a
+channel is deleted while the bot is fine. Requiring a working bot token to be
+re-pasted in order to fix an unrelated channel is one more way to fail under
+pressure, so this endpoint takes a channel and nothing else and carries the
+current bot arrangement forward.
+
+It bumps the generation, and **that is the entire migration.** Every cached
+membership records the generation it was observed in, so all of them become
+stale by construction; the next protected request each player makes returns
+`403 CHANNEL_MEMBERSHIP_REQUIRED` carrying the new invite link, which the user
+panel raises as a prompt that cannot be dismissed
+(`user-panel/src/components/Modals/ChannelGateModal.tsx`). Accounts, balances,
+KYC state, referral positions and joining numbers are untouched — none of them is
+keyed on the channel.
+
+The prompt reads the **cache** first (`GET /api/telegram/membership`) and only
+asks Telegram on an explicit second attempt, floored per user. On a flip the
+prompt appears for every logged-in player at once; joining a channel emits a
+`chat_member` update that writes the cache within about a second for free, so
+polling `getChatMember` on every tap would aim the whole active user base at the
+Bot API in the same few seconds — and at the bot everyone is simultaneously
+trying to sign in through.
+
+### 7c. What the bot says
+
+`domains/telegram/telegramTemplates.service.js`, admin panel → **Bot messages**.
+
+The welcome message carries the requirement that a player's Telegram account be
+on the mobile linked to their Aadhaar. Getting it wrong does not arrive as a bug
+report; it arrives weeks later as a pile of failed verifications. So the copy is
+data, editable without a deploy, with the shipped wording as the fallback.
+
+Three rules make it safe to hand to an operator:
+
+1. **A blank row means "use the default", never "send nothing".** Silence after
+   `/start` is indistinguishable from a broken platform.
+2. **Substituted values are HTML-escaped** — including `"`, because a template
+   may put a placeholder inside an attribute. One of the values is the player's
+   own Telegram first name, which they choose.
+3. **If Telegram refuses a custom template as malformed, the default is sent
+   instead.** An admin's stray `<div>` must not be able to take signup offline,
+   which is exactly what it would do — silently, since the failure is a 400 on a
+   fire-and-forget send nobody is watching. The markup is also checked on save,
+   so the usual case is caught where the admin can see it.
+
 ---
 
 ## 8. Account recovery
@@ -402,7 +494,9 @@ non-staff.
 | `kycDocumentPathRemoved.test.js` | No upload, no viewer, no identity data on `User`, one decision path |
 | `fieldCryptoRotation.test.js` | Decrypt-only retired keys; rewrap |
 | `schemaIndexConflicts.test.js` | No two indexes with the same key pattern and different options |
-| `adminRouteContract.test.js` | The panel calls paths the server serves; `/kyc/bulk/*` is not shadowed by `/kyc/:userId/*` |
+| `adminRouteContract.test.js` | The panel calls paths the server serves; `/kyc/bulk/*` and `/telegram/*` are not shadowed by wildcard patterns beside them |
+| `telegramFleet.test.js` | One live bot per singular role, via the derived `liveSlot` and its sparse unique index; outbound-only roles get no webhook; a template Telegram would refuse is caught on save; a player-chosen name cannot become markup |
+| `channelGateOrdering.test.js` | The gate asks whether a channel exists *before* blaming the player for not having joined one |
 
 Most of these assert **absence**, which no feature test can do: a happy-path
 suite for bulk verification passes perfectly well with an upload endpoint still

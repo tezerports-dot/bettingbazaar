@@ -25,6 +25,43 @@ import { currentOrigin, reportOriginUnreachable, failoverAvailable } from './ori
 // returns exactly what the old `import.meta.env.VITE_API_URL || ''` did.
 const MAX_RETRIES = 2;
 
+// ── The channel gate ──────────────────────────────────────────────────────────
+/**
+ * Betting, games and the wallet require membership of the official Telegram
+ * channel, and that channel is replaceable: when an operator swaps it, every
+ * cached membership goes stale in the same instant and the server starts
+ * answering 403 CHANNEL_MEMBERSHIP_REQUIRED — carrying the NEW invite link.
+ *
+ * Handled here, once, rather than at each call site. A player who is halfway
+ * through a deposit and a player tapping a game must both be told the same
+ * thing, and there are dozens of call sites that would each have to remember.
+ *
+ * The refusal is still thrown to the caller: the page that asked must still see
+ * its request fail, so nothing renders as though it had succeeded. This only
+ * adds the prompt on top.
+ */
+export interface ChannelGateEvent {
+  code: 'CHANNEL_MEMBERSHIP_REQUIRED' | 'TELEGRAM_NOT_LINKED';
+  message: string;
+  telegram?: { inviteLink?: string; channelUsername?: string; botUsername?: string; generation?: number } | null;
+}
+
+type GateListener = (e: ChannelGateEvent) => void;
+const gateListeners = new Set<GateListener>();
+
+export function onChannelGate(fn: GateListener): () => void {
+  gateListeners.add(fn);
+  return () => { gateListeners.delete(fn); };
+}
+
+function announceGate(json: any): void {
+  const code = json?.code;
+  if (code !== 'CHANNEL_MEMBERSHIP_REQUIRED' && code !== 'TELEGRAM_NOT_LINKED') return;
+  const event: ChannelGateEvent = { code, message: json?.message || '', telegram: json?.telegram ?? null };
+  // A listener that throws must not swallow the refusal for everyone else.
+  gateListeners.forEach(fn => { try { fn(event); } catch { /* ignore */ } });
+}
+
 // ── In-flight deduplication ───────────────────────────────────────────────────
 const inFlight = new Map<string, Promise<Response>>();
 
@@ -108,6 +145,7 @@ async function apiFetch(
   }
 
   const json = await resp.json().catch(() => ({}));
+  if (resp.status === 403) announceGate(json);
   if (!resp.ok) throw Object.assign(new Error(json?.message ?? resp.statusText), { status: resp.status, data: json });
   return json;
 }

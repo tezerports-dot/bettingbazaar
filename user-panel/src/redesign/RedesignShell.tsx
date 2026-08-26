@@ -20,6 +20,7 @@ import { useTheme } from './ThemeContext';
 import { useViewport } from './useViewport';
 import { fmt } from './format';
 import AuthModal from '../components/Modals/AuthModal';
+import ChannelGateModal from '../components/Modals/ChannelGateModal';
 
 interface ShellContextValue {
   isAuthenticated: boolean;
@@ -273,6 +274,14 @@ const RedesignShell: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
         )}
 
         {authOpen && !isAuthenticated && <AuthModal onClose={() => setAuthOpen(false)} initialMode={authMode} />}
+
+        {/*
+          Mounted unconditionally and rendering nothing until the server refuses
+          a request. It has to live in the shell rather than on a page: the
+          channel can be replaced at any moment, and the refusal lands on
+          whichever screen the player happens to be on.
+        */}
+        <ChannelGateModal />
       </div>
     </ShellContext.Provider>
   );

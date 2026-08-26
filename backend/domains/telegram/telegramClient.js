@@ -15,7 +15,7 @@
  * NOT made here — for channel membership it is made in the gate, where the
  * safe answer (deny betting, keep the session) is a policy choice.
  */
-import { TelegramConfig } from './telegram.model.js';
+import { TelegramConfig, TelegramBot } from './telegram.model.js';
 import { decryptField } from '../identity/fieldCrypto.util.js';
 
 const API_ROOT = 'https://api.telegram.org';
@@ -46,20 +46,68 @@ export async function activeConfig({ force = false } = {}) {
     .lean();
   if (!doc) { _cache = { at: Date.now(), config: null }; return null; }
 
+  // The bot REGISTRY wins over the credentials embedded in the generation.
+  //
+  // Both can name a sign-in bot, and they answer different questions: the
+  // config records what was live when the generation was created, the registry
+  // records what is live NOW. Promoting a spare must take effect without
+  // creating a new generation — a bot swap does not invalidate anybody's
+  // channel membership and must not force every player to re-join — so the
+  // registry has to be the one that is read.
+  //
+  // The embedded fields remain the fallback, which is what a deployment
+  // configured through the activation form alone has. They are not dead code:
+  // they are generation 1 of any install that never registered a spare.
+  const [signin, recovery] = await Promise.all([liveBot('signin'), liveBot('recovery')]);
+
   const config = {
     generation:        doc.generation,
-    botUsername:       doc.botUsername,
-    botToken:          safeDecrypt(doc.botTokenEncrypted),
-    webhookSecret:     doc.webhookSecret,
-    recoveryBotUsername: doc.recoveryBotUsername || '',
-    recoveryBotToken:  doc.recoveryBotTokenEncrypted ? safeDecrypt(doc.recoveryBotTokenEncrypted) : null,
-    recoveryWebhookSecret: doc.recoveryWebhookSecret || null,
+    botUsername:       signin?.username || doc.botUsername,
+    botToken:          signin ? signin.token : safeDecrypt(doc.botTokenEncrypted),
+    webhookSecret:     signin?.webhookSecret || doc.webhookSecret,
+    recoveryBotUsername: recovery?.username || doc.recoveryBotUsername || '',
+    recoveryBotToken:  recovery
+      ? recovery.token
+      : (doc.recoveryBotTokenEncrypted ? safeDecrypt(doc.recoveryBotTokenEncrypted) : null),
+    recoveryWebhookSecret: recovery?.webhookSecret || doc.recoveryWebhookSecret || null,
+    // Which source each credential came from — read by the admin panel so an
+    // operator can see at a glance whether a promotion actually took.
+    signinSource:   signin ? 'registry' : 'generation',
+    recoverySource: recovery ? 'registry' : (doc.recoveryBotTokenEncrypted ? 'generation' : 'none'),
     channelId:         doc.channelId,
     channelUsername:   doc.channelUsername || '',
     channelInviteLink: doc.channelInviteLink || '',
   };
   _cache = { at: Date.now(), config };
   return config;
+}
+
+/**
+ * The live bot for a role, token decrypted, or null.
+ *
+ * Null is a normal answer, not an error: it is what a fresh deployment returns
+ * before any bot is registered, and what a suspended role returns until someone
+ * promotes a spare. Callers must read it as "unavailable".
+ *
+ * Deliberately NOT cached here. `activeConfig` caches the composed result for
+ * CONFIG_TTL_MS and is what the request path calls; a second cache underneath
+ * it would mean a promotion had two independent expiries to wait out.
+ */
+export async function liveBot(role) {
+  const doc = await TelegramBot.findOne({ role, status: 'ACTIVE' })
+    .select('+tokenEncrypted +webhookSecret')
+    .sort({ activatedAt: -1 })
+    .lean();
+  if (!doc) return null;
+
+  return {
+    id: String(doc._id),
+    role: doc.role,
+    botId: doc.botId,
+    username: doc.username,
+    token: safeDecrypt(doc.tokenEncrypted),
+    webhookSecret: doc.webhookSecret,
+  };
 }
 
 /**
@@ -166,6 +214,35 @@ export async function setWebhook({ token, url, secret, allowedUpdates }) {
     // and Telegram only delivers it when explicitly requested.
     allowed_updates: allowedUpdates || ['message', 'chat_member', 'my_chat_member', 'callback_query'],
     drop_pending_updates: true,
+  });
+}
+
+/**
+ * Stop Telegram delivering to a bot.
+ *
+ * Called on a bot that has just been stood down, so a token that may be the
+ * reason for the swap — leaked, or on a bot suspected of compromise — stops
+ * receiving anything immediately. Best effort: a bot Telegram has already
+ * banned will refuse this, and that must never block the promotion of its
+ * replacement.
+ */
+export async function deleteWebhook(token) {
+  return callApi(token, 'deleteWebhook', { drop_pending_updates: true });
+}
+
+/**
+ * Send from a NAMED role rather than from the sign-in bot.
+ *
+ * Announcements go out through a broadcast bot so that a send storm cannot
+ * exhaust the sign-in bot's rate limit. The Bot API limits per bot, so sharing
+ * one bot between "welcome, here is your login link" and "here is today's
+ * promotion to 10,000 people" means the promotion delays the logins.
+ */
+export async function sendAs(role, chatId, text, extra = {}) {
+  const bot = await liveBot(role);
+  if (!bot?.token) return { ok: false, error: `no_live_${role}_bot` };
+  return callApi(bot.token, 'sendMessage', {
+    chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true, ...extra,
   });
 }
 

@@ -50,6 +50,14 @@ describe('the identity and payout control plane is reachable', () => {
   const required = [
     'GET /telegram/config',
     'POST /telegram/config',
+    'POST /telegram/channel',
+    'GET /telegram/bots',
+    'POST /telegram/bots',
+    'POST /telegram/bots/:id/promote',
+    'POST /telegram/bots/:id/webhook',
+    'POST /telegram/bots/:id/retire',
+    'GET /telegram/templates',
+    'PUT /telegram/templates/:key',
     'GET /kyc/bulk/stats',
     'GET /kyc/bulk/export',
     'POST /kyc/bulk/import',
@@ -113,6 +121,34 @@ describe('the KYC review routes are reachable and unshadowed', () => {
 
   it('no longer serves a document endpoint', () => {
     expect(paths.some((p) => p.includes('/document/'))).toBe(false);
+  });
+});
+
+describe('the Telegram control plane is unshadowed', () => {
+  it('has no earlier wildcard swallowing a concrete /telegram/* path', () => {
+    // `/telegram/templates/:key` and `/telegram/bots/:id/promote` sit in the
+    // same mount as the concrete `/telegram/config`, `/telegram/channel`,
+    // `/telegram/bots` and `/telegram/templates`. These are the routes an
+    // operator reaches for during an outage — a shadowed one would 404 at
+    // exactly the moment nobody can sign in, which is the worst possible time
+    // to discover it.
+    const concrete = paths
+      .map((p, i) => ({ p, i }))
+      .filter(({ p }) => {
+        const path = p.split(' ')[1];
+        return path.startsWith('/telegram/') && !path.includes(':');
+      });
+    // Guard against this degenerating into a check over an empty set.
+    expect(concrete.length).toBeGreaterThanOrEqual(6);
+
+    for (const { p, i } of concrete) {
+      const [method, path] = p.split(' ');
+      const swallower = paths.slice(0, i).find((earlier) => {
+        const [m, pattern] = earlier.split(' ');
+        return m === method && pattern.includes(':') && toRegExp(pattern).test(path);
+      });
+      expect(swallower, `${swallower} is registered before ${p} and matches it`).toBeUndefined();
+    }
   });
 });
 
