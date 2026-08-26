@@ -60,7 +60,8 @@ const { default: referralRedirect } = await import('../../routes/referralRedirec
 const { User } = await import('../../models/index.js');
 const { ReferralEarning } = await import('../../domains/referral/referral.model.js');
 const { KycVerification } = await import('../../domains/identity/kycVerification.model.js');
-const { generateReferralCode } = await import('../../domains/referral/referral.service.js');
+const { generateReferralCode, nextJoiningNumber } =
+  await import('../../domains/referral/referral.service.js');
 const { encryptField } = await import('../../domains/identity/fieldCrypto.util.js');
 
 const WEBHOOK_SECRET = 'test-webhook-secret-value';
@@ -123,8 +124,22 @@ async function until(predicate, { timeoutMs = 5000 } = {}) {
  */
 const settle = () => new Promise((r) => setTimeout(r, 400));
 
-const lastSendTo = (chatId) =>
-  [...sent].reverse().find((s) => String(s.chatId) === String(chatId) && s.method === 'sendMessage');
+/**
+ * The next message sent to a chat AFTER a marker.
+ *
+ * Not "the last message sent to this chat" — that was a real bug in this
+ * harness, and a instructive one. `until` resolves on the first truthy value,
+ * and a conversation has usually already produced a message by the time the
+ * step under test runs. So the poll returned the PREVIOUS reply instantly and
+ * the assertion compared against it: a test for "we refuse a duplicate Aadhaar"
+ * was reading the welcome message and failing with a confusing diff, while a
+ * genuinely broken refusal would have looked identical.
+ *
+ * Callers take `const mark = sent.length` immediately before the action, so the
+ * wait is for something NEW rather than for something.
+ */
+const sentAfter = (mark, chatId) =>
+  sent.slice(mark).find((s) => String(s.chatId) === String(chatId) && s.method === 'sendMessage');
 
 beforeEach(async () => {
   sent.length = 0;
@@ -151,7 +166,7 @@ describe('a referred player signs up, start to finish', () => {
     const referrerCode = generateReferralCode();
     const referrer = await User.create({
       username: 'Referrer', mobile: '9800000001',
-      referralCode: referrerCode, joiningNumber: 1,
+      referralCode: referrerCode, joiningNumber: await nextJoiningNumber(),
     });
 
     // ── 1. The invited player taps the shared link ─────────────────────────
@@ -223,6 +238,7 @@ describe('a referred player signs up, start to finish', () => {
 
     // ── 5. They join the channel ──────────────────────────────────────────
     api.chatMemberStatus = 'member';
+    const mark = sent.length;   // only messages sent AFTER the join count
     await update({
       chat_member: {
         chat: { id: CHANNEL_ID },
@@ -245,7 +261,7 @@ describe('a referred player signs up, start to finish', () => {
     expect(earned[0].amountPaise).toBe(2500);       // ₹25
 
     // ── 7. The bot sent a login link, and it works exactly once ───────────
-    const link = await until(() => lastSendTo(55501));
+    const link = await until(() => sentAfter(mark, 55501));
     const token = /token=([A-Za-z0-9_-]+)/.exec(link.text)?.[1];
     expect(token, 'the login message must carry a token').toBeTruthy();
 
@@ -297,11 +313,12 @@ describe('one Aadhaar, one account', () => {
     await update({ message: { message_id: 1, chat: { id: 55503 }, from: { id: 55503 }, text: '/start' } });
     await until(() => TelegramPendingLink.findOne({ telegramUserId: '55503' }).lean());
 
+    const mark = sent.length;   // the reply to THIS message, not the welcome
     await update({
       message: { message_id: 2, chat: { id: 55503 }, from: { id: 55503 }, text: '999988887777' },
     });
 
-    const told = await until(() => lastSendTo(55503));
+    const told = await until(() => sentAfter(mark, 55503));
     expect(told.text).toMatch(/already registered/i);
 
     // Still at the Aadhaar step — no account, no progress.
@@ -321,6 +338,7 @@ describe('a forwarded contact card cannot register somebody else', () => {
       (await TelegramPendingLink.findOne({ telegramUserId: '55504' }).lean())?.step === 'AWAITING_CONTACT');
 
     // Somebody ELSE's contact card, forwarded into the chat.
+    const mark = sent.length;   // the reply to THIS card, not the earlier prompt
     await update({
       message: {
         message_id: 3, chat: { id: 55504 }, from: { id: 55504 },
@@ -328,7 +346,7 @@ describe('a forwarded contact card cannot register somebody else', () => {
       },
     });
 
-    const told = await until(() => lastSendTo(55504));
+    const told = await until(() => sentAfter(mark, 55504));
     expect(told.text).toMatch(/YOUR OWN contact/i);
     expect(await User.findOne({ mobile: '9800000099' })).toBeNull();
   });
@@ -350,7 +368,7 @@ describe('a channel replacement does not spam the whole user base', () => {
   it('sends nothing to a player who has signed up before and is merely re-joining', async () => {
     const veteran = await User.create({
       username: 'Veteran', mobile: '9800000055',
-      joiningNumber: 7, referralCode: generateReferralCode(),
+      joiningNumber: await nextJoiningNumber(), referralCode: generateReferralCode(),
     });
     await TelegramIdentity.create({
       telegramUserId: '55505', userId: veteran._id,
@@ -389,6 +407,7 @@ describe('a channel replacement does not spam the whole user base', () => {
     });
 
     api.chatMemberStatus = 'member';
+    const mark = sent.length;
     await update({
       chat_member: {
         chat: { id: CHANNEL_ID }, from: { id: 55506 },
@@ -396,7 +415,7 @@ describe('a channel replacement does not spam the whole user base', () => {
       },
     });
 
-    const link = await until(() => lastSendTo(55506));
+    const link = await until(() => sentAfter(mark, 55506));
     expect(link.text).toMatch(/token=/);
     expect((await User.findById(fresh._id).lean()).joiningNumber).toBeGreaterThan(0);
   });
@@ -410,7 +429,7 @@ describe('attribution survives a code in the wrong case', () => {
     // the signup succeeded and the referrer simply never earned.
     const code = generateReferralCode();
     const referrer = await User.create({
-      username: 'Ref2', mobile: '9800000021', referralCode: code, joiningNumber: 2,
+      username: 'Ref2', mobile: '9800000021', referralCode: code, joiningNumber: await nextJoiningNumber(),
     });
 
     await update({
@@ -443,16 +462,17 @@ describe('attribution survives a code in the wrong case', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 describe('an existing player asking to log in', () => {
   it('gets a fresh link from /start rather than a second account', async () => {
-    const existing = await User.create({ username: 'Returning', mobile: '9800000088', joiningNumber: 9 });
+    const existing = await User.create({ username: 'Returning', mobile: '9800000088', joiningNumber: await nextJoiningNumber() });
     await TelegramIdentity.create({
       telegramUserId: '55508', userId: existing._id,
       phone: '9800000088', contactSharedAt: new Date(), contactActive: true,
       channelGeneration: 1, linkedGeneration: 1,
     });
 
+    const mark = sent.length;
     await update({ message: { message_id: 1, chat: { id: 55508 }, from: { id: 55508 }, text: '/start' } });
 
-    const link = await until(() => lastSendTo(55508));
+    const link = await until(() => sentAfter(mark, 55508));
     expect(link.text).toMatch(/token=/);
     expect(await User.countDocuments({ mobile: '9800000088' })).toBe(1);
     expect(await TelegramPendingLink.countDocuments({ telegramUserId: '55508' })).toBe(0);
@@ -504,7 +524,7 @@ describe('replacing the channel', () => {
     const { signToken } = await import('../../domains/identity/jwt.util.js');
     const u = await User.create({
       username: 'Established', mobile: '9800000044',
-      joiningNumber: 12, depositBalance: 500, winningsBalance: 250,
+      joiningNumber: await nextJoiningNumber(), depositBalance: 500, winningsBalance: 250,
       referralCode: generateReferralCode(),
     });
     await TelegramIdentity.create({
@@ -534,9 +554,12 @@ describe('replacing the channel', () => {
     // carries a link rather than the app hard-coding one.
     expect(res.body.telegram.inviteLink).toBe('https://t.me/+newinvite');
 
-    // Nothing about the person moved.
+    // Nothing about the person moved. Compared against the number this user was
+    // actually allocated rather than a literal — joining numbers come from a
+    // shared counter, so hard-coding one couples this assertion to how many
+    // other fixtures happened to run first.
     const after = await User.findById(u._id).lean();
-    expect(after.joiningNumber).toBe(12);
+    expect(after.joiningNumber).toBe(u.joiningNumber);
     expect(after.depositBalance).toBe(500);
     expect(after.winningsBalance).toBe(250);
     expect(await TelegramIdentity.countDocuments({ userId: u._id })).toBe(1);

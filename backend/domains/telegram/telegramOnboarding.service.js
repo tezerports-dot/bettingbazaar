@@ -269,8 +269,37 @@ export async function completeOnboarding({ userId }) {
   const firstCompletion = !user.joiningNumber;
 
   if (firstCompletion) {
-    user.joiningNumber = await nextJoiningNumber();
-    await user.save();
+    /**
+     * Retried on a duplicate, because the counter can fall behind the data.
+     *
+     * `joiningNumber` is unique, and it comes from a counter document that is
+     * separate from the users it numbers. Anything that restores one without
+     * the other — a partial restore, a counter reset, a number set by hand
+     * during support work — leaves the counter handing out a value some user
+     * already holds. `user.save()` then throws E11000.
+     *
+     * Nothing above catches that. The webhook's own catch logs it and returns,
+     * so the player is left with no joining number, no referral earnings booked
+     * for their upline, and no login link — permanently, because the only thing
+     * that would retry is another `chat_member` event and they have already
+     * joined. It is silent, it costs the referrer real money, and support has
+     * nothing to look at.
+     *
+     * The counter is atomic, so simply asking again yields the next value and
+     * walks past the occupied range. Bounded, because a loop that cannot make
+     * progress must fail loudly rather than spin.
+     */
+    for (let attempt = 1; ; attempt += 1) {
+      user.joiningNumber = await nextJoiningNumber();
+      try {
+        await user.save();
+        break;
+      } catch (err) {
+        if (err?.code !== 11000 || attempt >= 25) throw err;
+        console.warn(`[onboarding] joining number ${user.joiningNumber} was taken — `
+          + 'the counter is behind the data; asking for the next one');
+      }
+    }
   }
 
   // Books the upline's ₹25s. Safe on replay.
