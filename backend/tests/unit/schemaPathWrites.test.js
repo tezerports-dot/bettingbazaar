@@ -9,8 +9,8 @@
  * `modifiedCount: 0`, which almost nobody checks, and the write simply never
  * happened.
  *
- * This has bitten this codebase five separate times, and every one of them was
- * invisible until something downstream made no sense:
+ * This has bitten this codebase four separate times, and the three that shipped
+ * were invisible until something downstream made no sense:
  *
  *   - `kycData.reviewedBy` was written by two services and declared by neither,
  *     so every KYC approval was anonymous — the exact thing that audit field
@@ -19,8 +19,10 @@
  *     compared against `undefined` and let everyone through.
  *   - `userKycSnapshot.aadhaar` was written on withdrawal orders and was not a
  *     path on the model.
- *   - `referralClicks` would have been the fifth, caught while writing the
- *     referral redirect.
+ *   - `referralClicks` would have been the fourth, caught while writing the
+ *     referral redirect — the first one this test stopped rather than recorded.
+ *
+ * Keep the count and the list in step: if a fifth occurs, name it here.
  *
  * ── Why a test and not a code review ────────────────────────────────────────
  * Because reading cannot catch it. The write looks correct at the call site, the
