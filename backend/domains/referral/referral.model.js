@@ -160,7 +160,50 @@ const counterSchema = new mongoose.Schema({
   value: { type: Number, default: 0 },
 }, { collection: 'counters' });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// REFERRAL CLICK — how many people opened a link, as opposed to acted on it
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * A referrer who has invited twenty people and signed up two needs to know
+ * which half of that is broken: nobody is opening the link, or everybody opens
+ * it and stops at the bot. Signups alone cannot tell them apart.
+ *
+ * ── This exists only to deduplicate ─────────────────────────────────────────
+ * The count itself lives on the User document, incremented atomically. This
+ * collection holds nothing but the fact that a given viewer already counted, so
+ * the unique index can refuse the second one. Without it a WhatsApp link
+ * preview, the human's tap, and a back-button retry would read as three
+ * different people.
+ *
+ * ── Why the viewer is a hash, and why the rows expire ───────────────────────
+ * An IP address is personal data, and one that would sit here forever attached
+ * to "was interested in a gambling site". It is stored as a keyed hash — enough
+ * to recognise a repeat within the window, useless for anything else — and the
+ * rows are deleted after 24 hours by TTL. That expiry also does something
+ * useful: a genuine return visit tomorrow is a real second look, and counting it
+ * again is correct.
+ */
+const referralClickSchema = new mongoose.Schema({
+  code:      { type: String, required: true },
+  // HMAC of the viewer's IP. Never the address itself.
+  viewerHash: { type: String, required: true },
+  at:        { type: Date, default: Date.now },
+  // The TTL index below owns { expiresAt: 1 } — a field-level index here would
+  // create a second index with the same key pattern, which MongoDB refuses.
+  expiresAt: { type: Date, default: () => new Date(Date.now() + 24 * 60 * 60 * 1000) },
+}, { collection: 'referral_clicks' });
+
+// The dedupe itself: a second insert for the same viewer and code inside the
+// window fails with 11000, and the caller skips the increment. Doing this as
+// read-then-write would double-count two simultaneous taps.
+referralClickSchema.index(
+  { code: 1, viewerHash: 1 },
+  { unique: true, name: 'one_click_per_viewer_per_window' },
+);
+referralClickSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
 export const ReferralEarning   = mongoose.model('ReferralEarning', referralEarningSchema);
 export const ReferralDisbursal = mongoose.model('ReferralDisbursal', referralDisbursalSchema);
 export const ReferralProgramme = mongoose.model('ReferralProgramme', referralProgrammeSchema);
+export const ReferralClick     = mongoose.model('ReferralClick', referralClickSchema);
 export const Counter           = mongoose.model('Counter', counterSchema);

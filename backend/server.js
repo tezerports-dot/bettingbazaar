@@ -65,6 +65,7 @@ import betRoutes          from './domains/markets/bet.routes.js';
 // the caller is Telegram, and the webhook authenticates on the secret token
 // Telegram echoes, not on a session.
 import telegramRoutes     from './domains/telegram/telegram.routes.js';
+import referralRedirect   from './routes/referralRedirect.routes.js';
 import userRoutes         from './domains/user/user.routes.js';
 import merchantRoutes     from './domains/merchant/merchant.routes.js';
 import paymentRoutes      from './domains/payment/payment.routes.js';
@@ -323,6 +324,13 @@ registerService('alerting', { send: (...a) => import('./services/alerting.servic
 // glassmorphism.css with .glass-overlay { position:fixed; inset:0 }) to load
 // inside admin and merchant panels — creating a full-screen transparent overlay
 // that blocked all clicks on those panels.
+// Referral links: /r/<code> → whichever sign-up bot is live right now.
+//
+// Mounted HERE, above the static middleware and far above the SPA catch-all,
+// because both of those would otherwise answer /r/<code> with index.html. This
+// is a redirect, not a page — the visitor must never see the app shell.
+app.use('/', referralRedirect);
+
 app.use('/', (req, res, next) => {
   if (req.path.startsWith('/admin') || req.path.startsWith('/merchant') || req.path.startsWith('/api')) {
     return next(); // never serve user panel assets to other panels

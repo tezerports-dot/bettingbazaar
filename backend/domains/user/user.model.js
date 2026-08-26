@@ -25,6 +25,16 @@ const userSchema = new mongoose.Schema({
   // What a player shares. Distinct from joiningNumber so the public link does
   // not leak the platform's exact member count or a person's position in it.
   referralCode:  { type: String, unique: true, sparse: true, index: true },
+  // How many distinct people opened this user's referral link (deduplicated per
+  // viewer per day by ReferralClick). Held here rather than derived, because the
+  // rows it counts are deleted continuously by TTL — the aggregate is the thing
+  // that must survive, not the evidence.
+  //
+  // DECLARED, and that word is load-bearing: Mongoose strict mode strips
+  // undeclared paths out of update operators without complaint, so a `$inc` on a
+  // field that is not in this schema increments nothing and reports success.
+  // Four separate bugs in this codebase have been exactly that.
+  referralClicks: { type: Number, default: 0 },
   // Who referred them — the level-1 edge of the referral tree. The level-2 edge
   // is this user's referrer's own referredBy, walked at earning time.
   // (An index for this existed below long before the field itself did.)

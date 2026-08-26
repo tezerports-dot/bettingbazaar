@@ -46,6 +46,8 @@ interface Summary {
   totals: {
     referrals: number; confirmed: number; disbursed: number;
     nextDisbursal: number; awaitingKyc: number; blocked: number;
+    /** People who opened the link, deduplicated per viewer per day. */
+    clicks: number;
   };
   rows: Row[];
 }
@@ -74,21 +76,40 @@ const ReferralPage: React.FC = () => {
     } catch (e: any) {
       setError(e?.message || 'Could not load your referral report.');
     }
-    // The bot's @username is fetched, never hardcoded: a suspended bot is
-    // replaced from the admin panel, and a baked-in link would send every
-    // invited player to a dead chat until the app was rebuilt.
+    // Only to SHOW which bot the link currently opens. It is deliberately not
+    // part of the link itself — see below.
     try {
       const r = await fetch(apiUrl('/api/telegram/public-config'), { credentials: 'include' });
       const d = await r.json();
       if (d?.success) setBot(d.botUsername || '');
-    } catch { /* the report is still useful without a link */ }
+    } catch { /* the report and the link both work without this */ }
   }, []);
 
   useEffect(() => { void load(); }, [load]);
 
-  // Deep link: Telegram passes ?start=<code> straight to the bot, so the invited
-  // player never types a code and cannot mistype one.
-  const link = bot && data?.referralCode ? `https://t.me/${bot}?start=${encodeURIComponent(data.referralCode)}` : '';
+  /**
+   * The shared link points at OUR domain, never at t.me.
+   *
+   * This used to be `https://t.me/<bot>?start=<code>`, built from whichever bot
+   * was live when the page loaded. That link then leaves — into WhatsApp, into
+   * forwards, into screenshots — and lives for months somewhere nobody can
+   * reach. It names one specific bot.
+   *
+   * Telegram suspends gambling bots, and replacing one is a single click in the
+   * admin panel by design. But every link already shared would still name the
+   * DEAD bot: the invited player taps it, Telegram says the bot does not exist,
+   * and the referrer silently loses a signup they had earned. Nobody reports
+   * "the link I sent my cousin last month is broken", so the platform's referral
+   * numbers would just quietly stop meaning anything.
+   *
+   * `/r/<code>` redirects to whichever bot is live at the moment of the tap, so
+   * the link never has to change — it never named a bot in the first place.
+   * Telegram still receives the code as the /start argument, so the invited
+   * player types nothing.
+   */
+  const link = data?.referralCode
+    ? `${window.location.origin}/r/${encodeURIComponent(data.referralCode)}`
+    : '';
 
   const copy = async () => {
     if (!link) return;
@@ -154,10 +175,35 @@ const ReferralPage: React.FC = () => {
           )}
         </div>
         <p style={{ margin: '10px 0 0', fontSize: 11, color: 'var(--text3)', lineHeight: 1.6 }}>
-          Opening the link starts our bot with your code already attached — the person you
-          invite never has to type it. You earn {inr(data.rewardPerReferral)} when they join,
-          and {inr(data.rewardPerReferral)} again when someone <em>they</em> invite joins.
+          Opening the link starts our bot{bot ? <> (<strong style={{ color: 'var(--text2)' }}>@{bot}</strong>)</> : ''} with
+          your code already attached — the person you invite never has to type it. You earn{' '}
+          {inr(data.rewardPerReferral)} when they join, and {inr(data.rewardPerReferral)} again
+          when someone <em>they</em> invite joins.
         </p>
+        <p style={{ margin: '8px 0 0', fontSize: 11, color: 'var(--text3)', lineHeight: 1.6 }}>
+          This link is permanent. If we ever switch to a different sign-up bot it keeps working
+          and sends people to the new one, so anything you have already shared stays good.
+        </p>
+
+        {/*
+          Clicks beside signups, because the gap between them is the one number
+          that tells a referrer which half is broken: nobody is opening the link,
+          or everybody opens it and stops at the bot.
+        */}
+        <div style={{ display: 'flex', gap: 18, marginTop: 12, paddingTop: 11, borderTop: '1px solid var(--line2)' }}>
+          <div>
+            <div className="font-grotesk" style={{ fontSize: 17, fontWeight: 800, color: 'var(--text)' }}>
+              {(t.clicks ?? 0).toLocaleString('en-IN')}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--text3)', marginTop: 2 }}>opened your link</div>
+          </div>
+          <div>
+            <div className="font-grotesk" style={{ fontSize: 17, fontWeight: 800, color: 'var(--gold-ink)' }}>
+              {(t.referrals ?? 0).toLocaleString('en-IN')}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--text3)', marginTop: 2 }}>signed up</div>
+          </div>
+        </div>
       </div>
 
       {/* ── The four numbers ──────────────────────────────────────────── */}

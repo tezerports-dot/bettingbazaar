@@ -19,7 +19,7 @@
 import mongoose from 'mongoose';
 import crypto from 'crypto';
 import {
-  ReferralEarning, ReferralDisbursal, ReferralProgramme, Counter,
+  ReferralEarning, ReferralDisbursal, ReferralProgramme, ReferralClick, Counter,
   REFERRAL_REWARD_PAISE,
 } from './referral.model.js';
 import { creditWinnings } from '../wallet/walletAuthority.service.js';
@@ -342,12 +342,79 @@ export async function programmeStats() {
  * referrer a number they may never receive, so they are reported separately as
  * awaiting verification.
  */
+/**
+ * Someone opened a referral link.
+ *
+ * ── Why a click is worth counting at all ────────────────────────────────────
+ * A referrer who has sent their link to twenty people and signed up two cannot
+ * tell which half is broken: nobody is opening it, or everybody opens it and
+ * stops at the bot. Those need opposite responses, and signups alone cannot
+ * distinguish them.
+ *
+ * ── Deduplication, and why it is an index rather than a check ───────────────
+ * One tap produces more than one request: a WhatsApp or Telegram link preview
+ * fetches the URL before the human sees it, and a back-button retry fetches it
+ * again. Counting each would make the number flattering and useless.
+ *
+ * So a viewer is recorded once per code per 24 hours, and the unique index is
+ * what enforces it — a read-then-write would double-count two taps that arrive
+ * together, which is exactly what happens when a link is posted to a group.
+ *
+ * The address itself is never stored. It is keyed-hashed to something that can
+ * recognise a repeat and do nothing else, and the row is deleted after a day.
+ *
+ * Never throws: this runs beside a redirect that must not be delayed or broken
+ * by a counting failure.
+ */
+export async function recordReferralClick({ code, ip }) {
+  if (!code) return { counted: false, reason: 'no_code' };
+
+  const User = mongoose.model('User');
+
+  try {
+    await ReferralClick.create({ code, viewerHash: hashViewer(ip, code) });
+  } catch (err) {
+    // 11000: this viewer already counted for this code inside the window. The
+    // expected case for a link preview followed by the human's own tap.
+    if (err?.code === 11000) return { counted: false, reason: 'duplicate' };
+    throw err;
+  }
+
+  // The count lives on the User so reading it is one field, not an aggregation
+  // over a collection that is being deleted from continuously by TTL.
+  const res = await User.updateOne({ referralCode: code }, { $inc: { referralClicks: 1 } });
+
+  // A code nobody owns is not an error — it is a mistyped or retired link, and
+  // the visitor was still sent to the bot. Recorded as uncounted so the caller
+  // can tell "nobody has this code" from "counted".
+  return { counted: res.modifiedCount > 0, reason: res.modifiedCount ? 'counted' : 'unknown_code' };
+}
+
+/**
+ * A viewer identifier that cannot be turned back into an address.
+ *
+ * An IP has about 2^32 possible values, so a plain SHA-256 of one is reversible
+ * by brute force in seconds — a hash without a key would not actually protect
+ * anything. The key is DERIVED from an existing server secret rather than being
+ * a new one to manage, and derivation means this use cannot leak the parent.
+ *
+ * The code is mixed in so the same viewer produces a different hash per link,
+ * which stops the collection from becoming a way to correlate one person's
+ * interest across every referrer on the platform.
+ */
+function hashViewer(ip, code) {
+  const key = crypto.createHmac('sha256', String(process.env.PASETO_SECRET_KEY || 'referral-click'))
+    .update('referral-click-viewer-salt')
+    .digest();
+  return crypto.createHmac('sha256', key).update(`${code}|${ip || ''}`).digest('hex').slice(0, 32);
+}
+
 export async function referralSummaryFor(userId, { limit = 200 } = {}) {
   const mongooseLib = (await import('mongoose')).default;
   const User = mongooseLib.model('User');
   const { KycVerification } = await import('../identity/kycVerification.model.js');
 
-  const me = await User.findById(userId).select('referralCode joiningNumber').lean();
+  const me = await User.findById(userId).select('referralCode joiningNumber referralClicks').lean();
 
   const rows = await ReferralEarning.find({ earnerId: userId })
     .sort({ queuePosition: 1, level: 1 })
@@ -421,6 +488,10 @@ export async function referralSummaryFor(userId, { limit = 200 } = {}) {
       // Waiting on the invited player's KYC. Not yours yet.
       awaitingKyc: paiseToRupees(sum('awaitingKycPaise')),
       blocked:     paiseToRupees(sum('blockedPaise')),
+      // How many people opened the link, deduplicated per viewer per day.
+      // Shown beside the signup count because the gap between the two is the
+      // one number that says whether the link or the signup is the problem.
+      clicks:      me?.referralClicks || 0,
     },
     rows: detail,
   };

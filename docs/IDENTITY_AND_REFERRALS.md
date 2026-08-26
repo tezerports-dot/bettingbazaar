@@ -396,11 +396,58 @@ other people's accounts, which it could if recovery shared its credentials.
 | Budget | **₹400 crore** (`PROGRAMME_BUDGET_PAISE`) |
 | Member cap | **8 crore** verified members (`PROGRAMME_MEMBER_CAP`) |
 
+### The shared link never names a bot
+
+A referrer shares **`https://<our-domain>/r/<code>`**, not a `t.me` URL.
+`routes/referralRedirect.routes.js` resolves the live sign-up bot at the moment
+of the tap and 302s to `t.me/<bot>?start=<code>`.
+
+This is not indirection for its own sake. A link **leaves**: it is pasted into
+WhatsApp, forwarded, screenshotted, and lives for months in places nobody can
+reach. If it named a bot, then the day Telegram suspends that bot — the event
+the entire fleet exists to survive — every link ever shared would be dead. The
+invited player would see "this bot does not exist", and the referrer would lose
+a signup they had earned, **silently**, because nobody reports that a link they
+sent last month is broken.
+
+Three consequences worth knowing:
+
+- **302, never 301.** A permanent redirect would be cached by browsers and
+  intermediaries against the bot that was live at the time, recreating the exact
+  bug inside caches nobody can clear.
+- **The code is validated before it is interpolated.** The destination is always
+  `t.me` and always our own configured bot; a code that does not match the
+  referral shape is dropped rather than passed through, and the visitor still
+  reaches the bot — a mistyped link should not be a dead end.
+- **With no bot configured it serves a page, not a redirect.** That is the state
+  a fresh deployment sits in before the runbook's Phase 3.5, and the state a
+  suspension leaves until a spare is promoted. The page says the link will keep
+  working, so a referrer does not go asking for a new one.
+
+The redirect is also the only place a **click** can be observed. A referrer who
+has invited twenty people and signed up two cannot otherwise tell which half is
+broken — nobody opening the link, or everybody opening it and stopping at the
+bot. Clicks are deduplicated per viewer per code per 24 hours by a unique index
+on `ReferralClick` (a link preview, the human's tap and a back-button retry are
+one click, not three), and the viewer is a keyed hash of the address, never the
+address, in rows that TTL out after a day.
+
+### Attribution, and the START button
+
 A code rides in the deep link (`t.me/<bot>?start=<code>`) and is captured by the
 panel at boot into `localStorage` (`user-panel/src/services/referralCapture.ts`) — a visitor
 rarely signs up in the first second, and by the time they open the bot the URL
 has changed. First code wins, and it ages out after 90 days: without a lifetime,
 a code picked up in March still credits a referrer in November.
+
+**The invited player never types anything.** Telegram delivers the deep-link
+payload as the argument to `/start`, and it survives the START button — a player
+who has never opened the bot taps START once, and the bot receives
+`/start <code>` at that moment with the referrer already attached. That single
+tap is Telegram's own consent step (a bot may not message someone who has not
+opened the conversation) and cannot be removed by anything on our side. It is
+not a risk to attribution: the code rides in the payload, not in anything the
+player is asked to enter.
 
 **Attribution** (`recordEarningsFor`) walks at most two upline edges, filters
 self-referral, and tolerates 11000 — the unique `(sourceUserId, level)` index
@@ -497,6 +544,7 @@ non-staff.
 | `adminRouteContract.test.js` | The panel calls paths the server serves; `/kyc/bulk/*` and `/telegram/*` are not shadowed by wildcard patterns beside them |
 | `telegramFleet.test.js` | One live bot per singular role, via the derived `liveSlot` and its sparse unique index; outbound-only roles get no webhook; a template Telegram would refuse is caught on save; a player-chosen name cannot become markup |
 | `channelGateOrdering.test.js` | The gate asks whether a channel exists *before* blaming the player for not having joined one |
+| `referralLinkStability.test.js` | A shared link follows a bot swap; the redirect is never cacheable and never an open redirect; the panel does not mint a `t.me/<bot>` link |
 
 Most of these assert **absence**, which no feature test can do: a happy-path
 suite for bulk verification passes perfectly well with an upload endpoint still
