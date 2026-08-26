@@ -135,11 +135,51 @@ const settle = () => new Promise((r) => setTimeout(r, 400));
  * was reading the welcome message and failing with a confusing diff, while a
  * genuinely broken refusal would have looked identical.
  *
- * Callers take `const mark = sent.length` immediately before the action, so the
- * wait is for something NEW rather than for something.
+ * The mark must be taken immediately before the action, so the wait is for
+ * something NEW rather than for something. Prefer `say` below, which takes it
+ * for you — see there for why taking it by hand is easy to get wrong.
  */
 const sentAfter = (mark, chatId) =>
   sent.slice(mark).find((s) => String(s.chatId) === String(chatId) && s.method === 'sendMessage');
+
+/**
+ * Post an update and wait for the reply it produces, in one step.
+ *
+ * ── Why the mark cannot be taken by hand ────────────────────────────────────
+ * `sentAfter` fixed HALF of this harness's ordering problem: the assertion no
+ * longer reads a message that predates the action. It cannot fix the other
+ * half, because that one happens before it is ever called.
+ *
+ * The webhook answers 200 before doing its work, so a step used to be sequenced
+ * by waiting on the DATABASE row the handler writes:
+ *
+ *     await update({ …'/start' });
+ *     await until(() => TelegramPendingLink.findOne(…));   // row exists
+ *     const mark = sent.length;                            // ← too early
+ *
+ * The handler writes that row and THEN sends the welcome. So the row can exist
+ * while the welcome is still in flight, the mark is taken at a length the
+ * welcome has not reached yet, and the next `sentAfter(mark, …)` returns the
+ * welcome — the exact message the mark was meant to exclude. A DB row and the
+ * send log are two different clocks, and the mark belongs to the send log.
+ *
+ * That failure is timing-dependent, which is the worst property it could have:
+ * it passed locally and on one CI run, then failed on the next with a diff
+ * ("expected the welcome to match /already registered/") that points at the
+ * assertion rather than at the race.
+ *
+ * So: take the mark, post, and wait for the reply, with no window in between
+ * for a caller to sequence on the wrong thing. Waiting for THIS reply is also
+ * what makes the NEXT step's mark safe.
+ *
+ * Only for steps that do reply — a negative assertion has nothing to wait for
+ * and must use `settle()`.
+ */
+async function say(body, chatId) {
+  const mark = sent.length;
+  await update(body);
+  return until(() => sentAfter(mark, chatId));
+}
 
 beforeEach(async () => {
   sent.length = 0;
@@ -310,15 +350,11 @@ describe('one Aadhaar, one account', () => {
       aadhaarLast4: '7777', phone: '9800000010', status: 'PENDING_VERIFICATION',
     });
 
-    await update({ message: { message_id: 1, chat: { id: 55503 }, from: { id: 55503 }, text: '/start' } });
-    await until(() => TelegramPendingLink.findOne({ telegramUserId: '55503' }).lean());
+    await say({ message: { message_id: 1, chat: { id: 55503 }, from: { id: 55503 }, text: '/start' } }, 55503);
 
-    const mark = sent.length;   // the reply to THIS message, not the welcome
-    await update({
+    const told = await say({
       message: { message_id: 2, chat: { id: 55503 }, from: { id: 55503 }, text: '999988887777' },
-    });
-
-    const told = await until(() => sentAfter(mark, 55503));
+    }, 55503);
     expect(told.text).toMatch(/already registered/i);
 
     // Still at the Aadhaar step — no account, no progress.
@@ -331,22 +367,20 @@ describe('one Aadhaar, one account', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 describe('a forwarded contact card cannot register somebody else', () => {
   it('refuses a contact whose user_id is not the sender', async () => {
-    await update({ message: { message_id: 1, chat: { id: 55504 }, from: { id: 55504 }, text: '/start' } });
-    await until(() => TelegramPendingLink.findOne({ telegramUserId: '55504' }).lean());
-    await update({ message: { message_id: 2, chat: { id: 55504 }, from: { id: 55504 }, text: '111122223333' } });
-    await until(async () =>
-      (await TelegramPendingLink.findOne({ telegramUserId: '55504' }).lean())?.step === 'AWAITING_CONTACT');
+    await say({ message: { message_id: 1, chat: { id: 55504 }, from: { id: 55504 }, text: '/start' } }, 55504);
+    await say({ message: { message_id: 2, chat: { id: 55504 }, from: { id: 55504 }, text: '111122223333' } }, 55504);
+    // The prompt has been sent, so the step has advanced — but assert it, since
+    // this test is meaningless if the contact card arrives at the wrong step.
+    expect((await TelegramPendingLink.findOne({ telegramUserId: '55504' }).lean()).step)
+      .toBe('AWAITING_CONTACT');
 
     // Somebody ELSE's contact card, forwarded into the chat.
-    const mark = sent.length;   // the reply to THIS card, not the earlier prompt
-    await update({
+    const told = await say({
       message: {
         message_id: 3, chat: { id: 55504 }, from: { id: 55504 },
         contact: { phone_number: '+919800000099', user_id: 999999 },
       },
-    });
-
-    const told = await until(() => sentAfter(mark, 55504));
+    }, 55504);
     expect(told.text).toMatch(/YOUR OWN contact/i);
     expect(await User.findOne({ mobile: '9800000099' })).toBeNull();
   });
@@ -598,17 +632,15 @@ describe('a failed Aadhaar is released, and the player can try again', () => {
   it('takes a corrected number from /start and re-queues it', async () => {
     const u = await rejectedPlayer(55601, '9800000201', '111111111111');
 
-    let mark = sent.length;
-    await update({ message: { message_id: 1, chat: { id: 55601 }, from: { id: 55601 }, text: '/start' } });
-    const prompt = await until(() => sentAfter(mark, 55601));
+    const prompt = await say(
+      { message: { message_id: 1, chat: { id: 55601 }, from: { id: 55601 }, text: '/start' } }, 55601);
     // NOT a login link: a session would drop them into an app that refuses
     // every action and offers nothing to do about it.
     expect(prompt.text).toMatch(/could not be verified/i);
     expect(prompt.text).not.toMatch(/token=/);
 
-    mark = sent.length;
-    await update({ message: { message_id: 2, chat: { id: 55601 }, from: { id: 55601 }, text: '222222222222' } });
-    const accepted = await until(() => sentAfter(mark, 55601));
+    const accepted = await say(
+      { message: { message_id: 2, chat: { id: 55601 }, from: { id: 55601 }, text: '222222222222' } }, 55601);
     expect(accepted.text).toMatch(/2222/);
 
     const kyc = await until(() => KycVerification.findOne({ userId: u._id }).lean());
@@ -624,12 +656,10 @@ describe('a failed Aadhaar is released, and the player can try again', () => {
     // The stranger signs up with the number the typo had been holding.
     await rejectedPlayer(55602, '9800000202', '333333333333');
 
-    await update({ message: { message_id: 1, chat: { id: 55603 }, from: { id: 55603, first_name: 'RealOwner' }, text: '/start' } });
-    await until(() => TelegramPendingLink.findOne({ telegramUserId: '55603' }).lean());
+    await say({ message: { message_id: 1, chat: { id: 55603 }, from: { id: 55603, first_name: 'RealOwner' }, text: '/start' } }, 55603);
 
-    const mark = sent.length;
-    await update({ message: { message_id: 2, chat: { id: 55603 }, from: { id: 55603 }, text: '333333333333' } });
-    const reply = await until(() => sentAfter(mark, 55603));
+    const reply = await say(
+      { message: { message_id: 2, chat: { id: 55603 }, from: { id: 55603 }, text: '333333333333' } }, 55603);
 
     expect(reply.text, 'the real owner must not be refused').not.toMatch(/already registered/i);
     const pending = await TelegramPendingLink.findOne({ telegramUserId: '55603' }).lean();
