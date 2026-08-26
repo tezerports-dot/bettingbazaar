@@ -821,7 +821,6 @@ export class RealBackend implements Backend {
         username: profile.name || profile.username,
         mobile:   profile.mobile,
         password: profile.password || 'Merchant@123',
-        email:    profile.email,
       }),
     });
     return res;

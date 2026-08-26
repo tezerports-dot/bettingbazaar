@@ -264,7 +264,7 @@ router.get('/v1/user/:id/data', authenticate, async (req, res) => {
 
     const [user, recentBets] = await Promise.all([
       User.findById(id).select(
-        'username mobile email depositBalance winningsBalance lockedBalance kycStatus kycData bankDetails profilePic joinedAt lastLogin roles isAdmin phantomAccess'
+        'username mobile depositBalance winningsBalance lockedBalance kycStatus kycData bankDetails profilePic joinedAt lastLogin roles isAdmin phantomAccess'
       ).lean(),
       Bet.find({ userId: new mongoose.Types.ObjectId(id), isPhantom: false })
         .sort({ timestamp: -1 })
@@ -301,7 +301,6 @@ router.get('/v1/user/:id/data', authenticate, async (req, res) => {
         id:               user._id,
         username:         user.username,
         mobile:           user.mobile,
-        email:            user.email || '',
         depositBalance,
         winningsBalance,
         lockedBalance,
@@ -342,25 +341,33 @@ router.put('/user/:userId/profile', authenticate, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
 
-    const { username, email } = req.body;
+    /*
+     * `username` is the ONLY thing a player may change about themselves.
+     *
+     * Everything else that identifies them is proved rather than typed: the
+     * mobile comes from Telegram's contact share and the Aadhaar is verified in
+     * bulk, so neither is editable here or anywhere else — see §1 of the
+     * governance doc. `email` was removed on 2026-08-26 along with the channel
+     * that was its only consumer.
+     *
+     * This stays an explicit allow-list rather than a `req.body` spread. A
+     * spread here would let a caller set `kycStatus`, `mobile` or a balance,
+     * and strict mode would not save us — those are all declared paths.
+     */
+    const { username } = req.body;
     const User    = mongoose.model('User');
     const updates = {};
-    if (username)   updates.username   = username.trim();
-    // Optional contact email (Phase E) — the EMAIL notification channel delivers
-    // only to users who set one. Accept a valid address, or '' to clear it.
-    if (email !== undefined) {
-      const trimmed = String(email).trim().toLowerCase();
-      if (trimmed !== '' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
-        await abortOrEnd(session);
-        return res.status(400).json({ success: false, message: 'Please enter a valid email address.' });
-      }
-      updates.email = trimmed;
+    if (username) updates.username = username.trim();
+
+    if (!Object.keys(updates).length) {
+      await abortOrEnd(session);
+      return res.status(400).json({ success: false, message: 'Nothing to update.' });
     }
 
     const updatedUser = await User.findByIdAndUpdate(userId, updates, { new: true, session }).lean();
     await commitOrEnd(session);
 
-    res.json({ success: true, user: { id: updatedUser._id, username: updatedUser.username, profilePic: updatedUser.profilePic, email: updatedUser.email || '' } });
+    res.json({ success: true, user: { id: updatedUser._id, username: updatedUser.username, profilePic: updatedUser.profilePic } });
   } catch (error) {
     await abortOrEnd(session);
     console.error('Update profile error:', error);
@@ -896,7 +903,7 @@ router.get('/v1/user/profile', authenticate, async (req, res) => {
   try {
     const User = mongoose.model('User');
     const user = await User.findById(req.user._id)
-      .select('username mobile email depositBalance winningsBalance lockedBalance kycStatus bankDetails profilePic joinedAt')
+      .select('username mobile depositBalance winningsBalance lockedBalance kycStatus bankDetails profilePic joinedAt')
       .lean();
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     res.json({
@@ -905,7 +912,6 @@ router.get('/v1/user/profile', authenticate, async (req, res) => {
         id:               user._id,
         username:         user.username,
         mobile:           user.mobile,
-        email:            user.email || '',
         depositBalance:   user.depositBalance  || 0,
         winningsBalance:  user.winningsBalance || 0,
         lockedBalance:    user.lockedBalance   || 0,

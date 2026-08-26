@@ -187,7 +187,6 @@ export const UsersList: React.FC = () => {
                 <div>
                   <h3 className="text-xl font-bold">{selectedUser.username}</h3>
                   <p className="text-gray-400">{formatters.phone(selectedUser.mobile)}</p>
-                  {selectedUser.email && <p className="text-sm text-gray-400">{selectedUser.email}</p>}
                 </div>
               </div>
 

@@ -94,11 +94,24 @@ const userSchema = new mongoose.Schema({
   walletAddress: { type: String, unique: true, sparse: true }, 
   profilePic: { type: String, default: '' },
 
-  // Optional contact email (Phase E, 2026-07-10) — delivery target for the
-  // Communication Platform's EMAIL channel. Not collected at registration
-  // (mobile is the identity); users without one are skipped by the adapter.
-  email: { type: String, trim: true, lowercase: true, default: '' },
-  
+  /*
+   * REMOVED 2026-08-26 — `email`.
+   *
+   * A player's identity is their Aadhaar and the mobile behind their Telegram
+   * account, and nothing else. The bot never asks for an email, so this field
+   * was empty for every player who could ever exist; the only way to set one
+   * was a profile form nobody had a reason to fill in.
+   *
+   * The Communication Platform's EMAIL channel went with it — a delivery
+   * adapter whose only possible answer was "user has no email on file" is not
+   * a channel, and keeping it meant carrying SMTP configuration and the
+   * `nodemailer` dependency for a path that could not fire.
+   *
+   * Do not reintroduce a player email. Reaching a player means Telegram or an
+   * in-app notification. `SupportLinks.email` is a different thing entirely —
+   * that is the platform's own public contact address and it stays.
+   */
+
   status: { type: String, enum: ['ACTIVE', 'BLOCKED', 'SUSPENDED', 'PENDING_KYC', 'DELETED'], default: 'ACTIVE', index: true },
   
   kycStatus: { type: String, enum: ['PENDING_SUBMISSION', 'PENDING_APPROVAL', 'APPROVED', 'REJECTED'], default: 'PENDING_SUBMISSION' },

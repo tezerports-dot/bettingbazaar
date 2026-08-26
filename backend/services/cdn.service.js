@@ -408,12 +408,6 @@ export async function verifyUploadedObject({ fileKey, cdnUrl, expectedUserId, ex
 // ═══════════════════════════════════════════════════════════════════════
 
 
-export async function generateDisputeUploadUrl(fileName, contentType, fileSize, userId, disputeId) {
-  return generatePresignedUploadUrl({
-    fileName, contentType, fileSize, category: 'disputes/evidence', userId, orderId: disputeId,
-  });
-}
-
 export async function generateChatUploadUrl(fileName, contentType, fileSize, userId, orderId) {
   return generatePresignedUploadUrl({
     fileName,
@@ -425,18 +419,21 @@ export async function generateChatUploadUrl(fileName, contentType, fileSize, use
   });
 }
 
-/**
- * Generate presigned URL for KYC document
+/*
+ * REMOVED 2026-08-26 — `generateKYCUploadUrl`.
+ *
+ * The platform collects no identity DOCUMENTS. KYC is a 12-digit Aadhaar number
+ * typed into the bot, held as a keyed hash plus a ciphertext, and verified in
+ * bulk against the issuing authority. There is no ID scan, no address proof and
+ * no selfie, so there is nothing to presign an upload for.
+ *
+ * It had already lost its route and its service; this was the last piece, and
+ * an unused function that mints a writable S3 URL under a `kyc/` prefix is an
+ * invitation to reintroduce the exact thing that was deliberately removed.
+ *
+ * Do not add it back. The strongest protection for an identity document is not
+ * holding one.
  */
-export async function generateKYCUploadUrl(fileName, contentType, fileSize, userId, docType) {
-  return generatePresignedUploadUrl({
-    fileName,
-    contentType,
-    fileSize,
-    category: `kyc/${docType}`, // kyc/id_proof, kyc/address_proof, kyc/selfie
-    userId,
-  });
-}
 
 /**
  * Generate presigned URL for payment proof
@@ -453,19 +450,6 @@ export async function generatePaymentProofUploadUrl(fileName, contentType, fileS
 }
 
 /**
- * Generate presigned URL for profile picture
- */
-export async function generateProfilePictureUploadUrl(fileName, contentType, fileSize, userId) {
-  return generatePresignedUploadUrl({
-    fileName,
-    contentType,
-    fileSize,
-    category: 'profile',
-    userId,
-  });
-}
-
-/**
  * Generate presigned URL for admin branding image
  */
 export async function generateBrandingUploadUrl(fileName, contentType, fileSize, userId, brandingCategory) {
@@ -474,16 +458,6 @@ export async function generateBrandingUploadUrl(fileName, contentType, fileSize,
     contentType,
     fileSize,
     category: `branding/${brandingCategory}`,
-    userId,
-  });
-}
-
-export async function generatePromoUploadUrl(fileName, contentType, fileSize, userId, location) {
-  return generatePresignedUploadUrl({
-    fileName,
-    contentType,
-    fileSize,
-    category: `content/${location}`,   // content/tricks_page, content/rules_page, etc.
     userId,
   });
 }
@@ -519,18 +493,26 @@ export async function testS3Connection() {
 // EXPORTS
 // ═══════════════════════════════════════════════════════════════════════
 
+/**
+ * The upload surface that still exists, and nothing else.
+ *
+ * Four category helpers were removed on 2026-08-26 — KYC (no documents are
+ * collected at all), dispute evidence, profile pictures and promo images (no
+ * caller anywhere in the repo). They were still listed here after their
+ * definitions were deleted, which is a ReferenceError at module load, not a
+ * tidiness problem: every route that uploads anything imports this file.
+ *
+ * What remains is what the platform actually uses: P2P chat attachments,
+ * payment proofs, and admin branding assets.
+ */
 export default {
   generatePresignedUploadUrl,
   generatePresignedDownloadUrl,
   deleteFile,
   verifyUploadedObject,
-  generateDisputeUploadUrl,
   generateChatUploadUrl,
-  generateKYCUploadUrl,
   generatePaymentProofUploadUrl,
-  generateProfilePictureUploadUrl,
   generateBrandingUploadUrl,
-  generatePromoUploadUrl,
   mimeRulesForCategory,
   matchesMagicBytes,
   testS3Connection,

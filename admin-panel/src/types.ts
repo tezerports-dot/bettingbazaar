@@ -35,7 +35,6 @@ export interface Admin {
   id?: string;
   username: string;
   mobile: string;
-  email?: string;
   role: 'admin' | 'subadmin' | 'queue_manager';
   isAdmin: boolean;
   isSubAdmin: boolean;
@@ -51,7 +50,6 @@ export interface User {
   _id: string;
   username: string;
   mobile: string;
-  email?: string;
 
   depositBalance: number;
   winningsBalance: number;

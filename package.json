@@ -59,7 +59,6 @@
     "jsonwebtoken": "^9.0.2",
     "kafkajs": "^2.2.4",
     "mongoose": "^9.9.3",
-    "nodemailer": "^9.0.5",
     "path-to-regexp": "^8.4.2",
     "pg": "^8.23.0",
     "prom-client": "^15.1.3",
