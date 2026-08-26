@@ -61,9 +61,20 @@ const { User } = await import('../../models/index.js');
 const { ReferralEarning } = await import('../../domains/referral/referral.model.js');
 const { KycVerification } = await import('../../domains/identity/kycVerification.model.js');
 const { generateReferralCode } = await import('../../domains/referral/referral.service.js');
+const { encryptField } = await import('../../domains/identity/fieldCrypto.util.js');
 
 const WEBHOOK_SECRET = 'test-webhook-secret-value';
 const CHANNEL_ID = '-1001234567890';
+
+/**
+ * A REAL ciphertext, not a placeholder.
+ *
+ * `activeConfig` decrypts this to get the bot token, and `sendTemplate` refuses
+ * to send at all without one — so a config carrying a null token would make
+ * every assertion about what the bot said fail for a reason that has nothing to
+ * do with what is being tested.
+ */
+const BOT_TOKEN_CIPHERTEXT = encryptField('123456789:AA-test-bot-token');
 
 function app() {
   const a = express();
@@ -97,6 +108,21 @@ async function until(predicate, { timeoutMs = 5000 } = {}) {
   }
 }
 
+/**
+ * Wait long enough for a handler to have finished, then assert it did nothing.
+ *
+ * A POSITIVE assertion can poll for the effect it wants (`until` above). A
+ * NEGATIVE one — "no message was sent" — has no effect to wait for, and
+ * asserting immediately would pass simply because the handler had not reached
+ * the send yet. That is the classic shape of a test which is green until the
+ * machine is busy.
+ *
+ * So negative assertions get a bounded settle. It is deliberately far longer
+ * than the work involved, because the cost of waiting is a few milliseconds and
+ * the cost of not waiting is a test that lies.
+ */
+const settle = () => new Promise((r) => setTimeout(r, 400));
+
 const lastSendTo = (chatId) =>
   [...sent].reverse().find((s) => String(s.chatId) === String(chatId) && s.method === 'sendMessage');
 
@@ -107,7 +133,7 @@ beforeEach(async () => {
 
   await TelegramConfig.create({
     generation: 1,
-    botTokenEncrypted: null,
+    botTokenEncrypted: BOT_TOKEN_CIPHERTEXT,
     botUsername: 'bazaar_signin_bot',
     webhookSecret: WEBHOOK_SECRET,
     channelId: CHANNEL_ID,
@@ -242,7 +268,7 @@ describe('the webhook is not an open door', () => {
       },
     }, 'not-the-secret').expect(401);
 
-    await new Promise((r) => setTimeout(r, 100));
+    await settle();
     expect(await TelegramPendingLink.findOne({ telegramUserId: '55502' })).toBeNull();
     expect(sent).toHaveLength(0);
   });
@@ -262,6 +288,9 @@ describe('one Aadhaar, one account', () => {
     await KycVerification.create({
       userId: first._id,
       aadhaarHash: hashAadhaar('999988887777'),
+      // Required on the schema, and rightly so — a KYC row with no recoverable
+      // Aadhaar could never be exported for verification.
+      aadhaarEncrypted: encryptField('999988887777'),
       aadhaarLast4: '7777', phone: '9800000010', status: 'PENDING_VERIFICATION',
     });
 
@@ -341,7 +370,10 @@ describe('a channel replacement does not spam the whole user base', () => {
     await until(async () =>
       (await TelegramIdentity.findOne({ telegramUserId: '55505' }).lean())?.channelStatus === 'member');
 
-    // …and nothing was sent, and no token was minted.
+    // …and nothing was sent, and no token was minted. Settled first: the cache
+    // write happens BEFORE the branch under test, so asserting on the poll
+    // alone would be checking a handler that had not got there yet.
+    await settle();
     expect(sent.filter((s) => String(s.chatId) === '55505')).toHaveLength(0);
     expect(await TelegramLoginToken.countDocuments({ userId: veteran._id })).toBe(0);
   });

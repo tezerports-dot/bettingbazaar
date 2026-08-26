@@ -12,6 +12,12 @@ import '../startup/mongooseGlobalOptions.js';
 process.env.NODE_ENV ||= 'test';
 process.env.JWT_SECRET ||= 'test-only-jwt-secret';
 process.env.AADHAAR_HMAC_SECRET ||= 'test-only-aadhaar-hmac-secret';
+// Field encryption (bot tokens, the Aadhaar ciphertext). `encryptField` throws
+// without it rather than falling back to something weaker, which is the right
+// production behaviour — so the test environment has to supply a real key.
+// 32 bytes, base64, fixed so a ciphertext written by one test file is readable
+// by another in the same run.
+process.env.IDENTITY_ENCRYPTION_KEY ||= 'dGVzdC1vbmx5LWlkZW50aXR5LWtleS0zMi1ieXRlcyE=';
 
 let replset;
 // Captured in beforeAll when DATABASE_URL is set, so beforeEach can keep the PG
