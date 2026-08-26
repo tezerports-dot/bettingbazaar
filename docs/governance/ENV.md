@@ -140,7 +140,6 @@ after the overlap (token TTL / order lifetime). Verification accepts current **o
 | `APP_BASE_URL` / `CANONICAL_HOST` | Public URL; optional canonical-host 301. |
 | `ALERT_WEBHOOK_URL` | Fallback money-path alert sink (or set `SystemConfig.alertWebhookUrl` in-app). |
 | `DEFAULT_ADMIN_MOBILE` / `DEFAULT_ADMIN_PASSWORD` | First-boot admin bootstrap — **change the password immediately after first login**. |
-| `SMTP_HOST` / `SMTP_FROM` / `SMTP_*` | Enables the EMAIL channel when set (no delivery until then). |
 | `MONGO_AUTO_INDEX` | `true` (build indexes at boot). Set `false` + run `npm run sync:indexes` in the pipeline to avoid boot-time builds on a scaled fleet. |
 | `PG_POOL_SIZE` | Postgres pool per instance. Keep `instances × (Mongo pool + PG pool) ≤` the DB tier's connection cap (§21). |
 | `ARGON2_MEMORY_KIB` / `ARGON2_TIME_COST` / `ARGON2_PARALLELISM` | Password-hash cost (OWASP minimum by default; raise on capable hardware). |

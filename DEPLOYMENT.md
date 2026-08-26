@@ -20,7 +20,7 @@ secrets first.
 | **MongoDB** | primary datastore | must be a **replica set** (even 1 node) — money transactions require it |
 | **PostgreSQL 18** | hybrid money ledger (`DATABASE_URL`) | required in prod; pin the CA via `PG_CA_CERT` |
 | **Redis** | rate limits, realtime fan-out, job queue | required at >1 replica |
-| **S3-compatible storage** | KYC / payment-proof / profile uploads (`S3_BUCKET_NAME`) | AWS S3, Cloudflare R2, Backblaze B2, MinIO… |
+| **S3-compatible storage** | Payment proofs, P2P chat attachments, branding assets (`S3_BUCKET_NAME`). No identity documents — KYC is an Aadhaar number. | AWS S3, Cloudflare R2, Backblaze B2, MinIO… |
 
 **Required env** (see `.env.example` for the full annotated list). Each secret must
 be **≥32 chars and non-placeholder** — the boot gate rejects weak ones:

@@ -268,8 +268,9 @@ for the load balancer to notice, then closes connections.
 - **Cloudflare in front:** DNS, WAF, DDoS protection, and CDN for static assets.
   Set `TRUST_PROXY` correctly or every rate limit will key off Cloudflare's IP
   instead of the user's — which silently disables per-IP rate limiting.
-- **Cloudflare R2** for KYC documents, uploads, branding, and backups. No egress
-  fees, which matters for a media-heavy KYC flow.
+- **Cloudflare R2** for payment proofs, chat attachments, branding assets and
+  backups. No egress fees. It holds **no identity documents** — KYC is an
+  Aadhaar number, so there is no media-heavy KYC flow to size for.
 
 ## Backups and disaster recovery
 
@@ -278,7 +279,7 @@ for the load balancer to notice, then closes connections.
 | PostgreSQL | `pg_basebackup` + WAL archiving to R2 | Continuous WAL, daily base | 30 days |
 | MongoDB | `mongodump` from a secondary, to R2 | Every 6h | 30 days |
 | Redis | RDB snapshot | Hourly | 7 days |
-| Uploads/KYC | Already in R2 | — | Versioned |
+| Uploads (proofs, chat, branding) | Already in R2 | — | Versioned |
 
 **Point-in-time recovery for Postgres is the one that matters.** With WAL
 archiving you can restore to any second. For a money platform that is the

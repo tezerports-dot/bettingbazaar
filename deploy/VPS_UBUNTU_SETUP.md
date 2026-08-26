@@ -386,8 +386,9 @@ server {
 
     client_max_body_size 10m;   # app caps JSON at 1m / 8m; this is the outer wall
 
-    # KYC documents and payment proofs upload direct to the bucket via presigned
-    # URLs, so large bodies never traverse this proxy.
+    # Payment proofs, chat attachments and branding assets upload direct to the
+    # bucket via presigned URLs, so large bodies never traverse this proxy.
+    # (There are no KYC documents — KYC is an Aadhaar number, not a file.)
 
     location / {
         proxy_pass http://bb_api;
@@ -483,7 +484,8 @@ Then the checks that actually prove it works end to end:
    process and the WebSocket path together.
 4. **Open the admin panel and confirm the SSE stream stays connected past 60
    seconds** — that proves `proxy_read_timeout`.
-5. **Submit a KYC document or upload an asset** — that proves the bucket.
+5. **Upload a branding asset from the admin panel** — that proves the bucket.
+   (Not a KYC document: none exist. KYC is an Aadhaar number typed into the bot.)
 
 ## 13. After first boot
 

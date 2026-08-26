@@ -60,7 +60,7 @@ For every frame, include **default, loading, empty, validation error, server err
 | Live layers | footer is z-40; game chat modal must remain z-50 | Modal/drawer layer system: base 0; sticky nav 40; modal 50; auth emergency dialog 200. |
 
 ### Shared component inventory
-Create reusable variants for: `AppLogo`, `Avatar`, `StatusBadge`, `RiskBadge`, `MoneyValue`, `ReferenceId`, `PrimaryButton`, `SecondaryButton`, `DangerButton`, `IconButton`, `TextInput`, `MoneyInput`, `PasswordInput`, `OTP/CaptchaInput`, `Search`, `DateRange`, `Select`, `Combobox`, `Tabs`, `SegmentedControl`, `Toast`, `Banner`, `EmptyState`, `ErrorState`, `LoadingSkeleton`, `DataTable`, `Pagination`, `SideDrawer`, `ConfirmDialog`, `BottomSheet`, `Dialog`, `ChatThread`, `FileUploader`, `KycDocumentCard`, `Timeline`, `AuditTrail`, `RealtimeIndicator`, and `PermissionGate`.
+Create reusable variants for: `AppLogo`, `Avatar`, `StatusBadge`, `RiskBadge`, `MoneyValue`, `ReferenceId`, `PrimaryButton`, `SecondaryButton`, `DangerButton`, `IconButton`, `TextInput`, `MoneyInput`, `PasswordInput`, `OTP/CaptchaInput`, `Search`, `DateRange`, `Select`, `Combobox`, `Tabs`, `SegmentedControl`, `Toast`, `Banner`, `EmptyState`, `ErrorState`, `LoadingSkeleton`, `DataTable`, `Pagination`, `SideDrawer`, `ConfirmDialog`, `BottomSheet`, `Dialog`, `ChatThread`, `FileUploader`, `Timeline`, `AuditTrail`, `RealtimeIndicator`, and `PermissionGate`.
 
 ### Universal status vocabulary
 Use a consistent chip system: `OPEN / ACTIVE` green; `PENDING / QUEUED` amber; `PROCESSING` blue; `COMPLETED / APPROVED` green; `REJECTED / FAILED / BLOCKED` red; `CANCELLED / EXPIRED` gray; `RESULT DECLARED` purple/gold. Always pair color with text/icon.
@@ -89,7 +89,7 @@ Use a consistent chip system: `OPEN / ACTIVE` green; `PENDING / QUEUED` amber; `
 | `#/vip` | `VIPPage` | current tier/progress, benefits, VIP configuration disclosure | `/api/vip/config`, `/api/vip/my`, `/api/bonuses/my` |
 | `#/gift-code` | `GiftCodePage` | code input, redeem CTA, success summary, redemption error | `POST /api/giftcode/redeem` |
 | `#/recover-account` | `AccountRecoveryPage` | masked Aadhaar check with confirmation, generic anti-enumeration result, recovery request, status polling, safe recovery explanation; raw Aadhaar is POST-body only, never placed in URLs, browser storage, analytics, error telemetry, request metadata, or logs, and must be cleared from component state immediately after submission | `/api/auth/check-aadhaar`, `/recover`, and `/recover/status` must be privacy-safe: strict rate limit, generic responses where applicable, masked Aadhaar input confirmation, no raw Aadhaar in URLs/storage/analytics/telemetry/metadata/server logs, and immediate Aadhaar clearing after each submit |
-| `#/profile` | `ProfilePage` | profile fields, avatar upload, bank/UPI details, KYC **status only** (there is nothing to submit — the bot took the Aadhaar before the account existed), sign-out | profile, bank, upload endpoints |
+| `#/profile` | `ProfilePage` | username (the only editable field — no email, no password; Aadhaar and mobile are proved, not typed), avatar upload, bank/UPI details, KYC **status only** (there is nothing to submit — the bot took the Aadhaar before the account existed), sign-out | profile, bank, upload endpoints |
 | `#/history` | `HistoryPage` | payment/order timeline, filters, order detail, proof/chat/dispute links | `/api/payment/orders`, `/api/payment/order/:id`, status endpoints |
 | `#/my-bets` | `MyBetsPage` | bet list, cycle/side/amount/status filters, reference IDs | `GET /api/user/:userId/bets` |
 | `#/results` | `ResultsPage` | result timeline/table, cycle filter, winner/pool summary | cycle history + winners sources |
@@ -105,7 +105,7 @@ Use a consistent chip system: `OPEN / ACTIVE` green; `PENDING / QUEUED` amber; `
 |---|---|---|---|
 | Auth | protected CTA/header | **No form.** A single "Sign in with Telegram" action deep-links to the bot (carrying any held `?ref=` code); the bot verifies identity and sends a one-time link that lands on `#/auth/telegram`. Design the bot-handoff explainer, the "signing you in…" state, and the one indistinguishable failure state | `/api/telegram/public-config`, `/api/telegram/exchange`, `/api/v1/auth/logout`, `/me` |
 | Wallet | wallet CTA / game funding CTA | balance strip; Add Funds/Withdraw tabs; amount; 1:1 token/₹ preview; saved bank details; queued/complete/failed order state | deposit create; withdrawal create; order polling |
-| KYC | profile/withdraw eligibility | requirement explainer; document type; upload progress; submitted/reviewed/rejected states | user KYC + upload URL endpoints |
+| KYC | profile/withdraw eligibility | **status only — there is nothing to submit.** The bot takes the Aadhaar NUMBER before the account exists; no document, no selfie, no upload progress. Design the "being verified, nothing for you to do" state and the rejected/contact-support state | user profile (`kycStatus`) |
 | Share | referral/winner/promo CTA | native share, copy link, QR/visual fallback, success toast | referral data; client share APIs |
 | Place bet confirmation | recommended addition before irrevocable submission | cycle, side, amount, balances, risk notice, confirm/cancel; idempotent pending state | `POST /api/bet/place` |
 | Payment order detail | history/wallet | timeline, assigned merchant state, chat/proof/dispute CTA, reference ID | payment order, upload, dispute endpoints |
@@ -117,7 +117,7 @@ Use a consistent chip system: `OPEN / ACTIVE` green; `PENDING / QUEUED` amber; `
 2. **Add funds:** Wallet → Add Funds → amount → create payment order → queued → merchant assigned/accepted → chat/proof as available → completed → balance refresh and receipt.
 3. **Withdraw winnings:** Wallet → Withdraw → validate saved bank details and winnings balance → review → create withdrawal → queued/processing → completion or rejected explanation.
 4. **Account recovery:** auth modal link → Aadhaar check → recovery form → submitted → status screen → approved/rejected communication.
-5. **KYC:** profile/wallet eligibility prompt → consent + document selection → upload → submission receipt → review status → resolve rejection with actionable reason.
+5. **KYC:** there is no in-app KYC journey to design. The Aadhaar NUMBER is taken by the Telegram bot before the account exists, and verification runs in bulk on the operator's schedule. The app shows STATUS only — design the "being verified, nothing for you to do" state (which every new player sees) and the rejected → contact-support state. No consent screen, no document selection, no upload progress, no submission receipt.
 
 ---
 
@@ -542,7 +542,7 @@ Show a subtle “Live” state, a reconnecting banner after disconnect, and a no
 For every mutating endpoint: `idle → validate locally → submitting → success | recoverable error | auth expired | rate limited`. Disable only the action that is in flight; retain other safe navigation. Use an idempotency/reference label in financial flows where available.
 
 ### File upload pattern
-For user chat, merchant chat, payment proof, KYC, profile picture, merchant QR, branding, and app assets: design `select → file validation → upload URL request → upload progress → confirm upload → preview → remove/retry`. Include type/size errors, expired URL, connectivity failure, and sensitive-document privacy language.
+For user chat, merchant chat, payment proof, profile picture, merchant QR, branding, and app assets: design `select → file validation → upload URL request → upload progress → confirm upload → preview → remove/retry`. Include type/size errors, expired URL, and connectivity failure. **KYC is not in this list and must not be added to it** — no identity document is ever uploaded.
 
 ### Tables
 Admin and merchant tables need column visibility, sortable columns where meaningful, filter chips, date range, pagination/loading skeleton, empty-state CTA, reference ID copy, row click to detail drawer, and no-data/export behavior.

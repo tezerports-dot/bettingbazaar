@@ -221,6 +221,46 @@ changes.
 
 ---
 
+### 6a. If identity documents are ever proposed again
+
+They must not come back as a resurrection of the old module. It was removed on
+2026-08-25 with its private bucket and presigned review path, and on 2026-08-26
+the last orphaned function that could mint a writable URL under a `kyc/` prefix
+went too — it had no caller, which was exactly what made it dangerous: a working
+tool for reintroducing document collection without anyone deciding to.
+
+**The strongest protection for an identity document is not holding one.** An
+operator who cannot open a scan cannot leak one, and a bucket that does not
+exist cannot be misconfigured. That is the current position and it is
+deliberate, not an omission.
+
+If a regulator ever forces the question, these are the constraints a new
+implementation has to satisfy — each learned expensively:
+
+1. **A dedicated private bucket.** Never the one serving public assets — one
+   misrouted category silently republishes an identity document.
+2. **Store a key, never a URL.** A key is a reference; a URL is a grant.
+3. **`select: false` on the key field.** Several admin routes return whole user
+   documents, and a key that ships by default puts the reference back into API
+   responses, browser history and support tickets.
+4. **Read access is a decision at review time** — authenticated reviewer,
+   short-lived grant, recorded. Not a permanent property of a string.
+5. **Record the key in the audit log, never the grant.** The audit store is one
+   nobody deletes from; a live credential must not land in it.
+6. **Fail closed.** Every other upload category may degrade to 503 when storage
+   is unconfigured; a missing chat attachment is an inconvenience. Here,
+   "fall back to the old path" means publishing an identity document.
+7. **Re-check ownership when minting a grant.** If a mirror or migration ever
+   crossed two records, refuse rather than show a reviewer the wrong person's ID.
+8. **Enumerate projection leaves, never a parent and its child.** MongoDB 4.4+
+   rejects a projection containing both a path and its prefix, and it throws at
+   query time against a real server only.
+
+Proof the path is gone: `tests/unit/kycDocumentPathRemoved.test.js` and
+`tests/unit/identitySurfaceRemoved.test.js`.
+
+---
+
 ## 7. Replacing the bot or the channel
 
 `routes/admin/telegram.admin.routes.js`, admin panel → **Telegram Setup**.
@@ -515,7 +555,7 @@ and the commit history, the reference is out of date.
 | `POST /api/user/kyc/:docType/upload-url` | Nothing. There is no document |
 | `POST /api/user/:userId/kyc` | The bot takes the Aadhaar before the account exists |
 | `GET /api/admin/kyc/:userId/document/:docType` | Nothing to view |
-| `services/kycDocuments.service.js` + the private bucket | See `KYC_DOCUMENT_STORAGE.md` for the record |
+| `services/kycDocuments.service.js` + the private bucket | Nothing stores an identity document. The constraints a future implementation would have to satisfy are in §6a |
 | `User.aadhaarHash`, `kycData.aadhaarNumber`, `nameOnAadhaar`, `nameOnPAN`, `panNumber`, `idProofKey`, `photoKey`, `idProofUrl`, `photoUrl` | `KycVerification` |
 | `admin.service.js` approve/rejectKYC/getKYCQueue | `decideKyc` — they had no callers and raced |
 

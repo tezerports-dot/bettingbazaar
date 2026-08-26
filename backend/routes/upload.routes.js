@@ -284,7 +284,7 @@ router.post('/user/payment-proof/:orderId/confirm-upload', authenticate, async (
 // document is the one never collected.
 //
 // Do not re-add an upload endpoint here without the private-store guarantees
-// that used to sit on this one; docs/KYC_DOCUMENT_STORAGE.md records them.
+// that used to sit on this one; docs/IDENTITY_AND_REFERRALS.md §6a records them.
 // ═══════════════════════════════════════════════════════════════════════
 
 // ── Profile picture upload (used by profile page) ────────────────────────────

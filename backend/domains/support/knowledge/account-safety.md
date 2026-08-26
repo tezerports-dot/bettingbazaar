@@ -25,12 +25,17 @@ admin reviews it.
 ## If your account is blocked or flagged
 
 Contact human support. An admin can review and, if appropriate, clear the flag or
-unblock the account. Support may ask you to verify your identity, but will
-**never** ask for your password or OTP.
+unblock the account. Support may ask you to confirm details you already gave us,
+but will **never** ask you to send your Aadhaar number or forward a sign-in link.
 
 ## Protecting your account
 
-- Enable **two-factor authentication (2FA)** if available in your settings.
-- Never share your password, OTP, or KYC documents with anyone.
+- Keep control of the Telegram account you signed up with — it *is* your login.
+  If you lose it but still have the same mobile number, our recovery bot can
+  re-link your account; it needs both the number and the matching Aadhaar.
+- Never share your Aadhaar number or a sign-in link with anyone. Your sign-in
+  link works only once and only for you. (There is no password and no OTP on
+  this platform, and there are no KYC documents — so nobody has a legitimate
+  reason to ask you for any of them.)
 - Use your own bank/UPI account, matching your KYC name, for deposits and
   withdrawals.
