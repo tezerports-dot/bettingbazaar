@@ -169,8 +169,24 @@ const sentAfter = (mark, chatId) =>
  * assertion rather than at the race.
  *
  * So: take the mark, post, and wait for the reply, with no window in between
- * for a caller to sequence on the wrong thing. Waiting for THIS reply is also
- * what makes the NEXT step's mark safe.
+ * for a caller to sequence on the wrong thing.
+ *
+ * ── The rule, stated correctly ──────────────────────────────────────────────
+ * EVERY step that produces a reply must go through here — not only the step
+ * whose reply is being asserted.
+ *
+ * The narrower rule ("the mark is taken immediately before the post, so this
+ * site is fine") is the one that let the bug survive a review of exactly these
+ * lines. It is wrong because the send log is shared and append-only: an
+ * un-drained reply from step N is still in flight when step N+1 takes its mark,
+ * lands after it, and is returned as step N+1's reply. The end-to-end signup
+ * failed that way — the contact step was sequenced on `User.findOne(...)`, so
+ * its "join the channel" prompt landed inside the join step's window and was
+ * read as the login link.
+ *
+ * A step is safe only if the reply before it has been OBSERVED ON THE SEND LOG.
+ * A database row the handler wrote first proves nothing about a send it has
+ * not reached yet.
  *
  * Only for steps that do reply — a negative assertion has nothing to wait for
  * and must use `settle()`.
@@ -223,13 +239,13 @@ describe('a referred player signs up, start to finish', () => {
     // ── 2. Telegram opens the bot and sends /start with the payload ────────
     // This is what the START button produces: the code arrives as the argument,
     // so the invited player never types anything.
-    await update({
+    await say({
       message: {
         message_id: 1, chat: { id: 55501 },
         from: { id: 55501, first_name: 'Invited', username: 'invited' },
         text: `/start ${referrerCode}`,
       },
-    });
+    }, 55501);
 
     const pending = await until(() => TelegramPendingLink.findOne({ telegramUserId: '55501' }).lean());
     expect(pending.step).toBe('AWAITING_AADHAAR');
@@ -238,13 +254,13 @@ describe('a referred player signs up, start to finish', () => {
     expect(pending.referralCode).toBe(referrerCode);
 
     // ── 3. They send their Aadhaar ────────────────────────────────────────
-    await update({
+    await say({
       message: {
         message_id: 2, chat: { id: 55501 },
         from: { id: 55501, first_name: 'Invited' },
         text: '123456789012',
       },
-    });
+    }, 55501);
 
     await until(async () =>
       (await TelegramPendingLink.findOne({ telegramUserId: '55501' }).lean())?.step === 'AWAITING_CONTACT');
@@ -258,13 +274,16 @@ describe('a referred player signs up, start to finish', () => {
     expect(JSON.stringify(held)).not.toContain('123456789012');
 
     // ── 4. They tap "share my contact" — the account comes into being ─────
-    await update({
+    // Drained, not just posted: this reply is the "join the channel" prompt,
+    // and if it is still in flight when step 5 takes its mark it lands INSIDE
+    // step 5's window and gets read as the login link.
+    await say({
       message: {
         message_id: 3, chat: { id: 55501 },
         from: { id: 55501, first_name: 'Invited' },
         contact: { phone_number: '+919800000042', user_id: 55501 },
       },
-    });
+    }, 55501);
 
     const player = await until(() => User.findOne({ mobile: '9800000042' }).lean());
     expect(player.referredBy?.toString()).toBe(referrer._id.toString());
@@ -278,14 +297,13 @@ describe('a referred player signs up, start to finish', () => {
 
     // ── 5. They join the channel ──────────────────────────────────────────
     api.chatMemberStatus = 'member';
-    const mark = sent.length;   // only messages sent AFTER the join count
-    await update({
+    const link = await say({
       chat_member: {
         chat: { id: CHANNEL_ID },
         from: { id: 55501 },
         new_chat_member: { user: { id: 55501 }, status: 'member' },
       },
-    });
+    }, 55501);
 
     const numbered = await until(async () => {
       const u = await User.findById(player._id).lean();
@@ -301,7 +319,23 @@ describe('a referred player signs up, start to finish', () => {
     expect(earned[0].amountPaise).toBe(2500);       // ₹25
 
     // ── 7. The bot sent a login link, and it works exactly once ───────────
-    const link = await until(() => sentAfter(mark, 55501));
+    // The conversation as a whole, because every per-step window is a slice of
+    // this one log: a reply that arrives late, or twice, lands in somebody
+    // else's window and is read as the wrong message. That is exactly how this
+    // test once failed — comparing the join prompt against /token=/ and
+    // blaming the login link.
+    //
+    // Four replies, one per step, and the link is the last of them. Counting
+    // them is what catches a straggler; naming their text would only pin the
+    // copy, which an admin can edit.
+    const conversation = sent.filter((s) => String(s.chatId) === '55501');
+    expect(conversation, 'one reply per step: welcome, contact, join, link').toHaveLength(4);
+    expect(conversation.at(-1)).toBe(link);
+    expect(
+      conversation.filter((s) => /token=/.test(s.text)),
+      'only the final message may carry a login token',
+    ).toHaveLength(1);
+
     const token = /token=([A-Za-z0-9_-]+)/.exec(link.text)?.[1];
     expect(token, 'the login message must carry a token').toBeTruthy();
 
@@ -571,6 +605,11 @@ describe('replacing the channel', () => {
     await TelegramConfig.updateMany({ active: true }, { $set: { active: false } });
     await TelegramConfig.create({
       generation: 2,
+      // The bot is CARRIED FORWARD across a channel flip — that is the whole
+      // design, and a generation without a token is a config that could not
+      // send. Omitting it here made every run log "bot token could not be
+      // decrypted", which this test does not care about but a future one will.
+      botTokenEncrypted: BOT_TOKEN_CIPHERTEXT,
       botUsername: 'bazaar_signin_bot', webhookSecret: WEBHOOK_SECRET,
       channelId: '-1009999999999', channelUsername: 'bazaar_new',
       channelInviteLink: 'https://t.me/+newinvite', active: true,
