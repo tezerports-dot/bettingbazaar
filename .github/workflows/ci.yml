@@ -48,19 +48,31 @@ jobs:
       # package.json and the lockfile disagree — production runs exactly this.
       - name: Install dependencies (reproducible)
         run: npm ci --legacy-peer-deps
+      # ── `--reporter=github-actions` on every suite, deliberately ────────────
+      # Vitest's GitHub reporter emits `::error file=…,line=…::` workflow
+      # commands, which GitHub turns into ANNOTATIONS on the check run. Those
+      # are readable through the API; the raw step log frequently is not.
+      #
+      # The money suites run against real service containers, and those
+      # containers log every expected constraint violation the concurrency
+      # tests deliberately provoke — thousands of lines of "duplicate key value
+      # violates unique constraint", by design. That output dominates the tail
+      # of the job log, so "which assertion failed" can be genuinely unreadable
+      # from the log alone. The annotation carries the file, the line and the
+      # message regardless.
       - name: Unit tests (money math — no DB)
-        run: npm run test:unit
+        run: npm run test:unit -- --reporter=default --reporter=github-actions
       # The Postgres-authoritative wallet path: row locking, the negative-balance
       # guard and the unique-tx_id idempotency gate are behaviours of the
       # database, so they are proven against a real one. Needs no MongoDB, which
       # is why it is a separate suite (see vitest.pg.config.ts).
       - name: Postgres money-path tests (real Postgres, no MongoDB)
-        run: npm run test:pg
+        run: npm run test:pg -- --reporter=default --reporter=github-actions
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bb_test
           PG_SSL: 'false'
       - name: Integration tests (real in-memory MongoDB + real Redis + real Postgres)
-        run: npm run test:integration
+        run: npm run test:integration -- --reporter=default --reporter=github-actions
         env:
           MONGOMS_VERSION: 7.0.14
           REDIS_URL: redis://localhost:6379
