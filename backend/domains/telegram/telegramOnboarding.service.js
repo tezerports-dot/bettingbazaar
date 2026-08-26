@@ -50,6 +50,25 @@ export function isValidAadhaar(raw) {
   return /^\d{12}$/.test(String(raw || '').replace(/[\s-]/g, ''));
 }
 
+/**
+ * Normalise a referral code arriving from a deep link.
+ *
+ * Codes are GENERATED uppercase, and looked up by exact match. A payload that
+ * arrives in another case therefore matches nothing — and the failure is
+ * completely silent: the signup succeeds, the referrer simply never earns, and
+ * nobody finds out. That is the worst possible shape for an attribution bug.
+ *
+ * A code arrives in lower case more often than it sounds: somebody retypes a
+ * link they were read out, a client lowercases a URL it thinks is a hostname, or
+ * a code is copied out of a message that was auto-capitalised. Anything that is
+ * not a plausible code at all becomes null rather than being stored as junk that
+ * will never match.
+ */
+export function normaliseReferralCode(raw) {
+  const v = String(raw || '').trim().toUpperCase();
+  return /^[A-Z0-9_-]{4,32}$/.test(v) ? v : null;
+}
+
 // ── Step 1: /start ──────────────────────────────────────────────────────────
 
 /**
@@ -77,7 +96,11 @@ export async function beginOnboarding({ telegramUserId, username, firstName, ref
       },
       // Only on insert: a returning user restarting the flow must not lose the
       // referrer they originally arrived with.
-      $setOnInsert: { referralCode: referralCode || null },
+      //
+      // Normalised, because the lookup at contact-share time is an exact match
+      // against a code that was generated in upper case — and a mismatch there
+      // costs the referrer their earning with no error anywhere.
+      $setOnInsert: { referralCode: normaliseReferralCode(referralCode) },
     },
     { upsert: true, new: true },
   );
@@ -234,7 +257,18 @@ export async function completeOnboarding({ userId }) {
   const user = await User.findById(userId);
   if (!user) return { ok: false, reason: 'no_user' };
 
-  if (!user.joiningNumber) {
+  // Whether this join is the one that FINISHES a signup, or just another join by
+  // somebody who finished long ago. The absence of a joining number is exactly
+  // that question: it is allocated here, once, and never cleared.
+  //
+  // The caller needs this to decide whether to send an unsolicited login link.
+  // See the note in telegram.routes.js — on a channel replacement every existing
+  // player re-joins, and treating each of those as a fresh signup would send the
+  // whole user base a login link they did not ask for, through the one bot they
+  // are all simultaneously trying to sign in with.
+  const firstCompletion = !user.joiningNumber;
+
+  if (firstCompletion) {
     user.joiningNumber = await nextJoiningNumber();
     await user.save();
   }
@@ -245,5 +279,5 @@ export async function completeOnboarding({ userId }) {
   await TelegramPendingLink.deleteOne({ telegramUserId: { $exists: true }, phone: user.mobile })
     .catch(() => { /* the pending row also expires on its own */ });
 
-  return { ok: true, joiningNumber: user.joiningNumber, earnings };
+  return { ok: true, firstCompletion, joiningNumber: user.joiningNumber, earnings };
 }

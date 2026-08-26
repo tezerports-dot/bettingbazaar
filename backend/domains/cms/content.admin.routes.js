@@ -26,35 +26,28 @@ router.get('/content/faq', authenticate, isAdminOrSubAdmin, async (req, res) => 
     const { category, publishedOnly } = req.query;
     // Admin sees ALL FAQs (published and unpublished) by default so drafts are visible
     const showPublishedOnly = publishedOnly === 'true'; // default: show all
-    let faqs = await contentService.getFAQs(category || null, showPublishedOnly);
+    const faqs = await contentService.getFAQs(category || null, showPublishedOnly);
 
-    // Fall back to SystemConfig if FAQ model is empty
-    // (FAQs may have been seeded into SystemConfig before the FAQ model existed)
-    if (!faqs || faqs.length === 0) {
-      const SystemConfig = mongoose.model('SystemConfig');
-      const cfg = await SystemConfig.findOne({ key: 'faq' }).lean();
-      const legacy = cfg?.value || [];
-      if (legacy.length > 0) {
-        
-        const FAQ = mongoose.model('FAQ');
-        const created = await FAQ.insertMany(
-          legacy.map((f, i) => ({
-            question:    f.question || f.q || '',
-            answer:      f.answer   || f.a || '',
-            category:    f.category || 'general',
-            order:       i,
-            isPublished: true,
-            createdBy:   req.user._id,
-          })),
-          { ordered: false }
-        );
-        // Clear SystemConfig faq key now that they're in the FAQ model
-        await SystemConfig.findOneAndUpdate({ key: 'faq' }, { $unset: { value: 1 } });
-        faqs = created;
-        console.log(`✅ Migrated ${created.length} FAQs from SystemConfig → FAQ model`);
-      }
-    }
-
+    /*
+     * REMOVED (2026-08-26): a "migrate legacy FAQs out of SystemConfig" block
+     * that could never run, and would have corrupted data if it had.
+     *
+     * It read `SystemConfig.findOne({ key: 'faq' })`. `SystemConfig.key`
+     * defaults to 'main' and is unique, and nothing in the codebase has ever
+     * created a document with any other key — so the lookup matched nothing,
+     * every time, on every admin FAQ page load.
+     *
+     * The dangerous part was its cleanup. Having inserted the legacy rows into
+     * the FAQ model it called `$unset: { value: 1 }` to clear the source — but
+     * `value` is not a declared path on SystemConfig, and Mongoose strict mode
+     * strips undeclared paths out of update operators without complaint. The
+     * unset was silently discarded. So in the one scenario the block existed
+     * for, it would have re-migrated the same legacy FAQs on EVERY request,
+     * inserting duplicates forever with nothing reporting a problem.
+     *
+     * Found by tests/unit/schemaPathWrites.test.js, which is now the standing
+     * guard for this bug class.
+     */
     res.json({ success: true, faqs });
   } catch (error) {
     console.error('Get FAQs error:', error);

@@ -22,7 +22,7 @@ import express from 'express';
 import crypto from 'crypto';
 import mongoose from 'mongoose';
 import { TelegramIdentity, TelegramPendingLink } from './telegram.model.js';
-import { activeConfig, sendMessage } from './telegramClient.js';
+import { activeConfig, sendMessage, liveBot } from './telegramClient.js';
 import { applyMemberUpdate, isJoinedStatus, joinPrompt, membershipFor } from './telegramMembership.js';
 import { authenticate } from '../identity/auth.middleware.js';
 import {
@@ -60,8 +60,47 @@ const contactKeyboard = {
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /api/telegram/webhook — every update from the primary bot
 // ═══════════════════════════════════════════════════════════════════════════
-router.post('/webhook', async (req, res) => {
+/**
+ * The webhook needs a BOT. It does not need a channel.
+ *
+ * `activeConfig()` returns null when no channel generation is active, and this
+ * handler used to refuse everything on that basis — which made a perfectly
+ * good sign-in bot look completely dead. That is not a hypothetical state: it
+ * is exactly where a launch sits between registering the bot (which registers
+ * its webhook with Telegram, so updates start arriving immediately) and setting
+ * the channel. Telegram would deliver, we would answer 503 to all of it, and
+ * nothing anywhere would say why.
+ *
+ * It is also inconsistent with the rest of the system, which already treats a
+ * missing channel as "membership is not enforced yet" rather than as an outage
+ * — see requireChannelMembership's `unconfigured` branch.
+ *
+ * So the bot is resolved on its own terms. With no channel there is no
+ * `channelId`, which makes `handleChatMember` ignore every membership event —
+ * correct, because there is no channel to be a member of.
+ */
+async function webhookContext() {
   const cfg = await activeConfig();
+  if (cfg?.webhookSecret) return cfg;
+
+  const bot = await liveBot('signin');
+  if (!bot?.webhookSecret) return null;
+
+  console.warn('[telegram] a sign-in bot is live but no channel generation is active — '
+    + 'signup will run without the channel step until one is set in the admin panel');
+  return {
+    generation: 0,
+    botUsername: bot.username,
+    botToken: bot.token,
+    webhookSecret: bot.webhookSecret,
+    channelId: null,
+    channelUsername: '',
+    channelInviteLink: '',
+  };
+}
+
+router.post('/webhook', async (req, res) => {
+  const cfg = await webhookContext();
   if (!cfg) return res.status(503).json({ ok: false });
 
   if (!secretMatches(req.get('X-Telegram-Bot-Api-Secret-Token'), cfg.webhookSecret)) {
@@ -161,7 +200,16 @@ async function handleMessage(message, cfg) {
     });
   }
 
-  return sendMessage(chatId, 'Please join our channel to finish signing up.');
+  // AWAITING_CHANNEL: the account exists and the only thing left is the join.
+  // The invite link is fetched rather than assumed, because the channel is
+  // replaceable and a player sitting at this step through a replacement must be
+  // sent to the CURRENT one. Without the link this reply was a dead end — an
+  // instruction with nothing to act on.
+  const prompt = await joinPrompt();
+  return sendMessage(chatId,
+    'Almost done — join our official channel to finish signing up'
+    + `${prompt?.inviteLink ? `:\n\n${prompt.inviteLink}` : '.'}`
+    + '\n\nI will send your login link the moment you have joined.');
 }
 
 async function handleContact({ message, telegramUserId, chatId, cfg }) {
@@ -199,6 +247,10 @@ async function handleContact({ message, telegramUserId, chatId, cfg }) {
 // ── chat_member: the membership cache's primary writer ─────────────────────
 
 async function handleChatMember(chatMember, cfg) {
+  // No channel configured: there is no membership to record. Checked explicitly
+  // rather than relying on `String(null)` failing to match an id, which is true
+  // but only by accident.
+  if (!cfg.channelId) return;
   // Only the official channel matters; the bot may be in other chats.
   if (String(chatMember.chat?.id) !== String(cfg.channelId)) return;
 
@@ -214,7 +266,23 @@ async function handleChatMember(chatMember, cfg) {
   const identity = await TelegramIdentity.findOne({ telegramUserId }).select('userId').lean();
   if (!identity) return;
 
-  await completeOnboarding({ userId: identity.userId });
+  const done = await completeOnboarding({ userId: identity.userId });
+
+  // ── Only a FIRST completion earns an unsolicited login link ───────────────
+  //
+  // This handler fires on every join, and a channel replacement makes every
+  // existing player join. Sending a login link on each of those would, at the
+  // moment of a flip, mint a token and push a message to the entire active user
+  // base — through the single bot they are all simultaneously trying to sign in
+  // with, against a Bot API limit of roughly thirty messages a second. The flip
+  // would rate-limit the recovery it exists to enable, and the messages would be
+  // unsolicited login links to people who are already signed in.
+  //
+  // A returning player who genuinely wants a link sends /start and gets one.
+  if (!done.firstCompletion) return undefined;
+
+  // In a private chat Telegram's chat id IS the user's id, which is why the
+  // same value serves as both here.
   return sendLoginLink({ chatId: telegramUserId, telegramUserId, userId: identity.userId, cfg });
 }
 
@@ -248,9 +316,13 @@ function rememberRecovery(id, aadhaar) {
 }
 
 router.post('/recovery/webhook', async (req, res) => {
+  // Resolved the same way the primary webhook is, and for the same reason: a
+  // recovery bot registered in the fleet works whether or not a channel
+  // generation happens to be active.
   const cfg = await activeConfig();
-  if (!cfg?.recoveryWebhookSecret) return res.status(503).json({ ok: false });
-  if (!secretMatches(req.get('X-Telegram-Bot-Api-Secret-Token'), cfg.recoveryWebhookSecret)) {
+  const secret = cfg?.recoveryWebhookSecret || (await liveBot('recovery'))?.webhookSecret;
+  if (!secret) return res.status(503).json({ ok: false });
+  if (!secretMatches(req.get('X-Telegram-Bot-Api-Secret-Token'), secret)) {
     return res.status(401).json({ ok: false });
   }
   res.json({ ok: true });

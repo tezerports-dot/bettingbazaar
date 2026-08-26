@@ -99,8 +99,23 @@ describe('recovery re-links rather than re-creates', () => {
 
 describe('the recovery bot is isolated from the primary bot', () => {
   it('authenticates on its own secret', () => {
-    expect(routes).toMatch(/cfg\?\.recoveryWebhookSecret/);
-    expect(routes).toMatch(/secretMatches\(req\.get\('X-Telegram-Bot-Api-Secret-Token'\), cfg\.recoveryWebhookSecret\)/);
+    // Asserted over the recovery handler's OWN text rather than against one
+    // exact expression, so the secret may be resolved however it needs to be —
+    // the config's embedded value, or the recovery bot in the fleet — while the
+    // thing that actually matters stays pinned: it must never be the PRIMARY
+    // bot's secret, which would let a compromised sign-in bot drive account
+    // recovery, the precise separation this whole second bot exists for.
+    const handler = routes.slice(routes.indexOf("'/recovery/webhook'"), routes.indexOf("'/public-config'"));
+    expect(handler, 'the recovery secret must be a recovery credential').toMatch(/recovery/i);
+    expect(handler).toMatch(/secretMatches\(req\.get\('X-Telegram-Bot-Api-Secret-Token'\)/);
+    // The exact bypass: authenticating recovery against the primary's secret.
+    // Asserted as "the primary secret is not named anywhere in this handler"
+    // rather than as a pattern around the comparison — the argument list
+    // contains its own parentheses, so any regex trying to span it is one
+    // `req.get(...)` away from silently matching nothing. The recovery handler
+    // has no legitimate use for `cfg.webhookSecret` at all.
+    expect(handler, 'recovery must not accept the primary bot’s secret')
+      .not.toMatch(/\bcfg\.webhookSecret\b/);
   });
 
   it('replies through the recovery bot, not the primary one', () => {

@@ -136,21 +136,48 @@ export async function registerBot({ label, role, token, notes = '', actorId }) {
  * the posture the config activation path already takes.
  */
 export async function promote({ id, actorId, webhookBaseUrl }) {
-  const target = await TelegramBot.findById(id).select('+tokenEncrypted +webhookSecret');
-  if (!target) throw Object.assign(new Error('No such bot'), { status: 404 });
-  if (target.status === 'ACTIVE') {
-    return { alreadyLive: true, bot: publicView(target), webhook: 'unchanged' };
+  const probe = await TelegramBot.findById(id).select('role status username');
+  if (!probe) throw Object.assign(new Error('No such bot'), { status: 404 });
+  if (probe.status === 'ACTIVE') {
+    return { alreadyLive: true, bot: publicView(probe), webhook: 'unchanged' };
   }
-  if (target.status === 'RETIRED') {
+  if (probe.status === 'RETIRED') {
     throw Object.assign(new Error('A retired bot cannot be promoted. Register it again if it is genuinely back.'), { status: 400 });
   }
 
-  const singular = SINGULAR_BOT_ROLES.has(target.role);
+  const singular = SINGULAR_BOT_ROLES.has(probe.role);
+  let target = null;
   let displaced = null;
 
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
+      /**
+       * Both documents are re-read INSIDE the callback, on every attempt.
+       *
+       * `withTransaction` re-runs this function on a transient error, and a
+       * Mongoose document does not survive that. `save()` clears the document's
+       * dirty state as soon as it has issued its write — so on a retry, a
+       * document loaded outside this callback believes it has no pending
+       * changes and its second `save()` sends nothing. The transaction then
+       * commits successfully having written nothing at all, and this function
+       * reports a promotion that did not happen: the panel shows the new bot
+       * live, Telegram is pointed at it, and every update is authenticated
+       * against a secret the database never adopted.
+       *
+       * Re-reading per attempt is the standard remedy and the only one that
+       * keeps the pre-validate hook — which is what maintains `liveSlot`, and
+       * therefore what the unique index is guarding.
+       */
+      displaced = null;
+
+      // `+tokenEncrypted +webhookSecret`: both are needed after the commit, for
+      // the new bot's webhook registration and the old one's revocation.
+      target = await TelegramBot.findById(id)
+        .select('+tokenEncrypted +webhookSecret')
+        .session(session);
+      if (!target) throw Object.assign(new Error('No such bot'), { status: 404 });
+
       if (singular) {
         // Stand the incumbent down IN THE SAME transaction. The sparse unique
         // index on liveSlot refuses two live bots in one singular role, so
@@ -162,9 +189,6 @@ export async function promote({ id, actorId, webhookBaseUrl }) {
         // update operations. An updateOne here would clear `status` and leave a
         // stale `liveSlot` behind, which is precisely the invariant this index
         // exists to hold.
-        // `+tokenEncrypted` because the displaced bot's webhook is cleared after
-        // the transaction commits, and that needs its token. Selecting it later
-        // would be a second read of a row we already have in hand.
         const current = await TelegramBot.findOne({ liveSlot: target.role })
           .select('+tokenEncrypted')
           .session(session);

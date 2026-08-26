@@ -621,18 +621,19 @@ router.get('/v1/content/promo/:location', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/v1/content/faq', async (req, res) => {
   try {
-    // FAQs may be stored in SystemConfig, a dedicated FAQ model, or PromoContent.
-    // We try dedicated model first, then fall back to SystemConfig key 'faq'.
-    let faqs = [];
-    try {
-      const FAQ = mongoose.model('FAQ');
-      faqs = await FAQ.find({ isPublished: true }).sort({ category: 1, order: 1 }).lean();
-    } catch {
-      // Model doesn't exist yet — try SystemConfig
-      const SystemConfig = mongoose.model('SystemConfig');
-      const cfg = await SystemConfig.findOne({ key: 'faq' }).lean();
-      faqs = cfg?.value || [];
-    }
+    /*
+     * The FAQ model is the only store. A `SystemConfig({ key: 'faq' })`
+     * fallback used to sit here and was unreachable: `SystemConfig.key`
+     * defaults to 'main' and is unique, nothing has ever written another key,
+     * and `value` is not a declared path on that schema — so the fallback read
+     * a field that could not exist on a document that could not exist.
+     *
+     * It was also reachable only from a `catch` around `mongoose.model('FAQ')`,
+     * which throws solely when the model is unregistered — a startup fault, not
+     * a data condition. Swallowing that told the caller "no FAQs" instead.
+     */
+    const FAQ = mongoose.model('FAQ');
+    const faqs = await FAQ.find({ isPublished: true }).sort({ category: 1, order: 1 }).lean();
 
     res.json({
       success: true,
