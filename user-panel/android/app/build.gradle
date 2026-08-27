@@ -14,6 +14,22 @@ android {
         versionCode project.hasProperty('versionCode') ? project.property('versionCode').toInteger() : 1
         versionName project.hasProperty('versionName') ? project.property('versionName') : "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
+        // The host whose links this app claims — the PUBLIC_APP_ORIGIN host,
+        // because that is what the bot builds sign-in links against. Supplied
+        // by CI as -PappLinkHost=… (derived from the ANDROID_APP_ORIGIN repo
+        // variable; see .github/workflows/android-release.yml).
+        //
+        // The fallback is "localhost" rather than a real-looking placeholder,
+        // and that choice is load-bearing: a manifest placeholder must always
+        // resolve or the merge fails, and any plausible hostname here would
+        // ship a debug build quietly claiming somebody's domain. localhost can
+        // never be verified by Android and no bot link ever points at it, so
+        // the filter is simply inert — a local `assembleDebug` still builds,
+        // and it captures nothing it should not.
+        manifestPlaceholders = [
+            appLinkHost: project.hasProperty('appLinkHost') ? project.property('appLinkHost') : 'localhost'
+        ]
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61

@@ -297,6 +297,29 @@ suspended bot can be replaced from the admin panel without a deploy — see
 | `TELEGRAM_LOGIN_TTL_MS` | no | Lifetime of a one-time login link (default 5 min). |
 | `TELEGRAM_MEMBERSHIP_GRACE_MS` | no | How long a money action is still allowed when Telegram is unreachable, measured **from the last confirmed membership** (default 24h). Fail-closed would stop the platform taking money during a Telegram outage; fail-open forever would silently retire the gate. |
 
+## Native app association (Android App Links)
+
+`GET /.well-known/assetlinks.json` is built from these
+(`backend/routes/wellKnown.routes.js`). It is what tells Android that this
+origin vouches for the APK, which is what routes a bot sign-in link to the
+installed app instead of to a browser. Player auth is Telegram-only and that
+link is the only door, so with these unset the app installs and **cannot be
+signed in to** — the browser spends the single-use token and the app never sees
+a session. Until both are set the route 404s (deliberately: an empty document
+is a positive "this site vouches for no app", which Android caches as a
+verification failure, whereas a 404 leaves the next attempt free to succeed).
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `ANDROID_PACKAGE_ID` | for the APK | Package name; must equal `appId` in `user-panel/capacitor.config.ts` (`com.bettingbazaar.app`). Also advertised by `GET /api/app/bootstrap`. |
+| `ANDROID_SHA256_CERT_FINGERPRINTS` | for the APK | Comma-separated SHA-256 signing-certificate fingerprints. Colons and case are normalised. **List both the upload key and the Play-held key** once published: Play App Signing re-signs the APK, so a site naming only the upload fingerprint verifies for sideloads and fails for every store install. |
+| `IOS_BUNDLE_ID` | no | Advertised by `/api/app/bootstrap`. There is no iOS client — see `NATIVE_APP_DISTRIBUTION_POLICY.md`. |
+
+The build side of the same association lives in GitHub, not here: the release
+workflow needs an `ANDROID_APP_ORIGIN` repository **variable** (the same value
+as `PUBLIC_APP_ORIGIN`), whose host is baked into the APK's intent-filter.
+Full walkthrough: `ANDROID_RELEASE_SETUP.md`.
+
 ## Two-factor authentication (TOTP)
 
 | Variable | Required | Purpose |

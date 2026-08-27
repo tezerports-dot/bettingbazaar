@@ -197,8 +197,29 @@ meanwhile. Back it up with the same care as the Android signing keystore.
 
 ## G. Compliance & legal — ⛔ hard gate
 
-- ⛔ Gambling/gaming **licence** for each jurisdiction served.
-- ⛔ **AML/KYC** program appropriate to that licence.
+**⛔ India: this category is prohibited, not licensable.** The Promotion and
+Regulation of Online Gaming Act, 2025 has been in force since **1 May 2026**.
+§5 bans offering or abetting an *online money game* — defined as a game played
+on payment of a stake in expectation of winning money, **skill or chance
+irrelevant** — with up to 3 years' imprisonment and/or ₹1 crore. §6 bans
+advertising it. §7 bans banks *and any other person facilitating financial
+transactions* from processing related funds, which reaches the P2P merchant
+network personally. Constitutional challenges are before the Supreme Court,
+which has **declined an interim stay**.
+
+The practical consequence for this checklist: the first line below cannot be
+cleared for India by acquiring anything. There is no licence to obtain, and no
+distribution channel — Play, App Store, sideloaded APK or plain web — changes
+that. Full analysis, including what each store additionally requires in a
+jurisdiction that *does* license the category:
+`NATIVE_APP_DISTRIBUTION_POLICY.md` §1. **Not legal advice — take Indian
+gaming-law counsel.**
+
+- ⛔ Gambling/gaming **licence** for each jurisdiction served — *and confirmation
+  that the jurisdiction licenses this category at all*.
+- ⛔ **AML/KYC** program appropriate to that licence. Note the current identity
+  model is Aadhaar + a Telegram-linked Indian mobile; it does not transfer to
+  another jurisdiction unchanged.
 - ⛔ Professional third-party **security audit + penetration test**.
 - 🟡 Responsible-gaming controls, geo/age restrictions, dispute/chargeback process.
 
@@ -214,6 +235,8 @@ standard, but is **not** a substitute for licensing or a way to evade regulators
 CI green, deploy artifacts committed.
 
 **Must clear before a real-money launch:**
+- ⛔ **Which jurisdiction, and does it license this category?** For India the
+  answer is now no (§G). Everything else on this list is downstream of it.
 - ⛔ Compliance/licensing + third-party pen-test (§G)
 - ⛔ A real load test at target scale (§D)
 - 🟡 Key Turnstile to activate the captcha gate (§F). Both controls that sat

@@ -54,7 +54,7 @@ and an offline backup are the usual pair. Do not put it in the repository;
 
 ---
 
-## 2. Set the six GitHub secrets
+## 2. Set the seven GitHub secrets and variables
 
 `Settings → Secrets and variables → Actions` on
 `tezerports-dot/bettingbazaar`.
@@ -82,25 +82,100 @@ base64 -w 0 upload-keystore.jks
 newlines corrupt the secret. The workflow will fail at `base64 -d` with an
 unhelpful error.
 
-### Two repository **variables**
+### Three repository **variables**
 
 These are *variables*, not secrets — same page, "Variables" tab. They are
-public URLs, not credentials, and the workflow reads them as `vars.*`
-(`android-release.yml:63-64`).
+public URLs, not credentials, and the workflow reads them as `vars.*`.
 
 | Variable name | Value |
 |---|---|
 | `ANDROID_API_URL` | Your backend origin, e.g. `https://api.yourdomain.com` |
 | `ANDROID_MERCHANT_PANEL_URL` | Merchant panel origin, e.g. `https://yourdomain.com/merchant` |
+| `ANDROID_APP_ORIGIN` | Your public site origin — **the same value as the backend's `PUBLIC_APP_ORIGIN`**, e.g. `https://yourdomain.com` |
 
 > Getting `ANDROID_API_URL` wrong is the single most common cause of an APK
 > that installs and then shows a blank screen or "network error" — the app is
 > fine, it is talking to the wrong host. It is baked in at build time, so
 > fixing it means a new build.
 
+> **`ANDROID_APP_ORIGIN` is what makes the app signable-into.** Players never
+> type a password: the bot sends a one-time link at your public origin, and
+> whichever app opens that link spends the token. This variable's host is baked
+> into the APK as the address whose links the app claims. Get it wrong or leave
+> it unset and the build fails on purpose — an APK nobody can sign in to is not
+> a release. It must be the origin only: `https://yourdomain.com`, no path.
+
+---
+
+## 2b. Two backend environment variables
+
+Set these where the backend runs (alongside `PUBLIC_APP_ORIGIN`), not in
+GitHub. They are the other half of the same handshake: the APK claims your
+domain's links, and your server has to confirm the claim, or Android ignores it.
+
+| Variable | Value |
+|---|---|
+| `ANDROID_PACKAGE_ID` | `com.bettingbazaar.app` |
+| `ANDROID_SHA256_CERT_FINGERPRINTS` | The SHA-256 fingerprint from step 1 |
+
+You already printed the fingerprint when you backed the keystore up:
+
+```bash
+keytool -list -v -keystore upload-keystore.jks -alias bettingbazaar-upload
+```
+
+Copy the line beginning `SHA256:` — the long colon-separated hex string. Case
+and colons do not matter; the server normalises either form.
+
+Check it is live:
+
+```bash
+curl -s https://yourdomain.com/.well-known/assetlinks.json
+```
+
+You want a JSON array naming your package. A **404 means it is not configured**
+— the app will still install and open, but sign-in links will keep opening a
+browser instead of the app.
+
+> **If you publish on Play, come back and add a second fingerprint here.** Play
+> App Signing re-signs your APK with Google's own key before any user installs
+> it, so the certificate a phone sees is *not* your upload certificate. A site
+> listing only the upload fingerprint works perfectly for APKs you hand out
+> yourself and fails for every single Play install. Get the second one from
+> Play Console → Setup → App signing and list both, comma-separated.
+
 ---
 
 ## 3. Run the workflow
+
+> **Nothing here has ever been built.** The Android release workflow has run
+> **zero** times since it was added, so no APK or AAB has ever been produced by
+> this repository and none has ever been installed on a phone. Everything below
+> is a first run, and it should be treated like one.
+
+### Try it without the keystore first
+
+**Android build check** produces a *debug-signed* APK, which sideloads exactly
+like a release build. It needs no secrets — Gradle falls back to the local debug
+key — so it is the fastest way to get something onto a handset and run the
+on-device checks below.
+
+- Set `ANDROID_API_URL` and `ANDROID_APP_ORIGIN` first (§2) or the artifact is
+  a compile check only and will reach nothing. The run's summary tells you
+  which of the two you got.
+- A debug APK **cannot** be published, and cannot update a release-signed
+  install later. It is for testing only.
+
+It runs automatically on any pull request touching the Android project, so a
+change that breaks the build is caught there rather than on release day.
+
+> **`Actions → Android build check → Run workflow` only appears once this
+> workflow is on `main`.** GitHub lists a `workflow_dispatch` workflow from the
+> default branch only — so before it merges, the way to get the artifact is
+> from the checks on the pull request that introduces it, not from the Actions
+> tab.
+
+### The real thing
 
 `Actions → Android Release → Run workflow`.
 
@@ -125,17 +200,52 @@ Or transfer the APK and tap it, allowing "install from unknown sources" once.
 
 ## What to check on the device
 
-Beyond "it opens":
+Beyond "it opens". Check 1 is the one that decides whether the app is usable at
+all — everything else assumes you got past it.
 
-1. **It reaches your backend.** Log in. A blank screen or spinner means
+1. **You can sign in.** This is the whole test. Open the bot, send `/start`,
+   and tap the sign-in link it replies with.
+   - **Right:** the Betting Bazaar app comes to the front and you are signed in.
+   - **Wrong:** a web browser opens and you are signed in *there*. The app is
+     still signed out, and asking the bot again just repeats it.
+
+   If it goes wrong, work through these in order:
+   - `curl https://yourdomain.com/.well-known/assetlinks.json` — a 404 means
+     §2b is not set. Fix that first; nothing else can work without it.
+   - Check Android accepted the claim:
+     `adb shell pm get-app-links com.bettingbazaar.app`. You want your domain
+     listed as `verified`. If it says `1024` or `legacy_failure`, Android could
+     not fetch or match the file — check the URL serves over HTTPS with **no
+     redirect** (not even `http→https` or a `www` hop) and returns
+     `Content-Type: application/json`.
+   - Re-trigger verification after fixing the server:
+     `adb shell pm verify-app-links --re-verify com.bettingbazaar.app`.
+   - Check the setting was not turned off: Settings → Apps → Betting Bazaar →
+     **Open by default** → "Open supported links" should be on.
+2. **The same link, tapped from inside Telegram.** Do this as a separate check,
+   because it can fail while check 1 passes. Chat apps often open links in
+   their own in-built browser, and when they do the OS never sees the tap, so
+   no App Link fires. If the app does not come to the front, open the link's
+   ⋮ menu and choose **Open in browser** — that routes through Chrome, which
+   does honour the App Link. Whether Telegram hands off directly depends on its
+   version and on Telegram → Settings → Chat Settings → **In-App Browser**.
+   **Tell us what you observe here** — it decides whether the sign-in copy the
+   bot sends needs to say anything extra.
+3. **It reaches your backend.** A blank screen or spinner after sign-in means
    `ANDROID_API_URL` is wrong.
-2. **Origin failover works.** The app tries each configured domain until one
+4. **Origin failover works.** The app tries each configured domain until one
    answers (`user-panel/src/services/originFailover.ts`). Verify it recovers
    when the primary is unreachable.
-3. **Socket reconnects after backgrounding.** Background the app for a minute,
-   reopen it, and confirm live cycle data resumes — that is what PR #97 fixed
-   and it only reproduces on a real device.
-4. **2FA.** If your admin account is enrolled, the login should ask for a code.
+5. **Socket reconnects after backgrounding.** Background the app for a minute,
+   reopen it, and confirm live cycle data resumes — it only reproduces on a
+   real device.
+6. **The channel gate works.** Leave the official Telegram channel, then try a
+   money action. You should get the "join the channel" prompt with a working
+   link, and it should clear after you rejoin and tap "I've joined".
+7. **The Telegram links open Telegram.** The bot link on the sign-in screen and
+   the channel link in the gate prompt are `target="_blank"` links to `t.me`.
+   In a WebView those need the shell to hand off to the Telegram app; confirm
+   they do not open a blank page or dead-end inside the app.
 
 ---
 
@@ -151,3 +261,11 @@ Separately: a real-money betting app will be reviewed against Play's gambling
 policy, which requires a licence in each target country and geo-restriction to
 those countries. That is the same §G licensing gate in
 `LAUNCH_READINESS.md`, arriving from a different direction.
+
+> **Before you spend a day on store metadata, read
+> `NATIVE_APP_DISTRIBUTION_POLICY.md` §1.** India's Promotion and Regulation of
+> Online Gaming Act, 2025 has been in force since 1 May 2026 and prohibits
+> offering online money games outright — there is no Indian licence to declare,
+> and sideloading the APK does not change that. The engineering in this document
+> is worth doing either way (you need a working app before you need a channel
+> for it), but the store listing is not the next step it looks like.

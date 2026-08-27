@@ -115,6 +115,40 @@ Every failure — expired, already used, never valid — returns one indistingui
 answer. There is nothing a retry could learn, and the fix is always a fresh
 `/start`.
 
+### Where the link lands, and why that is the whole ballgame
+
+The token is spent by whichever **storage context** opens the link. That is not
+a detail — it is the difference between an app you can use and an app you
+cannot, because the session lives where the exchange happened and nowhere else.
+
+| Where the tap resolves | Result |
+|---|---|
+| A browser, no app installed | Signed in on the web. Correct — the website is a first-class client. |
+| **The installed Android app** | Signed in *in the app*. This requires the App Link path below. |
+| A browser, while the app is installed | Signed in on the web; the **app stays signed out**, and the next link repeats it. |
+| Telegram's in-app browser | Same as above, and its WebView is its own context, isolated from Chrome too. |
+| iOS home-screen PWA vs Safari | **Separate storage partitions.** A session established in Safari never reaches the installed icon (one-time cookie copy at install, nothing after). |
+
+**On Android this is solved with an App Link**, in three pieces:
+`AndroidManifest.xml` carries a `VIEW`/`BROWSABLE` filter with
+`autoVerify="true"` for `https://<PUBLIC_APP_ORIGIN host>/`;
+`GET /.well-known/assetlinks.json` (`routes/wellKnown.routes.js`, built from
+`ANDROID_PACKAGE_ID` + `ANDROID_SHA256_CERT_FINGERPRINTS`) proves the origin
+vouches for that package; and `services/nativeDeepLink.ts` takes the URL
+Android hands over, checks its origin, and applies **only the fragment** as a
+local route.
+
+The intent filter matches path `/` and not `/auth/telegram`, and that is forced
+rather than chosen: the token is in the fragment, intent filters match
+`Uri.getPath()`, and the path of `https://host/#/auth/telegram?token=…` is `/`.
+**Do not "fix" this by moving the token into the query string** — that would put
+the one credential in the link into every access log and `Referer` header it
+touches, which is the whole reason it is in the fragment.
+
+**On iOS there is no equivalent handoff**, so an installed-PWA player has to
+start sign-in from inside the PWA for the link to be redeemed there. See
+`governance/FULL_STACK_AND_CLIENT_DELIVERY.md` §3.6.
+
 `POST /api/telegram/exchange` calls **`issueSession`**, imported from
 `routes.js`, rather than minting its own. That is deliberate: staff password
 login, staff post-2FA login and Telegram login all reach the same function, so

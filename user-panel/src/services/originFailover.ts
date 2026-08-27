@@ -59,7 +59,7 @@ function normalise(url: string): string {
  * because it is what exists in a non-browser context (tests, any future SSR or
  * prerender step), where `import.meta.env` carries no VITE_ values.
  */
-function readEnv(name: string): string {
+export function readEnv(name: string): string {
   const fromProcess = typeof process !== 'undefined' ? process.env?.[name] : undefined;
   if (fromProcess) return fromProcess;
   return (import.meta as any).env?.[name] ?? '';

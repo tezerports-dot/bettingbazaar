@@ -1,0 +1,146 @@
+# GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+# Compiles the Android app WITHOUT the signing key.
+#
+# ── Why this exists ────────────────────────────────────────────────────────
+# `android-release.yml` is the only thing that had ever built this project, and
+# it had never run: it is dispatch-only and refuses to start without four
+# signing secrets the owner generates on their own machine. So the Capacitor
+# project — a committed, hand-edited Android platform folder — was carried for
+# weeks with nothing proving it still compiled, and the first attempt to find
+# out would have been release day, with a keystore in hand and a version number
+# already chosen.
+#
+# A debug build needs no secrets: Gradle falls back to the local debug key
+# (see app/build.gradle). That is enough to prove the manifest merges, the
+# Gradle wiring resolves, the web bundle syncs, and an installable APK comes
+# out the other end — which is everything except the signature.
+#
+# It also produces an APK the owner can put on a real handset TODAY to run the
+# on-device checks in ANDROID_RELEASE_SETUP.md, months before deciding anything
+# about a store listing. A debug-signed APK installs fine by sideload; it just
+# cannot be published or update a release-signed install.
+name: Android build check
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'user-panel/android/**'
+      - 'user-panel/capacitor.config.ts'
+      - 'user-panel/package.json'
+      - 'user-panel/scripts/assert-native-env.mjs'
+      - '.github/workflows/android-build-check.yml'
+      - '.github/workflows/android-release.yml'
+
+concurrency:
+  group: android-build-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  debug-apk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: user-panel
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: user-panel/package-lock.json
+
+      # Capacitor 8 targets a JDK 21 toolchain — same as the release build, so
+      # this check exercises the toolchain the release actually uses.
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: android-actions/setup-android@v4
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Install dependencies (reproducible)
+        run: npm ci --legacy-peer-deps
+
+      # Prefer the real deployment values so the artifact is a genuinely usable
+      # test build. Without them the job still proves the project compiles, but
+      # the APK is labelled so nobody mistakes it for something installable —
+      # an APK pointed at a placeholder host installs, opens, and reaches
+      # nothing, which is the exact failure assert-native-env.mjs exists to stop
+      # from ever reaching a handset unannounced.
+      - name: Resolve build inputs
+        run: |
+          API="${{ vars.ANDROID_API_URL }}"
+          APP="${{ vars.ANDROID_APP_ORIGIN }}"
+          if [ -n "$API" ] && [ -n "$APP" ]; then
+            echo "USABLE=true" >> "$GITHUB_ENV"
+            echo "ARTIFACT_NAME=bettingbazaar-android-debug" >> "$GITHUB_ENV"
+          else
+            echo "::warning::ANDROID_API_URL and/or ANDROID_APP_ORIGIN are not set. Building a COMPILE-CHECK-ONLY APK — it will install and reach nothing. Set both repository variables to get a testable build."
+            API="https://api.placeholder.invalid"
+            APP="https://placeholder.invalid"
+            echo "USABLE=false" >> "$GITHUB_ENV"
+            echo "ARTIFACT_NAME=android-compile-check-only-NOT-INSTALLABLE" >> "$GITHUB_ENV"
+          fi
+          echo "VITE_API_URL=$API" >> "$GITHUB_ENV"
+          echo "VITE_APP_ORIGIN=$APP" >> "$GITHUB_ENV"
+          echo "APP_LINK_HOST=$(node -e 'process.stdout.write(new URL(process.argv[1]).hostname)' "$APP")" >> "$GITHUB_ENV"
+
+      - name: Build web bundle for the native shell
+        run: npm run build:native
+        env:
+          VITE_MERCHANT_PANEL_URL: ${{ vars.ANDROID_MERCHANT_PANEL_URL }}
+
+      - name: Sync web assets into the Android project
+        run: npx cap sync android
+
+      - name: Assemble debug APK
+        working-directory: user-panel/android
+        run: ./gradlew --no-daemon -PappLinkHost="$APP_LINK_HOST" assembleDebug
+
+      # The App Link filter is what makes the app signable-into at all, so a
+      # merge that dropped it is a release blocker, not a cosmetic regression.
+      - name: Verify the App Link filter survived the manifest merge
+        working-directory: user-panel/android
+        run: |
+          MANIFEST=$(find app/build/intermediates -name AndroidManifest.xml -path '*merged*debug*' | head -1)
+          if [ -z "$MANIFEST" ]; then
+            echo "::error::Could not find the merged debug manifest."
+            exit 1
+          fi
+          echo "Checking $MANIFEST"
+          grep -q 'android.intent.action.VIEW' "$MANIFEST" \
+            || { echo "::error::No VIEW intent-filter in the merged manifest — sign-in links cannot reach the app."; exit 1; }
+          grep -q 'android.intent.category.BROWSABLE' "$MANIFEST" \
+            || { echo "::error::No BROWSABLE category in the merged manifest — the OS will not route web links here."; exit 1; }
+          grep -q "android:host=\"$APP_LINK_HOST\"" "$MANIFEST" \
+            || { echo "::error::The merged manifest does not claim $APP_LINK_HOST."; exit 1; }
+          echo "App Link filter present for $APP_LINK_HOST"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: user-panel/android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
+
+      - name: Summary
+        run: |
+          {
+            echo "### Android build check"
+            echo ""
+            if [ "$USABLE" = "true" ]; then
+              echo "Built a **debug APK you can install on a handset** (\`$ARTIFACT_NAME\`)."
+              echo "- API origin: \`$VITE_API_URL\`"
+              echo "- App Link host: \`$APP_LINK_HOST\`"
+              echo ""
+              echo "Sideload it and run the on-device checks in \`docs/governance/ANDROID_RELEASE_SETUP.md\`."
+            else
+              echo "Compiled successfully, but **this APK is not installable in any useful sense** —"
+              echo "it was built against placeholder origins because \`ANDROID_API_URL\` and/or"
+              echo "\`ANDROID_APP_ORIGIN\` are not set as repository variables."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

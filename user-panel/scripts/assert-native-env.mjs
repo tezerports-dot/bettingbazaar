@@ -53,6 +53,56 @@ if (!apiUrl) {
   }
 }
 
+// ── The public app origin — what makes the app signable-into ────────────────
+// Player auth is Telegram-only and the bot's one-time link is the only door.
+// It points at PUBLIC_APP_ORIGIN, arrives as an Android App Link, and is
+// matched against the host baked into AndroidManifest.xml at build time. Get
+// this wrong and the tap opens a browser, the browser spends the single-use
+// token, and the installed app stays signed out forever — the same shape of
+// silent failure as a wrong VITE_API_URL, and the reason this check is fatal
+// rather than a warning: an APK nobody can sign in to is not a release.
+const appOrigin = process.env.VITE_APP_ORIGIN;
+if (!appOrigin) {
+  errors.push(
+    'VITE_APP_ORIGIN is not set.\n' +
+    '      This is the public origin the bot builds sign-in links against\n' +
+    '      (the backend\'s PUBLIC_APP_ORIGIN). The shell uses it to decide which\n' +
+    '      incoming links to trust, and its HOST is what the App Link filter in\n' +
+    '      AndroidManifest.xml claims.\n' +
+    '      Example: VITE_APP_ORIGIN=https://example.com (origin only, no path)',
+  );
+} else {
+  let parsedApp;
+  try {
+    parsedApp = new URL(appOrigin);
+  } catch {
+    errors.push(`VITE_APP_ORIGIN is not a valid URL: ${appOrigin}`);
+  }
+
+  if (parsedApp) {
+    if (parsedApp.protocol !== 'https:') {
+      errors.push(
+        `VITE_APP_ORIGIN must be https (got "${parsedApp.protocol}").\n` +
+        '      Android only verifies App Links over https, and the app ships with\n' +
+        '      cleartext traffic disabled at the OS layer.',
+      );
+    }
+    if (parsedApp.hostname === 'localhost' || parsedApp.hostname === '127.0.0.1') {
+      errors.push(
+        `VITE_APP_ORIGIN points at ${parsedApp.hostname}, which Android can never verify.\n` +
+        '      No bot link points there either, so the App Link would match nothing.',
+      );
+    }
+    if (parsedApp.pathname !== '/' || parsedApp.search || parsedApp.hash) {
+      errors.push(
+        `VITE_APP_ORIGIN must be an origin, not a URL with a path (got "${appOrigin}").\n` +
+        '      An App Link filter matches a host; a path here cannot be honoured\n' +
+        '      and would give a false impression that it was.',
+      );
+    }
+  }
+}
+
 if (errors.length) {
   console.error('\n✖ Native build refused — the APK would install and reach nothing.\n');
   for (const e of errors) console.error(`  • ${e}\n`);
@@ -60,3 +110,4 @@ if (errors.length) {
 }
 
 console.log(`✅ Native build environment OK — API origin: ${apiUrl}`);
+console.log(`   App Link host: ${new URL(appOrigin).hostname}`);

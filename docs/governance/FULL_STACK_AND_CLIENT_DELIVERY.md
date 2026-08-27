@@ -6,15 +6,15 @@
 
 1. **What is the stack, exactly?** Every layer, every runtime, every datastore,
    every transport, for the backend and all three panels.
-2. **How does each of the three panels reach a user?** Website, PWA, and Android
-   app — what exists today, what does not, and what each remaining target costs.
+2. **How does each of the three panels reach a user?** Website, PWA, Android app
+   and iOS — what exists today, what does not, and what each remaining target costs.
 
 **What it is not.** It does not restate rules (that is `04-GOVERNANCE.md` §§0–16),
 capability status (`platform/capabilities.yaml` + §19), launch gates
 (`LAUNCH_READINESS.md`), or UI design specification (`design/BettingBazaar_UIUX_Product_Blueprint.md`).
 It cross-references those rather than duplicating them, per the §19 consolidation note.
 
-**Verified against the tree on 2026-07-29.** Every claim below points at a file
+**Verified against the tree on 2026-08-26.** Every claim below points at a file
 you can open. Where something is *not* built, it says so — a stated capability
 that does not exist is worse than a missing one (§20, 2026-07-27).
 
@@ -24,7 +24,7 @@ that does not exist is worse than a missing one (§20, 2026-07-27).
 
 - [Part 1 — The stack as built](#part-1--the-stack-as-built)
 - [Part 2 — The three panels](#part-2--the-three-panels)
-- [Part 3 — Client delivery: website, PWA, Android](#part-3--client-delivery-website-pwa-android)
+- [Part 3 — Client delivery: website, PWA, Android, iOS](#part-3--client-delivery-website-pwa-android-ios)
 - [Part 4 — Complete feature inventory](#part-4--complete-feature-inventory)
 - [Part 5 — Dormant capabilities and feature flags](#part-5--dormant-capabilities-and-feature-flags)
 - [Part 6 — Open gaps and decisions the plan needs](#part-6--open-gaps-and-decisions-the-plan-needs)
@@ -298,13 +298,22 @@ Order state lives in `hooks/useOrders.ts` fed by `services/sse.ts`.
 
 ---
 
-# Part 3 — Client delivery: website, PWA, Android
+# Part 3 — Client delivery: website, PWA, Android, iOS
+
+> **Before planning any store listing, read
+> `NATIVE_APP_DISTRIBUTION_POLICY.md` §1.** India's Promotion and Regulation of
+> Online Gaming Act, 2025 has been in force since 1 May 2026 and prohibits
+> offering online money games outright — skill or chance, no licence available,
+> no interim stay. That is upstream of every channel question below: it does not
+> change what is *built*, but it does change whether a Play or App Store listing
+> is work worth doing, and it is why the iOS decision in §3.6 goes the way it
+> does.
 
 ## 3.1 Where each panel stands today
 
 | | Responsive website | Installable PWA | Android app | iOS app |
 |---|---|---|---|---|
-| **User** | ✅ shipped | ✅ shipped | ✅ shipped (Capacitor 8, CI-signed) | ❌ not started |
+| **User** | ✅ shipped | ✅ shipped | 🟡 built, **never compiled or installed** — see §3.5 | ⛔ PWA only, by decision (§3.6) |
 | **Merchant** | ✅ shipped (responsive, `useViewport`) | ❌ no manifest / SW / icons | ❌ | ❌ |
 | **Admin** | ✅ shipped (desktop-first, tablet fallback) | ❌ no manifest / SW / icons | ❌ | ❌ |
 
@@ -321,7 +330,7 @@ in the whole client plan, because it constrains all three delivery targets at on
 
 | Consequence | Website | PWA | Android |
 |---|---|---|---|
-| Deep links (`/wallet`, share links, campaign URLs) | Broken — every URL is `/#/…`, so the path the server sees is always `/` | Manifest `shortcuts` and `start_url` into a specific screen do not work cleanly | App Links / intent filters cannot target a route |
+| Deep links (`/wallet`, share links, campaign URLs) | Broken — every URL is `/#/…`, so the path the server sees is always `/` | Manifest `shortcuts` and `start_url` into a specific screen do not work cleanly | An App Link can capture the origin (path `/`) but **cannot target a specific route** — the fragment is not matchable, so the app receives every in-app link and routes it itself (§3.5) |
 | SEO / crawlability | Hash fragments are never sent to the server; no per-page indexing | — | — |
 | Service worker navigation caching | Every navigation looks like `/`, so a network-first HTML strategy caches one document for the whole app | Same | n/a (SW disabled in the shell) |
 | Analytics per screen | Requires manual hash-change instrumentation | Same | Same |
@@ -355,11 +364,7 @@ header — never on who the client is.
 
 **Website work still open:**
 
-- `user-panel/index.html` carries a large stale `<script type="importmap">` listing
-  backend packages (`express`, `mongoose`, `multer`, `redis`, `jsonwebtoken`, …) and
-  `react-router-dom@7`, which the repo removed in the v8 migration. Nothing imports
-  it; it is dead weight in the served HTML and actively misleading. Delete it.
-- The same file sets `Cache-Control: no-cache, no-store, must-revalidate` via
+- `user-panel/index.html` sets `Cache-Control: no-cache, no-store, must-revalidate` via
   `<meta http-equiv>`, which pulls against the service worker's network-first HTML
   strategy. Pick one; the SW already handles freshness via a per-build cache name.
 - No per-panel SEO surface (title/description/OG tags are static). Only relevant for
@@ -379,9 +384,46 @@ header — never on who the client is.
 | Update flow | `src/index.tsx` + SW `activate` | Reload **only** when a new worker replaced one that was already driving the page — guarded at both ends so neither side alone can resurrect the first-visit reload loop (§20, 2026-07-28) |
 | Native suppression | `src/index.tsx` | SW registration skipped entirely inside the Capacitor shell |
 
+### Installability, verified against the criteria
+
+Chrome on Android installs a site when it is served over HTTPS and has a linked
+manifest carrying `name`/`short_name`, 192px and 512px icons, a `start_url`, a
+`display` of `standalone`/`fullscreen`/`minimal-ui`, plus a registered service
+worker with a `fetch` handler. Every one of those is present: the manifest is
+linked from `index.html`, all five icons exist in `public/app-assets/`, and the
+SW registers at `/` with a `fetch` listener. **The user panel meets the install
+criteria.** The `id` field (`"/"`) was added so the browser identifies the app
+by a stable key rather than by `start_url` — without it, changing `start_url`
+later registers a *second* app instead of updating the installed one.
+
+### The sign-in link reaches an installed PWA differently on each platform
+
+This is the same defect as the APK's (§3.5), and it does **not** resolve the
+same way on both platforms. The bot's one-time link is spent by whichever
+context opens it, so the only question that matters is which storage context
+that is.
+
+| Context the link opens in | Does the installed app get the session? |
+|---|---|
+| **Android**, link reaches Chrome | **Yes.** A Chrome-installed PWA is a WebAPK sharing Chrome's profile — same origin, same cookie jar, same `localStorage`. It also registers intent filters for every in-scope URL, so with `scope: "/"` the WebAPK can capture the link itself and open directly. |
+| **Android**, link opens in Telegram's in-app browser | **No.** That WebView is its own storage context. The token is spent there and the installed PWA stays signed out. |
+| **iOS**, link opens in Safari or an in-app browser | **No.** An iOS home-screen PWA runs in a **separate storage partition** from Safari. Cookies, `localStorage` and IndexedDB are not shared. There is a one-time cookie copy *at the moment of install* and nothing after it — so a session established in Safari afterwards never reaches the installed icon. |
+
+Two consequences worth stating plainly:
+
+1. **iOS is the harder case, and no client-side change fixes it.** It is a
+   platform storage decision, not a routing one. An iOS PWA player must
+   complete sign-in *inside the installed PWA*, which means the link has to be
+   opened from within it — there is no iOS equivalent of the App Link handoff
+   that §3.5 uses on Android.
+2. **When both the APK and the PWA are installed on the same Android handset,
+   they compete for the same links.** Both register intent filters for
+   `https://<host>/`. Android resolves to one; which one is not something the
+   app controls. Do not treat "install the APK" and "install the PWA" as
+   equivalent instructions to give the same player.
+
 ### What the PWA still needs (user panel)
 
-- `id` field in the manifest (stable app identity across `start_url` changes).
 - `screenshots` (required for the richer install UI on Android Chrome).
 - `shortcuts` — blocked on the `BrowserRouter` migration above.
 - `related_applications` + `prefer_related_applications` once the Play listing is
@@ -436,6 +478,7 @@ re-add the platform; run `npx cap sync android`.
 | `allowBackup` / `dataExtractionRules` | **off** (both pre-12 and 12+) | The default copies WebView storage — which holds the live session token — into the user's Google Drive, and clones a logged-in session on device transfer |
 | `usesCleartextTraffic` + `network_security_config` | TLS only | Enforced by the OS, so app code cannot weaken it |
 | Service worker | not registered | The WebView already resolves these assets locally; the app updates through Play |
+| Sign-in links | **App Link** on the `PUBLIC_APP_ORIGIN` host, path `/` | Player auth is Telegram-only and the bot's one-time link is the only door. Without a `VIEW`/`BROWSABLE` filter the tap goes to a browser, the browser spends the single-use token, and the installed app can never be signed in to. See below. |
 | R8 / `minifyEnabled` | **off** | Capacitor resolves plugins reflectively; shrinking needs exactly-right keep rules or the build compiles and fails on hardware. Keep rules are written in `proguard-rules.pro` — enabling it later is one line plus a device smoke test |
 | Permissions | `INTERNET` only | Nothing else is needed |
 | Plugins | `@capacitor/app`, `splash-screen`, `status-bar` | Lifecycle + chrome |
@@ -448,26 +491,85 @@ Nothing throws. The APK installs, opens, renders, and reaches nothing.
 to build without an absolute `https` `VITE_API_URL` and rejects `localhost` and a
 trailing `/api`.
 
+**Sign-in: how the bot's link reaches the app.** Three pieces, and all three
+have to be right or the app is unusable rather than merely inconvenient:
+
+1. **`AndroidManifest.xml`** carries a `VIEW`/`BROWSABLE` intent-filter with
+   `autoVerify="true"` for `https://${appLinkHost}/`. The host is a manifest
+   placeholder fed from the `ANDROID_APP_ORIGIN` repo variable at build time,
+   defaulting to `localhost` (inert) for local debug builds. **The path is
+   exactly `/`** — the token rides in the *fragment* so it never reaches an
+   access log or a `Referer` header, and intent filters cannot match a
+   fragment; Android matches `Uri.getPath()`, which for
+   `https://host/#/auth/telegram?token=…` is `/`. Matching `/` captures the
+   root and therefore every HashRouter route, while leaving `/merchant`,
+   `/admin`, `/api/…` and `/r/<code>` to the browser.
+2. **`GET /.well-known/assetlinks.json`** (`backend/routes/wellKnown.routes.js`)
+   proves the origin vouches for the package, which is what makes the link
+   *verified* rather than a chooser dialog. Built from `ANDROID_PACKAGE_ID` +
+   `ANDROID_SHA256_CERT_FINGERPRINTS`; 404s until both are set. **List the Play
+   fingerprint as well as the upload one** once published — Play App Signing
+   re-signs the APK, so a site naming only the upload key verifies for
+   sideloads and fails for every store install.
+3. **`services/nativeDeepLink.ts`** takes the URL Android hands over
+   (`appUrlOpen` for a warm start, `App.getLaunchUrl()` for a cold one),
+   checks its origin against the deployment's own, and applies **only the
+   fragment** as a local HashRouter navigation. It never navigates to the
+   incoming URL: that would load the live website inside the shell, silently
+   converting the native app into the repackaged web view `capacitor.config.ts`
+   exists to prevent. The origin check is not ceremony — `MainActivity` must be
+   `exported` to receive an App Link at all, so any app on the device can send
+   it a `VIEW` intent naming a URL of its choosing.
+
+> **⚠️ Verify on a handset: in-app browsers can swallow App Links.** When a link
+> is tapped inside a chat app that opens it in its own WebView, the OS never
+> sees the tap and no App Link fires. Whether Telegram hands off to an installed
+> app depends on its version and the user's **Settings → Chat Settings → In-App
+> Browser** toggle. If it does not hand off, the fallback is the in-app
+> browser's "Open in browser" action, which routes through Chrome and does. This
+> is the one part of the sign-in path that cannot be proven from the code, and
+> it is on-device check 2 in `ANDROID_RELEASE_SETUP.md`.
+
 **Release pipeline** (`.github/workflows/android-release.yml`) — triggered by
-`workflow_dispatch` with a version name, or by pushing an `android-v*` tag:
+`workflow_dispatch` with a version name, or by pushing an `android-v*` tag.
+**It has never run** (zero runs since it was added on 2026-07-28); it is
+dispatch-only and refuses to start without the signing secrets. Steps:
 
 1. Node 22 + JDK 21 + Android SDK + Gradle.
-2. `npm run build:native` with `VITE_API_URL` from the `ANDROID_API_URL` repo variable.
-3. `npx cap sync android`.
-4. Decode `ANDROID_KEYSTORE_BASE64` to `$RUNNER_TEMP` (outside the workspace, so no
+2. `npm run build:native` with `VITE_API_URL` from `ANDROID_API_URL` and
+   `VITE_APP_ORIGIN` from `ANDROID_APP_ORIGIN`.
+3. Derive the App Link host from `ANDROID_APP_ORIGIN` (one variable, both halves
+   — so the manifest and the bundle cannot disagree about which host to trust).
+4. `npx cap sync android`.
+5. Decode `ANDROID_KEYSTORE_BASE64` to `$RUNNER_TEMP` (outside the workspace, so no
    later step or artifact can pick it up).
-5. `versionCode` = `github.run_number` — monotonic and never reused, which is Play's
+6. `versionCode` = `github.run_number` — monotonic and never reused, which is Play's
    only hard requirement.
-6. `assembleRelease bundleRelease` → signed **APK** (sideload / direct download) and
-   **AAB** (Play upload).
-7. **Verify the APK is not debug-signed** via `apksigner`, and fail if it is — a
+7. `assembleRelease bundleRelease -PappLinkHost=…` → signed **APK** (sideload /
+   direct download) and **AAB** (Play upload).
+8. **Verify the merged manifest claims the App Link host.** A host of `localhost`
+   means `ANDROID_APP_ORIGIN` never reached Gradle and the build.gradle fallback
+   applied — an APK that installs, opens, and silently refuses every sign-in link.
+9. **Verify the APK is not debug-signed** via `apksigner`, and fail if it is — a
    debug-signed build installs fine on a test handset and is only rejected at upload
    time, far too late.
-8. Upload artifacts (90 days), then `rm` the keystore unconditionally.
+10. Upload artifacts (90 days), then `rm` the keystore unconditionally.
 
 Required config: secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`,
 `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`; variables `ANDROID_API_URL`,
-`ANDROID_MERCHANT_PANEL_URL`. Full walkthrough: `ANDROID_RELEASE_SETUP.md`.
+`ANDROID_MERCHANT_PANEL_URL`, `ANDROID_APP_ORIGIN`. Backend side:
+`ANDROID_PACKAGE_ID`, `ANDROID_SHA256_CERT_FINGERPRINTS`. Full walkthrough:
+`ANDROID_RELEASE_SETUP.md`.
+
+**Build check** (`.github/workflows/android-build-check.yml`) — compiles a
+**debug** APK on every PR touching the Android project, and on dispatch. It
+needs no secrets, because Gradle falls back to the local debug key. It exists
+because the release workflow had never run: a committed, hand-edited Android
+platform folder was being carried with nothing proving it still compiled, and
+the first attempt to find out would have been release day with a keystore in
+hand. It also asserts the App Link filter survived the manifest merge, and
+produces a sideloadable APK for the on-device checks — months before any
+decision about a store listing.
 
 > **Back up the upload keystore somewhere you will still have in five years.**
 > Losing it means you can never update the installed app — Play identifies an app by
@@ -484,28 +586,41 @@ package removed from any store.
 
 ### Android work still open (user panel)
 
-- **Not yet published.** The workflow produces artifacts; no Play listing, no
-  internal-testing track, no store metadata (screenshots, description, content
-  rating, data-safety form, gambling-app declaration) exists in the repo.
-  Google Play requires an explicit gambling licence declaration per country.
-- **Update-required gate.** `SystemConfig` carries `androidUrl`; there is no minimum
-  supported version check, so an old APK with a removed API contract has no forced
-  path to update. The design blueprint calls for a global "update required" modal —
-  it needs a backend version floor to key on.
+- **Never built, never installed.** The release workflow has **zero runs**. No
+  APK or AAB has ever been produced by this repository, so nothing here has run
+  on a handset. The build-check workflow above closes the "does it compile"
+  half; the on-device half needs someone with a phone
+  (`GO_LIVE_RUNBOOK.md` Phase 7).
+- **Not published, and see `NATIVE_APP_DISTRIBUTION_POLICY.md` §1 before
+  planning to be.** No Play listing, no internal-testing track, no store
+  metadata (screenshots, description, content rating, data-safety form,
+  gambling declaration). Google Play requires a gambling licence declaration
+  per country — and for India there is no licence to declare.
+- **Update-required gate — now the load-bearing one.** `SystemConfig` carries
+  `androidUrl`; there is no minimum supported version check, so an old APK with
+  a removed API contract has no forced path to update. The design blueprint
+  calls for a global "update required" modal — it needs a backend version floor
+  to key on. This was a nice-to-have while Play was the assumed channel, because
+  Play auto-updates. If the app ships by **direct APK download** (the likeliest
+  channel, per the distribution policy) nothing updates itself, and this becomes
+  the only mechanism that can retire a broken client. Build it before the first
+  public APK, not after.
 - **Push notifications.** `FLAGS.PUSH_NOTIFICATIONS` is declared and the PUSH channel
   adapter is registered but inactive. No FCM integration, no `@capacitor/push-notifications`.
   This is the biggest retention feature the native app currently does not have over
   the PWA.
-- **Deep links / App Links.** No `intent-filter` beyond `LAUNCHER`. Blocked on the
-  `BrowserRouter` migration.
-- **Biometric unlock.** A natural fit for a money app with 2FA already in place;
-  not started.
+- **Deep links / App Links — built, needs on-device confirmation.** The
+  `VIEW`/`BROWSABLE` filter, `assetlinks.json` and the `appUrlOpen` handler are
+  in place (see above). It was **not** blocked on the `BrowserRouter` migration,
+  as this section previously claimed: the intent filter matches
+  `Uri.getPath()`, which is `/` for every HashRouter URL, so path `/` is both
+  matchable and sufficient. What remains is verifying the handoff on a real
+  handset, including from inside Telegram.
+- **Biometric unlock.** A natural fit for a money app; not started. (Player auth
+  is Telegram-only — the 2FA already in place is the admin/merchant TOTP path,
+  not a player one.)
 - **Play Integrity / attestation.** Not integrated.
-- **iOS.** No Capacitor iOS platform, despite `/api/download/ios` and
-  `NATIVE_APP_DISTRIBUTION_POLICY.md` naming it as a target. Adding it is
-  `npx cap add ios` plus the same class of hardening decisions made for Android
-  (keychain/backup policy, ATS, secure context) — but Apple's real-money gaming
-  review requires a licence in every listed territory *before* submission.
+- **iOS.** Decided: installed PWA, no Capacitor shell. See §3.6.
 
 ### Merchant and admin as Android apps
 
@@ -519,7 +634,61 @@ Neither exists. Ranked by value:
 2. **Admin — weak case.** Dense tables, exports and multi-column layouts. A PWA
    install is the right ceiling; a native shell buys almost nothing.
 
-## 3.6 Concerns shared by every client
+## 3.6 iOS — installed PWA, not a Capacitor shell
+
+**Decision: ship iOS as an installed PWA. Do not add `user-panel/ios/`.**
+
+There is no Capacitor iOS platform in the repository. That is now a decision
+rather than an omission, and it turns on cost, not on preference.
+
+**What a Capacitor iOS shell would cost:**
+
+- **A Mac.** Xcode does not run anywhere else, so the build cannot join the
+  existing CI path the way `android-release.yml` does — it needs a macOS runner
+  or a physical machine in the loop for every release.
+- **An Apple Developer Program membership**, and specifically an **organisation**
+  one: Apple does not accept gambling apps, real-money or simulated, from
+  individual accounts. That means a verified incorporated entity, which is a
+  company-formation dependency, not a developer-tooling one.
+- **A licence before submission.** Guideline 5.3.4 requires the necessary
+  licensing and permissions in every location the app is used, geo-restriction
+  to those locations, and a free download. Per
+  `NATIVE_APP_DISTRIBUTION_POLICY.md` §1, for India there is no such licence to
+  obtain. So the shell could be built and could not be submitted.
+- **A second hardening pass.** Keychain vs `localStorage` for the session token,
+  ATS, backup exclusion (the Android build turns `allowBackup` off precisely so
+  a live session token does not land in a cloud backup — iOS needs the
+  equivalent decision), and a WKWebView storage posture.
+
+**What it would buy over an installed PWA:** push notifications, a store
+listing, and biometric unlock. The listing is unavailable. Push is the only
+real one, and it is not currently built on Android either.
+
+**So the PWA carries iOS.** It already works: `index.html` has the
+`apple-mobile-web-app-*` meta tags and the 180px apple-touch-icon,
+Add-to-Home-Screen produces a standalone window, and the service worker is
+skipped only inside the Capacitor shell — so an iOS PWA gets the full caching
+and update path.
+
+**With one honest limitation that the shell would have fixed** (§3.4): an iOS
+home-screen PWA runs in a **storage partition separate from Safari**, so a bot
+sign-in link opened in Safari or an in-app browser never reaches the installed
+icon. There is no iOS equivalent of Android's App Link handoff. The workable
+instruction for an iOS player is to **open the installed PWA first and start
+sign-in from inside it**, so that the bot link is tapped and redeemed in that
+same context — which is exactly the kind of instruction that belongs in the
+bot's copy (`TelegramTemplate`, §1) rather than in a support reply.
+
+**Revisit this decision if** a licensed jurisdiction is secured *and* push
+notification becomes the deciding retention feature *and* a Mac is in the
+release path. Until all three hold, `npx cap add ios` adds a platform folder
+nobody can ship.
+
+**`/api/download/ios` and `iosBundleId` stay.** They 302 to
+`SystemConfig.iosUrl`, which can point at an install-instructions page rather
+than a store listing; `iosBundleId` stays `null` until a native client exists.
+
+## 3.7 Concerns shared by every client
 
 | Concern | Where it lives | Status |
 |---|---|---|

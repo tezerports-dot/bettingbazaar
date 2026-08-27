@@ -1,7 +1,8 @@
 {
   "name": "Betting Bazaar",
   "short_name": "BettingBazaar",
-  "description": "Delhi vs Bombay \u2014 High-frequency prediction market. Predict and win real money.",
+  "id": "/",
+  "description": "Delhi vs Bombay — High-frequency prediction market. Predict and win real money.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
