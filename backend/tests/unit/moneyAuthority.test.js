@@ -78,11 +78,15 @@ describe('fail-safe behaviour', () => {
     expect(isPostgresAuthoritative(MONEY_PATHS.WALLET, env)).toBe(false);
   });
 
-  it('reports the mismatch so a deploy cannot believe it cut over when it did not', () => {
+  it('FAILS THE BOOT so a deploy cannot believe it cut over when it did not', () => {
+    // Was a warning (ok: true) until 2026-08-31. Downgrading to Mongo is safe
+    // in itself, but a deploy that sets the variables and forgets
+    // DATABASE_URL then runs with every rupee in the other store from the one
+    // configured, and nothing fails — server.js exits only on `ok: false`.
     const env = withoutPg({ MONEY_AUTHORITY_WALLET: 'postgres' });
     const result = validateAuthorityConfig(env);
-    expect(result.ok).toBe(true); // safe, but not silent
-    expect(result.warnings.join(' ')).toMatch(/DATABASE_URL is unset/);
+    expect(result.ok).toBe(false);
+    expect(result.errors.join(' ')).toMatch(/DATABASE_URL is unset/);
   });
 
   it.each(['mongodb', 'postgres ', 'pg', 'true', '1', 'yes', 'POSTGRESS', ''])(

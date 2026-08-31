@@ -109,6 +109,28 @@ Eleven domains × that is not a system anyone should operate.
 This document tracks progress *out of* Mongo. A domain is finished only when it
 appears in both as complete — certified on the way in, demolished on the way out.
 
-No domain has reached step 1. The demolition columns are therefore all empty,
-and saying so is the point: this plan exists before the mirrors multiply, not
-after.
+**Step 1 is configured for all eleven domains (2026-08-31), and no domain has
+gone past it.** The demolition columns are still empty, and saying so is the
+point: this plan exists before the mirrors multiply, not after.
+
+What step 1 means here and what it does not:
+
+- The eleven `MONEY_AUTHORITY_*` variables are documented in `.env.example` and
+  a full cutover is pinned coherent by `backend/tests/unit/fullPostgresCutover.test.js`
+  — every path capability-eligible, no path waiting on a dependency still in
+  Mongo, and the whole set validating clean together.
+- **Setting them is still a deploy-time act.** Committing the documentation
+  does not flip anything; an operator sets them on the server, having run
+  `npm run preflight:flip` first.
+- **Both mirrors still run.** Forward stops mattering, reverse becomes
+  load-bearing, and a fallback remains one redeploy away. That is the whole
+  value of stopping at step 1.
+
+Steps 3–6 are deliberately NOT taken, and the reason is not caution about
+existing data. This platform is greenfield — `preflightFlip.js` says so itself,
+and correctly refuses to demand a clean-migration signal that cannot exist when
+both stores are empty. The gate on **step 4** is different in kind: it is a
+*rehearsed backup restoration*, because that step converts a fallback from a
+redeploy into a restore. Having no data today does not satisfy it — it only
+moves the first time you need that restore to the first day you have real
+players. Step 4 waits on the drill, not on the calendar.
