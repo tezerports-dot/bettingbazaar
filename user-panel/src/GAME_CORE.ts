@@ -39,6 +39,38 @@ import { CycleType, GameState, BettingSide } from './types';
 
 export const PHASE = Object.freeze({
 
+  ONE_MIN: Object.freeze({
+    /** Total cycle duration: 1 minute */
+    DURATION_MS: 60 * 1000,                         // 60 000 ms
+
+    /**
+     * MERGED phase starts when the timer shows 00:12.
+     * Same blind-betting rule as the longer blocks — displayed pools combine so
+     * nobody can read which side holds fewer real bets.
+     */
+    MERGE_AT_MS: 12 * 1000,                         // 12 000 ms   →  timer: 00:12
+
+    /**
+     * Phantom Equalizer at 00:09 remaining. SERVER-SIDE ONLY — the client stays
+     * in MERGED; this is here for documentation and admin tooling, like the
+     * other blocks' equivalents.
+     */
+    PHANTOM_EQUALIZER_AT_MS: 9 * 1000,              //  9 000 ms   →  timer: 00:09
+
+    /**
+     * CLOSED phase at 00:05 remaining. All bets locked.
+     */
+    CLOSE_AT_MS: 5 * 1000,                          //  5 000 ms   →  timer: 00:05
+
+    /**
+     * Winner declared at 00:03, celebration runs 00:03 → 00:00, and the next
+     * block starts at 00:00. Three seconds rather than the ten the longer
+     * blocks use: a 10s celebration would still be running a sixth of the way
+     * into the next cycle's betting.
+     */
+    CELEBRATE_AT_MS: 3 * 1000,                      //  3 000 ms   →  timer: 00:03
+  }),
+
   THIRTY_MIN: Object.freeze({
     /** Total cycle duration: 30 minutes */
     DURATION_MS: 30 * 60 * 1000,                    // 1 800 000 ms
@@ -350,16 +382,26 @@ export const CELEBRATION = Object.freeze({
 //    NEVER reimplement this inline — always import and call PHASE.getStatus().
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** Phase config per cycle type. A map rather than a ternary chain: with two
+ *  types a ternary's fallback was harmless, but a third makes "everything that
+ *  is not THIRTY_MIN is FULL_DAY" wrong — a 1-minute cycle would have been read
+ *  against 24-hour offsets and shown as OPEN until its final 30 seconds. */
+const PHASE_BY_TYPE = Object.freeze({
+  [CycleType.ONE_MIN]:    PHASE.ONE_MIN,
+  [CycleType.THIRTY_MIN]: PHASE.THIRTY_MIN,
+  [CycleType.FULL_DAY]:   PHASE.FULL_DAY,
+});
+
 /**
  * Derive the current GameState from timing alone.
  *
- * @param type      CycleType.THIRTY_MIN | CycleType.FULL_DAY
+ * @param type      any CycleType
  * @param nowMs     Current time in ms — MUST be server-corrected (Date.now() + serverTimeOffset)
  * @param endTimeMs The cycle's endTime in ms
  * @returns         The correct GameState for this moment
  */
 export function getPhaseStatus(type: CycleType, nowMs: number, endTimeMs: number): GameState {
-  const cfg      = type === CycleType.THIRTY_MIN ? PHASE.THIRTY_MIN : PHASE.FULL_DAY;
+  const cfg      = PHASE_BY_TYPE[type] ?? PHASE.THIRTY_MIN;
   const timeLeft = endTimeMs - nowMs;
 
   if (timeLeft <= 0)                    return GameState.RESULT_DECLARED; // cycle over

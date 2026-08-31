@@ -170,10 +170,14 @@ const userSchema = new mongoose.Schema({
   
   // ✅ PHANTOM MANAGER ACCESS (FIX #2, #6)
   // Assigned by admin - can place phantom bets on cycles
-  phantomAccess: { 
-    type: String, 
-    enum: ['NONE', '30_MIN', 'FULL_DAY', 'BOTH'], 
-    default: 'NONE' 
+  // 'BOTH' predates the 1-minute block and means EVERY cycle type, not two of
+  // them — the gate in bet.routes.js reads it as "skip the per-type check", so
+  // it kept working when the third type arrived. Left named as it is because
+  // renaming a stored enum value is a migration, and the behaviour is right.
+  phantomAccess: {
+    type: String,
+    enum: ['NONE', '1_MIN', '30_MIN', 'FULL_DAY', 'BOTH'],
+    default: 'NONE'
   },
 
   // SUB-ADMIN SUPPORT

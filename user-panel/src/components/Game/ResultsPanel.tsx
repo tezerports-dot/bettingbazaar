@@ -2,7 +2,8 @@
 /**
  * ResultsPanel.tsx — the past-results strip below the betting card, now expandable.
  *
- * Collapsed: the same horizontal strip as before (30M + 24H colored balls).
+ * Collapsed: a horizontal strip of coloured balls, one row per cycle type
+ * (1M + 30M + 24H).
  * Expanded (chevron): a live-casino-style mini results box for the ACTIVE cycle
  * type only (30_MIN tab → 30-min results, FULL_DAY tab → full-day results):
  *   - bead grid of past winners (same ball size as the strip),
@@ -34,10 +35,20 @@ const ResultsPanel: React.FC = () => {
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState(false);
 
-  const results30 = pastCycles.filter(c => (c.type as string) === '30_MIN' && c.winner);
-  const resultsFD = pastCycles.filter(c => (c.type as string) === 'FULL_DAY' && c.winner);
+  // Results for the tab being viewed. Was a 30-min list, a full-day list and a
+  // boolean choosing between them — which silently showed 30-minute results on
+  // any third tab. Filtering by the active type directly cannot do that.
   const isFullDay = (cycleType as string) === 'FULL_DAY';
-  const active    = isFullDay ? resultsFD : results30;
+  const active    = pastCycles.filter(c => (c.type as string) === (cycleType as string) && c.winner);
+
+  // The collapsed strip: one row per cycle type. `show` differs because a
+  // full-day cycle produces one result a day, so five of them is already a
+  // week of history, while the short blocks produce enough to fill the row.
+  const STRIP_ROWS: Array<{ type: string; label: string; show: number }> = [
+    { type: '1_MIN',    label: '1M',  show: 30 },
+    { type: '30_MIN',   label: '30M', show: 30 },
+    { type: 'FULL_DAY', label: '24H', show: 5  },
+  ];
 
   // Descriptive stats over the visible window (last ≤50 results) — the same
   // "probability" readout live-casino roadmaps show. Not a prediction.
@@ -59,19 +70,19 @@ const ResultsPanel: React.FC = () => {
     <div className="flex-none border-y border-[#121826] bg-black/20 backdrop-blur-sm z-20 mb-2">
       {/* ── Collapsed strip — unchanged visuals ── */}
       <div className="py-2 px-3 flex items-center gap-1.5 min-h-[40px] overflow-x-auto scrollbar-none">
-        <span className="text-[8px] font-bold text-[#D4AF37]/60 uppercase tracking-widest shrink-0 mr-0.5">30M</span>
-        <div className="flex items-center gap-1 flex-1 overflow-hidden">
-          {results30.slice(0, 30).map((c, i) => <Ball key={`30m-${c.id || i}`} winner={c.winner as string} />)}
-          {results30.length === 0 && <span className="text-[9px] text-white/20 italic">no results yet</span>}
-        </div>
-
-        <div className="w-px h-4 bg-[#D4AF37]/30 shrink-0 mx-0.5" />
-
-        <span className="text-[8px] font-bold text-[#D4AF37]/60 uppercase tracking-widest shrink-0 mr-0.5">24H</span>
-        <div className="flex items-center gap-1">
-          {resultsFD.slice(0, 5).map((c, i) => <Ball key={`fd-${c.id || i}`} winner={c.winner as string} />)}
-          {resultsFD.length === 0 && <span className="text-[9px] text-white/20 italic">--</span>}
-        </div>
+        {STRIP_ROWS.map(({ type, label, show }, rowIdx) => {
+          const rowResults = pastCycles.filter(c => (c.type as string) === type && c.winner);
+          return (
+            <React.Fragment key={type}>
+              {rowIdx > 0 && <div className="w-px h-4 bg-[#D4AF37]/30 shrink-0 mx-0.5" />}
+              <span className="text-[8px] font-bold text-[#D4AF37]/60 uppercase tracking-widest shrink-0 mr-0.5">{label}</span>
+              <div className="flex items-center gap-1 overflow-hidden">
+                {rowResults.slice(0, show).map((c, i) => <Ball key={`${type}-${c.id || i}`} winner={c.winner as string} />)}
+                {rowResults.length === 0 && <span className="text-[9px] text-white/20 italic">--</span>}
+              </div>
+            </React.Fragment>
+          );
+        })}
 
         <button
           onClick={() => navigate('/history')}

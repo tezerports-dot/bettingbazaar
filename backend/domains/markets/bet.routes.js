@@ -18,6 +18,8 @@ import * as betAuthority from '../../postgres/betPgAuthority.js';
 import { assessBet, computeBetFundingPlan, computeMaxStake } from '../risk/riskValidation.service.js';
 // Shared trading vocabulary (Phase 011) — one source for sides/statuses.
 import { MARKET_SIDES } from '../trading/tradingModels.js';
+// Cycle-type vocabulary: which betLimits key belongs to which type.
+import { CYCLE_TYPES, isCycleType, limitsKeyFor } from './cycleTypes.js';
 // Derived cycle pools (FLAGS.DERIVED_CYCLE_POOLS, default off) — see
 // cyclePool.service.js for why the running total is the scaling ceiling.
 import { derivedPoolsEnabled, refreshRealPools } from './cyclePool.service.js';
@@ -146,9 +148,13 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
     // ── FIX A: DB-driven limits ──────────────────────────────────────────────
     // Old: const minBet = type === 'FULL_DAY' ? 100 : 10;  ← always hardcoded
     // New: read betLimits from SystemConfig.betLimits; fall back to safe defaults.
+    // The limits key comes from the type registry rather than an isFullDay
+    // ternary. Under the ternary a type that was neither silently inherited the
+    // 30-minute bounds — which happens to be right for the 1-minute block and
+    // would have been wrong, invisibly, for the next type added.
     const config    = await SystemConfig.findOne({ key: 'main' }).lean();
-    const isFullDay = type === 'FULL_DAY';
-    const limitsKey = isFullDay ? 'fullDay' : 'thirtyMin';
+    const isFullDay = type === CYCLE_TYPES.FULL_DAY;
+    const limitsKey = isCycleType(type) ? limitsKeyFor(type) : 'thirtyMin';
     const minBet    = config?.betLimits?.[limitsKey]?.min ?? (isFullDay ? 100  : 10);
     const maxBet    = config?.betLimits?.[limitsKey]?.max ?? (isFullDay ? 500000 : 100000);
 

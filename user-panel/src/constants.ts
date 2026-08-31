@@ -12,6 +12,11 @@ export const APP_NAME_FALLBACK = 'Betting Bazaar';  // use branding.userPanelNam
 // The user's selected cycle type is persisted in localStorage so chips
 // don't appear to randomly reset on page reload.
 export const CHIP_VALUES = {
+  // The 1-minute block deliberately shares the 30-minute ladder: it is the same
+  // game at a faster clock, and its stake bounds are the same server-side
+  // (SystemConfig.betLimits.oneMin defaults to betLimits.thirtyMin), so a
+  // different ladder here would offer chips the server rejects.
+  '1_MIN':    [10, 30, 90, 270, 810],
   '30_MIN':   [10, 30, 90, 270, 810],
   'FULL_DAY': [100, 300, 900, 2700, 8100],
 };

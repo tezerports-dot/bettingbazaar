@@ -10,6 +10,8 @@
  * shown in the Probability tab). Nothing here is used for server-side validation.
  */
 
+import type { CycleType } from '../types';
+
 export type Side = 'DELHI' | 'BOMBAY';
 
 export interface Run { side: Side; len: number; start: number; }
@@ -104,9 +106,21 @@ export function computeAnalytics(seq: Side[]): Analytics {
  * (newest first) when we have a meaningful sample, otherwise a deterministic
  * fallback so the roadmap is never empty.
  */
-export function analyticsFor(realWinnersNewestFirst: Side[], cycleType: '30_MIN' | 'FULL_DAY'): Analytics {
-  const target = cycleType === '30_MIN' ? 1440 : 30;
-  const seed = cycleType === '30_MIN' ? 90210 : 47311;
+export function analyticsFor(realWinnersNewestFirst: Side[], cycleType: CycleType | string): Analytics {
+  // Window size and fallback seed per type. The window is roughly "a month of
+  // results": 1440 thirty-minute cycles, 30 full days, and 1440 one-minute
+  // cycles — which is only a day of them, but a larger window would be a
+  // roadmap nobody can read and a sequence nobody scrolls.
+  //
+  // Each type gets its OWN seed so the deterministic padding differs between
+  // tabs; sharing one would render three tabs with identical "history" before
+  // real results arrive, which looks exactly like a bug.
+  const WINDOW: Record<string, { target: number; seed: number }> = {
+    '1_MIN':    { target: 1440, seed: 13337 },
+    '30_MIN':   { target: 1440, seed: 90210 },
+    'FULL_DAY': { target: 30,   seed: 47311 },
+  };
+  const { target, seed } = WINDOW[cycleType as string] ?? WINDOW['30_MIN'];
   let seq = realWinnersNewestFirst.slice(0, target);
   if (seq.length < 12) {
     // Not enough real history yet — pad with a deterministic tail so charts render.

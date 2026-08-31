@@ -154,6 +154,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
   const isRefreshing    = useRef(false);
 
   const liveStatsRef = useRef<{ [key in CycleType]: LiveStats }>({
+    [CycleType.ONE_MIN]:    { totalDelhi: 0, totalBombay: 0 },
     [CycleType.THIRTY_MIN]: { totalDelhi: 0, totalBombay: 0 },
     [CycleType.FULL_DAY]:   { totalDelhi: 0, totalBombay: 0 }
   });
@@ -182,6 +183,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
   });
 
   const [cycles, setCycles] = useState<{ [key in CycleType]: GameCycle }>({
+    [CycleType.ONE_MIN]:    createNullCycle(CycleType.ONE_MIN),
     [CycleType.THIRTY_MIN]: createNullCycle(CycleType.THIRTY_MIN),
     [CycleType.FULL_DAY]:   createNullCycle(CycleType.FULL_DAY),
   });
@@ -370,10 +372,33 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
         if (!watched.has(id)) { socket.emit('watch_cycle', { cycleId: id }); watched.add(id); }
       }
     };
-    const typeKeyOf = (raw: any, cycleId?: string): string =>
-      raw === '30_MIN' ? '30_MIN'
-      : raw === 'FULL_DAY' ? 'FULL_DAY'
-      : (typeof cycleId === 'string' && cycleId.includes('30MIN')) ? '30_MIN' : 'FULL_DAY';
+    // ── One place that turns a server type string into a CycleType ──────────
+    // Five handlers each had their own version of this, and every one ended in
+    // `: CycleType.FULL_DAY`. That fallback was harmless while there were two
+    // types and became a bug the moment there were three: a 1_MIN event with a
+    // type field the branch did not recognise was filed as FULL_DAY, so the
+    // 1-minute tab never updated and the full-day tab showed someone else's
+    // pools.
+    //
+    // The cycleId sniff stays as a last resort because some legacy events carry
+    // no type at all, but it is now keyed off the registry's id prefixes rather
+    // than a single hardcoded '30MIN'.
+    const CYCLE_ID_PREFIXES: Array<[string, CycleType]> = [
+      ['1MIN_',    CycleType.ONE_MIN],
+      ['30MIN_',   CycleType.THIRTY_MIN],
+      ['FULLDAY_', CycleType.FULL_DAY],
+    ];
+    const toCycleType = (raw: any, cycleId?: string): CycleType | null => {
+      const known = Object.values(CycleType).find(v => v === raw);
+      if (known) return known as CycleType;
+      if (typeof cycleId === 'string') {
+        const hit = CYCLE_ID_PREFIXES.find(([prefix]) => cycleId.startsWith(prefix));
+        if (hit) return hit[1];
+      }
+      // Unattributable: better to drop the event than to apply it to the wrong
+      // tab, which is what every previous fallback did.
+      return null;
+    };
 
     // ── cycle_snapshot: authoritative init pushed by server on connect ───────
     // Arrives via SSE on every connection (SSE sends it on connect).
@@ -418,10 +443,14 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
         }));
       };
 
-      applySnapshotType('30_MIN',   CycleType.THIRTY_MIN);
-      applySnapshotType('FULL_DAY', CycleType.FULL_DAY);
-      // Watch exactly the two live cycles the snapshot just described.
-      syncWatched({ '30_MIN': map['30_MIN']?.cycleId, 'FULL_DAY': map['FULL_DAY']?.cycleId });
+      // Every type, from the enum — the snapshot is the authoritative init, so a
+      // type missing here is a tab that stays on LOADING_ until the next
+      // new_cycle happens to fire.
+      for (const t of Object.values(CycleType)) applySnapshotType(t, t);
+      // Watch exactly the live cycles the snapshot just described.
+      syncWatched(Object.fromEntries(
+        Object.values(CycleType).map(t => [t, map[t]?.cycleId]),
+      ));
       setIsOnline(true);
     };
 
@@ -468,7 +497,8 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     };
 
     const handleBetPlaced = (data: any) => {
-      const ct = data.cycleType === '30_MIN' ? CycleType.THIRTY_MIN : CycleType.FULL_DAY;
+      const ct = toCycleType(data.cycleType, data.cycleId);
+      if (!ct) return;
       if (typeof data.cycleId !== 'string' || !data.cycleId) return;
       pendingBetPlaced.set(data.cycleId, {
         cycleType: ct,
@@ -498,11 +528,8 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
 
     const handleNewCycle = (data: any) => {
       // Server created a fresh cycle (sent 12s after cycle_result).
-      const ct = data.type === '30_MIN'
-        ? CycleType.THIRTY_MIN
-        : data.type === 'FULL_DAY'
-          ? CycleType.FULL_DAY
-          : data.cycleId?.includes('30MIN') ? CycleType.THIRTY_MIN : CycleType.FULL_DAY;
+      const ct = toCycleType(data.type, data.cycleId);
+      if (!ct) return;
       for (const [pendingCycleId, pending] of pendingBetPlaced) {
         if (pending.cycleType === ct) pendingBetPlaced.delete(pendingCycleId);
       }
@@ -533,16 +560,12 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
         }
       }));
       // Switch our watch to the fresh cycle for this type (leaves the old one).
-      syncWatched({ [typeKeyOf(data.type, data.cycleId)]: data.cycleId });
+      syncWatched({ [ct]: data.cycleId });
     };
 
     const handleCycleResult = (data: any) => {
-      const rawType = data.type;
-      const ct = rawType === '30_MIN'
-        ? CycleType.THIRTY_MIN
-        : rawType === 'FULL_DAY'
-          ? CycleType.FULL_DAY
-          : data.cycleId?.includes('30MIN') ? CycleType.THIRTY_MIN : CycleType.FULL_DAY;
+      const ct = toCycleType(data.type, data.cycleId);
+      if (!ct) return;
       setCycles(prev => ({
         ...prev,
         [ct]: {
@@ -581,7 +604,10 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     };
 
     const handleCyclePhase = (data: any) => {
-      const ct = data.cycleId?.includes('30MIN') ? CycleType.THIRTY_MIN : CycleType.FULL_DAY;
+      // cycle_phase does carry `type` (cycleGenerator emits it); the cycleId is
+      // the fallback for older payloads.
+      const ct = toCycleType(data.type, data.cycleId);
+      if (!ct) return;
       setCycles(prev => ({ ...prev, [ct]: { ...prev[ct], status: data.phase as GameState } }));
     };
 

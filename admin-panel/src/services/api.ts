@@ -732,7 +732,10 @@ export const subAdmins = {
 
   assignPhantomAccess: async (
     userId: string,
-    access: 'NONE' | '30_MIN' | 'FULL_DAY' | 'BOTH'
+    // Mirrors the User.phantomAccess enum. 'BOTH' predates the 1-minute block
+    // and means EVERY type — the server gate reads it as "skip the per-type
+    // check" (backend/domains/markets/bet.routes.js).
+    access: 'NONE' | '1_MIN' | '30_MIN' | 'FULL_DAY' | 'BOTH'
   ) => {
     // Backend expects { accessLevel }
     const res = await api.post(`/api/admin/users/${userId}/phantom-access`, {

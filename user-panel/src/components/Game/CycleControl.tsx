@@ -112,30 +112,29 @@ const CycleControl: React.FC = () => {
   return (
     <div className="h-[7%] min-h-[50px] flex items-center justify-between px-4 w-full bg-[#0B0E14]/50 border-b border-white/5 relative z-30">
 
-      {/* Cycle type selector */}
+      {/* Cycle type selector — one button per type, from a single list.
+          Three hand-written buttons would have meant repeating the same 6-line
+          class expression three times, and the tab labels drifting from the
+          CycleType values they set. */}
       <div className="flex bg-[#121826] rounded-full border border-[#D4AF37]/30 p-0.5 shadow-[inset_0_2px_4px_rgba(0,0,0,0.5)] gap-0.5">
-        <button
-          onClick={() => setCycleType(CycleType.FULL_DAY)}
-          className={`
-            px-4 h-8 rounded-full text-[9px] font-black tracking-wider transition-all duration-200
-            ${cycleType === CycleType.FULL_DAY
-              ? 'bg-gradient-to-b from-[#F5C77A] to-[#D4AF37] text-[#0B0E14] shadow-md'
-              : 'text-[#9AA0A6] hover:text-slate-300 active:bg-white/5'}
-          `}
-        >
-          FULL DAY
-        </button>
-        <button
-          onClick={() => setCycleType(CycleType.THIRTY_MIN)}
-          className={`
-            px-4 h-8 rounded-full text-[9px] font-black tracking-wider transition-all duration-200
-            ${cycleType === CycleType.THIRTY_MIN
-              ? 'bg-gradient-to-b from-[#F5C77A] to-[#D4AF37] text-[#0B0E14] shadow-md'
-              : 'text-[#9AA0A6] hover:text-slate-300 active:bg-white/5'}
-          `}
-        >
-          30 MIN
-        </button>
+        {([
+          [CycleType.FULL_DAY,   'FULL DAY'],
+          [CycleType.THIRTY_MIN, '30 MIN'],
+          [CycleType.ONE_MIN,    '1 MIN'],
+        ] as Array<[CycleType, string]>).map(([type, label]) => (
+          <button
+            key={type}
+            onClick={() => setCycleType(type)}
+            className={`
+              px-3 h-8 rounded-full text-[9px] font-black tracking-wider transition-all duration-200
+              ${cycleType === type
+                ? 'bg-gradient-to-b from-[#F5C77A] to-[#D4AF37] text-[#0B0E14] shadow-md'
+                : 'text-[#9AA0A6] hover:text-slate-300 active:bg-white/5'}
+            `}
+          >
+            {label}
+          </button>
+        ))}
       </div>
 
       {/* Timer / Status Display */}

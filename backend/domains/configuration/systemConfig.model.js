@@ -31,6 +31,14 @@ const systemConfigSchema = new mongoose.Schema({
   // Previously hardcoded as 10 / 100 (minBet) with no server-side maxBet.
   // Both values now come from DB so admin changes take effect immediately.
   betLimits: {
+    // The 1-minute block shares the 30-minute stake bounds and chip ladder
+    // (₹10·30·90·270·810) — same game, shorter window. Declared explicitly
+    // rather than left to fall through to thirtyMin, so that raising one
+    // block's ceiling cannot silently raise the other's.
+    oneMin: {
+      min: { type: Number, default: 10 },
+      max: { type: Number, default: 100000 }
+    },
     thirtyMin: {
       min: { type: Number, default: 10 },
       max: { type: Number, default: 100000 }
@@ -139,6 +147,23 @@ const systemConfigSchema = new mongoose.Schema({
   // celebrate > 0, and merge must be < the cycle duration. Read (cached) by
   // the generator. Full-day merges earlier than 30-min by default.
   cyclePhases: {
+    // 1-minute block: merge 12s before the end, equalize at 9s, close betting
+    // at 5s, declare at 3s, celebrate 3s→0, next block at 0. Betting is open
+    // for the first 55 of 60 seconds.
+    //
+    // These are seconds, like the others, and the same ordering invariant
+    // applies (merge > equalizer > close > celebrate >= 0) — but the margins
+    // here are seconds rather than minutes, and the status tick runs at 1s.
+    // The close→celebrate window is only 2s wide, so a slow tick can miss the
+    // CLOSED transition; the phase logic already tolerates that by letting a
+    // still-OPEN cycle complete directly (bets then close at 3s instead of 5s)
+    // rather than stalling.
+    oneMin: {
+      mergeBeforeEndSec:     { type: Number, default: 12 },
+      equalizerBeforeEndSec: { type: Number, default: 9 },
+      closeBeforeEndSec:     { type: Number, default: 5 },
+      celebrateBeforeEndSec: { type: Number, default: 3 },
+    },
     thirtyMin: {
       mergeBeforeEndSec:     { type: Number, default: 180 },
       equalizerBeforeEndSec: { type: Number, default: 120 },

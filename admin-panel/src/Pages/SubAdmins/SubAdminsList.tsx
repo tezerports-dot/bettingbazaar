@@ -42,7 +42,9 @@ export const SubAdminsList: React.FC = () => {
   });
   const [isSavingPermissions, setIsSavingPermissions] = useState(false);
 
-  const [phantomAccess, setPhantomAccess] = useState<'NONE' | '30_MIN' | 'FULL_DAY' | 'BOTH'>(
+  // 'BOTH' predates the 1-minute block and means EVERY type, not two — the
+  // server gate reads it as "skip the per-type check".
+  const [phantomAccess, setPhantomAccess] = useState<'NONE' | '1_MIN' | '30_MIN' | 'FULL_DAY' | 'BOTH'>(
     'NONE'
   );
 
@@ -164,6 +166,7 @@ export const SubAdminsList: React.FC = () => {
       render: (user: User) => {
         const colors: Record<string, string> = {
           NONE: 'bg-gray-500/20 text-gray-500',
+          '1_MIN': 'bg-teal-500/20 text-teal-500',
           '30_MIN': 'bg-blue-500/20 text-blue-500',
           FULL_DAY: 'bg-purple-500/20 text-purple-500',
           BOTH: 'bg-gold-500/20 text-gold-500',
@@ -236,6 +239,7 @@ export const SubAdminsList: React.FC = () => {
         <p className="font-semibold text-orange-400 mb-1">Phantom Access</p>
         <p className="text-gray-400">
           <strong className="text-gray-300">NONE</strong>: No phantom betting ·{' '}
+          <strong className="text-gray-300">1_MIN</strong>: 1-min cycles only ·{' '}
           <strong className="text-gray-300">30_MIN</strong>: 30-min cycles only ·{' '}
           <strong className="text-gray-300">FULL_DAY</strong>: Full-day cycles only ·{' '}
           <strong className="text-gray-300">BOTH</strong>: All cycle types.
@@ -390,6 +394,7 @@ export const SubAdminsList: React.FC = () => {
                 className="input"
               >
                 <option value="NONE">NONE — No phantom access</option>
+                <option value="1_MIN">1_MIN — 1-minute cycles only</option>
                 <option value="30_MIN">30_MIN — 30-minute cycles only</option>
                 <option value="FULL_DAY">FULL_DAY — Full-day cycles only</option>
                 <option value="BOTH">BOTH — All cycle types</option>

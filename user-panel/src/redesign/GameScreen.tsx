@@ -42,16 +42,26 @@ const GameScreen: React.FC = () => {
     userBets, isGhostMode, toggleGhostMode, user, isAuthenticated, sysConfig, pastCycles, subscribeToVolume, getCurrentVolume,
   } = useGame();
 
+  // Short label for the results strip, per cycle type. A map rather than a
+  // ternary so a new tab shows its own label instead of borrowing another's.
+  const CYCLE_TAB_LABEL: Record<string, string> = {
+    [CycleType.ONE_MIN]:    '1M',
+    [CycleType.THIRTY_MIN]: '30M',
+    [CycleType.FULL_DAY]:   '24H',
+  };
+
   // Phantom-manager access (ghost mode). Only users granted phantomAccess for the
   // active cycle type see the toggle; enabling it routes bets through
   // placePhantomBet (equalizer bets that balance the display pool, never paid out).
   const canUseGhostMode = (() => {
     const access = (user as any)?.phantomAccess as string | undefined;
     if (!access || access === 'NONE') return false;
+    // 'BOTH' predates the 1-minute block and means EVERY type — the server gate
+    // reads it the same way (backend/domains/markets/bet.routes.js).
     if (access === 'BOTH') return true;
-    if (access === '30_MIN') return cycleType === CycleType.THIRTY_MIN;
-    if (access === 'FULL_DAY') return cycleType === CycleType.FULL_DAY;
-    return false;
+    // Otherwise the access value IS the single type the agent is scoped to, so
+    // this compares rather than branching per type.
+    return access === (cycleType as string);
   })();
   const { openAuth } = useShell();
   const { desktop, mobile, vh } = useViewport();
@@ -106,10 +116,18 @@ const GameScreen: React.FC = () => {
       .filter(c => c.type === t && (c.winner === 'DELHI' || c.winner === 'BOMBAY'))
       .sort((a, b) => (b.endTime || 0) - (a.endTime || 0))
       .map(c => c.winner as Side);
-    return { '30_MIN': build(CycleType.THIRTY_MIN), FULL_DAY: build(CycleType.FULL_DAY) };
+    // Keyed by every CycleType, so a tab cannot fall through to another type's
+    // history — which is what `cycleType === THIRTY_MIN ? '30_MIN' : 'FULL_DAY'`
+    // did to any third type.
+    return Object.fromEntries(
+      Object.values(CycleType).map(t => [t, build(t)]),
+    ) as Record<CycleType, Side[]>;
   }, [pastCycles]);
 
-  const Ag = useMemo(() => analyticsFor(winnersByType[cycleType === CycleType.THIRTY_MIN ? '30_MIN' : 'FULL_DAY'], cycleType === CycleType.THIRTY_MIN ? '30_MIN' : 'FULL_DAY'), [winnersByType, cycleType]);
+  const Ag = useMemo(
+    () => analyticsFor(winnersByType[cycleType] ?? [], cycleType),
+    [winnersByType, cycleType],
+  );
   const seqGame = Ag.seq;
   const stripBeads = seqGame.slice(0, mobile ? 14 : 26).map(bead);
   const roadmapBeads = [...seqGame.slice(0, 60)].reverse().map(bead);
@@ -119,7 +137,7 @@ const GameScreen: React.FC = () => {
   const betAmount = manualInput !== '' && !isNaN(manualNum) && manualNum > 0 ? manualNum : selectedChip;
   const minBet = sysConfig?.minBet ?? 10; // schema default 10 (SystemConfig.betLimits.thirtyMin.min)
 
-  const chips = CHIP_VALUES[cycleType === CycleType.THIRTY_MIN ? '30_MIN' : 'FULL_DAY'].map((v, i) => {
+  const chips = (CHIP_VALUES[cycleType] ?? CHIP_VALUES[CycleType.THIRTY_MIN]).map((v, i) => {
     const st = CHIP_STYLES[i % 5];
     const sel = selectedChip === v && manualInput === '';
     return {
@@ -278,7 +296,7 @@ const GameScreen: React.FC = () => {
         {/* Cycle control */}
         <div style={{ flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '8px 4px 10px' }}>
           <div style={{ display: 'flex', background: 'var(--surface2)', border: '1px solid var(--line2)', borderRadius: 999, padding: 3, gap: 3, boxShadow: 'var(--shadow-sm)' }}>
-            {[{ t: CycleType.FULL_DAY, l: 'FULL DAY' }, { t: CycleType.THIRTY_MIN, l: '30 MIN' }].map(o => {
+            {[{ t: CycleType.FULL_DAY, l: 'FULL DAY' }, { t: CycleType.THIRTY_MIN, l: '30 MIN' }, { t: CycleType.ONE_MIN, l: '1 MIN' }].map(o => {
               const on = cycleType === o.t;
               return <button key={o.l} onClick={() => setCycleType(o.t)} style={{ padding: '7px 15px', borderRadius: 999, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 800, letterSpacing: '.06em', background: on ? 'linear-gradient(180deg,var(--gold2),var(--gold))' : 'transparent', color: on ? '#1a1200' : 'var(--text3)', boxShadow: on ? 'var(--shadow-sm)' : 'none' }}>{o.l}</button>;
             })}
@@ -400,7 +418,7 @@ const GameScreen: React.FC = () => {
         <div style={{ flex: 'none', padding: '8px 0 4px' }}>
           <button onClick={() => setDrawerOpen(true)} style={{ width: '100%', background: 'var(--surface)', border: '1px solid var(--line)', borderTop: '1px solid var(--line2)', borderRadius: 16, padding: '10px 14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, boxShadow: 'var(--shadow-sm)' }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 'none' }}>
-              <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.1em', color: 'var(--text3)' }}>{cycleType === CycleType.THIRTY_MIN ? '30M' : '24H'}</span>
+              <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.1em', color: 'var(--text3)' }}>{CYCLE_TAB_LABEL[cycleType] ?? '30M'}</span>
             </span>
             <div style={{ flex: 1, display: 'flex', gap: 5, overflow: 'hidden', alignItems: 'center' }}>
               {stripBeads.map((b, i) => <span key={i} style={{ flex: 'none', width: 20, height: 20, borderRadius: '50%', background: b.bg, color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: 'var(--shadow-sm)' }}>{b.ch}</span>)}

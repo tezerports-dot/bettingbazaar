@@ -1,11 +1,16 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import mongoose from 'mongoose';
+// The enum is derived from the type registry rather than restated, so a type
+// added there cannot be rejected here — the failure that shape produces is a
+// generator creating cycles the model silently refuses to save.
+import { CYCLE_TYPE_VALUES } from './cycleTypes.js';
 
 const cycleSchema = new mongoose.Schema({
   cycleId: { type: String, required: true, unique: true, index: true },
-  
-  // ✅ ONLY 2 TYPES: 30_MIN and FULL_DAY (FIX #1)
-  type: { type: String, enum: ['30_MIN', 'FULL_DAY'], required: true, index: true },
+
+  // 1_MIN, 30_MIN, FULL_DAY — see domains/markets/cycleTypes.js, which owns
+  // the vocabulary and the per-type config keys that go with each value.
+  type: { type: String, enum: CYCLE_TYPE_VALUES, required: true, index: true },
   
   startTime: { type: Number, required: true, index: true },
   endTime: { type: Number, required: true },
