@@ -76,29 +76,25 @@ describe('the full cutover is coherent', () => {
     expect(validateAuthorityConfig(fullCutoverEnv())).toMatchObject({ ok: true, errors: [] });
   });
 
-  it('falls back to Mongo and WARNS — it does not fail the boot — without DATABASE_URL', () => {
-    // Pinning what the code actually does, which is not quite what its header
-    // says ("refused outright ... makes a production boot fail loudly").
-    // Authority IS refused — every path resolves to Mongo, so no money moves
-    // to a store that isn't there — but `ok` stays true and the only signal is
-    // a per-path warning in the boot log.
-    //
-    // That gap is worth knowing: a deploy that sets all eleven variables and
-    // forgets DATABASE_URL runs happily with every rupee in the other database
-    // from the one the operator configured, and nothing fails. Whether that
-    // should be an error is an owner's call about boot policy, not something
-    // to change while flipping paths — so this asserts today's behaviour and
-    // names the discrepancy rather than hiding it.
+  it('FAILS THE BOOT without DATABASE_URL rather than quietly running on Mongo', () => {
+    // Falling back to Mongo is safe in itself — no money is read from a
+    // database that isn't there. The hazard is the deploy that BELIEVES it
+    // cut over: set all eleven variables, forget DATABASE_URL, and the
+    // platform runs with every rupee in the other store from the one
+    // configured. That used to be eleven warnings and `ok: true`, which
+    // server.js does not exit on.
     const env = fullCutoverEnv();
     delete env.DATABASE_URL;
     delete process.env.DATABASE_URL;
 
+    // Still downgrades safely...
     for (const p of ALL) expect(authorityFor(p, env)).toBe(STORE.MONGO);
 
+    // ...and now refuses to start, once per misconfigured path.
     const result = validateAuthorityConfig(env);
-    expect(result.errors).toEqual([]);
-    expect(result.warnings.length).toBe(ALL.length);
-    expect(result.warnings[0]).toMatch(/DATABASE_URL is unset/);
+    expect(result.ok).toBe(false);
+    expect(result.errors.length).toBe(ALL.length);
+    expect(result.errors[0]).toMatch(/DATABASE_URL is unset/);
   });
 });
 

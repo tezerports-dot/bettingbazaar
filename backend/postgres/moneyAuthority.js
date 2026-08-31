@@ -694,9 +694,11 @@ export function fullFinancialAuthorityStatus(env = process.env) {
  * either one means money would be read from a store that does not own it:
  *
  *  1. A path requests Postgres while DATABASE_URL is unset. The request is
- *     silently downgraded to Mongo by authorityFor(), which is the safe
- *     behaviour, but shipping a deploy that *believes* it cut over when it did
- *     not is its own hazard — so it is reported.
+ *     downgraded to Mongo by authorityFor(), which is the safe behaviour, but
+ *     shipping a deploy that *believes* it cut over when it did not is its own
+ *     hazard — so this is an ERROR and stops the boot. It was a warning until
+ *     2026-08-31, which meant a deploy that set every path and forgot the DSN
+ *     ran with all the money in the other store and nothing failed.
  *  2. A path is on Postgres while one of its dependencies is still on Mongo
  *     (e.g. ledger cut over but wallet did not). A single settlement would then
  *     read balances from one store and write accounting to another, and no
@@ -727,10 +729,23 @@ export function validateAuthorityConfig(env = process.env, capabilityOf = capabi
     const requested = requestedStore(path, env);
     if (requested !== STORE.POSTGRES) continue;
 
+    // A BOOT FAILURE, not a warning (2026-08-31). `authorityFor` still
+    // downgrades to Mongo, so no money is read from a database that isn't
+    // there — that part was never in doubt. The hazard is the deploy that
+    // BELIEVES it cut over: set every path to postgres, forget DATABASE_URL,
+    // and the platform runs happily with every rupee in the other store from
+    // the one that was configured, its only protest a line in the boot log.
+    //
+    // This header has always said both failures are "worth stopping a boot
+    // for"; the code disagreed with it. The header was right. A configuration
+    // that lies about where money lives is exactly what this function exists
+    // to refuse, and refusing to start is the only response that cannot be
+    // mistaken for success.
     if (!pgConfigured()) {
-      warnings.push(
-        `${PATH_SPEC[path].env}=postgres but DATABASE_URL is unset — '${path}' stays on MongoDB. ` +
-        `Set DATABASE_URL or remove the variable so the intent matches reality.`
+      errors.push(
+        `${PATH_SPEC[path].env}=postgres but DATABASE_URL is unset — '${path}' would stay on MongoDB ` +
+        `while the configuration claims Postgres. Set DATABASE_URL, or remove ${PATH_SPEC[path].env} ` +
+        `so the intent matches reality.`
       );
       continue;
     }
