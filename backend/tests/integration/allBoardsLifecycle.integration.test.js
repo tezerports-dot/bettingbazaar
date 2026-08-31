@@ -70,8 +70,13 @@ const phases = (type) => phasesFor(type, DEFAULT_CYCLE_PHASES);
 let player;
 beforeEach(async () => {
   await SystemConfig.create({ key: 'main' });
+  // `mobile` is required and unique, and `kycStatus` gates the bet route —
+  // both mirrored from the fixtures in oneMinuteCycleLifecycle rather than
+  // guessed. Omitting `mobile` failed every test in this file at beforeEach.
+  seq++;
   player = await User.create({
-    username: `p_${seq++}`, depositBalance: 100000, winningsBalance: 0, reserveBalance: 0,
+    username: `ab_u${seq}`, mobile: `93000${String(seq).padStart(5, '0')}`,
+    kycStatus: 'APPROVED', depositBalance: 100000, winningsBalance: 0, reserveBalance: 0,
   });
 });
 afterEach(() => { /* collections are cleared by tests/setup.js */ });
@@ -154,11 +159,15 @@ describe('the full-day board keeps its own creation path', () => {
     const c = await Cycle.findOne({ type: CYCLE_TYPES.FULL_DAY }).lean();
     expect(c, 'no full-day cycle was created').toBeTruthy();
     expect(c.status).toBe('OPEN');
-    // A day, not an hour-tiled block. Allowing a wide band because the anchor
-    // is IST midnight and this asserts the ORDER of magnitude, not the offset.
-    const span = c.endTime - c.startTime;
-    expect(span).toBeGreaterThan(20 * 3600_000);
-    expect(span).toBeLessThanOrEqual(24 * 3600_000 + 60_000);
+    // Exactly a day: the path sets endTime = startTime + 24h outright, so a
+    // band would under-assert. The anchor is IST midnight, which this does not
+    // pin — a change to the anchor is legitimate, a change to the length is a
+    // full-day block that is not a full day.
+    expect(c.endTime - c.startTime).toBe(24 * 3600_000);
+    // ...and the block covering right now, not a past or future day.
+    const now = Date.now();
+    expect(c.startTime).toBeLessThanOrEqual(now);
+    expect(c.endTime).toBeGreaterThan(now);
   });
 
   it('does not create a second full-day block while one is live', async () => {
