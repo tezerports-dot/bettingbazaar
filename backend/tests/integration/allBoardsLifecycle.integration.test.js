@@ -82,8 +82,14 @@ beforeEach(async () => {
 afterEach(() => { /* collections are cleared by tests/setup.js */ });
 
 describe('every board — the betting cutoff is on the clock and is its own', () => {
+  // POST /api/bet/place — the router's own path is `/place`, so mounting at
+  // `/api/bet` and posting to `/api/bet` produced a bare Express 404 with an
+  // empty body, which is what an unmounted path looks like rather than a
+  // rejected bet. `Idempotency-Key` is required by the route.
   const bet = (cycle, type) => request(app)
-    .post('/api/bet').set('Authorization', authFor(player))
+    .post('/api/bet/place')
+    .set('Authorization', authFor(player))
+    .set('Idempotency-Key', `ab-${cycle.cycleId}-${seq++}`)
     .send({ cycleId: cycle.cycleId, side: 'DELHI', amount: 100, type });
 
   for (const type of CYCLE_TYPE_VALUES) {
