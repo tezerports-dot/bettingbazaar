@@ -525,10 +525,48 @@ have to be right or the app is unusable rather than merely inconvenient:
 > is tapped inside a chat app that opens it in its own WebView, the OS never
 > sees the tap and no App Link fires. Whether Telegram hands off to an installed
 > app depends on its version and the user's **Settings → Chat Settings → In-App
-> Browser** toggle. If it does not hand off, the fallback is the in-app
-> browser's "Open in browser" action, which routes through Chrome and does. This
-> is the one part of the sign-in path that cannot be proven from the code, and
-> it is on-device check 2 in `ANDROID_RELEASE_SETUP.md`.
+> Browser** toggle. This is the one part of the sign-in path that cannot be
+> proven from the code, and it is on-device check 2 in
+> `ANDROID_RELEASE_SETUP.md`.
+>
+> **It no longer costs the player their token, though.** `TelegramAuthPage`
+> classifies the context *before* the exchange (`services/inAppBrowser.ts`) and,
+> in a storage-isolated WebView, hands the link back instead of spending it —
+> see "The handoff screen" below.
+
+### The handoff screen — why the token is sometimes not spent
+
+A one-time token is spent by whatever context opens it. Inside Telegram's
+Android WebView that context has its own cookie jar and its own `localStorage`
+and discards both when the sheet closes: the player watches themselves sign in,
+closes it, opens the app, and is signed out with the token already burned.
+
+So `services/inAppBrowser.ts` classifies the context first, and
+`TelegramAuthPage` redeems only where the result can survive:
+
+| Signal | Verdict |
+|---|---|
+| Capacitor shell (`Capacitor.isNativePlatform()`) | **native** — its storage is the app's; redeem |
+| ` wv` token **and** `Android` in the UA | **isolated** — Android stamps that on every WebView, and only a WebView |
+| iOS + `AppleWebKit` + **no** `Safari/` | **isolated** — a WKWebView. SFSafariViewController *does* carry `Safari/` and shares Safari's cookie store, so it is correctly left alone |
+| anything else | **browser** — redeem |
+
+**The classifier fails open by construction**, because the two errors are not
+symmetric: missing an isolated WebView burns a token, while a false positive
+*stops a sign-in that would have worked*. The second is worse, so every check
+must be positively true before it fires, and the screen carries a "continue here
+anyway" override — a wrong answer costs a tap, never an account.
+
+**Why the screen asks rather than redirecting.** The obvious fix — an
+`intent://` navigation into Chrome — cannot work here. Android rebuilds the
+target URI from scheme + authority + path + query, and `#Intent;…;end` occupies
+the fragment slot, so **a fragment cannot survive an intent hop**. The token
+rides in the fragment deliberately (it is what keeps it out of access logs and
+`Referer` headers), so an intent hop would hand Chrome a tokenless URL and sign
+nobody in. iOS has no such limitation — `x-safari-https:` passes the URL to
+Safari intact — which is why iOS gets a real button and Android gets a copy
+button plus the "⋮ → Open in browser" instruction, which preserves the URL
+exactly.
 
 **Release pipeline** (`.github/workflows/android-release.yml`) — triggered by
 `workflow_dispatch` with a version name, or by pushing an `android-v*` tag.

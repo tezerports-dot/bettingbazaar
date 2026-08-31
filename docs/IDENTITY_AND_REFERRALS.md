@@ -149,6 +149,20 @@ touches, which is the whole reason it is in the fragment.
 start sign-in from inside the PWA for the link to be redeemed there. See
 `governance/FULL_STACK_AND_CLIENT_DELIVERY.md` §3.6.
 
+**And where the link lands somewhere the session cannot survive, the token is
+not spent at all.** `services/inAppBrowser.ts` classifies the context *before*
+the exchange; in a storage-isolated WebView (Telegram's Android in-app browser
+being the case that matters) `TelegramAuthPage` shows a handoff screen — copy
+the link, or "⋮ → Open in browser", or on iOS a real "Open in Safari" button —
+rather than redeeming into storage that is about to be discarded. The
+classifier fails open and the screen carries an override, because wrongly
+stopping a sign-in is worse than wrongly allowing one.
+
+Note what this does **not** do: it does not force the link into Chrome. An
+`intent://` hop cannot carry a fragment (Android rebuilds the URI from scheme,
+authority, path and query only), and the token is in the fragment on purpose —
+so the redirect that looks obvious would arrive tokenless.
+
 `POST /api/telegram/exchange` calls **`issueSession`**, imported from
 `routes.js`, rather than minting its own. That is deliberate: staff password
 login, staff post-2FA login and Telegram login all reach the same function, so
