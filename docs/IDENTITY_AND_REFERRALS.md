@@ -163,6 +163,26 @@ Note what this does **not** do: it does not force the link into Chrome. An
 authority, path and query only), and the token is in the fragment on purpose —
 so the redirect that looks obvious would arrive tokenless.
 
+### The visitor who arrives from search
+
+Worth tracing, because it is the ordinary path and it crosses three contexts:
+
+1. Lands on the site in their browser, signed out, and opens the bot from the
+   sign-in screen (`https://t.me/<bot>`) — which leaves that tab open.
+2. Finishes in Telegram: Aadhaar, contact share, channel.
+3. Taps the bot's link. On mobile that opens Telegram's in-app browser, so the
+   handoff screen above appears and they choose "open in browser"; on desktop
+   the Telegram client hands off to the default browser directly.
+4. The link is redeemed **in their browser** — the same storage the tab from
+   step 1 is using, so the session is exactly where it needs to be.
+
+The catch is step 4 lands in a **new tab**, and session restore runs on mount.
+Without help, the original tab keeps rendering the signed-out app beside a
+signed-in one, and "just refresh it" is only obvious to someone who already
+knows what happened. `GameContext` therefore listens for the `storage` event —
+which fires in every *other* tab of the origin — and reloads a signed-out tab
+when `auth_token` appears, or clears the session when it is removed elsewhere.
+
 `POST /api/telegram/exchange` calls **`issueSession`**, imported from
 `routes.js`, rather than minting its own. That is deliberate: staff password
 login, staff post-2FA login and Telegram login all reach the same function, so
