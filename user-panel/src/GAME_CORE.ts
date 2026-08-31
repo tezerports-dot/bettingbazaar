@@ -400,6 +400,46 @@ const PHASE_BY_TYPE = Object.freeze({
  * @param endTimeMs The cycle's endTime in ms
  * @returns         The correct GameState for this moment
  */
+/**
+ * Safety margin between when the CLIENT stops accepting a stake and when the
+ * SERVER stops accepting one.
+ *
+ * The server closes betting on the clock at `endTime - closeBeforeEndSec`
+ * (bet.routes.js). The client closes at the same instant via `getPhaseStatus`.
+ * Both read the same wall clock, so in principle they agree — but a stake
+ * submitted at T−5.2s does not ARRIVE at T−5.2s. It crosses a mobile network
+ * first, and lands at T−4.8s, where the server correctly rejects it.
+ *
+ * Without this margin the player sees an open board, taps, and gets an error
+ * for a bet they placed in time. The fix is not to loosen the server (its
+ * cutoff is what stops a stake landing after the pools are balanced) but to
+ * have the client stop offering the bet slightly earlier than the deadline it
+ * cannot make.
+ *
+ * Absolute, not proportional: it models network latency and clock-sync error,
+ * neither of which scales with how long a cycle runs. 1.5s covers a slow
+ * Indian mobile round trip with room to spare, and costs a 60-second board
+ * 1.5 of its 55 betting seconds.
+ *
+ * This is a COURTESY, never a control. The server gate is the only thing that
+ * actually stops a late bet — anything the client enforces can be skipped by
+ * calling the API directly.
+ */
+export const BET_SUBMIT_MARGIN_MS = 1500;
+
+/**
+ * Whether the client should still OFFER a bet on this cycle.
+ *
+ * Deliberately separate from `getPhaseStatus`: that reports the cycle's true
+ * phase and must keep agreeing with the server, so the countdown and the
+ * MERGED/CLOSED labels stay honest. This is the narrower question of whether a
+ * tap right now would still arrive in time.
+ */
+export function canPlaceBet(type: CycleType, nowMs: number, endTimeMs: number): boolean {
+  const cfg = PHASE_BY_TYPE[type] ?? PHASE.THIRTY_MIN;
+  return (endTimeMs - nowMs) > (cfg.CLOSE_AT_MS + BET_SUBMIT_MARGIN_MS);
+}
+
 export function getPhaseStatus(type: CycleType, nowMs: number, endTimeMs: number): GameState {
   const cfg      = PHASE_BY_TYPE[type] ?? PHASE.THIRTY_MIN;
   const timeLeft = endTimeMs - nowMs;

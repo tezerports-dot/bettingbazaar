@@ -17,6 +17,7 @@ import { describe, it, expect } from 'vitest';
 import { analyticsFor, computeAnalytics, MIN_SAMPLE, Side } from './analytics';
 import { ANALYTICS_WINDOW } from '../constants';
 import { CycleType } from '../types';
+import { canPlaceBet, BET_SUBMIT_MARGIN_MS } from '../GAME_CORE';
 
 const run = (n: number, side: Side): Side[] => Array.from({ length: n }, () => side);
 
@@ -92,5 +93,33 @@ describe('computeAnalytics on an empty sequence', () => {
     expect(A.runs).toEqual([]);
     expect(A.sample).toBe(0);
     expect(A.cont(1)).toBe(0);
+  });
+});
+
+describe('client betting cutoff', () => {
+  // The client stops offering a bet before the server stops accepting one.
+  // Without the margin a stake tapped just inside the deadline arrives just
+  // outside it and is rejected — the player sees an open board and an error
+  // for a bet they placed in time.
+  const END = 1_800_000_000_000;
+  const at = (msLeft: number) => END - msLeft;
+
+  it('closes the 1-minute board 1.5s before the server does', () => {
+    expect(canPlaceBet(CycleType.ONE_MIN, at(7_000), END)).toBe(true);
+    expect(canPlaceBet(CycleType.ONE_MIN, at(6_500), END)).toBe(false); // 5s + margin
+    expect(canPlaceBet(CycleType.ONE_MIN, at(5_100), END)).toBe(false); // server would still take it
+  });
+
+  it('never opens later than it closes, on any board', () => {
+    for (const t of Object.values(CycleType)) {
+      expect(canPlaceBet(t, at(0), END), `${t} at the buzzer`).toBe(false);
+      expect(canPlaceBet(t, at(-1_000), END), `${t} past the end`).toBe(false);
+    }
+  });
+
+  it('costs the margin and no more', () => {
+    // A board must not lose a meaningful share of its betting window to this.
+    expect(BET_SUBMIT_MARGIN_MS).toBeLessThanOrEqual(2_000);
+    expect(canPlaceBet(CycleType.ONE_MIN, at(60_000), END)).toBe(true);
   });
 });

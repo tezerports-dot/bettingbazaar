@@ -24,6 +24,7 @@ import { fmt, timeStr } from './format';
 import { analyticsFor, Side } from './analytics';
 import AnalyticsDrawer from './AnalyticsDrawer';
 import { getAssetUrl } from '../services/backend.service';
+import { canPlaceBet } from '../GAME_CORE';
 
 // UI-only chip face palette (GOVERNANCE §10 — presentation, not validation).
 const CHIP_STYLES = [
@@ -39,7 +40,7 @@ const bead = (sd: Side) => ({ ch: sd === 'DELHI' ? 'D' : 'B', bg: sd === 'DELHI'
 const GameScreen: React.FC = () => {
   const {
     currentCycle, gameState, cycleType, setCycleType, placeBet, placePhantomBet,
-    userBets, isGhostMode, toggleGhostMode, user, isAuthenticated, sysConfig, pastCycles, loadCycleHistory, subscribeToVolume, getCurrentVolume,
+    userBets, isGhostMode, toggleGhostMode, user, isAuthenticated, sysConfig, pastCycles, loadCycleHistory, subscribeToVolume, getCurrentVolume, serverTimeOffset,
   } = useGame();
 
   // Short label for the results strip, per cycle type. A map rather than a
@@ -93,6 +94,11 @@ const GameScreen: React.FC = () => {
   const bPct = 100 - dPct;
 
   // Phase flags.
+  // True phase (agrees with the server) vs. whether a tap right now would still
+  // land in time — see canPlaceBet. Kept separate so the countdown and the
+  // MERGED/CLOSED labels stay truthful while the bet buttons close early.
+  const betOpen = !!currentCycle?.endTime
+    && canPlaceBet(cycleType, Date.now() + serverTimeOffset, currentCycle.endTime);
   const isOpen = gameState === GameState.OPEN;
   const isMerged = gameState === GameState.MERGED;
   const isClosed = gameState === GameState.CLOSED;
@@ -156,6 +162,12 @@ const GameScreen: React.FC = () => {
   const handleBet = (side: BettingSide) => {
     if (!isAuthenticated) { openAuth('login'); return; }
     if (isClosed || isResult) return;
+    // Stop offering the bet slightly before the server's cutoff. A stake tapped
+    // at T-5.2s does not ARRIVE at T-5.2s — it crosses a mobile network first
+    // and lands after the deadline, where the server correctly rejects it. The
+    // player would see an open board and an error for a bet they placed in
+    // time. See BET_SUBMIT_MARGIN_MS; the server gate remains the only control.
+    if (!betOpen) { addToast('Bets just closed for this cycle', 'error'); return; }
     if (!betAmount) { addToast('Pick a chip or enter an amount first', 'error'); return; }
     if (betAmount < minBet) { addToast(`Minimum bet for this cycle is ₹${minBet}`, 'error'); return; }
     if (side === BettingSide.DELHI && myBetBombay > 0) { addToast('You already backed BOMBAY this cycle — one side per cycle', 'error'); return; }
@@ -187,9 +199,12 @@ const GameScreen: React.FC = () => {
     const lock = side === BettingSide.DELHI ? lockD : lockB;
     // A bet on the OTHER side blocks placing here (handleBet), but this card stays
     // fully coloured — NO grey-out (owner UX). Only result/closed states dim.
-    const opacity = isResult && winner !== side ? .35 : isClosed ? .6 : 1;
+    // `!betOpen` dims the cards for the ~1.5s before the true close, so the
+    // board stops inviting a tap it can no longer deliver. The phase LABEL
+    // still flips at the real cutoff — that clock is the server's, not ours.
+    const opacity = isResult && winner !== side ? .35 : (isClosed || !betOpen) ? .6 : 1;
     const filter = isResult && winner !== side ? 'grayscale(.7)' : 'none';
-    const cursor = (isClosed || isResult || lock) ? 'not-allowed' : 'pointer';
+    const cursor = (isClosed || isResult || lock || !betOpen) ? 'not-allowed' : 'pointer';
     const gradient = side === BettingSide.DELHI
       ? 'linear-gradient(160deg,#2A0A0A,#140406 55%,#050203)'
       : 'linear-gradient(160deg,#07172E,#04101F 55%,#020814)';
