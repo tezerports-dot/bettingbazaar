@@ -111,6 +111,36 @@ export async function connectGuarded(pool) {
   return client;
 }
 
+/**
+ * Advisory-lock namespace for per-cycle serialization.
+ *
+ * `pg_advisory_xact_lock(CYCLE_LOCK_CLASS, hashtext(cycleId))` is what makes
+ * PostgreSQL — not Node's clock — the arbiter of the bet-versus-settlement
+ * race. Both `betPg.placeBet` and `settlementPg.openSettlement` take it, so
+ * one of them always observes the other's committed state instead of the two
+ * interleaving.
+ *
+ * It has to be an ADVISORY lock rather than a row lock because there is no
+ * `cycles` table in this schema: the cycle document (its status, endTime and
+ * phase offsets) lives only in MongoDB. `cycle_settlements` is the closest
+ * thing to a cycle row, and it does not exist until settlement opens — which
+ * is precisely the row a bet needs to have been blocked by. A lock on a row
+ * that is not there yet locks nothing, so the lock is taken on the cycle's
+ * NAME instead.
+ *
+ * `_xact_` matters: the lock releases on COMMIT or ROLLBACK with no cleanup
+ * path to forget, so a crashed backend cannot wedge a cycle.
+ *
+ * The class is a namespace, not a value — it keeps these locks from colliding
+ * with any other advisory lock added later. Nothing else in the codebase used
+ * advisory locks when this was introduced (2026-08-31).
+ */
+export const CYCLE_LOCK_CLASS = 811;
+
+/** SQL fragment: take the per-cycle advisory lock for $1 = cycleId. */
+export const LOCK_CYCLE_SQL =
+  `SELECT pg_advisory_xact_lock(${CYCLE_LOCK_CLASS}, hashtext($1))`;
+
 export async function pgQuery(text, params, operation = 'query') {
   const end = pgQueryDuration.startTimer({ operation: String(operation).slice(0, 48) || 'query' });
   try {

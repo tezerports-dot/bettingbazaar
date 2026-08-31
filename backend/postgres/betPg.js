@@ -50,7 +50,7 @@
  * pockets it actually came from. Returning it all to one would silently convert
  * non-withdrawable deposit into withdrawable winnings.
  */
-import { getPool, pgQuery, connectGuarded } from './pgClient.js';
+import { getPool, pgQuery, connectGuarded, LOCK_CYCLE_SQL } from './pgClient.js';
 import { applyMovementWithin } from './walletPg.js';
 import { moneyOperations } from '../services/metrics.service.js';
 import { MONEY_PATHS } from './moneyAuthority.js';
@@ -166,7 +166,7 @@ export async function getBetHistory(betId) {
  * opposite orders and deadlocking. This is the only place both are taken, which
  * is what makes that guarantee checkable.
  */
-async function withBetLock(userId, betId, fn) {
+async function withBetLock(userId, betId, fn, cycleId = null) {
   const uid = String(userId);
   const bid = String(betId);
   const pool = await getPool();
@@ -176,6 +176,15 @@ async function withBetLock(userId, betId, fn) {
 
   try {
     await client.query('BEGIN');
+    // The per-cycle advisory lock FIRST, before any row lock, so every bet on a
+    // cycle queues in the same order and cannot form a cycle in the lock graph
+    // with the wallet and bet locks below. `openSettlement` takes the same lock,
+    // which is what serializes a bet against the settlement of its own cycle.
+    // See CYCLE_LOCK_CLASS in pgClient.js for why it is advisory and not a row
+    // lock (there is no `cycles` table — the cycle lives in MongoDB).
+    if (cycleId != null) {
+      await client.query(LOCK_CYCLE_SQL, [String(cycleId)]);
+    }
     await client.query(
       `INSERT INTO wallets (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [uid],
     );
@@ -270,6 +279,32 @@ export async function placeBet({
       return { commit: false, value: { ok: true, idempotent: true, bet: ctx.bet } };
     }
 
+    // ── The betting/settlement boundary, decided by the DATABASE ────────────
+    // Until this check existed, nothing inside this transaction consulted the
+    // cycle at all: the only thing standing between a stake and an already
+    // settling cycle was the clock check in `bet.routes.js`, which runs BEFORE
+    // this transaction opens and therefore cannot see a settlement that starts
+    // while the stake is in flight. A bet could commit after the pools had been
+    // read and the winner chosen — counted in the pools by nobody, paid by
+    // nobody, and refunded by nobody.
+    //
+    // `cycle_settlements` is the boundary because it is the only per-cycle row
+    // this schema has, and it is created exactly when settlement opens
+    // (`cycle_id` is UNIQUE — one settlement per cycle, ever). The advisory
+    // lock taken above is what makes reading it sound: without it the row could
+    // be inserted between this SELECT and our COMMIT and neither side would
+    // notice. With it, one of the two always sees the other's committed state.
+    const settling = await ctx.client.query(
+      `SELECT status FROM cycle_settlements WHERE cycle_id = $1`,
+      [String(cycleId)],
+    );
+    if (settling.rows.length) {
+      return {
+        commit: false,
+        value: { ok: false, reason: 'cycle_settling', status: settling.rows[0].status },
+      };
+    }
+
     await ctx.client.query(
       `INSERT INTO bets (bet_id, mongo_id, user_id, cycle_id, side, stake_paise, status)
        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
@@ -316,7 +351,7 @@ export async function placeBet({
         balances: movement.balancesAfterPaise,
       },
     };
-  });
+  }, cycleId);
 
   count('BET_PLACE', !result.ok ? (result.reason ?? 'error') : result.idempotent ? 'idempotent' : 'applied');
   return result;

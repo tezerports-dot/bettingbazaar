@@ -37,7 +37,7 @@
  * some bets on one result and the rest on another. Correcting a declared result
  * is a void-and-resettle, not an in-place edit.
  */
-import { getPool, pgQuery, connectGuarded } from './pgClient.js';
+import { getPool, pgQuery, connectGuarded, CYCLE_LOCK_CLASS } from './pgClient.js';
 import { moneyOperations } from '../services/metrics.service.js';
 import { MONEY_PATHS } from './moneyAuthority.js';
 import { BET_STATUS, winBet, loseBet, voidBet } from './betPg.js';
@@ -96,10 +96,26 @@ export async function openSettlement({ cycleId, winningSide, betsTotal = 0, stak
   // is the invariant, and the id is derived from the cycle only as a
   // convenience. DO UPDATE with a no-op SET is what makes RETURNING give back
   // the existing row rather than nothing.
+  // The per-cycle advisory lock is taken IN THE SAME STATEMENT as the insert,
+  // via a CTE, because `pgQuery` runs one autocommit statement: a separate
+  // `pg_advisory_xact_lock` call would acquire and release the lock in its own
+  // transaction and protect nothing.
+  //
+  // What it buys: `betPg.placeBet` holds this lock while it checks for this
+  // row. Opening a settlement therefore waits for any bet already in flight on
+  // this cycle to commit (and that bet is then visible to the settlement), and
+  // any bet arriving afterwards blocks until this row is committed and then
+  // sees it and refuses. Without it, a stake could commit after the pools were
+  // read and the winner chosen — belonging to no pool, no payout and no refund.
+  //
+  // The lock releases when this statement's implicit transaction ends.
   const { rows } = await pgQuery(
-    `INSERT INTO cycle_settlements
+    `WITH cycle_lock AS (
+       SELECT pg_advisory_xact_lock(${CYCLE_LOCK_CLASS}, hashtext($2::text)) AS locked
+     )
+     INSERT INTO cycle_settlements
        (settlement_id, cycle_id, winning_side, status, bets_total, stake_paise)
-     VALUES ($1,$2,$3,$4,$5,$6)
+     SELECT $1,$2,$3,$4,$5,$6 FROM cycle_lock
      ON CONFLICT (cycle_id) DO UPDATE SET updated_at = now()
      RETURNING *, (xmax = 0) AS inserted`,
     [settlementId, String(cycleId), String(winningSide), SETTLEMENT_STATUS.RUNNING, betsTotal, stakePaise],
