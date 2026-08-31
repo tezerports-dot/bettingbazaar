@@ -244,12 +244,29 @@ System Settings.
 **Full annotated reference:** `.env.example` (repo root). **Deploy walkthroughs:** `DEPLOYMENT.md`.
 **Boot-gate source of truth:** `backend/startup/validateEnv.js`.
 
-## Client origin failover (user panel, build-time)
+## Player panel, build-time (`VITE_*`)
 
-| Variable | Purpose |
-|---|---|
-| `VITE_API_URL` | Absolute API origin. Optional for a same-origin web deploy (relative `/api` works); **mandatory** for the Android build, which has no same-origin backend to fall back on. |
-| `VITE_API_FALLBACK_URLS` | Comma-separated alternate origins serving the SAME deployment, tried in order when the primary does not answer. |
+Template: **`user-panel/.env.example`**; typed mirror: `user-panel/src/vite-env.d.ts`.
+
+Vite **inlines these into the bundle**, so two rules follow and neither is
+negotiable: nothing here may be a secret (it ships in the JavaScript every
+visitor downloads — secrets live in the backend `.env`), and changing one means
+a **rebuild**, not a restart. An APK carries whatever was set when it was built.
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `VITE_API_URL` | web: no · **native: yes** | Absolute API origin. Optional for a same-origin web deploy (relative `/api` works); mandatory for the Android build, which has no same-origin backend to fall back on. Origin only — no trailing slash, no `/api` suffix. |
+| `VITE_APP_ORIGIN` | web: no · **native: yes** | The panel's public origin, and it **must equal the backend's `PUBLIC_APP_ORIGIN`**. Decides which incoming deep links the shell trusts, and its host is baked into the APK's App Link filter at build time. Player auth is Telegram-only, so an APK with this wrong is an APK nobody can sign in to. |
+| `VITE_API_FALLBACK_URLS` | no | Comma-separated alternate origins serving the SAME deployment, tried in order when the primary does not answer. |
+| `VITE_MERCHANT_PANEL_URL` | no | Where `/merchant` links point on a split-origin deploy. |
+| `VITE_TURNSTILE_SITE_KEY` | no | Turnstile **site** key (public half). The captcha gate is a pass-through until this and the backend's `TURNSTILE_SECRET_KEY` are both set — see LAUNCH_READINESS §F. |
+| `VITE_APP_VERSION` | never set by hand | Injected at build time from `package.json`; §2 forbids a version literal in a source file. |
+
+`npm run build:native` refuses to build without a valid `VITE_API_URL` **and**
+`VITE_APP_ORIGIN` (`user-panel/scripts/assert-native-env.mjs`), because both
+failures are invisible until the APK is on a handset.
+
+### Origin failover
 
 Every listed host must serve the same app — this is the multi-domain redundancy
 in `backend/config/network.config.js` (`DOMAINS`), where each hostname serves
