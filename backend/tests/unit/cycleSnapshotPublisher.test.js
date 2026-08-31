@@ -43,17 +43,43 @@ describe('CycleSnapshotPublisher — coalescing', () => {
     expect(pu[0].payload.betCount).toBe(3);
   });
 
-  it('bridges a single coalesced bet_placed to global io + SSE for legacy clients', () => {
+  it('sends NO global socket broadcast — socket clients get the room-scoped pool_update', () => {
+    // The global `io.emit('bet_placed')` was a migration bridge for clients
+    // that had not adopted watch_cycle/pool_update. They all have, so with
+    // three boards live it delivered every cycle's snapshot to every connected
+    // client on top of the room-scoped copy they already had.
+    //
+    // Asserted as an ABSENCE because re-adding it would look like a fix — the
+    // event name is still live on the SSE transport below, so a future reader
+    // finding "bet_placed" in the codebase could reasonably conclude the socket
+    // emit was dropped by mistake.
     const h = harness();
     h.pub.recordBet('c1', { cycleType: '30_MIN', totalDelhi: 10, totalBombay: 5 });
     h.pub.recordBet('c1', { cycleType: '30_MIN', totalDelhi: 20, totalBombay: 5 });
     h.pub.flush();
 
-    const legacy = h.globalEmits.filter((e) => e.event === 'bet_placed');
-    expect(legacy).toHaveLength(1);                       // coalesced, not per-bet
-    expect(legacy[0].payload.newTotalDelhi).toBe(20);
-    expect(h.sseManager.broadcast).toHaveBeenCalledTimes(1);
-    expect(h.sseManager.broadcast).toHaveBeenCalledWith('bet_placed', expect.objectContaining({ cycleId: 'c1', newTotalBombay: 5 }));
+    expect(h.globalEmits.filter((e) => e.event === 'bet_placed')).toHaveLength(0);
+    // The room-scoped snapshot is still delivered, once.
+    expect(h.poolUpdates()).toHaveLength(1);
+  });
+
+  it('KEEPS the coalesced SSE bet_placed — it is the only live-pool feed without a socket', () => {
+    // Not a leftover half of the removal above. `pool_update` is emitted
+    // through Socket.IO rooms only and the browser socket is WebSocket-only
+    // (transports: ['websocket'], upgrade: false), so a client behind a
+    // WebSocket-blocking proxy has SSE as its sole transport. sseManager has
+    // no room concept to scope this to; dropping it stops pools moving for
+    // exactly the users least able to report why.
+    const h = harness();
+    h.pub.recordBet('c1', { cycleType: '30_MIN', totalDelhi: 10, totalBombay: 5 });
+    h.pub.recordBet('c1', { cycleType: '30_MIN', totalDelhi: 20, totalBombay: 5 });
+    h.pub.flush();
+
+    expect(h.sseManager.broadcast).toHaveBeenCalledTimes(1);   // coalesced, not per-bet
+    expect(h.sseManager.broadcast).toHaveBeenCalledWith(
+      'bet_placed',
+      expect.objectContaining({ cycleId: 'c1', newTotalDelhi: 20, newTotalBombay: 5 }),
+    );
   });
 
   it('emits only dirty cycles — an idle flush sends nothing', () => {

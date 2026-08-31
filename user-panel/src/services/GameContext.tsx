@@ -793,7 +793,12 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     // Admin adjust-balance emits 'user_update' (not 'user_balance_update').
     // Listen to both so admin wallet top-ups reflect instantly without refresh.
     socket.on('user_update',         handleUserBalanceUpdate);
-    socket.on('bet_placed',          handleBetPlaced);
+    // No socket `bet_placed` listener: the server stopped emitting it globally
+    // (2026-08-31). This client watches its cycle rooms and receives the
+    // room-scoped `pool_update` below, which carries the same totals. The SSE
+    // subscription above KEEPS listening to `bet_placed` — that is the only
+    // live-pool path for a client whose WebSocket is blocked and which
+    // therefore has no socket at all.
     socket.on('pool_update',         handlePoolUpdate);
     socket.on('new_cycle',           handleNewCycle);
     socket.on('cycle_result',        handleCycleResult);
@@ -811,7 +816,6 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
       if (socket) {
         socket.off('cycle_snapshot',      handleCycleSnapshot);
         socket.off('connect',             handleReconnect);
-        socket.off('bet_placed',          handleBetPlaced);
         socket.off('pool_update',         handlePoolUpdate);
         socket.off('new_cycle',           handleNewCycle);
         socket.off('cycle_result',        handleCycleResult);

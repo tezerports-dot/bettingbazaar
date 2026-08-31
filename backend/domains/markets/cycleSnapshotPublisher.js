@@ -38,10 +38,15 @@
  *
  * ROLLOUT SAFETY
  * The canonical event is `pool_update`, scoped to the `cycle:<cycleId>` room.
- * Until every client has adopted `watch_cycle` + `pool_update`, we ALSO emit a
- * coalesced `bet_placed` (the event today's clients already consume) globally —
- * still ≤1/sec, so the 99.7% win holds immediately with zero client change. The
- * global bridge is dropped once clients have migrated (see MIGRATION note).
+ * The Socket.IO clients have all migrated to `watch_cycle` + `pool_update`, so
+ * the global `io.emit('bet_placed')` bridge was removed on 2026-08-31: with
+ * three boards live it delivered every cycle's snapshot to every connected
+ * client on top of the room-scoped copy they already had.
+ *
+ * The SSE bridge is NOT a leftover and stays. `pool_update` travels through
+ * Socket.IO rooms only, and the browser socket is WebSocket-only, so a client
+ * behind a WebSocket-blocking proxy has SSE as its sole transport. `sseManager`
+ * has no room concept to scope it to — see the flush() comment.
  */
 import { assertPublicCycleSafe } from './cyclePublicView.js';
 
@@ -126,11 +131,25 @@ export class CycleSnapshotPublisher {
         // Canonical: room-scoped to watchers of this cycle.
         this.io?.to(`cycle:${cycleId}`).emit('pool_update', payload);
 
-        // MIGRATION bridge: today's clients consume a global `bet_placed`.
-        // Still ≤1/interval, so the fan-out COUNT is already cut ~99.7%.
-        // Remove both bridge emits once clients ship watch_cycle + pool_update.
+        // ── SSE-only bridge ────────────────────────────────────────────────
+        // The Socket.IO half of this bridge is GONE (2026-08-31): every socket
+        // client ships `watch_cycle` + `pool_update` (GameContext.tsx), so the
+        // global `io.emit` was sending each live cycle's snapshot to every
+        // connected client on top of the room-scoped one they already had —
+        // with three boards live, four deliveries a second where one was
+        // wanted.
+        //
+        // The SSE half STAYS, and is not a leftover. `pool_update` is emitted
+        // through Socket.IO rooms only, and the browser socket is configured
+        // WebSocket-only (`transports: ['websocket'], upgrade: false`), so a
+        // client behind a proxy that blocks WebSocket has SSE as its ONLY
+        // transport — and `sseManager` has just `broadcast` and
+        // `sendToClient`, no topic or room concept to scope this to.
+        //
+        // Removing it would silently stop live pool movement for exactly the
+        // users least able to report why. Scoping the SSE side needs a
+        // subscription registry, which is a feature, not a cleanup.
         const legacy = { cycleId, cycleType: snap.cycleType, newTotalDelhi: snap.totalDelhi, newTotalBombay: snap.totalBombay };
-        this.io?.emit('bet_placed', legacy);
         this.sseManager?.broadcast('bet_placed', legacy);
 
         published++;
