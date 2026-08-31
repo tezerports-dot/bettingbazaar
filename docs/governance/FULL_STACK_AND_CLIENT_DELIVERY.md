@@ -562,7 +562,9 @@ Required config: secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`,
 `ANDROID_RELEASE_SETUP.md`.
 
 **Build check** (`.github/workflows/android-build-check.yml`) — compiles a
-**debug** APK on every PR touching the Android project, and on dispatch. It
+**debug** APK on every PR touching the Android project, and on dispatch. **First
+green run: 2026-08-26**, which is the first time this Android project had ever
+been compiled anywhere. It
 needs no secrets, because Gradle falls back to the local debug key. It exists
 because the release workflow had never run: a committed, hand-edited Android
 platform folder was being carried with nothing proving it still compiled, and
@@ -570,6 +572,16 @@ the first attempt to find out would have been release day with a keystore in
 hand. It also asserts the App Link filter survived the manifest merge, and
 produces a sideloadable APK for the on-device checks — months before any
 decision about a store listing.
+
+> **A debug APK cannot verify an App Link without help.** Android matches the
+> installed app's signing certificate against `assetlinks.json`, and a debug
+> build carries the debug key, not the upload key — so sign-in opens a browser
+> and looks identical to the bug §3.5 fixes. The workflow therefore reads the
+> fingerprint back off the APK it produced (`apksigner verify --print-certs`)
+> and prints it in the job summary for pasting into
+> `ANDROID_SHA256_CERT_FINGERPRINTS`. It is read from the artifact rather than
+> assumed because a fresh runner has no `~/.android/debug.keystore`: Gradle
+> generates a new one per run, so the value changes every time.
 
 > **Back up the upload keystore somewhere you will still have in five years.**
 > Losing it means you can never update the installed app — Play identifies an app by
@@ -586,11 +598,15 @@ package removed from any store.
 
 ### Android work still open (user panel)
 
-- **Never built, never installed.** The release workflow has **zero runs**. No
-  APK or AAB has ever been produced by this repository, so nothing here has run
-  on a handset. The build-check workflow above closes the "does it compile"
-  half; the on-device half needs someone with a phone
-  (`GO_LIVE_RUNBOOK.md` Phase 7).
+- **Compiles; still never installed.** The build check went green on
+  2026-08-26 — the project's first successful compile, App Link filter verified
+  present in the merged manifest. The **release** workflow still has zero runs,
+  so no signed APK or AAB exists, and nothing has yet run on a handset. That
+  half needs someone with a phone (`GO_LIVE_RUNBOOK.md` Phase 7).
+- **`ANDROID_API_URL` and `ANDROID_APP_ORIGIN` are not set**, so the build check
+  currently emits an artifact named `android-compile-check-only-NOT-INSTALLABLE`
+  — built against placeholder origins, which reaches nothing. Setting both repo
+  variables turns the same workflow into a sideloadable test build.
 - **Not published, and see `NATIVE_APP_DISTRIBUTION_POLICY.md` §1 before
   planning to be.** No Play listing, no internal-testing track, no store
   metadata (screenshots, description, content rating, data-safety form,
