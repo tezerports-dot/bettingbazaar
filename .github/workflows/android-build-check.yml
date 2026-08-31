@@ -102,6 +102,39 @@ jobs:
         working-directory: user-panel/android
         run: ./gradlew --no-daemon -PappLinkHost="$APP_LINK_HOST" assembleDebug
 
+      # ── The debug APK cannot verify an App Link on its own ─────────────────
+      # Android matches the installed app's SIGNING CERTIFICATE against the
+      # fingerprints in /.well-known/assetlinks.json. This APK is signed with
+      # the debug key, whose fingerprint is not the upload key's — so on a
+      # handset the App Link silently fails to verify, the sign-in link opens a
+      # browser, and it looks exactly like the bug this whole change fixes.
+      #
+      # Worse, it cannot be looked up once and written down: a fresh runner has
+      # no ~/.android/debug.keystore, so Gradle generates a NEW one per run and
+      # the fingerprint changes. It is therefore read back off the artifact that
+      # was actually produced, which is also the only reading that cannot be
+      # wrong about what signed it.
+      #
+      # Informational: a failure to parse must not fail a build that compiled.
+      - name: Read the debug signing fingerprint
+        working-directory: user-panel/android
+        continue-on-error: true
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          FP=$("$BUILD_TOOLS/apksigner" verify --print-certs "$APK" \
+                | awk 'tolower($0) ~ /sha-256 digest/ {print $NF; exit}')
+          if [ -z "$FP" ]; then
+            echo "::warning::Could not read the debug signing fingerprint from $APK."
+            exit 0
+          fi
+          # Match the colon-separated uppercase form keytool prints, so it looks
+          # like every other fingerprint in the runbook. The backend normalises
+          # either form anyway (wellKnown.routes.js).
+          FP=$(echo "$FP" | tr '[:lower:]' '[:upper:]' | sed 's/../&:/g; s/:$//')
+          echo "DEBUG_CERT_SHA256=$FP" >> "$GITHUB_ENV"
+          echo "Debug signing SHA-256: $FP"
+
       # The App Link filter is what makes the app signable-into at all, so a
       # merge that dropped it is a release blocker, not a cosmetic regression.
       - name: Verify the App Link filter survived the manifest merge
@@ -142,5 +175,34 @@ jobs:
               echo "Compiled successfully, but **this APK is not installable in any useful sense** —"
               echo "it was built against placeholder origins because \`ANDROID_API_URL\` and/or"
               echo "\`ANDROID_APP_ORIGIN\` are not set as repository variables."
+              echo ""
+              echo "Set both (Settings → Secrets and variables → Actions → Variables) and re-run"
+              echo "to get an APK you can actually put on a phone."
+            fi
+
+            echo ""
+            echo "#### Before testing sign-in with this build"
+            echo ""
+            if [ -n "$DEBUG_CERT_SHA256" ]; then
+              echo "This APK is signed with the **debug** key, not your upload key. Android checks"
+              echo "the installed app's signing certificate against \`/.well-known/assetlinks.json\`,"
+              echo "so until this fingerprint is listed there the App Link will not verify — the"
+              echo "sign-in link will open a browser and it will look identical to the bug."
+              echo ""
+              echo "Add it to \`ANDROID_SHA256_CERT_FINGERPRINTS\` on the backend (comma-separated,"
+              echo "alongside the upload/Play fingerprints — it is a list for exactly this reason):"
+              echo ""
+              echo '```'
+              echo "$DEBUG_CERT_SHA256"
+              echo '```'
+              echo ""
+              echo "**This value changes on every run** — the runner generates a fresh debug"
+              echo "keystore each time — so re-copy it whenever you install a new debug build,"
+              echo "and remove it once you are testing release-signed builds."
+            else
+              echo "Could not read this build's signing fingerprint. Read it from the APK with:"
+              echo '```'
+              echo "apksigner verify --print-certs app-debug.apk"
+              echo '```'
             fi
           } >> "$GITHUB_STEP_SUMMARY"

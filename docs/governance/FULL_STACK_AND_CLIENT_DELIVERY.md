@@ -525,10 +525,48 @@ have to be right or the app is unusable rather than merely inconvenient:
 > is tapped inside a chat app that opens it in its own WebView, the OS never
 > sees the tap and no App Link fires. Whether Telegram hands off to an installed
 > app depends on its version and the user's **Settings → Chat Settings → In-App
-> Browser** toggle. If it does not hand off, the fallback is the in-app
-> browser's "Open in browser" action, which routes through Chrome and does. This
-> is the one part of the sign-in path that cannot be proven from the code, and
-> it is on-device check 2 in `ANDROID_RELEASE_SETUP.md`.
+> Browser** toggle. This is the one part of the sign-in path that cannot be
+> proven from the code, and it is on-device check 2 in
+> `ANDROID_RELEASE_SETUP.md`.
+>
+> **It no longer costs the player their token, though.** `TelegramAuthPage`
+> classifies the context *before* the exchange (`services/inAppBrowser.ts`) and,
+> in a storage-isolated WebView, hands the link back instead of spending it —
+> see "The handoff screen" below.
+
+### The handoff screen — why the token is sometimes not spent
+
+A one-time token is spent by whatever context opens it. Inside Telegram's
+Android WebView that context has its own cookie jar and its own `localStorage`
+and discards both when the sheet closes: the player watches themselves sign in,
+closes it, opens the app, and is signed out with the token already burned.
+
+So `services/inAppBrowser.ts` classifies the context first, and
+`TelegramAuthPage` redeems only where the result can survive:
+
+| Signal | Verdict |
+|---|---|
+| Capacitor shell (`Capacitor.isNativePlatform()`) | **native** — its storage is the app's; redeem |
+| ` wv` token **and** `Android` in the UA | **isolated** — Android stamps that on every WebView, and only a WebView |
+| iOS + `AppleWebKit` + **no** `Safari/` | **isolated** — a WKWebView. SFSafariViewController *does* carry `Safari/` and shares Safari's cookie store, so it is correctly left alone |
+| anything else | **browser** — redeem |
+
+**The classifier fails open by construction**, because the two errors are not
+symmetric: missing an isolated WebView burns a token, while a false positive
+*stops a sign-in that would have worked*. The second is worse, so every check
+must be positively true before it fires, and the screen carries a "continue here
+anyway" override — a wrong answer costs a tap, never an account.
+
+**Why the screen asks rather than redirecting.** The obvious fix — an
+`intent://` navigation into Chrome — cannot work here. Android rebuilds the
+target URI from scheme + authority + path + query, and `#Intent;…;end` occupies
+the fragment slot, so **a fragment cannot survive an intent hop**. The token
+rides in the fragment deliberately (it is what keeps it out of access logs and
+`Referer` headers), so an intent hop would hand Chrome a tokenless URL and sign
+nobody in. iOS has no such limitation — `x-safari-https:` passes the URL to
+Safari intact — which is why iOS gets a real button and Android gets a copy
+button plus the "⋮ → Open in browser" instruction, which preserves the URL
+exactly.
 
 **Release pipeline** (`.github/workflows/android-release.yml`) — triggered by
 `workflow_dispatch` with a version name, or by pushing an `android-v*` tag.
@@ -562,7 +600,9 @@ Required config: secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`,
 `ANDROID_RELEASE_SETUP.md`.
 
 **Build check** (`.github/workflows/android-build-check.yml`) — compiles a
-**debug** APK on every PR touching the Android project, and on dispatch. It
+**debug** APK on every PR touching the Android project, and on dispatch. **First
+green run: 2026-08-26**, which is the first time this Android project had ever
+been compiled anywhere. It
 needs no secrets, because Gradle falls back to the local debug key. It exists
 because the release workflow had never run: a committed, hand-edited Android
 platform folder was being carried with nothing proving it still compiled, and
@@ -570,6 +610,16 @@ the first attempt to find out would have been release day with a keystore in
 hand. It also asserts the App Link filter survived the manifest merge, and
 produces a sideloadable APK for the on-device checks — months before any
 decision about a store listing.
+
+> **A debug APK cannot verify an App Link without help.** Android matches the
+> installed app's signing certificate against `assetlinks.json`, and a debug
+> build carries the debug key, not the upload key — so sign-in opens a browser
+> and looks identical to the bug §3.5 fixes. The workflow therefore reads the
+> fingerprint back off the APK it produced (`apksigner verify --print-certs`)
+> and prints it in the job summary for pasting into
+> `ANDROID_SHA256_CERT_FINGERPRINTS`. It is read from the artifact rather than
+> assumed because a fresh runner has no `~/.android/debug.keystore`: Gradle
+> generates a new one per run, so the value changes every time.
 
 > **Back up the upload keystore somewhere you will still have in five years.**
 > Losing it means you can never update the installed app — Play identifies an app by
@@ -586,11 +636,15 @@ package removed from any store.
 
 ### Android work still open (user panel)
 
-- **Never built, never installed.** The release workflow has **zero runs**. No
-  APK or AAB has ever been produced by this repository, so nothing here has run
-  on a handset. The build-check workflow above closes the "does it compile"
-  half; the on-device half needs someone with a phone
-  (`GO_LIVE_RUNBOOK.md` Phase 7).
+- **Compiles; still never installed.** The build check went green on
+  2026-08-26 — the project's first successful compile, App Link filter verified
+  present in the merged manifest. The **release** workflow still has zero runs,
+  so no signed APK or AAB exists, and nothing has yet run on a handset. That
+  half needs someone with a phone (`GO_LIVE_RUNBOOK.md` Phase 7).
+- **`ANDROID_API_URL` and `ANDROID_APP_ORIGIN` are not set**, so the build check
+  currently emits an artifact named `android-compile-check-only-NOT-INSTALLABLE`
+  — built against placeholder origins, which reaches nothing. Setting both repo
+  variables turns the same workflow into a sideloadable test build.
 - **Not published, and see `NATIVE_APP_DISTRIBUTION_POLICY.md` §1 before
   planning to be.** No Play listing, no internal-testing track, no store
   metadata (screenshots, description, content rating, data-safety form,

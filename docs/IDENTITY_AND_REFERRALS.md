@@ -149,6 +149,72 @@ touches, which is the whole reason it is in the fragment.
 start sign-in from inside the PWA for the link to be redeemed there. See
 `governance/FULL_STACK_AND_CLIENT_DELIVERY.md` §3.6.
 
+**And where the link lands somewhere the session cannot survive, the token is
+not spent at all.** `services/inAppBrowser.ts` classifies the context *before*
+the exchange; in a storage-isolated WebView (Telegram's Android in-app browser
+being the case that matters) `TelegramAuthPage` shows a handoff screen — copy
+the link, or "⋮ → Open in browser", or on iOS a real "Open in Safari" button —
+rather than redeeming into storage that is about to be discarded. The
+classifier fails open and the screen carries an override, because wrongly
+stopping a sign-in is worse than wrongly allowing one.
+
+Note what this does **not** do: it does not force the link into Chrome. An
+`intent://` hop cannot carry a fragment (Android rebuilds the URI from scheme,
+authority, path and query only), and the token is in the fragment on purpose —
+so the redirect that looks obvious would arrive tokenless.
+
+### Two browser buttons from the bot are not possible — and what is
+
+This gets proposed, so it is recorded rather than re-derived. "Have the bot send
+an *Open in Chrome* and an *Open in Safari* button" cannot be built, for two
+independent reasons:
+
+1. **Telegram rejects the schemes.** An inline-keyboard `url` accepts only
+   `http`, `https` and `tg://`. A `googlechrome://` or `x-safari-https://`
+   button fails with `BUTTON_URL_INVALID` — the message never sends.
+2. **The bot does not know the device.** Telegram exposes no client platform to
+   bots, so both buttons would show to every user and one would be dead on any
+   given handset.
+
+**What would work, if the handoff screen proves too slow on real devices:** a
+Telegram **Mini App** launcher. A Mini App knows `WebApp.platform`, and
+`WebApp.openLink(url, { try_browser: 'chrome' })` opens a link in an *external*
+browser — and because it takes a plain https URL rather than an intent, **the
+fragment survives**, which is what rules out every Android alternative.
+
+One design note for whoever builds it: **Telegram owns the fragment on a Mini
+App URL** (it appends `#tgWebAppData=…`), so the token cannot ride in the link
+the way it does today. That forces a better shape — the button carries no token,
+the Mini App presents Telegram's signed `initData`, the backend verifies that
+HMAC and mints a fresh token through the existing `issueLoginToken`, and the
+Mini App punts it to the real browser. The token then never sits in a chat
+message at all, so it cannot be screenshotted or forwarded.
+
+**Deferred on purpose (2026-08-31):** it is a new authentication path in a
+money product, and it buys little if Telegram already hands off to the installed
+app — which only a handset can settle (on-device check 2 in
+`governance/ANDROID_RELEASE_SETUP.md`). Test first, then decide.
+
+### The visitor who arrives from search
+
+Worth tracing, because it is the ordinary path and it crosses three contexts:
+
+1. Lands on the site in their browser, signed out, and opens the bot from the
+   sign-in screen (`https://t.me/<bot>`) — which leaves that tab open.
+2. Finishes in Telegram: Aadhaar, contact share, channel.
+3. Taps the bot's link. On mobile that opens Telegram's in-app browser, so the
+   handoff screen above appears and they choose "open in browser"; on desktop
+   the Telegram client hands off to the default browser directly.
+4. The link is redeemed **in their browser** — the same storage the tab from
+   step 1 is using, so the session is exactly where it needs to be.
+
+The catch is step 4 lands in a **new tab**, and session restore runs on mount.
+Without help, the original tab keeps rendering the signed-out app beside a
+signed-in one, and "just refresh it" is only obvious to someone who already
+knows what happened. `GameContext` therefore listens for the `storage` event —
+which fires in every *other* tab of the origin — and reloads a signed-out tab
+when `auth_token` appears, or clears the session when it is removed elsewhere.
+
 `POST /api/telegram/exchange` calls **`issueSession`**, imported from
 `routes.js`, rather than minting its own. That is deliberate: staff password
 login, staff post-2FA login and Telegram login all reach the same function, so
