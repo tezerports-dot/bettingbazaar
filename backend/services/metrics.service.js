@@ -181,6 +181,28 @@ export const balanceDriftAccounts = new client.Gauge({
   registers: [registry],
 });
 
+// ── Stalled settlements ──────────────────────────────────────────────────────
+// A settlement run marked COMPLETED while bets on its cycle are still PENDING.
+// That is a player's stake locked with nothing coming to release it: the bet is
+// never paid, never lost, and never refunded. `findIncompleteSettlements()` in
+// postgres/settlementPg.js is the query that finds it — it was built and tested
+// and then had NO production call site at all, so the condition it detects
+// could persist indefinitely with nothing looking. Wired to the ledger-reconcile
+// cron 2026-08-31.
+//
+// Alert on `bb_stalled_settlements != 0`. It is a money-loss signal, not a
+// performance one, and it should be zero at all times.
+export const stalledSettlements = new client.Gauge({
+  name: 'bb_stalled_settlements',
+  help: 'Settlement runs marked COMPLETED with bets still PENDING (0 = none; any value is a locked stake)',
+  registers: [registry],
+});
+export const stalledSettlementBets = new client.Gauge({
+  name: 'bb_stalled_settlement_bets',
+  help: 'Total bets left PENDING across COMPLETED settlement runs',
+  registers: [registry],
+});
+
 // Pool-stats provider — registered by pgClient via setPoolStatsProvider() when
 // Postgres is in use. Inversion of control keeps this low-level metrics module
 // free of any dependency on the higher-level pgClient (dependency-cruiser

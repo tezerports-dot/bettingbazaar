@@ -15,7 +15,9 @@ import { registerRecurring } from '../services/jobQueue.service.js';
 // Item 38 (2026-07-13): money-critical failures page a human via the
 // admin-configured webhook; item 33: reconcile failures are counted for /metrics.
 import { sendAlert } from '../services/alerting.service.js';
-import { ledgerReconcileErrors } from '../services/metrics.service.js';
+import { ledgerReconcileErrors, stalledSettlements, stalledSettlementBets } from '../services/metrics.service.js';
+import { findIncompleteSettlements } from '../postgres/settlementPg.js';
+import { anyPathOnPostgres } from '../postgres/moneyAuthority.js';
 
 export function registerCronJobs(rebuildLeaderboard) {
 
@@ -116,6 +118,37 @@ export function registerCronJobs(rebuildLeaderboard) {
 
       const recorded = [...orderResults, ...cycleResults].filter(r => r.recorded).length;
       if (recorded > 0) console.log(`[ledger-reconcile] Recorded ${recorded} accounting event(s)`);
+
+      // ── Stalled settlements ─────────────────────────────────────────────
+      // A run marked COMPLETED while bets on its cycle are still PENDING is a
+      // player's stake locked with nothing coming to release it — never paid,
+      // never lost, never refunded.
+      //
+      // `findIncompleteSettlements()` was written for exactly this, described
+      // in its own module as "the strongest check", cited in four other
+      // modules' comments — and had NO production call site. It was a query
+      // nobody ran. This is that call site.
+      //
+      // Postgres-only by nature (it reads `cycle_settlements`), so it no-ops
+      // while every path is still on Mongo rather than throwing on a missing
+      // table. It does not REPAIR anything: the repair for a stalled run is a
+      // settlement pass, and quietly re-running one from a metrics cron would
+      // hide the condition instead of surfacing it.
+      if (anyPathOnPostgres()) {
+        const stalled = await findIncompleteSettlements();
+        const betsStuck = stalled.reduce((n, s) => n + s.stillPending, 0);
+        stalledSettlements.set(stalled.length);
+        stalledSettlementBets.set(betsStuck);
+        if (stalled.length > 0) {
+          console.error(`[ledger-reconcile] ${stalled.length} stalled settlement(s), ${betsStuck} bet(s) stuck PENDING`);
+          sendAlert('settlement-stalled',
+            `${stalled.length} settlement run(s) COMPLETED with ${betsStuck} bet(s) still PENDING — stakes are locked`, {
+              sample: stalled.slice(0, 5).map(s => ({
+                cycleId: s.cycleId, betsSettled: s.betsSettled, stillPending: s.stillPending,
+              })),
+            });
+        }
+      }
     } catch (e) {
       console.error('[ledger-reconcile] cron error:', e.message);
       sendAlert('ledger-reconcile-cron', 'Ledger reconciliation cron crashed', { error: e.message });
