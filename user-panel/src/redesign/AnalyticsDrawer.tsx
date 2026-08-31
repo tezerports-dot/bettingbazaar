@@ -14,7 +14,7 @@
  * threshold — a "DELHI next 67%" off four results is noise wearing the
  * costume of a signal, and it is the one screen players act on.
  */
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { analyticsFor, seqFromRuns, MIN_SAMPLE, Side } from './analytics';
 import { fmt } from './format';
 import { CycleType } from '../types';
@@ -32,13 +32,28 @@ interface Props {
   // Keyed by every CycleType — GameScreen builds it from the enum, so a type
   // missing here is a tab whose analytics silently show another type's history.
   winnersByType: Partial<Record<CycleType, Side[]>>;
+  // Requests one board's full analytics window. See GameContext.
+  loadCycleHistory: (type: CycleType) => void;
 }
 
 const bead = (sd: Side) => ({ ch: sd === 'DELHI' ? 'D' : 'B', bg: sd === 'DELHI' ? 'var(--delhi)' : 'var(--bombay)' });
 
-const AnalyticsDrawer: React.FC<Props> = ({ open, onClose, winnersByType }) => {
+const AnalyticsDrawer: React.FC<Props> = ({ open, onClose, winnersByType, loadCycleHistory }) => {
   const [aCycle, setACycle] = useState<CycleType>(CycleType.THIRTY_MIN);
   const [aTab, setATab] = useState<'roadmap' | 'streaks' | 'gaps' | 'predict'>('roadmap');
+
+  // Pull the full ANALYTICS_WINDOW for the board being viewed — 1,440 results
+  // for the 1-minute and 30-minute boards, which is what the streak
+  // distribution and gap tables are meant to describe. Connect only carries 50
+  // rows per type, since it is paid by every visitor whether or not they open
+  // this drawer; the deep window is fetched here, where it is actually read.
+  //
+  // Runs on open and on every board switch. Re-requesting a window already
+  // held is cheap and idempotent: the response merges by cycle id in
+  // GameContext rather than replacing.
+  useEffect(() => {
+    if (open) loadCycleHistory(aCycle);
+  }, [open, aCycle, loadCycleHistory]);
 
   const A = useMemo(() => analyticsFor(winnersByType[aCycle] || [], aCycle), [winnersByType, aCycle]);
 

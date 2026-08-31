@@ -26,6 +26,7 @@
 
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { CycleType, GameState, User, Bet, BettingSide, GameCycle } from '../types';
+import { ANALYTICS_WINDOW } from '../constants';
 import { getBackend, setCdnBaseUrl } from './backend.service';
 
 
@@ -77,6 +78,8 @@ interface GameContextType {
   cycles: { [key in CycleType]: GameCycle };
   currentCycle: GameCycle;
   pastCycles: GameCycle[];
+  /** Fetch one board's full ANALYTICS_WINDOW of results. See the callback. */
+  loadCycleHistory: (type: CycleType) => void;
   gameState: GameState;
   serverTimeOffset: number;
   placeBet: (amount: number, side: BettingSide) => Promise<void>;
@@ -302,6 +305,27 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
   // It now triggers a WS snapshot request, NOT an HTTP fetch.
   const refreshCycles = requestCycleSnapshot;
 
+  /**
+   * Ask for one board's full analytics window (ANALYTICS_WINDOW rows for that
+   * type — 1,440 for the 1-minute and 30-minute boards).
+   *
+   * On demand rather than on connect: this is ~288 KB and only matters to
+   * someone who opens the analytics drawer, while connect is paid by every
+   * anonymous visitor on a handset. The server caps a multi-type request far
+   * lower for the same reason, so this asks for ONE type at a time.
+   *
+   * Fire-and-forget, deliberately. The response arrives on the same passive
+   * `cycle_history` listener as every other payload and merges by id there —
+   * awaiting it would race the once-a-minute post-result broadcast, which is
+   * the same event name, and resolve with 50 rows instead of the deep window.
+   */
+  const loadCycleHistory = useCallback((type: CycleType) => {
+    const socket = (backend as any).socket;
+    if (!socket?.connected) return;
+    const limit = ANALYTICS_WINDOW[type as string] ?? ANALYTICS_WINDOW['30_MIN'];
+    socket.emit('request_cycle_history', { type, limit });
+  }, []);
+
   // ── BUG-U6: Refresh wallet balance from server ─────────────────────────────
   const refreshUserWallet = useCallback(async () => {
     if (!user?.id) return;
@@ -326,26 +350,45 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     const sseBridge = (backend as any).sseBridge as EventTarget | undefined;
     const socket    = (backend as any).socket;
 
-    // `types` names which cycle types this payload is authoritative for. The
-    // post-result broadcast sends ONE type — only that type's history changed —
-    // so replacing the whole list would wipe the other tabs' history every time
-    // a 1-minute block resolved, i.e. once a minute. Merge by type instead:
-    // drop our rows for the types named, keep the rest, re-sort newest first.
+    // Every `cycle_history` payload is MERGED INTO the stored history by cycle
+    // id, never swapped for it.
     //
-    // A payload with no `types` is a full replacement (an older server, or a
-    // client-requested fetch that covered everything).
+    // Payloads arrive at three very different depths and a replace cannot serve
+    // all three. Connect sends 50 rows per type (cheap, enough for the roadmap
+    // strip). The drawer asks for the full ANALYTICS_WINDOW of ONE board on
+    // demand — 1,440 rows. And the server re-broadcasts the resolved type's
+    // recent rows after every result, which for a 1-minute block is once a
+    // minute: replacing on that would throw away a 1,440-row window the player
+    // just waited for, sixty times an hour, and replacing only the named types
+    // would still do it to the board they are actually looking at.
+    //
+    // Union by id is idempotent, tolerates out-of-order and overlapping
+    // payloads, and lets a shallow refresh top up a deep window instead of
+    // truncating it. Rows are then capped per type at ANALYTICS_WINDOW so the
+    // list cannot grow without bound across a long session.
     const handleCycleHistory = (data: { cycles: any[]; types?: string[] }) => {
-      const resolved: GameCycle[] = (data.cycles || []).map((c: any) => ({
+      const incoming: GameCycle[] = (data.cycles || []).map((c: any) => ({
         ...c,
         totalDelhi:  c.totalDelhi  || c.delhiPool  || 0,
         totalBombay: c.totalBombay || c.bombayPool || 0,
       }));
-      const refreshed = data.types;
+      if (incoming.length === 0) { setIsOnline(true); return; }
+
       setPastCycles(prev => {
-        if (!Array.isArray(refreshed) || refreshed.length === 0) return resolved;
-        const stale = new Set(refreshed);
-        return [...prev.filter(c => !stale.has(c.type as string)), ...resolved]
-          .sort((a, b) => (b.endTime || 0) - (a.endTime || 0));
+        // Incoming wins on a collision: it is the fresher read of that cycle
+        // (a row can arrive mid-settlement and be restated once settled).
+        const byId = new Map<string, GameCycle>();
+        for (const c of prev)     byId.set(String(c.id), c);
+        for (const c of incoming) byId.set(String(c.id), c);
+
+        const kept: GameCycle[] = [];
+        const perType: Record<string, number> = {};
+        for (const c of [...byId.values()].sort((a, b) => (b.endTime || 0) - (a.endTime || 0))) {
+          const t = String(c.type);
+          const cap = ANALYTICS_WINDOW[t] ?? ANALYTICS_WINDOW['30_MIN'];
+          if ((perType[t] = (perType[t] || 0) + 1) <= cap) kept.push(c);
+        }
+        return kept;
       });
       setIsOnline(true);
     };
@@ -938,7 +981,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     <GameContext.Provider value={{
       user, isAuthenticated: !!user, isOnline, completeTelegramLogin, logout,
       cycleType, setCycleType, cycles, currentCycle: cycles[cycleType],
-      pastCycles, gameState: cycles[cycleType].status, serverTimeOffset,
+      pastCycles, loadCycleHistory, gameState: cycles[cycleType].status, serverTimeOffset,
       placeBet, placePhantomBet, userBets, history, triggerAdminAction, formatTime,
       updateProfile, subscribeToVolume, getCurrentVolume, refreshUserWallet,
       isGhostMode,

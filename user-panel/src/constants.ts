@@ -21,6 +21,27 @@ export const CHIP_VALUES = {
   'FULL_DAY': [100, 300, 900, 2700, 8100],
 };
 
+// ANALYTICS_WINDOW — how many past results each board's streak analytics cover.
+//
+// This is a real target, not a display cap: the drawer requests exactly this
+// many rows for the board being viewed, and `analyticsFor` computes over what
+// arrives. 1,440 results is 24 hours of 1-minute blocks and 30 days of
+// half-hour ones — enough for the run-length distribution and the streak-gap
+// tables to describe something rather than echo a handful of runs.
+//
+// FULL_DAY is 30 because that IS 30 days; asking for 1,440 would ask for four
+// years of a board that produces one result a day.
+//
+// Read by `redesign/analytics.ts` (the computation window), `GameContext`
+// (the per-type cap when merging history) and `AnalyticsDrawer` (what it
+// requests). One declaration — the server enforces its own ceiling
+// independently (backend/domains/markets/cycleHistory.service.js).
+export const ANALYTICS_WINDOW: Record<string, number> = {
+  '1_MIN':    1440,
+  '30_MIN':   1440,
+  'FULL_DAY': 30,
+};
+
 // M-03 fix: MIN_BET constant removed — GOVERNANCE §2 forbids frontend hardcoded
 // business values with backend config equivalents. sysConfig.minBet is the
 // runtime authority (SystemConfig.betLimits.thirtyMin.min / fullDay.min).

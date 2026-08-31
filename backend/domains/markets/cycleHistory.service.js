@@ -42,14 +42,35 @@ import { Cycle } from '../../models/index.js';
 import { CYCLE_TYPE_VALUES, isCycleType } from './cycleTypes.js';
 import { publicCycleView } from './cyclePublicView.js';
 
-/** Rows per type. Caps a `limit` a caller took from a query string. */
-const DEFAULT_LIMIT = 50;
-const MAX_LIMIT = 200;
+/**
+ * Rows per type. Caps a `limit` a caller took from a query string.
+ *
+ * `DEFAULT_LIMIT` stays small because it is what every connect pays: enough to
+ * draw the 60-bead roadmap immediately, on a metered handset connection, for
+ * an anonymous visitor who may never open the analytics drawer.
+ *
+ * `MAX_SINGLE_TYPE` is the deep window the drawer asks for on demand — the
+ * 1,440-result history the streak statistics are meant to describe (24h of
+ * 1-minute blocks, 30 days of half-hour ones). About 288 KB of JSON.
+ *
+ * A multi-type request is capped much lower. Three deep windows in one message
+ * is ~864 KB against socket.io's 1 MB default `maxHttpBufferSize`, so the
+ * request that asks for everything is exactly the one that must not ask for
+ * everything deeply. Deep windows are per type, one at a time, on request.
+ */
+export const DEFAULT_LIMIT = 50;
+export const MAX_SINGLE_TYPE = 1440;
+export const MAX_ALL_TYPES = 200;
 
-function normaliseLimit(limit) {
+/**
+ * @param {number|string} limit
+ * @param {number} typeCount how many types this request covers
+ */
+export function normaliseLimit(limit, typeCount) {
+  const ceiling = typeCount === 1 ? MAX_SINGLE_TYPE : MAX_ALL_TYPES;
   const n = parseInt(limit, 10);
-  if (!Number.isFinite(n)) return DEFAULT_LIMIT;
-  return Math.min(Math.max(n, 1), MAX_LIMIT);
+  if (!Number.isFinite(n)) return Math.min(DEFAULT_LIMIT, ceiling);
+  return Math.min(Math.max(n, 1), ceiling);
 }
 
 /**
@@ -73,7 +94,9 @@ async function historyForType(type, limit) {
  *                                 throwing — this feeds a broadcast, and one
  *                                 bad value from a socket client must not take
  *                                 the history away from everyone else.
- * @param {number}   [opts.limit]  rows PER TYPE (not in total).
+ * @param {number}   [opts.limit]  rows PER TYPE (not in total). Capped at
+ *                                 1,440 for a single type and 200 when several
+ *                                 are asked for at once — see the constants.
  * @returns {Promise<{cycles: object[], types: string[]}>} newest first within
  *          each type; `types` names what the payload is authoritative for.
  */
@@ -82,7 +105,7 @@ export async function fetchCycleHistory({ types, limit } = {}) {
     .filter(isCycleType);
   if (wanted.length === 0) return { cycles: [], types: [] };
 
-  const n = normaliseLimit(limit);
+  const n = normaliseLimit(limit, wanted.length);
   const perType = await Promise.all(wanted.map((t) => historyForType(t, n)));
 
   return { cycles: perType.flat(), types: wanted };

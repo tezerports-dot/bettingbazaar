@@ -14,16 +14,23 @@ import AnalyticsDrawer from '../redesign/AnalyticsDrawer';
 const sideBg = (sd: string) => (sd === 'DELHI' ? 'var(--delhi)' : 'var(--bombay)');
 
 const ResultsPage: React.FC = () => {
-  const { pastCycles } = useGame();
+  const { pastCycles, loadCycleHistory } = useGame();
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const cycles = useMemo(() => (pastCycles || [])
     .filter(c => c.winner === 'DELHI' || c.winner === 'BOMBAY')
     .sort((a, b) => (b.endTime || 0) - (a.endTime || 0)), [pastCycles]);
 
+  // Built from the enum, not a hand-written pair. The literal
+  // `{ '30_MIN': …, FULL_DAY: … }` this replaces silently omitted 1_MIN, so
+  // the drawer's 1-Min tab opened from THIS page showed an empty board however
+  // much 1-minute history had arrived — the same omission the GameScreen copy
+  // was already built from the enum to avoid.
   const winnersByType = useMemo(() => {
     const build = (t: CycleType): Side[] => cycles.filter(c => c.type === t).map(c => c.winner as Side);
-    return { '30_MIN': build(CycleType.THIRTY_MIN), FULL_DAY: build(CycleType.FULL_DAY) };
+    return Object.fromEntries(
+      Object.values(CycleType).map(t => [t, build(t)]),
+    ) as Record<CycleType, Side[]>;
   }, [cycles]);
 
   const roadmapBeads = cycles.slice(0, 60).map(c => c.winner as Side).reverse().map(sd => ({ ch: sd === 'DELHI' ? 'D' : 'B', bg: sideBg(sd) }));
@@ -81,7 +88,7 @@ const ResultsPage: React.FC = () => {
         })}
       </div>
 
-      <AnalyticsDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} winnersByType={winnersByType} />
+      <AnalyticsDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} winnersByType={winnersByType} loadCycleHistory={loadCycleHistory} />
     </ScreenShell>
   );
 };

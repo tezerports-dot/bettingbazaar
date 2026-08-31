@@ -15,6 +15,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { analyticsFor, computeAnalytics, MIN_SAMPLE, Side } from './analytics';
+import { ANALYTICS_WINDOW } from '../constants';
 import { CycleType } from '../types';
 
 const run = (n: number, side: Side): Side[] => Array.from({ length: n }, () => side);
@@ -49,6 +50,24 @@ describe('analyticsFor', () => {
     // nothing at all to a short one.
     expect(analyticsFor(run(50, 'DELHI'), CycleType.FULL_DAY).sample).toBe(30);
     expect(analyticsFor(run(4, 'DELHI'), CycleType.FULL_DAY).sample).toBe(4);
+  });
+
+  it('carries the full 1,440-result window on both minute-based boards', () => {
+    // The specified depth for the streak statistics: 24h of 1-minute blocks,
+    // 30 days of half-hour ones. GameContext caps stored history to the same
+    // map and the drawer requests exactly this many rows, so a change here
+    // that is not matched there leaves the charts quietly describing less
+    // history than they claim.
+    for (const t of [CycleType.ONE_MIN, CycleType.THIRTY_MIN]) {
+      expect(ANALYTICS_WINDOW[t], `${t} window`).toBe(1440);
+      expect(analyticsFor(run(2000, 'DELHI'), t).sample, `${t} sample`).toBe(1440);
+    }
+  });
+
+  it('declares a window for every cycle type', () => {
+    for (const t of Object.values(CycleType)) {
+      expect(ANALYTICS_WINDOW[t], `no window for ${t}`).toBeGreaterThan(0);
+    }
   });
 
   it('counts only the winners it was given', () => {

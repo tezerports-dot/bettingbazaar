@@ -28,6 +28,7 @@
  */
 
 import type { CycleType } from '../types';
+import { ANALYTICS_WINDOW } from '../constants';
 
 export type Side = 'DELHI' | 'BOMBAY';
 
@@ -121,16 +122,10 @@ export function computeAnalytics(seq: Side[]): Analytics {
  * with `sufficient: false` and is NOT topped up — see the module header.
  */
 export function analyticsFor(realWinnersNewestFirst: Side[], cycleType: CycleType | string): Analytics {
-  // How far back each tab looks. The cap is about readability and cost, not
-  // availability: the server sends at most ~50 rows per type today
-  // (cycleHistory.service.js), so these are ceilings the feed does not yet
-  // reach rather than targets to be filled.
-  const WINDOW: Record<string, number> = {
-    '1_MIN':    1440,  // 24h of 1-minute blocks
-    '30_MIN':   1440,  // 30 days of half-hour blocks
-    'FULL_DAY': 30,    // 30 days
-  };
-  const target = WINDOW[cycleType as string] ?? WINDOW['30_MIN'];
+  // How far back each board looks — ANALYTICS_WINDOW in constants.ts, shared
+  // with GameContext (which caps the stored history to it) and the drawer
+  // (which requests exactly that many rows for the board being viewed).
+  const target = ANALYTICS_WINDOW[cycleType as string] ?? ANALYTICS_WINDOW['30_MIN'];
   return computeAnalytics(realWinnersNewestFirst.slice(0, target));
 }
 

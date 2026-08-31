@@ -52,6 +52,7 @@ import { buildPublicKycData } from './kycPublicData.js';
 // The one public projection of a cycle. Real/phantom pools reveal the winner,
 // so every user-facing cycle response goes through here (cyclePublicView.js).
 import { publicCycleView } from '../markets/cyclePublicView.js';
+import { fetchCycleHistory } from '../markets/cycleHistory.service.js';
 
 const router = express.Router();
 
@@ -167,23 +168,17 @@ router.get('/v1/game/cycle/:type/:startTime', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/v1/game/cycles/history', async (req, res) => {
   try {
-    const { limit = 20, type } = req.query;
-    // SEC 2.7 FIX: cap pagination to prevent DoS
-    const parsedLimit = Math.min(Math.max(parseInt(limit) || 50, 1), 200);
-    const Cycle = mongoose.model('Cycle');
-    // NOTE: cycles stay in RESULT_DECLARED status; isSettled changes to COMPLETED.
-    // Query both to ensure all completed cycles are included.
-    const query = { status: 'RESULT_DECLARED' };
-    if (type) query.type = type;
-
-    const cycles = await Cycle.find(query)
-      .sort({ endTime: -1 })
-      .limit(parsedLimit)
-      .lean();
-
-    // Same single public projection as every other user-facing cycle route —
-    // no second hand-written whitelist to forget a field in.
-    res.json({ success: true, cycles: cycles.map(publicCycleView) });
+    // The query, the cap and the projection all come from cycleHistory.service
+    // — the same code behind the socket request, the SSE connect payload and
+    // the post-result broadcast. This route used to be a fourth copy with its
+    // own 200-row ceiling, which is why the History screen could not show the
+    // 1,440-result window the analytics are specified over.
+    //
+    // `limit` is PER TYPE. Omitting `type` returns every type at a much lower
+    // per-type cap; the deep window is for one board at a time.
+    const { limit, type } = req.query;
+    const { cycles } = await fetchCycleHistory({ types: type, limit });
+    res.json({ success: true, cycles });
   } catch (error) {
     console.error('Cycle history error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch cycle history' });

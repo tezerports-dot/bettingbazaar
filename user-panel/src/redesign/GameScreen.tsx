@@ -39,7 +39,7 @@ const bead = (sd: Side) => ({ ch: sd === 'DELHI' ? 'D' : 'B', bg: sd === 'DELHI'
 const GameScreen: React.FC = () => {
   const {
     currentCycle, gameState, cycleType, setCycleType, placeBet, placePhantomBet,
-    userBets, isGhostMode, toggleGhostMode, user, isAuthenticated, sysConfig, pastCycles, subscribeToVolume, getCurrentVolume,
+    userBets, isGhostMode, toggleGhostMode, user, isAuthenticated, sysConfig, pastCycles, loadCycleHistory, subscribeToVolume, getCurrentVolume,
   } = useGame();
 
   // Short label for the results strip, per cycle type. A map rather than a
@@ -441,7 +441,7 @@ const GameScreen: React.FC = () => {
 
       {desktop && rightPanel}
 
-      <AnalyticsDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} winnersByType={winnersByType} />
+      <AnalyticsDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} winnersByType={winnersByType} loadCycleHistory={loadCycleHistory} />
     </div>
   );
 };
