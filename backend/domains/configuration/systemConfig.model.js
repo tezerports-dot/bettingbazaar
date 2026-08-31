@@ -1,6 +1,55 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import mongoose from 'mongoose';
 
+/**
+ * Cycle phase offsets, in seconds BEFORE a cycle's end, per type.
+ *
+ * ── This is the only copy ──────────────────────────────────────────────────
+ * These numbers were declared three times: here as schema defaults, again in
+ * `cycleGenerator.service.js` as its fallback when config is missing or
+ * invalid, and again in `routes/admin/cycles.admin.routes.js` to compute the
+ * phase timeline the admin panel draws. Three copies of the same constant is a
+ * §4 duplicate, and this one had ALREADY DRIFTED: the admin route said the
+ * 30-minute block closed betting 60s before the end while the generator
+ * actually closed it at 30s, so the admin panel drew a phase boundary the
+ * engine did not honour.
+ *
+ * Runtime authority is unchanged and still lives in the database — an admin
+ * edits `SystemConfig.cyclePhases` and the generator picks it up within 30s
+ * (§1 Business Policy). This is what a fresh install starts from and what a
+ * consumer falls back to when the stored set is missing or fails the ordering
+ * invariant. Both consumers now import it instead of restating it.
+ *
+ * The invariant every set must satisfy: merge > equalizer > close >
+ * celebrate >= 0, and merge < the cycle's duration. `validPhaseSet` in the
+ * generator enforces it at read time; `cycleTypes.test.js` pins it for every
+ * type here so a bad DEFAULT can never be what a consumer falls back to.
+ */
+export const DEFAULT_CYCLE_PHASES = Object.freeze({
+  // 1-minute block: merge 12s before the end, equalize at 9s, close betting at
+  // 5s, declare at 3s, celebrate 3s→0, next block at 0. Betting is open for
+  // the first 55 of 60 seconds.
+  //
+  // These are seconds like the others, and the same ordering invariant
+  // applies — but the margins here are seconds rather than minutes, and the
+  // status tick runs at 1s. The close→celebrate window is only 2s wide, so a
+  // slow tick can miss the CLOSED transition; the phase logic already
+  // tolerates that by letting a still-OPEN cycle complete directly (bets then
+  // close at 3s instead of 5s) rather than stalling.
+  oneMin:    Object.freeze({ mergeBeforeEndSec: 12,  equalizerBeforeEndSec: 9,   closeBeforeEndSec: 5,  celebrateBeforeEndSec: 3 }),
+  thirtyMin: Object.freeze({ mergeBeforeEndSec: 180, equalizerBeforeEndSec: 120, closeBeforeEndSec: 30, celebrateBeforeEndSec: 10 }),
+  // Full-day merges earlier than the 30-minute block by default.
+  fullDay:   Object.freeze({ mergeBeforeEndSec: 300, equalizerBeforeEndSec: 120, closeBeforeEndSec: 30, celebrateBeforeEndSec: 10 }),
+});
+
+/** One phase set as Mongoose paths, so the schema default IS the constant above. */
+const phaseFields = (d) => ({
+  mergeBeforeEndSec:     { type: Number, default: d.mergeBeforeEndSec },
+  equalizerBeforeEndSec: { type: Number, default: d.equalizerBeforeEndSec },
+  closeBeforeEndSec:     { type: Number, default: d.closeBeforeEndSec },
+  celebrateBeforeEndSec: { type: Number, default: d.celebrateBeforeEndSec },
+});
+
 const systemConfigSchema = new mongoose.Schema({
   key: { type: String, default: 'main', unique: true },
   latestVersion: { type: String, default: '1.0.0' },
@@ -31,6 +80,14 @@ const systemConfigSchema = new mongoose.Schema({
   // Previously hardcoded as 10 / 100 (minBet) with no server-side maxBet.
   // Both values now come from DB so admin changes take effect immediately.
   betLimits: {
+    // The 1-minute block shares the 30-minute stake bounds and chip ladder
+    // (₹10·30·90·270·810) — same game, shorter window. Declared explicitly
+    // rather than left to fall through to thirtyMin, so that raising one
+    // block's ceiling cannot silently raise the other's.
+    oneMin: {
+      min: { type: Number, default: 10 },
+      max: { type: Number, default: 100000 }
+    },
     thirtyMin: {
       min: { type: Number, default: 10 },
       max: { type: Number, default: 100000 }
@@ -139,18 +196,9 @@ const systemConfigSchema = new mongoose.Schema({
   // celebrate > 0, and merge must be < the cycle duration. Read (cached) by
   // the generator. Full-day merges earlier than 30-min by default.
   cyclePhases: {
-    thirtyMin: {
-      mergeBeforeEndSec:     { type: Number, default: 180 },
-      equalizerBeforeEndSec: { type: Number, default: 120 },
-      closeBeforeEndSec:     { type: Number, default: 30 },
-      celebrateBeforeEndSec: { type: Number, default: 10 },
-    },
-    fullDay: {
-      mergeBeforeEndSec:     { type: Number, default: 300 },
-      equalizerBeforeEndSec: { type: Number, default: 120 },
-      closeBeforeEndSec:     { type: Number, default: 30 },
-      celebrateBeforeEndSec: { type: Number, default: 10 },
-    },
+    oneMin:    phaseFields(DEFAULT_CYCLE_PHASES.oneMin),
+    thirtyMin: phaseFields(DEFAULT_CYCLE_PHASES.thirtyMin),
+    fullDay:   phaseFields(DEFAULT_CYCLE_PHASES.fullDay),
   },
 
   // ── BET FUNDING SPLIT (Phase A, 2026-07-10) ───────────────────────────────

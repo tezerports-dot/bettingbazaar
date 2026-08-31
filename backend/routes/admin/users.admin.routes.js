@@ -1,6 +1,8 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** users.admin.routes.js — User management, balance adjust, block/unblock, phantom, queue managers */
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from './_adminShared.js';
+// Cycle-type vocabulary — phantom access is scoped to one type, or BOTH.
+import { CYCLE_TYPE_VALUES } from '../../domains/markets/cycleTypes.js';
 import { adminAdjustment } from '../../domains/wallet/walletAuthority.service.js';
 
 const router = express.Router();
@@ -271,10 +273,13 @@ router.get('/phantom-agents', authenticate, isAdmin, async (req, res) => {
 router.post('/users/:userId/phantom-access', authenticate, isAdmin, async (req, res) => {
   try {
     const { userId } = req.params;
-    const { accessLevel } = req.body; // '30_MIN', 'FULL_DAY', 'BOTH', 'NONE'
+    const { accessLevel } = req.body; // 'NONE', a cycle type, or 'BOTH' (= every type)
     const { User } = getModels();
-    
-    const validLevels = ['NONE', '30_MIN', 'FULL_DAY', 'BOTH'];
+
+    // Derived from the type registry rather than restated. As a literal list
+    // this silently rejected any newly added cycle type — the admin UI would
+    // offer the option and the save would 400.
+    const validLevels = ['NONE', ...CYCLE_TYPE_VALUES, 'BOTH'];
     if (!validLevels.includes(accessLevel)) {
       return res.status(400).json({
         success: false,

@@ -344,6 +344,7 @@ export const UsersList: React.FC = () => {
               <label className="label">Phantom Access Level</label>
               <select value={phantomLevel} onChange={e => setPhantomLevel(e.target.value)} className="input">
                 <option value="NONE">NONE — No phantom betting</option>
+                <option value="1_MIN">1_MIN — 1-minute cycles only</option>
                 <option value="30_MIN">30_MIN — 30-minute cycles only</option>
                 <option value="FULL_DAY">FULL_DAY — Full-day cycles only</option>
                 <option value="BOTH">BOTH — All cycles</option>

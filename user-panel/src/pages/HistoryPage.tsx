@@ -7,6 +7,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useGame } from '../services/GameContext';
 import { CycleType, GameCycle } from '../types';
+import { ANALYTICS_WINDOW } from '../constants';
 import { getBackend } from '../services/backend.service';
 import { fmt, ago } from '../redesign/format';
 import ScreenShell, { card } from '../redesign/Screen';
@@ -23,8 +24,16 @@ const HistoryPage: React.FC = () => {
   const fetchHistory = useCallback(async (type: CycleType) => {
     setLoading(true); setFetched(null);
     try {
-      const typeParam = type === CycleType.THIRTY_MIN ? '30_MIN' : 'FULL_DAY';
-      const res: any = await (backend as any).request(`/v1/game/cycles/history?type=${typeParam}&limit=100`);
+      // The enum value IS the server's type string — the
+      // `type === THIRTY_MIN ? '30_MIN' : 'FULL_DAY'` this replaces asked the
+      // server for full-day cycles whenever the selected board was neither,
+      // so the 1-Min tab would have listed the wrong board's results.
+      //
+      // `limit` is the board's full analytics window (1,440 for the 1-minute
+      // and 30-minute boards), matching what the drawer describes; the server
+      // caps it per type.
+      const limit = ANALYTICS_WINDOW[type as string] ?? ANALYTICS_WINDOW['30_MIN'];
+      const res: any = await (backend as any).request(`/v1/game/cycles/history?type=${type}&limit=${limit}`);
       setFetched(((res?.cycles || []) as GameCycle[]).filter((c: any) => c && c.endTime));
     } catch {
       setFetched((pastCycles || []).filter(c => c.type === type));
@@ -41,7 +50,7 @@ const HistoryPage: React.FC = () => {
   return (
     <ScreenShell icon="🕒" title="Game History" sub="Every cycle you have played">
       <div style={{ display: 'flex', background: 'var(--surface2)', border: '1px solid var(--line2)', borderRadius: 999, padding: 3, gap: 3, width: 'fit-content', marginBottom: 14, boxShadow: 'var(--shadow-sm)' }}>
-        {[{ t: CycleType.THIRTY_MIN, l: '30 MIN' }, { t: CycleType.FULL_DAY, l: 'FULL DAY' }].map(o => {
+        {[{ t: CycleType.ONE_MIN, l: '1 MIN' }, { t: CycleType.THIRTY_MIN, l: '30 MIN' }, { t: CycleType.FULL_DAY, l: 'FULL DAY' }].map(o => {
           const on = viewCycle === o.t;
           return <button key={o.l} onClick={() => setViewCycle(o.t)} style={{ padding: '7px 18px', borderRadius: 999, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 800, letterSpacing: '.06em', background: on ? 'linear-gradient(180deg,var(--gold2),var(--gold))' : 'transparent', color: on ? '#1a1200' : 'var(--text3)' }}>{o.l}</button>;
         })}

@@ -31,19 +31,23 @@ const BetControls: React.FC<BetControlsProps> = memo(({ onAmountChange, currentA
   const chips = CHIP_VALUES[cycleType];
   // FIX A1: read live minBet from sysConfig (server-pushed) instead of
   // hardcoded constants.ts which never changes when admin updates limits.
-  const minBet = cycleType === '30_MIN'
-    ? (sysConfig?.minBet || 10)
-    : (sysConfig?.minBet || 100);
+  // The fallback only applies until sysConfig arrives. The 1-minute block shares
+  // the 30-minute stake floor (SystemConfig.betLimits.oneMin defaults to
+  // betLimits.thirtyMin), so only FULL_DAY differs.
+  const minBet = cycleType === CycleType.FULL_DAY
+    ? (sysConfig?.minBet || 100)
+    : (sysConfig?.minBet || 10);
 
   const canUseGhostMode = (() => {
     const access = user?.phantomAccess;
     if (!access || access === 'NONE') return false;
+    // 'BOTH' predates the 1-minute block and means EVERY type — the server gate
+    // reads it the same way (backend/domains/markets/bet.routes.js).
     if (access === 'BOTH') return true;
-    // '30_MIN' agent can only ghost on the 30-MIN tab
-    if (access === '30_MIN') return cycleType === CycleType.THIRTY_MIN;
-    // 'FULL_DAY' agent can only ghost on the FULL-DAY tab
-    if (access === 'FULL_DAY') return cycleType === CycleType.FULL_DAY;
-    return false;
+    // Otherwise the agent is scoped to exactly one type, and the access value
+    // IS that type — so this is a comparison rather than a branch per type,
+    // and a new type needs no edit here.
+    return (access as string) === (cycleType as string);
   })();
 
   useEffect(() => {

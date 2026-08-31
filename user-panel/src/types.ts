@@ -4,7 +4,10 @@
 
 export enum CycleType {
   FULL_DAY   = 'FULL_DAY',
-  THIRTY_MIN = '30_MIN'
+  THIRTY_MIN = '30_MIN',
+  /** 60-second block. Same game and same chips as the 30-minute one, and the
+   *  only difference is the clock — see GAME_CORE.PHASE.ONE_MIN. */
+  ONE_MIN    = '1_MIN'
 }
 
 export enum BettingSide {
@@ -59,7 +62,9 @@ export interface User {
     bankName: string;
   };
 
-  phantomAccess?: 'NONE' | '30_MIN' | 'FULL_DAY' | 'BOTH';
+  // 'BOTH' predates the 1-minute block and means EVERY type — the server gate
+  // reads it as "skip the per-type check" (backend/domains/user/user.model.js).
+  phantomAccess?: 'NONE' | '1_MIN' | '30_MIN' | 'FULL_DAY' | 'BOTH';
   joinedAt: number;
   lastLogin: number;
 }

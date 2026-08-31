@@ -26,6 +26,7 @@
 
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { CycleType, GameState, User, Bet, BettingSide, GameCycle } from '../types';
+import { ANALYTICS_WINDOW } from '../constants';
 import { getBackend, setCdnBaseUrl } from './backend.service';
 
 
@@ -77,6 +78,8 @@ interface GameContextType {
   cycles: { [key in CycleType]: GameCycle };
   currentCycle: GameCycle;
   pastCycles: GameCycle[];
+  /** Fetch one board's full ANALYTICS_WINDOW of results. See the callback. */
+  loadCycleHistory: (type: CycleType) => void;
   gameState: GameState;
   serverTimeOffset: number;
   placeBet: (amount: number, side: BettingSide) => Promise<void>;
@@ -154,6 +157,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
   const isRefreshing    = useRef(false);
 
   const liveStatsRef = useRef<{ [key in CycleType]: LiveStats }>({
+    [CycleType.ONE_MIN]:    { totalDelhi: 0, totalBombay: 0 },
     [CycleType.THIRTY_MIN]: { totalDelhi: 0, totalBombay: 0 },
     [CycleType.FULL_DAY]:   { totalDelhi: 0, totalBombay: 0 }
   });
@@ -182,6 +186,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
   });
 
   const [cycles, setCycles] = useState<{ [key in CycleType]: GameCycle }>({
+    [CycleType.ONE_MIN]:    createNullCycle(CycleType.ONE_MIN),
     [CycleType.THIRTY_MIN]: createNullCycle(CycleType.THIRTY_MIN),
     [CycleType.FULL_DAY]:   createNullCycle(CycleType.FULL_DAY),
   });
@@ -300,6 +305,27 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
   // It now triggers a WS snapshot request, NOT an HTTP fetch.
   const refreshCycles = requestCycleSnapshot;
 
+  /**
+   * Ask for one board's full analytics window (ANALYTICS_WINDOW rows for that
+   * type — 1,440 for the 1-minute and 30-minute boards).
+   *
+   * On demand rather than on connect: this is ~288 KB and only matters to
+   * someone who opens the analytics drawer, while connect is paid by every
+   * anonymous visitor on a handset. The server caps a multi-type request far
+   * lower for the same reason, so this asks for ONE type at a time.
+   *
+   * Fire-and-forget, deliberately. The response arrives on the same passive
+   * `cycle_history` listener as every other payload and merges by id there —
+   * awaiting it would race the once-a-minute post-result broadcast, which is
+   * the same event name, and resolve with 50 rows instead of the deep window.
+   */
+  const loadCycleHistory = useCallback((type: CycleType) => {
+    const socket = (backend as any).socket;
+    if (!socket?.connected) return;
+    const limit = ANALYTICS_WINDOW[type as string] ?? ANALYTICS_WINDOW['30_MIN'];
+    socket.emit('request_cycle_history', { type, limit });
+  }, []);
+
   // ── BUG-U6: Refresh wallet balance from server ─────────────────────────────
   const refreshUserWallet = useCallback(async () => {
     if (!user?.id) return;
@@ -324,13 +350,46 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     const sseBridge = (backend as any).sseBridge as EventTarget | undefined;
     const socket    = (backend as any).socket;
 
-    const handleCycleHistory = (data: { cycles: any[] }) => {
-      const resolved: GameCycle[] = (data.cycles || []).map((c: any) => ({
+    // Every `cycle_history` payload is MERGED INTO the stored history by cycle
+    // id, never swapped for it.
+    //
+    // Payloads arrive at three very different depths and a replace cannot serve
+    // all three. Connect sends 50 rows per type (cheap, enough for the roadmap
+    // strip). The drawer asks for the full ANALYTICS_WINDOW of ONE board on
+    // demand — 1,440 rows. And the server re-broadcasts the resolved type's
+    // recent rows after every result, which for a 1-minute block is once a
+    // minute: replacing on that would throw away a 1,440-row window the player
+    // just waited for, sixty times an hour, and replacing only the named types
+    // would still do it to the board they are actually looking at.
+    //
+    // Union by id is idempotent, tolerates out-of-order and overlapping
+    // payloads, and lets a shallow refresh top up a deep window instead of
+    // truncating it. Rows are then capped per type at ANALYTICS_WINDOW so the
+    // list cannot grow without bound across a long session.
+    const handleCycleHistory = (data: { cycles: any[]; types?: string[] }) => {
+      const incoming: GameCycle[] = (data.cycles || []).map((c: any) => ({
         ...c,
         totalDelhi:  c.totalDelhi  || c.delhiPool  || 0,
         totalBombay: c.totalBombay || c.bombayPool || 0,
       }));
-      setPastCycles(resolved);
+      if (incoming.length === 0) { setIsOnline(true); return; }
+
+      setPastCycles(prev => {
+        // Incoming wins on a collision: it is the fresher read of that cycle
+        // (a row can arrive mid-settlement and be restated once settled).
+        const byId = new Map<string, GameCycle>();
+        for (const c of prev)     byId.set(String(c.id), c);
+        for (const c of incoming) byId.set(String(c.id), c);
+
+        const kept: GameCycle[] = [];
+        const perType: Record<string, number> = {};
+        for (const c of [...byId.values()].sort((a, b) => (b.endTime || 0) - (a.endTime || 0))) {
+          const t = String(c.type);
+          const cap = ANALYTICS_WINDOW[t] ?? ANALYTICS_WINDOW['30_MIN'];
+          if ((perType[t] = (perType[t] || 0) + 1) <= cap) kept.push(c);
+        }
+        return kept;
+      });
       setIsOnline(true);
     };
 
@@ -405,10 +464,33 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
         if (!watched.has(id)) { socket.emit('watch_cycle', { cycleId: id }); watched.add(id); }
       }
     };
-    const typeKeyOf = (raw: any, cycleId?: string): string =>
-      raw === '30_MIN' ? '30_MIN'
-      : raw === 'FULL_DAY' ? 'FULL_DAY'
-      : (typeof cycleId === 'string' && cycleId.includes('30MIN')) ? '30_MIN' : 'FULL_DAY';
+    // ── One place that turns a server type string into a CycleType ──────────
+    // Five handlers each had their own version of this, and every one ended in
+    // `: CycleType.FULL_DAY`. That fallback was harmless while there were two
+    // types and became a bug the moment there were three: a 1_MIN event with a
+    // type field the branch did not recognise was filed as FULL_DAY, so the
+    // 1-minute tab never updated and the full-day tab showed someone else's
+    // pools.
+    //
+    // The cycleId sniff stays as a last resort because some legacy events carry
+    // no type at all, but it is now keyed off the registry's id prefixes rather
+    // than a single hardcoded '30MIN'.
+    const CYCLE_ID_PREFIXES: Array<[string, CycleType]> = [
+      ['1MIN_',    CycleType.ONE_MIN],
+      ['30MIN_',   CycleType.THIRTY_MIN],
+      ['FULLDAY_', CycleType.FULL_DAY],
+    ];
+    const toCycleType = (raw: any, cycleId?: string): CycleType | null => {
+      const known = Object.values(CycleType).find(v => v === raw);
+      if (known) return known as CycleType;
+      if (typeof cycleId === 'string') {
+        const hit = CYCLE_ID_PREFIXES.find(([prefix]) => cycleId.startsWith(prefix));
+        if (hit) return hit[1];
+      }
+      // Unattributable: better to drop the event than to apply it to the wrong
+      // tab, which is what every previous fallback did.
+      return null;
+    };
 
     // ── cycle_snapshot: authoritative init pushed by server on connect ───────
     // Arrives via SSE on every connection (SSE sends it on connect).
@@ -453,10 +535,14 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
         }));
       };
 
-      applySnapshotType('30_MIN',   CycleType.THIRTY_MIN);
-      applySnapshotType('FULL_DAY', CycleType.FULL_DAY);
-      // Watch exactly the two live cycles the snapshot just described.
-      syncWatched({ '30_MIN': map['30_MIN']?.cycleId, 'FULL_DAY': map['FULL_DAY']?.cycleId });
+      // Every type, from the enum — the snapshot is the authoritative init, so a
+      // type missing here is a tab that stays on LOADING_ until the next
+      // new_cycle happens to fire.
+      for (const t of Object.values(CycleType)) applySnapshotType(t, t);
+      // Watch exactly the live cycles the snapshot just described.
+      syncWatched(Object.fromEntries(
+        Object.values(CycleType).map(t => [t, map[t]?.cycleId]),
+      ));
       setIsOnline(true);
     };
 
@@ -503,7 +589,8 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     };
 
     const handleBetPlaced = (data: any) => {
-      const ct = data.cycleType === '30_MIN' ? CycleType.THIRTY_MIN : CycleType.FULL_DAY;
+      const ct = toCycleType(data.cycleType, data.cycleId);
+      if (!ct) return;
       if (typeof data.cycleId !== 'string' || !data.cycleId) return;
       pendingBetPlaced.set(data.cycleId, {
         cycleType: ct,
@@ -533,11 +620,8 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
 
     const handleNewCycle = (data: any) => {
       // Server created a fresh cycle (sent 12s after cycle_result).
-      const ct = data.type === '30_MIN'
-        ? CycleType.THIRTY_MIN
-        : data.type === 'FULL_DAY'
-          ? CycleType.FULL_DAY
-          : data.cycleId?.includes('30MIN') ? CycleType.THIRTY_MIN : CycleType.FULL_DAY;
+      const ct = toCycleType(data.type, data.cycleId);
+      if (!ct) return;
       for (const [pendingCycleId, pending] of pendingBetPlaced) {
         if (pending.cycleType === ct) pendingBetPlaced.delete(pendingCycleId);
       }
@@ -568,16 +652,12 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
         }
       }));
       // Switch our watch to the fresh cycle for this type (leaves the old one).
-      syncWatched({ [typeKeyOf(data.type, data.cycleId)]: data.cycleId });
+      syncWatched({ [ct]: data.cycleId });
     };
 
     const handleCycleResult = (data: any) => {
-      const rawType = data.type;
-      const ct = rawType === '30_MIN'
-        ? CycleType.THIRTY_MIN
-        : rawType === 'FULL_DAY'
-          ? CycleType.FULL_DAY
-          : data.cycleId?.includes('30MIN') ? CycleType.THIRTY_MIN : CycleType.FULL_DAY;
+      const ct = toCycleType(data.type, data.cycleId);
+      if (!ct) return;
       setCycles(prev => ({
         ...prev,
         [ct]: {
@@ -616,7 +696,10 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     };
 
     const handleCyclePhase = (data: any) => {
-      const ct = data.cycleId?.includes('30MIN') ? CycleType.THIRTY_MIN : CycleType.FULL_DAY;
+      // cycle_phase does carry `type` (cycleGenerator emits it); the cycleId is
+      // the fallback for older payloads.
+      const ct = toCycleType(data.type, data.cycleId);
+      if (!ct) return;
       setCycles(prev => ({ ...prev, [ct]: { ...prev[ct], status: data.phase as GameState } }));
     };
 
@@ -710,7 +793,12 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     // Admin adjust-balance emits 'user_update' (not 'user_balance_update').
     // Listen to both so admin wallet top-ups reflect instantly without refresh.
     socket.on('user_update',         handleUserBalanceUpdate);
-    socket.on('bet_placed',          handleBetPlaced);
+    // No socket `bet_placed` listener: the server stopped emitting it globally
+    // (2026-08-31). This client watches its cycle rooms and receives the
+    // room-scoped `pool_update` below, which carries the same totals. The SSE
+    // subscription above KEEPS listening to `bet_placed` — that is the only
+    // live-pool path for a client whose WebSocket is blocked and which
+    // therefore has no socket at all.
     socket.on('pool_update',         handlePoolUpdate);
     socket.on('new_cycle',           handleNewCycle);
     socket.on('cycle_result',        handleCycleResult);
@@ -728,7 +816,6 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
       if (socket) {
         socket.off('cycle_snapshot',      handleCycleSnapshot);
         socket.off('connect',             handleReconnect);
-        socket.off('bet_placed',          handleBetPlaced);
         socket.off('pool_update',         handlePoolUpdate);
         socket.off('new_cycle',           handleNewCycle);
         socket.off('cycle_result',        handleCycleResult);
@@ -898,7 +985,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     <GameContext.Provider value={{
       user, isAuthenticated: !!user, isOnline, completeTelegramLogin, logout,
       cycleType, setCycleType, cycles, currentCycle: cycles[cycleType],
-      pastCycles, gameState: cycles[cycleType].status, serverTimeOffset,
+      pastCycles, loadCycleHistory, gameState: cycles[cycleType].status, serverTimeOffset,
       placeBet, placePhantomBet, userBets, history, triggerAdminAction, formatTime,
       updateProfile, subscribeToVolume, getCurrentVolume, refreshUserWallet,
       isGhostMode,
