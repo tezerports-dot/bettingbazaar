@@ -166,6 +166,37 @@ export async function getBetHistory(betId) {
  * opposite orders and deadlocking. This is the only place both are taken, which
  * is what makes that guarantee checkable.
  */
+/** Slice amounts collapsed per wallet field, zero-filled. Paise. */
+function sliceTotals(slices) {
+  const out = { depositBalance: 0, winningsBalance: 0, reserveBalance: 0 };
+  for (const s of slices || []) {
+    if (Object.prototype.hasOwnProperty.call(out, s.field)) out[s.field] += s.amountPaise;
+  }
+  return out;
+}
+
+/**
+ * The funding slices of a stored bet, read back from the row.
+ *
+ * The counterpart of `sliceTotals`, and the reason the split is stored here at
+ * all: it lets a settlement pass work from the authoritative store instead of
+ * from the Mongo mirror.
+ *
+ * Returns an EMPTY array for a row with no recorded provenance (a legacy row,
+ * all zeros). That is not the same as "funded by nothing" and must not be
+ * treated as such — `settle` refuses an empty slice set rather than defaulting
+ * it, exactly as `slicesFromBet` does on the Mongo side, because guessing would
+ * return a deposit-funded stake into `winningsBalance` and turn non-withdrawable
+ * money withdrawable.
+ */
+export function slicesFromRow(row) {
+  return [
+    { field: 'depositBalance',  amountPaise: Number(row?.from_deposit_paise  ?? 0) },
+    { field: 'winningsBalance', amountPaise: Number(row?.from_winnings_paise ?? 0) },
+    { field: 'reserveBalance',  amountPaise: Number(row?.from_reserve_paise  ?? 0) },
+  ].filter((s) => s.amountPaise > 0);
+}
+
 async function withBetLock(userId, betId, fn, cycleId = null) {
   const uid = String(userId);
   const bid = String(betId);
@@ -305,10 +336,17 @@ export async function placeBet({
       };
     }
 
+    // The funding split is stored WITH the bet, not only on the Mongo mirror.
+    // `settle` refuses to return a stake without knowing which pockets funded
+    // it, so a bet whose split lives elsewhere is un-settleable from here —
+    // see the schema comment on these columns.
+    const bySource = sliceTotals(slices);
     await ctx.client.query(
-      `INSERT INTO bets (bet_id, mongo_id, user_id, cycle_id, side, stake_paise, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [ctx.bid, mongoId ? String(mongoId) : null, ctx.uid, String(cycleId), String(side), stakePaise, BET_STATUS.PENDING],
+      `INSERT INTO bets (bet_id, mongo_id, user_id, cycle_id, side, stake_paise, status,
+                         from_deposit_paise, from_winnings_paise, from_reserve_paise)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [ctx.bid, mongoId ? String(mongoId) : null, ctx.uid, String(cycleId), String(side), stakePaise, BET_STATUS.PENDING,
+       bySource.depositBalance, bySource.winningsBalance, bySource.reserveBalance],
     );
 
     if (!await recordTransition(ctx.client, ctx.bid, {
@@ -525,6 +563,47 @@ export const refundBet = (args) => settle(args, { name: 'refund', ...TRANSITIONS
  * anything locked for a withdrawal. This reports the bet side alone, so a
  * caller can subtract what it knows about the other.
  */
+/**
+ * Every bet still awaiting settlement on a cycle, from the store that owns them.
+ *
+ * ── Why this exists ────────────────────────────────────────────────────────
+ * `gameEngine` enumerated the bets to settle with `Bet.find` / `Bet.aggregate`
+ * — MongoDB — even while Postgres was authoritative for the write. The Mongo
+ * copy is written by `betPgAuthority.placeBet` AFTER the Postgres transaction
+ * commits, which is after the per-cycle advisory lock has already released. So
+ * a bet could commit, the settlement could take the lock and enumerate, and the
+ * mirror could land afterwards: a PENDING bet on a cycle whose settlement had
+ * finished, never paid, never lost, never refunded, its stake locked.
+ *
+ * Reading the authoritative store removes the mirror from that decision
+ * entirely. `bb_stalled_settlements` stays wired regardless — a detector for a
+ * condition you believe you have fixed is how you find out you have not.
+ *
+ * `side` is optional so the caller can take the losing and winning halves
+ * separately, which is the shape the settlement pass already has.
+ */
+export async function findPendingBetsForCycle(cycleId, { side = null, limit = 1000 } = {}) {
+  const params = [String(cycleId), BET_STATUS.PENDING];
+  let sideClause = '';
+  if (side !== null) {
+    params.push(String(side));
+    sideClause = ` AND side = $${params.length}`;
+  }
+  params.push(Math.min(Math.max(parseInt(limit, 10) || 1000, 1), 5000));
+
+  // Ordered by placement so a resumed pass settles in the same sequence a
+  // first pass would have, and the `bets_cycle_idx` (cycle_id, status) index
+  // serves the lookup.
+  const { rows } = await pgQuery(
+    `SELECT * FROM bets
+      WHERE cycle_id = $1 AND status = $2${sideClause}
+      ORDER BY placed_at ASC, id ASC
+      LIMIT $${params.length}`,
+    params, 'bets_pending_for_cycle',
+  );
+  return rows.map((r) => ({ ...rowToBet(r), slices: slicesFromRow(r) }));
+}
+
 export async function reconcileUserStakes(userId) {
   const [{ rows: pending }, { rows: wallet }] = await Promise.all([
     pgQuery(

@@ -27,7 +27,7 @@
  * plain `SELECT` with no lock at all, because they never interleave.
  */
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
-import { placeBet } from '../../postgres/betPg.js';
+import { placeBet, findPendingBetsForCycle } from '../../postgres/betPg.js';
 import { openSettlement } from '../../postgres/settlementPg.js';
 import { getPool, pgQuery, connectGuarded, CYCLE_LOCK_CLASS } from '../../postgres/pgClient.js';
 
@@ -136,4 +136,63 @@ describe('the cycle lock actually blocks', () => {
     expect(openedAfterMs).not.toBeNull();
     expect(openedAfterMs).toBeGreaterThanOrEqual(HOLD_MS);
   }, 15_000);
+});
+
+describe('the funding split lives with the bet', () => {
+  // Until 2026-08-31 the split was recorded ONLY on the Mongo mirror, so a bet
+  // that had committed in Postgres but not yet mirrored was not merely
+  // invisible to the settlement sweep — it was UN-SETTLEABLE. You could find
+  // the row and still not know which pockets to return the stake to, and
+  // `settle` refuses to guess because returning a deposit-funded stake into
+  // winningsBalance turns non-withdrawable money withdrawable.
+  it('round-trips the pockets that funded a stake', async () => {
+    const cycle = nextCycle();
+    await pgQuery(
+      `INSERT INTO wallets (user_id, deposit_paise, winnings_paise) VALUES ($1, 100000000, 100000000)
+       ON CONFLICT (user_id) DO UPDATE SET deposit_paise = 100000000, winnings_paise = 100000000`,
+      [USER],
+    );
+    await placeBet({
+      betId: `${cycle}_split`, userId: USER, cycleId: cycle, side: 'DELHI',
+      slices: [
+        { field: 'depositBalance', amountPaise: 3_000 },
+        { field: 'winningsBalance', amountPaise: 2_000 },
+      ],
+    });
+
+    const [found] = await findPendingBetsForCycle(cycle);
+    expect(found, 'the bet was not enumerable from the store that owns it').toBeDefined();
+    expect(found.slices).toEqual([
+      { field: 'depositBalance', amountPaise: 3_000 },
+      { field: 'winningsBalance', amountPaise: 2_000 },
+    ]);
+    // The split must account for the whole stake, or a settlement returns less
+    // than was taken.
+    expect(found.slices.reduce((n, s) => n + s.amountPaise, 0)).toBe(found.stakePaise);
+  });
+
+  it('filters by side, so the losing and winning halves can be taken separately', async () => {
+    const cycle = nextCycle();
+    await placeBet({ betId: `${cycle}_d`, userId: USER, cycleId: cycle, side: 'DELHI',
+      slices: [{ field: 'depositBalance', amountPaise: 1_000 }] });
+    await placeBet({ betId: `${cycle}_b`, userId: USER, cycleId: cycle, side: 'BOMBAY',
+      slices: [{ field: 'depositBalance', amountPaise: 1_000 }] });
+
+    expect((await findPendingBetsForCycle(cycle)).length).toBe(2);
+    expect((await findPendingBetsForCycle(cycle, { side: 'DELHI' })).map((b) => b.side)).toEqual(['DELHI']);
+  });
+
+  it('reports no slices for a legacy row rather than inventing a split', async () => {
+    // A row written before the columns existed carries 0/0/0. An empty slice
+    // set is what makes settleBetOnPostgres refuse it as `no_funding_slices`
+    // instead of returning the stake to a pocket it never came from.
+    const cycle = nextCycle();
+    await pgQuery(
+      `INSERT INTO bets (bet_id, user_id, cycle_id, side, stake_paise, status)
+       VALUES ($1, $2, $3, 'DELHI', 5000, 'PENDING')`,
+      [`${cycle}_legacy`, USER, cycle],
+    );
+    const [legacy] = await findPendingBetsForCycle(cycle);
+    expect(legacy.slices).toEqual([]);
+  });
 });

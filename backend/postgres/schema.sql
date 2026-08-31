@@ -601,6 +601,37 @@ CREATE UNIQUE INDEX IF NOT EXISTS bets_mongo_id_key ON bets (mongo_id);
 ALTER TABLE bets ADD COLUMN IF NOT EXISTS platform_fee_paise BIGINT NOT NULL DEFAULT 0
   CONSTRAINT bets_platform_fee_check CHECK (platform_fee_paise >= 0);
 
+-- ── The funding split: which pockets paid for this stake ────────────────────
+-- Without these, a bet in this table cannot be SETTLED from this table.
+-- `betPg.settle` requires the slices and refuses to default them, because
+-- returning a deposit-funded stake into `winningsBalance` would convert
+-- non-withdrawable money into withdrawable — a cash-out route. The split was
+-- previously recorded ONLY on the Mongo document
+-- (`fromDepositBalance`/`fromWinningsBalance`/`fromReserveBalance`), so a bet
+-- that had committed in Postgres but not yet mirrored was not merely invisible
+-- to the settlement sweep, it was un-settleable: you could find it and still
+-- not know which pockets to return it to.
+--
+-- That is what made the settlement enumeration read MongoDB even while
+-- Postgres owned the write — and reading the mirror to decide who gets paid is
+-- the race `bb_stalled_settlements` was wired to detect. With the split here,
+-- the authoritative store is self-sufficient and the enumeration can follow
+-- authority like every other read.
+--
+-- ALTER, not columns in the CREATE above: `CREATE TABLE IF NOT EXISTS` is a
+-- no-op on an existing table, so a column added there never reaches a deployed
+-- database. Same reasoning as `mongo_id` and `platform_fee_paise`.
+--
+-- They sum to `stake_paise` for any bet placed after 2026-08-31. Legacy rows
+-- carry 0/0/0 and `slicesFromRow` reports them as unknown provenance rather
+-- than inventing a split — the same refusal `slicesFromBet` already makes.
+ALTER TABLE bets ADD COLUMN IF NOT EXISTS from_deposit_paise  BIGINT NOT NULL DEFAULT 0
+  CONSTRAINT bets_from_deposit_check  CHECK (from_deposit_paise  >= 0);
+ALTER TABLE bets ADD COLUMN IF NOT EXISTS from_winnings_paise BIGINT NOT NULL DEFAULT 0
+  CONSTRAINT bets_from_winnings_check CHECK (from_winnings_paise >= 0);
+ALTER TABLE bets ADD COLUMN IF NOT EXISTS from_reserve_paise  BIGINT NOT NULL DEFAULT 0
+  CONSTRAINT bets_from_reserve_check  CHECK (from_reserve_paise  >= 0);
+
 CREATE INDEX IF NOT EXISTS bets_user_idx  ON bets (user_id, placed_at DESC);
 -- The settlement sweep's query: every unsettled bet on one cycle.
 CREATE INDEX IF NOT EXISTS bets_cycle_idx ON bets (cycle_id, status);

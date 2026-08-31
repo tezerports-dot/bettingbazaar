@@ -43,6 +43,7 @@ import { rupeesToPaise, paiseToRupees } from '../shared/money.js';
 import { isPostgresAuthoritative, MONEY_PATHS } from './moneyAuthority.js';
 import {
   placeBet as placeBetPg, BET_STATUS, winBet, loseBet, voidBet, refundBet, resolveBetId,
+  findPendingBetsForCycle as findPendingBets,
 } from './betPg.js';
 import { reverseMirrorBet, reverseMirrorBetRow } from './reverseMirror.js';
 
@@ -140,8 +141,28 @@ export function slicesFromBet(bet) {
  * for every Postgres-settled cycle — an accounting number quietly going to
  * zero, which is the failure mode this migration exists to avoid.
  */
+/**
+ * The bets still awaiting settlement on a cycle, from whichever store owns them.
+ *
+ * Reads follow authority exactly as the writes do — the principle
+ * `settlementPgAuthority.readSettlement` already states and that the settlement
+ * enumeration did not honour: it read MongoDB even while Postgres held the
+ * write. Returns [] on the Mongo path, where the caller's own `Bet.find` is
+ * already the authoritative enumeration and a second list would be the same
+ * bets twice.
+ */
+export async function findPendingBetsForCycleOnPostgres(cycleId, opts = {}) {
+  if (!onPostgres()) return [];
+  return findPendingBets(cycleId, opts);
+}
+
 export async function settleBetOnPostgres({
   bet, outcome, payoutRupees = 0, platformFeeRupees = 0, reason = null,
+  // Set by a caller that enumerated from POSTGRES rather than from Mongo: it
+  // already holds the native key and the funding split off the row, so the
+  // Mongo derivation below (and its id round-trip) would only be a chance to
+  // disagree with the store that owns the bet. See betPg.findPendingBetsForCycle.
+  pgBetId = null, pgSlices = null,
 }) {
   if (!onPostgres()) return { handled: false };
 
@@ -152,8 +173,8 @@ export async function settleBetOnPostgres({
   // reads its bets from Mongo. It is not necessarily the Postgres key — see
   // betPg.resolveBetId for why a placed bet and a mirrored bet carry it in
   // different columns.
-  const mongoId = String(bet._id ?? bet.betId);
-  const slices = slicesFromBet(bet);
+  const mongoId = String(bet?._id ?? bet?.betId ?? pgBetId);
+  const slices = pgSlices ?? slicesFromBet(bet);
   // Legacy bets carry 0/0/0 provenance, from before the split was recorded.
   // Refusing is deliberate: `settle` would throw on the mismatch anyway, and a
   // caller that silently skipped would report a clean settlement pass over bets
@@ -162,7 +183,7 @@ export async function settleBetOnPostgres({
     return { handled: true, ok: false, reason: 'no_funding_slices', betId: mongoId };
   }
 
-  const betId = await resolveBetId(mongoId);
+  const betId = pgBetId ?? await resolveBetId(mongoId);
   if (!betId) {
     // Not in Postgres at all. Reported rather than skipped: under Postgres
     // authority this bet cannot be settled and its stake stays locked, which is
