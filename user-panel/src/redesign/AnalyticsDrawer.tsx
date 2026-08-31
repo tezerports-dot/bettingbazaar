@@ -6,27 +6,61 @@
  * All figures are DESCRIPTIVE statistics of past results (see analytics.ts and
  * the disclaimer in the Probability tab). Presentation only — never used for
  * server-side validation (GOVERNANCE §10).
+ *
+ * A board with too little history says so rather than showing a filled-in
+ * chart: `analytics.ts` no longer pads a thin window with generated results,
+ * so `A.sample` is the real count and `A.sufficient` gates the parts that
+ * generalise from it. The Probability tab is withheld entirely below the
+ * threshold — a "DELHI next 67%" off four results is noise wearing the
+ * costume of a signal, and it is the one screen players act on.
  */
-import React, { useMemo, useState } from 'react';
-import { analyticsFor, seqFromRuns, Side } from './analytics';
+import React, { useEffect, useMemo, useState } from 'react';
+import { analyticsFor, seqFromRuns, MIN_SAMPLE, Side } from './analytics';
 import { fmt } from './format';
+import { CycleType } from '../types';
+
+// How the window is described in the drawer header, per type.
+const CYCLE_WINDOW_LABEL: Record<CycleType, string> = {
+  [CycleType.ONE_MIN]:    '1-min',
+  [CycleType.THIRTY_MIN]: '30-min',
+  [CycleType.FULL_DAY]:   'full-day',
+};
 
 interface Props {
   open: boolean;
   onClose: () => void;
-  winnersByType: { '30_MIN': Side[]; FULL_DAY: Side[] };
+  // Keyed by every CycleType — GameScreen builds it from the enum, so a type
+  // missing here is a tab whose analytics silently show another type's history.
+  winnersByType: Partial<Record<CycleType, Side[]>>;
+  // Requests one board's full analytics window. See GameContext.
+  loadCycleHistory: (type: CycleType) => void;
 }
 
 const bead = (sd: Side) => ({ ch: sd === 'DELHI' ? 'D' : 'B', bg: sd === 'DELHI' ? 'var(--delhi)' : 'var(--bombay)' });
 
-const AnalyticsDrawer: React.FC<Props> = ({ open, onClose, winnersByType }) => {
-  const [aCycle, setACycle] = useState<'30_MIN' | 'FULL_DAY'>('30_MIN');
+const AnalyticsDrawer: React.FC<Props> = ({ open, onClose, winnersByType, loadCycleHistory }) => {
+  const [aCycle, setACycle] = useState<CycleType>(CycleType.THIRTY_MIN);
   const [aTab, setATab] = useState<'roadmap' | 'streaks' | 'gaps' | 'predict'>('roadmap');
+
+  // Pull the full ANALYTICS_WINDOW for the board being viewed — 1,440 results
+  // for the 1-minute and 30-minute boards, which is what the streak
+  // distribution and gap tables are meant to describe. Connect only carries 50
+  // rows per type, since it is paid by every visitor whether or not they open
+  // this drawer; the deep window is fetched here, where it is actually read.
+  //
+  // Runs on open and on every board switch. Re-requesting a window already
+  // held is cheap and idempotent: the response merges by cycle id in
+  // GameContext rather than replacing.
+  useEffect(() => {
+    if (open) loadCycleHistory(aCycle);
+  }, [open, aCycle, loadCycleHistory]);
 
   const A = useMemo(() => analyticsFor(winnersByType[aCycle] || [], aCycle), [winnersByType, aCycle]);
 
-  const aDPct = Math.round((A.delhiWins / Math.max(1, A.total)) * 100);
-  const aBPct = 100 - aDPct;
+  // Share of wins. With no results at all the `Math.max(1, …)` guard would
+  // otherwise render a confident "Delhi 0% / Bombay 100%" off an empty board.
+  const aDPct = A.total ? Math.round((A.delhiWins / A.total) * 100) : 0;
+  const aBPct = A.total ? 100 - aDPct : 0;
   const cur = A.current;
   const contP = Math.round(A.cont(cur.len) * 100);
   const breakP = 100 - contP;
@@ -56,6 +90,20 @@ const AnalyticsDrawer: React.FC<Props> = ({ open, onClose, winnersByType }) => {
 
   const aBeads = seqFromRuns(A.runs, 60).slice(0, 60).reverse().map(bead);
 
+  // How much real history this board has. Drives every "not enough yet" state
+  // below; nothing is padded to hide a short window.
+  const empty = A.sample === 0;
+  const thin  = !A.sufficient;
+  const sampleNote = empty
+    ? 'No results on this board yet — the roadmap fills in as cycles settle.'
+    : `Based on ${A.sample} result${A.sample === 1 ? '' : 's'} so far. Streak statistics need at least ${MIN_SAMPLE} to mean anything; they firm up as this board builds history.`;
+  const shortfallCard = (
+    <div style={{ background: 'var(--surface3)', border: '1px dashed var(--line2)', borderRadius: 14, padding: 18, textAlign: 'center' }}>
+      <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text2)', marginBottom: 6 }}>Not enough history yet</div>
+      <div style={{ fontSize: 11, color: 'var(--text3)', lineHeight: 1.6 }}>{sampleNote}</div>
+    </div>
+  );
+
   if (!open) return null;
 
   const tab = (key: typeof aTab, label: string) => {
@@ -65,7 +113,7 @@ const AnalyticsDrawer: React.FC<Props> = ({ open, onClose, winnersByType }) => {
     );
   };
 
-  const cyBtn = (t: '30_MIN' | 'FULL_DAY', label: string) => {
+  const cyBtn = (t: CycleType, label: string) => {
     const on = aCycle === t;
     return <button onClick={() => setACycle(t)} style={{ padding: '5px 11px', borderRadius: 999, border: 'none', cursor: 'pointer', fontSize: 9, fontWeight: 800, background: on ? 'var(--gold)' : 'transparent', color: on ? '#1a1200' : 'var(--text2)' }}>{label}</button>;
   };
@@ -79,12 +127,13 @@ const AnalyticsDrawer: React.FC<Props> = ({ open, onClose, winnersByType }) => {
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
             <div style={{ display: 'flex', flexDirection: 'column' }}>
               <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 16, color: 'var(--text)' }}>Results &amp; Streak Analytics</span>
-              <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}>Last window · {fmt(A.total)} {aCycle === '30_MIN' ? '30-min' : 'full-day'} cycles</span>
+              <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}>Last window · {fmt(A.total)} {CYCLE_WINDOW_LABEL[aCycle]} cycles</span>
             </div>
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
               <div style={{ display: 'flex', background: 'var(--surface3)', border: '1px solid var(--line)', borderRadius: 999, padding: 3, gap: 2 }}>
-                {cyBtn('FULL_DAY', 'FULL DAY')}
-                {cyBtn('30_MIN', '30 MIN')}
+                {cyBtn(CycleType.FULL_DAY, 'FULL DAY')}
+                {cyBtn(CycleType.THIRTY_MIN, '30 MIN')}
+                {cyBtn(CycleType.ONE_MIN, '1 MIN')}
               </div>
               <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: '50%', border: '1px solid var(--line)', background: 'var(--surface3)', color: 'var(--text2)', cursor: 'pointer', fontSize: 13 }}>✕</button>
             </div>
@@ -98,6 +147,11 @@ const AnalyticsDrawer: React.FC<Props> = ({ open, onClose, winnersByType }) => {
         </div>
 
         <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '4px 18px 26px' }}>
+          {thin && (
+            <div style={{ background: 'color-mix(in srgb,var(--gold) 9%,var(--surface3))', border: '1px solid color-mix(in srgb,var(--gold) 30%,transparent)', borderRadius: 12, padding: '10px 12px', marginBottom: 12, fontSize: 10, lineHeight: 1.6, color: 'var(--text2)' }}>
+              {sampleNote}
+            </div>
+          )}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginBottom: 16 }}>
             <div style={{ background: 'var(--surface3)', border: '1px solid var(--line)', borderRadius: 12, padding: '11px 12px' }}>
               <div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--text3)' }}>Cycles</div>
@@ -105,12 +159,12 @@ const AnalyticsDrawer: React.FC<Props> = ({ open, onClose, winnersByType }) => {
             </div>
             <div style={{ background: 'color-mix(in srgb,var(--delhi) 10%,var(--surface3))', border: '1px solid color-mix(in srgb,var(--delhi) 26%,transparent)', borderRadius: 12, padding: '11px 12px' }}>
               <div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--delhi)' }}>Delhi</div>
-              <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 19, color: 'var(--text)' }}>{aDPct}%</div>
+              <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 19, color: 'var(--text)' }}>{empty ? '—' : `${aDPct}%`}</div>
               <div style={{ fontSize: 9, color: 'var(--text3)' }}>{fmt(A.delhiWins)} wins</div>
             </div>
             <div style={{ background: 'color-mix(in srgb,var(--bombay) 10%,var(--surface3))', border: '1px solid color-mix(in srgb,var(--bombay) 26%,transparent)', borderRadius: 12, padding: '11px 12px' }}>
               <div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--bombay)' }}>Bombay</div>
-              <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 19, color: 'var(--text)' }}>{aBPct}%</div>
+              <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 19, color: 'var(--text)' }}>{empty ? '—' : `${aBPct}%`}</div>
               <div style={{ fontSize: 9, color: 'var(--text3)' }}>{fmt(A.bombayWins)} wins</div>
             </div>
           </div>
@@ -120,25 +174,29 @@ const AnalyticsDrawer: React.FC<Props> = ({ open, onClose, winnersByType }) => {
               <div style={{ background: 'var(--surface3)', border: '1px solid var(--line)', borderRadius: 14, padding: 14 }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
                   <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--text)' }}>Big road · newest right</span>
-                  <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--gold-ink)' }}>Current: {cur.side} ×{cur.len}</span>
+                  {!empty && <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--gold-ink)' }}>Current: {cur.side} ×{cur.len}</span>}
                 </div>
-                <div className="bb-noscroll" style={{ display: 'grid', gridAutoFlow: 'column', gridTemplateRows: 'repeat(6,20px)', gap: 4, overflowX: 'auto', paddingBottom: 6 }}>
-                  {aBeads.map((b, i) => (
-                    <span key={i} style={{ width: 20, height: 20, borderRadius: '50%', background: b.bg, color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{b.ch}</span>
-                  ))}
-                </div>
+                {empty ? (
+                  <div style={{ fontSize: 11, color: 'var(--text3)', padding: '14px 0', textAlign: 'center' }}>No results on this board yet.</div>
+                ) : (
+                  <div className="bb-noscroll" style={{ display: 'grid', gridAutoFlow: 'column', gridTemplateRows: 'repeat(6,20px)', gap: 4, overflowX: 'auto', paddingBottom: 6 }}>
+                    {aBeads.map((b, i) => (
+                      <span key={i} style={{ width: 20, height: 20, borderRadius: '50%', background: b.bg, color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{b.ch}</span>
+                    ))}
+                  </div>
+                )}
               </div>
-              <div style={{ marginTop: 12, background: 'var(--surface3)', border: '1px solid var(--line)', borderRadius: 14, padding: 14 }}>
+              {!empty && <div style={{ marginTop: 12, background: 'var(--surface3)', border: '1px solid var(--line)', borderRadius: 14, padding: 14 }}>
                 <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--text)' }}>Win distribution</span>
                 <div style={{ height: 14, borderRadius: 8, overflow: 'hidden', display: 'flex', marginTop: 10, boxShadow: 'inset 0 1px 3px rgba(0,0,0,.3)' }}>
                   <div style={{ height: '100%', background: 'linear-gradient(90deg,var(--delhi),color-mix(in srgb,var(--delhi) 55%,#000))', width: aDPct + '%', display: 'flex', alignItems: 'center', paddingLeft: 8 }}><span style={{ fontSize: 9, fontWeight: 800, color: '#fff' }}>{aDPct}%</span></div>
                   <div style={{ height: '100%', flex: 1, background: 'linear-gradient(90deg,color-mix(in srgb,var(--bombay) 55%,#000),var(--bombay))', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 8 }}><span style={{ fontSize: 9, fontWeight: 800, color: '#fff' }}>{aBPct}%</span></div>
                 </div>
-              </div>
+              </div>}
             </>
           )}
 
-          {aTab === 'streaks' && (
+          {aTab === 'streaks' && (thin ? shortfallCard : (
             <>
               <div style={{ background: 'var(--surface3)', border: '1px solid var(--line)', borderRadius: 14, padding: '14px 14px 8px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
@@ -157,9 +215,9 @@ const AnalyticsDrawer: React.FC<Props> = ({ open, onClose, winnersByType }) => {
               </div>
               <p style={{ fontSize: 10, color: 'var(--text3)', lineHeight: 1.5, margin: '12px 2px 0' }}>A "×3 streak" means the same side won 3 cycles in a row. Longer streaks are rarer — this is the historical count over the window.</p>
             </>
-          )}
+          ))}
 
-          {aTab === 'gaps' && (
+          {aTab === 'gaps' && (thin ? shortfallCard : (
             <div style={{ background: 'var(--surface3)', border: '1px solid var(--line)', borderRadius: 14, padding: 14 }}>
               <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--text)' }}>Cycles between streaks of each length</span>
               <p style={{ fontSize: 10, color: 'var(--text3)', lineHeight: 1.5, margin: '6px 0 12px' }}>Average gap, and the last 5 gaps (how many cycles passed between one such streak and the next).</p>
@@ -176,9 +234,9 @@ const AnalyticsDrawer: React.FC<Props> = ({ open, onClose, winnersByType }) => {
                 </div>
               ))}
             </div>
-          )}
+          ))}
 
-          {aTab === 'predict' && (
+          {aTab === 'predict' && (thin ? shortfallCard : (
             <>
               <div style={{ background: 'var(--surface3)', border: '1px solid var(--line)', borderRadius: 14, padding: 16 }}>
                 <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--text)' }}>Historical next-winner signal</span>
@@ -205,7 +263,7 @@ const AnalyticsDrawer: React.FC<Props> = ({ open, onClose, winnersByType }) => {
               </div>
               <p style={{ fontSize: 9, color: 'var(--text3)', lineHeight: 1.6, margin: '14px 2px 0', textAlign: 'center', textTransform: 'uppercase', letterSpacing: '.06em' }}>⚠ Descriptive statistics from past results only. Every cycle is independent — past outcomes do not affect future ones.</p>
             </>
-          )}
+          ))}
         </div>
       </div>
     </>

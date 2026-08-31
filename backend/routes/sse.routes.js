@@ -31,6 +31,7 @@ import express from 'express';
 import { verifyJwt } from '../domains/identity/jwt.util.js';
 import { isTokenRevoked } from '../domains/identity/auth.middleware.js';
 import { buildDescendingCursorFilter, normalizeLimit, paginatedResponse } from '../utils/cursorPagination.js';
+import { fetchCycleHistory } from '../domains/markets/cycleHistory.service.js';
 
 const ADMIN_QUEUE_SNAPSHOT_FIELDS = [
     'orderId', 'userId', 'type', 'status',
@@ -104,30 +105,19 @@ export function initSSERoutes(sseManager, cycleGenerator) {
             sseManager.sendToClient(clientId, 'branding', global.cachedBranding);
         }
 
-        // 4. Cycle history
+        // 4. Cycle history — every type, `limit` rows EACH.
+        //
+        // The endTime cursor this used to carry is gone: it paginated one
+        // interleaved list, and there is no longer one list to page through.
+        // Nothing sent a cursor — the client takes this payload as its whole
+        // history and re-requests over the socket when it wants more — so this
+        // removes an unused parameter rather than a feature. Per-type paging
+        // belongs on `request_cycle_history`, which takes a type.
         try {
-            const { Cycle } = await import('../models/index.js');
             const limit = normalizeLimit(req.query.limit, 50, 100);
-            const cursorFilter = buildDescendingCursorFilter(req.query.cursor, 'endTime');
-            const cycles = await Cycle.find({ status: 'RESULT_DECLARED', ...cursorFilter })
-                .sort({ endTime: -1, _id: -1 }).limit(limit + 1).lean();
-            const page = paginatedResponse(cycles, limit, 'endTime');
             sseManager.sendToClient(clientId, 'cycle_history', {
-                cycles: page.items.map(c => {
-                    const delhiPool  = c.totalDelhi  || 0;
-                    const bombayPool = c.totalBombay || 0;
-                    return {
-                        id: c.cycleId, type: c.type,
-                        startTime: c.startTime, endTime: c.endTime,
-                        winner: c.winner, status: c.status,
-                        delhiPool, bombayPool,
-                        totalDelhi: delhiPool, totalBombay: bombayPool,
-                        totalPool: delhiPool + bombayPool,
-                    };
-                }),
-                nextCursor: page.nextCursor,
-                hasMore: page.hasMore,
-                serverTime: page.serverTime,
+                ...(await fetchCycleHistory({ limit })),
+                serverTime: Date.now(),
             });
         } catch (e) {
             console.error('❌ SSE initial cycle_history error:', e.message);

@@ -4,6 +4,7 @@ import mongoose from 'mongoose';
 // AQ-2: verify via the single PASETO authority (Ed25519 signature + iss/aud stamped).
 import { verifyJwt } from '../domains/identity/jwt.util.js';
 import { cycleSnapshotPublisher } from '../domains/markets/cycleSnapshotPublisher.js';
+import { fetchCycleHistory } from '../domains/markets/cycleHistory.service.js';
 
 // Public cycle-room id guard: the room name is client-supplied, so bound it to
 // the shape a real cycleId has (no auth needed — pool totals are public — but a
@@ -114,24 +115,14 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
     socket.on('request_system_config',   sendSystemConfig);
     socket.on('request_branding',        sendBranding);
 
+    // `limit` is PER TYPE, not in total: an omitted `type` means "all of them",
+    // and one shared budget across types starves the slow ones — see
+    // cycleHistory.service.js.
     socket.on('request_cycle_history', async (params = {}) => {
       try {
-        const { type, limit = 50 } = params;
-        const parsedLimit = Math.min(Math.max(parseInt(limit) || 50, 1), 200);
-        const Cycle = mongoose.model('Cycle');
-        const query = { status: 'RESULT_DECLARED' };
-        if (type) query.type = type;
-        const cycles = await Cycle.find(query).sort({ endTime: -1 }).limit(parsedLimit).lean();
-        socket.emit('cycle_history', {
-          cycles: cycles.map(c => ({
-            id: c.cycleId, type: c.type,
-            startTime: c.startTime, endTime: c.endTime,
-            winner: c.winner, status: c.status,
-            delhiPool: c.totalDelhi || 0, bombayPool: c.totalBombay || 0,
-            totalPool: (c.totalDelhi || 0) + (c.totalBombay || 0),
-          }))
-        });
-      } catch (e) { socket.emit('cycle_history', { cycles: [] }); }
+        const { type, limit } = params;
+        socket.emit('cycle_history', await fetchCycleHistory({ types: type, limit }));
+      } catch (e) { socket.emit('cycle_history', { cycles: [], types: [] }); }
     });
 
     socket.on('request_promo', async ({ location } = {}) => {

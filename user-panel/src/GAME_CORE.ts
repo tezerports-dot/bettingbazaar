@@ -39,6 +39,38 @@ import { CycleType, GameState, BettingSide } from './types';
 
 export const PHASE = Object.freeze({
 
+  ONE_MIN: Object.freeze({
+    /** Total cycle duration: 1 minute */
+    DURATION_MS: 60 * 1000,                         // 60 000 ms
+
+    /**
+     * MERGED phase starts when the timer shows 00:12.
+     * Same blind-betting rule as the longer blocks — displayed pools combine so
+     * nobody can read which side holds fewer real bets.
+     */
+    MERGE_AT_MS: 12 * 1000,                         // 12 000 ms   →  timer: 00:12
+
+    /**
+     * Phantom Equalizer at 00:09 remaining. SERVER-SIDE ONLY — the client stays
+     * in MERGED; this is here for documentation and admin tooling, like the
+     * other blocks' equivalents.
+     */
+    PHANTOM_EQUALIZER_AT_MS: 9 * 1000,              //  9 000 ms   →  timer: 00:09
+
+    /**
+     * CLOSED phase at 00:05 remaining. All bets locked.
+     */
+    CLOSE_AT_MS: 5 * 1000,                          //  5 000 ms   →  timer: 00:05
+
+    /**
+     * Winner declared at 00:03, celebration runs 00:03 → 00:00, and the next
+     * block starts at 00:00. Three seconds rather than the ten the longer
+     * blocks use: a 10s celebration would still be running a sixth of the way
+     * into the next cycle's betting.
+     */
+    CELEBRATE_AT_MS: 3 * 1000,                      //  3 000 ms   →  timer: 00:03
+  }),
+
   THIRTY_MIN: Object.freeze({
     /** Total cycle duration: 30 minutes */
     DURATION_MS: 30 * 60 * 1000,                    // 1 800 000 ms
@@ -350,16 +382,66 @@ export const CELEBRATION = Object.freeze({
 //    NEVER reimplement this inline — always import and call PHASE.getStatus().
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** Phase config per cycle type. A map rather than a ternary chain: with two
+ *  types a ternary's fallback was harmless, but a third makes "everything that
+ *  is not THIRTY_MIN is FULL_DAY" wrong — a 1-minute cycle would have been read
+ *  against 24-hour offsets and shown as OPEN until its final 30 seconds. */
+const PHASE_BY_TYPE = Object.freeze({
+  [CycleType.ONE_MIN]:    PHASE.ONE_MIN,
+  [CycleType.THIRTY_MIN]: PHASE.THIRTY_MIN,
+  [CycleType.FULL_DAY]:   PHASE.FULL_DAY,
+});
+
 /**
  * Derive the current GameState from timing alone.
  *
- * @param type      CycleType.THIRTY_MIN | CycleType.FULL_DAY
+ * @param type      any CycleType
  * @param nowMs     Current time in ms — MUST be server-corrected (Date.now() + serverTimeOffset)
  * @param endTimeMs The cycle's endTime in ms
  * @returns         The correct GameState for this moment
  */
+/**
+ * Safety margin between when the CLIENT stops accepting a stake and when the
+ * SERVER stops accepting one.
+ *
+ * The server closes betting on the clock at `endTime - closeBeforeEndSec`
+ * (bet.routes.js). The client closes at the same instant via `getPhaseStatus`.
+ * Both read the same wall clock, so in principle they agree — but a stake
+ * submitted at T−5.2s does not ARRIVE at T−5.2s. It crosses a mobile network
+ * first, and lands at T−4.8s, where the server correctly rejects it.
+ *
+ * Without this margin the player sees an open board, taps, and gets an error
+ * for a bet they placed in time. The fix is not to loosen the server (its
+ * cutoff is what stops a stake landing after the pools are balanced) but to
+ * have the client stop offering the bet slightly earlier than the deadline it
+ * cannot make.
+ *
+ * Absolute, not proportional: it models network latency and clock-sync error,
+ * neither of which scales with how long a cycle runs. 1.5s covers a slow
+ * Indian mobile round trip with room to spare, and costs a 60-second board
+ * 1.5 of its 55 betting seconds.
+ *
+ * This is a COURTESY, never a control. The server gate is the only thing that
+ * actually stops a late bet — anything the client enforces can be skipped by
+ * calling the API directly.
+ */
+export const BET_SUBMIT_MARGIN_MS = 1500;
+
+/**
+ * Whether the client should still OFFER a bet on this cycle.
+ *
+ * Deliberately separate from `getPhaseStatus`: that reports the cycle's true
+ * phase and must keep agreeing with the server, so the countdown and the
+ * MERGED/CLOSED labels stay honest. This is the narrower question of whether a
+ * tap right now would still arrive in time.
+ */
+export function canPlaceBet(type: CycleType, nowMs: number, endTimeMs: number): boolean {
+  const cfg = PHASE_BY_TYPE[type] ?? PHASE.THIRTY_MIN;
+  return (endTimeMs - nowMs) > (cfg.CLOSE_AT_MS + BET_SUBMIT_MARGIN_MS);
+}
+
 export function getPhaseStatus(type: CycleType, nowMs: number, endTimeMs: number): GameState {
-  const cfg      = type === CycleType.THIRTY_MIN ? PHASE.THIRTY_MIN : PHASE.FULL_DAY;
+  const cfg      = PHASE_BY_TYPE[type] ?? PHASE.THIRTY_MIN;
   const timeLeft = endTimeMs - nowMs;
 
   if (timeLeft <= 0)                    return GameState.RESULT_DECLARED; // cycle over

@@ -14,6 +14,17 @@ import api from '../../services/api';
 import type { Cycle } from '../../types';
 import toast from 'react-hot-toast';
 
+// Cycle types shown in the history filters, badges and counts. One list rather
+// than three hardcoded pairs: the badge previously rendered every type it did
+// not recognise as "FULL DAY", and the filter tabs simply had no way to reach
+// a third type's rows.
+const CYCLE_TYPES = ['1_MIN', '30_MIN', 'FULL_DAY'] as const;
+const CYCLE_TYPE_META: Record<string, { label: string; cls: string; tone: string }> = {
+  '1_MIN':    { label: '1-Min',    cls: 'bg-teal-500/20 text-teal-500',     tone: 'var(--success)' },
+  '30_MIN':   { label: '30-Min',   cls: 'bg-blue-500/20 text-blue-500',     tone: 'var(--info)' },
+  'FULL_DAY': { label: 'Full Day', cls: 'bg-purple-500/20 text-purple-500', tone: 'var(--warning)' },
+};
+
 export const CycleHistory: React.FC = () => {
   const [cycles, setCycles] = useState<Cycle[]>([]);
   const [total, setTotal] = useState(0);
@@ -56,12 +67,14 @@ export const CycleHistory: React.FC = () => {
     return { loserBets, winnerBets };
   };
 
-  const getCycleTypeBadge = (type: string) =>
-    type === '30_MIN' ? (
-      <span className="px-2 py-1 rounded-sm text-xs font-medium bg-blue-500/20 text-blue-500">30 MIN</span>
-    ) : (
-      <span className="px-2 py-1 rounded-sm text-xs font-medium bg-purple-500/20 text-purple-500">FULL DAY</span>
+  const getCycleTypeBadge = (type: string) => {
+    const t = CYCLE_TYPE_META[type];
+    return (
+      <span className={`px-2 py-1 rounded-sm text-xs font-medium ${t?.cls ?? 'bg-gray-500/20 text-gray-400'}`}>
+        {t?.label ?? type}
+      </span>
     );
+  };
 
   const columns = [
     {
@@ -141,7 +154,11 @@ export const CycleHistory: React.FC = () => {
     <div className="om-fade space-y-6">
       <Kpis items={[
         { label: 'Total Cycles', value: total },
-        { label: '30-Min', value: cycles.filter((c) => c.type === '30_MIN').length, tone: 'var(--info)' },
+        ...CYCLE_TYPES.map((t) => ({
+          label: CYCLE_TYPE_META[t].label,
+          value: cycles.filter((c) => c.type === t).length,
+          tone: CYCLE_TYPE_META[t].tone,
+        })),
         { label: 'Total Paid Out', value: formatters.currency(totalPaidOut), tone: 'var(--warning)' },
         { label: 'Net Revenue', value: formatters.currency(totalNetRevenue), tone: totalNetRevenue >= 0 ? 'var(--success)' : 'var(--danger)' },
       ]} />
@@ -149,8 +166,11 @@ export const CycleHistory: React.FC = () => {
       <Toolbar
         tabs={[
           { label: 'All', active: typeFilter === 'ALL', onClick: () => setTypeFilter('ALL') },
-          { label: '30-Min', active: typeFilter === '30_MIN', onClick: () => setTypeFilter('30_MIN') },
-          { label: 'Full Day', active: typeFilter === 'FULL_DAY', onClick: () => setTypeFilter('FULL_DAY') },
+          ...CYCLE_TYPES.map((t) => ({
+            label: CYCLE_TYPE_META[t].label,
+            active: typeFilter === t,
+            onClick: () => setTypeFilter(t),
+          })),
         ]}
         search={{ value: search, onChange: setSearch, placeholder: 'Search cycle id…' }}
       />

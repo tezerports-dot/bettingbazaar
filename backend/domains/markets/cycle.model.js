@@ -1,11 +1,16 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import mongoose from 'mongoose';
+// The enum is derived from the type registry rather than restated, so a type
+// added there cannot be rejected here — the failure that shape produces is a
+// generator creating cycles the model silently refuses to save.
+import { CYCLE_TYPE_VALUES } from './cycleTypes.js';
 
 const cycleSchema = new mongoose.Schema({
   cycleId: { type: String, required: true, unique: true, index: true },
-  
-  // ✅ ONLY 2 TYPES: 30_MIN and FULL_DAY (FIX #1)
-  type: { type: String, enum: ['30_MIN', 'FULL_DAY'], required: true, index: true },
+
+  // 1_MIN, 30_MIN, FULL_DAY — see domains/markets/cycleTypes.js, which owns
+  // the vocabulary and the per-type config keys that go with each value.
+  type: { type: String, enum: CYCLE_TYPE_VALUES, required: true, index: true },
   
   startTime: { type: Number, required: true, index: true },
   endTime: { type: Number, required: true },
@@ -74,6 +79,13 @@ const cycleSchema = new mongoose.Schema({
 // restarts). cycleGenerator now uses findOneAndUpdate+upsert which relies on
 // this index to enforce uniqueness atomically.
 cycleSchema.index({ type: 1, startTime: 1 }, { unique: true, name: 'cycle_type_start_unique' });
+
+// The resolved-history feed (cycleHistory.service.js) asks for one type's most
+// recent results, and does it per type on every connect and after every result
+// — 60 times an hour once the 1-minute block is enabled. Without this the query
+// scans every RESULT_DECLARED cycle of every type and sorts in memory, which
+// grows without bound as history accumulates.
+cycleSchema.index({ type: 1, status: 1, endTime: -1 }, { name: 'cycle_type_status_end' });
 
 // Hybrid money DB: project the settlement RUN onto the table Postgres owns, so
 // a cutover can tell a finished payout from one that stopped half way. State

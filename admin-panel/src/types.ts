@@ -87,7 +87,9 @@ export interface User {
     bankName: string;
   };
 
-  phantomAccess: 'NONE' | '30_MIN' | 'FULL_DAY' | 'BOTH';
+  // 'BOTH' predates the 1-minute block and means EVERY type — the server gate
+  // reads it as "skip the per-type check".
+  phantomAccess: 'NONE' | '1_MIN' | '30_MIN' | 'FULL_DAY' | 'BOTH';
 
   roles: string[];
   subAdminPermissions?: Record<string, boolean>;
@@ -105,7 +107,9 @@ export interface User {
 // Cycles
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type CycleType = '30_MIN' | 'FULL_DAY';
+// Mirrors CYCLE_TYPE_VALUES in backend/domains/markets/cycleTypes.js, which is
+// the authority for this vocabulary (04-GOVERNANCE.md §1, §4 citation).
+export type CycleType = '1_MIN' | '30_MIN' | 'FULL_DAY';
 export type CycleStatus =
   | 'OPEN'
   | 'MERGED'

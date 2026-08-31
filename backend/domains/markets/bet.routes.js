@@ -18,6 +18,11 @@ import * as betAuthority from '../../postgres/betPgAuthority.js';
 import { assessBet, computeBetFundingPlan, computeMaxStake } from '../risk/riskValidation.service.js';
 // Shared trading vocabulary (Phase 011) — one source for sides/statuses.
 import { MARKET_SIDES } from '../trading/tradingModels.js';
+// Cycle-type vocabulary: which betLimits key belongs to which type.
+import { CYCLE_TYPES, isCycleType, limitsKeyFor, phasesFor } from './cycleTypes.js';
+// Phase offsets, for the clock-based betting cutoff below. Same single
+// declaration the generator and the admin phase view read.
+import { DEFAULT_CYCLE_PHASES } from '../configuration/systemConfig.model.js';
 // Derived cycle pools (FLAGS.DERIVED_CYCLE_POOLS, default off) — see
 // cyclePool.service.js for why the running total is the scaling ceiling.
 import { derivedPoolsEnabled, refreshRealPools } from './cyclePool.service.js';
@@ -146,9 +151,13 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
     // ── FIX A: DB-driven limits ──────────────────────────────────────────────
     // Old: const minBet = type === 'FULL_DAY' ? 100 : 10;  ← always hardcoded
     // New: read betLimits from SystemConfig.betLimits; fall back to safe defaults.
+    // The limits key comes from the type registry rather than an isFullDay
+    // ternary. Under the ternary a type that was neither silently inherited the
+    // 30-minute bounds — which happens to be right for the 1-minute block and
+    // would have been wrong, invisibly, for the next type added.
     const config    = await SystemConfig.findOne({ key: 'main' }).lean();
-    const isFullDay = type === 'FULL_DAY';
-    const limitsKey = isFullDay ? 'fullDay' : 'thirtyMin';
+    const isFullDay = type === CYCLE_TYPES.FULL_DAY;
+    const limitsKey = isCycleType(type) ? limitsKeyFor(type) : 'thirtyMin';
     const minBet    = config?.betLimits?.[limitsKey]?.min ?? (isFullDay ? 100  : 10);
     const maxBet    = config?.betLimits?.[limitsKey]?.max ?? (isFullDay ? 500000 : 100000);
 
@@ -177,6 +186,45 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
       return res.status(400).json({
         success: false,
         message: `Betting closed. Cycle status: ${cycle.status}`
+      });
+    }
+
+    // ── Time backstop: betting closes on the CLOCK, not on a flag ────────────
+    //
+    // The status check above used to be the only thing standing between a
+    // player and a late bet, and `status` is flipped to CLOSED by the cycle
+    // generator's 1-second tick. A tick that runs late — the generator shares
+    // its event loop with settlement — leaves the cycle reading OPEN past the
+    // moment betting was supposed to stop, and this route would take the bet.
+    //
+    // On a 30-minute block that slack is ~20 seconds wide (close at T−30s,
+    // declare at T−10s) and never mattered. On the 1-minute block it is TWO
+    // seconds (close T−5s, declare T−3s), and the generator deliberately
+    // tolerates a missed CLOSED transition by completing a still-OPEN cycle
+    // directly — which means bets were accepted until T−3s rather than T−5s
+    // whenever a tick slipped.
+    //
+    // That window sits AFTER the phantom equalizer has run (T−9s), so a stake
+    // landing in it moves the real minority side — the side that wins — after
+    // the house has finished balancing. It is not a guaranteed win (the public
+    // payload carries combined pools only, never the real/phantom split, so
+    // the minority side is not visible), but "the outcome is influenced by
+    // whoever benefits from a slow tick" is not a property a real-money board
+    // should have.
+    //
+    // The clock does not slip, so the clock is the gate. `config` is already
+    // loaded above for the stake limits, so this costs no extra read. An
+    // unrecognised type keeps the status-only behaviour rather than being
+    // rejected outright — it cannot be created through the model's enum, and
+    // failing closed on the money path over an impossible value is worse.
+    const phases = isCycleType(cycle.type)
+      ? (phasesFor(cycle.type, config?.cyclePhases) || phasesFor(cycle.type, DEFAULT_CYCLE_PHASES))
+      : null;
+    if (phases && Date.now() >= cycle.endTime - (phases.closeBeforeEndSec * 1000)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Betting closed for this cycle',
+        code: 'BETTING_CLOSED',
       });
     }
 
