@@ -755,7 +755,7 @@ export class RealBackend implements Backend {
       return cycles.map((c: any) => ({
         id:         c._id || c.cycleId,
         endTime:    c.endTime   || 0,
-        type:       c.type      || '30_MIN',
+        type:       c.type,   // no '30_MIN' fallback — an untyped row reads as untyped, not as a 30-minute one
         realDelhi:  c.realDelhi || 0,
         realBombay: c.realBombay || 0,
         winner:     c.winner    || 'DELHI',

@@ -1,34 +1,45 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** cycles.admin.routes.js — Cycle phases, history, equalization, manage-cycle */
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from './_adminShared.js';
+import { isCycleType, phasesFor } from '../../domains/markets/cycleTypes.js';
+import { DEFAULT_CYCLE_PHASES } from '../../domains/configuration/systemConfig.model.js';
 
 const router = express.Router();
 
 router.get('/cycles/phases', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
-    const { Cycle } = getModels();
-    
+    const { Cycle, SystemConfig } = getModels();
+
     const now = Date.now();
     const activeCycles = await Cycle.find({
       status: { $in: ['OPEN', 'MERGED', 'CLOSED'] },
       endTime: { $gte: now }
     }).sort({ startTime: 1 });
     
+    // Phase offsets come from the SAME admin config the generator acts on
+    // (SystemConfig.cyclePhases, resolved per type through the registry).
+    //
+    // These were hardcoded here as 3min/2min/1min-or-5min, which was wrong in
+    // two directions at once: it had already drifted from the generator's own
+    // defaults (which close bets at 30s, not 60s), so this screen reported a
+    // phase boundary the engine did not act on; and for any type it did not
+    // know it fell through to the full-day arm, which for a 1-minute cycle
+    // puts "merge" five minutes before a block that lasts sixty seconds.
+    // Reading the config is the only version that cannot drift.
+    const cfg = await SystemConfig.findOne({ key: 'main' }).select('cyclePhases').lean();
+
     const cyclesWithPhases = activeCycles.map(cycle => {
-      const is30Min = cycle.type === '30_MIN';
-      
-      // Calculate phase timestamps
-      const mergeTime = is30Min 
-        ? cycle.endTime - (3 * 60 * 1000)
-        : cycle.endTime - (5 * 60 * 1000);
-      
-      const equalizerTime = is30Min
-        ? cycle.endTime - (2 * 60 * 1000)
-        : cycle.endTime - (2 * 60 * 1000);
-      
-      const betsClosedTime = is30Min
-        ? cycle.endTime - (60 * 1000)
-        : cycle.endTime - (60 * 1000);
+      // An unrecognised type is skipped rather than defaulted. `phasesFor`
+      // throws on one, and this endpoint draws the whole live-cycle board —
+      // one stray row must not 500 the screen an operator watches the platform
+      // through.
+      if (!isCycleType(cycle.type)) return null;
+      const p = phasesFor(cycle.type, cfg?.cyclePhases)
+        || phasesFor(cycle.type, DEFAULT_CYCLE_PHASES);
+
+      const mergeTime      = cycle.endTime - (p.mergeBeforeEndSec     * 1000);
+      const equalizerTime  = cycle.endTime - (p.equalizerBeforeEndSec * 1000);
+      const betsClosedTime = cycle.endTime - (p.closeBeforeEndSec     * 1000);
       
       // Determine current phase
       let currentPhase = 'OPEN';
@@ -59,7 +70,7 @@ router.get('/cycles/phases', authenticate, isAdminOrSubAdmin, async (req, res) =
         },
         phantomBalanced: cycle.phantomBalanced
       };
-    });
+    }).filter(Boolean);
     
     res.json({
       success: true,

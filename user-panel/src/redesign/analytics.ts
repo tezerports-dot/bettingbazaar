@@ -3,11 +3,28 @@
  * analytics.ts — descriptive streak/roadmap statistics for the redesigned game
  * screen and the analytics drawer.
  *
- * The winner sequence is derived from real cycle history (GameContext.pastCycles)
- * when enough is available; otherwise a deterministic pseudo-random fallback fills
- * the window so the roadmap/analytics always render. All outputs are DESCRIPTIVE
- * statistics of past results only — every cycle is independent (see the disclaimer
- * shown in the Probability tab). Nothing here is used for server-side validation.
+ * Every number here is computed from REAL declared winners
+ * (GameContext.pastCycles). All outputs are DESCRIPTIVE statistics of past
+ * results only — every cycle is independent (see the disclaimer shown in the
+ * Probability tab). Nothing here is used for server-side validation.
+ *
+ * ── Why there is no longer a generated fallback ────────────────────────────
+ * This module used to pad any window holding fewer than 12 real results with a
+ * seeded PRNG sequence, so the roadmap "always rendered". The padded results
+ * were then counted, charted and described in exactly the same UI as real
+ * ones: a tab with two real results displayed "Cycles 1,440 · Delhi 52% ·
+ * Bombay 48%", a full big-road, streak-gap tables and a "DELHI next 58%"
+ * signal, with nothing anywhere saying the history was invented.
+ *
+ * That is not a cosmetic placeholder in this product. Players stake real money
+ * on those charts, and two of the three tabs were served by it in normal
+ * operation — the full-day window rarely held 12 results, and once the
+ * 1-minute block starts resolving 60 times an hour it crowds the shared
+ * history feed (see cycleHistory.service.js, fixed there too).
+ *
+ * So a thin window now reports itself as thin. `sample` is the real count and
+ * `sufficient` says whether it supports the streak statistics; the drawer
+ * renders the shortfall instead of filling it in.
  */
 
 import type { CycleType } from '../types';
@@ -16,6 +33,12 @@ export type Side = 'DELHI' | 'BOMBAY';
 
 export interface Run { side: Side; len: number; start: number; }
 export interface Analytics {
+  /** Real declared winners in this window. Equal to `total`; named so callers
+   *  reading `sample` cannot mistake it for a padded or target figure. */
+  sample: number;
+  /** Whether `sample` clears MIN_SAMPLE — i.e. whether the streak
+   *  distribution, gaps and continuation rate mean anything yet. */
+  sufficient: boolean;
   total: number;
   delhiWins: number;
   bombayWins: number;
@@ -29,31 +52,16 @@ export interface Analytics {
 
 const DIST_KEYS = ['2', '3', '4', '5', '6', '7+'];
 
-/** Deterministic PRNG (mulberry32) — stable fallback roadmap when history is thin. */
-function mulberry32(a: number) {
-  return function () {
-    a |= 0; a = (a + 0x6D2B79F5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-/** Generate a plausible winner sequence with mild streak persistence. index 0 = newest. */
-export function genSeq(n: number, seed: number): Side[] {
-  const rnd = mulberry32(seed);
-  const out: Side[] = [];
-  let last: Side = 'DELHI';
-  for (let i = 0; i < n; i++) {
-    const r = rnd();
-    let side: Side;
-    if (i === 0) side = r < 0.5 ? 'DELHI' : 'BOMBAY';
-    else side = r < 0.55 ? last : last === 'DELHI' ? 'BOMBAY' : 'DELHI';
-    out.push(side);
-    last = side;
-  }
-  return out;
-}
+/**
+ * Results a window needs before its streak statistics are worth showing.
+ *
+ * Below this the run-length distribution is a handful of counts and the
+ * continuation rate is frequently 0% or 100% off one or two runs — a number
+ * that reads as a strong signal and is noise. The roadmap itself is still
+ * drawn under this threshold; it only reports what happened, it does not
+ * generalise from it.
+ */
+export const MIN_SAMPLE = 30;
 
 export function computeAnalytics(seq: Side[]): Analytics {
   const total = seq.length;
@@ -98,36 +106,32 @@ export function computeAnalytics(seq: Side[]): Analytics {
     return atLeast ? more / atLeast : 0;
   };
 
-  return { total, delhiWins, bombayWins, runs, dist, gaps, cont, current: runs[0] || { side: 'DELHI', len: 1, start: 0 }, seq };
+  return {
+    sample: total,
+    sufficient: total >= MIN_SAMPLE,
+    total, delhiWins, bombayWins, runs, dist, gaps, cont,
+    current: runs[0] || { side: 'DELHI', len: 1, start: 0 },
+    seq,
+  };
 }
 
 /**
- * Build the analytics window for a cycle type. Uses real winners from history
- * (newest first) when we have a meaningful sample, otherwise a deterministic
- * fallback so the roadmap is never empty.
+ * Build the analytics window for a cycle type, from real winners only
+ * (newest first). A window holding fewer than `MIN_SAMPLE` results comes back
+ * with `sufficient: false` and is NOT topped up — see the module header.
  */
 export function analyticsFor(realWinnersNewestFirst: Side[], cycleType: CycleType | string): Analytics {
-  // Window size and fallback seed per type. The window is roughly "a month of
-  // results": 1440 thirty-minute cycles, 30 full days, and 1440 one-minute
-  // cycles — which is only a day of them, but a larger window would be a
-  // roadmap nobody can read and a sequence nobody scrolls.
-  //
-  // Each type gets its OWN seed so the deterministic padding differs between
-  // tabs; sharing one would render three tabs with identical "history" before
-  // real results arrive, which looks exactly like a bug.
-  const WINDOW: Record<string, { target: number; seed: number }> = {
-    '1_MIN':    { target: 1440, seed: 13337 },
-    '30_MIN':   { target: 1440, seed: 90210 },
-    'FULL_DAY': { target: 30,   seed: 47311 },
+  // How far back each tab looks. The cap is about readability and cost, not
+  // availability: the server sends at most ~50 rows per type today
+  // (cycleHistory.service.js), so these are ceilings the feed does not yet
+  // reach rather than targets to be filled.
+  const WINDOW: Record<string, number> = {
+    '1_MIN':    1440,  // 24h of 1-minute blocks
+    '30_MIN':   1440,  // 30 days of half-hour blocks
+    'FULL_DAY': 30,    // 30 days
   };
-  const { target, seed } = WINDOW[cycleType as string] ?? WINDOW['30_MIN'];
-  let seq = realWinnersNewestFirst.slice(0, target);
-  if (seq.length < 12) {
-    // Not enough real history yet — pad with a deterministic tail so charts render.
-    const fill = genSeq(target - seq.length, seed);
-    seq = [...seq, ...fill];
-  }
-  return computeAnalytics(seq);
+  const target = WINDOW[cycleType as string] ?? WINDOW['30_MIN'];
+  return computeAnalytics(realWinnersNewestFirst.slice(0, target));
 }
 
 /** Flatten runs back into a capped winner sequence (newest first) for bead rows. */

@@ -23,6 +23,7 @@ import {
   CYCLE_TYPES, CYCLE_TYPE_VALUES, INTERVAL_CYCLE_TYPES,
   isCycleType, cycleMeta, cycleLabel, phasesFor, limitsKeyFor,
 } from '../../domains/markets/cycleTypes.js';
+import { DEFAULT_CYCLE_PHASES } from '../../domains/configuration/systemConfig.model.js';
 
 describe('cycle type registry', () => {
   it('knows exactly the three types the platform runs', () => {
@@ -129,6 +130,33 @@ describe('Cycle model', () => {
     }
     const bad = new Cycle({ cycleId: 'nope', type: '5_MIN', startTime: 1, endTime: 2 });
     expect(bad.validateSync()?.errors?.type).toBeDefined();
+  });
+});
+
+describe('phase defaults are declared once', () => {
+  // These numbers lived in three files: the schema defaults, the generator's
+  // fallback, and the admin phase-timeline route. The copies had already
+  // drifted — the admin route said the 30-minute block closed betting 60s
+  // before the end while the generator closed it at 30s, so the admin panel
+  // drew a boundary the engine did not act on. There is now one declaration
+  // and both consumers import it; this asserts the schema still agrees with
+  // it, which is the join that a future edit could quietly break.
+  it('uses DEFAULT_CYCLE_PHASES as the schema default for every type', () => {
+    const cfg = new (mongoose.model('SystemConfig'))({ key: 'main' }).cyclePhases;
+    for (const key of Object.keys(DEFAULT_CYCLE_PHASES)) {
+      for (const [field, value] of Object.entries(DEFAULT_CYCLE_PHASES[key])) {
+        expect(cfg[key][field], `${key}.${field}`).toBe(value);
+      }
+    }
+  });
+
+  it('declares a phase set for every registered type', () => {
+    // A type in the registry with no phase set falls through to whatever the
+    // consumer's `||` lands on — which for a 60-second block would be full-day
+    // offsets, merging five minutes before a cycle that lasts one.
+    for (const type of CYCLE_TYPE_VALUES) {
+      expect(phasesFor(type, DEFAULT_CYCLE_PHASES), `no defaults for ${type}`).toBeDefined();
+    }
   });
 });
 

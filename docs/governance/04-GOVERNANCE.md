@@ -31,6 +31,10 @@ Before editing **any** file in this repository, you must:
 6. If the change adds a real-time event, check §11 for the canonical event-name list.
 7. If the change touches branding, read §3 and §12 in full before writing a single line.
 8. If the change is to the backend wallet, read §7 before writing a single line.
+9. **If the change adds a cycle type, board or game, read §22 and follow it without being
+   asked to.** It is the standing answer to "does this new board get the wallet split, the 1%
+   reserve, the winnings fee, settlement, snapshots and realtime?" — it does, automatically,
+   and §22.1 lists what must therefore NOT be given a per-type case.
 
 **For AI sessions specifically:** You cannot assume your context window contains the complete
 current state of the codebase. Always verify target text exists before generating a patch.
@@ -48,6 +52,8 @@ compute, or default this value independently.
 | Token buy/sell rates | **REMOVED 2026-07-08** — token conversion is fixed 1:1 (1 BB token = ₹1), not configurable. The `TokenRates` model, its admin endpoints (`/api/admin/token-rates`), and the admin UI page are gone; public rate endpoints remain but return constant 1/1/0 for client compatibility. Do not reintroduce configurable rates — see §20 (Decision Log) 2026-07-08. |
 | Deposit/reserve wallet split, reserve usage rules (per currency) | `DepositPolicy` model (`domains/configuration/depositPolicy.model.js`) — whole-document versioned, written only via `depositPolicy.service.js`. **Corrected 2026-07-08:** `merchantCommissionPercent`/`commissionFundingSource` were removed — merchant incentive pay is cycle-completion-triggered (Merchant Performance Bonus), not deposit-triggered, and does not belong on this policy. See the "Merchant earnings model" line below. |
 | Bet min/max (per cycle type) | `SystemConfig.betLimits` |
+| Cycle phase offsets — the defaults | `DEFAULT_CYCLE_PHASES` in `domains/configuration/systemConfig.model.js`, exported. It **is** the schema `default:`, and the generator and `routes/admin/cycles.admin.routes.js` import it as their fallback. Runtime authority is unchanged and still `SystemConfig.cyclePhases` (admin-editable, picked up within 30s). Declared once because the three previous copies had already drifted — the admin phase-timeline route drew a betting-close boundary 30 seconds off what the engine acted on. Do not restate these numbers; §5 requires exactly one default. |
+| Resolved-cycle history feed | `domains/markets/cycleHistory.service.js` — the one query behind every `cycle_history` emit (socket request, SSE connect payload, post-result broadcast). The window is **per type**, `limit` rows EACH: one shared budget across types starves the infrequent ones, which is how the full-day tab came to be fed by generated data. Its `{cycles, types}` return names which types the payload is authoritative for so a partial refresh merges instead of replacing; the post-result broadcast sends only the type that just resolved. Rows project through `publicCycleView` — do not hand-roll a fourth field list. Client consumer: `handleCycleHistory` in `user-panel/src/services/GameContext.tsx`. |
 | Deposit/withdrawal limits (platform-wide) | `SystemConfig` |
 | Per-merchant order min/max | `Merchant.minOrder` / `Merchant.maxOrder` (edited per-merchant from admin) |
 | Merchant settlement rail (INR-only vs USDT-only) | `Merchant.acceptedCurrencies` — **exactly one** entry, `["INR"]` or `["USDT"]` (schema validator, 2026-07-27). An INR merchant settles by UPI + bank; a USDT merchant settles by TRC-20 address; never both. Vocabulary + TRC-20 format check live in `domains/merchant/merchantCurrency.js` (`MERCHANT_CURRENCIES`, `isTrc20Address`, `merchantTypeOf`) — do not re-declare the rail strings or a second address regex. `Merchant.merchantType` is a **derived read-only virtual** over this field, never a second stored copy. Admin writes it via `PUT /api/admin/merchants/:id/capabilities` (`merchantType` or `acceptedCurrencies`); consumers: `merchantScoring.selectBestMerchant` (assignment), `POST /api/merchant/accept/:id` (claim guard), `GET /api/merchant/orders` (open-pool filter), `PUT /api/merchant/profile` (which credentials are editable), the merchant panel and the admin Merchants → Limits tab. |
@@ -633,6 +639,10 @@ Portable today (audited): a scan of `backend/**` found **zero** hardcoded platfo
 
 Architecture decisions that aren't obvious from code alone. Dates are stable anchors — **code comments cite these dates**, so keep them.
 
+**2026-08-31 — The analytics tabs were charting invented history, and the history feed was about to starve two of them.** Two defects that only became visible together. `analytics.ts` topped any window holding fewer than 12 real results up to 1,440 entries with a seeded PRNG, then counted, charted and described the padding in the same UI as real results — a board with two settled cycles displayed "Cycles 1,440 · Delhi 52%", a full big road, streak-gap tables and a "DELHI next 58%" signal, with nothing saying the history was manufactured. Separately, all three `cycle_history` emitters fetched the 50 most recent `RESULT_DECLARED` cycles **across all types at once**. With two types that worked by accident (50 rows spanned about a day); the full-day tab was already starving on it, which is why the padding was reaching production at all. A 1-minute block resolving 60 times an hour makes those 50 rows *the last 50 minutes and nothing else*, so both other tabs would have fallen to the generated fallback — three tabs of confident, entirely fictional betting statistics in a real-money product. **Both are fixed at the source rather than papered over.** `cycleHistory.service.js` owns one per-type query (each type gets its own N most recent, on the new `{type, status, endTime}` index) and projects through `publicCycleView` instead of the three hand-rolled field lists the emitters each carried. The post-result broadcast now sends **only the resolved type** — no other type's list changed, and restating all three 60 times an hour is payload spent telling every connected client what it already had — so the payload names the types it is authoritative for and the client merges on that key rather than replacing. On the client, the PRNG is gone: `sample` is the real count, `sufficient` gates the statistics that generalise, and the Probability tab is withheld below 30 results rather than reporting noise as a signal, because it is the one screen players act on.
+
+**2026-08-31 — Cycle phase offsets are declared once, and the copies had already drifted.** The same four numbers per type existed in three files: the `SystemConfig` schema defaults, `DEFAULT_CYCLE_PHASES` in the generator, and a third set in the admin phase-timeline route. This was already a §5 violation ("every config field's default in exactly one place"), and it had already cost something: the admin route said the 30-minute block closed betting 60 seconds before the end while the generator closed it at 30, so the live-cycle board an operator watches drew a phase boundary the engine did not act on. The declaration now lives beside the schema in `systemConfig.model.js` and *is* the schema default; the generator and the admin route import it. Runtime authority is unchanged — an admin still edits `SystemConfig.cyclePhases` and the generator picks it up within 30 seconds; this is only what a fresh install starts from and what a consumer falls back to when the stored set is missing or fails the ordering invariant. `cycleTypes.test.js` pins the schema to the constant, since that join is what a future edit would quietly break.
+
 **2026-08-31 — A third cycle type (`1_MIN`), and why it arrived as a registry rather than a third branch.** The platform ran two cycle types and expressed that as ternaries: `type === '30_MIN' ? '30-MIN' : 'FULL-DAY'` for labels (twice), `isFullDay ? 'fullDay' : 'thirtyMin'` for stake limits, `is30Min ? phases.thirtyMin : phases.fullDay` for timings, and two near-identical ~130-line `ensureActive*Cycle` methods. Every one of those has a silent wrong answer for a type it does not know, and the failures are not the kind anyone notices in review: a 1-minute winner announced as "FULL-DAY Winner: DELHI!", 30-minute stake limits applied to a block nobody chose them for, and — the expensive one — 24-hour phase offsets read against a 60-second cycle, which leaves it OPEN until its last 30 seconds and then declares a result 10 seconds after it ended. So the vocabulary moved into `domains/markets/cycleTypes.js` and the interval-cycle creation path was parameterised over it (FULL_DAY keeps its own path: it is anchored to a calendar date, which is a difference in kind, not duplication). The frontend had the same shape and the same fix — five separate coercions of a server type string, each ending `: CycleType.FULL_DAY`, collapsed into one `toCycleType` that returns **null** for an unattributable event rather than filing it under the wrong tab.
 
 **Timings (`SystemConfig.cyclePhases.oneMin`, admin-editable like the others): merge 12s before end, equalizer 9s, bets close 5s, winner declared 3s, celebration 3s→0, next block at 0.** Two things follow that are easy to get wrong. First, the celebration lock and the next-cycle timer were hardcoded at 10s/10.5s; they are now derived from each type's own celebrate offset, because a 10-second lock on a 60-second block swallows a sixth of the next cycle before betting opens. Second, the 1-second status tick leaves the close→declare window only 2 seconds wide, so a slow tick can miss the CLOSED transition — the existing phase logic already tolerates that (a still-OPEN cycle completes directly, closing bets at 3s instead of 5s) rather than stalling, and that tolerance is now load-bearing rather than incidental.
@@ -748,3 +758,79 @@ Grounded in what the repo exposes: Prometheus metrics (`services/metrics.service
 **Rollback:** Railway → redeploy previous deployment (or revert the merge on `main`). k8s → `kubectl rollout undo deployment/bettingbazaar` or flip the blue/green Service selector. Deploys are boot-safe: `validateEnv` fails fast on missing secrets, so a misconfigured rollout refuses to start.
 
 **On-call quick reference:** dashboards `deploy/grafana/bettingbazaar-dashboard.json` · scrape `GET /metrics` (Bearer `METRICS_TOKEN` if set) · health `/health/live` (process) + `/health/ready` (deps+drain) · alert sink `SystemConfig.alertWebhookUrl` / `ALERT_WEBHOOK_URL` · DR `docs/governance/DISASTER_RECOVERY.md` · money rollback `backend/postgres/DATA_ROLLBACK_PLAN.md`.
+
+---
+
+## 22. Adding a Cycle Type or Game — the standing integration contract
+
+**A new board inherits the money system. It does not re-implement any part of it, and no
+instruction to that effect is needed on the request.** This section is that instruction,
+permanently. Treat it as answered for every future board unless the request explicitly says
+otherwise for that board.
+
+### 22.1 Inherited automatically — never re-specified, never given a per-type case
+
+Every one of these is platform-wide today and was verified type-agnostic when `1_MIN` was added.
+A new type gets them by existing:
+
+| Concern | Where it lives | Why no per-type case |
+|---|---|---|
+| Bet funding split (deposit → winnings → reserve) | `domains/markets/bet.routes.js` | reads the wallet, not the cycle type |
+| 1% reserve funding (`betReservePercent`) | `services/riskValidation.service.js` | platform-wide `SystemConfig` field |
+| Winnings fee (`winningsFeePercent`) | same | platform-wide |
+| Payout multiplier (`payoutMultiplier`) | same | platform-wide |
+| Settlement, payout, idempotency, crash resume | `domains/markets/gameEngine.js` | no cycle-type branching anywhere in it |
+| Wallet ledger + Postgres mirror | `mirrorCycleSettlement`, `cycle_settlements` | keyed on `cycle_id`; the table has **no type column** |
+| Realtime snapshots, rooms, live pools | `cycleSnapshotPublisher.js`, `socketHandlers.js` | keyed by `cycleId`; rooms are `cycle:${cycleId}` |
+| Bet rate limiting | `ipBetLimiter`, `betBehaviorLimiter` | keyed by user, not by board |
+| Redis caching / rate-limit counters | `services/redis*` | no cycle-type keys exist |
+| Cron, retention, reconciliation | `startup/`, retention jobs | operate on all cycles |
+
+**The rule that follows:** if adding a type requires you to edit a file in that table, you have
+found a type-specific branch that should not be there. **Fix the branch; do not add a case to
+it.** Adding the case is how `type === '30_MIN' ? … : 'FULL_DAY'` came to announce every unknown
+board's winner as "FULL-DAY Winner".
+
+### 22.2 Declared per type — the complete list
+
+A new type is exactly these edits. Nothing outside this list should need touching:
+
+1. **`domains/markets/cycleTypes.js`** — one `META` entry (label, `phasesKey`, `limitsKey`,
+   `idPrefix`, `interval`, `fixedDurationMin`, the three broadcast messages). `CYCLE_TYPE_VALUES`,
+   `INTERVAL_CYCLE_TYPES`, the `Cycle.type` enum and the generator's per-type state all derive
+   from this — that is the point of the module.
+2. **`DEFAULT_CYCLE_PHASES.<phasesKey>`** in `domains/configuration/systemConfig.model.js` —
+   the phase offsets. One declaration; the schema default and both consumers read it (§5).
+3. **`SystemConfig.betLimits.<limitsKey>`** — stake bounds. Declare them even when they equal
+   another board's, so retuning one board cannot silently retune the other.
+4. **`User.phantomAccess` enum** — so an agent can be scoped to the new board without being
+   granted `BOTH`.
+5. **Frontend:** `CycleType` enum, `CHIP_VALUES`, `PHASE_BY_TYPE` (user panel); the `CycleType`
+   union and its label map (admin panel). Each is a §4 mirror and needs the citing comment.
+6. **`backend/tests/unit/cycleTypes.test.js`** — the new type is covered by the existing
+   per-type loops; add a case only for a timing that is genuinely unlike the others.
+
+### 22.3 Invariants a new type must satisfy
+
+- **Phase ordering:** `merge > equalizer > close > celebrate >= 0`, and `merge < duration`.
+  A set failing this is discarded at read time and the board silently runs on defaults.
+- **Phases must fit the block.** The ordering invariant compares phases only with each other,
+  never with the duration — a merge offset larger than the block fires before the cycle starts
+  and nothing else will object.
+- **The celebration lock and the next-cycle timer derive from the type's own celebrate offset.**
+  Never hardcode either; a 10-second lock on a 60-second block eats a sixth of the next cycle.
+- **Status ticks are 1s.** A close→declare window under ~2s can be missed; the phase logic
+  tolerates this by letting a still-OPEN cycle complete directly. Do not "fix" that tolerance.
+- **Unknown types fail loudly, not quietly.** `cycleMeta`/`phasesFor`/`limitsKeyFor` throw.
+  Callers on a broadcast path guard with `isCycleType` and skip the row rather than defaulting —
+  one unrecognised cycle must not take a screen or a tick down for every other type.
+
+### 22.4 Operational gate
+
+Cycle frequency multiplies settlement runs, cycle documents and realtime traffic linearly.
+`1_MIN` is 60 blocks/hour against `30_MIN`'s 2. **Re-run the `GO_LIVE_RUNBOOK.md` Phase 5 load
+test before enabling a new high-frequency board in production** — the concurrency ceiling that
+test measures is per-settlement, and a faster board consumes it proportionally faster.
+
+Anything genuinely new about a board — different sides, a different winner rule, a different
+fee — is outside this contract and must be specified on the request. Everything in §22.1 is not.

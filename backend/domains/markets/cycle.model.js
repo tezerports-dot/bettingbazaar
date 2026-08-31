@@ -80,6 +80,13 @@ const cycleSchema = new mongoose.Schema({
 // this index to enforce uniqueness atomically.
 cycleSchema.index({ type: 1, startTime: 1 }, { unique: true, name: 'cycle_type_start_unique' });
 
+// The resolved-history feed (cycleHistory.service.js) asks for one type's most
+// recent results, and does it per type on every connect and after every result
+// — 60 times an hour once the 1-minute block is enabled. Without this the query
+// scans every RESULT_DECLARED cycle of every type and sorts in memory, which
+// grows without bound as history accumulates.
+cycleSchema.index({ type: 1, status: 1, endTime: -1 }, { name: 'cycle_type_status_end' });
+
 // Hybrid money DB: project the settlement RUN onto the table Postgres owns, so
 // a cutover can tell a finished payout from one that stopped half way. State
 // and totals only — the per-bet outcomes come from the Bet mirror and the money

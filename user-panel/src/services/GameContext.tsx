@@ -326,13 +326,27 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     const sseBridge = (backend as any).sseBridge as EventTarget | undefined;
     const socket    = (backend as any).socket;
 
-    const handleCycleHistory = (data: { cycles: any[] }) => {
+    // `types` names which cycle types this payload is authoritative for. The
+    // post-result broadcast sends ONE type — only that type's history changed —
+    // so replacing the whole list would wipe the other tabs' history every time
+    // a 1-minute block resolved, i.e. once a minute. Merge by type instead:
+    // drop our rows for the types named, keep the rest, re-sort newest first.
+    //
+    // A payload with no `types` is a full replacement (an older server, or a
+    // client-requested fetch that covered everything).
+    const handleCycleHistory = (data: { cycles: any[]; types?: string[] }) => {
       const resolved: GameCycle[] = (data.cycles || []).map((c: any) => ({
         ...c,
         totalDelhi:  c.totalDelhi  || c.delhiPool  || 0,
         totalBombay: c.totalBombay || c.bombayPool || 0,
       }));
-      setPastCycles(resolved);
+      const refreshed = data.types;
+      setPastCycles(prev => {
+        if (!Array.isArray(refreshed) || refreshed.length === 0) return resolved;
+        const stale = new Set(refreshed);
+        return [...prev.filter(c => !stale.has(c.type as string)), ...resolved]
+          .sort((a, b) => (b.endTime || 0) - (a.endTime || 0));
+      });
       setIsOnline(true);
     };
 

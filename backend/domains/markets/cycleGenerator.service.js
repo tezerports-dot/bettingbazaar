@@ -1,5 +1,9 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import { Cycle } from '../../models/index.js';
+import { fetchCycleHistory } from './cycleHistory.service.js';
+// Fallback phase offsets when SystemConfig is missing or fails validPhaseSet.
+// Imported, never restated — see the header on DEFAULT_CYCLE_PHASES.
+import { DEFAULT_CYCLE_PHASES } from '../configuration/systemConfig.model.js';
 import mongoose from 'mongoose';
 // Derived cycle pools (FLAGS.DERIVED_CYCLE_POOLS, default off) — see
 // cyclePool.service.js for why the running total is the scaling ceiling.
@@ -24,12 +28,6 @@ import {
 //
 // Keys here are the `phasesKey` values in cycleTypes.js. The 1-minute block's
 // margins are seconds rather than minutes, which is the whole point of it.
-const DEFAULT_CYCLE_PHASES = {
-  oneMin:    { mergeBeforeEndSec: 12,  equalizerBeforeEndSec: 9,   closeBeforeEndSec: 5,  celebrateBeforeEndSec: 3 },
-  thirtyMin: { mergeBeforeEndSec: 180, equalizerBeforeEndSec: 120, closeBeforeEndSec: 30, celebrateBeforeEndSec: 10 },
-  fullDay:   { mergeBeforeEndSec: 300, equalizerBeforeEndSec: 120, closeBeforeEndSec: 30, celebrateBeforeEndSec: 10 },
-};
-
 // Reject a phase set that would break the state machine (out-of-order or negative
 // offsets). A bad admin value falls back to DEFAULT_CYCLE_PHASES for that type
 // rather than corrupting cycle transitions.
@@ -430,24 +428,14 @@ class CycleGenerator {
             // Push updated cycle history to ALL clients after result.
             // This replaces the 5-minute HTTP polling interval in GameContext.
             // Small delay so the DB write is committed before we query it.
+            //
+            // ONLY THIS TYPE'S history is sent. No other type's list changed,
+            // and a 1-minute block fires this 60 times an hour — restating all
+            // three types each time is 3x the payload to every connected client
+            // to tell them what they already had. The client merges on `types`.
             setTimeout(async () => {
                 try {
-                    const cycles = await Cycle.find({ status: 'RESULT_DECLARED' })
-                        .sort({ endTime: -1 }).limit(50).lean();
-                    this.emitPublic('cycle_history', {
-                        cycles: cycles.map(c => {
-                            const delhiPool  = c.totalDelhi  || 0;
-                            const bombayPool = c.totalBombay || 0;
-                            return {
-                                id: c.cycleId, type: c.type,
-                                startTime: c.startTime, endTime: c.endTime,
-                                winner: c.winner, status: c.status,
-                                delhiPool, bombayPool,
-                                totalDelhi: delhiPool, totalBombay: bombayPool,
-                                totalPool: delhiPool + bombayPool,
-                            };
-                        })
-                    });
+                    this.emitPublic('cycle_history', await fetchCycleHistory({ types: cycle.type }));
                 } catch (e) { /* non-critical — clients will re-request on next mount */ }
             }, 1500);
 

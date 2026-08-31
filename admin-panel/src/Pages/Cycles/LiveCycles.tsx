@@ -13,6 +13,14 @@ import sseService from '../../services/sse';
 import type { Cycle } from '../../types';
 import toast from 'react-hot-toast';
 
+// Short label per cycle type. A ternary here rendered every type it did not
+// know as "FULL DAY" — so a 1-minute cycle was mislabelled on the live board.
+const CYCLE_TYPE_LABEL: Record<string, string> = {
+  '1_MIN': '1 MIN',
+  '30_MIN': '30 MIN',
+  'FULL_DAY': 'FULL DAY',
+};
+
 const inr = (n: number | undefined | null): string => {
   const x = Number(n) || 0;
   if (x >= 1e7) return `₹${(x / 1e7).toFixed(2)}Cr`;
@@ -166,7 +174,7 @@ export const LiveCycles: React.FC = () => {
               <div key={c.cycleId} className="card" style={{ padding: '18px 20px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 15 }}>
                   <div className="font-mono" style={{ fontSize: 15, fontWeight: 800 }}>{c.cycleId}</div>
-                  <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-2)', background: 'var(--surface-2)', border: '1px solid var(--border)', padding: '3px 8px', borderRadius: 6 }}>{c.type === '30_MIN' ? '30 MIN' : 'FULL DAY'}</span>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-2)', background: 'var(--surface-2)', border: '1px solid var(--border)', padding: '3px 8px', borderRadius: 6 }}>{CYCLE_TYPE_LABEL[c.type as string] ?? c.type}</span>
                   <span style={{ flex: 1 }} />
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10.5, fontWeight: 700, padding: '4px 10px', borderRadius: 20, color: toneColor, background: toneBg }}>
                     <span style={{ width: 6, height: 6, borderRadius: '50%', background: toneColor }} />{(c.status || '').replace(/_/g, ' ')}

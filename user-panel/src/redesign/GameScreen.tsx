@@ -7,7 +7,7 @@
  *   • phase/status  — currentCycle.status (OPEN/MERGED/CLOSED/RESULT_DECLARED)
  *   • pools         — subscribeToVolume(cycleType) → {totalDelhi,totalBombay}
  *   • my bets       — userBets for the current cycle, summed per side
- *   • roadmap/stats — winners from pastCycles (analytics.ts), fallback-padded
+ *   • roadmap/stats — winners from pastCycles (analytics.ts), real results only
  *
  * GOVERNANCE §2/§3: min-bet comes from sysConfig (server authority), never a
  * hardcoded number. Chip denominations are UI-only (§10, constants.CHIP_VALUES).
@@ -266,9 +266,15 @@ const GameScreen: React.FC = () => {
           <span style={labelCap}>Roadmap</span>
           <button onClick={() => setDrawerOpen(true)} style={{ fontSize: 9, fontWeight: 800, color: 'var(--gold-ink)', background: 'none', border: '1px solid var(--line2)', borderRadius: 999, padding: '3px 10px', cursor: 'pointer' }}>FULL ANALYSIS</button>
         </div>
-        <div className="bb-noscroll" style={{ display: 'grid', gridAutoFlow: 'column', gridTemplateRows: 'repeat(6,18px)', gap: 4, overflowX: 'auto', paddingBottom: 4 }}>
-          {roadmapBeads.map((b, i) => <span key={i} style={{ width: 18, height: 18, borderRadius: '50%', background: b.bg, color: '#fff', fontSize: 8, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{b.ch}</span>)}
-        </div>
+        {roadmapBeads.length === 0 ? (
+          // Real results only (analytics.ts no longer pads a thin window), so a
+          // board with no settled cycles genuinely has nothing to plot.
+          <div style={{ fontSize: 10, color: 'var(--text3)', padding: '10px 0', textAlign: 'center' }}>No results on this board yet.</div>
+        ) : (
+          <div className="bb-noscroll" style={{ display: 'grid', gridAutoFlow: 'column', gridTemplateRows: 'repeat(6,18px)', gap: 4, overflowX: 'auto', paddingBottom: 4 }}>
+            {roadmapBeads.map((b, i) => <span key={i} style={{ width: 18, height: 18, borderRadius: '50%', background: b.bg, color: '#fff', fontSize: 8, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{b.ch}</span>)}
+          </div>
+        )}
       </div>
       <div style={sectionCard}>
         <span style={labelCap}>My open bets · this cycle</span>
@@ -421,7 +427,9 @@ const GameScreen: React.FC = () => {
               <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.1em', color: 'var(--text3)' }}>{CYCLE_TAB_LABEL[cycleType] ?? '30M'}</span>
             </span>
             <div style={{ flex: 1, display: 'flex', gap: 5, overflow: 'hidden', alignItems: 'center' }}>
-              {stripBeads.map((b, i) => <span key={i} style={{ flex: 'none', width: 20, height: 20, borderRadius: '50%', background: b.bg, color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: 'var(--shadow-sm)' }}>{b.ch}</span>)}
+              {stripBeads.length === 0
+                ? <span style={{ fontSize: 9, color: 'var(--text3)' }}>No results yet</span>
+                : stripBeads.map((b, i) => <span key={i} style={{ flex: 'none', width: 20, height: 20, borderRadius: '50%', background: b.bg, color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: 'var(--shadow-sm)' }}>{b.ch}</span>)}
             </div>
             <span style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 6, color: 'var(--gold-ink)' }}>
               <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.08em' }}>ANALYTICS</span>
