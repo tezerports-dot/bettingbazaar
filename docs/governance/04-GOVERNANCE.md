@@ -814,6 +814,12 @@ A new type is exactly these edits. Nothing outside this list should need touchin
    union and its label map (admin panel). Each is a §4 mirror and needs the citing comment.
 6. **`backend/tests/unit/cycleTypes.test.js`** — the new type is covered by the existing
    per-type loops; add a case only for a timing that is genuinely unlike the others.
+7. **`backend/tests/integration/oneMinuteCycleLifecycle.integration.test.js`** — if the new
+   board's phase offsets are a different ORDER OF MAGNITUDE from an existing one, copy this
+   file for it. Everything else in the integration suite runs at 30-minute timings, where the
+   1-second status tick has minutes of slack; that coverage proves the settlement machinery
+   and proves nothing about a board whose phases are seconds apart. The betting-cutoff defect
+   of 2026-08-31 lived exactly in that gap and no existing test could have caught it.
 
 ### 22.3 Invariants a new type must satisfy
 
