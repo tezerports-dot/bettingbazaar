@@ -255,6 +255,41 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     restoreSession();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── CROSS-TAB SESSION SYNC ────────────────────────────────────────────────
+  // The bot's sign-in link almost never lands in the tab the player started in.
+  // A visitor who arrives from search opens the bot from THIS tab, finishes in
+  // Telegram, and the link they tap comes back in a NEW tab (Telegram's "open
+  // in browser", or the desktop client handing off to the default browser).
+  // localStorage is shared across tabs of an origin, but the restore above runs
+  // only on mount — so without this the original tab sits there rendering a
+  // logged-out app next to a logged-in one, and the obvious move ("refresh")
+  // is not obvious to the person it happens to.
+  //
+  // `storage` fires only in the OTHER tabs, never the one that made the change,
+  // which is exactly the fan-out wanted here.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== 'auth_token') return;
+
+      // Signed in elsewhere. A reload rather than a partial rehydrate: this tab
+      // is showing the signed-out app, so there is nothing to lose, and it
+      // reuses the mount path above instead of duplicating it — one code path
+      // for "become signed in" rather than two that can drift.
+      if (e.newValue && !user) {
+        window.location.reload();
+        return;
+      }
+      // Signed out elsewhere. Mirror it rather than leaving a stale session
+      // rendered against a token that is already gone.
+      if (!e.newValue && user) {
+        setUser(null);
+        setUserBets([]);
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [user]);
+
   // ── WS-FIRST: request a fresh snapshot instead of HTTP fetch ───────────────
   const requestCycleSnapshot = useCallback(() => {
     const socket = (backend as any).socket;

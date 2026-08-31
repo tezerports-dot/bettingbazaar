@@ -144,6 +144,14 @@ browser instead of the app.
 > yourself and fails for every single Play install. Get the second one from
 > Play Console → Setup → App signing and list both, comma-separated.
 
+> **Testing with a debug APK needs a third one, temporarily.** A debug build is
+> signed with the debug key, so its fingerprint is neither of the above and the
+> App Link will not verify — sign-in will open a browser and look exactly like
+> the bug. The **Android build check** run prints the fingerprint of the APK it
+> just produced, in its job summary, ready to paste. It **changes on every run**
+> (the runner makes a new debug keystore each time), so re-copy it for each
+> debug build and drop it once you are testing release-signed builds.
+
 ---
 
 ## 3. Run the workflow
@@ -165,6 +173,9 @@ on-device checks below.
   which of the two you got.
 - A debug APK **cannot** be published, and cannot update a release-signed
   install later. It is for testing only.
+- To test **sign-in** with it, add the fingerprint the run's job summary prints
+  to `ANDROID_SHA256_CERT_FINGERPRINTS` (see §2b) — a debug build is signed with
+  a different key, so without that the App Link cannot verify.
 
 It runs automatically on any pull request touching the Android project, so a
 change that breaks the build is caught there rather than on release day.
@@ -212,6 +223,11 @@ all — everything else assumes you got past it.
    If it goes wrong, work through these in order:
    - `curl https://yourdomain.com/.well-known/assetlinks.json` — a 404 means
      §2b is not set. Fix that first; nothing else can work without it.
+   - **On a debug build, check the fingerprint matches.** The document must list
+     the fingerprint of the key that signed *the APK you installed*. For a debug
+     build that is the debug key, printed in the build-check job summary — and
+     different on every run. `apksigner verify --print-certs app-debug.apk`
+     reads it straight off the file you are holding.
    - Check Android accepted the claim:
      `adb shell pm get-app-links com.bettingbazaar.app`. You want your domain
      listed as `verified`. If it says `1024` or `legacy_failure`, Android could
