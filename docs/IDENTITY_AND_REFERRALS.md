@@ -163,6 +163,38 @@ Note what this does **not** do: it does not force the link into Chrome. An
 authority, path and query only), and the token is in the fragment on purpose —
 so the redirect that looks obvious would arrive tokenless.
 
+### Two browser buttons from the bot are not possible — and what is
+
+This gets proposed, so it is recorded rather than re-derived. "Have the bot send
+an *Open in Chrome* and an *Open in Safari* button" cannot be built, for two
+independent reasons:
+
+1. **Telegram rejects the schemes.** An inline-keyboard `url` accepts only
+   `http`, `https` and `tg://`. A `googlechrome://` or `x-safari-https://`
+   button fails with `BUTTON_URL_INVALID` — the message never sends.
+2. **The bot does not know the device.** Telegram exposes no client platform to
+   bots, so both buttons would show to every user and one would be dead on any
+   given handset.
+
+**What would work, if the handoff screen proves too slow on real devices:** a
+Telegram **Mini App** launcher. A Mini App knows `WebApp.platform`, and
+`WebApp.openLink(url, { try_browser: 'chrome' })` opens a link in an *external*
+browser — and because it takes a plain https URL rather than an intent, **the
+fragment survives**, which is what rules out every Android alternative.
+
+One design note for whoever builds it: **Telegram owns the fragment on a Mini
+App URL** (it appends `#tgWebAppData=…`), so the token cannot ride in the link
+the way it does today. That forces a better shape — the button carries no token,
+the Mini App presents Telegram's signed `initData`, the backend verifies that
+HMAC and mints a fresh token through the existing `issueLoginToken`, and the
+Mini App punts it to the real browser. The token then never sits in a chat
+message at all, so it cannot be screenshotted or forwarded.
+
+**Deferred on purpose (2026-08-31):** it is a new authentication path in a
+money product, and it buys little if Telegram already hands off to the installed
+app — which only a handset can settle (on-device check 2 in
+`governance/ANDROID_RELEASE_SETUP.md`). Test first, then decide.
+
 ### The visitor who arrives from search
 
 Worth tracing, because it is the ordinary path and it crosses three contexts:
