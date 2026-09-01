@@ -64,12 +64,13 @@ router.get('/analytics/dashboard', authenticate, isAdminOrSubAdmin, async (req, 
     const totalDeposits    = depositAgg[0]?.total    || 0;
     const totalWithdrawals = withdrawalAgg[0]?.total || 0;
 
-    // Stakes and payouts are SUMMED FROM THE BETS. They used to be summed from
-    // `Transaction` rows of type BET_PLACED and BET_WIN, and the first of those
-    // is never written by anything — so `totalBets` has been reading zero and
-    // `netProfit`, which is bets minus payouts, has been reporting MINUS the
-    // payouts, as though the house had taken nothing. A feed can be missing
-    // rows and still look healthy; a sum over `bets` cannot.
+    // Stakes and payouts are SUMMED FROM THE BETS rather than from `Transaction`
+    // rows of type BET_PLACED and BET_WIN. The BET_WIN rows came from a
+    // settlement helper the engine no longer calls, so the payout side would
+    // have gone silently to zero. Both sides move because a feed can be missing
+    // rows and still look healthy, while a sum over `bets` cannot — and because
+    // the feed counted REFUNDED stakes as turnover and grouped stakes and
+    // payouts by different timestamps.
     const allTime = await betTotals();
     const totalPayouts    = allTime.payouts;
     const totalBetsAmount = allTime.bets;

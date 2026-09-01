@@ -2,15 +2,14 @@
 /**
  * The admin dashboard's betting figures, summed from the bets.
  *
- * These replace two MongoDB aggregations over a `Transaction` feed, and the
- * reason is not tidiness. `BET_PLACED` transactions are never written by
- * anything — the strings that look like them are `reason` text on ledger rows —
- * so `totalBets` read ZERO and `netProfit`, which is bets minus payouts, has
- * been reporting minus-the-payouts as though the house had taken nothing.
- * `BET_WIN` rows came from a settlement helper the engine no longer calls.
+ * These replace two MongoDB aggregations over a `Transaction` feed. The
+ * `BET_WIN` rows came from a settlement helper the engine no longer calls, so
+ * the payout side would have gone silently to zero.
  *
  * A denormalised feed can be missing rows and still look healthy. A sum over
- * `bets` cannot: the bets ARE the thing being counted.
+ * `bets` cannot: the bets ARE the thing being counted. It also settles two
+ * questions the feed answered wrongly — whether a refunded stake is turnover,
+ * and which day a cycle's winnings belong to.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { betTotals, betTotalsByDay } from '../../postgres/analyticsPg.js';
@@ -67,9 +66,8 @@ d('betting figures derived from the bets', () => {
   });
 
   it('nets to what the house actually kept', async () => {
-    // ₹200 staked, ₹198 returned to the winner — the house keeps ₹2, the
-    // retained fee. Before this, `netProfit` was 0 − 198 = −198, because the
-    // stake side summed a transaction type nothing ever writes.
+    // ₹200 staked, ₹198 returned to the winner — the house keeps ₹2, which is
+    // the retained fee.
     const before = await betTotals();
     await givenBet({ status: 'WON',  stake: 10000, payout: 19800, fee: 200, placedAt: new Date() });
     await givenBet({ status: 'LOST', stake: 10000, placedAt: new Date() });

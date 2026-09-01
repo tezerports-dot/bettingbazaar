@@ -4,23 +4,20 @@
  *
  * ── Why these are not read from a transaction feed ──────────────────────────
  * The admin dashboard used to sum MongoDB `Transaction` documents: `BET_PLACED`
- * for stakes and `BET_WIN` for payouts. Two things were wrong with that, and
- * only one of them was mine.
+ * for stakes and `BET_WIN` for payouts.
  *
- *   - `BET_PLACED` transactions are never written. Nothing in the bet route
- *     creates one — the strings that look like it are `reason` text on ledger
- *     rows — so `totalBetsAmount` has been reading ZERO, and `netProfit`, which
- *     is bets minus payouts, has been reporting minus-the-payouts as though the
- *     house had taken nothing all year.
- *   - `BET_WIN` rows were written by `executeSettlementBatch`, which the engine
- *     no longer calls now that settlement is one Postgres enumeration. Left
- *     alone, the payout figures would have silently joined the stake figures at
- *     zero.
+ * `BET_WIN` rows were written by `executeSettlementBatch`, which the engine no
+ * longer calls now that settlement is one Postgres enumeration — so the payout
+ * figures would have gone silently to zero, taking `netProfit` with them.
+ * (`BET_PLACED` rows ARE written, on the placement route's success path. An
+ * earlier version of this comment claimed otherwise, from a truncated grep.)
  *
- * A denormalised feed can be missing rows and still look healthy; a sum over
- * `bets` cannot, because the bets ARE the thing being counted. The same
- * reasoning put the cycle's real pools and the settlement's counters on derived
- * reads rather than stored ones.
+ * Moving both sides here is not only about that. A denormalised feed can be
+ * missing rows and still look healthy; a sum over `bets` cannot, because the
+ * bets ARE the thing being counted — the same reasoning that put the cycle's
+ * real pools and the settlement's counters on derived reads. It also fixes two
+ * things the feed got wrong independently: REFUNDED stakes were counted as
+ * turnover, and stakes and payouts were grouped by different timestamps.
  *
  * ── One deliberate difference from the old query ────────────────────────────
  * Payouts are grouped by `placed_at`, not by when the payout was written. The

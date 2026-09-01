@@ -240,9 +240,21 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    const availableDeposit  = user.depositBalance  || 0;
-    const availableWinnings = user.winningsBalance  || 0;
-    const availableReserve  = user.reserveBalance   || 0;
+    // FROM THE STORE THAT HOLDS THE MONEY. These four numbers decide the
+    // affordability ceiling, drive the funding plan, and are what the player is
+    // shown when a stake is refused — and they used to be read off the Mongo
+    // User document while `placeBet` debits the `wallets` row. Two stores, one
+    // decision: the check could pass and the debit refuse, or the refusal
+    // message could quote a balance the wallet does not have.
+    //
+    // That is not hypothetical. It is exactly how a fixture that set
+    // `depositBalance: 100` on a user document and never funded Postgres
+    // produced "Insufficient balance" ALONGSIDE a payload reporting ₹110
+    // available — the refusal and the number in it came from different places.
+    const walletBalances    = await getBalances(userId);
+    const availableDeposit  = walletBalances.depositBalance  || 0;
+    const availableWinnings = walletBalances.winningsBalance || 0;
+    const availableReserve  = walletBalances.reserveBalance  || 0;
     const totalAvailable    = availableDeposit + availableWinnings + availableReserve;
 
     const reservePercent = config?.betReservePercent ?? 1; // schema default: 1
@@ -554,8 +566,11 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
       depositBalanceAfter:   availableDeposit  - fromDeposit,
       winningsBalanceBefore: availableWinnings,
       winningsBalanceAfter:  availableWinnings - fromWinnings,
-      lockedBalanceBefore:   user.lockedBalance  || 0,
-      lockedBalanceAfter:    (user.lockedBalance || 0) + amount,
+      // From the same read as the four fields above it. Mixing a Mongo
+      // lockedBalance into a record whose other balances came from Postgres
+      // would make the row internally inconsistent.
+      lockedBalanceBefore:   walletBalances.lockedBalance || 0,
+      lockedBalanceAfter:    (walletBalances.lockedBalance || 0) + amount,
       referenceId: bet._id.toString(),
       description: `Bet ₹${amount} on ${side} (₹${fromDeposit} deposit + ₹${fromWinnings} winnings)`,
       status: 'SUCCESS'
