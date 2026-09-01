@@ -441,12 +441,18 @@ export async function findCurrentCycle() {
  * Ordered oldest-first, which the Mongo version was not — it took whatever came
  * back first with no sort at all, so a cycle that failed to settle could be
  * passed over indefinitely while newer ones kept arriving.
+ *
+ * `winner IS NOT NULL` is part of the definition, not a defensive filter: the
+ * caller hands this cycle's winner straight to `beginSettlement`, which refuses
+ * a null side. A cycle at RESULT_DECLARED with no winner recorded is not a cycle
+ * that is ready to settle — it is a cycle whose result never reached this store,
+ * and offering it would make every settle tick throw on the same row forever.
  */
 export async function findCyclesAwaitingSettlement({ limit = 1 } = {}) {
   const { rows } = await pgQuery(
     `SELECT ${columnsOn('c')} FROM cycles c
        LEFT JOIN cycle_settlements s ON s.cycle_id = c.cycle_id
-      WHERE c.status = $1 AND s.cycle_id IS NULL
+      WHERE c.status = $1 AND s.cycle_id IS NULL AND c.winner IS NOT NULL
       ORDER BY c.end_at ASC
       LIMIT $2`,
     [CYCLE_STATUS.RESULT_DECLARED, Math.max(1, Math.min(100, Number(limit) || 1))],

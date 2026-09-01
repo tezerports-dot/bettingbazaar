@@ -19,7 +19,10 @@ import {
   isCycleType, cycleMeta, cycleLabel, phasesFor,
 } from './cycleTypes.js';
 // The cycle's Postgres row: the thing the money path locks. See cyclePg.js.
-import { ensureCycle } from '../../postgres/cyclePg.js';
+import {
+  ensureCycle, setStatus as setPgCycleStatus, declareWinner as declarePgWinner,
+  CYCLE_STATUS,
+} from '../../postgres/cyclePg.js';
 
 // ── CYCLE PHASE OFFSETS (Business Config Audit, 2026-07-11) ───────────────────
 // Seconds BEFORE a cycle's endTime that each phase fires. Previously hardcoded
@@ -205,6 +208,31 @@ class CycleGenerator {
 
     // ─────────────────────────────────────────────────────────────────────────
 
+    /**
+     * Move the cycle's status in PostgreSQL, which is where the engine reads it.
+     *
+     * gameEngine asks `cycles` for what to settle — a cycle stuck at OPEN there
+     * is a cycle it never picks up, however the Mongo document reads. So this is
+     * not bookkeeping alongside the Mongo write: it is the write that decides
+     * whether the cycle settles at all.
+     *
+     * A refused transition is logged, not thrown. The phase machine runs every
+     * second over every live cycle, and aborting the tick would strand the other
+     * cycles in it — including one waiting to be declared.
+     */
+    async movePgStatus(cycleId, to, from = null) {
+        try {
+            const r = await setPgCycleStatus({ cycleId, to, from });
+            if (!r.ok && r.reason !== 'invalid_transition') {
+                console.error(`❌ cycles.status ${cycleId} → ${to} refused:`, r.reason);
+            }
+            return r;
+        } catch (e) {
+            console.error(`❌ cycles.status ${cycleId} → ${to} threw:`, e.message);
+            return { ok: false, reason: 'threw' };
+        }
+    }
+
     async updateCycleStatuses() {
         try {
             const now = Date.now();
@@ -229,6 +257,7 @@ class CycleGenerator {
                 if (cycleEndMs <= now && cycle.status !== 'CLOSED') {
                     console.warn(`⚠️  updateCycleStatuses: force-closing stale ${cycle.type} cycle ${cycle.cycleId}`);
                     await Cycle.updateOne({ _id: cycle._id }, { status: 'CLOSED' });
+                    await this.movePgStatus(cycle.cycleId, CYCLE_STATUS.CLOSED);
                     cycle.status = 'CLOSED';
                 }
                 if (cycleEndMs <= now - 10000 && cycle.status === 'CLOSED') {
@@ -268,6 +297,7 @@ class CycleGenerator {
                 // ─── PHASE 1: MERGE ─────────────────────────────────────────
                 if (now >= mergeTime && now < equalizerTime && cycle.status === 'OPEN') {
                     await Cycle.updateOne({ _id: cycle._id }, { status: 'MERGED' });
+                    await this.movePgStatus(cycle.cycleId, CYCLE_STATUS.MERGED, CYCLE_STATUS.OPEN);
                     cycle.status = 'MERGED';
                     this.emitPublic('cycle_phase', {
                         cycleId: cycle.cycleId,
@@ -293,6 +323,11 @@ class CycleGenerator {
                 // Fix: allow OPEN or MERGED → both can transition to CLOSED.
                 if (now >= betsClosedTime && now < fireworksTime && ['OPEN', 'MERGED'].includes(cycle.status)) {
                     await Cycle.updateOne({ _id: cycle._id }, { status: 'CLOSED' });
+                    // Betting stops in Postgres too — `placeBet` refuses on any
+                    // status outside OPEN/MERGED, so this is what actually closes
+                    // the book rather than only what the UI is told.
+                    await this.movePgStatus(cycle.cycleId, CYCLE_STATUS.CLOSED,
+                        [CYCLE_STATUS.OPEN, CYCLE_STATUS.MERGED]);
                     cycle.status = 'CLOSED';
                     this.emitPublic('cycle_phase', {
                         cycleId: cycle.cycleId,
@@ -369,6 +404,25 @@ class CycleGenerator {
                 { _id: cycle._id },
                 { status: 'RESULT_DECLARED', winner, completedAt: new Date(), isSettled: 'PENDING' }
             );
+
+            // ── The result, in the store that settles it ──────────────────────
+            // Both of these are load-bearing, and in this order. gameEngine's
+            // settle tick asks for cycles at RESULT_DECLARED with no settlement
+            // run, and hands `cycle.winner` to `beginSettlement` — which refuses
+            // a null side outright. A cycle declared only in Mongo is therefore
+            // one that is never paid out, with every stake on it locked and
+            // nothing coming to release them.
+            //
+            // The winner goes FIRST so the cycle is never visible to the settle
+            // tick without the side it must be settled against. `declareWinner`
+            // is guarded on `winner IS NULL`, so a second pass reports
+            // `idempotent` and leaves the first result standing.
+            const declared = await declarePgWinner({ cycleId: cycle.cycleId, winner });
+            if (!declared.ok) {
+                console.error(`❌ cycles.winner ${cycle.cycleId} refused:`, declared.reason);
+            }
+            await this.movePgStatus(cycle.cycleId, CYCLE_STATUS.RESULT_DECLARED,
+                [CYCLE_STATUS.OPEN, CYCLE_STATUS.MERGED, CYCLE_STATUS.CLOSED]);
 
             const cycleType      = cycleLabel(cycle.type);
             // FIX 2 — send combined totals (same numbers users were watching during betting)

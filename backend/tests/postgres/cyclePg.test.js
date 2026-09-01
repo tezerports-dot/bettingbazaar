@@ -513,6 +513,29 @@ describe("the queries gameEngine used to ask MongoDB", () => {
     expect(ids(await findCyclesAwaitingSettlement({ limit: 100 }))).not.toContain(c.cycleId);
   });
 
+  it('never offers a cycle whose result never reached this store', async () => {
+    // The regression this guards, found by wiring the engine to `cycles` and
+    // then looking for what writes the status: NOTHING did. The generator
+    // declared the winner on the Mongo document only, so every cycle sat at OPEN
+    // here — the settle tick found nothing and the engine silently stopped
+    // paying anyone out, with every stake still locked.
+    //
+    // Half-wired is the more dangerous shape: status moved, winner not. The
+    // caller hands `cycle.winner` straight to `beginSettlement`, which refuses a
+    // null side — so the tick would throw on the same row every second forever.
+    const c = await make({ startTime: await afterEverything() });
+    await setStatus({ cycleId: c.cycleId, to: CYCLE_STATUS.RESULT_DECLARED });
+
+    expect(ids(await findCyclesAwaitingSettlement({ limit: 100 })))
+      .not.toContain(c.cycleId);
+
+    await declareWinner({ cycleId: c.cycleId, winner: 'DELHI' });
+    const offered = await findCyclesAwaitingSettlement({ limit: 100 });
+    expect(ids(offered)).toContain(c.cycleId);
+    // And it carries the side, because that is what the caller settles against.
+    expect(offered.find((o) => o.cycleId === c.cycleId).winner).toBe('DELHI');
+  });
+
   it('findCyclesAwaitingSettlement offers the OLDEST declared cycle first', async () => {
     // The Mongo original had no sort at all. A cycle that failed to settle
     // could therefore be passed over indefinitely while newer ones arrived —
