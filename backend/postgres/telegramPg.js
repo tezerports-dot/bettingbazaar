@@ -1,0 +1,547 @@
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+/**
+ * postgres/telegramPg.js — the sign-in surface: configuration generations, the
+ * bot registry, message templates, identities, half-finished onboardings and
+ * one-time login tokens.
+ *
+ * ── Expiry is enforced by the READS, not by a sweep ──────────────────────────
+ * The document model used TTL indexes, which delete expired rows on their own
+ * schedule. PostgreSQL has no such thing, so every read of an expiring row
+ * filters on `expires_at` and `sweepExpired()` only reclaims space.
+ *
+ * That ordering is not a detail. If a read trusted the sweep to have run, then
+ * a login token — a bearer credential — would stay usable for as long as the
+ * sweep was late, and an abandoned onboarding would keep an Aadhaar hash
+ * reachable past its retention window. The sweep may fail, lag, or never be
+ * scheduled; the reads still have to be right.
+ *
+ * ── Secrets ─────────────────────────────────────────────────────────────────
+ * Bot tokens and webhook secrets are ciphertext at rest and are never returned
+ * by the ordinary read. Whoever holds a token can read every message sent to
+ * the bot and speak as the platform, so reaching one takes calling the function
+ * named for it.
+ */
+import { pgQuery, getPool, connectGuarded } from './pgClient.js';
+
+const toInt = (v) => (v == null ? null : Number(v));
+
+// ── Configuration generations ────────────────────────────────────────────────
+
+const CONFIG_PUBLIC = `
+  generation, bot_username, recovery_bot_username,
+  channel_id, channel_username, channel_invite_link,
+  active, activated_at, activated_by, reason, created_at`;
+
+function toConfig(row) {
+  if (!row) return null;
+  return {
+    generation: toInt(row.generation),
+    botUsername: row.bot_username,
+    recoveryBotUsername: row.recovery_bot_username,
+    channelId: row.channel_id,
+    channelUsername: row.channel_username,
+    channelInviteLink: row.channel_invite_link,
+    active: row.active,
+    activatedAt: row.activated_at,
+    activatedBy: row.activated_by,
+    reason: row.reason,
+    createdAt: row.created_at,
+  };
+}
+
+/** The live generation, or null when the platform has never been configured. */
+export async function getActiveConfig() {
+  const { rows } = await pgQuery(
+    `SELECT ${CONFIG_PUBLIC} FROM telegram_configs WHERE active LIMIT 1`, [], 'tg_config_active',
+  );
+  return toConfig(rows[0]);
+}
+
+/**
+ * The live generation's SECRETS. Separate function, deliberately: no route that
+ * renders a config calls this one.
+ */
+export async function getActiveConfigSecrets() {
+  const { rows } = await pgQuery(
+    `SELECT generation, bot_token_encrypted, webhook_secret,
+            recovery_bot_token_encrypted, recovery_webhook_secret
+       FROM telegram_configs WHERE active LIMIT 1`, [], 'tg_config_secrets',
+  );
+  const r = rows[0];
+  return r ? {
+    generation: toInt(r.generation),
+    botTokenEncrypted: r.bot_token_encrypted,
+    webhookSecret: r.webhook_secret,
+    recoveryBotTokenEncrypted: r.recovery_bot_token_encrypted,
+    recoveryWebhookSecret: r.recovery_webhook_secret,
+  } : null;
+}
+
+/**
+ * Activate a new generation.
+ *
+ * Deactivating the old one and activating the new one happen in ONE
+ * transaction, because the partial unique index refuses two active rows — so a
+ * half-applied swap cannot leave the platform with none, which is an install
+ * where nobody can sign up.
+ *
+ * The generation number is `MAX + 1` taken inside the transaction, never a
+ * count: two admins swapping at once must not compute the same next number.
+ */
+export async function activateConfig({
+  channelId, channelUsername = '', channelInviteLink = '',
+  botTokenEncrypted = null, botUsername = '', webhookSecret = null,
+  recoveryBotTokenEncrypted = null, recoveryBotUsername = '', recoveryWebhookSecret = null,
+  activatedBy = null, reason = '',
+}) {
+  if (!channelId) throw new Error('activateConfig requires a channelId');
+  return withTelegramTransaction(async (client) => {
+    await client.query('UPDATE telegram_configs SET active = FALSE WHERE active');
+    const { rows } = await client.query(
+      `INSERT INTO telegram_configs (
+         generation, bot_token_encrypted, bot_username, webhook_secret,
+         recovery_bot_token_encrypted, recovery_bot_username, recovery_webhook_secret,
+         channel_id, channel_username, channel_invite_link,
+         active, activated_at, activated_by, reason)
+       VALUES ((SELECT COALESCE(MAX(generation), 0) + 1 FROM telegram_configs),
+               $1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, now(), $10, $11)
+       RETURNING ${CONFIG_PUBLIC}`,
+      [botTokenEncrypted, botUsername, webhookSecret,
+       recoveryBotTokenEncrypted, recoveryBotUsername, recoveryWebhookSecret,
+       String(channelId), channelUsername, channelInviteLink,
+       activatedBy ? String(activatedBy) : null, reason],
+    );
+    return toConfig(rows[0]);
+  });
+}
+
+// ── The bot registry ─────────────────────────────────────────────────────────
+
+const BOT_PUBLIC = `
+  bot_id, label, role, username, status, live_slot, webhook_url,
+  webhook_registered_at, last_error, added_by, added_at,
+  activated_at, activated_by, retired_at, retired_by, notes`;
+
+function toBot(row) {
+  if (!row) return null;
+  return {
+    botId: row.bot_id, label: row.label, role: row.role, username: row.username,
+    status: row.status, liveSlot: row.live_slot, webhookUrl: row.webhook_url,
+    webhookRegisteredAt: row.webhook_registered_at, lastError: row.last_error,
+    addedBy: row.added_by, addedAt: row.added_at,
+    activatedAt: row.activated_at, activatedBy: row.activated_by,
+    retiredAt: row.retired_at, retiredBy: row.retired_by, notes: row.notes,
+  };
+}
+
+/** Every registered bot, live and reserve. Secrets excluded. */
+export async function listBots({ role = null, status = null } = {}) {
+  const where = [];
+  const params = [];
+  if (role) { params.push(role); where.push(`role = $${params.length}`); }
+  if (status) { params.push(status); where.push(`status = $${params.length}`); }
+  const { rows } = await pgQuery(
+    `SELECT ${BOT_PUBLIC} FROM telegram_bots
+      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      ORDER BY role, status, added_at DESC`, params, 'tg_bot_list',
+  );
+  return rows.map(toBot);
+}
+
+/** The live bot for a singular role, or null. Reads the generated column. */
+export async function getLiveBot(role) {
+  const { rows } = await pgQuery(
+    `SELECT ${BOT_PUBLIC} FROM telegram_bots WHERE live_slot = $1`, [role], 'tg_bot_live',
+  );
+  return toBot(rows[0]);
+}
+
+/** The live bot's credentials, for the send and webhook-verify paths only. */
+export async function getLiveBotSecrets(role) {
+  const { rows } = await pgQuery(
+    `SELECT bot_id, username, token_encrypted, webhook_secret
+       FROM telegram_bots WHERE live_slot = $1`, [role], 'tg_bot_live_secrets',
+  );
+  const r = rows[0];
+  return r ? {
+    botId: r.bot_id, username: r.username,
+    tokenEncrypted: r.token_encrypted, webhookSecret: r.webhook_secret,
+  } : null;
+}
+
+/** Register a bot. Parked as STANDBY unless told otherwise — that is the point. */
+export async function addBot({
+  botId, label, role, username, tokenEncrypted, webhookSecret,
+  status = 'STANDBY', addedBy = null, notes = '',
+}) {
+  const { rows } = await pgQuery(
+    `INSERT INTO telegram_bots (bot_id, label, role, username, token_encrypted,
+                                webhook_secret, status, added_by, notes)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+     RETURNING ${BOT_PUBLIC}`,
+    [String(botId), label, role, username, tokenEncrypted, webhookSecret,
+     status, addedBy ? String(addedBy) : null, notes],
+    'tg_bot_add',
+  );
+  return toBot(rows[0]);
+}
+
+/**
+ * Promote a standby bot to live, retiring whichever bot holds the slot.
+ *
+ * Both moves in ONE transaction, and in this order, because the partial unique
+ * index refuses two live bots in a singular role. Doing it in two statements
+ * outside a transaction leaves a window with no live bot — every inbound
+ * webhook rejected, nobody able to sign in.
+ *
+ * Note what is NOT here: any application-side maintenance of `live_slot`. It is
+ * generated from `status` and `role` by the database, so a promotion cannot
+ * forget to recompute it. The model this replaces derived it in a hook that
+ * update operators bypassed entirely.
+ */
+export async function promoteBot({ botId, role, actor = null }) {
+  return withTelegramTransaction(async (client) => {
+    await client.query(
+      `UPDATE telegram_bots
+          SET status = 'RETIRED', retired_at = now(), retired_by = $2
+        WHERE live_slot = $1`,
+      [role, actor ? String(actor) : null],
+    );
+    const { rows } = await client.query(
+      `UPDATE telegram_bots
+          SET status = 'ACTIVE', activated_at = now(), activated_by = $2, last_error = ''
+        WHERE bot_id = $1 AND role = $3
+        RETURNING ${BOT_PUBLIC}`,
+      [String(botId), actor ? String(actor) : null, role],
+    );
+    if (!rows[0]) throw new Error(`promoteBot: no bot ${botId} in role ${role}`);
+    return toBot(rows[0]);
+  });
+}
+
+/** Record why a promotion or a send failed — the first thing an operator needs. */
+export async function recordBotError(botId, message) {
+  await pgQuery(
+    `UPDATE telegram_bots SET last_error = $2 WHERE bot_id = $1`,
+    [String(botId), String(message ?? '').slice(0, 500)], 'tg_bot_error',
+  );
+}
+
+// ── Templates ────────────────────────────────────────────────────────────────
+
+/**
+ * Every stored template, as a map.
+ *
+ * A blank body is treated as ABSENT so the caller falls back to the shipped
+ * default. An admin who clears the box means "use the default", never "send
+ * nothing" — a player staring at silence after /start is the worst outcome this
+ * table can produce.
+ */
+export async function getTemplates() {
+  const { rows } = await pgQuery(
+    `SELECT key, body FROM telegram_templates`, [], 'tg_template_all',
+  );
+  return Object.fromEntries(
+    rows.filter((r) => String(r.body ?? '').trim() !== '').map((r) => [r.key, r.body]),
+  );
+}
+
+/** Write a template. Upsert, because an admin edits by key, not by row id. */
+export async function setTemplate({ key, body, updatedBy = null }) {
+  const { rows } = await pgQuery(
+    `INSERT INTO telegram_templates (key, body, updated_by, updated_at)
+     VALUES ($1, $2, $3, now())
+     ON CONFLICT (key) DO UPDATE
+       SET body = EXCLUDED.body, updated_by = EXCLUDED.updated_by, updated_at = now()
+     RETURNING key, body, updated_at, updated_by`,
+    [String(key), String(body), updatedBy ? String(updatedBy) : null], 'tg_template_set',
+  );
+  return rows[0];
+}
+
+// ── Identities ───────────────────────────────────────────────────────────────
+
+const IDENTITY_COLUMNS = `
+  telegram_user_id, user_id, telegram_username, first_name, phone,
+  contact_shared_at, contact_active, channel_status, channel_checked_at,
+  channel_generation, linked_generation, created_at, last_seen_at`;
+
+function toIdentity(row) {
+  if (!row) return null;
+  return {
+    telegramUserId: row.telegram_user_id,
+    userId: row.user_id,
+    telegramUsername: row.telegram_username,
+    firstName: row.first_name,
+    phone: row.phone,
+    contactSharedAt: row.contact_shared_at,
+    contactActive: row.contact_active,
+    channelStatus: row.channel_status,
+    channelCheckedAt: row.channel_checked_at,
+    channelGeneration: toInt(row.channel_generation),
+    linkedGeneration: toInt(row.linked_generation),
+    createdAt: row.created_at,
+    lastSeenAt: row.last_seen_at,
+  };
+}
+
+export async function getIdentityByTelegramId(telegramUserId) {
+  if (!telegramUserId) return null;
+  const { rows } = await pgQuery(
+    `SELECT ${IDENTITY_COLUMNS} FROM telegram_identities WHERE telegram_user_id = $1`,
+    [String(telegramUserId)], 'tg_identity_get',
+  );
+  return toIdentity(rows[0]);
+}
+
+export async function getIdentityByUserId(userId) {
+  if (!userId) return null;
+  const { rows } = await pgQuery(
+    `SELECT ${IDENTITY_COLUMNS} FROM telegram_identities WHERE user_id = $1`,
+    [String(userId)], 'tg_identity_by_user',
+  );
+  return toIdentity(rows[0]);
+}
+
+/** Link a Telegram account to a platform account. */
+export async function createIdentity({
+  telegramUserId, userId, phone, contactSharedAt = new Date(),
+  telegramUsername = '', firstName = '', linkedGeneration = 0,
+}) {
+  const { rows } = await pgQuery(
+    `INSERT INTO telegram_identities (
+       telegram_user_id, user_id, telegram_username, first_name, phone,
+       contact_shared_at, linked_generation, channel_generation)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$7)
+     RETURNING ${IDENTITY_COLUMNS}`,
+    [String(telegramUserId), String(userId), telegramUsername, firstName,
+     String(phone), contactSharedAt, linkedGeneration],
+    'tg_identity_create',
+  );
+  return toIdentity(rows[0]);
+}
+
+/**
+ * Cache a channel-membership observation.
+ *
+ * The generation is stored WITH the status, never separately, so an admin
+ * swapping the channel makes every cached answer stale by construction rather
+ * than by a sweep somebody has to remember to run.
+ */
+export async function setChannelStatus(telegramUserId, { status, generation }) {
+  const { rows } = await pgQuery(
+    `UPDATE telegram_identities
+        SET channel_status = $2, channel_generation = $3,
+            channel_checked_at = now(), last_seen_at = now()
+      WHERE telegram_user_id = $1
+      RETURNING ${IDENTITY_COLUMNS}`,
+    [String(telegramUserId), status, generation], 'tg_identity_channel',
+  );
+  return toIdentity(rows[0]);
+}
+
+/**
+ * Retire an identity's contact claim.
+ *
+ * The row SURVIVES, marked — "was this number ever linked, and to whom?" is
+ * what a recovery request asks, and deleting the row destroys the answer. The
+ * partial unique index only covers contact-active rows, so retiring one frees
+ * the number for the person's new Telegram account.
+ */
+export async function deactivateContact(telegramUserId) {
+  const { rows } = await pgQuery(
+    `UPDATE telegram_identities SET contact_active = FALSE
+      WHERE telegram_user_id = $1 RETURNING ${IDENTITY_COLUMNS}`,
+    [String(telegramUserId)], 'tg_identity_deactivate',
+  );
+  return toIdentity(rows[0]);
+}
+
+// ── Pending onboardings ──────────────────────────────────────────────────────
+
+const PENDING_COLUMNS = `
+  telegram_user_id, step, aadhaar_hash, aadhaar_last4, phone,
+  telegram_username, first_name, referral_code, generation, created_at, expires_at`;
+
+function toPending(row) {
+  if (!row) return null;
+  return {
+    telegramUserId: row.telegram_user_id,
+    step: row.step,
+    aadhaarHash: row.aadhaar_hash,
+    aadhaarLast4: row.aadhaar_last4,
+    phone: row.phone,
+    telegramUsername: row.telegram_username,
+    firstName: row.first_name,
+    referralCode: row.referral_code,
+    generation: toInt(row.generation),
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+  };
+}
+
+/**
+ * The live onboarding for a Telegram account, or null.
+ *
+ * Filters on `expires_at` rather than trusting the sweep. An expired row that
+ * has not been swept yet is NOT a usable onboarding, and a caller that treated
+ * it as one would resume a conversation whose Aadhaar hash is past its
+ * retention window.
+ */
+export async function getPendingLink(telegramUserId) {
+  if (!telegramUserId) return null;
+  const { rows } = await pgQuery(
+    `SELECT ${PENDING_COLUMNS} FROM telegram_pending_links
+      WHERE telegram_user_id = $1 AND expires_at > now()`,
+    [String(telegramUserId)], 'tg_pending_get',
+  );
+  return toPending(rows[0]);
+}
+
+/** The captured Aadhaar ciphertext, for the one step that promotes it. */
+export async function getPendingAadhaar(telegramUserId) {
+  const { rows } = await pgQuery(
+    `SELECT aadhaar_hash, aadhaar_encrypted, aadhaar_last4
+       FROM telegram_pending_links
+      WHERE telegram_user_id = $1 AND expires_at > now()`,
+    [String(telegramUserId)], 'tg_pending_aadhaar',
+  );
+  const r = rows[0];
+  return r ? {
+    aadhaarHash: r.aadhaar_hash,
+    aadhaarEncrypted: r.aadhaar_encrypted,
+    aadhaarLast4: r.aadhaar_last4,
+  } : null;
+}
+
+/**
+ * Start or advance an onboarding.
+ *
+ * Upsert on the Telegram id: somebody who abandons a conversation and starts
+ * again gets ONE row, and a restarted onboarding resets the expiry rather than
+ * inheriting the abandoned one's.
+ */
+export async function upsertPendingLink({
+  telegramUserId, step = 'AWAITING_AADHAAR', aadhaarHash = null,
+  aadhaarEncrypted = null, aadhaarLast4 = '', phone = null,
+  telegramUsername = '', firstName = '', referralCode = null, generation = 0,
+  ttlHours = 24,
+}) {
+  const { rows } = await pgQuery(
+    `INSERT INTO telegram_pending_links (
+       telegram_user_id, step, aadhaar_hash, aadhaar_encrypted, aadhaar_last4,
+       phone, telegram_username, first_name, referral_code, generation, expires_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now() + ($11 || ' hours')::interval)
+     ON CONFLICT (telegram_user_id) DO UPDATE SET
+       step = EXCLUDED.step,
+       -- COALESCE so advancing a step does not erase what an earlier one
+       -- captured: the contact step sends no Aadhaar, and overwriting with NULL
+       -- would lose the number the conversation already proved.
+       aadhaar_hash      = COALESCE(EXCLUDED.aadhaar_hash, telegram_pending_links.aadhaar_hash),
+       aadhaar_encrypted = COALESCE(EXCLUDED.aadhaar_encrypted, telegram_pending_links.aadhaar_encrypted),
+       aadhaar_last4     = COALESCE(NULLIF(EXCLUDED.aadhaar_last4, ''), telegram_pending_links.aadhaar_last4),
+       phone             = COALESCE(EXCLUDED.phone, telegram_pending_links.phone),
+       telegram_username = COALESCE(NULLIF(EXCLUDED.telegram_username, ''), telegram_pending_links.telegram_username),
+       first_name        = COALESCE(NULLIF(EXCLUDED.first_name, ''), telegram_pending_links.first_name),
+       referral_code     = COALESCE(telegram_pending_links.referral_code, EXCLUDED.referral_code),
+       generation        = EXCLUDED.generation,
+       expires_at        = EXCLUDED.expires_at
+     RETURNING ${PENDING_COLUMNS}`,
+    [String(telegramUserId), step, aadhaarHash, aadhaarEncrypted, aadhaarLast4,
+     phone, telegramUsername, firstName, referralCode, generation, String(ttlHours)],
+    'tg_pending_upsert',
+  );
+  return toPending(rows[0]);
+}
+
+/** Drop an onboarding once it has produced an identity. */
+export async function deletePendingLink(telegramUserId) {
+  await pgQuery(
+    `DELETE FROM telegram_pending_links WHERE telegram_user_id = $1`,
+    [String(telegramUserId)], 'tg_pending_delete',
+  );
+}
+
+// ── Login tokens ─────────────────────────────────────────────────────────────
+
+/** Issue a one-time login token. Only the HASH is stored. */
+export async function issueLoginToken({ tokenHash, telegramUserId, userId, ttlSeconds = 300 }) {
+  const { rows } = await pgQuery(
+    `INSERT INTO telegram_login_tokens (token_hash, telegram_user_id, user_id, expires_at)
+     VALUES ($1, $2, $3, now() + ($4 || ' seconds')::interval)
+     RETURNING token_hash, user_id, expires_at`,
+    [String(tokenHash), String(telegramUserId), String(userId), String(ttlSeconds)],
+    'tg_login_issue',
+  );
+  return { tokenHash: rows[0].token_hash, userId: rows[0].user_id, expiresAt: rows[0].expires_at };
+}
+
+/**
+ * Consume a login token, once.
+ *
+ * The read and the consume are ONE atomic UPDATE. Checking first and consuming
+ * second is two statements, and a forwarded link redeemed twice fits between
+ * them — which for a bearer credential means two sessions from one token.
+ * `consumed_at IS NULL` in the WHERE clause is what makes exactly one of N
+ * racing redemptions win.
+ *
+ * Expiry is checked HERE, not left to the sweep: a token whose row has not been
+ * reclaimed yet is still expired.
+ *
+ * @returns {{userId: string}|null} null when unknown, already used, or expired —
+ *   deliberately indistinguishable to the caller, so the endpoint cannot be
+ *   used to tell a real token from a stale one.
+ */
+export async function consumeLoginToken({ tokenHash, telegramUserId = null }) {
+  const { rows } = await pgQuery(
+    `UPDATE telegram_login_tokens
+        SET consumed_at = now()
+      WHERE token_hash = $1
+        AND consumed_at IS NULL
+        AND expires_at > now()
+        AND ($2::text IS NULL OR telegram_user_id = $2)
+      RETURNING user_id, telegram_user_id`,
+    [String(tokenHash), telegramUserId ? String(telegramUserId) : null],
+    'tg_login_consume',
+  );
+  return rows[0] ? { userId: rows[0].user_id, telegramUserId: rows[0].telegram_user_id } : null;
+}
+
+// ── Retention ────────────────────────────────────────────────────────────────
+
+/**
+ * Reclaim space from expired rows.
+ *
+ * Space ONLY. Nothing here decides whether a row is usable — the reads do that,
+ * and they do it on every call. This sweep being late, failing, or never
+ * scheduled must not make a single expired token redeemable, which is why no
+ * read consults it.
+ *
+ * Counts come back from the DELETE's own row count, reconstructed per pass
+ * rather than accumulated across passes: an accumulator counts passes, and a
+ * crash mid-pass loses the number permanently.
+ */
+export async function sweepExpired() {
+  const pending = await pgQuery(
+    `DELETE FROM telegram_pending_links WHERE expires_at <= now()`, [], 'tg_sweep_pending');
+  const tokens = await pgQuery(
+    `DELETE FROM telegram_login_tokens WHERE expires_at <= now()`, [], 'tg_sweep_tokens');
+  return { pendingLinks: pending.rowCount ?? 0, loginTokens: tokens.rowCount ?? 0 };
+}
+
+/** Run `fn` in a transaction — for the two swaps that must be all-or-nothing. */
+export async function withTelegramTransaction(fn) {
+  const pool = await getPool();
+  const client = await connectGuarded(pool);
+  try {
+    await client.query('BEGIN');
+    const value = await fn(client);
+    await client.query('COMMIT');
+    return value;
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}

@@ -126,6 +126,44 @@ const MUTATIONS = [
     from: `  if (!client) throw new Error('setKycStatus must run inside the transaction that records the decision');`,
     to: `  if (!client) return null;`,
   },
+  // ── The sign-in surface: expiry, single use, and disclosure control ────────
+  {
+    id: 'M47', file: 'backend/postgres/telegramPg.js', config: PG,
+    test: 'backend/tests/postgres/telegramPg.test.js',
+    why: 'a forwarded login link can be redeemed twice, minting two sessions',
+    from: `        AND consumed_at IS NULL\n`,
+    to: '',
+  },
+  {
+    id: 'M48', file: 'backend/postgres/telegramPg.js', config: PG,
+    test: 'backend/tests/postgres/telegramPg.test.js',
+    why: 'an expired onboarding stays readable until a sweep happens to run',
+    from: `      WHERE telegram_user_id = $1 AND expires_at > now()\`,
+    [String(telegramUserId)], 'tg_pending_get',`,
+    to: `      WHERE telegram_user_id = $1\`,
+    [String(telegramUserId)], 'tg_pending_get',`,
+  },
+  {
+    id: 'M49', file: 'backend/postgres/identityPg.js', config: PG,
+    test: 'backend/tests/postgres/identityPg.test.js',
+    why: 'two concurrent exports disclose the same Aadhaar in two files',
+    from: `          FOR UPDATE SKIP LOCKED)`,
+    to: `          )`,
+  },
+  {
+    id: 'M50', file: 'backend/postgres/identityPg.js', config: PG,
+    test: 'backend/tests/postgres/identityPg.test.js',
+    why: 'a VERIFIED Aadhaar row can be deleted, freeing a number that is in use',
+    from: `WHERE user_id = $1 AND status = 'FAILED'`,
+    to: `WHERE user_id = $1`,
+  },
+  {
+    id: 'M51', file: 'backend/postgres/identityPg.js', config: PG,
+    test: 'backend/tests/postgres/identityPg.test.js',
+    why: 'a revoked token becomes valid again once its row expires',
+    from: `WHERE token = $1 AND expires_at > now()`,
+    to: `WHERE token = $1`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

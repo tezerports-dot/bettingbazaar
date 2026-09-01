@@ -839,3 +839,269 @@ CREATE INDEX IF NOT EXISTS users_joined_at_idx     ON users (joined_at DESC);
 -- partial index is both smaller and the one the planner actually picks.
 CREATE INDEX IF NOT EXISTS users_admins_idx        ON users (user_id) WHERE is_admin OR is_sub_admin;
 CREATE INDEX IF NOT EXISTS users_flagged_idx       ON users (payment_flagged_at DESC) WHERE payment_flagged;
+
+-- ── Telegram: the configuration generation ───────────────────────────────────
+--
+-- `generation` is monotonic and bumped ONLY when the channel changes, never
+-- when a bot is swapped. The two have different blast radii: a cached "this
+-- user is a member" is meaningful only for the channel it was observed in, so
+-- swapping channels must invalidate every cached answer — which the counter
+-- does by construction. Swapping a bot invalidates nothing, because identities
+-- key on the person's Telegram id, a property of Telegram rather than of our
+-- bot. Tying the two would force every player to re-join a channel to fix a
+-- problem that never touched it.
+CREATE TABLE IF NOT EXISTS telegram_configs (
+  generation           BIGINT PRIMARY KEY,
+  -- Ciphertext, always. Whoever holds a bot token can read every message sent
+  -- to the bot and speak as the platform. Never returned to any panel.
+  bot_token_encrypted  TEXT,
+  bot_username         TEXT NOT NULL DEFAULT '',
+  webhook_secret       TEXT,
+  recovery_bot_token_encrypted TEXT,
+  recovery_bot_username TEXT NOT NULL DEFAULT '',
+  recovery_webhook_secret TEXT,
+  channel_id           TEXT NOT NULL,
+  channel_username     TEXT NOT NULL DEFAULT '',
+  channel_invite_link  TEXT NOT NULL DEFAULT '',
+  active               BOOLEAN NOT NULL DEFAULT FALSE,
+  activated_at         TIMESTAMPTZ,
+  activated_by         TEXT,
+  reason               TEXT NOT NULL DEFAULT '',
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- At most one active generation, as the DATABASE's rule rather than something
+-- every writer has to remember: activating a new one must deactivate the old
+-- in the same transaction, or fail.
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_telegram_config
+  ON telegram_configs (active) WHERE active;
+
+-- ── Telegram: the bot registry ───────────────────────────────────────────────
+--
+-- Exists so that replacing a suspended bot is one click on a row that already
+-- exists, rather than creating, naming and verifying a bot during the outage
+-- where nobody can sign up. STANDBY is the point of the table.
+CREATE TABLE IF NOT EXISTS telegram_bots (
+  bot_id          TEXT PRIMARY KEY,   -- Telegram's numeric id: the real identity
+  label           TEXT NOT NULL,
+  role            TEXT NOT NULL,
+  username        TEXT NOT NULL,
+  token_encrypted TEXT NOT NULL,
+  webhook_secret  TEXT NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'STANDBY',
+
+  -- GENERATED, not maintained by application code.
+  --
+  -- This column exists only to be indexed: it holds the role for a LIVE bot in
+  -- a singular role and NULL otherwise, so the partial unique index below makes
+  -- "at most one live sign-in bot" a rule the database enforces.
+  --
+  -- The document model derived it in a pre-validate hook, which meant a writer
+  -- using an update operator instead of a document save bypassed the hook
+  -- entirely and left the invariant unguarded — a live-bot promotion that set
+  -- status without recomputing the slot would have been accepted. Generating it
+  -- from the row removes the requirement to remember, and there is no writer
+  -- that can get it wrong.
+  live_slot       TEXT GENERATED ALWAYS AS (
+                    CASE WHEN status = 'ACTIVE' AND role IN ('signin', 'recovery')
+                         THEN role END
+                  ) STORED,
+
+  webhook_url     TEXT NOT NULL DEFAULT '',
+  webhook_registered_at TIMESTAMPTZ,
+  last_error      TEXT NOT NULL DEFAULT '',
+  added_by        TEXT,
+  added_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  activated_at    TIMESTAMPTZ,
+  activated_by    TEXT,
+  retired_at      TIMESTAMPTZ,
+  retired_by      TEXT,
+  notes           TEXT NOT NULL DEFAULT '',
+
+  CONSTRAINT telegram_bots_role_check
+    CHECK (role IN ('signin','recovery','broadcast','moderation','generic')),
+  CONSTRAINT telegram_bots_status_check
+    CHECK (status IN ('ACTIVE','STANDBY','RETIRED'))
+);
+-- Partial rather than sparse: rows with no live_slot are not indexed at all, so
+-- any number of standby, retired and outbound-only bots coexist.
+CREATE UNIQUE INDEX IF NOT EXISTS one_live_bot_per_singular_role
+  ON telegram_bots (live_slot) WHERE live_slot IS NOT NULL;
+CREATE INDEX IF NOT EXISTS telegram_bots_role_status_idx ON telegram_bots (role, status);
+
+-- ── Telegram: what the bot says ──────────────────────────────────────────────
+-- A missing or blank row means THE SHIPPED DEFAULT, never silence: a player
+-- staring at nothing after /start is the worst outcome this table can produce.
+CREATE TABLE IF NOT EXISTS telegram_templates (
+  key        TEXT PRIMARY KEY,
+  body       TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by TEXT
+);
+
+-- ── Telegram: one Telegram account ↔ one platform account ────────────────────
+CREATE TABLE IF NOT EXISTS telegram_identities (
+  telegram_user_id  TEXT PRIMARY KEY,
+  -- UNIQUE both ways: one Telegram account cannot hold two platform accounts,
+  -- and one platform account cannot be driven by two Telegram accounts. That
+  -- pair IS the no-duplicate-accounts rule, enforced by the database rather
+  -- than by a check-then-insert that a concurrent signup fits between.
+  user_id           TEXT NOT NULL UNIQUE REFERENCES users (user_id) ON DELETE CASCADE,
+  telegram_username TEXT NOT NULL DEFAULT '',
+  first_name        TEXT NOT NULL DEFAULT '',
+
+  -- Telegram's own verified number for the account, which is why it can stand
+  -- in for an SMS OTP. Normalised to digits so it compares to users.mobile.
+  phone             TEXT NOT NULL,
+  contact_shared_at TIMESTAMPTZ NOT NULL,
+  contact_active    BOOLEAN NOT NULL DEFAULT TRUE,
+
+  -- A CACHE. Telegram is authoritative; this is updated by chat_member events
+  -- with a sweep for the ones we miss, because polling per request does not
+  -- survive the member counts this platform plans for.
+  channel_status    TEXT NOT NULL DEFAULT 'unknown',
+  channel_checked_at TIMESTAMPTZ,
+  -- Which generation's channel the status above refers to. An admin swapping
+  -- the channel makes this stale BY CONSTRUCTION, and the gate then reads the
+  -- user as "must join the new channel" rather than trusting an old answer.
+  channel_generation BIGINT NOT NULL DEFAULT 0,
+  linked_generation  BIGINT NOT NULL DEFAULT 0,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at      TIMESTAMPTZ,
+
+  CONSTRAINT telegram_identities_channel_status_check
+    CHECK (channel_status IN ('member','administrator','creator','restricted','left','kicked','unknown'))
+);
+-- The phone is an identity anchor: two Telegram accounts sharing one number
+-- must not become two platform accounts. Partial on contact_active so somebody
+-- who genuinely moves their number to a new Telegram account (the recovery
+-- path) is not blocked by their own retired row.
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_identity_per_phone
+  ON telegram_identities (phone) WHERE contact_active;
+CREATE INDEX IF NOT EXISTS telegram_identities_channel_idx
+  ON telegram_identities (channel_generation, channel_status);
+
+-- ── Telegram: the half-finished conversation ─────────────────────────────────
+--
+-- Deliberately SEPARATE from telegram_identities: nothing here has proven
+-- anything yet, and a half-finished signup must never be mistaken for an
+-- account.
+--
+-- EXPIRY IS NOT A TTL INDEX. PostgreSQL has none, so `expires_at` is enforced
+-- by the READS — every query filters on it — and the sweep below only reclaims
+-- space. That ordering matters: a sweep that has not run yet must never make an
+-- abandoned onboarding usable, and code that trusts the sweep to have run is
+-- code that trusts a cron job with an Aadhaar hash.
+CREATE TABLE IF NOT EXISTS telegram_pending_links (
+  telegram_user_id  TEXT PRIMARY KEY,
+  step              TEXT NOT NULL DEFAULT 'AWAITING_AADHAAR',
+  aadhaar_hash      TEXT,
+  aadhaar_encrypted TEXT,
+  aadhaar_last4     TEXT NOT NULL DEFAULT '',
+  phone             TEXT,
+  telegram_username TEXT NOT NULL DEFAULT '',
+  first_name        TEXT NOT NULL DEFAULT '',
+  -- Attribution is recorded HERE, at first contact, because that is the only
+  -- moment the deep-link payload exists. Carrying it forward to the created
+  -- account is what makes a referral link work at all.
+  referral_code     TEXT,
+  generation        BIGINT NOT NULL DEFAULT 0,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at        TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '24 hours'),
+
+  CONSTRAINT telegram_pending_links_step_check
+    CHECK (step IN ('AWAITING_AADHAAR','AWAITING_CONTACT','AWAITING_CHANNEL','COMPLETE'))
+);
+CREATE INDEX IF NOT EXISTS telegram_pending_links_expiry_idx ON telegram_pending_links (expires_at);
+
+-- ── Telegram: the bridge from a chat to a browser session ────────────────────
+--
+-- A bearer credential for the seconds it lives, travelling through a chat the
+-- player might forward. Deliberately hostile to reuse: single-use (consumed_at
+-- is set in the SAME atomic UPDATE that reads it), short-lived, and bound to
+-- the Telegram account it was issued to.
+--
+-- Stored as a SHA-256 hash, so a database dump yields nothing usable — the
+-- plaintext exists only in the message Telegram delivered.
+CREATE TABLE IF NOT EXISTS telegram_login_tokens (
+  token_hash      TEXT PRIMARY KEY,
+  telegram_user_id TEXT NOT NULL,
+  user_id         TEXT NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,
+  consumed_at     TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at      TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS telegram_login_tokens_user_idx ON telegram_login_tokens (user_id);
+CREATE INDEX IF NOT EXISTS telegram_login_tokens_expiry_idx ON telegram_login_tokens (expires_at);
+
+-- ── Revoked tokens ───────────────────────────────────────────────────────────
+-- Checked on every authenticated request, so it is a primary-key lookup and
+-- nothing else. Same expiry posture as above: the READ decides, the sweep only
+-- reclaims — a revoked token must not become valid again because a cron job
+-- was late.
+CREATE TABLE IF NOT EXISTS token_blacklist (
+  token      TEXT PRIMARY KEY,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '24 hours')
+);
+CREATE INDEX IF NOT EXISTS token_blacklist_expiry_idx ON token_blacklist (expires_at);
+
+-- ── KYC verification ─────────────────────────────────────────────────────────
+--
+-- No identity DOCUMENTS are collected, stored or accepted anywhere: KYC is a
+-- 12-digit number, held as an HMAC plus a ciphertext. See 04-GOVERNANCE.md §1.
+CREATE TABLE IF NOT EXISTS kyc_verifications (
+  user_id          TEXT PRIMARY KEY REFERENCES users (user_id) ON DELETE CASCADE,
+  -- UNIQUE: the no-duplicate-accounts rule, enforced by the database. Two
+  -- people cannot register the same Aadhaar, and it is a hash, so the index
+  -- itself reveals nothing.
+  aadhaar_hash     TEXT NOT NULL UNIQUE,
+  -- Ciphertext. Read in exactly one place (the audited export), which is why
+  -- the repository never selects it by default.
+  aadhaar_encrypted TEXT NOT NULL,
+  -- Shown to operators instead of the number: enough to match a query, useless
+  -- to an attacker.
+  aadhaar_last4    TEXT NOT NULL,
+  phone            TEXT NOT NULL,
+  status           TEXT NOT NULL DEFAULT 'PENDING_VERIFICATION',
+
+  -- Which export a row went out in and which import decided it. Two rows
+  -- sharing an export batch went to the verifier together, which is what makes
+  -- a disputed result traceable to a specific file.
+  export_batch_id  TEXT,
+  exported_at      TIMESTAMPTZ,
+  import_batch_id  TEXT,
+  verified_at      TIMESTAMPTZ,
+  -- Verbatim from the verifier on a NO, so support can tell a player why
+  -- instead of guessing.
+  failure_reason   TEXT NOT NULL DEFAULT '',
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  CONSTRAINT kyc_verifications_status_check
+    CHECK (status IN ('PENDING_VERIFICATION','VERIFIED','FAILED'))
+);
+CREATE INDEX IF NOT EXISTS kyc_verifications_phone_idx ON kyc_verifications (phone);
+-- The export query: everything still awaiting a verdict, oldest first.
+CREATE INDEX IF NOT EXISTS kyc_verifications_pending_idx
+  ON kyc_verifications (created_at) WHERE status = 'PENDING_VERIFICATION';
+CREATE INDEX IF NOT EXISTS kyc_verifications_export_batch_idx ON kyc_verifications (export_batch_id);
+CREATE INDEX IF NOT EXISTS kyc_verifications_import_batch_idx ON kyc_verifications (import_batch_id);
+
+-- ── KYC batches: one export or one import, as an auditable record ────────────
+-- An EXPORT is Aadhaar numbers LEAVING the platform. Recording who asked and
+-- when is the difference between a controlled disclosure and a leak nobody can
+-- reconstruct afterwards.
+CREATE TABLE IF NOT EXISTS kyc_batches (
+  batch_id       TEXT PRIMARY KEY,
+  kind           TEXT NOT NULL,
+  actor_id       TEXT NOT NULL,
+  row_count      INT NOT NULL DEFAULT 0 CHECK (row_count >= 0),
+  verified_count INT NOT NULL DEFAULT 0 CHECK (verified_count >= 0),
+  failed_count   INT NOT NULL DEFAULT 0 CHECK (failed_count >= 0),
+  skipped_count  INT NOT NULL DEFAULT 0 CHECK (skipped_count >= 0),
+  note           TEXT NOT NULL DEFAULT '',
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  CONSTRAINT kyc_batches_kind_check CHECK (kind IN ('EXPORT','IMPORT'))
+);
+CREATE INDEX IF NOT EXISTS kyc_batches_kind_idx ON kyc_batches (kind, created_at DESC);

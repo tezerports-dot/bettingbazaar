@@ -166,14 +166,14 @@ export async function getUserCredentials(userId) {
     [String(userId)], 'user_get_credentials',
   );
   const r = rows[0];
-  return r && {
+  return r ? {
     userId: r.user_id,
     passwordHash: r.password_hash,
     twoFactorEnabled: r.two_factor_enabled,
     twoFactorSecret: r.two_factor_secret,
     twoFactorPendingSecret: r.two_factor_pending_secret,
     twoFactorLastCounter: toInt(r.two_factor_last_counter),
-  };
+  } : null;
 }
 
 // ── Writes ───────────────────────────────────────────────────────────────────
