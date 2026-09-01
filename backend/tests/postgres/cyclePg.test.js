@@ -42,6 +42,24 @@ const make = async (over = {}) => {
   return cycle;
 };
 
+/**
+ * Return borrowed connections to the pool with no transaction left open.
+ *
+ * `client.release()` alone hands a connection back exactly as it is — so a test
+ * that fails an assertion mid-transaction returns a client still inside BEGIN,
+ * still holding whatever rows it locked. The next test borrows it and either
+ * blocks on the leftover lock or reads through the open snapshot, which is how
+ * one failing assertion in this file turned into a second, unrelated-looking
+ * `TypeError` in the test after it.
+ */
+async function rollbackQuietly(...clients) {
+  for (const c of clients) {
+    if (!c) continue;
+    try { await c.query('ROLLBACK'); } catch { /* already unwound */ }
+    c.release();
+  }
+}
+
 beforeAll(async () => { await applySchema(); });
 
 describe('creating a cycle', () => {
@@ -282,7 +300,7 @@ describe('the row lock replaces the advisory lock', () => {
       expect(locked.cycleId).toBe(cycle.cycleId);
       expect(locked.status).toBe(CYCLE_STATUS.OPEN);
       await client.query('COMMIT');
-    } finally { client.release(); }
+    } finally { await rollbackQuietly(client); }
   });
 
   it('does NOT make one bet wait for another on the same cycle', async () => {
@@ -307,7 +325,7 @@ describe('the row lock replaces the advisory lock', () => {
       // a latency budget, so it cannot become a flaky timing test.
       expect(elapsed, 'a bet queued behind another bet on the same cycle').toBeLessThan(2_000);
       await a.query('COMMIT');
-    } finally { a.release(); b.release(); }
+    } finally { await rollbackQuietly(a, b); }
   });
 
   it('makes a settlement WAIT for a bet already in flight', async () => {
@@ -332,13 +350,24 @@ describe('the row lock replaces the advisory lock', () => {
 
       const HOLD_MS = 600;
       await new Promise((r) => setTimeout(r, HOLD_MS));
+      // THIS is the proof it blocked: the settlement had a full HOLD_MS to take
+      // the lock and did not.
       expect(acquiredAfterMs, 'the settlement locked the cycle while a bet still held it').toBeNull();
 
+      // Measured against the moment the bet actually released, not against the
+      // sleep. `setTimeout(600)` is a floor the platform may round DOWN from —
+      // CI observed 599 — so asserting the wait was >= HOLD_MS made a real
+      // property depend on timer precision. What must hold is that the
+      // settlement acquired only AFTER the bet let go.
+      const releasedAt = Date.now() - startedAt;
       await better.query('COMMIT');
       await settling;
-      expect(acquiredAfterMs).toBeGreaterThanOrEqual(HOLD_MS);
+      expect(acquiredAfterMs).not.toBeNull();
+      expect(acquiredAfterMs).toBeGreaterThanOrEqual(releasedAt);
       await settler.query('COMMIT');
-    } finally { better.release(); settler.release(); }
+    } finally {
+      await rollbackQuietly(better, settler);
+    }
   }, 15_000);
 
   it('does not block a DIFFERENT cycle — no hash, so no collision', async () => {
@@ -363,7 +392,7 @@ describe('the row lock replaces the advisory lock', () => {
       expect(elsewhere.cycleId).toBe(other.cycleId);
       expect(elapsed, 'an unrelated cycle was blocked').toBeLessThan(2_000);
       await settler.query('COMMIT');
-    } finally { settler.release(); better.release(); }
+    } finally { await rollbackQuietly(settler, better); }
   });
 
   it('returns null for a cycle that does not exist', async () => {
@@ -373,7 +402,7 @@ describe('the row lock replaces the advisory lock', () => {
       await client.query('BEGIN');
       expect(await lockForBet(client, 'no_such_cycle')).toBeNull();
       await client.query('COMMIT');
-    } finally { client.release(); }
+    } finally { await rollbackQuietly(client); }
   });
 });
 
