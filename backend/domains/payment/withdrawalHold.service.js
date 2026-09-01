@@ -39,7 +39,6 @@ import { emitOrderUpdate, emitAdminUpdate } from '../notification/realtimeEmitte
 import { sendAlert } from '../../services/alerting.service.js';
 import { rupeesToPaise } from '../../shared/money.js';
 import { isPostgresAuthoritative, MONEY_PATHS } from '../../postgres/moneyAuthority.js';
-import { reverseMirrorMerchantSettlement } from '../../postgres/reverseMirror.js';
 import {
   DIRECTIONS, openSettlement, completeSettlement, cancelSettlement, reverseSettlement,
   getSettlement,
@@ -239,13 +238,7 @@ async function settleHoldOnPostgres(orderId) {
  * would hand the same order back on the next pass.
  */
 function mirrorSettlement(order, result) {
-  return reverseMirrorMerchantSettlement({
-    order_id: order._id.toString(),
-    direction: result.settlement.direction ?? DIRECTIONS.WITHDRAWAL,
-    state: result.settlement.state,
-    updated_at: result.settlement.updatedAt,
-  });
-}
+  return}
 
 /** The original Mongo-authoritative path, unchanged. */
 async function settleHoldOnMongo(orderId) {

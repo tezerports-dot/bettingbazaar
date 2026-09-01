@@ -99,10 +99,14 @@ capabilities:
     name: Database Transactions
     bucket: A
     owner: app
-    implementation_status: partial
+    # Was PARTIAL because a money movement spanned two stores and could not be
+    # one transaction. With a single store it can be, and is: the balance move,
+    # the row it belongs to and its ledger entries commit together or not at
+    # all, under the wallet row lock.
+    implementation_status: full
     activation_status: active
-    evidence: [backend/domains/wallet/walletAuthority.service.js, backend/postgres/dualWrite.js]
-    docs: [docs/governance/04-GOVERNANCE.md]
+    evidence: [backend/domains/wallet/walletAuthority.service.js, backend/postgres/walletPg.js, backend/postgres/pgClient.js]
+    docs: [docs/governance/04-GOVERNANCE.md, CLAUDE.md]
   - id: CAP-11
     name: CDC Migration
     bucket: decision
@@ -133,9 +137,20 @@ capabilities:
     name: Reconciliation Engine
     bucket: A
     owner: app
+    # Rescoped 2026-09-01. The cross-store reconciler is deleted along with the
+    # store it compared against — drift between two copies is not a failure mode
+    # with one copy. What remains, and is what "reconciliation" should have
+    # meant all along, is INTERNAL consistency: accounting events derived from
+    # completed orders and settled cycles, committed merchant pockets explained
+    # by outstanding settlements, and a ledger that conserves to zero.
     implementation_status: full
     activation_status: active
-    evidence: [backend/postgres/reconcile.js, backend/startup/cronJobs.js, backend/services/metrics.service.js]
+    evidence:
+      - backend/domains/revenue/revenueSettlement.service.js
+      - backend/postgres/merchantSettlementPg.js
+      - backend/postgres/ledgerPg.js
+      - backend/startup/cronJobs.js
+    verification: { test: backend/tests/postgres/merchantSettlementPg.test.js }
   - id: CAP-14
     name: Rollback Strategy
     bucket: A
@@ -163,8 +178,12 @@ capabilities:
     owner: app
     implementation_status: architecture-ready
     activation_status: volume-gated
-    evidence: [backend/postgres/migrations/001_partition_ledger.sql, backend/postgres/migratePartitions.js]
-    verification: { command: 'npm run pg:migrate:partition' }
+    # The migration SQL and the schema's own notes are the strategy; the runner
+    # that applied it went with the migration scaffolding. Applying it is a
+    # volume-gated operational step, not something the app does at boot -- see
+    # the PARTITIONING STRATEGY header in schema.sql for the global-uniqueness
+    # constraint any application of it must preserve.
+    evidence: [backend/postgres/migrations/001_partition_ledger.sql, backend/postgres/schema.sql]
   - id: CAP-17
     name: Point-in-Time Recovery
     bucket: C

@@ -100,10 +100,5 @@ for (const op of ['updateOne', 'updateMany', 'findOneAndUpdate', 'findOneAndRepl
   accountingEventSchema.pre(op, function () { throw new Error(IMMUTABLE_MSG); });
 }
 
-// Hybrid money DB (plan step 2): mirror every posting to Postgres
-// accounting_events (append-only + conserve-to-zero enforced by PG triggers).
-import { mirrorAccountingEvent } from '../../postgres/dualWrite.js';
-accountingEventSchema.post('save', (doc) => { mirrorAccountingEvent(doc); });
-accountingEventSchema.post('insertMany', (docs) => { (docs || []).forEach(d => mirrorAccountingEvent(d)); });
 
 export const AccountingEvent = mongoose.model('AccountingEvent', accountingEventSchema);

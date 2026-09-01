@@ -14,14 +14,9 @@ import { sendAlert } from '../../services/alerting.service.js';
 import { settlementRuns } from '../../services/metrics.service.js';
 // Derived cycle pools (FLAGS.DERIVED_CYCLE_POOLS, default off).
 import { refreshRealPools, forgetCycle } from './cyclePool.service.js';
-// Hybrid money DB: the settlement RUN is mirrored into Postgres from the two
-// points that change its state. See the note on the Cycle model's hooks for why
-// those hooks alone cannot see either of them.
-import { mirrorCycleSettlement } from '../../postgres/dualWrite.js';
-// …and routed through the resolver, so that once Postgres owns this path the
-// run is a row with a UNIQUE cycle_id rather than a flag that can be written
-// back. beginSettlement/finishSettlement no-op while Mongo is authoritative.
-import { beginSettlement, finishSettlement } from '../../postgres/settlementPgAuthority.js';
+// The settlement RUN is a row with a UNIQUE cycle_id, opened before any payout
+// and closed after the last one — not a flag that can be written back.
+import { beginSettlement, finishSettlement } from '../../postgres/settlementPg.js';
 // The bet lifecycle's other half. Placement has routed through the resolver for
 // a while; settlement wrote Bet.status directly here and in settlementService,
 // which left half the lifecycle authoritative in each store.
@@ -171,15 +166,8 @@ class GameEngine {
             return;
         }
 
-        // Open the settlement RUN. While Mongo is authoritative this is the
-        // mirror — explicit rather than left to the model hook, because
-        // findOneAndUpdate above has no `new: true`, so the hook is handed the
-        // PRE-update document and would still read PENDING. Fire-and-forget by
-        // design: a mirror failure must never stop a payout.
-        mirrorCycleSettlement({ ...lock.toObject?.() ?? lock, isSettled: 'PROCESSING' });
-
-        // Once Postgres owns the path this is the real claim, and it is AWAITED
-        // — a run that failed to open must not go on to pay anybody. `resumed`
+        // Open the settlement RUN. AWAITED — a run that failed to open must
+        // not go on to pay anybody. `resumed`
         // is not a refusal: gameEngine re-admits a PROCESSING cycle on purpose
         // so an interrupted payout can be finished, and treating a resume as a
         // stop would strand the cycles that most need finishing.
@@ -531,21 +519,12 @@ class GameEngine {
             }
         );
 
-        // Close the run in Postgres with the totals that were just written.
-        // `updateOne` gives a post hook no document, so this is the only point
-        // that can report the finish — and reporting it is what lets
-        // findIncompleteSettlements tell a finished payout from a stalled one.
-        mirrorCycleSettlement({
-            cycleId: cycle.cycleId, winner: cycle.winner,
-            isSettled: 'COMPLETED', settledAt: new Date(), totalPaidOut,
-        });
-
-        // …and close the run for real once Postgres owns the path. Awaited, but
+        // Close the run with the totals that were just written. Awaited, but
         // a refusal is NOT fatal here, unlike the claim: the money has already
         // moved and the bets are already stamped, so failing the pass now would
         // re-run a payout that is finished. It is logged and paged instead, and
         // findIncompleteSettlements is the query that finds it later.
-        const finish = await finishSettlement({ cycleId: cycle.cycleId, payoutRupees: totalPaidOut });
+        const finish = await finishSettlement({ cycleId: cycle.cycleId });
         if (!finish.ok) {
             console.error(`[Engine] Postgres refused to close settlement ${cycle.cycleId}:`, finish.reason);
             sendAlert('settlement-error', 'Postgres refused to close a completed settlement', {

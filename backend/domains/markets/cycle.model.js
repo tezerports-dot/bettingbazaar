@@ -100,10 +100,6 @@ cycleSchema.index({ type: 1, status: 1, endTime: -1 }, { name: 'cycle_type_statu
 // call mirrorCycleSettlement explicitly with the state they just wrote. The
 // hooks catch every other path that saves a Cycle; the mirror is idempotent on
 // cycle_id, so the two overlapping is harmless.
-import { mirrorCycleSettlement } from '../../postgres/dualWrite.js';
-
-cycleSchema.post('save', (doc) => { mirrorCycleSettlement(doc); });
-cycleSchema.post('findOneAndUpdate', (doc) => { if (doc) mirrorCycleSettlement(doc); });
 
 // ════════════════════════════════════════════════════════════════════════════
 // 🎲 BET SCHEMA - WITH BALANCE SOURCE TRACKING (FIX #4)

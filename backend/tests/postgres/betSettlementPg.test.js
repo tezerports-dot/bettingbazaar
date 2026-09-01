@@ -22,7 +22,6 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../../postgres/pgClient.js';
 import { applyDeltaPaise } from '../../postgres/walletPg.js';
 import { BET_STATUS, placeBet, winBet, loseBet, getBet, resolveBetId } from '../../postgres/betPg.js';
-import { reconcileBetStates } from '../../postgres/reconcile.js';
 import { mongoIdFor } from '../../postgres/betPgAuthority.js';
 
 const hasPg = pgConfigured();
@@ -123,31 +122,6 @@ describePg('the retained platform fee (PostgreSQL)', () => {
       `UPDATE bets SET platform_fee_paise = -1 WHERE bet_id = $1`, ['fee_negative'],
     )).rejects.toThrow(/bets_platform_fee_check/);
   });
-
-  it('is carried by the reconcile read, so --repair-mongo can restore it', async () => {
-    await place('fee_reconcile');
-    await winBet({
-      betId: 'fee_reconcile', userId: U,
-      slices: [{ field: 'depositBalance', amountPaise: 10_000 }],
-      payoutPaise: 19_800, platformFeePaise: 200,
-    });
-
-    // reconcileBetStates SELECTs an explicit column list and hands those rows
-    // straight to reverseMirrorBetRow. A column missing from that list is a
-    // field the repair silently cannot restore, which is invisible from the
-    // repair's own return value — so assert the query, not the repair.
-    const { rows } = await pgQuery(
-      `SELECT bet_id, user_id, cycle_id, side, stake_paise, payout_paise, platform_fee_paise,
-              status, placed_at, settled_at, updated_at
-         FROM bets WHERE bet_id = $1`, ['fee_reconcile'],
-    );
-    expect(rows[0].platform_fee_paise).toBe('200');
-
-    // And the pass itself runs against a real table without throwing on the
-    // new column. No Mongo here, so it can only report; that is enough to
-    // prove the SELECT is valid SQL against the deployed schema.
-    await expect(reconcileBetStates({ limit: 10 })).rejects.toThrow();
-  });
 });
 
 /**
@@ -188,12 +162,15 @@ describePg('resolving a bet by whichever id the caller holds', () => {
     expect(await resolveBetId(key)).toBe(key);
   });
 
-  it('finds a MIRRORED bet, whose bet_id IS the Mongo _id and whose mongo_id is null', async () => {
-    const { mirrorBet } = await import('../../postgres/dualWrite.js');
-    await mirrorBet({
-      _id: '507f1f77bcf86cd799439011', userId: U, cycleId: 'fee-cycle',
-      side: 'DELHI', amount: 100, status: 'PENDING', timestamp: new Date(),
-    });
+  it('finds a bet whose bet_id IS an external id, with no derived id recorded', async () => {
+    // Inserted directly rather than through a writer, because the property
+    // under test belongs to the resolver: a row it did not create itself must
+    // still resolve by the only id that row carries.
+    await pgQuery(
+      `INSERT INTO bets (bet_id, mongo_id, user_id, cycle_id, side, stake_paise, status, placed_at)
+       VALUES ($1, NULL, $2, 'fee-cycle', 'DELHI', 10000, 'PENDING', now())`,
+      ['507f1f77bcf86cd799439011', U],
+    );
 
     expect(await resolveBetId('507f1f77bcf86cd799439011')).toBe('507f1f77bcf86cd799439011');
   });
@@ -229,74 +206,5 @@ describePg('resolving a bet by whichever id the caller holds', () => {
     // without moving money would satisfy the status assertion alone.
     const { rows } = await pgQuery(`SELECT locked_paise FROM wallets WHERE user_id = $1`, [U]);
     expect(Number(rows[0].locked_paise)).toBe(0);
-  });
-});
-
-/**
- * The hazard the reconcile fix removes, demonstrated rather than asserted.
- *
- * `reconcileBetStates`' backfill leg repairs Postgres from Mongo by handing the
- * matched document to `mirrorBet`. It used to fetch those documents with
- * `.select('status')` — so the document had a status and nothing else, and the
- * mirror's `ON CONFLICT DO UPDATE` writes what it is given.
- *
- * These two tests pin the behaviour that made that a bug: the mirror is a
- * PROJECTION, so an absent field is written as zero rather than left alone.
- * That is correct for a mirror and wrong for a repair, which is why the fix is
- * in the SELECT and not here.
- */
-describePg('mirrorBet writes what it is given (why the backfill SELECT matters)', () => {
-  beforeAll(async () => { await applySchema(); });
-
-  beforeEach(async () => {
-    await pgQuery('TRUNCATE bet_transitions, bets, wallet_ledger, wallets RESTART IDENTITY CASCADE');
-    await fund('depositBalance', 1_000_000, 'fee_seed');
-  });
-
-  it('ZEROES a settled bet\'s payout and fee when handed a document that omits them', async () => {
-    const { mirrorBet } = await import('../../postgres/dualWrite.js');
-
-    await place('fee_backfill');
-    await winBet({
-      betId: 'fee_backfill', userId: U,
-      slices: [{ field: 'depositBalance', amountPaise: 10_000 }],
-      payoutPaise: 19_800, platformFeePaise: 200,
-    });
-
-    // Exactly the shape `.select('status').lean()` produced, with the identity
-    // fields the repair supplied from the Postgres row.
-    await mirrorBet({
-      _id: 'fee_backfill', status: 'WON',
-      userId: U, cycleId: 'fee-cycle', side: 'DELHI', amount: 100,
-    });
-
-    const { rows } = await pgQuery(
-      `SELECT payout_paise, platform_fee_paise FROM bets WHERE bet_id = $1`, ['fee_backfill'],
-    );
-    // A check that exists to CLOSE a disagreement was opening a bigger one:
-    // repairing the status destroyed the payout.
-    expect(rows[0]).toMatchObject({ payout_paise: '0', platform_fee_paise: '0' });
-  });
-
-  it('preserves both when the document carries them — what the fixed SELECT supplies', async () => {
-    const { mirrorBet } = await import('../../postgres/dualWrite.js');
-
-    await place('fee_backfill_ok');
-    await winBet({
-      betId: 'fee_backfill_ok', userId: U,
-      slices: [{ field: 'depositBalance', amountPaise: 10_000 }],
-      payoutPaise: 19_800, platformFeePaise: 200,
-    });
-
-    await mirrorBet({
-      _id: 'fee_backfill_ok', status: 'WON',
-      userId: U, cycleId: 'fee-cycle', side: 'DELHI', amount: 100,
-      payout: 198, platformFee: 2,
-    });
-
-    const { rows } = await pgQuery(
-      `SELECT payout_paise, platform_fee_paise FROM bets WHERE bet_id = $1`, ['fee_backfill_ok'],
-    );
-    expect(rows[0]).toMatchObject({ payout_paise: '19800', platform_fee_paise: '200' });
   });
 });

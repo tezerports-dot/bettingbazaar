@@ -36,7 +36,6 @@ import {
   KYC_STATES, KYC_REVISITABLE, transitionKyc, openKyc, getKyc,
 } from './kycPg.js';
 import { pgQuery } from './pgClient.js';
-import { reverseMirrorUserKycStatus } from './reverseMirror.js';
 
 /** Is Postgres the source of truth for KYC decisions? */
 export const onPostgres = () => isPostgresAuthoritative(MONEY_PATHS.KYC);
@@ -118,13 +117,6 @@ export async function decideKycOnPostgres(userId, to, { actor = null, reason = n
   // Mongo follows, AWAITED — every KYC gate in the app reads User.kycStatus, and
   // an admin who approves someone then watches them be refused a withdrawal
   // because the mirror was still in flight is not a acceptable outcome.
-  await reverseMirrorUserKycStatus({
-    user_id:          String(userId),
-    kyc_status:       result.kyc?.status ?? to,
-    rejection_reason: result.kyc?.rejectionReason ?? null,
-    reviewed_by:      result.kyc?.reviewedBy ?? null,
-    reviewed_at:      result.kyc?.reviewedAt ?? null,
-  });
 
   return {
     handled: true, ok: true,

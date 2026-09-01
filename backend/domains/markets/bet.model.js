@@ -65,10 +65,6 @@ betSchema.index(
 // a bulk update no documents to hand a post hook, so there is nothing to mirror
 // from — reconcile.js's cross-store state check is the completeness guarantee
 // for those, exactly as it is for the order paths hooks cannot see.
-import { mirrorBet } from '../../postgres/dualWrite.js';
-
-betSchema.post('save', (doc) => { mirrorBet(doc); });
-betSchema.post('findOneAndUpdate', (doc) => { if (doc) mirrorBet(doc); });
 
 // ════════════════════════════════════════════════════════════════════════════
 // 💰 TRANSACTION SCHEMA - WITH BALANCE TYPE TRACKING (FIX #4)

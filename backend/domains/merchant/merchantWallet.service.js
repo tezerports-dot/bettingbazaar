@@ -20,7 +20,6 @@
 import mongoose from 'mongoose';
 import { MerchantWalletLedger } from './merchantWallet.model.js';
 import { isPostgresAuthoritative, MONEY_PATHS } from '../../postgres/moneyAuthority.js';
-import { mirrorMerchantBalance, mirrorMerchantWalletLedger } from '../../postgres/dualWrite.js';
 import { moneyOperations } from '../../services/metrics.service.js';
 import * as pg from '../../postgres/merchantWalletPgAuthority.js';
 
@@ -38,21 +37,6 @@ function count(operation, outcome) {
   moneyOperations.inc({
     path: MONEY_PATHS.MERCHANT_WALLET, store: 'mongo', operation, outcome,
   });
-}
-
-/**
- * Mirror the merchant's balance to Postgres after a Mongo-authoritative move.
- *
- * The ledger rows were already mirrored (merchantWallet.model.js post-save);
- * the BALANCE was not, so merchant_wallets stayed empty while its ledger
- * filled. A cutover would then have begun reading balances of zero. This is
- * fire-and-forget for the same reason every other dual-write is: the mirror
- * must never be able to fail a Mongo money movement that has already
- * committed. Failures are counted and alerted inside dualWrite.mirror().
- */
-function mirrorBalance(merchant) {
-  if (merchant) mirrorMerchantBalance(merchant);
-  return merchant;
 }
 
 function sessOpts(session) { return session ? { session } : {}; }
@@ -114,7 +98,6 @@ async function completeLedger(ledger, balanceAfter, session) {
   await MerchantWalletLedger.updateOne(
     { txId: ledger.txId }, { $set: { balanceAfter } }, sessOpts(session),
   );
-  mirrorMerchantWalletLedger({ ...(ledger.toObject?.() ?? ledger), balanceAfter });
 }
 
 async function releaseLedgerReservation(txId, session) {
@@ -183,7 +166,7 @@ export async function debitMerchantTokens({
   await completeLedger(reservation.ledger, merchant.tokenBalance, session);
 
   count('MERCHANT_DEBIT', 'applied');
-  return { merchant: mirrorBalance(merchant), idempotent: false };
+  return { merchant: merchant, idempotent: false };
 }
 
 /** creditMerchantTokens — increase a merchant's token balance. */
@@ -229,7 +212,7 @@ export async function creditMerchantTokens({
   await completeLedger(reservation.ledger, merchant.tokenBalance, session);
 
   count('MERCHANT_CREDIT', 'applied');
-  return { merchant: mirrorBalance(merchant), idempotent: false };
+  return { merchant: merchant, idempotent: false };
 }
 
 /**

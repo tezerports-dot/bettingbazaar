@@ -35,9 +35,5 @@ utrRegistrySchema.index({ utr: 1 }, { unique: true });
 // Per-user fraud pattern lookup
 utrRegistrySchema.index({ userId: 1, registeredAt: -1 });
 
-// Hybrid money DB (plan step 2): mirror UTR claims to Postgres — the plan
-// requires UTR to move IN THE SAME database boundary as payment orders.
-import { mirrorUtr } from '../postgres/dualWrite.js';
-utrRegistrySchema.post('save', (doc) => { mirrorUtr(doc); });
 
 export const UTRRegistry = mongoose.model('UTRRegistry', utrRegistrySchema);

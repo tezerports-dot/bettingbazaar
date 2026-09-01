@@ -44,7 +44,6 @@ import { isPostgresAuthoritative, MONEY_PATHS } from './moneyAuthority.js';
 import {
   placeBet as placeBetPg, BET_STATUS, winBet, loseBet, voidBet, refundBet, resolveBetId,
 } from './betPg.js';
-import { reverseMirrorBet, reverseMirrorBetRow } from './reverseMirror.js';
 
 /** Is Postgres the source of truth for the bet lifecycle? */
 export const onPostgres = () => isPostgresAuthoritative(MONEY_PATHS.BETS);
@@ -192,16 +191,6 @@ export async function settleBetOnPostgres({
   // Mongo document under an id nothing else refers to, leaving the real one at
   // PENDING — a settled bet the whole system still believes is open.
   if (!result.idempotent && result.bet) {
-    await reverseMirrorBetRow({
-      bet_id: betId, mongo_id: mongoId,
-      user_id: String(bet.userId), cycle_id: bet.cycleId, side: bet.side,
-      stake_paise: rupeesToPaise(Number(bet.amount) || 0),
-      payout_paise: rupeesToPaise(Number(payoutRupees) || 0),
-      platform_fee_paise: rupeesToPaise(Number(platformFeeRupees) || 0),
-      status: result.bet.status,
-      settled_at: result.bet.settledAt ?? new Date(),
-      placed_at: bet.timestamp,
-    });
   }
 
   return { handled: true, ok: true, idempotent: Boolean(result.idempotent), betId };
@@ -252,8 +241,7 @@ export async function placeBet({
   //
   // Cannot throw: mirrorBack() logs, counts and pages internally. Postgres has
   // already committed and owns the decision either way.
-  if (!result.idempotent) await reverseMirrorBet(doc);
-
+  if (!result.idempotent)
   return {
     ok: true,
     idempotent: result.idempotent === true,

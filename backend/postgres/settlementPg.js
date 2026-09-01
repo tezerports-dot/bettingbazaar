@@ -38,6 +38,7 @@
  * is a void-and-resettle, not an in-place edit.
  */
 import { getPool, pgQuery, connectGuarded } from './pgClient.js';
+import { rupeesToPaise } from '../shared/money.js';
 import { moneyOperations } from '../services/metrics.service.js';
 import { MONEY_PATHS } from './moneyAuthority.js';
 import { BET_STATUS, winBet, loseBet, voidBet } from './betPg.js';
@@ -241,6 +242,37 @@ export async function voidSettlement({ cycleId, bets = [], actor = 'settlement',
  * itself done, or a bet was placed after settlement began — and both are
  * situations where a player's stake is locked with nothing coming to release it.
  */
+/**
+ * Open a settlement run, taking the stake in RUPEES.
+ *
+ * `gameEngine` works in float rupees and this module works in integer paise,
+ * so the conversion happens here, at the boundary, once — rather than in each
+ * caller, where two of them will eventually disagree about rounding.
+ *
+ * Returns `{ resumed: true }` when a previous pass opened it. That is not a
+ * refusal: an interrupted payout resuming is the scenario this domain is built
+ * around, and a caller that backed off on `resumed` would strand exactly the
+ * cycles that most need finishing.
+ */
+export async function beginSettlement({ cycleId, winningSide, betsTotal = 0, stakeRupees = 0 }) {
+  return openSettlement({
+    cycleId, winningSide, betsTotal,
+    stakePaise: rupeesToPaise(Number(stakeRupees) || 0),
+  });
+}
+
+/**
+ * Close the run with the totals the pass actually paid.
+ *
+ * `idempotent: true` comes back when another pass finished it first. That is
+ * not an error either: two passes racing to the end is the same supported
+ * scenario as two racing to the start, and the guard is in the UPDATE's WHERE
+ * clause, so exactly one of them wins.
+ */
+export async function finishSettlement({ cycleId }) {
+  return completeSettlement({ cycleId });
+}
+
 export async function findIncompleteSettlements() {
   const { rows } = await pgQuery(
     `SELECT s.cycle_id, s.status, s.bets_settled,

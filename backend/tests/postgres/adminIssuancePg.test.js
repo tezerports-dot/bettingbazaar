@@ -25,42 +25,29 @@
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 
-const authoritative = vi.hoisted(() => ({ value: true }));
 const mongoCap = vi.hoisted(() => ({ value: null }));
 
-vi.mock('../../postgres/moneyAuthority.js', async (importOriginal) => {
-  const actual = await importOriginal();
-  return { ...actual, isPostgresAuthoritative: () => authoritative.value };
-});
-
-// No MongoDB in this suite. The adapter reads the CAP from SystemConfig, so the
-// model is stubbed rather than absent — `mongoCap.value = null` makes the lookup
-// return nothing and exercises the fall-through to the built-in default, which
-// is the branch that runs when SystemConfig has never been written.
+// The supply ceiling is still read from the configuration document, which has
+// not moved to PostgreSQL yet. It is stubbed rather than absent so that
+// `mongoCap.value = null` exercises the fall-through to the built-in default —
+// the branch that runs when an admin has never set a ceiling.
 vi.mock('mongoose', () => ({
   default: {
     model: () => ({
       findOne: () => ({
         select: () => ({ lean: async () => (mongoCap.value === null ? null : { adminTokenSupply: { cap: mongoCap.value } }) }),
       }),
-      // Chainable, because the Mongo branch calls `.lean()` on the write and
-      // `.catch()` on the rollback. It must REFUSE rather than be absent: a
-      // stub that quietly succeeded would let a routing bug reach Mongo
-      // unnoticed, which is the one thing the last test is checking for.
+      // Writes REFUSE rather than being absent: nothing in this domain may
+      // write to the configuration document, and a stub that quietly succeeded
+      // would let such a write go unnoticed.
       findOneAndUpdate: () => ({
-        lean: () => Promise.reject(new Error('Mongo is not available in the pg suite')),
-        catch: (fn) => Promise.resolve().then(() => fn(new Error('Mongo is not available in the pg suite'))),
+        lean: () => Promise.reject(new Error('this domain does not write config')),
+        catch: (fn) => Promise.resolve().then(() => fn(new Error('this domain does not write config'))),
       }),
-      updateOne: () => Promise.reject(new Error('Mongo is not available in the pg suite')),
+      updateOne: () => Promise.reject(new Error('this domain does not write config')),
     }),
   },
 }));
-
-const reverseMirrorAdminSupply = vi.fn();
-vi.mock('../../postgres/reverseMirror.js', () => ({ reverseMirrorAdminSupply }));
-
-const mirrorAdminSupply = vi.fn();
-vi.mock('../../postgres/dualWrite.js', () => ({ mirrorAdminSupply }));
 
 const { pgConfigured, pgQuery, applySchema, closePg, getPool } = await import('../../postgres/pgClient.js');
 const { ACCOUNTS, getTreasuryBalances, trialBalance } = await import('../../postgres/treasuryPg.js');
@@ -87,7 +74,6 @@ describePg('Admin token issuance (PostgreSQL)', () => {
   afterAll(async () => { await closePg(); });
   beforeEach(async () => {
     await pgQuery('TRUNCATE treasury_entries, treasury_accounts RESTART IDENTITY CASCADE');
-    authoritative.value = true;
     mongoCap.value = null;
     vi.clearAllMocks();
   });
@@ -211,34 +197,35 @@ describePg('Admin token issuance (PostgreSQL)', () => {
     });
   });
 
-  // ── Mirrors ───────────────────────────────────────────────────────────────
-  describe('the rollback leg', () => {
-    it('pushes the derived TOTAL back to the Mongo counter, never the delta', async () => {
-      // Two mints of different sizes, because after one mint the total and the
-      // amount are the same number and a delta bug is invisible. 5,000 then
-      // 3,000 must report 8,000 — a mirror sending the delta would say 3,000.
-      await mint(5_000, 'mv_mirror_a');
-      expect(reverseMirrorAdminSupply).toHaveBeenLastCalledWith({ minted: 5_000, cap: DEFAULT_CAP_TOKENS });
+  // ── The reported supply is DERIVED, never accumulated ─────────────────────
+  //
+  // These assertions used to be made against a mirror that copied the supply
+  // to a second store, and they were really about the number rather than the
+  // copy: `minted` is re-derived from the treasury on every read, so a pass
+  // that ran late, twice, or not at all still converges on the right total
+  // instead of accumulating its own misses. The mirror is gone; the property
+  // is the same one, asserted at the source.
+  describe('the reported supply', () => {
+    it('is the running TOTAL after a mint, a second mint and a rollback', async () => {
+      // Two mints of DIFFERENT sizes, because after one mint the total and the
+      // amount are the same number and an off-by-a-delta bug is invisible.
+      await mint(5_000, 'mv_supply_a');
+      expect(await adminTokenSupply()).toMatchObject({ minted: 5_000, cap: DEFAULT_CAP_TOKENS });
 
-      await mint(3_000, 'mv_mirror_b');
-      expect(reverseMirrorAdminSupply).toHaveBeenLastCalledWith({ minted: 8_000, cap: DEFAULT_CAP_TOKENS });
+      await mint(3_000, 'mv_supply_b');
+      expect(await adminTokenSupply()).toMatchObject({ minted: 8_000, cap: DEFAULT_CAP_TOKENS });
 
-      // The point of copying a total rather than applying an increment: a
-      // mirror that ran late, twice, or not at all still converges on exactly
-      // the right number instead of accumulating its own misses.
-      await rollbackAdminMint({ amountTokens: 3_000, movementId: 'mv_mirror_b' });
-      expect(reverseMirrorAdminSupply).toHaveBeenLastCalledWith({ minted: 5_000, cap: DEFAULT_CAP_TOKENS });
-
-      expect(mirrorAdminSupply).not.toHaveBeenCalled();
+      // The burn returns the headroom without erasing either movement.
+      await rollbackAdminMint({ amountTokens: 3_000, movementId: 'mv_supply_b' });
+      expect(await adminTokenSupply()).toMatchObject({ minted: 5_000, cap: DEFAULT_CAP_TOKENS });
     });
 
-    it('mirrors nothing back when the cap refused the mint', async () => {
+    it('is unchanged when the ceiling refused the mint', async () => {
       mongoCap.value = 100;
       await mint(100, 'mv_ok');
-      vi.clearAllMocks();
 
       await mint(1, 'mv_refused').catch(() => {});
-      expect(reverseMirrorAdminSupply).not.toHaveBeenCalled();
+      expect(await adminTokenSupply()).toMatchObject({ minted: 100 });
     });
   });
 
@@ -292,14 +279,5 @@ describePg('Admin token issuance (PostgreSQL)', () => {
       expect(Date.now() - started).toBeLessThan(20_000);
       expect(await trialBalance()).toMatchObject({ ok: true, conservesToZero: true });
     });
-  });
-
-  // ── Routing ───────────────────────────────────────────────────────────────
-  it('does not touch Postgres while MongoDB is authoritative', async () => {
-    authoritative.value = false;
-    // The mongoose stub throws on findOneAndUpdate, which is what proves the
-    // Mongo branch was taken — there is no other way to reach it here.
-    await expect(mint(100, 'mv_mongo')).rejects.toThrow(/not available in the pg suite/);
-    expect(await getTreasuryBalances()).toMatchObject({ [ACCOUNTS.TOKEN_SUPPLY]: 0 });
   });
 });

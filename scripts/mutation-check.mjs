@@ -10,141 +10,13 @@
  *   node scripts/mutation-check.mjs            all mutations
  *   node scripts/mutation-check.mjs unit       only the ones whose test is a unit test
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 
 const UNIT = 'vitest.config.ts';
 const PG = 'vitest.pg.config.ts';
 
 const MUTATIONS = [
-  // ── Blocker (a): the winner aggregation's funding provenance ──────────────
-  {
-    id: 'M1', file: 'backend/domains/markets/gameEngine.js', config: UNIT,
-    test: 'backend/tests/unit/betSettlementEngineRouting.test.js',
-    why: 'aggregation projects the funding split under an ALIAS again',
-    from: `fromDepositBalance:  "$fromDepositBalance",`,
-    to: `fromDeposit: "$fromDepositBalance",`,
-  },
-  {
-    id: 'M2', file: 'backend/domains/markets/gameEngine.js', config: UNIT,
-    test: 'backend/tests/unit/betSettlementEngineRouting.test.js',
-    why: 'fromReserveBalance dropped from the projection again',
-    from: `                        fromReserveBalance:  "$fromReserveBalance",\n`,
-    to: '',
-  },
-  {
-    id: 'M3', file: 'backend/domains/markets/gameEngine.js', config: UNIT,
-    test: 'backend/tests/unit/betSettlementEngineRouting.test.js',
-    why: 'locked totals read the OLD alias, so the stake never leaves the counters',
-    from: `totalLockedDeposit += bet.fromDepositBalance || 0;`,
-    to: `totalLockedDeposit += bet.fromDeposit || 0;`,
-  },
-  // ── Blocker (b): the bet document travels with the stamp ──────────────────
-  {
-    id: 'M4', file: 'backend/domains/markets/gameEngine.js', config: UNIT,
-    test: 'backend/tests/unit/betSettlementEngineRouting.test.js',
-    why: 'betStamps carries no bet document again',
-    from: `                    bet: {\n                        _id:    bet.betId,`,
-    to: `                    betDoc: {\n                        _id:    bet.betId,`,
-  },
-  // ── The losing side routes, and the Mongo writes are suppressed ───────────
-  {
-    id: 'M5', file: 'backend/domains/markets/gameEngine.js', config: UNIT,
-    test: 'backend/tests/unit/betSettlementEngineRouting.test.js',
-    why: 'unlockLostBet runs on the Postgres branch too — the stake released twice',
-    from: `                if (!r.ok) {
-                    refusals.push({ betId: String(bet._id), userId: String(bet.userId), outcome: 'LOST', reason: r.reason });
-                }`,
-    to: `                if (!r.ok) {
-                    refusals.push({ betId: String(bet._id), userId: String(bet.userId), outcome: 'LOST', reason: r.reason });
-                }
-                await unlockLostBet(bet.userId, bet.amount, bet._id, 0, 0);`,
-  },
-  {
-    id: 'M6', file: 'backend/domains/markets/gameEngine.js', config: UNIT,
-    test: 'backend/tests/unit/betSettlementEngineRouting.test.js',
-    why: 'the bulk LOST stamp runs on both branches — it would overwrite a refusal',
-    from: `            await Bet.updateMany(
-                { cycleId: cycle.cycleId, side: { $ne: cycle.winner }, status: 'PENDING', isPhantom: false },
-                { $set: { status: 'LOST' } }
-            );
-        }`,
-    to: `        }
-            await Bet.updateMany(
-                { cycleId: cycle.cycleId, side: { $ne: cycle.winner }, status: 'PENDING', isPhantom: false },
-                { $set: { status: 'LOST' } }
-            );`,
-  },
-  {
-    id: 'M7', file: 'backend/domains/markets/gameEngine.js', config: UNIT,
-    test: 'backend/tests/unit/betSettlementEngineRouting.test.js',
-    why: 'refusals are collected but never reported',
-    from: `        if (refusals.length > 0) {
-            console.error(`,
-    to: `        if (false) {
-            console.error(`,
-  },
-  {
-    id: 'M8', file: 'backend/domains/markets/gameEngine.js', config: UNIT,
-    test: 'backend/tests/unit/betSettlementEngineRouting.test.js',
-    why: 'the winning side asks the resolver again instead of using the pass decision',
-    from: `executeSettlementBatch(userBulkOps, txBulkOps, { onPg })).refused);
-                userBulkOps = []`,
-    to: `executeSettlementBatch(userBulkOps, txBulkOps)).refused);
-                userBulkOps = []`,
-  },
-  // ── The winning side routes, and the Mongo writes are suppressed ──────────
-  {
-    id: 'M9', file: 'backend/domains/settlement/settlementService.js', config: UNIT,
-    test: 'backend/tests/unit/betSettlementRouting.test.js',
-    why: 'the bets are re-stamped under Postgres authority — a refusal made silent',
-    from: `    if (!onPg) {
-        const stampOps`,
-    to: `    if (true) {
-        const stampOps`,
-  },
-  {
-    id: 'M10', file: 'backend/domains/settlement/settlementService.js', config: UNIT,
-    test: 'backend/tests/unit/betSettlementRouting.test.js',
-    why: 'walletAuthority runs on the Postgres branch too — payout credited twice',
-    from: `    } else {
-        for (const op of userOps) {
-            try {`,
-    to: `    }
-    if (true) {
-        for (const op of userOps) {
-            try {`,
-  },
-  {
-    id: 'M11', file: 'backend/domains/settlement/settlementService.js', config: UNIT,
-    test: 'backend/tests/unit/betSettlementRouting.test.js',
-    why: 'the retained fee is not passed, so the cycle total silently reads zero',
-    from: `                    platformFeeRupees: s.platformFee,`,
-    to: `                    platformFeeRupees: 0,`,
-  },
-  {
-    id: 'M12', file: 'backend/domains/settlement/settlementService.js', config: UNIT,
-    test: 'backend/tests/unit/betSettlementRouting.test.js',
-    why: 'the caller\'s decision is ignored, so one pass can split across stores',
-    from: `export async function executeSettlementBatch(userOps, txOps, { onPg = betsOnPostgres() } = {}) {`,
-    to: `export async function executeSettlementBatch(userOps, txOps, _routing = {}) {\n    const onPg = betsOnPostgres();`,
-  },
-  {
-    id: 'M13', file: 'backend/domains/settlement/settlementService.js', config: UNIT,
-    test: 'backend/tests/unit/betSettlementRouting.test.js',
-    why: 'a refusal is swallowed instead of returned',
-    from: `                if (!r.ok) {
-                    refused.push({`,
-    to: `                if (false) {
-                    refused.push({`,
-  },
-  {
-    id: 'M14', file: 'backend/domains/settlement/settlementService.js', config: UNIT,
-    test: 'backend/tests/unit/betSettlementRouting.test.js',
-    why: 'the Transaction history log is skipped under Postgres authority',
-    from: `    if (txOps.length > 0) {`,
-    to: `    if (txOps.length > 0 && !onPg) {`,
-  },
   // ── The fee, in the store that decides it ─────────────────────────────────
   {
     id: 'M15', file: 'backend/postgres/betPg.js', config: PG,
@@ -170,46 +42,6 @@ const MUTATIONS = [
   }`,
     to: '',
   },
-  // ── The fee crossing between stores ───────────────────────────────────────
-  {
-    id: 'M17', file: 'backend/postgres/reverseMirror.js', config: UNIT,
-    test: 'backend/tests/unit/betMirrorFee.test.js',
-    why: 'the rollback leg drops the fee, so Mongo reports zero platform revenue',
-    from: `          ...(platformFee !== undefined ? { platformFee } : {}),`,
-    to: '',
-  },
-  {
-    id: 'M18', file: 'backend/postgres/reverseMirror.js', config: UNIT,
-    test: 'backend/tests/unit/betMirrorFee.test.js',
-    why: 'a legitimate ZERO fee is treated as absent and never written',
-    from: `    ...(row.platform_fee_paise !== undefined && row.platform_fee_paise !== null
-      ? { platformFee: rupees(row.platform_fee_paise) }
-      : {}),`,
-    to: `    ...(Number(row.platform_fee_paise) ? { platformFee: rupees(row.platform_fee_paise) } : {}),`,
-  },
-  {
-    id: 'M19', file: 'backend/postgres/dualWrite.js', config: UNIT,
-    test: 'backend/tests/unit/betMirrorFee.test.js',
-    why: 'phantom bets are mirrored into Postgres again',
-    from: `    if (doc.isPhantom) return;`,
-    to: '',
-  },
-  {
-    id: 'M20', file: 'backend/postgres/dualWrite.js', config: UNIT,
-    test: 'backend/tests/unit/betMirrorFee.test.js',
-    why: 'the forward leg drops the fee, so an adopted bet arrives with a zero',
-    from: `        Number.isFinite(Number(doc.platformFee)) ? paise(doc.platformFee) : 0,`,
-    to: `        0,`,
-  },
-  // ── The reconcile repair that was destroying what it repaired ─────────────
-  {
-    id: 'M21', file: 'backend/postgres/dualWrite.js', config: PG,
-    test: 'backend/tests/postgres/betSettlementPg.test.js',
-    why: 'the mirror stops overwriting on conflict, hiding the backfill hazard',
-    from: `             platform_fee_paise = EXCLUDED.platform_fee_paise,`,
-    to: '',
-  },
-
   // ── A deposit moves tokens; it must not create or destroy them ────────────
   {
     id: 'M22', file: 'backend/domains/payment/payment.routes.js', config: UNIT,
@@ -241,38 +73,6 @@ const MUTATIONS = [
     from: `  if (!usable) return { depositCredit: total, reserveCredit: 0, total, split: false };`,
     to: `  if (!usable) return { depositCredit: 0, reserveCredit: 0, total, split: false };`,
   },
-
-  // ── The cutover's step-1 report must count what landed, not what it tried ──
-  {
-    id: 'M26', file: 'backend/postgres/reconcile.js', config: PG,
-    test: 'backend/tests/postgres/lifecycleBackfill.test.js',
-    why: 'adoption reports ATTEMPTS again, so a pass that adopted nothing reports a full house',
-    from: `    created: landed.size,`,
-    to: `    created: attempted.length,`,
-  },
-  {
-    id: 'M27', file: 'backend/postgres/reconcile.js', config: PG,
-    test: 'backend/tests/postgres/lifecycleBackfill.test.js',
-    why: 'rows that did not land are not reported as such',
-    from: `    notAdopted: attempted.length - landed.size,`,
-    to: `    notAdopted: 0,`,
-  },
-
-  // ── A bet's two identities ────────────────────────────────────────────────
-  {
-    id: 'M28', file: 'backend/postgres/betPgAuthority.js', config: UNIT,
-    test: 'backend/tests/unit/betPgAuthorityRouting.test.js',
-    why: 'settlement uses the Mongo id as the Postgres key — every placed bet refused',
-    from: `  const betId = await resolveBetId(mongoId);`,
-    to: `  const betId = mongoId;`,
-  },
-  {
-    id: 'M29', file: 'backend/postgres/betPgAuthority.js', config: UNIT,
-    test: 'backend/tests/unit/betPgAuthorityRouting.test.js',
-    why: 'the reverse mirror writes the Postgres key as the Mongo _id — a second document',
-    from: `      bet_id: betId, mongo_id: mongoId,`,
-    to: `      bet_id: betId, mongo_id: betId,`,
-  },
   {
     id: 'M30', file: 'backend/postgres/betPg.js', config: PG,
     test: 'backend/tests/postgres/betSettlementPg.test.js',
@@ -280,7 +80,6 @@ const MUTATIONS = [
     from: `    \`SELECT bet_id FROM bets WHERE bet_id = $1 OR mongo_id = $1 LIMIT 1\`,`,
     to: `    \`SELECT bet_id FROM bets WHERE bet_id = $1 LIMIT 1\`,`,
   },
-
   // ── Money-domain READS follow authority (docs/MONEY_READS_MIGRATION.md) ───
   {
     id: 'M31', file: 'backend/postgres/merchantWalletPgAuthority.js', config: UNIT,
@@ -298,104 +97,22 @@ const MUTATIONS = [
     to: `    const balance_pa = merchant.tokenBalance;
     if (merchant.tokenBalance < order.tokenAmount) {`,
   },
-  // ── KYC documents: the private store, and the wiring that uses it ─────────
-  // The module was built and tested a while ago and nothing called it. These
-  // mutations target the WIRING, because that is what was actually missing.
-  {
-    id: 'M33', file: 'backend/routes/upload.routes.js', config: UNIT,
-    test: 'backend/tests/unit/kycPrivateRouting.test.js',
-    why: 'the KYC upload route goes back to the public CDN — the original exposure',
-    from: `    const grant = await kycDocuments.presignUpload({
-      userId: req.user._id.toString(),
-      docType, contentType: String(contentType).toLowerCase().split(';')[0].trim(), fileSize,
-    });`,
-    to: `    const grant = await cdnService.generatePresignedUploadUrl({
-      fileName, contentType, fileSize,
-      category: \`kyc/\${docType}\`, userId: req.user._id.toString(),
-    });`,
-  },
-  {
-    id: 'M34', file: 'backend/routes/upload.routes.js', config: UNIT,
-    test: 'backend/tests/unit/kycPrivateRouting.test.js',
-    why: 'an unconfigured private store silently falls through instead of refusing',
-    from: `    if (!kycDocuments.configured()) {
-      return res.status(503).json({
-        success: false,
-        message: 'Identity verification is temporarily unavailable. Please try again later.',
-      });
-    }
-
-    const grant = await kycDocuments.presignUpload({`,
-    to: `    const grant = await kycDocuments.presignUpload({`,
-  },
-  {
-    id: 'M35', file: 'backend/domains/user/user.routes.js', config: UNIT,
-    test: 'backend/tests/unit/kycPrivateRouting.test.js',
-    why: 'submission stores a public URL again instead of the object key',
-    from: `          idProofKey: idProof.key,
-          photoKey: photo.key,`,
-    to: `          idProofUrl: idProof.key,
-          photoUrl: photo.key,`,
-  },
-  {
-    id: 'M36', file: 'backend/services/kycDocuments.service.js', config: UNIT,
-    test: 'backend/tests/unit/kycPrivateRouting.test.js',
-    why: 'the ownership check goes away — user A can submit user B’s identity document',
-    from: `  if (expectedUserId !== null && parsed.userId !== String(expectedUserId)) {`,
-    to: `  if (false) {`,
-  },
-  {
-    id: 'M37', file: 'backend/domains/user/user.model.js', config: UNIT,
-    test: 'backend/tests/unit/kycPrivateRouting.test.js',
-    why: 'the document key ships by default in every response that returns a user',
-    from: `    idProofKey: { type: String, select: false },`,
-    to: `    idProofKey: { type: String },`,
-  },
-  {
-    id: 'M38', file: 'backend/routes/admin/kyc.admin.routes.js', config: UNIT,
-    test: 'backend/tests/unit/kycPrivateRouting.test.js',
-    why: 'the review grant is minted without checking the key belongs to that user',
-    from: `    const grant = await kycDocuments.presignReview({ key, expectedUserId: String(userId) });`,
-    to: `    const grant = await kycDocuments.presignReview({ key });`,
-  },
-  {
-    id: 'M39', file: 'backend/postgres/dualWrite.js', config: PG,
-    test: 'backend/tests/postgres/kycDocumentKeyMirror.test.js',
-    why: 'a partial repair mirror nulls the document key — the submission becomes unreviewable',
-    from: `       id_proof_key = COALESCE(EXCLUDED.id_proof_key, user_kyc.id_proof_key),
-       photo_key = COALESCE(EXCLUDED.photo_key, user_kyc.photo_key),`,
-    to: `       id_proof_key = EXCLUDED.id_proof_key,
-       photo_key = EXCLUDED.photo_key,`,
-  },
-  {
-    id: 'M40', file: 'backend/postgres/dualWrite.js', config: PG,
-    test: 'backend/tests/postgres/kycDocumentKeyMirror.test.js',
-    why: 'rejection_reason becomes sticky, so an approved user still sees why they were rejected',
-    from: `       rejection_reason = EXCLUDED.rejection_reason, updated_at = now()`,
-    to: `       rejection_reason = COALESCE(EXCLUDED.rejection_reason, user_kyc.rejection_reason), updated_at = now()`,
-  },
-  // The one that escaped to CI: a select string that reads correctly but that
-  // MongoDB refuses. Only a real Mongo query saw it, so the check is now on the
-  // projection Mongoose builds rather than on the string.
-  {
-    id: 'M41', file: 'backend/domains/user/kycFieldSelection.js', config: UNIT,
-    test: 'backend/tests/unit/kycFieldSelection.test.js',
-    why: 'the adoption sweep asks for a parent AND its child — every KYC reconcile throws',
-    from: `export const KYC_MIRROR_SELECT = [
-  'kycStatus',`,
-    to: `export const KYC_MIRROR_SELECT = [
-  'kycStatus',
-  'kycData',`,
-  },
-  {
-    id: 'M42', file: 'backend/domains/user/kycFieldSelection.js', config: UNIT,
-    test: 'backend/tests/unit/kycFieldSelection.test.js',
-    why: 'the sweep stops asking for the document keys, so the mirror stores nulls',
-    from: `  'kycData.idProofKey',
-  'kycData.photoKey',`,
-    to: '',
-  },
 ];
+
+// A mutation naming a file or test that no longer exists is not a mutation that
+// passed — it is one that never ran. The harness previously reported only what
+// it managed to execute, so entries left behind by a refactor quietly reduced
+// the coverage this script claims to measure. Refuse to run instead.
+const dead = MUTATIONS.filter((m) => !existsSync(m.file) || !existsSync(m.test));
+if (dead.length) {
+  console.error(`${dead.length} mutation(s) name a file or test that no longer exists:`);
+  for (const m of dead) {
+    const missing = [!existsSync(m.file) && m.file, !existsSync(m.test) && m.test].filter(Boolean);
+    console.error(`  ${m.id}: ${missing.join(', ')}`);
+  }
+  console.error('\nDelete them, or repoint them at what replaced the behaviour.');
+  process.exit(1);
+}
 
 const only = process.argv[2];
 const selected = MUTATIONS.filter((m) => !only

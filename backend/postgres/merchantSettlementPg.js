@@ -73,7 +73,6 @@ import { getPool, pgQuery, connectGuarded } from './pgClient.js';
 import { POCKETS, applyMovementWithin } from './merchantWalletPg.js';
 import { moneyOperations } from '../services/metrics.service.js';
 import { isPostgresAuthoritative, MONEY_PATHS } from './moneyAuthority.js';
-import { reverseMirrorMerchantMovement, reverseMirrorMerchantSettlement } from './reverseMirror.js';
 
 export const SETTLEMENT_STATES = Object.freeze({
   RESERVED:  'RESERVED',
@@ -144,12 +143,6 @@ function afterCommit(operation, result) {
     return result;
   }
   const s = result.settlement;
-  reverseMirrorMerchantMovement({
-    merchantId: s.merchantId, entries: result.entries ?? [], balances: result.balances,
-  });
-  reverseMirrorMerchantSettlement({
-    order_id: s.orderId, direction: s.direction, state: s.state, updated_at: s.updatedAt,
-  });
   return result;
 }
 

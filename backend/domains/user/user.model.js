@@ -275,7 +275,5 @@ userSchema.index({ createdAt: -1 });
 userSchema.pre('save', function () {
   this.$locals.kycTouched = this.isNew || this.isModified('kycStatus') || this.isModified('kycData');
 });
-import { mirrorUserKyc } from '../../postgres/dualWrite.js';
-userSchema.post('save', (doc) => { if (doc.$locals?.kycTouched) mirrorUserKyc(doc); });
 
 export const User = mongoose.model('User', userSchema);

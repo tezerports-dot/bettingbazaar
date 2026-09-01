@@ -53,7 +53,5 @@ merchantWalletLedgerSchema.index({ merchantId: 1, createdAt: -1 });
 // skips those, so the real copy happens when merchantWallet.service completes
 // the row and calls the mirror itself. The hook stays because it is the only
 // choke point covering any other writer that creates an already-complete row.
-import { mirrorMerchantWalletLedger } from '../../postgres/dualWrite.js';
-merchantWalletLedgerSchema.post('save', (doc) => { mirrorMerchantWalletLedger(doc); });
 
 export const MerchantWalletLedger = mongoose.model('MerchantWalletLedger', merchantWalletLedgerSchema);

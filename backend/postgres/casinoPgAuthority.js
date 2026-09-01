@@ -34,7 +34,6 @@ import mongoose from 'mongoose';
 import { isPostgresAuthoritative, MONEY_PATHS } from './moneyAuthority.js';
 import { rupeesToPaise, paiseToRupees } from '../shared/money.js';
 import { CASINO_TX, recordCallback, getRound } from './casinoPg.js';
-import { reverseMirrorCasinoRound } from './reverseMirror.js';
 
 /** Is Postgres the source of truth for casino rounds? */
 export const onPostgres = () => isPostgresAuthoritative(MONEY_PATHS.CASINO_SETTLEMENT);
@@ -75,14 +74,6 @@ export async function applyCallbackOnPostgres({
   // AWAITED: the route reads the balance back to answer the provider, and a
   // provider told the wrong balance will reconcile against it.
   const round = result.round ?? await getRound(roundId);
-  await reverseMirrorCasinoRound({
-    round,
-    transaction: {
-      tx_id: txId, round_id: roundId, user_id: String(userId),
-      tx_type: normalised, amount_paise: rupeesToPaise(Number(amountRupees) || 0),
-      provider_key: providerKey, game_id: gameId,
-    },
-  });
 
   return {
     handled: true, ok: true,

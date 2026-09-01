@@ -54,7 +54,6 @@ import {
   ORDER_TYPES, REVISITABLE,
 } from './orderPg.js';
 import { pgQuery } from './pgClient.js';
-import { reverseMirrorOrderState } from './reverseMirror.js';
 
 /** Is Postgres the source of truth for the order lifecycle? */
 export const onPostgres = () => isPostgresAuthoritative(MONEY_PATHS.ORDERS);
@@ -173,26 +172,11 @@ export async function transitionOrderOnPostgres(orderId, to, { set = {}, expectF
     };
   }
 
-  // ── Mongo follows ────────────────────────────────────────────────────────
-  // AWAITED, unlike the fire-and-forget forward mirror. The caller is about to
-  // move money and then read `order.status` back; a mirror still in flight
-  // would let it act on the previous state. The reverse mirror swallows its own
-  // errors and alerts, so awaiting costs latency, not availability.
-  //
-  // `expectFrom` is deliberately NOT passed to Postgres: it may only ever
-  // NARROW what ALLOWED_FROM permits, and narrowing is a Mongo-side convenience
-  // for callers that know more than the table. Postgres holds the row lock and
-  // has already refused anything the table forbids.
+  // `expectFrom` is deliberately NOT passed down: it may only ever NARROW what
+  // ALLOWED_FROM permits, and narrowing is a convenience for callers that know
+  // more than the table does. The transition already ran under the row lock and
+  // the table has refused anything it forbids.
   const state = result.order?.state ?? to;
-  await reverseMirrorOrderState(
-    {
-      order_id:    String(orderId),
-      state,
-      merchant_id: result.order?.merchantId,
-      updated_at:  new Date(),
-    },
-    set,
-  );
 
   return {
     handled: true, ok: true,

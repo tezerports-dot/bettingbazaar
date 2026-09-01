@@ -54,7 +54,6 @@ import { paiseToRupees, rupeesToPaise } from '../shared/money.js';
 import { moneyOperations } from '../services/metrics.service.js';
 import { POCKETS, applyMerchantMovement, getMerchantBalances } from './merchantWalletPg.js';
 import { MONEY_PATHS, isPostgresAuthoritative } from './moneyAuthority.js';
-import { reverseMirrorMerchantMovement } from './reverseMirror.js';
 
 /** Every exit from move() is counted, so retries and refusals are visible. */
 function count(operation, outcome) {
@@ -152,9 +151,6 @@ async function move({
   // never break a movement Postgres has already committed. Failures are logged,
   // counted and paged inside mirrorBack(), and the reverse reconcile repairs
   // whatever it dropped.
-  reverseMirrorMerchantMovement({
-    merchantId, entries: result.entries, balances: result.balances,
-  });
 
   count(operation, 'applied');
   return { merchant: withPgBalance(merchant, result.balances), idempotent: false };

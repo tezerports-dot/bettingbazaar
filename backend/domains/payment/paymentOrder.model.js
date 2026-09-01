@@ -332,24 +332,6 @@ paymentOrderSchema.statics.scrubExpiredProofs = async function(now = new Date())
 };
 
 // ── Exports ───────────────────────────────────────────────────────────────────
-// Hybrid money DB (plan step 2): mirror order lifecycle to Postgres.
-// findOneAndUpdate paths mirror best-effort (doc as returned); reconcile.js
-// is the completeness guarantee for any update shape hooks can't see.
-import { mirrorPaymentOrder, mirrorMerchantSettlement } from '../../postgres/dualWrite.js';
-// Two projections of the same document. mirrorPaymentOrder copies the order
-// itself; mirrorMerchantSettlement projects the merchant-side LIFECYCLE that
-// Mongo keeps on this order (merchantCreditStatus for withdrawals, status for
-// deposits) onto the state machine Postgres owns, so a cutover finds every
-// in-flight settlement already there rather than losing it at the flip.
-paymentOrderSchema.post('save', (doc) => {
-  mirrorPaymentOrder(doc);
-  mirrorMerchantSettlement(doc);
-});
-paymentOrderSchema.post('findOneAndUpdate', (doc) => {
-  if (!doc) return;
-  mirrorPaymentOrder(doc);
-  mirrorMerchantSettlement(doc);
-});
 
 export const PaymentOrder = mongoose.model('PaymentOrder', paymentOrderSchema);
 

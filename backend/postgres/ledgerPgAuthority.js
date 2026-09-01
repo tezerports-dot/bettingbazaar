@@ -43,7 +43,6 @@ import {
   recordEvent as pgRecordEvent, getEvent as pgGetEvent, getLedger as pgGetLedger,
   trialBalance as pgTrialBalance, accountBalancePaise as pgAccountBalance,
 } from './ledgerPg.js';
-import { reverseMirrorAccountingEvent } from './reverseMirror.js';
 
 /** Is Postgres the source of truth for the accounting ledger? */
 export const onPostgres = () => isPostgresAuthoritative(MONEY_PATHS.LEDGER);
@@ -105,25 +104,11 @@ export async function recordEventOnPostgres({
     createdAt: occurredAt,
   });
 
-  // Mongo follows, so the panels and the Mongo-side trial balance keep working
-  // and a fallback is a redeploy rather than a data recovery. AWAITED: the
-  // reconcilers read the event back immediately after posting it.
-  //
-  // Fetched rather than assumed on the idempotent branch — the row that already
-  // exists is the one Mongo must match, not the one this call tried to write.
+  // Fetched rather than assumed on the idempotent branch: the row that already
+  // EXISTS is the event this call must report, not the one it tried to write.
+  // A replay under the same key returns the original posting, which is what
+  // makes the idempotency gate observable to the caller rather than silent.
   const stored = result.event ?? await pgGetEvent(idempotencyKey);
-  if (stored) {
-    await reverseMirrorAccountingEvent({
-      idempotency_key: stored.idempotencyKey,
-      event_type:      stored.eventType,
-      amount_paise:    stored.amountPaise,
-      ref_model:       stored.refModel,
-      ref_id:          stored.refId,
-      postings:        stored.postings,
-      description:     stored.description,
-      created_at:      stored.createdAt,
-    });
-  }
 
   return {
     handled: true,

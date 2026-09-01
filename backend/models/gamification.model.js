@@ -81,9 +81,6 @@ bonusRecordSchema.index({ userId: 1, createdAt: -1 });
 // money itself travels on the wallet ledger's mirror, and the treasury pool is
 // deliberately left alone because it has already paid on the Mongo side.
 // See mirrorBonusGrant for why ADMIN_CREDIT is not mirrored.
-import { mirrorBonusGrant } from '../postgres/dualWrite.js';
-
-bonusRecordSchema.post('save', (doc) => { mirrorBonusGrant(doc); });
 
 export const BonusRecord = mongoose.model('BonusRecord', bonusRecordSchema);
 
