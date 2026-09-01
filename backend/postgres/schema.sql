@@ -165,6 +165,36 @@ CREATE TABLE IF NOT EXISTS utr_registry (
   registered_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- ALTER, not columns in the CREATE above: `CREATE TABLE IF NOT EXISTS` is a
+-- no-op on a table that already exists, so a column added to the CREATE would
+-- never appear on any database that has already booted once.
+--
+-- The table was built as the uniqueness GATE alone — utr, order, user, time —
+-- because that is all the Postgres mirror needed to answer "has this UTR been
+-- claimed". The Mongo model carries two more fields that the gate does not need
+-- and the DOMAIN does: the amount claimed, and a lifecycle
+-- (ACTIVE → RELEASED on completion or cancellation, or FRAUD when an admin
+-- flags it). Without them Postgres cannot answer `checkUTR`'s FRAUD_ALERT, and
+-- `releaseUTR` has nowhere to write — so the registry could be mirrored but
+-- never OWNED.
+ALTER TABLE utr_registry ADD COLUMN IF NOT EXISTS amount_paise BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE utr_registry ADD COLUMN IF NOT EXISTS status       TEXT   NOT NULL DEFAULT 'ACTIVE';
+
+DO $$ BEGIN
+  ALTER TABLE utr_registry ADD CONSTRAINT utr_registry_status_check
+    CHECK (status IN ('ACTIVE','RELEASED','FRAUD'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+  ALTER TABLE utr_registry ADD CONSTRAINT utr_registry_amount_check
+    CHECK (amount_paise >= 0);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- Per-user fraud-pattern lookup, mirroring the Mongo index it replaces.
+CREATE INDEX IF NOT EXISTS utr_registry_user_idx   ON utr_registry (user_id, registered_at DESC);
+-- The admin stats endpoint counts by status; without this it scans the table.
+CREATE INDEX IF NOT EXISTS utr_registry_status_idx ON utr_registry (status);
+
 -- ── MERCHANT WALLET LEDGER (mirrors MerchantWalletLedger) ────────────────────
 CREATE TABLE IF NOT EXISTS merchant_wallet_ledger (
   id                  BIGSERIAL PRIMARY KEY,
@@ -544,6 +574,103 @@ CREATE INDEX IF NOT EXISTS order_transitions_order_idx  ON order_transitions (or
 CREATE INDEX IF NOT EXISTS order_transitions_ledger_idx ON order_transitions (ledger_key);
 CREATE OR REPLACE TRIGGER order_transitions_append_only
   BEFORE UPDATE OR DELETE ON order_transitions FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
+-- ── Domain 5a: the CYCLE ───────────────────────────────────────────────────
+-- The game itself. Until now this lived only in MongoDB, and its absence was
+-- load-bearing in a way worth recording: the bet-versus-settlement boundary had
+-- to be arbitrated by an ADVISORY lock keyed on `hashtext(cycleId)` precisely
+-- because there was no row to lock. That worked, and it has a flaw a real row
+-- does not: `hashtext` returns int32, so two different cycle ids CAN collide —
+-- harmless for correctness (the lock is still mutual) but it means a bet on one
+-- cycle can serialise against the settlement of an unrelated one. With this
+-- table the boundary becomes `SELECT … FOR SHARE` / `FOR UPDATE` on the cycle's
+-- own row: no hash, no collision, and the lock and the status read become ONE
+-- statement instead of a lock plus a separate existence check.
+--
+-- ── What is deliberately NOT here ──────────────────────────────────────────
+-- `isSettled` (PENDING/PROCESSING/COMPLETED) and the settlement totals were on
+-- the Mongo document. They are not duplicated here: `cycle_settlements` already
+-- owns the settlement RUN, keyed UNIQUE on cycle_id, and two copies of one
+-- state is what the reverse mirror existed to keep in step. Settlement state is
+-- a LEFT JOIN away, and the join is an index lookup on a unique key.
+--
+-- `isPaused` is gone too — it was set alongside `status = 'PAUSED'` and carried
+-- no information the status did not.
+CREATE TABLE IF NOT EXISTS cycles (
+  cycle_id        TEXT PRIMARY KEY,
+  type            TEXT NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'OPEN',
+
+  -- TIMESTAMPTZ, not the epoch-milliseconds the Mongo document used. The
+  -- repository converts at the boundary so callers keep the ms shape they
+  -- already read, while the database gets a value it can compare, index and
+  -- range-scan on without every query casting a bigint into a time.
+  start_at        TIMESTAMPTZ NOT NULL,
+  end_at          TIMESTAMPTZ NOT NULL,
+
+  -- ── POOLS: integer paise, and the total is DERIVED ───────────────────────
+  -- The Mongo document carried six independently-incremented rupee floats and
+  -- relied on every writer to keep `total = real + phantom` by hand. Here the
+  -- totals are generated columns: the invariant is structural, cannot drift,
+  -- and cannot be written wrong by a caller that forgets one of the three.
+  real_delhi_paise     BIGINT NOT NULL DEFAULT 0,
+  real_bombay_paise    BIGINT NOT NULL DEFAULT 0,
+  phantom_delhi_paise  BIGINT NOT NULL DEFAULT 0,
+  phantom_bombay_paise BIGINT NOT NULL DEFAULT 0,
+  total_delhi_paise    BIGINT GENERATED ALWAYS AS (real_delhi_paise  + phantom_delhi_paise)  STORED,
+  total_bombay_paise   BIGINT GENERATED ALWAYS AS (real_bombay_paise + phantom_bombay_paise) STORED,
+
+  -- Equalizer state.
+  phantom_balanced    BOOLEAN NOT NULL DEFAULT FALSE,
+  phantom_bets_closed BOOLEAN NOT NULL DEFAULT FALSE,
+
+  -- Result. `winner` is the declared outcome; `pending_result` is an admin's
+  -- pre-selection that has not been declared yet, and they are separate because
+  -- one is a decision and the other is an intention.
+  winner          TEXT,
+  pending_result  TEXT,
+
+  -- How the winner was arrived at. Kept because "who decided this, and how
+  -- confident were they" is the first question asked about a disputed result.
+  -- The boolean `winnerDetermined` from the Mongo document is dropped: it said
+  -- exactly what `winner IS NOT NULL` says.
+  winner_determined_at TIMESTAMPTZ,
+  winner_determined_by TEXT,
+  winner_confidence    TEXT,
+
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  CONSTRAINT cycles_type_check   CHECK (type   IN ('1_MIN','30_MIN','FULL_DAY')),
+  CONSTRAINT cycles_status_check CHECK (status IN ('OPEN','MERGED','CLOSED','RESULT_DECLARED','COMPLETED','PAUSED','CANCELLED')),
+  CONSTRAINT cycles_winner_check         CHECK (winner         IS NULL OR winner         IN ('DELHI','BOMBAY')),
+  CONSTRAINT cycles_pending_check        CHECK (pending_result IS NULL OR pending_result IN ('DELHI','BOMBAY')),
+  CONSTRAINT cycles_determined_by_check  CHECK (winner_determined_by IS NULL OR winner_determined_by IN ('AUTOMATIC','ADMIN_MANUAL','PHANTOM_MANAGER')),
+  CONSTRAINT cycles_confidence_check     CHECK (winner_confidence    IS NULL OR winner_confidence    IN ('HIGH','MEDIUM','LOW','EQUAL_POOL')),
+  CONSTRAINT cycles_window_check         CHECK (end_at > start_at),
+  CONSTRAINT cycles_pools_nonneg_check   CHECK (real_delhi_paise >= 0 AND real_bombay_paise >= 0
+                                            AND phantom_delhi_paise >= 0 AND phantom_bombay_paise >= 0)
+);
+
+-- At most one cycle per type per time block, enforced by the database rather
+-- than by the generator being careful. This is what makes the generator's
+-- upsert safe across concurrent instances during a rolling restart.
+CREATE UNIQUE INDEX IF NOT EXISTS cycles_type_start_unique ON cycles (type, start_at);
+-- The resolved-history feed asks for one type's most recent results, on every
+-- connect and after every result — 60 times an hour with the 1-minute board
+-- live. Without this it scans every declared cycle of every type.
+CREATE INDEX IF NOT EXISTS cycles_type_status_end_idx ON cycles (type, status, end_at DESC);
+-- The engine's tick query: which cycles are live right now.
+CREATE INDEX IF NOT EXISTS cycles_status_end_idx      ON cycles (status, end_at);
+
+-- `updated_at` maintained by the database, not by every caller remembering.
+-- Defined here rather than inline because the next table that wants it should
+-- reuse this one instead of growing a second copy that drifts.
+CREATE OR REPLACE FUNCTION bb_touch_updated_at() RETURNS trigger AS $$
+BEGIN NEW.updated_at = now(); RETURN NEW; END $$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE TRIGGER cycles_touch
+  BEFORE UPDATE ON cycles FOR EACH ROW EXECUTE FUNCTION bb_touch_updated_at();
 
 -- ── Domain 5: bet lifecycle ────────────────────────────────────────────────
 -- The Mongo original keeps a bet's status on the Bet document and moves the
