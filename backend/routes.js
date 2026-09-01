@@ -27,6 +27,7 @@ import { signToken, verifyJwt, decodeTokenClaims } from './domains/identity/jwt.
 import { hashPassword, verifyPassword } from './domains/identity/password.util.js';
 import mongoose    from 'mongoose';
 import { buildPublicKycData } from './domains/user/kycPublicData.js';
+import { isTokenRevoked, revokeToken } from './postgres/identityPg.js';
 import { issueChallenge, verifyChallenge, CHALLENGE_AUDIENCE } from './domains/identity/twoFactorChallenge.js';
 import { verifySecondFactor, SECOND_FACTOR_RESULT } from './domains/identity/verifySecondFactor.js';
 
@@ -251,12 +252,12 @@ router.get('/me', async (req, res) => {
 
     const decoded = verifyJwt(token);
 
-    // Check blacklist
-    try {
-      const TokenBlacklist = mongoose.model('TokenBlacklist');
-      const bl = await TokenBlacklist.findOne({ token }).lean();
-      if (bl) return res.status(401).json({ success: false, message: 'Token invalidated. Please login again.' });
-    } catch { /* model may not exist on first boot */ }
+    // Check the revocation list. NOT wrapped in a swallow: this used to ignore
+    // its own failure and continue, which meant a revoked token was accepted
+    // whenever the check broke. isTokenRevoked fails closed for the same reason.
+    if (await isTokenRevoked(token)) {
+      return res.status(401).json({ success: false, message: 'Token invalidated. Please login again.' });
+    }
 
     const User = mongoose.model('User');
     const user = await User.findById(decoded.userId).select('-passwordHash');
@@ -293,12 +294,24 @@ router.post('/logout', async (req, res) => {
   try {
     const token = extractToken(req);
     if (token) {
+      // A failed revocation used to be swallowed, and the response still said
+      // "Logged out successfully" — so somebody signing out on a shared device
+      // was told their session was dead while the token kept working until it
+      // expired. Report the failure instead: the cookie is cleared either way,
+      // but the caller must not be told the token is dead when it is not.
       try {
-        const TokenBlacklist = mongoose.model('TokenBlacklist');
         const decoded = decodeTokenClaims(token);
         const exp = decoded?.exp ? new Date(decoded.exp * 1000) : new Date(Date.now() + 7 * 86400000);
-        await TokenBlacklist.create({ token, expiresAt: exp }).catch(() => {});
-      } catch { /* ignore */ }
+        await revokeToken(token, { ttlSeconds: Math.max(1, Math.ceil((exp - Date.now()) / 1000)) });
+      } catch (e) {
+        console.error('[auth] logout could not revoke the token:', e.message);
+        res.clearCookie('auth_token', { path: '/' });
+        return res.status(500).json({
+          success: false,
+          message: 'Signed out on this device, but the session could not be revoked. '
+                 + 'Please try again — the token is still valid until you do.',
+        });
+      }
     }
     res.clearCookie('auth_token', { path: '/' });
     res.json({ success: true, message: 'Logged out successfully' });

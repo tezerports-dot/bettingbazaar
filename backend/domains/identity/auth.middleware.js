@@ -22,6 +22,7 @@
  */
 
 import { SystemConfig, User } from '../../models/index.js';
+import { isTokenRevoked as pgIsTokenRevoked } from '../../postgres/identityPg.js';
 import { setContextUser } from '../../middleware/requestContext.js'; // X-6
 // AQ-2 (2026-07-13): every sign/verify goes through the single PASETO authority —
 // Ed25519 signature verification, iss/aud stamped on sign. No raw token-library calls remain here.
@@ -53,15 +54,25 @@ import { isChallengeToken } from './twoFactorChallenge.js';
  * @param {Function} next - Express next middleware function
  * @returns {void}
  */
+/**
+ * Has this token been revoked? Checked on every authenticated request.
+ *
+ * FAILS CLOSED. The previous implementation returned `false` when the lookup
+ * threw — so a signed-out session stayed valid for as long as the check was
+ * broken, which is the failure mode a revocation list exists to prevent. It
+ * cost nothing to be correct here: the platform has one datastore and refuses
+ * to boot without it, so "the database is unreachable" is not a state in which
+ * this process should be answering authenticated requests anyway.
+ *
+ * A caller that genuinely cannot tolerate a 401 on a database blip should be
+ * fixing the blip, not weakening the check.
+ */
 export async function isTokenRevoked(token) {
   try {
-    const TokenBlacklist = (await import('mongoose')).default.model('TokenBlacklist');
-    return Boolean(await TokenBlacklist.findOne({ token }).lean());
-  } catch {
-    // Model may not be registered during early tests/bootstraps; fail open for
-    // compatibility with the existing auth path, but all production boot paths
-    // import models/index.js before serving traffic.
-    return false;
+    return await pgIsTokenRevoked(token);
+  } catch (e) {
+    console.error('[auth] revocation check failed — refusing the token:', e.message);
+    return true;
   }
 }
 

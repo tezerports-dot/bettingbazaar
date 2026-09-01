@@ -164,6 +164,15 @@ const MUTATIONS = [
     from: `WHERE token = $1 AND expires_at > now()`,
     to: `WHERE token = $1`,
   },
+  // ── The revocation check must never fail open ─────────────────────────────
+  {
+    id: 'M52', file: 'backend/domains/identity/auth.middleware.js', config: UNIT,
+    test: 'backend/tests/unit/tokenRevocationFailsClosed.test.js',
+    why: 'a signed-out session stays usable whenever the revocation check breaks',
+    from: `    console.error('[auth] revocation check failed — refusing the token:', e.message);
+    return true;`,
+    to: `    return false;`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that
