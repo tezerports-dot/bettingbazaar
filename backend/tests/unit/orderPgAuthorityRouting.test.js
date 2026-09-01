@@ -90,39 +90,6 @@ beforeEach(() => {
   reverse.orderState.mockResolvedValue(undefined);
 });
 
-describe('the OFF position — Mongo is authoritative', () => {
-  it('reports the path as Mongo-owned', () => {
-    expect(isOn()).toBe(false);
-  });
-
-  it('hands the transition back to the seam without touching Postgres', async () => {
-    const routed = await transitionOrderOnPostgres('o1', ORDER_STATES.COMPLETED, {});
-    // `handled: false` is the seam's instruction to run its own guarded update.
-    expect(routed).toEqual({ handled: false });
-    expect(orderPg.transition).not.toHaveBeenCalled();
-    expect(orderPg.openOrder).not.toHaveBeenCalled();
-    expect(reverse.orderState).not.toHaveBeenCalled();
-  });
-
-  it('asks the resolver on EVERY call, so a rollback takes effect immediately', async () => {
-    // Not cached at module load. Reverting the flag is a redeploy, but a process
-    // that read the answer once would keep routing to Postgres for the lifetime
-    // of the old workers — which is the window a rollback exists to close.
-    //
-    // (The ordering gate itself — ORDERS may not carry authority while WALLET or
-    // LEDGER are still on Mongo — lives in the real resolver and is covered by
-    // moneyAuthority.test.js. It is mocked out here on purpose: this file tests
-    // what the adapter does with the answer, not how the answer is reached.)
-    expect(await transitionOrderOnPostgres('o1', ORDER_STATES.COMPLETED, {})).toEqual({ handled: false });
-
-    onPostgres.add(MONEY_PATHS.ORDERS);
-    expect(await transitionOrderOnPostgres('o1', ORDER_STATES.COMPLETED, {})).toMatchObject({ handled: true });
-
-    onPostgres.clear();
-    expect(await transitionOrderOnPostgres('o1', ORDER_STATES.COMPLETED, {})).toEqual({ handled: false });
-  });
-});
-
 describe('the ON position — Postgres owns the lifecycle', () => {
   beforeEach(() => { onPostgres.add(MONEY_PATHS.ORDERS); });
 

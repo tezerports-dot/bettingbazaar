@@ -65,7 +65,6 @@ export const KIND_FROM_RECORD_TYPE = Object.freeze({
 export async function grant({
   grantId, userId, recordType, amountRupees, refModel = 'BonusRecord', refId = null, reason = null,
 }) {
-  if (!onPostgres()) return { ok: true, source: 'mongo', applied: false };
 
   const kind = KIND_FROM_RECORD_TYPE[recordType];
   // An unmapped type is not an error to throw at a user mid-promotion — it is a
@@ -92,14 +91,12 @@ export async function grant({
  * worse than recording an uncomfortable number.
  */
 export async function clawBack({ grantId, userId, actor = null, reason = null }) {
-  if (!onPostgres()) return { ok: true, source: 'mongo', applied: false };
   const result = await clawBackBonus({ grantId, userId, actor, reason });
   return { ...result, source: 'postgres', applied: result.ok };
 }
 
 /** A grant in rupees, for callers that report to a Mongo-shaped surface. */
 export async function read(grantId) {
-  if (!onPostgres()) return null;
   const g = await getGrant(grantId);
   return g && { ...g, amount: paiseToRupees(g.amountPaise) };
 }

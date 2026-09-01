@@ -51,13 +51,11 @@ import {
   ACCOUNTS, DEFAULT_SUPPLY_CAP_PAISE, mintToMerchantFloat, burnFromMerchantFloat,
   getTreasuryBalances,
 } from './treasuryPg.js';
-import { mirrorAdminSupply } from './dualWrite.js';
 import { reverseMirrorAdminSupply } from './reverseMirror.js';
 
 /** Matches the SystemConfig schema default, in tokens. */
 export const DEFAULT_CAP_TOKENS = 10_000_000_000;
 
-const onPostgres = () => isPostgresAuthoritative(MONEY_PATHS.ADMIN_ISSUANCE);
 
 function count(operation, outcome, store) {
   moneyOperations.inc({ path: MONEY_PATHS.ADMIN_ISSUANCE, store, operation, outcome });
@@ -104,41 +102,6 @@ function guardedIncrement(SystemConfig, amountTokens) {
   ).lean();
 }
 
-async function reserveOnMongo(amountTokens) {
-  const SystemConfig = mongoose.model('SystemConfig');
-
-  let cfg = await guardedIncrement(SystemConfig, amountTokens);
-
-  // No match means one of two things, and they need telling apart: the cap
-  // would be breached, or the config document does not exist yet. Creating it
-  // is a SEPARATE statement precisely because it needs the upsert that the
-  // guard cannot have.
-  if (!cfg) {
-    await SystemConfig.updateOne(
-      { key: 'main' },
-      { $setOnInsert: { key: 'main', adminTokenSupply: { cap: DEFAULT_CAP_TOKENS, minted: 0 } } },
-      { upsert: true },
-    ).catch((e) => {
-      // A concurrent first mint won the race to create it. That is the outcome
-      // we wanted anyway — retry the guard against the document they made.
-      if (e?.code !== 11000) throw e;
-    });
-    // Retried once, never in a loop: a second null is a real cap breach, and
-    // spinning on it would turn a clean 400 into a hang.
-    cfg = await guardedIncrement(SystemConfig, amountTokens);
-  }
-
-  if (!cfg) throw capExceeded(null);
-  return cfg.adminTokenSupply;
-}
-
-async function rollbackOnMongo(amountTokens) {
-  await mongoose.model('SystemConfig').findOneAndUpdate(
-    { key: 'main' },
-    { $inc: { 'adminTokenSupply.minted': -amountTokens } },
-  ).catch(() => {});
-}
-
 /** The Mongo cap, so the Postgres guard enforces the SAME number an admin set. */
 async function capPaiseFromMongo() {
   try {
@@ -171,34 +134,6 @@ export async function reserveAdminMint({
     throw new Error(`reserveAdminMint: amountTokens must be a positive number, got ${amountTokens}`);
   }
   if (!movementId) throw new Error('reserveAdminMint requires a movementId (idempotency key)');
-
-  if (!onPostgres()) {
-    const supply = await reserveOnMongo(amountTokens);
-    count('ADMIN_MINT', 'applied', 'mongo');
-    // Project the counter's movement onto the treasury so a cutover finds the
-    // supply already there.
-    //
-    // AWAITED, unlike every other mirror in the codebase, and deliberately.
-    // The others are called from Mongoose post-save hooks where awaiting is not
-    // an option; this one has a caller. Two reasons it should wait:
-    //
-    //  - reconcileAdminSupply compares the counter against the derived total,
-    //    and an unawaited mirror leaves a window after EVERY mint in which
-    //    those two legitimately disagree. A drift check that fires on ordinary
-    //    traffic is one an operator learns to ignore, which costs more than the
-    //    round-trip saves.
-    //  - issuance is a human-initiated admin action, not a hot path. A few
-    //    milliseconds is not a trade worth making for a response that claims
-    //    tokens were minted while the ledger does not yet know.
-    //
-    // Safe to await because mirror() cannot throw — it logs, counts and pages
-    // internally. Mongo has already committed and still owns the decision.
-    await mirrorAdminSupply({
-      movementId, amountPaise: rupeesToPaise(amountTokens),
-      merchantId, actor, reason, refModel, refId, correlationId,
-    });
-    return { ...supply, idempotent: false, store: 'mongo' };
-  }
 
   const result = await mintToMerchantFloat(rupeesToPaise(amountTokens), {
     movementId, actor, reason: reason || 'Admin token issuance',
@@ -239,16 +174,6 @@ export async function rollbackAdminMint({
   if (!(amountTokens > 0) || !Number.isFinite(amountTokens)) return { ok: false, reason: 'invalid_amount' };
   if (!movementId) throw new Error('rollbackAdminMint requires a movementId (idempotency key)');
 
-  if (!onPostgres()) {
-    await rollbackOnMongo(amountTokens);
-    count('ADMIN_MINT_ROLLBACK', 'applied', 'mongo');
-    await mirrorAdminSupply({
-      movementId: `${movementId}_burn`, amountPaise: 0 - rupeesToPaise(amountTokens),
-      actor, reason, refModel, refId, correlationId,
-    });
-    return { ok: true, store: 'mongo' };
-  }
-
   const result = await burnFromMerchantFloat(rupeesToPaise(amountTokens), {
     movementId: `${movementId}_burn`, actor,
     reason: reason || 'Admin token issuance rolled back',
@@ -270,14 +195,6 @@ export async function rollbackAdminMint({
  * the admin panel renders and what every caller already expects.
  */
 export async function adminTokenSupply() {
-  if (!onPostgres()) {
-    const cfg = await mongoose.model('SystemConfig')
-      .findOne({ key: 'main' }).select('adminTokenSupply').lean();
-    return {
-      cap: cfg?.adminTokenSupply?.cap ?? DEFAULT_CAP_TOKENS,
-      minted: cfg?.adminTokenSupply?.minted ?? 0,
-    };
-  }
   return supplyFromBalances(await getTreasuryBalances(), await capPaiseFromMongo());
 }
 

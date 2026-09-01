@@ -88,23 +88,6 @@ beforeEach(() => {
   reverse.accountingEvent.mockResolvedValue(undefined);
 });
 
-describe('the OFF position — Mongo owns the ledger', () => {
-  it('reports the path as Mongo-owned', () => {
-    expect(isOn()).toBe(false);
-  });
-
-  it('hands every operation back to the Mongo implementation', async () => {
-    expect(await recordEventOnPostgres(EVENT)).toEqual({ handled: false });
-    expect(await trialBalanceOnPostgres()).toEqual({ handled: false });
-    expect(await accountBalanceOnPostgres(ACCOUNTS.USER_FUNDS.code)).toEqual({ handled: false });
-    expect(await getLedgerOnPostgres({})).toEqual({ handled: false });
-
-    expect(ledgerPg.recordEvent).not.toHaveBeenCalled();
-    expect(ledgerPg.trialBalance).not.toHaveBeenCalled();
-    expect(reverse.accountingEvent).not.toHaveBeenCalled();
-  });
-});
-
 describe('the ON position — Postgres owns the ledger', () => {
   beforeEach(() => { onPostgres.add(MONEY_PATHS.LEDGER); });
 

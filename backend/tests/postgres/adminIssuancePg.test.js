@@ -295,11 +295,4 @@ describePg('Admin token issuance (PostgreSQL)', () => {
   });
 
   // ── Routing ───────────────────────────────────────────────────────────────
-  it('does not touch Postgres while MongoDB is authoritative', async () => {
-    authoritative.value = false;
-    // The mongoose stub throws on findOneAndUpdate, which is what proves the
-    // Mongo branch was taken — there is no other way to reach it here.
-    await expect(mint(100, 'mv_mongo')).rejects.toThrow(/not available in the pg suite/);
-    expect(await getTreasuryBalances()).toMatchObject({ [ACCOUNTS.TOKEN_SUPPLY]: 0 });
   });
-});

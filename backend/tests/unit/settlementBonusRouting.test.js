@@ -65,13 +65,7 @@ beforeEach(() => {
 afterEach(() => { onPostgres.clear(); });
 
 describe('settlement routing (domain 6)', () => {
-  it('does not touch Postgres while Mongo is authoritative', async () => {
-    const r = await beginSettlement({ cycleId: 'c1', winningSide: 'DELHI' });
-    expect(r).toMatchObject({ ok: true, source: 'mongo' });
-    expect(settlementPg.openSettlement).not.toHaveBeenCalled();
-  });
-
-  it('claims the cycle in Postgres once it owns the path', async () => {
+    it('claims the cycle in Postgres once it owns the path', async () => {
     onPostgres.add(MONEY_PATHS.SETTLEMENTS);
     const r = await beginSettlement({ cycleId: 'c1', winningSide: 'DELHI', stakeRupees: 12.34 });
 
@@ -128,16 +122,7 @@ describe('settlement routing (domain 6)', () => {
 });
 
 describe('bonus routing (domain 8)', () => {
-  it('leaves the Mongo credit alone while Mongo is authoritative', async () => {
-    const r = await grant({ grantId: 'g1', userId: 'u1', recordType: 'GIFT_CODE', amountRupees: 50 });
-    // `applied: false` is the signal the caller uses to run its own credit.
-    // Returning ok:true with applied:true here would silently skip the only
-    // code path that actually pays the user today.
-    expect(r).toMatchObject({ ok: true, source: 'mongo', applied: false });
-    expect(bonusPg.grantBonus).not.toHaveBeenCalled();
-  });
-
-  it('pays from the pool once Postgres owns the path', async () => {
+    it('pays from the pool once Postgres owns the path', async () => {
     onPostgres.add(MONEY_PATHS.BONUSES_AND_COMMISSIONS);
     const r = await grant({ grantId: 'g1', userId: 'u1', recordType: 'GIFT_CODE', amountRupees: 50 });
 
@@ -185,8 +170,4 @@ describe('bonus routing (domain 8)', () => {
     expect(KIND_FROM_RECORD_TYPE.ADMIN_CREDIT).toBeUndefined();
   });
 
-  it('does not claw back through Postgres while Mongo is authoritative', async () => {
-    expect(await clawBack({ grantId: 'g1', userId: 'u1' })).toMatchObject({ source: 'mongo', applied: false });
-    expect(bonusPg.clawBackBonus).not.toHaveBeenCalled();
   });
-});

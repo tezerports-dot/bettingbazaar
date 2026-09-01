@@ -57,7 +57,6 @@ export function normaliseType(raw) {
 export async function applyCallbackOnPostgres({
   txId, roundId, userId, type, amountRupees, providerKey = null, gameId = null, reason = null,
 }) {
-  if (!onPostgres()) return { handled: false };
 
   const normalised = normaliseType(type);
   if (!normalised) return { handled: true, ok: false, reason: 'unknown_type', type };

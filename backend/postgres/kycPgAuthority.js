@@ -93,7 +93,6 @@ async function ensureKycRow(userId) {
  * must not be overruled by the store that has no opinion.
  */
 export async function decideKycOnPostgres(userId, to, { actor = null, reason = null, set = {}, txId = null } = {}) {
-  if (!onPostgres()) return { handled: false };
 
   if (!(await ensureKycRow(userId))) {
     return { handled: true, ok: false, reason: REASON.NOT_FOUND };

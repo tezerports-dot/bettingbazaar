@@ -147,7 +147,6 @@ async function ensureLifecycleRow(orderId) {
  * returns it unchanged.
  */
 export async function transitionOrderOnPostgres(orderId, to, { set = {}, expectFrom = null, actor = null, reason = null, txId = null } = {}) {
-  if (!onPostgres()) return { handled: false };
 
   if (!(await ensureLifecycleRow(orderId))) {
     return { handled: true, ok: false, reason: REASON.NOT_FOUND };

@@ -58,7 +58,6 @@ export const onPostgres = () => isPostgresAuthoritative(MONEY_PATHS.SETTLEMENTS)
  * direction, and doing it from here as well would write the row twice.
  */
 export async function beginSettlement({ cycleId, winningSide, betsTotal = 0, stakeRupees = 0 }) {
-  if (!onPostgres()) return { ok: true, resumed: false, source: 'mongo' };
 
   const result = await openSettlement({
     cycleId, winningSide, betsTotal,
@@ -86,7 +85,6 @@ export async function beginSettlement({ cycleId, winningSide, betsTotal = 0, sta
  * WHERE clause so exactly one of them wins.
  */
 export async function finishSettlement({ cycleId, payoutRupees = 0 }) {
-  if (!onPostgres()) return { ok: true, idempotent: false, source: 'mongo' };
 
   const result = await completeSettlement({ cycleId });
   if (result.ok) {
@@ -102,6 +100,5 @@ export async function finishSettlement({ cycleId, payoutRupees = 0 }) {
 
 /** The run for a cycle, or null. Reads follow authority like the writes do. */
 export async function readSettlement(cycleId) {
-  if (!onPostgres()) return null;
   return getCycleSettlement(cycleId);
 }

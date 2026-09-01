@@ -79,16 +79,6 @@ describe('the provider vocabulary', () => {
   });
 });
 
-describe('the OFF position — Mongo owns the path', () => {
-  it('reports the path as Mongo-owned', () => expect(isOn()).toBe(false));
-
-  it('hands the callback back to the route without touching Postgres', async () => {
-    expect(await applyCallbackOnPostgres(CALLBACK)).toEqual({ handled: false });
-    expect(casinoPg.recordCallback).not.toHaveBeenCalled();
-    expect(reverse.casinoRound).not.toHaveBeenCalled();
-  });
-});
-
 describe('the ON position — Postgres owns the round', () => {
   beforeEach(() => { onPostgres.add(MONEY_PATHS.CASINO_SETTLEMENT); });
 

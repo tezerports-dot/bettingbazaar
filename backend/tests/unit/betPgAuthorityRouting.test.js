@@ -120,15 +120,7 @@ describe('settling: the two identities a bet carries', () => {
     expect(settlePg.calls).toHaveLength(0);
   });
 
-  it('reports handled:false while MongoDB owns the path, touching nothing', async () => {
-    authoritative.value = false;
-    const r = await settleBetOnPostgres({ bet: mongoDoc(), outcome: 'LOST' });
-
-    expect(r).toEqual({ handled: false });
-    expect(settlePg.calls).toHaveLength(0);
-  });
-
-  it('does not re-mirror a settlement that had already happened', async () => {
+    it('does not re-mirror a settlement that had already happened', async () => {
     settlePg.result = { ok: true, idempotent: true, bet: { status: 'WON' } };
     const r = await settleBetOnPostgres({ bet: mongoDoc(), outcome: 'WON', payoutRupees: 198 });
 
@@ -238,14 +230,4 @@ describe('placing under PostgreSQL authority', () => {
     expect(reverseMirrorBet).not.toHaveBeenCalled();
   });
 
-  it('refuses to run at all while MongoDB is authoritative', async () => {
-    authoritative.value = false;
-    expect(onPostgres()).toBe(false);
-    // Loud rather than silent: a caller reaching this while Mongo owns the
-    // lifecycle would write a bet into the store that is not the source of
-    // truth, and the two would disagree from birth.
-    await expect(placeBet({ betId: 'b', userId: 'u1', cycleId: 'c1', side: 'DELHI', amount: 1, slices }))
-      .rejects.toThrow(/MongoDB is authoritative/);
-    expect(pg.calls).toHaveLength(0);
   });
-});

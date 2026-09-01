@@ -94,7 +94,6 @@ export async function recordEventOnPostgres({
   eventType, idempotencyKey, postings, refModel = null, refId = null,
   occurredAt = null, description = null, amountMinor = null,
 }) {
-  if (!onPostgres()) return { handled: false };
 
   const result = await pgRecordEvent({
     eventType, idempotencyKey,
@@ -144,7 +143,6 @@ export async function recordEventOnPostgres({
  * perfectly against nothing anyone can name.
  */
 export async function trialBalanceOnPostgres() {
-  if (!onPostgres()) return { handled: false };
 
   const pg = await pgTrialBalance();
   const accounts = {};
@@ -169,13 +167,11 @@ export async function trialBalanceOnPostgres() {
 
 /** One account's reported balance in minor units. */
 export async function accountBalanceOnPostgres(accountCode) {
-  if (!onPostgres()) return { handled: false };
   return { handled: true, reportedMinor: await pgAccountBalance(accountCode) };
 }
 
 /** A page of the ledger, in the shape getLedger() returns. */
 export async function getLedgerOnPostgres({ page = 1, limit = 50, eventType = null } = {}) {
-  if (!onPostgres()) return { handled: false };
   const pg = await pgGetLedger({ page, limit, eventType });
   return {
     handled: true,

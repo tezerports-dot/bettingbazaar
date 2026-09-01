@@ -154,7 +154,6 @@ export function slicesFromBet(bet) {
  * bets twice.
  */
 export async function findPendingBetsForCycleOnPostgres(cycleId, opts = {}) {
-  if (!onPostgres()) return [];
   return findPendingBets(cycleId, opts);
 }
 
@@ -166,7 +165,6 @@ export async function findPendingBetsForCycleOnPostgres(cycleId, opts = {}) {
  * silent-wrong-number failure this whole seam exists to prevent.
  */
 export async function derivePayoutTotalsOnPostgres(cycleId) {
-  if (!onPostgres()) return null;
   const t = await derivePayoutTotals(cycleId);
   return {
     paidRupees: paiseToRupees(t.paidPaise),
@@ -206,7 +204,6 @@ export async function settleBetOnPostgres({
   // disagree with the store that owns the bet. See betPg.findPendingBetsForCycle.
   pgBetId = null, pgSlices = null,
 }) {
-  if (!onPostgres()) return { handled: false };
 
   const spec = { WON: winBet, LOST: loseBet, VOID: voidBet, REFUNDED: refundBet }[outcome];
   if (!spec) return { handled: true, ok: false, reason: 'unknown_outcome', outcome };
@@ -285,7 +282,6 @@ export async function settleBetOnPostgres({
 export async function placeBet({
   betId, userId, cycleId, side, amount, slices, reason = null,
 }) {
-  if (!onPostgres()) throw new Error('placeBet: called while MongoDB is authoritative for bets');
 
   const mongoId = mongoIdFor(betId);
   const result = await placeBetPg({
