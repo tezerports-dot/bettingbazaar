@@ -47,6 +47,7 @@ import {
   derivePayoutTotalsForCycle as derivePayoutTotals,
 } from './betPg.js';
 import { reverseMirrorBet, reverseMirrorBetRow } from './reverseMirror.js';
+import { derivePoolsForCycle } from './cyclePg.js';
 
 /** Is Postgres the source of truth for the bet lifecycle? */
 export const onPostgres = () => isPostgresAuthoritative(MONEY_PATHS.BETS);
@@ -172,6 +173,33 @@ export async function derivePayoutTotalsOnPostgres(cycleId) {
     feeRupees:  paiseToRupees(t.feesPaise),
     winners:    t.winners,
     bets:       t.bets,
+  };
+}
+
+/**
+ * The cycle's REAL pools, summed from the store that owns the bets.
+ *
+ * This is the read the WINNER is determined from, so it is the last money
+ * decision on the critical path that was still being made from MongoDB. Null on
+ * the Mongo path, never zeroes: a caller that read "not authoritative here" as
+ * "no bets on either side" would declare a winner from an empty pool, which is
+ * the same class of mistake `derivePayoutTotalsOnPostgres` returns null to
+ * prevent.
+ *
+ * Rupees, because every caller of `computeRealPools` compares and publishes
+ * rupees. The paise are the truth and the conversion happens once, here.
+ *
+ * Phantom stakes are absent by construction rather than by filter: `dualWrite`
+ * never writes a phantom bet to Postgres at all, so summing `bets` cannot
+ * include one. The Mongo aggregate has to say `isPhantom: false` explicitly and
+ * would return the phantom pool if that clause were ever dropped.
+ */
+export async function derivePoolsOnPostgres(cycleId) {
+  if (!onPostgres()) return null;
+  const p = await derivePoolsForCycle(cycleId);
+  return {
+    realDelhi:  paiseToRupees(p.realDelhiPaise),
+    realBombay: paiseToRupees(p.realBombayPaise),
   };
 }
 

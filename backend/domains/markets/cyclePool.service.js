@@ -68,6 +68,9 @@
  */
 import mongoose from 'mongoose';
 import { isEnabled, FLAGS } from '../../services/featureFlags.service.js';
+// Reads follow authority the way the writes do: when Postgres owns the bets,
+// the pools the winner is chosen from are summed there. See betPgAuthority.
+import { derivePoolsOnPostgres } from '../../postgres/betPgAuthority.js';
 
 /** Cheap in-process memo so a broadcast burst does not re-aggregate per tick. */
 const _lastRefresh = new Map();
@@ -98,6 +101,22 @@ export async function derivedPoolsEnabled() {
  * @returns {Promise<{realDelhi: number, realBombay: number}>}
  */
 export async function computeRealPools(cycleId, { exact = false } = {}) {
+  // ── Postgres first, when Postgres owns the bets ──────────────────────────
+  // This is the read the WINNER is determined from — the last money decision
+  // on the critical path that was still being made from MongoDB. When bets are
+  // Postgres-authoritative the Mongo copies are a lagging mirror, so summing
+  // them can miss a stake that has committed and not yet been mirrored: a bet
+  // that is in the pool, paid by the settlement, and absent from the pools the
+  // result was chosen from.
+  //
+  // `null` (never zeroes) is the Mongo-path answer, so this falls through to
+  // the aggregate below rather than declaring a winner from an empty pool.
+  // `exact` has no analogue to pass on: a Postgres read inside a committed
+  // transaction is already the exact state, where Mongo needs a majority read
+  // concern to approximate one.
+  const fromPg = await derivePoolsOnPostgres(cycleId);
+  if (fromPg) return fromPg;
+
   const Bet = mongoose.model('Bet');
 
   const pipeline = [
