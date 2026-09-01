@@ -25,7 +25,7 @@ import { beginSettlement, finishSettlement } from '../../postgres/settlementPgAu
 // The bet lifecycle's other half. Placement has routed through the resolver for
 // a while; settlement wrote Bet.status directly here and in settlementService,
 // which left half the lifecycle authoritative in each store.
-import { onPostgres as betsOnPostgres, settleBetOnPostgres, findPendingBetsForCycleOnPostgres } from '../../postgres/betPgAuthority.js';
+import { onPostgres as betsOnPostgres, settleBetOnPostgres, findPendingBetsForCycleOnPostgres, derivePayoutTotalsOnPostgres } from '../../postgres/betPgAuthority.js';
 // unlockLostBet and executeSettlementBatch moved to domains/settlement/ on 2026-07-03.
 // processPayoutsOptimized stays here as the orchestrator -- see domains/settlement/README.md.
 
@@ -415,24 +415,96 @@ class GameEngine {
             });
         }
 
+        // ── Stragglers: bets Mongo had not heard about when we enumerated ────
+        // Every enumeration above reads MongoDB. Under Postgres authority the
+        // bet is written to Postgres FIRST and mirrored to Mongo only after
+        // that transaction commits — which is after the per-cycle advisory lock
+        // has released. So a bet can commit, this pass can take the lock and
+        // enumerate, and the mirror can land afterwards: a PENDING bet on a
+        // cycle whose settlement is closing, never paid, never lost, never
+        // refunded, its stake locked.
+        //
+        // Runs BEFORE the totals are derived, so a straggler's payout is in
+        // the cycle's recorded figures rather than missing from them.
+        //
+        // An earlier draft of this ran last, on the reasoning that it had to
+        // wait for in-flight mirrors. That was wrong twice over. The sweep reads
+        // POSTGRES, so no mirror is involved in what it can see; and no new bet
+        // can commit on this cycle at all once `beginSettlement` has opened the
+        // run, because `placeBet` takes the same per-cycle advisory lock and
+        // refuses with `cycle_settling`. The bet set is frozen from the claim
+        // onward, so the sweep is correct anywhere after it.
+        //
+        // Guarded as a whole: a failure here must not undo a payout that has
+        // already happened. `bb_stalled_settlements` is the backstop either way.
+        if (onPg) {
+            try {
+                const stragglers = await findPendingBetsForCycleOnPostgres(cycle.cycleId);
+                for (const row of stragglers) {
+                    const won = row.side === cycle.winner;
+                    const p = won ? computeWinningsPayout({
+                        amount: row.stakePaise / 100,
+                        feePercent: winningsFeePercent, multiplier: payoutMultiplier,
+                    }) : null;
+                    const r = await settleBetOnPostgres({
+                        bet: null, pgBetId: row.betId, pgSlices: row.slices,
+                        outcome: won ? 'WON' : 'LOST',
+                        payoutRupees: p?.payout ?? 0, platformFeeRupees: p?.fee ?? 0,
+                        reason: `Cycle ${cycle.cycleId} straggler sweep`,
+                    });
+                    if (!r.ok) {
+                        refusals.push({ betId: row.betId, userId: row.userId, outcome: won ? 'WON' : 'LOST', reason: r.reason });
+                    } else if (!r.idempotent) {
+                        console.warn(`[Engine] straggler settled on ${cycle.cycleId}: ${row.betId} (${won ? 'WON' : 'LOST'}) — its Mongo mirror had not landed when this pass enumerated`);
+                        sendAlert('settlement-straggler',
+                            'A bet was settled by the straggler sweep — the Mongo mirror lagged the settlement', {
+                                cycleId: cycle.cycleId, betId: row.betId, outcome: won ? 'WON' : 'LOST',
+                            });
+                    }
+                }
+            } catch (e) {
+                console.error(`[Engine] straggler sweep failed for ${cycle.cycleId}:`, e.message);
+                sendAlert('settlement-straggler-sweep', 'The straggler sweep threw; stalled bets may remain', {
+                    cycleId: cycle.cycleId, error: e.message,
+                });
+            }
+        }
+
         // Cycle totals are DERIVED from the stamped WON bets, not from this
         // run's in-memory accumulators (F-2 recovery fix, 2026-07-10): a
         // resume after a mid-batch crash only re-processes still-PENDING
         // bets, so accumulators would undercount — the DB sees every bet
         // paid across all passes. Round: payout/platformFee are 2-decimal
         // values whose float sum can drift at the 1e-12 scale.
-        const [wonTotals] = await Bet.aggregate([
-            { $match: { cycleId: cycle.cycleId, status: 'WON', isPhantom: false } },
-            { $group: {
-                _id: null,
-                paid: { $sum: '$payout' },
-                fees: { $sum: '$platformFee' },
-                winners: { $addToSet: '$userId' },
-            } },
-        ]);
-        const totalPaidOut      = Math.round((wonTotals?.paid || 0) * 100) / 100;
-        const totalPlatformFees = Math.round((wonTotals?.fees || 0) * 100) / 100;
-        const totalWinners      = wonTotals?.winners?.length || 0;
+        //
+        // DERIVED FROM THE STORE THAT OWNS THE BETS. Under Postgres authority
+        // this used to read the Mongo aggregate anyway, which put the cycle's
+        // recorded payout behind the reverse mirror: a bet settled in Postgres
+        // whose mirror had not landed was money paid and not counted. The
+        // reconstruction was always right; the store was wrong.
+        //
+        // Postgres returns integer paise and needs no rounding — the drift the
+        // rounding below guards against is a property of summing floats, which
+        // is the Mongo path's problem and not this one.
+        const pgTotals = await derivePayoutTotalsOnPostgres(cycle.cycleId);
+
+        let totalPaidOut, totalPlatformFees, totalWinners;
+        if (pgTotals) {
+            ({ paidRupees: totalPaidOut, feeRupees: totalPlatformFees, winners: totalWinners } = pgTotals);
+        } else {
+            const [wonTotals] = await Bet.aggregate([
+                { $match: { cycleId: cycle.cycleId, status: 'WON', isPhantom: false } },
+                { $group: {
+                    _id: null,
+                    paid: { $sum: '$payout' },
+                    fees: { $sum: '$platformFee' },
+                    winners: { $addToSet: '$userId' },
+                } },
+            ]);
+            totalPaidOut      = Math.round((wonTotals?.paid || 0) * 100) / 100;
+            totalPlatformFees = Math.round((wonTotals?.fees || 0) * 100) / 100;
+            totalWinners      = wonTotals?.winners?.length || 0;
+        }
 
         // ── REALTIME PAYOUT NOTIFICATION ──────────────────────────────────────
         // Emit payout_success to each winner's personal room so their wallet
@@ -539,63 +611,6 @@ class GameEngine {
             cycleId: cycle.cycleId, winner: cycle.winner,
             isSettled: 'COMPLETED', settledAt: new Date(), totalPaidOut,
         });
-
-        // ── Stragglers: bets Mongo had not heard about when we enumerated ────
-        // Every enumeration above reads MongoDB. Under Postgres authority the
-        // bet is written to Postgres FIRST and mirrored to Mongo only after
-        // that transaction commits — which is after the per-cycle advisory lock
-        // has released. So a bet can commit, this pass can take the lock and
-        // enumerate, and the mirror can land afterwards: a PENDING bet on a
-        // cycle whose settlement is closing, never paid, never lost, never
-        // refunded, its stake locked.
-        //
-        // Run LAST deliberately. Sweeping earlier only moves the window — what
-        // makes this sound is that by now every in-flight mirror has completed,
-        // so a bet still PENDING in Postgres is genuinely unsettled rather than
-        // merely late. Reads the store that OWNS the bets, not the mirror.
-        //
-        // ACCOUNTING CAVEAT, stated rather than hidden: `totalPaidOut` above is
-        // a const derived from a Mongo aggregate that has already run, so a
-        // straggler's payout is NOT in the cycle's recorded total. The money is
-        // correct — the player is paid — and `reconcileSettlement` compares the
-        // run's payout against the bets' own, so the discrepancy is reported
-        // rather than silent. Making the total authoritative means deriving it
-        // from Postgres too, which is a larger change than this sweep.
-        //
-        // Guarded as a whole: a failure here must not undo a payout that has
-        // already happened. `bb_stalled_settlements` is the backstop either way.
-        if (onPg) {
-            try {
-                const stragglers = await findPendingBetsForCycleOnPostgres(cycle.cycleId);
-                for (const row of stragglers) {
-                    const won = row.side === cycle.winner;
-                    const p = won ? computeWinningsPayout({
-                        amount: row.stakePaise / 100,
-                        feePercent: winningsFeePercent, multiplier: payoutMultiplier,
-                    }) : null;
-                    const r = await settleBetOnPostgres({
-                        bet: null, pgBetId: row.betId, pgSlices: row.slices,
-                        outcome: won ? 'WON' : 'LOST',
-                        payoutRupees: p?.payout ?? 0, platformFeeRupees: p?.fee ?? 0,
-                        reason: `Cycle ${cycle.cycleId} straggler sweep`,
-                    });
-                    if (!r.ok) {
-                        refusals.push({ betId: row.betId, userId: row.userId, outcome: won ? 'WON' : 'LOST', reason: r.reason });
-                    } else if (!r.idempotent) {
-                        console.warn(`[Engine] straggler settled on ${cycle.cycleId}: ${row.betId} (${won ? 'WON' : 'LOST'}) — its Mongo mirror had not landed when this pass enumerated`);
-                        sendAlert('settlement-straggler',
-                            'A bet was settled by the straggler sweep — the Mongo mirror lagged the settlement', {
-                                cycleId: cycle.cycleId, betId: row.betId, outcome: won ? 'WON' : 'LOST',
-                            });
-                    }
-                }
-            } catch (e) {
-                console.error(`[Engine] straggler sweep failed for ${cycle.cycleId}:`, e.message);
-                sendAlert('settlement-straggler-sweep', 'The straggler sweep threw; stalled bets may remain', {
-                    cycleId: cycle.cycleId, error: e.message,
-                });
-            }
-        }
 
         // …and close the run for real once Postgres owns the path. Awaited, but
         // a refusal is NOT fatal here, unlike the claim: the money has already

@@ -27,6 +27,9 @@ const pgAuth = vi.hoisted(() => ({
   onPostgres: false,
   settled: [],
   resultFor: null,
+  sweptCycles: [],
+  stragglers: [],
+  totals: null,
 }));
 vi.mock('../../postgres/betPgAuthority.js', () => ({
   onPostgres: () => pgAuth.onPostgres,
@@ -34,6 +37,15 @@ vi.mock('../../postgres/betPgAuthority.js', () => ({
     pgAuth.settled.push(args);
     return pgAuth.resultFor ? pgAuth.resultFor(args) : { handled: true, ok: true };
   },
+  // The straggler sweep and the payout derivation. Both default to "nothing to
+  // do" so the existing cases describe the ordinary pass; a case that wants a
+  // straggler or a Postgres-derived total sets `pgAuth.stragglers` /
+  // `pgAuth.totals` for itself.
+  findPendingBetsForCycleOnPostgres: async (cycleId) => {
+    pgAuth.sweptCycles.push(cycleId);
+    return pgAuth.stragglers;
+  },
+  derivePayoutTotalsOnPostgres: async () => pgAuth.totals,
 }));
 
 const svc = vi.hoisted(() => ({ unlocked: [], batches: [], refusedFor: null }));

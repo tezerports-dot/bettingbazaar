@@ -27,7 +27,7 @@
  * plain `SELECT` with no lock at all, because they never interleave.
  */
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
-import { placeBet, findPendingBetsForCycle } from '../../postgres/betPg.js';
+import { placeBet, findPendingBetsForCycle, derivePayoutTotalsForCycle, winBet } from '../../postgres/betPg.js';
 import { openSettlement } from '../../postgres/settlementPg.js';
 import { getPool, pgQuery, connectGuarded, CYCLE_LOCK_CLASS } from '../../postgres/pgClient.js';
 
@@ -194,5 +194,73 @@ describe('the funding split lives with the bet', () => {
     );
     const [legacy] = await findPendingBetsForCycle(cycle);
     expect(legacy.slices).toEqual([]);
+  });
+});
+
+describe('the cycle payout total is derived, not accumulated', () => {
+  // `gameEngine` computed this from a Mongo aggregate even under Postgres
+  // authority, which put the cycle's recorded payout behind the reverse
+  // mirror: a bet settled in Postgres whose mirror had not landed was money
+  // paid and not counted.
+  //
+  // The RECONSTRUCTION property is the one that matters and it predates this
+  // change — a pass resuming after a crash only re-processes still-PENDING
+  // bets, so an in-memory accumulator undercounts by everything the previous
+  // pass already paid. The table sees every bet paid across every pass. The
+  // derivation was always right; it was reading the wrong store.
+  const settleAll = async (cycle, rows) => {
+    for (const [betId, stakePaise] of rows) {
+      await placeBet({
+        betId, userId: USER, cycleId: cycle, side: 'DELHI',
+        slices: [{ field: 'depositBalance', amountPaise: stakePaise }],
+      });
+    }
+    for (const [betId, stakePaise] of rows) {
+      await winBet({
+        betId, userId: USER,
+        slices: [{ field: 'depositBalance', amountPaise: stakePaise }],
+        payoutPaise: Math.round(stakePaise * 2 * 0.99),
+        platformFeePaise: Math.round(stakePaise * 2 * 0.01),
+        actor: 'test', reason: 'settled',
+      });
+    }
+  };
+
+  it('sums the payouts and fees the bets actually carry', async () => {
+    const cycle = nextCycle();
+    const rows = [[`${cycle}_1`, 10_000], [`${cycle}_2`, 25_000], [`${cycle}_3`, 7_500]];
+    await settleAll(cycle, rows);
+
+    const totals = await derivePayoutTotalsForCycle(cycle);
+    const expectedPaid = rows.reduce((n, [, s]) => n + Math.round(s * 2 * 0.99), 0);
+    const expectedFees = rows.reduce((n, [, s]) => n + Math.round(s * 2 * 0.01), 0);
+    expect(totals.paidPaise).toBe(expectedPaid);
+    expect(totals.feesPaise).toBe(expectedFees);
+    expect(totals.bets).toBe(rows.length);
+  });
+
+  it('gives the SAME answer when run again — the crash-resume property', async () => {
+    // A settlement pass that dies mid-batch and restarts must not double-count
+    // what the first pass paid, and must not lose it either.
+    const cycle = nextCycle();
+    await settleAll(cycle, [[`${cycle}_a`, 5_000], [`${cycle}_b`, 3_000]]);
+    const first = await derivePayoutTotalsForCycle(cycle);
+    const second = await derivePayoutTotalsForCycle(cycle);
+    expect(second).toEqual(first);
+  });
+
+  it('counts DISTINCT winners, not winning bets', async () => {
+    // Two bets from one user is one winner. The Mongo aggregate used $addToSet
+    // for the same reason; the Postgres form must not quietly become a row count.
+    const cycle = nextCycle();
+    await settleAll(cycle, [[`${cycle}_x`, 1_000], [`${cycle}_y`, 1_000]]);
+    const totals = await derivePayoutTotalsForCycle(cycle);
+    expect(totals.bets).toBe(2);
+    expect(totals.winners).toBe(1);
+  });
+
+  it('reports zeros for a cycle nothing has settled on', async () => {
+    const totals = await derivePayoutTotalsForCycle(nextCycle());
+    expect(totals).toEqual({ paidPaise: 0, feesPaise: 0, winners: 0, bets: 0 });
   });
 });

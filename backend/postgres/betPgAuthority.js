@@ -44,6 +44,7 @@ import { isPostgresAuthoritative, MONEY_PATHS } from './moneyAuthority.js';
 import {
   placeBet as placeBetPg, BET_STATUS, winBet, loseBet, voidBet, refundBet, resolveBetId,
   findPendingBetsForCycle as findPendingBets,
+  derivePayoutTotalsForCycle as derivePayoutTotals,
 } from './betPg.js';
 import { reverseMirrorBet, reverseMirrorBetRow } from './reverseMirror.js';
 
@@ -154,6 +155,24 @@ export function slicesFromBet(bet) {
 export async function findPendingBetsForCycleOnPostgres(cycleId, opts = {}) {
   if (!onPostgres()) return [];
   return findPendingBets(cycleId, opts);
+}
+
+/**
+ * A cycle's payout totals from the store that owns the bets, or null on Mongo.
+ *
+ * Null rather than zeros: a caller that mistook "not authoritative here" for "no
+ * payouts" would write a zero into the cycle's recorded total, which is the
+ * silent-wrong-number failure this whole seam exists to prevent.
+ */
+export async function derivePayoutTotalsOnPostgres(cycleId) {
+  if (!onPostgres()) return null;
+  const t = await derivePayoutTotals(cycleId);
+  return {
+    paidRupees: paiseToRupees(t.paidPaise),
+    feeRupees:  paiseToRupees(t.feesPaise),
+    winners:    t.winners,
+    bets:       t.bets,
+  };
 }
 
 export async function settleBetOnPostgres({

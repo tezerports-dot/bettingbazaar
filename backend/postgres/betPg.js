@@ -604,6 +604,41 @@ export async function findPendingBetsForCycle(cycleId, { side = null, limit = 10
   return rows.map((r) => ({ ...rowToBet(r), slices: slicesFromRow(r) }));
 }
 
+/**
+ * A cycle's payout totals, DERIVED from the settled bets themselves.
+ *
+ * The Postgres counterpart of the `Bet.aggregate` in `gameEngine`, and it keeps
+ * that aggregate's most important property: the total is RECONSTRUCTED from
+ * stamped rows, never accumulated in memory. A pass that resumes after a crash
+ * only re-processes still-PENDING bets, so an accumulator would undercount by
+ * everything the previous pass already paid — the table, by contrast, sees
+ * every bet paid across every pass. Run it twice and it answers the same.
+ *
+ * It exists because that derivation was reading MongoDB even while Postgres
+ * owned the bets, which put the cycle's recorded payout behind the mirror. The
+ * reconstruction was right; the store was wrong.
+ *
+ * Paise in, paise out — the caller converts at its own boundary.
+ */
+export async function derivePayoutTotalsForCycle(cycleId) {
+  const { rows } = await pgQuery(
+    `SELECT COALESCE(SUM(payout_paise), 0)       AS paid,
+            COALESCE(SUM(platform_fee_paise), 0) AS fees,
+            COUNT(DISTINCT user_id)              AS winners,
+            COUNT(*)                             AS bets
+       FROM bets
+      WHERE cycle_id = $1 AND status = $2`,
+    [String(cycleId), BET_STATUS.WON], 'cycle_payout_totals',
+  );
+  const r = rows[0] || {};
+  return {
+    paidPaise: toPaise(r.paid),
+    feesPaise: toPaise(r.fees),
+    winners:   Number(r.winners || 0),
+    bets:      Number(r.bets || 0),
+  };
+}
+
 export async function reconcileUserStakes(userId) {
   const [{ rows: pending }, { rows: wallet }] = await Promise.all([
     pgQuery(
