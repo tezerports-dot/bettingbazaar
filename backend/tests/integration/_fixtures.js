@@ -88,3 +88,33 @@ export async function funded(pending) {
   }
   return user;
 }
+
+/**
+ * Give a merchant the tokens their Mongo document says they hold.
+ *
+ * The same gap as `funded()`, one domain over. `debitMerchantTokens` routes to
+ * `merchantWalletPgAuthority`, which moves the `merchant_wallets` row — so a
+ * merchant created as `Merchant.create({ tokenBalance: 500 })` has 500 tokens
+ * in the document and none in the store the debit reads. Every debit is
+ * refused, and a suite asserting on idempotency counts eight refusals as eight
+ * applications, which is how this surfaced.
+ *
+ *     const m = await fundedMerchant(Merchant().create({ …, tokenBalance: 500 }));
+ */
+export async function fundedMerchant(pending) {
+  const merchant = await pending;
+  if (!merchant?._id) throw new Error('fundedMerchant(): needs a merchant document with an _id');
+  const tokens = Number(merchant.tokenBalance || 0);
+  if (tokens > 0) {
+    const { creditMerchantTokens } = await import('../../postgres/merchantWalletPgAuthority.js');
+    await creditMerchantTokens({
+      merchantId: String(merchant._id), amount: tokens,
+      reason: 'integration fixture funding', refModel: 'Merchant',
+      refId: String(merchant._id),
+      // Keyed on the merchant, so a re-run against a shared database credits
+      // once rather than compounding.
+      txId: `fixture_merchant_${merchant._id}`,
+    });
+  }
+  return merchant;
+}

@@ -7,6 +7,7 @@
 //   - the credit is idempotent (double-confirm / double-approve credits once);
 //   - two concurrent approvals of the same order settle exactly once (X-9).
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { fundedMerchant } from './_fixtures.js';
 import request from 'supertest';
 import express from 'express';
 import { signToken } from '../../domains/identity/paseto.util.js';
@@ -30,11 +31,11 @@ const merchantToken = (merchantId) =>
   `Bearer ${signToken({ isMerchant: true, merchantId: String(merchantId) })}`;
 
 async function seed({ tokenBalance = 100000 } = {}) {
-  const merchant = await Merchant().create({
+  const merchant = await fundedMerchant(Merchant().create({
     name: 'Depo M', username: 'depom' + Math.random().toString(16).slice(2, 8),
     mobile: '9' + Math.floor(100000000 + Math.random() * 899999999),
     status: 'ACTIVE', merchantApprovalStatus: 'APPROVED', tokenBalance,
-  });
+  }));
   const user = await User().create({
     username: 'depuser' + Math.random().toString(16).slice(2, 8),
     mobile: '8' + Math.floor(100000000 + Math.random() * 899999999),

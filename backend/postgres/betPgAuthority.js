@@ -199,10 +199,11 @@ export async function derivePoolsOnPostgres(cycleId) {
 export async function settleBetOnPostgres({
   bet, outcome, payoutRupees = 0, platformFeeRupees = 0, reason = null,
   // Set by a caller that enumerated from POSTGRES rather than from Mongo: it
-  // already holds the native key and the funding split off the row, so the
-  // Mongo derivation below (and its id round-trip) would only be a chance to
-  // disagree with the store that owns the bet. See betPg.findPendingBetsForCycle.
-  pgBetId = null, pgSlices = null,
+  // already holds the native key, the owner and the funding split off the row,
+  // so the Mongo derivation below (and its id round-trip) would only be a chance
+  // to disagree with the store that owns the bet. See
+  // betPg.findPendingBetsForCycle, which returns all three.
+  pgBetId = null, pgSlices = null, pgUserId = null,
 }) {
 
   const spec = { WON: winBet, LOST: loseBet, VOID: voidBet, REFUNDED: refundBet }[outcome];
@@ -231,9 +232,19 @@ export async function settleBetOnPostgres({
     return { handled: true, ok: false, reason: 'not_found', betId: mongoId };
   }
 
+  // From the Postgres row when the caller enumerated there, and only otherwise
+  // from the Mongo document. This read used to be `String(bet.userId)`
+  // unconditionally, which threw `Cannot read properties of null` for every
+  // caller passing `bet: null` — the shape the straggler sweep always used and
+  // the shape the settlement pass now uses for EVERY bet.
+  const ownerId = pgUserId ?? bet?.userId;
+  if (!ownerId) {
+    return { handled: true, ok: false, reason: 'no_owner', betId };
+  }
+
   const result = await spec({
     betId,
-    userId: String(bet.userId),
+    userId: String(ownerId),
     slices,
     payoutPaise: rupeesToPaise(Number(payoutRupees) || 0),
     platformFeePaise: rupeesToPaise(Number(platformFeeRupees) || 0),
@@ -252,15 +263,25 @@ export async function settleBetOnPostgres({
   // Mongo document under an id nothing else refers to, leaving the real one at
   // PENDING — a settled bet the whole system still believes is open.
   if (!result.idempotent && result.bet) {
+    // Sourced from `result.bet` — the row that was just written — rather than
+    // from the Mongo document. Two reasons, and the first is a bug that was
+    // live: these five fields used to be read off `bet`, which is NULL for
+    // every caller that enumerated from Postgres, so the mirror threw
+    // `Cannot read properties of null` immediately after the money had already
+    // moved. The second is that `bet.amount` is the document's rupee figure,
+    // while `stakePaise` is the stake the settle actually consumed; mirroring
+    // the former would let the copy disagree with the transaction that made it.
     await reverseMirrorBetRow({
       bet_id: betId, mongo_id: mongoId,
-      user_id: String(bet.userId), cycle_id: bet.cycleId, side: bet.side,
-      stake_paise: rupeesToPaise(Number(bet.amount) || 0),
+      user_id: String(result.bet.userId),
+      cycle_id: result.bet.cycleId,
+      side: result.bet.side,
+      stake_paise: result.bet.stakePaise,
       payout_paise: rupeesToPaise(Number(payoutRupees) || 0),
       platform_fee_paise: rupeesToPaise(Number(platformFeeRupees) || 0),
       status: result.bet.status,
       settled_at: result.bet.settledAt ?? new Date(),
-      placed_at: bet.timestamp,
+      placed_at: result.bet.placedAt,
     });
   }
 

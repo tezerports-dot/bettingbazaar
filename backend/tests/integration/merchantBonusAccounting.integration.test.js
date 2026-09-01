@@ -3,6 +3,7 @@
 // (Revenue & Settlement) — pool funding capped at distributable revenue, and
 // issuance that is pool-capped, idempotent and mirrored by the wallet credit.
 import { describe, it, expect } from 'vitest';
+import { fundedMerchant } from './_fixtures.js';
 import mongoose from 'mongoose';
 import '../../models/index.js';
 import {
@@ -63,7 +64,7 @@ describe('Merchant Performance Bonus accounting (Revenue & Settlement)', () => {
     await fundMerchantBonusPool({ amountMinor: 30000, actor, justification: 'pool' });
 
     const Merchant = mongoose.model('Merchant');
-    const m = await Merchant.create({ name: 'Bonus M', username: 'bm1', mobile: '9300000004', tokenBalance: 0 });
+    const m = await fundedMerchant(Merchant.create({ name: 'Bonus M', username: 'bm1', mobile: '9300000004', tokenBalance: 0 }));
 
     // Beyond the pool → refused.
     await expect(issueMerchantBonus({

@@ -29,6 +29,7 @@
  * where the mongod download is blocked — CI is the verifier.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
+import { fundedMerchant } from './_fixtures.js';
 import mongoose from 'mongoose';
 import '../../models/index.js';
 import {
@@ -46,12 +47,12 @@ const settleAll = (p) => Promise.allSettled(p);
 beforeEach(async () => {
   await Merchant().deleteMany({});
   await MLedger().deleteMany({});
-  const m = await Merchant().create({
+  const m = await fundedMerchant(Merchant().create({
     name: 'ConcurrencyMerchant',
     mobile: `9400${Date.now() % 1000000}`,
     status: 'ACTIVE',
     tokenBalance: 100000,
-  });
+  }));
   merchantId = m._id;
 });
 

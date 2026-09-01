@@ -33,6 +33,7 @@
  * REQUIRES both MONGODB_URI (a replica set) and DATABASE_URL. Skips otherwise.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { fundedMerchant } from './_fixtures.js';
 import mongoose from 'mongoose';
 import '../../models/index.js';
 
@@ -92,12 +93,12 @@ async function heldWithdrawal({ tokens = 500, holdUntil = new Date(Date.now() - 
   const owner = await User().create({
     username: `holdmo${n}`, mobile: `91000${String(n).padStart(5, '0')}`,
   });
-  const merchant = await Merchant().create({
+  const merchant = await fundedMerchant(Merchant().create({
     name: `Hold M${n}`, username: `holdm${n}`, mobile: `92000${String(n).padStart(5, '0')}`,
     // `userId` is UNIQUE on the Merchant schema, so leaving it unset makes
     // every merchant after the first collide on null.
     userId: owner._id, tokenBalance: 0,
-  });
+  }));
   const user = await User().create({
     username: `holdu${n}`, mobile: `93000${String(n).padStart(5, '0')}`,
   });

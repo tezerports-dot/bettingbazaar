@@ -5,6 +5,7 @@
 // merchant:null), so the deposit-confirm path can decline instead of
 // crediting the user against tokens that don't exist.
 import { describe, it, expect, beforeEach } from 'vitest';
+import { fundedMerchant } from './_fixtures.js';
 import mongoose from 'mongoose';
 import '../../models/index.js';
 import { debitMerchantTokens, creditMerchantTokens } from '../../domains/merchant/merchantWallet.service.js';
@@ -19,7 +20,7 @@ beforeEach(async () => {
 
 describe('merchant wallet transfer safety (F-1)', () => {
   it('refuses to debit below zero without allowOverdraft (no minting)', async () => {
-    const m = await Merchant().create({ name: 'M One', username: 'm1', mobile: '9000001001', tokenBalance: 50 });
+    const m = await fundedMerchant(Merchant().create({ name: 'M One', username: 'm1', mobile: '9000001001', tokenBalance: 50 }));
     const { merchant } = await debitMerchantTokens({
       merchantId: m._id, amount: 100, reason: 'test', refModel: 'PaymentOrder',
       refId: 'o1', txId: 'mw_test_1',
@@ -30,7 +31,7 @@ describe('merchant wallet transfer safety (F-1)', () => {
   });
 
   it('debits when funded and records a ledger entry', async () => {
-    const m = await Merchant().create({ name: 'M Two', username: 'm2', mobile: '9000001002', tokenBalance: 500 });
+    const m = await fundedMerchant(Merchant().create({ name: 'M Two', username: 'm2', mobile: '9000001002', tokenBalance: 500 }));
     const { merchant } = await debitMerchantTokens({
       merchantId: m._id, amount: 100, reason: 'test', refModel: 'PaymentOrder',
       refId: 'o2', txId: 'mw_test_2',
@@ -40,7 +41,7 @@ describe('merchant wallet transfer safety (F-1)', () => {
   });
 
   it('debit is idempotent — same txId does not double-deduct', async () => {
-    const m = await Merchant().create({ name: 'M Three', username: 'm3', mobile: '9000001003', tokenBalance: 500 });
+    const m = await fundedMerchant(Merchant().create({ name: 'M Three', username: 'm3', mobile: '9000001003', tokenBalance: 500 }));
     await debitMerchantTokens({ merchantId: m._id, amount: 100, reason: 't', refModel: 'PaymentOrder', refId: 'o3', txId: 'mw_test_3' });
     const again = await debitMerchantTokens({ merchantId: m._id, amount: 100, reason: 't', refModel: 'PaymentOrder', refId: 'o3', txId: 'mw_test_3' });
     expect(again.idempotent).toBe(true);
@@ -50,7 +51,7 @@ describe('merchant wallet transfer safety (F-1)', () => {
 
 
   it('concurrent debit retries with the same txId apply only one balance mutation', async () => {
-    const m = await Merchant().create({ name: 'M Five', username: 'm5', mobile: '9000001005', tokenBalance: 500 });
+    const m = await fundedMerchant(Merchant().create({ name: 'M Five', username: 'm5', mobile: '9000001005', tokenBalance: 500 }));
     const attempts = await Promise.all(Array.from({ length: 8 }, () => debitMerchantTokens({
       merchantId: m._id, amount: 100, reason: 'concurrent retry', refModel: 'PaymentOrder',
       refId: 'o5', txId: 'mw_test_concurrent_5',
@@ -64,7 +65,7 @@ describe('merchant wallet transfer safety (F-1)', () => {
   });
 
   it('compensating refund restores the merchant (F-1 rollback path)', async () => {
-    const m = await Merchant().create({ name: 'M Four', username: 'm4', mobile: '9000001004', tokenBalance: 500 });
+    const m = await fundedMerchant(Merchant().create({ name: 'M Four', username: 'm4', mobile: '9000001004', tokenBalance: 500 }));
     await debitMerchantTokens({ merchantId: m._id, amount: 100, reason: 't', refModel: 'PaymentOrder', refId: 'o4', txId: 'mw_dep_deduct_o4' });
     await creditMerchantTokens({ merchantId: m._id, amount: 100, reason: 'reversed', refModel: 'PaymentOrder', refId: 'o4', txId: 'mw_dep_refund_o4' });
     const fresh = await Merchant().findById(m._id).lean();

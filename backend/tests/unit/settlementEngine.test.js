@@ -115,6 +115,23 @@ describe('paying the winning side', () => {
     });
   });
 
+  it('identifies the bet ENTIRELY from the row — id, owner and slices', async () => {
+    // This mock answers where the real `settleBetOnPostgres` reads. It used to
+    // take the owner off `bet.userId` unconditionally and threw
+    // `Cannot read properties of null` for every `bet: null` caller — which is
+    // every caller here. A mocked settle cannot catch that, so the unmocked
+    // proof lives in settleFromPgRow.pg.test.js; what this pins is the
+    // ARGUMENTS, so the engine cannot quietly stop supplying the owner.
+    pg.pending = [bet('b1', { userId: 'u_owner' })];
+    await settle();
+    expect(pg.settled[0]).toMatchObject({
+      bet: null,
+      pgBetId:  'b1',
+      pgUserId: 'u_owner',
+      pgSlices: [{ field: 'depositBalance', amountPaise: 10000 }],
+    });
+  });
+
   it('settles a losing bet with no payout and no fee', async () => {
     pg.pending = [bet('b1', { side: 'BOMBAY' })];
     await settle();

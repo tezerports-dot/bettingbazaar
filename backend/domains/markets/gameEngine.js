@@ -233,7 +233,7 @@ class GameEngine {
             }) : null;
 
             const r = await settleBetOnPostgres({
-                bet: null, pgBetId: row.betId, pgSlices: row.slices,
+                bet: null, pgBetId: row.betId, pgSlices: row.slices, pgUserId: row.userId,
                 outcome: won ? 'WON' : 'LOST',
                 payoutRupees: p?.net ?? 0, platformFeeRupees: p?.fee ?? 0,
                 reason: won
