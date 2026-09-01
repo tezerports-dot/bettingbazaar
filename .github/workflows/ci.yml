@@ -204,11 +204,10 @@ jobs:
       # products) fail the build instead of waiting for human review.
       - name: Architecture validation (dependency-cruiser)
         run: npm run check:deps
-      # Belt and braces: the gate also runs as its own job, but a contributor
-      # reading this job's log should see the rule named alongside the other
-      # architecture checks it belongs with.
-      - name: Single-store verification (PostgreSQL only)
-        run: npm run check:no-mongo
+      # The single-store gate is NOT repeated here, deliberately. It has its own
+      # job, it stays red for the whole removal, and a copy of it in this job
+      # would fail before the three panel builds below ever run — costing the
+      # signal without adding any. Read it from the `single-store` job.
       # Capability registry drift check (CAP-06/CAP-59): every capability the
       # registry claims must have its evidence/docs/tests present on disk.
       - name: Capability registry verification
