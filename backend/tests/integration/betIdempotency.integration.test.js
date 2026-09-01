@@ -21,7 +21,7 @@ import express from 'express';
 import mongoose from 'mongoose';
 import { signToken } from '../../domains/identity/paseto.util.js';
 import { User, Cycle, Bet } from '../../models/index.js';
-import { bettable } from './_bettableCycle.js';
+import { bettable, funded } from './_fixtures.js';
 import betRoutes from '../../domains/markets/bet.routes.js';
 
 const app = express();
@@ -32,11 +32,11 @@ const authFor = (user) => `Bearer ${signToken({ userId: user._id })}`;
 
 let seq = 0;
 async function freshUserAndCycle() {
-  const user = await User.create({
+  const user = await funded(User.create({
     username: `idem_${seq}`, mobile: `92000000${seq++}`.slice(0, 12),
     kycStatus: 'APPROVED',
     depositBalance: 100, winningsBalance: 0, reserveBalance: 10,
-  });
+  }));
   const cycle = await bettable(Cycle.create({
     cycleId: `idem_cycle_${Date.now()}_${seq}`, type: '30_MIN',
     startTime: Date.now() - 60_000, endTime: Date.now() + 300_000,

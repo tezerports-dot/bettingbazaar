@@ -34,7 +34,7 @@ import betRoutes from '../../domains/markets/bet.routes.js';
 import GameEngine from '../../domains/markets/gameEngine.js';
 import CycleGeneratorService from '../../domains/markets/cycleGenerator.service.js';
 import { CYCLE_TYPES } from '../../domains/markets/cycleTypes.js';
-import { bettable } from './_bettableCycle.js';
+import { bettable, funded } from './_fixtures.js';
 
 const app = express();
 app.use(express.json());
@@ -91,10 +91,10 @@ const reread = (c) => Cycle.findById(c._id).lean();
  * real bets makes both paths agree on the same winner.
  */
 async function stake(cycle, { delhi = 0, bombay = 0 }) {
-  const bettor = await User.create({
+  const bettor = await funded(User.create({
     username: `om_stk${seq++}`, mobile: `92000${String(seq).padStart(5, '0')}`,
     kycStatus: 'APPROVED', depositBalance: 0, winningsBalance: 0, reserveBalance: 0,
-  });
+  }));
   const rows = [];
   if (delhi)  rows.push({ userId: bettor._id, cycleId: cycle.cycleId, amount: delhi,  side: 'DELHI',  isPhantom: false, status: 'PENDING' });
   if (bombay) rows.push({ userId: bettor._id, cycleId: cycle.cycleId, amount: bombay, side: 'BOMBAY', isPhantom: false, status: 'PENDING' });
@@ -203,10 +203,10 @@ describe('1-minute cycle — phases fire at the specified 12 / 9 / 5 / 3 second 
 });
 
 describe('1-minute cycle — betting closes on the clock, not on the status flag', () => {
-  const better = () => User.create({
+  const better = () => funded(User.create({
     username: `om_u${seq++}`, mobile: `91000${String(seq).padStart(5, '0')}`,
     kycStatus: 'APPROVED', depositBalance: 500, winningsBalance: 0, reserveBalance: 50,
-  });
+  }));
 
   const bet = (user, cycle, key) => request(app).post('/api/bet/place')
     .set('Authorization', authFor(user))
@@ -336,14 +336,14 @@ describe('1-minute cycle — settlement pays the same way as every other board',
     // §22.1). This asserts that holds when the board is a 1-minute one — the
     // settlement runs inside a 3-second celebration window here rather than a
     // 10-second one.
-    const winner = await User.create({
+    const winner = await funded(User.create({
       username: 'om_win', mobile: '9110000001', kycStatus: 'APPROVED',
       depositBalance: 100, winningsBalance: 0, reserveBalance: 10,
-    });
-    const loser = await User.create({
+    }));
+    const loser = await funded(User.create({
       username: 'om_lose', mobile: '9110000002', kycStatus: 'APPROVED',
       depositBalance: 100, winningsBalance: 0, reserveBalance: 10,
-    });
+    }));
 
     const c = await cycleAt(30);
     const place = (u, side, key) => request(app).post('/api/bet/place')

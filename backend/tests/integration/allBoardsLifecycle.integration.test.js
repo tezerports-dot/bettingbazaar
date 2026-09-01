@@ -26,7 +26,7 @@ import request from 'supertest';
 import express from 'express';
 import { signToken } from '../../domains/identity/paseto.util.js';
 import { User, Cycle, SystemConfig } from '../../models/index.js';
-import { bettable } from './_bettableCycle.js';
+import { bettable, funded } from './_fixtures.js';
 import betRoutes from '../../domains/markets/bet.routes.js';
 import CycleGeneratorService from '../../domains/markets/cycleGenerator.service.js';
 import { CYCLE_TYPES, CYCLE_TYPE_VALUES, cycleMeta, phasesFor } from '../../domains/markets/cycleTypes.js';
@@ -75,10 +75,10 @@ beforeEach(async () => {
   // both mirrored from the fixtures in oneMinuteCycleLifecycle rather than
   // guessed. Omitting `mobile` failed every test in this file at beforeEach.
   seq++;
-  player = await User.create({
+  player = await funded(User.create({
     username: `ab_u${seq}`, mobile: `93000${String(seq).padStart(5, '0')}`,
     kycStatus: 'APPROVED', depositBalance: 100000, winningsBalance: 0, reserveBalance: 0,
-  });
+  }));
 });
 afterEach(() => { /* collections are cleared by tests/setup.js */ });
 

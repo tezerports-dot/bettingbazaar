@@ -16,7 +16,7 @@ import express from 'express';
 import { signToken } from '../../domains/identity/paseto.util.js';
 import mongoose from 'mongoose';
 import { User, Cycle, Bet } from '../../models/index.js';
-import { bettable } from './_bettableCycle.js';
+import { bettable, funded } from './_fixtures.js';
 import betRoutes from '../../domains/markets/bet.routes.js';
 import GameEngine from '../../domains/markets/gameEngine.js';
 import {
@@ -48,14 +48,14 @@ describe('Phase A money flow: split → settle → ledger', () => {
   it('runs a balanced ₹10-vs-₹10 cycle: winner nets 19.80, platform revenue = the 0.20 fee', async () => {
     // kycStatus APPROVED: /api/bet/place chains requireApprovedKyc after
     // authenticate — an unverified user is 403'd before the money path runs.
-    const alice = await User.create({
+    const alice = await funded(User.create({
       username: 'alice', mobile: '9100000001', kycStatus: 'APPROVED',
       depositBalance: 100, winningsBalance: 0, reserveBalance: 10,
-    });
-    const bob = await User.create({
+    }));
+    const bob = await funded(User.create({
       username: 'bob', mobile: '9100000002', kycStatus: 'APPROVED',
       depositBalance: 100, winningsBalance: 0, reserveBalance: 10,
-    });
+    }));
 
     const cycle = await bettable(Cycle.create({
       cycleId: 'flow_cycle_1', type: '30_MIN',
@@ -155,10 +155,10 @@ describe('Phase A money flow: split → settle → ledger', () => {
     // ₹1.93 of the ₹2 reserve is unreachable until the player deposits more.
     // The message now says that, and this test pins it — a refusal that quotes
     // a number the engine would also refuse is the bug, not the wording.
-    const user = await User.create({
+    const user = await funded(User.create({
       username: 'broke', mobile: '9100000003', kycStatus: 'APPROVED',
       depositBalance: 4, winningsBalance: 3, reserveBalance: 2, // total 9 < 10
-    });
+    }));
     const cycle = await bettable(Cycle.create({
       cycleId: 'flow_cycle_2', type: '30_MIN',
       startTime: Date.now() - 60000, endTime: Date.now() + 60000,
@@ -198,10 +198,10 @@ describe('Phase A money flow: split → settle → ledger', () => {
     // The outcome is identical to what the 3% default produced (0.10 / 5 /
     // 4.90) because the reserve shortfall simply shifted to main there, which
     // is why this test kept passing across the change.
-    const user = await User.create({
+    const user = await funded(User.create({
       username: 'fallback', mobile: '9100000004', kycStatus: 'APPROVED',
       depositBalance: 5, winningsBalance: 10, reserveBalance: 0.1,
-    });
+    }));
     const cycle = await bettable(Cycle.create({
       cycleId: 'flow_cycle_3', type: '30_MIN',
       startTime: Date.now() - 60000, endTime: Date.now() + 60000,
