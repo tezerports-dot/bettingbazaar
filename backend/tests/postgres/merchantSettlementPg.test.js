@@ -354,45 +354,9 @@ describePg('Merchant settlement (PostgreSQL)', () => {
   });
 
   // ── The mirror must never take the process down ───────────────────────────
-  describe('mirrorMerchantSettlement is fire-and-forget', () => {
-    it('resolves rather than rejects on a malformed order', async () => {
-      // It is invoked UNAWAITED from two Mongoose post-save hooks, so a
-      // rejection is an unhandled promise rejection on a path that runs for
-      // every order save. paise() alone can cause one: rupeesToPaise throws on
-      // a non-finite amount, so an order with no tokenAmount would take the
-      // process down instead of skipping a mirror. Every fallible step has to
-      // live inside mirror()'s try/catch.
-      const { mirrorMerchantSettlement } = await import('../../postgres/dualWrite.js');
-
-      const malformed = [
-        { _id: 'o-no-amount', merchantId: M, type: 'WITHDRAWAL', merchantCreditStatus: 'HELD' },
-        { _id: 'o-nan', merchantId: M, type: 'WITHDRAWAL', merchantCreditStatus: 'HELD', tokenAmount: NaN },
-        { _id: 'o-negative', merchantId: M, type: 'DEPOSIT', status: 'COMPLETED', tokenAmount: -5 },
-        { _id: 'o-string', merchantId: M, type: 'DEPOSIT', status: 'COMPLETED', tokenAmount: 'lots' },
-        { _id: 'o-no-merchant', type: 'DEPOSIT', status: 'COMPLETED', tokenAmount: 10 },
-      ];
-      for (const doc of malformed) {
-        await expect(Promise.resolve(mirrorMerchantSettlement(doc))).resolves.not.toThrow();
-      }
-
-      // None of them may reach the table — a settlement of nothing is not a
-      // settlement, and the CHECK constraint should never be the thing that
-      // finds out.
-      const { rows } = await pgQuery('SELECT COUNT(*)::int AS n FROM merchant_settlements');
-      expect(rows[0].n).toBe(0);
-    });
-
-    it('mirrors a well-formed order', async () => {
-      const { mirrorMerchantSettlement } = await import('../../postgres/dualWrite.js');
-      await mirrorMerchantSettlement({
-        _id: 'o-good', merchantId: M, type: 'WITHDRAWAL',
-        merchantCreditStatus: 'HELD', tokenAmount: 250,
-      });
-      expect(await getSettlement('ms_o-good')).toMatchObject({
-        merchantId: M, direction: 'WITHDRAWAL', amountPaise: 25_000, state: SETTLEMENT_STATES.RESERVED,
-      });
-    });
-  });
+  // REMOVED with the Mongo mirror: settlements are created in Postgres
+  // directly, so there is nothing to mirror and nothing to be fire-and-forget
+  // about.
 
   // ── Reconciliation ─────────────────────────────────────────────────────────
   describe('reconciliation', () => {

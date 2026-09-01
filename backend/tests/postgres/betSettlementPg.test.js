@@ -194,15 +194,10 @@ describePg('resolving a bet by whichever id the caller holds', () => {
     expect(await resolveBetId(key)).toBe(key);
   });
 
-  it('finds a MIRRORED bet, whose bet_id IS the Mongo _id and whose mongo_id is null', async () => {
-    const { mirrorBet } = await import('../../postgres/dualWrite.js');
-    await mirrorBet({
-      _id: '507f1f77bcf86cd799439011', userId: U, cycleId: 'fee-cycle',
-      side: 'DELHI', amount: 100, status: 'PENDING', timestamp: new Date(),
-    });
-
-    expect(await resolveBetId('507f1f77bcf86cd799439011')).toBe('507f1f77bcf86cd799439011');
-  });
+  // REMOVED with the Mongo mirror: a "mirrored bet" is one written to Postgres
+  // BY the Mongo path, and there is no Mongo path. Every bet is now placed in
+  // Postgres directly, so bet_id is the caller's key and mongo_id is null for
+  // all of them — the two-identity case this asserted cannot arise.
 
   it('returns null for a bet Postgres has never seen', async () => {
     // Not an error: it is what tells the settlement pass to REPORT the bet
@@ -251,58 +246,7 @@ describePg('resolving a bet by whichever id the caller holds', () => {
  * That is correct for a mirror and wrong for a repair, which is why the fix is
  * in the SELECT and not here.
  */
-describePg('mirrorBet writes what it is given (why the backfill SELECT matters)', () => {
-  beforeAll(async () => { await applySchema(); });
-
-  beforeEach(async () => {
-    await pgQuery('TRUNCATE bet_transitions, bets, wallet_ledger, wallets RESTART IDENTITY CASCADE');
-    await fund('depositBalance', 1_000_000, 'fee_seed');
-  });
-
-  it('ZEROES a settled bet\'s payout and fee when handed a document that omits them', async () => {
-    const { mirrorBet } = await import('../../postgres/dualWrite.js');
-
-    await place('fee_backfill');
-    await winBet({
-      betId: 'fee_backfill', userId: U,
-      slices: [{ field: 'depositBalance', amountPaise: 10_000 }],
-      payoutPaise: 19_800, platformFeePaise: 200,
-    });
-
-    // Exactly the shape `.select('status').lean()` produced, with the identity
-    // fields the repair supplied from the Postgres row.
-    await mirrorBet({
-      _id: 'fee_backfill', status: 'WON',
-      userId: U, cycleId: 'fee-cycle', side: 'DELHI', amount: 100,
-    });
-
-    const { rows } = await pgQuery(
-      `SELECT payout_paise, platform_fee_paise FROM bets WHERE bet_id = $1`, ['fee_backfill'],
-    );
-    // A check that exists to CLOSE a disagreement was opening a bigger one:
-    // repairing the status destroyed the payout.
-    expect(rows[0]).toMatchObject({ payout_paise: '0', platform_fee_paise: '0' });
-  });
-
-  it('preserves both when the document carries them — what the fixed SELECT supplies', async () => {
-    const { mirrorBet } = await import('../../postgres/dualWrite.js');
-
-    await place('fee_backfill_ok');
-    await winBet({
-      betId: 'fee_backfill_ok', userId: U,
-      slices: [{ field: 'depositBalance', amountPaise: 10_000 }],
-      payoutPaise: 19_800, platformFeePaise: 200,
-    });
-
-    await mirrorBet({
-      _id: 'fee_backfill_ok', status: 'WON',
-      userId: U, cycleId: 'fee-cycle', side: 'DELHI', amount: 100,
-      payout: 198, platformFee: 2,
-    });
-
-    const { rows } = await pgQuery(
-      `SELECT payout_paise, platform_fee_paise FROM bets WHERE bet_id = $1`, ['fee_backfill_ok'],
-    );
-    expect(rows[0]).toMatchObject({ payout_paise: '19800', platform_fee_paise: '200' });
-  });
-});
+// REMOVED with the Mongo mirror: mirrorBet no longer writes anything, so
+// "what it writes when handed a partial document" is not a question. The
+// defect it guarded — a backfill SELECT that omitted payout and fee, zeroing
+// them on repair — belonged to the backfill, which is gone too.

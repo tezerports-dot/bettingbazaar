@@ -179,12 +179,8 @@ export async function derivePayoutTotalsOnPostgres(cycleId) {
 /**
  * The cycle's REAL pools, summed from the store that owns the bets.
  *
- * This is the read the WINNER is determined from, so it is the last money
- * decision on the critical path that was still being made from MongoDB. Null on
- * the Mongo path, never zeroes: a caller that read "not authoritative here" as
- * "no bets on either side" would declare a winner from an empty pool, which is
- * the same class of mistake `derivePayoutTotalsOnPostgres` returns null to
- * prevent.
+ * This is the read the WINNER is determined from. It was the last money
+ * decision on the critical path still being made from MongoDB.
  *
  * Rupees, because every caller of `computeRealPools` compares and publishes
  * rupees. The paise are the truth and the conversion happens once, here.
@@ -195,7 +191,6 @@ export async function derivePayoutTotalsOnPostgres(cycleId) {
  * would return the phantom pool if that clause were ever dropped.
  */
 export async function derivePoolsOnPostgres(cycleId) {
-  if (!onPostgres()) return null;
   const p = await derivePoolsForCycle(cycleId);
   return {
     realDelhi:  paiseToRupees(p.realDelhiPaise),

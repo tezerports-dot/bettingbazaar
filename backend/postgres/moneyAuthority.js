@@ -601,28 +601,32 @@ function requestedStore(path, env) {
  * configured, this returns MONGO. Returning POSTGRES there would send the app
  * looking for balances in a database it has no connection to.
  */
-export function authorityFor(path, env = process.env, seen = new Set()) {
+export function authorityFor(path, env = process.env, seen = new Set()) { // eslint-disable-line no-unused-vars
   if (!isKnownPath(path)) {
     throw new Error(`Unknown money path '${path}'. Known paths: ${ALL_PATHS.join(', ')}`);
   }
-  if (requestedStore(path, env) !== STORE.POSTGRES) return STORE.MONGO;
-  if (!pgConfigured()) return STORE.MONGO;
-  // The capability gate. A path without a complete Postgres implementation can
-  // never be authoritative, whatever the environment says — otherwise setting
-  // the variable would move the *claim* without moving the *code*, and reads
-  // would go to a store that does not own the data. validateAuthorityConfig
-  // turns this into a boot failure rather than a silent downgrade, but the
-  // runtime resolver has to fail safe on its own too: anything that calls
-  // authorityFor() without having gone through boot validation (a script, a
-  // test, a worker) still gets the truthful answer.
-  if (!isCutoverEligible(path)) return STORE.MONGO;
-  // The ordering gate, for the same reason. A path whose dependency still lives
-  // in Mongo would split one settlement across two sources of truth, and
-  // validateAuthorityConfig only catches that at boot — so a script, worker or
-  // cron that never boots the app would happily act on the incoherent answer.
-  // reconcile.js is exactly that case: it picks its REPAIR DIRECTION from this
-  // resolver, and a wrong answer there overwrites good balances with stale ones.
-  if (laggingDependencies(path, env, seen).length) return STORE.MONGO;
+  // ── There is no decision left to make ────────────────────────────────────
+  // PostgreSQL is the durable database. It is not a destination this resolver
+  // steers towards one path at a time any more, so the environment variable,
+  // the capability gate and the dependency-ordering gate that used to live here
+  // are all answering a question nobody asks: every path is on Postgres, and
+  // the Mongo branch on the other side of every caller is unreachable.
+  //
+  // The gates were right for what they were for. `MONEY_AUTHORITY_*` existed so
+  // a live platform could move one money path at a time and roll back with a
+  // redeploy. This platform is not live, has no data to preserve and no
+  // rollback target to keep warm, so the machinery is cost without benefit —
+  // and every `if (!onPostgres())` in the money path is a branch that can only
+  // be taken by a configuration that should not exist.
+  //
+  // This function is the seam being closed, kept for one commit so the change
+  // is one decision rather than eleven simultaneous edits. It goes, with the
+  // rest of this module and every branch that calls it, next.
+  //
+  // NOT gated on `pgConfigured()`. Returning MONGO for a missing DATABASE_URL
+  // was failing SAFE when Mongo could still serve the request; with no Mongo
+  // behind it that would be failing SILENT, sending money reads to a store that
+  // no longer owns them. `validateAuthorityConfig` refuses the boot instead.
   return STORE.POSTGRES;
 }
 

@@ -14,26 +14,17 @@
  * stake could be committed, settled and paid while being absent from the pools
  * its own result was chosen from.
  *
- * The Mongo path is preserved by returning `null` rather than zeroes, because
- * "not authoritative here" and "nobody bet on either side" must never collapse
- * into the same answer: the second one silently declares a winner from an empty
- * pool.
+ * There is no Mongo path left to fall back to: PostgreSQL is the only durable
+ * store, so these pools are simply the pools.
  */
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { derivePoolsOnPostgres } from '../../postgres/betPgAuthority.js';
 import { derivePoolsForCycle, addPhantomToPool } from '../../postgres/cyclePg.js';
 import { pgQuery, applySchema } from '../../postgres/pgClient.js';
 import { givenCycle } from './_cycleFixture.js';
 
-const AUTHORITY = ['MONEY_AUTHORITY_WALLET', 'MONEY_AUTHORITY_LEDGER', 'MONEY_AUTHORITY_BETS'];
 let seq = 0;
 const nextId = () => `pools_${Date.now()}_${seq++}`;
-let saved;
-
-const onPg = () => {
-  saved = Object.fromEntries(AUTHORITY.map((v) => [v, process.env[v]]));
-  for (const v of AUTHORITY) process.env[v] = 'postgres';
-};
 
 const stake = (cycleId, side, paise, status = 'PENDING') => pgQuery(
   `INSERT INTO bets (bet_id, user_id, cycle_id, side, stake_paise, status)
@@ -43,25 +34,12 @@ const stake = (cycleId, side, paise, status = 'PENDING') => pgQuery(
 
 beforeAll(async () => { await applySchema(); });
 
-afterEach(() => {
-  if (!saved) return;
-  for (const v of AUTHORITY) {
-    if (saved[v] === undefined) delete process.env[v]; else process.env[v] = saved[v];
-  }
-  saved = undefined;
-});
-
 describe('deriving the pools the result is chosen from', () => {
-  it('returns null on the Mongo path — never zeroes', async () => {
-    // The distinction the winner depends on. Zeroes here would make the caller
-    // compare 0 against 0 and declare a coin-flip result on a cycle that may
-    // have had thousands of rupees on one side.
-    const id = nextId();
-    await givenCycle(id);
-    await stake(id, 'DELHI', 10_000);
-
-    expect(await derivePoolsOnPostgres(id)).toBeNull();
-  });
+  // REMOVED: this asserted `null` on the Mongo path so a caller could tell
+  // "not authoritative here" from "nobody bet on either side". There is no
+  // Mongo path any more, so there is no ambiguity left to guard — an empty
+  // cycle now simply reports zero on both sides, which the last test here
+  // covers.
 
   it('sums both sides, in rupees, when Postgres owns the bets', async () => {
     const id = nextId();
@@ -69,7 +47,6 @@ describe('deriving the pools the result is chosen from', () => {
     await stake(id, 'DELHI', 250_00);   // ₹250
     await stake(id, 'BOMBAY', 100_00);  // ₹100
 
-    onPg();
     expect(await derivePoolsOnPostgres(id)).toEqual({ realDelhi: 250, realBombay: 100 });
   });
 
@@ -79,7 +56,6 @@ describe('deriving the pools the result is chosen from', () => {
     await stake(id, 'DELHI', 900_00);
     await stake(id, 'BOMBAY', 100_00);
 
-    onPg();
     const { realDelhi, realBombay } = await derivePoolsOnPostgres(id);
     expect(realBombay).toBeLessThan(realDelhi);
   });
@@ -95,7 +71,6 @@ describe('deriving the pools the result is chosen from', () => {
     await stake(id, 'DELHI', 100_00);
     await addPhantomToPool({ cycleId: id, side: 'BOMBAY', amountPaise: 500_00, betCount: 5 });
 
-    onPg();
     expect(await derivePoolsOnPostgres(id)).toEqual({ realDelhi: 100, realBombay: 0 });
 
     // The phantom stake is still in the PUBLIC total — that is what it is for.
@@ -110,7 +85,6 @@ describe('deriving the pools the result is chosen from', () => {
     await stake(id, 'DELHI', 100_00);
     await stake(id, 'BOMBAY', 900_00, 'REFUNDED');
 
-    onPg();
     // Bombay's stake was returned, so Delhi is not the minority side by virtue
     // of money that is no longer in the pool.
     expect(await derivePoolsOnPostgres(id)).toEqual({ realDelhi: 100, realBombay: 0 });
@@ -119,7 +93,6 @@ describe('deriving the pools the result is chosen from', () => {
   it('reports an empty cycle as zero on both sides, not as an error', async () => {
     const id = nextId();
     await givenCycle(id);
-    onPg();
     expect(await derivePoolsOnPostgres(id)).toEqual({ realDelhi: 0, realBombay: 0 });
   });
 });
