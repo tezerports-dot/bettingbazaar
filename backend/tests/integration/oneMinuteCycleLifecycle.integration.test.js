@@ -260,7 +260,12 @@ describe('1-minute cycle — betting closes on the clock, not on the status flag
       .set('Authorization', authFor(u))
       .set('Idempotency-Key', `om-30-${seq}`)
       .send({ cycleId: thirty.cycleId, side: 'DELHI', amount: 10, type: CYCLE_TYPES.THIRTY_MIN });
-    expect(res.status).toBe(200);
+    // The BODY is asserted alongside the status deliberately. A bare
+    // `expect(res.status).toBe(200)` fails with "expected 400 to be 200" and
+    // nothing else, and /api/bet/place has a dozen ways to answer 400 — the
+    // clock cutoff, the cycle refusals, the balance guard, risk validation.
+    // Carrying the body means the CI log says WHICH.
+    expect({ status: res.status, body: res.body }).toMatchObject({ status: 200 });
   });
 });
 
@@ -343,9 +348,14 @@ describe('1-minute cycle — settlement pays the same way as every other board',
       .set('Idempotency-Key', key)
       .send({ cycleId: c.cycleId, side, amount: 10, type: CYCLE_TYPES.ONE_MIN });
 
-    expect((await place(winner, 'BOMBAY', 'om-settle-w')).status).toBe(200);
-    expect((await place(loser, 'DELHI', 'om-settle-l1')).status).toBe(200);
-    expect((await place(loser, 'DELHI', 'om-settle-l2')).status).toBe(200);
+    // Body asserted with the status, for the same reason as above: a 400 here
+    // could be any of half a dozen refusals and the number alone names none.
+    for (const [u, side, key] of [[winner, 'BOMBAY', 'om-settle-w'],
+                                  [loser, 'DELHI', 'om-settle-l1'],
+                                  [loser, 'DELHI', 'om-settle-l2']]) {
+      const r = await place(u, side, key);
+      expect({ key, status: r.status, body: r.body }).toMatchObject({ key, status: 200 });
+    }
 
     // Delhi carries more real stake, so Bombay is the minority and wins.
     const toSettle = await Cycle.findOneAndUpdate(
