@@ -85,6 +85,23 @@ export function initSSERoutes(sseManager, cycleGenerator) {
 
         const clientId = sseManager.addClient(res);
 
+        // ── Cycle topics ──────────────────────────────────────────────────────
+        // `?cycles=<id>,<id>` scopes the live pool stream to the cycles this
+        // client is actually looking at. Omitted (the default) means it wants
+        // none — see cycleSnapshotPublisher.flush() for why that is the right
+        // default: a client with a working WebSocket already receives the same
+        // snapshot room-scoped, and the SSE copy was pure duplication.
+        //
+        // The subscription is in the URL rather than settable over the stream
+        // because SSE is one-way: there is no client→server channel to carry a
+        // `watch_cycle`, and adding a POST endpoint to mutate it would be a
+        // second, unauthenticated way to reach into a live connection. Changing
+        // boards means reopening the EventSource, which the browser does in
+        // milliseconds and only on the fallback path.
+        const requested = String(req.query.cycles ?? '')
+            .split(',').map((s) => s.trim()).filter(Boolean);
+        if (requested.length) sseManager.watchCycles(clientId, requested);
+
         // 1. Cycle snapshot
         try {
             const snapshot = await cycleGenerator.getCycleSnapshotData();

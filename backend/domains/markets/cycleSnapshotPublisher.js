@@ -45,8 +45,10 @@
  *
  * The SSE bridge is NOT a leftover and stays. `pool_update` travels through
  * Socket.IO rooms only, and the browser socket is WebSocket-only, so a client
- * behind a WebSocket-blocking proxy has SSE as its sole transport. `sseManager`
- * has no room concept to scope it to — see the flush() comment.
+ * behind a WebSocket-blocking proxy has SSE as its sole transport. It is now
+ * scoped the same way: `sseManager` gained cycle topics on 2026-09-01, so the
+ * snapshot reaches the SSE clients watching that cycle rather than all of them
+ * — see the flush() comment for what that was costing.
  */
 import { assertPublicCycleSafe } from './cyclePublicView.js';
 
@@ -131,26 +133,35 @@ export class CycleSnapshotPublisher {
         // Canonical: room-scoped to watchers of this cycle.
         this.io?.to(`cycle:${cycleId}`).emit('pool_update', payload);
 
-        // ── SSE-only bridge ────────────────────────────────────────────────
+        // ── SSE bridge, now topic-scoped ───────────────────────────────────
         // The Socket.IO half of this bridge is GONE (2026-08-31): every socket
         // client ships `watch_cycle` + `pool_update` (GameContext.tsx), so the
         // global `io.emit` was sending each live cycle's snapshot to every
-        // connected client on top of the room-scoped one they already had —
-        // with three boards live, four deliveries a second where one was
-        // wanted.
+        // connected client on top of the room-scoped one they already had.
         //
-        // The SSE half STAYS, and is not a leftover. `pool_update` is emitted
-        // through Socket.IO rooms only, and the browser socket is configured
-        // WebSocket-only (`transports: ['websocket'], upgrade: false`), so a
-        // client behind a proxy that blocks WebSocket has SSE as its ONLY
-        // transport — and `sseManager` has just `broadcast` and
-        // `sendToClient`, no topic or room concept to scope this to.
+        // The SSE half stays, because `pool_update` travels through Socket.IO
+        // rooms only and the browser socket is WebSocket-only
+        // (`transports: ['websocket'], upgrade: false`) — a client behind a
+        // proxy that blocks WebSocket has SSE as its ONLY live-pool path, and
+        // removing this would stop pool movement for exactly the users least
+        // able to report why.
         //
-        // Removing it would silently stop live pool movement for exactly the
-        // users least able to report why. Scoping the SSE side needs a
-        // subscription registry, which is a feature, not a cleanup.
+        // What HAS changed is who receives it (2026-09-01). It used to be
+        // `sseManager.broadcast`, and the user panel opens its EventSource
+        // unconditionally — `SSEEventBridge` connects in its constructor, with
+        // no "only if the socket failed" branch — so this was not serving a
+        // blocked minority. It was sending every live cycle's snapshot to
+        // EVERY connected client, in addition to the room-scoped `pool_update`
+        // the same client was already processing on its socket. With three
+        // boards live that is 3 duplicated deliveries per client per second,
+        // and the client normalises the field names of the two copies against
+        // each other to reconcile them.
+        //
+        // `sseManager` now has cycle topics, so this reaches only the clients
+        // that asked for THIS cycle — which, per the default in
+        // `sse.routes.js`, is only those without a working WebSocket.
         const legacy = { cycleId, cycleType: snap.cycleType, newTotalDelhi: snap.totalDelhi, newTotalBombay: snap.totalBombay };
-        this.sseManager?.broadcast('bet_placed', legacy);
+        this.sseManager?.broadcastToCycle(cycleId, 'bet_placed', legacy);
 
         published++;
       } else if (now - snap.updatedAt > STALE_AFTER_MS) {

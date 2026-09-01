@@ -453,8 +453,34 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     // leave stale — and is called whenever the live cycles change.
     const desired: Record<string, string | undefined> = {};
     const watched = new Set<string>();
+
+    // ── The SSE half of the same subscription ────────────────────────────────
+    // `pool_update` is Socket.IO-only, so a client whose WebSocket is blocked
+    // or dropped has the SSE `bet_placed` stream as its ONLY live-pool path.
+    // The server used to broadcast that to every connection, which meant every
+    // client with a healthy socket processed each cycle's totals twice — once
+    // room-scoped over the socket, once globally over SSE. The server now scopes
+    // it to subscribers (sseManager cycle topics), so this side decides when to
+    // subscribe: only while the socket is NOT carrying them.
+    //
+    // `socketFailed` is a latch, not `socket.connected`. The socket is
+    // legitimately disconnected for the first moment of every page load, and
+    // reading `.connected` here would subscribe during that window and
+    // unsubscribe a moment later — two EventSource reconnects on every load, to
+    // avoid a duplication that was never happening. It flips only on a real
+    // failure, and back on a real connect.
+    let socketFailed = !socket;
+    const syncSseCycles = () => {
+      const bridge = sseBridge as unknown as { setCycles?: (ids: string[]) => void } | undefined;
+      if (!bridge?.setCycles) return;
+      bridge.setCycles(socketFailed
+        ? (Object.values(desired).filter(Boolean) as string[])
+        : []);
+    };
+
     const syncWatched = (patch: Record<string, string | undefined>) => {
       Object.assign(desired, patch);
+      syncSseCycles();
       if (!socket) return;
       const want = new Set(Object.values(desired).filter(Boolean) as string[]);
       for (const id of Array.from(watched)) {
@@ -769,10 +795,19 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     const unsubSSESysConfig   = onSSE('system_config',    handleSystemConfig);
 
     
+    // Hand the live-pool stream between the two transports as the socket comes
+    // and goes. Registered before the snapshot request below so a socket that
+    // fails immediately still flips the latch.
+    const handleSocketUp   = () => { socketFailed = false; syncSseCycles(); };
+    const handleSocketDown = () => { socketFailed = true;  syncSseCycles(); };
+
     if (socket) {
       socket.on('cycle_snapshot', handleCycleSnapshot);
       socket.on('connect',        handleReconnect);
-      
+      socket.on('connect',        handleSocketUp);
+      socket.on('disconnect',     handleSocketDown);
+      socket.on('connect_error',  handleSocketDown);
+
       if (socket.connected) {
         socket.emit('request_cycle_snapshot');
       }
@@ -816,6 +851,9 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
       if (socket) {
         socket.off('cycle_snapshot',      handleCycleSnapshot);
         socket.off('connect',             handleReconnect);
+        socket.off('connect',             handleSocketUp);
+        socket.off('disconnect',          handleSocketDown);
+        socket.off('connect_error',       handleSocketDown);
         socket.off('pool_update',         handlePoolUpdate);
         socket.off('new_cycle',           handleNewCycle);
         socket.off('cycle_result',        handleCycleResult);

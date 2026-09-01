@@ -84,15 +84,45 @@ const SSE_URL: string =
 
 class SSEEventBridge extends EventTarget {
   private sse: EventSource | null = null;
+  /**
+   * Cycles this stream is subscribed to for live pool snapshots.
+   *
+   * Empty is the normal state and means "send me no `bet_placed`". A client
+   * with a working WebSocket already receives the same totals as room-scoped
+   * `pool_update`, and the server used to send this to everyone on top of that
+   * — see cycleSnapshotPublisher.flush(). Only a client whose socket is down
+   * subscribes here.
+   */
+  private cycles: string[] = [];
 
   constructor() {
     super();
     this._connect();
   }
 
+  /**
+   * Set the cycles this stream should carry pool snapshots for.
+   *
+   * SSE is one-way, so there is no `watch_cycle` message to send: the
+   * subscription lives in the URL and changing it means reopening the
+   * EventSource. That is why this is a no-op when the set is unchanged —
+   * GameContext calls it on every snapshot, and reconnecting each time would
+   * be far worse than the duplication it exists to remove.
+   */
+  setCycles(next: string[]): void {
+    const wanted = Array.from(new Set(next.filter(Boolean))).sort();
+    if (wanted.length === this.cycles.length && wanted.every((id, i) => id === this.cycles[i])) return;
+    this.cycles = wanted;
+    this.sse?.close();
+    this._connect();
+  }
+
   private _connect() {
     try {
-      this.sse = new EventSource(SSE_URL);
+      const url = this.cycles.length
+        ? `${SSE_URL}${SSE_URL.includes('?') ? '&' : '?'}cycles=${this.cycles.map(encodeURIComponent).join(',')}`
+        : SSE_URL;
+      this.sse = new EventSource(url);
 
       // Register all public events we care about
       const publicEvents = [

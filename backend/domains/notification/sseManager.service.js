@@ -6,6 +6,19 @@ import crypto from 'crypto';
 
 const DEFAULT_MAX_BUFFERED_BYTES = 1024 * 1024;
 
+/**
+ * Topic limits for the PUBLIC, unauthenticated `/api/sse/events` stream.
+ *
+ * Three cycle types are live at once, so a client has no legitimate reason to
+ * watch more than a handful; the headroom is for a client that reconnects
+ * across a cycle rollover. Both bounds exist because the cycle id arrives from
+ * the query string and becomes a Map key: without them one request could ask
+ * the server to allocate an arbitrary number of Sets under arbitrarily long
+ * keys, and nothing else on this path would refuse.
+ */
+const MAX_CYCLES_PER_CLIENT = 8;
+const MAX_CYCLE_ID_LENGTH = 64;
+
 function resolveMaxBufferedBytes(value) {
     if (value == null || String(value).trim() === '') return DEFAULT_MAX_BUFFERED_BYTES;
     const parsed = Number(value);
@@ -27,6 +40,22 @@ class SSEManager {
         // Private USER channels  Map<userId_string, Set<response>>
         // Wallet service calls sendToUser after every balance change.
         this.userClients = new Map();
+
+        // ── CYCLE TOPICS ─────────────────────────────────────────────────────
+        // The SSE equivalent of Socket.IO's `cycle:<id>` rooms. Both maps
+        // describe the same subscriptions from opposite ends: `cycleClients`
+        // answers "who is watching this cycle" (the send path, hot), and
+        // `clientCycles` answers "what is this client watching" (the reconcile
+        // and cleanup path). Keeping both is what makes a disconnect O(cycles
+        // this client watched) instead of a scan of every topic.
+        //
+        // A cycle subscriber is ALSO in `clients` — subscribing is a filter on
+        // an existing public stream, not a second connection — so it is pinged
+        // once and counted once.
+        /** cycleId -> Set<response> */
+        this.cycleClients = new Map();
+        /** clientId -> Set<cycleId> */
+        this.clientCycles = new Map();
 
         this.nextId  = 0;
         this.stats   = { totalConnections: 0, totalMessages: 0, droppedBackpressure: 0 };
@@ -83,6 +112,7 @@ class SSEManager {
             case 'sendToUser':       return this._localSendToUser(...args);
             case 'sendToMerchant':   return this._localSendToMerchant(...args);
             case 'broadcastToAdmins':return this._localBroadcastToAdmins(...args);
+            case 'broadcastToCycle': return this._localBroadcastToCycle(...args);
         }
     }
 
@@ -127,10 +157,115 @@ class SSEManager {
         const id = ++this.nextId;
         this.clients.set(id, res);
         this.stats.totalConnections++;
-        res.on('close', () => { this.clients.delete(id); });
+        res.on('close', () => {
+            this.clients.delete(id);
+            // Leave every topic as well. Without this a dropped connection stays
+            // in `cycleClients` until something tries to write to it, which for
+            // a cycle that has already settled is never — the Set, and the
+            // response object it pins, would outlive the request forever.
+            //
+            // `res` is passed rather than looked up: `clients` no longer has
+            // this id by now, and a version of this that re-derived the
+            // response from the map silently removed nothing at all.
+            this.unwatchAllCycles(id, res);
+        });
         console.log(`📡 SSE public: client ${id} connected (total: ${this.clients.size})`);
         return id;
     }
+
+    // ── CYCLE TOPICS ──────────────────────────────────────────────────────────
+
+    /**
+     * Set which cycles a public client receives pool snapshots for.
+     *
+     * Replaces the whole set rather than adding to it — join the new, leave the
+     * stale — which is the same reconcile the Socket.IO client does with
+     * `watch_cycle`/`unwatch_cycle`. Idempotent: re-sending the same set is a
+     * no-op, so a client may call it on every snapshot without churn.
+     *
+     * Returns the set actually applied, which may be smaller than what was
+     * asked for. `/api/sse/events` is public and unauthenticated, so the caller
+     * is not trusted with how many topics it can make the server allocate.
+     */
+    watchCycles(clientId, cycleIds = []) {
+        const res = this.clients.get(clientId);
+        if (!res) return [];
+
+        const want = new Set();
+        for (const raw of Array.isArray(cycleIds) ? cycleIds : []) {
+            const id = String(raw ?? '').trim();
+            if (!id || id.length > MAX_CYCLE_ID_LENGTH) continue;
+            want.add(id);
+            if (want.size >= MAX_CYCLES_PER_CLIENT) break;
+        }
+
+        const held = this.clientCycles.get(clientId) ?? new Set();
+
+        for (const id of held) {
+            if (!want.has(id)) this._leaveCycle(id, res);
+        }
+        for (const id of want) {
+            if (!held.has(id)) {
+                if (!this.cycleClients.has(id)) this.cycleClients.set(id, new Set());
+                this.cycleClients.get(id).add(res);
+            }
+        }
+
+        if (want.size) this.clientCycles.set(clientId, want);
+        else this.clientCycles.delete(clientId);
+        return [...want];
+    }
+
+    /**
+     * Drop one client from every topic it holds.
+     *
+     * `res` may be supplied by a caller that already has it — the disconnect
+     * path does, and must, because it has already removed the id from
+     * `clients` by the time it gets here.
+     */
+    unwatchAllCycles(clientId, res = this.clients.get(clientId)) {
+        const held = this.clientCycles.get(clientId);
+        if (!held) return;
+        for (const id of held) this._leaveCycle(id, res);
+        this.clientCycles.delete(clientId);
+    }
+
+    _leaveCycle(cycleId, res) {
+        const set = this.cycleClients.get(cycleId);
+        if (!set) return;
+        if (res) set.delete(res);
+        if (set.size === 0) this.cycleClients.delete(cycleId);
+    }
+
+    /**
+     * Send an event to the clients watching ONE cycle (all instances).
+     *
+     * A cycle with no SSE watchers costs one Map miss, which is the point: a
+     * client whose WebSocket is healthy subscribes to nothing and receives
+     * nothing here, because it already has the same snapshot room-scoped over
+     * Socket.IO. Before this existed the only option was `broadcast`, so every
+     * live cycle's snapshot went to every connected client on top of the copy
+     * they already had.
+     */
+    broadcastToCycle(cycleId, event, data) {
+        this._localBroadcastToCycle(String(cycleId), event, data);
+        this._publish('broadcastToCycle', [String(cycleId), event, data]);
+    }
+
+    _localBroadcastToCycle(cycleId, event, data) {
+        const set = this.cycleClients.get(String(cycleId));
+        if (!set || set.size === 0) return;
+        const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+        const dead = [];
+        for (const res of set) {
+            this._writeOrDrop(res, payload, () => dead.push(res));
+        }
+        for (const res of dead) set.delete(res);
+        if (set.size === 0) this.cycleClients.delete(String(cycleId));
+    }
+
+    /** Cycles this client is watching — for tests and the stats endpoint. */
+    cyclesWatchedBy(clientId) { return [...(this.clientCycles.get(clientId) ?? [])]; }
 
     // ── USER PRIVATE CHANNEL ──────────────────────────────────────────────────
 
@@ -309,6 +444,8 @@ class SSEManager {
             active:        this.clients.size,
             activeMerchants: [...this.merchantClients.values()].reduce((a, s) => a + s.size, 0),
             activeAdmins:  this.adminClients.size,
+            cycleTopics:   this.cycleClients.size,
+            cycleSubscriptions: [...this.cycleClients.values()].reduce((a, s) => a + s.size, 0),
             totalIn:       this.stats.totalConnections,
             totalOut:      this.stats.totalMessages,
             droppedBackpressure: this.stats.droppedBackpressure,
@@ -321,6 +458,8 @@ class SSEManager {
         this.clients.clear();
         this.merchantClients.clear();
         this.adminClients.clear();
+        this.cycleClients.clear();
+        this.clientCycles.clear();
     }
 }
 

@@ -5,8 +5,9 @@
  *     LATEST absolute totals (this is the ~99.7% delivery cut).
  *   • emit only DIRTY cycles (an idle second sends nothing).
  *   • never leak real/phantom — every payload goes through assertPublicCycleSafe.
- *   • scope to the cycle room, with the coalesced global `bet_placed` bridge for
- *     un-migrated clients.
+ *   • scope to the cycle room on Socket.IO AND to the cycle topic on SSE — the
+ *     SSE bridge is the only live-pool path for a client without a socket, and
+ *     since 2026-09-01 it is scoped rather than broadcast.
  *   • prune cycles that stopped receiving bets, so the map can't grow unbounded.
  */
 import { describe, it, expect, vi } from 'vitest';
@@ -19,7 +20,7 @@ function harness() {
     to(room) { return { emit(event, payload) { roomEmits.push({ room, event, payload }); } }; },
     emit(event, payload) { globalEmits.push({ event, payload }); },
   };
-  const sseManager = { broadcast: vi.fn() };
+  const sseManager = { broadcast: vi.fn(), broadcastToCycle: vi.fn() };
   const pub = new CycleSnapshotPublisher().attach({ io, sseManager });
   return { pub, io, sseManager, roomEmits, globalEmits,
     poolUpdates: () => roomEmits.filter((e) => e.event === 'pool_update') };
@@ -67,19 +68,40 @@ describe('CycleSnapshotPublisher — coalescing', () => {
     // Not a leftover half of the removal above. `pool_update` is emitted
     // through Socket.IO rooms only and the browser socket is WebSocket-only
     // (transports: ['websocket'], upgrade: false), so a client behind a
-    // WebSocket-blocking proxy has SSE as its sole transport. sseManager has
-    // no room concept to scope this to; dropping it stops pools moving for
-    // exactly the users least able to report why.
+    // WebSocket-blocking proxy has SSE as its sole transport; dropping this
+    // stops pools moving for exactly the users least able to report why.
     const h = harness();
     h.pub.recordBet('c1', { cycleType: '30_MIN', totalDelhi: 10, totalBombay: 5 });
     h.pub.recordBet('c1', { cycleType: '30_MIN', totalDelhi: 20, totalBombay: 5 });
     h.pub.flush();
 
-    expect(h.sseManager.broadcast).toHaveBeenCalledTimes(1);   // coalesced, not per-bet
-    expect(h.sseManager.broadcast).toHaveBeenCalledWith(
+    expect(h.sseManager.broadcastToCycle).toHaveBeenCalledTimes(1); // coalesced, not per-bet
+    expect(h.sseManager.broadcastToCycle).toHaveBeenCalledWith(
+      'c1',
       'bet_placed',
       expect.objectContaining({ cycleId: 'c1', newTotalDelhi: 20, newTotalBombay: 5 }),
     );
+  });
+
+  it('SCOPES the SSE bridge to the cycle instead of broadcasting it', () => {
+    // What this replaced (2026-09-01): `sseManager.broadcast`, which sent every
+    // live cycle's snapshot to every public SSE client. That was justified on
+    // the grounds that SSE is the fallback for WebSocket-blocked clients — but
+    // the user panel opens its EventSource unconditionally, so every client was
+    // receiving each cycle's totals twice, once room-scoped over the socket and
+    // once globally over SSE. With three boards live that is three duplicated
+    // deliveries per client per second, growing linearly with connections.
+    //
+    // Asserted as "broadcast was NOT called", because the failure mode is
+    // additive: a future edit that restores the global bridge alongside the
+    // scoped one would leave every assertion above still passing.
+    const h = harness();
+    h.pub.recordBet('c1', { cycleType: '1_MIN',  totalDelhi: 3, totalBombay: 4 });
+    h.pub.recordBet('c2', { cycleType: '30_MIN', totalDelhi: 5, totalBombay: 6 });
+    h.pub.flush();
+
+    expect(h.sseManager.broadcast).not.toHaveBeenCalled();
+    expect(h.sseManager.broadcastToCycle.mock.calls.map((c) => c[0]).sort()).toEqual(['c1', 'c2']);
   });
 
   it('emits only dirty cycles — an idle flush sends nothing', () => {

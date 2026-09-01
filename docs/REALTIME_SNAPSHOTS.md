@@ -56,25 +56,52 @@ This is display-only. The authoritative pools remain the Cycle document's atomic
 | Sockets | `backend/startup/socketHandlers.js` | `watch_cycle` / `unwatch_cycle` rooms (+ immediate seed on join) |
 | Startup | `backend/server.js` | attach + start publisher; stop on shutdown; `/metrics` provider |
 | Metrics | `backend/services/metrics.service.js` | `bb_realtime_stats` gauges (connected sockets, tracked cycles, snapshots, coalesced) |
-| Client | `user-panel/src/services/GameContext.tsx` | watch the live cycles; consume `pool_update` (reuses the pool applier) |
+| SSE manager | `backend/domains/notification/sseManager.service.js` | `cycleClients` / `clientCycles` topics; `watchCycles`, `broadcastToCycle` (Redis-bridged) |
+| SSE route | `backend/routes/sse.routes.js` | `GET /events?cycles=a,b` subscribes the stream; omitted means none |
+| Client | `user-panel/src/services/GameContext.tsx` | watch the live cycles; consume `pool_update` (reuses the pool applier); hand the pool stream to SSE while the socket is down |
+| Client | `user-panel/src/services/realBackend.ts` | `SSEEventBridge.setCycles()` — reopens the stream on a changed set, no-ops otherwise |
 
-## Rollout (staged, no client outage)
+## Delivery is scoped on both transports
 
-The publisher **also** emits a coalesced global `bet_placed` (the event today's
-clients consume) — still ≤1/sec, so the 99.7% win lands immediately with **zero
-client change**. New clients additionally `watch_cycle` + read `pool_update`.
+The staged rollout is complete: there is no global bridge left on either
+transport, and every pool snapshot goes only to clients watching that cycle.
 
-1. **Ship server + client together.** Both are backward compatible — an old
-   client keeps working on the global `bet_placed` bridge; a new client also
-   gets room-scoped `pool_update`.
-2. **After all clients have the `watch_cycle`/`pool_update` build,** remove the
-   two global bridge emits in `cycleSnapshotPublisher.flush()` (marked
-   `MIGRATION`). Fan-out then drops from "×all users" to "×watchers".
-3. **Fast-follow (optional):** per-cycle **SSE** channels. SSE is the primary
-   public transport but has no room concept, so today it rides the coalesced
-   global bridge. Adding a `Map<cycleId, Set<res>>` sub-channel to
-   `sseManager.service.js` (mirroring its existing user/admin channels) gives SSE
-   watchers the same room benefit. Marginal at ~2k users; do it if load says so.
+| Transport | Scope mechanism | Who subscribes |
+|---|---|---|
+| Socket.IO | `cycle:<id>` rooms, joined with `watch_cycle` | every client, for each live cycle it displays |
+| SSE | `cycleClients` topics, set with `GET /api/sse/events?cycles=a,b` | only a client whose WebSocket is down |
+
+**The SSE side is a subscription in the URL, not a message.** SSE is one-way, so
+there is no `watch_cycle` to send: changing the set means reopening the
+`EventSource`, which `SSEEventBridge.setCycles()` does — and skips when the set
+is unchanged, because `GameContext` calls it on every snapshot. A POST endpoint
+to mutate a live stream was rejected: it would be a second unauthenticated way
+to reach into an open connection, to save a reconnect that happens only on the
+fallback path.
+
+**Why the default is "subscribe to nothing".** A client with a healthy socket
+already receives the same totals as room-scoped `pool_update`; the SSE copy is
+pure duplication. `GameContext` therefore subscribes only after the socket
+actually fails, latched on `disconnect`/`connect_error` rather than read from
+`socket.connected` — the socket is legitimately disconnected for the first
+moment of every page load, and reading the flag there would reconnect the
+EventSource twice on every load to avoid a duplication that was not happening.
+
+### What this cost before it was scoped
+
+This was previously described here as an optional fast-follow, "marginal at ~2k
+users". That estimate assumed SSE carried the bridge for a shrinking minority of
+clients whose WebSocket was blocked. It did not: `SSEEventBridge` connects in its
+constructor with no "only if the socket failed" branch, so **every** client held
+an SSE connection alongside its socket, and `sseManager.broadcast('bet_placed')`
+sent every live cycle's snapshot to all of them on top of the room-scoped
+`pool_update` they were already processing. The client normalised the two
+copies' field names against each other to reconcile them.
+
+With three boards live that is 3 duplicated deliveries per client per second —
+~6k/sec at 2,000 connections, ~600k/sec at the 200k target. The duplication grew
+linearly with connections, which is exactly the shape the snapshot publisher
+exists to avoid.
 
 ## Measure it (do not guess — item 17)
 
