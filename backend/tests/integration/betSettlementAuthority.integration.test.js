@@ -258,4 +258,59 @@ d('a cycle settled with Postgres authoritative for bets', () => {
     // bet settle twice.
     expect(rows[0].n).toBe(2);
   });
+
+  it('two CONCURRENT passes credit and unlock exactly once', async () => {
+    // The re-run above is two passes in sequence, where the second sees the
+    // first's committed work. This is the harder shape and the one that
+    // actually happens: the engine tick and the recovery task, or two nodes,
+    // running over the same cycle AT THE SAME TIME — so neither pass can see
+    // the other's state when it decides.
+    //
+    // Money safety here rests entirely on the per-bet guard being real: the
+    // status transition is `WHERE status = 'PENDING'`, and the stake movement
+    // and its ledger rows commit inside that same transaction. Whichever pass
+    // loses the race moves nothing.
+    const winner = uid();
+    const loser  = uid();
+    await seedStake(winner, 100_00, `${winner}_fund`);
+    await seedStake(loser,  100_00, `${loser}_fund`);
+    const winKey  = `bet_${winner}_c1`;
+    const loseKey = `bet_${loser}_c1`;
+    await place(winner, 'DELHI',  100, winKey);
+    await place(loser,  'BOMBAY', 100, loseKey);
+
+    const cycle = await makeCycle();
+    const second = new GameEngine(null);
+    second.stop();
+    try {
+      await Promise.all([
+        engine.processPayoutsOptimized(cycle),
+        second.processPayoutsOptimized(cycle),
+      ]);
+    } finally { second.stop(); }
+
+    // Exactly one payout, and the stake unlocked exactly once — a second
+    // unlock would drive lockedBalance negative, which the wallet guard would
+    // refuse, so a silent double-unlock cannot hide as a smaller number.
+    const w = await getBalancesPaise(winner);
+    expect(w.lockedBalance).toBe(0);
+    expect(w.winningsBalance).toBeGreaterThan(0);
+
+    const l = await getBalancesPaise(loser);
+    expect(l.lockedBalance).toBe(0);
+    expect(l.winningsBalance).toBe(0);
+
+    // The transition log is the check that survives any arithmetic coincidence:
+    // place + settle per bet, never a third row.
+    for (const key of [winKey, loseKey]) {
+      const { rows: t } = await pgQuery(
+        `SELECT count(*)::int AS n FROM bet_transitions WHERE bet_id = $1`, [key]);
+      expect({ key, transitions: t[0].n }).toEqual({ key, transitions: 2 });
+    }
+
+    const { rows: paid } = await pgQuery(
+      `SELECT count(*)::int AS n FROM wallet_ledger
+        WHERE ref_id = $1 AND tx_id LIKE '%_payout'`, [winKey]);
+    expect(paid[0].n, 'the winner was credited more than once').toBe(1);
+  });
 });
