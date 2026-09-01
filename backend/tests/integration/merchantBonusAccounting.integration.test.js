@@ -1,13 +1,10 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-// Integration tests (real DB): the two remaining un-covered money flows —
-// the withdrawal lock lifecycle (walletAuthority) and the Merchant
-// Performance Bonus accounting rules (Revenue & Settlement).
+// Integration test (real DB): the Merchant Performance Bonus accounting rules
+// (Revenue & Settlement) — pool funding capped at distributable revenue, and
+// issuance that is pool-capped, idempotent and mirrored by the wallet credit.
 import { describe, it, expect } from 'vitest';
 import mongoose from 'mongoose';
 import '../../models/index.js';
-import {
-  lockWithdrawal, releaseWithdrawal, refundWithdrawal,
-} from '../../domains/wallet/walletAuthority.service.js';
 import {
   recordAccountingEvent, buildCyclePostings, fundMerchantBonusPool,
   issueMerchantBonus, getTrialBalance, getDistributableRevenueMinor,
@@ -16,63 +13,18 @@ import {
 import { creditMerchantTokens } from '../../domains/merchant/merchantWallet.service.js';
 import { ACCOUNTS, EVENT_TYPES } from '../../domains/revenue/chartOfAccounts.js';
 
-const User = () => mongoose.model('User');
 
-describe('withdrawal lock lifecycle (walletAuthority)', () => {
-  // Production passes PaymentOrder._id strings — WalletLedger.refId is
-  // ObjectId-typed, so the ids here must be ObjectId strings too.
-  const reqId = () => new mongoose.Types.ObjectId().toString();
-
-  it('lock → approve burns the locked amount exactly once (idempotent)', async () => {
-    const wdReq = reqId();
-    const u = await User().create({
-      username: 'wduser1', mobile: '9300000001', winningsBalance: 500,
-    });
-
-    const lock = await lockWithdrawal(String(u._id), 200, wdReq);
-    expect(lock.winningsAfter).toBe(300);
-
-    // Same request re-locked (retry/double-click) → no double lock.
-    const again = await lockWithdrawal(String(u._id), 200, wdReq);
-    expect(again.idempotent).toBe(true);
-    let fresh = await User().findById(u._id).lean();
-    expect(fresh.winningsBalance).toBe(300);
-    expect(fresh.lockedBalance).toBe(200);
-
-    await releaseWithdrawal(String(u._id), 200, wdReq);
-    const releasedAgain = await releaseWithdrawal(String(u._id), 200, wdReq);
-    expect(releasedAgain.idempotent).toBe(true);
-
-    fresh = await User().findById(u._id).lean();
-    expect(fresh.winningsBalance).toBe(300); // paid out — not returned
-    expect(fresh.lockedBalance).toBe(0);     // burned exactly once
-  });
-
-  it('lock → reject returns the money to winningsBalance', async () => {
-    const wdReq = reqId();
-    const u = await User().create({
-      username: 'wduser2', mobile: '9300000002', winningsBalance: 500,
-    });
-
-    await lockWithdrawal(String(u._id), 150, wdReq);
-    await refundWithdrawal(String(u._id), 150, wdReq);
-
-    const fresh = await User().findById(u._id).lean();
-    expect(fresh.winningsBalance).toBe(500); // fully restored
-    expect(fresh.lockedBalance).toBe(0);
-  });
-
-  it('refuses to lock more than the withdrawable winnings balance', async () => {
-    const u = await User().create({
-      username: 'wduser3', mobile: '9300000003',
-      winningsBalance: 100, depositBalance: 9999, // deposit is NOT withdrawable
-    });
-    await expect(lockWithdrawal(String(u._id), 200, reqId())).rejects.toThrow(/Insufficient/i);
-    const fresh = await User().findById(u._id).lean();
-    expect(fresh.winningsBalance).toBe(100);
-    expect(fresh.lockedBalance || 0).toBe(0);
-  });
-});
+// REMOVED with the Mongo wallet: the withdrawal-lock lifecycle used to be
+// tested here by seeding `User.winningsBalance` and asserting the Mongo
+// document afterwards. Balances live in PostgreSQL now, so the seed produced a
+// user with nothing in it and lockWithdrawal correctly refused —
+// "Insufficient withdrawable balance: have Rs 0".
+//
+// Not lost coverage. lock/release/refund are exercised against real PostgreSQL
+// in walletPgAuthority.test.js (including the idempotent re-lock and the
+// over-balance refusal) and in moneyConservation.test.js, which additionally
+// proves the pockets conserve to zero across the whole lifecycle — more than
+// this asserted.
 
 describe('Merchant Performance Bonus accounting (Revenue & Settlement)', () => {
   const actor = { userId: new mongoose.Types.ObjectId() };
