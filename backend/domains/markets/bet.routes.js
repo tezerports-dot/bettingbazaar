@@ -352,7 +352,7 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
         slices: stakeSlices,
         reason: `BET_PLACED — ₹${amount} on ${side}`,
       });
-      stakeLock = { ok: placed.ok, balances: placed.balances };
+      stakeLock = { ok: placed.ok, balances: placed.balances, reason: placed.reason };
       pgBet = placed.ok ? placed.bet : null;
       moneyMoved = placed.ok && placed.idempotent !== true;
     } else {
@@ -363,6 +363,24 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
     }
 
     if (!stakeLock.ok) {
+      // Not every refusal is about money, and saying it is sends the player to
+      // check a balance that is fine. `placeBet` refuses three ways on the cycle
+      // itself — it takes the cycle's row lock and reads its state under it — and
+      // those are the answers a player can actually act on: wait for the next
+      // block, or stop trying to bet on one that has closed.
+      // 400 with a `code`, matching the clock-based cutoff above rather than
+      // inventing a second shape for the same class of answer: the cutoff
+      // already replies BETTING_CLOSED, and a client that handles one should
+      // not need a separate branch for the other.
+      const CYCLE_REFUSALS = {
+        cycle_not_found: ['CYCLE_UNAVAILABLE', 'That round is no longer available. Please pick the current one.'],
+        cycle_expired:   ['BETTING_CLOSED',    'Betting closed for this cycle'],
+        cycle_settling:  ['BETTING_CLOSED',    'This round is being settled. Please wait for the next one.'],
+      };
+      const refusal = CYCLE_REFUSALS[stakeLock.reason];
+      if (refusal) {
+        return res.status(400).json({ success: false, code: refusal[0], message: refusal[1] });
+      }
       // Concurrent request won the race — our pre-computed split is now stale.
       return res.status(400).json({
         success: false,

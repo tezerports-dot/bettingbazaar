@@ -34,6 +34,7 @@ import betRoutes from '../../domains/markets/bet.routes.js';
 import GameEngine from '../../domains/markets/gameEngine.js';
 import CycleGeneratorService from '../../domains/markets/cycleGenerator.service.js';
 import { CYCLE_TYPES } from '../../domains/markets/cycleTypes.js';
+import { bettable } from './_bettableCycle.js';
 
 const app = express();
 app.use(express.json());
@@ -57,7 +58,7 @@ let seq = 0;
  */
 const cycleAt = (secondsLeft, extra = {}) => {
   const endTime = Date.now() + secondsLeft * 1000;
-  return Cycle.create({
+  return bettable(Cycle.create({
     cycleId: `om_${Date.now()}_${seq++}`,
     type: CYCLE_TYPES.ONE_MIN,
     startTime: endTime - 60_000,
@@ -67,7 +68,7 @@ const cycleAt = (secondsLeft, extra = {}) => {
     phantomDelhi: 0, phantomBombay: 0,
     totalDelhi: 0, totalBombay: 0,
     ...extra,
-  });
+  }));
 };
 
 const reread = (c) => Cycle.findById(c._id).lean();
@@ -251,10 +252,10 @@ describe('1-minute cycle — betting closes on the clock, not on the status flag
     // but the 30-minute board closes at T−30s, so this is still open there.
     // A single shared cutoff would get one of these two wrong.
     const u = await better();
-    const thirty = await Cycle.create({
+    const thirty = await bettable(Cycle.create({
       cycleId: `om_30_${seq++}`, type: CYCLE_TYPES.THIRTY_MIN,
       startTime: Date.now() - 1_760_000, endTime: Date.now() + 40_000, status: 'OPEN',
-    });
+    }));
     const res = await request(app).post('/api/bet/place')
       .set('Authorization', authFor(u))
       .set('Idempotency-Key', `om-30-${seq}`)

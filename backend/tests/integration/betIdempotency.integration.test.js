@@ -21,6 +21,7 @@ import express from 'express';
 import mongoose from 'mongoose';
 import { signToken } from '../../domains/identity/paseto.util.js';
 import { User, Cycle, Bet } from '../../models/index.js';
+import { bettable } from './_bettableCycle.js';
 import betRoutes from '../../domains/markets/bet.routes.js';
 
 const app = express();
@@ -36,11 +37,11 @@ async function freshUserAndCycle() {
     kycStatus: 'APPROVED',
     depositBalance: 100, winningsBalance: 0, reserveBalance: 10,
   });
-  const cycle = await Cycle.create({
+  const cycle = await bettable(Cycle.create({
     cycleId: `idem_cycle_${Date.now()}_${seq}`, type: '30_MIN',
     startTime: Date.now() - 60_000, endTime: Date.now() + 300_000,
     status: 'OPEN',
-  });
+  }));
   return { user, cycle };
 }
 

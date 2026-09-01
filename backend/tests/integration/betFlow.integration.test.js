@@ -16,6 +16,7 @@ import express from 'express';
 import { signToken } from '../../domains/identity/paseto.util.js';
 import mongoose from 'mongoose';
 import { User, Cycle, Bet } from '../../models/index.js';
+import { bettable } from './_bettableCycle.js';
 import betRoutes from '../../domains/markets/bet.routes.js';
 import GameEngine from '../../domains/markets/gameEngine.js';
 import {
@@ -56,11 +57,11 @@ describe('Phase A money flow: split → settle → ledger', () => {
       depositBalance: 100, winningsBalance: 0, reserveBalance: 10,
     });
 
-    const cycle = await Cycle.create({
+    const cycle = await bettable(Cycle.create({
       cycleId: 'flow_cycle_1', type: '30_MIN',
       startTime: Date.now() - 60000, endTime: Date.now() + 60000,
       status: 'OPEN',
-    });
+    }));
 
     // ── Place both bets through the REAL route ────────────────────────────
     const resA = await request(app).post('/api/bet/place')
@@ -158,11 +159,11 @@ describe('Phase A money flow: split → settle → ledger', () => {
       username: 'broke', mobile: '9100000003', kycStatus: 'APPROVED',
       depositBalance: 4, winningsBalance: 3, reserveBalance: 2, // total 9 < 10
     });
-    const cycle = await Cycle.create({
+    const cycle = await bettable(Cycle.create({
       cycleId: 'flow_cycle_2', type: '30_MIN',
       startTime: Date.now() - 60000, endTime: Date.now() + 60000,
       status: 'OPEN',
-    });
+    }));
 
     const res = await request(app).post('/api/bet/place')
       .set('Authorization', authFor(user))
@@ -201,11 +202,11 @@ describe('Phase A money flow: split → settle → ledger', () => {
       username: 'fallback', mobile: '9100000004', kycStatus: 'APPROVED',
       depositBalance: 5, winningsBalance: 10, reserveBalance: 0.1,
     });
-    const cycle = await Cycle.create({
+    const cycle = await bettable(Cycle.create({
       cycleId: 'flow_cycle_3', type: '30_MIN',
       startTime: Date.now() - 60000, endTime: Date.now() + 60000,
       status: 'OPEN',
-    });
+    }));
 
     const res = await request(app).post('/api/bet/place')
       .set('Authorization', authFor(user))

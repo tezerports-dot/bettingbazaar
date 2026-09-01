@@ -26,6 +26,7 @@ import request from 'supertest';
 import express from 'express';
 import { signToken } from '../../domains/identity/paseto.util.js';
 import { User, Cycle, SystemConfig } from '../../models/index.js';
+import { bettable } from './_bettableCycle.js';
 import betRoutes from '../../domains/markets/bet.routes.js';
 import CycleGeneratorService from '../../domains/markets/cycleGenerator.service.js';
 import { CYCLE_TYPES, CYCLE_TYPE_VALUES, cycleMeta, phasesFor } from '../../domains/markets/cycleTypes.js';
@@ -53,7 +54,7 @@ let seq = 0;
 /** A cycle of `type` positioned `secondsLeft` from its end, with a real duration. */
 const cycleAt = (type, secondsLeft, extra = {}) => {
   const endTime = Date.now() + secondsLeft * 1000;
-  return Cycle.create({
+  return bettable(Cycle.create({
     cycleId: `all_${Date.now()}_${seq++}`,
     type,
     startTime: endTime - durationMs(type),
@@ -62,7 +63,7 @@ const cycleAt = (type, secondsLeft, extra = {}) => {
     realDelhi: 0, realBombay: 0, phantomDelhi: 0, phantomBombay: 0,
     totalDelhi: 0, totalBombay: 0,
     ...extra,
-  });
+  }));
 };
 
 const phases = (type) => phasesFor(type, DEFAULT_CYCLE_PHASES);
