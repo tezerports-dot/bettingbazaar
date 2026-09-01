@@ -116,7 +116,7 @@ export function slicesFromBet(bet) {
  *
  * ── Why per bet is not a regression ─────────────────────────────────────────
  * The Mongo path ALREADY settles per bet: gameEngine loops
- * `await unlockLostBet(...)` over the losing side, and settlementService loops
+ * `await unlockLostBet(...)` over the losing side, and the settlement helper looped
  * `creditWinnings` + `releaseLockedStake` per winner. The bulk `updateMany` /
  * `bulkWrite` that follows is only the status stamp on top of work that is
  * already N-at-a-time.

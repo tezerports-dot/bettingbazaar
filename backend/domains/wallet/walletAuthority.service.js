@@ -149,7 +149,7 @@ export async function refundWithdrawal(userId, amount, withdrawalId) {
  * releaseLockedStake — settle-time release of a bet's locked stake (F-2,
  * 2026-07-10). THE sanctioned writer for lockedBalance/lockedDepositAmount/
  * lockedWinningsAmount at settlement (§7) — replaces the raw `$inc`s that
- * lived in domains/settlement/settlementService.js.
+ * lived in domains/settlement/settlementService.js, now deleted.
  *
  * Concurrency contract: settlement passes can legitimately overlap (engine
  * tick + payout recovery task, or two nodes — the cycle lock re-admits

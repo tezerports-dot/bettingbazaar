@@ -1,6 +1,7 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** analytics.admin.routes.js — Dashboard, financial analytics, stats */
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from '../../routes/admin/_adminShared.js';
+import { betTotals, betTotalsByDay } from '../../postgres/analyticsPg.js';
 // Analytics Platform trends (Phase 012 — Enterprise Services tier)
 import { growthTrend, businessTrend, revenueTrend, riskTrend } from './analyticsPlatform.service.js';
 
@@ -48,8 +49,9 @@ router.get('/analytics/dashboard', authenticate, isAdminOrSubAdmin, async (req, 
       mongoose.model('Merchant').countDocuments({ status: 'ACTIVE', isOnline: true }),
     ]);
 
-    // FIX DATA 3.1: was WIN_PAYOUT (invalid) and COMPLETED (invalid) → payouts always showed ₹0
-    const [depositAgg, withdrawalAgg, payoutAgg] = await Promise.all([
+    // Deposits and withdrawals still come from the Transaction feed — those rows
+    // ARE written, by the payment flows, and that domain has not moved yet.
+    const [depositAgg, withdrawalAgg] = await Promise.all([
       Transaction.aggregate([
         { $match: { type: 'DEPOSIT', status: 'SUCCESS' } },
         { $group: { _id: null, total: { $sum: '$amount' } } }
@@ -58,59 +60,45 @@ router.get('/analytics/dashboard', authenticate, isAdminOrSubAdmin, async (req, 
         { $match: { type: 'WITHDRAWAL', status: 'SUCCESS' } },
         { $group: { _id: null, total: { $sum: '$amount' } } }
       ]),
-      Transaction.aggregate([
-        { $match: { type: 'BET_WIN', status: 'SUCCESS' } },
-        { $group: { _id: null, total: { $sum: '$amount' } } }
-      ]),
     ]);
-
-    const totalDeposits   = depositAgg[0]?.total    || 0;
+    const totalDeposits    = depositAgg[0]?.total    || 0;
     const totalWithdrawals = withdrawalAgg[0]?.total || 0;
-    const totalPayouts    = payoutAgg[0]?.total      || 0;
 
-    // Total bets amount
-    const betsAgg = await Transaction.aggregate([
-      { $match: { type: 'BET_PLACED' } },
-      { $group: { _id: null, total: { $sum: '$amount' } } }
-    ]);
-    const totalBetsAmount = betsAgg[0]?.total || 0;
-
-    // FIX: netProfit was reading Cycle.netProfit which is often 0/unpopulated.
-    // Correct formula: house keeps what was bet minus what was paid out to winners.
-    const netProfit = totalBetsAmount - totalPayouts;
+    // Stakes and payouts are SUMMED FROM THE BETS. They used to be summed from
+    // `Transaction` rows of type BET_PLACED and BET_WIN, and the first of those
+    // is never written by anything — so `totalBets` has been reading zero and
+    // `netProfit`, which is bets minus payouts, has been reporting MINUS the
+    // payouts, as though the house had taken nothing. A feed can be missing
+    // rows and still look healthy; a sum over `bets` cannot.
+    const allTime = await betTotals();
+    const totalPayouts    = allTime.payouts;
+    const totalBetsAmount = allTime.bets;
+    const netProfit       = totalBetsAmount - totalPayouts;
 
     // ── Finance TODAY (IST) ───────────────────────────────────────────────
     const weekAgo = new Date(today); weekAgo.setDate(weekAgo.getDate() - 7);
-    const [todayBetsAgg, todayPayoutsAgg, todayDepositsAgg] = await Promise.all([
-      Transaction.aggregate([{ $match: { type: 'BET_PLACED', createdAt: { $gte: today } } }, { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }]),
-      Transaction.aggregate([{ $match: { type: 'BET_WIN', status: 'SUCCESS', createdAt: { $gte: today } } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
+    const [todayBetting, todayDepositsAgg] = await Promise.all([
+      betTotals({ since: today }),
       Transaction.aggregate([{ $match: { type: 'DEPOSIT', status: 'SUCCESS', createdAt: { $gte: today } } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
     ]);
-    const todayBets      = todayBetsAgg[0]?.total     || 0;
-    const todayBetCount  = todayBetsAgg[0]?.count     || 0;
-    const todayPayouts   = todayPayoutsAgg[0]?.total  || 0;
+    const todayBets      = todayBetting.bets;
+    const todayBetCount  = todayBetting.betCount;
+    const todayPayouts   = todayBetting.payouts;
     const todayDeposits  = todayDepositsAgg[0]?.total || 0;
     const todayNetProfit = todayBets - todayPayouts;
 
     // ── Daily report: last 7 days (IST timezone) ──────────────────────────
-    const [dailyBetsRaw, dailyPayoutsRaw] = await Promise.all([
-      Transaction.aggregate([
-        { $match: { type: 'BET_PLACED', createdAt: { $gte: weekAgo } } },
-        { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: '+05:30' } }, bets: { $sum: '$amount' }, betCount: { $sum: 1 } } },
-        { $sort: { _id: 1 } }
-      ]),
-      Transaction.aggregate([
-        { $match: { type: 'BET_WIN', status: 'SUCCESS', createdAt: { $gte: weekAgo } } },
-        { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: '+05:30' } }, payouts: { $sum: '$amount' } } }
-      ]),
-    ]);
-    const payoutByDate = Object.fromEntries(dailyPayoutsRaw.map(d => [d._id, d.payouts]));
-    const dailyReport  = dailyBetsRaw.map(d => ({
-      date:      d._id,
+    // One query, one grouping. The two Mongo aggregations grouped stakes by the
+    // bet's day and payouts by the SETTLEMENT's day, so a cycle that closed
+    // either side of midnight put its stakes on one line and its winnings on the
+    // next — and both days' net profit was wrong. Both now key off `placed_at`,
+    // which keeps a cycle's money together.
+    const dailyReport = (await betTotalsByDay({ since: weekAgo })).map((d) => ({
+      date:      d.date,
       bets:      d.bets,
       betCount:  d.betCount,
-      payouts:   payoutByDate[d._id] || 0,
-      netProfit: d.bets - (payoutByDate[d._id] || 0),
+      payouts:   d.payouts,
+      netProfit: d.bets - d.payouts,
     }));
 
     // ── Cycles ─────────────────────────────────────────────────────────────
