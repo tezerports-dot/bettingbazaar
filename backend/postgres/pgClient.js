@@ -112,73 +112,28 @@ export async function connectGuarded(pool) {
 }
 
 /**
- * Advisory-lock namespace for per-cycle serialization.
+ * ── The advisory cycle lock lived here, and is gone ─────────────────────────
+ * `pg_advisory_xact_lock(811, hashtext(cycleId))` was what made PostgreSQL,
+ * rather than Node's clock, the arbiter of the bet-versus-settlement race. It
+ * had to be advisory because there was no `cycles` table: the cycle lived only
+ * in MongoDB, and `cycle_settlements` — the closest thing to a cycle row — does
+ * not exist until settlement opens, which is precisely the row a bet needed to
+ * be blocked by.
  *
- * `pg_advisory_xact_lock(CYCLE_LOCK_CLASS, hashtext(cycleId))` is what makes
- * PostgreSQL — not Node's clock — the arbiter of the bet-versus-settlement
- * race. Both `betPg.placeBet` and `settlementPg.openSettlement` take it, so
- * one of them always observes the other's committed state instead of the two
- * interleaving.
+ * There is a `cycles` table now, so both sides lock the row itself:
+ * `cyclePg.lockForBet` (FOR SHARE) and `cyclePg.lockForSettlement` /
+ * `openSettlement`'s CTE (FOR UPDATE). Two things improve. `hashtext` returns
+ * int32, so two unrelated cycle ids COULD collide and serialise against each
+ * other — never wrong, but invisible; a row cannot collide, because the row is
+ * the identity. And the advisory lock locked a NUMBER, so the cycle's actual
+ * state took a second query; the row lock returns the cycle under the lock that
+ * protects it, which is what lets the bet's clock check live inside the
+ * transaction instead of running ahead of it in `bet.routes.js`.
  *
- * It has to be an ADVISORY lock rather than a row lock because there is no
- * `cycles` table in this schema: the cycle document (its status, endTime and
- * phase offsets) lives only in MongoDB. `cycle_settlements` is the closest
- * thing to a cycle row, and it does not exist until settlement opens — which
- * is precisely the row a bet needs to have been blocked by. A lock on a row
- * that is not there yet locks nothing, so the lock is taken on the cycle's
- * NAME instead.
- *
- * `_xact_` matters: the lock releases on COMMIT or ROLLBACK with no cleanup
- * path to forget, so a crashed backend cannot wedge a cycle.
- *
- * The class is a namespace, not a value — it keeps these locks from colliding
- * with any other advisory lock added later. Nothing else in the codebase used
- * advisory locks when this was introduced (2026-08-31).
+ * Recorded rather than deleted silently: several comments across the money path
+ * cite this lock by name, and a reader who finds those before this note should
+ * be told where it went.
  */
-export const CYCLE_LOCK_CLASS = 811;
-
-/**
- * EXCLUSIVE — held by `openSettlement`. Waits for every bet in flight on this
- * cycle to commit, then blocks new ones until the settlement row is visible.
- */
-export const LOCK_CYCLE_SQL =
-  `SELECT pg_advisory_xact_lock(${CYCLE_LOCK_CLASS}, hashtext($1))`;
-
-/**
- * SHARED — held by `placeBet`. Bets must exclude the SETTLEMENT, not each
- * other, and this is the difference between those two statements.
- *
- * ── Why this is not the exclusive lock ──────────────────────────────────────
- * It was, and that made every bet on a cycle serialize behind every other one:
- * the lock is held for the whole transaction (wallet lock, the settling check,
- * the bet insert, the balance move, the ledger row, COMMIT), so throughput on
- * one cycle collapsed to 1/transaction-time no matter how much concurrency was
- * offered it. Measured against PostgreSQL 16: ~520 bets/sec at concurrency 1
- * and ~420 at concurrency 8 or 32 — MORE concurrency was slower, which is the
- * signature of a queue rather than a pool. Three cycles reached ~1,500/sec, so
- * the ceiling was per cycle, not the machine.
- *
- * That matters most on the 1-minute board, where one cycle carries the whole
- * board's traffic for sixty seconds at a time, and `loadtest/README.md` puts
- * the target at 500–800 bets/sec against a single cycle.
- *
- * A shared lock keeps every property the exclusive one was taken for. Shared
- * holders do not conflict with each other but DO conflict with an exclusive
- * holder, so:
- *   - bets run in parallel with bets, which is what they always needed;
- *   - `openSettlement` still waits for every in-flight bet to commit before it
- *     can open, so no stake is missing from the pools the winner is read from;
- *   - a bet arriving while a settlement is opening still blocks on the
- *     exclusive lock, and reads `cycle_settlements` AFTER it commits — so it
- *     sees the run and refuses with `cycle_settling`.
- *
- * The bet-vs-bet ordering the exclusive lock imposed bought nothing: two bets
- * on one cycle contend on their own wallet rows and on nothing else, and the
- * pools they update are `$inc` on the Mongo cycle document, which this lock
- * never guarded.
- */
-export const LOCK_CYCLE_SHARED_SQL =
-  `SELECT pg_advisory_xact_lock_shared(${CYCLE_LOCK_CLASS}, hashtext($1))`;
 
 export async function pgQuery(text, params, operation = 'query') {
   const end = pgQueryDuration.startTimer({ operation: String(operation).slice(0, 48) || 'query' });

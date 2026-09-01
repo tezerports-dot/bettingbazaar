@@ -30,6 +30,7 @@ import {
   BET_STATUS, placeBet, winBet, loseBet, voidBet, refundBet,
   getBet, getBetHistory, reconcileUserStakes, findBetsMissingStakeMovement,
 } from '../../postgres/betPg.js';
+import { givenCycle } from './_cycleFixture.js';
 
 const hasPg = pgConfigured();
 const describePg = hasPg ? describe : describe.skip;
@@ -57,7 +58,13 @@ const ledgerFor = async (betId) => {
 };
 
 describePg('Bet lifecycle (PostgreSQL)', () => {
-  beforeAll(async () => { await applySchema(); });
+  beforeAll(async () => {
+    await applySchema();
+    // `placeBet` locks the cycle's row and refuses when there is none.
+    // These suites bet against fixed ids, so the rows are made once here.
+    await givenCycle('cyc1');
+    await givenCycle('c');
+  });
   afterAll(async () => { await closePg(); });
   beforeEach(async () => {
     await pgQuery('TRUNCATE bet_transitions, bets, wallet_ledger, wallets RESTART IDENTITY CASCADE');

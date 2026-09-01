@@ -43,6 +43,7 @@ import {
   reconcileSettlement, findIncompleteSettlements,
 } from '../../postgres/settlementPg.js';
 import { getPool, pgQuery, applySchema } from '../../postgres/pgClient.js';
+import { givenCycle } from './_cycleFixture.js';
 
 const USER = 'crash_user';
 const STAKE = 5_000;      // ₹50
@@ -53,7 +54,13 @@ const FUNDED = 10_000_000;
 const slices = () => [{ field: 'depositBalance', amountPaise: STAKE }];
 
 let seq = 0;
-const nextCycle = () => `crash_cycle_${Date.now()}_${seq++}`;
+// Async now: `placeBet` locks the cycle's row and refuses when there is
+// none, so a test cycle has to exist before it can be bet on.
+const nextCycle = async () => {
+  const id = `crash_cycle_${Date.now()}_${seq++}`;
+  await givenCycle(id);
+  return id;
+};
 
 const wallet = async () => (await pgQuery(
   `SELECT deposit_paise, winnings_paise, locked_paise FROM wallets WHERE user_id = $1`, [USER],
@@ -121,7 +128,7 @@ beforeEach(async () => {
 
 describe('a crash mid-transaction leaves no half-settled bet', () => {
   it('rolls back a payout that had already reached the wallet row', async () => {
-    const cycle = nextCycle();
+    const cycle = await nextCycle();
     const betId = `${cycle}_b1`;
     expect((await placeBet({ betId, userId: USER, cycleId: cycle, side: 'DELHI', slices: slices() })).ok).toBe(true);
 
@@ -160,7 +167,7 @@ describe('a crash mid-transaction leaves no half-settled bet', () => {
   it('rolls back a stake that had already left the wallet row', async () => {
     // Same shape on the way IN. A stake that is debited but whose bet was never
     // committed is money the player cannot see, bet, or withdraw.
-    const cycle = nextCycle();
+    const cycle = await nextCycle();
     const betId = `${cycle}_b1`;
     const before = await wallet();
 
@@ -182,7 +189,7 @@ describe('a crash mid-transaction leaves no half-settled bet', () => {
 
 describe('a settlement resumed after a crash pays each bet once', () => {
   it('re-offers every bet and credits only the ones that were still owed', async () => {
-    const cycle = nextCycle();
+    const cycle = await nextCycle();
     const ids = [0, 1, 2, 3].map((i) => `${cycle}_b${i}`);
     for (const betId of ids) {
       expect((await placeBet({ betId, userId: USER, cycleId: cycle, side: 'DELHI', slices: slices() })).ok).toBe(true);
@@ -238,7 +245,7 @@ describe('the run record survives a crash between the money and the counter', ()
     // statement. Dying in between pays the player and loses the count — and
     // the resume cannot restore it, because the bet transition is idempotent
     // and deliberately does not re-count.
-    const cycle = nextCycle();
+    const cycle = await nextCycle();
     const ids = [0, 1, 2].map((i) => `${cycle}_b${i}`);
     for (const betId of ids) await placeBet({ betId, userId: USER, cycleId: cycle, side: 'DELHI', slices: slices() });
 
@@ -289,7 +296,7 @@ describe('the run record survives a crash between the money and the counter', ()
     // and an empty cycle would be reported as an invalid transition and stay
     // RUNNING forever — visible only as a stalled-settlement alert nobody can
     // action.
-    const cycle = nextCycle();
+    const cycle = await nextCycle();
     await openSettlement({ cycleId: cycle, winningSide: 'DELHI', betsTotal: 7, stakePaise: 999 });
 
     const done = await completeSettlement({ cycleId: cycle });
@@ -314,7 +321,7 @@ describe('the run record survives a crash between the money and the counter', ()
     // exists for, and deriving the totals has to make that MORE visible, not
     // less: bets_settled comes out below bets_total instead of matching a
     // counter that only ever counted what the pass touched.
-    const cycle = nextCycle();
+    const cycle = await nextCycle();
     const settled = `${cycle}_b0`;
     const stranded = `${cycle}_b1`;
     for (const betId of [settled, stranded]) {
@@ -348,7 +355,7 @@ describe('a failure AFTER the commit cannot undo or repeat the payout', () => {
     // `winBet` returns. None of them is transactional with it, and none of them
     // may be able to reverse it — so the only safe behaviour is for the retry
     // to find the work already done.
-    const cycle = nextCycle();
+    const cycle = await nextCycle();
     const betId = `${cycle}_b1`;
     await placeBet({ betId, userId: USER, cycleId: cycle, side: 'DELHI', slices: slices() });
 

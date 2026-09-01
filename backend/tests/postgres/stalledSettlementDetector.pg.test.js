@@ -24,10 +24,17 @@ import {
 } from '../../postgres/settlementPg.js';
 import { placeBet } from '../../postgres/betPg.js';
 import { pgQuery } from '../../postgres/pgClient.js';
+import { givenCycle } from './_cycleFixture.js';
 
 const USER = 'stalled_user';
 let seq = 0;
-const nextCycle = () => `stalled_${Date.now()}_${seq++}`;
+// Async now: `placeBet` locks the cycle's row and refuses when there is
+// none, so a test cycle has to exist before it can be bet on.
+const nextCycle = async () => {
+  const id = `stalled_${Date.now()}_${seq++}`;
+  await givenCycle(id);
+  return id;
+};
 
 beforeAll(async () => {
   const { applySchema } = await import('../../postgres/pgClient.js');
@@ -44,7 +51,7 @@ describe('findIncompleteSettlements', () => {
     // Exactly the state the mirror race leaves behind: the bet committed in
     // Postgres, the settlement enumerated from Mongo before the mirror landed,
     // so the run finished without ever seeing it.
-    const cycle = nextCycle();
+    const cycle = await nextCycle();
     await placeBet({
       betId: `${cycle}_b1`, userId: USER, cycleId: cycle, side: 'DELHI',
       slices: [{ field: 'depositBalance', amountPaise: 5_000 }],
@@ -61,7 +68,7 @@ describe('findIncompleteSettlements', () => {
   it('stays silent on a run that is still RUNNING', async () => {
     // An open run with pending bets is the NORMAL mid-settlement state. Paging
     // on it would make the alert meaningless within one cycle.
-    const cycle = nextCycle();
+    const cycle = await nextCycle();
     await placeBet({
       betId: `${cycle}_b1`, userId: USER, cycleId: cycle, side: 'DELHI',
       slices: [{ field: 'depositBalance', amountPaise: 5_000 }],

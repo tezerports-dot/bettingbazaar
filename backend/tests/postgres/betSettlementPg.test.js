@@ -24,6 +24,7 @@ import { applyDeltaPaise } from '../../postgres/walletPg.js';
 import { BET_STATUS, placeBet, winBet, loseBet, getBet, resolveBetId } from '../../postgres/betPg.js';
 import { reconcileBetStates } from '../../postgres/reconcile.js';
 import { mongoIdFor } from '../../postgres/betPgAuthority.js';
+import { givenCycle } from './_cycleFixture.js';
 
 const hasPg = pgConfigured();
 const describePg = hasPg ? describe : describe.skip;
@@ -45,7 +46,12 @@ const feeColumn = async (betId) => {
 };
 
 describePg('the retained platform fee (PostgreSQL)', () => {
-  beforeAll(async () => { await applySchema(); });
+  beforeAll(async () => {
+    await applySchema();
+    // `placeBet` locks the cycle's row and refuses when there is none.
+    // These suites bet against fixed ids, so the rows are made once here.
+    await givenCycle('fee-cycle');
+  });
   afterAll(async () => { await closePg(); });
 
   beforeEach(async () => {

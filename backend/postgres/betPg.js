@@ -50,7 +50,8 @@
  * pockets it actually came from. Returning it all to one would silently convert
  * non-withdrawable deposit into withdrawable winnings.
  */
-import { getPool, pgQuery, connectGuarded, LOCK_CYCLE_SHARED_SQL } from './pgClient.js';
+import { getPool, pgQuery, connectGuarded } from './pgClient.js';
+import { lockForBet } from './cyclePg.js';
 import { applyMovementWithin } from './walletPg.js';
 import { moneyOperations } from '../services/metrics.service.js';
 import { MONEY_PATHS } from './moneyAuthority.js';
@@ -207,19 +208,25 @@ async function withBetLock(userId, betId, fn, cycleId = null) {
 
   try {
     await client.query('BEGIN');
-    // The per-cycle advisory lock FIRST, before any row lock, so it cannot form
-    // a cycle in the lock graph with the wallet and bet locks below.
+    // The cycle's SHARED row lock FIRST, before any row lock below, so it
+    // cannot form a cycle in the lock graph with the wallet and bet locks.
     //
     // SHARED, not exclusive: a bet must exclude the SETTLEMENT of its cycle,
-    // never another bet. `openSettlement` takes the exclusive form of the same
-    // lock, so it still waits for every in-flight bet and still blocks the ones
-    // that arrive while it opens — but bets no longer queue behind each other,
-    // which capped one cycle at ~420 bets/sec regardless of concurrency. See
-    // LOCK_CYCLE_SHARED_SQL in pgClient.js for the measurements and for why it
-    // is advisory rather than a row lock (there is no `cycles` table — the
-    // cycle lives in MongoDB).
+    // never another bet. `openSettlement` takes `FOR UPDATE` on the same row,
+    // so it still waits for every in-flight bet and still locks out the ones
+    // arriving while it opens — but bets do not queue behind each other, which
+    // capped one cycle at ~420 bets/sec regardless of concurrency.
+    //
+    // This was an ADVISORY lock on `hashtext(cycleId)` until the `cycles` table
+    // existed, because there was no row to lock. The row is better on two
+    // counts: `hashtext` is int32 and two cycle ids CAN collide, silently
+    // serialising unrelated cycles against each other; and the advisory lock
+    // locked a number, so the cycle's actual state needed a SECOND query.
+    // Here the lock and the read are one statement, which is what lets the
+    // clock check below live inside this transaction.
+    let cycle = null;
     if (cycleId != null) {
-      await client.query(LOCK_CYCLE_SHARED_SQL, [String(cycleId)]);
+      cycle = await lockForBet(client, cycleId);
     }
     await client.query(
       `INSERT INTO wallets (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [uid],
@@ -227,7 +234,7 @@ async function withBetLock(userId, betId, fn, cycleId = null) {
     await client.query(`SELECT 1 FROM wallets WHERE user_id = $1 FOR UPDATE`, [uid]);
     const bet = await client.query(`SELECT * FROM bets WHERE bet_id = $1 FOR UPDATE`, [bid]);
 
-    const { commit, value } = await fn({ client, uid, bid, bet: rowToBet(bet.rows[0]) });
+    const { commit, value } = await fn({ client, uid, bid, bet: rowToBet(bet.rows[0]), cycle });
     await client.query(commit ? 'COMMIT' : 'ROLLBACK');
     return value;
   } catch (error) {
@@ -315,21 +322,36 @@ export async function placeBet({
       return { commit: false, value: { ok: true, idempotent: true, bet: ctx.bet } };
     }
 
-    // ── The betting/settlement boundary, decided by the DATABASE ────────────
-    // Until this check existed, nothing inside this transaction consulted the
-    // cycle at all: the only thing standing between a stake and an already
-    // settling cycle was the clock check in `bet.routes.js`, which runs BEFORE
-    // this transaction opens and therefore cannot see a settlement that starts
-    // while the stake is in flight. A bet could commit after the pools had been
-    // read and the winner chosen — counted in the pools by nobody, paid by
-    // nobody, and refunded by nobody.
+    // ── The betting boundary, decided INSIDE this transaction ───────────────
+    // Three refusals, in the order they can be answered.
     //
-    // `cycle_settlements` is the boundary because it is the only per-cycle row
-    // this schema has, and it is created exactly when settlement opens
-    // (`cycle_id` is UNIQUE — one settlement per cycle, ever). The advisory
-    // lock taken above is what makes reading it sound: without it the row could
-    // be inserted between this SELECT and our COMMIT and neither side would
-    // notice. With it, one of the two always sees the other's committed state.
+    // 1. NO SUCH CYCLE. The row is taken under a shared lock above; its absence
+    //    means there is nothing to bet on. This used to be accepted — nothing
+    //    in the transaction consulted the cycle at all — and a stake on a cycle
+    //    that does not exist belongs to nothing.
+    if (!ctx.cycle) {
+      return { commit: false, value: { ok: false, reason: 'cycle_not_found' } };
+    }
+
+    // 2. THE CLOCK, and this is the one that moves. `bet.routes.js` checks the
+    //    cutoff BEFORE this transaction opens, so a stake in flight across the
+    //    boundary could still commit into a cycle whose window had closed —
+    //    the late-bet defect, which the advisory lock could not close because
+    //    it locked a hash and knew nothing about the cycle's window. `end_at`
+    //    is written once at creation and read here under the lock, so the
+    //    question is answered against the database at the moment of the write.
+    if (ctx.cycle.endTime <= Date.now()) {
+      return {
+        commit: false,
+        value: { ok: false, reason: 'cycle_expired', endTime: ctx.cycle.endTime },
+      };
+    }
+
+    // 3. ALREADY SETTLING. `cycle_settlements.cycle_id` is UNIQUE — one
+    //    settlement per cycle, ever — and it is created exactly when settlement
+    //    opens, under this same row's exclusive lock. So either this bet holds
+    //    the shared lock and the settlement is still waiting for it, or the
+    //    settlement committed first and this SELECT sees the row it wrote.
     const settling = await ctx.client.query(
       `SELECT status FROM cycle_settlements WHERE cycle_id = $1`,
       [String(cycleId)],

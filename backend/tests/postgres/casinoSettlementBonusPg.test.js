@@ -30,6 +30,7 @@ import {
 } from '../../postgres/settlementPg.js';
 import { grantBonus, clawBackBonus, getGrant, reconcileBonusPools, GRANT_STATUS } from '../../postgres/bonusPg.js';
 import { ACCOUNTS, getTreasuryBalances, allocateFromHouse, trialBalance } from '../../postgres/treasuryPg.js';
+import { givenCycle } from './_cycleFixture.js';
 
 const hasPg = pgConfigured();
 const describePg = hasPg ? describe : describe.skip;
@@ -41,7 +42,12 @@ const bal = (userId = U) => getBalancesPaise(userId);
 const slice = (field, amountPaise) => ({ field, amountPaise });
 
 describePg('Domains 6-8 (PostgreSQL)', () => {
-  beforeAll(async () => { await applySchema(); });
+  beforeAll(async () => {
+    await applySchema();
+    // `placeBet` locks the cycle's row and refuses when there is none.
+    // These suites bet against fixed ids, so the rows are made once here.
+    await givenCycle('cyc1');
+  });
   afterAll(async () => { await closePg(); });
   beforeEach(async () => {
     await pgQuery(`TRUNCATE casino_transactions, casino_rounds, cycle_settlements,

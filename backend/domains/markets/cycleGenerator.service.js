@@ -18,6 +18,8 @@ import {
   CYCLE_TYPES, CYCLE_TYPE_VALUES, INTERVAL_CYCLE_TYPES,
   isCycleType, cycleMeta, cycleLabel, phasesFor,
 } from './cycleTypes.js';
+// The cycle's Postgres row: the thing the money path locks. See cyclePg.js.
+import { ensureCycle } from '../../postgres/cyclePg.js';
 
 // ── CYCLE PHASE OFFSETS (Business Config Audit, 2026-07-11) ───────────────────
 // Seconds BEFORE a cycle's endTime that each phase fires. Previously hardcoded
@@ -682,6 +684,21 @@ class CycleGenerator {
             // If the document already existed (no insert), skip broadcast.
             if (!cycle.__v && cycle.status !== 'OPEN') return;
 
+            // ── The cycle's PostgreSQL row ───────────────────────────────────
+            // `betPg.placeBet` takes this row's SHARED lock and refuses when
+            // there is none, so the row is not a mirror: without it every stake
+            // on this cycle is rejected as `cycle_not_found`. Awaited and
+            // allowed to throw for exactly that reason — a silent failure here
+            // is a board that takes no bets, and finding that out from a player
+            // is worse than finding it out from a crash.
+            await ensureCycle({
+                cycleId:   cycle.cycleId,
+                type:      cycle.type,
+                startTime: cycle.startTime instanceof Date ? cycle.startTime.getTime() : Number(cycle.startTime),
+                endTime:   cycle.endTime   instanceof Date ? cycle.endTime.getTime()   : Number(cycle.endTime),
+                status:    cycle.status || 'OPEN',
+            });
+
             this.liveCycleCache[type] = cycle;  // seed broadcast cache immediately
             console.log(`🆕 Created new ${label} cycle: ${cycle.cycleId}`);
             console.log(`   Start: ${startTime.toISOString()}`);
@@ -799,6 +816,21 @@ class CycleGenerator {
                 throw err;
             }
             if (!cycle.__v && cycle.status !== 'OPEN') return;
+
+            // ── The cycle's PostgreSQL row ───────────────────────────────────
+            // `betPg.placeBet` takes this row's SHARED lock and refuses when
+            // there is none, so the row is not a mirror: without it every stake
+            // on this cycle is rejected as `cycle_not_found`. Awaited and
+            // allowed to throw for exactly that reason — a silent failure here
+            // is a board that takes no bets, and finding that out from a player
+            // is worse than finding it out from a crash.
+            await ensureCycle({
+                cycleId:   cycle.cycleId,
+                type:      cycle.type,
+                startTime: cycle.startTime instanceof Date ? cycle.startTime.getTime() : Number(cycle.startTime),
+                endTime:   cycle.endTime   instanceof Date ? cycle.endTime.getTime()   : Number(cycle.endTime),
+                status:    cycle.status || 'OPEN',
+            });
 
             const startIST2 = new Date(startTime.getTime() + this.IST_OFFSET);
             const endIST2   = new Date(endTime.getTime()   + this.IST_OFFSET);
