@@ -153,15 +153,46 @@ export async function ensureCycle({
 }) {
   if (!cycleId) throw new Error('ensureCycle requires a cycleId');
   if (!type) throw new Error('ensureCycle requires a type');
-  const { rows } = await pgQuery(
-    `INSERT INTO cycles (cycle_id, type, status, start_at, end_at)
-     VALUES ($1, $2, $3, to_timestamp($4::bigint / 1000.0), to_timestamp($5::bigint / 1000.0))
-     ON CONFLICT (type, start_at) DO UPDATE SET updated_at = now()
-     RETURNING ${COLUMNS}, (xmax = 0) AS inserted`,
-    [String(cycleId), String(type), String(status), Number(startTime), Number(endTime)],
-    'cycle_ensure',
-  );
-  return { cycle: rowToCycle(rows[0]), inserted: rows[0].inserted === true };
+
+  // ── Why this catches instead of relying on ON CONFLICT alone ──────────────
+  // The row has TWO ways to already exist, and `ON CONFLICT` can name only one
+  // target. `(type, start_at)` is the one that matters for correctness — one
+  // cycle per block — so it is the declared target. The other is the primary
+  // key: the same `cycle_id` arriving for a DIFFERENT block, which happens
+  // whenever two cycles are minted inside one millisecond, because the id
+  // carries `Date.now()`. Rare in the wall-clock case, routine under a test's
+  // fake timers, and certain in a recovery pass that walks several blocks in a
+  // tight loop.
+  //
+  // Reproduced against PostgreSQL 16 before this guard existed: the second
+  // call raised `23505 cycles_pkey` and, because the generator awaits this,
+  // took cycle creation down with it.
+  try {
+    const { rows } = await pgQuery(
+      `INSERT INTO cycles (cycle_id, type, status, start_at, end_at)
+       VALUES ($1, $2, $3, to_timestamp($4::bigint / 1000.0), to_timestamp($5::bigint / 1000.0))
+       ON CONFLICT (type, start_at) DO UPDATE SET updated_at = now()
+       RETURNING ${COLUMNS}, (xmax = 0) AS inserted`,
+      [String(cycleId), String(type), String(status), Number(startTime), Number(endTime)],
+      'cycle_ensure',
+    );
+    return { cycle: rowToCycle(rows[0]), inserted: rows[0].inserted === true };
+  } catch (error) {
+    if (error?.code !== '23505') throw error;
+    // Some unique constraint already holds this cycle. Return whichever row
+    // owns it — by id first, because `cycle_id` is the identity every caller
+    // holds — rather than surfacing a raw driver error for a row that exists.
+    const existing = await getCycle(cycleId);
+    if (existing) return { cycle: existing, inserted: false };
+
+    const { rows } = await pgQuery(
+      `SELECT ${COLUMNS} FROM cycles
+        WHERE type = $1 AND start_at = to_timestamp($2::bigint / 1000.0)`,
+      [String(type), Number(startTime)], 'cycle_ensure_recheck',
+    );
+    if (rows.length) return { cycle: rowToCycle(rows[0]), inserted: false };
+    throw error; // a constraint we do not know about — do not swallow it
+  }
 }
 
 /** One cycle by id, with no lock. For reads that are not deciding anything. */

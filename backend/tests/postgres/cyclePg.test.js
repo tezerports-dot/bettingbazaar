@@ -80,6 +80,40 @@ describe('creating a cycle', () => {
     expect(rows[0].n).toBe(1);
   });
 
+  it('survives the SAME id arriving for a different block', async () => {
+    // The row has two ways to already exist and `ON CONFLICT` can name only
+    // one. `(type, start_at)` is the declared target because one-cycle-per-block
+    // is the correctness rule; the other is the primary key — the same
+    // `cycle_id` for a DIFFERENT block, which happens whenever two cycles are
+    // minted inside one millisecond, because the id carries `Date.now()`.
+    //
+    // This threw `23505 cycles_pkey` when it first shipped, and because the
+    // generator AWAITS ensureCycle it took cycle creation down with it. Rare on
+    // a wall clock, routine under fake timers, certain in a recovery pass
+    // walking several blocks in a loop.
+    const id = `dup_${Date.now()}_${seq++}`;
+    const first = nextBlock();
+
+    const a = await ensureCycle({ cycleId: id, type: '1_MIN', startTime: first, endTime: first + 60_000 });
+    expect(a.inserted).toBe(true);
+
+    const second = first + 600_000;
+    const b = await ensureCycle({ cycleId: id, type: '1_MIN', startTime: second, endTime: second + 60_000 });
+    expect(b.inserted).toBe(false);
+    // It returns the row that actually owns the id, not a fabricated one.
+    expect(b.cycle.cycleId).toBe(id);
+    expect(b.cycle.startTime).toBe(first);
+  });
+
+  it('returns the block owner when a DIFFERENT id claims a taken block', async () => {
+    const start = nextBlock();
+    const a = await ensureCycle({ cycleId: `own_${start}`, type: '1_MIN', startTime: start, endTime: start + 60_000 });
+    const b = await ensureCycle({ cycleId: `other_${start}`, type: '1_MIN', startTime: start, endTime: start + 60_000 });
+
+    expect(b.inserted).toBe(false);
+    expect(b.cycle.cycleId).toBe(a.cycle.cycleId);
+  });
+
   it('refuses a window that ends before it starts', async () => {
     const startTime = nextBlock();
     await expect(ensureCycle({
