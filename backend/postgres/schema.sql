@@ -608,17 +608,34 @@ CREATE TABLE IF NOT EXISTS cycles (
   start_at        TIMESTAMPTZ NOT NULL,
   end_at          TIMESTAMPTZ NOT NULL,
 
-  -- ── POOLS: integer paise, and the total is DERIVED ───────────────────────
-  -- The Mongo document carried six independently-incremented rupee floats and
-  -- relied on every writer to keep `total = real + phantom` by hand. Here the
-  -- totals are generated columns: the invariant is structural, cannot drift,
-  -- and cannot be written wrong by a caller that forgets one of the three.
-  real_delhi_paise     BIGINT NOT NULL DEFAULT 0,
-  real_bombay_paise    BIGINT NOT NULL DEFAULT 0,
+  -- ── POOLS ────────────────────────────────────────────────────────────────
+  -- The REAL pools are not columns here. They are derived from `bets`, and the
+  -- reason is a hard constraint rather than a preference.
+  --
+  -- A stored `real_delhi_paise` has to be incremented by every bet, in the same
+  -- transaction that takes this row's SHARED boundary lock. `FOR SHARE` then
+  -- `UPDATE` on one row is a lock upgrade, and two bets doing it concurrently
+  -- deadlock: each holds a share lock the other needs to release before it can
+  -- take the exclusive one. Demonstrated against PostgreSQL 16 — two bets, one
+  -- cycle, `40P01 deadlock detected` and one transaction killed.
+  --
+  -- The only way to keep the stored column is to make the bet's lock EXCLUSIVE,
+  -- which serialises every bet on a cycle behind every other. That was measured
+  -- this cycle: ~418 bets/sec exclusive against ~2,113 shared, on a single
+  -- cycle, against a target of 500-800.
+  --
+  -- Deriving is also the stronger guarantee, not a consolation. A total summed
+  -- from the bets cannot disagree with the bets; a stored counter can, and the
+  -- Mongo document's six hand-maintained fields are the evidence. See
+  -- `cyclePg.derivePoolsForCycle`.
+  --
+  -- PHANTOM pools ARE columns, because phantom bets are never written to
+  -- `bets` at all (dualWrite skips them: synthetic, no funding provenance,
+  -- unsettleable) and because the equalizer writes them ONCE per cycle rather
+  -- than once per bet — so they carry none of the contention above.
   phantom_delhi_paise  BIGINT NOT NULL DEFAULT 0,
   phantom_bombay_paise BIGINT NOT NULL DEFAULT 0,
-  total_delhi_paise    BIGINT GENERATED ALWAYS AS (real_delhi_paise  + phantom_delhi_paise)  STORED,
-  total_bombay_paise   BIGINT GENERATED ALWAYS AS (real_bombay_paise + phantom_bombay_paise) STORED,
+  phantom_bet_count    INTEGER NOT NULL DEFAULT 0,
 
   -- Equalizer state.
   phantom_balanced    BOOLEAN NOT NULL DEFAULT FALSE,
@@ -648,8 +665,8 @@ CREATE TABLE IF NOT EXISTS cycles (
   CONSTRAINT cycles_determined_by_check  CHECK (winner_determined_by IS NULL OR winner_determined_by IN ('AUTOMATIC','ADMIN_MANUAL','PHANTOM_MANAGER')),
   CONSTRAINT cycles_confidence_check     CHECK (winner_confidence    IS NULL OR winner_confidence    IN ('HIGH','MEDIUM','LOW','EQUAL_POOL')),
   CONSTRAINT cycles_window_check         CHECK (end_at > start_at),
-  CONSTRAINT cycles_pools_nonneg_check   CHECK (real_delhi_paise >= 0 AND real_bombay_paise >= 0
-                                            AND phantom_delhi_paise >= 0 AND phantom_bombay_paise >= 0)
+  CONSTRAINT cycles_pools_nonneg_check   CHECK (phantom_delhi_paise >= 0 AND phantom_bombay_paise >= 0
+                                            AND phantom_bet_count >= 0)
 );
 
 -- At most one cycle per type per time block, enforced by the database rather
@@ -762,6 +779,14 @@ ALTER TABLE bets ADD COLUMN IF NOT EXISTS from_reserve_paise  BIGINT NOT NULL DE
 CREATE INDEX IF NOT EXISTS bets_user_idx  ON bets (user_id, placed_at DESC);
 -- The settlement sweep's query: every unsettled bet on one cycle.
 CREATE INDEX IF NOT EXISTS bets_cycle_idx ON bets (cycle_id, status);
+-- The live pool sum: SUM(stake_paise) and COUNT(*) per side for one cycle,
+-- read once per second per live cycle by the snapshot publisher and again,
+-- exactly, when the winner is determined. Ordered equality-first (cycle_id),
+-- then the group key (side), then the filter (status), with `stake_paise`
+-- last so the sum is an INDEX-ONLY scan that never touches a bet row. This is
+-- what keeps deriving the pools cheaper than storing them — see the POOLS
+-- note on `cycles`.
+CREATE INDEX IF NOT EXISTS bets_cycle_pool_idx ON bets (cycle_id, side, status, stake_paise);
 
 CREATE TABLE IF NOT EXISTS bet_transitions (
   id           BIGSERIAL PRIMARY KEY,

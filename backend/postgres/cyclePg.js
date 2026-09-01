@@ -59,12 +59,9 @@ function rowToCycle(row) {
     status: row.status,
     startTime: ms(row.start_at),
     endTime: ms(row.end_at),
-    realDelhiPaise:     num(row.real_delhi_paise),
-    realBombayPaise:    num(row.real_bombay_paise),
     phantomDelhiPaise:  num(row.phantom_delhi_paise),
     phantomBombayPaise: num(row.phantom_bombay_paise),
-    totalDelhiPaise:    num(row.total_delhi_paise),
-    totalBombayPaise:   num(row.total_bombay_paise),
+    phantomBetCount:    num(row.phantom_bet_count),
     phantomBalanced:   !!row.phantom_balanced,
     phantomBetsClosed: !!row.phantom_bets_closed,
     winner: row.winner ?? null,
@@ -76,8 +73,8 @@ function rowToCycle(row) {
 }
 
 const COLUMNS = `cycle_id, type, status, start_at, end_at,
-  real_delhi_paise, real_bombay_paise, phantom_delhi_paise, phantom_bombay_paise,
-  total_delhi_paise, total_bombay_paise, phantom_balanced, phantom_bets_closed,
+  phantom_delhi_paise, phantom_bombay_paise, phantom_bet_count,
+  phantom_balanced, phantom_bets_closed,
   winner, pending_result, winner_determined_at, winner_determined_by, winner_confidence`;
 
 // ── LOCKING PRIMITIVES ──────────────────────────────────────────────────────
@@ -264,31 +261,90 @@ export async function declareWinner({
 // ── POOLS ───────────────────────────────────────────────────────────────────
 
 /**
- * Add a stake to one side's pool.
+ * Add a PHANTOM stake to one side's pool.
  *
- * Only the REAL and PHANTOM columns are writable — the totals are generated, so
- * `total = real + phantom` holds by construction rather than by every caller
- * remembering to increment two fields. The Mongo path `$inc`'d both and any
- * writer that forgot one left the pools quietly disagreeing.
+ * Real stakes are not written here and there is no equivalent for them: they
+ * are summed from `bets` by `derivePoolsForCycle`. That is not a shortcut —
+ * incrementing a column on this row from inside a bet's transaction means
+ * upgrading the row's SHARED boundary lock to exclusive, and two bets doing
+ * that concurrently deadlock (`40P01`, demonstrated). See the POOLS note in
+ * schema.sql.
  *
- * Written as a read-modify-write-free `x = x + $n` so concurrent stakes on the
- * same cycle do not need the row lock to be correct — they serialise on the row
- * only for the duration of the UPDATE itself.
+ * Phantom stakes have neither problem: they never reach the `bets` table, and
+ * the equalizer writes them once per cycle rather than once per bet.
  */
-export async function addToPool({ cycleId, side, amountPaise, phantom = false }) {
+export async function addPhantomToPool({ cycleId, side, amountPaise, betCount = 1 }) {
   const s = String(side).toUpperCase();
-  if (s !== 'DELHI' && s !== 'BOMBAY') throw new Error(`addToPool: unknown side ${side}`);
+  if (s !== 'DELHI' && s !== 'BOMBAY') throw new Error(`addPhantomToPool: unknown side ${side}`);
   if (!Number.isInteger(amountPaise) || amountPaise < 0) {
-    throw new TypeError(`addToPool: amountPaise must be a non-negative integer, got ${amountPaise}`);
+    throw new TypeError(`addPhantomToPool: amountPaise must be a non-negative integer, got ${amountPaise}`);
   }
-  const column = `${phantom ? 'phantom' : 'real'}_${s.toLowerCase()}_paise`;
+  const column = `phantom_${s.toLowerCase()}_paise`;
   const { rows } = await pgQuery(
-    `UPDATE cycles SET ${column} = ${column} + $2
+    `UPDATE cycles SET ${column} = ${column} + $2, phantom_bet_count = phantom_bet_count + $3
       WHERE cycle_id = $1 RETURNING ${COLUMNS}`,
-    [String(cycleId), amountPaise], 'cycle_pool_add',
+    [String(cycleId), amountPaise, Number(betCount) || 0], 'cycle_phantom_add',
   );
   if (!rows.length) return { ok: false, reason: 'not_found' };
   return { ok: true, cycle: rowToCycle(rows[0]) };
+}
+
+/**
+ * The cycle's pools, right now: real summed from the bets, phantom read from
+ * the cycle row, and the totals composed from both.
+ *
+ * This is the authoritative answer for both consumers that need one — the
+ * per-second realtime snapshot, and the exact read the winner is determined
+ * from — and it is authoritative in the strongest available sense: the real
+ * pools ARE the bets, so they cannot drift from them. A stored counter can, and
+ * the Mongo document's six hand-maintained fields are what that looks like.
+ *
+ * REFUNDED bets are excluded. A refunded stake was returned to the player and
+ * is not in the pool the winner is computed from; every other status counts,
+ * because a bet that is PENDING, WON or LOST was staked.
+ *
+ * Served by `bets_cycle_pool_idx` as an index-only scan.
+ */
+export async function derivePoolsForCycle(cycleId) {
+  const [{ rows: sums }, cycle] = await Promise.all([
+    pgQuery(
+      `SELECT side,
+              COALESCE(SUM(stake_paise), 0) AS staked,
+              COUNT(*)                      AS bets
+         FROM bets
+        WHERE cycle_id = $1 AND status <> $2
+        GROUP BY side`,
+      [String(cycleId), 'REFUNDED'], 'cycle_pools_derive',
+    ),
+    getCycle(cycleId),
+  ]);
+
+  const bySide = { DELHI: { staked: 0, bets: 0 }, BOMBAY: { staked: 0, bets: 0 } };
+  for (const r of sums) {
+    const key = String(r.side).toUpperCase();
+    if (bySide[key]) bySide[key] = { staked: num(r.staked), bets: num(r.bets) };
+  }
+
+  const phantomDelhi  = cycle?.phantomDelhiPaise  ?? 0;
+  const phantomBombay = cycle?.phantomBombayPaise ?? 0;
+
+  return {
+    cycleId: String(cycleId),
+    // Real — admin-only. Never put these in a public payload; cyclePublicView's
+    // assertPublicCycleSafe exists because showing them lets a player infer the
+    // phantom side by subtraction.
+    realDelhiPaise:  bySide.DELHI.staked,
+    realBombayPaise: bySide.BOMBAY.staked,
+    realBetCount:    bySide.DELHI.bets + bySide.BOMBAY.bets,
+    phantomDelhiPaise:  phantomDelhi,
+    phantomBombayPaise: phantomBombay,
+    phantomBetCount:    cycle?.phantomBetCount ?? 0,
+    // Total — what the public sees.
+    totalDelhiPaise:  bySide.DELHI.staked  + phantomDelhi,
+    totalBombayPaise: bySide.BOMBAY.staked + phantomBombay,
+    totalPoolPaise:   bySide.DELHI.staked + bySide.BOMBAY.staked + phantomDelhi + phantomBombay,
+    betCount:         bySide.DELHI.bets + bySide.BOMBAY.bets + (cycle?.phantomBetCount ?? 0),
+  };
 }
 
 /** Mark the phantom equalizer as having run; phantom bets close with it. */

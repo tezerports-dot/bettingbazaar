@@ -18,8 +18,8 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import {
-  ensureCycle, getCycle, setStatus, declareWinner, addToPool,
-  closePhantomBetting, findLiveCycles, findCycleHistory, findOpenCycleOfType,
+  ensureCycle, getCycle, setStatus, declareWinner, addPhantomToPool,
+  derivePoolsForCycle, closePhantomBetting, findLiveCycles, findCycleHistory, findOpenCycleOfType,
   lockForBet, lockForSettlement, isBettable,
   CYCLE_STATUS, BETTABLE_STATUSES,
 } from '../../postgres/cyclePg.js';
@@ -129,45 +129,94 @@ describe('creating a cycle', () => {
   });
 });
 
-describe('pools cannot drift', () => {
-  it('derives the total from real + phantom rather than trusting a caller', async () => {
-    // The Mongo document carried six independently-$inc'd rupee floats and
-    // relied on every writer to keep total = real + phantom by hand. Here the
-    // totals are GENERATED, so a writer that updates one field cannot leave the
-    // other two disagreeing.
+describe('pools: real derived from the bets, phantom stored on the cycle', () => {
+  // Real pools are NOT columns. Incrementing one from inside a bet's
+  // transaction means upgrading this row's SHARED boundary lock to exclusive,
+  // and two bets doing that concurrently deadlock — 40P01, demonstrated
+  // against PostgreSQL 16. Keeping the column would mean an exclusive bet
+  // lock, measured at ~418 bets/sec against ~2,113 shared on one cycle.
+  //
+  // Deriving is also the stronger guarantee: a total summed from the bets
+  // cannot disagree with the bets.
+
+  const stake = async (cycleId, side, paise, status = 'PENDING') => {
+    await pgQuery(
+      `INSERT INTO bets (bet_id, user_id, cycle_id, side, stake_paise, status)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [`pool_${cycleId}_${seq++}`, 'pool_user', cycleId, side, paise, status],
+    );
+  };
+
+  it('sums the real pools from the bets themselves', async () => {
     const cycle = await make();
+    await stake(cycle.cycleId, 'DELHI', 5_000);
+    await stake(cycle.cycleId, 'DELHI', 2_000);
+    await stake(cycle.cycleId, 'BOMBAY', 1_000);
 
-    await addToPool({ cycleId: cycle.cycleId, side: 'DELHI', amountPaise: 5_000 });
-    await addToPool({ cycleId: cycle.cycleId, side: 'DELHI', amountPaise: 2_500, phantom: true });
-    await addToPool({ cycleId: cycle.cycleId, side: 'BOMBAY', amountPaise: 1_000 });
-
-    const after = await getCycle(cycle.cycleId);
-    expect(after.realDelhiPaise).toBe(5_000);
-    expect(after.phantomDelhiPaise).toBe(2_500);
-    expect(after.totalDelhiPaise).toBe(7_500);
-    expect(after.totalBombayPaise).toBe(1_000);
+    const pools = await derivePoolsForCycle(cycle.cycleId);
+    expect(pools.realDelhiPaise).toBe(7_000);
+    expect(pools.realBombayPaise).toBe(1_000);
+    expect(pools.realBetCount).toBe(3);
+    expect(pools.totalPoolPaise).toBe(8_000);
   });
 
-  it('cannot have the generated total written directly', async () => {
+  it('excludes a REFUNDED stake, which is money given back', async () => {
     const cycle = await make();
-    await expect(pgQuery(
-      `UPDATE cycles SET total_delhi_paise = 999999 WHERE cycle_id = $1`, [cycle.cycleId],
-    )).rejects.toThrow();
+    await stake(cycle.cycleId, 'DELHI', 5_000);
+    await stake(cycle.cycleId, 'DELHI', 9_000, 'REFUNDED');
+
+    const pools = await derivePoolsForCycle(cycle.cycleId);
+    expect(pools.realDelhiPaise).toBe(5_000);
+    expect(pools.realBetCount).toBe(1);
   });
 
-  it('adds concurrent stakes without losing any', async () => {
+  it('counts a settled stake — WON and LOST money was still staked', async () => {
     const cycle = await make();
-    await Promise.all(Array.from({ length: 40 }, () =>
-      addToPool({ cycleId: cycle.cycleId, side: 'DELHI', amountPaise: 100 })));
+    await stake(cycle.cycleId, 'DELHI', 1_000, 'WON');
+    await stake(cycle.cycleId, 'BOMBAY', 3_000, 'LOST');
 
-    expect((await getCycle(cycle.cycleId)).realDelhiPaise).toBe(4_000);
+    const pools = await derivePoolsForCycle(cycle.cycleId);
+    expect(pools.totalPoolPaise).toBe(4_000);
   });
 
-  it('refuses a non-integer or negative amount rather than truncating money', async () => {
+  it('composes the public totals from real plus phantom', async () => {
     const cycle = await make();
-    await expect(addToPool({ cycleId: cycle.cycleId, side: 'DELHI', amountPaise: 12.5 }))
+    await stake(cycle.cycleId, 'DELHI', 5_000);
+    await addPhantomToPool({ cycleId: cycle.cycleId, side: 'BOMBAY', amountPaise: 4_000, betCount: 2 });
+
+    const pools = await derivePoolsForCycle(cycle.cycleId);
+    expect(pools.totalDelhiPaise).toBe(5_000);
+    expect(pools.totalBombayPaise).toBe(4_000);
+    expect(pools.totalPoolPaise).toBe(9_000);
+    // The count the public sees includes phantom, so it cannot be compared
+    // against the pool to infer the split.
+    expect(pools.betCount).toBe(3);
+    expect(pools.phantomBetCount).toBe(2);
+  });
+
+  it('reports zeroes for a cycle nobody has bet on', async () => {
+    const cycle = await make();
+    const pools = await derivePoolsForCycle(cycle.cycleId);
+    expect(pools.totalPoolPaise).toBe(0);
+    expect(pools.betCount).toBe(0);
+  });
+
+  it('adds concurrent real stakes without losing any, and without a deadlock', async () => {
+    // The property the derived design buys: 40 concurrent stakes touch the
+    // bets table only, so nothing contends on the cycle row at all.
+    const cycle = await make();
+    await Promise.all(Array.from({ length: 40 }, () => stake(cycle.cycleId, 'DELHI', 100)));
+
+    const pools = await derivePoolsForCycle(cycle.cycleId);
+    expect(pools.realDelhiPaise).toBe(4_000);
+    expect(pools.realBetCount).toBe(40);
+  });
+
+  it('refuses a non-integer or negative phantom amount rather than truncating money', async () => {
+    const cycle = await make();
+    await expect(addPhantomToPool({ cycleId: cycle.cycleId, side: 'DELHI', amountPaise: 12.5 }))
       .rejects.toThrow(TypeError);
-    await expect(addToPool({ cycleId: cycle.cycleId, side: 'DELHI', amountPaise: -100 }))
+    await expect(addPhantomToPool({ cycleId: cycle.cycleId, side: 'DELHI', amountPaise: -100 }))
       .rejects.toThrow(TypeError);
   });
 });
