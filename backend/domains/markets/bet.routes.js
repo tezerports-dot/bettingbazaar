@@ -13,6 +13,10 @@ import { betLimiter } from '../../middleware/security.js';
 import { requireChannelMembership } from '../../middleware/requireChannelMembership.js';
 import { requireIdempotencyKey, IdempotencyKeyError } from '../../middleware/idempotencyKey.js';
 import * as betAuthority from '../../postgres/betPgAuthority.js';
+// Phantom pools are STORED on the cycle row — a phantom bet has no stake to sum
+// and the equalizer overwrites the pair, so no aggregation can reproduce them.
+import { addPhantomToPool } from '../../postgres/cyclePg.js';
+import { rupeesToPaise } from '../../shared/money.js';
 // Risk Platform (Phase 010): the single validation authority for bets.
 // Phase A (2026-07-10): computeBetFundingPlan owns the stake-split arithmetic.
 import { assessBet, computeBetFundingPlan, computeMaxStake } from '../risk/riskValidation.service.js';
@@ -706,6 +710,25 @@ router.post('/phantom', authenticate, async (req, res) => {
       ? { $inc: { phantomDelhi: amount, totalDelhi: amount } }
       : { $inc: { phantomBombay: amount, totalBombay: amount } };
     const updatedCycle = await Cycle.findOneAndUpdate({ cycleId }, phantomPoolUpdate, { new: true });
+
+    // ── …and in the store the pools are read from ─────────────────────────
+    // `derivePoolsForCycle` sums the REAL pools out of `bets` and reads phantom
+    // off the cycle row, because a phantom bet has no stake to sum and the
+    // equalizer overwrites the pair with max(delhi, bombay) — no aggregation
+    // over rows can reproduce that. So a phantom bet that skipped this write
+    // would be invisible to every reader of the totals: the public pool would
+    // show real money only, which is the one number phantom exists to shape.
+    //
+    // Not fatal, and deliberately so: a phantom bet is a display device, not
+    // money, and refusing the request after the Mongo row moved would leave the
+    // two disagreeing with no way back.
+    try {
+      await addPhantomToPool({
+        cycleId, side, amountPaise: rupeesToPaise(amount), betCount: 1,
+      });
+    } catch (e) {
+      console.error(`[phantom] cycles pool update failed for ${cycleId}:`, e.message);
+    }
 
     
     {

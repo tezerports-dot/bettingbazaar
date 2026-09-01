@@ -21,6 +21,7 @@ import {
   ensureCycle, getCycle, setStatus, declareWinner, addPhantomToPool,
   derivePoolsForCycle, closePhantomBetting, findLiveCycles, findCycleHistory, findOpenCycleOfType,
   findCurrentCycle, findCyclesAwaitingSettlement, findResumableSettlements,
+  equalizePhantomPools,
   lockForBet, lockForSettlement, isBettable,
   CYCLE_STATUS, BETTABLE_STATUSES,
 } from '../../postgres/cyclePg.js';
@@ -468,6 +469,55 @@ describe('queries the engine and the client need', () => {
 // gameEngine asked all three of MongoDB. Each assertion below is written
 // against MEMBERSHIP rather than an exact result set, because these tests share
 // one database with every other file and the queries are deliberately global.
+
+describe('levelling the phantom pools', () => {
+  it('sends BOTH sides to the larger of the two, and closes phantom betting', async () => {
+    const c = await make();
+    await addPhantomToPool({ cycleId: c.cycleId, side: 'DELHI',  amountPaise: 7000 });
+    await addPhantomToPool({ cycleId: c.cycleId, side: 'BOMBAY', amountPaise: 2500 });
+
+    const r = await equalizePhantomPools(c.cycleId);
+
+    // Both land on 7000, not 7000 and 7000-computed-from-an-already-updated-7000
+    // — every SET expression reads the row as it was BEFORE the statement, which
+    // is what lets one UPDATE do what the Mongo pipeline needed two stages for.
+    expect(r.cycle.phantomDelhiPaise).toBe(7000);
+    expect(r.cycle.phantomBombayPaise).toBe(7000);
+    expect(r.cycle.phantomBetsClosed).toBe(true);
+    expect(r.cycle.phantomBalanced).toBe(true);
+  });
+
+  it('returns the PRE-image, because the caller announces what changed', async () => {
+    const c = await make();
+    await addPhantomToPool({ cycleId: c.cycleId, side: 'DELHI',  amountPaise: 4000 });
+    await addPhantomToPool({ cycleId: c.cycleId, side: 'BOMBAY', amountPaise: 1000 });
+
+    const r = await equalizePhantomPools(c.cycleId);
+    expect({ d: r.priorDelhiPaise, b: r.priorBombayPaise }).toEqual({ d: 4000, b: 1000 });
+  });
+
+  it('a second tick equalizes nothing and says so', async () => {
+    // Guarded on the flag rather than on a value comparison: two overlapping
+    // ticks must not both announce an equalization, and comparing values would
+    // let the second one through whenever the pools were already level.
+    const c = await make();
+    await addPhantomToPool({ cycleId: c.cycleId, side: 'DELHI', amountPaise: 500 });
+
+    expect(await equalizePhantomPools(c.cycleId)).not.toBeNull();
+    expect(await equalizePhantomPools(c.cycleId)).toBeNull();
+  });
+
+  it('leaves the REAL pools alone — they are the bets, and phantom is not', async () => {
+    const c = await make();
+    await addPhantomToPool({ cycleId: c.cycleId, side: 'DELHI', amountPaise: 9000 });
+    await equalizePhantomPools(c.cycleId);
+
+    const pools = await derivePoolsForCycle(c.cycleId);
+    expect({ d: pools.realDelhiPaise, b: pools.realBombayPaise }).toEqual({ d: 0, b: 0 });
+    // …and the public total is real + phantom, so the levelling shows up there.
+    expect(pools.totalPoolPaise).toBe(18000);
+  });
+});
 
 describe("the queries gameEngine used to ask MongoDB", () => {
   /**

@@ -21,7 +21,7 @@ import {
 // The cycle's Postgres row: the thing the money path locks. See cyclePg.js.
 import {
   ensureCycle, setStatus as setPgCycleStatus, declareWinner as declarePgWinner,
-  CYCLE_STATUS,
+  equalizePhantomPools as equalizePgPhantom, CYCLE_STATUS,
 } from '../../postgres/cyclePg.js';
 
 // ── CYCLE PHASE OFFSETS (Business Config Audit, 2026-07-11) ───────────────────
@@ -574,6 +574,19 @@ class CycleGenerator {
                 ],
                 { new: false }
             );
+
+            // ── …and level them where the pools are read from ─────────────
+            // Same guard, same semantics: both sides go to the larger of the
+            // two, and `phantom_bets_closed` makes it idempotent across
+            // overlapping ticks. Skipping this would leave the public pool
+            // showing an UNBALANCED phantom split for the rest of the cycle —
+            // which is exactly the signal the equalizer exists to remove, since
+            // a lopsided total lets a player infer which side is synthetic.
+            try {
+                await equalizePgPhantom(cycle.cycleId);
+            } catch (e) {
+                console.error(`❌ cycles phantom equalize failed for ${cycle.cycleId}:`, e.message);
+            }
 
             // Another tick already closed phantom betting — nothing to announce.
             if (!before) return;

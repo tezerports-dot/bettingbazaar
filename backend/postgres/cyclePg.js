@@ -347,6 +347,47 @@ export async function derivePoolsForCycle(cycleId) {
   };
 }
 
+/**
+ * Level the two phantom pools, and close phantom betting in the same statement.
+ *
+ * Both sides go to the larger of the two. Every SET expression in PostgreSQL is
+ * evaluated against the row as it was BEFORE the update, so both columns see the
+ * original pair and land on the same number — the same property the Mongo
+ * aggregation pipeline relied on across its two `$set` stages.
+ *
+ * Guarded on `phantom_bets_closed = false` rather than on a value comparison, so
+ * two overlapping ticks cannot equalize twice — the second matches no row. The
+ * PRE-image comes back alongside the new row, because the caller announces what
+ * changed and reading it separately afterwards would report the post-state.
+ *
+ * Null means another tick got there first; that is not an error.
+ */
+export async function equalizePhantomPools(cycleId) {
+  const { rows } = await pgQuery(
+    `WITH prior AS (
+       SELECT cycle_id,
+              phantom_delhi_paise  AS prior_delhi,
+              phantom_bombay_paise AS prior_bombay
+         FROM cycles WHERE cycle_id = $1
+     )
+     UPDATE cycles c
+        SET phantom_delhi_paise  = GREATEST(c.phantom_delhi_paise, c.phantom_bombay_paise),
+            phantom_bombay_paise = GREATEST(c.phantom_delhi_paise, c.phantom_bombay_paise),
+            phantom_bets_closed  = TRUE,
+            phantom_balanced     = TRUE
+       FROM prior p
+      WHERE c.cycle_id = p.cycle_id AND c.phantom_bets_closed = FALSE
+      RETURNING ${columnsOn('c')}, p.prior_delhi, p.prior_bombay`,
+    [String(cycleId)], 'cycle_phantom_equalize',
+  );
+  if (!rows.length) return null;
+  return {
+    cycle: rowToCycle(rows[0]),
+    priorDelhiPaise:  Number(rows[0].prior_delhi  ?? 0),
+    priorBombayPaise: Number(rows[0].prior_bombay ?? 0),
+  };
+}
+
 /** Mark the phantom equalizer as having run; phantom bets close with it. */
 export async function closePhantomBetting(cycleId) {
   const { rows } = await pgQuery(
