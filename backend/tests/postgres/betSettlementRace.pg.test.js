@@ -107,7 +107,12 @@ describe('a bet cannot land on a settling cycle', () => {
   });
 });
 
-describe('the cycle lock actually blocks', () => {
+describe('the cycle lock blocks a settlement, and only a settlement', () => {
+  // The lock is SHARED on the bet side and EXCLUSIVE on the settlement side,
+  // and both halves of that need a test. The first says the boundary holds; the
+  // second says it does not cost what the exclusive version cost. A change that
+  // made the bet side exclusive again would still pass the first, and only a
+  // load test would notice — which is how it got shipped the first time.
   it('makes a settlement WAIT for a bet transaction already in flight', async () => {
     // The decisive test. Everything above would pass with an unlocked SELECT,
     // because nothing interleaves; this is the one that fails if the advisory
@@ -117,8 +122,10 @@ describe('the cycle lock actually blocks', () => {
     const inFlight = await connectGuarded(pool);
 
     // Stand in for a bet transaction that has taken the lock and not committed.
+    // SHARED, because that is what `placeBet` actually takes — holding the
+    // exclusive form here would pass even if the two sides no longer conflicted.
     await inFlight.query('BEGIN');
-    await inFlight.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [CYCLE_LOCK_CLASS, cycle]);
+    await inFlight.query('SELECT pg_advisory_xact_lock_shared($1, hashtext($2))', [CYCLE_LOCK_CLASS, cycle]);
 
     const startedAt = Date.now();
     let openedAfterMs = null;
@@ -135,6 +142,40 @@ describe('the cycle lock actually blocks', () => {
 
     expect(openedAfterMs).not.toBeNull();
     expect(openedAfterMs).toBeGreaterThanOrEqual(HOLD_MS);
+  }, 15_000);
+
+  it('does NOT make one bet wait for another on the same cycle', async () => {
+    // The exclusive lock this replaced held for the whole bet transaction, so
+    // every bet on a cycle queued behind every other one. Measured against
+    // PostgreSQL 16: ~420 bets/sec on a single cycle at concurrency 8 or 32,
+    // BELOW the ~520 it managed at concurrency 1 — offering it more concurrency
+    // made it slower, because it was a queue. The 1-minute board puts one
+    // cycle's whole traffic through one lock for sixty seconds at a time, and
+    // loadtest/README.md targets 500-800 bets/sec against a single cycle.
+    //
+    // Bets need to exclude the SETTLEMENT, never each other: two bets on one
+    // cycle contend on their own wallet rows and nothing else. Shared holders
+    // do not conflict, so this bet must not wait on the one already in flight.
+    const cycle = nextCycle();
+    const pool = await getPool();
+    const inFlight = await connectGuarded(pool);
+
+    await inFlight.query('BEGIN');
+    await inFlight.query('SELECT pg_advisory_xact_lock_shared($1, hashtext($2))', [CYCLE_LOCK_CLASS, cycle]);
+
+    const startedAt = Date.now();
+    const placed = await bet(cycle, `${cycle}_concurrent`);
+    const elapsed = Date.now() - startedAt;
+
+    await inFlight.query('COMMIT');
+    inFlight.release();
+
+    expect(placed.ok, `the bet was refused: ${placed.reason}`).toBe(true);
+    // Generous by design: this asserts "did not queue behind an open
+    // transaction", not a latency budget, so it cannot become a flaky timing
+    // test on a loaded CI box. Under the exclusive lock it could not have
+    // returned at all until the COMMIT above, which never happens within this.
+    expect(elapsed, 'the bet queued behind another bet on the same cycle').toBeLessThan(2_000);
   }, 15_000);
 });
 

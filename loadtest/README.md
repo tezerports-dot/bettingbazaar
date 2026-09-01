@@ -9,11 +9,15 @@ does not. Every bet on a cycle updates the same document
 `docs/governance/LATENCY.md` records that the height of that ceiling is
 unmeasured. This directory measures it.
 
-> **This has not been run.** The harness is written and reviewed; no numbers
-> exist yet. It could not be executed in the environment it was authored in
-> (no `mongod` — the binary download is blocked by network policy — and no
-> deployed instance). Treat any statement about where the knee sits as
-> unverified until you run it.
+> **The Mongo ceiling has not been measured.** The harness is written and
+> reviewed; no numbers exist for the `Cycle` document. It cannot be executed
+> where it was authored (no `mongod` — the binary download is blocked by network
+> policy — and no deployed instance). Treat any statement about where that knee
+> sits as unverified until you run it.
+>
+> **The PostgreSQL bet path HAS been measured** — see "The per-cycle lock,
+> measured" below. That path needs no MongoDB, so it runs against a local
+> PostgreSQL, and it already found and fixed a ceiling.
 
 ## Never point this at production
 
@@ -88,6 +92,57 @@ db.serverStatus().metrics.operation.writeConflicts          // the retry count �
 
 Plus the app's own `/metrics`: `http_request_duration_seconds`,
 `bb_pg_pool_connections{state="waiting"}`, `bb_requests_shed_total`.
+
+## The per-cycle lock, measured
+
+`betPg.placeBet` takes a per-cycle advisory lock so a stake cannot commit onto a
+cycle whose settlement has already opened. That lock is also, unavoidably, a
+throughput question — and the answer was bad enough to change the design.
+
+Measured against a real PostgreSQL 16, one Node process, 1,200 bets across 200
+distinct users. **Relative numbers only:** client and server share a box, so the
+absolute rate is not a capacity claim. The comparison between rows is the result.
+
+| Bets spread over | Concurrency | Exclusive lock | Shared lock |
+|---|---|---|---|
+| 1 cycle | 1 | 521/s | 527/s |
+| 1 cycle | 8 | **418/s** | **2,113/s** |
+| 1 cycle | 32 | **419/s** | 2,060/s |
+| 3 cycles | 8 | 1,488/s | 2,397/s |
+| 32 cycles | 32 | 2,535/s | 2,360/s |
+
+Read the exclusive column first. One cycle was *slower at concurrency 8 than at
+concurrency 1* — more concurrency, less throughput. That is not a pool or a disk;
+it is a queue. The lock was held for the whole bet transaction, so every bet on a
+cycle waited for every other one, and a single cycle was pinned near 420/s no
+matter what was offered it. Three cycles reached 1,488/s, which confirms the
+ceiling was per cycle rather than the machine.
+
+**That target is 500–800 bets/sec against ONE cycle** — the number this
+directory exists to test. The lock was sitting below it.
+
+The fix is that bets take the lock **shared** and `openSettlement` takes it
+**exclusive**. Bets need to exclude the settlement, never each other: two bets on
+one cycle contend on their own wallet rows and nothing else. Shared holders do
+not conflict with each other but do conflict with an exclusive holder, so every
+property the lock was added for survives — a settlement still waits for in-flight
+bets, and a bet arriving mid-settlement still blocks and then refuses with
+`cycle_settling`. Both directions are pinned in `betSettlementRace.pg.test.js`;
+the second test times out rather than fails if the lock reverts to exclusive.
+
+**Why this matters most on the 1-minute board.** A 30-minute cycle spreads its
+traffic over 30 minutes; a 1-minute cycle puts a whole board's traffic through
+one cycle id — and therefore one lock — for sixty seconds at a time, then does it
+again. Whatever the per-cycle ceiling is, the 1-minute board is the first thing
+to hit it.
+
+### What this does NOT tell you
+
+The bet path also writes MongoDB (`Cycle.findOneAndUpdate` with `$inc` on the
+pools), and **that** document is the ceiling this directory was built to find.
+The numbers above measure the Postgres half in isolation. A full-stack bet is
+bounded by the slower of the two, so treat ~2,400/s as an upper bound that the
+Mongo write will pull down by an unmeasured amount.
 
 ## Recording the result
 

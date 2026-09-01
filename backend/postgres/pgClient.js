@@ -137,9 +137,48 @@ export async function connectGuarded(pool) {
  */
 export const CYCLE_LOCK_CLASS = 811;
 
-/** SQL fragment: take the per-cycle advisory lock for $1 = cycleId. */
+/**
+ * EXCLUSIVE — held by `openSettlement`. Waits for every bet in flight on this
+ * cycle to commit, then blocks new ones until the settlement row is visible.
+ */
 export const LOCK_CYCLE_SQL =
   `SELECT pg_advisory_xact_lock(${CYCLE_LOCK_CLASS}, hashtext($1))`;
+
+/**
+ * SHARED — held by `placeBet`. Bets must exclude the SETTLEMENT, not each
+ * other, and this is the difference between those two statements.
+ *
+ * ── Why this is not the exclusive lock ──────────────────────────────────────
+ * It was, and that made every bet on a cycle serialize behind every other one:
+ * the lock is held for the whole transaction (wallet lock, the settling check,
+ * the bet insert, the balance move, the ledger row, COMMIT), so throughput on
+ * one cycle collapsed to 1/transaction-time no matter how much concurrency was
+ * offered it. Measured against PostgreSQL 16: ~520 bets/sec at concurrency 1
+ * and ~420 at concurrency 8 or 32 — MORE concurrency was slower, which is the
+ * signature of a queue rather than a pool. Three cycles reached ~1,500/sec, so
+ * the ceiling was per cycle, not the machine.
+ *
+ * That matters most on the 1-minute board, where one cycle carries the whole
+ * board's traffic for sixty seconds at a time, and `loadtest/README.md` puts
+ * the target at 500–800 bets/sec against a single cycle.
+ *
+ * A shared lock keeps every property the exclusive one was taken for. Shared
+ * holders do not conflict with each other but DO conflict with an exclusive
+ * holder, so:
+ *   - bets run in parallel with bets, which is what they always needed;
+ *   - `openSettlement` still waits for every in-flight bet to commit before it
+ *     can open, so no stake is missing from the pools the winner is read from;
+ *   - a bet arriving while a settlement is opening still blocks on the
+ *     exclusive lock, and reads `cycle_settlements` AFTER it commits — so it
+ *     sees the run and refuses with `cycle_settling`.
+ *
+ * The bet-vs-bet ordering the exclusive lock imposed bought nothing: two bets
+ * on one cycle contend on their own wallet rows and on nothing else, and the
+ * pools they update are `$inc` on the Mongo cycle document, which this lock
+ * never guarded.
+ */
+export const LOCK_CYCLE_SHARED_SQL =
+  `SELECT pg_advisory_xact_lock_shared(${CYCLE_LOCK_CLASS}, hashtext($1))`;
 
 export async function pgQuery(text, params, operation = 'query') {
   const end = pgQueryDuration.startTimer({ operation: String(operation).slice(0, 48) || 'query' });

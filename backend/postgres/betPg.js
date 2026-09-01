@@ -50,7 +50,7 @@
  * pockets it actually came from. Returning it all to one would silently convert
  * non-withdrawable deposit into withdrawable winnings.
  */
-import { getPool, pgQuery, connectGuarded, LOCK_CYCLE_SQL } from './pgClient.js';
+import { getPool, pgQuery, connectGuarded, LOCK_CYCLE_SHARED_SQL } from './pgClient.js';
 import { applyMovementWithin } from './walletPg.js';
 import { moneyOperations } from '../services/metrics.service.js';
 import { MONEY_PATHS } from './moneyAuthority.js';
@@ -207,14 +207,19 @@ async function withBetLock(userId, betId, fn, cycleId = null) {
 
   try {
     await client.query('BEGIN');
-    // The per-cycle advisory lock FIRST, before any row lock, so every bet on a
-    // cycle queues in the same order and cannot form a cycle in the lock graph
-    // with the wallet and bet locks below. `openSettlement` takes the same lock,
-    // which is what serializes a bet against the settlement of its own cycle.
-    // See CYCLE_LOCK_CLASS in pgClient.js for why it is advisory and not a row
-    // lock (there is no `cycles` table — the cycle lives in MongoDB).
+    // The per-cycle advisory lock FIRST, before any row lock, so it cannot form
+    // a cycle in the lock graph with the wallet and bet locks below.
+    //
+    // SHARED, not exclusive: a bet must exclude the SETTLEMENT of its cycle,
+    // never another bet. `openSettlement` takes the exclusive form of the same
+    // lock, so it still waits for every in-flight bet and still blocks the ones
+    // that arrive while it opens — but bets no longer queue behind each other,
+    // which capped one cycle at ~420 bets/sec regardless of concurrency. See
+    // LOCK_CYCLE_SHARED_SQL in pgClient.js for the measurements and for why it
+    // is advisory rather than a row lock (there is no `cycles` table — the
+    // cycle lives in MongoDB).
     if (cycleId != null) {
-      await client.query(LOCK_CYCLE_SQL, [String(cycleId)]);
+      await client.query(LOCK_CYCLE_SHARED_SQL, [String(cycleId)]);
     }
     await client.query(
       `INSERT INTO wallets (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [uid],
