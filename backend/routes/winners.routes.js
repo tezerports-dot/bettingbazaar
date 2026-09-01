@@ -12,21 +12,40 @@ import { authenticate, isAdmin, isAdminOrSubAdmin } from '../domains/identity/au
 // Item 47 (2026-07-13): the public winners feed is analytics-class (staleness
 // fine) — routes to a secondary when FLAGS.READ_REPLICA is enabled.
 import { preferReplica } from '../services/readPreference.service.js';
+// The ordering lives in its own module so it can be tested without dragging
+// mongoose and the auth middleware in behind it — see winners.ranking.js.
+import { rankWinners, resolveWinnersLimit } from './winners.ranking.js';
 
 const router = express.Router();
 
 // ── PUBLIC ────────────────────────────────────────────────────────────────────
 
-// GET /api/v1/winners — public winners feed (real + admin-curated)
-// Query params:
-//   period = 'today' (default) → last 24 hours
-//   period = 'week'            → last 7 days
-//   limit  = number (default 50)
-//   page   = number (default 1)
+/**
+ * GET /api/v1/winners — the public leaderboard: the BIGGEST wins in a window.
+ *
+ * Query params:
+ *   period = 'today' (default) → last 24 hours
+ *   period = 'week'            → last 7 days
+ *   limit  = number (default 20, max 50)
+ *
+ * ── Ordered by payout, and that is the whole feature ────────────────────────
+ * This used to merge the two sources and sort by `displayTime`, i.e. by
+ * RECENCY — while the nav calls it "Top Winners" and the page renders the first
+ * three entries as a podium. So the podium showed the three most recent
+ * winners, presented as the three biggest. A ₹50 win a minute ago outranked a
+ * ₹50,000 win an hour ago.
+ *
+ * `page` is gone rather than fixed. It was applied to the curated source only,
+ * so page 2 returned the same real winners as page 1 — and a top-N leaderboard
+ * does not page: the tail is not a second page of winners, it is not winners.
+ * No caller ever sent it.
+ */
 router.get('/v1/winners', async (req, res) => {
   try {
-    const { limit = 50, page = 1, period = 'today' } = req.query;
-    const skip = (Number(page) - 1) * Number(limit);
+    const { period = 'today' } = req.query;
+    // Clamped, not trusted: this is a public unauthenticated endpoint reading
+    // the largest collection in the system, and `limit` sizes that read.
+    const limit = resolveWinnersLimit(req.query.limit);
 
     const FakeWinner = mongoose.model('FakeWinner');
     const Bet        = mongoose.model('Bet');
@@ -37,13 +56,20 @@ router.get('/v1/winners', async (req, res) => {
     const periodHours = (period === 'week') ? 168 : 24;
     const since       = new Date(Date.now() - periodHours * 3600000);
 
-    // 1. Admin-curated winners — filter by displayTime within the period window
-    const curatedQuery = { isPublic: true };
-    curatedQuery.displayTime = { $gte: since };
-    const curated = await preferReplica(FakeWinner.find(curatedQuery)
-      .sort({ sortOrder: 1, displayTime: -1 })
-      .limit(Number(limit))
-      .skip(skip)
+    // 1. Admin-curated winners — within the window.
+    //
+    // `sortOrder` SELECTS here, it does not rank: it decides which curated
+    // entries make the shortlist when there are more than `limit` of them, and
+    // then `rankWinners` orders the merged board by amount like everything
+    // else. That is deliberate. A pin that jumped the queue would put a chosen
+    // entry above a bigger real win on a board whose entire promise is "biggest
+    // wins", which is the defect this endpoint just had. Admins choose who is
+    // eligible; the amount decides the position.
+    const curated = await preferReplica(FakeWinner.find({
+      isPublic: true, displayTime: { $gte: since },
+    })
+      .sort({ sortOrder: 1, amount: -1 })
+      .limit(limit)
       .lean());
 
     // 2. Real recent winners — actual settled winning bets in the window.
@@ -51,9 +77,14 @@ router.get('/v1/winners', async (req, res) => {
     // NEVER existed on the Bet schema (it's status:'WON' + payout), so real
     // winners never appeared — only curated entries. Now cycle-based real
     // wins show with their true NET payout (2x minus the winnings fee).
+    //
+    // `limit`, not a hard-coded 20: the two sources are merged and re-cut to
+    // `limit`, so capping one of them lower silently biases the board toward
+    // the other. Served by the `winners_leaderboard` index (bet.model.js),
+    // which provides the payout order rather than feeding a blocking sort.
     const realWins = await preferReplica(Bet.find({
       status: 'WON', isPhantom: false, settledAt: { $gte: since }
-    }).sort({ payout: -1 }).limit(20).lean());
+    }).sort({ payout: -1 }).limit(limit).lean());
 
     const realUserIds = [...new Set(realWins.map(b => b.userId))];
     const users = await User.find({ _id: { $in: realUserIds } })
@@ -75,12 +106,10 @@ router.get('/v1/winners', async (req, res) => {
       };
     });
 
-    // Merge and sort by displayTime
-    const merged = [
+    const merged = rankWinners([
       ...curated.map(w => ({ ...w, isReal: false })),
       ...realFormatted,
-    ].sort((a, b) => new Date(b.displayTime).getTime() - new Date(a.displayTime).getTime())
-     .slice(0, Number(limit));
+    ], limit);
 
     res.json({ success: true, winners: merged, total: merged.length });
   } catch (err) {

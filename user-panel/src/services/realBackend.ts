@@ -538,7 +538,10 @@ export class RealBackend implements Backend {
   // -- WINNERS ----------------------------------------------------------------
   // BUG-U12 FIX: Real winners from the server (not mock data in WinnersPage)
 
-  async getWinners(period: 'today' | 'week' = 'today', limit = 10) {
+  // Default matches the board's own WINNERS_LIMIT. The server clamps to 50 and
+  // ranks by amount won, so `limit` here means "how far down the leaderboard",
+  // never "which page" — there is no paging on a top-N list.
+  async getWinners(period: 'today' | 'week' = 'today', limit = 20) {
     const res = await this.request<{ success: boolean; winners: any[] }>(`/v1/winners?period=${period}&limit=${limit}`);
     return (res as any).winners || [];
   }

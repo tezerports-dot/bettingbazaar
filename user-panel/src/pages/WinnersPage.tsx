@@ -10,6 +10,16 @@ import { apiUrl } from '../services/apiUrl';
 
 interface Winner { displayName: string; profilePic?: string; amount: number; betAmount?: number; game?: string; }
 
+/**
+ * How many winners the board shows: three on the podium, the rest as runners-up.
+ *
+ * One number, here, because the server decides the ranking and this decides how
+ * much of it to render — the previous code asked for 10 and then also sliced at
+ * a hard-coded 10, so changing the board's length meant editing two constants
+ * that had no reason to agree.
+ */
+const WINNERS_LIMIT = 20;
+
 const MEDAL: Record<number, { color: string; medal: string; podH: number; avSize: number }> = {
   1: { color: '#F5C77A', medal: '👑', podH: 92, avSize: 62 },
   2: { color: '#C7CBD1', medal: '🥈', podH: 70, avSize: 52 },
@@ -25,15 +35,17 @@ export default function WinnersPage() {
 
   useEffect(() => {
     setLoading(true);
-    fetch(apiUrl(`/api/v1/winners?limit=10&period=${period}`))
+    fetch(apiUrl(`/api/v1/winners?limit=${WINNERS_LIMIT}&period=${period}`))
       .then(r => r.json())
       .then(d => { if (d.success) setWinners(d.winners || d.data || []); })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [period]);
 
+  // The server returns them already ranked by amount won, so position in this
+  // array IS the rank — the podium is just the first three of it.
   const top3 = winners.slice(0, 3);
-  const rest = winners.slice(3, 10);
+  const rest = winners.slice(3);
   const podium = [top3[1], top3[0], top3[2]].map((w, i) => w ? { ...w, rank: i === 1 ? 1 : i === 0 ? 2 : 3 } : null);
 
   return (

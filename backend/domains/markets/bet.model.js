@@ -52,6 +52,28 @@ betSchema.index(
   { name: 'derived_pool_sum' },
 );
 
+// The public winners leaderboard (routes/winners.routes.js): the biggest NET
+// payouts in a rolling window. Neither index above can serve it — both lead
+// with `cycleId`, and this query has no cycleId at all — so it was a collection
+// scan plus an in-memory sort over the largest collection in the system, from a
+// PUBLIC, unauthenticated endpoint, getting slower every day the platform runs.
+//
+// Ordered equality-then-sort (`payout: -1` third) so the index PROVIDES the
+// order rather than feeding a blocking sort. That is the point: an in-memory
+// sort has a hard 32 MB ceiling and fails the request outright past it, whereas
+// walking the index in payout order degrades into a longer scan. `settledAt`
+// is last so the window filter is answered from the index too.
+//
+// SCALE LIMIT, stated rather than implied: this is a query over `bets`, and at
+// the load target (500–800 bets/sec) a 24-hour window holds tens of millions of
+// documents. An index bounds the cost; it does not make it small. Past that,
+// the leaderboard wants to be a maintained collection written at settlement,
+// not a query — do that when the window scan shows up in latency, not before.
+betSchema.index(
+  { status: 1, isPhantom: 1, payout: -1, settledAt: -1 },
+  { name: 'winners_leaderboard' },
+);
+
 // Hybrid money DB (plan step 2): project the bet LIFECYCLE onto the state
 // machine Postgres owns, so a cutover finds every in-flight bet already there
 // rather than losing the whole PENDING population at the moment of the flip.
