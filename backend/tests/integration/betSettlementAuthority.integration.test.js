@@ -31,6 +31,7 @@ import { pgQuery, applySchema, closePg } from '../../postgres/pgClient.js';
 import { applyDeltaPaise, getBalancesPaise } from '../../postgres/walletPg.js';
 import { placeBet as placePgBet, mongoIdFor } from '../../postgres/betPgAuthority.js';
 import GameEngine from '../../domains/markets/gameEngine.js';
+import { ensureCycle } from '../../postgres/cyclePg.js';
 
 const HAS_PG = !!process.env.DATABASE_URL;
 
@@ -113,6 +114,28 @@ d('a cycle settled with Postgres authoritative for bets', () => {
 
     RUN += 1;
     CYCLE = `${tag()}_cycle`;
+
+    // The cycle's Postgres row, OPEN and with its window still ahead of it.
+    //
+    // `placeBet` takes this row's shared lock and refuses without it
+    // (`cycle_not_found`), and refuses again if `end_at` has passed
+    // (`cycle_expired`). Every test below places its stakes FIRST and calls
+    // `makeCycle()` afterwards, which was only possible while nothing in the
+    // bet's transaction consulted the cycle at all.
+    //
+    // So the row is created here, open, and the Mongo document `makeCycle()`
+    // writes later is the same cycle in its RESULT_DECLARED state — which is
+    // the real sequence: bet on an open cycle, then settle it. The two stores
+    // disagreeing about status in between is the transitional state, not a
+    // bug: the engine still reads its cycles from Mongo.
+    //
+    // `start_at` is offset by RUN because (type, start_at) is UNIQUE and these
+    // tests run inside the same millisecond.
+    await ensureCycle({
+      cycleId: CYCLE, type: '30_MIN',
+      startTime: Date.now() - 3600_000 + (RUN * 1000),
+      endTime:   Date.now() + 3600_000,
+    });
     engine = new GameEngine(null);
     // Stop the timers immediately. The constructor starts a 1s tick that
     // sweeps exactly the cycles these tests create, so leaving it running would
