@@ -13,7 +13,7 @@ Use this checklist when performing security reviews of Betting Bazaar. It is wri
 
 ## Repository orientation
 
-- Monorepo with `backend/` for Express 5, Mongoose/MongoDB, Postgres ledger, Redis/ioredis/BullMQ, Kafka, Socket.io, and SSE; plus root, `admin-panel/`, and `merchant-panel/` React/Vite frontends.
+- Monorepo with `backend/` for Express 5, PostgreSQL (the only datastore — money, identity, config, content), Redis/ioredis/BullMQ, Kafka, Socket.io, and SSE; plus root, `admin-panel/`, and `merchant-panel/` React/Vite frontends.
 - Backend code is domain-oriented under `backend/domains/<domain>/`, with shared middleware, services, and providers.
 - Actor classes include user, merchant, subadmin, admin, and queue-manager. Review seams between roles carefully.
 - User-content uploads use presigned S3-style direct-to-storage flows; review upload confirmation and persisted URL/key trust boundaries.
@@ -72,9 +72,10 @@ Use this checklist when performing security reviews of Betting Bazaar. It is wri
 
 ## 6. Input validation and injection
 
-- Confirm Mongo sanitization covers body, params, and query, runs after parsing and before routes, and blocks `__proto__`, `constructor`, and `prototype` keys.
-- Confirm Postgres queries are parameterized, with no string-concatenated or template-built SQL.
-- Flag mass assignment where raw `req.body` reaches `create`, `findByIdAndUpdate`, or `findOneAndUpdate` without an allowlist.
+- Confirm prototype-pollution sanitization covers body, params, and query, runs after parsing and before routes, and blocks `__proto__`, `constructor`, and `prototype` keys.
+- Confirm every query is parameterized, with no string-concatenated or template-built SQL. **A table or column name cannot be a parameter** — if one is dynamic, it must come from an allowlist, never from the request.
+- Flag mass assignment where raw `req.body` reaches an insert or update without an explicit column allowlist.
+- Confirm `BIGINT` money columns are cast at the read boundary. node-postgres returns them as **strings**, and an uncast comparison (`'900' >= 1000` is `true`) is a silently wrong authorization decision, not just a display bug.
 - Check recursive merges of user-controlled objects into long-lived objects for prototype pollution.
 - Confirm no server-side template injection, shell command injection, or ReDoS-prone user-input regexes.
 
@@ -110,9 +111,10 @@ Use this checklist when performing security reviews of Betting Bazaar. It is wri
 ## 11. Database
 
 - Verify indexes for hot-path filters and sorts against schemas.
-- Confirm multi-document money-affecting writes use transactions/sessions where atomicity matters.
-- Review long-held hot-path transactions for lock contention.
-- If MongoDB and Postgres both hold financial state, confirm reconciliation and partial-failure handling.
+- Confirm every money-affecting write puts the balance move and its ledger rows in **one transaction**. A balance the ledger cannot explain is a P1.
+- Confirm the balance a decision is made from is read **inside** the lock that the write takes, not before it. A pre-read plus a guard is not equivalent — a replay can compute a different split, miss the unique-`tx_id` collision, and debit twice.
+- Review long-held hot-path transactions for lock contention, and treat **any 40P01 deadlock as a bug**: it means something updates a row it also holds `FOR SHARE`.
+- Confirm no code path reads a balance from one place and executes against another. There is one store; a second copy of a balance is a second writer waiting to disagree.
 
 ## 12. Secrets and cryptography
 

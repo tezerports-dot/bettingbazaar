@@ -1,7 +1,13 @@
 # CI — the proof that money-path code actually runs.
-# Unit tests (no DB) run always; integration tests boot an in-memory MongoDB
-# (mongodb-memory-server downloads a mongod binary — reachable on GitHub
-# runners, unlike the restricted build sandbox). See vitest*.config.ts.
+#
+# The single-store gate runs FIRST and needs no dependencies: it is pure Node
+# over the working tree, so it fails in seconds rather than after an install.
+# See CLAUDE.md for the rule it enforces and the exit criteria it counts.
+#
+# Unit tests need no database. The money-path suites run against a real
+# PostgreSQL service container, because row locking, the negative-balance guard
+# and the unique-tx_id idempotency gate are behaviours of the database and are
+# not worth asserting against a fake. See vitest*.config.ts.
 name: CI
 
 on:
@@ -11,8 +17,21 @@ on:
     branches: [main]
 
 jobs:
+  # The definition of done for the single-store architecture (CLAUDE.md).
+  # Pure Node over the checked-out tree — no install, no services, so it reports
+  # in seconds and blocks everything downstream when a count is non-zero.
+  single-store:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with: { node-version: '22' }
+      - name: Single-store verification (PostgreSQL only)
+        run: npm run check:no-mongo -- --verbose
+
   test:
     runs-on: ubuntu-latest
+    needs: single-store
     services:
       # F-3: real Redis so the rate-limit store's cross-instance counter
       # sharing is proven, not assumed. AQ-7: Redis 8 (current major).
@@ -20,10 +39,10 @@ jobs:
         image: redis:8
         ports:
           - 6379:6379
-      # Hybrid money DB (plan steps 1-4): real Postgres so the BIGINT-paise
-      # schema, append-only + conserve-to-zero triggers, dual-write hooks, and
-      # the reconcile/backfill loop are PROVEN in CI. AQ-7 + decision D-2:
-      # PostgreSQL 18 (the version the money cutover will provision).
+      # The money database — the only database. Real Postgres so the
+      # BIGINT-paise schema, the append-only + conserve-to-zero triggers and the
+      # row-locked wallet path are PROVEN in CI rather than assumed. AQ-7 +
+      # decision D-2: PostgreSQL 18 (the version production provisions).
       postgres:
         image: postgres:18
         env:
@@ -48,6 +67,20 @@ jobs:
       # package.json and the lockfile disagree — production runs exactly this.
       - name: Install dependencies (reproducible)
         run: npm ci --legacy-peer-deps
+      # The concurrency suites provoke constraint violations ON PURPOSE, and
+      # Postgres logs every refused ERROR with its full statement. The runner
+      # dumps the whole container log at teardown, which pushes vitest's output
+      # and its failure annotations out of the retrievable window — the suite
+      # fails and the reason is unreadable. A service container has no
+      # `command:` key to pass server flags through, so turn the logging down at
+      # runtime instead, before any suite runs.
+      - name: Quiet expected Postgres error logging (keeps test output readable)
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -d bb_test -v ON_ERROR_STOP=1 <<'SQL'
+          ALTER SYSTEM SET log_min_error_statement = 'panic';
+          ALTER SYSTEM SET log_min_messages = 'fatal';
+          SELECT pg_reload_conf();
+          SQL
       # ── `--reporter=github-actions` on every suite, deliberately ────────────
       # Vitest's GitHub reporter emits `::error file=…,line=…::` workflow
       # commands, which GitHub turns into ANNOTATIONS on the check run. Those
@@ -62,11 +95,10 @@ jobs:
       # message regardless.
       - name: Unit tests (money math — no DB)
         run: npm run test:unit -- --reporter=default --reporter=github-actions
-      # The Postgres-authoritative wallet path: row locking, the negative-balance
-      # guard and the unique-tx_id idempotency gate are behaviours of the
-      # database, so they are proven against a real one. Needs no MongoDB, which
-      # is why it is a separate suite (see vitest.pg.config.ts).
-      - name: Postgres money-path tests (real Postgres, no MongoDB)
+      # The wallet path: row locking, the negative-balance guard and the
+      # unique-tx_id idempotency gate are behaviours of the database, so they are
+      # proven against a real one (see vitest.pg.config.ts).
+      - name: Postgres money-path tests (real Postgres)
         run: npm run test:pg -- --reporter=default --reporter=github-actions
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bb_test
@@ -97,6 +129,7 @@ jobs:
   # fails the build instead of being invisible to it.
   audit:
     runs-on: ubuntu-latest
+    needs: single-store
     strategy:
       fail-fast: false
       matrix:
@@ -118,6 +151,7 @@ jobs:
   # of it when an image registry is introduced (see docs/governance/04-GOVERNANCE.md).
   sbom:
     runs-on: ubuntu-latest
+    needs: single-store
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
@@ -152,6 +186,7 @@ jobs:
 
   typecheck-build:
     runs-on: ubuntu-latest
+    needs: single-store
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
@@ -167,6 +202,11 @@ jobs:
       # products) fail the build instead of waiting for human review.
       - name: Architecture validation (dependency-cruiser)
         run: npm run check:deps
+      # Belt and braces: the gate also runs as its own job, but a contributor
+      # reading this job's log should see the rule named alongside the other
+      # architecture checks it belongs with.
+      - name: Single-store verification (PostgreSQL only)
+        run: npm run check:no-mongo
       # Capability registry drift check (CAP-06/CAP-59): every capability the
       # registry claims must have its evidence/docs/tests present on disk.
       - name: Capability registry verification

@@ -51,7 +51,7 @@ distinction is the whole reason the rest is here.
 [ Edge VPS ]  clean public IP · Caddy terminates TLS · no app, no data
         │  WireGuard (10.10.0.0/24)      ← the only way to the origin
         ▼
-[ Origin — Shinjiru, Malaysia ]  app (3 roles) · Mongo/PG/Redis/MinIO · market engine
+[ Origin — Shinjiru, Malaysia ]  app (3 roles) · PG/Redis/MinIO · market engine
      no public web port · firewall drops everything but the tunnel + your SSH
 ```
 
@@ -109,7 +109,7 @@ ss -tlnp | grep -E '27017|5432|6379|9000'   # every line must show 127.0.0.1
 ```
 
 If any datastore shows `0.0.0.0`, fix that before opening the tunnel — the tunnel
-would otherwise reach it. (Mongo/PG/Redis/MinIO binding is covered in
+would otherwise reach it. (PostgreSQL/Redis/MinIO binding is covered in
 `../VPS_UBUNTU_SETUP.md` §§3–6.)
 
 If you run PROXY protocol from an L4 edge instead of Caddy's HTTP forwarding, set

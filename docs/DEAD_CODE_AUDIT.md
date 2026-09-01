@@ -22,7 +22,7 @@ below as they happen.
 
 ## The measurement was wrong the first time, and that is the point
 
-The first pass listed `connectMongoDB`, `connectRedis` and `seedAdminAccount` as
+The first pass listed the database connector, `connectRedis` and `seedAdminAccount` as
 referenced by **nothing**. All three are called from `backend/server.js`. The
 file list came from `git ls-files backend/**/*.js`, and the shell expanded `**`
 as a single `*` — so `backend/server.js`, one level down, was never scanned.
@@ -57,7 +57,7 @@ Not "looks unused" — provably not built or served:
   never been installed on its own — the Docker image runs `npm ci` at `/app`
   from the ROOT lockfile (which carries every backend dep), and `backend/*.js`
   resolve ESM via the root's `"type":"module"`. The stray manifest was a second,
-  drifting dependency source (root=mongoose 9, stray=mongoose 8).
+  drifting dependency source (two copies of the same package at different majors).
 - **`docs/NEXT_SESSION_HANDOFF.md`** — a transient AI-session handoff pinned to a
   merged PR (#121) and a deleted branch. Superseded by `docs/GO_LIVE_RUNBOOK.md`.
 - **`docs/RAILWAY_STAGING.md`** — Railway is off-plan; the platform now self-hosts

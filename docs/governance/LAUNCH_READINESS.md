@@ -20,14 +20,14 @@ real in the repo; every 🟡 / ⛔ is an owner action.
 | Area | Status | Evidence |
 |---|---|---|
 | Boot fails closed on missing/weak secrets or unverified money-DB TLS | ✅ | `startup/validateEnv.js`, `tests/unit/validateEnv.test.js` |
-| Stateless app tier (all durable state in Mongo/Postgres/Redis/S3) | ✅ | `04-GOVERNANCE.md` §17; k8s `readOnlyRootFilesystem`, `emptyDir` |
+| Stateless app tier (all durable state in Postgres/Redis/S3) | ✅ | `04-GOVERNANCE.md` §17; k8s `readOnlyRootFilesystem`, `emptyDir` |
 | Multi-instance realtime (SSE/WebSocket fan-out via Redis) | ✅ | `startup/realtimeBridge.js` |
 | Tiered + per-subnet rate limiting, surge breaker, load-shed/bulkhead | ✅ | `middleware/security.js`, `ipDefense.js`, `loadShed.js` |
 | Idempotent, crash-resume settlement (no money lost mid-payout) | ✅ | `payoutRecoveryTask`; DR §1 |
 | Money as integer paise + append-only, DB-enforced double-entry ledger | ✅ | `postgres/schema.sql` (balance/append-only triggers) |
 | PASETO Ed25519 auth (no alg-swap/`none`), instant revocation | ✅ | `domains/identity/paseto.util.js` |
 | Health/readiness/liveness + graceful drain; Prometheus + Grafana-as-code | ✅ | `server.js`, `deploy/grafana/` |
-| CI: unit + integration (Mongo/Redis/Postgres), typecheck/builds, audit, sbom, secret-scan | ✅ | `.github/workflows/ci.yml` |
+| CI: single-store gate, unit + Postgres money-path suites (real Postgres/Redis), typecheck/builds, audit, sbom, secret-scan | ✅ | `.github/workflows/ci.yml` |
 
 **Bottom line:** the code is launch-grade. The remaining work below is *not* code.
 
@@ -49,7 +49,7 @@ overlap (token TTL / order lifetime) elapses.
 
 - 🟡 **Domains:** add to `ALLOWED_ORIGINS`, point DNS. Host-agnostic Caddyfile; frontends fall back to same-origin `/api`. DNS-failover runbook: `DISASTER_RECOVERY.md §4`.
 - 🟡 **Servers:** replace freely — rolling update `maxUnavailable: 0` + PodDisruptionBudget; the app holds no durable state.
-- 🟡 **DB host:** swap `MONGODB_URI` / `DATABASE_URL` (same engine). Engine swap (Mongo→SQL) is a rewrite, not config (`04-GOVERNANCE.md` §17).
+- 🟡 **DB host:** swap `DATABASE_URL` — any PostgreSQL 16+ host. No call site knows which host it is talking to (`04-GOVERNANCE.md` §17).
 
 ---
 
@@ -57,9 +57,9 @@ overlap (token TTL / order lifetime) elapses.
 
 | Item | Status | Action |
 |---|---|---|
-| Daily `mongodump` → S3, 14 retained, failure paged | ✅ | `services/backup.service.js` |
+| Daily `pg_dump` → S3, 14 retained, failure paged | ✅ | `services/backup.service.js` |
 | **Restore drill** ("an untested backup is not a backup") | 🟡 | Run once on staging now, then quarterly — DR §2 |
-| Mongo PITR (oplog, to-the-minute) | 🟡 | Enable Atlas Continuous Backup — DR §3 |
+| PITR (WAL archiving, to-the-second) — **and one rehearsed restore** | ⛔ | Enable WAL archiving off-box — DR §3, §E item 1 |
 | Postgres WAL archiving (PITR for money) | 🟡 | Enable on the managed Postgres — DR §3 |
 | RPO/RTO targets (≤24h→minutes / ≤1h app, ≤4h DB) | ✅ documented | Validate in the drill — DR header |
 
@@ -72,7 +72,7 @@ microservice seams. Capacity sketch: 1M DAU ≈ 30–70k concurrent ≈ 6–20k 
 handled by the scaled monolith behind an LB **before** any service split is
 needed (`04-GOVERNANCE.md` §18).
 
-- 🟡 **Managed, clustered datastores:** MongoDB **replica set / sharded** + read replicas (transactions require a replica set); **Redis Cluster**; managed **Postgres**. Single-node dev stores will not carry 1M DAU.
+- 🟡 **Managed, clustered datastores:** PostgreSQL **primary + streaming replica** (the replica is both read-scaling and the failover target, so size it to match the primary); **Redis Cluster**; managed **Postgres**. Single-node dev stores will not carry 1M DAU.
 - 🟡 **Edge gateway / L7 load balancer:** Envoy, Kong, or APISIX in front — TLS termination, global rate limiting, LB across instances. App exposes `/health/live`, `/health/ready`, `/metrics`, versioned routes (`04-GOVERNANCE.md` §18).
 - 🟡 **WAF** (Cloudflare) — `middleware/owaspFilter.js` is the app-side complement, not a replacement.
 - 🟡 **Autoscaling / HA:** apply `deploy/k8s/deployment.yaml` (api/realtime/scheduler roles, HPA, PDB, topology spread) or equivalent.
@@ -80,85 +80,46 @@ needed (`04-GOVERNANCE.md` §18).
 - ⛔ **Load test.** The RPS numbers above are a *sizing sketch, not a benchmark*. Run a real load test against staging before launch and size pools/replicas from the result. This is the single biggest unknown.
 
 ---
+## E. The money store — ✅ settled; no cutover to gate
 
-## E. Postgres money cutover — gated; the launch plan flips it ON at go-live
+**PostgreSQL is the only datastore, for money and for everything else.** There is
+no cutover to gate, no authority to flip, no reconciliation window to wait out
+and no rollback to keep ready — all four were properties of running two stores.
 
-> **Launch decision (2026-08):** the platform launches with Postgres as the money
-> authority from day one (`MONEY_AUTHORITY_*=postgres`). See
-> `docs/GO_LIVE_RUNBOOK.md` Phase 4. This does **not** bypass the gate below — you
-> still pass `npm run preflight:flip` before taking money. What makes the direct
-> flip low-risk is that a **fresh launch has no existing money data to migrate**:
-> Postgres starts empty and authoritative, MongoDB mirrors it. The description
-> below is the mechanism and the gate; it remains exact.
+This section previously ran to seventy lines: a per-path authority switch
+defaulting to the other store, a forward mirror, a reverse mirror whose job was
+to make a rollback lossless, a two-sided reconciler, a lock-provenance seeding
+step that had to run in a specific minute relative to the flip, and a 24-hour
+clean-reconciliation gate before any path could move. **All of it is deleted.**
+The platform is pre-deployment, so there was never any data to migrate; the
+machinery existed to make a migration survivable and there is no migration. See
+`CLAUDE.md` and the 2026-09-01 entry in `04-GOVERNANCE.md`.
 
-**State today (code default, flags unset):** Postgres is a **fully-wired,
-verified _shadow_.** Every
-money mutation dual-writes to it (`postgres/dualWrite.js`, hooked on all seven
-money collections) and a reconcile job detects/repairs drift
-(`postgres/reconcile.js`). **MongoDB is still authoritative** for reads and
-writes — by design.
+**What replaces the gate.** The properties the gate was trying to buy are now
+structural, and are asserted by tests against a real PostgreSQL rather than
+watched on a dashboard:
 
-Making Postgres authoritative is an **owner-gated production cutover**, not a
-code flip, because it moves the source of truth for money. The sequence
-(`04-GOVERNANCE.md` §18, `postgres/DATA_ROLLBACK_PLAN.md`):
+| Property | How it is guaranteed now | Evidence |
+|---|---|---|
+| Money is integer paise at rest | `BIGINT` columns; no float, no decimal string in arithmetic; cast at the read boundary because `BIGINT` returns as a **string** | `postgres/schema.sql`, `npm run test:pg` |
+| No lost update on a balance | Row-level `SELECT … FOR UPDATE` around every mutation; the split for a spend order is computed **inside** the lock, never from a pre-read | `npm run test:pg` concurrency suites |
+| A replay cannot double-spend | Unique `tx_id` per movement — the constraint is the gate, not an application check | `npm run test:pg` |
+| Accounting cannot silently drift | Append-only double-entry ledger with conserve-to-zero triggers; a balance and its ledger are written in **one transaction** | `postgres/schema.sql` triggers |
+| Settlement cannot pay from stale state | The winner is written **before** the status, and a cycle with no winner is never offered for settlement | settlement suites |
+| No decision reads the wrong number | One store, so a decision read and the write it authorises touch the same row under the same lock | — |
 
-0. ✅ **The cutover machinery is built (2026-07-28), dormant.** Three
-   prerequisites that did not exist in code now do: a per-path authority switch
-   (`postgres/moneyAuthority.js` — one env var per path, defaults to Mongo,
-   refuses an out-of-order cutover at boot), the reverse mirror the rollback
-   plan's zero-RPO guarantee depends on (`postgres/reverseMirror.js`), and a
-   two-sided reconcile with a per-account Mongo-vs-PG ledger comparison. The
-   authoritative wallet path itself (`postgres/walletPg.js`) is written and
-   proven against a real Postgres — row locking, the negative-balance guard and
-   the unique-`tx_id` idempotency gate hold under concurrency (`npm run test:pg`).
-   **No path is flipped**; every one still resolves to MongoDB.
-0b. ✅ **The wallet path is genuinely routed (2026-07-28), still dormant.**
-   Every operation `walletAuthority.service.js` exposes now has a Postgres
-   implementation behind the switch (`postgres/walletPgAuthority.js`), keyed by
-   byte-identical txIds so a rollback's Mongo idempotency gate still recognises
-   movements Postgres made. Bet placement, which mutated balances with a raw
-   `$inc` inside `domains/markets/bet.routes.js`, was moved behind
-   `lockBetStake`/`unlockBetStake` — until that happened, balances had a second
-   writer the switch could not reach and a flip would have split the source of
-   truth mid-bet. 46 tests cover both layers against a real Postgres.
-   **Two things remain before the wallet path is flippable:**
-   - **Run `npm run pg:seed-locks` immediately before the flip**, while Mongo is
-     still authoritative. `lockedDepositAmount`/`lockedWinningsAmount` are never
-     a ledger row's field, so the forward mirror cannot carry them and the new
-     `wallets.locked_*_paise` columns would be 0 at cutover — the first
-     settlement to release a stake would unwind a split Postgres never learned.
-     (`-- --check` reports drift without writing.)
-   - **Balance READS are still Mongo property access** (~211 sites). They read
-     the copy the reverse mirror keeps current — stale by at most a reconcile
-     pass rather than wrong — but they are not authoritative.
-     `walletAuthority.getBalances()` is the routed read; call sites move to it
-     incrementally, and any NEW balance read must use it.
-1. ✅ **Reconciliation is already scheduled** — the `pg-reconcile` cron
-   (`startup/cronJobs.js`) runs every 5 min once `DATABASE_URL` is set,
-   leader-locked, detection-only. It exports drift as metrics and pages
-   `sendAlert('pg-drift', …)`. Watch the **cutover gate** on the Grafana
-   dashboard: `bb_pg_reconcile_consecutive_clean` must climb and **stay green
-   (≥ 24h of clean 5-min passes)** — any drift or crashed run resets it to 0.
-   `bb_pg_drift_rows` must be 0 and `bb_pg_trial_balance_ok` must be 1. (Ad-hoc:
-   `npm run reconcile:pg -- --all` for a full-history check.) Once any path is
-   PG-authoritative the job also checks the REVERSE direction —
-   `bb_mongo_drift_rows` (rows in Postgres missing from Mongo, the writes a
-   fallback would lose) and `bb_ledgers_agree` (both ledgers match account by
-   account). Without those two the gate would keep climbing while Mongo
-   silently fell behind. `bb_money_authority_postgres{path=...}` shows which
-   paths have moved.
-2. 🟡 Once the gate has been green over a sustained window, flip **reads** to Postgres per money path, one at a time, watching the same metrics.
-3. 🟡 Flip **writes/authority** per path; wallet/ledger first, **KYC last**.
-4. 🟡 Keep the Mongo→PG rollback ready at each step.
+**What is still owed before launch, and is genuinely operational:**
 
-> Do **not** flip authority until reconciliation has been clean in production
-> repeatedly. Until then the shadow + reconcile is the correct, safe posture —
-> you get Postgres's financial-grade guarantees as a continuous cross-check
-> without betting live money on an unproven cutover. (`secureBetPlacement.js` is
-> the built reference implementation of the authoritative serializable path,
-> intentionally dormant until the cutover.)
-
----
+1. ⛔ **Rehearse a restore.** Point-in-time recovery is the one real gap: enable
+   WAL archiving off-box and **actually restore from it once**, to a scratch
+   host, and time it. An untested backup is not a backup. This was previously
+   listed as the gate for removing the reverse mirror; it is now simply the
+   gate for taking money, which is where it belonged.
+2. ⛔ **Load-test the consolidated tier.** PostgreSQL now carries every domain.
+   The sizing in `deploy/CAPACITY_AUDIT_10K.md` §5 is explicitly marked as
+   needing re-measurement — do that before buying hardware.
+3. 🟡 **Watch `wallets` row-lock waits and 40P01 deadlocks**, not store drift.
+   Drift is not a failure mode with one store; lock contention is the ceiling.
 
 ## F. Account-security controls — 🟡 one of two is now built
 

@@ -12,7 +12,7 @@ load test, and the Android app. It sequences `VPS_UBUNTU_SETUP.md` (below) and
 the capacity docs for you.
 
 ## Single VPS (Ubuntu) — `VPS_UBUNTU_SETUP.md`
-Everything on one Ubuntu 22.04/24.04 box: Node 22, MongoDB 7 as a single-node
+Everything on one Ubuntu 22.04/24.04 box: Node 22, PostgreSQL 18 as the single
 replica set, PostgreSQL 18 + pgvector, Redis, MinIO, PM2 running the three
 runtime roles, NGINX terminating TLS. Read its §0 before starting — four
 properties of this codebase (the hard boot gate, mandatory object storage,
@@ -26,7 +26,7 @@ kubectl create secret generic bb-env --from-env-file=.env      # your real env
 kubectl apply -f deploy/k8s/deployment.yaml                     # Deployment+Service+HPA
 ```
 Statelessness prereqs are already met in code (JWT auth, Redis rate limits,
-cron leader election, SSE/socket Redis bridge, S3 assets). Provide MongoDB
+cron leader election, SSE/socket Redis bridge, S3 assets). Provide PostgreSQL
 (replica set) + Redis reachable from the cluster. Ingress/TLS: use your
 cluster's ingress controller in front of the `bettingbazaar` Service.
 
@@ -47,7 +47,7 @@ behind your DNS. On k8s it's first-class with these manifests:
 4. Rollback = flip the selector back. Delete blue when confident.
 
 ## Reproducible self-host / IaC (item 41) — `docker-compose.yml`
-`docker compose -f deploy/docker-compose.yml up` stands up app + MongoDB
+`docker compose -f deploy/docker-compose.yml up` stands up app + PostgreSQL
 (single-node replica set, required for transactions) + Redis from scratch —
 the version-controlled, reproducible environment definition. DECISION (recorded
 in the deployment strategy): full Terraform/Pulumi only becomes worthwhile when

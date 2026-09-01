@@ -114,10 +114,9 @@ as the bug being fixed.
 
 Callers on those two edges must supply a key. That is a real cost and it is the
 point: the key is a decision about what counts as the same event, and it belongs
-to the layer that knows. The Mongo seam has no equivalent burden — it guards
-with `status: {$in: [...]}` in the update filter and has no transition table —
-so Stage 1 call sites are unaffected. The cost lands on Stage 2, where
-`orderPgAuthority.js` must pass a key through for assign and requeue.
+to the layer that knows. Every call site pays it, and that is correct: a
+transition without an explicit key is a transition whose idempotency nobody has
+thought about.
 
 ## Verification
 
@@ -153,8 +152,7 @@ added specifically to cover that, and it does kill the mutation.
 
 The requeue edge was the first missing edge, not the only one. Converting the
 remaining call sites meant reading what each one actually does, and four
-transitions the live Mongo routes perform every day had no entry in
-`ALLOWED_FROM`. Each is recorded at its line in `orderPg.js`.
+transitions the live routes perform every day had no entry in `ALLOWED_FROM`. Each is recorded at its line in `orderPg.js`.
 
 | Edge added | The route that already does it | What it was |
 |---|---|---|
