@@ -260,12 +260,15 @@ describe('1-minute cycle — betting closes on the clock, not on the status flag
       .set('Authorization', authFor(u))
       .set('Idempotency-Key', `om-30-${seq}`)
       .send({ cycleId: thirty.cycleId, side: 'DELHI', amount: 10, type: CYCLE_TYPES.THIRTY_MIN });
-    // The BODY is asserted alongside the status deliberately. A bare
-    // `expect(res.status).toBe(200)` fails with "expected 400 to be 200" and
-    // nothing else, and /api/bet/place has a dozen ways to answer 400 — the
-    // clock cutoff, the cycle refusals, the balance guard, risk validation.
-    // Carrying the body means the CI log says WHICH.
-    expect({ status: res.status, body: res.body }).toMatchObject({ status: 200 });
+    // The body goes in the assertion MESSAGE, not into the compared object.
+    // /api/bet/place has at least six ways to answer 400 — the risk gate, the
+    // clock cutoff, the route's cycle-status check, the stake-fundable guard,
+    // the funding-plan error, the three cycle refusals — and "expected 400 to
+    // be 200" names none of them. `toMatchObject` does not help either: it
+    // diffs only the keys you asserted and reports the rest as "properties
+    // omitted", which is how the first attempt at this hid the very thing it
+    // was added to show.
+    expect(res.status, `refused: ${JSON.stringify(res.body)}`).toBe(200);
   });
 });
 
@@ -354,7 +357,7 @@ describe('1-minute cycle — settlement pays the same way as every other board',
                                   [loser, 'DELHI', 'om-settle-l1'],
                                   [loser, 'DELHI', 'om-settle-l2']]) {
       const r = await place(u, side, key);
-      expect({ key, status: r.status, body: r.body }).toMatchObject({ key, status: 200 });
+      expect(r.status, `${key} refused: ${JSON.stringify(r.body)}`).toBe(200);
     }
 
     // Delhi carries more real stake, so Bombay is the minority and wins.
