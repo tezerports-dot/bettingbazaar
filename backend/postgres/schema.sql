@@ -718,3 +718,124 @@ CREATE TABLE IF NOT EXISTS bonus_grants (
 );
 CREATE INDEX IF NOT EXISTS bonus_grants_user_idx ON bonus_grants (user_id, granted_at DESC);
 CREATE INDEX IF NOT EXISTS bonus_grants_kind_idx ON bonus_grants (kind, status);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- IDENTITY
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- WHAT IS DELIBERATELY NOT HERE: balances.
+--
+-- The document this replaces carried depositBalance, winningsBalance,
+-- lockedBalance, lockedDepositAmount, lockedWinningsAmount and reserveBalance
+-- alongside the identity fields. Those live in `wallets`, in integer paise,
+-- behind a row lock — and a copy of a balance on this table would be a SECOND
+-- WRITER waiting to disagree with the first. Every balance read, for display or
+-- for a decision, goes to `wallets`. Do not add a balance column here, not even
+-- a cached one, not even "just for the admin list".
+--
+-- The KYC decision fields are likewise not here: `user_kyc` owns them, with
+-- `kyc_transitions` as its audit trail. `users.kyc_status` exists only as the
+-- denormalised status the authorisation checks read on every request, and is
+-- written by the same transaction that writes `user_kyc` — never independently.
+CREATE TABLE IF NOT EXISTS users (
+  user_id            TEXT PRIMARY KEY,     -- the account's stable identity
+  username           TEXT NOT NULL,
+  mobile             TEXT NOT NULL UNIQUE, -- never mutable, by anyone (§1)
+  -- Absent means "cannot sign in with a password", which is the CORRECT state
+  -- for a player: players authenticate through Telegram and never set one.
+  -- Admins, sub-admins and merchants have one so their access does not depend
+  -- on a third party that can suspend an account.
+  password_hash      TEXT,
+
+  -- ── Referral programme identity ──────────────────────────────────────────
+  -- Assigned once, when onboarding COMPLETES, never at first contact: a
+  -- half-finished signup must not consume a number. The payout queue is ordered
+  -- by this, so it is unique and strictly increasing, and it comes from an
+  -- atomic counter rather than a count of rows.
+  joining_number     BIGINT UNIQUE,
+  -- What a player shares. Distinct from joining_number so a public link does not
+  -- leak the platform's member count or a person's position in it.
+  referral_code      TEXT UNIQUE,
+  -- Held rather than derived: the click rows it counts are deleted continuously
+  -- by retention, so the aggregate is the thing that must survive, not the
+  -- evidence.
+  referral_clicks    BIGINT NOT NULL DEFAULT 0 CHECK (referral_clicks >= 0),
+  referred_by        TEXT REFERENCES users (user_id) ON DELETE SET NULL,
+
+  -- ── Account state ────────────────────────────────────────────────────────
+  status             TEXT NOT NULL DEFAULT 'ACTIVE',
+  kyc_status         TEXT NOT NULL DEFAULT 'PENDING_SUBMISSION',
+  wallet_address     TEXT UNIQUE,
+  profile_pic        TEXT NOT NULL DEFAULT '',
+  warning_count      INT  NOT NULL DEFAULT 0 CHECK (warning_count >= 0),
+
+  -- ── Payment risk flags ───────────────────────────────────────────────────
+  payment_flagged    BOOLEAN NOT NULL DEFAULT FALSE,
+  payment_flag_reason TEXT NOT NULL DEFAULT '',
+  payment_flagged_at TIMESTAMPTZ,
+  payment_flag_count INT NOT NULL DEFAULT 0 CHECK (payment_flag_count >= 0),
+
+  -- ── Roles ────────────────────────────────────────────────────────────────
+  is_admin           BOOLEAN NOT NULL DEFAULT FALSE,
+  is_sub_admin       BOOLEAN NOT NULL DEFAULT FALSE,
+  is_queue_manager   BOOLEAN NOT NULL DEFAULT FALSE,
+  is_mediator        BOOLEAN NOT NULL DEFAULT FALSE,
+  sub_admin_role     TEXT NOT NULL DEFAULT 'CUSTOM',
+  -- JSONB rather than 8 boolean columns: the permission set is read as a whole
+  -- on every authorisation check and is edited as a whole from the admin panel.
+  -- The KEYS are still governed — utils/permissions.ts is the one declaration —
+  -- and an unknown key here is a bug, not a feature.
+  sub_admin_permissions JSONB NOT NULL DEFAULT '{}'::jsonb,
+  phantom_access     TEXT NOT NULL DEFAULT 'NONE',
+
+  -- ── Second factor ────────────────────────────────────────────────────────
+  -- MANDATORY for admins and sub-admins, available to merchants, and not
+  -- applicable to players (who have no password to protect).
+  two_factor_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  two_factor_secret  TEXT,
+  two_factor_pending_secret TEXT,
+  -- The last accepted TOTP counter. Storing it is what makes a replay of an
+  -- observed code fail: a code is valid for a window, and without this the same
+  -- code works twice inside it.
+  two_factor_last_counter BIGINT,
+  two_factor_enrolled_at TIMESTAMPTZ,
+
+  -- ── Blocking ─────────────────────────────────────────────────────────────
+  is_blocked         BOOLEAN NOT NULL DEFAULT FALSE,
+  block_reason       TEXT,
+  blocked_at         TIMESTAMPTZ,
+  blocked_by         TEXT,
+
+  -- ── Payout destination ───────────────────────────────────────────────────
+  -- One JSONB rather than four columns: it is written and read as a unit, and
+  -- an account number that disagrees with its IFSC is worse than either being
+  -- absent, so they must move together.
+  bank_details       JSONB,
+
+  last_login         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  joined_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  CONSTRAINT users_status_check
+    CHECK (status IN ('ACTIVE','BLOCKED','SUSPENDED','PENDING_KYC','DELETED')),
+  CONSTRAINT users_kyc_status_check
+    CHECK (kyc_status IN ('PENDING_SUBMISSION','PENDING_APPROVAL','APPROVED','REJECTED')),
+  CONSTRAINT users_phantom_access_check
+    CHECK (phantom_access IN ('NONE','1_MIN','30_MIN','FULL_DAY','BOTH')),
+  CONSTRAINT users_sub_admin_role_check
+    CHECK (sub_admin_role IN ('PHANTOM_MANAGER','PHANTOM_EQUALIZER','USER_OPS',
+                              'MERCHANT_OPS','CONTENT_MANAGER','ANALYST','CUSTOM')),
+  -- A blocked account must say why and when. "Blocked, reason unknown" is a
+  -- support ticket nobody can answer and an appeal nobody can review.
+  CONSTRAINT users_blocked_has_reason
+    CHECK (NOT is_blocked OR (block_reason IS NOT NULL AND blocked_at IS NOT NULL))
+);
+
+CREATE INDEX IF NOT EXISTS users_status_idx        ON users (status);
+CREATE INDEX IF NOT EXISTS users_kyc_status_idx    ON users (kyc_status);
+CREATE INDEX IF NOT EXISTS users_referred_by_idx   ON users (referred_by) WHERE referred_by IS NOT NULL;
+CREATE INDEX IF NOT EXISTS users_joined_at_idx     ON users (joined_at DESC);
+-- The admin user list filters on these two constantly and they are rare, so a
+-- partial index is both smaller and the one the planner actually picks.
+CREATE INDEX IF NOT EXISTS users_admins_idx        ON users (user_id) WHERE is_admin OR is_sub_admin;
+CREATE INDEX IF NOT EXISTS users_flagged_idx       ON users (payment_flagged_at DESC) WHERE payment_flagged;

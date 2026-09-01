@@ -97,6 +97,35 @@ const MUTATIONS = [
     to: `    const balance_pa = merchant.tokenBalance;
     if (merchant.tokenBalance < order.tokenAmount) {`,
   },
+  // ── The accounts table: four properties, each verified to be load-bearing ──
+  {
+    id: 'M43', file: 'backend/postgres/userPg.js', config: PG,
+    test: 'backend/tests/postgres/userPg.test.js',
+    why: 'a racing signup on one mobile creates two accounts',
+    from: `     ON CONFLICT (mobile) DO NOTHING\n`,
+    to: '',
+  },
+  {
+    id: 'M44', file: 'backend/postgres/userPg.js', config: PG,
+    test: 'backend/tests/postgres/userPg.test.js',
+    why: 'a write to an unknown column is silently discarded again',
+    from: `  if (unknown.length) {`,
+    to: `  if (false) {`,
+  },
+  {
+    id: 'M45', file: 'backend/postgres/userPg.js', config: PG,
+    test: 'backend/tests/postgres/userPg.test.js',
+    why: "BIGINT stays a string, so '900' >= 1000 is true",
+    from: `const toInt = (v) => (v == null ? null : Number(v));`,
+    to: `const toInt = (v) => v;`,
+  },
+  {
+    id: 'M46', file: 'backend/postgres/userPg.js', config: PG,
+    test: 'backend/tests/postgres/userPg.test.js',
+    why: 'the denormalised kyc_status can be written outside the decision transaction',
+    from: `  if (!client) throw new Error('setKycStatus must run inside the transaction that records the decision');`,
+    to: `  if (!client) return null;`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that
@@ -111,6 +140,21 @@ if (dead.length) {
     console.error(`  ${m.id}: ${missing.join(', ')}`);
   }
   console.error('\nDelete them, or repoint them at what replaced the behaviour.');
+  process.exit(1);
+}
+
+// A suite that SKIPS is not a suite that passed. The Postgres suites gate
+// themselves on DATABASE_URL (`describePg = pgConfigured() ? describe :
+// describe.skip`) and vitest exits 0 when every test in a file is skipped — so
+// running a PG mutation without a database reported SURVIVED for a mutation
+// that was never executed. That is worse than not running it: it manufactures
+// a hole in a suite that does not have one, and the three betPg entries were
+// being reported that way for however long DATABASE_URL has been unset here.
+const needsPg = MUTATIONS.some((m) => m.config === PG);
+if (needsPg && !process.env.DATABASE_URL) {
+  console.error('DATABASE_URL is not set, and some mutations run against a real PostgreSQL.');
+  console.error('Those suites would SKIP, exit 0, and be reported as SURVIVED — a hole that');
+  console.error('does not exist. Set DATABASE_URL, or run `node scripts/mutation-check.mjs unit`.');
   process.exit(1);
 }
 
@@ -132,21 +176,31 @@ for (const m of selected) {
   writeFileSync(m.file, original.replace(m.from, m.to));
   let outcome;
   try {
-    execSync(`npx vitest run --config ${m.config} ${m.test}`, { stdio: 'pipe', env: process.env });
-    outcome = 'SURVIVED';
+    const out = execSync(`npx vitest run --config ${m.config} ${m.test}`,
+      { stdio: 'pipe', env: process.env }).toString();
+    // Exit 0 is only evidence of survival if tests actually RAN. A file whose
+    // every test skipped also exits 0, and calling that SURVIVED reports a hole
+    // in a suite nobody measured.
+    outcome = /Tests\s+\d+\s+passed/.test(out) ? 'SURVIVED' : 'NOT-MEASURED';
   } catch {
     outcome = 'KILLED';
   } finally {
     writeFileSync(m.file, original);
   }
   results.push({ ...m, outcome });
-  console.log(`${outcome === 'KILLED' ? '✅' : '❌'} ${m.id}  ${outcome.padEnd(9)} ${m.why}`);
+  const mark = { KILLED: '✅', SURVIVED: '❌', 'NOT-MEASURED': '❓' }[outcome];
+  console.log(`${mark} ${m.id}  ${outcome.padEnd(12)} ${m.why}`);
 }
 
-const survived = results.filter((r) => r.outcome !== 'KILLED');
-console.log(`\n${results.length - survived.length}/${results.length} mutations killed.`);
+const survived = results.filter((r) => r.outcome === 'SURVIVED');
+const unmeasured = results.filter((r) => r.outcome === 'NOT-MEASURED');
+console.log(`\n${results.filter((r) => r.outcome === 'KILLED').length}/${results.length} mutations killed.`);
+if (unmeasured.length) {
+  console.log('NOT MEASURED (the suite ran no tests — do not read these as passes):');
+  for (const s of unmeasured) console.log(`  ${s.id} ${s.test}`);
+}
 if (survived.length) {
   console.log('SURVIVED (a hole in the suite):');
   for (const s of survived) console.log(`  ${s.id} ${s.file} — ${s.why}`);
-  process.exit(1);
 }
+if (survived.length || unmeasured.length) process.exit(1);

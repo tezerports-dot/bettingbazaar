@@ -1,13 +1,11 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
- * postgres/pgClient.js — the single Postgres touchpoint (hybrid money DB,
- * plan items 6/10/11, step 1). 2026-07-13.
+ * postgres/pgClient.js — the single touchpoint for the only datastore.
  *
- * PERMANENT architecture, not a shim (plan directive): this module, the
- * dual-write layer, and the reconciliation script are maintained core systems.
- * Activation is production-required for the hybrid MongoDB + PostgreSQL money
- * layer: DATABASE_URL opens the pool and applySchema() runs idempotently at boot.
- * Non-production can still omit it for local Mongo-only development/tests.
+ * `DATABASE_URL` opens the pool and `applySchema()` runs idempotently at boot.
+ * It is REQUIRED: there is no second store to fall back to and no degraded mode
+ * to run in, so an instance that cannot reach PostgreSQL must refuse to start
+ * rather than serve requests it cannot answer. See CLAUDE.md.
  */
 import fs from 'fs';
 import path from 'path';
@@ -73,10 +71,11 @@ export async function getPool() {
  * 'error' with no listener is a hard Node crash, so a checked-out client turned
  * a database blip into the API process exiting.
  *
- * That mattered more than it sounds: Postgres is currently only the dual-write
- * MIRROR — MongoDB is authoritative — so a restart of a database the money path
- * does not even read from would take down every app instance. Reproduced by
- * stopping Postgres with `pg_ctl -m immediate` during concurrent debits:
+ * That matters more than it sounds: this is the database every request needs,
+ * so an ordinary restart or failover would take down every app instance at
+ * once rather than causing the in-flight queries to fail and the next ones to
+ * reconnect. Reproduced by stopping Postgres with `pg_ctl -m immediate` during
+ * concurrent debits:
  *
  *     Emitted 'error' event on Client instance at:
  *         at Client._handleErrorEvent (pg/lib/client.js:417:10)
@@ -131,7 +130,7 @@ export async function applySchema() {
   const sql = fs.readFileSync(
     path.join(path.dirname(new URL(import.meta.url).pathname), 'schema.sql'), 'utf8');
   await pgQuery(sql);
-  console.log('✅ Postgres money schema applied (hybrid DB active — dual-write ON)');
+  console.log('✅ PostgreSQL schema applied');
   return true;
 }
 

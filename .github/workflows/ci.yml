@@ -115,6 +115,15 @@ jobs:
         run: npm run test:redis -- --reporter=default --reporter=github-actions
         env:
           REDIS_URL: redis://localhost:6379
+      # A passing suite proves nothing about a test that would pass anyway. Each
+      # entry breaks one behaviour the money paths rely on and asserts the test
+      # for it goes red. It refuses to run without a database rather than
+      # reporting an unrun Postgres mutation as a hole that does not exist.
+      - name: Mutation check (the suites actually bite)
+        run: node scripts/mutation-check.mjs
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bb_test
+          PG_SSL: 'false'
 
   # AQ-7 note: SAST is provided by CodeQL "default setup" — enabled once by the
   # owner in Settings -> Code security -> Code scanning (GitHub-managed, needs no
