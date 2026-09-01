@@ -100,7 +100,10 @@ capabilities:
     implementation_status: partial
     activation_status: active
     evidence: [backend/domains/wallet/walletAuthority.service.js, backend/postgres/dualWrite.js]
-    docs: [docs/governance/04-GOVERNANCE.md]
+    # Still `partial` for the Mongo paths (M-2/M-4 in MONGO_MONEY_AUDIT.md), but
+    # the Postgres transaction BOUNDARY is now certified by failure injection
+    # rather than by argument — see CONCURRENCY_CERTIFICATION §G.
+    docs: [docs/governance/04-GOVERNANCE.md, docs/CONCURRENCY_CERTIFICATION.md]
   - id: CAP-11
     name: CDC Migration
     bucket: decision

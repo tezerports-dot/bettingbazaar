@@ -177,16 +177,66 @@ export async function settleBet({
 }
 
 /**
- * RUNNING → COMPLETED. The guard is in the WHERE clause, so two passes
- * finishing at once complete it once.
+ * RUNNING → COMPLETED, stamping what the BETS say the run did.
+ *
+ * The guard is in the WHERE clause, so two passes finishing at once complete
+ * it once.
+ *
+ * ── Why the totals are derived here and not carried in ──────────────────────
+ * `settleBet` advances `bets_settled` and `payout_paise` with `= x + 1`. That
+ * is an accumulator, and an accumulator counts PASSES, not bets: a run that
+ * dies between `winBet`'s COMMIT and that UPDATE has moved the money and lost
+ * the count, and the resume cannot put it back — the bet transition is
+ * idempotent, so the second pass returns `idempotent: true` and deliberately
+ * does not re-count it. The counters then stay short forever, on a cycle where
+ * every rupee is correct.
+ *
+ * That is not hypothetical: it is reproduced in settlementCrashRecovery.pg.test.js
+ * by terminating the backend while it waits on `cycle_settlements`.
+ *
+ * So the run's record is RECONSTRUCTED from the bets at the moment it closes,
+ * exactly as `Cycle.totalPaidOut` is (see gameEngine's payout totals, and the
+ * F-2 recovery fix that established the rule): the bets are the authority for
+ * what was paid, the settlement row is a report about them, and a report must
+ * never be the only copy of a number.
+ *
+ * `bets_total` and `stake_paise` are stamped here too. `openSettlement` takes
+ * them from the caller, and the caller — gameEngine — does not know them yet
+ * when it claims the cycle, so it passes neither and every production run has
+ * carried 0/0 since the table existed. Derived at close they become true.
+ *
+ * The running accumulator stays: while a settlement is RUNNING it is the only
+ * evidence of forward progress, and `findIncompleteSettlements` only looks at
+ * COMPLETED runs. Completion is where it gets corrected.
+ *
+ * ── Why this may read `bets` without asking who owns it ─────────────────────
+ * Deriving from a store that is only a MIRROR would stamp a plausible wrong
+ * number, which is worse than the honest zero it replaces. It cannot happen
+ * here: SETTLEMENTS `dependsOn` BETS in moneyAuthority's PATH_SPEC, and
+ * `authorityFor` returns MONGO for any path whose dependency is still in Mongo
+ * — so `finishSettlement` never reaches this function unless the `bets` table
+ * is the owner of the rows it is summing. That ordering rule is load-bearing
+ * for this query, and it is pinned in moneyAuthority.test.js.
+ *
+ * A cycle with no bets completes cleanly to all-zeroes: the aggregate has no
+ * GROUP BY, so it yields one row even over an empty set, and the UPDATE fires.
  */
 export async function completeSettlement({ cycleId }) {
   const { rows } = await pgQuery(
-    `UPDATE cycle_settlements
-        SET status = $2, completed_at = now(), updated_at = now()
-      WHERE cycle_id = $1 AND status = $3
-      RETURNING *`,
-    [String(cycleId), SETTLEMENT_STATUS.COMPLETED, SETTLEMENT_STATUS.RUNNING],
+    `UPDATE cycle_settlements s
+        SET status = $2, completed_at = now(), updated_at = now(),
+            bets_total   = d.total,
+            bets_settled = d.settled,
+            payout_paise = d.payout,
+            stake_paise  = d.stake
+       FROM (SELECT COUNT(*)                             AS total,
+                    COUNT(*) FILTER (WHERE status <> $4) AS settled,
+                    COALESCE(SUM(payout_paise), 0)       AS payout,
+                    COALESCE(SUM(stake_paise), 0)        AS stake
+               FROM bets WHERE cycle_id = $1) d
+      WHERE s.cycle_id = $1 AND s.status = $3
+      RETURNING s.*`,
+    [String(cycleId), SETTLEMENT_STATUS.COMPLETED, SETTLEMENT_STATUS.RUNNING, BET_STATUS.PENDING],
     'cycle_settlement_complete',
   );
   if (!rows.length) {
@@ -275,7 +325,18 @@ export async function findIncompleteSettlements() {
   }));
 }
 
-/** Does a run's recorded payout match what its bets actually paid? */
+/**
+ * Does a run's recorded payout still match what its bets actually paid?
+ *
+ * Note the "still". `completeSettlement` stamps these totals FROM the bets, so
+ * at the instant a run closes the two sides are the same measurement and this
+ * cannot fail. What it detects is divergence AFTER that: a straggler settled by
+ * a later sweep, a bet voided by hand, a stake that landed on a closed cycle.
+ * It is a drift detector on a finished run, not a proof that the run was right
+ * — for that, see `findIncompleteSettlements`, which asks the stronger question
+ * (is any bet on a COMPLETED cycle still PENDING) and does not consult these
+ * columns at all.
+ */
 export async function reconcileSettlement(cycleId) {
   const [settlement, { rows }] = await Promise.all([
     getCycleSettlement(cycleId),

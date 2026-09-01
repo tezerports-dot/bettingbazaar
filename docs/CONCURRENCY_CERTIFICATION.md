@@ -24,6 +24,10 @@ below as a staging runbook rather than claimed.
 | 8 | Redis killed under a live server | **COVERED** | adversarial run — see §E |
 | 9 | 100–1000 simultaneous bets, multi-instance | **NOT VERIFIED** | staging — §A |
 | 10 | Process crash between debit and ledger write (Mongo) | **NOT VERIFIED** | staging — §B |
+| 10a | Process crash between debit and ledger write (Postgres) | **COVERED** | `settlementCrashRecovery.pg.test.js` — §G |
+| 10b | Settlement crashed mid-run, then resumed | **COVERED** | same |
+| 10c | Crash between a bet's COMMIT and the run counter | **COVERED** | same |
+| 10d | Post-commit publication (mirror/socket/SSE) fails | **COVERED** | same |
 | 11 | MongoDB failover during settlement | **NOT VERIFIED** | staging — §C |
 | 12 | WebSocket/SSE reconnect during settlement | **NOT VERIFIED** | staging — §D |
 | 13 | Application instance / load balancer restart | **NOT VERIFIED** | staging — §F |
@@ -52,8 +56,15 @@ non-deterministic, and asserting it produces flaky tests that teach nothing.
 5. **The ledger explains the balance** — `start + credits − debits` equals the
    final balance exactly.
 
+6. **Exactly-once settlement** — a bet is settled once financially, however
+   many times the settlement worker runs over it.
+
 Invariant 5 is the one that catches the subtle failures. A double-charge can
 look plausible in isolation; a balance the ledger cannot account for cannot.
+
+Invariant 6 is 4 restated for the settlement path, and it is separate because
+the thing being replayed is different: 4 is one caller retrying one movement,
+6 is a whole worker restarting with no memory of where it got to.
 
 ---
 
@@ -223,3 +234,49 @@ the drain window is shorter than the LB's health-check interval.
 
 **Assert.** Ledger explains every balance afterwards; no bet in a state without
 its money movement; `bb_unaudited_money_movements_total` still 0.
+
+## §G — Settlement under failure injection (automated, real Postgres)
+
+Scenarios 10a–10d, and the only crash scenarios in this matrix that run in CI
+rather than in staging. `backend/tests/postgres/settlementCrashRecovery.pg.test.js`.
+
+**How the crash is injected.** Not by mocking and not by throwing from inside
+the code under test — both of those prove the code unwinds *itself*, which is
+the easy half. A control connection takes a table-level `EXCLUSIVE` lock, the
+code under test runs until it blocks on that table, and its backend is then
+destroyed with `pg_terminate_backend`. PostgreSQL unwinds the transaction, not
+the client: no `finally`, no ROLLBACK, no chance to compensate. That is the
+shape of a `kill -9`.
+
+The table chosen decides where in the transaction it dies:
+
+| Lock | Dies after | Uncommitted damage held |
+|---|---|---|
+| `wallet_ledger` | the bet is stamped WON and the payout is added to the wallet row | a paid winner with no audit row |
+| `cycle_settlements` | `winBet` has **committed** | real money moved, count lost |
+
+**What it found.** The second window is the one that matters, because it is the
+only one where a crash leaves money actually moved. `settleBet` commits the bet
+through `winBet` and then bumps `cycle_settlements` in a separate statement.
+Dying in between paid the player and lost the count — and the resume could not
+restore it, because the bet transition is idempotent and deliberately does not
+re-count. `bets_settled` and `payout_paise` stayed short **forever**, on a cycle
+where every rupee was correct, and `reconcileSettlement` reported that healthy
+cycle as drifting for the rest of its life.
+
+`bets_total` and `stake_paise` were worse: `openSettlement` takes them from the
+caller, gameEngine does not know them when it claims the cycle, so every
+production run had carried 0/0 since the table existed.
+
+**The fix.** `completeSettlement` reconstructs the run's totals from the bets
+instead of trusting the pass that counted them — the same rule as
+`Cycle.totalPaidOut` (the F-2 recovery fix): the bets are the authority for what
+was paid, the settlement row is a report about them, and a report must never be
+the only copy of a number. The running accumulator stays, because while a
+settlement is RUNNING it is the only evidence of forward progress; completion is
+where it gets corrected.
+
+**What is still staging-only.** These run in one process against one Postgres.
+They exercise the server-side unwind, which is where the double-credit risk
+lives, but not two app instances resuming the *same* cycle at once. §A and §F
+remain the measurement for that.
