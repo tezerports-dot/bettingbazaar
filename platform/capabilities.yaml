@@ -70,14 +70,16 @@ capabilities:
 
   # ── B. Financial Platform ──────────────────────────────────────────────────
   - id: CAP-07
-    name: PostgreSQL as Financial Source of Truth
-    bucket: B
+    name: PostgreSQL as Source of Truth
+    bucket: A
     owner: app
-    implementation_status: architecture-ready
-    activation_status: infra-gated
-    dependencies: [CAP-09, CAP-12, CAP-13, CAP-14]
-    evidence: [backend/postgres/schema.sql, backend/postgres/pgClient.js, backend/postgres/dualWrite.js]
-    docs: [backend/postgres/DATA_ROLLBACK_PLAN.md]
+    # Unconditional as of 2026-09-01: PostgreSQL is the only datastore, so this
+    # is no longer gated on a cutover, a flag or any infrastructure decision.
+    implementation_status: full
+    activation_status: active
+    dependencies: [CAP-09, CAP-13]
+    evidence: [backend/postgres/schema.sql, backend/postgres/pgClient.js]
+    docs: [CLAUDE.md, docs/governance/04-GOVERNANCE.md]
   - id: CAP-08
     name: Append-Only Ledger
     bucket: A
@@ -118,12 +120,15 @@ capabilities:
     docs: [docs/governance/04-GOVERNANCE.md]
   - id: CAP-12
     name: Dual-Write Migration
-    bucket: B
+    bucket: decision
     owner: app
-    implementation_status: full
-    activation_status: active
-    evidence: [backend/postgres/dualWrite.js]
-    verification: { test: backend/tests/integration/postgresDualWrite.integration.test.js }
+    # REMOVED 2026-09-01. This was a mechanism for keeping a second store in
+    # step during a migration. There is no second store and no migration, so
+    # the capability is not "absent pending work" — it is a recorded decision
+    # not to have one. Do not reintroduce it. See CLAUDE.md.
+    implementation_status: decision
+    activation_status: n/a
+    docs: [CLAUDE.md]
   - id: CAP-13
     name: Reconciliation Engine
     bucket: A
@@ -135,10 +140,14 @@ capabilities:
     name: Rollback Strategy
     bucket: A
     owner: app
+    # Scoped to DEPLOYMENT rollback (redeploy the previous release, or flip the
+    # blue/green selector), which is what remains real. The store-level rollback
+    # plan this used to point at was the fallback path for a cutover between two
+    # stores; both are gone. Data recovery is now PITR — see CAP-15.
     implementation_status: full
     activation_status: active
-    docs: [backend/postgres/DATA_ROLLBACK_PLAN.md]
-    evidence: [backend/postgres/DATA_ROLLBACK_PLAN.md]
+    docs: [docs/governance/04-GOVERNANCE.md, DEPLOYMENT.md]
+    evidence: [deploy/k8s, ecosystem.config.cjs]
 
   # ── C. PostgreSQL Platform ─────────────────────────────────────────────────
   - id: CAP-15
@@ -199,10 +208,16 @@ capabilities:
     name: Distributed Locks
     bucket: A
     owner: app
-    implementation_status: full
+    # PARTIAL as of 2026-09-01, and this is a real gap, not bookkeeping.
+    # startup/cronLock.js elects a leader using a TTL document in the store
+    # being removed — despite Redis backing every other lock in the platform.
+    # Until it is rewritten on PostgreSQL, scheduled jobs are guarded only by
+    # their own idempotency, which for settlement means duplicated work on
+    # every instance every tick. Its concurrency test went with the integration
+    # tier and is restored in tests/postgres/ when the lock moves.
+    implementation_status: partial
     activation_status: active
     evidence: [backend/startup/cronLock.js]
-    verification: { test: backend/tests/integration/cronLock.integration.test.js }
   - id: CAP-23
     name: Redis Sessions
     bucket: decision
@@ -233,7 +248,7 @@ capabilities:
     implementation_status: full
     activation_status: active
     evidence: [backend/middleware/redisRateLimitStore.js]
-    verification: { test: backend/tests/integration/rateLimitStore.integration.test.js }
+    verification: { test: backend/tests/redis/rateLimitStore.test.js }
   - id: CAP-26
     name: Cache Strategy (TTL/Invalidation)
     bucket: A
