@@ -90,6 +90,27 @@ export async function getMerchantBalances(merchantId) {
  * the callback the balances AS OF that lock. Same contract as walletPg's
  * withWalletLock — see there for why the lock rather than a hopeful pre-read.
  */
+/**
+ * Spendable balances for MANY merchants at once, in paise.
+ *
+ * The eligibility gate that picks a merchant for a deposit has to compare every
+ * candidate's balance against the order, and doing that one `getMerchantBalances`
+ * call at a time is a query per candidate on the hot path of every deposit.
+ *
+ * Returns a Map keyed by merchant id. A merchant with no row is ABSENT rather
+ * than zero, so a caller can tell "has no wallet yet" from "has nothing in it" —
+ * the two mean different things when deciding whether to route money to them.
+ */
+export async function getAvailablePaiseFor(merchantIds) {
+  const ids = [...new Set((merchantIds || []).map(String))].filter(Boolean);
+  if (!ids.length) return new Map();
+  const { rows } = await pgQuery(
+    `SELECT merchant_id, available_paise FROM merchant_wallets WHERE merchant_id = ANY($1)`,
+    [ids], 'merchant_available_batch',
+  );
+  return new Map(rows.map((r) => [r.merchant_id, Number(r.available_paise)]));
+}
+
 export async function withMerchantLock(merchantId, fn) {
   const mid = String(merchantId);
   const pool = await getPool();

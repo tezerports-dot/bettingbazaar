@@ -8,6 +8,7 @@
  */
 
 import mongoose from 'mongoose';
+import { getAvailablePaiseFor } from '../../postgres/merchantWalletPg.js';
 import { MERCHANT_CURRENCY } from './merchantCurrency.js';
 
 const ACTIVE_ASSIGNMENT_STATUSES = ['ASSIGNED', 'PROCESSING', 'PAID'];
@@ -109,13 +110,39 @@ export async function selectBestMerchant(orderType, tokenAmount, currency = MERC
 
   if (orderType === 'DEPOSIT') {
     baseQuery.acceptsDeposits = true;
-    baseQuery.tokenBalance = { $gte: tokenAmount };
   } else {
     baseQuery.acceptsWithdrawals = true;
   }
 
   let candidates = await Merchant.find(baseQuery).lean();
   candidates = await attachActiveTypeCounts(candidates);
+
+  // ── The balance test is a POSTGRES read, not a Mongo query clause ──────────
+  // This used to be `baseQuery.tokenBalance = { $gte: tokenAmount }`, filtering
+  // on the Merchant document while every token movement goes through
+  // merchantWalletPgAuthority to `merchant_wallets`. A deposit could therefore
+  // be routed to a merchant who does not hold the tokens to serve it — the
+  // order is accepted, the merchant cannot fund it, and the player waits.
+  //
+  // It cannot stay in the Mongo query, because that query cannot see the other
+  // store; so the criterion moves after the fetch. One batched read for the
+  // whole candidate set rather than a query per merchant on the hot path of
+  // every deposit.
+  //
+  // A merchant with no wallet row is EXCLUDED from deposits rather than treated
+  // as zero-and-sorted-last: no row means nothing has ever moved for them, and
+  // routing an order to a merchant the money system has never seen is a worse
+  // failure than routing to one that is merely empty.
+  const availablePaise = await getAvailablePaiseFor(candidates.map((m) => m._id));
+  candidates = candidates.map((m) => ({
+    ...m,
+    pgTokenBalance: availablePaise.has(String(m._id))
+      ? availablePaise.get(String(m._id)) / 100
+      : null,
+  }));
+  if (orderType === 'DEPOSIT') {
+    candidates = candidates.filter((m) => m.pgTokenBalance !== null && m.pgTokenBalance >= tokenAmount);
+  }
   candidates = candidates.filter((m) => {
     const limit = typeLimitFor(m, orderType, defaults);
     const activeForType = orderType === 'DEPOSIT' ? m.activeDepositOrderCount : m.activeWithdrawalOrderCount;
@@ -125,7 +152,8 @@ export async function selectBestMerchant(orderType, tokenAmount, currency = MERC
 
   if (orderType === 'DEPOSIT') {
     candidates.sort((a, b) => {
-      if ((b.tokenBalance || 0) !== (a.tokenBalance || 0)) return (b.tokenBalance || 0) - (a.tokenBalance || 0);
+      // Ranked on the same number the filter used, for the same reason.
+      if ((b.pgTokenBalance || 0) !== (a.pgTokenBalance || 0)) return (b.pgTokenBalance || 0) - (a.pgTokenBalance || 0);
       const scoreDiff = scoreMerchant(b) - scoreMerchant(a);
       if (scoreDiff !== 0) return scoreDiff;
       return (a.activeDepositOrderCount || 0) - (b.activeDepositOrderCount || 0);

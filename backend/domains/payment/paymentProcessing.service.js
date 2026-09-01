@@ -9,7 +9,7 @@
 
 import mongoose from 'mongoose';
 import crypto   from 'crypto';
-import { debitWinningsForWithdrawal, refundWithdrawal } from '../wallet/walletAuthority.service.js';
+import { debitWinningsForWithdrawal, refundWithdrawal, getBalances } from '../wallet/walletAuthority.service.js';
 import { selectBestMerchant } from '../merchant/merchantScoring.service.js';
 import { merchantTypeOf } from '../merchant/merchantCurrency.js';
 // Risk Platform (Phase 010): the single validation authority for funding orders.
@@ -341,16 +341,26 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
       { $group: { _id: null, total: { $sum: '$tokenAmount' } } },
     ]);
     const pendingTotal = pagg?.total || 0;
-    if (pendingTotal + tokenAmount > (user.winningsBalance || 0))
+
+    // FROM THE STORE THE DEBIT MOVES. `debitWinningsForWithdrawal` below moves
+    // the `wallets` row; these guards used to read the Mongo User document, so
+    // a withdrawal could be ADMITTED against winnings the wallet does not hold,
+    // or refused while quoting a balance that is not the one being checked.
+    // Same defect as the bet route's affordability check, on the path where the
+    // money leaves the platform.
+    const wallet = await getBalances(String(user._id));
+    const winningsAvailable = wallet.winningsBalance || 0;
+
+    if (pendingTotal + tokenAmount > winningsAvailable)
       throw Object.assign(
-        new Error(`Insufficient winnings balance. Available: ${user.winningsBalance || 0} tokens (${pendingTotal} locked in pending orders).`),
+        new Error(`Insufficient winnings balance. Available: ${winningsAvailable} tokens (${pendingTotal} locked in pending orders).`),
         { status: 400 }
       );
 
-    if (user.winningsBalance < tokenAmount)
+    if (winningsAvailable < tokenAmount)
       throw Object.assign(
-        new Error(`Insufficient winnings balance. Available: ${user.winningsBalance} tokens`),
-        { status: 400, balance: { deposit: user.depositBalance, winnings: user.winningsBalance } }
+        new Error(`Insufficient winnings balance. Available: ${winningsAvailable} tokens`),
+        { status: 400, balance: { deposit: wallet.depositBalance, winnings: winningsAvailable } }
       );
 
     // Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08):
@@ -427,9 +437,9 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
         userBankDetails:  order.userBankDetails,
       },
       remainingBalance: {
-        deposit:  user.depositBalance,
-        winnings: debitResult.winningsAfter ?? (user.winningsBalance - tokenAmount),
-        total:    user.depositBalance + (debitResult.winningsAfter ?? (user.winningsBalance - tokenAmount)),
+        deposit:  wallet.depositBalance,
+        winnings: debitResult.winningsAfter ?? (winningsAvailable - tokenAmount),
+        total:    wallet.depositBalance + (debitResult.winningsAfter ?? (winningsAvailable - tokenAmount)),
       },
       note: `You will receive ₹${fiatAmount.toLocaleString()} from merchant`,
     };
