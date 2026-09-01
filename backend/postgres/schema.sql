@@ -826,6 +826,15 @@ CREATE TABLE IF NOT EXISTS cycle_settlements (
   bets_settled   INTEGER NOT NULL DEFAULT 0,
   payout_paise   BIGINT  NOT NULL DEFAULT 0 CHECK (payout_paise >= 0),
   stake_paise    BIGINT  NOT NULL DEFAULT 0 CHECK (stake_paise >= 0),
+  -- The cycle's reporting figures. They lived on the Mongo Cycle document
+  -- (totalPlatformFees, netProfit) and belong to the RUN, not to the cycle: a
+  -- cycle that is settled twice has one set of them, and re-deriving them from
+  -- the bets on every read is the query this column exists to avoid.
+  -- net_profit_paise is deliberately NOT constrained non-negative — a cycle
+  -- where the minority side was heavily backed pays out more than it took in,
+  -- and refusing to record that would be refusing to record a real loss.
+  platform_fee_paise BIGINT NOT NULL DEFAULT 0 CHECK (platform_fee_paise >= 0),
+  net_profit_paise   BIGINT NOT NULL DEFAULT 0,
   started_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
   completed_at   TIMESTAMPTZ,
   updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),

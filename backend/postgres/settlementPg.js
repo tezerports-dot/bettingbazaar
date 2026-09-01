@@ -65,6 +65,8 @@ function rowToSettlement(row) {
     betsSettled:  Number(row.bets_settled),
     payoutPaise:  toPaise(row.payout_paise),
     stakePaise:   toPaise(row.stake_paise),
+    platformFeePaise: toPaise(row.platform_fee_paise),
+    netProfitPaise:   Number(row.net_profit_paise ?? 0),
     startedAt:    row.started_at,
     completedAt:  row.completed_at,
   };
@@ -239,15 +241,25 @@ export async function completeSettlement({ cycleId }) {
             bets_total   = d.total,
             bets_settled = d.settled,
             payout_paise = d.payout,
-            stake_paise  = d.stake
+            stake_paise  = d.stake,
+            -- Reconstructed for the same reason the counters above are: an
+            -- accumulator counts PASSES, not bets, so a run that resumed after a
+            -- crash would report only what its final pass paid. The real pool
+            -- excludes REFUNDED stakes — money returned was never the house's —
+            -- and net profit is that pool less what went out.
+            platform_fee_paise = d.fees,
+            net_profit_paise   = d.real_pool - d.payout
        FROM (SELECT COUNT(*)                             AS total,
                     COUNT(*) FILTER (WHERE status <> $4) AS settled,
                     COALESCE(SUM(payout_paise), 0)       AS payout,
-                    COALESCE(SUM(stake_paise), 0)        AS stake
+                    COALESCE(SUM(stake_paise), 0)        AS stake,
+                    COALESCE(SUM(platform_fee_paise), 0) AS fees,
+                    COALESCE(SUM(stake_paise) FILTER (WHERE status <> $5), 0) AS real_pool
                FROM bets WHERE cycle_id = $1) d
       WHERE s.cycle_id = $1 AND s.status = $3
       RETURNING s.*`,
-    [String(cycleId), SETTLEMENT_STATUS.COMPLETED, SETTLEMENT_STATUS.RUNNING, BET_STATUS.PENDING],
+    [String(cycleId), SETTLEMENT_STATUS.COMPLETED, SETTLEMENT_STATUS.RUNNING,
+     BET_STATUS.PENDING, BET_STATUS.REFUNDED],
     'cycle_settlement_complete',
   );
   if (!rows.length) {

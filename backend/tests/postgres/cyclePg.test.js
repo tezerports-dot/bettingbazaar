@@ -20,10 +20,14 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import {
   ensureCycle, getCycle, setStatus, declareWinner, addPhantomToPool,
   derivePoolsForCycle, closePhantomBetting, findLiveCycles, findCycleHistory, findOpenCycleOfType,
+  findCurrentCycle, findCyclesAwaitingSettlement, findResumableSettlements,
   lockForBet, lockForSettlement, isBettable,
   CYCLE_STATUS, BETTABLE_STATUSES,
 } from '../../postgres/cyclePg.js';
 import { getPool, pgQuery, connectGuarded, applySchema } from '../../postgres/pgClient.js';
+// The engine's settlement questions are answered by joining `cycle_settlements`,
+// so the run has to be opened and closed for real rather than faked with an INSERT.
+import { openSettlement, completeSettlement } from '../../postgres/settlementPg.js';
 
 let seq = 0;
 const nextId = () => `cyc_${Date.now()}_${seq++}`;
@@ -457,5 +461,102 @@ describe('queries the engine and the client need', () => {
     expect(history.every((c) => c.type === '30_MIN')).toBe(true);
     expect(history.map((c) => c.cycleId)).toContain(thirty.cycleId);
     expect(history.map((c) => c.cycleId)).not.toContain(oneMin.cycleId);
+  });
+});
+
+// ── THE ENGINE'S THREE QUESTIONS ────────────────────────────────────────────
+// gameEngine asked all three of MongoDB. Each assertion below is written
+// against MEMBERSHIP rather than an exact result set, because these tests share
+// one database with every other file and the queries are deliberately global.
+
+describe("the queries gameEngine used to ask MongoDB", () => {
+  /**
+   * A start time strictly later than every cycle currently in the table.
+   *
+   * `findCurrentCycle` answers a GLOBAL question — "which cycle is newest" —
+   * and these suites share one persistent database, so a fixture built from
+   * `Date.now()` plus a per-run counter is not necessarily newest: a previous
+   * run of this same file leaves rows behind, and its counter had climbed
+   * higher than this run's has. That is exactly how this test failed on its
+   * second run and passed on its first. Anchoring to the table's own maximum
+   * makes "newest" true by construction instead of by luck.
+   */
+  async function afterEverything(offsetMs = 0) {
+    const { rows } = await pgQuery(
+      `SELECT COALESCE(MAX(start_at), now()) AS m FROM cycles`);
+    return new Date(rows[0].m).getTime() + 600_000 + offsetMs;
+  }
+  const ids = (rows) => rows.map((c) => c.cycleId);
+
+  it('findCurrentCycle returns the newest cycle that has not finished', async () => {
+    const live = await make({ startTime: await afterEverything(), status: CYCLE_STATUS.OPEN });
+    expect((await findCurrentCycle()).cycleId).toBe(live.cycleId);
+
+    // A LATER cycle that is already finished must not displace it. The status
+    // filter is the whole query — without it the engine's idea of "now" would
+    // jump to a cycle nobody can bet on the instant one is archived.
+    const later = await make({ startTime: await afterEverything() });
+    await setStatus({ cycleId: later.cycleId, to: CYCLE_STATUS.COMPLETED });
+    expect((await findCurrentCycle()).cycleId).toBe(live.cycleId);
+  });
+
+  it('findCyclesAwaitingSettlement offers a declared cycle exactly until someone claims it', async () => {
+    const c = await make({ startTime: await afterEverything() });
+    await declareWinner({ cycleId: c.cycleId, winner: 'DELHI' });
+    await setStatus({ cycleId: c.cycleId, to: CYCLE_STATUS.RESULT_DECLARED });
+
+    expect(ids(await findCyclesAwaitingSettlement({ limit: 100 }))).toContain(c.cycleId);
+
+    // Opening the run is the claim. There is no PENDING flag to write, so there
+    // is none to forget: the row's existence is the whole state.
+    await openSettlement({ cycleId: c.cycleId, winningSide: 'DELHI' });
+    expect(ids(await findCyclesAwaitingSettlement({ limit: 100 }))).not.toContain(c.cycleId);
+  });
+
+  it('findCyclesAwaitingSettlement offers the OLDEST declared cycle first', async () => {
+    // The Mongo original had no sort at all. A cycle that failed to settle
+    // could therefore be passed over indefinitely while newer ones arrived —
+    // and every bet on it stays locked for as long as that goes on.
+    const base  = await afterEverything();
+    const older = await make({ startTime: base,           endTime: base + 60_000 });
+    const newer = await make({ startTime: base + 600_000, endTime: base + 900_000 });
+    for (const c of [older, newer]) {
+      await declareWinner({ cycleId: c.cycleId, winner: 'DELHI' });
+      await setStatus({ cycleId: c.cycleId, to: CYCLE_STATUS.RESULT_DECLARED });
+    }
+
+    const mine = ids(await findCyclesAwaitingSettlement({ limit: 100 }))
+      .filter((id) => id === older.cycleId || id === newer.cycleId);
+    expect(mine).toEqual([older.cycleId, newer.cycleId]);
+  });
+
+  it('findResumableSettlements finds a run that started and did not finish', async () => {
+    const c = await make({ startTime: await afterEverything() });
+    await declareWinner({ cycleId: c.cycleId, winner: 'BOMBAY' });
+    await openSettlement({ cycleId: c.cycleId, winningSide: 'BOMBAY' });
+
+    expect(ids(await findResumableSettlements())).toContain(c.cycleId);
+
+    await completeSettlement({ cycleId: c.cycleId });
+    expect(ids(await findResumableSettlements())).not.toContain(c.cycleId);
+  });
+
+  it('a resumed settlement is offered the side the FIRST pass paid against', async () => {
+    // THE reason this query reads winning_side off the run instead of winner
+    // off the cycle. `cycle_settlements.winning_side` is written once and never
+    // updated, so a result corrected mid-settlement cannot make a resumed pass
+    // pay the remaining bets on the other outcome — but that guarantee is only
+    // worth anything if the resume actually reads it.
+    const c = await make({ startTime: await afterEverything() });
+    await declareWinner({ cycleId: c.cycleId, winner: 'DELHI' });
+    await openSettlement({ cycleId: c.cycleId, winningSide: 'DELHI' });
+
+    // An admin corrects the result after the payout has begun.
+    await pgQuery(`UPDATE cycles SET winner = 'BOMBAY' WHERE cycle_id = $1`, [c.cycleId]);
+    expect((await getCycle(c.cycleId)).winner).toBe('BOMBAY');
+
+    const resumable = (await findResumableSettlements()).find((r) => r.cycleId === c.cycleId);
+    expect(resumable.winner, 'the resume followed the corrected result and would split the cycle')
+      .toBe('DELHI');
   });
 });

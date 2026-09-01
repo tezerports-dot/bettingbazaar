@@ -400,3 +400,81 @@ export async function findOpenCycleOfType(type) {
   );
   return rowToCycle(rows[0]);
 }
+
+// ── THE ENGINE'S THREE QUESTIONS ────────────────────────────────────────────
+// gameEngine asked all three of these of MongoDB. They are the last reads that
+// decide where money goes, and each one translates into something the Mongo
+// document could not express.
+
+/** The same column list, qualified — for the queries below that join. */
+const columnsOn = (alias) => COLUMNS.split(',').map((c) => `${alias}.${c.trim()}`).join(', ');
+
+/**
+ * "What cycle is running right now?"
+ *
+ * The most recent cycle that has not been archived. Note this is deliberately
+ * NOT per-type: it backs the legacy global `getGameState()`, which predates
+ * there being more than one cycle type and answers for whichever is newest.
+ * `findOpenCycleOfType` is the per-type question and is what new callers want.
+ */
+export async function findCurrentCycle() {
+  const { rows } = await pgQuery(
+    `SELECT ${COLUMNS} FROM cycles
+      WHERE status = ANY($1)
+      ORDER BY start_at DESC, created_at DESC
+      LIMIT 1`,
+    [[CYCLE_STATUS.OPEN, CYCLE_STATUS.MERGED, CYCLE_STATUS.CLOSED, CYCLE_STATUS.RESULT_DECLARED]],
+    'cycle_current',
+  );
+  return rowToCycle(rows[0]);
+}
+
+/**
+ * "Which declared cycles has nobody started paying out yet?"
+ *
+ * The Mongo query was `{ status: 'RESULT_DECLARED', isSettled: 'PENDING' }` —
+ * two fields on one document, where the second is a flag someone has to
+ * remember to write. Here the CLAIM IS THE ROW: `cycle_settlements.cycle_id` is
+ * UNIQUE, so a cycle with no settlement row has never been claimed by anyone.
+ * There is no PENDING state to write, and therefore none to forget.
+ *
+ * Ordered oldest-first, which the Mongo version was not — it took whatever came
+ * back first with no sort at all, so a cycle that failed to settle could be
+ * passed over indefinitely while newer ones kept arriving.
+ */
+export async function findCyclesAwaitingSettlement({ limit = 1 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT ${columnsOn('c')} FROM cycles c
+       LEFT JOIN cycle_settlements s ON s.cycle_id = c.cycle_id
+      WHERE c.status = $1 AND s.cycle_id IS NULL
+      ORDER BY c.end_at ASC
+      LIMIT $2`,
+    [CYCLE_STATUS.RESULT_DECLARED, Math.max(1, Math.min(100, Number(limit) || 1))],
+    'cycle_awaiting_settlement',
+  );
+  return rows.map(rowToCycle);
+}
+
+/**
+ * "Which payouts started and never finished?"
+ *
+ * The recovery sweep, formerly `Cycle.find({ isSettled: 'PROCESSING' })`.
+ *
+ * `winner` is deliberately taken from the RUN, not from the cycle. The run
+ * records `winning_side` once and never updates it, precisely so a pass that
+ * resumes settles the remaining bets against the side the FIRST pass paid
+ * against. Reading the cycle's `winner` here would mean that a result corrected
+ * mid-settlement pays some bets on one outcome and the rest on the other —
+ * which is the failure `cycle_settlements.winning_side` exists to make
+ * impossible, and it only works if the resume actually reads it.
+ */
+export async function findResumableSettlements() {
+  const { rows } = await pgQuery(
+    `SELECT ${columnsOn('c')}, s.winning_side FROM cycles c
+       JOIN cycle_settlements s ON s.cycle_id = c.cycle_id
+      WHERE s.status = 'RUNNING'
+      ORDER BY s.started_at ASC`,
+    [], 'cycle_resumable_settlements',
+  );
+  return rows.map((r) => ({ ...rowToCycle(r), winner: r.winning_side }));
+}
