@@ -1,8 +1,8 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-import mongoose from 'mongoose';
 import { describe, expect, it } from 'vitest';
 import {
-  buildDescendingCursorFilter,
+  decodeOrderCursor,
+  encodeOrderCursor,
   encodeCompoundCursor,
   normalizeLimit,
   paginatedResponse,
@@ -15,16 +15,28 @@ describe('cursor pagination utilities', () => {
     expect(normalizeLimit('9999', 50, 100)).toBe(100);
   });
 
-  it('builds a compound descending cursor filter', () => {
-    const doc = { _id: new mongoose.Types.ObjectId('64f000000000000000000001'), createdAt: new Date('2026-07-18T12:00:00.000Z') };
-    const cursor = encodeCompoundCursor(doc);
+  it('round-trips an order cursor through the wire format', () => {
+    const at = new Date('2026-07-18T12:00:00.000Z');
+    const cursor = encodeOrderCursor({ createdAt: at, orderId: 'ORD-1' });
 
-    expect(buildDescendingCursorFilter(cursor)).toEqual({
-      $or: [
-        { createdAt: { $lt: doc.createdAt } },
-        { createdAt: doc.createdAt, _id: { $lt: doc._id } },
-      ],
-    });
+    // Base64url, so a client cannot construct one by guessing the shape and a
+    // caller does not have to know what is inside it.
+    expect(cursor).not.toContain('ORD-1');
+    expect(decodeOrderCursor(cursor)).toEqual({ createdAt: at, orderId: 'ORD-1' });
+  });
+
+  it('treats an unusable cursor as no cursor at all', () => {
+    // A client that pasted half a URL gets the FIRST page, not a 400 it cannot
+    // act on — and never a filter built from half a value.
+    expect(decodeOrderCursor(undefined)).toBeNull();
+    expect(decodeOrderCursor('not-base64url-json')).toBeNull();
+    // The encoder answers "no cursor" with null for an unusable value too,
+    // rather than raising a RangeError out of the response that was only trying
+    // to say there is no next page.
+    expect(encodeCompoundCursor({ _id: 'x', createdAt: 'not a date' })).toBeNull();
+    expect(decodeOrderCursor(encodeCompoundCursor({ _id: 'x', createdAt: 'not a date' }))).toBeNull();
+    expect(encodeOrderCursor(null)).toBeNull();
+    expect(encodeOrderCursor({ createdAt: new Date() })).toBeNull();
   });
 
   it('returns one page plus resumable metadata', () => {

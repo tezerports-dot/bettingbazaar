@@ -23,6 +23,7 @@
  */
 
 import express from 'express';
+import { db } from '#db';
 // AQ-1/AQ-2: verify via the single PASETO authority. This replaces a
 // `process.env.JWT_SECRET || 'fallback-secret'` default that verified user and
 // admin SSE tokens against a PUBLIC string whenever the env var was unset —
@@ -30,19 +31,13 @@ import express from 'express';
 // HS256 and uses the fail-fast secret.
 import { verifyJwt } from '../domains/identity/jwt.util.js';
 import { isTokenRevoked } from '../domains/identity/auth.middleware.js';
-import { buildDescendingCursorFilter, normalizeLimit, paginatedResponse } from '../utils/cursorPagination.js';
+import { decodeOrderCursor, encodeOrderCursor, normalizeLimit } from '../utils/cursorPagination.js';
 import { fetchCycleHistory } from '../domains/markets/cycleHistory.service.js';
 
-const ADMIN_QUEUE_SNAPSHOT_FIELDS = [
-    'orderId', 'userId', 'type', 'status',
-    'tokenAmount', 'fiatAmount', 'amount', 'rateUsed',
-    'merchantProfit', 'merchantFee', 'payoutFee',
-    'utrWarning', 'utrWarningMessage', 'requiresReview',
-    'redFlagged', 'redFlagReason',
-    'assignedAt', 'expiresAt', 'paidAt', 'completedAt',
-    'bulkPayoutDate', 'bulkPaidAt', 'bulkPayoutBatch',
-    'createdAt', 'updatedAt',
-].join(' ');
+// The admin queue projection used to be a hand-written field list here. It is
+// the repository's `toOrder` now — one description of what an order looks like
+// rather than two, so a column added to the order does not have to be
+// remembered in a string in a route file to reach the screen that shows it.
 
 const PUBLIC_SYSTEM_CONFIG_FIELDS = [
     'minBetAmount',
@@ -154,12 +149,13 @@ export function initSSERoutes(sseManager, cycleGenerator) {
             return res.status(403).json({ success: false, message: 'Not a merchant token' });
         }
 
-        // Verify merchant is still active
+        // Verify the merchant is still active. FAILS CLOSED: a token is a
+        // claim about who somebody was when it was issued, and this is the
+        // check that they still are. Letting a database blip open the stream
+        // would keep a suspended merchant connected to the live order feed.
         try {
-            const mongoose = await import('mongoose');
-            const Merchant = mongoose.default.model('Merchant');
-            const merchant = await Merchant.findById(decoded.merchantId).lean();
-            if (!merchant || !['ACTIVE'].includes(merchant.status)) {
+            const merchant = await db.merchants.getMerchant(decoded.merchantId);
+            if (!merchant || merchant.status !== 'ACTIVE') {
                 return res.status(403).json({ success: false, message: 'Merchant account is not active' });
             }
         } catch (e) {
@@ -176,18 +172,26 @@ export function initSSERoutes(sseManager, cycleGenerator) {
         // ✅ FIXED BUG-6: PaymentOrder.merchantId now stores Merchant._id = decoded.merchantId
         // so this query now correctly returns the merchant's orders (was always empty before)
         try {
-            const mongoose = await import('mongoose');
-            const PaymentOrder = mongoose.default.model('PaymentOrder');
             const limit = normalizeLimit(req.query.limit, 50, 100);
-            const cursorFilter = buildDescendingCursorFilter(req.query.cursor);
-            const orders = await PaymentOrder.find({
+            // KEYSET, through the repository. The cursor is `(createdAt, orderId)`
+            // and the filter is part of the statement rather than a spread of
+            // query fragments assembled here — an order created while a merchant
+            // pages shifts every later row by one, and the page after it
+            // silently skips an order the merchant is meant to work.
+            const page = await db.orders.findOrders({
                 merchantId,
-                status: { $in: ['ASSIGNED', 'PROCESSING', 'PAID', 'PENDING_QUEUE'] },
-                ...cursorFilter,
-            }).sort({ createdAt: -1, _id: -1 }).limit(limit + 1).lean();
-            const page = paginatedResponse(orders, limit);
+                states: ['ASSIGNED', 'PROCESSING', 'PAID', 'PENDING_QUEUE'],
+                limit,
+                cursor: decodeOrderCursor(req.query.cursor),
+            });
 
-            sseManager.writeEvent(res, 'merchant_orders_snapshot', { orders: page.items, nextCursor: page.nextCursor, hasMore: page.hasMore, serverTime: page.serverTime, timestamp: Date.now() });
+            sseManager.writeEvent(res, 'merchant_orders_snapshot', {
+                orders: page.orders,
+                nextCursor: page.nextCursor ? encodeOrderCursor(page.nextCursor) : null,
+                hasMore: Boolean(page.nextCursor),
+                serverTime: Date.now(),
+                timestamp: Date.now(),
+            });
         } catch (e) {
             console.error('❌ SSE merchant snapshot error:', e.message);
         }
@@ -222,11 +226,13 @@ export function initSSERoutes(sseManager, cycleGenerator) {
             return res.status(401).json({ success: false, message: 'Token has been invalidated' });
         }
 
-        const mongoose = await import('mongoose');
-        const User = mongoose.default.model('User');
-        const adminUser = await User.findById(decoded.userId).select('isAdmin isSubAdmin isQueueManager isBlocked subAdminPermissions').lean();
-        if (!adminUser || adminUser.isBlocked ||
-            (!adminUser.isAdmin && !adminUser.isSubAdmin && !adminUser.isQueueManager)) {
+        // Re-checked against the ROW, not taken from the token. A token issued
+        // before an admin was blocked still carries their old claims, and this
+        // stream carries every order, every KYC submission and every cycle
+        // result — the last thing a revoked admin should keep receiving.
+        const adminUser = await db.users.getUser(decoded.userId);
+        if (!adminUser || adminUser.isBlocked
+            || (!adminUser.isAdmin && !adminUser.isSubAdmin && !adminUser.isQueueManager)) {
             return res.status(403).json({ success: false, message: 'Admin access required' });
         }
 
@@ -235,18 +241,20 @@ export function initSSERoutes(sseManager, cycleGenerator) {
 
         // Push queue snapshot immediately on connect
         try {
-            const PaymentOrder = mongoose.default.model('PaymentOrder');
             const limit = normalizeLimit(req.query.limit, 100, 250);
-            const cursorFilter = buildDescendingCursorFilter(req.query.cursor);
-            const pendingOrders = await PaymentOrder.find({ status: 'PENDING_QUEUE', ...cursorFilter })
-                .select(ADMIN_QUEUE_SNAPSHOT_FIELDS)
-                .populate('userId', 'username mobile')
-                .sort({ createdAt: -1, _id: -1 })
-                .limit(limit + 1)
-                .lean();
-            const page = paginatedResponse(pendingOrders, limit);
+            const page = await db.orders.findOrders({
+                state: 'PENDING_QUEUE',
+                limit,
+                cursor: decodeOrderCursor(req.query.cursor),
+            });
 
-            sseManager.writeEvent(res, 'queue_snapshot', { orders: page.items, nextCursor: page.nextCursor, hasMore: page.hasMore, serverTime: page.serverTime, timestamp: Date.now() });
+            sseManager.writeEvent(res, 'queue_snapshot', {
+                orders: page.orders,
+                nextCursor: page.nextCursor ? encodeOrderCursor(page.nextCursor) : null,
+                hasMore: Boolean(page.nextCursor),
+                serverTime: Date.now(),
+                timestamp: Date.now(),
+            });
         } catch (e) {
             console.error('❌ SSE admin queue snapshot error:', e.message);
         }
