@@ -281,20 +281,28 @@ export async function bumpReferralClicks(userId, by = 1) {
 /**
  * Claim the next joining number, atomically.
  *
- * The payout queue is ordered by this, so it must be unique and strictly
- * increasing. It comes from a sequence over the existing maximum, taken inside
- * one statement — never from `count(*) + 1`, which two concurrent signups both
- * read as the same value.
+ * The payout queue is ordered by this, so it must be unique.
  *
- * Idempotent: an account that already holds a number keeps it. Onboarding can
- * complete twice (a retried webhook, a resumed flow) and must not consume two.
+ * ── It comes from a real SEQUENCE now ───────────────────────────────────────
+ * This used to take `MAX(joining_number) + 1` inside the UPDATE, and the
+ * comment above it claimed that was "a sequence over the existing maximum". It
+ * was not. Each transaction reads the maximum IT can see, so two concurrent
+ * signups both read the same value and one of them collides on the unique
+ * index — a 500 at the very end of onboarding. The concurrency test documented
+ * those collisions as acceptable and asserted only that no two accounts shared
+ * a number; it now asserts that every claim succeeds.
+ *
+ * Gaps in the numbering are fine: this is an ORDER, not a count. A gap costs
+ * nothing; a collision costs a player their signup.
+ *
+ * Idempotent: an account that already holds a number keeps it — `COALESCE`
+ * only calls `nextval` when the column is null. Onboarding can complete twice
+ * (a retried webhook, a resumed flow) and must not consume two.
  */
 export async function claimJoiningNumber(userId) {
   const { rows } = await pgQuery(
     `UPDATE users
-        SET joining_number = COALESCE(
-              joining_number,
-              (SELECT COALESCE(MAX(joining_number), 0) + 1 FROM users)),
+        SET joining_number = COALESCE(joining_number, nextval('joining_number_seq')),
             updated_at = now()
       WHERE user_id = $1
       RETURNING joining_number`,

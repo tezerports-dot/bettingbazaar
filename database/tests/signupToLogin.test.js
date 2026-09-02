@@ -89,8 +89,14 @@ describePg('signup → login, end to end on one store', () => {
 
   it('completing onboarding numbers the account the login path can read', async () => {
     const userId = await signUp();
-    expect(await claimJoiningNumber(userId)).toBe(1);
-    expect((await getUser(userId)).joiningNumber).toBe(1);
+    // The number comes from a global sequence, so its VALUE depends on what
+    // else this database has issued. What matters is that onboarding assigns
+    // one, that the login path reads the same one, and that completing twice
+    // does not consume two.
+    const claimed = await claimJoiningNumber(userId);
+    expect(Number.isInteger(claimed) && claimed > 0).toBe(true);
+    expect((await getUser(userId)).joiningNumber).toBe(claimed);
+    expect(await claimJoiningNumber(userId)).toBe(claimed);
   });
 
   it('a blocked account is visible as blocked to the middleware that gates it', async () => {

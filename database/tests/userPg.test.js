@@ -26,7 +26,15 @@ const mk = (over = {}) => ({
 describePg('accounts (PostgreSQL)', () => {
   beforeAll(async () => { await applySchema(); });
   afterAll(async () => { await closePg(); });
-  beforeEach(async () => { await pgQuery('TRUNCATE users RESTART IDENTITY CASCADE'); });
+  beforeEach(async () => {
+    await pgQuery('TRUNCATE users RESTART IDENTITY CASCADE');
+    // The joining number comes from a SEQUENCE, which is global and does not
+    // reset when the table is emptied — correctly, since it hands out an ORDER
+    // rather than a count. Restarting it here lets these tests assert concrete
+    // values instead of "some distinct integers", which is easier to read and
+    // still exercises the same code path.
+    await pgQuery('ALTER SEQUENCE joining_number_seq RESTART WITH 1');
+  });
 
   describe('creation', () => {
     it('creates an account and reads it back', async () => {
@@ -154,6 +162,8 @@ describePg('accounts (PostgreSQL)', () => {
 
   describe('joining numbers', () => {
     it('hands out 1, 2, 3 in order', async () => {
+      // Gaps would be fine — this is an order, not a count — but with the
+      // sequence restarted above the numbering is contiguous and readable.
       for (let i = 1; i <= 3; i += 1) {
         await createUser(mk({ userId: `u-${i}`, mobile: `999000000${i}` }));
         expect(await claimJoiningNumber(`u-${i}`)).toBe(i);
@@ -171,10 +181,15 @@ describePg('accounts (PostgreSQL)', () => {
       for (const [i, id] of ids.entries()) {
         await createUser(mk({ userId: id, mobile: `98800000${String(i).padStart(2, '0')}` }));
       }
-      // Some of these legitimately collide on the unique index and are retried
-      // by the caller in production; here we assert the invariant that matters —
-      // whatever numbers were issued, no two accounts share one.
-      await Promise.allSettled(ids.map((id) => claimJoiningNumber(id)));
+      // EVERY claim succeeds. This used to be `allSettled`, with a comment
+      // calling the collisions acceptable and "retried by the caller" — but the
+      // collision happens at the very end of onboarding, and what the player
+      // sees is a 500. The number now comes from a sequence, so there is
+      // nothing to collide over and nothing to retry.
+      const claimed = await Promise.all(ids.map((id) => claimJoiningNumber(id)));
+      expect(claimed.every((n) => Number.isInteger(n) && n > 0)).toBe(true);
+      expect(new Set(claimed).size).toBe(ids.length);
+
       const { rows } = await pgQuery(
         `SELECT joining_number, count(*)::int AS n FROM users
           WHERE joining_number IS NOT NULL GROUP BY 1 HAVING count(*) > 1`);

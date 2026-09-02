@@ -2289,3 +2289,40 @@ CREATE TABLE IF NOT EXISTS payment_gateway_configs (
   CONSTRAINT payment_gateway_enabled_has_provider CHECK (
     NOT gateway_enabled OR gateway_provider IS NOT NULL)
 );
+
+-- The referral payout order.
+--
+-- A SEQUENCE, not `MAX(queue_position) + 1`. The max is computed by each
+-- transaction from what it can see, so two concurrent signups both read the
+-- same value and both try to claim it — the unique index then fails one of
+-- them for a reason the caller cannot act on. A sequence hands out distinct
+-- values to concurrent callers by construction, which is the entire reason it
+-- exists. Gaps are fine: this is an ORDER, not a count.
+CREATE SEQUENCE IF NOT EXISTS referral_queue_position_seq AS BIGINT START 1;
+
+-- Advance the sequence past anything already in the table.
+--
+-- A fresh sequence starts at 1, so on a database that already holds earnings it
+-- would hand out positions that are already taken and every insert would fail
+-- on the unique index. GREATEST against `last_value` means this never moves the
+-- sequence BACKWARDS, so it is safe to run on every boot like the rest of this
+-- file.
+SELECT setval('referral_queue_position_seq', GREATEST(
+  (SELECT COALESCE(MAX(queue_position), 0) FROM referral_earnings),
+  (SELECT last_value FROM referral_queue_position_seq),
+  1), TRUE);
+
+-- The signup queue position.
+--
+-- Same reason as the referral sequence, and the same defect before it existed:
+-- `claimJoiningNumber` took `MAX(joining_number) + 1` inside its UPDATE and its
+-- own comment claimed that was "a sequence over the existing maximum". It was
+-- not. Two concurrent signups read the same maximum and one of them collided on
+-- the unique index — a 500 at the end of onboarding, which the caller was
+-- expected to retry. Its concurrency test even documented the collisions as
+-- acceptable.
+CREATE SEQUENCE IF NOT EXISTS joining_number_seq AS BIGINT START 1;
+SELECT setval('joining_number_seq', GREATEST(
+  (SELECT COALESCE(MAX(joining_number), 0) FROM users),
+  (SELECT last_value FROM joining_number_seq),
+  1), TRUE);

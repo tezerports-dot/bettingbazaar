@@ -63,6 +63,17 @@ import * as merchants from './repositories/merchants.js';
 import * as chat from './repositories/chat.js';
 import * as config from './repositories/config.js';
 import * as balanceAdjustments from './repositories/balanceAdjustments.js';
+import * as markets from './repositories/markets.js';
+import * as games from './repositories/games.js';
+import * as content from './repositories/content.js';
+import * as engagement from './repositories/engagement.js';
+import * as social from './repositories/social.js';
+import * as referrals from './repositories/referrals.js';
+import * as audit from './repositories/audit.js';
+import * as compliance from './repositories/compliance.js';
+import * as operations from './repositories/operations.js';
+import * as paymentConfig from './repositories/paymentConfig.js';
+import * as supportDocuments from './repositories/supportDocuments.js';
 
 import * as walletsCore from './repositories/wallets.core.js';
 import * as walletsApi from './repositories/wallets.js';
@@ -103,6 +114,7 @@ export const db = Object.freeze({
   balanceAdjustments,
 
   // Trading
+  markets,
   bets: merge(betsCore, betsApi),
   settlements,
   casino: merge(casinoCore, casinoApi),
@@ -114,13 +126,27 @@ export const db = Object.freeze({
   merchantWallets: merge(merchantWalletsCore, merchantWalletsApi),
   merchantSettlements,
   adminIssuance,
+  paymentConfig,
 
   // Compliance
   kyc: merge(kycCore, kycApi),
+  compliance,
+  audit,
 
-  // Everything else
+  // Catalogue and content
+  games,
+  content,
+
+  // Player-facing everything else
+  engagement,
+  social,
+  referrals,
   chat,
+
+  // Platform
   config,
+  operations,
+  supportDocuments,
 });
 
 export default db;
@@ -128,3 +154,5 @@ export default db;
 // Named re-exports for the call sites that read better without the namespace.
 export { users, identity, security, telegram, merchants, chat, config };
 export { treasury, settlements, merchantSettlements, adminIssuance, balanceAdjustments };
+export { markets, games, content, engagement, social, referrals };
+export { audit, compliance, operations, paymentConfig, supportDocuments };

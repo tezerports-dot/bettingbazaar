@@ -231,6 +231,8 @@ export async function applyConfig({
   if (!pool) throw new Error('Postgres not configured (DATABASE_URL unset)');
   const client = await connectGuarded(pool);
   let failure = null;
+  let committed = null;
+  let stale = null;
 
   try {
     await client.query('BEGIN');
@@ -251,8 +253,10 @@ export async function applyConfig({
 
     if (expectedVersion !== null && Number(expectedVersion) !== currentVersion) {
       await client.query('ROLLBACK');
-      return { ok: false, reason: 'STALE', currentVersion };
+      stale = { ok: false, reason: 'STALE', currentVersion };
     }
+
+    if (stale) return stale;
 
     const settings = JSON.parse(JSON.stringify(current.settings ?? {}));
     for (const [dotted, value] of Object.entries(flat)) setPath(settings, dotted, value);
@@ -272,25 +276,31 @@ export async function applyConfig({
         actor ? String(actor) : null, reason],
     );
     await client.query('COMMIT');
-
     // Applied immediately, not at the next expiry: a stale LIMIT is worse than
     // a stale banner, and both go through here.
     invalidateConfigCache(scope, docKey);
-    return {
-      ok: true,
-      config: await getConfig(scope, { docKey, fresh: true }),
-      version: nextVersion,
-      changed: flat,
-    };
+    // Built from what was just written, NOT re-read. A read here would ask the
+    // pool for a second client while this one is still checked out, which
+    // deadlocks the pool once enough writers do it at once.
+    committed = { settings, version: nextVersion };
   } catch (error) {
     failure = error;
     try { await client.query('ROLLBACK'); } catch { /* already unwound */ }
     throw error;
   } finally {
     // Pass the error so a dead socket is DESTROYED rather than handed to the
-    // next caller. See pgClient.connectGuarded.
+    // next caller. See client.connectGuarded.
     client.release(failure ?? undefined);
   }
+
+  // The client is back in the pool before this runs, so asking for another is
+  // safe here and is not inside the transaction above.
+  return {
+    ok: true,
+    config: await getConfig(scope, { docKey, fresh: true }),
+    version: committed.version,
+    changed: flat,
+  };
 }
 
 /** Convenience for the 1 call site that patches the system config. */
