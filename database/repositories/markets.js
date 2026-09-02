@@ -375,15 +375,26 @@ export async function recentResults(cycleType, { limit = 10 } = {}) {
  * This is the check that would have caught the silent-never-settled defect on
  * the day it shipped: the engine looked healthy, every individual read
  * succeeded, and no cycle ever left OPEN.
+ *
+ * ── Why it returns a count as well as a page ────────────────────────────────
+ * It used to return a bare array under a hard `LIMIT 100`, which is the wrong
+ * shape for the thing it feeds. An alarm that reads `stalled.length` cannot
+ * tell a hundred stalled cycles from four hundred — it reports 100 either way,
+ * and the number stops moving exactly when the outage is getting worse. The
+ * total is counted over the whole matching set in the same snapshot as the
+ * page, so the alarm has the real figure and the operator still gets the oldest
+ * offenders to look at.
  */
-export async function findStalledCycles({ olderThanMinutes = 5 } = {}) {
+export async function findStalledCycles({ olderThanMinutes = 5, limit = 100 } = {}) {
   const { rows } = await pgQuery(
-    `SELECT ${COLUMNS} FROM cycles
+    `SELECT ${COLUMNS}, COUNT(*) OVER () AS total_rows FROM cycles
       WHERE winner IS NULL
         AND status IN ('OPEN', 'CLOSED')
         AND end_time < now() - ($1 || ' minutes')::interval
-      ORDER BY end_time ASC LIMIT 100`,
-    [String(Math.max(Number(olderThanMinutes) || 5, 1))], 'cycle_find_stalled',
+      ORDER BY end_time ASC LIMIT $2`,
+    [String(Math.max(Number(olderThanMinutes) || 5, 1)),
+      Math.min(Math.max(Number(limit) || 100, 1), 1000)],
+    'cycle_find_stalled',
   );
-  return rows.map(toCycle);
+  return { total: rows.length ? Number(rows[0].total_rows) : 0, cycles: rows.map(toCycle) };
 }

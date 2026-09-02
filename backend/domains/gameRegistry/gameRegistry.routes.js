@@ -15,7 +15,7 @@
  * (GameProvider + GameSession + GameTransaction) — see gameProvider.routes.js.
  */
 import express from 'express';
-import mongoose from 'mongoose';
+import { db } from '#db';
 import { authenticate, isAdmin, isAdminOrSubAdmin } from '../identity/auth.middleware.js';
 
 const router = express.Router();
@@ -31,28 +31,35 @@ function slugify(s) {
 
 // Public projection — never leak internal-only fields (there are none sensitive
 // today, but keep the contract explicit so future admin-only fields don't leak).
-const PUBLIC_FIELDS = 'slug name providerKey categorySlug launchStrategy externalGameId launchUrl thumbnail banner badge rtp tags minBet maxBet status featured order';
+/*
+ * PUBLIC_FIELDS is gone. It was a projection string listing every field the
+ * repository already returns, so it selected everything and protected nothing —
+ * a name that reads like a safety boundary and is not one. If a game ever
+ * carries something a player must not see, it belongs in a separate reader like
+ * `getProviderSecrets`, not in a string a future field is forgotten from.
+ */
 
 // ── PUBLIC: catalogue ─────────────────────────────────────────────────────────
 // Query: category, provider, featured=true, tag, q (name search), limit.
 // Users see ACTIVE + MAINTENANCE (MAINTENANCE renders locked). INACTIVE hidden.
 router.get('/games', async (req, res) => {
   try {
-    const Game = mongoose.model('Game');
     const { category, provider, featured, tag, q, limit } = req.query;
 
-    const filter = { status: { $in: ['ACTIVE', 'MAINTENANCE'] } };
-    if (category) filter.categorySlug = category;
-    if (provider) filter.providerKey = provider;
-    if (featured === 'true') filter.featured = true;
-    if (tag) filter.tags = tag;
-    if (q) filter.name = { $regex: String(q).slice(0, 60), $options: 'i' };
-
-    const games = await Game.find(filter)
-      .select(PUBLIC_FIELDS)
-      .sort({ featured: -1, order: 1, name: 1 })
-      .limit(Math.min(parseInt(limit) || 200, 500))
-      .lean();
+    // Visible means ACTIVE or MAINTENANCE. A game under maintenance is still
+    // shown, greyed out — removing the tile makes players think it is gone for
+    // good. Only INACTIVE is hidden.
+    //
+    // The name search is ANCHORED in the repository, so a search box cannot be
+    // turned into a leading-wildcard scan of the whole catalogue.
+    const games = await db.games.listGames({
+      categorySlug: category || null,
+      providerKey: provider || null,
+      featuredOnly: featured === 'true',
+      tag: tag || null,
+      search: q || null,
+      limit: Math.min(parseInt(limit, 10) || 200, 500),
+    });
 
     res.json({ success: true, games });
   } catch (err) {
@@ -64,23 +71,11 @@ router.get('/games', async (req, res) => {
 // ── PUBLIC: categories (enabled), with a live count of visible games ──────────
 router.get('/categories', async (req, res) => {
   try {
-    const GameCategory = mongoose.model('GameCategory');
-    const Game = mongoose.model('Game');
-    const cats = await GameCategory.find({ enabled: true }).sort({ order: 1, name: 1 }).lean();
-
-    const counts = await Game.aggregate([
-      { $match: { status: { $in: ['ACTIVE', 'MAINTENANCE'] } } },
-      { $group: { _id: '$categorySlug', count: { $sum: 1 } } },
-    ]);
-    const countBySlug = Object.fromEntries(counts.map(c => [c._id, c.count]));
-
-    res.json({
-      success: true,
-      categories: cats.map(c => ({
-        slug: c.slug, name: c.name, icon: c.icon, order: c.order,
-        gameCount: countBySlug[c.slug] || 0,
-      })),
-    });
+    // ONE query. It was a category fetch plus a separate aggregation, so a
+    // category created between them appeared with a count of zero, and a game
+    // moved between categories could be counted twice or not at all.
+    const categories = await db.games.listCategoriesWithCounts({ enabledOnly: true });
+    res.json({ success: true, categories });
   } catch (err) {
     console.error('[gameRegistry] list categories error:', err.message);
     res.status(500).json({ success: false, message: 'Failed to load categories' });
@@ -92,13 +87,14 @@ router.get('/categories', async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 router.get('/admin/games', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
-    const Game = mongoose.model('Game');
     const { category, provider, status } = req.query;
-    const filter = {};
-    if (category) filter.categorySlug = category;
-    if (provider) filter.providerKey = provider;
-    if (status) filter.status = status;
-    const games = await Game.find(filter).sort({ order: 1, name: 1 }).lean();
+    const games = await db.games.listGames({
+      categorySlug: category || null,
+      providerKey: provider || null,
+      status: status || null,
+      visibleOnly: false,          // the admin list shows INACTIVE games too
+      limit: 1000,
+    });
     res.json({ success: true, games });
   } catch (err) {
     console.error('[gameRegistry] admin list games error:', err.message);
@@ -120,21 +116,33 @@ function pickGameFields(body) {
 
 router.post('/admin/games', authenticate, isAdmin, async (req, res) => {
   try {
-    const Game = mongoose.model('Game');
     const data = pickGameFields(req.body);
     if (!data.name) return res.status(400).json({ success: false, message: 'name is required' });
 
     const slug = slugify(req.body.slug || data.name);
     if (!slug) return res.status(400).json({ success: false, message: 'A valid slug/name is required' });
-    if (await Game.exists({ slug })) {
+
+    // The slug's uniqueness is decided by the primary key, not by an `exists`
+    // check two simultaneous creations both pass. The launchability rule is a
+    // CHECK on the row, so an ACTIVE game that nothing can launch is refused
+    // here as well as on every other path that could set the status.
+    if (await db.games.getGame(slug)) {
       return res.status(409).json({ success: false, message: `A game with slug "${slug}" already exists` });
     }
-
-    const game = await Game.create({
-      ...data, slug,
-      createdBy: req.user.userId, updatedBy: req.user.userId,
-      createdAt: new Date(), updatedAt: new Date(),
-    });
+    let game;
+    try {
+      game = await db.games.upsertGame({
+        ...data, slug, createdBy: req.user.userId, updatedBy: req.user.userId,
+      });
+    } catch (e) {
+      if (e.code === '23514') {
+        return res.status(400).json({
+          success: false,
+          message: 'An ACTIVE game must be launchable — a provider game needs a provider and an external id, a URL game needs a URL.',
+        });
+      }
+      throw e;
+    }
     res.json({ success: true, game });
   } catch (err) {
     console.error('[gameRegistry] create game error:', err.message);
@@ -144,20 +152,27 @@ router.post('/admin/games', authenticate, isAdmin, async (req, res) => {
 
 router.put('/admin/games/:id', authenticate, isAdmin, async (req, res) => {
   try {
-    const Game = mongoose.model('Game');
+    const existing = await db.games.getGame(req.params.id);
+    if (!existing) return res.status(404).json({ success: false, message: 'Game not found' });
+
+    // The slug IS the identity — renaming one is creating a different game and
+    // orphaning every reference to the old one, so it is not offered. The
+    // display name is what an admin actually wants to change.
     const updates = pickGameFields(req.body);
-    // Allow slug rename with a uniqueness guard.
-    if (req.body.slug !== undefined) {
-      const slug = slugify(req.body.slug);
-      if (!slug) return res.status(400).json({ success: false, message: 'Invalid slug' });
-      const clash = await Game.findOne({ slug, _id: { $ne: req.params.id } }).select('_id').lean();
-      if (clash) return res.status(409).json({ success: false, message: `slug "${slug}" is taken` });
-      updates.slug = slug;
+    let game;
+    try {
+      game = await db.games.upsertGame({
+        ...existing, ...updates, slug: existing.slug, updatedBy: req.user.userId,
+      });
+    } catch (e) {
+      if (e.code === '23514') {
+        return res.status(400).json({
+          success: false,
+          message: 'An ACTIVE game must be launchable — a provider game needs a provider and an external id, a URL game needs a URL.',
+        });
+      }
+      throw e;
     }
-    updates.updatedBy = req.user.userId;
-    updates.updatedAt = new Date();
-    const game = await Game.findByIdAndUpdate(req.params.id, updates, { new: true });
-    if (!game) return res.status(404).json({ success: false, message: 'Game not found' });
     res.json({ success: true, game });
   } catch (err) {
     console.error('[gameRegistry] update game error:', err.message);
@@ -167,9 +182,9 @@ router.put('/admin/games/:id', authenticate, isAdmin, async (req, res) => {
 
 router.delete('/admin/games/:id', authenticate, isAdmin, async (req, res) => {
   try {
-    const Game = mongoose.model('Game');
-    const del = await Game.findByIdAndDelete(req.params.id);
-    if (!del) return res.status(404).json({ success: false, message: 'Game not found' });
+    if (!await db.games.deleteGame(req.params.id)) {
+      return res.status(404).json({ success: false, message: 'Game not found' });
+    }
     res.json({ success: true, message: 'Game deleted' });
   } catch (err) {
     console.error('[gameRegistry] delete game error:', err.message);
@@ -182,9 +197,7 @@ router.delete('/admin/games/:id', authenticate, isAdmin, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 router.get('/admin/categories', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
-    const GameCategory = mongoose.model('GameCategory');
-    const cats = await GameCategory.find({}).sort({ order: 1, name: 1 }).lean();
-    res.json({ success: true, categories: cats });
+    res.json({ success: true, categories: await db.games.listCategoriesWithCounts({ enabledOnly: false }) });
   } catch (err) {
     console.error('[gameRegistry] admin list categories error:', err.message);
     res.status(500).json({ success: false, message: 'Failed to load categories' });
@@ -193,16 +206,15 @@ router.get('/admin/categories', authenticate, isAdminOrSubAdmin, async (req, res
 
 router.post('/admin/categories', authenticate, isAdmin, async (req, res) => {
   try {
-    const GameCategory = mongoose.model('GameCategory');
     const { name, icon = '', order = 0, enabled = true } = req.body;
     if (!name) return res.status(400).json({ success: false, message: 'name is required' });
     const slug = slugify(req.body.slug || name);
     if (!slug) return res.status(400).json({ success: false, message: 'A valid slug/name is required' });
-    if (await GameCategory.exists({ slug })) {
-      return res.status(409).json({ success: false, message: `Category "${slug}" already exists` });
-    }
-    const cat = await GameCategory.create({ slug, name, icon, order, enabled, updatedBy: req.user.userId });
-    res.json({ success: true, category: cat });
+
+    const category = await db.games.upsertCategory({
+      slug, name, icon, order, enabled, updatedBy: req.user.userId,
+    });
+    res.json({ success: true, category });
   } catch (err) {
     console.error('[gameRegistry] create category error:', err.message);
     res.status(500).json({ success: false, message: 'Failed to create category' });
@@ -211,12 +223,16 @@ router.post('/admin/categories', authenticate, isAdmin, async (req, res) => {
 
 router.put('/admin/categories/:id', authenticate, isAdmin, async (req, res) => {
   try {
-    const GameCategory = mongoose.model('GameCategory');
-    const updates = { updatedBy: req.user.userId, updatedAt: new Date() };
-    for (const f of ['name', 'icon', 'order', 'enabled']) if (req.body[f] !== undefined) updates[f] = req.body[f];
-    const cat = await GameCategory.findByIdAndUpdate(req.params.id, updates, { new: true });
-    if (!cat) return res.status(404).json({ success: false, message: 'Category not found' });
-    res.json({ success: true, category: cat });
+    const existing = (await db.games.listCategories({ enabledOnly: false }))
+      .find((c) => c.slug === req.params.id);
+    if (!existing) return res.status(404).json({ success: false, message: 'Category not found' });
+
+    const updates = { ...existing };
+    for (const f of ['name', 'icon', 'order', 'enabled']) {
+      if (req.body[f] !== undefined) updates[f] = req.body[f];
+    }
+    const category = await db.games.upsertCategory({ ...updates, updatedBy: req.user.userId });
+    res.json({ success: true, category });
   } catch (err) {
     console.error('[gameRegistry] update category error:', err.message);
     res.status(500).json({ success: false, message: 'Failed to update category' });
@@ -225,16 +241,19 @@ router.put('/admin/categories/:id', authenticate, isAdmin, async (req, res) => {
 
 router.delete('/admin/categories/:id', authenticate, isAdmin, async (req, res) => {
   try {
-    const GameCategory = mongoose.model('GameCategory');
-    const Game = mongoose.model('Game');
-    const cat = await GameCategory.findById(req.params.id);
-    if (!cat) return res.status(404).json({ success: false, message: 'Category not found' });
-    // Refuse to orphan games — reassign or delete them first.
-    const inUse = await Game.countDocuments({ categorySlug: cat.slug });
-    if (inUse > 0) {
-      return res.status(409).json({ success: false, message: `${inUse} game(s) still use this category. Reassign them first.` });
+    // The refusal and the delete are ONE statement: a count followed by a
+    // delete lets a game be assigned in between, and the games are then
+    // pointing at a category that no longer exists.
+    const result = await db.games.deleteCategory(req.params.id);
+    if (!result.ok) {
+      if (result.reason === 'NOT_FOUND') {
+        return res.status(404).json({ success: false, message: 'Category not found' });
+      }
+      return res.status(409).json({
+        success: false,
+        message: `${result.gameCount} game(s) still use this category. Reassign them first.`,
+      });
     }
-    await GameCategory.deleteOne({ _id: cat._id });
     res.json({ success: true, message: 'Category deleted' });
   } catch (err) {
     console.error('[gameRegistry] delete category error:', err.message);

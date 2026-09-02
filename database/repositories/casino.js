@@ -1,41 +1,33 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
 /**
- * postgres/casinoPgAuthority.js — casino provider callbacks, behind the resolver.
+ * repositories/casino.js — the vocabulary layer over the casino round machinery.
  *
- * The eleventh path to be routed and the last one that was not built at all.
- * `domains/casino/gameProvider.routes.js` handles BET / WIN / ROLLBACK / REFUND
- * and moved real money with no round accounting behind it;
- * `true` now decides per call.
+ * `casino.core.js` holds the mechanism: the round lock, the reversal bound, the
+ * idempotency gate and the wallet movement, all in one transaction. This file
+ * is the shape the provider webhook calls it in — it normalises the supplier's
+ * word for a money move and answers with the balance to send back.
  *
- * ── What routing buys ───────────────────────────────────────────────────────
- * The Mongo route has the refund bound — it was added when the exposure was
- * found — but it enforces it by summing `GameTransaction` documents AFTER
- * reading them, outside any lock:
+ * ── The refusal IS the product ──────────────────────────────────────────────
+ * A reversal must prove the debit it reverses. A provider that is buggy,
+ * replayed, or hostile can otherwise CREDIT REAL MONEY by rolling back a round
+ * that never had a bet, or by rolling back more than was staked — and the
+ * duplicate-txId gate does not help, because it stops the SAME callback
+ * applying twice and says nothing about a DIFFERENT callback that should never
+ * have been honoured.
  *
- *     const priorTx = await GameTransaction.find({ roundId, userId });
- *     …sum BETs, sum ROLLBACKs, compare, then refund
+ * Two concurrent rollbacks carrying different provider ids are the case that
+ * makes summing-then-comparing wrong: both reads see "nothing refunded yet" and
+ * both pass. The totals therefore move under the round's row lock inside the
+ * same transaction as the wallet movement, and `refunded_paise <= debited_paise`
+ * is a CHECK CONSTRAINT — so the bound holds against a future code path that
+ * forgets to test it.
  *
- * Two concurrent rollbacks with DIFFERENT provider tx ids both read the same
- * "nothing refunded yet" and both pass. The duplicate-txId check cannot help:
- * it stops one callback applying twice and says nothing about two distinct
- * callbacks that should not both be honoured. In Postgres the totals move under
- * the round's row lock inside the same transaction as the wallet movement, and
- * `refunded_paise <= debited_paise` is a CHECK CONSTRAINT — so the bound holds
- * against a future code path that forgets to test it.
- *
- * ── A refusal is surfaced, never swallowed ──────────────────────────────────
- * When Postgres refuses a reversal the provider is told no. Falling back to the
- * Mongo path on a refusal would mean the store that owns the round is overruled
- * by the store that has no opinion — and this is the one domain where the
- * refusal IS the product: it is what stops a buggy or hostile provider minting
- * money by rolling back a round that never had a bet.
+ * A refusal is returned to the caller to be surfaced to the provider. There is
+ * nowhere for it to fall back to, and there should not be.
  */
-import mongoose from 'mongoose';
-import { MONEY_PATHS } from '../moneyPaths.js';
-import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
+import { rupeesToPaise } from '../../backend/shared/money.js';
 import { CASINO_TX, recordCallback, getRound } from './casino.core.js';
-
-/** Is Postgres the source of truth for casino rounds? */
+import { getBalancesRupees } from './wallets.core.js';
 
 /** The provider's vocabulary, normalised. Anything else is not a money move. */
 export function normaliseType(raw) {
@@ -43,60 +35,48 @@ export function normaliseType(raw) {
   return CASINO_TX[t] ? t : null;
 }
 
-/**
- * Apply one provider callback.
- *
- * Returns `{ handled: false }` when Mongo owns the path, which tells the route
- * to run its own logic unchanged. Anything else is the final answer:
- *
- *   { ok: true,  idempotent }            applied, or already applied
- *   { ok: false, reason: 'no_prior_debit' | 'refund_exceeds_debit' | … }
- */
-export async function applyCallbackOnPostgres({
-  txId, roundId, userId, type, amountRupees, providerKey = null, gameId = null, reason = null,
-}) {
-
-  const normalised = normaliseType(type);
-  if (!normalised) return { handled: true, ok: false, reason: 'unknown_type', type };
-
-  const result = await recordCallback({
-    txId, roundId, userId: String(userId), type: normalised,
-    amountPaise: rupeesToPaise(Number(amountRupees) || 0),
-    providerKey, gameId, reason,
-  });
-
-  if (!result.ok) return { handled: true, ...result };
-
-  // Mongo follows so the player's balance, the game history and the admin
-  // panels stay usable, and a fallback is a redeploy rather than a recovery.
-  // AWAITED: the route reads the balance back to answer the provider, and a
-  // provider told the wrong balance will reconcile against it.
-  const round = result.round ?? await getRound(roundId);
-
-  return {
-    handled: true, ok: true,
-    idempotent: Boolean(result.idempotent),
-    round,
-    // The route answers the provider with a balance; give it the authoritative
-    // one rather than letting it re-read a document that may still be catching up.
-    balanceRupees: await authoritativeBalance(userId),
-  };
+/** What the provider is told, and what the audit row records. */
+export async function spendableBalance(userId) {
+  const w = await getBalancesRupees(String(userId));
+  return (w?.depositBalance || 0) + (w?.winningsBalance || 0);
 }
 
 /**
- * The player's spendable balance, from whichever store owns the wallet.
+ * Apply one provider callback. This is the whole decision.
  *
- * Casino settles through the USER WALLET directly rather than the bets path, so
- * this follows WALLET's authority, not this module's — those are separate flags
- * and reading the wrong one is how a provider gets told a balance that no store
- * actually holds.
+ *   { ok: true,  idempotent, round, balanceRupees }
+ *   { ok: false, reason: 'unknown_type' | 'no_prior_debit' | 'refund_exceeds_debit'
+ *                      | 'insufficient' | 'inconsistent_idempotency' }
+ *
+ * An amount that is not a positive number is refused here rather than reaching
+ * the mechanism: `rupeesToPaise` on junk yields NaN, and NaN paise passed to a
+ * `BIGINT` column is a 500 to a provider that will retry it forever.
  */
-async function authoritativeBalance(userId) {
-  {
-    const { getBalancesRupees } = await import('./wallets.core.js');
-    const w = await getBalancesRupees(String(userId));
-    if (w) return (w.depositBalance || 0) + (w.winningsBalance || 0);
+export async function applyProviderCallback({
+  txId, roundId, userId, type, amountRupees, providerKey = null, gameId = null, reason = null,
+}) {
+  const normalised = normaliseType(type);
+  if (!normalised) return { ok: false, reason: 'unknown_type', type };
+
+  const amountPaise = rupeesToPaise(Number(amountRupees) || 0);
+  if (!Number.isInteger(amountPaise) || amountPaise <= 0) {
+    return { ok: false, reason: 'invalid_amount', amountRupees };
   }
-  const u = await mongoose.model('User').findById(userId).select('depositBalance winningsBalance').lean();
-  return (u?.depositBalance || 0) + (u?.winningsBalance || 0);
+
+  const result = await recordCallback({
+    txId, roundId, userId: String(userId), type: normalised,
+    amountPaise, providerKey, gameId, reason,
+  });
+
+  if (!result.ok) return result;
+
+  return {
+    ok: true,
+    idempotent: Boolean(result.idempotent),
+    round: result.round ?? await getRound(roundId),
+    // Read AFTER the movement committed and its client was released — the
+    // provider reconciles against this figure, so it must be the balance the
+    // wallet actually holds rather than the one this function expected.
+    balanceRupees: await spendableBalance(userId),
+  };
 }

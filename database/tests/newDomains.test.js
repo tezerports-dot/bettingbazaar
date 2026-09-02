@@ -171,8 +171,24 @@ describePg('the domains written from scratch', () => {
         cycleId: `c-${ID}-stalled`, cycleType: 'FULL_DAY',
         startTime: start, endTime: new Date(start.getTime() + 60_000),
       });
-      const stalled = await markets.findStalledCycles({ olderThanMinutes: 5 });
-      expect(stalled.map((c) => c.cycleId)).toContain(`c-${ID}-stalled`);
+      const stalled = await markets.findStalledCycles({ olderThanMinutes: 5, limit: 1000 });
+      expect(stalled.cycles.map((c) => c.cycleId)).toContain(`c-${ID}-stalled`);
+      // The count is of everything matching, not of the page — an alarm that
+      // reads the page length cannot tell 100 stalled cycles from 400.
+      expect(stalled.total).toBeGreaterThanOrEqual(stalled.cycles.length);
+    });
+
+    it('counts every stalled cycle even when the page is smaller', async () => {
+      const start = new Date(Date.now() - 90 * 60_000);
+      for (const n of [1, 2, 3]) {
+        await markets.ensureCycle({
+          cycleId: `c-${ID}-stall-${n}`, cycleType: 'FULL_DAY',
+          startTime: start, endTime: new Date(start.getTime() + 60_000),
+        });
+      }
+      const page = await markets.findStalledCycles({ olderThanMinutes: 5, limit: 2 });
+      expect(page.cycles).toHaveLength(2);
+      expect(page.total).toBeGreaterThanOrEqual(4);
     });
 
     it('records the settlement once, and only with a winner', async () => {
@@ -510,16 +526,28 @@ describePg('the domains written from scratch', () => {
 
   // ══════════════════════════════════════════════════════════════════════════
   describe('content, games, social — rows that cannot say two things', () => {
-    it('refuses a LIVE game nothing can launch', async () => {
+    // ACTIVE / MAINTENANCE / INACTIVE is the registry's own vocabulary. This
+    // test said 'LIVE' — a status the registry never sets — and so proved the
+    // launchability rule against a value the column rejects outright for a
+    // different reason. It passed for the wrong reason, which is worse than
+    // failing: the constraint it names could have been dropped entirely.
+    it('refuses an ACTIVE game nothing can launch', async () => {
       await expect(games.upsertGame({
-        slug: `g-${ID}`, name: 'Broken', status: 'LIVE', launchStrategy: 'PROVIDER',
+        slug: `g-${ID}`, name: 'Broken', status: 'ACTIVE', launchStrategy: 'PROVIDER',
       })).rejects.toThrow(/games_live_is_launchable/);
 
       const ok = await games.upsertGame({
-        slug: `g-${ID}-ok`, name: 'Fine', status: 'LIVE',
+        slug: `g-${ID}-ok`, name: 'Fine', status: 'ACTIVE',
         launchStrategy: 'URL', launchUrl: 'https://example.test/play',
       });
-      expect(ok.status).toBe('LIVE');
+      expect(ok.status).toBe('ACTIVE');
+    });
+
+    it('refuses a status the registry never sets', async () => {
+      await expect(games.upsertGame({
+        slug: `g-${ID}-bad`, name: 'Wrong vocabulary', status: 'LIVE',
+        launchStrategy: 'URL', launchUrl: 'https://example.test/play',
+      })).rejects.toThrow(/games_status_known/);
     });
 
     it('does not wipe a provider credential when an admin edits its name', async () => {
@@ -531,6 +559,100 @@ describePg('the domains written from scratch', () => {
       expect((await games.getProviderSecrets(`p-${ID}`)).apiKeyEncrypted).toBe('secret-key');
       // …and the general reader never sees it.
       expect(JSON.stringify(await games.getProvider(`p-${ID}`))).not.toContain('secret-key');
+    });
+
+    it('never returns a credential from the list, only whether one is set', async () => {
+      await games.upsertProvider({
+        providerKey: `pl-${ID}`, name: 'Listed', apiUrl: 'https://api.test',
+        apiKeyEncrypted: 'sealed-key-material',
+      });
+      const listed = (await games.listProviders()).find((p) => p.key === `pl-${ID}`);
+      expect(listed.hasApiKey).toBe(true);
+      expect(listed.hasApiSecret).toBe(false);
+      // The whole row, serialised. A new credential column added later and
+      // forgotten in the SELECT would fail here rather than in production.
+      expect(JSON.stringify(listed)).not.toContain('sealed-key-material');
+    });
+
+    it('keeps configuration state off the public list', async () => {
+      await games.upsertProvider({
+        providerKey: `pp-${ID}`, name: 'Public', category: 'casino',
+        apiUrl: 'https://api.test', apiKeyEncrypted: 'sealed', enabled: true,
+      });
+      await games.upsertProvider({
+        providerKey: `px-${ID}`, name: 'Not live', category: 'casino',
+        apiUrl: 'https://api.test', apiKeyEncrypted: 'sealed',
+      });
+      const publicList = await games.listPublicProviders();
+      const keys = publicList.map((p) => p.key);
+      expect(keys).toContain(`pp-${ID}`);
+      // A configured-but-switched-off supplier is commercial information.
+      expect(keys).not.toContain(`px-${ID}`);
+      expect(Object.keys(publicList[0])).not.toContain('hasApiKey');
+    });
+
+    it('lets the key decide, so two creates cannot both win', async () => {
+      const [a, b] = await Promise.all([
+        games.createProvider({ providerKey: `pc-${ID}`, name: 'First' }),
+        games.createProvider({ providerKey: `pc-${ID}`, name: 'Second' }),
+      ]);
+      // One row, one null. Never two rows and never a throw.
+      expect([a, b].filter(Boolean)).toHaveLength(1);
+      expect((await games.getProvider(`pc-${ID}`)).enabled).toBe(false);
+    });
+
+    it('leaves an untouched credential alone on a partial edit', async () => {
+      await games.createProvider({
+        providerKey: `pu-${ID}`, name: 'Before', apiUrl: 'https://api.test',
+        apiKeyEncrypted: 'keep-me', apiSecretEncrypted: 'also-keep-me',
+      });
+      await games.updateProvider(`pu-${ID}`, { name: 'After' }, { updatedBy: 'admin-1' });
+      const secrets = await games.getProviderSecrets(`pu-${ID}`);
+      expect(secrets.apiKeyEncrypted).toBe('keep-me');
+      expect(secrets.apiSecretEncrypted).toBe('also-keep-me');
+      expect((await games.getProvider(`pu-${ID}`)).name).toBe('After');
+
+      // An explicit null is how a credential is retired.
+      await games.updateProvider(`pu-${ID}`, { apiSecretEncrypted: null });
+      expect((await games.getProviderSecrets(`pu-${ID}`)).apiSecretEncrypted).toBeNull();
+      expect((await games.getProviderSecrets(`pu-${ID}`)).apiKeyEncrypted).toBe('keep-me');
+    });
+
+    it('reports a missing provider rather than succeeding at nothing', async () => {
+      expect(await games.updateProvider(`nope-${ID}`, { name: 'Ghost' })).toBeNull();
+      expect(await games.deleteProvider(`nope-${ID}`)).toMatchObject({ ok: false, reason: 'NOT_FOUND' });
+    });
+
+    it('will not delete a provider out from under a game', async () => {
+      await games.createProvider({ providerKey: `pd-${ID}`, name: 'In use' });
+      await games.upsertGame({
+        slug: `gd-${ID}`, name: 'Uses it', providerKey: `pd-${ID}`,
+        launchStrategy: 'PROVIDER', externalGameId: 'x1', status: 'INACTIVE',
+      });
+      expect(await games.deleteProvider(`pd-${ID}`)).toMatchObject({ ok: false, reason: 'HAS_GAMES', games: 1 });
+
+      await games.deleteGame(`gd-${ID}`);
+      expect(await games.deleteProvider(`pd-${ID}`)).toMatchObject({ ok: true, name: 'In use' });
+    });
+
+    it('pages provider transactions with a total from the same query', async () => {
+      for (let i = 0; i < 5; i += 1) {
+        await games.recordGameTransaction({
+          txId: `gt-${ID}-${i}`, roundId: `r-${ID}`, userId: `u-${ID}`,
+          providerKey: `pt-${ID}`, txType: 'BET', amountRupees: 10 + i,
+        });
+      }
+      const first = await games.adminGameTransactions({ providerKey: `pt-${ID}`, page: 1, limit: 2 });
+      expect(first.transactions).toHaveLength(2);
+      // The count describes the FILTERED set, not the page and not the table.
+      expect(first.total).toBe(5);
+
+      const last = await games.adminGameTransactions({ providerKey: `pt-${ID}`, page: 3, limit: 2 });
+      expect(last.transactions).toHaveLength(1);
+      expect(last.total).toBe(5);
+
+      const empty = await games.adminGameTransactions({ providerKey: `absent-${ID}` });
+      expect(empty).toMatchObject({ total: 0, transactions: [] });
     });
 
     it('refuses an enabled provider with no endpoint', async () => {

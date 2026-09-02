@@ -1678,26 +1678,52 @@ CREATE TABLE IF NOT EXISTS games (
   tags             TEXT[] NOT NULL DEFAULT '{}',
   min_bet_paise    BIGINT NOT NULL DEFAULT 1000,
   max_bet_paise    BIGINT NOT NULL DEFAULT 10000000,
-  status           TEXT NOT NULL DEFAULT 'DRAFT',
+  status           TEXT NOT NULL DEFAULT 'INACTIVE',
   featured         BOOLEAN NOT NULL DEFAULT FALSE,
   sort_order       INTEGER NOT NULL DEFAULT 0,
   created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   created_by       TEXT,
   updated_by       TEXT,
-  CONSTRAINT games_status_known   CHECK (status IN ('DRAFT', 'LIVE', 'DISABLED')),
+  -- The vocabulary the REGISTRY uses. A status the application sets and the
+  -- table refuses is a game that cannot be published — the same mistake the
+  -- cycle statuses had, and for the same reason: the tidier set was invented
+  -- here rather than read from the code that writes it.
+  --   ACTIVE      playable
+  --   MAINTENANCE visible, temporarily unplayable
+  --   INACTIVE    hidden
+  CONSTRAINT games_status_known   CHECK (status IN ('ACTIVE', 'MAINTENANCE', 'INACTIVE')),
   CONSTRAINT games_strategy_known CHECK (launch_strategy IN ('PROVIDER', 'URL', 'INTERNAL')),
   CONSTRAINT games_bet_range      CHECK (min_bet_paise > 0 AND min_bet_paise <= max_bet_paise),
   CONSTRAINT games_rtp_range      CHECK (rtp IS NULL OR (rtp >= 0 AND rtp <= 100)),
-  -- A LIVE game nobody can launch is a tile that 404s.
+  -- A playable game nobody can launch is a tile that 404s.
   CONSTRAINT games_live_is_launchable CHECK (
-    status <> 'LIVE'
+    status <> 'ACTIVE'
     OR (launch_strategy = 'PROVIDER' AND provider_key IS NOT NULL AND external_game_id IS NOT NULL)
     OR (launch_strategy = 'URL' AND launch_url IS NOT NULL)
     OR launch_strategy = 'INTERNAL')
 );
-CREATE INDEX IF NOT EXISTS games_catalogue_idx ON games (category_slug, sort_order) WHERE status = 'LIVE';
-CREATE INDEX IF NOT EXISTS games_featured_idx  ON games (sort_order) WHERE status = 'LIVE' AND featured;
+CREATE INDEX IF NOT EXISTS games_catalogue_idx ON games (category_slug, sort_order)
+  WHERE status IN ('ACTIVE', 'MAINTENANCE');
+CREATE INDEX IF NOT EXISTS games_featured_idx  ON games (sort_order)
+  WHERE status IN ('ACTIVE', 'MAINTENANCE') AND featured;
+
+-- Applied as ALTERs too: a CHECK inside `CREATE TABLE IF NOT EXISTS` is skipped
+-- where the table already exists, so a corrected vocabulary would reach a fresh
+-- install and no other.
+DO $$ BEGIN
+  ALTER TABLE games DROP CONSTRAINT IF EXISTS games_status_known;
+  ALTER TABLE games ADD CONSTRAINT games_status_known
+    CHECK (status IN ('ACTIVE', 'MAINTENANCE', 'INACTIVE'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE games DROP CONSTRAINT IF EXISTS games_live_is_launchable;
+  ALTER TABLE games ADD CONSTRAINT games_live_is_launchable CHECK (
+    status <> 'ACTIVE'
+    OR (launch_strategy = 'PROVIDER' AND provider_key IS NOT NULL AND external_game_id IS NOT NULL)
+    OR (launch_strategy = 'URL' AND launch_url IS NOT NULL)
+    OR launch_strategy = 'INTERNAL');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- CONTENT — what the panels render
