@@ -477,20 +477,24 @@ export async function markOrderPaid(userId, orderId, utrNumber, proofFileKey, pr
     expectedCategory: 'payment-proof',
   });
 
-  try {
-    await markUTRAsUsed(normalizedUTR, order._id, order.userId, order.fiatAmount);
-  } catch (err) {
-    if (err.code === 11000) {
-      // FIX (2026-07-09): was '../models/' (resolves to nonexistent
-      // domains/models/) — crashed the duplicate-UTR path. Correct: ../../models/.
-      const { UTRRegistry } = await import('../../models/utrRegistry.model.js');
-      const existing = await UTRRegistry.findOne({ utr: normalizedUTR }).lean();
-      throw Object.assign(
-        new Error('This UTR was already used. Contact support.'),
-        { status: 409, code: 'DUPLICATE_UTR', originalOrderId: existing?.orderId }
-      );
-    }
-    throw err;
+  // The claim decides in ONE statement. It used to be a check followed by an
+  // insert, so two submissions of the same reference arriving together both
+  // passed the check and one then died on the index — a 500 to a player who
+  // had done nothing wrong. The refusal now names which rule stopped it and
+  // carries the order that holds the reference, so support has an answer
+  // without a second lookup.
+  const claimed = await markUTRAsUsed(normalizedUTR, order._id, order.userId, order.fiatAmount);
+  if (!claimed.ok) {
+    throw Object.assign(
+      new Error(claimed.reason === 'FRAUD_FLAGGED'
+        ? 'This payment reference is under review. Contact support.'
+        : 'This UTR was already used. Contact support.'),
+      {
+        status: 409,
+        code: claimed.reason,
+        originalOrderId: claimed.entry?.orderId ?? null,
+      },
+    );
   }
 
   // The UTR was consumed above and is not returnable, so the transition being

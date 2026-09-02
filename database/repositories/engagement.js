@@ -173,6 +173,9 @@ export async function redeemGiftCode(code, userId) {
       return {
         ok: true,
         redemptionId: Number(redemption.rows[0].id),
+        // The NORMALISED code, so a caller building an idempotency key from it
+        // produces the same key whatever case the player typed.
+        code: row.code,
         amount: paiseToRupees(Number(row.amount_paise)),
         amountPaise: Number(row.amount_paise),
         bonusType: row.bonus_type,
@@ -209,6 +212,49 @@ export async function setGiftCodeActive(code, isActive) {
     [String(code).toUpperCase(), Boolean(isActive)], 'giftcode_set_active',
   );
   return toGiftCode(rows[0]);
+}
+
+/**
+ * Redemptions whose reward never reached the player.
+ *
+ * ── Why this exists instead of a compensating delete ────────────────────────
+ * The route used to undo a redemption when the credit failed: delete the
+ * redemption row, decrement `usedCount`, tell the player nothing happened.
+ * Three writes to unwind one, each able to fail on its own, and a crash between
+ * any two leaves the code burned with nobody paid.
+ *
+ * The redemption is committed FIRST and the credit is keyed on it, so a failed
+ * credit is retryable rather than reversible — and this query is how it gets
+ * retried. It finds redemptions with no matching ledger row: money owed, and
+ * the exact list a reconciliation job works through.
+ *
+ * That is the standard shape for a payout that spans two commits: detect and
+ * repair, never compensate and hope.
+ */
+export async function findUnpaidRedemptions({ olderThanMinutes = 5, limit = 200 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT r.id, r.code, r.user_id, r.amount_paise, r.redeemed_at
+       FROM gift_code_redemptions r
+      WHERE r.redeemed_at < now() - ($1 || ' minutes')::interval
+        AND NOT EXISTS (
+          SELECT 1 FROM wallet_ledger l
+           WHERE l.user_id = r.user_id
+             AND l.tx_id = 'giftcode_' || r.code || '_' || r.user_id)
+      ORDER BY r.redeemed_at ASC
+      LIMIT $2`,
+    [String(Math.max(Number(olderThanMinutes) || 5, 0)),
+      Math.min(Math.max(Number(limit) || 200, 1), 1000)],
+    'giftcode_unpaid',
+  );
+  return rows.map((r) => ({
+    id: Number(r.id), code: r.code, userId: r.user_id,
+    amount: paiseToRupees(Number(r.amount_paise)),
+    amountPaise: Number(r.amount_paise),
+    redeemedAt: r.redeemed_at,
+    // The key the credit is made under, so a repair reproduces it exactly and
+    // a replay collides rather than paying twice.
+    txId: `giftcode_${r.code}_${r.user_id}`,
+  }));
 }
 
 export async function listRedemptions({ code = null, userId = null, limit = 200 } = {}) {

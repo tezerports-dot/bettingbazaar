@@ -2425,3 +2425,56 @@ CREATE INDEX IF NOT EXISTS order_states_disputes_idx ON order_states (dispute_ra
   WHERE state = 'DISPUTED';
 CREATE INDEX IF NOT EXISTS order_states_review_idx ON order_states (created_at)
   WHERE requires_review;
+
+-- ── UTR REGISTRY: the lifecycle, and why the rows are permanent ─────────────
+--
+-- A UTR is a bank's reference for a real transfer. Reusing one across two
+-- orders is either a mistake or an attempt to claim one payment twice, and
+-- detecting it is an anti-fraud control an operator is expected to have.
+--
+-- The row therefore OUTLIVES the order. `RELEASED` means the order finished and
+-- the reference is spent — NOT that it is available again. Nothing in the
+-- application deletes from this table; the primary key is what refuses the
+-- second use, and a delete would hand the reference back to whoever wanted it.
+ALTER TABLE utr_registry ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ACTIVE';
+ALTER TABLE utr_registry ADD COLUMN IF NOT EXISTS released_at TIMESTAMPTZ;
+ALTER TABLE utr_registry ADD COLUMN IF NOT EXISTS flagged_at TIMESTAMPTZ;
+ALTER TABLE utr_registry ADD COLUMN IF NOT EXISTS flagged_by TEXT;
+ALTER TABLE utr_registry ADD COLUMN IF NOT EXISTS flag_reason TEXT;
+ALTER TABLE utr_registry ADD COLUMN IF NOT EXISTS duplicate_attempts INTEGER NOT NULL DEFAULT 0;
+
+DO $$ BEGIN
+  ALTER TABLE utr_registry ADD CONSTRAINT utr_registry_status_known
+    CHECK (status IN ('ACTIVE', 'RELEASED', 'FRAUD'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  -- A fraud flag names who raised it and why. An unattributed fraud marking is
+  -- one nobody can defend in a dispute, and it blocks a real customer.
+  ALTER TABLE utr_registry ADD CONSTRAINT utr_registry_flag_has_actor
+    CHECK (status <> 'FRAUD' OR (flagged_by IS NOT NULL AND flag_reason IS NOT NULL));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE utr_registry ADD CONSTRAINT utr_registry_attempts_non_negative
+    CHECK (duplicate_attempts >= 0);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+CREATE INDEX IF NOT EXISTS utr_registry_user_idx ON utr_registry (user_id, registered_at DESC);
+-- The review queue: references somebody tried to use more than once.
+CREATE INDEX IF NOT EXISTS utr_registry_contested_idx ON utr_registry (duplicate_attempts DESC)
+  WHERE duplicate_attempts > 0 OR status = 'FRAUD';
+
+-- Nothing deletes a registered reference.
+--
+-- A DELETE trigger rather than a convention, because the convention was
+-- `clearAllUTRs()` — an exported function that emptied the whole registry and
+-- was one import away from any route. Reusing a bank reference is the thing
+-- this table exists to prevent, and a table that can be emptied prevents it
+-- only until someone empties it.
+CREATE OR REPLACE FUNCTION bb_forbid_utr_delete() RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'utr_registry rows are permanent — a released UTR is spent, not free';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE TRIGGER utr_registry_no_delete
+  BEFORE DELETE ON utr_registry FOR EACH ROW EXECUTE FUNCTION bb_forbid_utr_delete();
