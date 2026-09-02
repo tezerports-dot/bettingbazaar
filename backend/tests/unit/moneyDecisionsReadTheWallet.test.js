@@ -61,11 +61,17 @@ const SITES = [
   {
     name: 'merchant assignment',
     file: 'domains/merchant/merchantScoring.service.js',
-    gates: [/availablePaise\.get\(String\(m\._id\)\) \?\? -1\) >= neededPaise/],
+    gates: [/availablePaise\.get\(String\(m\.merchantId\)\) \?\? -1\) >= neededPaise/],
     source: /await getAvailablePaiseFor\(candidates\.map/,
-    // A Mongo query cannot express a Postgres condition, so this must not come
-    // back as a filter on the query document.
-    forbidden: [/baseQuery\.tokenBalance/],
+    forbidden: [
+      // The eligibility query must not gain a balance predicate. The merchant
+      // row has no balance column, so one written here would be reading
+      // something that is not a merchant's money — the same defect as the
+      // stored `tokenBalance` filter it replaced, one layer down.
+      /baseQuery\.tokenBalance/,
+      /token_balance/,
+      /m\.tokenBalance\s*[<>]/,
+    ],
   },
   {
     name: 'merchant accept guard',

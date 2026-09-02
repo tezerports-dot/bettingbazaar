@@ -22,6 +22,7 @@ import * as operations from '../repositories/operations.js';
 import * as paymentConfig from '../repositories/paymentConfig.js';
 import * as depositPolicy from '../repositories/depositPolicy.js';
 import * as orderRecord from '../repositories/orders.record.js';
+import * as merchants from '../repositories/merchants.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -1127,6 +1128,135 @@ describePg('the domains written from scratch', () => {
       const again = await orderRecord.mirrorSettlementState(id, 'SETTLED');
       expect(again.status).toBe('COMPLETED');
       expect(new Date(again.completedAt).getTime()).toBeGreaterThanOrEqual(new Date(completedAt).getTime());
+    });
+  });
+
+
+  // ══════════════════════════════════════════════════════════════════════════
+  describe('merchant assignment candidates', () => {
+    const online = async (suffix, over = {}) => {
+      const id = `am-${ID}-${suffix}`;
+      await merchants.createMerchantWithWallet({
+        merchantId: id, name: `M ${suffix}`, username: id,
+        mobile: `6${String(Date.now()).slice(-6)}${suffix.padStart(3, '0')}`.slice(0, 12),
+        bankUpiId: `${id}@test`,
+      });
+      await merchants.updateMerchant(id, {
+        status: 'ACTIVE', merchantApprovalStatus: 'APPROVED', isOnline: true,
+        acceptsDeposits: true, acceptsWithdrawals: true, ...over,
+      });
+      return id;
+    };
+
+    const assignedOrder = async (merchantId, type = 'DEPOSIT') => orderRecord.createOrderRecord({
+      orderId: `AO_${ID}_${Math.random().toString(36).slice(2, 8)}`,
+      userId: `au-${ID}`, merchantId, type, tokenAmountRupees: 100, state: 'ASSIGNED',
+    });
+
+    const idsFor = async (options) =>
+      (await merchants.assignmentCandidates(options)).map((m) => m.merchantId);
+
+    it('counts active orders instead of reading a field that does not exist', async () => {
+      // ── The filter that never filtered ─────────────────────────────────────
+      // The document query gated on `activeOrderCount < maxConcurrentOrders`
+      // with an `$ifNull` default of 0. `activeOrderCount` is not a field on a
+      // merchant — the number is derived from the orders — so the left side was
+      // always 0 and the filter always passed. A merchant already at their
+      // limit was offered every order anyway.
+      const m = await online('001', { maxConcurrentDepositOrders: 2, maxConcurrentOrders: 5 });
+      expect(await idsFor({ direction: 'DEPOSIT' })).toContain(m);
+
+      await assignedOrder(m);
+      const one = (await merchants.assignmentCandidates({ direction: 'DEPOSIT' }))
+        .find((c) => c.merchantId === m);
+      expect(one.activeDepositOrderCount).toBe(1);
+      expect(one.activeOrderCount).toBe(1);
+
+      await assignedOrder(m);
+      // At the cap now. Not a candidate at all, rather than one the caller is
+      // trusted to filter out afterwards.
+      expect(await idsFor({ direction: 'DEPOSIT' })).not.toContain(m);
+    });
+
+    it('counts each direction against its own cap', async () => {
+      const m = await online('002', { maxConcurrentDepositOrders: 1, maxConcurrentWithdrawalOrders: 1, maxConcurrentOrders: 5 });
+      await assignedOrder(m, 'DEPOSIT');
+
+      // The deposit cap is spent; the withdrawal one is not. A single shared
+      // count would have taken this merchant out of both queues.
+      expect(await idsFor({ direction: 'DEPOSIT' })).not.toContain(m);
+      expect(await idsFor({ direction: 'WITHDRAWAL' })).toContain(m);
+    });
+
+    it('honours a PLATFORM default of zero rather than substituting its own', async () => {
+      // `Number(x) || 1` treats 0 as absent and puts the default back — the
+      // falsy-zero trap this codebase has now hit three times. A platform
+      // default of zero is how an operator stops automatic assignment while
+      // they investigate, and silently re-opening the tap is the worst possible
+      // response to it.
+      //
+      // A per-MERCHANT cap of zero is a different thing and deliberately not
+      // representable: `merchants_concurrency_positive` requires 1–10, because
+      // pausing one merchant on one rail is what `acceptsDeposits` is for and
+      // two ways to express the same state is one too many.
+      const m = await online('003', { maxConcurrentDepositOrders: 1, maxConcurrentOrders: 5 });
+      expect(await idsFor({ direction: 'DEPOSIT' })).toContain(m);
+      expect(await idsFor({ direction: 'DEPOSIT', defaultDepositLimit: 0 })).toContain(m);
+
+      // …and with no cap of its own, the merchant falls back to the platform
+      // default — which zero must actually mean.
+      const bare = await online('009', { maxConcurrentOrders: 5 });
+      expect(await idsFor({ direction: 'DEPOSIT' })).toContain(bare);
+      expect(await idsFor({ direction: 'DEPOSIT', defaultDepositLimit: 0 })).not.toContain(bare);
+    });
+
+    it('refuses a per-merchant cap the row does not allow', async () => {
+      const m = await online('010', { maxConcurrentOrders: 5 });
+      await expect(merchants.updateMerchant(m, { maxConcurrentDepositOrders: 0 }))
+        .rejects.toThrow(/merchants_concurrency_positive/);
+    });
+
+    it('leaves out a merchant who is offline, unapproved, or not accepting', async () => {
+      const offline = await online('004', { isOnline: false });
+      const unapproved = await online('005', { merchantApprovalStatus: 'PENDING' });
+      const refusing = await online('006', { acceptsDeposits: false });
+
+      const ids = await idsFor({ direction: 'DEPOSIT' });
+      expect(ids).not.toContain(offline);
+      expect(ids).not.toContain(unapproved);
+      expect(ids).not.toContain(refusing);
+    });
+
+    it('reports the 30-day funding imbalance a withdrawal is ranked on', async () => {
+      const m = await online('007');
+      await orderRecord.createOrderRecord({
+        orderId: `AI_${ID}_d`, userId: `au-${ID}`, merchantId: m, type: 'DEPOSIT',
+        tokenAmountRupees: 900, state: 'COMPLETED', completedAt: new Date(),
+      });
+      await orderRecord.createOrderRecord({
+        orderId: `AI_${ID}_w`, userId: `au-${ID}`, merchantId: m, type: 'WITHDRAWAL',
+        tokenAmountRupees: 200, state: 'COMPLETED', completedAt: new Date(),
+      });
+
+      const row = (await merchants.assignmentCandidates({ direction: 'WITHDRAWAL' }))
+        .find((c) => c.merchantId === m);
+      // Taken in more than paid out, so this merchant is replenished first —
+      // tokens flow back out of whoever is holding the most.
+      expect(row.thirtyDayDepositValue).toBe(900);
+      expect(row.thirtyDayWithdrawalValue).toBe(200);
+      expect(row.thirtyDayBuySellDelta).toBe(700);
+    });
+
+    it('ignores completed orders older than the window', async () => {
+      const m = await online('008');
+      await orderRecord.createOrderRecord({
+        orderId: `AI_${ID}_old`, userId: `au-${ID}`, merchantId: m, type: 'DEPOSIT',
+        tokenAmountRupees: 5000, state: 'COMPLETED',
+        completedAt: new Date(Date.now() - 60 * 86_400_000),
+      });
+      const row = (await merchants.assignmentCandidates({ direction: 'WITHDRAWAL', imbalanceDays: 30 }))
+        .find((c) => c.merchantId === m);
+      expect(row.thirtyDayDepositValue).toBe(0);
     });
   });
 

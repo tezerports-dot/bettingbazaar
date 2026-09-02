@@ -61,6 +61,27 @@ const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email
   max_concurrent_deposit_orders, max_concurrent_withdrawal_orders,
   total_orders_completed, total_orders_all, created_at, updated_at`;
 
+/**
+ * The same columns, qualified. A join against a CTE that also has
+ * `merchant_id` makes the bare list ambiguous, and PostgreSQL says so at
+ * runtime rather than at load — derived from COLUMNS so the two cannot drift.
+ */
+const M_COLUMNS = COLUMNS.split(',').map((c) => `m.${c.trim()}`).join(', ');
+
+/**
+ * A non-negative number, where ZERO is a real answer.
+ *
+ * `Number(x) || fallback` substitutes the fallback for 0, because 0 is falsy.
+ * That is harmless for a page size — a limit of zero is nonsense anyway — and
+ * wrong for anything an operator might deliberately set to nothing: a
+ * concurrency cap of 0 means "assign to nobody while I investigate", and `||`
+ * silently re-opens the tap at the default.
+ */
+const nonNegative = (value, fallback) => {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+};
+
 /** node-postgres returns BIGINT as a STRING. Cast once, here, at the boundary. */
 const toInt = (v) => (v === null || v === undefined ? null : Number(v));
 const rupees = (v) => paiseToRupees(Number(v ?? 0));
@@ -289,6 +310,100 @@ export async function listAssignableMerchants({
     'merchant_list_assignable',
   );
   return rows.map(toMerchant);
+}
+
+/**
+ * Candidates for automatic assignment, with the counts the scorer needs.
+ *
+ * ── The filter that never filtered ──────────────────────────────────────────
+ * The document query gated on `activeOrderCount < maxConcurrentOrders` with an
+ * `$ifNull` default of 0. `activeOrderCount` is not a field on a merchant —
+ * this table deliberately has no such column, because the number is DERIVED
+ * from the orders themselves — so the left side was always 0 and the filter
+ * always passed. A merchant at their concurrency limit was offered every order
+ * anyway, and the same read fed `scoreMerchant`'s load component, which was
+ * therefore a constant.
+ *
+ * Counted here, per direction, from `order_states`. A merchant's own
+ * `max_concurrent_*` overrides the platform default when set, which is what the
+ * per-merchant caps in the admin panel are for.
+ *
+ * The token balance is deliberately NOT here. It lives in `merchant_wallets`
+ * and the caller reads it there — a balance predicate in this query would be
+ * the same defect as the stored `tokenBalance` filter it replaced.
+ */
+export async function assignmentCandidates({
+  currency = 'INR', direction = 'DEPOSIT',
+  defaultDepositLimit = 1, defaultWithdrawalLimit = 1, defaultTotalLimit = 3,
+  imbalanceDays = 30,
+} = {}) {
+  const withdrawal = direction === 'WITHDRAWAL';
+  const acceptsColumn = withdrawal ? 'accepts_withdrawals' : 'accepts_deposits';
+  const typeColumn = withdrawal ? 'withdrawals' : 'deposits';
+  const capColumn = withdrawal ? 'max_concurrent_withdrawal_orders' : 'max_concurrent_deposit_orders';
+  const since = new Date(Date.now() - Math.max(Number(imbalanceDays) || 30, 1) * 86_400_000);
+
+  // Only the limit for THIS direction is bound. Passing both would leave one
+  // parameter referenced by no expression, and PostgreSQL cannot infer the type
+  // of a parameter nothing uses — it refuses the statement rather than guessing.
+  //
+  // `nonNegative` rather than `Number(x) || 1`: a concurrency cap of ZERO is
+  // meaningful — it is how an operator stops assigning to anybody while they
+  // investigate — and `||` treats it as absent and substitutes the default,
+  // silently re-opening the tap. The same falsy-zero trap the withdrawal hold
+  // window and the settlement lease both had.
+  const typeLimit = nonNegative(withdrawal ? defaultWithdrawalLimit : defaultDepositLimit, 1);
+
+  const { rows } = await pgQuery(
+    `WITH active AS (
+       SELECT merchant_id,
+              COUNT(*)::int AS total,
+              COUNT(*) FILTER (WHERE order_type = 'DEPOSIT')::int    AS deposits,
+              COUNT(*) FILTER (WHERE order_type = 'WITHDRAWAL')::int AS withdrawals
+         FROM order_states
+        WHERE merchant_id IS NOT NULL AND state IN ('ASSIGNED', 'PROCESSING', 'PAID')
+        GROUP BY merchant_id
+     ), imbalance AS (
+       SELECT merchant_id,
+              COALESCE(SUM(token_amount_paise) FILTER (WHERE order_type = 'DEPOSIT'), 0)    AS deposit_paise,
+              COALESCE(SUM(token_amount_paise) FILTER (WHERE order_type = 'WITHDRAWAL'), 0) AS withdrawal_paise
+         FROM order_states
+        WHERE merchant_id IS NOT NULL AND state = 'COMPLETED'
+          AND completed_at IS NOT NULL AND completed_at >= $2
+        GROUP BY merchant_id
+     )
+     SELECT ${M_COLUMNS},
+            COALESCE(a.total, 0)       AS active_total,
+            COALESCE(a.deposits, 0)    AS active_deposits,
+            COALESCE(a.withdrawals, 0) AS active_withdrawals,
+            COALESCE(i.deposit_paise, 0)    AS thirty_day_deposit_paise,
+            COALESCE(i.withdrawal_paise, 0) AS thirty_day_withdrawal_paise
+       FROM merchants m
+       LEFT JOIN active a    ON a.merchant_id = m.merchant_id
+       LEFT JOIN imbalance i ON i.merchant_id = m.merchant_id
+      WHERE m.status = 'ACTIVE'
+        AND m.merchant_approval_status = 'APPROVED'
+        AND m.is_online
+        AND m.${acceptsColumn}
+        AND m.merchant_type = $1
+        -- The concurrency caps, applied where the counts are. A merchant at
+        -- their limit is not a candidate at all, rather than a candidate the
+        -- caller is trusted to filter out afterwards.
+        AND COALESCE(a.total, 0) < COALESCE(m.max_concurrent_orders, $3)
+        AND COALESCE(a.${typeColumn}, 0) < COALESCE(m.${capColumn}, $4)`,
+    [String(currency), since, nonNegative(defaultTotalLimit, 3), typeLimit],
+    'merchant_assignment_candidates',
+  );
+
+  return rows.map((r) => ({
+    ...toMerchant(r),
+    activeOrderCount: Number(r.active_total),
+    activeDepositOrderCount: Number(r.active_deposits),
+    activeWithdrawalOrderCount: Number(r.active_withdrawals),
+    thirtyDayDepositValue: rupees(r.thirty_day_deposit_paise),
+    thirtyDayWithdrawalValue: rupees(r.thirty_day_withdrawal_paise),
+    thirtyDayBuySellDelta: rupees(r.thirty_day_deposit_paise) - rupees(r.thirty_day_withdrawal_paise),
+  }));
 }
 
 /**
