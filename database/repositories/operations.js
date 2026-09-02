@@ -89,12 +89,29 @@ export async function listLocks() {
 /**
  * Run `fn` only if this instance wins the lock.
  *
- * The lease is renewed on a timer while `fn` runs, so a job legitimately
- * slower than its TTL keeps the lock instead of having it stolen mid-run. The
- * release is in `finally` — a job that throws must not hold the lock until it
- * expires, or the next tick is skipped for no reason.
+ * The lease is renewed on a timer while `fn` runs, so a job legitimately slower
+ * than its TTL keeps the lock instead of having it stolen mid-run — and the
+ * next tick does not start a SECOND copy of a job that is still going.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * `holdLease` IS THE DIFFERENCE BETWEEN MUTUAL EXCLUSION AND LEADER ELECTION
+ * ══════════════════════════════════════════════════════════════════════════
+ * Released on completion (the default), this is a MUTEX: it guarantees two
+ * instances never run the job at the same moment. That is not what a cron tick
+ * needs. Three instances waking on the same tick take the lock one after
+ * another and the job runs THREE TIMES, sequentially — every instance doing
+ * every job, which is the duplicate work the lock was added to remove.
+ *
+ * `holdLease: true` keeps the lock for the rest of the lease instead of
+ * releasing it, so a tick has exactly one leader. The cost is deliberate and
+ * bounded: an instance that crashes mid-run wedges the job until the lease
+ * expires, which is why callers pass the INTERVAL as the TTL — at most one tick
+ * is ever skipped.
+ *
+ * A job that THROWS still releases, on either setting. Holding a lease for work
+ * that failed would skip the retry as well as the duplicate.
  */
-export async function withLock(jobName, holder, fn, { ttlSeconds = 300 } = {}) {
+export async function withLock(jobName, holder, fn, { ttlSeconds = 300, holdLease = false } = {}) {
   const claim = await acquireLock(jobName, holder, { ttlSeconds });
   if (!claim.acquired) return { ran: false, reason: 'NOT_LEADER' };
 
@@ -106,13 +123,24 @@ export async function withLock(jobName, holder, fn, { ttlSeconds = 300 } = {}) {
   // Never hold the process open for a heartbeat.
   if (typeof heartbeat.unref === 'function') heartbeat.unref();
 
+  const stopRenewing = () => clearInterval(heartbeat);
+  const free = () => releaseLock(jobName, holder).catch((e) =>
+    console.error(`[cron] lock release failed for ${jobName}:`, e.message));
+
+  let result;
   try {
-    return { ran: true, result: await fn() };
-  } finally {
-    clearInterval(heartbeat);
-    await releaseLock(jobName, holder).catch((e) =>
-      console.error(`[cron] lock release failed for ${jobName}:`, e.message));
+    result = await fn();
+  } catch (err) {
+    // A failed run frees the lock immediately whatever `holdLease` says: the
+    // next tick should RETRY, and holding the lease would skip that too.
+    stopRenewing();
+    await free();
+    throw err;
   }
+
+  stopRenewing();
+  if (!holdLease) await free();
+  return { ran: true, result };
 }
 
 // ── Counters ────────────────────────────────────────────────────────────────

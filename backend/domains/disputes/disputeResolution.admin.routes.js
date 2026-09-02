@@ -1,6 +1,6 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 
-import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, hasPermission, getModels } from '../../routes/admin/_adminShared.js';
+import { express, authenticate, isAdmin, isAdminOrSubAdmin, hasPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import { creditDeposit, creditWinnings } from '../wallet/walletAuthority.service.js';
 // The order state machine. Resolving a dispute is a guarded transition, and it
@@ -15,28 +15,18 @@ const router = express.Router();
 
 router.get('/dispute-orders', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
   try {
-    const { PaymentOrder } = getModels();
     const { status = 'DISPUTED', page = 1, limit = 50 } = req.query;
-    
-    // Support viewing recently resolved disputes too
-    const query = status === 'ALL'
-      ? { $or: [{ status: 'DISPUTED' }, { disputeReason: { $exists: true, $ne: '' } }] }
-      : { status };
-    
-    const [orders, total] = await Promise.all([
-      PaymentOrder.find(query)
-        .sort({ disputedAt: -1, createdAt: -1 })
-        .skip((Number(page) - 1) * Number(limit))
-        .limit(Number(limit))
-        .populate('userId', 'username mobile kycStatus')
-        .populate('merchantId', 'username mobile')
-        .lean(),
-      PaymentOrder.countDocuments(query),
-    ]);
 
-    // Map to the shape DisputeManager.tsx expects
-    const disputes = orders.map(o => ({
-      _id:               o._id,
+    // The page and its total come from ONE statement, and both parties from a
+    // join. The version this replaced ran the find and the count concurrently
+    // — so on a queue people are actively working, the total could describe a
+    // different instant than the rows — and called `.populate()` twice on plain
+    // rows, which is a TypeError.
+    const queue = await db.orders.disputeQueue({ status, page, limit });
+
+    // Mapped to the shape DisputeManager.tsx expects.
+    const disputes = queue.disputes.map((o) => ({
+      _id:               o.orderId,
       orderId:           o.orderId,
       type:              o.type,
       amount:            o.fiatAmount,
@@ -44,19 +34,22 @@ router.get('/dispute-orders', authenticate, hasPermission('canResolveDisputes'),
       tokenAmount:       o.tokenAmount,
       status:            o.status,
       createdAt:         o.createdAt,
-      disputedAt:        o.disputedAt,
-      resolvedAt:        o.resolvedAt,
+      disputedAt:        o.disputeRaisedAt,
+      resolvedAt:        o.disputeResolvedAt,
       disputeReason:     o.disputeReason,
       disputeResolution: o.disputeResolution,
       disputeDecision:   o.disputeDecision,
       proofScreenshot:   o.proofScreenshot,
       utrNumber:         o.utrNumber,
-      userId:            o.userId,
-      merchantId:        o.merchantId,
-      resolvedBy:        o.resolvedBy,
+      userId:            o.user,
+      merchantId:        o.merchant,
+      resolvedBy:        o.disputeResolvedBy,
     }));
 
-    res.json({ success: true, disputes, total, page: Number(page), limit: Number(limit) });
+    res.json({
+      success: true, disputes,
+      total: queue.total, page: queue.page, limit: queue.limit, pages: queue.pages,
+    });
   } catch (err) {
     console.error('GET /dispute-orders error:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch disputes' });
@@ -66,10 +59,9 @@ router.get('/dispute-orders', authenticate, hasPermission('canResolveDisputes'),
 // ── GET /api/admin/dispute-orders/:orderId — single dispute detail ────────────
 router.get('/dispute-orders/:orderId', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
   try {
-    const { PaymentOrder } = getModels();
-    const order = await db.orders.getOrderRecord(req.params.orderId)
-      .populate('merchantId', 'username mobile')
-      .lean();
+    // The join names the merchant. `.populate()` on the plain object the
+    // repository returns is a TypeError, so this endpoint threw on every call.
+    const order = await db.orders.getOrderWithParties(req.params.orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     res.json({ success: true, dispute: order });
   } catch (err) {
@@ -102,7 +94,6 @@ router.post('/dispute-orders/:orderId/chat', authenticate, hasPermission('canRes
     });
 
     // Notify both parties in real time
-    const { PaymentOrder } = getModels();
     const order = await db.orders.getOrderRecord(req.params.orderId);
     if (order) {
       global.io?.to(`user-${order.userId}`).emit('support_reply', { orderId: order._id, message: message.trim() });
@@ -141,7 +132,6 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, isAdmin, async (re
       return res.status(400).json({ success: false, message: 'Resolution notes required' });
     }
 
-    const { PaymentOrder } = getModels();
     const order = await db.orders.getOrderRecord(req.params.orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     if (!['DISPUTED', 'PROCESSING', 'PAID', 'ASSIGNED'].includes(order.status)) {
@@ -312,8 +302,6 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, isAdmin, async (re
 router.post('/dispute-orders/:orderId/escalate', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
   try {
     const { notes } = req.body;
-    const { PaymentOrder } = getModels();
-
     const order = await db.orders.getOrderRecord(req.params.orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     

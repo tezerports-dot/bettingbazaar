@@ -501,6 +501,93 @@ export async function paymentQueue({ state = null, limit = 200 } = {}) {
   };
 }
 
+/**
+ * The dispute queue, with both parties named.
+ *
+ * `status: 'ALL'` means "everything that has ever been disputed", not
+ * "everything" — a resolved dispute is still a dispute, and the admin screen
+ * that reviews decisions needs the ones that are closed.
+ *
+ * The page and its total come from ONE statement. The two concurrent reads this
+ * replaced could report a page of fifty against a total taken a moment later,
+ * which on a queue people are actively working is how a paginator grows a page
+ * that is not there.
+ */
+export async function disputeQueue({ status = 'DISPUTED', page = 1, limit = 50 } = {}) {
+  const params = [];
+  let filter;
+  if (status === 'ALL') {
+    // Currently disputed, OR carrying the marks of a dispute that was settled.
+    filter = `(o.state = 'DISPUTED' OR o.dispute_raised_at IS NOT NULL
+               OR COALESCE(o.dispute_reason, '') <> '')`;
+  } else {
+    params.push(String(status));
+    filter = `o.state = $${params.length}`;
+  }
+
+  const size = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const wanted = Math.max(Number(page) || 1, 1);
+  params.push(size, (wanted - 1) * size);
+
+  const { rows } = await pgQuery(
+    `SELECT o.*,
+            u.username AS user_username, u.mobile AS user_mobile,
+            u.kyc_status AS user_kyc_status,
+            m.name AS merchant_name, m.mobile AS merchant_mobile,
+            COUNT(*) OVER () AS total_matching
+       FROM order_states o
+       LEFT JOIN users u     ON u.user_id = o.user_id
+       LEFT JOIN merchants m ON m.merchant_id = o.merchant_id
+      WHERE ${filter}
+      -- Newest dispute first, falling back to creation for an order whose
+      -- dispute timestamp predates the column.
+      ORDER BY COALESCE(o.dispute_raised_at, o.created_at) DESC
+      LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params, 'orders_dispute_queue',
+  );
+
+  const total = rows.length ? Number(rows[0].total_matching) : 0;
+  return {
+    disputes: rows.map((r) => ({
+      ...toOrder(r),
+      user: r.user_username
+        ? { userId: r.user_id, username: r.user_username, mobile: r.user_mobile, kycStatus: r.user_kyc_status }
+        : null,
+      merchant: r.merchant_name
+        ? { merchantId: r.merchant_id, name: r.merchant_name, mobile: r.merchant_mobile }
+        : null,
+    })),
+    total, page: wanted, limit: size,
+    pages: Math.max(Math.ceil(total / size), 1),
+  };
+}
+
+/** One order with both parties named — the dispute detail screen's read. */
+export async function getOrderWithParties(orderId) {
+  const { rows } = await pgQuery(
+    `SELECT o.*,
+            u.username AS user_username, u.mobile AS user_mobile,
+            u.kyc_status AS user_kyc_status,
+            m.name AS merchant_name, m.mobile AS merchant_mobile
+       FROM order_states o
+       LEFT JOIN users u     ON u.user_id = o.user_id
+       LEFT JOIN merchants m ON m.merchant_id = o.merchant_id
+      WHERE o.order_id = $1`,
+    [String(orderId)], 'order_with_parties',
+  );
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    ...toOrder(r),
+    user: r.user_username
+      ? { userId: r.user_id, username: r.user_username, mobile: r.user_mobile, kycStatus: r.user_kyc_status }
+      : null,
+    merchant: r.merchant_name
+      ? { merchantId: r.merchant_id, name: r.merchant_name, mobile: r.merchant_mobile }
+      : null,
+  };
+}
+
 export async function findDueHolds({ limit = 200 } = {}) {
   const { rows } = await pgQuery(
     `SELECT * FROM order_states

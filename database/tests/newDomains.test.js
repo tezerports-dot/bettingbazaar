@@ -516,6 +516,38 @@ describePg('the domains written from scratch', () => {
       expect(await operations.releaseLock(`job-${ID}-r`, 'me')).toBe(true);
     });
 
+    it('runs a tick ONCE, not once per instance in sequence', async () => {
+      let ran = 0;
+      // Three instances waking on the same tick. Released on completion, they
+      // take the lock one after another and the job runs THREE TIMES — every
+      // instance doing every job, which is the duplicate work the lock was
+      // added to remove. `holdLease` keeps it for the rest of the tick, so
+      // there is exactly one leader.
+      await Promise.all(['a', 'b', 'c'].map((who) =>
+        operations.withLock(`job-${ID}-tick`, who, async () => { ran += 1; },
+          { ttlSeconds: 60, holdLease: true })));
+      expect(ran).toBe(1);
+
+      // And a later instance still finds it held, because the lease outlives
+      // the run rather than ending with it.
+      const later = await operations.withLock(`job-${ID}-tick`, 'd', async () => { ran += 1; },
+        { ttlSeconds: 60, holdLease: true });
+      expect(later).toEqual({ ran: false, reason: 'NOT_LEADER' });
+      expect(ran).toBe(1);
+    });
+
+    it('frees a held lease when the job throws, so the next tick retries', async () => {
+      await expect(operations.withLock(`job-${ID}-boom`, 'a', async () => {
+        throw new Error('job failed');
+      }, { ttlSeconds: 60, holdLease: true })).rejects.toThrow('job failed');
+
+      // Holding the lease for work that FAILED would skip the retry as well as
+      // the duplicate — the job would sit dead until the lease expired.
+      const retry = await operations.withLock(`job-${ID}-boom`, 'b', async () => 'ok',
+        { ttlSeconds: 60, holdLease: true });
+      expect(retry).toMatchObject({ ran: true, result: 'ok' });
+    });
+
     it('releases the lock even when the job throws', async () => {
       await expect(operations.withLock(`job-${ID}-t`, 'me', async () => {
         throw new Error('job failed');
