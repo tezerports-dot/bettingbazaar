@@ -27,12 +27,36 @@ const read = (p) => readFileSync(new URL(`../../${p}`, import.meta.url), 'utf8')
 /** The gate line, with its surrounding function, for each site. */
 const SITES = [
   {
+    // ── The strongest form of this rule ──────────────────────────────────
+    // The other four sites READ the wallet and then decide. This one does not
+    // decide at all: `debitWinningsForWithdrawal` moves winnings → locked under
+    // `SELECT … FOR UPDATE` on the wallet row and refuses what the row cannot
+    // fund, so admission and movement are the same act and cannot disagree.
+    //
+    // The three checks that used to stand in front of it are gone, and their
+    // absence is what is asserted. They read the balance, summed the player's
+    // in-flight withdrawals, and compared — three reads with nothing holding
+    // them together, so two requests arriving at once both passed. And the sum
+    // DOUBLE-COUNTED: an in-flight withdrawal's tokens are already out of
+    // winnings and in locked, so a player with ₹1,000 who asked for ₹400 had
+    // their next ₹400 refused against money they held. The guard admitted
+    // overdrafts under concurrency and refused legitimate withdrawals the rest
+    // of the time.
     name: 'withdrawal admission',
     file: 'domains/payment/paymentProcessing.service.js',
-    gates: [/if \(pendingTotal \+ tokenAmount > availableWinnings\)/,
-            /if \(availableWinnings < tokenAmount\)/],
-    source: /const balances = await getBalances\(String\(user\._id\)\)/,
-    forbidden: [/> \(user\.winningsBalance/, /user\.winningsBalance < tokenAmount/],
+    gates: [/debitResult = await debitWinningsForWithdrawal\(String\(user\.userId\), tokenAmount, orderId\)/,
+            /err\.code === 'INSUFFICIENT_WITHDRAWABLE'/],
+    // The figures in the refusal come off the refusal itself — from the rows
+    // the debit locked — never from a record read separately.
+    source: /err\.availableWinnings/,
+    forbidden: [
+      /> \(user\.winningsBalance/,
+      /user\.winningsBalance < tokenAmount/,
+      // The pre-checks, by shape. Any of these coming back means somebody has
+      // put a second, unsynchronised decision in front of the wallet again.
+      /if \(availableWinnings < tokenAmount\)/,
+      /pendingTotal \+ tokenAmount > availableWinnings/,
+    ],
   },
   {
     name: 'merchant assignment',

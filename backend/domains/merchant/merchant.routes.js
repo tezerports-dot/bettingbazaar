@@ -1070,8 +1070,15 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         // completion up within seconds. Non-blocking — never affects the flow.
         try { publishDomainEvent(DOMAIN_EVENTS.PAYMENT_ORDER_COMPLETED, { orderId: order._id, type: order.type }); } catch (_) {}
 
-        // Update merchant scoring stats
-        await updateMerchantStatsOnComplete(req.merchantId, true).catch(() => {});
+        // Update merchant scoring stats. The direction and amount travel with
+        // it: they feed the merchant's processed volume and their per-rail
+        // counts, and passing neither meant every completed order was recorded
+        // as a zero-value deposit — a merchant's volume never moved.
+        await updateMerchantStatsOnComplete(req.merchantId, true, {
+            direction: order.type,
+            amountRupees: order.tokenAmount,
+            earningsRupees: order.merchantProfit || 0,
+        }).catch(() => {});
 
         // Notify merchant of updated score (GOVERNANCE §11: merchant_score_update)
         const freshMerchant = await db.merchants.getMerchant(req.merchantId);

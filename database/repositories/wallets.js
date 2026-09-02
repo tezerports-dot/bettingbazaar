@@ -188,9 +188,19 @@ export async function debitWinningsForWithdrawal(userId, amount, orderId) {
 
   if (result.idempotent) return { idempotent: true, txId };
   if (!result.ok) {
+    // A refusal here is an EXPECTED answer, not a fault: the player asked for
+    // more than they hold. The figures ride on the error so the caller can tell
+    // them what is actually available without parsing the message — and so a
+    // route can answer 400 rather than 500.
     const balances = await getBalancesPaise(userId);
-    throw new Error(
-      `Insufficient withdrawable balance: have ₹${rupees(balances.winningsBalance)}, need ₹${amount}. Only winnings are withdrawable.`,
+    throw Object.assign(
+      new Error(`Insufficient withdrawable balance: have ₹${rupees(balances.winningsBalance)}, need ₹${amount}. Only winnings are withdrawable.`),
+      {
+        status: 400,
+        code: 'INSUFFICIENT_WITHDRAWABLE',
+        availableWinnings: rupees(balances.winningsBalance),
+        requested: amount,
+      },
     );
   }
 

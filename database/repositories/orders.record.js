@@ -563,13 +563,27 @@ export async function bulkCompleteWithdrawals({ orderIds, merchantId, batchId, p
  * window is expired whether or not anything has noticed, and the player is
  * waiting either way.
  */
+/**
+ * Orders past their deadline, by the DATABASE's clock.
+ *
+ * `now()` rather than a timestamp the caller computed: three app instances with
+ * drifting clocks expiring the same orders is how one gets refunded a minute
+ * before its own deadline, and how another sits unexpired past it.
+ *
+ * There is deliberately NO `FOR UPDATE SKIP LOCKED` here. It was here, and it
+ * did nothing: `pgQuery` runs each statement in its own implicit transaction,
+ * so the lock is released the moment the SELECT returns and two cron instances
+ * still read the same batch. The row lock that matters is the one the
+ * TRANSITION takes — the loser gets `idempotent` and skips the refund. Leaving
+ * a no-op lock in the query would suggest the coordination lives here, and the
+ * next reader would trust it.
+ */
 export async function findExpiredOrders({ limit = 100 } = {}) {
   const { rows } = await pgQuery(
     `SELECT * FROM order_states
       WHERE expires_at IS NOT NULL AND expires_at <= now()
         AND state IN ('PENDING_QUEUE', 'ASSIGNED', 'PROCESSING')
-      ORDER BY expires_at ASC LIMIT $1
-      FOR UPDATE SKIP LOCKED`,
+      ORDER BY expires_at ASC LIMIT $1`,
     [Math.min(Math.max(Number(limit) || 100, 1), 500)], 'order_find_expired',
   );
   return rows.map(toOrder);

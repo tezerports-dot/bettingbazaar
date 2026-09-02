@@ -1,21 +1,44 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-// Domain: Payment (BBEPS Phase 003 §3.3). Moved from backend/services/paymentProcessing.service.js
-// on 2026-07-01 (BBEPS Phase 004 migration).
-// NOTE: this file calls into the Merchant domain's selectBestMerchant() algorithm
-// directly (see import below). That's pre-existing cross-domain coupling, not
-// something this migration introduced or resolved — flagged here per BBEPS Phase 003
-// §3.7 "Domain Dependency Rules" as a candidate for a future migration (route the
-// call through a proper Merchant-domain public interface instead of a direct import).
-
-import mongoose from 'mongoose';
+/**
+ * domains/payment/paymentProcessing.service.js — deposits and withdrawals.
+ *
+ * ── Withdrawal admission is ONE decision, under the wallet's row lock ───────
+ * This path is where money LEAVES the platform. It used to admit a withdrawal
+ * by reading the player's winnings, summing their in-flight withdrawals, and
+ * comparing — three reads, then a debit, with nothing holding them together.
+ * Two requests arriving together both passed.
+ *
+ * Worse, the pending-order sum DOUBLE-COUNTED. The escrow debit moves winnings
+ * into `lockedBalance`, so an in-flight withdrawal is already out of the
+ * winnings figure the check compared against: a player with ₹1,000 who asked
+ * for ₹400 was left holding winnings ₹600 and locked ₹400, and their next ₹400
+ * request was refused by `400 + 400 > 600` — against money they genuinely had.
+ * The guard both let overdrafts through under concurrency and refused
+ * legitimate withdrawals the rest of the time.
+ *
+ * `debitWinningsForWithdrawal` decides. It moves winnings → locked under
+ * `SELECT … FOR UPDATE` on the wallet row, in the same transaction as its
+ * ledger entry, and refuses what the row cannot fund. There is nothing left
+ * here to get wrong, because there is no check here.
+ *
+ * ── The order is created in one statement ───────────────────────────────────
+ * It used to be a `new PaymentOrder(...)` with a pre-save hook computing the
+ * deposit split invisibly, then a `save()`, then further writes. The split is
+ * explicit now (`db.depositPolicy.splitForDeposit`) and the order arrives
+ * complete — allocations, escrow flag, bank details and all — so it can never
+ * be picked up by the assignment sweep in a half-built state.
+ *
+ * NOTE: this file calls the Merchant domain's `selectBestMerchant()` directly.
+ * That is pre-existing cross-domain coupling, flagged per BBEPS Phase 003 §3.7.
+ */
+import crypto from 'crypto';
 import { db } from '#db';
-import crypto   from 'crypto';
 import { debitWinningsForWithdrawal, refundWithdrawal, getBalances } from '../wallet/walletAuthority.service.js';
 import { selectBestMerchant } from '../merchant/merchantScoring.service.js';
 import { merchantTypeOf } from '../merchant/merchantCurrency.js';
 // Risk Platform (Phase 010): the single validation authority for funding orders.
 import { assessFundingOrder, getRiskRules, computePayoutFeeMinor } from '../risk/riskValidation.service.js';
-import { markUTRAsUsed }   from '../../middleware/utrValidation.js';
+import { markUTRAsUsed } from '../../middleware/utrValidation.js';
 // The order state machine. Every status change goes through here so an illegal
 // move is refused by the database rather than by whichever check ran first.
 import {
@@ -26,25 +49,10 @@ import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate 
 import cdnService from '../../services/cdn.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 
-// ─── Session helpers (graceful degradation on standalone MongoDB) ─────────────
-async function safeSession() {
-  try {
-    const s = await mongoose.startSession();
-    s.startTransaction();
-    return s;
-  } catch {
-    console.warn('[paymentProcessing] standalone MongoDB — no transaction session');
-    return null;
-  }
-}
-async function commitOrEnd(s) { if (!s) return; try { await s.commitTransaction(); } finally { s.endSession(); } }
-async function abortOrEnd(s)  { if (!s) return; try { await s.abortTransaction(); }  finally { s.endSession(); } }
-function withSession(s)        { return s ? { session: s } : {}; }
-
 // ─── Shared admin SSE payload ─────────────────────────────────────────────────
 function adminOrderPayload(order, user) {
   return {
-    _id:            order._id,
+    _id:            order.orderId,
     orderId:        order.orderId,
     type:           order.type,
     status:         order.status,
@@ -52,7 +60,7 @@ function adminOrderPayload(order, user) {
     tokenAmount:    order.tokenAmount,
     userName:       user?.username,
     userMobile:     user?.mobile,
-    userId:         user?._id || order.userId,
+    userId:         user?.userId || order.userId,
     merchantProfit: order.merchantProfit || 0,
     rateUsed:       order.rateUsed,
     createdAt:      order.createdAt,
@@ -60,26 +68,26 @@ function adminOrderPayload(order, user) {
   };
 }
 
-// ─── Build merchantSnapshot from a Merchant doc ───────────────────────────────
-function merchantDisplayRef(merchantDoc) {
-  return `Merchant #${merchantDoc.publicRef}`;
+// ─── Build merchantSnapshot from a merchant row ───────────────────────────────
+function merchantDisplayRef(merchant) {
+  return `Merchant #${merchant.publicRef}`;
 }
 
-function buildMerchantSnapshot(merchantDoc, expiresAt) {
+function buildMerchantSnapshot(merchant, expiresAt) {
   return {
-    merchantId:    merchantDoc._id,
-    merchantName:  merchantDisplayRef(merchantDoc),
+    merchantId:    merchant.merchantId,
+    merchantName:  merchantDisplayRef(merchant),
     // A merchant settles on exactly one rail, so exactly one credential set is
     // populated: UPI/bank for an INR merchant, the TRC-20 address for a USDT
     // merchant. The user panel renders whichever is present.
-    merchantType:  merchantTypeOf(merchantDoc),
-    upiId:         merchantDoc.bankDetails?.upiId             || '',
-    qrCodeUrl:     merchantDoc.qrCodeUrl                      || '',
-    bankName:      merchantDoc.bankDetails?.bankName           || '',
-    accountNo:     merchantDoc.bankDetails?.accountNo          || '',
-    ifsc:          merchantDoc.bankDetails?.ifsc               || '',
-    accountHolder: merchantDoc.bankDetails?.accountHolderName  || '',
-    usdtAddress:   merchantDoc.usdtWalletAddress               || '',
+    merchantType:  merchantTypeOf(merchant),
+    upiId:         merchant.bankDetails?.upiId             || '',
+    qrCodeUrl:     merchant.qrCodeUrl                      || '',
+    bankName:      merchant.bankDetails?.bankName          || '',
+    accountNo:     merchant.bankDetails?.accountNo         || '',
+    ifsc:          merchant.bankDetails?.ifsc              || '',
+    accountHolder: merchant.bankDetails?.accountHolderName || '',
+    usdtAddress:   merchant.usdtWalletAddress              || '',
     snapshotAt:    new Date(),
     expiresAt,
   };
@@ -101,12 +109,11 @@ async function getOrderExpiryMs() {
 
 // ─── Attempt to assign order to best merchant; returns true if assigned ────────
 async function tryAssignMerchant(order) {
-  const Merchant = mongoose.model('Merchant');
-  // Pass the order's rail: selectBestMerchant matches it against
-  // Merchant.acceptedCurrencies, so a USDT order can only reach a USDT merchant
-  // and an INR order only an INR merchant. Previously the argument was omitted
-  // and every order fell back to the 'INR' default, which would have routed a
-  // USDT order to an INR merchant (2026-07-27).
+  // Pass the order's rail: `selectBestMerchant` matches it against the
+  // merchant's accepted currencies, so a USDT order can only reach a USDT
+  // merchant and an INR order only an INR merchant. The argument was once
+  // omitted and every order fell back to the 'INR' default, which would have
+  // routed a USDT order to an INR merchant (2026-07-27).
   const merchant = await selectBestMerchant(order.type, order.tokenAmount, order.currency);
   if (!merchant) return false;
 
@@ -115,13 +122,12 @@ async function tryAssignMerchant(order) {
 
   // The transition is the gate. Two assignment passes racing the same queued
   // order — the synchronous attempt at creation and the retry loop, which do
-  // overlap — both used to pass the `status === 'PENDING_QUEUE'` read above and
-  // both used to save, so the second silently overwrote the first merchant's
-  // assignment and left that merchant holding an activeOrderCount for an order
-  // they no longer had. Exactly one caller now matches a row.
-  const moved = await assignOrderState(order._id, {
+  // overlap — both used to pass a `status === 'PENDING_QUEUE'` read and both
+  // used to save, so the second silently overwrote the first merchant's
+  // assignment. Exactly one caller now matches a row.
+  const moved = await assignOrderState(order.orderId, {
     set: {
-      merchantId:       merchant._id,
+      merchantId:       merchant.merchantId,
       assignedAt:       new Date(),
       expiresAt,
       merchantSnapshot: snapshot,
@@ -129,27 +135,32 @@ async function tryAssignMerchant(order) {
   });
   if (!moved.ok || moved.idempotent) return false;
 
-  // Keep the caller's in-memory document consistent with what was written, so
-  // the emitters below describe the row that exists rather than a hoped-for one.
-  order.merchantId       = merchant._id;
-  order.status           = 'ASSIGNED';
-  order.assignedAt       = moved.order.assignedAt;
-  order.expiresAt        = expiresAt;
-  order.merchantSnapshot = snapshot;
+  // Keep the caller's in-memory copy consistent with what was written, so the
+  // emitters below describe the row that exists rather than a hoped-for one.
+  Object.assign(order, {
+    merchantId: merchant.merchantId,
+    status: 'ASSIGNED',
+    assignedAt: moved.order.assignedAt,
+    expiresAt,
+    merchantSnapshot: snapshot,
+  });
 
-  // Increment merchant activeOrderCount
-  await Merchant.findByIdAndUpdate(merchant._id, { $inc: { activeOrderCount: 1 } });
+  // No activeOrderCount increment. That counter is DERIVED from the orders
+  // themselves (`db.merchants.getActiveOrderCounts`), so there is nothing to
+  // bump and nothing to leave stale when an assignment is refused — which is
+  // precisely how a merchant ended up holding a count for an order they did
+  // not have.
 
   // Notify merchant via SSE (GOVERNANCE §11: new_order)
-  emitMerchantUpdate(merchant._id.toString(), 'new_order', {
-    ...order.toObject(),
+  emitMerchantUpdate(String(merchant.merchantId), 'new_order', {
+    ...order,
     server_ts: Date.now(),
   });
 
   // Notify user: order_assigned (GOVERNANCE §11)
-  emitOrderUpdate(order.userId.toString(), 'order_assigned', {
+  emitOrderUpdate(String(order.userId), 'order_assigned', {
     orderId:          order.orderId,
-    _id:              order._id,
+    _id:              order.orderId,
     merchantSnapshot: order.merchantSnapshot,
     expiresAt:        order.expiresAt,
     status:           'ASSIGNED',
@@ -172,13 +183,11 @@ function startPendingRetryLoop(orderId) {
   async function attempt() {
     attempts++;
     try {
-      const PaymentOrder = mongoose.model('PaymentOrder');
       const order = await db.orders.getOrderRecord(orderId);
       if (!order || order.status !== 'PENDING_QUEUE') return; // already assigned/cancelled
 
-      const assigned = await tryAssignMerchant(order);
-      if (assigned) {
-        emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'ASSIGNED', server_ts: Date.now() });
+      if (await tryAssignMerchant(order)) {
+        emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'ASSIGNED', server_ts: Date.now() });
         return;
       }
 
@@ -186,32 +195,30 @@ function startPendingRetryLoop(orderId) {
         // Expire the order. The transition gates the refund: this loop and the
         // expireOrders cron can both reach the same order, and only the caller
         // that actually moved it may release the escrow.
-        const expired = await cancelOrderState(order._id, {
+        const expired = await cancelOrderState(order.orderId, {
           expectFrom: 'PENDING_QUEUE',
-          set: { cancelReason: 'EXPIRED', cancelledAt: new Date(), updatedAt: new Date() },
+          set: { cancelReason: 'EXPIRED', cancelledAt: new Date() },
         });
         if (!expired.ok || expired.idempotent) return;
         order.status = 'CANCELLED';
 
         // Release escrow if WITHDRAWAL
         if (order.type === 'WITHDRAWAL' && order.escrowLocked) {
-          await refundWithdrawal(
-            order.userId, order.tokenAmount, order._id.toString()
-          ).catch(e => console.error('[startPendingRetryLoop] escrow release failed:', e.message));
+          await refundWithdrawal(order.userId, order.tokenAmount, order.orderId)
+            .catch(e => console.error('[startPendingRetryLoop] escrow release failed:', e.message));
         }
 
-        emitOrderUpdate(order.userId.toString(), 'order_expired', {
+        emitOrderUpdate(String(order.userId), 'order_expired', {
           orderId:   order.orderId,
-          _id:       order._id,
+          _id:       order.orderId,
           status:    'CANCELLED',
           reason:    'EXPIRED',
           server_ts: Date.now(),
         });
-        emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'CANCELLED', reason: 'EXPIRED' });
+        emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'CANCELLED', reason: 'EXPIRED' });
         return;
       }
 
-      // Schedule next attempt
       setTimeout(attempt, 30 * 1000);
     } catch (err) {
       console.error('[startPendingRetryLoop] attempt error:', err.message);
@@ -226,240 +233,224 @@ function startPendingRetryLoop(orderId) {
 // createDepositOrder
 // ═════════════════════════════════════════════════════════════════════════════
 export async function createDepositOrder(userId, tokenAmount) {
-  const session = await safeSession();
-  try {
-    const User         = mongoose.model('User');
-    const PaymentOrder = mongoose.model('PaymentOrder');
+  const cfg        = await getSystemConfig();
+  const minDeposit = cfg?.minDeposit || 100;
+  const maxDeposit = cfg?.maxDeposit || 50000;
 
-    const cfg        = await getSystemConfig();
-    const minDeposit = cfg?.minDeposit || 100; // schema default: 100
-    const maxDeposit = cfg?.maxDeposit || 50000; // schema default: 50000
+  // Risk Platform gate (Phase 010): positive/numeric/multiples-of-10,
+  // min/max, velocity — the single validation authority.
+  await assessFundingOrder({ userId, tokenAmount, type: 'DEPOSIT', min: minDeposit, max: maxDeposit });
 
-    // Risk Platform gate (Phase 010): positive/numeric/multiples-of-10,
-    // min/max, velocity — the single validation authority.
-    await assessFundingOrder({ userId, tokenAmount, type: 'DEPOSIT', min: minDeposit, max: maxDeposit });
-
-    const user = await User.findById(userId, null, withSession(session));
-    if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
-    if (user.isBlocked)
-      throw Object.assign(new Error('Your account has been suspended due to payment violations. Contact support.'), { status: 403, code: 'USER_BLOCKED' });
-    if (user.kycStatus !== 'APPROVED')
-      throw Object.assign(new Error('Please complete KYC verification to purchase tokens'), { status: 403 });
-
-    // Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08):
-    // 1 BB token = ₹1, no buy/sell spread. Merchant earnings come from the
-    // future cycle-completion-triggered Merchant Performance Bonus, never
-    // from a rate spread — see docs/governance/04-GOVERNANCE.md.
-    const fiatAmount         = tokenAmount;
-    const merchantProfit     = 0; // spread retired; schema default is also 0
-    // depositAllocation / reserveAllocation are NOT computed here — the
-    // PaymentOrder pre-save hook (paymentOrder.model.js) is the single
-    // computation site, deriving them from the active DepositPolicy. This
-    // function used to independently compute them with a hardcoded 0.90,
-    // which the hook then silently overwrote on save — the persisted order
-    // was already correct, but the `note` text below was built from the
-    // stale, pre-overwrite local variables, so it could describe a split
-    // the admin had already changed away from. Fixed by reading the
-    // authoritative values off `order` AFTER save.
-
-    const order = new PaymentOrder({
-      orderId:           `DEP_${crypto.randomBytes(12).toString('hex')}`,
-      type:              'DEPOSIT',
-      userId:            user._id,
-      tokenAmount,
-      fiatAmount,
-      rateUsed:          1, // fixed 1:1 conversion
-      merchantProfit,
-      status:            'PENDING_QUEUE',
-      createdAt:         new Date(),
-    });
-
-    await order.save(withSession(session));
-    await commitOrEnd(session);
-
-    emitAdminUpdate('new_order', adminOrderPayload(order, user));
-
-    // Auto-assign merchant immediately
-    const assigned = await tryAssignMerchant(order);
-    if (!assigned) {
-      startPendingRetryLoop(order._id.toString());
-    } else {
-      emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'ASSIGNED', server_ts: Date.now() });
-    }
-
-    return {
-      order: {
-        _id:               order._id,
-        orderId:           order.orderId,
-        tokenAmount:       order.tokenAmount,
-        fiatAmount:        order.fiatAmount,
-        depositAllocation: order.depositAllocation,
-        reserveAllocation: order.reserveAllocation,
-        rateUsed:          order.rateUsed,
-        status:            order.status,
-        merchantSnapshot:  order.merchantSnapshot,
-        expiresAt:         order.expiresAt,
-      },
-      note: `You will pay ₹${fiatAmount.toLocaleString()} to receive ${tokenAmount} BB tokens (${order.depositAllocation} betting + ${order.reserveAllocation} reserve)`,
-    };
-  } catch (err) {
-    await abortOrEnd(session);
-    throw err;
+  const user = await db.users.getUser(userId);
+  if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
+  if (user.isBlocked) {
+    throw Object.assign(
+      new Error('Your account has been suspended due to payment violations. Contact support.'),
+      { status: 403, code: 'USER_BLOCKED' },
+    );
   }
+  if (user.kycStatus !== 'APPROVED') {
+    throw Object.assign(new Error('Please complete KYC verification to purchase tokens'), { status: 403 });
+  }
+
+  // Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08): 1 BB
+  // token = ₹1, no buy/sell spread. Merchant earnings come from the
+  // cycle-completion Merchant Performance Bonus, never from a rate spread.
+  const fiatAmount = tokenAmount;
+
+  // ── The split, computed HERE ────────────────────────────────────────────
+  // This was a pre-save hook on the order model: invisible, and a second
+  // writer to a value with a designated owner. The service that computes the
+  // note below used to derive it from its own stale local variables while the
+  // hook silently overwrote the persisted ones — so the order was right and
+  // the message describing it was wrong. One computation, one source.
+  const split = await db.depositPolicy.splitForDeposit(tokenAmount, user.currency || 'INR');
+
+  // Created COMPLETE, in one statement. It used to be a save followed by
+  // further writes, and between them the order existed at PENDING_QUEUE with a
+  // zero allocation — visible to the assignment sweep in that state, and stuck
+  // there for good if the process died in between.
+  const order = await db.orders.createOrderRecord({
+    orderId:           `DEP_${crypto.randomBytes(12).toString('hex')}`,
+    userId:            user.userId,
+    type:              'DEPOSIT',
+    tokenAmountRupees: tokenAmount,
+    fiatAmountRupees:  fiatAmount,
+    rateUsed:          1,
+    merchantProfit:    0,
+    depositAllocation: split.depositAllocation,
+    reserveAllocation: split.reserveAllocation,
+    depositPolicySnapshot: split.snapshot,
+  });
+
+  emitAdminUpdate('new_order', adminOrderPayload(order, user));
+
+  // Auto-assign merchant immediately
+  if (await tryAssignMerchant(order)) {
+    emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'ASSIGNED', server_ts: Date.now() });
+  } else {
+    startPendingRetryLoop(order.orderId);
+  }
+
+  return {
+    order: {
+      _id:               order.orderId,
+      orderId:           order.orderId,
+      tokenAmount:       order.tokenAmount,
+      fiatAmount:        order.fiatAmount,
+      depositAllocation: order.depositAllocation,
+      reserveAllocation: order.reserveAllocation,
+      rateUsed:          order.rateUsed,
+      status:            order.status,
+      merchantSnapshot:  order.merchantSnapshot,
+      expiresAt:         order.expiresAt,
+    },
+    // Built from the STORED figures, so the message and the order agree.
+    note: `You will pay ₹${fiatAmount.toLocaleString()} to receive ${tokenAmount} BB tokens (${order.depositAllocation} betting + ${order.reserveAllocation} reserve)`,
+  };
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
 // createWithdrawalOrder
 // ═════════════════════════════════════════════════════════════════════════════
 export async function createWithdrawalOrder(userId, tokenAmount) {
-  const session = await safeSession();
+  const cfg         = await getSystemConfig();
+  const minWithdraw = cfg?.minWithdrawal || 500;
+  const maxWithdraw = cfg?.maxWithdrawal || 50000;
+
+  await assessFundingOrder({ userId, tokenAmount, type: 'WITHDRAWAL', min: minWithdraw, max: maxWithdraw });
+
+  const user = await db.users.getUser(userId);
+  if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
+  if (user.isBlocked) {
+    throw Object.assign(
+      new Error('Your account has been suspended due to payment violations. Contact support.'),
+      { status: 403, code: 'USER_BLOCKED' },
+    );
+  }
+  if (user.kycStatus !== 'APPROVED') {
+    throw Object.assign(new Error('Please complete KYC verification before withdrawing'), { status: 403 });
+  }
+  if (!user.bankDetails?.accountNumber || !user.bankDetails?.ifscCode) {
+    throw Object.assign(new Error('Please add your bank account details before withdrawing'), { status: 400 });
+  }
+
+  // Phase 010: a configurable payout fee (SystemConfig.payoutFeePercent —
+  // Business Policy owns the number, Risk owns the arithmetic) may be deducted
+  // from the fiat paid out. Default 0%.
+  const riskRules      = await getRiskRules();
+  const payoutFeeMinor = computePayoutFeeMinor(tokenAmount, riskRules.payoutFeePercent);
+  const payoutFee      = payoutFeeMinor / 100;
+  const fiatAmount     = tokenAmount - payoutFee;
+
+  const orderId = `WD_${crypto.randomBytes(12).toString('hex')}`;
+
+  // ── ADMISSION ───────────────────────────────────────────────────────────
+  // The escrow debit IS the gate, and it is the whole gate: winnings → locked
+  // under `SELECT … FOR UPDATE` on the wallet row, in one transaction with its
+  // ledger entry, refusing what the row cannot fund. Idempotent on `wd_<id>`.
+  //
+  // It runs BEFORE the order row exists. A failed debit therefore leaves
+  // nothing behind to undo — the alternative, writing the order first, means a
+  // refused debit needs a compensating delete that can itself fail, and a
+  // crash between the two leaves an escrow-flagged order holding money that
+  // was never taken.
+  //
+  // The three checks that used to precede it are gone. See the module header:
+  // they raced each other AND double-counted the escrow, so they admitted
+  // overdrafts under concurrency and refused legitimate withdrawals otherwise.
+  let debitResult;
   try {
-    const User         = mongoose.model('User');
-    const PaymentOrder = mongoose.model('PaymentOrder');
-
-    const cfg         = await getSystemConfig();
-    const minWithdraw = cfg?.minWithdrawal || 500; // schema default: 500
-    const maxWithdraw = cfg?.maxWithdrawal || 50000; // schema default: 50000
-
-    // Risk Platform gate (Phase 010): positive/numeric/multiples-of-10,
-    // min/max, velocity — the single validation authority.
-    await assessFundingOrder({ userId, tokenAmount, type: 'WITHDRAWAL', min: minWithdraw, max: maxWithdraw });
-
-    const user = await User.findById(userId, null, withSession(session));
-    if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
-    if (user.isBlocked)
-      throw Object.assign(new Error('Your account has been suspended due to payment violations. Contact support.'), { status: 403, code: 'USER_BLOCKED' });
-    if (user.kycStatus !== 'APPROVED')
-      throw Object.assign(new Error('Please complete KYC verification before withdrawing'), { status: 403 });
-    if (!user.bankDetails?.accountNumber || !user.bankDetails?.ifscCode)
-      throw Object.assign(new Error('Please add your bank account details before withdrawing'), { status: 400 });
-
-    // ── Admission is decided from the WALLET ────────────────────────────────
-    //
-    // This is the path where money LEAVES the platform, and all four numbers
-    // below — the overdraft guard, the sufficiency check, what the refusal
-    // tells the player, and what it reports as available — used to come off the
-    // user record while `debitWinningsForWithdrawal` moves the `wallets` row.
-    // A withdrawal could therefore be ADMITTED against winnings the wallet does
-    // not hold, and refused with a figure no wallet ever had.
-    //
-    // ONE read, used for every one of them, from the rows the debit will lock.
-    const balances = await getBalances(String(user._id));
-    const availableWinnings = balances.winningsBalance || 0;
-
-    // Pending withdrawal total guard (prevents overdraft across concurrent requests)
-    const [pagg] = await mongoose.model('PaymentOrder').aggregate([
-      { $match: { userId: user._id, type: 'WITHDRAWAL', status: { $in: ['PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID'] } } },
-      { $group: { _id: null, total: { $sum: '$tokenAmount' } } },
-    ]);
-    const pendingTotal = pagg?.total || 0;
-    if (pendingTotal + tokenAmount > availableWinnings)
-      throw Object.assign(
-        new Error(`Insufficient winnings balance. Available: ${availableWinnings} tokens (${pendingTotal} locked in pending orders).`),
-        { status: 400 }
-      );
-
-    if (availableWinnings < tokenAmount)
-      throw Object.assign(
-        new Error(`Insufficient winnings balance. Available: ${availableWinnings} tokens`),
-        { status: 400, balance: { deposit: balances.depositBalance || 0, winnings: availableWinnings } }
-      );
-
-    // Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08):
-    // 1 BB token = ₹1 on withdrawal. Phase 010: a configurable payout fee
-    // (SystemConfig.payoutFeePercent — Business Policy owns the number,
-    // Risk owns the arithmetic, R&S records it in PAYOUT_FEES) may be
-    // deducted from the fiat paid out. Default 0% — behavior unchanged
-    // until an admin sets a fee.
-    const riskRules      = await getRiskRules();
-    const payoutFeeMinor = computePayoutFeeMinor(tokenAmount, riskRules.payoutFeePercent);
-    const payoutFee      = payoutFeeMinor / 100; // rupees, for the order document
-    const fiatAmount     = tokenAmount - payoutFee;
-
-    const order = new PaymentOrder({
-      orderId:         `WD_${crypto.randomBytes(12).toString('hex')}`,
-      type:            'WITHDRAWAL',
-      userId:          user._id,
-      tokenAmount,
-      fiatAmount,
-      payoutFee,
-      rateUsed:        1, // fixed 1:1 conversion
-      status:          'PENDING_QUEUE',
-      createdAt:       new Date(),
-      escrowLocked:    true,
-      escrowAmount:    tokenAmount,
-      // userKycSnapshot removed 2026-08-25. It was write-only three times over:
-      // sanitizeOrderForMerchant and sanitizeMerchantOrder both delete it before
-      // any response, its `aadhaar` field was never a path on the PaymentOrder
-      // schema so Mongoose dropped it silently, and `pan`/`nameOnAadhaar` are no
-      // longer collected at all. A merchant verifies a payout against
-      // userBankDetails, which is real and is sent.
-      userBankDetails: {
-        accountNumber:     user.bankDetails?.accountNumber || '',
-        ifscCode:          user.bankDetails?.ifscCode      || '',
-        bankName:          user.bankDetails?.bankName      || '',
-        accountHolderName: user.bankDetails?.accountHolderName || user.username || '',
-      },
-      userPhone:  user.mobile,
-      // Store user UPI ID from profile for merchant to see (used in sell order UI)
-      upiId:      user.bankDetails?.upiId || '',
-    });
-
-    // Escrow: lock tokens from winningsBalance into lockedBalance via wallet authority
-    // GOVERNANCE §7: all balance mutations go through walletAuthority.service.js
-    const debitResult = await debitWinningsForWithdrawal(String(user._id), tokenAmount, order._id.toString(), session);
-
-    await order.save(withSession(session));
-    await commitOrEnd(session);
-
-    emitAdminUpdate('new_order', adminOrderPayload(order, user));
-    await emitWalletUpdate(user._id);
-
-    // Auto-assign merchant immediately
-    const assigned = await tryAssignMerchant(order);
-    if (assigned) {
-      emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'ASSIGNED', server_ts: Date.now() });
-    } else {
-      // Sell orders become an open merchant pool item immediately. They do not
-      // consume the deposit retry loop because any eligible merchant may accept
-      // them later as their sell capacity opens up.
-      emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'PENDING_QUEUE', pool: 'SELL_OPEN_POOL', server_ts: Date.now() });
-    }
-
-    return {
-      order: {
-        _id:              order._id,
-        orderId:          order.orderId,
-        tokenAmount:      order.tokenAmount,
-        fiatAmount:       order.fiatAmount,
-        rateUsed:         order.rateUsed,
-        status:           order.status,
-        merchantSnapshot: order.merchantSnapshot,
-        expiresAt:        order.expiresAt,
-        userBankDetails:  order.userBankDetails,
-      },
-      remainingBalance: {
-        deposit:  user.depositBalance,
-        winnings: debitResult.winningsAfter ?? (user.winningsBalance - tokenAmount),
-        total:    user.depositBalance + (debitResult.winningsAfter ?? (user.winningsBalance - tokenAmount)),
-      },
-      note: `You will receive ₹${fiatAmount.toLocaleString()} from merchant`,
-    };
+    debitResult = await debitWinningsForWithdrawal(String(user.userId), tokenAmount, orderId);
   } catch (err) {
-    await abortOrEnd(session);
+    if (err.code === 'INSUFFICIENT_WITHDRAWABLE') {
+      // The figures come off the refusal, from the rows the debit locked —
+      // never from a record read separately, which is how a player was once
+      // told an available balance no wallet ever held.
+      const pending = await db.orders.pendingWithdrawalTotal(user.userId);
+      throw Object.assign(
+        new Error(
+          `Insufficient winnings balance. Available: ${err.availableWinnings} tokens`
+          + (pending > 0 ? ` (${pending} already committed to withdrawals in progress).` : '.'),
+        ),
+        {
+          status: 400,
+          balance: { winnings: err.availableWinnings, pending },
+        },
+      );
+    }
     throw err;
   }
+
+  const order = await db.orders.createOrderRecord({
+    orderId,
+    userId:            user.userId,
+    type:              'WITHDRAWAL',
+    tokenAmountRupees: tokenAmount,
+    fiatAmountRupees:  fiatAmount,
+    payoutFee,
+    rateUsed:          1,
+    escrowLocked:      true,
+    escrowStatus:      'LOCKED',
+    escrowAmount:      tokenAmount,
+    // A merchant verifies a payout against these. `userKycSnapshot` was removed
+    // 2026-08-25: it was stripped from every response before it reached anyone,
+    // and its `aadhaar` field was never a real path on the model.
+    userBankDetails: {
+      accountNumber:     user.bankDetails?.accountNumber || '',
+      ifscCode:          user.bankDetails?.ifscCode      || '',
+      bankName:          user.bankDetails?.bankName      || '',
+      accountHolderName: user.bankDetails?.accountHolderName || user.username || '',
+      upiId:             user.bankDetails?.upiId || '',
+    },
+    userPhone: user.mobile,
+  });
+
+  emitAdminUpdate('new_order', adminOrderPayload(order, user));
+  await emitWalletUpdate(user.userId);
+
+  if (await tryAssignMerchant(order)) {
+    emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'ASSIGNED', server_ts: Date.now() });
+  } else {
+    // Sell orders become an open merchant pool item immediately. They do not
+    // consume the deposit retry loop because any eligible merchant may accept
+    // them later as their sell capacity opens up.
+    emitAdminUpdate('queue_order_update', {
+      orderId: order.orderId, status: 'PENDING_QUEUE', pool: 'SELL_OPEN_POOL', server_ts: Date.now(),
+    });
+  }
+
+  return {
+    order: {
+      _id:              order.orderId,
+      orderId:          order.orderId,
+      tokenAmount:      order.tokenAmount,
+      fiatAmount:       order.fiatAmount,
+      rateUsed:         order.rateUsed,
+      status:           order.status,
+      merchantSnapshot: order.merchantSnapshot,
+      expiresAt:        order.expiresAt,
+      userBankDetails:  order.userBankDetails,
+    },
+    // From the movement that actually happened, not from a record read before
+    // it. `debitResult.balances` is what the wallet holds now.
+    remainingBalance: {
+      deposit:  debitResult.balances?.depositBalance ?? 0,
+      winnings: debitResult.balances?.winningsBalance ?? 0,
+      total:    (debitResult.balances?.depositBalance ?? 0) + (debitResult.balances?.winningsBalance ?? 0),
+    },
+    note: `You will receive ₹${fiatAmount.toLocaleString()} from merchant`,
+  };
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
 // markOrderPaid  — user submits UTR + screenshot (DEPOSIT only)
 // ═════════════════════════════════════════════════════════════════════════════
 export async function markOrderPaid(userId, orderId, utrNumber, proofFileKey, proofCdnUrl = null) {
-  const PaymentOrder = mongoose.model('PaymentOrder');
-  const order = await PaymentOrder.findOne({ $or: [{ orderId }, { _id: orderId }] });
+  const order = await db.orders.getOrderRecord(orderId);
   if (!order) throw Object.assign(new Error('Order not found'), { status: 404 });
 
-  if (order.userId.toString() !== userId.toString())
+  if (String(order.userId) !== String(userId))
     throw Object.assign(new Error('Access denied'), { status: 403 });
   if (!['ASSIGNED', 'PROCESSING'].includes(order.status))
     throw Object.assign(new Error(`Cannot mark paid — order is in ${order.status} status`), { status: 400 });
@@ -484,7 +475,7 @@ export async function markOrderPaid(userId, orderId, utrNumber, proofFileKey, pr
   // had done nothing wrong. The refusal now names which rule stopped it and
   // carries the order that holds the reference, so support has an answer
   // without a second lookup.
-  const claimed = await markUTRAsUsed(normalizedUTR, order._id, order.userId, order.fiatAmount);
+  const claimed = await markUTRAsUsed(normalizedUTR, order.orderId, order.userId, order.fiatAmount);
   if (!claimed.ok) {
     throw Object.assign(
       new Error(claimed.reason === 'FRAUD_FLAGGED'
@@ -501,13 +492,12 @@ export async function markOrderPaid(userId, orderId, utrNumber, proofFileKey, pr
   // The UTR was consumed above and is not returnable, so the transition being
   // refused here means the order moved under us between the status read and
   // now — a 409, not a 400: the request was understood and is no longer valid.
-  const paid = await markOrderPaidState(order._id, {
+  const paid = await markOrderPaidState(order.orderId, {
     expectFrom: ['ASSIGNED', 'PROCESSING'],
     set: {
       utrNumber:       normalizedUTR,
       proofScreenshot: verifiedProof.cdnUrl,
       paidAt:          new Date(),
-      updatedAt:       new Date(),
     },
   });
   if (!paid.ok) {
@@ -525,9 +515,9 @@ export async function markOrderPaid(userId, orderId, utrNumber, proofFileKey, pr
   order.paidAt          = paidOrder.paidAt;
 
   if (order.merchantId) {
-    emitMerchantUpdate(order.merchantId.toString(), 'order_paid', {
+    emitMerchantUpdate(String(order.merchantId), 'order_paid', {
       orderId:         order.orderId,
-      _id:             order._id,
+      _id:             order.orderId,
       status:          'PAID',
       utrNumber:       normalizedUTR,
       proofScreenshot: order.proofScreenshot,
@@ -537,29 +527,38 @@ export async function markOrderPaid(userId, orderId, utrNumber, proofFileKey, pr
       server_ts:       Date.now(),
     });
   }
-  emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'PAID', server_ts: Date.now() });
+  emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'PAID', server_ts: Date.now() });
 
   return order;
 }
 
-// ─── Update merchant scoring stats after order completes/fails ───────────────
-export async function updateMerchantStatsOnComplete(merchantId, success) {
+/**
+ * Record an order against a merchant's scoring stats.
+ *
+ * ── Two statements became one ───────────────────────────────────────────────
+ * This incremented the counters, read them back, computed `successRate` from
+ * what it read, and wrote that in a SECOND update. Two orders completing
+ * together both read the same totals, and both wrote a rate that described
+ * neither — a merchant's success rate drifting away from their own counters
+ * with nothing to say which was right.
+ *
+ * `recordCompletedOrder` derives the rate from the counters the same statement
+ * is moving, so the rate and the count it describes are always the same pair.
+ *
+ * The `activeOrderCount: -1` is gone with no replacement. That figure is
+ * DERIVED from the orders themselves, so there is no counter to decrement and
+ * none to leave wrong when this is called twice or not at all.
+ */
+export async function updateMerchantStatsOnComplete(merchantId, success, detail = {}) {
   if (!merchantId) return;
-  const Merchant = mongoose.model('Merchant');
-  const inc = { totalOrdersAll: 1, activeOrderCount: -1 };
-  if (success) inc.totalOrdersCompleted = 1;
-
-  const m = await Merchant.findByIdAndUpdate(merchantId, { $inc: inc }, { new: true });
-  if (!m) return;
-
-  // Recalculate successRate from totals
-  const totalAll       = m.totalOrdersAll       || 1;
-  const totalCompleted = m.totalOrdersCompleted || 0;
-  await Merchant.findByIdAndUpdate(merchantId, {
-    $set: {
-      successRate: totalCompleted / totalAll,
-      disputeRate: (m.disputeRate || 0), // preserved; updated separately on dispute
-    },
+  await db.merchants.recordCompletedOrder(merchantId, {
+    direction: detail.direction ?? 'DEPOSIT',
+    amountRupees: detail.amountRupees ?? 0,
+    earningsRupees: detail.earningsRupees ?? 0,
+    // `success` false means the order did not complete. It still counts toward
+    // total_orders_all, which is what makes the success rate fall.
+    disputed: !success,
+    responseMinutes: detail.responseMinutes ?? null,
   });
 }
 
@@ -567,28 +566,26 @@ export async function updateMerchantStatsOnComplete(merchantId, success) {
 // cancelOrder  — user or admin cancels a PENDING_QUEUE order
 // ═════════════════════════════════════════════════════════════════════════════
 export async function cancelOrder(actorId, isAdmin, orderId) {
-  const PaymentOrder = mongoose.model('PaymentOrder');
-  const order = await PaymentOrder.findOne({ $or: [{ orderId }, { _id: orderId }] });
+  const order = await db.orders.getOrderRecord(orderId);
   if (!order) throw Object.assign(new Error('Order not found'), { status: 404 });
 
-  if (order.userId.toString() !== actorId.toString() && !isAdmin)
+  if (String(order.userId) !== String(actorId) && !isAdmin)
     throw Object.assign(new Error('Access denied'), { status: 403 });
-  if (order.status !== 'PENDING_QUEUE')
-    throw Object.assign(new Error('Order cannot be cancelled at this stage'), { status: 400 });
 
   // ORDER INVERTED, deliberately. This refunded the escrow FIRST and set the
-  // status afterwards, guarded only by the `order.status` read above — stale by
-  // the time it mattered. A user double-tapping cancel put two refunds in
-  // flight, and only refundWithdrawal's own idempotency key stopped the second
-  // credit, which means the protection lived in a different domain from the
-  // decision. The transition decides now, and only the winner refunds.
-  const cancelled = await cancelOrderState(order._id, {
+  // status afterwards, guarded only by a stale status read. A user
+  // double-tapping cancel put two refunds in flight, and only
+  // `refundWithdrawal`'s own idempotency key stopped the second credit — which
+  // means the protection lived in a different domain from the decision. The
+  // transition decides now, and only the winner refunds.
+  const cancelled = await cancelOrderState(order.orderId, {
     expectFrom: 'PENDING_QUEUE',
     set: {
-      cancelReason:  'USER_CANCELLED',
-      cancelledAt:   new Date(),
-      updatedAt:     new Date(),
-      ...(order.type === 'WITHDRAWAL' && order.escrowLocked ? { escrowLocked: false } : {}),
+      cancelReason: 'USER_CANCELLED',
+      cancelledAt:  new Date(),
+      ...(order.type === 'WITHDRAWAL' && order.escrowLocked
+        ? { escrowLocked: false, escrowStatus: 'REFUNDED' }
+        : {}),
     },
   });
   if (!cancelled.ok) {
@@ -598,7 +595,7 @@ export async function cancelOrder(actorId, isAdmin, orderId) {
     );
   }
   if (!cancelled.idempotent && order.type === 'WITHDRAWAL' && order.escrowLocked) {
-    await refundWithdrawal(order.userId, order.tokenAmount, order._id.toString());
+    await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
   }
   await emitWalletUpdate(order.userId);
   return cancelled.order ?? order;
@@ -608,12 +605,10 @@ export async function cancelOrder(actorId, isAdmin, orderId) {
 // expireOrders  — cron worker (called from cronJobs.js or setInterval)
 // ═════════════════════════════════════════════════════════════════════════════
 export async function expireOrders() {
-  const PaymentOrder = mongoose.model('PaymentOrder');
-  const now = new Date();
-  const expired = await PaymentOrder.find({
-    status:    { $in: ['ASSIGNED', 'PROCESSING'] },
-    expiresAt: { $lt: now },
-  });
+  // The due set comes from the DATABASE's clock, not the app server's. Three
+  // instances with drifting clocks expiring the same orders is how an order
+  // gets refunded a minute before its own deadline.
+  const expired = await db.orders.findExpiredOrders({ limit: 500 });
   if (expired.length === 0) return 0;
 
   let count = 0;
@@ -622,34 +617,45 @@ export async function expireOrders() {
       // Two instances running this cron both read the same expired batch. The
       // transition is what makes the refund happen once: the loser gets
       // `idempotent` and skips the release rather than racing it.
-      const expired = await cancelOrderState(order._id, {
-        expectFrom: ['ASSIGNED', 'PROCESSING'],
-        set: { cancelReason: 'EXPIRED', cancelledAt: now, updatedAt: now },
+      // PENDING_QUEUE is in this list, and was not before. The retry loop that
+      // expires an unassigned order is a `setTimeout` chain living in one
+      // process — so a restart between an order's creation and its deadline
+      // orphaned it permanently, and for a WITHDRAWAL that means the player's
+      // money sits in escrow forever with nothing scheduled to release it.
+      const moved = await cancelOrderState(order.orderId, {
+        expectFrom: ['PENDING_QUEUE', 'ASSIGNED', 'PROCESSING'],
+        set: {
+          cancelReason: 'EXPIRED',
+          cancelledAt:  new Date(),
+          ...(order.type === 'WITHDRAWAL' && order.escrowLocked
+            ? { escrowLocked: false, escrowStatus: 'REFUNDED' }
+            : {}),
+        },
       });
-      if (!expired.ok || expired.idempotent) continue;
-      order.status = 'CANCELLED';
+      if (!moved.ok || moved.idempotent) continue;
 
       // Release escrow if WITHDRAWAL
       if (order.type === 'WITHDRAWAL' && order.escrowLocked) {
-        await refundWithdrawal(
-          order.userId, order.tokenAmount, order._id.toString()
-        ).catch(e => console.error('[expireOrders] escrow release failed:', e.message));
+        await refundWithdrawal(order.userId, order.tokenAmount, order.orderId)
+          .catch(e => console.error('[expireOrders] escrow release failed:', e.message));
       }
 
-      // Update merchant scoring (failure)
+      // Scoring: the merchant did not complete it.
       if (order.merchantId) {
-        await updateMerchantStatsOnComplete(order.merchantId, false).catch(() => {});
+        await updateMerchantStatsOnComplete(order.merchantId, false, {
+          direction: order.type, amountRupees: order.tokenAmount,
+        }).catch(() => {});
       }
 
-      emitOrderUpdate(order.userId.toString(), 'order_expired', {
+      emitOrderUpdate(String(order.userId), 'order_expired', {
         orderId:   order.orderId,
-        _id:       order._id,
+        _id:       order.orderId,
         status:    'CANCELLED',
         reason:    'EXPIRED',
         expiresAt: order.expiresAt,
         server_ts: Date.now(),
       });
-      emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'CANCELLED', reason: 'EXPIRED' });
+      emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'CANCELLED', reason: 'EXPIRED' });
       count++;
     } catch (e) {
       console.error('[expireOrders] failed:', order.orderId, e.message);
