@@ -231,6 +231,54 @@ describePg('Bet lifecycle (PostgreSQL)', () => {
 
   // ── The state machine ─────────────────────────────────────────────────────
   // ── Enumerating what a settlement pass has to settle ──────────────────────
+  // ── The reply a REPLAYED placement gets ───────────────────────────────────
+  describe('a replayed placement answers, rather than throwing', () => {
+    it('returns the same bet on every delivery of one request', async () => {
+      const { placeBet: placeThroughApi, getBetDoc } = await import('../repositories/bets.js');
+      await fund('depositBalance', 100_00, 'f-replay');
+
+      const args = {
+        betId: 'bet-replay-1', userId: U, cycleId: 'cyc1', side: 'DELHI',
+        amount: 100, slices: [{ field: 'depositBalance', amount: 100 }],
+      };
+
+      const first  = await placeThroughApi(args);
+      const second = await placeThroughApi(args);
+
+      // The second delivery used to fall past a bare `if (!result.idempotent)`
+      // left behind when a mirror call was removed, and return UNDEFINED — so
+      // the route read `.ok` off nothing and every retried bet placement threw
+      // a TypeError, on the highest-traffic endpoint, in the exact case
+      // idempotency exists to make safe.
+      expect(second).toBeDefined();
+      expect(second.ok).toBe(true);
+      expect(second.idempotent).toBe(true);
+      expect(second.bet._id).toBe(first.bet._id);
+
+      // And it debited once.
+      expect((await bal()).depositBalance).toBe(0);
+      expect((await bal()).lockedBalance).toBe(100_00);
+    });
+
+    it('finds a bet by either of the two keys it carries', async () => {
+      const { placeBet: placeThroughApi, getBetDoc, mongoIdFor } = await import('../repositories/bets.js');
+      await fund('depositBalance', 50_00, 'f-keys');
+      await placeThroughApi({
+        betId: 'bet-keys-1', userId: U, cycleId: 'cyc1', side: 'DELHI',
+        amount: 50, slices: [{ field: 'depositBalance', amount: 50 }],
+      });
+
+      // The idempotency key and the derived public id both resolve to one row.
+      const byKey = await getBetDoc('bet-keys-1');
+      const byPublicId = await getBetDoc(mongoIdFor('bet-keys-1'));
+      expect(byKey.betId).toBe('bet-keys-1');
+      expect(byPublicId.betId).toBe('bet-keys-1');
+      // Rupees, because that is what the response carries.
+      expect(byKey.amount).toBe(50);
+      expect(await getBetDoc('no-such-bet')).toBeNull();
+    });
+  });
+
   describe('the settlement pass reads the rows it settles', () => {
     /** A cycle row, so the winning/losing split can be resolved in the statement. */
     const declareCycle = (cycleId, winner) => pgQuery(

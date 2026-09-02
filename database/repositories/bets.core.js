@@ -641,6 +641,64 @@ export async function listSettleableBets(cycleId, { side = null, limit = 1000, a
   }));
 }
 
+/**
+ * What a cycle actually paid, reconstructed from its settled bets.
+ *
+ * ── Trap 6, in the one place it costs money ────────────────────────────────
+ * The settlement pass must NOT report its own in-memory accumulators. An
+ * accumulator counts what THIS pass did; a pass resumed after a crash only
+ * re-processes the bets still PENDING, so its accumulator undercounts every bet
+ * an earlier pass already paid — and the cycle's recorded payout, which is what
+ * the platform's profit is computed from, is then permanently wrong while the
+ * money itself is correct. There is no way to tell afterwards which number
+ * lied.
+ *
+ * Summed from the rows, this is right whether the cycle settled in one pass or
+ * five.
+ */
+export async function cyclePayoutTotals(cycleId) {
+  const { rows } = await pgQuery(
+    `SELECT COALESCE(SUM(payout_paise), 0)       AS paid,
+            COALESCE(SUM(platform_fee_paise), 0) AS fees,
+            COUNT(DISTINCT user_id) FILTER (WHERE status = 'WON')::int AS winners,
+            COUNT(*) FILTER (WHERE status = 'WON')::int     AS won_bets,
+            COUNT(*) FILTER (WHERE status = 'LOST')::int    AS lost_bets,
+            COUNT(*) FILTER (WHERE status = 'PENDING')::int AS still_pending
+       FROM bets
+      WHERE cycle_id = $1 AND NOT is_phantom`,
+    [String(cycleId)], 'bets_cycle_payout_totals',
+  );
+  const r = rows[0];
+  return {
+    paidOutPaise: Number(r.paid),
+    platformFeesPaise: Number(r.fees),
+    winners: Number(r.winners),
+    wonBets: Number(r.won_bets),
+    lostBets: Number(r.lost_bets),
+    // A settled cycle with bets still PENDING is a stake locked with nothing
+    // coming to release it. The pass reports this rather than discovering it
+    // months later through a support ticket.
+    stillPending: Number(r.still_pending),
+  };
+}
+
+/**
+ * Stamp a cycle's phantom bets LOST.
+ *
+ * Phantom bets never win and never move money: they are created with no balance
+ * deduction, so there is no stake to consume and nothing for `settle` to settle
+ * against. This is bookkeeping — one UPDATE, so the displayed history does not
+ * leave synthetic bets sitting at PENDING forever.
+ */
+export async function closePhantomBets(cycleId) {
+  const { rowCount } = await pgQuery(
+    `UPDATE bets SET status = 'LOST', settled_at = now(), updated_at = now()
+      WHERE cycle_id = $1 AND is_phantom AND status = 'PENDING'`,
+    [String(cycleId)], 'bets_close_phantom',
+  );
+  return rowCount;
+}
+
 export async function claimPendingBetForRefund(betId) {
   const { rows } = await pgQuery(
     `DELETE FROM bets WHERE bet_id = $1 AND status = 'PENDING' RETURNING *`,
