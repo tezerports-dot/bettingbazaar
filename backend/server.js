@@ -114,6 +114,7 @@ import GameEngine         from './domains/markets/gameEngine.js';
 import CycleGenerator     from './domains/markets/cycleGenerator.service.js';
 import SSEManager         from './domains/notification/sseManager.service.js';
 import { initSSERoutes }  from './routes/sse.routes.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 // ─── APP SETUP ────────────────────────────────────────────────────────────────
 const runtime = runtimeProfile();

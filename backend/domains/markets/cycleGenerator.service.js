@@ -18,6 +18,7 @@ import {
   CYCLE_TYPES, CYCLE_TYPE_VALUES, INTERVAL_CYCLE_TYPES,
   isCycleType, cycleMeta, cycleLabel, phasesFor,
 } from './cycleTypes.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 // ── CYCLE PHASE OFFSETS (Business Config Audit, 2026-07-11) ───────────────────
 // Seconds BEFORE a cycle's endTime that each phase fires. Previously hardcoded

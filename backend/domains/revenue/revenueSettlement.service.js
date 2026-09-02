@@ -37,6 +37,7 @@ import {
   accountBalanceOnPostgres, getLedgerOnPostgres,
 } from '#db/repositories/ledger.js';
 import { ACCOUNTS, ACCOUNT_CODES, EVENT_TYPES, toMinor } from './chartOfAccounts.js';
+import { db } from '#db';
 
 // ═════════════════════════════════════════════════════════════════════════════
 // Pure validation + posting builders (exported for tests — no DB required)
@@ -386,27 +387,20 @@ export async function issueMerchantBonus({ merchantId, amountMinor, idempotencyK
 // If source volume makes the scan expensive, add a checkpoint optimization —
 // flagged in docs/governance/04-GOVERNANCE.md.
 
-async function unrecordedSources(Model, matchStage, refModel, localRefExpr, limit) {
-  return Model.aggregate([
-    { $match: matchStage },
-    { $sort: { _id: 1 } },
-    { $lookup: {
-        from: 'accountingevents',
-        let: { rid: localRefExpr },
-        pipeline: [
-          { $match: { $expr: { $and: [
-            { $eq: ['$refModel', refModel] },
-            { $eq: ['$refId', '$$rid'] },
-          ] } } },
-          { $limit: 1 },
-          { $project: { _id: 1 } },
-        ],
-        as: 'ledger',
-    } },
-    { $match: { ledger: { $size: 0 } } },
-    { $limit: limit },
-  ]);
-}
+/**
+ * The two reconciliation reads live in the repository now.
+ *
+ * `unrecordedSources` was one generic aggregate parameterised by a Mongoose
+ * model, a match stage and a `$lookup` — and it was called with `PaymentOrder`
+ * and `Cycle`, both deleted with the ODM, so BOTH reconciliation passes threw
+ * a ReferenceError. Silently: they are called from a cron whose per-item
+ * failures are collected rather than raised, so a revenue reconciliation that
+ * had never run once still reported a clean, empty result.
+ *
+ * A LEFT JOIN with a NULL test answers the same question in one pass, and each
+ * source gets a named query rather than a generic one that has to be told what
+ * a source is.
+ */
 
 /**
  * reconcileCompletedOrders — record DEPOSIT_COMPLETED / WITHDRAWAL_COMPLETED
@@ -414,13 +408,7 @@ async function unrecordedSources(Model, matchStage, refModel, localRefExpr, limi
  * Per-item failures are collected, never thrown.
  */
 export async function reconcileCompletedOrders(limit = 200) {
-  const due = await unrecordedSources(
-    PaymentOrder,
-    { status: 'COMPLETED', type: { $in: ['DEPOSIT', 'WITHDRAWAL'] } },
-    'PaymentOrder',
-    { $toString: '$_id' },
-    limit
-  );
+  const due = await db.orders.findCompletedOrdersMissingEvents({ limit });
 
   const results = [];
   for (const order of due) {
@@ -457,13 +445,7 @@ export async function reconcileCompletedOrders(limit = 200) {
  * cycles (isSettled: 'COMPLETED') that have no ledger entry yet.
  */
 export async function reconcileSettledCycles(limit = 200) {
-  const due = await unrecordedSources(
-    Cycle,
-    { isSettled: 'COMPLETED' },
-    'Cycle',
-    '$cycleId',
-    limit
-  );
+  const due = await db.markets.findSettledCyclesMissingEvents({ limit });
 
   const results = [];
   for (const cycle of due) {

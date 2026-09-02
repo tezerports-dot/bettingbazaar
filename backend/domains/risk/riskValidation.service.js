@@ -26,6 +26,7 @@
 import mongoose from 'mongoose';
 // Shared trading vocabulary (Phase 011) — canonical sides, no local strings.
 import { oppositeSide } from '../trading/tradingModels.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 function reject(message, code = 'RISK_VALIDATION') {
   return Object.assign(new Error(message), { status: 400, code });

@@ -20,6 +20,7 @@ import * as audit from '../repositories/audit.js';
 import * as compliance from '../repositories/compliance.js';
 import * as operations from '../repositories/operations.js';
 import * as paymentConfig from '../repositories/paymentConfig.js';
+import * as depositPolicy from '../repositories/depositPolicy.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -782,4 +783,190 @@ describePg('the domains written from scratch', () => {
       expect(cfg).toMatchObject({ activeMode: 'P2P', p2pEnabled: true, gatewayEnabled: false });
     });
   });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  describe('deposit policy — the split that governs every deposit', () => {
+    const CUR = () => `T${ID.slice(0, 5).toUpperCase()}`;
+
+    const activeCount = async (currency) => {
+      const { rows } = await pgQuery(
+        "SELECT count(*)::int AS n FROM deposit_policies WHERE currency = $1 AND status = 'ACTIVE'",
+        [currency],
+      );
+      return rows[0].n;
+    };
+
+    it('gives the FIRST version of a currency to exactly one of two writers', async () => {
+      const currency = `${CUR()}A`;
+      // There is no ACTIVE row yet, so there is nothing for the supersede to
+      // lock and both writers compute version 1. The unique constraint is what
+      // decides — one gets the row, the other a clean refusal it can retry.
+      // Never a throw, and never two rows governing deposits.
+      const results = await Promise.all([
+        depositPolicy.createPolicyVersion({
+          currency, depositAllocationPercent: 90, reserveAllocationPercent: 10,
+          justification: 'race a', changedBy: 'admin-1',
+        }),
+        depositPolicy.createPolicyVersion({
+          currency, depositAllocationPercent: 80, reserveAllocationPercent: 20,
+          justification: 'race b', changedBy: 'admin-2',
+        }),
+      ]);
+      expect(results.filter((r) => r.ok)).toHaveLength(1);
+      expect(results.filter((r) => !r.ok).map((r) => r.reason)).toEqual(['CONCURRENT_CHANGE']);
+      expect(await activeCount(currency)).toBe(1);
+    });
+
+    it('refuses the loser of a contended edit rather than doubling the policy', async () => {
+      const currency = `${CUR()}H`;
+      await depositPolicy.createPolicyVersion({
+        currency, depositAllocationPercent: 90, reserveAllocationPercent: 10,
+        justification: 'v1', changedBy: 'admin-1',
+      });
+      // Two admins editing the live policy at once. The supersede does not
+      // serialise them — under READ COMMITTED the loser's UPDATE matches
+      // nothing and holds no lock — so it is the one-ACTIVE-row index that
+      // decides. What matters is what a caller can observe: one applied edit,
+      // one retryable refusal, and one policy governing deposits.
+      const results = await Promise.all([
+        depositPolicy.createPolicyVersion({
+          currency, depositAllocationPercent: 70, reserveAllocationPercent: 30,
+          justification: 'race a', changedBy: 'admin-1',
+        }),
+        depositPolicy.createPolicyVersion({
+          currency, depositAllocationPercent: 60, reserveAllocationPercent: 40,
+          justification: 'race b', changedBy: 'admin-2',
+        }),
+      ]);
+      expect(results.filter((r) => r.ok)).toHaveLength(1);
+      expect(results.filter((r) => !r.ok).map((r) => r.reason)).toEqual(['CONCURRENT_CHANGE']);
+      expect(await activeCount(currency)).toBe(1);
+
+      // Retrying the refused edit succeeds, which is what makes the refusal an
+      // acceptable answer rather than a lost change.
+      const retried = await depositPolicy.createPolicyVersion({
+        currency, depositAllocationPercent: 60, reserveAllocationPercent: 40,
+        justification: 'race b, retried', changedBy: 'admin-2',
+      });
+      expect(retried.ok).toBe(true);
+      expect(await activeCount(currency)).toBe(1);
+      expect((await depositPolicy.getActivePolicy(currency)).depositAllocationPercent).toBe(60);
+    });
+
+    it('refuses a split that does not conserve the deposit', async () => {
+      const currency = `${CUR()}B`;
+      // 70 + 20 destroys a tenth of every deposit it governs. The JavaScript
+      // validator caught this for callers that called it; the rollback path
+      // did not, and this is the row refusing it regardless.
+      const refused = await depositPolicy.createPolicyVersion({
+        currency, depositAllocationPercent: 70, reserveAllocationPercent: 20,
+        justification: 'loses money',
+      });
+      expect(refused).toMatchObject({ ok: false, reason: 'PERCENTAGES_MUST_SUM_TO_100' });
+      expect(await depositPolicy.getActivePolicy(currency)).toBeNull();
+    });
+
+    it('conserves the full amount when it splits one', async () => {
+      const currency = `${CUR()}C`;
+      await depositPolicy.createPolicyVersion({
+        currency, depositAllocationPercent: 93, reserveAllocationPercent: 7,
+        justification: 'awkward percentage', changedBy: 'admin-1',
+      });
+      for (const amount of [1, 7, 99, 1000, 1234, 99_999]) {
+        const split = await depositPolicy.splitForDeposit(amount, currency);
+        // Rounding both shares independently loses or invents a paisa on most
+        // amounts; over a day of deposits that is a reserve that will not
+        // reconcile. The reserve is floored and the player gets the remainder.
+        expect(split.depositAllocation + split.reserveAllocation).toBe(amount);
+        expect(split.reserveAllocation).toBe(Math.floor((amount * 7) / 100));
+      }
+    });
+
+    it('never edits history — a superseded version keeps its numbers', async () => {
+      const currency = `${CUR()}D`;
+      await depositPolicy.createPolicyVersion({
+        currency, depositAllocationPercent: 90, reserveAllocationPercent: 10,
+        justification: 'v1', changedBy: 'admin-1',
+      });
+      await depositPolicy.createPolicyVersion({
+        currency, depositAllocationPercent: 60, reserveAllocationPercent: 40,
+        justification: 'v2', changedBy: 'admin-1',
+      });
+
+      const v1 = await depositPolicy.getPolicyVersion(currency, 1);
+      expect(v1).toMatchObject({ status: 'SUPERSEDED', depositAllocationPercent: 90 });
+
+      // An order created under v1 carries v1's split forever, so v1's numbers
+      // are not editable and v1 is not deletable.
+      await expect(pgQuery(
+        'UPDATE deposit_policies SET deposit_allocation_percent = 50, reserve_allocation_percent = 50 WHERE currency = $1 AND version = 1',
+        [currency],
+      )).rejects.toThrow(/immutable/);
+      await expect(pgQuery(
+        'DELETE FROM deposit_policies WHERE currency = $1 AND version = 1', [currency],
+      )).rejects.toThrow(/permanent/);
+    });
+
+    it('holds a proposal back until somebody approves it', async () => {
+      const currency = `${CUR()}E`;
+      await depositPolicy.createPolicyVersion({
+        currency, depositAllocationPercent: 90, reserveAllocationPercent: 10,
+        justification: 'live', changedBy: 'admin-1',
+      });
+      const proposed = await depositPolicy.createPolicyVersion({
+        currency, depositAllocationPercent: 50, reserveAllocationPercent: 50,
+        justification: 'proposal', changedBy: 'admin-2', status: 'PENDING_APPROVAL',
+      });
+      expect(proposed.policy.status).toBe('PENDING_APPROVAL');
+      // A proposal does not govern deposits. The 90/10 keeps running.
+      expect((await depositPolicy.getActivePolicy(currency)).depositAllocationPercent).toBe(90);
+
+      const activated = await depositPolicy.activatePolicyVersion(currency, proposed.policy.version, { changedBy: 'admin-3' });
+      expect(activated.status).toBe('ACTIVE');
+      expect((await depositPolicy.getActivePolicy(currency)).depositAllocationPercent).toBe(50);
+      // …and approving it superseded the one it replaced, in the same breath.
+      expect((await depositPolicy.getPolicyVersion(currency, 1)).status).toBe('SUPERSEDED');
+    });
+
+    it('reinstates an old version as a new one rather than reviving it', async () => {
+      const currency = `${CUR()}F`;
+      await depositPolicy.createPolicyVersion({
+        currency, depositAllocationPercent: 95, reserveAllocationPercent: 5,
+        justification: 'v1', changedBy: 'admin-1',
+      });
+      await depositPolicy.createPolicyVersion({
+        currency, depositAllocationPercent: 70, reserveAllocationPercent: 30,
+        justification: 'v2', changedBy: 'admin-1',
+      });
+      const rolled = await depositPolicy.rollbackToPolicyVersion(currency, 1, { changedBy: 'admin-9' });
+      expect(rolled.ok).toBe(true);
+      expect(rolled.policy.version).toBe(3);
+      expect(rolled.policy.depositAllocationPercent).toBe(95);
+      // v1 is untouched history, not resurrected.
+      expect((await depositPolicy.getPolicyVersion(currency, 1)).status).toBe('SUPERSEDED');
+    });
+
+    it('activates a scheduled version once its time has come', async () => {
+      const currency = `${CUR()}G`;
+      await depositPolicy.createPolicyVersion({
+        currency, depositAllocationPercent: 90, reserveAllocationPercent: 10,
+        justification: 'current', changedBy: 'admin-1',
+      });
+      await depositPolicy.createPolicyVersion({
+        currency, depositAllocationPercent: 85, reserveAllocationPercent: 15,
+        justification: 'scheduled', changedBy: 'admin-1',
+        status: 'SCHEDULED', effectiveAt: new Date(Date.now() - 60_000),
+      });
+
+      const applied = await depositPolicy.applyScheduledPolicyChanges();
+      expect(applied.some((r) => r.currency === currency && r.applied)).toBe(true);
+      expect((await depositPolicy.getActivePolicy(currency)).depositAllocationPercent).toBe(85);
+
+      // Running the sweep again finds nothing to do — it is not a second
+      // activation, and it does not error.
+      const second = await depositPolicy.applyScheduledPolicyChanges();
+      expect(second.some((r) => r.currency === currency)).toBe(false);
+    });
+  });
+
 });

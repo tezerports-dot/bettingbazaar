@@ -44,6 +44,7 @@ import {
   DIRECTIONS, openSettlement, completeSettlement, cancelSettlement, reverseSettlement,
   getSettlement,
 } from '#db/repositories/merchantSettlements.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 /** Is Postgres the source of truth for the merchant side of a settlement? */
 

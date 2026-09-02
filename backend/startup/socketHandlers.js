@@ -6,6 +6,7 @@ import { db } from '#db';
 import { verifyJwt } from '../domains/identity/jwt.util.js';
 import { cycleSnapshotPublisher } from '../domains/markets/cycleSnapshotPublisher.js';
 import { fetchCycleHistory } from '../domains/markets/cycleHistory.service.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 // Public cycle-room id guard: the room name is client-supplied, so bound it to
 // the shape a real cycleId has (no auth needed — pool totals are public — but a

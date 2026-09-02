@@ -191,6 +191,107 @@ const SETTABLE = Object.freeze({
 });
 
 /**
+ * Open an order WITH its detail, in one statement.
+ *
+ * `openOrder` (the lifecycle module) writes the six columns the state machine
+ * needs; everything else — allocations, escrow, the payer's bank details, the
+ * fee — used to arrive in a second UPDATE. Between the two, the order existed
+ * at PENDING_QUEUE with a zero allocation and no escrow flag, and the assignment
+ * sweep could pick it up there. A crash between them left it that way for good.
+ *
+ * `ON CONFLICT DO NOTHING` makes it retry-safe: the caller's generated order id
+ * is the idempotency key, so a resubmitted create returns the existing order
+ * rather than a second one.
+ */
+export async function createOrderRecord({
+  orderId, userId, type, tokenAmountRupees, fiatAmountRupees = 0,
+  state = 'PENDING_QUEUE', ...detail
+}) {
+  if (!orderId) throw new Error('createOrderRecord requires an orderId');
+  if (!userId) throw new Error('createOrderRecord requires a userId');
+  if (type !== 'DEPOSIT' && type !== 'WITHDRAWAL') {
+    throw new Error(`createOrderRecord: unknown order type '${type}'`);
+  }
+  const tokenPaise = rupeesToPaise(tokenAmountRupees);
+  if (!Number.isInteger(tokenPaise) || tokenPaise <= 0) {
+    throw new TypeError(`createOrderRecord: tokenAmount must be positive, got ${tokenAmountRupees}`);
+  }
+
+  const columns = ['order_id', 'user_id', 'order_type', 'state', 'token_amount_paise', 'fiat_amount_paise'];
+  const params = [String(orderId), String(userId), type, state, tokenPaise, rupeesToPaise(fiatAmountRupees)];
+
+  // The same allowlist `setOrderFields` uses, so a field this create accepts is
+  // one an update accepts and vice versa — and an unknown one is refused here
+  // too rather than silently dropped.
+  const unknown = Object.entries(detail)
+    .filter(([k, v]) => v !== undefined && !SETTABLE[k]).map(([k]) => k);
+  if (unknown.length) {
+    throw new Error(`createOrderRecord: refusing to write unknown field(s): ${unknown.join(', ')}`);
+  }
+  for (const [key, value] of Object.entries(detail)) {
+    if (value === undefined) continue;
+    const spec = SETTABLE[key];
+    const [column, transform] = Array.isArray(spec) ? spec : [spec, null];
+    columns.push(column);
+    params.push(transform && value !== null ? transform(value) : value);
+  }
+
+  const { rows } = await pgQuery(
+    `INSERT INTO order_states (${columns.join(', ')})
+     VALUES (${params.map((_, i) => `$${i + 1}`).join(', ')})
+     ON CONFLICT (order_id) DO NOTHING
+     RETURNING *`,
+    params, 'order_create_record',
+  );
+  return rows[0] ? toOrder(rows[0]) : getOrderRecord(orderId);
+}
+
+/**
+ * Tokens a player already has committed to withdrawals in flight.
+ *
+ * A READ, for showing the player why a figure looks lower than they expect. It
+ * is NOT the admission gate — the escrow debit is, because it decides under the
+ * wallet row lock. See `createWithdrawalOrder`.
+ */
+/**
+ * COMPLETED orders whose accounting event was never posted.
+ *
+ * The reconciliation the revenue service walks: money moved, the ledger does
+ * not know. It is a LEFT JOIN with a NULL test rather than a per-order lookup —
+ * the document version did a `$lookup` inside an aggregate and could only ever
+ * answer for one collection at a time, which is why it was duplicated per
+ * source and why both copies referenced models that no longer exist.
+ *
+ * Ordered oldest-first, because the oldest gap is the one that has been
+ * misreporting revenue for longest.
+ */
+export async function findCompletedOrdersMissingEvents({ limit = 200 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT o.* FROM order_states o
+       LEFT JOIN accounting_events e
+         ON e.ref_model = 'PaymentOrder' AND e.ref_id = o.order_id
+      WHERE o.state = 'COMPLETED'
+        AND o.order_type IN ('DEPOSIT', 'WITHDRAWAL')
+        AND e.id IS NULL
+      ORDER BY o.created_at ASC
+      LIMIT ${Math.min(Math.max(Number(limit) || 200, 1), 1000)}`,
+    [], 'order_missing_accounting_event',
+  );
+  return rows.map(toOrder);
+}
+
+export async function pendingWithdrawalTotal(userId) {
+  const { rows } = await pgQuery(
+    `SELECT COALESCE(SUM(token_amount_paise), 0) AS total
+       FROM order_states
+      WHERE user_id = $1 AND order_type = 'WITHDRAWAL'
+        AND state IN ('PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID')`,
+    [String(userId)], 'order_pending_withdrawal_total',
+  );
+  return rupees(rows[0].total);
+}
+
+/**
  * Set detail on an order.
  *
  * Refuses an unknown field rather than dropping it. The document model
@@ -380,6 +481,30 @@ export async function releaseUtr(utr, orderId) {
  * each computing their own IST midnight, and a difference of one in any of them
  * would have paid a different set of orders.
  */
+/**
+ * Today's payout date, as the DATABASE reckons it.
+ *
+ * `bulk_payout_date` is a DATE in IST, and three route handlers each built
+ * their own IST midnight from `new Date()`. A server running in UTC is five and
+ * a half hours behind, so between 18:30 and midnight UTC each of them could
+ * disagree about which day it is — and a batch listed under one date and paid
+ * under another pays a different set of orders than the merchant reviewed.
+ *
+ * There is one owner of that value now, and it is the same clock the column is
+ * compared against.
+ */
+export async function istToday() {
+  const { rows } = await pgQuery(
+    "SELECT CAST(now() AT TIME ZONE 'Asia/Kolkata' AS DATE) AS today", [], 'order_ist_today',
+  );
+  // A DATE comes back as a JS Date at local midnight; the ISO date part is the
+  // day itself, free of whatever offset the app server happens to run in.
+  const d = rows[0].today;
+  return d instanceof Date
+    ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    : String(d);
+}
+
 export async function bulkPayoutBatch({ merchantId, payoutDate }) {
   const { rows } = await pgQuery(
     `SELECT * FROM order_states

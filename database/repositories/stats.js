@@ -222,6 +222,63 @@ export async function topPlayers({ from = null, to = null, limit = 20 } = {}) {
   }));
 }
 
+/**
+ * The leaderboard, computed from settled bets.
+ *
+ * ── Three things the document aggregate got wrong ───────────────────────────
+ * 1. It summed `betAmount` on winning bets and called the result `totalWon` —
+ *    the amount STAKED on bets that won, not the amount won. The leaderboard
+ *    then showed it in a column labelled winnings.
+ * 2. It computed `winRate` as `totalWon / totalBets * 100`: rupees divided by a
+ *    count. A player with one ₹5,000 winning bet ranked at 500,000% and the
+ *    figure was rendered as a percentage.
+ * 3. It ranked on every bet including PENDING ones, whose payout is zero, so an
+ *    open position dragged a player down the board until it settled and then
+ *    jumped them back up.
+ *
+ * Only SETTLED bets count. A pending bet has no outcome yet, and VOID and
+ * REFUNDED ones never had one — including them would let a player improve
+ * their standing by placing bets that get cancelled.
+ *
+ * The username comes from a JOIN. The document version fetched the top fifty
+ * ids and then looked each one up, matching them in JavaScript with
+ * `users.find(...)` inside the map — fifty linear scans, and a silent 'Player'
+ * for anyone the second query missed.
+ */
+export async function leaderboard({ since = null, limit = 50 } = {}) {
+  const params = [];
+  const where = ["b.status IN ('WON', 'LOST')"];
+  if (since) { params.push(since); where.push(`b.settled_at >= $${params.length}`); }
+  const { rows } = await pgQuery(
+    `SELECT b.user_id,
+            COALESCE(u.username, 'Player')                      AS username,
+            COUNT(*)::int                                       AS bets,
+            COUNT(*) FILTER (WHERE b.status = 'WON')::int       AS wins,
+            COALESCE(SUM(b.stake_paise), 0)                     AS staked,
+            COALESCE(SUM(b.payout_paise), 0)                    AS won,
+            COALESCE(SUM(b.payout_paise) - SUM(b.stake_paise), 0) AS net
+       FROM bets b
+       LEFT JOIN users u ON u.user_id = b.user_id
+      WHERE ${where.join(' AND ')}
+      GROUP BY b.user_id, u.username
+      ORDER BY net DESC, staked DESC
+      LIMIT ${Math.min(Math.max(Number(limit) || 50, 1), 500)}`,
+    params, 'stats_leaderboard',
+  );
+  return rows.map((r, i) => ({
+    rank: i + 1,
+    userId: r.user_id,
+    username: r.username,
+    totalBets: r.bets,
+    wins: r.wins,
+    totalStaked: rupees(r.staked),
+    totalWon: rupees(r.won),
+    netProfit: rupees(r.net),
+    // A share of settled bets, which is what the word means.
+    winRate: r.bets ? Math.round((r.wins / r.bets) * 100) : 0,
+  }));
+}
+
 /** Per-merchant throughput, derived from the orders they actually settled. */
 export async function merchantThroughput({ from = null, to = null, limit = 50 } = {}) {
   const where = ["state = 'COMPLETED'", 'merchant_id IS NOT NULL'];

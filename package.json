@@ -32,7 +32,8 @@
     "stack:down": "docker compose -f docker-compose.test.yml down -v",
     "stack:logs": "docker compose -f docker-compose.test.yml logs -f",
     "test:all": "sh -c 'export DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/bb_test REDIS_URL=redis://127.0.0.1:6379; npm run check:no-mongo && npm run test:unit && npm run test:pg && npm run test:redis'",
-    "check:db-boundary": "node scripts/verify-db-boundary.mjs"
+    "check:db-boundary": "node scripts/verify-db-boundary.mjs",
+    "check:orphans": "node scripts/detect-orphan-refs.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",

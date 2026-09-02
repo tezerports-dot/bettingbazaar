@@ -313,6 +313,43 @@ export async function listBonuses({ userId = null, bonusType = null, limit = 100
   }));
 }
 
+/**
+ * One page of a player's bonus history, with its total from the same query.
+ *
+ * `find()` plus a separate `countDocuments()` are two reads of a table that
+ * accepts a new bonus between them, so the total described a different instant
+ * than the page. `COUNT(*) OVER ()` counts the same filtered set in the same
+ * snapshot.
+ */
+export async function pageBonuses({ userId, bonusType = null, page = 1, limit = 30 } = {}) {
+  if (!userId) throw new Error('pageBonuses requires a userId');
+  const params = [String(userId)];
+  const where = ['user_id = $1'];
+  if (bonusType) { params.push(String(bonusType)); where.push(`bonus_type = $${params.length}`); }
+
+  const size = Math.min(Math.max(Number(limit) || 30, 1), 200);
+  const offset = Math.max((Number(page) || 1) - 1, 0) * size;
+  params.push(size, offset);
+
+  const { rows } = await pgQuery(
+    `SELECT *, COUNT(*) OVER () AS total_rows FROM bonus_records
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params, 'bonus_page',
+  );
+  return {
+    total: rows.length ? Number(rows[0].total_rows) : 0,
+    page: Math.max(Number(page) || 1, 1),
+    limit: size,
+    records: rows.map((r) => ({
+      id: Number(r.id), bonusId: r.bonus_id, userId: r.user_id,
+      type: r.bonus_type, amount: paiseToRupees(Number(r.amount_paise)),
+      description: r.description, refId: r.ref_id, createdAt: r.created_at,
+    })),
+  };
+}
+
 // ── Notifications ───────────────────────────────────────────────────────────
 
 const toNotification = (r) => (r ? {

@@ -65,6 +65,47 @@ export async function setAnnouncementActive(announcementId, isActive) {
   return toAnnouncement(rows[0]);
 }
 
+/** The fields an operator may edit, and the body key each is written from. */
+const ANNOUNCEMENT_UPDATABLE = Object.freeze({
+  title: 'title', body: 'body', kind: 'kind',
+  priority: 'priority', isActive: 'is_active', expiresAt: 'expires_at',
+});
+
+/**
+ * Edit an announcement in place.
+ *
+ * Only the supplied keys move. The route used to build a `$set` from whatever
+ * survived its own filter and hand it to the driver, so the allowlist lived in
+ * the route and a second caller got none of it. It lives here now, beside the
+ * table, where every writer passes through it.
+ *
+ * Returns null for an id that does not exist, so the route answers 404 rather
+ * than reporting success for a row it never touched.
+ */
+export async function updateAnnouncement(announcementId, patch = {}) {
+  const sets = []; const params = [String(announcementId)];
+  for (const [key, column] of Object.entries(ANNOUNCEMENT_UPDATABLE)) {
+    if (patch[key] === undefined) continue;
+    const value = column === 'priority' ? (Number(patch[key]) || 0)
+      : column === 'is_active' ? Boolean(patch[key])
+        : patch[key];
+    params.push(value);
+    sets.push(`${column} = $${params.length}`);
+  }
+  if (sets.length === 0) {
+    const { rows } = await pgQuery(
+      'SELECT * FROM announcements WHERE announcement_id = $1', [String(announcementId)],
+      'announcement_get',
+    );
+    return toAnnouncement(rows[0]);
+  }
+  const { rows } = await pgQuery(
+    `UPDATE announcements SET ${sets.join(', ')} WHERE announcement_id = $1 RETURNING *`,
+    params, 'announcement_update',
+  );
+  return toAnnouncement(rows[0]);
+}
+
 export async function deleteAnnouncement(announcementId) {
   const { rowCount } = await pgQuery(
     'DELETE FROM announcements WHERE announcement_id = $1', [String(announcementId)],

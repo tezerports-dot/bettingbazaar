@@ -13,6 +13,7 @@ import mongoose from 'mongoose';
 // a couple of JITTERED retries so a briefly-flaky collector still receives the
 // page — full jitter so many instances alerting at once don't retry in lockstep.
 import { fetchWithRetry } from '../utils/retry.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 const COOLDOWN_MS = 10 * 60 * 1000; // same alert key at most once per 10 min
 const lastSent = new Map();         // key -> ts (per-instance; duplicates across instances are acceptable for v1)

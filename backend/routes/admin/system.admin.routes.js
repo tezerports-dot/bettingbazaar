@@ -2,6 +2,7 @@
 /** system.admin.routes.js — System config, token rates, withdrawal requests, error logs */
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from './_adminShared.js';
 import { setConfigField } from '../../domains/configuration/configVersioning.service.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 const router = express.Router();
 

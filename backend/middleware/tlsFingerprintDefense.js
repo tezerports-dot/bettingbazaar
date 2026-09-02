@@ -10,6 +10,7 @@
  */
 import mongoose from 'mongoose';
 import logger from '../services/logger.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 const DEFAULTS = {
   enabled: true,

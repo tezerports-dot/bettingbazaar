@@ -36,6 +36,7 @@
 import { rateLimit } from 'express-rate-limit';
 import { createRateLimitStore } from './redisRateLimitStore.js';
 import { RATE_LIMIT_TIERS } from '../config/security.config.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 // ── Subnet key ────────────────────────────────────────────────────────────────
 /**

@@ -2,6 +2,8 @@
 /** content.admin.routes.js — FAQ, support links, promo, announcements */
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from '../../routes/admin/_adminShared.js';
 import contentService from './content.service.js';
+import { getSystemConfig } from '#db/repositories/config.js';
+import { db } from '#db';
 
 const router = express.Router();
 
@@ -139,35 +141,32 @@ router.put('/content/support-links', authenticate, isAdmin, async (req, res) => 
     const { whatsapp, telegram, telegramUsername, telegramGroupUrl, telegramChannelUrl,
             email, helpCenterUrl, termsUrl, privacyUrl } = req.body;
 
-    let config = await getSystemConfig();
-    if (!config) {
-      config = new SystemConfig();
+    // A PATCH, not a read-modify-write. The old shape read the document,
+    // mutated the fields present in the body and saved the whole thing back —
+    // so an admin who opened the form, sat on it, and saved silently reverted
+    // whatever anybody changed in between. `applyConfig` writes only the keys
+    // supplied, in one statement, and versions the change.
+    //
+    // It also called `new SystemConfig()`, a name deleted with the ODM: on a
+    // platform whose config row had not been materialised yet, this handler
+    // threw a ReferenceError.
+    const patch = {};
+    for (const [key, value] of Object.entries({
+      whatsapp, telegram, telegramUsername, telegramGroupUrl, telegramChannelUrl,
+      email, helpCenterUrl, termsUrl, privacyUrl,
+    })) {
+      if (value !== undefined) patch[key] = value;
     }
 
-    if (!config.supportLinks) {
-      config.supportLinks = {};
-    }
+    const applied = await db.config.applySystemConfig(
+      { supportLinks: patch },
+      { actor: req.user.userId, reason: 'Support links updated' },
+    );
 
-    if (whatsapp !== undefined) config.supportLinks.whatsapp = whatsapp;
-    if (telegram !== undefined) config.supportLinks.telegram = telegram;
-    if (telegramUsername !== undefined) config.supportLinks.telegramUsername = telegramUsername;
-    if (telegramGroupUrl !== undefined) config.supportLinks.telegramGroupUrl = telegramGroupUrl;
-    if (telegramChannelUrl !== undefined) config.supportLinks.telegramChannelUrl = telegramChannelUrl;
-    if (email !== undefined) config.supportLinks.email = email;
-    if (helpCenterUrl !== undefined) config.supportLinks.helpCenterUrl = helpCenterUrl;
-    if (termsUrl !== undefined) config.supportLinks.termsUrl = termsUrl;
-    if (privacyUrl !== undefined) config.supportLinks.privacyUrl = privacyUrl;
-    config.markModified('supportLinks');
-    
-    config.updatedAt = new Date();
-    config.updatedBy = req.user.userId;
-    
-    await config.save();
-    
     res.json({
       success: true,
       message: 'Support links updated successfully',
-      supportLinks: config.supportLinks
+      supportLinks: applied.config?.supportLinks ?? patch,
     });
   } catch (error) {
     console.error('Update support links error:', error);

@@ -36,6 +36,7 @@ import { cycleSnapshotPublisher } from './cycleSnapshotPublisher.js';
 // Pages the operator when a bet's stake cannot be conclusively refunded or
 // released — the one outcome no automated path can resolve on its own.
 import { sendAlert } from '../../services/alerting.service.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 const router = express.Router();
 
@@ -335,34 +336,27 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
     // never written, so no settlement releases it and no reconciliation can
     // attribute it. The balance is simply short until a human finds it.
     //
-    // On POSTGRES both are ONE transaction (betPg.placeBet), so the window
-    // cannot open. Which store runs is the authority resolver's decision.
-    
-    let stakeLock;
-    let pgBet = null;
-    // moneyMoved IS the idempotency decision: true only for the single delivery
-    // that actually debited. placeBet (Postgres) and lockBetStake (Mongo) are
-    // both idempotent on the key, so every other delivery reports idempotent and
-    // moved nothing — and must not run the pool increment, the Transaction row or
-    // the broadcast. The invariant is "the delivery that moved the money owns the
-    // side-effects", and it deliberately does NOT depend on who wins the bet-row
-    // insert race below (a money-mover that loses that race still owns them).
-    let moneyMoved = false;
-    if (betsOnPostgres) {
-      const placed = await betAuthority.placeBet({
-        betId: betTxBase, userId, cycleId, side, amount,
-        slices: stakeSlices,
-        reason: `BET_PLACED — ₹${amount} on ${side}`,
-      });
-      stakeLock = { ok: placed.ok, balances: placed.balances };
-      pgBet = placed.ok ? placed.bet : null;
-      moneyMoved = placed.ok && placed.idempotent !== true;
-    } else {
-      stakeLock = await lockBetStake(userId, {
-        amount, txId: betTxBase, refId: betMongoId, slices: stakeSlices,
-      });
-      moneyMoved = stakeLock.ok && stakeLock.idempotent !== true;
-    }
+    // The stake movement and the bet row are ONE transaction (`placeBet`), so
+    // the window cannot open at all.
+    //
+    // This used to be `if (betsOnPostgres) { … } else { … }` — and
+    // `betsOnPostgres` was deleted with the rest of the store resolver, so the
+    // condition threw a ReferenceError on EVERY bet placed. The path is the
+    // hottest one on the platform.
+    //
+    // `moneyMoved` IS the idempotency decision: true only for the single
+    // delivery that actually debited. `placeBet` is idempotent on the key, so
+    // every other delivery reports idempotent and moved nothing — and must not
+    // run the pool increment, the transaction row or the broadcast. The
+    // invariant is "the delivery that moved the money owns the side-effects".
+    const placed = await betAuthority.placeBet({
+      betId: betTxBase, userId, cycleId, side, amount,
+      slices: stakeSlices,
+      reason: `BET_PLACED — ₹${amount} on ${side}`,
+    });
+    const stakeLock = { ok: placed.ok, balances: placed.balances };
+    const pgBet = placed.ok ? placed.bet : null;
+    const moneyMoved = placed.ok && placed.idempotent !== true;
 
     if (!stakeLock.ok) {
       // Concurrent request won the race — our pre-computed split is now stale.
@@ -373,40 +367,12 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
       });
     }
 
-    // ── The bet record (deterministic _id) ───────────────────────────────────
-    // On Postgres it is already written inside the stake's transaction and
-    // mirrored to Mongo before placeBet returned. On Mongo it is inserted here
-    // under the DETERMINISTIC _id derived from the idempotency key, so a delivery
-    // that raced past the fast gate collides on the primary key (11000) and
-    // ADOPTS the existing row rather than writing a second. Adopting the row does
-    // not change who moved the money — `moneyMoved` alone gates the side-effects.
-    let bet;
-    if (betsOnPostgres) {
-      bet = await betAuthority.getBetDoc(pgBet._id);
-    } else {
-      try {
-        const created = await Bet.create([{
-          _id: betMongoId,
-          userId,
-          cycleId,
-          amount,
-          side,
-          fromDepositBalance:  fromDeposit,
-          fromWinningsBalance: fromWinnings,
-          fromReserveBalance:  fromReserve,   // Section 6.2: stored for exact refund
-          status:    'PENDING',
-          isPhantom: false,
-          timestamp: new Date()
-        }]);
-        bet = created[0];
-      } catch (createErr) {
-        if (createErr?.code === 11000) {
-          bet = await Bet.findById(betMongoId).lean();
-        } else {
-          throw createErr;
-        }
-      }
-    }
+    // ── The bet record ───────────────────────────────────────────────────────
+    // Already written inside the stake's transaction, under `bet_id` UNIQUE —
+    // so a delivery that raced past the fast gate collides INSIDE the
+    // transaction rather than creating a second bet. There is no separate
+    // insert here to get wrong.
+    const bet = await betAuthority.getBetDoc(pgBet._id);
 
     // Every delivery except the one that moved the money is a replay: the bet
     // exists once, the money moved at most once, and the pool / Transaction /

@@ -25,6 +25,7 @@
  */
 import mongoose from 'mongoose';
 import { logger } from '../../services/logger.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 const MIN_FLOOR_DAYS = 30; // never delete anything younger than this, ever
 const DELETE_BATCH = 5000;

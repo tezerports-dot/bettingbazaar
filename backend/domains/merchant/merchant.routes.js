@@ -50,6 +50,7 @@ import {
 /** Is Postgres the source of truth for the merchant side of a settlement? */
 import { buildBulkPayoutExportRows } from './bulkPayoutExport.js';
 import { MERCHANT_CURRENCY, isTrc20Address, merchantTypeOf } from './merchantCurrency.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 const router     = express.Router();
 // JWT secret + expiry owned by jwt.util.js — removed a '|| fallback-secret'
@@ -1038,14 +1039,16 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
                 // state machine to advance. Idempotent on the order's key, and
                 // fire-and-forget: the hold itself must not fail because the
                 // settlement could not be opened — settleHold opens it lazily.
-                if (settlementOnPostgres()) {
-                    await openSettlement({
-                        settlementId: `ms_${order.orderId}`, merchantId: req.merchantId,
-                        orderId: order.orderId, direction: SETTLEMENT_DIRECTIONS.WITHDRAWAL,
-                        amountPaise: rupeesToPaise(order.tokenAmount),
-                        reason: `Withdrawal ${order.orderId} held pending settlement`,
-                    }).catch(e => console.error('[Merchant confirm] settlement open failed:', e.message));
-                }
+                // Unconditional. This was `if (settlementOnPostgres())`, and that
+                // resolver was deleted with the rest of the two-store machinery
+                // — so the guard threw a ReferenceError and the merchant's
+                // confirm 500'd after the withdrawal had already been held.
+                await openSettlement({
+                    settlementId: `ms_${order.orderId}`, merchantId: req.merchantId,
+                    orderId: order.orderId, direction: SETTLEMENT_DIRECTIONS.WITHDRAWAL,
+                    amountPaise: rupeesToPaise(order.tokenAmount),
+                    reason: `Withdrawal ${order.orderId} held pending settlement`,
+                }).catch(e => console.error('[Merchant confirm] settlement open failed:', e.message));
             } else {
                 // Hold disabled by admin — settle inline, the pre-2026-07-30
                 // behaviour. Same canonical txIds, so an order can never be
@@ -1464,7 +1467,7 @@ router.get('/bulk-payouts', merchantAuth, requireBulkPayoutsEnabled, async (req,
         // timestamp range each call site computes for itself — three of them
         // built their own IST midnight, and a difference of one in any would
         // have paid a different set of orders.
-        const payoutDate = date || istToday();
+        const payoutDate = date || await db.orders.istToday();
         const orders = await db.orders.bulkPayoutBatch({
             merchantId: req.merchantId, payoutDate,
         });
@@ -1474,7 +1477,10 @@ router.get('/bulk-payouts', merchantAuth, requireBulkPayoutsEnabled, async (req,
 
         res.json({
             success: true,
-            date:    targetDate.toISOString().split('T')[0],
+            // The date the batch was actually read for. This said
+            // `targetDate.toISOString()` and `targetDate` did not exist — the
+            // handler threw a ReferenceError after doing all its work.
+            date:    payoutDate,
             orders: sanitizeMerchantOrders(orders),
             summary: {
                 count:       orders.length,
@@ -1494,7 +1500,7 @@ router.get('/bulk-payouts/export', merchantAuth, requireBulkPayoutsEnabled, asyn
     try {
         const { date } = req.query;
 
-        const payoutDate = date || istToday();
+        const payoutDate = date || await db.orders.istToday();
         const orders = await db.orders.bulkPayoutBatch({
             merchantId: req.merchantId, payoutDate,
         });

@@ -23,6 +23,7 @@ import { emitAdminUpdate, emitMerchantUpdate, emitOrderUpdate, emitWalletUpdate 
 import { getMerchantTokenBalance } from '#db/repositories/merchantWallets.js';
 import { getAvailablePaiseFor } from '#db/repositories/merchantWallets.core.js';
 import { rupeesToPaise, paiseToRupees } from '../../shared/money.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 const router = express.Router();
 
@@ -385,10 +386,12 @@ router.put('/queue/merchant-pool', authenticate, isAdminOrSubAdminOrQueueManager
 
     const before = await getSystemConfig();
 
-    await SystemConfig.findOneAndUpdate(
-      { key: 'main' },
-      { $set: { queueManagerPool: uniqueIds, updatedAt: new Date(), updatedBy: req.user.userId } },
-      { upsert: true, new: true }
+    // The write, its version bump and its audit row commit TOGETHER. This was
+    // `SystemConfig.findOneAndUpdate` — a name deleted with the ODM, so the
+    // handler threw after telling the caller its validation had passed.
+    await db.config.applySystemConfig(
+      { queueManagerPool: uniqueIds },
+      { actor: req.user.userId, reason: 'Queue manager pool updated' },
     );
 
     await db.audit.recordDetailed({

@@ -370,6 +370,27 @@ export async function recentResults(cycleType, { limit = 10 } = {}) {
 }
 
 /**
+ * Settled cycles whose accounting event was never posted.
+ *
+ * The betting-side twin of `findCompletedOrdersMissingEvents`. Same shape, same
+ * reason: a LEFT JOIN answers "which of these has no ledger row" in one pass,
+ * where a lookup per cycle answers it one round trip at a time and gets slower
+ * exactly as the backlog it is meant to clear grows.
+ */
+export async function findSettledCyclesMissingEvents({ limit = 200 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT c.* FROM cycles c
+       LEFT JOIN accounting_events e
+         ON e.ref_model = 'Cycle' AND e.ref_id = c.cycle_id
+      WHERE c.status = 'COMPLETED' AND e.id IS NULL
+      ORDER BY c.end_time ASC
+      LIMIT ${Math.min(Math.max(Number(limit) || 200, 1), 1000)}`,
+    [], 'cycle_missing_accounting_event',
+  );
+  return rows.map(toCycle);
+}
+
+/**
  * Cycles that ended but were never given a result.
  *
  * This is the check that would have caught the silent-never-settled defect on

@@ -1,37 +1,49 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-// Domain: Configuration / Business Policy Platform (BBEPS Phase 006).
-//
-// This is the ONLY allowed writer of DepositPolicy documents (docs/governance/04-GOVERNANCE.md
-// §1). Route handlers must call these functions — never
-// DepositPolicy.findOneAndUpdate / .create directly.
-//
-// RUNTIME CONSUMERS (read-only, via getActivePolicy):
-//   - backend/domains/payment/paymentOrder.model.js pre-save hook — computes
-//     depositAllocation/reserveAllocation for new DEPOSIT orders and snapshots
-//     the policy version used onto the order (depositPolicySnapshot).
-//
-// SCOPE (corrected 2026-07-08): this policy governs ONLY the deposit/reserve
-// wallet split and reserve usage rules. Merchant incentive pay is a separate
-// mechanism ("Merchant Performance Bonus") triggered by completed buy+sell
-// cycles, not by deposit approval — see docs/governance/04-GOVERNANCE.md.
+/**
+ * domains/configuration/depositPolicy.service.js — the deposit/reserve split.
+ *
+ * A thin adapter over `db.depositPolicy`. The rules live in the table and the
+ * repository; this file exists because the admin routes and the cron already
+ * import these names.
+ *
+ * ── What moved into the row ─────────────────────────────────────────────────
+ *
+ * 1. "EXACTLY ONE ACTIVE VERSION PER CURRENCY" was two writes: create the new
+ *    version, then `updateMany` the old ones to SUPERSEDED. Two admins saving
+ *    together left two ACTIVE documents and the next deposit was split by
+ *    whichever `.sort({version:-1})` returned. It is a partial unique index
+ *    now, and the supersede commits with the insert.
+ *
+ * 2. "THE PERCENTAGES SUM TO 100" was `validatePolicyFields`, called by the
+ *    callers that remembered to call it — the rollback path did not. A split
+ *    that does not sum to 100 creates or destroys money on every deposit it
+ *    governs, so it is a CHECK constraint.
+ *
+ * 3. `nextVersionNumber()` was `MAX(version) + 1` read outside any transaction.
+ *    Two versions saved together got the same number and one died on the
+ *    index — after the other had already been made ACTIVE.
+ *
+ * SCOPE: this policy governs ONLY the deposit/reserve wallet split and reserve
+ * usage rules. Merchant incentive pay is a separate mechanism (the Merchant
+ * Performance Bonus) triggered by completed buy+sell cycles.
+ */
+import { db } from '#db';
 
-import mongoose from 'mongoose';
-import { DepositPolicy, SUPPORTED_CURRENCIES } from './depositPolicy.model.js';
+export const SUPPORTED_CURRENCIES = Object.freeze(['INR', 'USDT']);
 
 /**
- * validatePolicyFields — cross-field validation that can't be expressed as
- * plain Mongoose schema constraints. Throws a plain Error with a message
- * that's safe to return to an admin client as-is.
+ * Cross-field validation, kept as an exported name because the admin routes
+ * call it to produce a friendly message BEFORE attempting the write.
+ *
+ * It is no longer the guard. The table refuses a bad split whether or not
+ * anybody calls this, which is the point — this only decides how the refusal
+ * is worded.
  */
 export function validatePolicyFields(fields) {
-  const {
-    currency,
-    depositAllocationPercent,
-    reserveAllocationPercent,
-  } = fields;
+  const { currency, depositAllocationPercent, reserveAllocationPercent } = fields;
 
   if (!SUPPORTED_CURRENCIES.includes(currency)) {
-    throw new Error(`Unsupported currency '${currency}'. Add it to SUPPORTED_CURRENCIES in depositPolicy.model.js first.`);
+    throw new Error(`Unsupported currency '${currency}'. Add it to SUPPORTED_CURRENCIES in depositPolicy.service.js first.`);
   }
   if (typeof depositAllocationPercent !== 'number' || typeof reserveAllocationPercent !== 'number') {
     throw new Error('depositAllocationPercent and reserveAllocationPercent are required numbers.');
@@ -39,7 +51,6 @@ export function validatePolicyFields(fields) {
   if (depositAllocationPercent < 0 || reserveAllocationPercent < 0) {
     throw new Error('Allocation percentages cannot be negative.');
   }
-  // Floating point safety margin — 99.99–100.01 treated as 100.
   const sum = depositAllocationPercent + reserveAllocationPercent;
   if (Math.abs(sum - 100) > 0.01) {
     throw new Error(`depositAllocationPercent + reserveAllocationPercent must equal 100 (got ${sum}).`);
@@ -47,185 +58,79 @@ export function validatePolicyFields(fields) {
   return true;
 }
 
-/** getActivePolicy — the runtime read path. Read-only. */
-export async function getActivePolicy(currency) {
-  return DepositPolicy.findOne({ currency, status: 'ACTIVE' }).sort({ version: -1 }).lean();
-}
+/** The runtime read path — what a new DEPOSIT order is split by. */
+export const getActivePolicy = (currency) => db.depositPolicy.getActivePolicy(currency);
 
-/** getPolicyHistory — every version for a currency, newest first. Audit trail. Read-only. */
-export async function getPolicyHistory(currency) {
-  return DepositPolicy.find({ currency })
-    .sort({ version: -1 })
-    .populate('changedBy', 'username')
-    .lean();
-}
-
-async function nextVersionNumber(currency) {
-  const latest = await DepositPolicy.findOne({ currency }).sort({ version: -1 }).select('version').lean();
-  return latest ? latest.version + 1 : 1;
-}
+/** Every version for a currency, newest first. */
+export const getPolicyHistory = (currency) => db.depositPolicy.getPolicyHistory(currency);
 
 /**
- * createPolicyVersion — the write path for a new DepositPolicy version.
+ * Publish a new version.
  *
- * @param {string} currency
- * @param {object} fields    { depositAllocationPercent, reserveAllocationPercent,
- *                             reserveUsageRules }
- * @param {object} actor     { userId, userName }
- * @param {object} opts      { justification (required), effectiveAt, requireApproval }
- *
- * Mirrors configVersioning.service.js's setConfigField status logic
- * (PENDING_APPROVAL / SCHEDULED / ACTIVE), but at whole-document granularity:
- * making a new version ACTIVE also supersedes whatever was previously ACTIVE
- * for that currency, so exactly one ACTIVE document per currency ever exists.
+ * `requireApproval` holds it at PENDING_APPROVAL; a future `effectiveAt`
+ * schedules it. Neither supersedes the current policy — a proposal does not
+ * govern deposits, and the version that does keeps doing so until somebody
+ * approves this one or its time arrives.
  */
 export async function createPolicyVersion(currency, fields, actor, opts = {}) {
   const { justification, effectiveAt = new Date(), requireApproval = false } = opts;
   if (!justification || !justification.trim()) {
     throw new Error('businessJustification is required for every DepositPolicy change.');
   }
-
-  const merged = {
+  validatePolicyFields({
     currency,
     depositAllocationPercent: fields.depositAllocationPercent,
     reserveAllocationPercent: fields.reserveAllocationPercent,
-  };
-  validatePolicyFields(merged);
+  });
 
   const isFuture = effectiveAt > new Date();
-  let status, approvalStatus;
-  if (requireApproval) {
-    status = 'PENDING_APPROVAL';
-    approvalStatus = 'PENDING_APPROVAL';
-  } else if (isFuture) {
-    status = 'SCHEDULED';
-    approvalStatus = 'AUTO_APPROVED';
-  } else {
-    status = 'ACTIVE';
-    approvalStatus = 'AUTO_APPROVED';
-  }
+  const status = requireApproval ? 'PENDING_APPROVAL' : (isFuture ? 'SCHEDULED' : 'ACTIVE');
 
-  const version = await nextVersionNumber(currency);
-
-  const doc = await DepositPolicy.create({
+  const result = await db.depositPolicy.createPolicyVersion({
     currency,
-    depositAllocationPercent: merged.depositAllocationPercent,
-    reserveAllocationPercent: merged.reserveAllocationPercent,
-    reserveUsageRules: fields.reserveUsageRules ?? undefined, // falls back to schema defaults
-    version,
-    status,
-    approvalStatus,
-    effectiveAt,
-    businessJustification: justification,
-    changedBy: actor.userId,
-    changedByName: actor.userName,
+    depositAllocationPercent: fields.depositAllocationPercent,
+    reserveAllocationPercent: fields.reserveAllocationPercent,
+    reserveUsageRules: fields.reserveUsageRules ?? {},
+    justification, effectiveAt, status,
+    changedBy: actor?.userId ?? null,
   });
 
-  if (status === 'ACTIVE') {
-    await activate(doc);
-  }
-
-  return doc;
-}
-
-/** activate — internal helper: marks `doc` ACTIVE/applied and supersedes the
- *  previous ACTIVE version for the same currency, if any. Not exported —
- *  every external caller goes through createPolicyVersion, approvePolicyVersion,
- *  rollbackToPolicyVersion, or applyScheduledPolicyChanges. */
-async function activate(doc) {
-  await DepositPolicy.updateMany(
-    { currency: doc.currency, status: 'ACTIVE', _id: { $ne: doc._id } },
-    { $set: { status: 'SUPERSEDED' } }
-  );
-  doc.status = 'ACTIVE';
-  doc.appliedAt = new Date();
-  await doc.save();
-  return doc;
+  if (!result.ok) throw Object.assign(new Error(result.message), { status: 400, code: result.reason });
+  return result.policy;
 }
 
 /**
- * approvePolicyVersion — moves a PENDING_APPROVAL version forward, mirroring
- * configVersioning.service.js's approveConfigVersion. Rejecting is the same
- * call with approve=false.
+ * Move a PENDING_APPROVAL version forward. Rejecting is the same call with
+ * `approve=false`.
+ *
+ * Takes a currency and a version rather than a document id: the version is what
+ * the history, the snapshot on every order, and the operator all refer to.
  */
-export async function approvePolicyVersion(versionId, actor, approve = true) {
-  const doc = await DepositPolicy.findById(versionId);
-  if (!doc) throw new Error('Policy version not found');
-  if (doc.status !== 'PENDING_APPROVAL') {
-    throw new Error(`Version is ${doc.status}, not awaiting approval`);
-  }
-
-  doc.approvedBy = actor.userId;
-  doc.approvedAt = new Date();
-
+export async function approvePolicyVersion({ currency, version }, actor, approve = true) {
   if (!approve) {
-    doc.status = 'REJECTED';
-    doc.approvalStatus = 'REJECTED';
-    await doc.save();
-    return doc;
+    const rejected = await db.depositPolicy.rejectPolicyVersion(currency, version, { changedBy: actor?.userId });
+    if (!rejected) throw Object.assign(new Error('Version is not awaiting approval'), { status: 409 });
+    return rejected;
   }
-
-  doc.approvalStatus = 'APPROVED';
-  const isFuture = doc.effectiveAt > new Date();
-  if (isFuture) {
-    doc.status = 'SCHEDULED';
-    await doc.save();
-    return doc;
-  }
-
-  return activate(doc);
+  const activated = await db.depositPolicy.activatePolicyVersion(currency, version, { changedBy: actor?.userId });
+  if (!activated) throw Object.assign(new Error('Version is not awaiting approval'), { status: 409 });
+  return activated;
 }
 
-/**
- * rollbackToPolicyVersion — restores an old version's field values as a NEW
- * active version. Per BBEPS §6.10, never deletes or mutates history: the
- * target version being restored FROM is untouched; the version being
- * replaced is superseded via the normal activate() path, same as any other
- * new version. Whole-policy rollback means "reinstate this old snapshot",
- * distinct from configVersioning.service.js's per-field rollback semantics
- * ("undo this one change") — see depositPolicy.model.js file header for why
- * field-level semantics don't fit this model.
- */
-export async function rollbackToPolicyVersion(versionId, actor) {
-  const target = await DepositPolicy.findById(versionId).lean();
-  if (!target) throw new Error('Policy version not found');
-
-  const version = await nextVersionNumber(target.currency);
-
-  const doc = await DepositPolicy.create({
-    currency: target.currency,
-    depositAllocationPercent: target.depositAllocationPercent,
-    reserveAllocationPercent: target.reserveAllocationPercent,
-    reserveUsageRules: target.reserveUsageRules,
-    version,
-    status: 'ACTIVE',
-    approvalStatus: 'AUTO_APPROVED',
-    effectiveAt: new Date(),
-    isRollback: true,
-    rollbackOfVersionId: target._id,
-    businessJustification: `Rollback to v${target.version} (policy id ${target._id})`,
-    changedBy: actor.userId,
-    changedByName: actor.userName,
-  });
-
-  return activate(doc);
-}
-
-/**
- * applyScheduledPolicyChanges — run every 60 seconds via cronJobs.js
- * (alongside applyScheduledConfigChanges) to activate SCHEDULED versions
- * whose effectiveAt has passed.
- */
-export async function applyScheduledPolicyChanges() {
-  const due = await DepositPolicy.find({ status: 'SCHEDULED', effectiveAt: { $lte: new Date() } });
-  const results = [];
-  for (const doc of due) {
-    try {
-      await activate(doc);
-      results.push({ versionId: doc._id, currency: doc.currency, applied: true });
-    } catch (e) {
-      results.push({ versionId: doc._id, currency: doc.currency, applied: false, error: e.message });
-    }
+/** Reinstate an old version's numbers as a NEW active version. History is never edited. */
+export async function rollbackToPolicyVersion({ currency, version }, actor) {
+  const result = await db.depositPolicy.rollbackToPolicyVersion(currency, version, { changedBy: actor?.userId });
+  if (!result.ok) {
+    throw Object.assign(
+      new Error(result.reason === 'NOT_FOUND' ? 'Policy version not found' : result.message),
+      { status: result.reason === 'NOT_FOUND' ? 404 : 400, code: result.reason },
+    );
   }
-  return results;
+  return result.policy;
 }
+
+/** Activate SCHEDULED versions whose effectiveAt has passed. Runs on the cron. */
+export const applyScheduledPolicyChanges = () => db.depositPolicy.applyScheduledPolicyChanges();
+
+/** The split for one deposit, plus the snapshot recording which policy produced it. */
+export const splitForDeposit = (tokenAmount, currency) => db.depositPolicy.splitForDeposit(tokenAmount, currency);

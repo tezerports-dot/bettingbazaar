@@ -124,6 +124,46 @@ export async function pgQuery(text, params, operation = 'query') {
   }
 }
 
+/**
+ * Run a function inside one transaction on one client, and always give the
+ * client back.
+ *
+ * ── The failure this prevents ───────────────────────────────────────────────
+ * Every repository that needed a transaction open-coded BEGIN / COMMIT /
+ * ROLLBACK / release. That is four things to get right at each site, and the
+ * one that gets missed is the release: a client that is never returned is gone
+ * from a pool of ten forever, so the tenth transaction to throw takes the whole
+ * platform down with requests that hang rather than fail.
+ *
+ * ── The rule this does NOT relax ────────────────────────────────────────────
+ * NEVER ask the pool for a client while holding one. Calling a repository
+ * function from inside `fn` asks for a SECOND client, and under load every
+ * client in the pool ends up holding one and waiting for another — a deadlock
+ * with no error, just a suite that hangs and a platform that stops answering.
+ * Everything `fn` needs must go through the `client` it is handed.
+ *
+ * A throw rolls back and rethrows; the caller sees the original error, not a
+ * failure from the rollback.
+ */
+export async function withTransaction(fn) {
+  const pool = await getPool();
+  if (!pool) throw new Error('Postgres not configured (DATABASE_URL unset)');
+  const client = await connectGuarded(pool);
+  try {
+    await client.query('BEGIN');
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    // Best-effort: the connection may already be gone, and reporting a rollback
+    // failure would bury the error that actually caused it.
+    try { await client.query('ROLLBACK'); } catch { /* connection already lost */ }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 /** Apply schema.sql idempotently (every statement IF NOT EXISTS / OR REPLACE). */
 export async function applySchema() {
   if (!pgConfigured()) return false;

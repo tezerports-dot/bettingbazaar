@@ -3,6 +3,7 @@
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from './_adminShared.js';
 import { isCycleType, phasesFor } from '../../domains/markets/cycleTypes.js';
 import { DEFAULT_CYCLE_PHASES } from '../../domains/configuration/systemConfig.model.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 const router = express.Router();
 

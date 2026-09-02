@@ -53,6 +53,7 @@ import { buildPublicKycData } from './kycPublicData.js';
 // so every user-facing cycle response goes through here (cyclePublicView.js).
 import { publicCycleView } from '../markets/cyclePublicView.js';
 import { fetchCycleHistory } from '../markets/cycleHistory.service.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 const router = express.Router();
 

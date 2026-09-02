@@ -31,6 +31,7 @@
  * to know when to scale.
  */
 import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 // Never shed or count these — health/metrics must answer even under overload
 // (so orchestrators can see the instance is alive and scrapers keep working),

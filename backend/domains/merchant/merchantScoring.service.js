@@ -12,6 +12,7 @@ import { db } from '#db';
 import { MERCHANT_CURRENCY } from './merchantCurrency.js';
 import { getAvailablePaiseFor } from '#db/repositories/merchantWallets.core.js';
 import { rupeesToPaise } from '../../shared/money.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 const ACTIVE_ASSIGNMENT_STATUSES = ['ASSIGNED', 'PROCESSING', 'PAID'];
 

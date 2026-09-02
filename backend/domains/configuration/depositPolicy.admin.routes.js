@@ -6,7 +6,7 @@
  * Mounted at /api/admin via routes/admin/index.js (domain-owned admin route,
  * same pattern as merchant.admin.routes.js / content.admin.routes.js).
  */
-import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import {
   getActivePolicy,
@@ -14,10 +14,31 @@ import {
   createPolicyVersion,
   approvePolicyVersion,
   rollbackToPolicyVersion,
+  SUPPORTED_CURRENCIES,
 } from './depositPolicy.service.js';
-import { SUPPORTED_CURRENCIES } from './depositPolicy.model.js';
 
 const router = express.Router();
+
+/**
+ * A policy version is addressed by CURRENCY AND VERSION, not by a document id.
+ *
+ * That is what the history listing shows, what every order's snapshot records,
+ * and what an operator says out loud — "roll INR back to v3". The panel
+ * round-trips the `_id` the API hands it, which is this same pair rendered as
+ * `INR:v3`, so the URLs are unchanged and there is exactly one way to name a
+ * version.
+ */
+function parseVersionRef(versionId, res) {
+  const match = /^([A-Za-z]+):v(\d+)$/.exec(String(versionId || ''));
+  if (!match) {
+    res.status(400).json({
+      success: false,
+      message: `Malformed version reference '${versionId}'. Expected a value from the policy history, e.g. INR:v3.`,
+    });
+    return null;
+  }
+  return { currency: match[1].toUpperCase(), version: Number(match[2]) };
+}
 
 function assertCurrency(req, res) {
   const { currency } = req.params;
@@ -97,7 +118,7 @@ router.put('/deposit-policy/:currency', authenticate, isAdmin, async (req, res) 
       action: 'UPDATE_DEPOSIT_POLICY',
       category: 'FINANCIAL',
       targetType: 'DepositPolicy',
-      targetId: doc._id.toString(),
+      targetId: String(doc._id),
       details: {
         currency,
         version: doc.version,
@@ -127,9 +148,11 @@ router.post('/deposit-policy/version/:versionId/approve', authenticate, isAdmin,
     const actor = { userId: req.user.userId, userName: req.user.username };
     let doc;
     try {
-      doc = await approvePolicyVersion(req.params.versionId, actor, !!approve);
+      const ref = parseVersionRef(req.params.versionId, res);
+      if (!ref) return;
+      doc = await approvePolicyVersion(ref, actor, !!approve);
     } catch (e) {
-      return res.status(400).json({ success: false, message: e.message });
+      return res.status(e.status || 400).json({ success: false, message: e.message });
     }
 
     await db.audit.recordDetailed({
@@ -139,7 +162,7 @@ router.post('/deposit-policy/version/:versionId/approve', authenticate, isAdmin,
       action: approve ? 'APPROVE_DEPOSIT_POLICY' : 'REJECT_DEPOSIT_POLICY',
       category: 'FINANCIAL',
       targetType: 'DepositPolicy',
-      targetId: doc._id.toString(),
+      targetId: String(doc._id),
       details: { currency: doc.currency, version: doc.version, status: doc.status },
       success: true,
     });
@@ -160,9 +183,11 @@ router.post('/deposit-policy/version/:versionId/rollback', authenticate, isAdmin
     const actor = { userId: req.user.userId, userName: req.user.username };
     let doc;
     try {
-      doc = await rollbackToPolicyVersion(req.params.versionId, actor);
+      const ref = parseVersionRef(req.params.versionId, res);
+      if (!ref) return;
+      doc = await rollbackToPolicyVersion(ref, actor);
     } catch (e) {
-      return res.status(400).json({ success: false, message: e.message });
+      return res.status(e.status || 400).json({ success: false, message: e.message });
     }
 
     await db.audit.recordDetailed({
@@ -172,7 +197,7 @@ router.post('/deposit-policy/version/:versionId/rollback', authenticate, isAdmin
       action: 'ROLLBACK_DEPOSIT_POLICY',
       category: 'FINANCIAL',
       targetType: 'DepositPolicy',
-      targetId: doc._id.toString(),
+      targetId: String(doc._id),
       details: { currency: doc.currency, restoredAsVersion: doc.version, rollbackOfVersionId: req.params.versionId },
       success: true,
     });

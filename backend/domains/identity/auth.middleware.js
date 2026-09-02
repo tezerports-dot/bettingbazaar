@@ -30,6 +30,7 @@ import { setContextUser } from '../../middleware/requestContext.js'; // X-6
 // Ed25519 signature verification, iss/aud stamped on sign. No raw token-library calls remain here.
 import { signToken, verifyJwt, JWT_SECRET, JWT_EXPIRES_IN } from './jwt.util.js';
 import { isChallengeToken } from './twoFactorChallenge.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 // JWT_SECRET / JWT_EXPIRES_IN now come from jwt.util.js (imported above), which
 // fail-fasts on a missing secret and owns the 24h default. Re-exported at the
@@ -489,10 +490,12 @@ const authenticateMerchant = async (req, res, next) => {
       });
     }
 
-    // Fetch merchant from database
-    // HIGH-01 FIX: use Merchant model (decoded.merchantId is Merchant._id, not User._id)
-    const merchant = await MerchantModel.findById(decoded.merchantId);
-    
+    // The merchant, by the id the token carries. This read `MerchantModel`,
+    // which was deleted with the ODM — so every merchant-authenticated request
+    // died with a ReferenceError inside the catch below and answered 500. The
+    // merchant panel was entirely unreachable.
+    const merchant = await db.merchants.getMerchant(decoded.merchantId);
+
     if (!merchant) {
       return res.status(401).json({ 
         success: false,
@@ -500,19 +503,25 @@ const authenticateMerchant = async (req, res, next) => {
       });
     }
 
-    // Check if merchant account is active
-    if (merchant.isBlocked || merchant.isSuspended) {
+    // One column decides, rather than two booleans that could disagree.
+    // `isBlocked || isSuspended` was two fields the row does not have, so a
+    // suspended merchant would have passed this guard even once the lookup was
+    // fixed. `status` is a CHECKed vocabulary: anything but ACTIVE is refused.
+    if (merchant.status !== 'ACTIVE') {
       return res.status(403).json({ 
         success: false,
-        message: 'Merchant account is suspended' 
+        message: merchant.status === 'SUSPENDED'
+          ? `Merchant account is suspended${merchant.suspensionReason ? `: ${merchant.suspensionReason}` : ''}`
+          : 'Merchant account is not active',
       });
     }
 
-    // Check if user has merchant role
-    if (!merchant.roles || !merchant.roles.includes('merchant')) {
+    // Approval is separate from status: an applicant is ACTIVE and not yet
+    // approved, and must not be able to take orders.
+    if (merchant.merchantApprovalStatus !== 'APPROVED') {
       return res.status(403).json({ 
         success: false,
-        message: 'User does not have merchant privileges' 
+        message: 'Merchant account is awaiting approval',
       });
     }
 

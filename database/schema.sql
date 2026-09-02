@@ -1475,6 +1475,87 @@ CREATE INDEX IF NOT EXISTS config_document_versions_idx
 CREATE OR REPLACE TRIGGER config_document_versions_append_only
   BEFORE UPDATE OR DELETE ON config_document_versions FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
 
+-- ── Deposit policy — the deposit/reserve split, versioned ──────────────────
+--
+-- Governs ONE thing: how much of a deposit lands in the player's spendable
+-- balance and how much goes to the platform reserve. It is versioned because
+-- the split is snapshotted onto every DEPOSIT order at creation, and an auditor
+-- asking "which policy produced this order's split" needs the version to still
+-- exist months later — so versions are never edited or deleted, only superseded.
+--
+-- ── Two rules the document version could not express ────────────────────────
+--
+-- 1. EXACTLY ONE ACTIVE VERSION PER CURRENCY. The service made a new version
+--    active and then updated the previous one to SUPERSEDED — two writes, and
+--    two admins saving at once left two ACTIVE rows for the same currency. The
+--    next order to read the policy got whichever the sort happened to return.
+--    A partial unique index makes a second ACTIVE row impossible.
+--
+-- 2. THE PERCENTAGES SUM TO 100. Validated in JavaScript before every write,
+--    which means validated by every caller that remembered to call the
+--    validator. A split that does not sum to 100 either creates or destroys
+--    money on every deposit it governs; that belongs in the row.
+CREATE TABLE IF NOT EXISTS deposit_policies (
+  id           BIGSERIAL PRIMARY KEY,
+  currency     TEXT NOT NULL,
+  version      BIGINT NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'ACTIVE',
+  deposit_allocation_percent NUMERIC(6,3) NOT NULL,
+  reserve_allocation_percent NUMERIC(6,3) NOT NULL,
+  reserve_usage_rules JSONB NOT NULL DEFAULT '{}'::jsonb,
+  justification TEXT NOT NULL DEFAULT '',
+  effective_at  TIMESTAMPTZ,
+  changed_by    TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  superseded_at TIMESTAMPTZ,
+  CONSTRAINT deposit_policies_version_unique UNIQUE (currency, version),
+  CONSTRAINT deposit_policies_status_known CHECK (
+    status IN ('ACTIVE', 'PENDING_APPROVAL', 'SCHEDULED', 'SUPERSEDED', 'REJECTED')),
+  CONSTRAINT deposit_policies_percent_range CHECK (
+    deposit_allocation_percent >= 0 AND reserve_allocation_percent >= 0),
+  -- Money is neither created nor destroyed by a split. The 0.01 tolerance is
+  -- the same one the JavaScript validator used, kept so a policy it accepted
+  -- is one the table accepts.
+  CONSTRAINT deposit_policies_sums_to_100 CHECK (
+    abs((deposit_allocation_percent + reserve_allocation_percent) - 100) <= 0.01),
+  CONSTRAINT deposit_policies_rules_object CHECK (jsonb_typeof(reserve_usage_rules) = 'object')
+);
+-- One ACTIVE version per currency, enforced by the index rather than by the
+-- order two writers happen to run in.
+CREATE UNIQUE INDEX IF NOT EXISTS deposit_policies_one_active
+  ON deposit_policies (currency) WHERE status = 'ACTIVE';
+CREATE INDEX IF NOT EXISTS deposit_policies_history_idx
+  ON deposit_policies (currency, version DESC);
+-- A superseded version is history. Editing one would rewrite the split an
+-- order in flight was created under.
+CREATE OR REPLACE FUNCTION bb_forbid_policy_rewrite() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'deposit_policies rows are permanent: version % of % may not be deleted',
+      OLD.version, OLD.currency;
+  END IF;
+  IF OLD.status = 'SUPERSEDED' AND NEW.status <> 'SUPERSEDED' THEN
+    RAISE EXCEPTION 'deposit_policies version % of % is superseded and may not be revived',
+      OLD.version, OLD.currency;
+  END IF;
+  IF NEW.deposit_allocation_percent <> OLD.deposit_allocation_percent
+     OR NEW.reserve_allocation_percent <> OLD.reserve_allocation_percent THEN
+    RAISE EXCEPTION 'deposit_policies percentages are immutable: supersede version % of % instead',
+      OLD.version, OLD.currency;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER deposit_policies_immutable
+  BEFORE UPDATE OR DELETE ON deposit_policies
+  FOR EACH ROW EXECUTE FUNCTION bb_forbid_policy_rewrite();
+-- Version numbers are per-currency and contiguous, so they cannot come from a
+-- shared sequence. `MAX(version) + 1` does not serialise on its own — but the
+-- writer supersedes the current ACTIVE row in the same statement, and that
+-- UPDATE takes the row lock that makes the read behind it safe. Where no ACTIVE
+-- row exists yet (the first version for a currency) there is nothing to lock,
+-- and `deposit_policies_version_unique` is what refuses the second writer.
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- MARKETS — the betting cycle
 -- ═══════════════════════════════════════════════════════════════════════════
