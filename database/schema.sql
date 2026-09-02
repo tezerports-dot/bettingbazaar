@@ -1514,3 +1514,778 @@ CREATE INDEX IF NOT EXISTS config_document_versions_idx
   ON config_document_versions (scope, doc_key, version DESC);
 CREATE OR REPLACE TRIGGER config_document_versions_append_only
   BEFORE UPDATE OR DELETE ON config_document_versions FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- MARKETS — the betting cycle
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- A cycle is one betting round: it opens, takes bets on two sides, closes,
+-- declares a winner, and settles. Everything a player wagers moves through one.
+--
+-- ── The three rules this table encodes ──────────────────────────────────────
+--
+-- 1. REAL POOL TOTALS ARE NOT STORED HERE. A bet holds `FOR SHARE` on this row,
+--    so a bet that also UPDATEs it blocks against another bet doing the same —
+--    a 40P01 deadlock on the hottest path on the platform. The real pools are
+--    DERIVED from `bets`. Only the PHANTOM figures, which nothing concurrent
+--    writes, live on the row.
+--
+-- 2. THE WINNER IS WRITTEN BEFORE THE STATUS. Nothing in the old engine
+--    advanced the cycle at all: `ensureCycle` created the row at OPEN and it
+--    stayed there, so the engine looked healthy and silently never settled. The
+--    CHECK below makes the ordering a property of the row rather than a
+--    convention: a cycle cannot be COMPLETED without a winner.
+--
+-- 3. A CYCLE WITH NO WINNER IS NOT OFFERED FOR SETTLEMENT. Same constraint,
+--    read the other way.
+CREATE TABLE IF NOT EXISTS cycles (
+  cycle_id    TEXT PRIMARY KEY,
+  cycle_type  TEXT NOT NULL,
+  start_time  TIMESTAMPTZ NOT NULL,
+  end_time    TIMESTAMPTZ NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'OPEN',
+
+  -- Phantom liquidity only. See rule 1: the real pools come from `bets`.
+  phantom_delhi_paise   BIGINT NOT NULL DEFAULT 0,
+  phantom_bombay_paise  BIGINT NOT NULL DEFAULT 0,
+  phantom_balanced      BOOLEAN NOT NULL DEFAULT FALSE,
+  phantom_bets_closed   BOOLEAN NOT NULL DEFAULT FALSE,
+
+  winner              TEXT,
+  pending_result      TEXT,
+  is_paused           BOOLEAN NOT NULL DEFAULT FALSE,
+  winner_determined_at TIMESTAMPTZ,
+  winner_determined_by TEXT,
+  winner_confidence   DOUBLE PRECISION,
+
+  is_settled          BOOLEAN NOT NULL DEFAULT FALSE,
+  settled_at          TIMESTAMPTZ,
+  total_paid_out_paise BIGINT NOT NULL DEFAULT 0,
+  net_profit_paise     BIGINT NOT NULL DEFAULT 0,
+  total_platform_fees_paise BIGINT NOT NULL DEFAULT 0,
+  -- The fee rate USED, snapshotted. An admin editing the rate afterwards must
+  -- not change what a settled cycle says it charged.
+  winnings_fee_percent_used DOUBLE PRECISION,
+
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  CONSTRAINT cycles_type_known   CHECK (cycle_type IN ('1_MIN', '30_MIN', 'FULL_DAY')),
+  CONSTRAINT cycles_status_known CHECK (status IN ('OPEN', 'CLOSED', 'COMPLETED', 'CANCELLED')),
+  CONSTRAINT cycles_side_known   CHECK (winner IS NULL OR winner IN ('DELHI', 'BOMBAY')),
+  CONSTRAINT cycles_pending_side_known CHECK (pending_result IS NULL OR pending_result IN ('DELHI', 'BOMBAY')),
+  CONSTRAINT cycles_window_ordered CHECK (end_time > start_time),
+  -- Rules 2 and 3. A completed cycle HAS a winner; an unsettled one has not
+  -- paid anything out.
+  CONSTRAINT cycles_completed_has_winner CHECK (status <> 'COMPLETED' OR winner IS NOT NULL),
+  CONSTRAINT cycles_settled_has_winner   CHECK (NOT is_settled OR winner IS NOT NULL),
+  CONSTRAINT cycles_unsettled_paid_nothing CHECK (is_settled OR total_paid_out_paise = 0),
+  CONSTRAINT cycles_phantom_non_negative CHECK (
+    phantom_delhi_paise >= 0 AND phantom_bombay_paise >= 0)
+);
+-- One cycle per type per start instant. Two generators waking together must
+-- produce one cycle, and the index is what decides rather than a pre-read.
+CREATE UNIQUE INDEX IF NOT EXISTS cycles_type_start_unique ON cycles (cycle_type, start_time);
+CREATE INDEX IF NOT EXISTS cycles_open_idx   ON cycles (cycle_type, status, end_time);
+CREATE INDEX IF NOT EXISTS cycles_recent_idx ON cycles (cycle_type, start_time DESC);
+-- The settlement sweep's query: declared, not yet settled.
+CREATE INDEX IF NOT EXISTS cycles_settleable_idx ON cycles (end_time)
+  WHERE winner IS NOT NULL AND NOT is_settled;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- CASINO — third-party game providers
+-- ═══════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS game_providers (
+  provider_key   TEXT PRIMARY KEY,
+  name           TEXT NOT NULL,
+  category       TEXT NOT NULL DEFAULT 'SLOTS',
+  enabled        BOOLEAN NOT NULL DEFAULT FALSE,
+  api_url        TEXT,
+  -- Credentials. Encrypted at rest by the application, and never selected by
+  -- the general reader — see `getProvider` vs `getProviderSecrets`.
+  api_key_encrypted     TEXT,
+  api_secret_encrypted  TEXT,
+  webhook_secret_encrypted TEXT,
+  provider_merchant_id  TEXT,
+  extra_config   JSONB NOT NULL DEFAULT '{}'::jsonb,
+  logo_url       TEXT,
+  description    TEXT NOT NULL DEFAULT '',
+  updated_by     TEXT,
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT game_providers_config_object CHECK (jsonb_typeof(extra_config) = 'object'),
+  -- An enabled provider with no endpoint is a launch that fails at the click.
+  CONSTRAINT game_providers_enabled_has_url CHECK (NOT enabled OR api_url IS NOT NULL)
+);
+
+CREATE TABLE IF NOT EXISTS game_sessions (
+  session_id   TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL,
+  provider_key TEXT NOT NULL,
+  game_id      TEXT,
+  game_name    TEXT,
+  currency     TEXT NOT NULL DEFAULT 'INR',
+  status       TEXT NOT NULL DEFAULT 'ACTIVE',
+  launch_url   TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- Enforced by the READ, like every other expiry here: a sweep that is late
+  -- must not leave an expired session usable.
+  expires_at   TIMESTAMPTZ,
+  CONSTRAINT game_sessions_status_known CHECK (status IN ('ACTIVE', 'CLOSED', 'EXPIRED'))
+);
+CREATE INDEX IF NOT EXISTS game_sessions_user_idx ON game_sessions (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS game_sessions_live_idx ON game_sessions (expires_at) WHERE status = 'ACTIVE';
+
+-- Every provider callback that moved money. `tx_id` UNIQUE is the idempotency
+-- gate: a redelivered callback collides inside the transaction rather than
+-- debiting twice.
+CREATE TABLE IF NOT EXISTS game_transactions (
+  id            BIGSERIAL PRIMARY KEY,
+  tx_id         TEXT NOT NULL UNIQUE,
+  round_id      TEXT,
+  session_id    TEXT,
+  user_id       TEXT NOT NULL,
+  provider_key  TEXT NOT NULL,
+  tx_type       TEXT NOT NULL,
+  amount_paise  BIGINT NOT NULL,
+  balance_before_paise BIGINT,
+  balance_after_paise  BIGINT,
+  game_id       TEXT,
+  game_name     TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT game_transactions_type_known CHECK (tx_type IN ('BET', 'WIN', 'REFUND', 'ROLLBACK'))
+);
+CREATE INDEX IF NOT EXISTS game_transactions_user_idx  ON game_transactions (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS game_transactions_round_idx ON game_transactions (round_id);
+CREATE OR REPLACE TRIGGER game_transactions_append_only
+  BEFORE UPDATE OR DELETE ON game_transactions FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- GAME REGISTRY — the catalogue players browse
+-- ═══════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS game_categories (
+  slug       TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  icon       TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  enabled    BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by TEXT
+);
+
+CREATE TABLE IF NOT EXISTS games (
+  slug             TEXT PRIMARY KEY,
+  name             TEXT NOT NULL,
+  provider_key     TEXT,
+  category_slug    TEXT REFERENCES game_categories (slug) ON DELETE SET NULL,
+  launch_strategy  TEXT NOT NULL DEFAULT 'PROVIDER',
+  external_game_id TEXT,
+  launch_url       TEXT,
+  thumbnail        TEXT,
+  banner           TEXT,
+  badge            TEXT,
+  rtp              DOUBLE PRECISION,
+  tags             TEXT[] NOT NULL DEFAULT '{}',
+  min_bet_paise    BIGINT NOT NULL DEFAULT 1000,
+  max_bet_paise    BIGINT NOT NULL DEFAULT 10000000,
+  status           TEXT NOT NULL DEFAULT 'DRAFT',
+  featured         BOOLEAN NOT NULL DEFAULT FALSE,
+  sort_order       INTEGER NOT NULL DEFAULT 0,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_by       TEXT,
+  updated_by       TEXT,
+  CONSTRAINT games_status_known   CHECK (status IN ('DRAFT', 'LIVE', 'DISABLED')),
+  CONSTRAINT games_strategy_known CHECK (launch_strategy IN ('PROVIDER', 'URL', 'INTERNAL')),
+  CONSTRAINT games_bet_range      CHECK (min_bet_paise > 0 AND min_bet_paise <= max_bet_paise),
+  CONSTRAINT games_rtp_range      CHECK (rtp IS NULL OR (rtp >= 0 AND rtp <= 100)),
+  -- A LIVE game nobody can launch is a tile that 404s.
+  CONSTRAINT games_live_is_launchable CHECK (
+    status <> 'LIVE'
+    OR (launch_strategy = 'PROVIDER' AND provider_key IS NOT NULL AND external_game_id IS NOT NULL)
+    OR (launch_strategy = 'URL' AND launch_url IS NOT NULL)
+    OR launch_strategy = 'INTERNAL')
+);
+CREATE INDEX IF NOT EXISTS games_catalogue_idx ON games (category_slug, sort_order) WHERE status = 'LIVE';
+CREATE INDEX IF NOT EXISTS games_featured_idx  ON games (sort_order) WHERE status = 'LIVE' AND featured;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- CONTENT — what the panels render
+-- ═══════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS announcements (
+  announcement_id TEXT PRIMARY KEY,
+  title      TEXT NOT NULL,
+  body       TEXT NOT NULL DEFAULT '',
+  kind       TEXT NOT NULL DEFAULT 'INFO',
+  priority   INTEGER NOT NULL DEFAULT 0,
+  is_active  BOOLEAN NOT NULL DEFAULT TRUE,
+  expires_at TIMESTAMPTZ,
+  created_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT announcements_kind_known CHECK (kind IN ('INFO', 'WARNING', 'CRITICAL', 'PROMO'))
+);
+-- The user-panel query: live, unexpired, most important first. Expiry is in the
+-- READ; the index only makes it cheap.
+CREATE INDEX IF NOT EXISTS announcements_live_idx
+  ON announcements (priority DESC, created_at DESC) WHERE is_active;
+
+CREATE TABLE IF NOT EXISTS promo_content (
+  promo_id    TEXT PRIMARY KEY,
+  title       TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  kind        TEXT NOT NULL DEFAULT 'BANNER',
+  location    TEXT NOT NULL DEFAULT 'HOME',
+  media_type  TEXT NOT NULL DEFAULT 'IMAGE',
+  file_url    TEXT,
+  priority    INTEGER NOT NULL DEFAULT 0,
+  status      TEXT NOT NULL DEFAULT 'DRAFT',
+  is_active   BOOLEAN NOT NULL DEFAULT FALSE,
+  created_by  TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT promo_status_known CHECK (status IN ('DRAFT', 'PUBLISHED', 'ARCHIVED')),
+  CONSTRAINT promo_media_known  CHECK (media_type IN ('IMAGE', 'VIDEO', 'TEXT')),
+  -- A published promo with nothing to show is an empty slot on the home page.
+  CONSTRAINT promo_published_has_media CHECK (
+    status <> 'PUBLISHED' OR media_type = 'TEXT' OR file_url IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS promo_content_live_idx
+  ON promo_content (location, priority DESC) WHERE status = 'PUBLISHED' AND is_active;
+
+CREATE TABLE IF NOT EXISTS faqs (
+  faq_id       TEXT PRIMARY KEY,
+  question     TEXT NOT NULL,
+  answer       TEXT NOT NULL,
+  category     TEXT NOT NULL DEFAULT 'GENERAL',
+  sort_order   INTEGER NOT NULL DEFAULT 0,
+  is_published BOOLEAN NOT NULL DEFAULT FALSE,
+  views        BIGINT NOT NULL DEFAULT 0,
+  tags         TEXT[] NOT NULL DEFAULT '{}',
+  created_by   TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT faqs_has_content CHECK (question <> '' AND answer <> ''),
+  CONSTRAINT faqs_views_non_negative CHECK (views >= 0)
+);
+CREATE INDEX IF NOT EXISTS faqs_published_idx ON faqs (category, sort_order) WHERE is_published;
+
+CREATE TABLE IF NOT EXISTS cdn_images (
+  image_id    TEXT PRIMARY KEY,
+  url         TEXT NOT NULL UNIQUE,
+  category    TEXT NOT NULL DEFAULT 'GENERAL',
+  title       TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  tags        TEXT[] NOT NULL DEFAULT '{}',
+  mime_type   TEXT,
+  file_size   BIGINT,
+  width       INTEGER,
+  height      INTEGER,
+  is_public   BOOLEAN NOT NULL DEFAULT TRUE,
+  -- Derived from `usage_count`: an image nothing references can be deleted, and
+  -- knowing which is a property of the row rather than a scan.
+  usage_count BIGINT NOT NULL DEFAULT 0,
+  uploaded_by TEXT,
+  uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT cdn_images_usage_non_negative CHECK (usage_count >= 0),
+  CONSTRAINT cdn_images_size_non_negative  CHECK (file_size IS NULL OR file_size >= 0)
+);
+CREATE INDEX IF NOT EXISTS cdn_images_category_idx ON cdn_images (category, uploaded_at DESC);
+
+-- One asset per named slot — the splash screen, the login banner. `slot` is the
+-- primary key because "two things in the splash slot" is not a state.
+CREATE TABLE IF NOT EXISTS app_assets (
+  slot         TEXT PRIMARY KEY,
+  url          TEXT NOT NULL,
+  storage      TEXT NOT NULL DEFAULT 'CDN',
+  file_key     TEXT,
+  file_size    BIGINT,
+  content_type TEXT,
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by   TEXT
+);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- ENGAGEMENT
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- The daily check-in streak. One row per player.
+--
+-- `current_streak` and `total_check_ins` are counters, and the rule for
+-- counters holds: they are moved by arithmetic IN THE STATEMENT that records
+-- the check-in, never read-modify-written. `last_check_in_date` is a DATE, not
+-- a timestamp — "have they checked in today" is a question about the day.
+CREATE TABLE IF NOT EXISTS check_ins (
+  user_id          TEXT PRIMARY KEY,
+  current_streak   INTEGER NOT NULL DEFAULT 0,
+  longest_streak   INTEGER NOT NULL DEFAULT 0,
+  total_check_ins  BIGINT NOT NULL DEFAULT 0,
+  last_check_in_date DATE,
+  total_earned_paise BIGINT NOT NULL DEFAULT 0,
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT check_ins_non_negative CHECK (
+    current_streak >= 0 AND longest_streak >= 0
+    AND total_check_ins >= 0 AND total_earned_paise >= 0),
+  -- The longest streak is a high-water mark. It cannot be below the current one.
+  CONSTRAINT check_ins_longest_is_high_water CHECK (longest_streak >= current_streak)
+);
+
+CREATE TABLE IF NOT EXISTS gift_codes (
+  code        TEXT PRIMARY KEY,
+  amount_paise BIGINT NOT NULL,
+  bonus_type  TEXT NOT NULL DEFAULT 'DEPOSIT',
+  max_uses    INTEGER NOT NULL DEFAULT 1,
+  used_count  INTEGER NOT NULL DEFAULT 0,
+  expires_at  TIMESTAMPTZ,
+  is_active   BOOLEAN NOT NULL DEFAULT TRUE,
+  note        TEXT NOT NULL DEFAULT '',
+  created_by  TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT gift_codes_amount_positive CHECK (amount_paise > 0),
+  -- The redemption cap is a property of the ROW. A check-then-increment in the
+  -- application lets two concurrent redemptions both read the same used_count
+  -- and both pass, which is how a single-use code pays out twice.
+  CONSTRAINT gift_codes_within_cap CHECK (used_count >= 0 AND used_count <= max_uses),
+  CONSTRAINT gift_codes_uses_positive CHECK (max_uses > 0)
+);
+
+CREATE TABLE IF NOT EXISTS gift_code_redemptions (
+  id          BIGSERIAL PRIMARY KEY,
+  code        TEXT NOT NULL REFERENCES gift_codes (code) ON DELETE CASCADE,
+  user_id     TEXT NOT NULL,
+  amount_paise BIGINT NOT NULL,
+  redeemed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- One redemption per player per code, decided by the index rather than by a
+  -- pre-read two concurrent requests can both pass.
+  CONSTRAINT gift_code_redemptions_once UNIQUE (code, user_id)
+);
+CREATE INDEX IF NOT EXISTS gift_code_redemptions_user_idx ON gift_code_redemptions (user_id, redeemed_at DESC);
+
+-- Every bonus a player was granted, and why. Append-only: this is the record a
+-- player disputes against.
+CREATE TABLE IF NOT EXISTS bonus_records (
+  id           BIGSERIAL PRIMARY KEY,
+  bonus_id     TEXT UNIQUE,
+  user_id      TEXT NOT NULL,
+  bonus_type   TEXT NOT NULL,
+  amount_paise BIGINT NOT NULL,
+  description  TEXT NOT NULL DEFAULT '',
+  ref_id       TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS bonus_records_user_idx ON bonus_records (user_id, created_at DESC);
+CREATE OR REPLACE TRIGGER bonus_records_append_only
+  BEFORE UPDATE OR DELETE ON bonus_records FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
+-- A precomputed leaderboard. Genuinely a CACHE: it is derived from bets and
+-- settlements, it is rebuilt on a schedule, and nothing reads it to make a
+-- decision. Deleting it costs a rebuild, not a fact.
+CREATE TABLE IF NOT EXISTS leaderboard_cache (
+  period       TEXT PRIMARY KEY,
+  entries      JSONB NOT NULL DEFAULT '[]'::jsonb,
+  generated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT leaderboard_cache_is_array CHECK (jsonb_typeof(entries) = 'array')
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id           BIGSERIAL PRIMARY KEY,
+  user_id      TEXT NOT NULL,
+  kind         TEXT NOT NULL DEFAULT 'INFO',
+  title        TEXT NOT NULL,
+  message      TEXT NOT NULL DEFAULT '',
+  action_url   TEXT,
+  action_label TEXT,
+  related_id   TEXT,
+  related_type TEXT,
+  is_read      BOOLEAN NOT NULL DEFAULT FALSE,
+  read_at      TIMESTAMPTZ,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at   TIMESTAMPTZ,
+  -- A row that says it is read but not when is a row an audit cannot use.
+  CONSTRAINT notifications_read_has_time CHECK (NOT is_read OR read_at IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS notifications_inbox_idx ON notifications (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS notifications_unread_idx ON notifications (user_id) WHERE NOT is_read;
+
+-- Display-only winners shown on the marketing carousel.
+--
+-- These are NOT players and carry no money. `user_id` is nullable and
+-- deliberately not a foreign key: attaching one to a real account would put a
+-- fabricated payout next to a real person's name.
+CREATE TABLE IF NOT EXISTS fake_winners (
+  id           BIGSERIAL PRIMARY KEY,
+  display_name TEXT NOT NULL,
+  profile_pic  TEXT,
+  city         TEXT,
+  amount_paise BIGINT NOT NULL DEFAULT 0,
+  game         TEXT,
+  badge        TEXT,
+  user_id      TEXT,
+  is_public    BOOLEAN NOT NULL DEFAULT TRUE,
+  sort_order   INTEGER NOT NULL DEFAULT 0,
+  display_time TIMESTAMPTZ,
+  created_by   TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS fake_winners_carousel_idx ON fake_winners (sort_order, display_time DESC)
+  WHERE is_public;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- SOCIAL — public chat and support
+-- ═══════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS public_chat_messages (
+  id           BIGSERIAL PRIMARY KEY,
+  user_id      TEXT NOT NULL,
+  display_name TEXT NOT NULL DEFAULT '',
+  profile_pic  TEXT,
+  vip_level    INTEGER NOT NULL DEFAULT 0,
+  kind         TEXT NOT NULL DEFAULT 'TEXT',
+  content      TEXT NOT NULL DEFAULT '',
+  image_key    TEXT,
+  status       TEXT NOT NULL DEFAULT 'APPROVED',
+  approved_by  TEXT,
+  approved_at  TIMESTAMPTZ,
+  reject_reason TEXT,
+  -- Soft delete: a moderator removing a message must not destroy the evidence
+  -- of what was said, which is what a report is about.
+  is_deleted   BOOLEAN NOT NULL DEFAULT FALSE,
+  deleted_by   TEXT,
+  deleted_at   TIMESTAMPTZ,
+  report_count INTEGER NOT NULL DEFAULT 0,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at   TIMESTAMPTZ,
+  CONSTRAINT public_chat_kind_known   CHECK (kind IN ('TEXT', 'IMAGE', 'SYSTEM')),
+  CONSTRAINT public_chat_status_known CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED')),
+  CONSTRAINT public_chat_has_content  CHECK (content <> '' OR image_key IS NOT NULL),
+  CONSTRAINT public_chat_rejected_has_reason CHECK (status <> 'REJECTED' OR reject_reason IS NOT NULL),
+  CONSTRAINT public_chat_deleted_has_actor  CHECK (NOT is_deleted OR deleted_by IS NOT NULL),
+  CONSTRAINT public_chat_reports_non_negative CHECK (report_count >= 0)
+);
+-- The room's live feed. `(created_at, id)` because two messages in the same
+-- millisecond order arbitrarily under the timestamp alone, and a chat is a
+-- sequence.
+CREATE INDEX IF NOT EXISTS public_chat_feed_idx ON public_chat_messages (created_at DESC, id DESC)
+  WHERE status = 'APPROVED' AND NOT is_deleted;
+CREATE INDEX IF NOT EXISTS public_chat_moderation_idx ON public_chat_messages (created_at)
+  WHERE status = 'PENDING';
+
+-- A chat ban. `ban_until` NULL means permanent, which is a real state and not
+-- the same as "expired".
+CREATE TABLE IF NOT EXISTS chat_bans (
+  user_id    TEXT PRIMARY KEY,
+  banned_by  TEXT,
+  reason     TEXT NOT NULL DEFAULT '',
+  ban_until  TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS support_tickets (
+  ticket_id    TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL,
+  subject      TEXT NOT NULL,
+  category     TEXT NOT NULL DEFAULT 'GENERAL',
+  priority     TEXT NOT NULL DEFAULT 'NORMAL',
+  status       TEXT NOT NULL DEFAULT 'OPEN',
+  assigned_to  TEXT,
+  assigned_at  TIMESTAMPTZ,
+  resolved_at  TIMESTAMPTZ,
+  closed_at    TIMESTAMPTZ,
+  rating       INTEGER,
+  rating_note  TEXT,
+  last_reply_at TIMESTAMPTZ,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT support_tickets_status_known CHECK (
+    status IN ('OPEN', 'ASSIGNED', 'WAITING_USER', 'RESOLVED', 'CLOSED')),
+  CONSTRAINT support_tickets_priority_known CHECK (priority IN ('LOW', 'NORMAL', 'HIGH', 'URGENT')),
+  CONSTRAINT support_tickets_rating_range CHECK (rating IS NULL OR rating BETWEEN 1 AND 5),
+  -- An assigned ticket with no agent, or a resolved one with no time, is a row
+  -- a queue cannot act on.
+  CONSTRAINT support_tickets_assigned_has_agent CHECK (status <> 'ASSIGNED' OR assigned_to IS NOT NULL),
+  CONSTRAINT support_tickets_resolved_has_time  CHECK (status <> 'RESOLVED' OR resolved_at IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS support_tickets_user_idx  ON support_tickets (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS support_tickets_queue_idx ON support_tickets (priority, created_at)
+  WHERE status IN ('OPEN', 'ASSIGNED', 'WAITING_USER');
+
+CREATE TABLE IF NOT EXISTS support_messages (
+  id          BIGSERIAL PRIMARY KEY,
+  ticket_id   TEXT NOT NULL REFERENCES support_tickets (ticket_id) ON DELETE CASCADE,
+  sender_id   TEXT,
+  sender_type TEXT NOT NULL,
+  content     TEXT NOT NULL DEFAULT '',
+  attachments TEXT[] NOT NULL DEFAULT '{}',
+  is_read     BOOLEAN NOT NULL DEFAULT FALSE,
+  read_at     TIMESTAMPTZ,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT support_messages_sender_known CHECK (sender_type IN ('USER', 'AGENT', 'SYSTEM')),
+  CONSTRAINT support_messages_has_content CHECK (content <> '' OR cardinality(attachments) > 0),
+  CONSTRAINT support_messages_sender_required CHECK (sender_id IS NOT NULL OR sender_type = 'SYSTEM')
+);
+CREATE INDEX IF NOT EXISTS support_messages_thread_idx ON support_messages (ticket_id, created_at, id);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- REFERRALS
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- A referral earning is MONEY OWED. It is queued, paid in batches, and every
+-- state it passes through is auditable — so the amount is paise in BIGINT like
+-- every other money column, and `wallet_tx_id` links the payment to the ledger
+-- row that actually moved it.
+CREATE TABLE IF NOT EXISTS referral_earnings (
+  id            BIGSERIAL PRIMARY KEY,
+  earning_id    TEXT UNIQUE,
+  earner_id     TEXT NOT NULL,
+  source_user_id TEXT NOT NULL,
+  level         INTEGER NOT NULL DEFAULT 1,
+  amount_paise  BIGINT NOT NULL,
+  -- The payout order. Unique so two earnings cannot claim one slot, and taken
+  -- from a sequence over the maximum rather than from count(*) + 1.
+  queue_position BIGINT,
+  status        TEXT NOT NULL DEFAULT 'QUEUED',
+  blocked_reason TEXT,
+  disbursal_batch_id TEXT,
+  disbursed_at  TIMESTAMPTZ,
+  -- The ledger row that paid this. A PAID earning without one is a payment
+  -- nothing in the books accounts for.
+  wallet_tx_id  TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT referral_earnings_status_known CHECK (
+    status IN ('QUEUED', 'PAID', 'BLOCKED', 'CANCELLED')),
+  CONSTRAINT referral_earnings_amount_positive CHECK (amount_paise > 0),
+  CONSTRAINT referral_earnings_level_positive  CHECK (level >= 1),
+  CONSTRAINT referral_earnings_paid_is_ledgered CHECK (
+    status <> 'PAID' OR (wallet_tx_id IS NOT NULL AND disbursed_at IS NOT NULL)),
+  CONSTRAINT referral_earnings_blocked_has_reason CHECK (
+    status <> 'BLOCKED' OR blocked_reason IS NOT NULL),
+  -- Nobody earns from their own signup.
+  CONSTRAINT referral_earnings_not_self CHECK (earner_id <> source_user_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS referral_earnings_queue_unique
+  ON referral_earnings (queue_position) WHERE queue_position IS NOT NULL;
+CREATE INDEX IF NOT EXISTS referral_earnings_earner_idx ON referral_earnings (earner_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS referral_earnings_payable_idx ON referral_earnings (queue_position)
+  WHERE status = 'QUEUED';
+
+CREATE TABLE IF NOT EXISTS referral_disbursals (
+  batch_id      TEXT PRIMARY KEY,
+  pool_paise    BIGINT NOT NULL DEFAULT 0,
+  spent_paise   BIGINT NOT NULL DEFAULT 0,
+  paid_count    INTEGER NOT NULL DEFAULT 0,
+  blocked_count INTEGER NOT NULL DEFAULT 0,
+  last_queue_position BIGINT,
+  actor_id      TEXT,
+  status        TEXT NOT NULL DEFAULT 'RUNNING',
+  error         TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at  TIMESTAMPTZ,
+  CONSTRAINT referral_disbursals_status_known CHECK (status IN ('RUNNING', 'COMPLETED', 'FAILED')),
+  -- A batch cannot spend more than its pool. That is the whole point of a pool.
+  CONSTRAINT referral_disbursals_within_pool CHECK (spent_paise >= 0 AND spent_paise <= pool_paise),
+  CONSTRAINT referral_disbursals_failed_has_error CHECK (status <> 'FAILED' OR error IS NOT NULL)
+);
+
+CREATE TABLE IF NOT EXISTS referral_programmes (
+  programme_key   TEXT PRIMARY KEY,
+  budget_paise    BIGINT NOT NULL DEFAULT 0,
+  disbursed_paise BIGINT NOT NULL DEFAULT 0,
+  member_cap      INTEGER NOT NULL DEFAULT 0,
+  verified_members INTEGER NOT NULL DEFAULT 0,
+  active          BOOLEAN NOT NULL DEFAULT FALSE,
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- The budget is a ceiling, enforced by the row. An application-side check
+  -- lets two concurrent disbursals both read the same total and both pass.
+  CONSTRAINT referral_programmes_within_budget CHECK (
+    disbursed_paise >= 0 AND disbursed_paise <= budget_paise),
+  CONSTRAINT referral_programmes_members_non_negative CHECK (
+    verified_members >= 0 AND member_cap >= 0)
+);
+
+-- Click attribution. Short-lived and high-volume: expiry is enforced by the
+-- READ, and the sweep only reclaims space.
+CREATE TABLE IF NOT EXISTS referral_clicks (
+  id          BIGSERIAL PRIMARY KEY,
+  code        TEXT NOT NULL,
+  viewer_hash TEXT NOT NULL,
+  clicked_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at  TIMESTAMPTZ NOT NULL,
+  -- One click per viewer per code within the window. Without this a refresh
+  -- loop inflates a referrer's click count without bound.
+  CONSTRAINT referral_clicks_once UNIQUE (code, viewer_hash)
+);
+CREATE INDEX IF NOT EXISTS referral_clicks_sweep_idx ON referral_clicks (expires_at);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- OPERATIONS
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- The scheduled-job leader lock.
+--
+-- ── This replaces a TTL document, and the difference matters ────────────────
+-- The document version relied on a TTL index to expire an abandoned lock. A
+-- TTL index sweeps on ITS OWN SCHEDULE — up to a minute late, longer under
+-- load — so a crashed leader's lock lingered and every instance skipped its
+-- jobs until the sweep happened to run. PostgreSQL has no TTL index, which is
+-- the better answer: the lock's expiry is in the WHERE clause of the claim, so
+-- an abandoned lock is claimable the instant it lapses.
+CREATE TABLE IF NOT EXISTS cron_locks (
+  job_name   TEXT PRIMARY KEY,
+  holder     TEXT NOT NULL,
+  acquired_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  CONSTRAINT cron_locks_expires_after_acquire CHECK (expires_at > acquired_at)
+);
+
+-- A monotonic counter, for the few values that need one.
+--
+-- Derive from rows wherever possible — this exists for the cases where there
+-- are no rows to derive from. The value moves by arithmetic in the UPDATE, so
+-- two concurrent claims cannot both read the same number.
+CREATE TABLE IF NOT EXISTS counters (
+  counter_key TEXT PRIMARY KEY,
+  value       BIGINT NOT NULL DEFAULT 0,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT counters_non_negative CHECK (value >= 0)
+);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- AUDIT
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Append-only, both of them. An audit log something can edit is not an audit
+-- log, and the trigger is what makes that true rather than a convention.
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id         BIGSERIAL PRIMARY KEY,
+  admin_id   TEXT,
+  action     TEXT NOT NULL,
+  details    JSONB NOT NULL DEFAULT '{}'::jsonb,
+  target_id  TEXT,
+  ip         TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT audit_logs_details_object CHECK (jsonb_typeof(details) = 'object')
+);
+CREATE INDEX IF NOT EXISTS audit_logs_admin_idx  ON audit_logs (admin_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS audit_logs_action_idx ON audit_logs (action, created_at DESC);
+CREATE INDEX IF NOT EXISTS audit_logs_target_idx ON audit_logs (target_id, created_at DESC);
+CREATE OR REPLACE TRIGGER audit_logs_append_only
+  BEFORE UPDATE OR DELETE ON audit_logs FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
+-- The richer trail: who, in what role, against what, from where, and whether it
+-- worked. A FAILED action is as important as a successful one — an audit that
+-- records only successes cannot show an attack that did not land.
+CREATE TABLE IF NOT EXISTS enhanced_audit_logs (
+  id               BIGSERIAL PRIMARY KEY,
+  performed_by     TEXT,
+  performed_by_name TEXT,
+  performed_by_role TEXT,
+  action           TEXT NOT NULL,
+  category         TEXT NOT NULL DEFAULT 'GENERAL',
+  target_type      TEXT,
+  target_id        TEXT,
+  target_name      TEXT,
+  details          JSONB NOT NULL DEFAULT '{}'::jsonb,
+  changes          JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ip               TEXT,
+  user_agent       TEXT,
+  method           TEXT,
+  endpoint         TEXT,
+  success          BOOLEAN NOT NULL DEFAULT TRUE,
+  error_message    TEXT,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT enhanced_audit_details_object CHECK (jsonb_typeof(details) = 'object'),
+  CONSTRAINT enhanced_audit_changes_object CHECK (jsonb_typeof(changes) = 'object'),
+  -- A failure with no message is a failure nobody can investigate.
+  CONSTRAINT enhanced_audit_failure_has_message CHECK (success OR error_message IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS enhanced_audit_actor_idx    ON enhanced_audit_logs (performed_by, created_at DESC);
+CREATE INDEX IF NOT EXISTS enhanced_audit_category_idx ON enhanced_audit_logs (category, created_at DESC);
+CREATE INDEX IF NOT EXISTS enhanced_audit_target_idx   ON enhanced_audit_logs (target_type, target_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS enhanced_audit_failures_idx ON enhanced_audit_logs (created_at DESC) WHERE NOT success;
+CREATE OR REPLACE TRIGGER enhanced_audit_logs_append_only
+  BEFORE UPDATE OR DELETE ON enhanced_audit_logs FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
+-- Client-side crash reports. High volume, low value individually, pruned by
+-- retention — deliberately NOT append-only.
+CREATE TABLE IF NOT EXISTS frontend_error_reports (
+  id         BIGSERIAL PRIMARY KEY,
+  message    TEXT NOT NULL,
+  stack      TEXT,
+  component  TEXT,
+  url        TEXT,
+  panel      TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS frontend_error_reports_recent_idx ON frontend_error_reports (created_at DESC);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- COMPLIANCE — the PAN registry
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- One PAN, one account. The hash is the primary key, so the uniqueness is
+-- STORAGE-ENFORCED: two accounts cannot claim one tax identity, and the index
+-- decides rather than a pre-read two concurrent registrations both pass. The
+-- number itself is never stored — only its hash and last four, which is what a
+-- support agent needs to confirm an identity without holding the document.
+CREATE TABLE IF NOT EXISTS pan_registry (
+  pan_hash    TEXT PRIMARY KEY,
+  pan_last4   TEXT NOT NULL,
+  user_id     TEXT NOT NULL UNIQUE,
+  verified_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT pan_registry_last4_shape CHECK (pan_last4 ~ '^[0-9A-Z]{4}$')
+);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- PAYMENTS — merchant token purchases from the platform
+-- ═══════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS merchant_admin_token_orders (
+  order_id      TEXT PRIMARY KEY,
+  merchant_id   TEXT NOT NULL,
+  token_paise   BIGINT NOT NULL,
+  usdt_rate     NUMERIC(18, 6),
+  usdt_amount   NUMERIC(18, 6),
+  usdt_tx_hash  TEXT,
+  status        TEXT NOT NULL DEFAULT 'PENDING',
+  requested_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  reviewed_at   TIMESTAMPTZ,
+  reviewed_by   TEXT,
+  review_note   TEXT,
+  CONSTRAINT merchant_token_orders_status_known CHECK (
+    status IN ('PENDING', 'APPROVED', 'REJECTED', 'CANCELLED')),
+  CONSTRAINT merchant_token_orders_amount_positive CHECK (token_paise > 0),
+  -- A reviewed order records WHO and WHEN, or the decision has no owner.
+  CONSTRAINT merchant_token_orders_reviewed_has_actor CHECK (
+    status = 'PENDING' OR (reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL)),
+  CONSTRAINT merchant_token_orders_rejected_has_note CHECK (
+    status <> 'REJECTED' OR review_note IS NOT NULL),
+  -- A settled USDT purchase names the transaction that paid for it.
+  CONSTRAINT merchant_token_orders_approved_has_hash CHECK (
+    status <> 'APPROVED' OR usdt_amount IS NULL OR usdt_tx_hash IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS merchant_token_orders_merchant_idx
+  ON merchant_admin_token_orders (merchant_id, requested_at DESC);
+CREATE INDEX IF NOT EXISTS merchant_token_orders_queue_idx
+  ON merchant_admin_token_orders (requested_at) WHERE status = 'PENDING';
+
+-- The payment-gateway credentials. One row, key 'main'.
+CREATE TABLE IF NOT EXISTS payment_gateway_configs (
+  config_key       TEXT PRIMARY KEY,
+  active_mode      TEXT NOT NULL DEFAULT 'P2P',
+  p2p_enabled      BOOLEAN NOT NULL DEFAULT TRUE,
+  gateway_enabled  BOOLEAN NOT NULL DEFAULT FALSE,
+  gateway_provider TEXT,
+  -- Encrypted at rest, and never selected by the general reader.
+  gateway_api_key_encrypted        TEXT,
+  gateway_api_secret_encrypted     TEXT,
+  gateway_webhook_secret_encrypted TEXT,
+  gateway_callback_url TEXT,
+  gateway_merchant_id  TEXT,
+  updated_by       TEXT,
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT payment_gateway_mode_known CHECK (active_mode IN ('P2P', 'GATEWAY', 'BOTH')),
+  -- Turning off both rails leaves no way for a player to fund an account, and
+  -- an admin doing it by accident finds out from the support queue.
+  CONSTRAINT payment_gateway_one_rail_live CHECK (p2p_enabled OR gateway_enabled),
+  -- A live gateway that names no provider cannot be called.
+  CONSTRAINT payment_gateway_enabled_has_provider CHECK (
+    NOT gateway_enabled OR gateway_provider IS NOT NULL)
+);
