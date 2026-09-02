@@ -207,11 +207,22 @@ export const SYSTEM_CONFIG_SPEC = group({
 
 /** Branding — colours, logos, the platform's name. */
 export const BRANDING_SPEC = group({
+  appName: s('BettingBazaar'),
   platformName: s('Betting Bazaar'),
-  logoUrl: s(''), faviconUrl: s(''), splashUrl: s(''),
-  primaryColor: s('#0EA5E9'), secondaryColor: s('#111827'), accentColor: s('#F59E0B'),
+  userPanelName: s(''), adminPanelName: s(''),
+  merchantPanelName: s(''), queueManagerPanelName: s(''),
+  // The CDN base. Empty means "use the CDN_URL environment variable", which is
+  // the bootstrap source — an admin can override it here without a redeploy.
+  cdnBaseUrl: s(''),
+  logoUrl: s(''), faviconUrl: s(''), splashUrl: s(''), iconUrl: s(''),
+  primaryColor: s('#D4AF37'), secondaryColor: s('#111827'), accentColor: s('#F59E0B'),
   loginBannerUrl: s(''), homeBannerUrl: s(''),
-  footerText: s(''), tagline: s(''),
+  registerBannerUrl: s(''), depositBannerUrl: s(''), withdrawalBannerUrl: s(''),
+  rulesPageImageUrl: s(''), tricksTipsBannerUrl: s(''),
+  betCardDelhiImageUrl: s(''), betCardBombayImageUrl: s(''),
+  homePopupImageUrl: s(''), homePopupLinkUrl: s(''), homePopupEnabled: b(false),
+  contactEmail: s(''), contactPhone: s(''),
+  footerText: s(''), tagline: s(''), description: s(''),
 });
 
 /** Support links surfaced on the user Support page. */

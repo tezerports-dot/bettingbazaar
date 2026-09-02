@@ -350,6 +350,26 @@ export async function setPendingResult(cycleId, side) {
 }
 
 /**
+ * The last N cycles with a declared result, newest first.
+ *
+ * `winner IS NOT NULL` rather than a status filter, because that is the
+ * property the caller actually wants: a cycle whose result is in. Filtering on
+ * status alone would miss a declared cycle whose settlement is still running,
+ * and would include a COMPLETED one whose winner was somehow never written —
+ * which the table now refuses, but the query should not depend on that.
+ */
+export async function recentResults(cycleType, { limit = 10 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT ${COLUMNS} FROM cycles
+      WHERE cycle_type = $1 AND winner IS NOT NULL
+      ORDER BY end_time DESC LIMIT $2`,
+    [String(cycleType), Math.min(Math.max(Number(limit) || 10, 1), 200)],
+    'cycle_recent_results',
+  );
+  return rows.map(toCycle);
+}
+
+/**
  * Cycles that ended but were never given a result.
  *
  * This is the check that would have caught the silent-never-settled defect on

@@ -2520,3 +2520,18 @@ CREATE OR REPLACE TRIGGER utr_registry_no_delete
 CREATE UNIQUE INDEX IF NOT EXISTS merchant_token_orders_one_per_day
   ON merchant_admin_token_orders (merchant_id, (CAST(requested_at AT TIME ZONE 'UTC' AS DATE)))
   WHERE status IN ('PENDING', 'APPROVED');
+
+-- The bet's cycle type, denormalised.
+--
+-- A player's bet history shows which market each bet was on, and joining
+-- `cycles` for every row of every history page is a join that buys one string.
+-- It is written once at placement and a cycle's type never changes, so this is
+-- a copy that cannot drift — the one case where denormalising is not a second
+-- owner waiting to disagree.
+ALTER TABLE bets ADD COLUMN IF NOT EXISTS cycle_type TEXT;
+ALTER TABLE bets ADD COLUMN IF NOT EXISTS is_phantom BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE bets ADD COLUMN IF NOT EXISTS phantom_manager_id TEXT;
+
+-- A player's history, newest first — the query the panel makes on every load.
+CREATE INDEX IF NOT EXISTS bets_user_history_idx
+  ON bets (user_id, placed_at DESC, id DESC) WHERE NOT is_phantom;

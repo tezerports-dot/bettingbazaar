@@ -54,6 +54,7 @@ import { getPool, pgQuery, connectGuarded } from '../client.js';
 import { applyMovementWithin } from './wallets.core.js';
 import { moneyOperations } from '../../backend/services/metrics.service.js';
 import { MONEY_PATHS } from '../moneyPaths.js';
+import { paiseToRupees } from '../../backend/shared/money.js';
 
 export const BET_STATUS = Object.freeze({
   PENDING:  'PENDING',
@@ -155,6 +156,64 @@ export async function getBetHistory(betId) {
     txId: r.tx_id, from: r.from_status, to: r.to_status,
     actor: r.actor, reason: r.reason, at: r.created_at,
   }));
+}
+
+/**
+ * A player's bets, newest first.
+ *
+ * ── Phantom bets are excluded by default ────────────────────────────────────
+ * A phantom bet is house liquidity placed under a managed account; it is not
+ * something a player did and must never appear in their history. Including
+ * them by accident would show a player wagers they never made — so the
+ * exclusion is the DEFAULT and a caller has to ask for them by name.
+ *
+ * Keyset pagination on `(placed_at, id)`: a bet placed while a player scrolls
+ * shifts every later row under OFFSET, and the page after it silently skips
+ * one of their own bets.
+ */
+export async function listUserBets(userId, {
+  cycleId = null, status = null, includePhantom = false,
+  limit = 50, cursor = null,
+} = {}) {
+  const where = ['user_id = $1'];
+  const params = [String(userId)];
+  const add = (sql, value) => { params.push(value); where.push(sql.replace('$?', `$${params.length}`)); };
+
+  if (!includePhantom) where.push('NOT is_phantom');
+  if (cycleId) add('cycle_id = $?', String(cycleId));
+  if (status) add('status = $?', String(status));
+  if (cursor?.placedAt && cursor?.id !== undefined) {
+    params.push(cursor.placedAt, Number(cursor.id));
+    where.push(`(placed_at, id) < ($${params.length - 1}, $${params.length})`);
+  }
+
+  const size = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const { rows } = await pgQuery(
+    `SELECT id, bet_id, user_id, cycle_id, cycle_type, side, stake_paise,
+            payout_paise, platform_fee_paise, status, placed_at, settled_at,
+            COUNT(*) OVER () AS total_count
+       FROM bets WHERE ${where.join(' AND ')}
+      ORDER BY placed_at DESC, id DESC
+      LIMIT ${size + 1}`,
+    params, 'bet_list_user',
+  );
+
+  const hasMore = rows.length > size;
+  const page = rows.slice(0, size);
+  const last = page[page.length - 1];
+  return {
+    bets: page.map((r) => ({
+      id: r.bet_id, betId: r.bet_id, userId: r.user_id,
+      cycleId: r.cycle_id, cycleType: r.cycle_type, side: r.side,
+      amount: paiseToRupees(Number(r.stake_paise)),
+      payout: paiseToRupees(Number(r.payout_paise)),
+      platformFee: paiseToRupees(Number(r.platform_fee_paise)),
+      status: r.status,
+      timestamp: r.placed_at, placedAt: r.placed_at, settledAt: r.settled_at,
+    })),
+    total: rows[0] ? Number(rows[0].total_count) : 0,
+    nextCursor: hasMore && last ? { placedAt: last.placed_at, id: Number(last.id) } : null,
+  };
 }
 
 /**
