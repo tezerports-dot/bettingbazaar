@@ -85,8 +85,14 @@ const SITES = [
     name: 'queue-manager assignment list',
     file: 'domains/merchant/merchant.assignment.routes.js',
     gates: [/m\.walletAvailableTokens < amount/],
-    source: /await getAvailablePaiseFor\(merchantDocs\.map/,
-    forbidden: [/if \(m\.tokenBalance < amount\)/],
+    source: /await getAvailablePaiseFor\(merchants\.map/,
+    forbidden: [
+      /if \(m\.tokenBalance < amount\)/,
+      // The pool and candidate listings quote a balance too, and an admin
+      // curating the pool picks from that figure. Reading a stored
+      // `tokenBalance` there showed them a number no transfer would find.
+      /tokenBalance: m\.tokenBalance/,
+    ],
   },
 ];
 

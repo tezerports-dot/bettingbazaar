@@ -1,54 +1,134 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-// Domain: Merchant (BBEPS Phase 003 §3.3). Owns merchant assignment/reassignment,
-// the queue manager merchant pool, and pending-order-for-assignment listing.
-// Payment-order lifecycle (approve/reject/cancel/resolve-dispute) moved to
-// domains/payment/paymentOrder.routes.js — that's Payment domain territory, not
-// Merchant. Split out of the old backend/routes/admin/queue.admin.routes.js on
-// 2026-07-01 as part of the Merchant+Payment domain migration (BBEPS Phase 004).
-// See backend/domains/README.md.
-
-import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels, isAdminOrSubAdminOrQueueManager } from '../../routes/admin/_adminShared.js';
+/**
+ * domains/merchant/merchant.assignment.routes.js — who gets handed a player's
+ * money.
+ *
+ * Owns manual assignment and reassignment, the queue-manager merchant pool, and
+ * the pending-order worklist. Payment-order lifecycle (approve / reject /
+ * cancel / resolve-dispute) is Payment domain territory and lives in
+ * domains/payment/paymentOrder.routes.js.
+ *
+ * ── Every eligibility gate here decides with money ──────────────────────────
+ * An assignment hands a merchant an order they must fund. The inventory check
+ * therefore reads `merchant_wallets` — the rows a transfer will actually lock —
+ * never a copy of the figure held anywhere else. A merchant with NO wallet row
+ * is excluded rather than shown as empty: no row means the money system has
+ * never seen them, which is a different thing from a zero balance.
+ *
+ * ── Three assign paths, one rule ────────────────────────────────────────────
+ * Manual assignment is confined to the curated `queueManagerPool` so it cannot
+ * compete with the automatic assigner's full candidate set. That rule is
+ * enforced server-side in every assign and reassign endpoint here, not just in
+ * the list the picker renders.
+ */
+import { express, authenticate, isAdmin, isAdminOrSubAdmin, isAdminOrSubAdminOrQueueManager } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
-import { creditDeposit, creditWinnings } from '../wallet/walletAuthority.service.js';
 // The order state machine — the expected state is in the update's filter, so
 // two admins assigning the same order produce one winner, not a silent overwrite.
 import { assignOrder, reassignOrder } from '../payment/orderLifecycle.service.js';
-import { emitAdminUpdate, emitMerchantUpdate, emitOrderUpdate, emitWalletUpdate } from '../notification/realtimeEmitters.js';
-// Inventory eligibility is a MONEY read, so it follows the money. The Mongo
-// document is a live mirror and stale by at most a reconcile pass; the gates
-// below decide whether an order may be handed to a merchant, and a stale answer
-// there misroutes it. getMerchantTokenBalance returns the Mongo value while
-// Mongo owns the path, so converting a gate is monotonic — strictly more
-// correct under either store, never a behaviour change on the current one.
+import { emitAdminUpdate, emitMerchantUpdate, emitOrderUpdate } from '../notification/realtimeEmitters.js';
+// Inventory eligibility is a MONEY read, so it reads the wallet.
 import { getMerchantTokenBalance } from '#db/repositories/merchantWallets.js';
 import { getAvailablePaiseFor } from '#db/repositories/merchantWallets.core.js';
-import { rupeesToPaise, paiseToRupees } from '../../shared/money.js';
+import { paiseToRupees } from '../../shared/money.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 
 const router = express.Router();
 
-// ─── Helper: build merchantSnapshot from a Merchant doc ──────────────────────
-// PRIVACY FIX 2026-07-05: merchantName was merchantDoc.name||merchantDoc.username,
-// which in this data is literally the merchant's own mobile number -- every user
-// assigned an order could see the merchant's real phone number. Replaced with a
-// persisted, non-identifying public reference from Merchant.publicRef.
-function merchantDisplayRef(merchantDoc) {
-  return `Merchant #${merchantDoc.publicRef}`;
+// ─── Helper: build merchantSnapshot from a merchant row ──────────────────────
+// PRIVACY FIX 2026-07-05: merchantName was `name || username`, which in this
+// data is literally the merchant's own mobile number — every user assigned an
+// order could see the merchant's real phone number. Replaced with a persisted,
+// non-identifying public reference.
+function merchantDisplayRef(merchant) {
+  return `Merchant #${merchant.publicRef}`;
 }
 
-function buildSnapshot(merchantDoc, expiresAt) {
+function buildSnapshot(merchant, expiresAt) {
   return {
-    merchantId:    merchantDoc._id,
-    merchantName:  merchantDisplayRef(merchantDoc),
-    upiId:         merchantDoc.bankDetails?.upiId              || '',
-    bankName:      merchantDoc.bankDetails?.bankName           || '',
-    accountNo:     merchantDoc.bankDetails?.accountNo          || '',
-    ifsc:          merchantDoc.bankDetails?.ifsc               || '',
-    accountHolder: merchantDoc.bankDetails?.accountHolderName  || '',
+    merchantId:    merchant.merchantId,
+    merchantName:  merchantDisplayRef(merchant),
+    upiId:         merchant.bankDetails?.upiId              || '',
+    bankName:      merchant.bankDetails?.bankName           || '',
+    accountNo:     merchant.bankDetails?.accountNo          || '',
+    ifsc:          merchant.bankDetails?.ifsc               || '',
+    accountHolder: merchant.bankDetails?.accountHolderName  || '',
+    usdtAddress:   merchant.usdtWalletAddress               || '',
     snapshotAt:    new Date(),
     expiresAt,
   };
 }
+
+/**
+ * The manual-assignment pool guard, in one place.
+ *
+ * It was copy-pasted into three handlers with three different local variable
+ * names. Three copies of a rule is three chances for one of them to drift, and
+ * the rule decides which merchant is handed a player's deposit.
+ *
+ * Returns null when the merchant may be assigned to, or a `{status, message}`
+ * the caller sends back unchanged.
+ */
+async function poolRefusal(merchantId, action = 'assigning') {
+  const config = await getSystemConfig();
+  const pool = (config?.queueManagerPool || []).map(String);
+  if (pool.length === 0) {
+    return {
+      status: 400,
+      message: `No merchant pool configured. Set one via PUT /api/admin/queue/merchant-pool (any number, 1+) before ${action} manually.`,
+    };
+  }
+  if (!pool.includes(String(merchantId))) {
+    return {
+      status: 400,
+      message: `This merchant is not in the queue manager pool. Manual ${action === 'reassigning' ? 'reassignment' : 'assignment'} is restricted to pooled merchants.`,
+    };
+  }
+  return null;
+}
+
+/**
+ * The inventory guard, from the wallet.
+ *
+ * Returns null when the merchant can fund the order. This is a DECISION read:
+ * a merchant handed an order they cannot fund leaves a player waiting for a
+ * payment that will never arrive.
+ */
+async function inventoryRefusal(merchantId, tokenAmount) {
+  const balance = await getMerchantTokenBalance(merchantId);
+  if (balance >= tokenAmount) return null;
+  return {
+    status: 400,
+    message: `Merchant has insufficient inventory (${balance} < ${tokenAmount}). Top up merchant inventory first.`,
+    merchantBalance: balance,
+    required: tokenAmount,
+  };
+}
+
+/** The order-assigned fan-out, identical across all three assign paths. */
+function announceAssignment(order, merchant, expiresAt) {
+  emitMerchantUpdate(String(merchant.merchantId), 'new_order', {
+    orderId:     order.orderId,
+    orderStrId:  order.orderId,
+    type:        order.type,
+    tokenAmount: order.tokenAmount,
+    fiatAmount:  order.fiatAmount,
+    expiresAt,
+    server_ts:   Date.now(),
+  });
+  emitOrderUpdate(String(order.userId), 'order_assigned', {
+    orderId:          order.orderId,
+    _id:              order.orderId,
+    status:           'ASSIGNED',
+    merchantSnapshot: order.merchantSnapshot,  // user reads payment details from snapshot
+    expiresAt,
+    server_ts:        Date.now(),
+  });
+  emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'ASSIGNED' });
+}
+
+/** The manual-assignment window (Section 8). */
+const ASSIGN_WINDOW_MS = 10 * 60 * 1000;
 
 // NOTE: GET /payment-queue is intentionally not registered in the Merchant
 // domain. The canonical queue listing lives in the Payment domain
@@ -56,20 +136,16 @@ function buildSnapshot(merchantDoc, expiresAt) {
 // canViewTransactions permission. Keeping this route here shadowed the Payment
 // route because merchant.assignment.routes.js is mounted first.
 
-// ─── POST /api/admin/payment-orders/:id/assign ───────────────────────────────────
+// ─── POST /api/admin/payment-orders/:id/assign ───────────────────────────────
 // Dedicated assign endpoint. Creates merchantSnapshot + 10-min timer.
 // Spec Section 8 / 16.1 / Finding 5
 router.post('/payment-orders/:id/assign', authenticate, isAdmin, async (req, res) => {
   try {
-    const { id }         = req.params;
-    const { merchantId } = req.body;
+    const { merchantId } = req.body || {};
     if (!merchantId) return res.status(400).json({ success: false, message: 'merchantId is required' });
 
-    const { PaymentOrder } = getModels();
-    const Merchant     = mongoose.model('Merchant');
-
-    const order    = await db.orders.getOrderRecord(id);
-    if (!order)    return res.status(404).json({ success: false, message: 'Order not found' });
+    const order = await db.orders.getOrderRecord(req.params.id);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     if (order.status !== 'PENDING_QUEUE') {
       return res.status(400).json({ success: false, message: `Order is ${order.status}, cannot assign` });
     }
@@ -77,37 +153,20 @@ router.post('/payment-orders/:id/assign', authenticate, isAdmin, async (req, res
     const merchant = await db.merchants.getMerchant(merchantId);
     if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
 
-    // ── Queue Manager Pool guard: manual assignment is confined to the
-    // curated pool (see domains/configuration/systemConfig.model.js queueManagerPool). This keeps
-    // manual/forced assignment from competing with merchantScoring.service.js's
-    // full ACTIVE merchant set for automatic assignment. ─────────────────────
-    const poolConfig_pa   = await getSystemConfig();
-    const pool_pa         = (poolConfig_pa?.queueManagerPool || []).map(String);
-    if (pool_pa.length === 0) {
-      return res.status(400).json({ success: false, message: 'No merchant pool configured. Set one via PUT /api/admin/queue/merchant-pool (any number, 1+) before assigning manually.' });
-    }
-    if (!pool_pa.includes(String(merchant._id))) {
-      return res.status(400).json({ success: false, message: 'This merchant is not in the queue manager pool. Manual assignment is restricted to pooled merchants.' });
-    }
+    const pooled = await poolRefusal(merchant.merchantId, 'assigning');
+    if (pooled) return res.status(pooled.status).json({ success: false, ...pooled });
 
-    // ── Finding 5: Inventory check before assignment ───────────────────────
-    // Read from whichever store owns the merchant wallet, not from the mirror.
-    const balance_pa = await getMerchantTokenBalance(merchant._id);
-    if (balance_pa < order.tokenAmount) {
-      return res.status(400).json({
-        success: false,
-        message: `Merchant has insufficient inventory (${balance_pa} < ${order.tokenAmount}). Top up merchant inventory first.`,
-        merchantBalance: balance_pa,
-        required:        order.tokenAmount,
-      });
-    }
+    const funded = await inventoryRefusal(merchant.merchantId, order.tokenAmount);
+    if (funded) return res.status(funded.status).json({ success: false, ...funded });
 
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min (Section 8)
+    const expiresAt = new Date(Date.now() + ASSIGN_WINDOW_MS);
 
-    // ── Snapshot: freeze payment details at assignment time (Section 8.3) ─
-    const assigned = await assignOrder(order._id, {
+    // The transition is the gate: the expected state is in the UPDATE's WHERE,
+    // so this route and the automatic assigner reaching the same queued order
+    // produce one winner rather than a silent overwrite.
+    const assigned = await assignOrder(order.orderId, {
       set: {
-        merchantId:       merchant._id,
+        merchantId:       merchant.merchantId,
         merchantSnapshot: buildSnapshot(merchant, expiresAt),
         assignedAt:       new Date(),
         assignedBy:       req.user.userId,
@@ -115,7 +174,6 @@ router.post('/payment-orders/:id/assign', authenticate, isAdmin, async (req, res
       },
     });
     if (!assigned.ok || assigned.idempotent) {
-      // The automatic assigner reaches the same queued orders this route does.
       return res.status(409).json({
         success: false,
         message: `Order is ${assigned.status ?? 'missing'}, cannot assign`,
@@ -123,47 +181,24 @@ router.post('/payment-orders/:id/assign', authenticate, isAdmin, async (req, res
     }
     Object.assign(order, assigned.order);
 
-    // ── SSE notifications (Finding 3) ─────────────────────────────────────
-    emitMerchantUpdate(merchant._id.toString(), 'new_order', {
-      orderId:     order._id,
-      orderStrId:  order.orderId,
-      type:        order.type,
-      tokenAmount: order.tokenAmount,
-      fiatAmount:  order.fiatAmount,
-      expiresAt,
-      server_ts:   Date.now(),
-    });
-    emitOrderUpdate(order.userId.toString(), 'order_assigned', {
-      orderId:          order.orderId,
-      _id:              order._id,
-      status:           'ASSIGNED',
-      merchantSnapshot: order.merchantSnapshot,   // user reads payment details from snapshot
-      expiresAt,
-      server_ts:        Date.now(),
-    });
-    emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'ASSIGNED' });
-
+    announceAssignment(order, merchant, expiresAt);
     res.json({ success: true, message: 'Order assigned with merchant snapshot', order });
   } catch (error) {
-    console.error('POST /p2p-orders/:id/assign error:', error);
+    console.error('POST /payment-orders/:id/assign error:', error);
     res.status(500).json({ success: false, message: 'Failed to assign order' });
   }
 });
 
-// ─── POST /api/admin/payment-orders/:id/reassign ─────────────────────────────────
+// ─── POST /api/admin/payment-orders/:id/reassign ─────────────────────────────
 // Reassign to a different merchant. New snapshot, reset timer.
 // Spec Section 11.3 / 16.1
 router.post('/payment-orders/:id/reassign', authenticate, isAdminOrSubAdminOrQueueManager, async (req, res) => {
   try {
-    const { id }         = req.params;
-    const { merchantId } = req.body;
+    const { merchantId } = req.body || {};
     if (!merchantId) return res.status(400).json({ success: false, message: 'merchantId is required' });
 
-    const { PaymentOrder } = getModels();
-    const Merchant     = mongoose.model('Merchant');
-
-    const order    = await db.orders.getOrderRecord(id);
-    if (!order)    return res.status(404).json({ success: false, message: 'Order not found' });
+    const order = await db.orders.getOrderRecord(req.params.id);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     if (!['ASSIGNED', 'PROCESSING'].includes(order.status)) {
       return res.status(400).json({ success: false, message: `Order is ${order.status}, cannot reassign` });
     }
@@ -174,33 +209,18 @@ router.post('/payment-orders/:id/reassign', authenticate, isAdminOrSubAdminOrQue
       return res.status(400).json({ success: false, message: 'Merchant is not ACTIVE' });
     }
 
-    // ── Queue Manager Pool guard (same rule as /payment-orders/:id/assign) ──
-    const poolConfig_pr   = await getSystemConfig();
-    const pool_pr         = (poolConfig_pr?.queueManagerPool || []).map(String);
-    if (pool_pr.length === 0) {
-      return res.status(400).json({ success: false, message: 'No merchant pool configured. Set one via PUT /api/admin/queue/merchant-pool (any number, 1+) before reassigning manually.' });
-    }
-    if (!pool_pr.includes(String(merchant._id))) {
-      return res.status(400).json({ success: false, message: 'This merchant is not in the queue manager pool. Manual reassignment is restricted to pooled merchants.' });
-    }
+    const pooled = await poolRefusal(merchant.merchantId, 'reassigning');
+    if (pooled) return res.status(pooled.status).json({ success: false, ...pooled });
 
-    // ── Finding 5: Inventory check ─────────────────────────────────────────
-    const balance_pr = await getMerchantTokenBalance(merchant._id);
-    if (balance_pr < order.tokenAmount) {
-      return res.status(400).json({
-        success: false,
-        message: `Merchant has insufficient inventory (${balance_pr} < ${order.tokenAmount}).`,
-        merchantBalance: balance_pr,
-        required:        order.tokenAmount,
-      });
-    }
+    const funded = await inventoryRefusal(merchant.merchantId, order.tokenAmount);
+    if (funded) return res.status(funded.status).json({ success: false, ...funded });
 
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    const expiresAt = new Date(Date.now() + ASSIGN_WINDOW_MS);
 
-    // An assignee change, not a lifecycle move — see reassignOrder's comment.
-    const moved = await reassignOrder(order._id, {
+    // An assignee change, not a lifecycle move — the order stays ASSIGNED.
+    const moved = await reassignOrder(order.orderId, {
       set: {
-        merchantId:       merchant._id,
+        merchantId:       merchant.merchantId,
         merchantSnapshot: buildSnapshot(merchant, expiresAt),   // overwrite old snapshot
         assignedAt:       new Date(),
         assignedBy:       req.user.userId,
@@ -212,24 +232,13 @@ router.post('/payment-orders/:id/reassign', authenticate, isAdminOrSubAdminOrQue
     }
     Object.assign(order, moved.order);
 
-    emitMerchantUpdate(merchant._id.toString(), 'new_order', {
-      orderId: order._id, orderStrId: order.orderId,
-      type: order.type, tokenAmount: order.tokenAmount, fiatAmount: order.fiatAmount,
-      expiresAt, server_ts: Date.now(),
-    });
-    emitOrderUpdate(order.userId.toString(), 'order_assigned', {
-      orderId: order.orderId, _id: order._id, status: 'ASSIGNED',
-      merchantSnapshot: order.merchantSnapshot, expiresAt, server_ts: Date.now(),
-    });
-    emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'ASSIGNED' });
-
+    announceAssignment(order, merchant, expiresAt);
     res.json({ success: true, message: 'Order reassigned with new merchant snapshot', order });
   } catch (error) {
-    console.error('POST /p2p-orders/:id/reassign error:', error);
+    console.error('POST /payment-orders/:id/reassign error:', error);
     res.status(500).json({ success: false, message: 'Failed to reassign order' });
   }
 });
-
 
 // NOTE: POST /payment-queue/:orderId/assign was REMOVED here (BBEPS Phase 0
 // Risk A / SD-002 "Delete Before Rewrite"). It was a byte-for-byte functional
@@ -242,12 +251,11 @@ router.post('/payment-orders/:id/reassign', authenticate, isAdminOrSubAdminOrQue
 // /queue/assign/:orderId instead — both are exercised by the live frontend
 // and both now enforce the queue manager merchant pool.
 // ─── GET /api/admin/queue/available-merchants ─────────────────────────────────
-// FIX (Queue Manager Pool redesign): candidates now come from the curated
-// queueManagerPool (domains/configuration/systemConfig.model.js), not a full search of every ACTIVE
-// merchant. This is what actually stops manual/forced assignment from
-// competing with merchantScoring.service.js's full candidate set — the pool
-// membership is enforced again server-side in every assign/reassign endpoint
-// below, so this filter isn't just cosmetic.
+// Pool members a queue manager may assign to RIGHT NOW. Candidates come from
+// the curated queueManagerPool, not a full search of every ACTIVE merchant —
+// which is what stops manual assignment competing with the automatic
+// assigner's candidate set. Pool membership is re-enforced server-side in every
+// assign endpoint above, so this filter is not merely cosmetic.
 router.get('/queue/available-merchants', authenticate, isAdminOrSubAdminOrQueueManager, async (req, res) => {
   if (!req.user.isQueueManager && !req.user.isAdmin) {
     return res.status(403).json({ success: false, message: 'Queue manager access required' });
@@ -255,11 +263,9 @@ router.get('/queue/available-merchants', authenticate, isAdminOrSubAdminOrQueueM
   try {
     const { type, orderAmount } = req.query;
     const amount = parseFloat(orderAmount) || 0;
-    const Merchant = mongoose.model('Merchant');
 
-    const poolConfig = await getSystemConfig();
-    const poolIds = poolConfig?.queueManagerPool || [];
-
+    const config = await getSystemConfig();
+    const poolIds = config?.queueManagerPool || [];
     if (poolIds.length === 0) {
       return res.json({
         success: true,
@@ -269,32 +275,32 @@ router.get('/queue/available-merchants', authenticate, isAdminOrSubAdminOrQueueM
       });
     }
 
-    const merchantFilter = { _id: { $in: poolIds }, status: 'ACTIVE', isOnline: true };
-    if (type === 'DEPOSIT')    merchantFilter.acceptsDeposits    = true;
-    if (type === 'WITHDRAWAL') merchantFilter.acceptsWithdrawals = true;
-    const merchantDocs = await Merchant.find(merchantFilter).lean();
+    // Approved, active, online and accepting this direction — decided by the
+    // row, in one query, rather than by four `!== false` checks over a wider
+    // set fetched first.
+    const merchants = await db.merchants.getAssignablePoolMerchants(poolIds, { direction: type });
+
     // The token figure comes from the WALLET, in one batched read, because this
     // list is what a queue manager assigns from — the number they see has to be
-    // the number the transfer will find. A merchant with no wallet row reports
-    // -1 paise below and is excluded rather than shown as empty: no row means
-    // the money system has never seen them.
-    const availablePaise = await getAvailablePaiseFor(merchantDocs.map((m) => m._id));
-    const merchants = merchantDocs
+    // the number the transfer will find.
+    const availablePaise = await getAvailablePaiseFor(merchants.map((m) => m.merchantId));
+
+    const rows = merchants
       .map((m) => ({
-        _id:               m._id,
-        userId:            m.userId,
-        name:              m.name || m.username || '',
-        mobile:            m.mobile || '',
-        status:            m.status,
-        isOnline:          m.isOnline,
-        acceptsDeposits:   m.acceptsDeposits   !== false,
-        acceptsWithdrawals:m.acceptsWithdrawals !== false,
-        tokenBalance:      paiseToRupees(availablePaise.get(String(m._id)) ?? 0),
-        // The same figure, under a name that says where it came from: the
-        // filter below gates an assignment, and a reader should not have to
-        // trace thirty lines back to see that it reads the wallet.
-        walletAvailableTokens: availablePaise.has(String(m._id))
-          ? paiseToRupees(availablePaise.get(String(m._id)))
+        _id:                m.merchantId,
+        userId:             m.userId,
+        name:               m.name || m.username || '',
+        mobile:             m.mobile || '',
+        status:             m.status,
+        isOnline:           m.isOnline,
+        acceptsDeposits:    m.acceptsDeposits,
+        acceptsWithdrawals: m.acceptsWithdrawals,
+        // The same figure twice, the second under a name that says where it
+        // came from: the filter below gates an assignment, and a reader should
+        // not have to trace back to see that it reads the wallet.
+        tokenBalance: paiseToRupees(availablePaise.get(String(m.merchantId)) ?? 0),
+        walletAvailableTokens: availablePaise.has(String(m.merchantId))
+          ? paiseToRupees(availablePaise.get(String(m.merchantId)))
           : null,
         merchantStats: {
           monthlyProcessed:     m.merchantStats?.monthlyProcessed     || 0,
@@ -302,53 +308,65 @@ router.get('/queue/available-merchants', authenticate, isAdminOrSubAdminOrQueueM
         },
         limits: { minOrder: m.minOrder || 0, maxOrder: m.maxOrder || 50000 },
       }))
-      .filter(m => {
-        if (amount > 0) {
-          // Excluded, not merely outranked: a merchant the money system has
-          // never seen must not be offered for an assignment. `null` here is
-          // "no wallet row", which is a different thing from a zero balance.
-          if (m.walletAvailableTokens === null) return false;
-          if (m.walletAvailableTokens < amount) return false;  // Finding 5
-          if (amount > m.limits.maxOrder)      return false;
-          if (m.limits.minOrder > 0 && amount < m.limits.minOrder) return false;
-        }
+      .filter((m) => {
+        if (amount <= 0) return true;
+        // Excluded, not merely outranked: a merchant the money system has never
+        // seen must not be offered for an assignment. `null` here is "no wallet
+        // row", which is a different thing from a zero balance.
+        if (m.walletAvailableTokens === null) return false;
+        if (m.walletAvailableTokens < amount) return false;
+        if (amount > m.limits.maxOrder) return false;
+        if (m.limits.minOrder > 0 && amount < m.limits.minOrder) return false;
         return true;
       })
       .sort((a, b) => b.walletAvailableTokens - a.walletAvailableTokens);
 
-    res.json({ success: true, merchants, isPoolConfigured: true, poolSize: poolIds.length });
+    res.json({ success: true, merchants: rows, isPoolConfigured: true, poolSize: poolIds.length });
   } catch (error) {
-    console.error('Get available merchants error:', error);
+    console.error('GET /queue/available-merchants error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch available merchants' });
   }
 });
 
 // ─── GET /api/admin/queue/merchant-pool ───────────────────────────────────────
-// Returns the full curated pool (including offline/ineligible members, unlike
-// available-merchants above) so the settings UI can show and edit it.
+// The full curated pool — including offline and currently-ineligible members,
+// unlike available-merchants above — so the settings UI can show and edit it.
 router.get('/queue/merchant-pool', authenticate, isAdminOrSubAdminOrQueueManager, async (req, res) => {
   try {
-    const Merchant = mongoose.model('Merchant');
     const config = await getSystemConfig();
     const poolIds = config?.queueManagerPool || [];
+    const merchants = await db.merchants.getPoolMerchants(poolIds);
 
-    const merchants = poolIds.length
-      ? await Merchant.find({ _id: { $in: poolIds } })
-          .select('name username mobile status isOnline acceptsDeposits acceptsWithdrawals tokenBalance merchantStats')
-          .lean()
-      : [];
+    // Balances from the wallet, so the settings screen and the assignment
+    // screen quote the same number. They read from different places once, and
+    // an admin curating the pool saw a figure no transfer would have found.
+    const availablePaise = await getAvailablePaiseFor(merchants.map((m) => m.merchantId));
 
     res.json({
       success: true,
-      pool: merchants,
+      pool: merchants.map((m) => ({
+        _id: m.merchantId,
+        name: m.name || m.username || '',
+        username: m.username,
+        mobile: m.mobile,
+        status: m.status,
+        isOnline: m.isOnline,
+        acceptsDeposits: m.acceptsDeposits,
+        acceptsWithdrawals: m.acceptsWithdrawals,
+        tokenBalance: paiseToRupees(availablePaise.get(String(m.merchantId)) ?? 0),
+        totalOrdersProcessed: m.merchantStats?.totalOrdersProcessed || 0,
+      })),
       poolSize: merchants.length,
+      // A pooled merchant deleted since is reported, not silently dropped: the
+      // settings list would otherwise shrink with no explanation.
+      missing: poolIds.length - merchants.length,
       isConfigured: poolIds.length > 0,
       message: poolIds.length === 0
         ? 'No merchant pool configured yet. Set one with PUT /api/admin/queue/merchant-pool (1 or more merchant IDs).'
         : undefined,
     });
   } catch (error) {
-    console.error('Get merchant pool error:', error);
+    console.error('GET /queue/merchant-pool error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch merchant pool' });
   }
 });
@@ -369,14 +387,19 @@ router.put('/queue/merchant-pool', authenticate, isAdminOrSubAdminOrQueueManager
       return res.status(400).json({ success: false, message: 'Duplicate merchant IDs in pool.' });
     }
 
-    const Merchant = mongoose.model('Merchant');
-
-    const foundMerchants = await Merchant.find({ _id: { $in: uniqueIds } })
-      .select('name username status merchantApprovalStatus').lean();
+    const foundMerchants = await db.merchants.getPoolMerchants(uniqueIds);
     if (foundMerchants.length !== uniqueIds.length) {
-      return res.status(400).json({ success: false, message: 'One or more merchant IDs do not exist.' });
+      // Name the ones that are missing. "One or more IDs do not exist" sends an
+      // admin to compare two lists by hand.
+      const found = new Set(foundMerchants.map((m) => String(m.merchantId)));
+      return res.status(400).json({
+        success: false,
+        message: `These merchant IDs do not exist: ${uniqueIds.filter((id) => !found.has(id)).join(', ')}`,
+      });
     }
-    const notEligible = foundMerchants.filter(m => m.status !== 'ACTIVE' || m.merchantApprovalStatus !== 'APPROVED');
+    const notEligible = foundMerchants.filter(
+      (m) => m.status !== 'ACTIVE' || m.merchantApprovalStatus !== 'APPROVED',
+    );
     if (notEligible.length) {
       return res.status(400).json({
         success: false,
@@ -423,21 +446,25 @@ router.put('/queue/merchant-pool', authenticate, isAdminOrSubAdminOrQueueManager
 // is isAdmin-only and returns broader account data not needed here).
 router.get('/queue/eligible-merchants', authenticate, isAdminOrSubAdminOrQueueManager, async (req, res) => {
   try {
-    const Merchant = mongoose.model('Merchant');
-    const merchantDocs = await Merchant.find({ status: 'ACTIVE', merchantApprovalStatus: 'APPROVED' })
-      .select('name username mobile isOnline tokenBalance merchantStats')
-      .lean();
-    const merchants = merchantDocs.map(m => ({
-      _id: m._id,
-      name: m.name || m.username || '',
-      mobile: m.mobile || '',
-      isOnline: m.isOnline || false,
-      tokenBalance: m.tokenBalance || 0,
-      totalOrdersProcessed: m.merchantStats?.totalOrdersProcessed || 0,
-    }));
-    res.json({ success: true, merchants });
+    const merchants = await db.merchants.listPoolCandidates();
+    // The balance comes from the WALLET here too. It read a stored
+    // `tokenBalance` field, so an admin curating the pool was shown a figure
+    // that no transfer would have found — and picked their pool from it.
+    const availablePaise = await getAvailablePaiseFor(merchants.map((m) => m.merchantId));
+
+    res.json({
+      success: true,
+      merchants: merchants.map((m) => ({
+        _id: m.merchantId,
+        name: m.name || m.username || '',
+        mobile: m.mobile || '',
+        isOnline: m.isOnline || false,
+        tokenBalance: paiseToRupees(availablePaise.get(String(m.merchantId)) ?? 0),
+        totalOrdersProcessed: m.merchantStats?.totalOrdersProcessed || 0,
+      })),
+    });
   } catch (error) {
-    console.error('Get eligible merchants error:', error);
+    console.error('GET /queue/eligible-merchants error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch eligible merchants' });
   }
 });
@@ -448,24 +475,22 @@ router.get('/queue/pending-orders', authenticate, isAdminOrSubAdminOrQueueManage
     return res.status(403).json({ success: false, message: 'Queue manager access required' });
   }
   try {
-    const PaymentOrder = mongoose.model('PaymentOrder');
-    const rawOrders = await PaymentOrder.find({ status: 'PENDING_QUEUE' })
-      .populate('userId', 'username mobile kycStatus bankDetails')
-      .sort({ createdAt: 1 })
-      .limit(50)
-      .lean();
-
-    const orders = rawOrders.map((o) => ({
-      ...o,
-      userName:      o.userId?.username || o.userName || 'Unknown',
-      userMobile:    o.userId?.mobile   || o.userMobile || '',
-      userKycStatus: o.userId?.kycStatus || 'UNKNOWN',
-      userId:        o.userId?._id     || o.userId,
-    }));
-
-    res.json({ success: true, orders });
+    // One query with the player joined, not a populate per page. A player who
+    // has since been deleted comes back with null columns rather than a `null`
+    // reference the mapper turned into the string 'Unknown' — a closed account
+    // and a data problem looked identical.
+    const orders = await db.orders.queuePendingOrders({ limit: 50 });
+    res.json({
+      success: true,
+      orders: orders.map((o) => ({
+        ...o,
+        userName:      o.userName ?? 'Deleted account',
+        userMobile:    o.userMobile ?? '',
+        userKycStatus: o.userKycStatus ?? 'UNKNOWN',
+      })),
+    });
   } catch (error) {
-    console.error('Get pending orders error:', error);
+    console.error('GET /queue/pending-orders error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch pending orders' });
   }
 });
@@ -476,83 +501,66 @@ router.post('/queue/assign/:orderId', authenticate, isAdminOrSubAdminOrQueueMana
     return res.status(403).json({ success: false, message: 'Queue manager access required' });
   }
   try {
-    const { orderId } = req.params;
-    const { merchantId } = req.body;
-    const PaymentOrder  = mongoose.model('PaymentOrder');
-    const Merchant  = mongoose.model('Merchant');
+    const { merchantId } = req.body || {};
+    if (!merchantId) return res.status(400).json({ success: false, message: 'merchantId is required' });
 
-    const order = await db.orders.getOrderRecord(orderId);
+    const order = await db.orders.getOrderRecord(req.params.orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     if (order.status !== 'PENDING_QUEUE') {
       return res.status(400).json({ success: false, message: `Order status is ${order.status}, cannot assign` });
     }
 
-    const merchantDoc = await db.merchants.getMerchant(merchantId);
-    if (!merchantDoc || merchantDoc.merchantApprovalStatus !== 'APPROVED') {
+    const merchant = await db.merchants.getMerchant(merchantId);
+    if (!merchant || merchant.merchantApprovalStatus !== 'APPROVED') {
       return res.status(400).json({ success: false, message: 'Invalid or unapproved merchant' });
     }
 
-    // ── Queue Manager Pool guard (same rule as payment-orders assign/reassign) ─
-    const poolConfig_qa   = await getSystemConfig();
-    const pool_qa         = (poolConfig_qa?.queueManagerPool || []).map(String);
-    if (pool_qa.length === 0) {
-      return res.status(400).json({ success: false, message: 'No merchant pool configured. Set one via PUT /api/admin/queue/merchant-pool (any number, 1+) before assigning manually.' });
-    }
-    if (!pool_qa.includes(String(merchantDoc._id))) {
-      return res.status(400).json({ success: false, message: 'This merchant is not in the queue manager pool. Manual assignment is restricted to pooled merchants.' });
-    }
+    const pooled = await poolRefusal(merchant.merchantId, 'assigning');
+    if (pooled) return res.status(pooled.status).json({ success: false, ...pooled });
 
-    // Finding 5: inventory check
-    const balance_qa = await getMerchantTokenBalance(merchantDoc._id);
-    if (balance_qa < order.tokenAmount) {
-      return res.status(400).json({
-        success: false,
-        message: `Merchant inventory insufficient (${balance_qa} tokens, need ${order.tokenAmount}).`,
-      });
-    }
+    const funded = await inventoryRefusal(merchant.merchantId, order.tokenAmount);
+    if (funded) return res.status(funded.status).json({ success: false, ...funded });
 
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    const expiresAt = new Date(Date.now() + ASSIGN_WINDOW_MS);
 
-    const queueAssigned = await assignOrder(order._id, {
+    const assigned = await assignOrder(order.orderId, {
       set: {
-        merchantId:       merchantDoc._id,
-        merchantSnapshot: buildSnapshot(merchantDoc, expiresAt),
+        merchantId:       merchant.merchantId,
+        merchantSnapshot: buildSnapshot(merchant, expiresAt),
         assignedAt:       new Date(),
         assignedBy:       req.user.userId,
         expiresAt,
       },
     });
-    if (!queueAssigned.ok || queueAssigned.idempotent) {
+    if (!assigned.ok || assigned.idempotent) {
       return res.status(409).json({
         success: false,
-        message: `Order status is ${queueAssigned.status ?? 'missing'}, cannot assign`,
+        message: `Order status is ${assigned.status ?? 'missing'}, cannot assign`,
       });
     }
-    Object.assign(order, queueAssigned.order);
+    Object.assign(order, assigned.order);
 
-    if (!merchantDoc.merchantStats) merchantDoc.merchantStats = {};
-    merchantDoc.merchantStats.totalOrdersProcessed = (merchantDoc.merchantStats.totalOrdersProcessed || 0) + 1;
-    await merchantDoc.save();
+    // No `totalOrdersProcessed` increment here. Two things were wrong with it:
+    // it counted an order as PROCESSED at the moment it was handed out, which
+    // is not what the word means and inflated every merchant's throughput; and
+    // it did it by calling `.save()` on a plain object, so the handler threw a
+    // TypeError AFTER the order had already been assigned — the assignment
+    // stuck and the queue manager saw a 500. The counter moves when the order
+    // completes, in `recordCompletedOrder`, in one statement.
 
-    emitMerchantUpdate(merchantDoc._id.toString(), 'new_order', {
-      orderId: order._id, orderStrId: order.orderId,
-      type: order.type, tokenAmount: order.tokenAmount, fiatAmount: order.fiatAmount,
-      expiresAt, server_ts: Date.now(),
-    });
-    emitOrderUpdate(order.userId.toString(), 'order_assigned', {
-      orderId: order.orderId, _id: order._id, status: 'ASSIGNED',
-      merchantSnapshot: order.merchantSnapshot, expiresAt, server_ts: Date.now(),
-    });
-    emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'ASSIGNED' });
+    announceAssignment(order, merchant, expiresAt);
 
     res.json({
       success: true,
       message: 'Order assigned successfully',
-      order: await db.orders.getOrderRecord(orderId)
-        .populate('merchantId', 'username mobile'),
+      // Re-read, so the response describes the row that exists. This called
+      // `.populate()` on the returned promise — another TypeError, on the line
+      // that was meant to enrich the response.
+      order: await db.orders.getOrderRecord(order.orderId),
+      merchant: { _id: merchant.merchantId, ref: merchantDisplayRef(merchant) },
     });
   } catch (error) {
-    console.error('Assign order error:', error);
+    console.error('POST /queue/assign/:orderId error:', error);
     res.status(500).json({ success: false, message: 'Failed to assign order' });
   }
 });
@@ -560,26 +568,35 @@ router.post('/queue/assign/:orderId', authenticate, isAdminOrSubAdminOrQueueMana
 // ─── PUT /api/admin/merchants/:merchantId/scoring — admin sets maxConcurrentOrders ──
 router.put('/merchants/:merchantId/scoring', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
-    const { maxConcurrentOrders, maxConcurrentDepositOrders, maxConcurrentWithdrawalOrders } = req.body;
-    for (const [key, value] of Object.entries({ maxConcurrentOrders, maxConcurrentDepositOrders, maxConcurrentWithdrawalOrders })) {
+    const { maxConcurrentOrders, maxConcurrentDepositOrders, maxConcurrentWithdrawalOrders } = req.body || {};
+    const patch = {};
+    for (const [key, value] of Object.entries({
+      maxConcurrentOrders, maxConcurrentDepositOrders, maxConcurrentWithdrawalOrders,
+    })) {
       if (value === undefined || value === null || value === '') continue;
       const val = Number(value);
-      if (isNaN(val) || val < 1 || val > 10) return res.status(400).json({ success: false, message: `${key} must be 1–10` });
+      if (!Number.isInteger(val) || val < 1 || val > 10) {
+        return res.status(400).json({ success: false, message: `${key} must be a whole number 1–10` });
+      }
+      patch[key] = val;
     }
-    const Merchant = mongoose.model('Merchant');
-    const update = {};
-    if (maxConcurrentOrders !== undefined) update.maxConcurrentOrders = Number(maxConcurrentOrders);
-    if (maxConcurrentDepositOrders !== undefined) update.maxConcurrentDepositOrders = Number(maxConcurrentDepositOrders);
-    if (maxConcurrentWithdrawalOrders !== undefined) update.maxConcurrentWithdrawalOrders = Number(maxConcurrentWithdrawalOrders);
+    if (!Object.keys(patch).length) {
+      return res.status(400).json({ success: false, message: 'Nothing to update.' });
+    }
 
-    const merchant = await Merchant.findByIdAndUpdate(
-      req.params.merchantId, { $set: update }, { new: true }
-    );
+    const merchant = await db.merchants.updateMerchant(req.params.merchantId, patch);
     if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
+
+    // These caps decide how many orders a merchant may hold at once, so a
+    // change to them is an operational decision worth a record.
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, action: 'UPDATE_MERCHANT_CONCURRENCY', category: 'MERCHANT',
+      targetType: 'Merchant', targetId: merchant.merchantId, details: patch,
+    });
 
     res.json({ success: true, merchant });
   } catch (error) {
-    console.error('PUT /admin/merchants/:merchantId/scoring error:', error);
+    console.error('PUT /merchants/:merchantId/scoring error:', error);
     res.status(500).json({ success: false, message: 'Failed to update merchant scoring settings' });
   }
 });

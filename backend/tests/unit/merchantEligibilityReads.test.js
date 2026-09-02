@@ -112,14 +112,31 @@ describe('the assignment routes no longer read the mirror', () => {
 
   it('routes every gate through the authority reader', () => {
     expect(source).toMatch(/import \{ getMerchantTokenBalance \}/);
-    // Three gates: manual assign, manual reassign, queue-manager assign.
-    expect([...source.matchAll(/await getMerchantTokenBalance\(/g)]).toHaveLength(3);
+    // ── Counted differently, on purpose ──────────────────────────────────
+    // This asserted THREE calls, one per assign path, because the guard was
+    // copy-pasted into each handler. Three copies of a rule that decides which
+    // merchant is handed a player's deposit is three chances for one to drift,
+    // and a test that counts the copies makes consolidating them look like a
+    // regression. There is one `inventoryRefusal` helper now, so what is
+    // asserted is that it reads the wallet and that every assign path calls it.
+    expect(source).toMatch(/async function inventoryRefusal\([\s\S]*?await getMerchantTokenBalance\(/);
+
+    // One call site, inside the helper — not a second gate that skipped it.
+    expect([...source.matchAll(/await getMerchantTokenBalance\(/g)]).toHaveLength(1);
+
+    // All three paths still gate. A new assign endpoint that forgets to is the
+    // failure this protects against.
+    const assignHandlers = [...source.matchAll(/router\.post\('(\/payment-orders\/:id\/(?:re)?assign|\/queue\/assign\/:orderId)'/g)];
+    expect(assignHandlers).toHaveLength(3);
+    expect([...source.matchAll(/await inventoryRefusal\(/g)]).toHaveLength(3);
+    // …and each is confined to the curated pool.
+    expect([...source.matchAll(/await poolRefusal\(/g)]).toHaveLength(3);
   });
 
   it('still reports the balance it actually gated on', () => {
-    // The refusal messages quote the number. Quoting the mirror while gating on
-    // Postgres would make an operator chase a discrepancy that is not there.
-    expect(source).toMatch(/merchantBalance: balance_pa/);
-    expect(source).toMatch(/merchantBalance: balance_pr/);
+    // The refusal quotes the number it refused against, and it comes from the
+    // same read that decided — quoting anything else makes an operator chase a
+    // discrepancy that is not there.
+    expect(source).toMatch(/const balance = await getMerchantTokenBalance\(merchantId\);[\s\S]*?merchantBalance: balance,/);
   });
 });

@@ -292,6 +292,76 @@ export async function listAssignableMerchants({
 }
 
 /**
+ * The curated queue-manager pool, by id, in the order given.
+ *
+ * `IN (…)` returns rows in whatever order the planner likes, and the settings
+ * screen shows the pool as an ordered list an admin arranged. `ORDER BY
+ * array_position` preserves it.
+ *
+ * A missing id comes back as nothing rather than as an error, and the caller
+ * compares lengths — a merchant deleted after being pooled should be reported
+ * as gone, not crash the settings page.
+ */
+export async function getPoolMerchants(merchantIds = []) {
+  const ids = [...new Set((merchantIds || []).filter(Boolean).map(String))];
+  if (!ids.length) return [];
+  const { rows } = await pgQuery(
+    `SELECT ${COLUMNS} FROM merchants
+      WHERE merchant_id = ANY($1::text[])
+      ORDER BY array_position($1::text[], merchant_id)`,
+    [ids], 'merchant_pool_get',
+  );
+  return rows.map(toMerchant);
+}
+
+/**
+ * Pool members a queue manager may actually assign to, right now.
+ *
+ * The eligibility the ROW can decide — approved, active, online, and accepting
+ * this direction — is in the WHERE clause. What it deliberately does NOT decide
+ * is the token balance: that lives in `merchant_wallets` and the caller reads it
+ * there. A balance predicate written into this query would be the same defect as
+ * the stored `tokenBalance` filter it replaced, one layer down.
+ */
+export async function getAssignablePoolMerchants(merchantIds = [], { direction = null } = {}) {
+  const ids = [...new Set((merchantIds || []).filter(Boolean).map(String))];
+  if (!ids.length) return [];
+  const clauses = [
+    'merchant_id = ANY($1::text[])',
+    "status = 'ACTIVE'",
+    "merchant_approval_status = 'APPROVED'",
+    'is_online',
+  ];
+  if (direction === 'DEPOSIT') clauses.push('accepts_deposits');
+  if (direction === 'WITHDRAWAL') clauses.push('accepts_withdrawals');
+  const { rows } = await pgQuery(
+    `SELECT ${COLUMNS} FROM merchants WHERE ${clauses.join(' AND ')}
+      ORDER BY array_position($1::text[], merchant_id)`,
+    [ids], 'merchant_pool_assignable',
+  );
+  return rows.map(toMerchant);
+}
+
+/**
+ * Every merchant eligible to BE pooled — the list an admin picks the pool from.
+ *
+ * Distinct from `getAssignablePoolMerchants`: an offline merchant is a valid
+ * pool member (they come back online), but not a valid assignment target right
+ * now. Conflating the two either shrinks the pool every night or hands orders
+ * to merchants who cannot take them.
+ */
+export async function listPoolCandidates({ limit = 500 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT ${COLUMNS} FROM merchants
+      WHERE status = 'ACTIVE' AND merchant_approval_status = 'APPROVED'
+      ORDER BY name
+      LIMIT ${Math.min(Math.max(Number(limit) || 500, 1), 2000)}`,
+    [], 'merchant_pool_candidates',
+  );
+  return rows.map(toMerchant);
+}
+
+/**
  * The admin list. Keyset pagination on `(created_at, merchant_id)`.
  *
  * Not OFFSET: a merchant created while an admin pages through the list shifts

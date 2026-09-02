@@ -401,6 +401,40 @@ export async function findOrders({
 }
 
 /**
+ * The queue manager's worklist: orders waiting for a merchant, oldest first,
+ * with the player's identity attached.
+ *
+ * ── One query, not one per row ──────────────────────────────────────────────
+ * The document version used `.populate('userId', …)`, which is a second round
+ * trip per page and silently yields `null` for a player who has since been
+ * deleted — the mapping then fell back to the string 'Unknown', so an order
+ * belonging to a removed account looked like a data problem rather than a
+ * closed account. A LEFT JOIN says which it is: the columns come back null and
+ * the caller can tell the difference.
+ *
+ * Oldest first, because the queue manager works a queue and the order that has
+ * waited longest is the one a player is complaining about.
+ */
+export async function queuePendingOrders({ limit = 50 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT o.*, u.username, u.mobile, u.kyc_status, u.bank_details
+       FROM order_states o
+       LEFT JOIN users u ON u.user_id = o.user_id
+      WHERE o.state = 'PENDING_QUEUE'
+      ORDER BY o.created_at ASC
+      LIMIT ${Math.min(Math.max(Number(limit) || 50, 1), 200)}`,
+    [], 'order_queue_pending',
+  );
+  return rows.map((r) => ({
+    ...toOrder(r),
+    userName: r.username ?? null,
+    userMobile: r.mobile ?? null,
+    userKycStatus: r.kyc_status ?? null,
+    userBankDetails: r.bank_details ?? null,
+  }));
+}
+
+/**
  * One order, scoped to the merchant who holds it.
  *
  * The ownership check is in the WHERE clause, not a comparison after the fetch.
