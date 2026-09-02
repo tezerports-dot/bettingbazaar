@@ -75,6 +75,26 @@ export async function listChatMessages({ limit = 50, before = null } = {}) {
   return rows.map(toMessage);
 }
 
+/**
+ * What a MODERATOR sees: everything, including deleted and rejected messages.
+ *
+ * Deliberately not `listChatMessages` with a flag. That function's filters are
+ * correct for a player — approved, not deleted, not expired — and loosening
+ * them with an option is how a moderation-only view ends up one boolean away
+ * from the public feed. A moderator reviewing a report needs the deleted
+ * message in front of them; a player must never see it.
+ */
+export async function moderationFeed({ limit = 60, includeDeleted = false } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT * FROM public_chat_messages
+      ${includeDeleted ? '' : 'WHERE NOT is_deleted'}
+      ORDER BY created_at DESC, id DESC
+      LIMIT ${Math.min(Math.max(Number(limit) || 60, 1), 200)}`,
+    [], 'chat_moderation_feed',
+  );
+  return rows.map(toMessage);
+}
+
 /** The moderation queue. */
 export async function listPendingChatMessages({ limit = 100 } = {}) {
   const { rows } = await pgQuery(
@@ -254,6 +274,106 @@ export async function listTickets({ userId = null, status = null, assignedTo = n
     params, 'ticket_list',
   );
   return rows.map(toTicket);
+}
+
+/**
+ * The support desk: tickets with the player attached, and the open count.
+ *
+ * ── One query, and the count agrees with the list ───────────────────────────
+ * The admin route ran `find().populate()` for the tickets and a separate
+ * `countDocuments` for the open badge. Two reads of a table that accepts a
+ * ticket between them, so the badge and the list disagreed — and the populate
+ * yielded null for a since-deleted player, rendered as a blank name that reads
+ * as missing data rather than as a closed account.
+ *
+ * Ordered by last activity, which is the order an agent works: a ticket
+ * somebody replied to two minutes ago needs answering before one that has sat
+ * quiet since Tuesday.
+ */
+export async function supportDesk({ status = null, limit = 50 } = {}) {
+  const params = []; const where = [];
+  if (status) { params.push(String(status)); where.push(`t.status = $${params.length}`); }
+
+  const { rows } = await pgQuery(
+    `SELECT t.*, u.username, u.mobile,
+            COUNT(*) FILTER (WHERE t.status IN ('OPEN','ASSIGNED','WAITING_USER')) OVER () AS open_count
+       FROM support_tickets t
+       LEFT JOIN users u ON u.user_id = t.user_id
+      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      ORDER BY COALESCE(t.last_reply_at, t.created_at) DESC
+      LIMIT ${Math.min(Math.max(Number(limit) || 50, 1), 200)}`,
+    params, 'ticket_desk',
+  );
+
+  return {
+    // The open count is over the FILTERED set, so a status filter narrows both
+    // together. An "open: 41" badge above a filtered list of three closed
+    // tickets is a number nobody can act on.
+    openCount: rows.length ? Number(rows[0].open_count) : 0,
+    tickets: rows.map((r) => ({
+      ...toTicket(r),
+      user: r.username === null ? null : { username: r.username, mobile: r.mobile },
+    })),
+  };
+}
+
+/** One ticket with the player attached, for the thread view. */
+export async function getTicketWithUser(ticketId) {
+  const { rows } = await pgQuery(
+    `SELECT t.*, u.username, u.mobile
+       FROM support_tickets t
+       LEFT JOIN users u ON u.user_id = t.user_id
+      WHERE t.ticket_id = $1`,
+    [String(ticketId)], 'ticket_with_user',
+  );
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    ...toTicket(r),
+    user: r.username === null ? null : { username: r.username, mobile: r.mobile },
+  };
+}
+
+/**
+ * An agent's reply, and the ticket state that follows from it, together.
+ *
+ * ── Four writes became one ──────────────────────────────────────────────────
+ * The route inserted the message, then set `lastReplyAt`, then claimed the
+ * ticket if unassigned, then moved OPEN to ASSIGNED, then saved. Two agents
+ * replying at once both read "unassigned" and both claimed it, and a crash
+ * between the insert and the save left a reply the player could see on a ticket
+ * that still looked untouched.
+ *
+ * `COALESCE(assigned_to, $2)` is the claim: whoever gets there first keeps it,
+ * decided by the database rather than by a read the other agent also passed.
+ */
+export async function agentReply({ ticketId, agentId, content }) {
+  if (!agentId) throw new Error('agentReply requires an agentId');
+  if (!String(content ?? '').trim()) throw new Error('agentReply requires content');
+
+  const { rows } = await pgQuery(
+    `WITH inserted AS (
+       INSERT INTO support_messages (ticket_id, sender_id, sender_type, content)
+       SELECT $1, $2, 'AGENT', $3
+        WHERE EXISTS (SELECT 1 FROM support_tickets WHERE ticket_id = $1)
+       RETURNING *
+     ), touched AS (
+       UPDATE support_tickets SET
+         last_reply_at = now(),
+         assigned_to = COALESCE(assigned_to, $2),
+         assigned_at = CASE WHEN assigned_to IS NULL THEN now() ELSE assigned_at END,
+         status = CASE WHEN status = 'OPEN' THEN 'ASSIGNED' ELSE status END
+        WHERE ticket_id = $1 AND EXISTS (SELECT 1 FROM inserted)
+        RETURNING *
+     )
+     SELECT (SELECT row_to_json(i) FROM inserted i) AS message,
+            (SELECT row_to_json(t) FROM touched t)  AS ticket`,
+    [String(ticketId), String(agentId), String(content).trim()], 'ticket_agent_reply',
+  );
+
+  const r = rows[0];
+  if (!r?.message) return { ok: false, reason: 'NOT_FOUND' };
+  return { ok: true, message: toSupportMessage(r.message), ticket: toTicket(r.ticket) };
 }
 
 /** The agent queue: open work, most urgent and oldest first. */
