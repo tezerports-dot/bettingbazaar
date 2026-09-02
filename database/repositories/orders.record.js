@@ -588,6 +588,29 @@ export async function getOrderWithParties(orderId) {
   };
 }
 
+/**
+ * Drop expired payment-proof images, keeping the orders they belong to.
+ *
+ * The proof is a high-volume screenshot; the ORDER is the financial record and
+ * is never deleted. Two columns are cleared, in one statement, so an order
+ * cannot end up with a cleared expiry and a proof still attached — which is a
+ * proof nothing will ever come back for.
+ *
+ * Returns how many were scrubbed. A retention sweep that cannot say what it did
+ * is one nobody notices has stopped running.
+ */
+export async function scrubExpiredProofs() {
+  const { rowCount } = await pgQuery(
+    `UPDATE order_states
+        SET proof_screenshot = NULL, proof_expires_at = NULL, updated_at = now()
+      WHERE proof_expires_at IS NOT NULL
+        AND proof_expires_at <= now()
+        AND proof_screenshot IS NOT NULL`,
+    [], 'orders_scrub_proofs',
+  );
+  return rowCount;
+}
+
 export async function findDueHolds({ limit = 200 } = {}) {
   const { rows } = await pgQuery(
     `SELECT * FROM order_states

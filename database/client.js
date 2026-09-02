@@ -174,6 +174,25 @@ export async function applySchema() {
   return true;
 }
 
+/**
+ * Is the money database answering?
+ *
+ * A real round trip, not a pool-state flag. `pool.totalCount > 0` says a socket
+ * exists, which is true of a database that has stopped answering queries — and
+ * a readiness probe that reports healthy through an outage is worse than no
+ * probe, because it keeps sending traffic to an instance that cannot serve it.
+ *
+ * Never throws: a probe that raises turns a dependency check into a crash.
+ */
+export async function isDatabaseReachable() {
+  try {
+    await pgQuery('SELECT 1', [], 'health_check');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function closePg() {
   try { await pool?.end(); } catch { /* closing */ }
   pool = null;

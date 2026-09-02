@@ -4,7 +4,7 @@
  * Single responsibility: register cron intervals, nothing else.
  * Import and call registerCronJobs(rebuildLeaderboard) from server.js after DB init.
  */
-import mongoose from 'mongoose';
+import { db } from '#db';
 import { emitOrderUpdate, emitAdminUpdate } from '../domains/notification/realtimeEmitters.js';
 // Items 17+56 (2026-07-13): every job runs through the Background Job Platform
 // (services/jobQueue.service.js) — BullMQ repeatables with retry/backoff when
@@ -156,22 +156,22 @@ export function registerCronJobs(rebuildLeaderboard) {
 
 
   // ── Payment proof retention — runs hourly ──────────────────────────────────
-  // Keeps PaymentOrder transaction records while removing high-volume proof
-  // image references after 48 hours. Mongo TTL cannot unset a single field, so
-  // this job scrubs proofScreenshot/proofExpiresAt without deleting the order.
+  // Keeps the ORDER — it is the financial record — while dropping the
+  // high-volume proof screenshot once its retention window has passed. One
+  // statement clears both the image and its expiry, so an order cannot end up
+  // with a cleared expiry and a proof still attached.
   registerRecurring('payment-proof-retention', 60 * 60 * 1000, async () => {
     try {
-      const PaymentOrder = mongoose.model('PaymentOrder');
-      const result = await PaymentOrder.scrubExpiredProofs();
-      const modified = result.modifiedCount || 0;
-      if (modified > 0) console.log(`[retention] Scrubbed ${modified} expired payment proof(s)`);
+      const scrubbed = await db.orders.scrubExpiredProofs();
+      if (scrubbed > 0) console.log(`[retention] Scrubbed ${scrubbed} expired payment proof(s)`);
     } catch (e) { console.error('[retention] payment proof scrub error:', e.message); }
   });
 
-  // ── Automated database backup — runs daily (plan item 45) ───────────────────
-  // mongodump → gzip archive → S3 (backups/), keep newest BACKUP_KEEP (14).
-  // Skips loudly (log + alert) when mongodump or S3 is unavailable; a failed
-  // backup pages the alert webhook. Restore steps: docs/governance/DISASTER_RECOVERY.md.
+  // ── Automated database backup — runs daily ─────────────────────────────────
+  // pg_dump (custom format) → S3 (backups/), keeping the newest BACKUP_KEEP
+  // (14). Skips loudly (log + alert) when pg_dump or S3 is unavailable; a
+  // failed backup pages the alert webhook. Restore steps:
+  // docs/governance/DISASTER_RECOVERY.md.
   registerRecurring('db-backup', 24 * 60 * 60 * 1000, async () => {
     try {
       const { runBackup } = await import('../services/backup.service.js');

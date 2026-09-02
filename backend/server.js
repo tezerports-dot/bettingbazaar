@@ -3,7 +3,6 @@
 
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import express      from 'express';
-import mongoose     from 'mongoose';
 import http         from 'http';
 import https        from 'https';
 import { Server as SocketIOServer } from 'socket.io';
@@ -115,6 +114,8 @@ import CycleGenerator     from './domains/markets/cycleGenerator.service.js';
 import SSEManager         from './domains/notification/sseManager.service.js';
 import { initSSERoutes }  from './routes/sse.routes.js';
 import { getSystemConfig } from '#db/repositories/config.js';
+import { db } from '#db';
+import { isDatabaseReachable } from '#db/client.js';
 
 // ─── APP SETUP ────────────────────────────────────────────────────────────────
 const runtime = runtimeProfile();
@@ -286,12 +287,12 @@ const isSafeAppAssetSlot = (slot) => /^[a-z0-9][a-z0-9-]*\.png$/.test(slot);
 app.get('/app-assets/:name', async (req, res, next) => {
   try {
     if (!isSafeAppAssetSlot(req.params.name)) return res.sendStatus(404);
-    const asset = await mongoose.model('AppAsset').findOne({
-      slot: req.params.name,
-      storage: 'LOCAL',
-    }).select('contentType').lean();
+    const asset = await db.content.getAsset(req.params.name);
     const filePath = path.join(appAssetsDir, req.params.name);
-    if (!asset || !asset.contentType) return next();
+    // Only a LOCAL asset is served from this directory. One stored on the CDN
+    // has its bytes somewhere else entirely, and sending a local file under its
+    // content type would serve whatever happened to be left on this disk.
+    if (!asset || asset.storage !== 'LOCAL' || !asset.contentType) return next();
     res.type(asset.contentType);
     return res.sendFile(filePath, (error) => {
       if (error?.code === 'ENOENT') return next();
@@ -373,18 +374,23 @@ if (fs.existsSync(merchantDistPath)) {
 // ─── HEALTH / PROBES (AQ-4) ─────────────────────────────────────────────────
 // Kubernetes-correct probe split (also drives Railway/Docker healthchecks):
 //   LIVENESS  = "is the process alive?" — NEVER depends on external deps. A
-//               Mongo outage must NOT make the orchestrator kill and restart
+//               database outage must NOT make the orchestrator kill and restart
 //               every pod (that turns a dependency blip into a full outage).
 //   READINESS = "should this instance receive traffic?" — deps up AND not
 //               draining. Flipping this to 503 on SIGTERM is how we bleed
 //               traffic off an instance before it stops accepting connections.
 let shuttingDown = false;
 
-function readinessState() {
-  const mongoUp = mongoose.connection.readyState === 1;
+async function readinessState() {
+  // A REAL round trip, not a connection-state flag. A pool with an open socket
+  // to a database that has stopped answering reports "connected" — and a
+  // readiness probe that stays green through an outage is worse than no probe,
+  // because it keeps the load balancer sending traffic to an instance that
+  // cannot serve it.
+  const databaseUp = await isDatabaseReachable();
   return {
-    ready: mongoUp && !shuttingDown,
-    mongodb: mongoUp ? 'connected' : 'disconnected',
+    ready: databaseUp && !shuttingDown,
+    database: databaseUp ? 'connected' : 'disconnected',
     redis: global.redis ? 'connected' : 'unavailable',
     draining: shuttingDown,
     uptime: process.uptime(),
@@ -398,15 +404,19 @@ app.get('/health/live', (req, res) => {
   res.status(shuttingDown ? 503 : 200).json({ status: shuttingDown ? 'draining' : 'alive', uptime: process.uptime() });
 });
 // Readiness — deps + drain aware.
-app.get('/health/ready', (req, res) => {
-  const s = readinessState();
+app.get('/health/ready', async (req, res) => {
+  // AWAITED. The probe is a real round trip now, and calling it without
+  // awaiting returns a pending Promise whose `.ready` is undefined — so every
+  // readiness check would answer 503 and the orchestrator would take every
+  // instance out of rotation.
+  const s = await readinessState();
   res.status(s.ready ? 200 : 503).json({ status: s.ready ? 'ready' : 'not-ready', ...s });
 });
 // Back-compat: /health and /api/v1/health keep readiness semantics (Railway's
 // healthcheckPath and the Docker HEALTHCHECK point here). Now also 503 while
 // draining so deploys route away from an instance that's shutting down.
-function legacyHealth(req, res) {
-  const s = readinessState();
+async function legacyHealth(req, res) {
+  const s = await readinessState();
   res.status(s.ready ? 200 : 503).json({ status: s.ready ? 'healthy' : 'unhealthy', ...s });
 }
 app.get('/health', legacyHealth);
@@ -452,16 +462,11 @@ app.use('/api/admin', adminRoutes);   // ← now routes/admin/index.js (13 sub-r
 const errorReportLimiter = rateLimit({ windowMs: 60000, max: 10, message: { success: false, message: 'Too many error reports' } });
 app.post('/api/internal/error-report', errorReportLimiter, async (req, res) => {
   try {
-    const FrontendErrorReport = mongoose.model('FrontendErrorReport'); // LOW-06: model defined in backend/models/payment.model.js
     const { message, stack, component, url, panel } = req.body;
     if (!message) return res.status(400).json({ success: false, message: 'message required' });
-    await FrontendErrorReport.create({
-      message:   String(message).slice(0, 2000),
-      stack:     stack     ? String(stack).slice(0, 10000)    : undefined,
-      component: component ? String(component).slice(0, 5000) : undefined,
-      url:       url       ? String(url).slice(0, 500)        : undefined,
-      panel:     ['user', 'merchant'].includes(panel) ? panel : 'unknown',
-      ts:        new Date(),
+    await db.operations.recordFrontendError({
+      message, stack, component, url,
+      panel: ['user', 'merchant'].includes(panel) ? panel : 'unknown',
     });
     res.json({ success: true });
   } catch (err) {
@@ -686,7 +691,6 @@ async function closeResources() {
     import('#db/client.js').then(m => m.closePg()),                    // hybrid money DB: drain PG pool
     import('./services/workerPool.service.js').then(m => m.closeWorkerPool()),  // item 5: terminate CPU threads
   ]);
-  try { await mongoose.connection.close(false); } catch (_) {}
   try { global.redis?.disconnect?.(); } catch (_) {}
 }
 
