@@ -355,7 +355,7 @@ export async function findOrders({
   userId = null, merchantId = null, state = null, states = null,
   orderType = null, currency = null, since = null, until = null,
   redFlagged = null, requiresReview = null, disputedOnly = false,
-  limit = 50, cursor = null,
+  limit = 50, cursor = null, offset = 0,
 } = {}) {
   const where = []; const params = [];
   const add = (sql, value) => { params.push(value); where.push(sql.replace('$?', `$${params.length}`)); };
@@ -381,11 +381,17 @@ export async function findOrders({
   }
 
   const size = Math.min(Math.max(Number(limit) || 50, 1), 500);
+  // OFFSET is supported for the player's own order history, where the client
+  // sends skip/limit and a page is a page. A KEYSET cursor is still the right
+  // tool for anything long — an order created while somebody pages shifts every
+  // later row by one, and the page after it silently skips an order — so both
+  // are here and `cursor` wins when given.
+  const skip = cursor ? 0 : Math.max(Number(offset) || 0, 0);
   const { rows } = await pgQuery(
     `SELECT *, COUNT(*) OVER () AS total_count FROM order_states
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
       ORDER BY created_at DESC, order_id DESC
-      LIMIT ${size + 1}`,
+      LIMIT ${size + 1} OFFSET ${skip}`,
     params, 'order_find',
   );
 

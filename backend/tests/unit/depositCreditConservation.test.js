@@ -27,24 +27,25 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 const calls = vi.hoisted(() => ({ debit: [], deposit: [], reserve: [], merchantCredit: [] }));
 const order = vi.hoisted(() => ({ value: null }));
 
-vi.mock('mongoose', () => {
-  const models = {
-    PaymentOrder: {
-      findOne: async () => order.value,
-      findById: async () => order.value,
+// The ORDER is supplied, because these tests are about the arithmetic that
+// pairs a merchant debit with a user credit — not about where the order was
+// read from. The wallet writers are observed rather than executed for the same
+// reason: what is asserted is the AMOUNT each one is asked for.
+//
+// The movements themselves are proven against a real database in
+// `database/tests/depositConservationPg.test.js`. A suite that mocked the
+// settlement writer once reported settlement working while the real function
+// threw on every call, so the boundary that carries money is exercised for
+// real somewhere — just not here, where a stub is what makes the amounts
+// visible.
+vi.mock('#db', () => ({
+  db: {
+    orders: {
+      getOrderRecord: async () => order.value,
+      findOrders: async () => ({ orders: [], total: 0 }),
     },
-    Transaction: { create: async () => [{}] },
-    User: { findById: async () => ({ _id: 'u1' }) },
-    Merchant: { findById: async () => ({ _id: 'm1' }) },
-  };
-  return {
-    default: {
-      model: (n) => models[n] ?? { findOne: async () => null, create: async () => [{}], findById: async () => null },
-      startSession: async () => { throw new Error('standalone'); },
-      Types: { ObjectId: class { constructor(v) { this.v = v; } toString() { return String(this.v); } } },
-    },
-  };
-});
+  },
+}));
 
 vi.mock('../../domains/wallet/walletAuthority.service.js', () => ({
   creditDeposit: async (userId, amount) => { calls.deposit.push(amount); },
@@ -104,7 +105,6 @@ function fakeRes() {
 }
 
 const makeOrder = (over = {}) => ({
-  _id: { toString: () => 'o1' },
   orderId: 'ORD1',
   userId: 'u1',
   merchantId: 'm1',
@@ -113,7 +113,6 @@ const makeOrder = (over = {}) => ({
   tokenAmount: 1000,
   depositAllocation: 900,
   reserveAllocation: 100,
-  toObject() { return { ...this }; },
   ...over,
 });
 
