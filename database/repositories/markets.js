@@ -271,16 +271,68 @@ export async function declareWinner(cycleId, winner, { by = 'engine', confidence
  * without two of them claiming the same cycle. `winner IS NOT NULL` is rule 3:
  * a cycle with no result must never be offered, whatever its status says.
  */
-export async function claimSettleable({ limit = 10 } = {}) {
+/**
+ * Claim cycles to settle, and mean it.
+ *
+ * ── The claim that was not one ──────────────────────────────────────────────
+ * This was a SELECT with `FOR UPDATE SKIP LOCKED`. That does nothing here:
+ * `pgQuery` runs each statement in its own implicit transaction, so the lock
+ * released the moment the SELECT returned and both settlement workers walked
+ * the same cycles. `markSettled` is guarded on `NOT is_settled`, so only one
+ * final write landed and nothing was paid twice — but both workers did the
+ * entire settlement pass, and the function called "claim" claimed nothing.
+ *
+ * A lock cannot serve, either: the claim has to OUTLIVE the transaction that
+ * takes it, because settling means walking a cycle's bets through other calls,
+ * and holding a pooled client across those is the deadlock this codebase has
+ * already paid for once.
+ *
+ * So the claim is a column, taken and released in ONE statement whose WHERE
+ * clause is the gate. `leaseMinutes` bounds it: a worker that dies mid-pass
+ * releases its cycles when the lease expires, rather than stranding them
+ * forever — the failure mode a claim column has to answer for.
+ */
+export async function claimSettleable({ limit = 10, worker = 'settlement-engine', leaseMinutes = 15 } = {}) {
   const { rows } = await pgQuery(
-    `SELECT ${COLUMNS} FROM cycles
-      WHERE winner IS NOT NULL AND NOT is_settled AND end_time <= now()
-      ORDER BY end_time ASC
-      LIMIT $1
-      FOR UPDATE SKIP LOCKED`,
-    [Math.min(Math.max(Number(limit) || 10, 1), 100)], 'cycle_claim_settleable',
+    `UPDATE cycles SET
+       settlement_claimed_at = now(),
+       settlement_claimed_by = $2
+     WHERE cycle_id IN (
+       SELECT cycle_id FROM cycles
+        WHERE winner IS NOT NULL AND NOT is_settled AND end_time <= now()
+          AND (settlement_claimed_at IS NULL
+               OR settlement_claimed_at < now() - ($3 || ' minutes')::interval)
+        ORDER BY end_time ASC
+        LIMIT $1
+        FOR UPDATE SKIP LOCKED
+     )
+     RETURNING ${COLUMNS}`,
+    [Math.min(Math.max(Number(limit) || 10, 1), 100), String(worker),
+      // `Number(x) || 15` swallows an explicit 0, and 0 is meaningful here:
+      // "reclaim everything now", which is how an operator drains a queue after
+      // a worker fleet dies. Falsy-coalescing a number is the same trap the
+      // withdrawal hold window already had.
+      String(Number.isFinite(Number(leaseMinutes)) ? Math.max(Number(leaseMinutes), 0) : 15)],
+    'cycle_claim_settleable',
   );
   return rows.map(toCycle);
+}
+
+/**
+ * Hand a claimed cycle back without settling it.
+ *
+ * For a worker that claimed a cycle and could not finish — a refusal, a
+ * shutdown. Returning it immediately beats waiting out the lease, and a lease
+ * that is only ever waited out is a queue that stalls for fifteen minutes every
+ * time anything goes wrong.
+ */
+export async function releaseSettlementClaim(cycleId) {
+  const { rowCount } = await pgQuery(
+    `UPDATE cycles SET settlement_claimed_at = NULL, settlement_claimed_by = NULL
+      WHERE cycle_id = $1 AND NOT is_settled`,
+    [String(cycleId)], 'cycle_release_claim',
+  );
+  return rowCount > 0;
 }
 
 /**

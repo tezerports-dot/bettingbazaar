@@ -1665,6 +1665,25 @@ CREATE INDEX IF NOT EXISTS cycles_settleable_idx ON cycles (end_time)
 -- ═══════════════════════════════════════════════════════════════════════════
 -- CASINO — third-party game providers
 -- ═══════════════════════════════════════════════════════════════════════════
+-- ── Settlement claim, so two workers cannot walk the same cycle ────────────
+--
+-- `claimSettleable` used `FOR UPDATE SKIP LOCKED`, which did nothing: the query
+-- runs in its own implicit transaction, so the lock released as the SELECT
+-- returned and both settlement workers walked the same cycles. `markSettled` is
+-- guarded on `NOT is_settled`, so only one final write landed and no money was
+-- paid twice — but both workers did the whole settlement pass, and the function
+-- named "claim" made no claim at all.
+--
+-- A lock cannot serve here: the claim has to outlive the transaction that takes
+-- it, because settling a cycle means walking its bets through other calls, and
+-- holding a pooled client across those is the deadlock this codebase already
+-- paid for once. A claim COLUMN survives, and a lease that expires means a
+-- worker that dies mid-settlement releases its cycles instead of stranding them.
+ALTER TABLE cycles ADD COLUMN IF NOT EXISTS settlement_claimed_at TIMESTAMPTZ;
+ALTER TABLE cycles ADD COLUMN IF NOT EXISTS settlement_claimed_by TEXT;
+CREATE INDEX IF NOT EXISTS cycles_settleable_idx
+  ON cycles (end_time) WHERE winner IS NOT NULL AND NOT is_settled;
+
 CREATE TABLE IF NOT EXISTS game_providers (
   provider_key   TEXT PRIMARY KEY,
   name           TEXT NOT NULL,

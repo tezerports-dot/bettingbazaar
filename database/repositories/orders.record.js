@@ -401,6 +401,77 @@ export async function findOrders({
 }
 
 /**
+ * Held withdrawals whose hold window has passed.
+ *
+ * ── The clock is the database's ─────────────────────────────────────────────
+ * `merchant_credit_hold_until <= now()`, evaluated where the column lives.
+ * Several worker instances comparing against their own `new Date()` disagree by
+ * however far their clocks have drifted, and this decides when a merchant's
+ * tokens become spendable.
+ *
+ * Oldest deadline first: a hold that expired an hour ago has a player waiting.
+ */
+export async function findDueHolds({ limit = 200 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT * FROM order_states
+      WHERE merchant_credit_status = 'HELD'
+        AND merchant_credit_hold_until IS NOT NULL
+        AND merchant_credit_hold_until <= now()
+      ORDER BY merchant_credit_hold_until ASC
+      LIMIT ${Math.min(Math.max(Number(limit) || 200, 1), 500)}`,
+    [], 'order_find_due_holds',
+  );
+  return rows.map(toOrder);
+}
+
+/**
+ * Write a settlement's committed state onto the order it settles.
+ *
+ * ── What this replaces ──────────────────────────────────────────────────────
+ * A function whose body a codemod had reduced to `return}` — it wrote nothing.
+ * The settlement committed, the player's stake was consumed and the merchant
+ * credited, and the ORDER never advanced: it stayed HELD, so the sweep offered
+ * it again on every pass, forever, after the money had already moved. A
+ * settlement is idempotent so nothing was paid twice, but the order never
+ * completed and the queue never drained.
+ *
+ * ONE STATEMENT per outcome, and the terminal state is in the WHERE clause's
+ * gift rather than assembled by the caller: a mirror that can write half of a
+ * settled order is a mirror that can leave `merchant_credit_status = RELEASED`
+ * beside `state = ASSIGNED`.
+ */
+export async function mirrorSettlementState(orderId, settlementStatus, { reason = null, actor = null } = {}) {
+  const OUTCOME = {
+    SETTLED:   { credit: 'RELEASED', state: 'COMPLETED', escrow: false },
+    CANCELLED: { credit: 'REVERSED', state: 'DISPUTED',  escrow: false },
+    REVERSED:  { credit: 'REVERSED', state: 'DISPUTED',  escrow: false },
+    RESERVED:  { credit: 'HELD',     state: null,        escrow: true  },
+  }[String(settlementStatus).toUpperCase()];
+  if (!OUTCOME) throw new Error(`mirrorSettlementState: unknown settlement status '${settlementStatus}'`);
+
+  const { rows } = await pgQuery(
+    `UPDATE order_states SET
+       merchant_credit_status = $2,
+       escrow_locked = $3,
+       state = COALESCE($4, state),
+       completed_at = CASE WHEN $4 = 'COMPLETED' THEN now() ELSE completed_at END,
+       merchant_credit_reversed_at = CASE
+         WHEN $2 = 'REVERSED' THEN COALESCE(merchant_credit_reversed_at, now())
+         ELSE merchant_credit_reversed_at END,
+       merchant_credit_reversed_reason = COALESCE($5, merchant_credit_reversed_reason),
+       dispute_resolved_by = COALESCE($6, dispute_resolved_by),
+       updated_at = now()
+     WHERE order_id = $1
+     RETURNING *`,
+    [String(orderId), OUTCOME.credit, OUTCOME.escrow, OUTCOME.state,
+      reason === null ? null : String(reason).slice(0, 500),
+      actor === null ? null : String(actor)],
+    'order_mirror_settlement',
+  );
+  return toOrder(rows[0]);
+}
+
+/**
  * The queue manager's worklist: orders waiting for a merchant, oldest first,
  * with the player's identity attached.
  *

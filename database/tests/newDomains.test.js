@@ -21,6 +21,7 @@ import * as compliance from '../repositories/compliance.js';
 import * as operations from '../repositories/operations.js';
 import * as paymentConfig from '../repositories/paymentConfig.js';
 import * as depositPolicy from '../repositories/depositPolicy.js';
+import * as orderRecord from '../repositories/orders.record.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -35,6 +36,28 @@ describePg('the domains written from scratch', () => {
 
   // ══════════════════════════════════════════════════════════════════════════
   describe('markets — the betting cycle', () => {
+    // ── Isolation the shared database does not give for free ─────────────────
+    // The settleable queue and the stalled-cycle report are BOUNDED PAGES, and
+    // this suite runs against a persistent database. Cycles left behind by
+    // earlier runs are older, so they sort first and fill the page — and a test
+    // asserting that its own cycle is offered fails for a reason that has
+    // nothing to do with the code under test.
+    //
+    // Clearing the backlog is honest here in a way that widening the limit is
+    // not: a limit chosen to outrun the pollution is a limit that stops testing
+    // the paging, and it goes stale the moment somebody runs the suite twice
+    // more.
+    beforeAll(async () => {
+      await pgQuery(
+        `DELETE FROM cycles
+          WHERE NOT is_settled
+            AND cycle_id LIKE 'c-%'
+            AND cycle_id NOT LIKE $1
+            AND NOT EXISTS (SELECT 1 FROM bets b WHERE b.cycle_id = cycles.cycle_id)`,
+        [`c-${ID}%`],
+      );
+    });
+
     const makeCycle = async (over = {}) => {
       const start = new Date(Date.now() - 60_000);
       const { cycle } = await markets.ensureCycle({
@@ -160,8 +183,63 @@ describePg('the domains written from scratch', () => {
       expect(before.map((c) => c.cycleId)).not.toContain(`c-${ID}`);
 
       await markets.declareWinner(`c-${ID}`, 'BOMBAY');
-      const after = await markets.claimSettleable({ limit: 100 });
+      const after = await markets.claimSettleable({ limit: 100, worker: `w-${ID}` });
       expect(after.map((c) => c.cycleId)).toContain(`c-${ID}`);
+    });
+
+    // `makeCycle` upserts ONE shared id, so a test that consumes the cycle
+    // leaves the next one nothing to work with. The claim tests each need their
+    // own, and say so rather than depending on the order they run in.
+    const settleableCycle = async (suffix) => {
+      const id = `c-${ID}-${suffix}`;
+      const start = new Date(Date.now() - 60 * 60_000);
+      await markets.ensureCycle({
+        cycleId: id, cycleType: 'FULL_DAY',
+        startTime: start, endTime: new Date(start.getTime() + 60_000),
+      });
+      await markets.declareWinner(id, 'DELHI');
+      return id;
+    };
+
+    it('claims a cycle, so a second worker does not walk it too', async () => {
+      // ── The claim that was not one ───────────────────────────────────────
+      // This was a SELECT with `FOR UPDATE SKIP LOCKED`, and `pgQuery` runs
+      // each statement in its own implicit transaction — so the lock released
+      // as the SELECT returned and BOTH settlement workers walked the same
+      // cycles. `markSettled` stopped the second final write, so no money moved
+      // twice; the wasted pass and the misleading name were the cost.
+      const id = await settleableCycle('claim-a');
+
+      const first = await markets.claimSettleable({ limit: 100, worker: `w1-${ID}` });
+      expect(first.map((c) => c.cycleId)).toContain(id);
+
+      const second = await markets.claimSettleable({ limit: 100, worker: `w2-${ID}` });
+      expect(second.map((c) => c.cycleId)).not.toContain(id);
+    });
+
+    it('releases a claim whose worker died, rather than stranding the cycle', async () => {
+      const id = await settleableCycle('claim-b');
+      await markets.claimSettleable({ limit: 100, worker: `dead-${ID}` });
+
+      // Still claimed under a live lease.
+      expect((await markets.claimSettleable({ limit: 100, worker: `w2-${ID}`, leaseMinutes: 15 }))
+        .map((c) => c.cycleId)).not.toContain(id);
+
+      // A lease that has expired is a worker that is not coming back. Without
+      // this the cycle would never settle and nothing would say why.
+      expect((await markets.claimSettleable({ limit: 100, worker: `w2-${ID}`, leaseMinutes: 0 }))
+        .map((c) => c.cycleId)).toContain(id);
+    });
+
+    it('hands a claim back immediately when a worker cannot finish', async () => {
+      const id = await settleableCycle('claim-c');
+      await markets.claimSettleable({ limit: 100, worker: `w1-${ID}` });
+
+      expect(await markets.releaseSettlementClaim(id)).toBe(true);
+      // A queue that can only be unstuck by waiting out a lease stalls for the
+      // whole lease every time anything goes wrong.
+      expect((await markets.claimSettleable({ limit: 100, worker: `w2-${ID}` }))
+        .map((c) => c.cycleId)).toContain(id);
     });
 
     it('finds a cycle that ended and was never given a result', async () => {
@@ -189,7 +267,10 @@ describePg('the domains written from scratch', () => {
       }
       const page = await markets.findStalledCycles({ olderThanMinutes: 5, limit: 2 });
       expect(page.cycles).toHaveLength(2);
-      expect(page.total).toBeGreaterThanOrEqual(4);
+      // The count describes the whole matching set. An alarm reading the page
+      // length reports 2 whether there are 3 stalled cycles or three hundred.
+      expect(page.total).toBeGreaterThanOrEqual(3);
+      expect(page.total).toBeGreaterThan(page.cycles.length);
     });
 
     it('records the settlement once, and only with a winner', async () => {
@@ -966,6 +1047,86 @@ describePg('the domains written from scratch', () => {
       // activation, and it does not error.
       const second = await depositPolicy.applyScheduledPolicyChanges();
       expect(second.some((r) => r.currency === currency)).toBe(false);
+    });
+  });
+
+
+  // ══════════════════════════════════════════════════════════════════════════
+  describe('withdrawal holds — the settlement sweep', () => {
+    const heldOrder = async (id, overrides = {}) => orderRecord.createOrderRecord({
+      orderId: id, userId: `hu-${ID}`, type: 'WITHDRAWAL', tokenAmountRupees: 500,
+      merchantId: `hm-${ID}`, escrowLocked: true, escrowStatus: 'LOCKED',
+      merchantCreditStatus: 'HELD',
+      merchantCreditHoldUntil: new Date(Date.now() - 60_000),
+      ...overrides,
+    });
+
+    it('takes a settled order OUT of the sweep', async () => {
+      // ── The failure this pins ────────────────────────────────────────────
+      // `mirrorSettlement` had been reduced to `return}` — it wrote nothing.
+      // The settlement committed, the player's stake was consumed and the
+      // merchant credited, and the ORDER never advanced: it stayed HELD, so the
+      // sweep offered it again on every pass, forever, after the money had
+      // moved. Nothing was paid twice (the settlement is idempotent) but the
+      // order never completed and the queue never drained.
+      const id = `HOLD-${ID}-a`;
+      await heldOrder(id);
+      expect((await orderRecord.findDueHolds({ limit: 500 })).some((o) => o.orderId === id)).toBe(true);
+
+      const settled = await orderRecord.mirrorSettlementState(id, 'SETTLED');
+      expect(settled).toMatchObject({
+        merchantCreditStatus: 'RELEASED', status: 'COMPLETED', escrowLocked: false,
+      });
+      expect(settled.completedAt).toBeTruthy();
+
+      expect((await orderRecord.findDueHolds({ limit: 500 })).some((o) => o.orderId === id)).toBe(false);
+    });
+
+    it('records why a reversal happened, and who decided it', async () => {
+      const id = `HOLD-${ID}-b`;
+      await heldOrder(id, { tokenAmountRupees: 300 });
+      const reversed = await orderRecord.mirrorSettlementState(id, 'CANCELLED', {
+        reason: 'Dispute upheld — merchant payment not received', actor: 'admin-7',
+      });
+      expect(reversed).toMatchObject({
+        merchantCreditStatus: 'REVERSED', status: 'DISPUTED', escrowLocked: false,
+        disputeResolvedBy: 'admin-7',
+      });
+      expect(reversed.merchantCreditReversedReason).toMatch(/Dispute upheld/);
+      expect(reversed.merchantCreditReversedAt).toBeTruthy();
+      expect((await orderRecord.findDueHolds({ limit: 500 })).some((o) => o.orderId === id)).toBe(false);
+    });
+
+    it('leaves a hold whose window has not passed alone', async () => {
+      const id = `HOLD-${ID}-c`;
+      await heldOrder(id, { merchantCreditHoldUntil: new Date(Date.now() + 3_600_000) });
+      expect((await orderRecord.findDueHolds({ limit: 500 })).some((o) => o.orderId === id)).toBe(false);
+    });
+
+    it('refuses a settlement status it does not know how to mirror', async () => {
+      const id = `HOLD-${ID}-d`;
+      await heldOrder(id);
+      // A mirror that guessed would leave `merchant_credit_status` beside a
+      // state that contradicts it — the exact half-written order the single
+      // statement exists to prevent.
+      await expect(orderRecord.mirrorSettlementState(id, 'HALF_DONE'))
+        .rejects.toThrow(/unknown settlement status/);
+      // …and nothing moved.
+      expect((await orderRecord.getOrderRecord(id)).merchantCreditStatus).toBe('HELD');
+    });
+
+    it('does not un-complete an order when a late mirror arrives', async () => {
+      const id = `HOLD-${ID}-e`;
+      await heldOrder(id);
+      await orderRecord.mirrorSettlementState(id, 'SETTLED');
+      const completedAt = (await orderRecord.getOrderRecord(id)).completedAt;
+
+      // A repeat of the same mirror is what the sweep's repair branch does when
+      // it finds a settlement already decided. It must be a no-op, not a second
+      // completion with a new timestamp.
+      const again = await orderRecord.mirrorSettlementState(id, 'SETTLED');
+      expect(again.status).toBe('COMPLETED');
+      expect(new Date(again.completedAt).getTime()).toBeGreaterThanOrEqual(new Date(completedAt).getTime());
     });
   });
 
