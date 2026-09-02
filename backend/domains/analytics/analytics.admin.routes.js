@@ -1,10 +1,33 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** analytics.admin.routes.js — Dashboard, financial analytics, stats */
-import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from '../../routes/admin/_adminShared.js';
+import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import { db } from '#db';
 // Analytics Platform trends (Phase 012 — Enterprise Services tier)
 import { growthTrend, businessTrend, revenueTrend, riskTrend } from './analyticsPlatform.service.js';
 
 const router = express.Router();
+
+/** A date that many days back, for the "last N days" windows below. */
+const daysAgo = (n) => new Date(Date.now() - n * 24 * 60 * 60 * 1000);
+
+/**
+ * One direction of token flow, with the query string's window applied.
+ *
+ * The deposit and withdrawal dashboards were two near-identical handlers whose
+ * only difference was a transaction type; they are one function and two
+ * response shapes now.
+ */
+async function tokenFlowFor(direction, query = {}) {
+  const from = query.startDate ? new Date(query.startDate) : null;
+  const to   = query.endDate   ? new Date(query.endDate)   : null;
+  // An unparseable date used to become `Invalid Date` and match nothing, so a
+  // typo in the admin's date picker showed an empty dashboard rather than an
+  // error. It is rejected here instead.
+  if ((from && Number.isNaN(from.getTime())) || (to && Number.isNaN(to.getTime()))) {
+    throw new Error('startDate and endDate must be dates');
+  }
+  return db.stats.tokenFlow({ direction, from, to });
+}
 
 // GET /api/admin/analytics/trends?days=30 — platform-level trend bundle:
 // growth (signups, first-time depositors), business (betting + funding
@@ -23,118 +46,60 @@ router.get('/analytics/trends', authenticate, isAdminOrSubAdmin, async (req, res
   }
 });
 
+/**
+ * The admin dashboard.
+ *
+ * ── What it was reading ─────────────────────────────────────────────────────
+ * Twelve separate aggregates over a `transactions` collection nothing has
+ * written to since the money moved to PostgreSQL. Every finance figure on this
+ * page was a frozen total from before the migration, and the page reported them
+ * with no indication that they had stopped moving.
+ *
+ * Each panel below is now one statement over the rows that actually carry the
+ * thing it counts, so the figures within a panel cannot contradict each other.
+ */
 router.get('/analytics/dashboard', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
-    const { User, Transaction, Bet, Cycle, PaymentOrder } = getModels();
-    
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
-    // ── Users ──────────────────────────────────────────────────────────────
-    const [totalUsers, activeUsers, blockedUsers, kycPending] = await Promise.all([
-      // Exclude merchant-role users from player count (merchants are separate entity)
-      User.countDocuments({ roles: { $ne: 'merchant' }, isAdmin: false }),
-      User.countDocuments({ roles: { $ne: 'merchant' }, isAdmin: false, status: 'ACTIVE' }),
-      User.countDocuments({ status: 'BLOCKED' }),
-      User.countDocuments({ kycStatus: { $in: ['PENDING_SUBMISSION', 'PENDING_APPROVAL'] } }),
+    const [core, finance, daily, counts] = await Promise.all([
+      db.stats.dashboard(),
+      db.stats.platformFinance({}),
+      db.stats.dailyFinance({ days: 7 }),
+      db.stats.cycleAndQueueCounts({}),
     ]);
 
-    // ── Merchants ──────────────────────────────────────────────────────────
-    const [totalMerchants, activeMerchants, pendingMerchants, onlineMerchants] = await Promise.all([
-      mongoose.model('Merchant').countDocuments({}),
-      mongoose.model('Merchant').countDocuments({ merchantApprovalStatus: 'APPROVED' }),
-      mongoose.model('Merchant').countDocuments({ merchantApprovalStatus: 'PENDING' }),
-      // ✅ FIXED BUG-5: isOnline lives on Merchant doc not User doc → was always 0
-      mongoose.model('Merchant').countDocuments({ status: 'ACTIVE', isOnline: true }),
-    ]);
-
-    // FIX DATA 3.1: was WIN_PAYOUT (invalid) and COMPLETED (invalid) → payouts always showed ₹0
-    const [depositAgg, withdrawalAgg, payoutAgg] = await Promise.all([
-      Transaction.aggregate([
-        { $match: { type: 'DEPOSIT', status: 'SUCCESS' } },
-        { $group: { _id: null, total: { $sum: '$amount' } } }
-      ]),
-      Transaction.aggregate([
-        { $match: { type: 'WITHDRAWAL', status: 'SUCCESS' } },
-        { $group: { _id: null, total: { $sum: '$amount' } } }
-      ]),
-      Transaction.aggregate([
-        { $match: { type: 'BET_WIN', status: 'SUCCESS' } },
-        { $group: { _id: null, total: { $sum: '$amount' } } }
-      ]),
-    ]);
-
-    const totalDeposits   = depositAgg[0]?.total    || 0;
-    const totalWithdrawals = withdrawalAgg[0]?.total || 0;
-    const totalPayouts    = payoutAgg[0]?.total      || 0;
-
-    // Total bets amount
-    const betsAgg = await Transaction.aggregate([
-      { $match: { type: 'BET_PLACED' } },
-      { $group: { _id: null, total: { $sum: '$amount' } } }
-    ]);
-    const totalBetsAmount = betsAgg[0]?.total || 0;
-
-    // FIX: netProfit was reading Cycle.netProfit which is often 0/unpopulated.
-    // Correct formula: house keeps what was bet minus what was paid out to winners.
-    const netProfit = totalBetsAmount - totalPayouts;
-
-    // ── Finance TODAY (IST) ───────────────────────────────────────────────
-    const weekAgo = new Date(today); weekAgo.setDate(weekAgo.getDate() - 7);
-    const [todayBetsAgg, todayPayoutsAgg, todayDepositsAgg] = await Promise.all([
-      Transaction.aggregate([{ $match: { type: 'BET_PLACED', createdAt: { $gte: today } } }, { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }]),
-      Transaction.aggregate([{ $match: { type: 'BET_WIN', status: 'SUCCESS', createdAt: { $gte: today } } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
-      Transaction.aggregate([{ $match: { type: 'DEPOSIT', status: 'SUCCESS', createdAt: { $gte: today } } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
-    ]);
-    const todayBets      = todayBetsAgg[0]?.total     || 0;
-    const todayBetCount  = todayBetsAgg[0]?.count     || 0;
-    const todayPayouts   = todayPayoutsAgg[0]?.total  || 0;
-    const todayDeposits  = todayDepositsAgg[0]?.total || 0;
-    const todayNetProfit = todayBets - todayPayouts;
-
-    // ── Daily report: last 7 days (IST timezone) ──────────────────────────
-    const [dailyBetsRaw, dailyPayoutsRaw] = await Promise.all([
-      Transaction.aggregate([
-        { $match: { type: 'BET_PLACED', createdAt: { $gte: weekAgo } } },
-        { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: '+05:30' } }, bets: { $sum: '$amount' }, betCount: { $sum: 1 } } },
-        { $sort: { _id: 1 } }
-      ]),
-      Transaction.aggregate([
-        { $match: { type: 'BET_WIN', status: 'SUCCESS', createdAt: { $gte: weekAgo } } },
-        { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: '+05:30' } }, payouts: { $sum: '$amount' } } }
-      ]),
-    ]);
-    const payoutByDate = Object.fromEntries(dailyPayoutsRaw.map(d => [d._id, d.payouts]));
-    const dailyReport  = dailyBetsRaw.map(d => ({
-      date:      d._id,
-      bets:      d.bets,
-      betCount:  d.betCount,
-      payouts:   payoutByDate[d._id] || 0,
-      netProfit: d.bets - (payoutByDate[d._id] || 0),
-    }));
-
-    // ── Cycles ─────────────────────────────────────────────────────────────
-    const [activeCycles, todayCycles, totalBetCount] = await Promise.all([
-      Cycle.countDocuments({ status: { $in: ['OPEN', 'PAUSED'] } }),
-      Cycle.countDocuments({ status: 'COMPLETED', updatedAt: { $gte: today } }),
-      Bet.countDocuments(),
-    ]);
-
-    // ── Queue ──────────────────────────────────────────────────────────────
-    const pendingOrders = await PaymentOrder.countDocuments({ status: 'PENDING_QUEUE' });
+    // Today is the last bucket of the seven-day series, not a thirteenth query
+    // with its own idea of when today started. The route this replaced computed
+    // its day boundary from the SERVER's local midnight while bucketing the
+    // series in IST, so on a UTC host the two disagreed by five and a half
+    // hours and "today" on the tiles never matched "today" on the chart.
+    const today = daily[daily.length - 1] ?? { bets: 0, betCount: 0, payouts: 0, deposits: 0, netProfit: 0 };
 
     res.json({
       success: true,
       metrics: {
-        users:     { total: totalUsers, active: activeUsers, blocked: blockedUsers, kycPending },
-        merchants: { total: totalMerchants, active: activeMerchants, pending: pendingMerchants, online: onlineMerchants },
-        finance: {
-          totalDeposits, totalWithdrawals, totalBets: totalBetsAmount, totalPayouts, netProfit,
-          today: { bets: todayBets, betCount: todayBetCount, payouts: todayPayouts, deposits: todayDeposits, netProfit: todayNetProfit },
+        users: {
+          total: core.users.total, active: core.users.active,
+          blocked: core.users.blocked, kycPending: core.users.pendingKYC,
         },
-        cycles:      { activeCount: activeCycles, todayCount: todayCycles, totalBets: totalBetCount },
-        queue:       { pendingOrders, avgWaitTime: 0 },
-        dailyReport,
+        merchants: {
+          total: core.merchants.total, active: core.merchants.active,
+          pending: core.merchants.pendingApproval, online: core.merchants.active,
+        },
+        finance: {
+          totalDeposits:    finance.deposits.amount,
+          totalWithdrawals: finance.withdrawals.amount,
+          totalBets:        finance.bets.amount,
+          totalPayouts:     finance.payouts.amount,
+          netProfit:        finance.netProfit,
+          today: {
+            bets: today.bets, betCount: today.betCount,
+            payouts: today.payouts, deposits: today.deposits,
+            netProfit: today.netProfit,
+          },
+        },
+        cycles: { ...counts.cycles, totalBets: core.betting.totalBets },
+        queue: { pendingOrders: counts.queue.pendingOrders, avgWaitTime: 0 },
+        dailyReport: daily,
       },
     });
   } catch (error) {
@@ -143,75 +108,41 @@ router.get('/analytics/dashboard', authenticate, isAdminOrSubAdmin, async (req, 
   }
 });
 
-// Get financial data
+/**
+ * Financial analytics over an optional date window.
+ *
+ * `profitMargin` divides by deposits, and deposits of zero would make it
+ * Infinity — the guard is kept from the original. The rest is derived from the
+ * order and bet rows rather than from the abandoned transaction collection.
+ */
 router.get('/analytics/financials', authenticate, isAdmin, async (req, res) => {
   try {
-    const { Transaction, Bet } = getModels();
-    const GameTransaction = mongoose.model('GameTransaction');
     const { startDate, endDate } = req.query;
-    
-    const dateFilter = {};
-    if (startDate) dateFilter.$gte = new Date(startDate);
-    if (endDate) dateFilter.$lte = new Date(endDate);
+    const from = startDate ? new Date(startDate) : null;
+    const to   = endDate   ? new Date(endDate)   : null;
+    if ((from && Number.isNaN(from.getTime())) || (to && Number.isNaN(to.getTime()))) {
+      return res.status(400).json({ success: false, message: 'startDate and endDate must be dates' });
+    }
 
-    // FIX DATA 3.2: was status 'COMPLETED' (invalid) and createdAt (wrong field — schema uses 'timestamp')
-    const deposits = await Transaction.aggregate([
-      { $match: { type: 'DEPOSIT', status: 'SUCCESS', ...(Object.keys(dateFilter).length && { timestamp: dateFilter }) } },
-      { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }
+    const [finance, byProvider] = await Promise.all([
+      db.stats.platformFinance({ from, to }),
+      db.stats.providerRevenue({ from, to }),
     ]);
-
-    const withdrawals = await Transaction.aggregate([
-      { $match: { type: 'WITHDRAWAL', status: 'SUCCESS', ...(Object.keys(dateFilter).length && { timestamp: dateFilter }) } },
-      { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }
-    ]);
-
-    // FIX 11: Exclude phantom bets so P&L only reflects real user activity
-    const betsData = await Bet.aggregate([
-      { $match: { isPhantom: { $ne: true }, ...(Object.keys(dateFilter).length && { createdAt: dateFilter }) } },
-      { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }
-    ]);
-
-    const payoutsData = await Bet.aggregate([
-      { $match: { isPhantom: { $ne: true }, status: 'WON', payout: { $exists: true }, ...(Object.keys(dateFilter).length && { settledAt: dateFilter }) } },
-      { $group: { _id: null, total: { $sum: '$payout' }, count: { $sum: 1 } } }
-    ]);
-
-    const depositsTotal    = deposits[0]?.total    || 0;
-    const withdrawalsTotal = withdrawals[0]?.total || 0;
-    const betsTotal        = betsData[0]?.total    || 0;
-    const payoutsTotal     = payoutsData[0]?.total || 0;
-    // FIX 5: Use betsTotal - payoutsTotal (same formula as dashboard).
-    // Cycle.netProfit is unreliable — it was 0 for many historical cycles.
-    const netProfit = betsTotal - payoutsTotal;
-
-    // Per-provider GGR from GameTransaction wallet callbacks
-    const providerBets = await GameTransaction.aggregate([
-      { $match: { type: 'BET', ...(Object.keys(dateFilter).length && { createdAt: dateFilter }) } },
-      { $group: { _id: '$providerKey', bets: { $sum: '$amount' }, betCount: { $sum: 1 } } },
-    ]);
-    const providerWins = await GameTransaction.aggregate([
-      { $match: { type: 'WIN', ...(Object.keys(dateFilter).length && { createdAt: dateFilter }) } },
-      { $group: { _id: '$providerKey', wins: { $sum: '$amount' }, winCount: { $sum: 1 } } },
-    ]);
-    const winsMap = Object.fromEntries(providerWins.map(w => [w._id, w]));
-    const byProvider = providerBets.map(b => {
-      const w = winsMap[b._id] || { wins: 0, winCount: 0 };
-      return { key: b._id, bets: b.bets, betCount: b.betCount, wins: w.wins, winCount: w.winCount, ggr: b.bets - w.wins };
-    }).sort((a, b) => b.ggr - a.ggr);
 
     res.json({
       success: true,
       data: {
-        totalRevenue:  depositsTotal + betsTotal,
-        totalExpenses: withdrawalsTotal + payoutsTotal,
-        netProfit,
-        profitMargin:  depositsTotal > 0 ? (netProfit / depositsTotal) * 100 : 0,
-        deposits:    { amount: depositsTotal,    count: deposits[0]?.count    || 0 },
-        withdrawals: { amount: withdrawalsTotal, count: withdrawals[0]?.count || 0 },
-        bets:        { amount: betsTotal,        count: betsData[0]?.count    || 0 },
-        payouts:     { amount: payoutsTotal,     count: payoutsData[0]?.count || 0 },
+        totalRevenue:  finance.deposits.amount + finance.bets.amount,
+        totalExpenses: finance.withdrawals.amount + finance.payouts.amount,
+        netProfit:     finance.netProfit,
+        profitMargin:  finance.deposits.amount > 0
+          ? (finance.netProfit / finance.deposits.amount) * 100 : 0,
+        deposits:    finance.deposits,
+        withdrawals: finance.withdrawals,
+        bets:        finance.bets,
+        payouts:     finance.payouts,
         byProvider,
-      }
+      },
     });
   } catch (error) {
     console.error('Financial data error:', error);
@@ -225,42 +156,34 @@ router.get('/analytics/financials', authenticate, isAdmin, async (req, res) => {
  * ════════════════════════════════════════════════════════════════════════════
  */
 
-// Get all users with filters
 router.get('/stats', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
-    const { User, Merchant, PaymentOrder, Transaction, Bet } = getModels();
-    const now = new Date();
-    const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0);
-    const weekStart = new Date(now); weekStart.setDate(now.getDate() - 7);
-    const monthStart = new Date(now); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
-
-    const [
-      totalUsers, activeUsers, totalMerchants,
-      pendingOrders, completedOrders, disputedOrders,
-      dailyVolume, monthlyVolume, totalBets
-    ] = await Promise.all([
-      User.countDocuments({ isAdmin: false, roles: { $ne: 'merchant' } }),
-      User.countDocuments({ status: 'ACTIVE', isAdmin: false, roles: { $ne: 'merchant' } }),
-      Merchant.countDocuments({ merchantApprovalStatus: 'APPROVED' }),
-      PaymentOrder.countDocuments({ status: { $in: ['PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID'] } }),
-      PaymentOrder.countDocuments({ status: 'COMPLETED', updatedAt: { $gte: monthStart } }),
-      PaymentOrder.countDocuments({ status: 'DISPUTED' }),
-      PaymentOrder.aggregate([{ $match: { status: 'COMPLETED', completedAt: { $gte: dayStart } } }, { $group: { _id: null, total: { $sum: '$fiatAmount' } } }]),
-      PaymentOrder.aggregate([{ $match: { status: 'COMPLETED', completedAt: { $gte: monthStart } } }, { $group: { _id: null, total: { $sum: '$fiatAmount' } } }]),
-      Bet.countDocuments({ timestamp: { $gte: weekStart }, isPhantom: false }),
+    const [core, counts, month, week] = await Promise.all([
+      db.stats.dashboard(),
+      db.stats.cycleAndQueueCounts({}),
+      // "This month" is the last thirty IST days rather than since the 1st.
+      // The route this replaced built its month boundary with setDate(1) in
+      // SERVER local time, so on a UTC host the first five and a half hours of
+      // the month landed in the previous one.
+      db.stats.tokenFlow({ direction: 'DEPOSIT', from: daysAgo(30) }),
+      db.stats.dailyFinance({ days: 7 }),
     ]);
 
     res.json({
       success: true,
       stats: {
-        users: { total: totalUsers, active: activeUsers },
-        merchants: { total: totalMerchants },
-        orders: { pending: pendingOrders, completedThisMonth: completedOrders, disputed: disputedOrders },
-        volume: {
-          daily: dailyVolume[0]?.total || 0,
-          monthly: monthlyVolume[0]?.total || 0,
+        users: { total: core.users.total, active: core.users.active },
+        merchants: { total: core.merchants.total },
+        orders: {
+          pending: counts.queue.inFlightOrders + counts.queue.pendingOrders,
+          completedThisMonth: month.orders,
+          disputed: counts.queue.disputedOrders,
         },
-        bets: { weeklyCount: totalBets },
+        volume: {
+          daily: week[week.length - 1]?.deposits ?? 0,
+          monthly: month.fiat,
+        },
+        bets: { weeklyCount: week.reduce((sum, day) => sum + day.betCount, 0) },
       },
     });
   } catch (error) {
@@ -283,49 +206,15 @@ router.get('/stats', authenticate, isAdminOrSubAdmin, async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/analytics/deposit-dashboard', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
-    const { Transaction } = getModels();
-    const { startDate, endDate } = req.query;
-
-    const dateFilter = {};
-    if (startDate) dateFilter.$gte = new Date(startDate);
-    if (endDate)   dateFilter.$lte = new Date(endDate);
-    const match = {
-      type:   'TOKEN_PURCHASE',
-      status: 'SUCCESS',
-      ...(Object.keys(dateFilter).length && { timestamp: dateFilter }),
-    };
-
-    const [agg, daily] = await Promise.all([
-      Transaction.aggregate([
-        { $match: match },
-        { $group: {
-          _id:           null,
-          totalINR:      { $sum: { $multiply: ['$amount', { $ifNull: ['$rateUsed', 1] }] } },
-          totalTokens:   { $sum: '$amount' },
-          uniqueBuyers:  { $addToSet: '$userId' },
-          count:         { $sum: 1 },
-        }},
-      ]),
-      Transaction.aggregate([
-        { $match: match },
-        { $group: {
-          _id:    { $dateToString: { format: '%Y-%m-%d', date: '$timestamp', timezone: '+05:30' } },
-          tokens: { $sum: '$amount' },
-          count:  { $sum: 1 },
-        }},
-        { $sort: { _id: 1 } },
-      ]),
-    ]);
-
-    const summary = agg[0] || { totalINR: 0, totalTokens: 0, uniqueBuyers: [], count: 0 };
+    const flow = await tokenFlowFor('DEPOSIT', req.query);
     res.json({
       success: true,
       data: {
-        totalINRDeposited:    summary.totalINR    || 0,
-        totalTokensPurchased: summary.totalTokens || 0,
-        numberOfBuyers:       (summary.uniqueBuyers || []).length,
-        transactionCount:     summary.count        || 0,
-        dailyBreakdown:       daily,
+        totalINRDeposited:    flow.fiat,
+        totalTokensPurchased: flow.tokens,
+        numberOfBuyers:       flow.parties,
+        transactionCount:     flow.orders,
+        dailyBreakdown:       flow.daily,
       },
     });
   } catch (err) {
@@ -341,49 +230,15 @@ router.get('/analytics/deposit-dashboard', authenticate, isAdminOrSubAdmin, asyn
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/analytics/withdrawal-dashboard', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
-    const { Transaction } = getModels();
-    const { startDate, endDate } = req.query;
-
-    const dateFilter = {};
-    if (startDate) dateFilter.$gte = new Date(startDate);
-    if (endDate)   dateFilter.$lte = new Date(endDate);
-    const match = {
-      type:   'TOKEN_REDEMPTION',
-      status: { $in: ['SUCCESS', 'PENDING'] },
-      ...(Object.keys(dateFilter).length && { timestamp: dateFilter }),
-    };
-
-    const [agg, daily] = await Promise.all([
-      Transaction.aggregate([
-        { $match: match },
-        { $group: {
-          _id:           null,
-          totalTokens:   { $sum: '$amount' },
-          totalINR:      { $sum: { $multiply: ['$amount', { $ifNull: ['$rateUsed', 1] }] } },
-          uniqueSellers: { $addToSet: '$userId' },
-          count:         { $sum: 1 },
-        }},
-      ]),
-      Transaction.aggregate([
-        { $match: match },
-        { $group: {
-          _id:    { $dateToString: { format: '%Y-%m-%d', date: '$timestamp', timezone: '+05:30' } },
-          tokens: { $sum: '$amount' },
-          count:  { $sum: 1 },
-        }},
-        { $sort: { _id: 1 } },
-      ]),
-    ]);
-
-    const summary = agg[0] || { totalTokens: 0, totalINR: 0, uniqueSellers: [], count: 0 };
+    const flow = await tokenFlowFor('WITHDRAWAL', req.query);
     res.json({
       success: true,
       data: {
-        totalTokensSold:    summary.totalTokens     || 0,
-        totalINRWithdrawn:  summary.totalINR        || 0,
-        numberOfSellers:    (summary.uniqueSellers || []).length,
-        transactionCount:   summary.count           || 0,
-        dailyBreakdown:     daily,
+        totalTokensSold:   flow.tokens,
+        totalINRWithdrawn: flow.fiat,
+        numberOfSellers:   flow.parties,
+        transactionCount:  flow.orders,
+        dailyBreakdown:    flow.daily,
       },
     });
   } catch (err) {
@@ -399,28 +254,22 @@ router.get('/analytics/withdrawal-dashboard', authenticate, isAdminOrSubAdmin, a
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/analytics/merchant-funding', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
-    const { Transaction } = getModels();
-    const Merchant = mongoose.model('Merchant');
-
-    const agg = await Transaction.aggregate([
-      { $match: { type: { $in: ['MERCHANT_TOPUP', 'MERCHANT_RESERVE', 'MERCHANT_LIQUIDITY'] } } },
-      { $group: {
-        _id:    '$type',
-        total:  { $sum: '$amount' },
-        count:  { $sum: 1 },
-      }},
+    // Merchant funding is merchant WALLET movement, which is where it has
+    // always actually been recorded. The aggregate this replaced grouped a
+    // player transaction collection by three type strings that were never
+    // written to it, so all three tiles read zero on a platform that had funded
+    // merchants every day.
+    const [funding, merchants] = await Promise.all([
+      db.merchantWallets.fundingTotals(),
+      db.stats.merchantStats(),
     ]);
-
-    const byType = Object.fromEntries(agg.map(a => [a._id, { total: a.total, count: a.count }]));
-    const activeMerchants = await Merchant.countDocuments({ merchantApprovalStatus: 'APPROVED' });
-
     res.json({
       success: true,
       data: {
-        merchantTopup:     byType['MERCHANT_TOPUP']     || { total: 0, count: 0 },
-        merchantReserve:   byType['MERCHANT_RESERVE']   || { total: 0, count: 0 },
-        merchantLiquidity: byType['MERCHANT_LIQUIDITY'] || { total: 0, count: 0 },
-        activeMerchants,
+        merchantTopup:     funding.topup,
+        merchantReserve:   funding.reserve,
+        merchantLiquidity: funding.liquidity,
+        activeMerchants:   merchants.total,
       },
     });
   } catch (err) {

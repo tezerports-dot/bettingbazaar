@@ -510,6 +510,22 @@ export async function listCategories({ enabledOnly = true } = {}) {
   return rows.map((r) => ({ slug: r.slug, name: r.name, icon: r.icon, order: r.sort_order, enabled: r.enabled }));
 }
 
+/**
+ * RTP as a number, from whatever the caller had.
+ *
+ * The catalogue carries it as a display string — '96.5%'. The column is
+ * DOUBLE PRECISION with a 0-100 CHECK, so passing the string through made
+ * PostgreSQL reject the whole row on a value that was perfectly valid, just
+ * dressed for a UI. Anything unparseable becomes null, which the CHECK allows:
+ * an unknown RTP is a fact, and refusing the game over it would drop a
+ * playable title from the lobby.
+ */
+function parseRtp(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(String(value).replace('%', '').trim());
+  return Number.isFinite(n) && n >= 0 && n <= 100 ? n : null;
+}
+
 export async function upsertGame(spec) {
   const { rows } = await pgQuery(
     `INSERT INTO games (slug, name, provider_key, category_slug, launch_strategy,
@@ -529,9 +545,12 @@ export async function upsertGame(spec) {
     [String(spec.slug), String(spec.name), spec.providerKey ?? null, spec.categorySlug ?? null,
       String(spec.launchStrategy || 'PROVIDER'), spec.externalGameId ?? null, spec.launchUrl ?? null,
       spec.thumbnail ?? null, spec.banner ?? null, spec.badge ?? null,
-      spec.rtp ?? null, spec.tags ?? [],
+      parseRtp(spec.rtp), spec.tags ?? [],
       rupeesToPaise(spec.minBet ?? 10), rupeesToPaise(spec.maxBet ?? 100000),
-      String(spec.status || 'DRAFT'), Boolean(spec.featured), Number(spec.order) || 0,
+      // INACTIVE, not 'DRAFT': games_status_known declares ACTIVE, MAINTENANCE
+      // and INACTIVE, so a caller that omitted a status got a CHECK violation
+      // rather than the unpublished game it asked for. INACTIVE IS unpublished.
+      String(spec.status || 'INACTIVE'), Boolean(spec.featured), Number(spec.order) || 0,
       spec.createdBy ?? null, spec.updatedBy ?? null],
     'game_upsert',
   );

@@ -135,6 +135,107 @@ export async function search({
   };
 }
 
+/**
+ * The audit feed: newest first, with the count of everything that matched.
+ *
+ * ── Why the total comes from the same statement ─────────────────────────────
+ * `COUNT(*) OVER ()` rides along with the page, so the page and the number of
+ * pages describe ONE instant. The route this replaced issued a find and a
+ * countDocuments concurrently, so an entry written between them gave an auditor
+ * a page count that did not match the rows — in the one place where a row
+ * nobody can account for is the whole point.
+ *
+ * This is offset paging, unlike `search` above, because the admin panel asks
+ * for page numbers. That is a real cost: an entry written while an auditor
+ * pages shifts every later row by one, so the next page skips an entry. Use
+ * `search`'s cursor where an auditor must be sure they saw everything; this is
+ * for the browsable feed.
+ */
+export async function feed({
+  category = null, action = null, performedBy = null,
+  page = 1, limit = 50,
+} = {}) {
+  const where = []; const params = [];
+  const add = (sql, value) => { params.push(value); where.push(sql.replace('$?', `$${params.length}`)); };
+  if (category)    add('category = $?', String(category));
+  if (action)      add('action = $?', String(action));
+  if (performedBy) add('performed_by = $?', String(performedBy));
+
+  const size = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const wanted = Math.max(Number(page) || 1, 1);
+  params.push(size, (wanted - 1) * size);
+
+  const { rows } = await pgQuery(
+    `SELECT *, COUNT(*) OVER () AS total_matching FROM enhanced_audit_logs
+      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params, 'audit_feed',
+  );
+
+  // A page past the end returns no rows and therefore no count. Zero is the
+  // honest answer for "how many did this page find", but not for the total —
+  // so the caller is told which page it landed on rather than being handed a
+  // total of 0 for a filter that matches thousands.
+  const total = rows.length ? Number(rows[0].total_matching) : 0;
+  return {
+    entries: rows.map(toDetailed),
+    total, page: wanted, size,
+    pages: Math.max(Math.ceil(total / size), 1),
+    beyondEnd: rows.length === 0 && wanted > 1,
+  };
+}
+
+/**
+ * What each admin did recently, grouped by actor.
+ *
+ * One statement. The aggregation it replaced ran a five-stage pipeline that
+ * pushed EVERY matching entry into an array per actor and then sliced ten off
+ * the front — so a busy month materialised tens of thousands of rows in memory
+ * to return ten of them. `ROW_NUMBER()` takes the ten before the grouping.
+ *
+ * `actions` is counted over the whole window, not over the ten kept, because
+ * "what did this admin do" and "show me the last ten" are different questions
+ * and the pipeline's count answered neither once the slice was applied.
+ */
+export async function adminActivity({ hours = 24, roles = ['admin', 'subadmin'], limit = 100 } = {}) {
+  const { rows } = await pgQuery(
+    `WITH windowed AS (
+       SELECT performed_by, performed_by_name, action, category, created_at, success,
+              ROW_NUMBER() OVER (PARTITION BY performed_by ORDER BY created_at DESC, id DESC) AS rn,
+              COUNT(*)     OVER (PARTITION BY performed_by) AS actions
+         FROM enhanced_audit_logs
+        WHERE created_at >= now() - ($1 || ' hours')::interval
+          AND performed_by IS NOT NULL
+          AND performed_by_role = ANY($2::text[])
+     )
+     SELECT performed_by,
+            MIN(performed_by_name) FILTER (WHERE rn = 1) AS performed_by_name,
+            MIN(actions)  AS actions,
+            MAX(created_at) AS last_action_at,
+            jsonb_agg(jsonb_build_object(
+              'action', action, 'category', category,
+              'at', created_at, 'success', success
+            ) ORDER BY created_at DESC) AS recent
+       FROM windowed
+      WHERE rn <= 10
+      GROUP BY performed_by
+      ORDER BY MAX(created_at) DESC
+      LIMIT $3`,
+    [String(Math.min(Math.max(Number(hours) || 24, 1), 24 * 30)),
+      roles.map(String),
+      Math.min(Math.max(Number(limit) || 100, 1), 500)],
+    'audit_admin_activity',
+  );
+  return rows.map((r) => ({
+    adminId: r.performed_by,
+    name: r.performed_by_name,
+    actions: Number(r.actions),
+    lastActionAt: r.last_action_at,
+    recent: r.recent ?? [],
+  }));
+}
+
 /** Everything that happened to one target, oldest first — the object's story. */
 export async function historyFor(targetId, { limit = 200 } = {}) {
   const { rows } = await pgQuery(

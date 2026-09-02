@@ -169,6 +169,21 @@ export async function listFrontendErrors({ limit = 100 } = {}) {
 }
 
 /**
+ * Clear the crash-report inbox.
+ *
+ * Returns how many rows went. The endpoint above it reported "All error reports
+ * cleared" whether it deleted nine hundred or none, so an admin could not tell
+ * a clear from a no-op against an empty table — or from a clear that ran
+ * against the wrong deployment.
+ */
+export async function clearFrontendErrors() {
+  const { rowCount } = await pgQuery(
+    'DELETE FROM frontend_error_reports', [], 'frontend_error_clear',
+  );
+  return rowCount;
+}
+
+/**
  * Prune operational data past the retention window.
  *
  * Deliberately narrow. Financial, audit and user data is NEVER pruned — this

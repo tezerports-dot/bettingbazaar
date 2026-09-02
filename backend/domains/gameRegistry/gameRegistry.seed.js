@@ -2,10 +2,16 @@
 // One-time seed of the Game Registry from the catalogue that used to be
 // hardcoded in the React lobbies (CasinoPage.tsx GAME_CATALOGUE,
 // CrashPage.tsx CRASH_GAMES) plus the in-house cycle game. Runs ONLY when the
-// collections are empty, so it never overwrites admin edits — after the first
-// boot the DB is the source of truth. This is what lets the frontend stop
-// shipping hardcoded game arrays without any visual regression.
-import mongoose from 'mongoose';
+// tables are empty, so it never overwrites admin edits — after the first boot
+// the DB is the source of truth. This is what lets the frontend stop shipping
+// hardcoded game arrays without any visual regression.
+//
+// ── The launch strategies below are the table's, not an invented set ────────
+// This catalogue said INTERNAL_ROUTE and PROVIDER_GAME. `games_strategy_known`
+// declares PROVIDER, URL and INTERNAL — so every row here would have been
+// refused by the CHECK, and the seed's own `catch` would have swallowed the
+// error and left the lobby permanently empty with a one-line warning.
+import { db } from '#db';
 
 const CATEGORIES = [
   { slug: 'bb-originals', name: 'BB Originals',    icon: '🎯', order: 0 },
@@ -21,7 +27,7 @@ const CATEGORIES = [
 const GAMES = [
   // In-house — the live product plugs into the same registry.
   { slug: 'delhi-bombay', name: 'Delhi vs Bombay', providerKey: '', categorySlug: 'bb-originals',
-    launchStrategy: 'INTERNAL_ROUTE', launchUrl: '/', badge: '🎯 Original', featured: true, order: 0, tags: ['original', 'live'] },
+    launchStrategy: 'INTERNAL', launchUrl: '/', badge: '🎯 Original', featured: true, order: 0, tags: ['original', 'live'] },
 
   // Evolution (table games + shows)
   { slug: 'live-roulette',      name: 'Live Roulette',      providerKey: 'evolution', categorySlug: 'table-games', externalGameId: 'roulette',           badge: '🔴 Live',    rtp: '97.3%', order: 1 },
@@ -63,23 +69,34 @@ let _seeded = false;
 export async function seedGameRegistry() {
   if (_seeded) return;
   try {
-    const Game = mongoose.model('Game');
-    const GameCategory = mongoose.model('GameCategory');
-
-    if (await GameCategory.countDocuments() === 0) {
-      await GameCategory.insertMany(CATEGORIES.map(c => ({ ...c, enabled: true })));
+    // Categories first: `games.category_slug` REFERENCES them, so seeding
+    // games against an empty category table would either null every game's
+    // category (ON DELETE SET NULL does not apply to inserts — the FK would
+    // simply refuse) or leave the lobby with uncategorised tiles.
+    const existingCategories = await db.games.listCategories({ enabledOnly: false });
+    if (existingCategories.length === 0) {
+      for (const category of CATEGORIES) {
+        await db.games.upsertCategory({ ...category, enabled: true });
+      }
       console.log(`🎮 Game Registry: seeded ${CATEGORIES.length} categories`);
     }
-    if (await Game.countDocuments() === 0) {
-      const now = new Date();
-      await Game.insertMany(GAMES.map(g => ({
-        launchStrategy: 'PROVIDER_GAME', status: 'ACTIVE', featured: false, order: 0,
-        ...g, createdAt: now, updatedAt: now,
-      })));
+
+    const existingGames = await db.games.listGames({ visibleOnly: false, limit: 1 });
+    if (existingGames.length === 0) {
+      for (const game of GAMES) {
+        await db.games.upsertGame({
+          launchStrategy: 'PROVIDER', status: 'ACTIVE', featured: false, order: 0,
+          ...game,
+        });
+      }
       console.log(`🎮 Game Registry: seeded ${GAMES.length} games`);
     }
     _seeded = true;
   } catch (e) {
-    console.warn('[gameRegistry seed] skipped:', e.message);
+    // A seed failure must not take the server down — but it MUST be loud. The
+    // warning this replaced said "skipped", which reads like a decision rather
+    // than a failure, and the empty lobby that followed looked like a
+    // configuration choice for as long as nobody read the boot log carefully.
+    console.error('[gameRegistry seed] FAILED — the lobby will be empty:', e.message);
   }
 }

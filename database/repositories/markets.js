@@ -51,6 +51,16 @@ const COLUMNS = `cycle_id, cycle_type, start_time, end_time, status,
   winner_confidence, is_settled, settled_at, total_paid_out_paise, net_profit_paise,
   total_platform_fees_paise, winnings_fee_percent_used, created_at, updated_at`;
 
+/**
+ * The same column list, qualified with a table alias.
+ *
+ * COLUMNS spans several lines, so splitting it on ', ' leaves the newline and
+ * its indentation glued to the next name and produces `c.\n  phantom_delhi_paise`
+ * — which PostgreSQL parses as a column named `c` followed by garbage. Split on
+ * the comma and whatever whitespace follows it instead.
+ */
+const qualified = (alias) => COLUMNS.split(/,\s*/).map((c) => `${alias}.${c.trim()}`).join(', ');
+
 /** BIGINT arrives as a STRING. Cast once, here. */
 const num = (v) => Number(v ?? 0);
 
@@ -284,6 +294,95 @@ export async function listCycles({ cycleType = null, status = null, limit = 50, 
     params, 'cycle_list',
   );
   return rows.map(toCycle);
+}
+
+/**
+ * Cycles with their real pools, in ONE statement.
+ *
+ * ── Why not call `cycleWithPools` per row ──────────────────────────────────
+ * That is two queries per cycle. The admin phase board draws every live cycle,
+ * so on the four cycle types running concurrently it was nine round trips for
+ * one screen that refreshes every few seconds — and each pool read saw the
+ * database at a different instant, so two cycles on the same board could
+ * disagree about a bet placed while the page was loading.
+ *
+ * The LEFT JOIN keeps a cycle with no bets: `COALESCE` gives it zero pools
+ * rather than dropping it, and a cycle nobody has bet on yet is exactly the one
+ * an operator is watching at the top of a round.
+ *
+ * Phantom figures come off the cycle row and real ones from the bets, which is
+ * trap 4: storing real pools on the row deadlocks against the bets writing them.
+ */
+const POOL_JOIN = `
+  LEFT JOIN LATERAL (
+    SELECT COALESCE(SUM(stake_paise) FILTER (WHERE side = 'DELHI'), 0)  AS real_delhi_paise,
+           COALESCE(SUM(stake_paise) FILTER (WHERE side = 'BOMBAY'), 0) AS real_bombay_paise,
+           COUNT(*) FILTER (WHERE side = 'DELHI')::int  AS delhi_bets,
+           COUNT(*) FILTER (WHERE side = 'BOMBAY')::int AS bombay_bets
+      FROM bets b
+     WHERE b.cycle_id = c.cycle_id
+       AND NOT b.is_phantom
+       AND b.status NOT IN ('VOID', 'REFUNDED')
+  ) p ON TRUE`;
+
+function withPools(row) {
+  const cycle = toCycle(row);
+  const realDelhi = paiseToRupees(num(row.real_delhi_paise));
+  const realBombay = paiseToRupees(num(row.real_bombay_paise));
+  return {
+    ...cycle,
+    realDelhi, realBombay,
+    delhiBets: Number(row.delhi_bets ?? 0), bombayBets: Number(row.bombay_bets ?? 0),
+    totalDelhi: realDelhi + (cycle.phantomDelhi || 0),
+    totalBombay: realBombay + (cycle.phantomBombay || 0),
+  };
+}
+
+/** Every live cycle with its pools — the admin phase board's single read. */
+export async function activeCyclesWithPools() {
+  const { rows } = await pgQuery(
+    `SELECT ${qualified('c')},
+            p.real_delhi_paise, p.real_bombay_paise, p.delhi_bets, p.bombay_bets
+       FROM cycles c ${POOL_JOIN}
+      WHERE c.status = ANY($1::text[]) AND c.end_time > now()
+      ORDER BY c.cycle_type ASC, c.start_time ASC`,
+    [['OPEN', 'MERGED', 'CLOSED', 'PAUSED']], 'cycle_active_with_pools',
+  );
+  return rows.map(withPools);
+}
+
+/**
+ * Finished cycles, a page at a time, with the count of everything that matched.
+ *
+ * `COUNT(*) OVER ()` so the page and its total describe one instant. The two
+ * concurrent reads this replaced could report 51 cycles across 2 pages while
+ * the page in front of the admin held rows from a third.
+ */
+export async function cycleHistory({ cycleType = null, page = 1, limit = 50 } = {}) {
+  const params = [['RESULT_DECLARED', 'COMPLETED', 'CANCELLED']];
+  const where = ['c.status = ANY($1::text[])'];
+  if (cycleType) { params.push(String(cycleType)); where.push(`c.cycle_type = $${params.length}`); }
+
+  const size = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const wanted = Math.max(Number(page) || 1, 1);
+  params.push(size, (wanted - 1) * size);
+
+  const { rows } = await pgQuery(
+    `SELECT ${qualified('c')},
+            p.real_delhi_paise, p.real_bombay_paise, p.delhi_bets, p.bombay_bets,
+            COUNT(*) OVER () AS total_matching
+       FROM cycles c ${POOL_JOIN}
+      WHERE ${where.join(' AND ')}
+      ORDER BY c.end_time DESC
+      LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params, 'cycle_history',
+  );
+  const total = rows.length ? Number(rows[0].total_matching) : 0;
+  return {
+    cycles: rows.map(withPools),
+    total, page: wanted, limit: size,
+    pages: Math.max(Math.ceil(total / size), 1),
+  };
 }
 
 // ── Writes ───────────────────────────────────────────────────────────────────
@@ -524,13 +623,104 @@ export async function setPhantomPools(cycleId, { delhiRupees, bombayRupees, bala
 }
 
 /** Pause or resume a cycle. An admin control, separate from its lifecycle. */
+/**
+ * Pause or resume a cycle — the flag AND the status, in one statement.
+ *
+ * ── Why both ───────────────────────────────────────────────────────────────
+ * `is_paused` is what the admin panel shows; `status` is what decides whether a
+ * bet is accepted. Setting only the flag left a "paused" cycle still taking
+ * bets, and the admin had no way to tell: the panel said PAUSED because it
+ * reads the flag.
+ *
+ * ── Resuming does not always mean OPEN ─────────────────────────────────────
+ * A cycle whose betting window has already closed resumes to CLOSED, not to
+ * OPEN. The route this replaced set OPEN unconditionally, so pausing a cycle
+ * past its end time and resuming it REOPENED betting on a round whose result
+ * was about to be declared — bets accepted after the window, at a price nobody
+ * else could still get.
+ *
+ * A settled or cancelled cycle is refused outright. There is nothing to pause
+ * about a round whose money has already moved.
+ */
 export async function setPaused(cycleId, isPaused) {
   const { rows } = await pgQuery(
-    `UPDATE cycles SET is_paused = $2, updated_at = now()
-      WHERE cycle_id = $1 RETURNING ${COLUMNS}`,
+    `UPDATE cycles SET
+       is_paused = $2,
+       status = CASE
+         WHEN $2 THEN 'PAUSED'
+         WHEN end_time > now() THEN 'OPEN'
+         ELSE 'CLOSED'
+       END,
+       updated_at = now()
+      WHERE cycle_id = $1
+        AND NOT is_settled
+        AND status NOT IN ('CANCELLED', 'COMPLETED', 'RESULT_DECLARED')
+      RETURNING ${COLUMNS}`,
     [String(cycleId), Boolean(isPaused)], 'cycle_set_paused',
   );
-  return toCycle(rows[0]);
+  if (rows[0]) return { ok: true, cycle: toCycle(rows[0]) };
+  const current = await getCycle(cycleId);
+  if (!current) return { ok: false, reason: 'NOT_FOUND' };
+  return { ok: false, reason: 'NOT_PAUSABLE', status: current.status };
+}
+
+/**
+ * Cancel a cycle.
+ *
+ * Refuses a cycle that has been settled or has a winner. Cancelling one of
+ * those would leave the round CANCELLED while the payouts it produced stayed in
+ * players' wallets — money moved for a round the platform says never happened.
+ * Refunding the stakes on an unsettled cycle is settlement's job, not this
+ * one's; this only moves the status.
+ */
+export async function cancelCycle(cycleId, { by = null } = {}) {
+  const { rows } = await pgQuery(
+    `UPDATE cycles SET status = 'CANCELLED', is_paused = FALSE,
+            winner_determined_by = COALESCE($2, winner_determined_by),
+            updated_at = now()
+      WHERE cycle_id = $1 AND NOT is_settled AND winner IS NULL
+        AND status <> 'CANCELLED'
+      RETURNING ${COLUMNS}`,
+    [String(cycleId), by ? String(by) : null], 'cycle_cancel',
+  );
+  if (rows[0]) return { ok: true, cycle: toCycle(rows[0]) };
+  const current = await getCycle(cycleId);
+  if (!current) return { ok: false, reason: 'NOT_FOUND' };
+  if (current.status === 'CANCELLED') return { ok: false, reason: 'ALREADY_CANCELLED' };
+  return { ok: false, reason: 'ALREADY_DECLARED', winner: current.winner };
+}
+
+/**
+ * Level the two phantom pools to the larger of them.
+ *
+ * The arithmetic is in the statement, not read out and written back. The
+ * handler this replaced loaded the cycle, computed
+ * `max(phantomDelhi, phantomBombay)` in JavaScript and saved both fields — so
+ * a phantom bet landing between the read and the save was overwritten, and the
+ * pools ended up levelled to a figure that was already stale.
+ *
+ * Refuses a settled or declared cycle: moving the displayed pool after the
+ * result is out changes what players were shown about a round that is over.
+ */
+export async function equalizePhantomPools(cycleId) {
+  const { rows } = await pgQuery(
+    `UPDATE cycles SET
+       phantom_delhi_paise  = GREATEST(phantom_delhi_paise, phantom_bombay_paise),
+       phantom_bombay_paise = GREATEST(phantom_delhi_paise, phantom_bombay_paise),
+       phantom_balanced = TRUE, updated_at = now()
+      WHERE cycle_id = $1 AND NOT is_settled AND winner IS NULL
+      RETURNING ${COLUMNS}`,
+    [String(cycleId)], 'cycle_equalize_phantom',
+  );
+  if (!rows[0]) {
+    const current = await getCycle(cycleId);
+    if (!current) return { ok: false, reason: 'NOT_FOUND' };
+    return { ok: false, reason: 'ALREADY_DECLARED', winner: current.winner };
+  }
+  // The pools the admin actually needs to see are the totals, and the real half
+  // of those comes from the bets — so it is read after the write, not carried
+  // over from before it.
+  return { ok: true, cycle: await cycleWithPools(cycleId) };
 }
 
 /** A pending result an admin has staged but not yet declared. */

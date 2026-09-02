@@ -1,6 +1,7 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** cycles.admin.routes.js — Cycle phases, history, equalization, manage-cycle */
-import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from './_adminShared.js';
+import { express, authenticate, isAdmin, isAdminOrSubAdmin } from './_adminShared.js';
+import { db } from '#db';
 import { isCycleType, phasesFor } from '../../domains/markets/cycleTypes.js';
 import { DEFAULT_CYCLE_PHASES } from '../../domains/configuration/systemConfig.model.js';
 import { getSystemConfig } from '#db/repositories/config.js';
@@ -9,13 +10,13 @@ const router = express.Router();
 
 router.get('/cycles/phases', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
-    const { Cycle, SystemConfig } = getModels();
-
     const now = Date.now();
-    const activeCycles = await Cycle.find({
-      status: { $in: ['OPEN', 'MERGED', 'CLOSED'] },
-      endTime: { $gte: now }
-    }).sort({ startTime: 1 });
+    // Cycles AND their pools in one statement. Reading the pools per cycle was
+    // two round trips each, and each one saw the database at its own instant —
+    // so two rows on the same board could disagree about a bet placed while the
+    // page loaded. PAUSED is included: a paused cycle is still live, and the
+    // board that shows an operator what is running must show it.
+    const activeCycles = await db.markets.activeCyclesWithPools();
     
     // Phase offsets come from the SAME admin config the generator acts on
     // (SystemConfig.cyclePhases, resolved per type through the registry).
@@ -38,9 +39,16 @@ router.get('/cycles/phases', authenticate, isAdminOrSubAdmin, async (req, res) =
       const p = phasesFor(cycle.type, cfg?.cyclePhases)
         || phasesFor(cycle.type, DEFAULT_CYCLE_PHASES);
 
-      const mergeTime      = cycle.endTime - (p.mergeBeforeEndSec     * 1000);
-      const equalizerTime  = cycle.endTime - (p.equalizerBeforeEndSec * 1000);
-      const betsClosedTime = cycle.endTime - (p.closeBeforeEndSec     * 1000);
+      // Epoch millis, because the phase arithmetic below subtracts seconds
+      // from them. The rows carry Date objects; subtracting a number from a
+      // Date works by coercion but adding one back gives a string, and the
+      // response's phase boundaries would have gone out as concatenated text.
+      const endMs   = new Date(cycle.endTime).getTime();
+      const startMs = new Date(cycle.startTime).getTime();
+
+      const mergeTime      = endMs - (p.mergeBeforeEndSec     * 1000);
+      const equalizerTime  = endMs - (p.equalizerBeforeEndSec * 1000);
+      const betsClosedTime = endMs - (p.closeBeforeEndSec     * 1000);
       
       // Determine current phase
       let currentPhase = 'OPEN';
@@ -53,13 +61,13 @@ router.get('/cycles/phases', authenticate, isAdminOrSubAdmin, async (req, res) =
         type: cycle.type,
         status: cycle.status,
         currentPhase,
-        startTime: cycle.startTime,
-        endTime: cycle.endTime,
+        startTime: startMs,
+        endTime: endMs,
         phases: {
-          open: { start: cycle.startTime, end: mergeTime },
+          open: { start: startMs, end: mergeTime },
           merge: { start: mergeTime, end: equalizerTime },
           equalizer: { start: equalizerTime, end: betsClosedTime },
-          closed: { start: betsClosedTime, end: cycle.endTime }
+          closed: { start: betsClosedTime, end: endMs }
         },
         pools: {
           totalDelhi: cycle.totalDelhi,
@@ -90,49 +98,39 @@ router.get('/cycles/phases', authenticate, isAdminOrSubAdmin, async (req, res) =
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/cycles/history', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
-    const { Cycle } = getModels();
     const { page = 1, limit = 50, type } = req.query;
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-
-    const query = { status: { $in: ['RESULT_DECLARED', 'COMPLETED', 'CANCELLED'] } };
-    if (type) query.type = type;
-
-    const [cycles, total] = await Promise.all([
-      Cycle.find(query)
-        .sort({ endTime: -1 })
-        .skip(skip)
-        .limit(parseInt(limit))
-        .lean(),
-      Cycle.countDocuments(query),
-    ]);
+    // The page and its total come from one statement, so the pagination an
+    // admin clicks through matches the rows in front of them.
+    const history = await db.markets.cycleHistory({
+      cycleType: type || null, page, limit,
+    });
 
     res.json({
       success: true,
-      cycles: cycles.map(c => ({
-        _id: c._id,
+      cycles: history.cycles.map((c) => ({
+        _id: c.cycleId,
         cycleId: c.cycleId,
         type: c.type,
         status: c.status,
         startTime: c.startTime,
         endTime: c.endTime,
-        winner: c.winner || null,
-        realDelhi: c.realDelhi || 0,
-        realBombay: c.realBombay || 0,
-        phantomDelhi: c.phantomDelhi || 0,
-        phantomBombay: c.phantomBombay || 0,
-        totalDelhi: c.totalDelhi || 0,
-        totalBombay: c.totalBombay || 0,
+        winner: c.winner,
+        // Real pools are DERIVED from the bets — the columns the old response
+        // read (`realDelhi`, `totalDelhi`) were never on the cycle row, so
+        // every one of them fell through to its `|| 0` and the admin history
+        // showed zero volume on every settled cycle the platform had run.
+        realDelhi: c.realDelhi, realBombay: c.realBombay,
+        phantomDelhi: c.phantomDelhi, phantomBombay: c.phantomBombay,
+        totalDelhi: c.totalDelhi, totalBombay: c.totalBombay,
         isSettled: c.isSettled,
-        totalPaidOut: c.totalPaidOut || 0,
-        netProfit: c.netProfit || 0,
+        totalPaidOut: c.totalPaidOut,
+        netProfit: c.netProfit,
         winnerDeterminedBy: c.winnerDeterminedBy || 'AUTOMATIC',
-        settledAt: c.settledAt || null,
+        settledAt: c.settledAt,
       })),
       pagination: {
-        total,
-        page: parseInt(page),
-        limit: parseInt(limit),
-        pages: Math.ceil(total / parseInt(limit)),
+        total: history.total, page: history.page,
+        limit: history.limit, pages: history.pages,
       },
     });
   } catch (error) {
@@ -145,41 +143,42 @@ router.get('/cycles/history', authenticate, isAdminOrSubAdmin, async (req, res) 
 router.post('/cycles/:cycleId/equalize', authenticate, isAdmin, async (req, res) => {
   try {
     const { cycleId } = req.params;
-    const { Cycle } = getModels();
-    
-    const cycle = await Cycle.findOne({ cycleId });
-    if (!cycle) {
-      return res.status(404).json({ success: false, message: 'Cycle not found' });
+    // The levelling arithmetic runs IN the statement. The handler this replaced
+    // read both phantom pools, took their max in JavaScript and saved both
+    // back, so a phantom bet landing in between was silently overwritten.
+    const result = await db.markets.equalizePhantomPools(cycleId);
+
+    if (!result.ok) {
+      return result.reason === 'NOT_FOUND'
+        ? res.status(404).json({ success: false, message: 'Cycle not found' })
+        : res.status(409).json({
+          success: false,
+          message: `Cycle already has a result (${result.winner}) — its pools are final`,
+        });
     }
-    
-    // Run manual equalization
-    const targetPhantom = Math.max(cycle.phantomDelhi || 0, cycle.phantomBombay || 0);
-    
-    cycle.phantomDelhi = targetPhantom;
-    cycle.phantomBombay = targetPhantom;
-    cycle.totalDelhi = (cycle.realDelhi || 0) + targetPhantom;
-    cycle.totalBombay = (cycle.realBombay || 0) + targetPhantom;
-    cycle.phantomBalanced = true;
-    
-    await cycle.save();
-    
-    // Emit real-time update
+
+    const { cycle } = result;
     global.io?.emit('phantom_equalized', {
       cycleId: cycle.cycleId,
       totalDelhi: cycle.totalDelhi,
-      totalBombay: cycle.totalBombay
+      totalBombay: cycle.totalBombay,
     });
-    
+
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, performedByRole: 'admin',
+      action: 'CYCLE_PHANTOM_EQUALIZED', category: 'MARKETS',
+      targetType: 'Cycle', targetId: String(cycleId),
+      details: { phantomDelhi: cycle.phantomDelhi, phantomBombay: cycle.phantomBombay },
+    });
+
     res.json({
       success: true,
       message: 'Phantom equalizer executed',
       cycle: {
         cycleId: cycle.cycleId,
-        totalDelhi: cycle.totalDelhi,
-        totalBombay: cycle.totalBombay,
-        phantomDelhi: cycle.phantomDelhi,
-        phantomBombay: cycle.phantomBombay
-      }
+        totalDelhi: cycle.totalDelhi, totalBombay: cycle.totalBombay,
+        phantomDelhi: cycle.phantomDelhi, phantomBombay: cycle.phantomBombay,
+      },
     });
   } catch (error) {
     console.error('Manual equalize error:', error);
@@ -196,47 +195,100 @@ router.post('/cycles/:cycleId/equalize', authenticate, isAdmin, async (req, res)
 // This duplicate was shadowing the system version (wrong response shape).
 // Removed to eliminate the route conflict.
 
+/**
+ * Admin cycle control: pause, resume, cancel, force a result.
+ *
+ * ── Every branch moved two fields with a read-modify-write ─────────────────
+ * The handler this replaced loaded the cycle, mutated it in JavaScript and
+ * saved it back. Three defects came out of that shape and none of them are
+ * here:
+ *
+ *   • RESUME set status to OPEN unconditionally, so resuming a cycle past its
+ *     betting window REOPENED it — bets accepted after close, on a round whose
+ *     result was about to be declared.
+ *   • CANCEL and FORCE_RESULT did not check whether the cycle had already
+ *     settled, so an admin could cancel a round whose payouts were already in
+ *     players' wallets, or declare a second, different winner over one.
+ *   • FORCE_RESULT assigned `winner` and `status` as two statements in a
+ *     document that was then saved — trap 3. The winner must be written with
+ *     the status or before it; a cycle that is RESULT_DECLARED with no winner
+ *     is offered to settlement and settles nothing.
+ *
+ * Each action is now one guarded UPDATE that either applies in full or reports
+ * why it could not.
+ */
 router.post('/manage-cycle', authenticate, isAdmin, async (req, res) => {
   try {
     const { action, cycleId, payload } = req.body;
-    const Cycle = mongoose.model('Cycle');
+    if (!cycleId) return res.status(400).json({ success: false, message: 'cycleId is required' });
 
-    const cycle = await Cycle.findOne({ cycleId });
-    if (!cycle) return res.status(404).json({ success: false, message: 'Cycle not found' });
+    const refuse = (result) => {
+      const status = result.reason === 'NOT_FOUND' ? 404 : 409;
+      const message = {
+        NOT_FOUND: 'Cycle not found',
+        NOT_PAUSABLE: `Cycle is ${result.status} and cannot be paused or resumed`,
+        ALREADY_CANCELLED: 'Cycle is already cancelled',
+        ALREADY_DECLARED: `Cycle already has a result: ${result.winner}`,
+      }[result.reason] ?? 'Cycle cannot accept that action';
+      return res.status(status).json({ success: false, message });
+    };
 
+    let result;
     switch (action?.toUpperCase()) {
       case 'PAUSE':
-        cycle.isPaused = true;
-        cycle.status   = 'PAUSED';
-        await cycle.save();
+        result = await db.markets.setPaused(cycleId, true);
+        if (!result.ok) return refuse(result);
         global.io?.emit('cycle_phase', { cycleId, phase: 'PAUSED', message: 'Cycle paused by admin' });
         break;
+
       case 'RESUME':
-        cycle.isPaused = false;
-        cycle.status   = 'OPEN';
-        await cycle.save();
-        global.io?.emit('cycle_phase', { cycleId, phase: 'OPEN', message: 'Cycle resumed by admin' });
+        result = await db.markets.setPaused(cycleId, false);
+        if (!result.ok) return refuse(result);
+        // The phase is whatever the row settled on, not an assumed OPEN: a
+        // cycle resumed past its window comes back CLOSED and the clients need
+        // to hear that, or they will offer a bet the server refuses.
+        global.io?.emit('cycle_phase', {
+          cycleId, phase: result.cycle.status,
+          message: `Cycle resumed by admin (${result.cycle.status})`,
+        });
         break;
+
       case 'CANCEL':
-        cycle.status = 'CANCELLED';
-        await cycle.save();
+        result = await db.markets.cancelCycle(cycleId, { by: req.user.userId });
+        if (!result.ok) return refuse(result);
         global.io?.emit('cycle_phase', { cycleId, phase: 'CANCELLED', message: 'Cycle cancelled by admin' });
         break;
-      case 'FORCE_RESULT':
+
+      case 'FORCE_RESULT': {
         const winner = payload?.winner;
         if (!['DELHI', 'BOMBAY'].includes(winner)) {
           return res.status(400).json({ success: false, message: 'winner must be DELHI or BOMBAY' });
         }
-        cycle.winner = winner;
-        cycle.status = 'RESULT_DECLARED';
-        await cycle.save();
+        // The same function the engine declares through, so there is one owner
+        // of "this cycle has a result" — and one guard refusing a second one.
+        result = await db.markets.declareWinner(cycleId, winner, { by: `admin:${req.user.userId}` });
+        if (!result.ok) return refuse(result);
         global.io?.emit('cycle_result', { cycleId, winner, forced: true });
         break;
+      }
+
       default:
         return res.status(400).json({ success: false, message: `Unknown action: ${action}` });
     }
 
-    res.json({ success: true, message: `Action '${action}' applied to cycle ${cycleId}`, cycle });
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId,
+      performedByRole: req.user.isAdmin ? 'admin' : 'subadmin',
+      action: `CYCLE_${action.toUpperCase()}`, category: 'MARKETS',
+      targetType: 'Cycle', targetId: String(cycleId),
+      details: { winner: payload?.winner ?? null, status: result.cycle.status },
+    });
+
+    res.json({
+      success: true,
+      message: `Action '${action}' applied to cycle ${cycleId}`,
+      cycle: result.cycle,
+    });
   } catch (error) {
     console.error('Manage cycle error:', error);
     res.status(500).json({ success: false, message: 'Failed to manage cycle' });

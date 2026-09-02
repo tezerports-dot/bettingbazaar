@@ -2,11 +2,12 @@
 /**
  * communication.admin.routes.js — Communication Platform admin surface
  * (BBEPS Phase 012): channel registry view, the Audit Feed, and the Admin
- * Activity Feed (both read-only projections over EnhancedAuditLog — the
- * audit data itself stays owned by its existing writers).
+ * Activity Feed (both read-only projections over the enhanced audit trail —
+ * the audit data itself stays owned by its existing writers).
  * Mounted at /api/admin via routes/admin/index.js.
  */
-import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import { db } from '#db';
 import { listChannels } from './communication.service.js';
 
 const router = express.Router();
@@ -17,7 +18,7 @@ router.get('/communication/channels', authenticate, isAdminOrSubAdmin, async (re
 });
 
 // GET /api/admin/communication/audit-feed?page=&limit=&category=&action=
-// The Audit Feed: newest-first EnhancedAuditLog entries with filters.
+// The Audit Feed: newest-first audit entries with filters.
 router.get('/communication/audit-feed', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
     const page  = Math.max(1, parseInt(req.query.page) || 1);
@@ -25,14 +26,13 @@ router.get('/communication/audit-feed', authenticate, isAdminOrSubAdmin, async (
     const filter = {};
     if (req.query.category) filter.category = req.query.category;
     if (req.query.action)   filter.action = req.query.action;
+    if (req.query.admin)    filter.performedBy = req.query.admin;
 
-    const EnhancedAuditLog = mongoose.model('EnhancedAuditLog');
-    const [entries, total] = await Promise.all([
-      EnhancedAuditLog.find(filter).sort({ createdAt: -1 })
-        .skip((page - 1) * limit).limit(limit).lean(),
-      EnhancedAuditLog.countDocuments(filter),
-    ]);
-    res.json({ success: true, entries, total, page, pages: Math.ceil(total / limit) || 1 });
+    // The page and its total come from ONE statement. The two reads this
+    // replaced ran concurrently, so an entry written between them handed the
+    // auditor a page count that did not match the rows in front of them.
+    const feed = await db.audit.feed({ ...filter, page, limit });
+    res.json({ success: true, ...feed });
   } catch (error) {
     console.error('Audit feed error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch audit feed' });
@@ -46,26 +46,11 @@ router.get('/communication/admin-activity', authenticate, isAdmin, async (req, r
     const hours = Math.min(24 * 30, Math.max(1, parseInt(req.query.hours) || 24));
     const since = new Date(Date.now() - hours * 60 * 60 * 1000);
 
-    const EnhancedAuditLog = mongoose.model('EnhancedAuditLog');
-    const activity = await EnhancedAuditLog.aggregate([
-      { $match: { createdAt: { $gte: since }, performedByRole: { $in: ['admin', 'subadmin'] } } },
-      { $sort: { createdAt: -1 } },
-      { $group: {
-          _id: { performedBy: '$performedBy', name: '$performedByName' },
-          actions: { $sum: 1 },
-          lastActionAt: { $first: '$createdAt' },
-          recent: { $push: { action: '$action', category: '$category', at: '$createdAt', success: '$success' } },
-      } },
-      { $project: {
-          _id: 0,
-          adminId: '$_id.performedBy',
-          name: '$_id.name',
-          actions: 1,
-          lastActionAt: 1,
-          recent: { $slice: ['$recent', 10] },
-      } },
-      { $sort: { lastActionAt: -1 } },
-    ]);
+    // Ten entries per actor are taken by the WINDOW, before the grouping. The
+    // pipeline this replaced pushed every matching entry into an array per
+    // admin and sliced ten off the front afterwards, materialising a month of
+    // audit history in memory to answer with a handful of rows.
+    const activity = await db.audit.adminActivity({ hours });
     res.json({ success: true, hours, activity });
   } catch (error) {
     console.error('Admin activity feed error:', error);

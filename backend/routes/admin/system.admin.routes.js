@@ -1,8 +1,9 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** system.admin.routes.js — System config, token rates, withdrawal requests, error logs */
-import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from './_adminShared.js';
+import { express, authenticate, isAdmin, isAdminOrSubAdmin } from './_adminShared.js';
 import { setConfigField } from '../../domains/configuration/configVersioning.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
+import { db } from '#db';
 
 const router = express.Router();
 
@@ -49,30 +50,25 @@ const FOOTER_PAGE_KEYS = [
 
 router.get('/transactions', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
-    const { Transaction } = getModels();
-    const { type, status, page = 1, limit = 50 } = req.query;
-    
-    const filter = {};
-    if (type && type !== 'all') filter.type = type;
-    if (status && status !== 'all') filter.status = status;
+    const { type, field, page = 1, limit = 50 } = req.query;
 
-    const transactions = await Transaction.find(filter)
-      .populate('userId', 'username mobile')
-      .sort({ createdAt: -1 })
-      .limit(parseInt(limit))
-      .skip((parseInt(page) - 1) * parseInt(limit));
-
-    const total = await Transaction.countDocuments(filter);
+    // The wallet ledger IS the transaction list. `type` filters by direction
+    // (CREDIT / DEBIT) and `field` by pocket, which is the vocabulary the rows
+    // actually carry — the collection this replaced had its own type and status
+    // enums, and nothing has written a row to it since the money moved.
+    const ledger = await db.wallets.platformLedger({
+      txType: type && type !== 'all' ? String(type).toUpperCase() : null,
+      field:  field && field !== 'all' ? String(field) : null,
+      page, limit,
+    });
 
     res.json({
       success: true,
-      transactions,
+      transactions: ledger.entries,
       pagination: {
-        total,
-        page: parseInt(page),
-        limit: parseInt(limit),
-        pages: Math.ceil(total / parseInt(limit))
-      }
+        total: ledger.total, page: ledger.page,
+        limit: ledger.limit, pages: ledger.pages,
+      },
     });
   } catch (error) {
     console.error('Get transactions error:', error);
@@ -493,8 +489,7 @@ router.get('/download/links', authenticate, isAdminOrSubAdmin, async (req, res) 
 
 router.get('/error-reports', authenticate, isAdmin, async (req, res) => {
   try {
-    const FrontendErrorReport = mongoose.model('FrontendErrorReport');
-    const reports = await FrontendErrorReport.find({}).sort({ ts: -1 }).limit(200).lean();
+    const reports = await db.operations.listFrontendErrors({ limit: 200 });
     res.json({ success: true, reports });
   } catch (err) {
     console.error('[error-reports] list failed:', err.message);
@@ -504,9 +499,11 @@ router.get('/error-reports', authenticate, isAdmin, async (req, res) => {
 
 router.delete('/error-reports', authenticate, isAdmin, async (req, res) => {
   try {
-    const FrontendErrorReport = mongoose.model('FrontendErrorReport');
-    await FrontendErrorReport.deleteMany({});
-    res.json({ success: true, message: 'All error reports cleared' });
+    // The count is reported. "All error reports cleared" for a delete that
+    // removed nothing looks the same as one that removed nine hundred, so an
+    // admin could not tell a clear from a no-op against an empty table.
+    const cleared = await db.operations.clearFrontendErrors();
+    res.json({ success: true, cleared, message: `${cleared} error report(s) cleared` });
   } catch (err) {
     console.error('[error-reports] clear failed:', err.message);
     res.status(500).json({ success: false, message: 'Failed to clear error reports' });

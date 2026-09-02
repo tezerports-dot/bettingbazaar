@@ -200,3 +200,53 @@ export async function getMerchantWalletLedger(merchantId, { page = 1, limit = 50
 export async function getMerchantTokenBalance(merchantId) {
   return spendable(await getMerchantBalances(merchantId));
 }
+
+/**
+ * How much has been put INTO merchant wallets, by kind of funding.
+ *
+ * ── What the three tiles actually mean ──────────────────────────────────────
+ * The admin panel shows "topup", "reserve" and "liquidity". They map onto the
+ * operations the merchant wallet ledger actually records:
+ *
+ *   topup     — ADMIN_ISSUANCE and OPENING_BALANCE: tokens the platform issued
+ *               to a merchant.
+ *   reserve   — RESERVE: available tokens moved into the reserved pocket to
+ *               back an order in flight.
+ *   liquidity — SETTLEMENT_COMPLETE and RESERVE_COMPLETE: reserved tokens
+ *               released once an order settled.
+ *
+ * The dashboard this replaced grouped a PLAYER transaction collection by three
+ * type strings — MERCHANT_TOPUP, MERCHANT_RESERVE, MERCHANT_LIQUIDITY — that
+ * nothing has ever written to it. All three tiles read zero on a platform that
+ * had been funding merchants daily, and the page gave no sign that the numbers
+ * were structurally impossible rather than merely small.
+ */
+export async function fundingTotals({ from = null, to = null } = {}) {
+  const params = []; const where = [];
+  if (from) { params.push(from); where.push(`created_at >= $${params.length}`); }
+  if (to)   { params.push(to);   where.push(`created_at <= $${params.length}`); }
+
+  const { rows } = await pgQuery(
+    `SELECT
+       COALESCE(SUM(amount_paise) FILTER
+         (WHERE operation IN ('ADMIN_ISSUANCE', 'OPENING_BALANCE')), 0) AS topup,
+       COUNT(*) FILTER
+         (WHERE operation IN ('ADMIN_ISSUANCE', 'OPENING_BALANCE'))::int AS topup_count,
+       COALESCE(SUM(amount_paise) FILTER (WHERE operation = 'RESERVE'), 0) AS reserve,
+       COUNT(*) FILTER (WHERE operation = 'RESERVE')::int                  AS reserve_count,
+       COALESCE(SUM(amount_paise) FILTER
+         (WHERE operation IN ('SETTLEMENT_COMPLETE', 'RESERVE_COMPLETE')), 0) AS liquidity,
+       COUNT(*) FILTER
+         (WHERE operation IN ('SETTLEMENT_COMPLETE', 'RESERVE_COMPLETE'))::int AS liquidity_count
+     FROM merchant_wallet_entries
+     ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`,
+    params, 'merchant_funding_totals',
+  );
+  const r = rows[0];
+  const bucket = (total, count) => ({ total: paiseToRupees(Number(total)), count: Number(count) });
+  return {
+    topup:     bucket(r.topup, r.topup_count),
+    reserve:   bucket(r.reserve, r.reserve_count),
+    liquidity: bucket(r.liquidity, r.liquidity_count),
+  };
+}

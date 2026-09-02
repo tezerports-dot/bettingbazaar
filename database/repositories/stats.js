@@ -893,3 +893,255 @@ export async function tableCounts(tables = []) {
   }
   return out;
 }
+
+// ── The admin analytics dashboards ──────────────────────────────────────────
+
+/**
+ * Platform finance, in one pass over each table it needs.
+ *
+ * ── What this replaced, and why every figure it produced was wrong ──────────
+ * The dashboard aggregated a `transactions` collection nothing writes to any
+ * more. Every total it showed was whatever had accumulated there before the
+ * money moved to PostgreSQL and then stopped changing — a dashboard that looked
+ * healthy and had not moved in weeks.
+ *
+ * Deposits and withdrawals come from `order_states`, which is where a funding
+ * order's money actually settles; staked and paid-out come from `bets`. Phantom
+ * bets are excluded from both, because they are display volume and counting
+ * them in profit would show the house earning its own liquidity.
+ *
+ * `netProfit` is staked minus paid out. The cycle rows carry a `net_profit`
+ * column, and reading THAT was the original defect: it was zero for every cycle
+ * nothing had populated, so the platform reported a profit of zero forever.
+ */
+export async function platformFinance({ from = null, to = null } = {}) {
+  const window = (column) => {
+    const clauses = [];
+    if (from) clauses.push(`${column} >= $1`);
+    if (to)   clauses.push(`${column} <= $${from ? 2 : 1}`);
+    return clauses.length ? `AND ${clauses.join(' AND ')}` : '';
+  };
+  const params = [from, to].filter((v) => v !== null);
+
+  const [funding, betting] = await Promise.all([
+    pgQuery(
+      `SELECT
+         COALESCE(SUM(fiat_amount_paise) FILTER (WHERE order_type = 'DEPOSIT'), 0)    AS deposits,
+         COUNT(*) FILTER (WHERE order_type = 'DEPOSIT')::int                          AS deposit_count,
+         COALESCE(SUM(fiat_amount_paise) FILTER (WHERE order_type = 'WITHDRAWAL'), 0) AS withdrawals,
+         COUNT(*) FILTER (WHERE order_type = 'WITHDRAWAL')::int                       AS withdrawal_count
+       FROM order_states
+      WHERE state = 'COMPLETED' ${window('completed_at')}`,
+      params, 'stats_platform_funding',
+    ),
+    pgQuery(
+      `SELECT
+         COALESCE(SUM(stake_paise), 0)                            AS staked,
+         COUNT(*)::int                                            AS bet_count,
+         COALESCE(SUM(payout_paise) FILTER (WHERE status = 'WON'), 0) AS paid_out,
+         COUNT(*) FILTER (WHERE status = 'WON')::int              AS win_count
+       FROM bets
+      WHERE NOT is_phantom ${window('placed_at')}`,
+      params, 'stats_platform_betting',
+    ),
+  ]);
+
+  const f = funding.rows[0];
+  const b = betting.rows[0];
+  const stakedPaise = Number(b.staked);
+  const paidOutPaise = Number(b.paid_out);
+  return {
+    deposits:    { amount: rupees(f.deposits),    count: f.deposit_count },
+    withdrawals: { amount: rupees(f.withdrawals), count: f.withdrawal_count },
+    bets:        { amount: rupees(stakedPaise),   count: b.bet_count },
+    payouts:     { amount: rupees(paidOutPaise),  count: b.win_count },
+    netProfit: rupees(stakedPaise - paidOutPaise),
+  };
+}
+
+/**
+ * Staked, paid out and deposited per IST day, with no gaps.
+ *
+ * `generate_series` supplies every day in the window and the totals LEFT JOIN
+ * onto it, so a day with no activity is a zero rather than a missing point. The
+ * aggregate this replaced emitted only the days that had bets, and the chart
+ * drawn from it joined Monday straight to Thursday as though the days between
+ * had never happened.
+ *
+ * Bucketed in IST. Bucketing in UTC misattributes the first five and a half
+ * hours of every Indian day to the day before — which on this platform is most
+ * of the evening's play.
+ */
+export async function dailyFinance({ days = 7, timezone = 'Asia/Kolkata' } = {}) {
+  const span = spanOf(days);
+  const { rows } = await pgQuery(
+    `WITH span AS (${DAY_SPAN}), staked AS (
+       SELECT CAST(placed_at AT TIME ZONE $1 AS DATE) AS day,
+              COALESCE(SUM(stake_paise), 0) AS amount, COUNT(*)::int AS n
+         FROM bets WHERE NOT is_phantom GROUP BY 1
+     ), paid AS (
+       -- Bucketed on SETTLEMENT, not placement: a payout belongs to the day the
+       -- house paid it. Bucketing both on placed_at made a cycle that settled
+       -- after midnight subtract its payout from the previous day's profit.
+       SELECT CAST(settled_at AT TIME ZONE $1 AS DATE) AS day,
+              COALESCE(SUM(payout_paise), 0) AS amount
+         FROM bets WHERE NOT is_phantom AND status = 'WON' AND settled_at IS NOT NULL
+        GROUP BY 1
+     ), deposited AS (
+       SELECT CAST(completed_at AT TIME ZONE $1 AS DATE) AS day,
+              COALESCE(SUM(fiat_amount_paise), 0) AS amount
+         FROM order_states
+        WHERE order_type = 'DEPOSIT' AND state = 'COMPLETED' AND completed_at IS NOT NULL
+        GROUP BY 1
+     )
+     SELECT s.day,
+            COALESCE(b.amount, 0) AS bets, COALESCE(b.n, 0) AS bet_count,
+            COALESCE(p.amount, 0) AS payouts,
+            COALESCE(d.amount, 0) AS deposits
+       FROM span s
+       LEFT JOIN staked    b ON b.day = s.day
+       LEFT JOIN paid      p ON p.day = s.day
+       LEFT JOIN deposited d ON d.day = s.day
+      ORDER BY s.day`,
+    [timezone, span], 'stats_daily_finance',
+  );
+  return rows.map((r) => ({
+    date: isoDay(r.day),
+    bets: rupees(r.bets), betCount: int(r.bet_count),
+    payouts: rupees(r.payouts), deposits: rupees(r.deposits),
+    netProfit: rupees(Number(r.bets) - Number(r.payouts)),
+  }));
+}
+
+/**
+ * One direction of token flow — what the deposit and withdrawal dashboards show.
+ *
+ * `numberOfBuyers` is `COUNT(DISTINCT user_id)`. The aggregate this replaced
+ * collected every distinct user id into an array with `$addToSet` and then took
+ * its length, so a platform with a hundred thousand depositors built a
+ * hundred-thousand-element array in the database to return one integer.
+ */
+export async function tokenFlow({ direction = 'DEPOSIT', from = null, to = null, timezone = 'Asia/Kolkata' } = {}) {
+  // Two statements, two parameter lists. Sharing one list between them binds
+  // the timezone into the summary query, which never mentions it — and
+  // PostgreSQL refuses a bind that supplies more parameters than the statement
+  // declares, so the whole dashboard 500s rather than merely mis-reporting.
+  const filters = ["order_type = $1", "state = 'COMPLETED'", 'completed_at IS NOT NULL'];
+  const summaryParams = [String(direction)];
+  if (from) { summaryParams.push(from); filters.push(`completed_at >= $${summaryParams.length}`); }
+  if (to)   { summaryParams.push(to);   filters.push(`completed_at <= $${summaryParams.length}`); }
+  const filter = filters.join(' AND ');
+
+  // The daily query takes the same filter with the timezone appended, so the
+  // two always describe the same set of orders.
+  const dailyParams = [...summaryParams, timezone];
+  const tzPlaceholder = `$${dailyParams.length}`;
+
+  const [summary, daily] = await Promise.all([
+    pgQuery(
+      `SELECT COALESCE(SUM(fiat_amount_paise), 0)  AS fiat,
+              COALESCE(SUM(token_amount_paise), 0) AS tokens,
+              COUNT(DISTINCT user_id)::int         AS parties,
+              COUNT(*)::int                        AS orders
+         FROM order_states WHERE ${filter}`,
+      summaryParams, 'stats_token_flow',
+    ),
+    pgQuery(
+      `SELECT CAST(completed_at AT TIME ZONE ${tzPlaceholder} AS DATE) AS day,
+              COALESCE(SUM(token_amount_paise), 0) AS tokens,
+              COUNT(*)::int AS n
+         FROM order_states WHERE ${filter}
+        GROUP BY 1 ORDER BY 1`,
+      dailyParams, 'stats_token_flow_daily',
+    ),
+  ]);
+
+  const s = summary.rows[0];
+  return {
+    fiat: rupees(s.fiat), tokens: rupees(s.tokens),
+    parties: int(s.parties), orders: int(s.orders),
+    daily: daily.rows.map((r) => ({
+      date: isoDay(r.day), tokens: rupees(r.tokens), count: int(r.n),
+    })),
+  };
+}
+
+/**
+ * Gross gaming revenue per casino provider — staked minus won.
+ *
+ * Both halves in ONE grouped pass. The version this replaced ran a bets
+ * aggregate and a wins aggregate and joined them in JavaScript, so a provider
+ * that had wins but no bets in the window vanished from the report entirely —
+ * exactly the provider a reviewer most wants to see.
+ */
+export async function providerRevenue({ from = null, to = null } = {}) {
+  const params = []; const where = [];
+  if (from) { params.push(from); where.push(`created_at >= $${params.length}`); }
+  if (to)   { params.push(to);   where.push(`created_at <= $${params.length}`); }
+
+  const { rows } = await pgQuery(
+    `SELECT provider_key,
+            COALESCE(SUM(amount_paise) FILTER (WHERE tx_type = 'BET'), 0) AS bets,
+            COUNT(*) FILTER (WHERE tx_type = 'BET')::int                  AS bet_count,
+            COALESCE(SUM(amount_paise) FILTER (WHERE tx_type = 'WIN'), 0) AS wins,
+            COUNT(*) FILTER (WHERE tx_type = 'WIN')::int                  AS win_count,
+            -- A refund gives a stake back, so it is revenue the house does not
+            -- keep. The original counted only BET and WIN and reported a
+            -- refunded round as pure profit.
+            COALESCE(SUM(amount_paise) FILTER (WHERE tx_type IN ('REFUND', 'ROLLBACK')), 0) AS refunds
+       FROM game_transactions
+      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      GROUP BY provider_key
+      ORDER BY (COALESCE(SUM(amount_paise) FILTER (WHERE tx_type = 'BET'), 0)
+              - COALESCE(SUM(amount_paise) FILTER (WHERE tx_type = 'WIN'), 0)
+              - COALESCE(SUM(amount_paise) FILTER (WHERE tx_type IN ('REFUND', 'ROLLBACK')), 0)) DESC`,
+    params, 'stats_provider_revenue',
+  );
+  return rows.map((r) => ({
+    key: r.provider_key,
+    bets: rupees(r.bets), betCount: int(r.bet_count),
+    wins: rupees(r.wins), winCount: int(r.win_count),
+    refunds: rupees(r.refunds),
+    ggr: rupees(Number(r.bets) - Number(r.wins) - Number(r.refunds)),
+  }));
+}
+
+/**
+ * Cycle and order counts for the dashboard's operational strip.
+ *
+ * `todayCount` counts cycles that SETTLED today, in IST. The count it replaced
+ * filtered on `updatedAt`, which moves for any edit at all, so an admin
+ * touching a month-old cycle made it appear in today's total.
+ */
+export async function cycleAndQueueCounts({ timezone = 'Asia/Kolkata' } = {}) {
+  const [cycles, queue] = await Promise.all([
+    pgQuery(
+      // The engine's own vocabulary, checked against cycles_status_known: a
+      // cycle is live from OPEN through RESULT_DECLARED, and PAUSED is an
+      // admin hold on a cycle that is still very much running. Counting only
+      // OPEN would have reported zero active cycles for the whole of the
+      // phantom merge and the settlement window.
+      `SELECT COUNT(*) FILTER (WHERE status IN
+                ('OPEN', 'MERGED', 'CLOSED', 'RESULT_DECLARED', 'PAUSED'))::int AS active,
+              COUNT(*) FILTER (WHERE is_settled
+                AND CAST(settled_at AT TIME ZONE $1 AS DATE)
+                  = CAST(now() AT TIME ZONE $1 AS DATE))::int                   AS today
+         FROM cycles`,
+      [timezone], 'stats_cycle_counts',
+    ),
+    pgQuery(
+      `SELECT COUNT(*) FILTER (WHERE state = 'PENDING_QUEUE')::int AS queued,
+              COUNT(*) FILTER (WHERE state IN ('ASSIGNED', 'PROCESSING', 'PAID'))::int AS in_flight,
+              COUNT(*) FILTER (WHERE state = 'DISPUTED')::int      AS disputed
+         FROM order_states`, [], 'stats_queue_counts',
+    ),
+  ]);
+  return {
+    cycles: { activeCount: int(cycles.rows[0].active), todayCount: int(cycles.rows[0].today) },
+    queue: {
+      pendingOrders: int(queue.rows[0].queued),
+      inFlightOrders: int(queue.rows[0].in_flight),
+      disputedOrders: int(queue.rows[0].disputed),
+    },
+  };
+}

@@ -213,19 +213,19 @@ router.put('/users/:userId/unblock', authenticate, isAdmin, async (req, res) => 
     }
     await user.save();
 
-    // Audit log
-    try {
-      const Audit = mongoose.model('AuditLog');
-      await Audit.create({
-        actorId:   req.user.userId,
-        actorType: 'ADMIN',
-        action:    'USER_UNBLOCK',
-        targetId:  user._id,
-        targetType: 'User',
-        meta: { resetWarnings },
-        timestamp: new Date(),
-      });
-    } catch (_) { /* audit failure never blocks response */ }
+    // The audit repository already swallows its own failures — an audit write
+    // that throws logs and returns null rather than taking down the operation
+    // it was describing. The bare `catch (_) {}` around this call was a second
+    // layer of the same thing that also hid a MissingSchemaError: `AuditLog`
+    // resolved to no schema, so every unblock on this route recorded NOTHING
+    // and reported success.
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId,
+      performedByRole: req.user.isAdmin ? 'admin' : 'subadmin',
+      action: 'USER_UNBLOCK', category: 'USER',
+      targetType: 'User', targetId: String(user.userId ?? user._id),
+      details: { resetWarnings },
+    });
 
     res.json({
       success: true,

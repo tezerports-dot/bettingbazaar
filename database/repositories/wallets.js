@@ -435,6 +435,72 @@ export async function releaseLockedStake(userId, { amount, fromDeposit = 0, from
  * walletAuthority.getUserLedger — the same paginated history, read from
  * wallet_ledger and reshaped into the WalletLedger doc the panels render.
  */
+/**
+ * Platform-wide wallet movement, a page at a time, with the player's name.
+ *
+ * ── Three things the endpoint above this was doing wrong ───────────────────
+ *   • It read a `transactions` collection that stopped receiving writes when
+ *     the money moved to PostgreSQL. The admin transaction list showed only
+ *     pre-migration history and nothing since.
+ *   • It ran the page and the count as two statements, so the total could
+ *     describe a different instant than the rows.
+ *   • It called `.populate('userId', …)` to attach a username. On a plain row
+ *     that is a TypeError; the join does it here, in the same statement, so
+ *     one page is one round trip rather than one plus a lookup per row.
+ *
+ * `field` filters by pocket (depositBalance, winningsBalance…) and `txType` by
+ * direction (CREDIT / DEBIT), which is the vocabulary the ledger actually uses.
+ */
+export async function platformLedger({ field = null, txType = null, page = 1, limit = 50 } = {}) {
+  const where = []; const params = [];
+  if (field)  { params.push(String(field));  where.push(`l.field = $${params.length}`); }
+  if (txType) { params.push(String(txType)); where.push(`l.tx_type = $${params.length}`); }
+
+  const size = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const wanted = Math.max(Number(page) || 1, 1);
+  params.push(size, (wanted - 1) * size);
+
+  const { rows } = await pgQuery(
+    `SELECT l.tx_id, l.user_id, l.field, l.amount_paise, l.balance_before_paise,
+            l.balance_after_paise, l.tx_type, l.description, l.ref_id, l.created_at,
+            u.username, u.mobile,
+            COUNT(*) OVER () AS total_matching
+       FROM wallet_ledger l
+       LEFT JOIN users u ON u.user_id = l.user_id
+      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      ORDER BY l.created_at DESC, l.id DESC
+      LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params, 'wallet_ledger_platform',
+  );
+
+  const total = rows.length ? Number(rows[0].total_matching) : 0;
+  return {
+    total, page: wanted, limit: size,
+    pages: Math.max(Math.ceil(total / size), 1),
+    entries: rows.map((r) => {
+      const amount = Number(r.amount_paise);
+      const balanceAfter = Number(r.balance_after_paise);
+      return {
+        txId: r.tx_id,
+        userId: r.user_id,
+        // A LEFT JOIN so a ledger row survives a user row that is gone. The
+        // money moved; losing its record because the account was deleted would
+        // put a hole in the one trail reconciliation is computed from.
+        user: r.username ? { userId: r.user_id, username: r.username, mobile: r.mobile } : null,
+        type: r.tx_type, field: r.field,
+        amount: rupees(amount),
+        balanceBefore: rupees(
+          r.balance_before_paise != null
+            ? Number(r.balance_before_paise)
+            : (r.tx_type === 'DEBIT' ? balanceAfter + amount : balanceAfter - amount),
+        ),
+        balanceAfter: rupees(balanceAfter),
+        reason: r.description, refId: r.ref_id, createdAt: r.created_at,
+      };
+    }),
+  };
+}
+
 export async function getUserLedger(userId, page = 1, limit = 30) {
   const uid = String(userId);
   const offset = (Math.max(1, page) - 1) * limit;
