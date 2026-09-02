@@ -1,6 +1,8 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** branding.admin.routes.js — Branding config, CDN images, app assets */
-import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from './_adminShared.js';
+import { express, authenticate, isAdmin, isAdminOrSubAdmin } from './_adminShared.js';
+import { db } from '#db';
+import { brandingPayload, broadcastBranding } from '../../domains/branding/brandingPayload.js';
 import { generateBrandingUploadUrl, isS3Configured, uploadBufferToS3, deleteFile } from '../../services/cdn.service.js';
 import path_node from 'path';
 import fs_node from 'fs';
@@ -9,8 +11,9 @@ const router = express.Router();
 
 // ── APP-ASSET SLOTS (PWA icons / logos / splash) ──────────────────────────────
 // Fixed named slots the admin can upload. Bytes go to S3 when configured
-// (shared across instances) or local disk as a graceful fallback; the AppAsset
-// model records where each slot lives so listing is multi-instance-correct.
+// (shared across instances) or local disk as a graceful fallback; the
+// `app_assets` table records where each slot lives so listing is
+// multi-instance-correct.
 // (Previously these consts lived in system.admin.routes.js while the routes lived
 // here — a cross-module reference that threw at request time. Now self-contained.)
 const ASSET_SLOTS = {
@@ -48,96 +51,63 @@ function bust(url, ts) {
 
 router.get('/branding', authenticate, isAdmin, async (req, res) => {
   try {
-    
-    // FIX: Use Branding model (has proper schema) not SystemConfig.value (field doesn't exist)
-    const Branding = mongoose.model('Branding');
-    const branding = await Branding.findOne({ key: 'main' }).lean() || {};
-    res.json({ success: true, branding });
+    // Branding is a configuration scope. Every key reads as its declared
+    // default when nothing has been set, so there is no `|| {}` here and no
+    // per-field fallback below — a platform that has never been branded and one
+    // branded back to the defaults answer identically, which is the truth.
+    res.json({ success: true, branding: await db.config.getConfig('branding') });
   } catch (error) {
     console.error('Get branding error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch branding' });
   }
 });
 
-// Update branding — C-01 fix: persist ALL schema fields via $set spread.
-// GOVERNANCE §2: every admin-editable field must wire to a real consumer.
-// GOVERNANCE §9: every field on an admin settings page must reach a real DB write.
+/**
+ * Update branding.
+ *
+ * ── What the config store does that the old write did not ───────────────────
+ * The old handler assembled a `$set` from a hand-listed field array and pushed
+ * it through an upsert. Three things followed from that, all fixed by routing
+ * the write through `applyConfig`:
+ *
+ *   • A field in the body that was not on the hand-written list was DROPPED,
+ *     silently, and the response still said "Branding updated successfully".
+ *     The list had drifted from the schema — `betCardDelhiImageUrl` and
+ *     `betCardBombayImageUrl` were on it, `platformName` and `footerText` were
+ *     not. Now an undeclared key is REFUSED with the path that caused it.
+ *   • Nothing was audited. A branding change is an admin action on what every
+ *     player sees; it is now versioned and attributed in the same transaction.
+ *   • `cdnBaseUrl` was defaulted from the environment on every save, so an
+ *     admin clearing the field got the env value written into storage as
+ *     though they had typed it — and it then outranked a later env change.
+ *     Empty is stored as empty; the env is consulted at READ time, in
+ *     `brandingPayload`.
+ */
 router.put('/branding', authenticate, isAdmin, async (req, res) => {
   try {
-    const Branding = mongoose.model('Branding');
-    const b = req.body;
+    // `key`, `version`, `updatedAt` and `updatedBy` come back on every read;
+    // an admin panel that PUTs the object it just GET'd would otherwise be
+    // refused for writing settings that are not settings.
+    const { key, version, updatedAt, updatedBy, lastUpdated, _id, ...patch } = req.body ?? {};
 
-    // Build $set from all known brandingSchema fields; only set fields present in body.
-    // This is idempotent — missing fields in body are left unchanged in DB.
-    const $set = { lastUpdated: new Date(), updatedBy: req.user.userId };
-    const BRANDING_FIELDS = [
-      'appName','logo','icon','favicon','splashScreen',
-      'userPanelName','adminPanelName','merchantPanelName','queueManagerPanelName',
-      'primaryColor','secondaryColor','accentColor',
-      'tagline','description','contactEmail','contactPhone','cdnBaseUrl',
-      'homePopupImageUrl','homePopupLinkUrl','homePopupEnabled',
-      'tricksTipsBannerUrl','rulesPageImageUrl','depositPageBannerUrl',
-      'withdrawalPageBannerUrl','loginPageBannerUrl','registerPageBannerUrl',
-      'betCardDelhiImageUrl','betCardBombayImageUrl',
-    ];
-    for (const field of BRANDING_FIELDS) {
-      if (b[field] !== undefined) $set[field] = b[field];
-    }
-    // Ensure cdnBaseUrl falls back to env if not provided and not already in DB
-    if ($set.cdnBaseUrl === undefined && b.cdnBaseUrl === undefined) {
-      $set.cdnBaseUrl = process.env.CDN_URL || '';
-    }
+    const applied = await db.config.applyConfig({
+      scope: 'branding', patch,
+      actor: req.user.userId, reason: 'Branding updated',
+    });
 
-    const updated = await Branding.findOneAndUpdate(
-      { key: 'main' },
-      { $set },
-      { upsert: true, new: true }
-    );
-
-    // Broadcast full branding payload to all panels (user, admin, merchant)
-    
-    if (global.io) {
-      const payload = updated.toObject();
-      global.io.emit('branding_updated', { branding: payload, timestamp: new Date() });
-      global.io.emit('branding', buildBrandingPayload(payload));
-    }
-
-    res.json({ success: true, message: 'Branding updated successfully', branding: updated });
+    broadcastBranding(brandingPayload(applied.config));
+    res.json({ success: true, message: 'Branding updated successfully', branding: applied.config });
   } catch (error) {
+    // A refused key or an out-of-range value is the admin's mistake to see, not
+    // a server fault: the message names the exact path.
+    if (/^config: /.test(error.message)) {
+      return res.status(400).json({ success: false, message: error.message });
+    }
     console.error('Update branding error:', error);
     res.status(500).json({ success: false, message: 'Failed to update branding' });
   }
 });
 
-
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-function buildBrandingPayload(b) {
-  const cdnBaseUrl = b.cdnBaseUrl || process.env.CDN_URL || '';
-  return {
-    appName:              b.appName              || 'Betting Bazaar',
-    cdnBaseUrl,
-    primaryColor:         b.primaryColor         || '#D4AF37',
-    secondaryColor:       b.secondaryColor       || '#8B5CF6',
-    accentColor:          b.accentColor          || '#F59E0B',
-    logo:                 b.logo                 || '',
-    icon:                 b.icon                 || '',
-    favicon:              b.favicon              || '',
-    splashScreen:         b.splashScreen         || '',
-    userPanelName:        b.userPanelName        || 'Betting Bazaar',
-    adminPanelName:       b.adminPanelName       || 'Bazaar Admin',
-    merchantPanelName:    b.merchantPanelName    || 'Merchant Panel',
-    queueManagerPanelName:b.queueManagerPanelName|| 'Queue Manager',
-    homePopupImageUrl:    b.homePopupImageUrl    || '',
-    homePopupLinkUrl:     b.homePopupLinkUrl     || '',
-    homePopupEnabled:     b.homePopupEnabled     || false,
-    tricksTipsBannerUrl:  b.tricksTipsBannerUrl  || '',
-    rulesPageImageUrl:    b.rulesPageImageUrl     || '',
-    depositPageBannerUrl:   b.depositPageBannerUrl   || '',
-    withdrawalPageBannerUrl:b.withdrawalPageBannerUrl|| '',
-    loginPageBannerUrl:   b.loginPageBannerUrl   || '',
-    registerPageBannerUrl:b.registerPageBannerUrl|| '',
-  };
-}
 
 /**
  * ════════════════════════════════════════════════════════════════════════════
@@ -157,11 +127,12 @@ router.post('/branding/images', authenticate, isAdmin, async (req, res) => {
     const validCategories = ['banner', 'icon', 'promo', 'misc', 'logo', 'other'];
     const safeCategory = validCategories.includes(category) ? category : 'misc';
 
-    const { CDNImage } = getModels();
-    const image = await CDNImage.create({
-      url,
-      fileKey:     fileKey || '',
-      title,
+    // `fileKey` was accepted here and stored on a column the image library
+    // does not have: the CDN url IS the key, and `addImage` upserts on it, so
+    // re-registering the same url updates its metadata rather than creating a
+    // second row that the delete route would then leave behind.
+    const image = await db.content.addImage({
+      url, title,
       category:    safeCategory,
       description: description || '',
       uploadedBy:  req.user.userId,
@@ -181,13 +152,7 @@ router.post('/branding/images', authenticate, isAdmin, async (req, res) => {
 router.get('/branding/images', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
     const { category } = req.query;
-    const { CDNImage } = getModels();
-
-    const query = category ? { category } : {};
-    const images = await CDNImage.find(query)
-      .sort({ createdAt: -1 })
-      .lean();
-
+    const images = await db.content.listImages({ category: category || null });
     res.json({ success: true, images });
   } catch (error) {
     console.error('GET /branding/images error:', error);
@@ -201,14 +166,21 @@ router.get('/branding/images', authenticate, isAdminOrSubAdmin, async (req, res)
 router.delete('/branding/images/:imageId', authenticate, isAdmin, async (req, res) => {
   try {
     const { imageId } = req.params;
-    const { CDNImage } = getModels();
-
-    const deleted = await CDNImage.findByIdAndDelete(imageId);
-    if (!deleted) {
-      return res.status(404).json({ success: false, message: 'Image not found' });
+    const deleted = await db.content.deleteImage(imageId);
+    if (deleted.ok) {
+      return res.json({ success: true, message: 'Image deleted successfully' });
     }
-
-    res.json({ success: true, message: 'Image deleted successfully' });
+    // An image something still points at is not deletable: removing it would
+    // leave a broken banner on whatever references it. The refusal says how
+    // many references are holding it, so the admin can go clear them.
+    if (deleted.reason === 'IN_USE') {
+      return res.status(409).json({
+        success: false,
+        message: `Image is used in ${deleted.usageCount} place(s) — remove those first`,
+        usageCount: deleted.usageCount,
+      });
+    }
+    res.status(404).json({ success: false, message: 'Image not found' });
   } catch (error) {
     console.error('Delete CDN image error:', error);
     res.status(500).json({ success: false, message: 'Failed to delete image' });
@@ -230,15 +202,16 @@ router.post('/branding/cdn-url', authenticate, isAdmin, async (req, res) => {
   try {
     const { url, title, category, description, tags } = req.body;
     if (!url || !title) return res.status(400).json({ success: false, message: 'url and title required' });
-    // Store in branding images collection if CDNImage model exists, else just return success
-    try {
-      const { CDNImage } = getModels();
-      const image = await CDNImage.create({ url, title, category: category || 'other', description, tags: tags || [], uploadedBy: req.user.userId });
-      res.json({ success: true, image });
-    } catch {
-      // CDNImage model may not exist in all deployments — store in config
-      res.json({ success: true, message: 'URL noted', url, title });
-    }
+    // The old shape wrapped this in a `try { … } catch { res.json({success:true}) }`
+    // that reported success for a FAILED write — the catch existed for a
+    // "model may not exist in some deployments" case that has never been true,
+    // and it swallowed every real error with it. A failure is now a failure.
+    const image = await db.content.addImage({
+      url, title, category: category || 'other',
+      description: description || '', tags: tags || [],
+      uploadedBy: req.user.userId,
+    });
+    res.json({ success: true, image });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to add CDN URL' });
   }
@@ -286,32 +259,25 @@ router.post('/branding/confirm-upload', authenticate, isAdmin, async (req, res) 
     if (!fileKey || !cdnUrl) {
       return res.status(400).json({ success: false, message: 'fileKey and cdnUrl are required' });
     }
-    // Persist to CDNImage collection if available
-    let image = null;
-    try {
-      const { CDNImage } = getModels();
-      image = await CDNImage.create({
-        url:         cdnUrl,
-        fileKey,
-        title:       title || fileKey,
-        category:    category || 'logo',
-        fileSize:    fileSize || 0,
-        uploadedBy:  req.user.userId,
-      });
-    } catch {
-      // CDNImage model not present in all deployments — non-fatal
-    }
-    // If it's a logo, also update the main branding config so the app immediately
-    // shows the new logo without admin needing to manually re-save branding settings.
-    // AUDIT FIX: was 'logoUrl' which doesn't exist in Branding schema → silent no-op.
-    // Correct field name is 'logo'.
+    const image = await db.content.addImage({
+      url:        cdnUrl,
+      title:      title || fileKey,
+      category:   category || 'logo',
+      fileSize:   fileSize || null,
+      uploadedBy: req.user.userId,
+    });
+
+    // A logo upload also becomes the live logo, so the admin does not have to
+    // re-save the branding form to see the thing they just uploaded. The write
+    // goes through the config store like every other branding change, which
+    // means it is versioned and audited rather than a silent upsert — and the
+    // panels are told, which the old handler never did.
     if (category === 'logo') {
-      const Branding = mongoose.model('Branding');
-      await Branding.findOneAndUpdate(
-        { key: 'main' },
-        { logo: cdnUrl, updatedBy: req.user.userId, lastUpdated: new Date() },
-        { upsert: true, new: true }
-      );
+      const applied = await db.config.applyConfig({
+        scope: 'branding', patch: { logo: cdnUrl },
+        actor: req.user.userId, reason: 'Logo uploaded',
+      });
+      broadcastBranding(brandingPayload(applied.config));
     }
     res.json({ success: true, image, cdnUrl, fileKey });
   } catch (error) {
@@ -326,9 +292,7 @@ router.post('/branding/confirm-upload', authenticate, isAdmin, async (req, res) 
 // still show (backward compatible).
 router.get('/app-assets', authenticate, isAdmin, async (req, res) => {
   try {
-    const AppAsset = mongoose.model('AppAsset');
-    const records = await AppAsset.find({}).lean();
-    const byslot = Object.fromEntries(records.map(r => [r.slot, r]));
+    const byslot = await db.content.getAllAssets();
 
     const slots = Object.entries(ASSET_SLOTS).map(([name, meta]) => {
       const rec = byslot[name];
@@ -383,7 +347,6 @@ router.post('/app-assets/upload',
         return res.status(400).json({ success: false, message: 'Only PNG, JPEG, WebP or GIF image bytes are allowed.' });
       }
 
-      const AppAsset = mongoose.model('AppAsset');
       let url, storage, fileKey = '';
 
       if (isS3Configured()) {
@@ -400,14 +363,19 @@ router.post('/app-assets/upload',
         storage = 'LOCAL';
       }
 
-      const now = new Date();
-      await AppAsset.findOneAndUpdate(
-        { slot },
-        { slot, url, storage, fileKey, size: buffer.length, contentType: detectedContentType, updatedAt: now, updatedBy: req.user.userId },
-        { upsert: true, new: true }
-      );
+      // The cache-buster comes from the row the write returned, not from a
+      // `new Date()` taken beside it: the two differ by however long the write
+      // took, so a client that re-fetched on the earlier timestamp could be
+      // handed the previous image from a CDN edge and keep it.
+      const record = await db.content.setAsset(slot, {
+        url, storage, fileKey, size: buffer.length,
+        contentType: detectedContentType, updatedBy: req.user.userId,
+      });
 
-      res.json({ success: true, slot, url: bust(url, now.getTime()), size: buffer.length, storage });
+      res.json({
+        success: true, slot, storage, size: buffer.length,
+        url: bust(url, new Date(record.updatedAt).getTime()),
+      });
     } catch (err) {
       console.error('[app-assets upload]', err.message);
       res.status(500).json({ success: false, message: 'Failed to save asset' });
@@ -419,8 +387,7 @@ router.delete('/app-assets/:name', authenticate, isAdmin, async (req, res) => {
   const { name } = req.params;
   if (!ASSET_SLOTS[name]) return res.status(400).json({ success: false, message: 'Unknown slot' });
   try {
-    const AppAsset = mongoose.model('AppAsset');
-    const rec = await AppAsset.findOne({ slot: name });
+    const rec = await db.content.getAsset(name);
     const filePath = path_node.join(appAssetsDir_r, name);
     const diskExists = fs_node.existsSync(filePath);
 
@@ -433,7 +400,7 @@ router.delete('/app-assets/:name', authenticate, isAdmin, async (req, res) => {
     if (diskExists) {
       try { fs_node.unlinkSync(filePath); } catch { /* ignore */ }
     }
-    if (rec) await AppAsset.deleteOne({ _id: rec._id });
+    if (rec) await db.content.deleteAsset(name);
 
     res.json({ success: true, message: `${name} deleted` });
   } catch (err) {

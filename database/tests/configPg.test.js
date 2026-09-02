@@ -237,7 +237,7 @@ describePg('the configuration store', () => {
   // ── Other scopes ──────────────────────────────────────────────────────────
   it('serves every declared scope, and refuses one it does not know', async () => {
     const branding = await getConfig('branding', { docKey: KEY });
-    expect(branding.platformName).toBe('Betting Bazaar');
+    expect(branding.appName).toBe('Betting Bazaar');
 
     const policy = await getConfig('depositPolicy', { docKey: KEY });
     expect(policy.reservePercent).toBe(0);
@@ -255,8 +255,8 @@ describePg('the configuration store', () => {
   });
 
   it('keeps scopes apart', async () => {
-    await applyConfig({ scope: 'branding', docKey: KEY, patch: { platformName: 'Other' } });
-    expect((await getConfig('branding', { docKey: KEY, fresh: true })).platformName).toBe('Other');
+    await applyConfig({ scope: 'branding', docKey: KEY, patch: { appName: 'Other' } });
+    expect((await getConfig('branding', { docKey: KEY, fresh: true })).appName).toBe('Other');
     expect((await getSystemConfig({ docKey: KEY, fresh: true })).maintenanceMode).toBe(false);
   });
 

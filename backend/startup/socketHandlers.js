@@ -1,7 +1,7 @@
 
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-import mongoose from 'mongoose';
 import { db } from '#db';
+import { brandingPayload, currentBranding } from '../domains/branding/brandingPayload.js';
 // AQ-2: verify via the single PASETO authority (Ed25519 signature + iss/aud stamped).
 import { verifyJwt } from '../domains/identity/jwt.util.js';
 import { cycleSnapshotPublisher } from '../domains/markets/cycleSnapshotPublisher.js';
@@ -65,46 +65,19 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
     
     const sendBranding = async () => {
       try {
-        const Branding = mongoose.model('Branding');
-        const b = await Branding.findOne({ key: 'main' }).lean() || {};
-        const cdnBaseUrl = b.cdnBaseUrl || process.env.CDN_URL || '';
-        const brandingData = {
-          appName:              b.appName              || 'Betting Bazaar',
-          cdnBaseUrl,
-          primaryColor:         b.primaryColor         || '#D4AF37',
-          secondaryColor:       b.secondaryColor       || '#8B5CF6',
-          accentColor:          b.accentColor          || '#F59E0B',
-          logo:                 b.logo                 || '',
-          icon:                 b.icon                 || '',
-          favicon:              b.favicon              || '',
-          splashScreen:         b.splashScreen         || '',
-          userPanelName:        b.userPanelName        || 'Betting Bazaar',
-          adminPanelName:       b.adminPanelName       || 'Bazaar Admin',
-          merchantPanelName:    b.merchantPanelName    || 'Merchant Panel',
-          queueManagerPanelName:b.queueManagerPanelName|| 'Queue Manager',
-          homePopupImageUrl:    b.homePopupImageUrl    || '',
-          homePopupLinkUrl:     b.homePopupLinkUrl     || '',
-          homePopupEnabled:     b.homePopupEnabled     || false,
-          tricksTipsBannerUrl:  b.tricksTipsBannerUrl  || '',
-          rulesPageImageUrl:    b.rulesPageImageUrl     || '',
-          depositPageBannerUrl:   b.depositPageBannerUrl   || '',
-          withdrawalPageBannerUrl:b.withdrawalPageBannerUrl|| '',
-          loginPageBannerUrl:   b.loginPageBannerUrl   || '',
-          registerPageBannerUrl:b.registerPageBannerUrl|| '',
-        };
-        global.cachedBranding = brandingData;
-        socket.emit('branding', brandingData);
+        // One owner for this object. The twenty-eight-field literal that used
+        // to sit here was a copy of the one in branding.admin.routes.js, so a
+        // field added to that one reached an admin who had just saved but not
+        // a client who had just connected.
+        const payload = await currentBranding();
+        global.cachedBranding = payload;
+        socket.emit('branding', payload);
       } catch (e) {
-        // Minimal safe fallback — NO hardcoded asset filenames (C-04 fix)
-        socket.emit('branding', {
-          appName: 'Betting Bazaar',
-          cdnBaseUrl: process.env.CDN_URL || '',
-          primaryColor: '#D4AF37',
-          secondaryColor: '#8B5CF6',
-          accentColor: '#F59E0B',
-          logo: '', icon: '', favicon: '', splashScreen: '',
-          homePopupEnabled: false,
-        });
+        // The declared defaults, not a second hardcoded copy of them: a client
+        // that connects while the database is unreachable draws itself the same
+        // way an unbranded platform does, rather than in colours that exist
+        // nowhere else in the codebase.
+        socket.emit('branding', brandingPayload(db.config.defaultsFor('branding')));
       }
     };
 
@@ -128,8 +101,14 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
 
     socket.on('request_promo', async ({ location } = {}) => {
       try {
-        const PromoContent = mongoose.model('PromoContent');
-        const content = await PromoContent.find({ location, isActive: true }).sort({ order: 1 }).lean();
+        // PUBLISHED and active, most important first — `listLivePromos` is the
+        // same read the panels make. The old query filtered on `isActive` alone
+        // and sorted by an `order` field promos have never had, so a draft
+        // someone had flagged active leaked to every client and the ordering
+        // was whatever the store felt like.
+        const content = await db.content.listLivePromos(
+          location ? String(location).toUpperCase() : 'HOME',
+        );
         socket.emit('promo_data', { location, content });
       } catch (e) { socket.emit('promo_data', { location, content: [] }); }
     });

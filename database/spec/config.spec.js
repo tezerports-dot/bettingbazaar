@@ -94,14 +94,10 @@ export const SYSTEM_CONFIG_SPEC = group({
   maintenanceMessage: s(''),
   androidUrl: s(''), iosUrl: s(''), webUrl: s(''),
 
-  supportLinks: group({
-    whatsapp: s(''),
-    telegram: s(''),              // legacy single field, kept for back-compat
-    telegramUsername:   s(''),
-    telegramGroupUrl:   s(''),
-    telegramChannelUrl: s(''),
-    email: s(''), helpCenterUrl: s(''), termsUrl: s(''), privacyUrl: s(''),
-  }),
+  // Support links used to be declared here TOO, beside the dedicated
+  // `supportLinks` scope below. Both existed, so the admin page wrote one and
+  // the public page read the other: every channel an admin configured showed as
+  // blank to players, with nothing reporting a problem. One owner — the scope.
 
   // The 1-minute block shares the 30-minute stake bounds and chip ladder — same
   // game, shorter window. Declared explicitly rather than falling through, so
@@ -206,30 +202,58 @@ export const SYSTEM_CONFIG_SPEC = group({
 });
 
 /** Branding — colours, logos, the platform's name. */
+/**
+ * Branding — what every panel draws itself with.
+ *
+ * The names here are the ones the panels and the frontend already read
+ * (`logo`, `favicon`, `splashScreen`, `depositPageBannerUrl`…). An earlier
+ * draft of this scope invented a parallel set (`logoUrl`, `faviconUrl`,
+ * `splashUrl`, `depositBannerUrl`…) with its own defaults, so the same colour
+ * had two declared values and a rename at every boundary. The spec is the
+ * single owner of both name and default; nothing translates.
+ */
 export const BRANDING_SPEC = group({
-  appName: s('BettingBazaar'),
-  platformName: s('Betting Bazaar'),
-  userPanelName: s(''), adminPanelName: s(''),
-  merchantPanelName: s(''), queueManagerPanelName: s(''),
+  // ── Core identity ─────────────────────────────────────────────────────────
+  appName: s('Betting Bazaar'),
+  logo: s(''), icon: s(''), favicon: s(''), splashScreen: s(''),
+  // ── Panel titles ──────────────────────────────────────────────────────────
+  userPanelName: s('Betting Bazaar'), adminPanelName: s('Bazaar Admin'),
+  merchantPanelName: s('Merchant Panel'), queueManagerPanelName: s('Queue Manager'),
+  // ── Brand colours ─────────────────────────────────────────────────────────
+  primaryColor: s('#D4AF37'), secondaryColor: s('#8B5CF6'), accentColor: s('#F59E0B'),
+  // ── Copy ──────────────────────────────────────────────────────────────────
+  tagline: s('Your Premier Betting Platform'),
+  description: s('Safe, secure, and exciting betting experience'),
+  contactEmail: s(''), contactPhone: s(''),
   // The CDN base. Empty means "use the CDN_URL environment variable", which is
   // the bootstrap source — an admin can override it here without a redeploy.
   cdnBaseUrl: s(''),
-  logoUrl: s(''), faviconUrl: s(''), splashUrl: s(''), iconUrl: s(''),
-  primaryColor: s('#D4AF37'), secondaryColor: s('#111827'), accentColor: s('#F59E0B'),
-  loginBannerUrl: s(''), homeBannerUrl: s(''),
-  registerBannerUrl: s(''), depositBannerUrl: s(''), withdrawalBannerUrl: s(''),
-  rulesPageImageUrl: s(''), tricksTipsBannerUrl: s(''),
-  betCardDelhiImageUrl: s(''), betCardBombayImageUrl: s(''),
+  // ── Home popup ────────────────────────────────────────────────────────────
   homePopupImageUrl: s(''), homePopupLinkUrl: s(''), homePopupEnabled: b(false),
-  contactEmail: s(''), contactPhone: s(''),
-  footerText: s(''), tagline: s(''), description: s(''),
+  // ── Banners, one per surface that shows one ───────────────────────────────
+  tricksTipsBannerUrl: s(''), rulesPageImageUrl: s(''),
+  depositPageBannerUrl: s(''), withdrawalPageBannerUrl: s(''),
+  loginPageBannerUrl: s(''), registerPageBannerUrl: s(''),
+  // ── Bet-card backgrounds ──────────────────────────────────────────────────
+  betCardDelhiImageUrl: s(''), betCardBombayImageUrl: s(''),
 });
 
-/** Support links surfaced on the user Support page. */
+/**
+ * Support links surfaced on the user Support page.
+ *
+ * `instagram`, `youtube` and `phone` are declared because the public endpoint
+ * has always returned them. They were not declared anywhere, so they read as
+ * undefined and the endpoint emitted an empty string for each — three fields no
+ * admin could ever fill. Declaring them is what makes the admin form's write
+ * reach them.
+ */
 export const SUPPORT_LINKS_SPEC = group({
-  whatsapp: s(''), telegram: s(''), telegramUsername: s(''),
-  telegramGroupUrl: s(''), telegramChannelUrl: s(''),
-  email: s(''), helpCenterUrl: s(''), termsUrl: s(''), privacyUrl: s(''),
+  whatsapp: s(''),
+  telegram: s(''),              // legacy single field, kept for back-compat
+  telegramUsername: s(''), telegramGroupUrl: s(''), telegramChannelUrl: s(''),
+  instagram: s(''), youtube: s(''),
+  email: s(''), phone: s(''),
+  helpCenterUrl: s(''), termsUrl: s(''), privacyUrl: s(''),
 });
 
 /**

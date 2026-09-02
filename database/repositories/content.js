@@ -160,15 +160,58 @@ export async function listLivePromos(location = 'HOME', { limit = 20 } = {}) {
   return rows.map(toPromo);
 }
 
-export async function listPromos({ status = null, limit = 100 } = {}) {
-  const params = []; let where = '';
-  if (status) { params.push(String(status)); where = 'WHERE status = $1'; }
+export async function listPromos({ location = null, status = null, limit = 100 } = {}) {
+  const where = []; const params = [];
+  if (location) { params.push(String(location)); where.push(`location = $${params.length}`); }
+  if (status)   { params.push(String(status));   where.push(`status = $${params.length}`); }
   const { rows } = await pgQuery(
-    `SELECT * FROM promo_content ${where} ORDER BY priority DESC, created_at DESC
+    `SELECT * FROM promo_content ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      ORDER BY priority DESC, created_at DESC
       LIMIT ${Math.min(Math.max(Number(limit) || 100, 1), 500)}`,
     params, 'promo_list',
   );
   return rows.map(toPromo);
+}
+
+/**
+ * Edit the fields an admin actually supplied.
+ *
+ * Not `upsertPromo`: that one writes every column from its defaults, so a form
+ * that posts only a new title would silently reset the priority to 0, the
+ * status to DRAFT and the media to null. Here an absent key is left alone by
+ * the statement itself rather than by a read-modify-write, so two admins
+ * editing different fields of the same promo do not overwrite each other.
+ *
+ * Returns null when no such promo exists, so the route answers 404 instead of
+ * reporting success for a row it never touched.
+ */
+export async function updatePromo(promoId, patch = {}) {
+  const COLUMN = {
+    title: 'title', description: 'description', kind: 'kind', type: 'kind',
+    location: 'location', mediaType: 'media_type', fileUrl: 'file_url',
+    priority: 'priority', status: 'status', isActive: 'is_active',
+  };
+  const sets = []; const params = [String(promoId)];
+  for (const [key, value] of Object.entries(patch)) {
+    const column = COLUMN[key];
+    if (!column || value === undefined) continue;
+    params.push(value);
+    sets.push(`${column} = $${params.length}`);
+  }
+  if (!sets.length) return getPromo(promoId);
+  const { rows } = await pgQuery(
+    `UPDATE promo_content SET ${sets.join(', ')}, updated_at = now()
+      WHERE promo_id = $1 RETURNING *`,
+    params, 'promo_update',
+  );
+  return toPromo(rows[0]);
+}
+
+export async function getPromo(promoId) {
+  const { rows } = await pgQuery(
+    'SELECT * FROM promo_content WHERE promo_id = $1', [String(promoId)], 'promo_get',
+  );
+  return toPromo(rows[0]);
 }
 
 export async function deletePromo(promoId) {
@@ -208,6 +251,14 @@ export async function upsertFaq({
   return toFaq(rows[0]);
 }
 
+/** One FAQ, whatever its published state — the editor's read. */
+export async function getFaq(faqId) {
+  const { rows } = await pgQuery(
+    'SELECT * FROM faqs WHERE faq_id = $1', [String(faqId)], 'faq_get',
+  );
+  return toFaq(rows[0]);
+}
+
 export async function listFaqs({ category = null, publishedOnly = true } = {}) {
   const where = []; const params = [];
   if (publishedOnly) where.push('is_published');
@@ -233,6 +284,38 @@ export async function recordFaqView(faqId) {
     [String(faqId)], 'faq_view',
   );
   return rows[0] ? Number(rows[0].views) : 0;
+}
+
+/**
+ * Put the starter FAQ in place, once.
+ *
+ * Both halves of the guard matter. `WHERE NOT EXISTS (SELECT 1 FROM faqs)`
+ * means an admin who deletes a default entry does not find it back on the next
+ * page load. The caller-supplied ids plus `ON CONFLICT DO NOTHING` mean two
+ * admins opening the page at the same moment seed the same eight rows rather
+ * than sixteen — a read-then-insert from the application has no such guard,
+ * because both requests read an empty table before either wrote to it.
+ *
+ * Returns how many rows this call actually inserted, which is zero on every
+ * call after the first.
+ */
+export async function seedFaqs(entries = []) {
+  if (!entries.length) return 0;
+  const ids = entries.map((e) => String(e.faqId));
+  const { rowCount } = await pgQuery(
+    `INSERT INTO faqs (faq_id, question, answer, category, sort_order, is_published)
+     SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::int[], $6::bool[])
+      WHERE NOT EXISTS (SELECT 1 FROM faqs)
+     ON CONFLICT (faq_id) DO NOTHING`,
+    [ids,
+      entries.map((e) => String(e.question)),
+      entries.map((e) => String(e.answer)),
+      entries.map((e) => String(e.category || 'GENERAL')),
+      entries.map((e, i) => Number(e.order ?? i)),
+      entries.map((e) => e.isPublished !== false)],
+    'faq_seed',
+  );
+  return rowCount;
 }
 
 export async function deleteFaq(faqId) {

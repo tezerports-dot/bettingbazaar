@@ -615,22 +615,12 @@ router.get('/v1/content/support-links', async (req, res) => {
     // whichever an admin last edited was whichever the page happened to show.
     // Both are the `supportLinks` configuration scope now, and every key it
     // declares reads as its default when nothing has been set.
-    const raw = await db.config.getConfig('supportLinks');
-    res.json({
-      success: true,
-      links: {
-        whatsapp:           raw.whatsapp           || '',
-        telegram:           raw.telegram           || '',
-        telegramUsername:   raw.telegramUsername   || '',
-        telegramGroupUrl:   raw.telegramGroupUrl   || '',
-        telegramChannelUrl: raw.telegramChannelUrl || '',
-        instagram:          raw.instagram          || '',
-        youtube:            raw.youtube            || '',
-        email:              raw.email              || '',
-        phone:              raw.phone              || '',
-        helpCenterUrl:      raw.helpCenterUrl      || '',
-      }
-    });
+    const { key, version, updatedAt, updatedBy, ...links } = await db.config.getConfig('supportLinks');
+    // No per-field `|| ''`: `getConfig` already filled every declared key with
+    // its default, and the list those fallbacks re-stated had drifted — it
+    // omitted `termsUrl` and `privacyUrl`, so two links an admin could set were
+    // dropped on the way out.
+    res.json({ success: true, links });
   } catch (error) {
     console.error('Support links error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch support links' });

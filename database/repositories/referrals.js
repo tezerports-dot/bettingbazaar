@@ -100,21 +100,59 @@ export async function earningsSummary(earnerId) {
 }
 
 /**
- * Claim the next payable earnings for a batch.
+ * The next payable earnings, in the order the programme promised.
  *
- * `FOR UPDATE SKIP LOCKED` so two disbursal runs cannot claim the same earning.
- * Ordered by queue position, which is the payout order the programme promised.
+ * A READ, and named `claimPayable` for its callers rather than because it
+ * claims: `FOR UPDATE SKIP LOCKED` was here and did nothing, because `pgQuery`
+ * runs each statement in its own implicit transaction and the lock releases as
+ * the SELECT returns. Two disbursal runs read the same rows either way.
+ *
+ * What actually stops one earning being paid twice is `markPaid`, whose
+ * `status = 'QUEUED'` guard is in the UPDATE's WHERE clause — the loser gets
+ * NOT_QUEUED and moves on. Leaving a no-op lock in this query would suggest the
+ * coordination lives here, and the next reader would trust it.
+ *
+ * `level` breaks ties within one joiner, so level 1 is always settled before
+ * level 2 for the same signup.
  */
-export async function claimPayable({ batchId, limit = 100 }) {
+export async function claimPayable({ limit = 100 } = {}) {
   const { rows } = await pgQuery(
     `SELECT * FROM referral_earnings
       WHERE status = 'QUEUED'
-      ORDER BY queue_position ASC
-      LIMIT $1
-      FOR UPDATE SKIP LOCKED`,
+      ORDER BY queue_position ASC, level ASC
+      LIMIT $1`,
     [Math.min(Math.max(Number(limit) || 100, 1), 1000)], 'referral_claim',
   );
   return rows.map(toEarning);
+}
+
+/**
+ * The whole queue at a glance, for the admin dashboard.
+ *
+ * One statement rather than two aggregates and a lookup for the next position,
+ * so the counts, the money and the head of the queue all describe the same
+ * instant. Three reads a moment apart can show a queue whose head has already
+ * been paid.
+ */
+export async function queueSummary() {
+  const { rows } = await pgQuery(
+    `SELECT
+       COUNT(*) FILTER (WHERE status = 'QUEUED')::int  AS queued_count,
+       COUNT(*) FILTER (WHERE status = 'BLOCKED')::int AS blocked_count,
+       COALESCE(SUM(amount_paise) FILTER (WHERE status = 'QUEUED'), 0)  AS queued_paise,
+       COALESCE(SUM(amount_paise) FILTER (WHERE status = 'BLOCKED'), 0) AS blocked_paise,
+       MIN(queue_position) FILTER (WHERE status = 'QUEUED')             AS next_position
+     FROM referral_earnings`,
+    [], 'referral_queue_summary',
+  );
+  const r = rows[0];
+  return {
+    queuedCount: r.queued_count,
+    queuedPaise: Number(r.queued_paise),
+    blockedCount: r.blocked_count,
+    blockedPaise: Number(r.blocked_paise),
+    nextQueuePosition: r.next_position === null ? null : Number(r.next_position),
+  };
 }
 
 /**
@@ -301,6 +339,30 @@ export async function recordClick({ code, viewerHash, ttlHours = 24 }) {
     'referral_click',
   );
   return { counted: rows.length > 0 };
+}
+
+/**
+ * Move the running click total on the referrer's own row.
+ *
+ * -- Why a stored counter beside the click rows -----------------------------
+ * `referral_clicks` rows EXPIRE — retention deletes them continuously — so a
+ * count over them shrinks over time. The aggregate is the thing that has to
+ * survive, and the rows are only the evidence that stops one viewer counting
+ * twice inside the window.
+ *
+ * The arithmetic is in the statement. A read-modify-write loses one of two
+ * concurrent clicks, and the count is what a payout tier is read from.
+ *
+ * Returns false when no row carries this code: a mistyped or retired link is
+ * not an error — the visitor was still sent to the bot — but the caller needs
+ * to tell "nobody has this code" from "counted".
+ */
+export async function bumpClickCount(code) {
+  const { rowCount } = await pgQuery(
+    'UPDATE users SET referral_clicks = referral_clicks + 1 WHERE referral_code = $1',
+    [String(code)], 'referral_click_bump',
+  );
+  return rowCount > 0;
 }
 
 export async function countClicks(code) {

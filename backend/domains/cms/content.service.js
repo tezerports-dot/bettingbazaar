@@ -1,193 +1,86 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
- * ════════════════════════════════════════════════════════════════════════════
- * 📝 CONTENT SERVICE
- * ════════════════════════════════════════════════════════════════════════════
+ * domains/cms/content.service.js — FAQs.
  *
- * Manages FAQs, support links, and help content
+ * ── What this file lost ─────────────────────────────────────────────────────
+ * It also carried `getSupportLinks` and `updateSupportLinks` against a
+ * `SupportLinks` model. Nothing called them: support links are keys in the
+ * system configuration document and `content.admin.routes.js` reads and writes
+ * them there. Two owners for one value is what §1 forbids, and the unused one
+ * is the one that goes.
+ *
+ * Every method was also wrapped in `try { … } catch (e) { throw new Error(...) }`,
+ * which discarded the original error's type, code and stack and replaced them
+ * with a string. A caller could no longer tell a unique-constraint violation
+ * from a lost connection, and the route above answered 500 for both.
  */
-
-// ✅ FIX #41: Converted from CommonJS (require) to ESM (import) for ES Module project
-import mongoose from 'mongoose';
-
-// Lazy model getters to avoid "model not registered" at import time
-function FAQ()             { return mongoose.model('FAQ'); }
-function SupportLinks()    { return mongoose.model('SupportLinks'); }
-function EnhancedAuditLog() { return mongoose.model('EnhancedAuditLog'); }
+import { db } from '#db';
 
 class ContentService {
-  
   /**
-   * ════════════════════════════════════════════════════════════════════════════
-   * ❓ FAQ MANAGEMENT
-   * ════════════════════════════════════════════════════════════════════════════
+   * FAQs, ordered as an editor arranged them.
+   *
+   * `publishedOnly` defaults to true — the caller has to ASK for unpublished
+   * drafts, so a public endpoint that forgets the flag shows nothing rather
+   * than everything.
    */
-
-  /**
-   * Get all FAQs
-   */
-  async getFAQs(category = null, publishedOnly = true) {
-    try {
-      const query = {};
-      if (category) query.category = category;
-      if (publishedOnly) query.isPublished = true;
-
-      const faqs = await FAQ().find(query)
-        .sort({ category: 1, order: 1, createdAt: -1 });
-
-      return faqs;
-    } catch (error) {
-      throw new Error(`Failed to get FAQs: ${error.message}`);
-    }
+  getFAQs(category = null, publishedOnly = true) {
+    return db.content.listFaqs({ category, publishedOnly });
   }
 
-  /**
-   * Add new FAQ
-   */
+  /** Create an FAQ, published. */
   async addFAQ(question, answer, category, adminId) {
-    try {
-      const faq = await FAQ().create({
-        question,
-        answer,
-        category: category || 'general',
-        createdBy: adminId,
-        isPublished: true
-      });
-
-      await EnhancedAuditLog().create({
-        performedBy: adminId,
-        action: 'FAQ_CREATED',
-        category: 'CONTENT',
-        targetType: 'FAQ',
-        targetId: faq._id.toString(),
-        details: { question, category }
-      });
-
-      return faq;
-    } catch (error) {
-      throw new Error(`Failed to add FAQ: ${error.message}`);
-    }
+    const faq = await db.content.upsertFaq({
+      question, answer, category: category || 'GENERAL',
+      isPublished: true, createdBy: adminId,
+    });
+    await db.audit.recordDetailed({
+      performedBy: adminId, action: 'FAQ_CREATED', category: 'CONTENT',
+      targetType: 'FAQ', targetId: faq.faqId,
+      details: { question: faq.question, faqCategory: faq.category },
+    });
+    return faq;
   }
 
   /**
-   * Update FAQ
+   * Edit an FAQ.
+   *
+   * Returns null for an id that does not exist, so the route answers 404 rather
+   * than reporting success for a row it never touched.
    */
-  async updateFAQ(id, question, answer, category, adminId) {
-    try {
-      const faq = await FAQ().findByIdAndUpdate(
-        id,
-        { 
-          question, 
-          answer, 
-          category,
-          updatedAt: new Date()
-        },
-        { new: true }
-      );
+  async updateFAQ(faqId, question, answer, category, adminId) {
+    const existing = await db.content.getFaq(faqId);
+    if (!existing) return null;
 
-      if (!faq) {
-        throw new Error('FAQ not found');
-      }
-
-      await EnhancedAuditLog().create({
-        performedBy: adminId,
-        action: 'FAQ_UPDATED',
-        category: 'CONTENT',
-        targetType: 'FAQ',
-        targetId: id,
-        details: { question, category }
-      });
-
-      return faq;
-    } catch (error) {
-      throw new Error(`Failed to update FAQ: ${error.message}`);
-    }
+    const faq = await db.content.upsertFaq({
+      faqId,
+      // An absent field keeps what is stored: an editor fixing a typo in the
+      // answer must not blank the question.
+      question: question ?? existing.question,
+      answer: answer ?? existing.answer,
+      category: category ?? existing.category,
+      order: existing.order,
+      isPublished: existing.isPublished,
+      tags: existing.tags,
+      createdBy: existing.createdBy,
+    });
+    await db.audit.recordDetailed({
+      performedBy: adminId, action: 'FAQ_UPDATED', category: 'CONTENT',
+      targetType: 'FAQ', targetId: faq.faqId, details: { question: faq.question },
+    });
+    return faq;
   }
 
-  /**
-   * Delete FAQ
-   */
-  async deleteFAQ(id, adminId) {
-    try {
-      const faq = await FAQ().findByIdAndDelete(id);
-
-      if (!faq) {
-        throw new Error('FAQ not found');
-      }
-
-      await EnhancedAuditLog().create({
-        performedBy: adminId,
-        action: 'FAQ_DELETED',
-        category: 'CONTENT',
-        targetType: 'FAQ',
-        targetId: id,
-        details: { question: faq.question }
-      });
-
-      return { success: true };
-    } catch (error) {
-      throw new Error(`Failed to delete FAQ: ${error.message}`);
-    }
-  }
-
-  /**
-   * ════════════════════════════════════════════════════════════════════════════
-   * 🔗 SUPPORT LINKS MANAGEMENT
-   * ════════════════════════════════════════════════════════════════════════════
-   */
-
-  /**
-   * Get support links
-   */
-  async getSupportLinks() {
-    try {
-      let links = await SupportLinks().findOne({ key: 'main' });
-
-      if (!links) {
-        // Create default support links
-        links = await SupportLinks().create({
-          key: 'main',
-          supportHours: '24/7',
-          responseTime: 'Within 2 hours'
-        });
-      }
-
-      return links;
-    } catch (error) {
-      throw new Error(`Failed to get support links: ${error.message}`);
-    }
-  }
-
-  /**
-   * Update support links
-   */
-  async updateSupportLinks(linksData, adminId) {
-    try {
-      const links = await SupportLinks().findOneAndUpdate(
-        { key: 'main' },
-        {
-          ...linksData,
-          updatedAt: new Date(),
-          updatedBy: adminId
-        },
-        { new: true, upsert: true }
-      );
-
-      await EnhancedAuditLog().create({
-        performedBy: adminId,
-        action: 'SUPPORT_LINKS_UPDATED',
-        category: 'CONTENT',
-        targetType: 'SupportLinks',
-        targetId: links._id.toString(),
-        details: linksData
-      });
-
-      return links;
-    } catch (error) {
-      throw new Error(`Failed to update support links: ${error.message}`);
-    }
+  /** Remove an FAQ. False when there was nothing to remove. */
+  async deleteFAQ(faqId, adminId) {
+    const removed = await db.content.deleteFaq(faqId);
+    if (!removed) return false;
+    await db.audit.recordDetailed({
+      performedBy: adminId, action: 'FAQ_DELETED', category: 'CONTENT',
+      targetType: 'FAQ', targetId: String(faqId), details: {},
+    });
+    return true;
   }
 }
 
-// ✅ FIX #41: ESM export default
 export default new ContentService();

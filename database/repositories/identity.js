@@ -96,6 +96,29 @@ export async function getVerification(userId) {
 }
 
 /** Is this Aadhaar already registered? A hash lookup; the number never appears. */
+/**
+ * KYC status for many users at once, as a Map.
+ *
+ * A referral report lists up to two hundred joiners and shows whether each
+ * one's KYC has come back — a lookup per row is two hundred round trips to
+ * render one page.
+ *
+ * A user with no verification row is ABSENT from the map rather than mapped to
+ * a status: "has not started KYC" and "is pending" are different answers, and
+ * a commission is blocked differently by each.
+ */
+export async function verificationStatusFor(userIds = []) {
+  const ids = [...new Set((userIds || []).filter(Boolean).map(String))];
+  const out = new Map();
+  if (!ids.length) return out;
+  const { rows } = await pgQuery(
+    'SELECT user_id, status FROM kyc_verifications WHERE user_id = ANY($1::text[])',
+    [ids], 'kyc_status_many',
+  );
+  for (const r of rows) out.set(r.user_id, r.status);
+  return out;
+}
+
 export async function isAadhaarRegistered(aadhaarHash) {
   const { rows } = await pgQuery(
     `SELECT 1 FROM kyc_verifications WHERE aadhaar_hash = $1`,
