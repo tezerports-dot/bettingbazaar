@@ -253,6 +253,41 @@ export async function accountBalancePaise(code) {
  * flag, so the two always add back to the net and there is no third field to
  * disagree with them.
  */
+/**
+ * The bonus high-water mark per merchant, read from the IDEMPOTENCY KEY.
+ *
+ * -- Why not from metadata --------------------------------------------------
+ * The engine passed `cumulativeMatchedMinor` in a `metadata` object and read it
+ * back with `$metadata.cumulativeMatchedMinor`. There is no metadata column on
+ * an accounting event and nothing stores one — so every mark came back
+ * undefined, defaulted to 0, and the engine would treat a merchant's ENTIRE
+ * lifetime matched volume as newly matched on every pass. Enabling the bonus
+ * engine would have paid every merchant their whole history again, each run.
+ * It ships disabled, which is the only reason this never fired.
+ *
+ * The mark is recovered from `acct_bonusissue_<merchantId>_<cumulative>`
+ * instead. That key already exists, is UNIQUE, and is the very thing that makes
+ * the payment idempotent — so the mark and the idempotency cannot disagree,
+ * which a separate metadata field could.
+ */
+export async function bonusHighWaterMarks() {
+  const { rows } = await pgQuery(
+    `SELECT ref_id AS merchant_id,
+            MAX(NULLIF(regexp_replace(idempotency_key, '^acct_bonusissue_.*_', ''), '')::BIGINT) AS mark
+       FROM accounting_events
+      WHERE event_type = 'MERCHANT_BONUS_ISSUED'
+        AND idempotency_key ~ '^acct_bonusissue_.+_[0-9]+$'
+      GROUP BY ref_id`,
+    [], 'ledger_bonus_high_water',
+  );
+  const marks = {};
+  // MAX, not "the most recent": a bonus issued out of order — a replay, a
+  // repair — must never LOWER the mark, because lowering it re-pays the
+  // difference on the very next pass.
+  for (const r of rows) marks[r.merchant_id] = Number(r.mark) || 0;
+  return marks;
+}
+
 export async function accountActivity({ from = null, to = null } = {}) {
   const where = []; const params = [];
   if (from) { params.push(new Date(from)); where.push(`created_at >= $${params.length}`); }

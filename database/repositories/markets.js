@@ -22,7 +22,7 @@
  *    filters on it, and the table's CHECK makes the state unreachable anyway —
  *    two layers, because this one silently paid nobody for an entire release.
  */
-import { pgQuery } from '../client.js';
+import { pgQuery, withTransaction } from '../client.js';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
 
 /**
@@ -89,6 +89,90 @@ export async function getCycle(cycleId) {
   if (!cycleId) return null;
   const { rows } = await pgQuery(
     `SELECT ${COLUMNS} FROM cycles WHERE cycle_id = $1`, [String(cycleId)], 'cycle_get',
+  );
+  return toCycle(rows[0]);
+}
+
+/**
+ * Place a phantom bet: the row, and the cycle's phantom pool, together.
+ *
+ * -- Why phantom pools ARE stored, when real ones are not -------------------
+ * They are not a sum of phantom bet rows. `equalizePhantomPools` OVERWRITES
+ * them with `max(delhi, bombay)` rather than adding, so no aggregation over
+ * rows can reproduce them. They are also not the contention source: phantom
+ * bets come from a handful of admin agents, never from thousands of players, so
+ * the row lock this takes costs nothing.
+ *
+ * The bet row and the counter move in ONE transaction. They were two writes,
+ * and a failure between them left a phantom bet the pools did not include —
+ * invisible in the total a player sees, and still there at settlement.
+ */
+export async function placePhantomBet({ betId, userId, cycleId, side, amountRupees, cycleType = null }) {
+  if (!betId) throw new Error('placePhantomBet requires a betId');
+  const amountPaise = rupeesToPaise(amountRupees);
+  if (!Number.isInteger(amountPaise) || amountPaise <= 0) {
+    throw new TypeError(`placePhantomBet: amount must be positive, got ${amountRupees}`);
+  }
+  const column = side === 'DELHI' ? 'phantom_delhi_paise' : 'phantom_bombay_paise';
+
+  return withTransaction(async (client) => {
+    const { rows: cycle } = await client.query(
+      `SELECT status, phantom_bets_closed FROM cycles WHERE cycle_id = $1 FOR UPDATE`,
+      [String(cycleId)],
+    );
+    if (!cycle.length) return { ok: false, reason: 'CYCLE_NOT_FOUND' };
+    if (!['OPEN', 'MERGED'].includes(cycle[0].status)) {
+      return { ok: false, reason: 'CYCLE_CLOSED', status: cycle[0].status };
+    }
+    // Checked under the lock, so an admin closing phantom betting cannot be
+    // raced by an agent's last bet.
+    if (cycle[0].phantom_bets_closed) return { ok: false, reason: 'PHANTOM_CLOSED' };
+
+    const { rows: bet } = await client.query(
+      `INSERT INTO bets (bet_id, user_id, cycle_id, side, stake_paise, status,
+                         is_phantom, phantom_manager_id, cycle_type)
+       VALUES ($1,$2,$3,$4,$5,'PENDING',TRUE,$2,$6)
+       ON CONFLICT (bet_id) DO NOTHING
+       RETURNING *`,
+      [String(betId), String(userId), String(cycleId), String(side), amountPaise, cycleType],
+    );
+    // A replayed request must not move the pool a second time.
+    if (!bet.length) return { ok: true, idempotent: true };
+
+    const { rows: updated } = await client.query(
+      `UPDATE cycles SET ${column} = ${column} + $2, updated_at = now()
+        WHERE cycle_id = $1 RETURNING ${COLUMNS}`,
+      [String(cycleId), amountPaise],
+    );
+    return { ok: true, idempotent: false, cycle: toCycle(updated[0]) };
+  });
+}
+
+/**
+ * This cycle, but only if it is still taking bets.
+ *
+ * A READ, deliberately, and not the gate. The document version made it an
+ * `$inc` on the pool totals with the status in the filter, so the "is it still
+ * open" question and the pool update were one atomic act. That cannot be done
+ * here and must not be: a bet holds `FOR SHARE` on the cycle row, so a bet that
+ * also UPDATEd it would block against every other bet doing the same — 40P01,
+ * on the hottest path on the platform. The pools are derived from the bets
+ * instead, so there is nothing to increment.
+ *
+ * What settles the race is the BET insert, which carries the stake movement in
+ * its own transaction. A cycle that closes between this read and that insert
+ * costs at most one bet accepted a moment late — and the settlement pays from
+ * the bet rows, so a late bet is paid or refunded like any other rather than
+ * being lost.
+ *
+ * MERGED is accepted alongside OPEN: a merged cycle is still live, it has
+ * simply been folded into a longer round.
+ */
+export async function getAcceptingCycle(cycleId) {
+  const { rows } = await pgQuery(
+    `SELECT ${COLUMNS} FROM cycles
+      WHERE cycle_id = $1 AND status IN ('OPEN', 'MERGED')`,
+    [String(cycleId)], 'cycle_get_accepting',
   );
   return toCycle(rows[0]);
 }
@@ -271,6 +355,66 @@ export async function declareWinner(cycleId, winner, { by = 'engine', confidence
  * without two of them claiming the same cycle. `winner IS NOT NULL` is rule 3:
  * a cycle with no result must never be offered, whatever its status says.
  */
+/**
+ * The REAL bet pools for a cycle, summed from the bets.
+ *
+ * -- Derived, never stored, and that is trap 4 ------------------------------
+ * Storing these on the cycle row DEADLOCKS. A bet holds `FOR SHARE` on that row
+ * while it commits, so a bet that also UPDATEs it blocks against another bet
+ * doing the same — 40P01 on the hottest path on the platform. Only the PHANTOM
+ * figures live on the row, because nothing concurrent writes them.
+ *
+ * PHANTOM bets are excluded, and this is the whole point of the word REAL:
+ * phantom stakes are house figures that move the displayed total without
+ * anybody having staked anything. Counting them here would inflate the pool a
+ * winner is paid a share of, and decide the winning side — which is the
+ * MINORITY real-bet side — from numbers nobody bet.
+ *
+ * REFUNDED and VOID are excluded too: a returned stake is not in the pool.
+ *
+ * There is no `exact` option and no memo. A sum over an indexed column is a
+ * single statement against a consistent snapshot — the staleness the document
+ * version had to reason about, and refresh around, does not exist here.
+ */
+export async function realPools(cycleId) {
+  const { rows } = await pgQuery(
+    `SELECT
+       COALESCE(SUM(stake_paise) FILTER (WHERE side = 'DELHI'), 0)  AS delhi,
+       COALESCE(SUM(stake_paise) FILTER (WHERE side = 'BOMBAY'), 0) AS bombay,
+       COUNT(*) FILTER (WHERE side = 'DELHI')::int  AS delhi_bets,
+       COUNT(*) FILTER (WHERE side = 'BOMBAY')::int AS bombay_bets
+     FROM bets
+     WHERE cycle_id = $1 AND NOT is_phantom AND status NOT IN ('REFUNDED', 'VOID')`,
+    [String(cycleId)], 'cycle_real_pools',
+  );
+  const r = rows[0];
+  return {
+    realDelhi: paiseToRupees(Number(r.delhi)),
+    realBombay: paiseToRupees(Number(r.bombay)),
+    delhiBets: r.delhi_bets,
+    bombayBets: r.bombay_bets,
+  };
+}
+
+/**
+ * A cycle with its real pools attached, and the combined totals.
+ *
+ * `totalDelhi` is real + phantom computed at READ time. The document version
+ * wrote it back onto the row, which meant a broadcast and a settlement could
+ * see different totals depending on which refresh had last run.
+ */
+export async function cycleWithPools(cycleId) {
+  const cycle = await getCycle(cycleId);
+  if (!cycle) return null;
+  const pools = await realPools(cycleId);
+  return {
+    ...cycle,
+    ...pools,
+    totalDelhi: pools.realDelhi + (cycle.phantomDelhi || 0),
+    totalBombay: pools.realBombay + (cycle.phantomBombay || 0),
+  };
+}
+
 /**
  * Claim cycles to settle, and mean it.
  *

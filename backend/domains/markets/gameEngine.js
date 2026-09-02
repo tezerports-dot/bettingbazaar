@@ -13,7 +13,7 @@ import { getRiskRules, computeWinningsPayout } from '../risk/riskValidation.serv
 import { sendAlert } from '../../services/alerting.service.js';
 import { settlementRuns } from '../../services/metrics.service.js';
 // Derived cycle pools (FLAGS.DERIVED_CYCLE_POOLS, default off).
-import { refreshRealPools, forgetCycle } from './cyclePool.service.js';
+import { computeRealPools, forgetCycle } from './cyclePool.service.js';
 // The settlement RUN is a row with a UNIQUE cycle_id, opened before any payout
 // and closed after the last one — not a flag that can be written back.
 import { beginSettlement, finishSettlement } from '#db/repositories/settlements.js';
@@ -501,7 +501,7 @@ class GameEngine {
         // payout pass. The stored fields are the correct fallback here — they
         // are at worst slightly stale, and the reconciler derives the
         // authoritative ledger entry from the bets regardless.
-        const settlePools = await refreshRealPools(cycle.cycleId, { exact: true }).catch((e) => {
+        const settlePools = await computeRealPools(cycle.cycleId).catch((e) => {
             console.error(`[Engine] exact pool refresh failed for ${cycle.cycleId}, using stored:`, e.message);
             return null;
         });

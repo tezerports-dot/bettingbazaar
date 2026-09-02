@@ -753,6 +753,60 @@ export async function merchantOpenOrders(merchantId) {
   return rows.map(toOrder);
 }
 
+/**
+ * How many funding orders a player has created in a window.
+ *
+ * The velocity gate. Any status counts — cancellation churn IS velocity, and a
+ * player who creates and cancels twenty orders an hour is doing the thing this
+ * limit exists to catch, whatever the orders ended up as.
+ *
+ * The window is measured by the DATABASE's clock, not the app server's: several
+ * instances each subtracting an hour from their own `new Date()` disagree by
+ * however far their clocks have drifted, and this decides whether a player is
+ * refused.
+ */
+export async function countRecentOrders(userId, { withinMinutes = 60 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT COUNT(*)::int AS n FROM order_states
+      WHERE user_id = $1
+        AND created_at >= now() - ($2 || ' minutes')::interval`,
+    [String(userId), String(Math.max(Number(withinMinutes) || 60, 1))],
+    'order_recent_count',
+  );
+  return rows[0].n;
+}
+
+/**
+ * Per-merchant matched volume: the smaller of what they took in and what they
+ * paid out, which is what a completed buy→sell cycle actually is.
+ *
+ * The bonus engine pays on this figure, so it is computed in one statement over
+ * completed orders rather than assembled from two aggregates and a loop that
+ * defaulted the side it did not find.
+ */
+export async function merchantMatchedVolumes() {
+  const { rows } = await pgQuery(
+    `SELECT merchant_id,
+            COALESCE(SUM(fiat_amount_paise) FILTER (WHERE order_type = 'DEPOSIT'), 0)    AS deposit_paise,
+            COALESCE(SUM(fiat_amount_paise) FILTER (WHERE order_type = 'WITHDRAWAL'), 0) AS withdrawal_paise
+       FROM order_states
+      WHERE state = 'COMPLETED' AND merchant_id IS NOT NULL
+        AND order_type IN ('DEPOSIT', 'WITHDRAWAL')
+      GROUP BY merchant_id`,
+    [], 'order_merchant_matched_volumes',
+  );
+  const out = {};
+  for (const r of rows) {
+    const depositMinor = Number(r.deposit_paise);
+    const withdrawalMinor = Number(r.withdrawal_paise);
+    out[r.merchant_id] = {
+      depositMinor, withdrawalMinor,
+      matchedMinor: Math.min(depositMinor, withdrawalMinor),
+    };
+  }
+  return out;
+}
+
 /** Counts for the admin dashboard, in one pass. */
 export async function orderCounts({ since = null } = {}) {
   const { rows } = await pgQuery(

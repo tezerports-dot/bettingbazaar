@@ -549,6 +549,37 @@ export const refundBet = (args) => settle(args, { name: 'refund', ...TRANSITIONS
  * anything locked for a withdrawal. This reports the bet side alone, so a
  * caller can subtract what it knows about the other.
  */
+/**
+ * Claim a bet for compensation: delete it, but ONLY while it is still PENDING.
+ *
+ * The bet-placement route uses this when the cycle closes underneath a bet it
+ * has already taken money for. Settlement may have reached the same bet first,
+ * in which case it owns it and the stake must NOT be refunded — the player was
+ * included in the round and will be paid or not on its result.
+ *
+ * `status = 'PENDING'` is in the WHERE clause, so the race is settled by the
+ * database. THREE outcomes, and collapsing the last two loses money:
+ *
+ *   { claimed: true }   this call owns it; refund the stake
+ *   { claimed: false }  settlement owns it; touch nothing
+ *   a THROW              ownership unknown — the caller must page a human
+ *                        rather than guess, because refunding risks paying
+ *                        twice and not refunding risks locking the stake
+ *
+ * That last case is why this does not swallow its own errors. A `.catch(=> null)`
+ * would make a transient database failure indistinguishable from "settlement
+ * won", sending it down the branch that deliberately does not refund — and
+ * reconciliation could not recover it, because the ledger legitimately shows
+ * the debit.
+ */
+export async function claimPendingBetForRefund(betId) {
+  const { rows } = await pgQuery(
+    `DELETE FROM bets WHERE bet_id = $1 AND status = 'PENDING' RETURNING *`,
+    [String(betId)], 'bet_claim_for_refund',
+  );
+  return { claimed: rows.length > 0, bet: rows[0] ? rowToBet(rows[0]) : null };
+}
+
 export async function reconcileUserStakes(userId) {
   const [{ rows: pending }, { rows: wallet }] = await Promise.all([
     pgQuery(
@@ -577,6 +608,26 @@ export async function reconcileUserStakes(userId) {
 }
 
 /** Every settled bet whose stake never left `lockedBalance`. */
+/**
+ * Does this player already hold a live bet on the OTHER side of this cycle?
+ *
+ * The wash-bet guard: betting both sides of the same cycle guarantees a return
+ * regardless of the outcome, which is not betting.
+ *
+ * A read, deliberately — it decides whether to REFUSE a bet, and the refusal is
+ * a policy the operator can switch off. It is not the money gate: the stake
+ * movement is, one call later, under the wallet's row lock.
+ */
+export async function hasOppositeSideBet({ userId, cycleId, side }) {
+  const { rows } = await pgQuery(
+    `SELECT 1 FROM bets
+      WHERE user_id = $1 AND cycle_id = $2 AND side <> $3 AND status = 'PENDING'
+      LIMIT 1`,
+    [String(userId), String(cycleId), String(side)], 'bet_opposite_side',
+  );
+  return rows.length > 0;
+}
+
 export async function findBetsMissingStakeMovement() {
   const { rows } = await pgQuery(
     `SELECT b.bet_id, b.user_id, b.status

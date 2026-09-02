@@ -7,7 +7,7 @@ import { DEFAULT_CYCLE_PHASES } from '../configuration/systemConfig.model.js';
 import mongoose from 'mongoose';
 // Derived cycle pools (FLAGS.DERIVED_CYCLE_POOLS, default off) — see
 // cyclePool.service.js for why the running total is the scaling ceiling.
-import { derivedPoolsEnabled, refreshRealPools } from './cyclePool.service.js';
+import { computeRealPools } from './cyclePool.service.js';
 // Public cycle payloads must never carry real/phantom pools (they reveal the
 // minority-side winner). assertPublicCycleSafe throws if one slips in.
 import { assertPublicCycleSafe } from './cyclePublicView.js';
@@ -340,17 +340,21 @@ class CycleGenerator {
             // them would pick a winner from pools that are not the real ones and
             // pay out accordingly. The cycle stays un-completed and the next
             // tick retries, which is a delay rather than a mispayment.
-            const derived = await derivedPoolsEnabled();
-            const exactPools = await refreshRealPools(cycle.cycleId, { exact: true }).catch((e) => {
-                console.error(`[Cycle] exact pool refresh failed for ${cycle.cycleId}:`, e.message);
+            const exactPools = await computeRealPools(cycle.cycleId).catch((e) => {
+                console.error(`[Cycle] pool read failed for ${cycle.cycleId}:`, e.message);
                 return null;
             });
-            if (derived && !exactPools) {
-                console.error(`[Cycle] ⛔ Refusing to settle ${cycle.cycleId} on unverified pools — retrying next tick.`);
+            // No fallback to a figure on the cycle row. There is none — the real
+            // pools are derived and the row carries only the phantom ones — and
+            // settling on a stale number picks the winning SIDE from pools that
+            // are not the real ones and pays out accordingly. The cycle stays
+            // un-completed and the next tick retries: a delay, not a mispayment.
+            if (!exactPools) {
+                console.error(`[Cycle] Refusing to settle ${cycle.cycleId} on unread pools — retrying next tick.`);
                 return;
             }
-            const realDelhi  = exactPools ? exactPools.realDelhi  : (cycle.realDelhi  || 0);
-            const realBombay = exactPools ? exactPools.realBombay : (cycle.realBombay || 0);
+            const realDelhi  = exactPools.realDelhi;
+            const realBombay = exactPools.realBombay;
 
             // Winner = minority real-bet side (platform profits from majority)
             let winner;
