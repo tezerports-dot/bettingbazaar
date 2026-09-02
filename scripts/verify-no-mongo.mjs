@@ -9,6 +9,13 @@
  *
  * Run it after every removal pass. The numbers must only go down.
  *
+ * It also reports PROGRESS as a percentage of the references that existed
+ * before removal began, per check and overall, from baselines measured with
+ * this same script (see BASELINE). That figure is the only one to quote: an
+ * estimate made from memory moves its own denominator, and two such estimates
+ * taken a day apart are not comparable — which reads as regress even while
+ * every count is falling.
+ *
  *   npm run check:no-mongo            summary + per-file counts
  *   npm run check:no-mongo -- -v      every file, with matching lines
  *   npm run check:no-mongo -- --summary   totals only
@@ -265,6 +272,30 @@ function hits(text, re) {
 // Checks — each returns { id, title, unit, total, files }
 // ---------------------------------------------------------------------------
 
+/**
+ * What each check counted BEFORE any removal began, measured by running this
+ * same script against the merge base (commit 6e66b52).
+ *
+ * These exist so progress is a MEASUREMENT rather than an estimate. Reporting
+ * "about 60% done" from memory is how a number drifts: the denominator moves
+ * without anybody saying so, and two reports taken a day apart are no longer
+ * comparable — which looks like regress even while every count is falling.
+ *
+ * They are constants, never recomputed. If a baseline is ever wrong, correct it
+ * here with the commit that was measured, and say so.
+ */
+const BASELINE = Object.freeze({
+  1: 582,   // mongoose.model() call sites
+  2: 147,   // files importing the driver or models/index.js
+  3: 3,     // packages declared in package.json
+  4: 53,    // MONGODB_URI references
+  5: 894,   // comment lines
+  6: 390,   // documentation lines
+  7: 1689,  // code references
+});
+const BASELINE_COMMIT = '6e66b52';
+const BASELINE_TOTAL = Object.values(BASELINE).reduce((a, b) => a + b, 0);
+
 const checks = [];
 
 // 1. mongoose.model() call sites.
@@ -495,12 +526,15 @@ console.log(bold('\nSingle-store verification — PostgreSQL is the only store\n
 
 for (const check of checks) {
   const label = `  ${check.id}. ${check.title}`;
+  const base = BASELINE[check.id];
+  const removed = base ? Math.round(((base - check.total) / base) * 100) : null;
+  const progress = removed === null ? '' : `  [${removed}% of ${base} removed]`;
   if (check.total === 0) {
-    console.log(`${green('PASS')}${label}: ${green('0')}`);
+    console.log(`${green('PASS')}${label}: ${green('0')}${progress}`);
     continue;
   }
   console.log(
-    `${red('FAIL')}${label}: ${red(String(check.total))} ${check.unit} in ${check.files.length} file(s)`,
+    `${red('FAIL')}${label}: ${red(String(check.total))} ${check.unit} in ${check.files.length} file(s)${progress}`,
   );
   if (summaryOnly) continue;
 
@@ -528,8 +562,16 @@ if (failing.length === 0) {
   process.exit(0);
 }
 
+const removedTotal = BASELINE_TOTAL - grandTotal;
+const percent = Math.round((removedTotal / BASELINE_TOTAL) * 100);
+
 console.log(
   red(bold(`${failing.length} of ${checks.length} checks non-zero — ${grandTotal} references remain.`)),
 );
+console.log(
+  bold(`Progress: ${removedTotal} of ${BASELINE_TOTAL} references removed — ${percent}% `)
+  + `(baseline measured at ${BASELINE_COMMIT}).`,
+);
+console.log('This is the ONLY number to quote for progress. It is counted, not estimated.');
 console.log('The migration is not done. Re-run after the next removal pass.\n');
 process.exit(1);

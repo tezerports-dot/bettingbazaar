@@ -71,6 +71,16 @@ Non-zero exit with a per-file report while any count is above zero. Run it after
 every removal pass; **the numbers must only go down.** It runs in CI and is the
 definition of done.
 
+It also prints progress as a percentage of the references that existed before
+removal began — per check and overall — from baselines measured with the same
+script at commit `6e66b52`.
+
+**That printed figure is the only progress number to quote.** An estimate made
+from memory carries its own denominator, and two estimates taken a day apart are
+not comparable: reporting 65% and then 62% looked like regress while every
+single count was in fact still falling. If somebody asks how far along the
+migration is, run the gate and read the number off it.
+
 `scripts/verify-no-mongo.mjs` is the only file permitted to name the forbidden
 strings, because it is the thing that forbids them. It excludes itself by path.
 Nothing else is exempt — not a comment, not a variable name, not a doc.
