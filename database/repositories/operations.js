@@ -191,19 +191,66 @@ export async function clearFrontendErrors() {
  * a hard floor stops a misconfigured `retentionMonths` from deleting anything
  * recent whatever the admin set.
  */
-export async function pruneOperationalData({ months = 6 } = {}) {
-  const safeMonths = Math.max(Number(months) || 6, 1);
-  const interval = `${safeMonths} months`;
+/**
+ * The ONLY tables retention may touch, with the rows it may touch in each.
+ *
+ * A structural guarantee, not a convention: no financial, audit, user, bet or
+ * cycle table appears here, so there is no argument a caller could pass that
+ * would reach one. The plan that preceded this took a MODEL NAME and a filter
+ * from its caller, which made "which tables are prunable" a property of the
+ * call rather than of the module.
+ *
+ * The 30-day floor is repeated in EVERY clause on purpose. It is the last line
+ * of defence against a misconfigured window, and it belongs in the statement
+ * that does the deleting rather than in a caller that might be bypassed.
+ */
+const PRUNABLE = Object.freeze({
+  frontendErrors: {
+    table: 'frontend_error_reports',
+    where: "created_at < now() - $1::interval AND created_at < now() - interval '30 days'",
+    usesInterval: true,
+  },
+  referralClicks: {
+    table: 'referral_clicks',
+    where: "expires_at < now() - interval '30 days'",
+    usesInterval: false,
+  },
+  notifications: {
+    table: 'notifications',
+    where: "expires_at IS NOT NULL AND expires_at < now() - interval '30 days'",
+    usesInterval: false,
+  },
+});
+
+/**
+ * The same rows the prune would delete, counted rather than deleted.
+ *
+ * Shares its WHERE clauses with `pruneOperationalData` through `PRUNABLE`, so
+ * a dry run and the real thing cannot describe different sets. Two hand-written
+ * copies of the same filter is how a dry run comes to report nine rows and the
+ * prune deletes nine hundred.
+ */
+export async function countPrunableData({ months = 6 } = {}) {
+  const interval = `${Math.max(Number(months) || 6, 1)} months`;
   const out = {};
-  for (const [name, sql] of Object.entries({
-    frontendErrors: `DELETE FROM frontend_error_reports
-                      WHERE created_at < now() - $1::interval
-                        AND created_at < now() - interval '30 days'`,
-    referralClicks: `DELETE FROM referral_clicks WHERE expires_at < now() - interval '30 days'`,
-    notifications:  `DELETE FROM notifications
-                      WHERE expires_at IS NOT NULL AND expires_at < now() - interval '30 days'`,
-  })) {
-    const { rowCount } = await pgQuery(sql, name === 'frontendErrors' ? [interval] : [], `prune_${name}`);
+  for (const [name, spec] of Object.entries(PRUNABLE)) {
+    const { rows } = await pgQuery(
+      `SELECT COUNT(*)::int AS n FROM ${spec.table} WHERE ${spec.where}`,
+      spec.usesInterval ? [interval] : [], `prune_count_${name}`,
+    );
+    out[name] = rows[0].n;
+  }
+  return out;
+}
+
+export async function pruneOperationalData({ months = 6 } = {}) {
+  const interval = `${Math.max(Number(months) || 6, 1)} months`;
+  const out = {};
+  for (const [name, spec] of Object.entries(PRUNABLE)) {
+    const { rowCount } = await pgQuery(
+      `DELETE FROM ${spec.table} WHERE ${spec.where}`,
+      spec.usesInterval ? [interval] : [], `prune_${name}`,
+    );
     out[name] = rowCount;
   }
   return out;

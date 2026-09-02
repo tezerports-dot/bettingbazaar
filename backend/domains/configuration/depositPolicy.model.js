@@ -12,7 +12,7 @@
 // modeled here (`merchantCommissionPercent`, `commissionFundingSource`).
 //
 // WHY A DEDICATED MODEL INSTEAD OF MORE SystemConfig FIELDS:
-// configVersioning.service.js + ConfigVersion version individual FIELDS on a
+// configVersioning.service.js versions individual FIELDS on a
 // flat key:'main' document. That's correct for independent values (bet
 // limits, maintenance mode) but wrong here: deposit-allocation % and
 // reserve-allocation % are not independent numbers — they are one coherent

@@ -17,6 +17,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import {
+  setConfigPath,
   getConfig, getSystemConfig, getConfigs, applyConfig, applySystemConfig,
   bumpConfigCounter, getConfigHistory, restoreConfigVersion, defaultsFor,
   invalidateConfigCache,
@@ -258,6 +259,39 @@ describePg('the configuration store', () => {
     await applyConfig({ scope: 'branding', docKey: KEY, patch: { appName: 'Other' } });
     expect((await getConfig('branding', { docKey: KEY, fresh: true })).appName).toBe('Other');
     expect((await getSystemConfig({ docKey: KEY, fresh: true })).maintenanceMode).toBe(false);
+  });
+
+  // ── The admin System Settings write path ──────────────────────────────────
+  it('writes a dotted path to the document the platform actually reads', async () => {
+    const before = await getConfig('system', { docKey: KEY, fresh: true });
+    expect(before.betLimits.thirtyMin.min).toBe(10);
+
+    await setConfigPath('system', 'betLimits.thirtyMin.min', 25, {
+      docKey: KEY, actor: 'admin1', reason: 'probe',
+    });
+
+    // This is the bug that made the whole rewrite necessary: the service that
+    // served the admin System Settings page wrote to a SystemConfig document
+    // while getSystemConfig read config_documents. Every setting appeared to
+    // save and none of them took effect.
+    const after = await getConfig('system', { docKey: KEY, fresh: true });
+    expect(after.betLimits.thirtyMin.min).toBe(25);
+  });
+
+  it('records the dotted path it changed, not the whole document', async () => {
+    await setConfigPath('system', 'maintenanceMode', true, { docKey: KEY, actor: 'admin1' });
+    const [latest] = await getConfigHistory('system', { docKey: KEY });
+    // An auditor reading the trail sees what an admin actually did rather than
+    // having to diff two full documents to find it.
+    expect(latest.changed).toEqual({ maintenanceMode: true });
+    expect(latest.changedBy).toBe('admin1');
+  });
+
+  it('refuses a dotted path the spec does not declare', async () => {
+    await expect(setConfigPath('system', 'notADeclaredKey', 1, { docKey: KEY }))
+      .rejects.toThrow(/refusing to write undeclared setting 'notADeclaredKey'/);
+    await expect(setConfigPath('system', 'betLimits.thirtyMin.nope', 1, { docKey: KEY }))
+      .rejects.toThrow(/betLimits\.thirtyMin\.nope/);
   });
 
   it('is a no-op for an empty patch rather than a version bump', async () => {

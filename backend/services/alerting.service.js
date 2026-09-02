@@ -8,7 +8,6 @@
 // Mattermost, or any generic HTTP collector works. Fire-and-forget: an alert
 // failure must NEVER break the money path that raised it. Per-key cooldown
 // stops a crash-looping job from flooding the channel.
-import mongoose from 'mongoose';
 // Item 3 (2026-07-13): transient webhook failures (429/503, network blips) get
 // a couple of JITTERED retries so a briefly-flaky collector still receives the
 // page — full jitter so many instances alerting at once don't retry in lockstep.

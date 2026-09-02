@@ -341,6 +341,20 @@ export async function bumpConfigCounter({
 }
 
 /**
+ * Write ONE dotted path — `betLimits.thirtyMin.min` — and version it.
+ *
+ * A convenience over `applyConfig` for callers that hold a path and a value
+ * rather than a nested patch. Everything else is identical: the spec still
+ * refuses an undeclared key or an out-of-range value, and the change is still
+ * recorded in the same transaction that makes it.
+ */
+export async function setConfigPath(scope, path, value, { docKey = 'main', actor = null, reason = null } = {}) {
+  const patch = {};
+  setPath(patch, String(path), value);
+  return applyConfig({ scope, docKey, patch, actor, reason });
+}
+
+/**
  * The change history for a document, newest first.
  *
  * This is what `ConfigVersion` was for. It is written by `applyConfig` in the

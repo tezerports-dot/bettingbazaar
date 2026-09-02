@@ -59,11 +59,11 @@ export function registerCronJobs(rebuildLeaderboard) {
     }
   });
 
-  // ── Scheduled policy/config apply worker — runs every 60 seconds ────────────
-  // Activates DepositPolicy versions and ConfigVersion field changes whose
-  // effectiveAt has passed. Both functions process every due item independently
-  // and return a per-item result; a single item's failure is logged, never
-  // thrown, so it can't block the rest of the batch or crash the interval.
+  // ── Scheduled policy apply worker — runs every 60 seconds ──────────────────
+  // Activates deposit-policy versions whose effectiveAt has passed. It processes
+  // every due item independently and returns a per-item result; a single item's
+  // failure is logged, never thrown, so it cannot block the rest of the batch or
+  // crash the interval.
   registerRecurring('scheduled-apply', 60 * 1000, async () => {
     try {
       const { applyScheduledPolicyChanges } = await import('../domains/configuration/depositPolicy.service.js');
@@ -75,15 +75,12 @@ export function registerCronJobs(rebuildLeaderboard) {
       if (applied > 0) console.log(`[scheduled-policy] Applied ${applied} DepositPolicy version(s)`);
     } catch (e) { console.error('[scheduled-policy] cron error:', e.message); }
 
-    try {
-      const { applyScheduledConfigChanges } = await import('../domains/configuration/configVersioning.service.js');
-      const results = await applyScheduledConfigChanges();
-      for (const r of results) {
-        if (!r.applied) console.error(`[scheduled-config] Failed to apply version ${r.versionId}:`, r.error);
-      }
-      const applied = results.filter(r => r.applied).length;
-      if (applied > 0) console.log(`[scheduled-config] Applied ${applied} config version(s)`);
-    } catch (e) { console.error('[scheduled-config] cron error:', e.message); }
+    // The scheduled-CONFIG sweep that sat here is gone. It swept for config
+    // versions marked SCHEDULED, and nothing could ever create one: the single
+    // caller of setConfigField passes no effectiveAt, no route exposed an
+    // approval endpoint, and no screen offered a future date. It ran every 60
+    // seconds over rows that could not exist. The deposit-policy sweep above
+    // is different — that one has a real scheduling surface.
   });
 
   // ── Settlement-ledger reconciliation — runs every 60 seconds ────────────────
