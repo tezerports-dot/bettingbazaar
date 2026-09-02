@@ -19,7 +19,8 @@ import {
   getActiveConfig, getActiveConfigSecrets, activateConfig,
   listBots, getLiveBot, getLiveBotSecrets, addBot, promoteBot, recordBotError,
   getTemplates, setTemplate,
-  getIdentityByTelegramId, getIdentityByUserId, createIdentity,
+  getIdentityByTelegramId, getIdentityByUserId, createIdentity, relinkIdentity,
+  listIdentitiesForUser,
   setChannelStatus, deactivateContact,
   getPendingLink, getPendingAadhaar, upsertPendingLink, deletePendingLink,
   issueLoginToken, consumeLoginToken, sweepExpired,
@@ -106,25 +107,51 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
       expect(await listBots({ role: 'broadcast', status: 'ACTIVE' })).toHaveLength(2);
     });
 
-    it('promotes a standby and retires the incumbent, atomically', async () => {
+    it('promotes a standby and stands the incumbent down, atomically', async () => {
       await addBot(bot({ botId: 'live', status: 'ACTIVE' }));
       await addBot(bot({ botId: 'spare' }));
 
-      const promoted = await promoteBot({ botId: 'spare', role: 'signin', actor: 'admin-1' });
-      expect(promoted).toMatchObject({ botId: 'spare', status: 'ACTIVE', liveSlot: 'signin' });
+      const result = await promoteBot({ botId: 'spare', role: 'signin', actor: 'admin-1' });
+      expect(result.bot).toMatchObject({ botId: 'spare', status: 'ACTIVE', liveSlot: 'signin' });
+      // The displaced bot comes back with it: the caller has to revoke the old
+      // webhook once the transaction has committed, and it cannot do that from
+      // a bot it was never told about.
+      expect(result.displaced.bot).toMatchObject({ botId: 'live', status: 'STANDBY', liveSlot: null });
+      expect(result.displaced.secrets.webhookSecret).toBeTruthy();
 
-      const all = await listBots({ role: 'signin' });
-      expect(all.find((b) => b.botId === 'live')).toMatchObject({ status: 'RETIRED', liveSlot: null });
       // Never zero live bots at any point a reader could observe — the window
-      // between retire and promote is inside one transaction.
+      // between the stand-down and the promotion is inside one transaction.
       expect(await getLiveBot('signin')).toMatchObject({ botId: 'spare' });
+    });
+
+    it('leaves the displaced bot promotable, so a bad promotion can be undone', async () => {
+      await addBot(bot({ botId: 'live', status: 'ACTIVE' }));
+      await addBot(bot({ botId: 'spare' }));
+      await promoteBot({ botId: 'spare', role: 'signin', actor: 'admin-1' });
+
+      // RETIRED is a one-way door — `promote` refuses a retired bot outright —
+      // so retiring the incumbent made every promotion irreversible: an operator
+      // who promoted the wrong bot could not switch back, and the working bot
+      // they had just displaced was gone for good.
+      const back = await promoteBot({ botId: 'live', role: 'signin', actor: 'admin-1' });
+      expect(back.bot).toMatchObject({ botId: 'live', status: 'ACTIVE' });
+      expect(await getLiveBot('signin')).toMatchObject({ botId: 'live' });
+    });
+
+    it('refuses to promote a retired bot', async () => {
+      await addBot(bot({ botId: 'live', status: 'ACTIVE' }));
+      await addBot(bot({ botId: 'gone', status: 'RETIRED' }));
+      await expect(promoteBot({ botId: 'gone', role: 'signin' }))
+        .rejects.toThrow(/no promotable bot gone/);
+      expect(await getLiveBot('signin')).toMatchObject({ botId: 'live' });
     });
 
     it('leaves the incumbent live when the promotion target does not exist', async () => {
       await addBot(bot({ botId: 'live', status: 'ACTIVE' }));
-      await expect(promoteBot({ botId: 'ghost', role: 'signin' })).rejects.toThrow(/no bot ghost/);
-      // The retire half must have rolled back with it, or the platform is left
-      // with nobody answering the webhook.
+      await expect(promoteBot({ botId: 'ghost', role: 'signin' }))
+        .rejects.toThrow(/no promotable bot ghost/);
+      // The stand-down half must have rolled back with it, or the platform is
+      // left with nobody answering the webhook.
       expect(await getLiveBot('signin')).toMatchObject({ botId: 'live' });
     });
 
@@ -178,7 +205,7 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
     it('refuses a second Telegram account for one platform account', async () => {
       await createIdentity({ telegramUserId: 't-1', userId: 'u-1', phone: '9990000001' });
       await expect(createIdentity({ telegramUserId: 't-2', userId: 'u-1', phone: '9990000002' }))
-        .rejects.toThrow(/telegram_identities_user_id_key/);
+        .rejects.toThrow(/one_active_identity_per_user/);
     });
 
     it('refuses two ACTIVE identities on one phone — the anchor rule', async () => {
@@ -437,5 +464,105 @@ describePg('signup (PostgreSQL)', () => {
     expect(r.userId).toMatch(/^[0-9a-f]{24}$/);
     expect(r.userId).not.toContain('9990001111');
     expect(newUserId()).not.toBe(newUserId());
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Account recovery — handing an account to a DIFFERENT Telegram identity.
+//
+// Every assertion here is about a constraint that must not be briefly violated.
+// The swap satisfies three unique indexes at once: the account's identity, the
+// phone's active slot, and the Telegram id itself.
+// ─────────────────────────────────────────────────────────────────────────────
+describePg('recovering an account onto a new Telegram identity', () => {
+  beforeAll(async () => { await applySchema(); });
+  afterAll(async () => { await closePg(); });
+  beforeEach(async () => {
+    await pgQuery('TRUNCATE telegram_identities, users RESTART IDENTITY CASCADE');
+    // The identity's user_id is a foreign key: an identity cannot point at an
+    // account that does not exist, which is the constraint that stops a
+    // recovery from linking a Telegram account to nothing.
+    await createUser({ userId: 'u-1', username: 'a', mobile: '9990000001' });
+    await createUser({ userId: 'u-2', username: 'b', mobile: '9990000002' });
+    await createUser({ userId: 'u-9', username: 'i', mobile: '9990000009' });
+  });
+
+  it('moves the account to the new identity and stands the old one down', async () => {
+    await createIdentity({ telegramUserId: 't-old', userId: 'u-1', phone: '9990000001' });
+
+    const result = await relinkIdentity({
+      telegramUserId: 't-new', userId: 'u-1', phone: '9990000001', generation: 3,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.identity).toMatchObject({ telegramUserId: 't-new', userId: 'u-1' });
+    // Which identity LOST the account — the detail a takeover review needs.
+    expect(result.displacedTelegramUserId).toBe('t-old');
+
+    // The account resolves to the new identity. An unfiltered read would
+    // return whichever row the planner reached first — usually the OLD one —
+    // and messaging the identity that just lost the account is the failure
+    // recovery exists to prevent.
+    expect(await getIdentityByUserId('u-1')).toMatchObject({ telegramUserId: 't-new' });
+
+    // The displaced row SURVIVES as history rather than being deleted. It is
+    // the first thing a takeover review asks for.
+    const old = await getIdentityByTelegramId('t-old');
+    expect(old.contactActive).toBe(false);
+    expect(old.channelStatus).toBe('left');
+    expect(old.userId).toBe('u-1');
+    expect((await listIdentitiesForUser('u-1')).map((i) => i.telegramUserId).sort())
+      .toEqual(['t-new', 't-old']);
+  });
+
+  it('frees the phone slot, so the new identity can claim the same number', async () => {
+    await createIdentity({ telegramUserId: 't-old', userId: 'u-1', phone: '9990000001' });
+    // `one_active_identity_per_phone` is partial on contact_active. Two steps
+    // would either be refused outright or leave the account with no active
+    // identity between them.
+    const result = await relinkIdentity({
+      telegramUserId: 't-new', userId: 'u-1', phone: '9990000001',
+    });
+    expect(result.ok).toBe(true);
+    expect(result.identity.contactActive).toBe(true);
+  });
+
+  it('refuses to hand a second account to one Telegram identity', async () => {
+    await createIdentity({ telegramUserId: 't-1', userId: 'u-1', phone: '9990000001' });
+    await createIdentity({ telegramUserId: 't-2', userId: 'u-2', phone: '9990000002' });
+
+    // t-2 already holds u-2. Giving it u-1 as well would create exactly the
+    // duplicate the design exists to prevent — and it is a REFUSAL rather than
+    // a thrown duplicate-key error, so the caller answers with a message.
+    const result = await relinkIdentity({
+      telegramUserId: 't-2', userId: 'u-1', phone: '9990000001',
+    });
+    expect(result).toEqual({ ok: false, reason: 'TELEGRAM_ALREADY_LINKED' });
+
+    // Nothing moved.
+    expect(await getIdentityByUserId('u-1')).toMatchObject({ telegramUserId: 't-1' });
+    expect(await getIdentityByUserId('u-2')).toMatchObject({ telegramUserId: 't-2' });
+  });
+
+  it('is idempotent when the same identity asks twice', async () => {
+    await createIdentity({ telegramUserId: 't-1', userId: 'u-1', phone: '9990000001' });
+    const again = await relinkIdentity({
+      telegramUserId: 't-1', userId: 'u-1', phone: '9990000001',
+    });
+    // The same Telegram account re-points its own row rather than colliding
+    // with itself, and displaces nobody.
+    expect(again.ok).toBe(true);
+    expect(again.displacedTelegramUserId).toBeNull();
+    expect(await getIdentityByUserId('u-1')).toMatchObject({ telegramUserId: 't-1' });
+  });
+
+  it('links a first identity when the account has none', async () => {
+    const first = await relinkIdentity({
+      telegramUserId: 't-fresh', userId: 'u-9', phone: '9990000009',
+    });
+    expect(first.ok).toBe(true);
+    // A recovery that displaced nobody is a first link, not a recovery — and
+    // the caller can tell the two apart.
+    expect(first.displacedTelegramUserId).toBeNull();
   });
 });

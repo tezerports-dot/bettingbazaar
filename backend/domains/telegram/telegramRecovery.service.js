@@ -34,9 +34,7 @@
  * pointing at it is replaced. Creating a fresh account here would strand the
  * player's money and silently break the referral chain beneath them.
  */
-import mongoose from 'mongoose';
-import { TelegramIdentity } from './telegram.model.js';
-import { KycVerification } from '../identity/kycVerification.model.js';
+import { db } from '#db';
 import { hashAadhaarCandidates } from '../identity/aadhaarHash.util.js';
 import { activeConfig } from './telegramClient.js';
 import { normalisePhone } from './telegramOnboarding.service.js';
@@ -65,16 +63,13 @@ export async function attemptRecovery({ newTelegramUserId, phone, contactUserId,
   const candidates = hashAadhaarCandidates(aadhaar);
   if (!candidates.length) return { ok: false, reason: 'invalid_aadhaar' };
 
-  const User = mongoose.model('User');
-  const user = await User.findOne({ mobile }).select('_id status isBlocked').lean();
+  const user = await db.users.getUserByMobile(mobile);
 
   // FACTOR 2. Checked against the account the PHONE resolved to — not used as a
   // search key. Looking an account up BY Aadhaar would turn this bot into the
   // enumeration oracle that was removed from the old recovery flow.
-  const kyc = user
-    ? await KycVerification.findOne({ userId: user._id }).select('aadhaarHash').lean()
-    : null;
-  const aadhaarMatches = Boolean(kyc && candidates.includes(kyc.aadhaarHash));
+  const kyc = user ? await db.identity.getVerification(user.userId) : null;
+  const aadhaarMatches = Boolean(kyc?.aadhaarHash && candidates.includes(kyc.aadhaarHash));
 
   // One answer for every failure. Telling "no account on this number" apart
   // from "wrong Aadhaar" would let someone with a recycled SIM learn whether
@@ -91,62 +86,39 @@ export async function attemptRecovery({ newTelegramUserId, phone, contactUserId,
   }
 
   const cfg = await activeConfig();
-  const session = await mongoose.startSession();
-  try {
-    let outcome;
-    await session.withTransaction(async () => {
-      // Retire the old identity FIRST. The phone's unique index is partial on
-      // contactActive, so the new row cannot be inserted until the old one has
-      // stepped aside — doing this in the same transaction is what stops a
-      // failure from leaving the account with two live identities or none.
-      await TelegramIdentity.updateMany(
-        { userId: user._id, contactActive: true },
-        { $set: { contactActive: false, channelStatus: 'left' } },
-        { session },
-      );
 
-      // The same Telegram account asking twice re-points its existing row
-      // rather than colliding with itself.
-      await TelegramIdentity.findOneAndUpdate(
-        { telegramUserId: String(newTelegramUserId) },
-        {
-          $set: {
-            userId: user._id,
-            phone: mobile,
-            contactSharedAt: new Date(),
-            contactActive: true,
-            channelStatus: 'unknown',
-            channelGeneration: cfg?.generation ?? 0,
-            linkedGeneration: cfg?.generation ?? 0,
-          },
-        },
-        { upsert: true, new: true, session },
-      );
+  // ONE transaction, in the repository. Three unique constraints have to be
+  // satisfied at once — the account's identity, the phone's active slot, and
+  // the Telegram id itself — and none of them may be briefly violated. The
+  // version this replaced ran the same swap through a document-store
+  // transaction and had to catch a duplicate-key ERROR to report the one case
+  // that is a refusal rather than a fault; the refusal is a return value now.
+  const linked = await db.telegram.relinkIdentity({
+    telegramUserId: newTelegramUserId,
+    userId: user.userId,
+    phone: mobile,
+    generation: cfg?.generation ?? 0,
+  });
 
-      outcome = { userId: String(user._id) };
-    });
-
-    // Recovery hands an account to a different Telegram identity, which is
-    // exactly the shape a successful takeover would have. It is always
-    // reported, so a pattern of them is visible without anyone having to think
-    // to look.
-    console.warn(`[recovery] GRANTED user=${user._id} to telegram=${newTelegramUserId}`);
-    sendAlert('account-recovered', 'An account was re-linked to a new Telegram identity', {
-      userId: String(user._id),
-      newTelegramUserId: String(newTelegramUserId),
-      phoneLast4: mobile.slice(-4),
-    }).catch(() => { /* alerting must never block a recovery already committed */ });
-
-    return { ok: true, ...outcome };
-  } catch (err) {
-    if (err?.code === 11000) {
-      // The new Telegram account is already linked to a DIFFERENT user. Handing
-      // it a second account would create the duplicate the whole design exists
-      // to prevent.
-      return { ok: false, reason: 'telegram_already_linked' };
-    }
-    throw err;
-  } finally {
-    await session.endSession();
+  if (!linked.ok) {
+    // The new Telegram account is already linked to a DIFFERENT platform
+    // account. Handing it a second one would create the duplicate the whole
+    // design exists to prevent.
+    return { ok: false, reason: 'telegram_already_linked' };
   }
+
+  // Recovery hands an account to a different Telegram identity, which is
+  // exactly the shape a successful takeover would have. It is always reported,
+  // so a pattern of them is visible without anyone having to think to look.
+  console.warn(`[recovery] GRANTED user=${user.userId} to telegram=${newTelegramUserId}`);
+  sendAlert('account-recovered', 'An account was re-linked to a new Telegram identity', {
+    userId: String(user.userId),
+    newTelegramUserId: String(newTelegramUserId),
+    // The identity that LOST the account, which is the detail a takeover review
+    // needs and which the alert did not previously carry.
+    displacedTelegramUserId: linked.displacedTelegramUserId,
+    phoneLast4: mobile.slice(-4),
+  }).catch(() => { /* alerting must never block a recovery already committed */ });
+
+  return { ok: true, userId: String(user.userId) };
 }

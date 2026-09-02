@@ -187,36 +187,138 @@ export async function addBot({
 }
 
 /**
- * Promote a standby bot to live, retiring whichever bot holds the slot.
+ * Promote a standby bot to live, standing down whichever bot holds the slot.
  *
  * Both moves in ONE transaction, and in this order, because the partial unique
  * index refuses two live bots in a singular role. Doing it in two statements
  * outside a transaction leaves a window with no live bot — every inbound
  * webhook rejected, nobody able to sign in.
  *
+ * ── STANDBY, not RETIRED ───────────────────────────────────────────────────
+ * The incumbent is stood down, not retired. RETIRED is a one-way door here —
+ * `promote` refuses a retired bot outright — so retiring the incumbent made
+ * every promotion irreversible: an operator who promoted the wrong bot could
+ * not switch back, and the working bot they had just displaced was gone for
+ * good. Standing it down leaves it promotable, which is what a rollback needs.
+ *
  * Note what is NOT here: any application-side maintenance of `live_slot`. It is
  * generated from `status` and `role` by the database, so a promotion cannot
  * forget to recompute it. The model this replaces derived it in a hook that
  * update operators bypassed entirely.
+ *
+ * Returns the promoted bot AND the bot it displaced, because the caller has to
+ * revoke the old webhook once the transaction has committed.
  */
 export async function promoteBot({ botId, role, actor = null }) {
   return withTelegramTransaction(async (client) => {
-    await client.query(
+    const { rows: stoodDown } = await client.query(
       `UPDATE telegram_bots
-          SET status = 'RETIRED', retired_at = now(), retired_by = $2
-        WHERE live_slot = $1`,
-      [role, actor ? String(actor) : null],
+          SET status = 'STANDBY', activated_at = NULL, activated_by = NULL
+        WHERE live_slot = $1 AND bot_id <> $2
+        RETURNING ${BOT_PUBLIC}, token_encrypted, webhook_secret`,
+      [role, String(botId)],
     );
     const { rows } = await client.query(
       `UPDATE telegram_bots
           SET status = 'ACTIVE', activated_at = now(), activated_by = $2, last_error = ''
-        WHERE bot_id = $1 AND role = $3
-        RETURNING ${BOT_PUBLIC}`,
+        WHERE bot_id = $1 AND role = $3 AND status <> 'RETIRED'
+        RETURNING ${BOT_PUBLIC}, token_encrypted, webhook_secret`,
       [String(botId), actor ? String(actor) : null, role],
     );
-    if (!rows[0]) throw new Error(`promoteBot: no bot ${botId} in role ${role}`);
-    return toBot(rows[0]);
+    if (!rows[0]) {
+      // Either no such bot in that role, or it is retired. Both are refusals
+      // the caller turns into a 4xx, and neither may leave the slot empty —
+      // which is why the stand-down and the promotion share a transaction.
+      throw new Error(`promoteBot: no promotable bot ${botId} in role ${role}`);
+    }
+    return {
+      bot: toBot(rows[0]),
+      secrets: {
+        tokenEncrypted: rows[0].token_encrypted,
+        webhookSecret: rows[0].webhook_secret,
+      },
+      displaced: stoodDown[0]
+        ? {
+            bot: toBot(stoodDown[0]),
+            secrets: {
+              tokenEncrypted: stoodDown[0].token_encrypted,
+              webhookSecret: stoodDown[0].webhook_secret,
+            },
+          }
+        : null,
+    };
   });
+}
+
+/** One bot by id, or null. No secrets — see `getBotSecrets` for those. */
+export async function getBot(botId) {
+  const { rows } = await pgQuery(
+    `SELECT ${BOT_PUBLIC} FROM telegram_bots WHERE bot_id = $1`,
+    [String(botId)], 'tg_bot_get',
+  );
+  return toBot(rows[0]);
+}
+
+/**
+ * One bot's credentials, for the webhook paths that need them.
+ *
+ * Separate from `getBot` on purpose: an ordinary read cannot leak a bot token
+ * into a response body by accident, because the projection that produces a bot
+ * object does not contain one.
+ */
+export async function getBotSecrets(botId) {
+  const { rows } = await pgQuery(
+    `SELECT bot_id, username, role, status, token_encrypted, webhook_secret
+       FROM telegram_bots WHERE bot_id = $1`,
+    [String(botId)], 'tg_bot_secrets',
+  );
+  const r = rows[0];
+  return r ? {
+    botId: r.bot_id, username: r.username, role: r.role, status: r.status,
+    tokenEncrypted: r.token_encrypted, webhookSecret: r.webhook_secret,
+  } : null;
+}
+
+/** Record where Telegram was told to deliver, and when it accepted. */
+export async function recordWebhookRegistration(botId, { url, error = null }) {
+  const { rows } = await pgQuery(
+    `UPDATE telegram_bots SET
+       webhook_url = CASE WHEN $3::text IS NULL THEN $2 ELSE webhook_url END,
+       webhook_registered_at = CASE WHEN $3::text IS NULL THEN now() ELSE webhook_registered_at END,
+       last_error = COALESCE($3, '')
+      WHERE bot_id = $1
+      RETURNING ${BOT_PUBLIC}`,
+    [String(botId), String(url ?? ''), error ? String(error).slice(0, 500) : null],
+    'tg_bot_webhook_recorded',
+  );
+  return toBot(rows[0]);
+}
+
+/**
+ * Retire a bot, permanently.
+ *
+ * Refuses the LIVE bot of a singular role: retiring it leaves the platform with
+ * nobody answering the webhook and no way for anyone to sign in. The operation
+ * an operator actually wants in that moment is to promote the replacement,
+ * which stands this one down inside the same transaction.
+ *
+ * The guard is `live_slot IS NULL` — the generated column — rather than a
+ * status check the caller performs first, so a promotion landing between the
+ * caller's read and this write cannot slip past it.
+ */
+export async function retireBot(botId, { actor = null } = {}) {
+  const { rows } = await pgQuery(
+    `UPDATE telegram_bots
+        SET status = 'RETIRED', retired_at = now(), retired_by = $2
+      WHERE bot_id = $1 AND live_slot IS NULL AND status <> 'RETIRED'
+      RETURNING ${BOT_PUBLIC}`,
+    [String(botId), actor ? String(actor) : null], 'tg_bot_retire',
+  );
+  if (rows[0]) return { ok: true, bot: toBot(rows[0]) };
+  const current = await getBot(botId);
+  if (!current) return { ok: false, reason: 'NOT_FOUND' };
+  if (current.status === 'RETIRED') return { ok: false, reason: 'ALREADY_RETIRED' };
+  return { ok: false, reason: 'IS_LIVE', role: current.role };
 }
 
 /** Record why a promotion or a send failed — the first thing an operator needs. */
@@ -294,13 +396,41 @@ export async function getIdentityByTelegramId(telegramUserId) {
   return toIdentity(rows[0]);
 }
 
-export async function getIdentityByUserId(userId) {
+/**
+ * The account's CURRENT Telegram identity.
+ *
+ * `contact_active` is not optional here. Since account recovery keeps the
+ * displaced identity as history, an account can have several rows and only one
+ * of them is live — an unfiltered read returns whichever the planner reaches
+ * first, which after a recovery is usually the OLD one. Every caller of this is
+ * asking "who do we message", and messaging the identity that just lost the
+ * account is the failure recovery exists to prevent.
+ *
+ * `ORDER BY contact_active DESC` is the tiebreak for the one case a filter
+ * cannot cover: an account whose identity was deactivated and never replaced.
+ * Returning its last known identity beats returning nothing, because the caller
+ * can then say "this account was linked and is not any more".
+ */
+export async function getIdentityByUserId(userId, { activeOnly = true } = {}) {
   if (!userId) return null;
   const { rows } = await pgQuery(
-    `SELECT ${IDENTITY_COLUMNS} FROM telegram_identities WHERE user_id = $1`,
+    `SELECT ${IDENTITY_COLUMNS} FROM telegram_identities
+      WHERE user_id = $1 ${activeOnly ? 'AND contact_active' : ''}
+      ORDER BY contact_active DESC, contact_shared_at DESC
+      LIMIT 1`,
     [String(userId)], 'tg_identity_by_user',
   );
   return toIdentity(rows[0]);
+}
+
+/** Every identity an account has ever had, newest first — the takeover trail. */
+export async function listIdentitiesForUser(userId) {
+  const { rows } = await pgQuery(
+    `SELECT ${IDENTITY_COLUMNS} FROM telegram_identities
+      WHERE user_id = $1 ORDER BY contact_shared_at DESC`,
+    [String(userId)], 'tg_identity_history',
+  );
+  return rows.map(toIdentity);
 }
 
 /** Link a Telegram account to a platform account. */
@@ -319,6 +449,92 @@ export async function createIdentity({
     'tg_identity_create',
   );
   return toIdentity(rows[0]);
+}
+
+/**
+ * Hand an account to a DIFFERENT Telegram identity — account recovery.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * THIS IS THE SHAPE A SUCCESSFUL TAKEOVER HAS
+ * ══════════════════════════════════════════════════════════════════════════
+ * Everything about it is deliberate. The caller proves TWO factors before
+ * reaching here — the phone resolves the account, and the Aadhaar hash is
+ * checked AGAINST that account rather than used as a search key, because
+ * looking an account up by Aadhaar would make the bot an enumeration oracle.
+ *
+ * The swap is one transaction because three unique constraints have to be
+ * satisfied at once and none of them may be briefly violated:
+ *
+ *   • `user_id` is UNIQUE, so the old identity must release the account in the
+ *     same statement sequence that gives it to the new one. Two steps leave a
+ *     window in which the account has no identity, and a failure between them
+ *     leaves it stranded there permanently.
+ *   • `one_active_identity_per_phone` is partial on `contact_active`, so the
+ *     old row must be deactivated before the new one can claim the number.
+ *   • `telegram_user_id` is the PRIMARY KEY, so the same Telegram account
+ *     asking twice re-points its own row rather than colliding with itself.
+ *
+ * Returns `{ ok: false, reason: 'TELEGRAM_ALREADY_LINKED' }` when the new
+ * Telegram account already holds a DIFFERENT platform account. Handing it a
+ * second one would create exactly the duplicate this design exists to prevent,
+ * and it is a refusal rather than an error because the caller answers it with a
+ * message rather than a stack trace.
+ */
+export async function relinkIdentity({
+  telegramUserId, userId, phone, generation = 0,
+  telegramUsername = '', firstName = '',
+}) {
+  return withTelegramTransaction(async (client) => {
+    // Whoever the new Telegram account is currently linked to. Read INSIDE the
+    // transaction: a check outside it is a decision made against a state that
+    // can change before the write lands.
+    const { rows: holder } = await client.query(
+      'SELECT user_id FROM telegram_identities WHERE telegram_user_id = $1',
+      [String(telegramUserId)],
+    );
+    if (holder[0] && String(holder[0].user_id) !== String(userId)) {
+      return { ok: false, reason: 'TELEGRAM_ALREADY_LINKED' };
+    }
+
+    // The old identity steps aside FIRST — while it is active it holds both
+    // the account's slot and the phone's. It keeps its real `user_id`: both
+    // indexes are partial on `contact_active`, so an inactive row occupies
+    // neither, and the record of who used to hold the account survives. That
+    // record is the first thing a takeover review asks for.
+    const { rows: retired } = await client.query(
+      `UPDATE telegram_identities
+          SET contact_active = FALSE, channel_status = 'left'
+        WHERE user_id = $1 AND telegram_user_id <> $2 AND contact_active
+        RETURNING telegram_user_id`,
+      [String(userId), String(telegramUserId)],
+    );
+
+    const { rows } = await client.query(
+      `INSERT INTO telegram_identities (
+         telegram_user_id, user_id, telegram_username, first_name, phone,
+         contact_shared_at, contact_active, channel_status,
+         channel_generation, linked_generation)
+       VALUES ($1,$2,$3,$4,$5, now(), TRUE, 'unknown', $6, $6)
+       ON CONFLICT (telegram_user_id) DO UPDATE SET
+         user_id = EXCLUDED.user_id, phone = EXCLUDED.phone,
+         contact_shared_at = EXCLUDED.contact_shared_at,
+         contact_active = TRUE, channel_status = 'unknown',
+         channel_generation = EXCLUDED.channel_generation,
+         linked_generation = EXCLUDED.linked_generation,
+         last_seen_at = now()
+       RETURNING ${IDENTITY_COLUMNS}`,
+      [String(telegramUserId), String(userId), telegramUsername, firstName,
+       String(phone), generation],
+    );
+
+    return {
+      ok: true,
+      identity: toIdentity(rows[0]),
+      // Which identity lost the account, so the caller can report it. A
+      // recovery that displaced nobody is a first link, not a recovery.
+      displacedTelegramUserId: retired[0]?.telegram_user_id ?? null,
+    };
+  });
 }
 
 /**

@@ -951,11 +951,12 @@ CREATE TABLE IF NOT EXISTS telegram_templates (
 -- ── Telegram: one Telegram account ↔ one platform account ────────────────────
 CREATE TABLE IF NOT EXISTS telegram_identities (
   telegram_user_id  TEXT PRIMARY KEY,
-  -- UNIQUE both ways: one Telegram account cannot hold two platform accounts,
-  -- and one platform account cannot be driven by two Telegram accounts. That
-  -- pair IS the no-duplicate-accounts rule, enforced by the database rather
-  -- than by a check-then-insert that a concurrent signup fits between.
-  user_id           TEXT NOT NULL UNIQUE REFERENCES users (user_id) ON DELETE CASCADE,
+  -- One Telegram account cannot hold two platform accounts (the PRIMARY KEY),
+  -- and one platform account cannot be driven by two ACTIVE Telegram accounts
+  -- (`one_active_identity_per_user` below). That pair IS the
+  -- no-duplicate-accounts rule, enforced by the database rather than by a
+  -- check-then-insert that a concurrent signup fits between.
+  user_id           TEXT NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,
   telegram_username TEXT NOT NULL DEFAULT '',
   first_name        TEXT NOT NULL DEFAULT '',
 
@@ -985,6 +986,21 @@ CREATE TABLE IF NOT EXISTS telegram_identities (
 -- must not become two platform accounts. Partial on contact_active so somebody
 -- who genuinely moves their number to a new Telegram account (the recovery
 -- path) is not blocked by their own retired row.
+-- Partial on `contact_active`, exactly like the phone index below, and for the
+-- same reason: ACCOUNT RECOVERY has to hand an account from one Telegram
+-- identity to another, and the old row must survive as history.
+--
+-- A plain UNIQUE on user_id could not express that. Recovery would have had to
+-- DELETE the identity that lost the account — erasing the record of who used to
+-- hold it, which is the first thing a takeover review asks for — or point it at
+-- some placeholder account, which the foreign key refuses. Partial, the old row
+-- keeps its real user_id, goes inactive, and stays readable.
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_identity_per_user
+  ON telegram_identities (user_id) WHERE contact_active;
+DO $$ BEGIN
+  ALTER TABLE telegram_identities DROP CONSTRAINT IF EXISTS telegram_identities_user_id_key;
+EXCEPTION WHEN undefined_object THEN NULL; END $$;
+
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_identity_per_phone
   ON telegram_identities (phone) WHERE contact_active;
 CREATE INDEX IF NOT EXISTS telegram_identities_channel_idx

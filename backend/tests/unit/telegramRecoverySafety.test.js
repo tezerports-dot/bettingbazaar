@@ -27,13 +27,18 @@ describe('recovery requires two independent factors', () => {
     // Aadhaar have an account here" — the exact flaw removed from the old
     // recovery route. The Aadhaar is only ever compared to the account the
     // phone already resolved to.
-    expect(svc).toMatch(/User\.findOne\(\{ mobile \}\)/);
-    expect(svc).not.toMatch(/User\.findOne\(\{[^)]*aadhaar/i);
-    expect(svc).not.toMatch(/KycVerification\.findOne\(\{\s*aadhaarHash/);
+    expect(svc).toMatch(/getUserByMobile\(mobile\)/);
+    // No lookup anywhere takes an Aadhaar as its search key. Asserted over the
+    // whole file rather than one expression, so a future read added below is
+    // covered too.
+    expect(svc).not.toMatch(/getUserBy[A-Za-z]*\([^)]*aadhaar/i);
+    expect(svc).not.toMatch(/(findBy|getBy|lookup)[A-Za-z]*[Aa]adhaar/);
   });
 
   it('compares the Aadhaar against that account only', () => {
-    expect(svc).toMatch(/KycVerification\.findOne\(\{ userId: user\._id \}\)/);
+    // The verification is fetched BY THE ACCOUNT the phone resolved to, and the
+    // Aadhaar is only ever compared to what comes back.
+    expect(svc).toMatch(/getVerification\(user\.userId\)/);
     expect(svc).toMatch(/candidates\.includes\(kyc\.aadhaarHash\)/);
   });
 
@@ -70,26 +75,28 @@ describe('failures are indistinguishable', () => {
 });
 
 describe('recovery re-links rather than re-creates', () => {
-  it('never creates a User', () => {
+  it('never creates an account', () => {
     // A fresh account would strand the player's balance and silently break the
     // referral chain beneath them.
-    expect(svc).not.toMatch(/User\.create|new User\(/);
+    expect(svc).not.toMatch(/createUser\(|User\.create|new User\(/);
   });
 
-  it('retires the old identity and links the new one in one transaction', () => {
-    const retireAt = svc.indexOf('contactActive: false');
-    const linkAt = svc.indexOf('TelegramIdentity.findOneAndUpdate');
-    expect(retireAt).toBeGreaterThan(-1);
-    expect(linkAt).toBeGreaterThan(retireAt);
-    expect(svc).toMatch(/withTransaction/);
-    // Both writes must carry the session, or the transaction is decorative.
-    const block = svc.slice(svc.indexOf('withTransaction'), svc.indexOf('outcome ='));
-    expect((block.match(/session/g) || []).length).toBeGreaterThanOrEqual(2);
+  it('stands the old identity down and links the new one in one transaction', () => {
+    // The swap is ONE repository call, which is what makes it one transaction.
+    // The shape this replaced assembled the two writes here and had to carry a
+    // session through both — so a write that forgot the session left the
+    // transaction decorative, and nothing in the file said so.
+    expect(svc).toMatch(/relinkIdentity\(\{/);
+    // And it must not be reassembled out of separate steps.
+    expect(svc).not.toMatch(/deactivateContact\([\s\S]*createIdentity\(/);
   });
 
   it('refuses a Telegram account already linked elsewhere', () => {
     // Granting it a second account is the duplicate the design exists to stop.
-    expect(svc).toMatch(/11000[\s\S]*?telegram_already_linked/);
+    // A RETURNED refusal, not a caught duplicate-key error: the case is a
+    // refusal the caller answers with a message, not a fault.
+    expect(svc).toMatch(/telegram_already_linked/);
+    expect(svc).toMatch(/if \(!linked\.ok\)/);
   });
 
   it('reports every grant, since a grant looks like a takeover', () => {
