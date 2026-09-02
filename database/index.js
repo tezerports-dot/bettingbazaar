@@ -81,6 +81,7 @@ import * as ledgerCore from './repositories/ledger.core.js';
 import * as ledgerApi from './repositories/ledger.js';
 import * as ordersCore from './repositories/orders.core.js';
 import * as ordersApi from './repositories/orders.js';
+import * as ordersRecord from './repositories/orders.record.js';
 import * as betsCore from './repositories/bets.core.js';
 import * as betsApi from './repositories/bets.js';
 import * as casinoCore from './repositories/casino.core.js';
@@ -121,7 +122,7 @@ export const db = Object.freeze({
   bonuses: merge(bonusesCore, bonusesApi),
 
   // Payments and counterparties
-  orders: merge(ordersCore, ordersApi),
+  orders: Object.freeze({ ...ordersCore, ...ordersApi, ...ordersRecord }),
   merchants,
   merchantWallets: merge(merchantWalletsCore, merchantWalletsApi),
   merchantSettlements,

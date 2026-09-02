@@ -116,85 +116,44 @@ END $$ LANGUAGE plpgsql;
 CREATE OR REPLACE TRIGGER accounting_events_balanced
   BEFORE INSERT ON accounting_events FOR EACH ROW EXECUTE FUNCTION bb_check_postings_balance();
 
--- ── TRANSACTIONS (mirrors transaction.model.js — the money-movement log) ─────
-CREATE TABLE IF NOT EXISTS transactions (
-  mongo_id     TEXT PRIMARY KEY,
-  user_id      TEXT,
-  tx_type      TEXT,
-  status       TEXT,
-  amount_paise BIGINT NOT NULL DEFAULT 0,
-  description  TEXT,
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
-);
+-- ── REMOVED: the four MIRROR tables ─────────────────────────────────────────
+--
+-- `payment_orders`, `transactions`, `merchant_wallet_ledger` and the original
+-- `utr_registry` were PROJECTIONS of document-store collections, written by a
+-- forward mirror so a reader could query either store during a cutover. There
+-- is no second store and no cutover, so a projection of one is a table that
+-- costs writes and answers nothing. Nothing in `repositories/` read any of
+-- them.
+--
+-- What replaced each:
+--   payment_orders        -> `order_states` + `order_transitions`, which own the
+--                            lifecycle, the guard on every move, and the
+--                            accounting entry written in the same transaction.
+--   transactions          -> `wallet_ledger`, append-only and double-entry.
+--   merchant_wallet_ledger-> `merchant_wallet_entries`, with a movement_id so
+--                            "did movement K happen?" is an identity rather
+--                            than a prefix match.
+--   utr_registry          -> kept, and defined below with the order it belongs
+--                            to, because one UTR to one order is a real rule.
+--
+-- Dropped explicitly rather than left behind: an empty table with the right
+-- name is how a later reader convinces themselves the data is somewhere.
+DROP TABLE IF EXISTS payment_orders;
+DROP TABLE IF EXISTS transactions;
+DROP TABLE IF EXISTS merchant_wallet_ledger;
 
--- ── PAYMENT ORDERS (mirrors PaymentOrder) ────────────────────────────────────
-CREATE TABLE IF NOT EXISTS payment_orders (
-  mongo_id           TEXT PRIMARY KEY,
-  order_id           TEXT UNIQUE,
-  user_id            TEXT NOT NULL,
-  merchant_id        TEXT,
-  order_type         TEXT NOT NULL,
-  status             TEXT NOT NULL,
-  fiat_amount_paise  BIGINT NOT NULL DEFAULT 0,
-  token_amount_paise BIGINT NOT NULL DEFAULT 0,
-  utr                TEXT,
-  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-BEGIN;
-ALTER TABLE transactions ALTER COLUMN created_at SET DEFAULT now();
-UPDATE transactions SET created_at = now() WHERE created_at IS NULL;
-ALTER TABLE transactions ALTER COLUMN created_at SET NOT NULL;
-ALTER TABLE payment_orders ALTER COLUMN created_at SET DEFAULT now();
-UPDATE payment_orders SET created_at = now() WHERE created_at IS NULL;
-ALTER TABLE payment_orders ALTER COLUMN created_at SET NOT NULL;
-COMMIT;
-
-CREATE INDEX IF NOT EXISTS transactions_user_cursor_idx       ON transactions (user_id, created_at DESC, mongo_id DESC);
-CREATE INDEX IF NOT EXISTS payment_orders_user_cursor_idx     ON payment_orders (user_id, created_at DESC, mongo_id DESC);
-CREATE INDEX IF NOT EXISTS payment_orders_status_cursor_idx   ON payment_orders (status, created_at DESC, mongo_id DESC);
-CREATE INDEX IF NOT EXISTS payment_orders_merchant_cursor_idx ON payment_orders (merchant_id, status, created_at DESC, mongo_id DESC);
-
--- ── UTR REGISTRY — moves WITH payment_orders in the SAME database (plan:
--- splitting these two across databases would race two atomicity guarantees).
+-- ── UTR REGISTRY ────────────────────────────────────────────────────────────
+-- One UTR belongs to one order, storage-enforced. A bank reference reused
+-- across two orders is either a mistake or a fraud attempt, and both are
+-- refused by the same primary key.
 CREATE TABLE IF NOT EXISTS utr_registry (
-  utr           TEXT PRIMARY KEY,            -- one UTR = one order, storage-enforced
+  utr           TEXT PRIMARY KEY,
   order_id      TEXT NOT NULL UNIQUE,
   user_id       TEXT,
+  amount_paise  BIGINT,
   registered_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
--- ── MERCHANT WALLET LEDGER (mirrors MerchantWalletLedger) ────────────────────
-CREATE TABLE IF NOT EXISTS merchant_wallet_ledger (
-  id                  BIGSERIAL PRIMARY KEY,
-  mongo_id            TEXT UNIQUE,
-  tx_id               TEXT NOT NULL UNIQUE,
-  merchant_id         TEXT NOT NULL,
-  direction           TEXT,
-  amount_paise        BIGINT NOT NULL,
-  balance_after_paise BIGINT,
-  reason              TEXT,
-  created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS merchant_wallet_ledger_idx ON merchant_wallet_ledger (merchant_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS merchant_wallet_ledger_cursor_idx ON merchant_wallet_ledger (merchant_id, created_at DESC, id DESC);
-CREATE OR REPLACE TRIGGER merchant_wallet_ledger_append_only
-  BEFORE UPDATE OR DELETE ON merchant_wallet_ledger FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
-
--- ── REMOVED 2026-08-11: the strict-NUMERIC wallet block ─────────────────────
--- `user_wallets`, `financial_ledger` and `operational_bet_outbox` were the
--- table set for postgres/secureBetPlacement.js — a reference implementation of
--- the serializable-with-outbox pattern on a string-decimal money model. That
--- module was imported by nothing and is deleted; these tables were created on
--- every boot for it and never held a balance the application read.
---
--- The authoritative money tables are `wallets` + `wallet_ledger`, BIGINT paise.
--- Do not resurrect these: two wallet table sets in one schema is how a cutover
--- silently switches to an empty set of balances. See docs/DEAD_CODE_AUDIT.md.
---
--- Existing databases keep the (empty) tables; `CREATE TABLE IF NOT EXISTS` only
--- stops making new ones. Dropping them is a manual, deliberate step.
+ALTER TABLE utr_registry ADD COLUMN IF NOT EXISTS amount_paise BIGINT;
 
 -- ── USER KYC (split OUT of user.model.js per the plan — identity documents
 -- need ACID + compliance guarantees; the rest of the user stays on Mongo).
@@ -482,20 +441,21 @@ CREATE OR REPLACE TRIGGER treasury_entries_append_only
   BEFORE UPDATE OR DELETE ON treasury_entries FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- ORDERS (domain 5) — the workflow state machine, and the glue between domains
+-- ORDERS — the workflow state machine, and the glue between domains
 --
--- `payment_orders` above is a MIRROR: a projection of the Mongo document,
--- overwritten on every change, with no history and no guard on what may follow
--- what. It answers "where is this order now" and nothing else.
+-- These two tables ARE the order. The projection that used to sit beside them
+-- was overwritten on every change, kept no history, and guarded nothing about
+-- what could follow what — it answered "where is this order now" and nothing
+-- else. It is deleted.
 --
--- These two tables make the order's LIFECYCLE authoritative. Every transition
+-- These two make the order's lifecycle authoritative. Every transition
 -- names the state it expects to find, so an out-of-order provider callback is
 -- refused rather than obeyed, and every transition is recorded so the sequence
 -- that produced the current state can be read back.
 --
 -- The FK from the transitions to the order is what stops a transition existing
--- for an order that does not — the mirror has no such constraint, because a
--- projection cannot have one.
+-- for an order that does not — a constraint the projection could not have had,
+-- because a projection has no authority to refuse anything.
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS order_states (
   order_id           TEXT PRIMARY KEY,
@@ -2326,3 +2286,142 @@ SELECT setval('joining_number_seq', GREATEST(
   (SELECT COALESCE(MAX(joining_number), 0) FROM users),
   (SELECT last_value FROM joining_number_seq),
   1), TRUE);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE FULL ORDER RECORD
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- `order_states` above owns the LIFECYCLE — the state, the guard on every move,
+-- and the accounting entry written in the same transaction. These columns carry
+-- everything else the order needs to be settled and, when it goes wrong,
+-- disputed: the amounts, the counterparty details money is actually sent to,
+-- the proof a player uploaded, and the record of who decided what.
+--
+-- Added as ALTERs rather than folded into the CREATE so the lifecycle tables
+-- and their 19 tested functions keep their shape. Money is integer paise
+-- throughout, like everywhere else.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'INR';
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS rate_used NUMERIC(18, 6);
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS merchant_profit_paise BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS payout_fee_paise      BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS merchant_fee_paise    BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS platform_fee_rate     DOUBLE PRECISION;
+-- The deposit split, and the policy that produced it. SNAPSHOTTED: an admin
+-- editing the policy afterwards must not change what a settled order says it
+-- allocated.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS deposit_allocation_paise BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS reserve_allocation_paise BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS deposit_policy_snapshot  JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+-- Escrow and the merchant credit hold. The hold exists so a merchant who
+-- asserts payment without sending it cannot convert the tokens before the
+-- player reports it.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS escrow_status TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS escrow_locked BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS escrow_amount_paise BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS merchant_credit_status TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS merchant_credit_hold_until TIMESTAMPTZ;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS merchant_credit_reversed_at TIMESTAMPTZ;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS merchant_credit_reversed_reason TEXT;
+
+-- Where the money actually goes. A withdrawal is paid to these.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS user_phone TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS user_bank_details JSONB;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS user_usdt_address TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS requires_video_kyc BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- The payment evidence.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS utr TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS proof_screenshot TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS proof_expires_at TIMESTAMPTZ;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS utr_warning BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS utr_warning_message TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS utr_warning_data JSONB;
+
+-- Review, dispute and resolution. Every decision names WHO made it.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS requires_review BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS reviewed_by TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS review_action TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS review_notes TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS rejected_reason TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_reason TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_raised_at TIMESTAMPTZ;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_raised_by TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_escalated BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_escalated_at TIMESTAMPTZ;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_escalation_notes TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_resolved_by TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_resolved_at TIMESTAMPTZ;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_decision TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_resolution TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS refunded_amount_paise BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS mediator_id TEXT;
+
+-- Red flags, assignment provenance and the merchant snapshot the player saw.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS red_flagged BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS red_flag_reason TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS red_flagged_by TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS red_flagged_at TIMESTAMPTZ;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS assigned_by TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMPTZ;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS processing_at TIMESTAMPTZ;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS merchant_panel_url TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS merchant_response_minutes DOUBLE PRECISION;
+-- The merchant's details AS THE PLAYER SAW THEM. A merchant editing their UPI
+-- id afterwards must not change the account a player was told to pay.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS merchant_snapshot JSONB;
+
+-- Approval, cancellation, and the terminal timestamps.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS approved_by TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS rejected_by TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS rejected_at TIMESTAMPTZ;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS cancel_reason TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS warning_issued BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS bulk_payout_date DATE;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS bulk_paid_at TIMESTAMPTZ;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS bulk_payout_batch TEXT;
+
+DO $$ BEGIN
+  ALTER TABLE order_states ADD CONSTRAINT order_states_currency_known
+    CHECK (currency IN ('INR', 'USDT'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  -- The split has to close: a deposit allocated in two directions must add up
+  -- to what was deposited, or the difference is money nothing accounts for.
+  ALTER TABLE order_states ADD CONSTRAINT order_states_allocation_closes
+    CHECK (deposit_allocation_paise + reserve_allocation_paise
+           IN (0, token_amount_paise));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  -- A resolved dispute names who resolved it and how. "It was resolved" with
+  -- no decider is a resolution nobody can be asked about.
+  ALTER TABLE order_states ADD CONSTRAINT order_states_resolution_has_decider
+    CHECK (dispute_resolved_at IS NULL
+           OR (dispute_resolved_by IS NOT NULL AND dispute_decision IS NOT NULL));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE order_states ADD CONSTRAINT order_states_flag_has_reason
+    CHECK (NOT red_flagged OR red_flag_reason IS NOT NULL);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE order_states ADD CONSTRAINT order_states_refund_non_negative
+    CHECK (refunded_amount_paise >= 0 AND refunded_amount_paise <= token_amount_paise);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- One UTR per order, enforced here as well as by `utr_registry`: the registry
+-- stops the same reference being used on two orders, this stops one order
+-- carrying two.
+CREATE UNIQUE INDEX IF NOT EXISTS order_states_utr_unique
+  ON order_states (utr) WHERE utr IS NOT NULL;
+CREATE INDEX IF NOT EXISTS order_states_expiring_idx ON order_states (expires_at)
+  WHERE expires_at IS NOT NULL AND state IN ('PENDING_QUEUE', 'ASSIGNED', 'PROCESSING');
+CREATE INDEX IF NOT EXISTS order_states_disputes_idx ON order_states (dispute_raised_at DESC)
+  WHERE state = 'DISPUTED';
+CREATE INDEX IF NOT EXISTS order_states_review_idx ON order_states (created_at)
+  WHERE requires_review;
