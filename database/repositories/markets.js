@@ -338,17 +338,70 @@ function withPools(row) {
   };
 }
 
-/** Every live cycle with its pools — the admin phase board's single read. */
-export async function activeCyclesWithPools() {
+/**
+ * Live cycles with their pools.
+ *
+ * `includeExpired` is what the cycle generator needs and the admin board does
+ * not. A cycle whose end time has passed while its status is still OPEN is a
+ * cycle the server was down for — and it is the ONLY thing that can find it,
+ * because every other read filters it out. Leaving it invisible is how a
+ * platform comes back from a deploy with a frozen timer and players' stakes
+ * locked against a round that will never resolve.
+ */
+export async function activeCyclesWithPools({
+  statuses = ['OPEN', 'MERGED', 'CLOSED', 'PAUSED'], includeExpired = false,
+} = {}) {
   const { rows } = await pgQuery(
     `SELECT ${qualified('c')},
             p.real_delhi_paise, p.real_bombay_paise, p.delhi_bets, p.bombay_bets
        FROM cycles c ${POOL_JOIN}
-      WHERE c.status = ANY($1::text[]) AND c.end_time > now()
+      WHERE c.status = ANY($1::text[])
+        ${includeExpired ? '' : 'AND c.end_time > now()'}
       ORDER BY c.cycle_type ASC, c.start_time ASC`,
-    [['OPEN', 'MERGED', 'CLOSED', 'PAUSED']], 'cycle_active_with_pools',
+    [statuses], 'cycle_active_with_pools',
   );
   return rows.map(withPools);
+}
+
+/**
+ * The current cycle of one type, with its pools.
+ *
+ * Newest by start time among the live statuses, so a client connecting mid
+ * celebration still gets the cycle whose result it is about to see rather than
+ * nothing at all.
+ */
+export async function currentCycleWithPools(cycleType, {
+  statuses = ['OPEN', 'MERGED', 'CLOSED', 'RESULT_DECLARED'],
+} = {}) {
+  const { rows } = await pgQuery(
+    `SELECT ${qualified('c')},
+            p.real_delhi_paise, p.real_bombay_paise, p.delhi_bets, p.bombay_bets
+       FROM cycles c ${POOL_JOIN}
+      WHERE c.cycle_type = $1 AND c.status = ANY($2::text[])
+      ORDER BY c.start_time DESC LIMIT 1`,
+    [String(cycleType), statuses], 'cycle_current_with_pools',
+  );
+  return rows.length ? withPools(rows[0]) : null;
+}
+
+/**
+ * Move a cycle between live statuses.
+ *
+ * The `from` list is the guard, IN the statement. The generator's phase loop
+ * reads a cycle, decides, and writes — and between the read and the write
+ * another tick or another instance may have moved it. Without the guard the
+ * later write wins and a cycle can go BACKWARDS, from CLOSED to MERGED,
+ * reopening a betting window that had already shut.
+ */
+export async function setCycleStatus(cycleId, to, { from = [] } = {}) {
+  if (!from.length) throw new Error('setCycleStatus requires the statuses it may move from');
+  const { rows } = await pgQuery(
+    `UPDATE cycles SET status = $2, updated_at = now()
+      WHERE cycle_id = $1 AND status = ANY($3::text[])
+      RETURNING ${COLUMNS}`,
+    [String(cycleId), String(to), from], 'cycle_set_status',
+  );
+  return rows[0] ? { ok: true, cycle: toCycle(rows[0]) } : { ok: false, reason: 'NOT_IN_EXPECTED_STATE' };
 }
 
 /**
@@ -430,14 +483,26 @@ export async function closeCycle(cycleId) {
  *
  * Guarded on `winner IS NULL`, so a second declaration for the same cycle
  * matches no row rather than overwriting a result players have already seen.
+ *
+ * The status it lands on is RESULT_DECLARED, not COMPLETED. The two mean
+ * different things and collapsing them loses the distinction that matters: the
+ * result is out, and settlement has NOT yet run. `markSettled` is what moves it
+ * to COMPLETED, so a cycle sitting at RESULT_DECLARED is one whose payouts are
+ * outstanding — which is exactly the state an operator needs to be able to see.
  */
 export async function declareWinner(cycleId, winner, { by = 'engine', confidence = null } = {}) {
   if (!SIDES.includes(winner)) throw new Error(`declareWinner: unknown side '${winner}'`);
   const { rows } = await pgQuery(
     `UPDATE cycles SET
        winner = $2, winner_determined_at = now(), winner_determined_by = $3,
-       winner_confidence = $4, status = 'COMPLETED', updated_at = now()
-      WHERE cycle_id = $1 AND winner IS NULL AND status IN ('OPEN', 'CLOSED')
+       winner_confidence = $4, status = 'RESULT_DECLARED', updated_at = now()
+      -- Every LIVE status, not just OPEN and CLOSED. A cycle that missed its
+      -- MERGE or CLOSE phase — a slow tick, a restart — was previously
+      -- undeclarable: the guard matched no row, the generator moved on, and the
+      -- cycle sat forever with players' stakes locked against a result that
+      -- could never be declared.
+      WHERE cycle_id = $1 AND winner IS NULL
+        AND status IN ('OPEN', 'MERGED', 'CLOSED', 'PAUSED')
       RETURNING ${COLUMNS}`,
     [String(cycleId), winner, String(by), confidence], 'cycle_declare',
   );
@@ -753,6 +818,41 @@ export async function recentResults(cycleType, { limit = 10 } = {}) {
     'cycle_recent_results',
   );
   return rows.map(toCycle);
+}
+
+/**
+ * Resolved cycles for one type, newest first, with their pools.
+ *
+ * ── Why the pools have to come with them ───────────────────────────────────
+ * The history feed goes through `publicCycleView`, which sends COMBINED totals
+ * only — the real/phantom split discloses the outcome, because the winner is
+ * the minority real-bet side. A row with no pools projects to zero on both
+ * sides, so the client's 60-bead roadmap and its streak analytics would be
+ * drawn over a history in which nobody ever bet anything.
+ *
+ * ── Filtered on the WINNER, not the status ─────────────────────────────────
+ * `winner IS NOT NULL` is what "resolved" means. The query this replaced
+ * matched `status: 'RESULT_DECLARED'`, which drops every cycle that has since
+ * moved to COMPLETED — so the history feed lost each cycle the moment its
+ * settlement finished, and the roadmap showed only the handful of results that
+ * happened to be mid-settlement at that instant.
+ *
+ * `limit` is PER TYPE. One shared budget across types starves the slow ones:
+ * a 1-minute block resolves 60 times an hour, so 50 rows shared across three
+ * types is the last 50 minutes and nothing else.
+ */
+export async function resolvedCyclesWithPools(cycleType, { limit = 50 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT ${qualified('c')},
+            p.real_delhi_paise, p.real_bombay_paise, p.delhi_bets, p.bombay_bets
+       FROM cycles c ${POOL_JOIN}
+      WHERE c.cycle_type = $1 AND c.winner IS NOT NULL
+      ORDER BY c.end_time DESC
+      LIMIT $2`,
+    [String(cycleType), Math.min(Math.max(Number(limit) || 50, 1), 1440)],
+    'cycle_resolved_with_pools',
+  );
+  return rows.map(withPools);
 }
 
 /**

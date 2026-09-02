@@ -150,11 +150,32 @@ describe('no update writes to a path its schema does not declare', () => {
       .toEqual([]);
   });
 
-  it('actually inspected a meaningful number of update calls', () => {
-    // Without this, a refactor that renamed the update helpers would turn the
-    // assertion above into "nothing was checked, so nothing was wrong".
-    expect(calls, 'the scanner matched almost no update calls — has the pattern rotted?')
-      .toBeGreaterThan(20);
+  /**
+   * The scanner's own liveness check — a RATCHET, not a floor.
+   *
+   * It exists so that a refactor renaming the update helpers cannot turn the
+   * assertion above into "nothing was checked, so nothing was wrong". But the
+   * number it guards is the count of document-store update calls left in the
+   * codebase, and the whole point of this migration is to drive that to zero.
+   *
+   * So it may only go DOWN. Lower it as call sites move; when it reaches zero
+   * there are no such writes left, this scanner has nothing to inspect, and it
+   * retires along with the models it reads. Raising it would mean a document
+   * update came BACK, which is the one thing the single-store rule forbids.
+   */
+  const REMAINING_UPDATE_CALLS = 12;
+
+  it('inspected every update call that is left', () => {
+    expect(calls, 'more document-store update calls than the ratchet allows — did one come back?')
+      .toBeLessThanOrEqual(REMAINING_UPDATE_CALLS);
+    // Zero is the finish line, and at zero the scanner has nothing to say — so
+    // it asks to be deleted rather than passing vacuously forever.
+    if (calls === 0) {
+      throw new Error(
+        'No document-store update calls remain. Delete schemaPathWrites.test.js '
+        + 'and the scanner with the models it reads.',
+      );
+    }
   });
 
   it('loaded the domain-local models, not just the shared index', () => {

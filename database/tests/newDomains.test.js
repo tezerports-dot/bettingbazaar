@@ -136,9 +136,14 @@ describePg('the domains written from scratch', () => {
       await makeCycle();
       const r = await markets.declareWinner(`c-${ID}`, 'DELHI', { by: 'engine', confidence: 0.9 });
       expect(r.ok).toBe(true);
-      // There is no instant at which the cycle is COMPLETED with no winner —
-      // which is exactly what the settlement sweep would otherwise read.
-      expect(r.cycle.status).toBe('COMPLETED');
+      // There is no instant at which the cycle carries a declared status with
+      // no winner — which is exactly what the settlement sweep would read.
+      //
+      // RESULT_DECLARED, not COMPLETED: the result is out and settlement has
+      // NOT run. `markSettled` moves it to COMPLETED, so a cycle sitting here
+      // is one whose payouts are still outstanding — the state an operator
+      // needs to be able to see.
+      expect(r.cycle.status).toBe('RESULT_DECLARED');
       expect(r.cycle.winner).toBe('DELHI');
     });
 
