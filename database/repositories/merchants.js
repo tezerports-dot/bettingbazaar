@@ -682,6 +682,87 @@ export async function deleteMerchant(merchantId) {
 }
 
 /**
+ * Create the whole merchant: the login account, the merchant record and the
+ * wallet row, in ONE transaction.
+ *
+ * ── What this replaces ──────────────────────────────────────────────────────
+ * Signup wrote the account, then the merchant record, with nothing joining
+ * them. A failure on the second left an account flagged `isMerchant` with no
+ * merchant record behind it — an applicant who could never log in, whose
+ * mobile was now taken, and who could not reapply. The login path had grown a
+ * repair for a neighbouring case: find the account, find the merchant by
+ * account id, and write the mobile back onto the merchant record if it was
+ * missing. Data repair inside an authentication path.
+ *
+ * All three rows commit together or none of them do, so the half-created
+ * merchant is not a state that exists and the login path has nothing to repair.
+ *
+ * @returns {{ok:true, merchant, userId}}
+ *          {{ok:false, reason:'MOBILE_TAKEN'|'CREDENTIALS_TAKEN'}}
+ */
+export async function createMerchantAccount({
+  userId, username, mobile, email = null, passwordHash,
+  currency = 'INR', bankDetails = null, usdtWalletAddress = null,
+}) {
+  if (!mobile) throw new Error('createMerchantAccount requires a mobile');
+  if (!passwordHash) throw new Error('createMerchantAccount requires a passwordHash');
+
+  const pool = await getPool();
+  if (!pool) throw new Error('Postgres not configured (DATABASE_URL unset)');
+  const client = await connectGuarded(pool);
+  let failure = null;
+
+  try {
+    await client.query('BEGIN');
+
+    // The account. `ON CONFLICT DO NOTHING` on the mobile, so a second
+    // application on a registered number is REFUSED by the index rather than
+    // by a prior lookup two applicants can both pass.
+    const account = await client.query(
+      `INSERT INTO users (user_id, username, mobile, password_hash, email, status, kyc_status, roles)
+       VALUES ($1, $2, $3, $4, $5, 'ACTIVE', 'PENDING_SUBMISSION', ARRAY['merchant'])
+       ON CONFLICT (mobile) DO NOTHING
+       RETURNING user_id`,
+      [String(userId), username ?? '', String(mobile), passwordHash, email],
+    );
+    if (!account.rows.length) {
+      await client.query('ROLLBACK');
+      return { ok: false, reason: 'MOBILE_TAKEN' };
+    }
+    const uid = account.rows[0].user_id;
+
+    const merchant = await createMerchant({
+      merchantId: newMerchantId(), userId: uid, name: username || String(mobile),
+      username, mobile, email, passwordHash,
+      currency, status: 'PENDING', bankDetails, usdtWalletAddress,
+      client,
+    });
+
+    // A merchant with no wallet row is EXCLUDED from assignment, so it belongs
+    // in the same transaction as the merchant itself.
+    await client.query(
+      `INSERT INTO merchant_wallets (merchant_id) VALUES ($1)
+       ON CONFLICT (merchant_id) DO NOTHING`, [merchant.merchantId],
+    );
+
+    await client.query('COMMIT');
+    return { ok: true, merchant, userId: uid };
+  } catch (error) {
+    failure = error;
+    try { await client.query('ROLLBACK'); } catch { /* already unwound */ }
+    // A payment credential already registered to another merchant. Money sent
+    // to it would arrive at the wrong account, so it is refused — and named,
+    // because "signup failed" tells an applicant nothing they can act on.
+    if (error.code === '23505') {
+      return { ok: false, reason: 'CREDENTIALS_TAKEN', constraint: error.constraint };
+    }
+    throw error;
+  } finally {
+    client.release(failure ?? undefined);
+  }
+}
+
+/**
  * Create a merchant and its wallet row together, or neither.
  *
  * A merchant with no wallet row is EXCLUDED from assignment (that is

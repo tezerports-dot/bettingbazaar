@@ -47,7 +47,7 @@ const SITES = [
     name: 'merchant accept guard',
     file: 'domains/merchant/merchant.routes.js',
     gates: [/availableTokens < order\.tokenAmount/],
-    source: /await getMerchantTokenBalance\(merchant\._id\)/,
+    source: /await getMerchantTokenBalance\(merchant\.merchantId\)/,
     forbidden: [/\(merchant\.tokenBalance \|\| 0\) < order\.tokenAmount/],
   },
   {

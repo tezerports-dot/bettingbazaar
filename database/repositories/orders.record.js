@@ -299,6 +299,24 @@ export async function findOrders({
   };
 }
 
+/**
+ * One order, scoped to the merchant who holds it.
+ *
+ * The ownership check is in the WHERE clause, not a comparison after the fetch.
+ * That is an authorisation boundary: a merchant must not be able to read
+ * another merchant's order by guessing an id, and a fetch-then-compare has
+ * already loaded the row — including the player's bank details — before it
+ * decides whether the caller was allowed to see them.
+ */
+export async function getMerchantOrder(orderId, merchantId) {
+  if (!orderId || !merchantId) return null;
+  const { rows } = await pgQuery(
+    'SELECT * FROM order_states WHERE order_id = $1 AND merchant_id = $2',
+    [String(orderId), String(merchantId)], 'order_get_for_merchant',
+  );
+  return toOrder(rows[0]);
+}
+
 /** One order by its UTR — the reconciliation lookup. */
 export async function findOrderByUtr(utr) {
   const { rows } = await pgQuery(
@@ -355,6 +373,65 @@ export async function releaseUtr(utr, orderId) {
 }
 
 /**
+ * A merchant's withdrawals scheduled for one day's bulk payout.
+ *
+ * `bulk_payout_date` is a DATE, so the window is a day rather than a
+ * timestamp range that has to be built by the caller — three call sites were
+ * each computing their own IST midnight, and a difference of one in any of them
+ * would have paid a different set of orders.
+ */
+export async function bulkPayoutBatch({ merchantId, payoutDate }) {
+  const { rows } = await pgQuery(
+    `SELECT * FROM order_states
+      WHERE merchant_id = $1
+        AND order_type = 'WITHDRAWAL'
+        AND state IN ('PAID', 'COMPLETED', 'ASSIGNED', 'PROCESSING')
+        AND bulk_payout_date = $2::date
+      ORDER BY created_at ASC`,
+    [String(merchantId), payoutDate], 'order_bulk_batch',
+  );
+  return rows.map(toOrder);
+}
+
+/**
+ * Close a batch of a merchant's withdrawals as paid.
+ *
+ * ONE STATEMENT, with the eligibility in the WHERE clause: this merchant's
+ * withdrawals, in a state a payout may legitimately close. An order that moved
+ * between the caller's read and this write matches nothing rather than being
+ * closed from a state it has already left — which is what an `updateMany` over
+ * ids alone would do.
+ *
+ * Returns which ids were closed, so the caller can tell the merchant that three
+ * of their five went through rather than reporting a count they cannot act on.
+ */
+export async function bulkCompleteWithdrawals({ orderIds, merchantId, batchId, paidAt = null }) {
+  const ids = [...new Set((orderIds || []).filter(Boolean).map(String))];
+  if (!ids.length) return { completed: 0, orderIds: [], skipped: [] };
+
+  const { rows } = await pgQuery(
+    `UPDATE order_states SET
+       state = 'COMPLETED',
+       completed_at = COALESCE($4::timestamptz, now()),
+       bulk_paid_at = COALESCE($4::timestamptz, now()),
+       bulk_payout_batch = $3,
+       updated_at = now()
+     WHERE order_id = ANY($1::text[])
+       AND merchant_id = $2
+       AND order_type = 'WITHDRAWAL'
+       AND state IN ('PAID', 'ASSIGNED', 'PROCESSING')
+     RETURNING order_id`,
+    [ids, String(merchantId), String(batchId), paidAt], 'order_bulk_complete',
+  );
+  const closed = rows.map((r) => r.order_id);
+  return {
+    completed: closed.length,
+    orderIds: closed,
+    skipped: ids.filter((id) => !closed.includes(id)),
+  };
+}
+
+/**
  * Orders that ran out of time.
  *
  * Expiry decided by the READ, not by whether a sweep has run: an order past its
@@ -371,6 +448,48 @@ export async function findExpiredOrders({ limit = 100 } = {}) {
     [Math.min(Math.max(Number(limit) || 100, 1), 500)], 'order_find_expired',
   );
   return rows.map(toOrder);
+}
+
+/**
+ * What a merchant may see in their queue.
+ *
+ * Two sets, and they are different in kind: the orders ASSIGNED to them, plus
+ * the OPEN withdrawal pool on their own rail — orders nobody holds yet, which
+ * any merchant on that rail may claim. Mixing the two in one query is what the
+ * panel needs; keeping them separate would make the merchant poll twice and
+ * see the pool at a different instant from their own work.
+ *
+ * The rail filter is not cosmetic: an INR merchant claiming a USDT order cannot
+ * settle it, and the player waits for a payment that will never come.
+ */
+export async function merchantVisibleOrders({
+  merchantId, rail = 'INR', state = null, orderType = null,
+  limit = 50, offset = 0,
+}) {
+  const params = [String(merchantId), String(rail)];
+  const filters = [];
+  if (state) { params.push(String(state)); filters.push(`state = $${params.length}`); }
+  if (orderType) { params.push(String(orderType)); filters.push(`order_type = $${params.length}`); }
+
+  const size = Math.min(Math.max(Number(limit) || 50, 1), 100);
+  const skip = Math.max(Number(offset) || 0, 0);
+
+  const { rows } = await pgQuery(
+    `SELECT *, COUNT(*) OVER () AS total_count FROM order_states
+      WHERE (
+              merchant_id = $1
+              OR (merchant_id IS NULL AND order_type = 'WITHDRAWAL'
+                  AND state = 'PENDING_QUEUE' AND currency = $2)
+            )
+        ${filters.length ? `AND ${filters.join(' AND ')}` : ''}
+      ORDER BY created_at DESC, order_id DESC
+      LIMIT ${size} OFFSET ${skip}`,
+    params, 'order_merchant_visible',
+  );
+  return {
+    orders: rows.map(toOrder),
+    total: rows[0] ? Number(rows[0].total_count) : 0,
+  };
 }
 
 /** What a merchant is currently working. */

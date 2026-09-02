@@ -2478,3 +2478,16 @@ $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE TRIGGER utr_registry_no_delete
   BEFORE DELETE ON utr_registry FOR EACH ROW EXECUTE FUNCTION bb_forbid_utr_delete();
+
+-- One admin token purchase request per merchant per day.
+--
+-- The route checked for today's request and then inserted, so two requests
+-- arriving together both passed the check — a rate limit that stops nobody who
+-- clicks twice. A unique index over `(merchant_id, requested_at::date)` makes
+-- the rule a property of the table: the second INSERT collides.
+--
+-- CANCELLED and REJECTED requests are excluded, so a merchant whose request was
+-- turned down is not locked out for the rest of the day by it.
+CREATE UNIQUE INDEX IF NOT EXISTS merchant_token_orders_one_per_day
+  ON merchant_admin_token_orders (merchant_id, (CAST(requested_at AT TIME ZONE 'UTC' AS DATE)))
+  WHERE status IN ('PENDING', 'APPROVED');

@@ -4,9 +4,9 @@
 
 
 import express   from 'express';
+import { randomBytes } from 'node:crypto';
 import { db } from '#db';
 import { creditDeposit, creditReserve, refundWithdrawal, releaseWithdrawal } from '../wallet/walletAuthority.service.js';
-import mongoose  from 'mongoose';
 // AQ-2/AQ-8: sign via the single JWT authority; hash via the password authority
 // (argon2id + bcrypt verify-fallback). No direct bcrypt use remains here.
 import { signToken } from '../identity/jwt.util.js';
@@ -149,55 +149,43 @@ router.post('/auth/signup', async (req, res) => {
             return res.status(400).json({ success: false, message: 'username, mobile and password are required' });
         }
 
-        const Merchant = mongoose.model('Merchant');
-        const User     = mongoose.model('User');
+        // ONE TRANSACTION for the account, the merchant record and the wallet.
+        //
+        // This used to be two unrelated writes. A failure on the second left an
+        // account flagged as a merchant with no merchant record behind it: an
+        // applicant who could never log in, whose mobile was now taken, and who
+        // could not reapply. The login path had grown a repair for the
+        // neighbouring case — data repair inside an authentication path.
+        //
+        // The mobile's uniqueness is decided by the index, not by a prior
+        // lookup: two applications on the same number arriving together both
+        // pass a check, and only one INSERT can win.
+        const created = await db.merchants.createMerchantAccount({
+            userId: db.users.newUserId(),
+            username, mobile,
+            email: email || null,
+            passwordHash: await hashPassword(password),
+            bankDetails: bankDetails || upiId ? {
+                upiId: upiId || bankDetails?.upiId || null,
+                bankName: bankDetails?.bankName || null,
+                accountNo: bankDetails?.accountNo || null,
+                ifsc: bankDetails?.ifsc || null,
+            } : null,
+        });
 
-        const existingUser = await User.findOne({ mobile });
-        if (existingUser) {
-            return res.status(409).json({ success: false, message: 'Mobile number already registered' });
+        if (!created.ok) {
+            // Named, because "signup failed" tells an applicant nothing they
+            // can act on — and a payment credential already registered to
+            // someone else is a different problem from a taken mobile.
+            const message = created.reason === 'MOBILE_TAKEN'
+                ? 'Mobile number already registered'
+                : 'Those payment details are already registered to another merchant';
+            return res.status(409).json({ success: false, message });
         }
 
-        const passwordHash = await hashPassword(password);
-
-        const user = await User.create({
-            username,
-            mobile,
-            passwordHash,
-            email:     email || undefined,
-            status:    'ACTIVE',
-            kycStatus: 'PENDING_SUBMISSION',
-            isMerchant: true,
-            roles:     ['merchant'],  // merchant accounts never get user panel access
-        });
-
-        // Merchant doc status = 'PENDING' (now valid per B1 schema fix)
-        await Merchant.create({
-            userId:       user._id,
-            name:         username,
-            username,
-            mobile,
-            email:        email || undefined,
-            // FIX B1: Merchant.password must be set so merchantAuth middleware
-            // can authenticate after admin approves. Without this, approved
-            // merchants can never log in because Option A reads Merchant.password.
-            password:     passwordHash,
-            passwordHash: passwordHash,
-            merchantApprovalStatus: 'PENDING',
-            status:       'PENDING',
-            isOnline:     false,
-            tokenBalance: 0,
-            upiId:        upiId     || undefined,
-            bankDetails:  bankDetails ? {
-                upiId:     upiId || undefined,
-                bankName:  bankDetails.bankName  || undefined,
-                accountNo: bankDetails.accountNo || undefined,
-                ifsc:      bankDetails.ifsc       || undefined,
-            } : undefined,
-        });
-
         res.json({
-            success:    true,
-            message:    'Application submitted. An admin will review and approve your account.',
+            success: true,
+            message: 'Application submitted. An admin will review and approve your account.',
         });
     } catch (error) {
         console.error('Merchant signup error:', error);
@@ -212,39 +200,39 @@ router.post('/auth/login', async (req, res) => {
             return res.status(400).json({ success: false, message: 'mobile and password are required' });
         }
 
-        // Query Merchant by mobile — with User-doc fallback for merchants
-        // whose mobile was only stored on User (created before B6-c fix).
-        const Merchant = mongoose.model('Merchant');
-        const User = mongoose.model('User');
-        let merchant = await Merchant.findOne({ mobile }).select('+password +passwordHash');
-        if (!merchant) {
-            // Fallback: find User by mobile, then get linked Merchant doc
-            const user = await User.findOne({ mobile });
-            if (user) {
-                merchant = await Merchant.findOne({ userId: user._id }).select('+password +passwordHash');
-                // Sync mobile onto Merchant doc so direct lookup works next time
-                if (merchant && !merchant.mobile) {
-                    merchant.mobile = mobile;
-                    await merchant.save();
-                }
-            }
-        }
+        // ── One lookup, no repair ────────────────────────────────────────
+        // This used to try the merchant record, then fall back to the account,
+        // then WRITE the mobile back onto the merchant record if it was
+        // missing — data repair inside an authentication path, for a state
+        // that signup can no longer produce. The mobile is a column with a
+        // unique index now, and signup writes it in the same transaction as
+        // the account, so there is one lookup and nothing to fix up.
+        const merchant = await db.merchants.getMerchantByLogin(mobile);
         if (!merchant)
             return res.status(401).json({ success: false, message: 'No merchant account found for this mobile number' });
 
-        const hash = merchant.password || merchant.passwordHash;
-        const { valid: pwValid, needsRehash: pwNeedsRehash } = await verifyPassword(hash, password);
+        // Credentials are read by a function that has to be asked for BY NAME,
+        // so a hash cannot reach a response body by accident.
+        const creds = await db.merchants.getMerchantCredentials(merchant.merchantId);
+        const { valid: pwValid, needsRehash: pwNeedsRehash } = await verifyPassword(creds?.passwordHash, password);
         if (!pwValid)
             return res.status(401).json({ success: false, message: 'Invalid credentials' });
-        // AQ-8: upgrade a legacy bcrypt hash to argon2id on successful login,
-        // writing back to whichever field held it.
+
+        // AQ-8: upgrade a legacy bcrypt hash to argon2id on a successful login.
+        // Best-effort: a failed upgrade must not fail a login that has already
+        // been authenticated.
         if (pwNeedsRehash) {
             try {
-                const upgraded = await hashPassword(password);
-                if (merchant.password) merchant.password = upgraded; else merchant.passwordHash = upgraded;
-                await merchant.save();
-            } catch { /* best-effort upgrade */ }
+                await db.merchants.updateMerchant(merchant.merchantId, {
+                    passwordHash: await hashPassword(password),
+                });
+            } catch (e) { console.error('[merchant-login] hash upgrade failed:', e.message); }
         }
+
+        // The credential read is the authority on 2FA state, not the rendered
+        // record — they come from the same row, but only one of them is the
+        // one the challenge is issued against.
+        merchant.twoFactorEnabled = creds?.twoFactorEnabled ?? false;
 
         if (merchant.merchantApprovalStatus !== 'APPROVED' || merchant.status !== 'ACTIVE') {
             const msgs = { PENDING: 'Application pending approval.', REJECTED: 'Application rejected.',
@@ -262,7 +250,7 @@ router.post('/auth/login', async (req, res) => {
                 success: false,             // deliberately not a logged-in success
                 twoFactorRequired: true,
                 challengeToken: issueChallenge({
-                    id: merchant._id, audience: CHALLENGE_AUDIENCE.MERCHANT,
+                    id: merchant.merchantId, audience: CHALLENGE_AUDIENCE.MERCHANT,
                 }),
                 message: 'Enter the code from your authenticator app.',
             });
@@ -467,8 +455,7 @@ router.put('/profile', merchantAuth, async (req, res) => {
     try {
         const { upiId, qrCodeUrl, bankDetails, usdtWalletAddress } = req.body;
 
-        const Merchant = mongoose.model('Merchant');
-        const current  = await db.merchants.getMerchant(req.merchantId);
+        const current = await db.merchants.getMerchant(req.merchantId);
         if (!current) return res.status(404).json({ success: false, message: 'Merchant profile not found.' });
 
         const isUsdt  = merchantTypeOf(current) === MERCHANT_CURRENCY.USDT;
@@ -510,22 +497,31 @@ router.put('/profile', merchantAuth, async (req, res) => {
             return res.status(400).json({ success: false, message: 'No valid profile fields provided.' });
         }
 
-        // runValidators so the schema's TRC-20 / uniqueness rules apply to this
-        // update path too, not only to full document saves.
-        const merchant = await Merchant.findByIdAndUpdate(
-            req.merchantId,
-            { $set: update },
-            { new: true, runValidators: true }
-        );
+        // The TRC-20 format and the credential uniqueness are CHECK constraints
+        // and unique indexes on the row, so they hold on this path without a
+        // `runValidators` flag to remember — which is the point of moving them
+        // into the table. A collision comes back as 23505.
+        let merchant;
+        try {
+            merchant = await db.merchants.updateMerchant(req.merchantId, update);
+        } catch (e) {
+            if (e.code === '23505') {
+                return res.status(409).json({
+                    success: false,
+                    message: 'Those payment details are already registered to another merchant. Money sent to them would reach the wrong account.',
+                });
+            }
+            if (e.code === '23514') {
+                return res.status(400).json({ success: false, message: 'Those payment details are not in a valid format.' });
+            }
+            throw e;
+        }
 
         res.json({ success: true, merchant: formatMerchant(merchant, req.user) });
     } catch (err) {
         console.error('PUT /merchant/profile error:', err);
         if (err?.name === 'ValidationError') {
             return res.status(400).json({ success: false, message: err.message });
-        }
-        if (err?.code === 11000) {
-            return res.status(409).json({ success: false, message: 'Those payment details are already registered to another merchant.' });
         }
         res.status(500).json({ success: false, message: 'Failed to update profile.' });
     }
@@ -537,15 +533,14 @@ router.put('/online-status', merchantAuth, async (req, res) => {
         if (typeof isOnline !== 'boolean') {
             return res.status(400).json({ success: false, message: 'isOnline must be a boolean.' });
         }
-        const merchant = await mongoose.model('Merchant').findByIdAndUpdate(
-            req.merchantId,
-            { isOnline, lastOnlineToggle: new Date() },
-            { new: true }
-        );
+        // The flag and its timestamp move in ONE statement, so two rapid
+        // toggles cannot interleave into "online, with the timestamp of going
+        // offline" — which is what the assignment score reads.
+        const merchant = await db.merchants.setOnline(req.merchantId, isOnline);
         // Notify admin panel via SSE so merchant list shows green/red dot without refresh
         if (global.sseManager && merchant) {
             global.sseManager.broadcastToAdmins('merchant_status_changed', {
-                merchantId: merchant._id,
+                merchantId: merchant.merchantId,
                 userId:     merchant.userId,
                 isOnline,
                 name:       merchant.username || merchant.name || '',
@@ -568,7 +563,7 @@ router.put('/preferences', merchantAuth, async (req, res) => {
         if (!Object.keys(update).length) {
             return res.status(400).json({ success: false, message: 'No valid preference fields provided.' });
         }
-        const merchant = await mongoose.model('Merchant').findByIdAndUpdate(req.merchantId, update, { new: true });
+        const merchant = await db.merchants.updateMerchant(req.merchantId, update);
         res.json({ success: true, merchant: formatMerchant(merchant, req.user) });
     } catch (err) {
         console.error('PUT /merchant/preferences error:', err);
@@ -589,9 +584,23 @@ router.put('/limits', merchantAuth, async (req, res) => {
         if (maxWithdraw !== undefined) update['limits.maxWithdraw'] = Number(maxWithdraw);
         if (!Object.keys(update).length)
             return res.status(400).json({ success: false, message: 'No valid limit fields provided.' });
-        const merchant = await mongoose.model('Merchant').findByIdAndUpdate(
-            req.merchantId, { $set: update }, { new: true }
-        );
+
+        // Rupees in, integer paise stored — the limits are compared against
+        // order amounts, and an order amount is paise. The row also refuses a
+        // range that excludes every amount (min above max), which the document
+        // schema did not check at all.
+        let merchant;
+        try {
+            merchant = await db.merchants.updateMerchant(req.merchantId, update);
+        } catch (e) {
+            if (e.code === '23514') {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Those limits exclude every amount — the minimum cannot be above the maximum.',
+                });
+            }
+            throw e;
+        }
         res.json({ success: true, merchant: formatMerchant(merchant, req.user) });
     } catch (err) {
         console.error('PUT /merchant/limits error:', err);
@@ -602,8 +611,7 @@ router.put('/limits', merchantAuth, async (req, res) => {
 // ─── MERCHANT → ADMIN TOKEN PURCHASE ORDERS ─────────────────────────────────
 router.get('/admin-token-orders', merchantAuth, async (req, res) => {
     try {
-        const MerchantAdminTokenOrder = mongoose.model('MerchantAdminTokenOrder');
-        const orders = await MerchantAdminTokenOrder.find({ merchantId: req.merchantId }).sort({ requestedAt: -1 }).limit(30).lean();
+        const orders = await db.paymentConfig.listTokenOrders({ merchantId: req.merchantId, limit: 30 });
         res.json({ success: true, orders });
     } catch (err) {
         console.error('GET /merchant/admin-token-orders error:', err);
@@ -615,8 +623,6 @@ router.post('/admin-token-orders', merchantAuth, async (req, res) => {
     try {
         const tokenAmount = Number(req.body.tokenAmount);
         const usdtTxHash = String(req.body.usdtTxHash || '').trim();
-        const Merchant = mongoose.model('Merchant');
-        const MerchantAdminTokenOrder = mongoose.model('MerchantAdminTokenOrder');
         const [cfg, merchant] = await Promise.all([
             getSystemConfig(),
             db.merchants.getMerchant(req.merchantId),
@@ -643,19 +649,29 @@ router.post('/admin-token-orders', merchantAuth, async (req, res) => {
             const maxText = maxPurchaseUsdt > 0 ? ` and at most ${maxPurchaseUsdt} USDT` : '';
             return res.status(400).json({ success: false, message: `Admin token purchase must be at least ${minPurchaseUsdt} USDT${maxText}.` });
         }
-        const startOfDay = new Date();
-        startOfDay.setHours(0, 0, 0, 0);
-        const existingToday = await MerchantAdminTokenOrder.findOne({ merchantId: req.merchantId, requestedAt: { $gte: startOfDay } }).lean();
-        if (existingToday) return res.status(429).json({ success: false, message: 'Only one admin token purchase request is allowed per day.' });
-        const order = await MerchantAdminTokenOrder.create({
-            orderId: `MAT_${new mongoose.Types.ObjectId().toString()}`,
+        // ONE REQUEST PER DAY, decided by a unique index rather than by a
+        // lookup for today's request followed by an insert. That check-then-act
+        // shape is a rate limit that stops nobody who clicks twice: both
+        // requests pass the check, both insert.
+        const created = await db.paymentConfig.createTokenOrder({
+            orderId: `MAT_${randomBytes(12).toString('hex')}`,
             merchantId: req.merchantId,
-            tokenAmount,
+            tokenAmountRupees: tokenAmount,
             usdtRate,
             usdtAmount,
-            usdtTxHash,
+            usdtTxHash: usdtTxHash || null,
+        }).catch((e) => {
+            if (e.code === '23505') return { ok: false, reason: 'ALREADY_REQUESTED_TODAY' };
+            throw e;
         });
-        res.json({ success: true, order });
+
+        if (!created.ok) {
+            return res.status(429).json({
+                success: false,
+                message: 'Only one admin token purchase request is allowed per day.',
+            });
+        }
+        res.json({ success: true, order: created.order });
     } catch (err) {
         console.error('POST /merchant/admin-token-orders error:', err);
         res.status(500).json({ success: false, message: 'Failed to create admin token order.' });
@@ -674,26 +690,18 @@ router.get('/orders', merchantAuth, async (req, res) => {
         // up) must be filtered to this merchant's own rail — a USDT merchant has
         // no way to pay out an INR withdrawal and vice-versa (2026-07-27).
         // Orders written before `currency` existed have no field at all, so the
-        // INR rail also matches missing/null (schema default: 'INR').
-        const rail = merchantTypeOf(req.merchant);
-        const railMatch = rail === MERCHANT_CURRENCY.INR
-            ? { $in: [MERCHANT_CURRENCY.INR, null] }
-            : rail;
-        const openPool = { type: 'WITHDRAWAL', status: 'PENDING_QUEUE', currency: railMatch };
-
-        const query = { $or: [
-            { merchantId: req.merchantId },
-            { ...openPool, merchantId: null },
-            { ...openPool, merchantId: { $exists: false } },
-        ] };
-        if (status) query.status = status;
-        if (type)   query.type   = type;
-
-        const PaymentOrder = mongoose.model('PaymentOrder');
-        const [orders, total] = await Promise.all([
-            PaymentOrder.find(query).sort({ createdAt: -1 }).skip(parsedSkip).limit(parsedLimit).lean(),
-            PaymentOrder.countDocuments(query),
-        ]);
+        // The merchant's own orders PLUS the open withdrawal pool on their
+        // rail. The rail filter is not cosmetic: an INR merchant claiming a
+        // USDT order cannot settle it, and the player waits for a payment that
+        // will never come.
+        const { orders, total } = await db.orders.merchantVisibleOrders({
+            merchantId: req.merchantId,
+            rail: merchantTypeOf(req.merchant),
+            state: status || null,
+            orderType: type || null,
+            limit: parsedLimit,
+            offset: parsedSkip,
+        });
 
         res.json({ success: true, orders: sanitizeMerchantOrders(orders), pagination: { total, limit: parsedLimit, skip: parsedSkip } });
     } catch (err) {
@@ -704,9 +712,6 @@ router.get('/orders', merchantAuth, async (req, res) => {
 
 router.post('/accept/:id', merchantAuth, async (req, res) => {
     try {
-        const PaymentOrder = mongoose.model('PaymentOrder');
-        const Merchant     = mongoose.model('Merchant');
-
         const order = await db.orders.getOrderRecord(req.params.id);
         if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
 
@@ -736,7 +741,7 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
             // From the WALLET, not the merchant record. This gate admits an
             // order the merchant then has to fund; deciding it from a stored
             // copy is how one came to be accepted that could not be served.
-            const availableTokens = await getMerchantTokenBalance(merchant._id);
+            const availableTokens = await getMerchantTokenBalance(merchant.merchantId);
             if (merchant.acceptsDeposits === false || availableTokens < order.tokenAmount) {
                 return res.status(400).json({ success: false, message: 'Merchant has insufficient token balance or deposit capability for this buy order.' });
             }
@@ -748,7 +753,13 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         const typeLimit = order.type === 'DEPOSIT'
             ? (merchant.maxConcurrentDepositOrders ?? cfg?.merchantOrderLimits?.maxConcurrentDepositOrders ?? 1)
             : (merchant.maxConcurrentWithdrawalOrders ?? cfg?.merchantOrderLimits?.maxConcurrentWithdrawalOrders ?? 1);
-        const activeForType = await PaymentOrder.countDocuments({ merchantId: req.merchantId, type: order.type, status: { $in: ['ASSIGNED', 'PROCESSING', 'PAID'] } });
+        // DERIVED from the orders themselves. The merchant record used to carry
+        // an `activeOrderCount` incremented on accept and decremented on
+        // finish; a crash between the two throttled that merchant permanently,
+        // with nothing able to correct it because nothing else knew the number.
+        const counts = await db.merchants.getActiveOrderCounts([req.merchantId]);
+        const active = counts.get(String(req.merchantId));
+        const activeForType = order.type === 'DEPOSIT' ? active.deposit : active.withdrawal;
         if (activeForType >= typeLimit) {
             return res.status(400).json({ success: false, message: `Merchant has reached ${order.type} active order limit (${typeLimit}).` });
         }
@@ -767,7 +778,7 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         // not get.
         const responseMinutes = order.assignedAt ? (now - new Date(order.assignedAt)) / 60000 : null;
 
-        const accepted = await startOrder(order._id, {
+        const accepted = await startOrder(order.orderId, {
             set: {
                 merchantId:       req.merchantId,
                 assignedAt:       order.assignedAt || now,
@@ -790,15 +801,19 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         Object.assign(order, accepted.order);
 
         if (responseMinutes !== null) {
-            const oldAvg = merchant.avgResponseMinutes ?? 2; // schema default: 2
-            const newAvg = (oldAvg * 0.8) + (responseMinutes * 0.2);
-            await Merchant.findByIdAndUpdate(req.merchantId, { $set: { avgResponseMinutes: newAvg } });
+            // Rolling average, EMA with α=0.2. Applied AFTER the transition —
+            // a merchant who lost the accept race must not have their response
+            // time recorded for an order they did not get.
+            const oldAvg = merchant.avgResponseMinutes ?? 2;
+            await db.merchants.updateMerchant(req.merchantId, {
+                avgResponseMinutes: (oldAvg * 0.8) + (responseMinutes * 0.2),
+            });
         }
-
-        if (!wasAssigned) await Merchant.findByIdAndUpdate(req.merchantId, { $inc: { activeOrderCount: 1 } });
+        // No counter to increment. The active order count is derived from the
+        // orders, so accepting one IS the increment.
 
         const io = global.io;
-        const oid = order._id;
+        const oid = order.orderId;
         const isDeposit = order.type === 'DEPOSIT';
         const bank = order.userBankDetails  || {};
 
@@ -858,8 +873,7 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
 router.post('/confirm/:id', merchantAuth, async (req, res) => {
     try {
         const { proof, utrNumber } = req.body;
-        const PaymentOrder = mongoose.model('PaymentOrder');
-        const order = await PaymentOrder.findOne({ _id: req.params.id, merchantId: req.merchantId });
+        const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
         if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
 
         const isDeposit = order.type === 'DEPOSIT';
@@ -941,12 +955,6 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         }
         Object.assign(order, moved.order);
 
-        // FIX (2026-07-09): was '../models/' (nonexistent domains/models/) so
-        // the import ALWAYS threw and fell back to the mongoose lookup — the
-        // .catch() masked it. Correct depth is ../../models/.
-        const { Merchant } = await import('../../models/index.js').then(m => m).catch(() => ({}));
-        const MerchantModel = Merchant || mongoose.model('Merchant');
-
         if (isDeposit) {
             // AUDIT FIX F-1 (2026-07-09): tokens must be TRANSFERRED from the
             // merchant, never minted. Previously the user was credited first
@@ -961,8 +969,8 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             const { merchant: debited } = await debitMerchantTokens({
                 merchantId: req.merchantId, amount: order.tokenAmount,
                 reason: `Deposit ${order.orderId} confirmed — tokens dispensed to user`,
-                refModel: 'PaymentOrder', refId: order._id.toString(),
-                txId: `mw_dep_deduct_${order._id}`,
+                refModel: 'PaymentOrder', refId: order.orderId,
+                txId: `mw_dep_deduct_${order.orderId}`,
             });
             if (!debited) {
                 return res.status(400).json({ success: false, message: 'Insufficient token inventory to confirm this deposit. Top up your merchant wallet.' });
@@ -987,15 +995,15 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             // depending on how the order was fetched.
             const { depositCredit, reserveCredit } = depositCreditSplit(order);
             try {
-                if (depositCredit > 0) await creditDeposit(order.userId, depositCredit, order._id.toString());
-                if (reserveCredit > 0) await creditReserve(order.userId, reserveCredit, order._id.toString());
+                if (depositCredit > 0) await creditDeposit(order.userId, depositCredit, order.orderId);
+                if (reserveCredit > 0) await creditReserve(order.userId, reserveCredit, order.orderId);
             } catch (walletErr) {
                 console.error('[Merchant confirm] user credit failed — refunding merchant:', walletErr.message);
                 await creditMerchantTokens({
                     merchantId: req.merchantId, amount: order.tokenAmount,
                     reason: `Deposit ${order.orderId} confirm reversed — user credit failed`,
-                    refModel: 'PaymentOrder', refId: order._id.toString(),
-                    txId: `mw_dep_refund_${order._id}`,
+                    refModel: 'PaymentOrder', refId: order.orderId,
+                    txId: `mw_dep_refund_${order.orderId}`,
                 }).catch(e => console.error('[Merchant confirm] CRITICAL: merchant refund failed, manual reconcile needed:', e.message));
                 return res.status(500).json({ success: false, message: 'Wallet credit failed. Please retry.' });
             }
@@ -1032,8 +1040,8 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
                 // settlement could not be opened — settleHold opens it lazily.
                 if (settlementOnPostgres()) {
                     await openSettlement({
-                        settlementId: `ms_${order._id}`, merchantId: req.merchantId,
-                        orderId: order._id.toString(), direction: SETTLEMENT_DIRECTIONS.WITHDRAWAL,
+                        settlementId: `ms_${order.orderId}`, merchantId: req.merchantId,
+                        orderId: order.orderId, direction: SETTLEMENT_DIRECTIONS.WITHDRAWAL,
                         amountPaise: rupeesToPaise(order.tokenAmount),
                         reason: `Withdrawal ${order.orderId} held pending settlement`,
                     }).catch(e => console.error('[Merchant confirm] settlement open failed:', e.message));
@@ -1042,12 +1050,12 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
                 // Hold disabled by admin — settle inline, the pre-2026-07-30
                 // behaviour. Same canonical txIds, so an order can never be
                 // credited twice across the two paths.
-                await releaseWithdrawal(order.userId, order.tokenAmount, order._id.toString());
+                await releaseWithdrawal(order.userId, order.tokenAmount, order.orderId);
                 await creditMerchantTokens({
                     merchantId: req.merchantId, amount: order.tokenAmount,
                     reason: `Withdrawal ${order.orderId} confirmed — tokens received from user`,
-                    refModel: 'PaymentOrder', refId: order._id.toString(),
-                    txId: `mw_wd_credit_${order._id}`,
+                    refModel: 'PaymentOrder', refId: order.orderId,
+                    txId: `mw_wd_credit_${order.orderId}`,
                 }).catch(e => console.error('[Merchant confirm] WITHDRAWAL tokenBalance increment failed:', e.message));
             }
 
@@ -1063,7 +1071,7 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         await updateMerchantStatsOnComplete(req.merchantId, true).catch(() => {});
 
         // Notify merchant of updated score (GOVERNANCE §11: merchant_score_update)
-        const freshMerchant = await MerchantModel.findById(req.merchantId).lean();
+        const freshMerchant = await db.merchants.getMerchant(req.merchantId);
         if (freshMerchant) {
             emitMerchantUpdate(req.merchantId.toString(), 'merchant_score_update', {
                 successRate: freshMerchant.successRate,
@@ -1074,7 +1082,7 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         // Auto system message
         try {
             const io = global.io;
-            const oid = order._id;
+            const oid = order.orderId;
             if (isDeposit) {
                 await sendSystemMessage(oid,
                     `✅ Payment Confirmed by Merchant\n` +
@@ -1148,10 +1156,8 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
         const { reason } = req.body;
         if (!reason) return res.status(400).json({ success: false, message: 'A rejection reason is required.' });
 
-        const PaymentOrder = mongoose.model('PaymentOrder');
-        const Merchant     = mongoose.model('Merchant');
 
-        const order = await PaymentOrder.findOne({ _id: req.params.id, merchantId: req.merchantId });
+        const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
         if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
 
         // Only allowed if ASSIGNED (before user has paid) -- per spec Section 2C
@@ -1170,7 +1176,7 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
         // row. The old code relied on tryAssignMerchant's trailing save() to
         // persist both at once, which is also why a failed reassignment left the
         // order's requeue unsaved unless the else-branch happened to save it.
-        const requeued = await requeueOrder(order._id, {
+        const requeued = await requeueOrder(order.orderId, {
             set: { merchantId: null, merchantSnapshot: null, expiresAt: null, rejectedReason: reason },
         });
         if (!requeued.ok) {
@@ -1181,16 +1187,18 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
         }
         Object.assign(order, requeued.order);
 
-        // Decrement merchant activeOrderCount. After the transition, so a
-        // merchant who lost the race does not decrement a count they still hold.
-        await Merchant.findByIdAndUpdate(req.merchantId, {
-            $inc: { totalOrdersAll: 1, activeOrderCount: -1 },
+        // The lifetime counter moves; there is no active count to decrement.
+        // It is derived from the orders, so requeuing one IS the decrement —
+        // and a merchant who lost the race cannot decrement a count they still
+        // hold, because there is no count to get wrong.
+        await db.merchants.recordCompletedOrder(req.merchantId, {
+            direction: order.type, amountRupees: 0, earningsRupees: 0, disputed: false,
         });
 
         // Release escrow if WITHDRAWAL
         if (order.type === 'WITHDRAWAL' && order.escrowLocked) {
             try {
-                await refundWithdrawal(order.userId, order.tokenAmount, order._id.toString());
+                await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
                 order.escrowLocked = false;
             } catch (refundErr) {
                 console.error('[merchant reject] winnings refund failed:', refundErr.message);
@@ -1247,8 +1255,7 @@ router.post('/order/:id/dispute', merchantAuth, async (req, res) => {
         const { reason } = req.body;
         if (!reason?.trim()) return res.status(400).json({ success: false, message: 'A reason is required.' });
 
-        const PaymentOrder = mongoose.model('PaymentOrder');
-        const order = await PaymentOrder.findOne({ _id: req.params.id, merchantId: req.merchantId });
+        const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
         if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
 
         // ASSIGNED is deliberately absent: the rule table admits a dispute from
@@ -1300,22 +1307,15 @@ router.post('/order/:id/dispute', merchantAuth, async (req, res) => {
 
 router.get('/chat/:id', merchantAuth, async (req, res) => {
     try {
-        const PaymentOrder    = mongoose.model('PaymentOrder');
-
-        // Allow lookup by document id or by orderId string
-        const order = await PaymentOrder.findOne({
-            $or: [
-                { _id: (req.params.id && /^[a-f\d]{24}$/i.test(req.params.id) ? req.params.id : null) },
-                { orderId: req.params.id },
-                { merchantId: req.merchantId, _id: req.params.id }
-            ]
-        });
+        // ONE lookup, with ownership in the WHERE clause.
+        //
+        // This used to search by document id OR order id OR both, then compare
+        // the merchant afterwards — a fetch-then-compare, which has already
+        // loaded the row (including the player's bank details) before deciding
+        // whether the caller was allowed to see it. There is one id now, and
+        // the ownership is part of the query.
+        const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
         if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
-
-        // Verify merchant owns this order
-        if (order.merchantId?.toString() !== req.merchantId.toString()) {
-            return res.status(403).json({ success: false, message: 'Access denied.' });
-        }
 
         const messages = await listMessages(order._id, { limit: 200 });
 
@@ -1323,7 +1323,7 @@ router.get('/chat/:id', merchantAuth, async (req, res) => {
             success: true,
             // The thread is stored against the order's id; the panel labels each
             // message with the human-facing orderId, which is a different string.
-            messages: messages.map(m => ({ ...m, orderId: order.orderId || String(order._id) })),
+            messages: messages.map(m => ({ ...m, orderId: order.orderId })),
         });
     } catch (err) {
         console.error('GET /merchant/chat/:id error:', err);
@@ -1338,23 +1338,18 @@ router.post('/chat/:id', merchantAuth, async (req, res) => {
             return res.status(400).json({ success: false, message: 'Message text is required.' });
         }
 
-        const PaymentOrder    = mongoose.model('PaymentOrder');
-
-        const order = await PaymentOrder.findOne({
-            $or: [
-                { _id: (req.params.id && /^[a-f\d]{24}$/i.test(req.params.id) ? req.params.id : null) },
-                { orderId: req.params.id },
-                { merchantId: req.merchantId, _id: req.params.id }
-            ]
-        });
+        // ONE lookup, with ownership in the WHERE clause.
+        //
+        // This used to search by document id OR order id OR both, then compare
+        // the merchant afterwards — a fetch-then-compare, which has already
+        // loaded the row (including the player's bank details) before deciding
+        // whether the caller was allowed to see it. There is one id now, and
+        // the ownership is part of the query.
+        const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
         if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
 
-        if (order.merchantId?.toString() !== req.merchantId.toString()) {
-            return res.status(403).json({ success: false, message: 'Access denied.' });
-        }
-
         const chat = await postMessage({
-            orderId:       order._id,
+            orderId:       order.orderId,
             senderId:      req.userId,
             senderType:    'MERCHANT',
             message:       text.trim(),
@@ -1365,13 +1360,13 @@ router.post('/chat/:id', merchantAuth, async (req, res) => {
 
         // The stored message, relabelled with the human-facing orderId — the
         // panel joins on that, not on the order document's id.
-        const chatPayload = { ...chat, orderId: order.orderId || String(order._id) };
+        const chatPayload = { ...chat, orderId: order.orderId };
 
         
         try {
             const io = global.io;
             if (io) {
-                const oid = order.orderId || order._id.toString();
+                const oid = order.orderId || order.orderId;
                 io.to(`order_${oid}`).emit(`chat_${oid}`, chatPayload);
                 if (order.userId) {
                     io.to(`user-${order.userId}`).emit('new_chat_message', chatPayload);
@@ -1399,8 +1394,7 @@ router.post('/orders/:id/red-flag', merchantAuth, async (req, res) => {
             return res.status(400).json({ success: false, message: 'A reason is required to red-flag an order.' });
         }
 
-        const PaymentOrder = mongoose.model('PaymentOrder');
-        const order = await PaymentOrder.findOne({ _id: req.params.id, merchantId: req.merchantId });
+        const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
         if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
 
         if (['COMPLETED', 'CANCELLED'].includes(order.status)) {
@@ -1437,7 +1431,7 @@ router.post('/orders/:id/red-flag', merchantAuth, async (req, res) => {
         // Notify admins via SSE
         if (global.sseManager) {
             global.sseManager.broadcastToAdmins('order_red_flagged', {
-                orderId:       order._id,
+                orderId:       order.orderId,
                 orderStringId: order.orderId,
                 reason:        reason.trim(),
                 merchantId:    req.merchantId,
@@ -1465,25 +1459,15 @@ router.post('/orders/:id/red-flag', merchantAuth, async (req, res) => {
 router.get('/bulk-payouts', merchantAuth, requireBulkPayoutsEnabled, async (req, res) => {
     try {
         const { date } = req.query;
-        const PaymentOrder = mongoose.model('PaymentOrder');
 
-        // Default to today IST
-        let targetDate;
-        if (date) {
-            targetDate = new Date(date);
-        } else {
-            const istOffset = 5.5 * 60 * 60 * 1000;
-            const istNow    = new Date(Date.now() + istOffset);
-            targetDate = new Date(Date.UTC(istNow.getUTCFullYear(), istNow.getUTCMonth(), istNow.getUTCDate()));
-        }
-        const nextDay = new Date(targetDate.getTime() + 24 * 60 * 60 * 1000);
-
-        const orders = await PaymentOrder.find({
-            merchantId:    req.merchantId,
-            type:          'WITHDRAWAL',
-            status:        { $in: ['PAID', 'COMPLETED', 'ASSIGNED', 'PROCESSING'] },
-            bulkPayoutDate: { $gte: targetDate, $lt: nextDay },
-        }).sort({ createdAt: 1 }).lean();
+        // `bulk_payout_date` is a DATE, so the batch is a day rather than a
+        // timestamp range each call site computes for itself — three of them
+        // built their own IST midnight, and a difference of one in any would
+        // have paid a different set of orders.
+        const payoutDate = date || istToday();
+        const orders = await db.orders.bulkPayoutBatch({
+            merchantId: req.merchantId, payoutDate,
+        });
 
         const totalFiat   = orders.reduce((s, o) => s + (o.fiatAmount || 0), 0);
         const totalTokens = orders.reduce((s, o) => s + (o.tokenAmount || 0), 0);
@@ -1509,30 +1493,17 @@ router.get('/bulk-payouts', merchantAuth, requireBulkPayoutsEnabled, async (req,
 router.get('/bulk-payouts/export', merchantAuth, requireBulkPayoutsEnabled, async (req, res) => {
     try {
         const { date } = req.query;
-        const PaymentOrder = mongoose.model('PaymentOrder');
 
-        let targetDate;
-        if (date) {
-            targetDate = new Date(date);
-        } else {
-            const istOffset = 5.5 * 60 * 60 * 1000;
-            const istNow    = new Date(Date.now() + istOffset);
-            targetDate = new Date(Date.UTC(istNow.getUTCFullYear(), istNow.getUTCMonth(), istNow.getUTCDate()));
-        }
-        const nextDay = new Date(targetDate.getTime() + 24 * 60 * 60 * 1000);
-
-        const orders = await PaymentOrder.find({
-            merchantId:    req.merchantId,
-            type:          'WITHDRAWAL',
-            status:        { $in: ['PAID', 'COMPLETED', 'ASSIGNED', 'PROCESSING'] },
-            bulkPayoutDate: { $gte: targetDate, $lt: nextDay },
-        }).sort({ createdAt: 1 }).lean();
+        const payoutDate = date || istToday();
+        const orders = await db.orders.bulkPayoutBatch({
+            merchantId: req.merchantId, payoutDate,
+        });
 
         // Format rows for bank CSV upload
         // Standard Indian bank bulk transfer format
         const rows = buildBulkPayoutExportRows(orders);
 
-        const dateStr  = targetDate.toISOString().split('T')[0];
+        const dateStr  = payoutDate;
         const totalAmt = orders.reduce((s, o) => s + (o.amount || 0), 0);
 
         res.json({
@@ -1561,40 +1532,30 @@ router.post('/bulk-payouts/mark-paid', merchantAuth, requireBulkPayoutsEnabled, 
             return res.status(400).json({ success: false, message: 'orderIds array is required.' });
         }
 
-        const PaymentOrder  = mongoose.model('PaymentOrder');
-        const paidAt    = new Date();
-        const batchId   = batchRef || `BATCH_${Date.now()}`;
+        const paidAt  = new Date();
+        const batchId = batchRef || `BATCH_${Date.now()}`;
 
-        const result = await PaymentOrder.updateMany(
-            {
-                _id:        { $in: orderIds },
-                merchantId: req.merchantId,
-                type:       'WITHDRAWAL',
-                status:     { $in: ['PAID', 'ASSIGNED', 'PROCESSING'] },
-            },
-            {
-                $set: {
-                    status:        'COMPLETED',
-                    bulkPaidAt:    paidAt,
-                    bulkPayoutBatch: batchId,
-                    completedAt:   paidAt,
-                },
-            }
-        );
+        // The eligibility is in the WHERE clause of ONE statement: this
+        // merchant's withdrawals, in a state a payout may close. An order that
+        // moved between the read and the write matches nothing rather than
+        // being closed from a state it has already left.
+        const result = await db.orders.bulkCompleteWithdrawals({
+            orderIds, merchantId: req.merchantId, batchId, paidAt,
+        });
 
         // Notify admins
         if (global.sseManager) {
             global.sseManager.broadcastToAdmins('bulk_payout_completed', {
                 merchantId: req.merchantId,
                 batchId,
-                count:      result.modifiedCount,
+                count:      result.completed,
                 paidAt,
             });
         }
 
         res.json({
             success:  true,
-            message:  `${result.modifiedCount} orders marked as paid.`,
+            message:  `${result.completed} orders marked as paid.`,
             batchId,
             count:    result.modifiedCount,
         });
@@ -1609,32 +1570,17 @@ router.post('/bulk-payouts/mark-paid', merchantAuth, requireBulkPayoutsEnabled, 
 router.get('/earnings', merchantAuth, async (req, res) => {
     try {
         const { startDate, endDate } = req.query;
-        const PaymentOrder  = mongoose.model('PaymentOrder');
-        const todayStart = new Date();
-        todayStart.setHours(0, 0, 0, 0);
-
-        const baseMatch  = { merchantId: req.merchantId, status: { $in: ['PAID', 'COMPLETED'] } };
-        const rangeMatch = { ...baseMatch };
-        if (startDate || endDate) {
-            rangeMatch.createdAt = {};
-            if (startDate) rangeMatch.createdAt.$gte = new Date(startDate);
-            if (endDate)   rangeMatch.createdAt.$lte = new Date(endDate);
-        }
-
-        const [todayStats, lifetimeStats] = await Promise.all([
-            PaymentOrder.aggregate([
-                { $match: { ...baseMatch, createdAt: { $gte: todayStart } } },
-                { $group: { _id: '$type', totalFees: { $sum: '$merchantProfit' }, totalAmount: { $sum: '$fiatAmount' }, count: { $sum: 1 } } },
-            ]),
-            PaymentOrder.aggregate([
-                { $match: rangeMatch },
-                { $group: { _id: null, totalEarnings: { $sum: '$merchantProfit' }, totalVolume: { $sum: '$fiatAmount' }, totalOrders: { $sum: 1 } } },
-            ]),
-        ]);
-
-        const todayDeposits    = todayStats.find(s => s._id === 'DEPOSIT')    || { totalFees: 0, totalAmount: 0, count: 0 };
-        const todayWithdrawals = todayStats.find(s => s._id === 'WITHDRAWAL') || { totalFees: 0, totalAmount: 0, count: 0 };
-        const lifetime         = lifetimeStats[0]                              || { totalEarnings: 0, totalVolume: 0, totalOrders: 0 };
+        // ONE statement for both windows. It was two aggregations issued
+        // together, so "today" and "lifetime" could describe the database at
+        // different instants — and a merchant watching during a settlement saw
+        // today's figure outrun the lifetime one it is part of.
+        const earnings = await db.stats.merchantEarnings(req.merchantId, {
+            from: startDate ? new Date(startDate) : null,
+            to: endDate ? new Date(endDate) : null,
+        });
+        const todayDeposits    = earnings.today.deposits;
+        const todayWithdrawals = earnings.today.withdrawals;
+        const lifetime         = earnings.lifetime;
 
         res.json({
             success: true,
@@ -1660,48 +1606,14 @@ router.get('/earnings', merchantAuth, async (req, res) => {
 // GET /api/merchant/earnings/weekly — Real 7-day daily breakdown for dashboard chart
 router.get('/earnings/weekly', merchantAuth, async (req, res) => {
     try {
-        const PaymentOrder = mongoose.model('PaymentOrder');
 
-        // Build last 7 days in IST
-        const istOffset = 5.5 * 60 * 60 * 1000;
-        const days = [];
-        for (let i = 6; i >= 0; i--) {
-            const dayStart = new Date(Date.now() + istOffset - i * 86400000);
-            dayStart.setUTCHours(0, 0, 0, 0);
-            const dayEnd = new Date(dayStart.getTime() + 86400000);
-            days.push({ label: dayStart.toISOString().split('T')[0], start: dayStart, end: dayEnd });
-        }
-
-        const agg = await PaymentOrder.aggregate([
-            {
-                $match: {
-                    merchantId: req.merchantId,
-                    status:     { $in: ['PAID', 'COMPLETED'] },
-                    createdAt:  { $gte: days[0].start, $lt: days[days.length - 1].end },
-                },
-            },
-            {
-                $group: {
-                    _id: {
-                        $dateToString: {
-                            format:   '%Y-%m-%d',
-                            date:     '$createdAt',
-                            timezone: '+05:30',
-                        },
-                    },
-                    earnings: { $sum: '$merchantProfit' },
-                    orders:   { $sum: 1 },
-                },
-            },
-        ]);
-
-        const byDate = Object.fromEntries(agg.map(r => [r._id, { earnings: r.earnings, orders: r.orders }]));
-
-        const result = days.map(d => ({
-            date:     d.label,
-            earnings: byDate[d.label]?.earnings || 0,
-            orders:   byDate[d.label]?.orders   || 0,
-        }));
+        // The days are generated by the DATABASE and left-joined, so a day
+        // with no orders comes back as a zero rather than being absent — a
+        // chart that silently drops empty days draws a week that looks busier
+        // than it was. The bucketing is in the query, in the merchant's own
+        // timezone, rather than seven ranges built in JavaScript.
+        const result = (await db.stats.merchantDailyEarnings(req.merchantId, { days: 7 }))
+            .map((d) => ({ date: d.label, earnings: d.earnings, orders: d.orders }));
 
         res.json({ success: true, weekly: result });
     } catch (err) {
@@ -1712,17 +1624,17 @@ router.get('/earnings/weekly', merchantAuth, async (req, res) => {
 
 router.get('/stats', merchantAuth, async (req, res) => {
     try {
-        const PaymentOrder   = mongoose.model('PaymentOrder');
-        const todayStart = new Date();
-        todayStart.setHours(0, 0, 0, 0);
-
-        const [pending, processing, completedToday, paidPendingReview] = await Promise.all([
-            PaymentOrder.countDocuments({ merchantId: req.merchantId, status: 'PENDING_QUEUE' }),
-            PaymentOrder.countDocuments({ merchantId: req.merchantId, status: 'PROCESSING'   }),
-            PaymentOrder.countDocuments({ merchantId: req.merchantId, status: { $in: ['PAID', 'COMPLETED'] }, createdAt: { $gte: todayStart } }),
-            // Count PAID orders awaiting merchant review (Section 17.2)
-            PaymentOrder.countDocuments({ merchantId: req.merchantId, status: 'PAID' }),
-        ]);
+        // ONE pass over one snapshot. Four separate counts could disagree —
+        // an order moving from PROCESSING to PAID between two of them is
+        // counted in both, or in neither, and the merchant's dashboard adds up
+        // to the wrong number.
+        const q = await db.stats.merchantQueueCounts(req.merchantId);
+        const pending = q.pending;
+        const processing = q.processing;
+        const completedToday = q.completed_today;
+        const paidPendingReview = (await db.orders.findOrders({
+            merchantId: req.merchantId, state: 'PAID', limit: 1,
+        })).total;
 
         res.json({ success: true, stats: { pending, processing, completedToday, paidPendingReview } });
     } catch (err) {
@@ -1739,22 +1651,52 @@ router.get('/stats', merchantAuth, async (req, res) => {
 router.post('/orders/:id/approve', merchantAuth, async (req, res) => {
     const session = await safeSession();
     try {
-        const PaymentOrder    = mongoose.model('PaymentOrder');
-        const User        = mongoose.model('User');
-        const Merchant    = mongoose.model('Merchant');
         // WalletLedger no longer needed here — the wallet authority writes its
         // own ledger entries now (Phase X X-3, 2026-07-10).
-        const Transaction  = mongoose.model('Transaction');
         const { id }      = req.params;
 
-        // ── Idempotency: atomic status guard — only PAID orders can be approved ──
-        // This route already had the right shape: the expected state in the
-        // filter, so concurrent approvals both execute and only the first
-        // returns non-null. Routing it through the seam changes nothing about
-        // that and makes it the same one place every other status change goes.
+        // ── The order of operations, and why it changed ──────────────────
+        //
+        // This used to COMPLETE the order, then debit the merchant, and — when
+        // the merchant could not fund it — walk the order backwards from
+        // COMPLETED to PAID. Its own comment called that "compensation, not a
+        // transition — deliberately outside the state machine", which is an
+        // accurate description of a write nothing guards.
+        //
+        // The constraint is the merchant's inventory, so the inventory is
+        // checked FIRST. That is the order the /confirm path on this same route
+        // already used: debit the merchant under a hard guard, and only once it
+        // succeeds does anything else happen. A failure now leaves the order
+        // exactly where it was, with nothing to undo.
+        const pending = await db.orders.getMerchantOrder(id, req.merchantId);
+        if (!pending) return res.status(404).json({ success: false, message: 'Order not found, or not assigned to you' });
+        if (pending.status !== 'PAID') {
+            return res.status(400).json({ success: false, message: `Cannot approve order in ${pending.status} status` });
+        }
+
+        // Step 1: the merchant's tokens. Idempotent on a canonical txId, so a
+        // retried approval debits once — and hard-guarded, so an under-funded
+        // merchant is refused rather than overdrawn.
+        const { merchant: updatedMerchant } = await debitMerchantTokens({
+            merchantId: req.merchantId, amount: pending.tokenAmount,
+            reason: `Deposit ${pending.orderId} approved — tokens dispensed to user`,
+            refModel: 'PaymentOrder', refId: pending.orderId,
+            txId: `mw_dep_deduct_${pending.orderId}`, session,
+        });
+        if (!updatedMerchant) {
+            await abortOrEnd(session);
+            return res.status(400).json({
+                success: false,
+                message: 'Merchant has insufficient token inventory to approve this order',
+            });
+        }
+
+        // Step 2: the transition, guarded on PAID. Two approvals racing both
+        // reach here; only one moves the order, and the other's debit was
+        // idempotent, so nothing is double-spent either way.
         const approved = await completeOrder(id, {
             expectFrom: 'PAID',
-            set: { approvedBy: req.merchantId, approvedAt: new Date(), updatedAt: new Date() },
+            set: { approvedBy: req.merchantId, approvedAt: new Date() },
             session,
         });
         if (!approved.ok || approved.idempotent) {
@@ -1764,47 +1706,6 @@ router.post('/orders/:id/approve', merchantAuth, async (req, res) => {
             return res.status(400).json({ success: false, message: `Cannot approve order in ${approved.status} status` });
         }
         const order = approved.order;
-
-        // Ownership check — merchant can only approve their own orders
-        if (order.merchantId?.toString() !== req.merchantId?.toString()) {
-            await abortOrEnd(session);
-            return res.status(403).json({ success: false, message: 'This order is not assigned to you' });
-        }
-
-        // ── Finding 5: Merchant inventory validation ───────────────────────────
-        // ── Finding 4: Atomic inventory deduction with $gte guard ──────────────
-        // GOVERNANCE §1: via merchantWallet.service.js (sole tokenBalance writer);
-        // same canonical txId as every other deposit-deduction path, so a
-        // deposit's inventory can never be deducted twice across routes.
-        const { merchant: updatedMerchant } = await debitMerchantTokens({
-            merchantId: req.merchantId, amount: order.tokenAmount,
-            reason: `Deposit ${order.orderId} approved — tokens dispensed to user`,
-            refModel: 'PaymentOrder', refId: order._id.toString(),
-            txId: `mw_dep_deduct_${order._id}`, session,
-        });
-        if (!updatedMerchant) {
-            // COMPENSATION, not a transition — and deliberately outside the
-            // state machine. There is no COMPLETED→PAID edge in ALLOWED_FROM and
-            // there should not be: an edge that walks a completed order
-            // backwards would be reachable from every other caller too, and
-            // "undo" is not a state an order can be in.
-            //
-            // Only needed when there is no session to abort. With one, the
-            // rollback below already unwinds this write, and re-issuing it would
-            // be a second write inside a transaction that is about to be thrown
-            // away.
-            if (!session) {
-                await PaymentOrder.updateOne(
-                    { _id: id, status: 'COMPLETED' },
-                    { $set: { status: 'PAID', approvedBy: null, approvedAt: null } },
-                );
-            }
-            await abortOrEnd(session);
-            return res.status(400).json({
-                success: false,
-                message: 'Merchant has insufficient token inventory to approve this order',
-            });
-        }
 
         // ── Token allocation (Section 4) ────────────────────────────────────────
         // Uses the split already locked in at order creation
@@ -1836,25 +1737,18 @@ router.post('/orders/:id/approve', merchantAuth, async (req, res) => {
         // with the /confirm path — an order credits at most once total) and
         // run atomically under the route session on a replica set. Closes
         // Known Open Item #6.
-        if (depositCredit > 0) await creditDeposit(order.userId, depositCredit, order._id.toString(), session);
-        if (reserveCredit > 0) await creditReserve(order.userId, reserveCredit, order._id.toString(), session);
-        const updatedUser = await User.findById(order.userId, null, withSession(session));
+        if (depositCredit > 0) await creditDeposit(order.userId, depositCredit, order.orderId, session);
+        if (reserveCredit > 0) await creditReserve(order.userId, reserveCredit, order.orderId, session);
+        const updatedUser = await db.users.getUser(order.userId);
 
-        // Transaction record
-        const now = new Date();
-        await Transaction.create([{
-            userId:      order.userId,
-            type:        'TOKEN_PURCHASE',
-            amount:      order.tokenAmount,
-            balanceType: 'DEPOSIT',
-            status:      'SUCCESS',
-            referenceId: order._id.toString(),
-            description: `Token purchase approved: ${order.tokenAmount} tokens (${depositCredit} deposit + ${reserveCredit} reserve)`,
-            timestamp:   now,
-        }], withSession(session));
+        // No separate transaction row. `creditDeposit` and `creditReserve`
+        // each write their own append-only ledger entry inside the movement, so
+        // a second hand-written record here would be a duplicate that can
+        // disagree with the one the money actually made — and it is the ledger
+        // that reconciliation is computed from.
 
         // ── Mark UTR as RELEASED ───────────────────────────────────────────────
-        await releaseUTR(order._id);
+        await releaseUTR(order.orderId);
 
         await commitOrEnd(session);
 
@@ -1895,8 +1789,6 @@ router.post('/orders/:id/approve', merchantAuth, async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
     try {
-        const PaymentOrder = mongoose.model('PaymentOrder');
-        const User     = mongoose.model('User');
         const { id }   = req.params;
         const { reason } = req.body;
 
@@ -1912,7 +1804,7 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
         // warning count, the payment flag, the auto-block — is a consequence of
         // the rejection, and a merchant retrying a failed request used to run
         // all of it a second time and increment the warning count again.
-        const rejected = await cancelOrderState(order._id, {
+        const rejected = await cancelOrderState(order.orderId, {
             expectFrom: ['PAID', 'PROCESSING'],
             set: {
                 rejectedBy:     req.merchantId,
@@ -1939,49 +1831,35 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
         // the user immediately. Auto-block threshold stays admin-owned
         // (SystemConfig.riskRules.maxWarnings; 0 = never). Both mutations are one
         // atomic $inc/$set so a flag can never be lost between two writes.
+        // The auto-block threshold stays admin-owned (riskRules.maxWarnings;
+        // 0 = never). The increment, the flag AND the block are ONE statement:
+        // it was two, and a failure between them left a player one warning past
+        // the limit and not blocked, with nothing to re-check it — the count
+        // only moves again when a new warning arrives.
         const { maxWarnings } = await getRiskRules();
         const flagReason = (reason && reason.trim()) || 'Merchant reported payment not received / failed';
-        const updatedUser = await User.findOneAndUpdate(
-            { _id: order.userId },
-            {
-                $inc: { warningCount: 1, paymentFlagCount: 1 },
-                $set: {
-                    paymentFlagged:    true,
-                    paymentFlagReason: flagReason,
-                    paymentFlaggedAt:  new Date(),
-                },
-            },
-            { new: true }
-        );
+        const flagged = await db.users.flagPaymentWarning(order.userId, {
+            reason: flagReason, maxWarnings,
+        });
 
-        const newCount = updatedUser?.warningCount || 0;
-        const hitThreshold = maxWarnings > 0 && newCount >= maxWarnings;
-
-        // Auto-block at threshold
-        if (hitThreshold && !updatedUser.isBlocked) {
-            await User.findByIdAndUpdate(order.userId, {
-                $set: {
-                    isBlocked:   true,
-                    blockReason: `Automatic block: ${maxWarnings} payment warnings.`,
-                    blockedAt:   new Date(),
-                },
-            });
-        }
+        const updatedUser  = flagged?.user ?? null;
+        const newCount     = flagged?.warningCount ?? 0;
+        const hitThreshold = flagged?.autoBlocked ?? false;
 
         // ── SSE: notify user (Finding 3) ──────────────────────────────────────
         emitOrderUpdate(order.userId.toString(), 'order_rejected', {
             orderId:      order.orderId,
-            _id:          order._id,
+            _id:          order.orderId,
             reason:       order.rejectedReason,
             warningCount: newCount,
             isBlocked:    hitThreshold,
             server_ts:    Date.now(),
         });
-        emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'CANCELLED', server_ts: Date.now() });
+        emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'CANCELLED', server_ts: Date.now() });
         // Explicit flag event so the admin console can surface the flagged user.
         emitAdminUpdate('user_flagged', {
             userId:          order.userId,
-            orderId:         order._id,
+            orderId:         order.orderId,
             reason:          flagReason,
             warningCount:    newCount,
             paymentFlagCount: updatedUser?.paymentFlagCount || 0,
@@ -2002,19 +1880,23 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
     }
 });
 
-// safeSession helper for approve route (MongoDB transaction support)
-async function safeSession() {
-    try {
-        const session = await mongoose.startSession();
-        try { session.startTransaction(); return session; }
-        catch (txErr) { await session.endSession().catch(() => {}); throw txErr; }
-    } catch {
-        console.warn('[merchant] MongoDB standalone – running without transaction session.');
-        return null;
-    }
-}
-async function commitOrEnd(s) { if (!s) return; try { await s.commitTransaction(); } finally { s.endSession(); } }
-async function abortOrEnd(s)  { if (!s) return; try { await s.abortTransaction();  } finally { s.endSession(); } }
-function withSession(s) { return s ? { session: s } : {}; }
+/**
+ * The session helpers, now no-ops.
+ *
+ * `safeSession` opened a document-store transaction and, on a standalone
+ * server, logged a warning and returned null — so the "atomic" approve path
+ * ran NON-atomically in exactly the deployment most likely to be a single
+ * node, and the code above it could not tell the difference.
+ *
+ * Every money movement on this route is its own PostgreSQL transaction with a
+ * deterministic idempotency key, which is what makes a retry safe without an
+ * enclosing session. There is nothing left to open, commit or abort. The names
+ * survive because a dozen call sites thread `session` through, and passing a
+ * no-op is clearer than a sweep that deletes an argument from each of them.
+ */
+const safeSession = async () => null;
+const commitOrEnd = async () => {};
+const abortOrEnd  = async () => {};
+const withSession = () => ({});
 
 export default router;

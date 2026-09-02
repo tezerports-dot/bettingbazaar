@@ -307,6 +307,55 @@ export async function bumpReferralClicks(userId, by = 1) {
 }
 
 /**
+ * Record a payment warning against a player, and auto-block at the threshold.
+ *
+ * ── One statement, because the threshold decision is the block ──────────────
+ * This was two writes: increment the counters and set the flag, then read the
+ * new count, compare it to the threshold, and issue a SECOND update to block.
+ * A failure between them leaves a player one warning past the limit and not
+ * blocked — and nothing ever re-checks, because the count only moves when a
+ * new warning arrives.
+ *
+ * Here the increment, the flag and the block are the same UPDATE. The threshold
+ * is evaluated against the incremented value in the statement that increments
+ * it, so there is no instant at which the count says "block" and the account
+ * says otherwise.
+ *
+ * `maxWarnings = 0` means never auto-block, which is a real setting and not the
+ * same as a threshold of zero.
+ */
+export async function flagPaymentWarning(userId, { reason, maxWarnings = 0 }) {
+  const { rows } = await pgQuery(
+    `UPDATE users SET
+       warning_count       = warning_count + 1,
+       payment_flag_count  = payment_flag_count + 1,
+       payment_flagged     = TRUE,
+       payment_flag_reason = $2,
+       payment_flagged_at  = now(),
+       -- The block, decided from the count this statement is producing.
+       is_blocked  = is_blocked OR ($3::int > 0 AND warning_count + 1 >= $3::int),
+       block_reason = CASE
+         WHEN NOT is_blocked AND $3::int > 0 AND warning_count + 1 >= $3::int
+           THEN 'Automatic block: ' || $3::text || ' payment warnings.'
+         ELSE block_reason END,
+       blocked_at = CASE
+         WHEN NOT is_blocked AND $3::int > 0 AND warning_count + 1 >= $3::int
+           THEN now() ELSE blocked_at END,
+       updated_at = now()
+     WHERE user_id = $1
+     RETURNING ${COLUMNS}`,
+    [String(userId), String(reason), Number(maxWarnings) || 0],
+    'user_flag_payment_warning',
+  );
+  const user = toUser(rows[0]);
+  return user ? {
+    user,
+    warningCount: user.warningCount,
+    autoBlocked: Boolean(maxWarnings) && user.warningCount >= maxWarnings,
+  } : null;
+}
+
+/**
  * Claim the next joining number, atomically.
  *
  * The payout queue is ordered by this, so it must be unique.
