@@ -462,6 +462,85 @@ export async function deletePendingLink(telegramUserId) {
   );
 }
 
+/**
+ * Turn a completed onboarding into an account.
+ *
+ * ONE transaction across three tables: the account, the Telegram identity that
+ * drives it, and the Aadhaar queued for the next verification export. All three
+ * or none — a half-created signup is an account nobody can sign into, or an
+ * Aadhaar registered against a person who does not exist.
+ *
+ * ── Refusals are answers, not errors ─────────────────────────────────────────
+ * Every refusal below is something the bot has to TELL somebody, so each comes
+ * back as a reason rather than a thrown error. The unique indexes are what
+ * decide — a courtesy check before the insert has a window a concurrent signup
+ * fits through, and this path is reachable twice for the same person whenever
+ * Telegram redelivers an update.
+ *
+ *   phone_already_linked  another live identity holds this number
+ *   aadhaar_taken         this Aadhaar is registered to another account
+ *   duplicate             the account already exists (a redelivered update)
+ *
+ * @returns {Promise<{ok:true,userId:string}|{ok:false,reason:string}>}
+ */
+export async function createAccountFromOnboarding({
+  telegramUserId, mobile, username, aadhaarHash, aadhaarEncrypted, aadhaarLast4,
+  telegramUsername = '', firstName = '', referralCode = null, referredBy = null,
+  generation = 0, newUserId, kycStatus = 'PENDING_APPROVAL',
+}) {
+  if (!telegramUserId || !mobile) throw new Error('createAccountFromOnboarding requires telegramUserId and mobile');
+  if (!aadhaarHash || !aadhaarEncrypted) throw new Error('createAccountFromOnboarding requires the captured Aadhaar');
+
+  try {
+    return await withTelegramTransaction(async (client) => {
+      const userId = String(newUserId);
+
+      const { rows: userRows } = await client.query(
+        `INSERT INTO users (user_id, username, mobile, referral_code, referred_by,
+                            status, kyc_status, kyc_submission_count)
+         VALUES ($1, $2, $3, $4, $5, 'ACTIVE', $6, 1)
+         ON CONFLICT (mobile) DO NOTHING
+         RETURNING user_id`,
+        [userId, username || `player${String(mobile).slice(-4)}`, String(mobile),
+         referralCode, referredBy ? String(referredBy) : null, kycStatus],
+      );
+      // The signup IS submission one — counted here rather than in a second
+      // statement, so the reapply cap cannot silently allow one more attempt
+      // than it advertises.
+      if (!userRows[0]) return { ok: false, reason: 'duplicate' };
+
+      await client.query(
+        `INSERT INTO telegram_identities (
+           telegram_user_id, user_id, telegram_username, first_name, phone,
+           contact_shared_at, linked_generation, channel_generation)
+         VALUES ($1, $2, $3, $4, $5, now(), $6, $6)`,
+        [String(telegramUserId), userId, telegramUsername, firstName, String(mobile), generation],
+      );
+
+      await client.query(
+        `INSERT INTO kyc_verifications (user_id, aadhaar_hash, aadhaar_encrypted,
+                                        aadhaar_last4, phone)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [userId, String(aadhaarHash), String(aadhaarEncrypted),
+         String(aadhaarLast4 ?? ''), String(mobile)],
+      );
+
+      return { ok: true, userId };
+    });
+  } catch (e) {
+    // 23505 is a unique violation. WHICH index refused decides what the bot
+    // says, so the constraint name is read rather than reporting one message
+    // for every collision — "this number is already linked" and "this Aadhaar
+    // belongs to another account" send a person to different places.
+    if (e?.code === '23505') {
+      if (e.constraint === 'one_active_identity_per_phone') return { ok: false, reason: 'phone_already_linked' };
+      if (e.constraint === 'kyc_verifications_aadhaar_hash_key') return { ok: false, reason: 'aadhaar_taken' };
+      return { ok: false, reason: 'duplicate' };
+    }
+    throw e;
+  }
+}
+
 // ── Login tokens ─────────────────────────────────────────────────────────────
 
 /** Issue a one-time login token. Only the HASH is stored. */

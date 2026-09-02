@@ -23,7 +23,26 @@
  * true and every comparison against it is silently wrong. `toInt` is applied to
  * every BIGINT column on the way out, once, at this boundary.
  */
+import { randomBytes } from 'node:crypto';
 import { pgQuery, getPool, connectGuarded } from './pgClient.js';
+
+/**
+ * A new account id.
+ *
+ * 24 hex characters — the shape the rest of the codebase still expects, since
+ * `ObjectId.isValid` guards survive in modules that have not moved yet, and a
+ * value that fails them is silently dropped rather than rejected.
+ *
+ * RANDOM, not derived from the mobile. Deriving would make signup idempotent
+ * for free, and it is tempting for exactly that reason — but account ids travel
+ * in URLs and payloads, and an id computable from a phone number lets anyone
+ * holding the number address the account. Idempotency comes from the UNIQUE
+ * constraint on `mobile` instead, which is where it belongs: `createUser`
+ * returns the existing account on conflict rather than making a second one.
+ */
+export function newUserId() {
+  return randomBytes(12).toString('hex');
+}
 
 /** pg returns BIGINT as a string. Cast once, here, or compare strings later. */
 const toInt = (v) => (v == null ? null : Number(v));
@@ -32,7 +51,7 @@ const toInt = (v) => (v == null ? null : Number(v));
 const COLUMNS = `
   user_id, username, mobile, password_hash,
   joining_number, referral_code, referral_clicks, referred_by,
-  status, kyc_status, wallet_address, profile_pic, warning_count,
+  status, kyc_status, kyc_submission_count, wallet_address, profile_pic, warning_count,
   payment_flagged, payment_flag_reason, payment_flagged_at, payment_flag_count,
   is_admin, is_sub_admin, is_queue_manager, is_mediator,
   sub_admin_role, sub_admin_permissions, phantom_access,
@@ -84,6 +103,7 @@ function toUser(row) {
     referredBy: row.referred_by,
     status: row.status,
     kycStatus: row.kyc_status,
+    kycSubmissionCount: row.kyc_submission_count,
     walletAddress: row.wallet_address,
     profilePic: row.profile_pic,
     warningCount: row.warning_count,
@@ -186,19 +206,27 @@ export async function getUserCredentials(userId) {
 export async function createUser({
   userId, username, mobile, passwordHash = null, referralCode = null,
   referredBy = null, status = 'ACTIVE', isAdmin = false,
+  kycStatus = 'PENDING_SUBMISSION', kycSubmissionCount = 0, client = null,
 }) {
   if (!userId) throw new Error('createUser requires a userId');
   if (!mobile) throw new Error('createUser requires a mobile');
 
-  const { rows } = await pgQuery(
+  // `client` lets a caller enlist this insert in a transaction it already
+  // owns — the signup writes the account, the identity and the KYC row
+  // together or not at all.
+  const run = client
+    ? (text, params) => client.query(text, params)
+    : (text, params) => pgQuery(text, params, 'user_create');
+
+  const { rows } = await run(
     `INSERT INTO users (user_id, username, mobile, password_hash, referral_code,
-                        referred_by, status, is_admin)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                        referred_by, status, is_admin, kyc_status, kyc_submission_count)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      ON CONFLICT (mobile) DO NOTHING
      RETURNING ${COLUMNS}`,
     [String(userId), username ?? '', String(mobile), passwordHash, referralCode,
-     referredBy ? String(referredBy) : null, status, isAdmin],
-    'user_create',
+     referredBy ? String(referredBy) : null, status, isAdmin,
+     kycStatus, kycSubmissionCount],
   );
   if (rows[0]) return { user: toUser(rows[0]), created: true };
   return { user: await getUserByMobile(mobile), created: false };
@@ -273,6 +301,44 @@ export async function claimJoiningNumber(userId) {
     [String(userId)], 'user_claim_joining_number',
   );
   return toInt(rows[0]?.joining_number);
+}
+
+/**
+ * Claim one KYC submission, refusing past the cap.
+ *
+ * The comparison and the increment are ONE statement, so two submissions
+ * arriving together cannot both read the same count and both pass. A
+ * read-then-write would let the cap be exceeded by exactly the number of
+ * requests in flight — and the cap is what stops "submit a number, learn
+ * whether it is registered" from being a repeatable enumeration oracle.
+ *
+ * @returns {Promise<number|null>} the new count, or null when the cap refused.
+ */
+export async function claimKycSubmission(userId, cap) {
+  const { rows } = await pgQuery(
+    `UPDATE users SET kyc_submission_count = kyc_submission_count + 1, updated_at = now()
+      WHERE user_id = $1 AND kyc_submission_count < $2
+      RETURNING kyc_submission_count`,
+    [String(userId), cap], 'user_claim_kyc_submission',
+  );
+  return rows[0] ? Number(rows[0].kyc_submission_count) : null;
+}
+
+/**
+ * Give a claimed submission back, because it never entered the queue.
+ *
+ * Floored at zero: a release that ran twice — a retry, a crash between the two
+ * failure paths — must not hand out a free attempt.
+ */
+export async function releaseKycSubmission(userId) {
+  const { rows } = await pgQuery(
+    `UPDATE users SET kyc_submission_count = GREATEST(kyc_submission_count - 1, 0),
+                      updated_at = now()
+      WHERE user_id = $1
+      RETURNING kyc_submission_count`,
+    [String(userId)], 'user_release_kyc_submission',
+  );
+  return rows[0] ? Number(rows[0].kyc_submission_count) : null;
 }
 
 /**

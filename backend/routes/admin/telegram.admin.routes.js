@@ -142,7 +142,7 @@ router.post('/telegram/config', authenticate, isAdmin, async (req, res) => {
         channelInviteLink: channelInviteLink || '',
         active: true,
         activatedAt: new Date(),
-        activatedBy: req.user._id,
+        activatedBy: req.user.userId,
         reason: reason || '',
       }], { session });
       created = doc;
@@ -255,7 +255,7 @@ router.post('/telegram/channel', authenticate, isAdmin, async (req, res) => {
         channelInviteLink: channelInviteLink || '',
         active: true,
         activatedAt: new Date(),
-        activatedBy: req.user._id,
+        activatedBy: req.user.userId,
         reason: reason || 'channel replaced',
       }], { session });
       created = doc;
@@ -264,7 +264,7 @@ router.post('/telegram/channel', authenticate, isAdmin, async (req, res) => {
     invalidateConfigCache();
 
     console.warn(`[admin/telegram] CHANNEL FLIP to generation ${created.generation} `
-      + `(${channelUsername || channelId}) by admin ${req.user._id}`);
+      + `(${channelUsername || channelId}) by admin ${req.user.userId}`);
 
     return res.json({
       success: true,
@@ -299,8 +299,8 @@ router.get('/telegram/bots', authenticate, isAdmin, async (req, res) => {
 router.post('/telegram/bots', authenticate, isAdmin, async (req, res) => {
   try {
     const { label, role, token, notes } = req.body || {};
-    const bot = await registerBot({ label, role, token, notes, actorId: req.user._id });
-    console.warn(`[admin/telegram] bot @${bot.username} registered as ${bot.role} by admin ${req.user._id}`);
+    const bot = await registerBot({ label, role, token, notes, actorId: req.user.userId });
+    console.warn(`[admin/telegram] bot @${bot.username} registered as ${bot.role} by admin ${req.user.userId}`);
     res.json({ success: true, bot, message: `@${bot.username} is registered and on standby.` });
   } catch (err) {
     res.status(err.status || 500).json({ success: false, message: err.message });
@@ -319,10 +319,10 @@ router.post('/telegram/bots/:id/promote', authenticate, isAdmin, async (req, res
   try {
     const result = await promote({
       id: req.params.id,
-      actorId: req.user._id,
+      actorId: req.user.userId,
       webhookBaseUrl: req.body?.webhookBaseUrl,
     });
-    console.warn(`[admin/telegram] PROMOTE @${result.bot.username} (${result.bot.role}) by admin ${req.user._id}`
+    console.warn(`[admin/telegram] PROMOTE @${result.bot.username} (${result.bot.role}) by admin ${req.user.userId}`
       + `${result.displaced ? `, displacing @${result.displaced.username}` : ''} — webhook ${result.webhook}`);
     res.json({
       success: true,
@@ -349,8 +349,8 @@ router.post('/telegram/bots/:id/webhook', authenticate, isAdmin, async (req, res
 /** POST /api/admin/telegram/bots/:id/retire — stand a bot down for good. */
 router.post('/telegram/bots/:id/retire', authenticate, isAdmin, async (req, res) => {
   try {
-    const bot = await retire({ id: req.params.id, actorId: req.user._id });
-    console.warn(`[admin/telegram] RETIRE @${bot.username} (${bot.role}) by admin ${req.user._id}`);
+    const bot = await retire({ id: req.params.id, actorId: req.user.userId });
+    console.warn(`[admin/telegram] RETIRE @${bot.username} (${bot.role}) by admin ${req.user.userId}`);
     res.json({ success: true, bot, message: `@${bot.username} is retired.` });
   } catch (err) {
     res.status(err.status || 500).json({ success: false, message: err.message });
@@ -382,7 +382,7 @@ router.put('/telegram/templates/:key', authenticate, isAdmin, async (req, res) =
     const saved = await saveTemplate({
       key: req.params.key,
       body: req.body?.body,
-      actorId: req.user._id,
+      actorId: req.user.userId,
     });
     res.json({
       success: true,
@@ -417,13 +417,13 @@ router.get('/kyc/bulk/stats', authenticate, isAdmin, async (req, res) => {
 router.get('/kyc/bulk/export', authenticate, isAdmin, async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 10_000, 50_000);
-    const { batchId, csv, rowCount } = await buildExport({ actorId: req.user._id, limit });
+    const { batchId, csv, rowCount } = await buildExport({ actorId: req.user.userId, limit });
 
     if (!rowCount) {
       return res.status(404).json({ success: false, message: 'There are no pending verifications to export.' });
     }
 
-    console.warn(`[kyc] EXPORT ${batchId}: ${rowCount} Aadhaar row(s) released to admin ${req.user._id}`);
+    console.warn(`[kyc] EXPORT ${batchId}: ${rowCount} Aadhaar row(s) released to admin ${req.user.userId}`);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${batchId}.csv"`);
     // Identity data must never sit in a shared cache.
@@ -439,8 +439,8 @@ router.get('/kyc/bulk/export', authenticate, isAdmin, async (req, res) => {
 router.post('/kyc/bulk/import', authenticate, isAdmin, async (req, res) => {
   try {
     const csv = typeof req.body === 'string' ? req.body : req.body?.csv;
-    const result = await applyImport({ csv, actorId: req.user._id });
-    console.warn(`[kyc] IMPORT ${result.batchId} by admin ${req.user._id}: `
+    const result = await applyImport({ csv, actorId: req.user.userId });
+    console.warn(`[kyc] IMPORT ${result.batchId} by admin ${req.user.userId}: `
       + `${result.verified} verified, ${result.failed} failed, ${result.skipped} skipped`);
     res.json({ success: true, ...result });
   } catch (err) {
@@ -492,10 +492,10 @@ router.post('/referral/disburse', authenticate, isAdmin, async (req, res) => {
 
     const result = await disburse({
       poolPaise: rupeesToPaise(amount),
-      actorId: req.user._id,
+      actorId: req.user.userId,
     });
 
-    console.warn(`[referral] DISBURSAL ${result.batchId} by admin ${req.user._id}: `
+    console.warn(`[referral] DISBURSAL ${result.batchId} by admin ${req.user.userId}: `
       + `₹${paiseToRupees(result.spentPaise)} to ${result.paid} earner(s), ${result.blocked} blocked`);
 
     res.json({

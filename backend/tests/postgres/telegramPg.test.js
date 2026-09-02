@@ -341,3 +341,101 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
     });
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Signup: the only way a player account comes into being.
+// ─────────────────────────────────────────────────────────────────────────────
+import { createAccountFromOnboarding } from '../../postgres/telegramPg.js';
+import { getUser, newUserId } from '../../postgres/userPg.js';
+import { getVerification, isAadhaarRegistered } from '../../postgres/identityPg.js';
+
+const signup = (over = {}) => ({
+  telegramUserId: 't-1', mobile: '9990001111', username: 'newplayer',
+  aadhaarHash: 'ah-1', aadhaarEncrypted: 'ac-1', aadhaarLast4: '4321',
+  newUserId: newUserId(), ...over,
+});
+
+describePg('signup (PostgreSQL)', () => {
+  beforeAll(async () => { await applySchema(); });
+  afterAll(async () => { await closePg(); });
+  beforeEach(async () => {
+    await pgQuery(`TRUNCATE kyc_verifications, telegram_identities, users
+                   RESTART IDENTITY CASCADE`);
+  });
+
+  it('writes the account, the identity and the Aadhaar together', async () => {
+    const r = await createAccountFromOnboarding(signup());
+    expect(r.ok).toBe(true);
+
+    const user = await getUser(r.userId);
+    expect(user).toMatchObject({
+      mobile: '9990001111', status: 'ACTIVE', kycStatus: 'PENDING_APPROVAL',
+      // The signup IS submission one. Counted in the same INSERT, so the
+      // reapply cap cannot silently allow one more attempt than it advertises.
+      kycSubmissionCount: 1,
+    });
+    expect((await getIdentityByTelegramId('t-1')).userId).toBe(r.userId);
+    expect((await getVerification(r.userId)).status).toBe('PENDING_VERIFICATION');
+  });
+
+  it('leaves NOTHING behind when the Aadhaar is already registered', async () => {
+    await createAccountFromOnboarding(signup());
+    const second = await createAccountFromOnboarding(signup({
+      telegramUserId: 't-2', mobile: '9990002222', newUserId: newUserId(),
+    }));
+    expect(second).toEqual({ ok: false, reason: 'aadhaar_taken' });
+
+    // The account and identity inserts came FIRST in the transaction, so a
+    // partial signup here would leave an account nobody can sign into and a
+    // number that can never be registered again.
+    const { rows } = await pgQuery(`SELECT count(*)::int AS n FROM users`);
+    expect(rows[0].n).toBe(1);
+    expect(await getIdentityByTelegramId('t-2')).toBeNull();
+  });
+
+  it('leaves nothing behind when the phone is already linked', async () => {
+    await createAccountFromOnboarding(signup());
+    const second = await createAccountFromOnboarding(signup({
+      telegramUserId: 't-2', aadhaarHash: 'ah-2', aadhaarEncrypted: 'ac-2',
+      newUserId: newUserId(),
+    }));
+    // Same mobile, so the account insert conflicts first.
+    expect(second.ok).toBe(false);
+    expect((await pgQuery(`SELECT count(*)::int AS n FROM users`)).rows[0].n).toBe(1);
+    expect(await isAadhaarRegistered('ah-2')).toBe(false);
+  });
+
+  it('reports a redelivered update as a duplicate rather than crashing', async () => {
+    await createAccountFromOnboarding(signup());
+    // Telegram redelivers. The same person, the same everything.
+    expect(await createAccountFromOnboarding(signup({ newUserId: newUserId() })))
+      .toEqual({ ok: false, reason: 'duplicate' });
+  });
+
+  it('10 concurrent completions of one onboarding produce ONE account', async () => {
+    const attempts = Array.from({ length: 10 }, () =>
+      createAccountFromOnboarding(signup({ newUserId: newUserId() })));
+    const results = await Promise.all(attempts);
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    expect((await pgQuery(`SELECT count(*)::int AS n FROM users`)).rows[0].n).toBe(1);
+    expect((await pgQuery(`SELECT count(*)::int AS n FROM kyc_verifications`)).rows[0].n).toBe(1);
+  });
+
+  it('carries the referral attribution captured at first contact', async () => {
+    const first = await createAccountFromOnboarding(signup({ referralCode: 'ALICE1' }));
+    const second = await createAccountFromOnboarding(signup({
+      telegramUserId: 't-2', mobile: '9990002222', aadhaarHash: 'ah-2',
+      aadhaarEncrypted: 'ac-2', referredBy: first.userId, newUserId: newUserId(),
+    }));
+    expect((await getUser(second.userId)).referredBy).toBe(first.userId);
+  });
+
+  it('gives each account an unpredictable id, not one derived from the phone', async () => {
+    // Account ids travel in URLs and payloads. An id computable from a phone
+    // number would let anyone holding the number address the account.
+    const r = await createAccountFromOnboarding(signup());
+    expect(r.userId).toMatch(/^[0-9a-f]{24}$/);
+    expect(r.userId).not.toContain('9990001111');
+    expect(newUserId()).not.toBe(newUserId());
+  });
+});

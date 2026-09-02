@@ -90,7 +90,7 @@ router.post('/kyc/:userId/approve', authenticate, hasPermission('canVerifyKYC'),
     // The reviewer is now recorded, which it was not: `user.kyc` is not a path
     // on the User schema (only `kycData` is), so the block that set reviewedBy
     // never executed and every approval on this route was anonymous.
-    const decided = await approveKyc(user._id, { actor: req.user._id });
+    const decided = await approveKyc(user._id, { actor: req.user.userId });
     if (!decided.ok) {
       return res.status(409).json({
         success: false,
@@ -117,7 +117,7 @@ router.post('/kyc/:userId/approve', authenticate, hasPermission('canVerifyKYC'),
     try {
       const EnhancedAuditLog = mongoose.model('EnhancedAuditLog');
       await EnhancedAuditLog.create({
-        performedBy:     req.user._id,
+        performedBy:     req.user.userId,
         performedByName: req.user.username || req.user.mobile || 'admin',
         performedByRole: req.user.isAdmin ? 'admin' : 'subadmin',
         action:          'KYC_APPROVED',
@@ -158,7 +158,7 @@ router.post('/kyc/:userId/reject', authenticate, hasPermission('canVerifyKYC'), 
     if (!reason?.trim()) {
       return res.status(400).json({ success: false, message: 'A rejection reason is required — it is what the user is shown.' });
     }
-    const decided = await rejectKyc(user._id, { actor: req.user._id, reason: reason.trim() });
+    const decided = await rejectKyc(user._id, { actor: req.user.userId, reason: reason.trim() });
     if (!decided.ok) {
       return res.status(409).json({
         success: false,

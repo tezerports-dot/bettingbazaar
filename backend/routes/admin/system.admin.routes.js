@@ -183,7 +183,7 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
 router.put('/system/config', authenticate, isAdmin, async (req, res) => {
   try {
     const SystemConfig = mongoose.model('SystemConfig');
-    const actor = { userId: req.user._id, userName: req.user.username };
+    const actor = { userId: req.user.userId, userName: req.user.username };
 
     const {
       minBet, maxBet, max30MinBet, maxFullDayBet,

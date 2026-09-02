@@ -120,7 +120,7 @@ router.post('/launch', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Provider is not fully configured' });
     }
 
-    const user = await User.findById(req.user._id).select('username mobile depositBalance winningsBalance');
+    const user = await User.findById(req.user.userId).select('username mobile depositBalance winningsBalance');
     const balance = (user.depositBalance || 0) + (user.winningsBalance || 0);
     const sessionId = crypto.randomUUID();
     const expiresAt = new Date(Date.now() + 4 * 3600000); // 4h
@@ -133,13 +133,13 @@ router.post('/launch', authenticate, async (req, res) => {
       // Real endpoint: {apiUrl}/api/auth  with HMAC-SHA256 signed body
       const timestamp  = Date.now();
       const signature  = crypto.createHmac('sha256', provider.apiSecret)
-        .update(`${provider.merchantId}${req.user._id}${timestamp}`)
+        .update(`${provider.merchantId}${req.user.userId}${timestamp}`)
         .digest('hex');
       try {
         const body = {
           uuid:      sessionId,
           player: {
-            id:       String(req.user._id),
+            id:       String(req.user.userId),
             update:   true,
             firstName: user.username || 'Player',
             lastName:  '',
@@ -171,15 +171,15 @@ router.post('/launch', authenticate, async (req, res) => {
     // ── Spribe (Aviator) launch ──────────────────────────────────────────────
     else if (providerKey === 'spribe') {
       const token = crypto.createHmac('sha256', provider.apiSecret)
-        .update(`${req.user._id}:${sessionId}:${Date.now()}`)
+        .update(`${req.user.userId}:${sessionId}:${Date.now()}`)
         .digest('hex');
-      launchUrl = `${provider.apiUrl}/launch/${gameId || 'aviator'}?operatorId=${provider.merchantId}&token=${token}&currency=INR&lang=en&userId=${req.user._id}&returnUrl=${encodeURIComponent(process.env.APP_BASE_URL || '')}`;
+      launchUrl = `${provider.apiUrl}/launch/${gameId || 'aviator'}?operatorId=${provider.merchantId}&token=${token}&currency=INR&lang=en&userId=${req.user.userId}&returnUrl=${encodeURIComponent(process.env.APP_BASE_URL || '')}`;
     }
 
     // ── Betby Sports launch ──────────────────────────────────────────────────
     else if (providerKey === 'betby') {
       const token = Buffer.from(JSON.stringify({
-        userId: String(req.user._id),
+        userId: String(req.user.userId),
         balance,
         currency: 'INR',
         sessionId,
@@ -191,7 +191,7 @@ router.post('/launch', authenticate, async (req, res) => {
     // ── Pragmatic Play launch ────────────────────────────────────────────────
     else if (providerKey === 'pragmatic') {
       const hash = crypto.createHash('md5')
-        .update(`${req.user._id}${provider.apiSecret}`)
+        .update(`${req.user.userId}${provider.apiSecret}`)
         .digest('hex');
       launchUrl = `${provider.apiUrl}/gs2c/do?token=${hash}&stylename=${provider.merchantId}&game=${gameId || 'vs20sugardance'}&jurisdiction=INR&lobby_url=${encodeURIComponent(process.env.APP_BASE_URL || '')}`;
     }
@@ -199,7 +199,7 @@ router.post('/launch', authenticate, async (req, res) => {
     // ── Ezugi launch ─────────────────────────────────────────────────────────
     else if (providerKey === 'ezugi') {
       const token = crypto.createHmac('sha256', provider.apiSecret)
-        .update(`${provider.merchantId}${req.user._id}${Date.now()}`)
+        .update(`${provider.merchantId}${req.user.userId}${Date.now()}`)
         .digest('hex');
       launchUrl = `${provider.apiUrl}/ezglaunch?operatorId=${provider.merchantId}&token=${token}&gameId=${gameId || '1'}&lang=en&currency=INR`;
     }
@@ -212,7 +212,7 @@ router.post('/launch', authenticate, async (req, res) => {
     // Save session
     await GameSession.create({
       sessionId,
-      userId:      req.user._id,
+      userId:      req.user.userId,
       providerKey,
       gameId,
       gameName,
@@ -390,7 +390,7 @@ router.put('/admin/game-providers/:key', authenticate, isAdmin, async (req, res)
     const GameProvider = mongoose.model('GameProvider');
     const { key } = req.params;
     const allowed = ['enabled', 'apiUrl', 'apiKey', 'apiSecret', 'merchantId', 'webhookSecret', 'extraConfig', 'logoUrl', 'description'];
-    const update = { updatedBy: req.user._id, updatedAt: new Date() };
+    const update = { updatedBy: req.user.userId, updatedAt: new Date() };
     for (const k of allowed) if (req.body[k] !== undefined) update[k] = req.body[k];
     const provider = await GameProvider.findOneAndUpdate({ key }, update, { new: true });
     if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
@@ -459,7 +459,7 @@ router.post('/admin/game-providers', authenticate, isAdmin, async (req, res) => 
       description: description || '', logoUrl: logoUrl || '',
       apiUrl: apiUrl || '', apiKey: apiKey || '', apiSecret: apiSecret || '',
       merchantId: merchantId || '', webhookSecret: webhookSecret || '',
-      extraConfig: extraConfig || {}, enabled: false, updatedBy: req.user._id,
+      extraConfig: extraConfig || {}, enabled: false, updatedBy: req.user.userId,
     });
     res.json({ success: true, provider });
   } catch (err) {

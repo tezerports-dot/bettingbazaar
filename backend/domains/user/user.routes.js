@@ -204,7 +204,7 @@ router.get('/user/:userId/bets', authenticate, async (req, res) => {
     const parsedLimit = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
     const parsedSkip  = Math.max(parseInt(skip) || 0, 0);
 
-    if (req.user._id.toString() !== userId) {
+    if (req.user.userId.toString() !== userId) {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
 
@@ -250,7 +250,7 @@ router.get('/user/:userId/bets', authenticate, async (req, res) => {
 router.get('/v1/user/:id/data', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    if (req.user._id.toString() !== id) {
+    if (req.user.userId.toString() !== id) {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
 
@@ -331,7 +331,7 @@ router.put('/user/:userId/profile', authenticate, async (req, res) => {
   const session = await safeSession();
   try {
     const { userId } = req.params;
-    if (req.user._id.toString() !== userId) {
+    if (req.user.userId.toString() !== userId) {
       await abortOrEnd(session);
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
@@ -396,7 +396,7 @@ router.put('/user/:userId/bank-details', authenticate, async (req, res) => {
   const session = await safeSession();
   try {
     const { userId } = req.params;
-    if (req.user._id.toString() !== userId) {
+    if (req.user.userId.toString() !== userId) {
       await abortOrEnd(session);
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
@@ -438,7 +438,7 @@ router.put('/user/:userId/bank-details', authenticate, async (req, res) => {
 router.get('/user/referrals', authenticate, async (req, res) => {
   try {
     const { referralSummaryFor } = await import('../referral/referral.service.js');
-    const summary = await referralSummaryFor(req.user._id);
+    const summary = await referralSummaryFor(req.user.userId);
     return res.json({ success: true, ...summary });
   } catch (error) {
     console.error('Referral summary error:', error);
@@ -467,7 +467,7 @@ router.get('/user/bet-limits', authenticate, async (req, res) => {
     const { getRiskRules } = await import('../risk/riskValidation.service.js');
 
     const User = mongoose.model('User');
-    const user = await User.findById(req.user._id)
+    const user = await User.findById(req.user.userId)
       .select('depositBalance winningsBalance reserveBalance lockedBalance').lean();
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
@@ -504,7 +504,7 @@ router.get('/user/bet-limits', authenticate, async (req, res) => {
 router.get('/user/:userId/transactions', authenticate, async (req, res) => {
   try {
     const { userId } = req.params;
-    if (req.user._id.toString() !== userId) {
+    if (req.user.userId.toString() !== userId) {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
 
@@ -834,7 +834,7 @@ router.get('/v1/branding', async (req, res) => {
 router.get('/v1/wallet/ledger', authenticate, async (req, res) => { // paginated
   try {
     const { page = 1, limit = 30 } = req.query;
-    const result = await getUserLedger(req.user._id, Number(page), Number(limit));
+    const result = await getUserLedger(req.user.userId, Number(page), Number(limit));
     res.json({ success: true, ...result });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -897,7 +897,7 @@ export default router;
 router.get('/v1/user/profile', authenticate, async (req, res) => {
   try {
     const User = mongoose.model('User');
-    const user = await User.findById(req.user._id)
+    const user = await User.findById(req.user.userId)
       .select('username mobile depositBalance winningsBalance lockedBalance kycStatus bankDetails profilePic joinedAt')
       .lean();
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });

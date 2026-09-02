@@ -109,7 +109,7 @@ router.post('/payment-orders/:id/assign', authenticate, isAdmin, async (req, res
         merchantId:       merchant._id,
         merchantSnapshot: buildSnapshot(merchant, expiresAt),
         assignedAt:       new Date(),
-        assignedBy:       req.user._id,
+        assignedBy:       req.user.userId,
         expiresAt,
       },
     });
@@ -203,7 +203,7 @@ router.post('/payment-orders/:id/reassign', authenticate, isAdminOrSubAdminOrQue
         merchantId:       merchant._id,
         merchantSnapshot: buildSnapshot(merchant, expiresAt),   // overwrite old snapshot
         assignedAt:       new Date(),
-        assignedBy:       req.user._id,
+        assignedBy:       req.user.userId,
         expiresAt,
       },
     });
@@ -392,12 +392,12 @@ router.put('/queue/merchant-pool', authenticate, isAdminOrSubAdminOrQueueManager
 
     await SystemConfig.findOneAndUpdate(
       { key: 'main' },
-      { $set: { queueManagerPool: uniqueIds, updatedAt: new Date(), updatedBy: req.user._id } },
+      { $set: { queueManagerPool: uniqueIds, updatedAt: new Date(), updatedBy: req.user.userId } },
       { upsert: true, new: true }
     );
 
     await EnhancedAuditLog.create({
-      performedBy: req.user._id,
+      performedBy: req.user.userId,
       performedByName: req.user.username,
       performedByRole: req.user.isAdmin ? 'admin' : (req.user.isSubAdmin ? 'subadmin' : 'queue_manager'),
       action: 'UPDATE_QUEUE_MANAGER_POOL',
@@ -521,7 +521,7 @@ router.post('/queue/assign/:orderId', authenticate, isAdminOrSubAdminOrQueueMana
         merchantId:       merchantDoc._id,
         merchantSnapshot: buildSnapshot(merchantDoc, expiresAt),
         assignedAt:       new Date(),
-        assignedBy:       req.user._id,
+        assignedBy:       req.user.userId,
         expiresAt,
       },
     });

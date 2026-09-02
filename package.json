@@ -21,6 +21,7 @@
     "check:deps": "depcruise backend --config .dependency-cruiser.cjs",
     "check:no-mongo": "node scripts/verify-no-mongo.mjs",
     "check:balance-reads": "node scripts/audit-balance-reads.mjs",
+    "check:coherence": "node scripts/verify-migration-coherence.mjs",
     "sync:indexes": "node backend/scripts/sync-indexes.mjs",
     "verify:capabilities": "node scripts/verify-capabilities.mjs",
     "migrate:public-chat-retention": "node backend/scripts/enforce-public-chat-retention.js",

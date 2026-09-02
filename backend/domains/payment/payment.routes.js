@@ -54,14 +54,14 @@ function sanitizeOrderForMerchant(order) {
 
 router.post('/deposit/create', authenticate, requireApprovedKyc, requireChannelMembership({ action: 'add funds' }), async (req, res) => {
   try {
-    const result = await requestDeposit({ userId: req.user._id, tokenAmount: Number(req.body.tokenAmount) });
+    const result = await requestDeposit({ userId: req.user.userId, tokenAmount: Number(req.body.tokenAmount) });
     res.json({ success: true, message: 'Deposit request created. Waiting for merchant assignment.', ...result });
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code }); }
 });
 
 router.post('/withdrawal/create', authenticate, requireApprovedKyc, requireChannelMembership({ action: 'withdraw' }), withdrawalLimiter, createSubnetLimiter('withdrawal'), globalSurgeBreaker('withdrawal'), async (req, res) => {
   try {
-    const result = await requestWithdrawal({ userId: req.user._id, tokenAmount: Number(req.body.tokenAmount) });
+    const result = await requestWithdrawal({ userId: req.user.userId, tokenAmount: Number(req.body.tokenAmount) });
     res.json({ success: true, message: 'Withdrawal request created. Waiting for merchant assignment.', ...result });
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code, cutoffPassed: err.cutoffPassed, balance: err.balance }); }
 });
@@ -71,7 +71,7 @@ router.post('/order/:orderId/mark-paid', authenticate, async (req, res) => {
     const { utrNumber, proofFileKey, proofCdnUrl } = req.body;
     if (!utrNumber?.trim()) return res.status(400).json({ success: false, message: 'utrNumber is required' });
     if (!proofFileKey?.trim()) return res.status(400).json({ success: false, message: 'proofFileKey is required. Upload a payment screenshot file first.' });
-    const order = await markOrderPaid(req.user._id, req.params.orderId, utrNumber, proofFileKey, proofCdnUrl);
+    const order = await markOrderPaid(req.user.userId, req.params.orderId, utrNumber, proofFileKey, proofCdnUrl);
     res.json({ success: true, message: 'Payment marked. Awaiting merchant review.', order });
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code, originalOrderId: err.originalOrderId }); }
 });
@@ -98,7 +98,7 @@ router.post('/deposit/:orderId/confirm', paymentActorAuth, async (req, res) => {
     const confirmed = await completeOrder(order._id, {
       expectFrom: ['PAID', 'PROCESSING'],
       set: {
-        completedAt: new Date(), approvedBy: req.merchantId || req.user._id,
+        completedAt: new Date(), approvedBy: req.merchantId || req.user.userId,
         approvedAt: new Date(), updatedAt: new Date(),
       },
       session,
@@ -148,7 +148,7 @@ router.get('/orders', authenticate, async (req, res) => {
     const parsedLimit = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
     const parsedSkip  = Math.max(parseInt(skip) || 0, 0);
     const PaymentOrder = mongoose.model('PaymentOrder');
-    const query = { userId: req.user._id };
+    const query = { userId: req.user.userId };
     if (status) query.status = status;
     if (type)   query.type   = type;
     const [orders, total] = await Promise.all([
@@ -164,7 +164,7 @@ router.get('/order/:orderId', authenticate, async (req, res) => {
     const PaymentOrder = mongoose.model('PaymentOrder');
     const order = await PaymentOrder.findOne({ $or: [{ orderId: req.params.orderId }, { _id: req.params.orderId.match(/^[0-9a-fA-F]{24}$/) ? req.params.orderId : null }] }).lean();
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (order.userId.toString() !== req.user._id.toString() && !req.user.isAdmin) return res.status(403).json({ success: false, message: 'Access denied' });
+    if (order.userId.toString() !== req.user.userId.toString() && !req.user.isAdmin) return res.status(403).json({ success: false, message: 'Access denied' });
     res.json({ success: true, order });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
@@ -177,7 +177,7 @@ router.get('/rates', async (req, res) => {
 
 router.post('/order/cancel', authenticate, async (req, res) => {
   try {
-    await cancelOrder(req.user._id, req.user.isAdmin, req.body.orderId);
+    await cancelOrder(req.user.userId, req.user.isAdmin, req.body.orderId);
     res.json({ success: true, message: 'Order cancelled' });
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message }); }
 });
@@ -191,7 +191,7 @@ router.get('/order/:orderId/status', authenticate, async (req, res) => {
       $or: [{ orderId: req.params.orderId }, { _id: req.params.orderId.match(/^[0-9a-fA-F]{24}$/) ? req.params.orderId : null }],
     }).lean();
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (order.userId.toString() !== req.user._id.toString() && !req.user.isAdmin)
+    if (order.userId.toString() !== req.user.userId.toString() && !req.user.isAdmin)
       return res.status(403).json({ success: false, message: 'Access denied' });
     const proofExpiresAt = order.proofExpiresAt || new Date(new Date(order.createdAt).getTime() + 48 * 60 * 60 * 1000);
     const proofVisible = new Date(proofExpiresAt).getTime() > Date.now();
@@ -218,7 +218,7 @@ router.post('/order/:orderId/dispute', authenticate, async (req, res) => {
       $or: [{ orderId: req.params.orderId }, { _id: req.params.orderId.match(/^[0-9a-fA-F]{24}$/) ? req.params.orderId : null }],
     });
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (order.userId.toString() !== req.user._id.toString())
+    if (order.userId.toString() !== req.user.userId.toString())
       return res.status(403).json({ success: false, message: 'Access denied' });
     if (order.status !== 'PAID')
       return res.status(400).json({ success: false, message: 'Can only dispute PAID orders' });
@@ -265,7 +265,7 @@ router.post('/order/:orderId/status', authenticate, async (req, res) => {
     const PaymentOrder = mongoose.model('PaymentOrder');
     const order = await PaymentOrder.findOne({
       $or: [{ orderId: req.params.orderId }, { _id: req.params.orderId.match(/^[0-9a-fA-F]{24}$/) ? req.params.orderId : null }],
-      userId: req.user._id,
+      userId: req.user.userId,
     });
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     const moved = await disputeOrder(order._id, {

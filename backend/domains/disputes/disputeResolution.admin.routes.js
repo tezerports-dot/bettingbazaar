@@ -96,7 +96,7 @@ router.post('/dispute-orders/:orderId/chat', authenticate, hasPermission('canRes
     const ChatMessage = mongoose.model('ChatMessage');
     const msg = await ChatMessage.create({
       orderId:    req.params.orderId,
-      senderId:   req.user._id,
+      senderId:   req.user.userId,
       senderType: 'ADMIN',
       message:    message.trim(),
       isSystem:   false,
@@ -175,7 +175,7 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, isAdmin, async (re
         disputeDecision:   decision,
         disputeResolution: resolution,
         resolvedAt:        new Date(),
-        resolvedBy:        req.user._id,
+        resolvedBy:        req.user.userId,
         ...(newStatus === 'COMPLETED' ? { completedAt: new Date() } : { cancelledAt: new Date() }),
       },
     });
@@ -243,7 +243,7 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, isAdmin, async (re
         // stake through the wallet authority's inverse of the original debit.
         await reverseHold(order._id, {
           reason: `Dispute resolved by ${adminName}: ${resolution}`,
-          by: req.user._id,
+          by: req.user.userId,
         });
         systemMessage = `🔄 Admin Decision: WITHDRAWAL REVERSED\n` +
           `Payment was not received. ${order.tokenAmount} tokens returned to your balance.\n` +
@@ -284,7 +284,7 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, isAdmin, async (re
 
     
     await ChatMessage.create({
-      orderId: order._id, senderId: req.user._id, senderType: 'ADMIN',
+      orderId: order._id, senderId: req.user.userId, senderType: 'ADMIN',
       message: `⚖️ DISPUTE RESOLVED by ${adminName}\n${systemMessage}`,
       isSystem: true,
     });
@@ -324,7 +324,7 @@ router.post('/dispute-orders/:orderId/escalate', authenticate, hasPermission('ca
     await order.save();
 
     await ChatMessage.create({
-      orderId: order._id, senderId: req.user._id, senderType: 'ADMIN',
+      orderId: order._id, senderId: req.user.userId, senderType: 'ADMIN',
       message: `🔺 Dispute ESCALATED to senior admin.\nNotes: ${notes || 'No additional notes'}`,
       isSystem: true,
     });

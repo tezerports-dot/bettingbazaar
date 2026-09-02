@@ -218,6 +218,12 @@ jobs:
       # copy of a balance while the movement touched the wallet.
       - name: Money decisions read the wallet
         run: npm run check:balance-reads
+      # A migrated entity must be WRITTEN and READ in the same store. A split
+      # write-here/read-there succeeds on the write, finds nothing on the read,
+      # and errors nowhere — invisible to check:no-mongo, which counts
+      # references rather than asking whether the replacement is complete.
+      - name: Migration coherence (no entity split across stores)
+        run: npm run check:coherence
       # The single-store gate is NOT repeated here, deliberately. It has its own
       # job, it stays red for the whole removal, and a copy of it in this job
       # would fail before the three panel builds below ever run — costing the

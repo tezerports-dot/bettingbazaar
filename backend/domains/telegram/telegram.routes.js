@@ -519,12 +519,12 @@ function mayCheckLive(userId) {
 
 router.get('/membership', authenticate, async (req, res) => {
   try {
-    const identity = await TelegramIdentity.findOne({ userId: req.user._id })
+    const identity = await TelegramIdentity.findOne({ userId: req.user.userId })
       .select('telegramUserId channelStatus channelCheckedAt channelGeneration')
       .lean();
 
     const wantsLive = req.query.verify === '1';
-    const refresh = wantsLive && mayCheckLive(req.user._id);
+    const refresh = wantsLive && mayCheckLive(req.user.userId);
     const verdict = await membershipFor(identity, { refresh });
 
     const prompt = await joinPrompt();

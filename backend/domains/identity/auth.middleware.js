@@ -21,8 +21,9 @@
  * @requires ../models
  */
 
-import { SystemConfig, User } from '../../models/index.js';
+import { SystemConfig } from '../../models/index.js';
 import { isTokenRevoked as pgIsTokenRevoked } from '../../postgres/identityPg.js';
+import { getUser } from '../../postgres/userPg.js';
 import { setContextUser } from '../../middleware/requestContext.js'; // X-6
 // AQ-2 (2026-07-13): every sign/verify goes through the single PASETO authority —
 // Ed25519 signature verification, iss/aud stamped on sign. No raw token-library calls remain here.
@@ -128,8 +129,16 @@ const authenticate = async (req, res, next) => {
       return res.status(401).json({ success: false, message: 'Token has been invalidated. Please login again.' });
     }
 
-    // Fetch user from database
-    const user = await User.findById(decoded.userId).select('+twoFactorSecret +twoFactorEnabled');
+    // The account, from the SAME table signup writes to. It used to come from
+    // the document while `createAccountFromOnboarding` wrote the row — so a
+    // player could sign up and then not log in: the write succeeded, this read
+    // found nothing, and nothing errored anywhere.
+    //
+    // Credentials are NOT loaded here. This runs on every authenticated
+    // request, and a TOTP secret on `req.user` is a secret one careless
+    // `res.json(req.user)` puts in a response body. The paths that verify a
+    // second factor ask for them by name.
+    const user = await getUser(decoded.userId);
     
     if (!user) {
       return res.status(401).json({ 
@@ -148,10 +157,10 @@ const authenticate = async (req, res, next) => {
 
     // Attach user to request object for use in subsequent middleware/routes
     req.user = user;
-    req.userId = user._id;
+    req.userId = user.userId;
     // X-6: tag the request-context so structured logs in downstream services
     // (wallet, settlement, …) are attributable to this user by correlation id.
-    try { setContextUser(user._id); } catch { /* context is best-effort */ }
+    try { setContextUser(user.userId); } catch { /* context is best-effort */ }
 
     
     // Merchant PASETO contains { merchantId, isMerchant: true } — set by domains/merchant/merchant.routes.js /auth/login.
@@ -537,7 +546,7 @@ const authenticateMerchant = async (req, res, next) => {
  */
 const generateToken = (user, options = {}) => {
   const payload = {
-    userId: user._id,
+    userId: user.userId,
     mobile: user.mobile,
     isAdmin: user.isAdmin || false,
     isSubAdmin: user.isSubAdmin || false,
@@ -609,11 +618,11 @@ const optionalAuth = async (req, res, next) => {
     
     try {
       const decoded = verifyJwt(token);
-      const user = await User.findById(decoded.userId);
-      
+      const user = await getUser(decoded.userId);
+
       if (user && !user.isBlocked) {
         req.user = user;
-        req.userId = user._id;
+        req.userId = user.userId;
       }
     } catch (jwtError) {
       // Invalid token, but we don't fail - just continue without user

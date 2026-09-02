@@ -47,7 +47,7 @@ router.put('/admin/config', authenticate, isAdmin, async (req, res) => {
       'gatewayProvider', 'gatewayApiKey', 'gatewayApiSecret',
       'gatewayWebhookSecret', 'gatewayCallbackUrl', 'gatewayMerchantId',
     ];
-    const update = { updatedBy: req.user._id, updatedAt: new Date() };
+    const update = { updatedBy: req.user.userId, updatedAt: new Date() };
     for (const k of allowed) if (req.body[k] !== undefined) update[k] = req.body[k];
     const cfg = await PaymentGatewayConfig.findOneAndUpdate(
       { key: 'main' }, update, { upsert: true, new: true }

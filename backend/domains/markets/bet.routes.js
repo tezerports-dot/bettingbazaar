@@ -111,7 +111,7 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
   try {
     const { cycleId, side, amount: rawAmount, type } = req.body;
     const amount = Number(rawAmount);
-    const userId = req.user._id;
+    const userId = req.user.userId;
 
     const User         = mongoose.model('User');
     const Cycle        = mongoose.model('Cycle');
@@ -640,7 +640,7 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
 router.post('/phantom', authenticate, async (req, res) => {
   try {
     const { cycleId, side, amount } = req.body;
-    const userId = req.user._id;
+    const userId = req.user.userId;
 
     const User    = mongoose.model('User');
     const Cycle   = mongoose.model('Cycle');

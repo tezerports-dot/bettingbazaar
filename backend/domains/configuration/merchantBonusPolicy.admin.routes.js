@@ -42,7 +42,7 @@ router.get('/merchant-bonus-policy/history', authenticate, isAdminOrSubAdmin, as
 router.put('/merchant-bonus-policy', authenticate, isAdmin, async (req, res) => {
   try {
     const { enabled, bonusPercent, minMatchedVolume, justification } = req.body;
-    const actor = { userId: req.user._id, userName: req.user.username };
+    const actor = { userId: req.user.userId, userName: req.user.username };
 
     let doc;
     try {
@@ -53,7 +53,7 @@ router.put('/merchant-bonus-policy', authenticate, isAdmin, async (req, res) => 
 
     const EnhancedAuditLog = mongoose.model('EnhancedAuditLog');
     await EnhancedAuditLog.create({
-      performedBy: req.user._id,
+      performedBy: req.user.userId,
       performedByName: req.user.username,
       performedByRole: 'admin',
       action: 'UPDATE_MERCHANT_BONUS_POLICY',
@@ -75,7 +75,7 @@ router.put('/merchant-bonus-policy', authenticate, isAdmin, async (req, res) => 
 // POST /api/admin/merchant-bonus-policy/version/:versionId/rollback
 router.post('/merchant-bonus-policy/version/:versionId/rollback', authenticate, isAdmin, async (req, res) => {
   try {
-    const actor = { userId: req.user._id, userName: req.user.username };
+    const actor = { userId: req.user.userId, userName: req.user.username };
     let doc;
     try {
       doc = await rollbackToBonusPolicyVersion(req.params.versionId, actor);
@@ -85,7 +85,7 @@ router.post('/merchant-bonus-policy/version/:versionId/rollback', authenticate, 
 
     const EnhancedAuditLog = mongoose.model('EnhancedAuditLog');
     await EnhancedAuditLog.create({
-      performedBy: req.user._id,
+      performedBy: req.user.userId,
       performedByName: req.user.username,
       performedByRole: 'admin',
       action: 'ROLLBACK_MERCHANT_BONUS_POLICY',

@@ -105,6 +105,27 @@ export async function isAadhaarRegistered(aadhaarHash) {
 }
 
 /**
+ * The same question across every hash a rotation may have produced.
+ *
+ * The HMAC secret is rotatable, so one Aadhaar has several valid hashes: the
+ * current secret's and each retired one's. Checking only the current hash would
+ * report a number as unregistered because it was registered under the previous
+ * secret — and then the INSERT would collide on a hash the check never looked
+ * at, turning a clear "already registered" into an opaque failure.
+ *
+ * @param {string[]} candidates every hash from `hashAadhaarCandidates`
+ */
+export async function findRegisteredAadhaar(candidates = []) {
+  const hashes = candidates.filter(Boolean).map(String);
+  if (!hashes.length) return null;
+  const { rows } = await pgQuery(
+    `SELECT user_id, aadhaar_hash FROM kyc_verifications WHERE aadhaar_hash = ANY($1::text[])`,
+    [hashes], 'kyc_hash_candidates',
+  );
+  return rows[0] ? { userId: rows[0].user_id, aadhaarHash: rows[0].aadhaar_hash } : null;
+}
+
+/**
  * Submit an Aadhaar for verification.
  *
  * The UNIQUE index on the hash decides whether this is a duplicate, not a prior

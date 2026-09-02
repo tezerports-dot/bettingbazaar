@@ -133,7 +133,7 @@ router.post('/utr/resolve/:orderId', authenticate, isAdmin, async (req, res) => 
     const order    = await PaymentOrder.findById(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     order.requiresReview = false;
-    order.reviewedBy     = req.user._id;
+    order.reviewedBy     = req.user.userId;
     order.reviewedAt     = new Date();
     order.reviewAction   = action;
     order.reviewNotes    = notes || '';

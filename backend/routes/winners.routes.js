@@ -111,7 +111,7 @@ router.post('/admin/fake-winners', authenticate, isAdmin, async (req, res) => {
       badge: badge || '', isPublic: isPublic !== false,
       sortOrder: sortOrder || 0,
       displayTime: displayTime ? new Date(displayTime) : new Date(),
-      createdBy: req.user._id,
+      createdBy: req.user.userId,
     });
     res.json({ success: true, winner: entry });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }

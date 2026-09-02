@@ -831,6 +831,43 @@ CREATE TABLE IF NOT EXISTS users (
     CHECK (NOT is_blocked OR (block_reason IS NOT NULL AND blocked_at IS NOT NULL))
 );
 
+-- Single-use 2FA recovery codes, hashed.
+--
+-- An array rather than a table: they are written as a SET (enrolment mints ten,
+-- consuming one rewrites the remainder) and never queried individually, so a
+-- child table would add a join and a delete path for no read this code makes.
+-- Like the TOTP secret, these are returned only by the function that exists to
+-- read them — a recovery code in a response body is a second factor given away.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS backup_codes TEXT[] NOT NULL DEFAULT '{}';
+
+-- Coarse role tags, distinct from the is_* booleans that gate authorisation.
+-- The booleans decide what an account MAY DO and are what every check reads;
+-- this is descriptive (a merchant's linked login carries 'merchant'). Do not
+-- start authorising from it — two sources for one decision is how they drift.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS roles TEXT[] NOT NULL DEFAULT '{}';
+
+-- How many Aadhaar numbers this account has ever submitted.
+--
+-- ON `users`, NOT on `kyc_verifications`, and the placement is the whole point.
+-- `releaseFailedSubmission` DELETES the verification row when a number comes
+-- back rejected — that is what frees the unique hash so a mistyped digit does
+-- not park a stranger's Aadhaar in the index forever. A counter living on that
+-- row would be deleted with it and reset to zero, which defeats the cap
+-- entirely: submit, fail, submit again, indefinitely.
+--
+-- The cap exists because "submit a number, be told whether it is already
+-- registered" is an ENUMERATION ORACLE the moment it can be repeated freely.
+-- Bounding it is what keeps this a correction path rather than a probe.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS kyc_submission_count INT NOT NULL DEFAULT 0;
+-- `ADD CONSTRAINT` has no IF NOT EXISTS, and this file is applied on EVERY
+-- boot — so a bare ADD would fail the second start with "constraint already
+-- exists". Swallowing just that error is the idempotent idiom.
+DO $$ BEGIN
+  ALTER TABLE users ADD CONSTRAINT users_kyc_submission_count_check
+    CHECK (kyc_submission_count >= 0);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
 CREATE INDEX IF NOT EXISTS users_status_idx        ON users (status);
 CREATE INDEX IF NOT EXISTS users_kyc_status_idx    ON users (kyc_status);
 CREATE INDEX IF NOT EXISTS users_referred_by_idx   ON users (referred_by) WHERE referred_by IS NOT NULL;

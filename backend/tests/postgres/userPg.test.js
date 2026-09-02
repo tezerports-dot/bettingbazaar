@@ -287,3 +287,72 @@ describePg('accounts (PostgreSQL)', () => {
     });
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The KYC reapply cap. It is the only thing stopping "submit a number, be told
+// whether it is registered" from being a repeatable enumeration oracle.
+// ─────────────────────────────────────────────────────────────────────────────
+import { claimKycSubmission, releaseKycSubmission, newUserId } from '../../postgres/userPg.js';
+
+describePg('the KYC submission cap', () => {
+  beforeAll(async () => { await applySchema(); });
+  afterAll(async () => { await closePg(); });
+  beforeEach(async () => {
+    await pgQuery('TRUNCATE users RESTART IDENTITY CASCADE');
+    await createUser(mk());
+  });
+
+  it('hands out attempts up to the cap and then refuses', async () => {
+    expect(await claimKycSubmission('u-1', 3)).toBe(1);
+    expect(await claimKycSubmission('u-1', 3)).toBe(2);
+    expect(await claimKycSubmission('u-1', 3)).toBe(3);
+    expect(await claimKycSubmission('u-1', 3)).toBeNull();
+  });
+
+  it('20 concurrent reapplies consume exactly the cap, never more', async () => {
+    // The hole this closes: the previous implementation READ the count near the
+    // top of the flow and incremented at the very bottom, with the whole
+    // submission in between. Requests arriving together all read the same count
+    // and all passed, so the cap was exceeded by the number in flight — which
+    // is exactly the oracle it exists to prevent.
+    const results = await Promise.all(
+      Array.from({ length: 20 }, () => claimKycSubmission('u-1', 3)));
+    expect(results.filter((r) => r !== null)).toHaveLength(3);
+
+    const { rows } = await pgQuery(
+      'SELECT kyc_submission_count AS n FROM users WHERE user_id = $1', ['u-1']);
+    expect(Number(rows[0].n)).toBe(3);
+  });
+
+  it('gives an attempt back when the submission never entered the queue', async () => {
+    await claimKycSubmission('u-1', 3);
+    expect(await releaseKycSubmission('u-1')).toBe(0);
+    // …and the freed attempt is genuinely usable again.
+    expect(await claimKycSubmission('u-1', 3)).toBe(1);
+  });
+
+  it('a release that runs twice does not hand out a free attempt', async () => {
+    await claimKycSubmission('u-1', 3);
+    await releaseKycSubmission('u-1');
+    await releaseKycSubmission('u-1');   // a retry, or a crash between paths
+    const { rows } = await pgQuery(
+      'SELECT kyc_submission_count AS n FROM users WHERE user_id = $1', ['u-1']);
+    expect(Number(rows[0].n)).toBe(0);   // floored, never negative
+  });
+
+  it('the count SURVIVES the verification row being deleted', async () => {
+    // This is why the counter lives on `users` and not on `kyc_verifications`:
+    // releaseFailedSubmission DELETES that row to free the unique Aadhaar hash,
+    // and a counter living there would be deleted with it — resetting the cap
+    // and making it unlimited by construction.
+    await claimKycSubmission('u-1', 3);
+    await claimKycSubmission('u-1', 3);
+    await pgQuery(
+      `INSERT INTO kyc_verifications (user_id, aadhaar_hash, aadhaar_encrypted, aadhaar_last4, phone, status)
+       VALUES ($1,'h','c','1234','999','FAILED')`, ['u-1']);
+    await pgQuery(`DELETE FROM kyc_verifications WHERE user_id = $1`, ['u-1']);
+
+    expect(await claimKycSubmission('u-1', 3)).toBe(3);
+    expect(await claimKycSubmission('u-1', 3)).toBeNull();
+  });
+});

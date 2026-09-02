@@ -132,7 +132,7 @@ router.post('/admin/games', authenticate, isAdmin, async (req, res) => {
 
     const game = await Game.create({
       ...data, slug,
-      createdBy: req.user._id, updatedBy: req.user._id,
+      createdBy: req.user.userId, updatedBy: req.user.userId,
       createdAt: new Date(), updatedAt: new Date(),
     });
     res.json({ success: true, game });
@@ -154,7 +154,7 @@ router.put('/admin/games/:id', authenticate, isAdmin, async (req, res) => {
       if (clash) return res.status(409).json({ success: false, message: `slug "${slug}" is taken` });
       updates.slug = slug;
     }
-    updates.updatedBy = req.user._id;
+    updates.updatedBy = req.user.userId;
     updates.updatedAt = new Date();
     const game = await Game.findByIdAndUpdate(req.params.id, updates, { new: true });
     if (!game) return res.status(404).json({ success: false, message: 'Game not found' });
@@ -201,7 +201,7 @@ router.post('/admin/categories', authenticate, isAdmin, async (req, res) => {
     if (await GameCategory.exists({ slug })) {
       return res.status(409).json({ success: false, message: `Category "${slug}" already exists` });
     }
-    const cat = await GameCategory.create({ slug, name, icon, order, enabled, updatedBy: req.user._id });
+    const cat = await GameCategory.create({ slug, name, icon, order, enabled, updatedBy: req.user.userId });
     res.json({ success: true, category: cat });
   } catch (err) {
     console.error('[gameRegistry] create category error:', err.message);
@@ -212,7 +212,7 @@ router.post('/admin/categories', authenticate, isAdmin, async (req, res) => {
 router.put('/admin/categories/:id', authenticate, isAdmin, async (req, res) => {
   try {
     const GameCategory = mongoose.model('GameCategory');
-    const updates = { updatedBy: req.user._id, updatedAt: new Date() };
+    const updates = { updatedBy: req.user.userId, updatedAt: new Date() };
     for (const f of ['name', 'icon', 'order', 'enabled']) if (req.body[f] !== undefined) updates[f] = req.body[f];
     const cat = await GameCategory.findByIdAndUpdate(req.params.id, updates, { new: true });
     if (!cat) return res.status(404).json({ success: false, message: 'Category not found' });

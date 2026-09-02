@@ -83,7 +83,7 @@ export function requireChannelMembership({ action = 'continue' } = {}) {
 
       const { TelegramIdentity, membershipFor, joinPrompt } = await deps();
 
-      const identity = await TelegramIdentity.findOne({ userId: req.user._id })
+      const identity = await TelegramIdentity.findOne({ userId: req.user.userId })
         .select('telegramUserId channelStatus channelCheckedAt channelGeneration contactActive')
         .lean();
 

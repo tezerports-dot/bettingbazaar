@@ -305,7 +305,7 @@ router.put('/merchants/:merchantId/capabilities', authenticate, isAdmin, async (
 
     try {
       await mongoose.model('EnhancedAuditLog').create({
-        performedBy: req.user._id, performedByName: req.user.username, performedByRole: 'admin',
+        performedBy: req.user.userId, performedByName: req.user.username, performedByRole: 'admin',
         action: 'UPDATE_MERCHANT_CAPABILITIES', category: 'MERCHANT',
         targetType: 'Merchant', targetId: String(merchant._id),
         details: {
@@ -403,7 +403,7 @@ router.put('/merchants/:merchantId/approve', authenticate, isAdmin, async (req, 
     const merchant = await Merchant.findByIdAndUpdate(
       merchantId, {
         merchantApprovalStatus: 'APPROVED',
-        merchantApprovedBy: req.user._id,
+        merchantApprovedBy: req.user.userId,
         merchantApprovedAt: new Date(),
         status: 'ACTIVE',
       }, { new: true }
@@ -566,7 +566,7 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
     try {
       supply = await reserveAdminMint(tokenAmountNum, {
         movementId: `mint_${mintKey}`, merchantId: String(merchantId),
-        actor: String(req.user._id), refModel: 'Merchant', refId: String(merchantId),
+        actor: String(req.user.userId), refModel: 'Merchant', refId: String(merchantId),
         reason: `Admin wallet top-up${note ? ` — ${note}` : ''}`,
       });
       creditResult = await creditMerchantTokens({
@@ -578,7 +578,7 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
     } catch (mintErr) {
       if (supply) {
         await rollbackAdminMint(tokenAmountNum, {
-          movementId: `mint_${mintKey}`, actor: String(req.user._id),
+          movementId: `mint_${mintKey}`, actor: String(req.user.userId),
           refModel: 'Merchant', refId: String(merchantId),
           reason: 'Admin wallet top-up failed after minting',
         }).catch((e) => console.error('[admin fund] mint rollback failed:', e.message));
@@ -599,11 +599,11 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
       balanceType: 'DEPOSIT',
       status:      'SUCCESS',
       description: `Admin wallet top-up: +${tokenAmountNum} tokens` + (note ? ` — ${note}` : ''),
-      referenceId: req.user._id.toString(),
+      referenceId: req.user.userId.toString(),
       timestamp:   new Date()
     }]);
 
-    console.log(`💳 Admin ${req.user._id} funded merchant (userId:${merchantId}) +${tokenAmountNum} tokens → balance: ${merchant.tokenBalance}`);
+    console.log(`💳 Admin ${req.user.userId} funded merchant (userId:${merchantId}) +${tokenAmountNum} tokens → balance: ${merchant.tokenBalance}`);
 
     res.json({
       success:          true,
@@ -641,7 +641,7 @@ router.post('/merchant-token-orders/:orderId/approve', authenticate, isAdmin, as
     const MerchantAdminTokenOrder = mongoose.model('MerchantAdminTokenOrder');
     const order = await MerchantAdminTokenOrder.findOneAndUpdate(
       { _id: req.params.orderId, status: 'PENDING' },
-      { $set: { status: 'APPROVED', reviewedAt: new Date(), reviewedBy: req.user._id, reviewNote: req.body.note || '' } },
+      { $set: { status: 'APPROVED', reviewedAt: new Date(), reviewedBy: req.user.userId, reviewNote: req.body.note || '' } },
       { new: true }
     );
     if (!order) return res.status(404).json({ success: false, message: 'Pending merchant token order not found' });
@@ -656,7 +656,7 @@ router.post('/merchant-token-orders/:orderId/approve', authenticate, isAdmin, as
       // reach of the guard while the mint stays spent.
       supply = await reserveAdminMint(order.tokenAmount, {
         movementId: `mint_order_${order._id}`, merchantId: String(order.merchantId),
-        actor: String(req.user._id), refModel: 'MerchantAdminTokenOrder', refId: String(order._id),
+        actor: String(req.user.userId), refModel: 'MerchantAdminTokenOrder', refId: String(order._id),
         reason: `Admin token purchase approved: ${order.orderId}`,
       });
       const { merchant } = await creditMerchantTokens({
@@ -671,7 +671,7 @@ router.post('/merchant-token-orders/:orderId/approve', authenticate, isAdmin, as
     } catch (err) {
       if (supply) {
         await rollbackAdminMint(order.tokenAmount, {
-          movementId: `mint_order_${order._id}`, actor: String(req.user._id),
+          movementId: `mint_order_${order._id}`, actor: String(req.user.userId),
           refModel: 'MerchantAdminTokenOrder', refId: String(order._id),
           reason: `Admin token purchase ${order.orderId} failed after minting`,
         }).catch((e) => console.error('[admin approve] mint rollback failed:', e.message));
@@ -690,7 +690,7 @@ router.post('/merchant-token-orders/:orderId/reject', authenticate, isAdmin, asy
     const MerchantAdminTokenOrder = mongoose.model('MerchantAdminTokenOrder');
     const order = await MerchantAdminTokenOrder.findOneAndUpdate(
       { _id: req.params.orderId, status: 'PENDING' },
-      { $set: { status: 'REJECTED', reviewedAt: new Date(), reviewedBy: req.user._id, reviewNote: req.body.reason || 'Rejected by admin' } },
+      { $set: { status: 'REJECTED', reviewedAt: new Date(), reviewedBy: req.user.userId, reviewNote: req.body.reason || 'Rejected by admin' } },
       { new: true }
     );
     if (!order) return res.status(404).json({ success: false, message: 'Pending merchant token order not found' });
@@ -754,13 +754,13 @@ router.post('/merchants/:merchantId/deduct', authenticate, isAdmin, async (req, 
       balanceType: 'DEPOSIT',
       status:      'SUCCESS',
       description: `Admin wallet deduction: -${tokenAmount} tokens — ${String(reason).trim()}`,
-      referenceId: req.user._id.toString(),
-      adminId:     req.user._id.toString(),
+      referenceId: req.user.userId.toString(),
+      adminId:     req.user.userId.toString(),
       merchantId:  String(merchantId),
       timestamp:   new Date()
     }]);
 
-    console.log(`💳 Admin ${req.user._id} deducted merchant ${merchantId} -${tokenAmount} tokens → balance: ${merchant.tokenBalance}`);
+    console.log(`💳 Admin ${req.user.userId} deducted merchant ${merchantId} -${tokenAmount} tokens → balance: ${merchant.tokenBalance}`);
 
     res.json({
       success:            true,

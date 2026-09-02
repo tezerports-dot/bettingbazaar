@@ -158,7 +158,7 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
       expectFrom: 'DISPUTED',
       set: {
         disputeResolvedAt: now,
-        disputeResolvedBy: req.user._id,
+        disputeResolvedBy: req.user.userId,
         disputeResolution: resolution === 'release' ? 'released' : 'refunded',
         resolutionNotes:   reason.trim(),
         updatedAt:         now,

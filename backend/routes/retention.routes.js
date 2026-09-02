@@ -111,7 +111,7 @@ router.post('/admin/announcements', authenticate, isAdmin, async (req, res) => {
     const Announcement = mongoose.model('Announcement');
     const item = await Announcement.create({
       ...normalizeAnnouncementBody(req.body),
-      createdBy: req.user._id,
+      createdBy: req.user.userId,
     });
     res.json({ success: true, announcement: item });
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message }); }
@@ -144,8 +144,8 @@ router.get('/bonuses/my', authenticate, async (req, res) => {
     const { page=1, limit=30 } = req.query;
     const skip = (Number(page)-1)*Number(limit);
     const [records, total] = await Promise.all([
-      BonusRecord.find({ userId: req.user._id }).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).lean(),
-      BonusRecord.countDocuments({ userId: req.user._id }),
+      BonusRecord.find({ userId: req.user.userId }).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).lean(),
+      BonusRecord.countDocuments({ userId: req.user.userId }),
     ]);
     res.json({ success: true, records, total });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
@@ -170,8 +170,8 @@ router.post('/admin/balance-adjust', authenticate, isAdmin, async (req, res) => 
     if (type === 'DEBIT' && before < Number(amount)) return res.status(400).json({ success: false, message: 'Insufficient balance' });
 
     // Atomic: admin adjustment via wallet service (ledger + SSE)
-    const adjustDoc = await BalanceAdjustment.create({ userId, adminId: req.user._id, type, field, amount: Number(amount), reason, beforeBalance: before, afterBalance: before + (type==='CREDIT'?1:-1)*Number(amount) });
-    await adminAdjustment(req.user._id, userId, type, field, Number(amount), reason, adjustDoc._id.toString());
+    const adjustDoc = await BalanceAdjustment.create({ userId, adminId: req.user.userId, type, field, amount: Number(amount), reason, beforeBalance: before, afterBalance: before + (type==='CREDIT'?1:-1)*Number(amount) });
+    await adminAdjustment(req.user.userId, userId, type, field, Number(amount), reason, adjustDoc._id.toString());
     const after = before + (type === 'CREDIT' ? Number(amount) : -Number(amount));
     if (type === 'CREDIT') await BonusRecord.create({ userId, type: 'ADMIN_CREDIT', amount: Number(amount), description: reason });
 

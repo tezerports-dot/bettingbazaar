@@ -70,7 +70,7 @@ router.put('/branding', authenticate, isAdmin, async (req, res) => {
 
     // Build $set from all known brandingSchema fields; only set fields present in body.
     // This is idempotent — missing fields in body are left unchanged in DB.
-    const $set = { lastUpdated: new Date(), updatedBy: req.user._id };
+    const $set = { lastUpdated: new Date(), updatedBy: req.user.userId };
     const BRANDING_FIELDS = [
       'appName','logo','icon','favicon','splashScreen',
       'userPanelName','adminPanelName','merchantPanelName','queueManagerPanelName',
@@ -165,7 +165,7 @@ router.post('/branding/images', authenticate, isAdmin, async (req, res) => {
       title,
       category:    safeCategory,
       description: description || '',
-      uploadedBy:  req.user._id,
+      uploadedBy:  req.user.userId,
     });
 
     res.json({ success: true, message: 'Image registered successfully', image });
@@ -234,7 +234,7 @@ router.post('/branding/cdn-url', authenticate, isAdmin, async (req, res) => {
     // Store in branding images collection if CDNImage model exists, else just return success
     try {
       const { CDNImage } = getModels();
-      const image = await CDNImage.create({ url, title, category: category || 'other', description, tags: tags || [], uploadedBy: req.user._id });
+      const image = await CDNImage.create({ url, title, category: category || 'other', description, tags: tags || [], uploadedBy: req.user.userId });
       res.json({ success: true, image });
     } catch {
       // CDNImage model may not exist in all deployments — store in config
@@ -264,7 +264,7 @@ router.post('/branding/upload-url', authenticate, isAdmin, async (req, res) => {
       fileName,
       contentType,
       fileSize,
-      req.user._id.toString(),
+      req.user.userId.toString(),
       category
     );
     res.json({
@@ -297,7 +297,7 @@ router.post('/branding/confirm-upload', authenticate, isAdmin, async (req, res) 
         title:       title || fileKey,
         category:    category || 'logo',
         fileSize:    fileSize || 0,
-        uploadedBy:  req.user._id,
+        uploadedBy:  req.user.userId,
       });
     } catch {
       // CDNImage model not present in all deployments — non-fatal
@@ -310,7 +310,7 @@ router.post('/branding/confirm-upload', authenticate, isAdmin, async (req, res) 
       const Branding = mongoose.model('Branding');
       await Branding.findOneAndUpdate(
         { key: 'main' },
-        { logo: cdnUrl, updatedBy: req.user._id, lastUpdated: new Date() },
+        { logo: cdnUrl, updatedBy: req.user.userId, lastUpdated: new Date() },
         { upsert: true, new: true }
       );
     }
@@ -404,7 +404,7 @@ router.post('/app-assets/upload',
       const now = new Date();
       await AppAsset.findOneAndUpdate(
         { slot },
-        { slot, url, storage, fileKey, size: buffer.length, contentType: detectedContentType, updatedAt: now, updatedBy: req.user._id },
+        { slot, url, storage, fileKey, size: buffer.length, contentType: detectedContentType, updatedAt: now, updatedBy: req.user.userId },
         { upsert: true, new: true }
       );
 

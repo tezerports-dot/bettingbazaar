@@ -64,7 +64,7 @@ router.post('/content/faq', authenticate, isAdmin, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Question and answer are required' });
     }
     
-    const faq = await contentService.addFAQ(question, answer, category, req.user._id);
+    const faq = await contentService.addFAQ(question, answer, category, req.user.userId);
     res.json({ success: true, message: 'FAQ created successfully', faq });
   } catch (error) {
     console.error('Create FAQ error:', error);
@@ -76,7 +76,7 @@ router.post('/content/faq', authenticate, isAdmin, async (req, res) => {
 router.put('/content/faq/:faqId', authenticate, isAdmin, async (req, res) => {
   try {
     const { question, answer, category } = req.body;
-    const faq = await contentService.updateFAQ(req.params.faqId, question, answer, category, req.user._id);
+    const faq = await contentService.updateFAQ(req.params.faqId, question, answer, category, req.user.userId);
     res.json({ success: true, message: 'FAQ updated successfully', faq });
   } catch (error) {
     console.error('Update FAQ error:', error);
@@ -87,7 +87,7 @@ router.put('/content/faq/:faqId', authenticate, isAdmin, async (req, res) => {
 // Delete FAQ
 router.delete('/content/faq/:faqId', authenticate, isAdmin, async (req, res) => {
   try {
-    await contentService.deleteFAQ(req.params.faqId, req.user._id);
+    await contentService.deleteFAQ(req.params.faqId, req.user.userId);
     res.json({ success: true, message: 'FAQ deleted successfully' });
   } catch (error) {
     console.error('Delete FAQ error:', error);
@@ -162,7 +162,7 @@ router.put('/content/support-links', authenticate, isAdmin, async (req, res) => 
     config.markModified('supportLinks');
     
     config.updatedAt = new Date();
-    config.updatedBy = req.user._id;
+    config.updatedBy = req.user.userId;
     
     await config.save();
     
@@ -211,7 +211,7 @@ router.post('/promo', authenticate, isAdminOrSubAdmin, async (req, res) => {
       fileUrl, priority: priority || 0,
       status: status?.toUpperCase() || 'ACTIVE',
       isActive: (status?.toUpperCase() || 'ACTIVE') === 'ACTIVE',
-      createdBy: req.user._id,
+      createdBy: req.user.userId,
       createdAt: new Date()
     });
     res.json({ success: true, promo });

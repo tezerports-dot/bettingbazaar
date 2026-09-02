@@ -81,7 +81,7 @@ router.post('/revenue/bonus-pool/fund', authenticate, isAdmin, async (req, res) 
       return res.status(400).json({ success: false, message: 'amount must be a positive number of rupees.' });
     }
 
-    const actor = { userId: req.user._id, userName: req.user.username };
+    const actor = { userId: req.user.userId, userName: req.user.username };
     let result;
     try {
       result = await fundMerchantBonusPool({
@@ -96,7 +96,7 @@ router.post('/revenue/bonus-pool/fund', authenticate, isAdmin, async (req, res) 
 
     const EnhancedAuditLog = mongoose.model('EnhancedAuditLog');
     await EnhancedAuditLog.create({
-      performedBy: req.user._id,
+      performedBy: req.user.userId,
       performedByName: req.user.username,
       performedByRole: 'admin',
       action: 'FUND_MERCHANT_BONUS_POOL',

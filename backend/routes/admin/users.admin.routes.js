@@ -31,7 +31,7 @@ router.post('/users/:userId/adjust-balance', authenticate, isAdmin, async (req, 
     const adjustmentId = new (await import('mongoose')).default.Types.ObjectId().toString();
     const type = amount >= 0 ? 'CREDIT' : 'DEBIT';
     // adminAdjust is ACID-safe: wraps debitForBet/creditWinnings in session.withTransaction()
-    await adminAdjustment(req.user._id, userId, type, field, Math.abs(amount), reason || `Admin adjustment`, adjustmentId);
+    await adminAdjustment(req.user.userId, userId, type, field, Math.abs(amount), reason || `Admin adjustment`, adjustmentId);
 
     const updated = await User.findById(userId).select('depositBalance winningsBalance').lean();
     if (global.io) {
@@ -161,7 +161,7 @@ router.put('/users/:userId/block', authenticate, isAdmin, async (req, res) => {
     user.status = 'BLOCKED';
     user.blockReason = reason;
     user.blockedAt = new Date();
-    user.blockedBy = req.user._id;
+    user.blockedBy = req.user.userId;
     await user.save();
 
     res.json({ success: true, message: 'User blocked successfully' });
@@ -201,7 +201,7 @@ router.put('/users/:userId/unblock', authenticate, isAdmin, async (req, res) => 
     try {
       const Audit = mongoose.model('AuditLog');
       await Audit.create({
-        actorId:   req.user._id,
+        actorId:   req.user.userId,
         actorType: 'ADMIN',
         action:    'USER_UNBLOCK',
         targetId:  user._id,
@@ -235,7 +235,7 @@ router.delete('/users/:userId', authenticate, isAdmin, async (req, res) => {
     // Soft delete — mark as deleted but keep data for audit trail
     user.isDeleted = true;
     user.deletedAt = new Date();
-    user.deletedBy = req.user._id;
+    user.deletedBy = req.user.userId;
     // ✅ FIX #16: 'DELETED' is now in the User status enum (models/user.model.js)
     user.status = 'DELETED';
     await user.save();

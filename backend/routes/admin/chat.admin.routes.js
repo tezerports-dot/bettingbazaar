@@ -31,7 +31,7 @@ const M = () => ({
 async function audit(req, { action, category, targetType, targetId, targetName, details }) {
   try {
     await mongoose.model('EnhancedAuditLog').create({
-      performedBy: req.user._id,
+      performedBy: req.user.userId,
       performedByName: req.user.username,
       performedByRole: req.user.isAdmin ? 'admin' : 'subadmin',
       action, category,
@@ -69,7 +69,7 @@ router.post('/chat/messages/:id/delete', canManageSupport, async (req, res) => {
     const msg = await PublicChatMsg.findById(req.params.id);
     if (!msg) return res.status(404).json({ success: false, message: 'Message not found' });
     msg.isDeleted = true;
-    msg.deletedBy = req.user._id;
+    msg.deletedBy = req.user.userId;
     msg.deletedAt = new Date();
     await msg.save();
 
@@ -108,7 +108,7 @@ router.post('/chat/ban', canManageSupport, async (req, res) => {
     const banUntil = hours && Number(hours) > 0 ? new Date(Date.now() + Number(hours) * 3600000) : null;
     const ban = await ChatBan.findOneAndUpdate(
       { userId },
-      { userId, bannedBy: req.user._id, reason: String(reason).trim(), banUntil, createdAt: new Date() },
+      { userId, bannedBy: req.user.userId, reason: String(reason).trim(), banUntil, createdAt: new Date() },
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );
     if (global.io) global.io.to(`user-${userId}`).emit('chat_banned', { until: banUntil });
@@ -180,12 +180,12 @@ router.post('/support/tickets/:id/reply', canManageSupport, async (req, res) => 
 
     const msg = await SupportMsg.create({
       ticketId: ticket._id,
-      senderId: req.user._id,
+      senderId: req.user.userId,
       senderType: 'agent',
       content: String(content).trim(),
     });
     ticket.lastReplyAt = new Date();
-    if (!ticket.assignedTo) { ticket.assignedTo = req.user._id; ticket.assignedAt = new Date(); }
+    if (!ticket.assignedTo) { ticket.assignedTo = req.user.userId; ticket.assignedAt = new Date(); }
     if (ticket.status === 'open') ticket.status = 'assigned';
     await ticket.save();
 

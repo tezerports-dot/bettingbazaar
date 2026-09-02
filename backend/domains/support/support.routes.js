@@ -24,7 +24,7 @@ const askLimiter = rateLimit({
   max: Number(process.env.RAG_ASK_RATE || 10),
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => (req.user?._id ? `u:${req.user._id}` : ipKeyGenerator(req.ip)),
+  keyGenerator: (req) => (req.user?._id ? `u:${req.user.userId}` : ipKeyGenerator(req.ip)),
   message: { success: false, message: 'Too many support questions. Please wait a minute.' },
 });
 

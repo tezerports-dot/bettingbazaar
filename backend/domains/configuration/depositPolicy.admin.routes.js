@@ -76,7 +76,7 @@ router.put('/deposit-policy/:currency', authenticate, isAdmin, async (req, res) 
       return res.status(400).json({ success: false, message: 'businessJustification is required for every DepositPolicy change.' });
     }
 
-    const actor = { userId: req.user._id, userName: req.user.username };
+    const actor = { userId: req.user.userId, userName: req.user.username };
     let doc;
     try {
       doc = await createPolicyVersion(
@@ -91,7 +91,7 @@ router.put('/deposit-policy/:currency', authenticate, isAdmin, async (req, res) 
 
     const EnhancedAuditLog = mongoose.model('EnhancedAuditLog');
     await EnhancedAuditLog.create({
-      performedBy: req.user._id,
+      performedBy: req.user.userId,
       performedByName: req.user.username,
       performedByRole: 'admin',
       action: 'UPDATE_DEPOSIT_POLICY',
@@ -124,7 +124,7 @@ router.put('/deposit-policy/:currency', authenticate, isAdmin, async (req, res) 
 router.post('/deposit-policy/version/:versionId/approve', authenticate, isAdmin, async (req, res) => {
   try {
     const { approve = true } = req.body;
-    const actor = { userId: req.user._id, userName: req.user.username };
+    const actor = { userId: req.user.userId, userName: req.user.username };
     let doc;
     try {
       doc = await approvePolicyVersion(req.params.versionId, actor, !!approve);
@@ -134,7 +134,7 @@ router.post('/deposit-policy/version/:versionId/approve', authenticate, isAdmin,
 
     const EnhancedAuditLog = mongoose.model('EnhancedAuditLog');
     await EnhancedAuditLog.create({
-      performedBy: req.user._id,
+      performedBy: req.user.userId,
       performedByName: req.user.username,
       performedByRole: 'admin',
       action: approve ? 'APPROVE_DEPOSIT_POLICY' : 'REJECT_DEPOSIT_POLICY',
@@ -158,7 +158,7 @@ router.post('/deposit-policy/version/:versionId/approve', authenticate, isAdmin,
 // POST /api/admin/deposit-policy/version/:versionId/rollback
 router.post('/deposit-policy/version/:versionId/rollback', authenticate, isAdmin, async (req, res) => {
   try {
-    const actor = { userId: req.user._id, userName: req.user.username };
+    const actor = { userId: req.user.userId, userName: req.user.username };
     let doc;
     try {
       doc = await rollbackToPolicyVersion(req.params.versionId, actor);
@@ -168,7 +168,7 @@ router.post('/deposit-policy/version/:versionId/rollback', authenticate, isAdmin
 
     const EnhancedAuditLog = mongoose.model('EnhancedAuditLog');
     await EnhancedAuditLog.create({
-      performedBy: req.user._id,
+      performedBy: req.user.userId,
       performedByName: req.user.username,
       performedByRole: 'admin',
       action: 'ROLLBACK_DEPOSIT_POLICY',

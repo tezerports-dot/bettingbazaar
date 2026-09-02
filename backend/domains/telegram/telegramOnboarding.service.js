@@ -27,12 +27,20 @@
  * per Aadhaar hash. Every "is this taken?" read here is a courtesy that
  * produces a friendly message; correctness comes from the write failing.
  */
-import mongoose from 'mongoose';
-import { TelegramIdentity, TelegramPendingLink } from './telegram.model.js';
-import { KycVerification } from '../identity/kycVerification.model.js';
+import {
+  getIdentityByTelegramId, getIdentityByUserId, getPendingLink, getPendingAadhaar,
+  upsertPendingLink, deletePendingLink, createAccountFromOnboarding,
+} from '../../postgres/telegramPg.js';
+import {
+  getUser, getUserByReferralCode, claimJoiningNumber,
+  claimKycSubmission, releaseKycSubmission, newUserId,
+} from '../../postgres/userPg.js';
+import {
+  findRegisteredAadhaar, submitVerification, releaseFailedSubmission,
+} from '../../postgres/identityPg.js';
 import { hashAadhaar, hashAadhaarCandidates } from '../identity/aadhaarHash.util.js';
 import { encryptField } from '../identity/fieldCrypto.util.js';
-import { nextJoiningNumber, generateReferralCode, recordEarningsFor } from '../referral/referral.service.js';
+import { generateReferralCode, recordEarningsFor } from '../referral/referral.service.js';
 import { activeConfig } from './telegramClient.js';
 
 /** Telegram gives phone numbers with or without a +; store digits only. */
@@ -81,42 +89,36 @@ export async function beginOnboarding({ telegramUserId, username, firstName, ref
   const cfg = await activeConfig();
 
   // Already has an account? Then this is a login, not a signup.
-  const existing = await TelegramIdentity.findOne({ telegramUserId: String(telegramUserId) }).lean();
+  const existing = await getIdentityByTelegramId(String(telegramUserId));
   if (existing) {
     // A rejected player is not asking to log in — they are stuck, and the only
     // useful thing the bot can do is take a corrected Aadhaar. Reported here so
     // the route does not have to re-read the user to find out.
-    const User = mongoose.model('User');
-    const u = await User.findById(existing.userId).select('kycStatus kycData').lean();
+    const u = await getUser(existing.userId);
     return {
       alreadyLinked: true,
       userId: existing.userId,
       kycStatus: u?.kycStatus || null,
       canReapply: u?.kycStatus === 'REJECTED'
-        && (u?.kycData?.submissionCount || 0) < MAX_KYC_SUBMISSIONS,
+        && (u?.kycSubmissionCount || 0) < MAX_KYC_SUBMISSIONS,
     };
   }
 
-  await TelegramPendingLink.findOneAndUpdate(
-    { telegramUserId: String(telegramUserId) },
-    {
-      $set: {
-        step: 'AWAITING_AADHAAR',
-        telegramUsername: username || '',
-        firstName: firstName || '',
-        generation: cfg?.generation ?? 0,
-        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-      },
-      // Only on insert: a returning user restarting the flow must not lose the
-      // referrer they originally arrived with.
-      //
-      // Normalised, because the lookup at contact-share time is an exact match
-      // against a code that was generated in upper case — and a mismatch there
-      // costs the referrer their earning with no error anywhere.
-      $setOnInsert: { referralCode: normaliseReferralCode(referralCode) },
-    },
-    { upsert: true, new: true },
-  );
+  // The referral code is written only when the row is CREATED — the upsert
+  // keeps whichever code is already there. A returning player restarting the
+  // flow must not lose the referrer they originally arrived with.
+  //
+  // Normalised, because the lookup at contact-share time is an exact match
+  // against a code generated in upper case, and a mismatch there costs the
+  // referrer their earning with no error anywhere.
+  await upsertPendingLink({
+    telegramUserId: String(telegramUserId),
+    step: 'AWAITING_AADHAAR',
+    telegramUsername: username || '',
+    firstName: firstName || '',
+    referralCode: normaliseReferralCode(referralCode),
+    generation: cfg?.generation ?? 0,
+  });
   return { alreadyLinked: false, step: 'AWAITING_AADHAAR' };
 }
 
@@ -130,28 +132,33 @@ export async function beginOnboarding({ telegramUserId, username, firstName, ref
  * export in the same breath, so the plaintext never rests anywhere.
  */
 export async function submitAadhaar({ telegramUserId, aadhaar }) {
-  const pending = await TelegramPendingLink.findOne({ telegramUserId: String(telegramUserId) });
+  const pending = await getPendingLink(String(telegramUserId));
   if (!pending) return { ok: false, reason: 'no_session' };
   if (!isValidAadhaar(aadhaar)) return { ok: false, reason: 'invalid_format' };
 
   const normalised = String(aadhaar).replace(/[\s-]/g, '');
   const hash = hashAadhaar(normalised);
 
-  // Courtesy check — the unique index on KycVerification.aadhaarHash is what
-  // actually prevents a second account, but telling them now is kinder than
-  // failing after they have shared a contact.
-  const taken = await KycVerification.findOne({
-    aadhaarHash: { $in: hashAadhaarCandidates(normalised) },
-  }).select('_id').lean();
-  if (taken) return { ok: false, reason: 'already_registered' };
+  // Courtesy check — the UNIQUE index on the Aadhaar hash is what actually
+  // prevents a second account, but telling them now is kinder than failing
+  // after they have shared a contact. Checked across every candidate hash: the
+  // HMAC secret is rotatable, so a number registered under a retired secret
+  // must still read as taken.
+  if (await findRegisteredAadhaar(hashAadhaarCandidates(normalised))) {
+    return { ok: false, reason: 'already_registered' };
+  }
 
-  pending.aadhaarHash = hash;
-  pending.aadhaarEncrypted = encryptField(normalised);
-  pending.aadhaarLast4 = normalised.slice(-4);
-  pending.step = 'AWAITING_CONTACT';
-  await pending.save();
+  const last4 = normalised.slice(-4);
+  await upsertPendingLink({
+    telegramUserId: String(telegramUserId),
+    step: 'AWAITING_CONTACT',
+    aadhaarHash: hash,
+    aadhaarEncrypted: encryptField(normalised),
+    aadhaarLast4: last4,
+    generation: pending.generation,
+  });
 
-  return { ok: true, step: 'AWAITING_CONTACT', last4: pending.aadhaarLast4 };
+  return { ok: true, step: 'AWAITING_CONTACT', last4 };
 }
 
 // ── Step 3: shared contact → the account exists ─────────────────────────────
@@ -165,8 +172,7 @@ export async function submitAadhaar({ telegramUserId, aadhaar }) {
  * @param {string} args.contactUserId Telegram's user_id ON the shared contact
  */
 export async function completeContactShare({ telegramUserId, phone, contactUserId }) {
-  const pending = await TelegramPendingLink.findOne({ telegramUserId: String(telegramUserId) })
-    .select('+aadhaarEncrypted');
+  const pending = await getPendingLink(String(telegramUserId));
   if (!pending) return { ok: false, reason: 'no_session' };
   if (pending.step !== 'AWAITING_CONTACT' || !pending.aadhaarHash) {
     return { ok: false, reason: 'aadhaar_first' };
@@ -183,79 +189,45 @@ export async function completeContactShare({ telegramUserId, phone, contactUserI
   if (!mobile) return { ok: false, reason: 'invalid_phone' };
 
   const cfg = await activeConfig();
-  const User = mongoose.model('User');
 
-  // Courtesy checks before doing work; the indexes remain the real guarantee.
-  const phoneTaken = await TelegramIdentity.findOne({ phone: mobile, contactActive: true }).select('_id').lean();
-  if (phoneTaken) return { ok: false, reason: 'phone_already_linked' };
+  // The ciphertext is fetched separately from the rest of the row: an ordinary
+  // read of a pending onboarding must not carry an Aadhaar around with it.
+  const captured = await getPendingAadhaar(String(telegramUserId));
+  if (!captured?.aadhaarEncrypted) return { ok: false, reason: 'aadhaar_first' };
 
   const referrer = pending.referralCode
-    ? await User.findOne({ referralCode: pending.referralCode }).select('_id').lean()
+    ? await getUserByReferralCode(pending.referralCode)
     : null;
 
-  const session = await mongoose.startSession();
-  try {
-    let created = null;
-    await session.withTransaction(async () => {
-      // The platform account. `mobile` is unique, so a person who somehow
-      // already has an account on this number collides here rather than
-      // acquiring a second one.
-      const [user] = await User.create([{
-        username: pending.firstName || `player${mobile.slice(-4)}`,
-        mobile,
-        kycStatus: 'PENDING_APPROVAL',
-        status: 'ACTIVE',
-        referralCode: generateReferralCode(),
-        referredBy: referrer?._id || null,
-      }], { session });
+  // One transaction: the account, the identity that drives it, and the Aadhaar
+  // queued for verification. Every refusal below is something the bot has to
+  // TELL somebody, and the unique indexes are what decide — a courtesy check
+  // has a window a concurrent signup fits through, and this path is reachable
+  // twice for one person whenever Telegram redelivers an update.
+  const created = await createAccountFromOnboarding({
+    telegramUserId: String(telegramUserId),
+    mobile,
+    username: pending.firstName || `player${mobile.slice(-4)}`,
+    aadhaarHash: captured.aadhaarHash,
+    aadhaarEncrypted: captured.aadhaarEncrypted,
+    aadhaarLast4: captured.aadhaarLast4,
+    telegramUsername: pending.telegramUsername || '',
+    firstName: pending.firstName || '',
+    referralCode: generateReferralCode(),
+    referredBy: referrer?.userId ?? null,
+    generation: cfg?.generation ?? 0,
+    newUserId: newUserId(),
+  });
+  if (!created.ok) return created;
 
-      await TelegramIdentity.create([{
-        telegramUserId: String(telegramUserId),
-        userId: user._id,
-        telegramUsername: pending.telegramUsername || '',
-        firstName: pending.firstName || '',
-        phone: mobile,
-        contactSharedAt: new Date(),
-        contactActive: true,
-        channelStatus: 'unknown',
-        channelGeneration: cfg?.generation ?? 0,
-        linkedGeneration: cfg?.generation ?? 0,
-      }], { session });
+  await upsertPendingLink({
+    telegramUserId: String(telegramUserId),
+    step: 'AWAITING_CHANNEL',
+    phone: mobile,
+    generation: cfg?.generation ?? 0,
+  });
 
-      // The KYC row goes in now, PENDING_VERIFICATION, so the Aadhaar is
-      // queued for the next export the moment the account exists.
-      await KycVerification.create([{
-        userId: user._id,
-        aadhaarHash: pending.aadhaarHash,
-        aadhaarEncrypted: pending.aadhaarEncrypted,
-        aadhaarLast4: pending.aadhaarLast4,
-        phone: mobile,
-        status: 'PENDING_VERIFICATION',
-      }], { session });
-
-      // The signup IS submission one. Counting it here keeps the reapply cap
-      // honest — otherwise MAX_KYC_SUBMISSIONS would silently allow one more
-      // attempt than it says.
-      await User.updateOne({ _id: user._id }, { $set: { 'kycData.submissionCount': 1 } }, { session });
-
-      created = user;
-    });
-
-    pending.step = 'AWAITING_CHANNEL';
-    pending.phone = mobile;
-    await pending.save();
-
-    return { ok: true, step: 'AWAITING_CHANNEL', userId: created._id, mobile };
-  } catch (err) {
-    // 11000 from any of the three unique constraints: somebody completed this
-    // same signup concurrently, or the number/Aadhaar is already registered.
-    // Reported as a duplicate rather than a crash — the database refused
-    // exactly as designed.
-    if (err?.code === 11000) return { ok: false, reason: 'duplicate' };
-    throw err;
-  } finally {
-    await session.endSession();
-  }
+  return { ok: true, step: 'AWAITING_CHANNEL', userId: created.userId, mobile };
 }
 
 // ── Reapply: a rejected player sends a different Aadhaar ───────────────────
@@ -289,8 +261,7 @@ export const MAX_KYC_SUBMISSIONS = 3;
  * @returns {Promise<{ok: true, last4: string} | {ok: false, reason: string}>}
  */
 export async function resubmitAadhaar({ userId, aadhaar }) {
-  const User = mongoose.model('User');
-  const user = await User.findById(userId).select('kycStatus kycData').lean();
+  const user = await getUser(userId);
   if (!user) return { ok: false, reason: 'no_user' };
 
   // Only a rejected account may resubmit. An APPROVED Aadhaar is immutable, and
@@ -298,37 +269,55 @@ export async function resubmitAadhaar({ userId, aadhaar }) {
   // change a verified identity, which is the thing the whole model forbids.
   if (user.kycStatus !== 'REJECTED') return { ok: false, reason: 'not_rejected' };
 
-  if ((user.kycData?.submissionCount || 0) >= MAX_KYC_SUBMISSIONS) {
-    return { ok: false, reason: 'too_many_attempts' };
-  }
   if (!isValidAadhaar(aadhaar)) return { ok: false, reason: 'invalid_format' };
+
+  /**
+   * The attempt is CLAIMED before any work, in one statement that both checks
+   * the cap and consumes an attempt.
+   *
+   * It used to read the count near the top and increment at the very bottom,
+   * which left the whole submission between them: two reapplies arriving
+   * together both read the same count, both passed, and the cap was exceeded
+   * by exactly the number of requests in flight. That cap is the only thing
+   * stopping "submit a number, be told whether it is registered" from being a
+   * repeatable enumeration oracle, so a concurrency hole in it is the hole.
+   *
+   * The trade is deliberate: a refused submission below RELEASES the attempt,
+   * but a crash between the claim and the release burns one. Burning an attempt
+   * on a rare crash is a support ticket; an unbounded oracle is not.
+   */
+  const claimed = await claimKycSubmission(userId, MAX_KYC_SUBMISSIONS);
+  if (claimed === null) return { ok: false, reason: 'too_many_attempts' };
+
+  /** Give the attempt back — this submission never entered the queue. */
+  const release = () => releaseKycSubmission(userId).catch(() => {});
 
   const normalised = String(aadhaar).replace(/[\s-]/g, '');
   const hash = hashAadhaar(normalised);
 
-  const taken = await KycVerification.findOne({
-    aadhaarHash: { $in: hashAadhaarCandidates(normalised) },
-  }).select('_id userId').lean();
   // Their own live row would mean the release did not happen; anyone else's
-  // means the number genuinely belongs to another account.
-  if (taken) return { ok: false, reason: 'already_registered' };
+  // means the number genuinely belongs to another account. Checked across
+  // every candidate hash, so a number registered under a retired HMAC secret
+  // still reads as taken.
+  if (await findRegisteredAadhaar(hashAadhaarCandidates(normalised))) {
+    await release();
+    return { ok: false, reason: 'already_registered' };
+  }
 
-  const identity = await TelegramIdentity.findOne({ userId }).select('phone').lean();
+  const identity = await getIdentityByUserId(userId);
 
-  try {
-    await KycVerification.create({
-      userId,
-      aadhaarHash: hash,
-      aadhaarEncrypted: encryptField(normalised),
-      aadhaarLast4: normalised.slice(-4),
-      phone: identity?.phone || '',
-      status: 'PENDING_VERIFICATION',
-    });
-  } catch (err) {
-    // 11000 on userId means a row already exists — the previous one was not
-    // released, so this is a state problem rather than a duplicate Aadhaar.
-    if (err?.code === 11000) return { ok: false, reason: 'already_registered' };
-    throw err;
+  const submitted = await submitVerification({
+    userId,
+    aadhaarHash: hash,
+    aadhaarEncrypted: encryptField(normalised),
+    aadhaarLast4: normalised.slice(-4),
+    phone: identity?.phone || '',
+  });
+  if (!submitted.ok) {
+    await release();
+    // `user_already_submitted` means the previous row was never released, so
+    // this is a state problem rather than a duplicate Aadhaar.
+    return { ok: false, reason: 'already_registered' };
   }
 
   // Back into the queue, through the state machine rather than a raw write, so
@@ -337,11 +326,10 @@ export async function resubmitAadhaar({ userId, aadhaar }) {
   const moved = await submitKycForReview(userId, { reason: null });
   if (!moved.ok) {
     // Do not strand a submission the user cannot see the status of.
-    await KycVerification.deleteOne({ userId, status: 'PENDING_VERIFICATION' }).catch(() => {});
+    await releaseFailedSubmission(userId).catch(() => {});
+    await release();
     return { ok: false, reason: 'state_refused' };
   }
-
-  await User.updateOne({ _id: userId }, { $inc: { 'kycData.submissionCount': 1 } });
 
   return { ok: true, last4: normalised.slice(-4) };
 }
@@ -359,60 +347,43 @@ export async function resubmitAadhaar({ userId, aadhaar }) {
  * nothing, and `recordEarningsFor` is itself guarded by a unique index.
  */
 export async function completeOnboarding({ userId }) {
-  const User = mongoose.model('User');
-  const user = await User.findById(userId);
+  const user = await getUser(userId);
   if (!user) return { ok: false, reason: 'no_user' };
 
-  // Whether this join is the one that FINISHES a signup, or just another join by
-  // somebody who finished long ago. The absence of a joining number is exactly
-  // that question: it is allocated here, once, and never cleared.
+  // Whether this join is the one that FINISHES a signup, or just another join
+  // by somebody who finished long ago. The absence of a joining number is
+  // exactly that question: it is allocated here, once, and never cleared.
   //
-  // The caller needs this to decide whether to send an unsolicited login link.
-  // See the note in telegram.routes.js — on a channel replacement every existing
-  // player re-joins, and treating each of those as a fresh signup would send the
-  // whole user base a login link they did not ask for, through the one bot they
-  // are all simultaneously trying to sign in with.
+  // The caller needs it to decide whether to send an unsolicited login link.
+  // On a channel replacement every existing player re-joins, and treating each
+  // of those as a fresh signup would send the whole user base a login link they
+  // did not ask for, through the one bot they are all trying to sign in with.
   const firstCompletion = !user.joiningNumber;
 
-  if (firstCompletion) {
-    /**
-     * Retried on a duplicate, because the counter can fall behind the data.
-     *
-     * `joiningNumber` is unique, and it comes from a counter document that is
-     * separate from the users it numbers. Anything that restores one without
-     * the other — a partial restore, a counter reset, a number set by hand
-     * during support work — leaves the counter handing out a value some user
-     * already holds. `user.save()` then throws E11000.
-     *
-     * Nothing above catches that. The webhook's own catch logs it and returns,
-     * so the player is left with no joining number, no referral earnings booked
-     * for their upline, and no login link — permanently, because the only thing
-     * that would retry is another `chat_member` event and they have already
-     * joined. It is silent, it costs the referrer real money, and support has
-     * nothing to look at.
-     *
-     * The counter is atomic, so simply asking again yields the next value and
-     * walks past the occupied range. Bounded, because a loop that cannot make
-     * progress must fail loudly rather than spin.
-     */
-    for (let attempt = 1; ; attempt += 1) {
-      user.joiningNumber = await nextJoiningNumber();
-      try {
-        await user.save();
-        break;
-      } catch (err) {
-        if (err?.code !== 11000 || attempt >= 25) throw err;
-        console.warn(`[onboarding] joining number ${user.joiningNumber} was taken — `
-          + 'the counter is behind the data; asking for the next one');
-      }
-    }
-  }
+  /**
+   * One statement, and the retry loop it replaces is gone.
+   *
+   * The number used to come from a separate counter row, which could fall
+   * BEHIND the users it numbered — a partial restore, a counter reset, a number
+   * set by hand during support work — and then hand out a value somebody
+   * already held. The save threw, nothing caught it, and the player was left
+   * permanently with no joining number, no referral earnings booked for their
+   * upline, and no login link: silent, costly to the referrer, and invisible to
+   * support. The workaround was a bounded retry that asked the counter again.
+   *
+   * `claimJoiningNumber` derives MAX + 1 from the rows themselves inside one
+   * UPDATE, so there is no counter to fall behind and nothing to retry. It is
+   * idempotent by construction — an account that already holds a number keeps
+   * it — which is what makes a redelivered `chat_member` event free.
+   */
+  const joiningNumber = await claimJoiningNumber(userId);
 
   // Books the upline's ₹25s. Safe on replay.
-  const earnings = await recordEarningsFor(user);
+  const earnings = await recordEarningsFor({ ...user, joiningNumber });
 
-  await TelegramPendingLink.deleteOne({ telegramUserId: { $exists: true }, phone: user.mobile })
-    .catch(() => { /* the pending row also expires on its own */ });
+  // The pending row also expires on its own; removing it here just stops a
+  // finished onboarding lingering with an Aadhaar hash on it.
+  await deletePendingLink(String(user.userId)).catch(() => {});
 
-  return { ok: true, firstCompletion, joiningNumber: user.joiningNumber, earnings };
+  return { ok: true, firstCompletion, joiningNumber, earnings };
 }
