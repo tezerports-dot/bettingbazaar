@@ -22,6 +22,7 @@ import mongoose from 'mongoose';
 import { notify } from '../domains/communication/communication.service.js';
 // AQ-8: hash via the password authority (argon2id).
 import { hashPassword } from '../domains/identity/password.util.js';
+import { getBalances } from '../domains/wallet/walletAuthority.service.js';
 
 // Models are accessed via mongoose.model() to avoid circular dependency
 function getModels() {
@@ -238,7 +239,13 @@ class AdminService {
         throw new Error('Cannot delete user with pending orders');
       }
 
-      if (user.lockedBalance > 0) {
+      // From the WALLET. This gate exists so an account is not retired while
+      // money is still committed against it — a stake mid-cycle, a withdrawal
+      // mid-flight. Reading a stored copy of the figure would let a delete
+      // through on a balance the wallet still holds locked, and the lock is
+      // then attached to an account nobody can act on.
+      const { lockedBalance } = await getBalances(String(userId));
+      if (lockedBalance > 0) {
         throw new Error('Cannot delete user with locked balance');
       }
 

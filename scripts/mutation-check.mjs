@@ -84,9 +84,9 @@ const MUTATIONS = [
   {
     id: 'M31', file: 'backend/postgres/merchantWalletPgAuthority.js', config: UNIT,
     test: 'backend/tests/unit/merchantEligibilityReads.test.js',
-    why: 'the eligibility reader ignores the resolver and reads a mirror that may be empty',
-    from: `  if (!isPostgresAuthoritative(MONEY_PATHS.MERCHANT_WALLET)) {`,
-    to: `  if (false) {`,
+    why: 'committed tokens are reported as spendable, admitting orders nobody can fund',
+    from: `const spendable = (balances) => paiseToRupees(balances.available);`,
+    to: `const spendable = (balances) => paiseToRupees(balances.available + balances.reserved + balances.settlement);`,
   },
   {
     id: 'M32', file: 'backend/domains/merchant/merchant.assignment.routes.js', config: UNIT,
@@ -172,6 +172,21 @@ const MUTATIONS = [
     from: `    console.error('[auth] revocation check failed — refusing the token:', e.message);
     return true;`,
     to: `    return false;`,
+  },
+  // ── Money decisions must read the wallet (trap 7) ─────────────────────────
+  {
+    id: 'M53', file: 'backend/domains/payment/paymentProcessing.service.js', config: UNIT,
+    test: 'backend/tests/unit/moneyDecisionsReadTheWallet.test.js',
+    why: 'withdrawal admission decided from a record field again — money leaves on this path',
+    from: `if (availableWinnings < tokenAmount)`,
+    to: `if (user.winningsBalance < tokenAmount)`,
+  },
+  {
+    id: 'M54', file: 'backend/domains/merchant/merchantScoring.service.js', config: UNIT,
+    test: 'backend/tests/unit/moneyDecisionsReadTheWallet.test.js',
+    why: 'assignment filters candidates on a stored balance, routing orders nobody can fund',
+    from: `    baseQuery.acceptsDeposits = true;`,
+    to: `    baseQuery.acceptsDeposits = true;\n    baseQuery.tokenBalance = { $gte: tokenAmount };`,
   },
 ];
 

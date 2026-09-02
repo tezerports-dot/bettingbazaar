@@ -20,6 +20,7 @@
     "test:watch": "vitest --config vitest.config.ts",
     "check:deps": "depcruise backend --config .dependency-cruiser.cjs",
     "check:no-mongo": "node scripts/verify-no-mongo.mjs",
+    "check:balance-reads": "node scripts/audit-balance-reads.mjs",
     "sync:indexes": "node backend/scripts/sync-indexes.mjs",
     "verify:capabilities": "node scripts/verify-capabilities.mjs",
     "migrate:public-chat-retention": "node backend/scripts/enforce-public-chat-retention.js",

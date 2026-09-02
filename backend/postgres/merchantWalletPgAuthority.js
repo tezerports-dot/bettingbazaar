@@ -194,15 +194,12 @@ export function creditMerchantTokens({
  * it is the same false-authority failure the capability gate exists to prevent,
  * one layer down.
  *
- * With the check, converting a read site is MONOTONIC: the site returns the
- * Mongo value today and the Postgres value after a flip, so the conversion
- * changes nothing now and is correct later. That is what makes the read
- * migration safe to do incrementally — see docs/MONEY_READS_MIGRATION.md.
+ * There is one place a merchant's token balance lives — `merchant_wallets` —
+ * and every movement of those tokens goes through it under a row lock. Reading
+ * the number off a merchant record instead is how an order came to be routed to
+ * a merchant with no tokens to serve it: accepted, unfundable, and the player
+ * left waiting.
  */
 export async function getMerchantTokenBalance(merchantId) {
-  if (!isPostgresAuthoritative(MONEY_PATHS.MERCHANT_WALLET)) {
-    const merchant = await loadMerchant(merchantId);
-    return Number(merchant?.tokenBalance) || 0;
-  }
   return spendable(await getMerchantBalances(merchantId));
 }

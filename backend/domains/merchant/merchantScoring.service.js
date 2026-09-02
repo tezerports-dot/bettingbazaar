@@ -9,6 +9,8 @@
 
 import mongoose from 'mongoose';
 import { MERCHANT_CURRENCY } from './merchantCurrency.js';
+import { getAvailablePaiseFor } from '../../postgres/merchantWalletPg.js';
+import { rupeesToPaise } from '../../shared/money.js';
 
 const ACTIVE_ASSIGNMENT_STATUSES = ['ASSIGNED', 'PROCESSING', 'PAID'];
 
@@ -84,8 +86,15 @@ function typeLimitFor(merchant, orderType, defaults) {
 /**
  * selectBestMerchant — find and return the highest-priority eligible merchant.
  *
- * DEPOSIT (user buys tokens): merchants must hold enough tokens; highest
- * current tokenBalance wins so the largest inventory takes the largest fit.
+ * DEPOSIT (user buys tokens): merchants must hold enough tokens; the largest
+ * spendable inventory wins, so the biggest holder takes the biggest fit.
+ *
+ * The token figure comes from `merchant_wallets`, which is where every token
+ * movement actually happens — NOT from a field on the merchant record. This
+ * function decides where a player's money goes, so the number it decides with
+ * has to be the number the transfer will find. Filtering on a stored copy is
+ * how an order came to be routed to a merchant with no tokens to serve it:
+ * accepted, unfundable, and the player waiting.
  * WITHDRAWAL (user sells tokens): merchants with the largest 30-day completed
  * buy-minus-sell value are replenished first; if none are free, the order stays
  * in the open sell pool instead of burning retry attempts.
@@ -109,7 +118,9 @@ export async function selectBestMerchant(orderType, tokenAmount, currency = MERC
 
   if (orderType === 'DEPOSIT') {
     baseQuery.acceptsDeposits = true;
-    baseQuery.tokenBalance = { $gte: tokenAmount };
+    // The token criterion is NOT in this query, and cannot be: the balance it
+    // would filter on lives in another system. It is applied below, against the
+    // wallet, after the candidates are fetched.
   } else {
     baseQuery.acceptsWithdrawals = true;
   }
@@ -124,8 +135,24 @@ export async function selectBestMerchant(orderType, tokenAmount, currency = MERC
   if (!candidates.length) return null;
 
   if (orderType === 'DEPOSIT') {
+    // One batched read, so every candidate is judged against the same instant.
+    // A read per candidate would be N round trips on the hot path of a money
+    // movement, and would judge each one at a slightly different moment.
+    const availablePaise = await getAvailablePaiseFor(candidates.map((m) => m._id));
+    const neededPaise = rupeesToPaise(tokenAmount);
+
+    // A merchant with NO wallet row is EXCLUDED, not sorted last. No row means
+    // the money system has never seen them, which is a different thing from
+    // being empty and routes differently: an empty merchant may be topped up,
+    // an unknown one should not be handed an order at all.
+    candidates = candidates.filter((m) => (availablePaise.get(String(m._id)) ?? -1) >= neededPaise);
+    if (!candidates.length) return null;
+
+    const paiseOf = (m) => availablePaise.get(String(m._id)) ?? 0;
     candidates.sort((a, b) => {
-      if ((b.tokenBalance || 0) !== (a.tokenBalance || 0)) return (b.tokenBalance || 0) - (a.tokenBalance || 0);
+      // Ranked on the SAME number the filter used, so the merchant chosen is
+      // the one that actually holds the most.
+      if (paiseOf(b) !== paiseOf(a)) return paiseOf(b) - paiseOf(a);
       const scoreDiff = scoreMerchant(b) - scoreMerchant(a);
       if (scoreDiff !== 0) return scoreDiff;
       return (a.activeDepositOrderCount || 0) - (b.activeDepositOrderCount || 0);

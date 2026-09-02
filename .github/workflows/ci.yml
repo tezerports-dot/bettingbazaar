@@ -213,6 +213,11 @@ jobs:
       # products) fail the build instead of waiting for human review.
       - name: Architecture validation (dependency-cruiser)
         run: npm run check:deps
+      # Trap 7, mechanically: a number that GATES a transfer must be read from
+      # the rows the write will lock. Four gates were once decided from a stored
+      # copy of a balance while the movement touched the wallet.
+      - name: Money decisions read the wallet
+        run: npm run check:balance-reads
       # The single-store gate is NOT repeated here, deliberately. It has its own
       # job, it stays red for the whole removal, and a copy of it in this job
       # would fail before the three panel builds below ever run — costing the

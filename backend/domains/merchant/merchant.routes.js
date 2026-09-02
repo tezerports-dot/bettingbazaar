@@ -33,6 +33,7 @@ import { holdMinutes } from '../payment/withdrawalHold.service.js';
 // One rule for how a confirmed deposit splits across the user's two pockets.
 import { depositCreditSplit } from '../payment/depositCredit.js';
 import { debitMerchantTokens, creditMerchantTokens } from './merchantWallet.service.js';
+import { getMerchantTokenBalance } from '../../postgres/merchantWalletPgAuthority.js';
 import { publish as publishDomainEvent, EVENTS as DOMAIN_EVENTS } from '../../services/eventBus.service.js';
 import { getRiskRules } from '../risk/riskValidation.service.js';
 import { FLAGS, isEnabled } from '../../services/featureFlags.service.js';
@@ -735,7 +736,11 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         }
 
         if (order.type === 'DEPOSIT') {
-            if (merchant.acceptsDeposits === false || (merchant.tokenBalance || 0) < order.tokenAmount) {
+            // From the WALLET, not the merchant record. This gate admits an
+            // order the merchant then has to fund; deciding it from a stored
+            // copy is how one came to be accepted that could not be served.
+            const availableTokens = await getMerchantTokenBalance(merchant._id);
+            if (merchant.acceptsDeposits === false || availableTokens < order.tokenAmount) {
                 return res.status(400).json({ success: false, message: 'Merchant has insufficient token balance or deposit capability for this buy order.' });
             }
         } else if (merchant.acceptsWithdrawals === false) {

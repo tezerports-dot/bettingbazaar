@@ -9,7 +9,7 @@
 
 import mongoose from 'mongoose';
 import crypto   from 'crypto';
-import { debitWinningsForWithdrawal, refundWithdrawal } from '../wallet/walletAuthority.service.js';
+import { debitWinningsForWithdrawal, refundWithdrawal, getBalances } from '../wallet/walletAuthority.service.js';
 import { selectBestMerchant } from '../merchant/merchantScoring.service.js';
 import { merchantTypeOf } from '../merchant/merchantCurrency.js';
 // Risk Platform (Phase 010): the single validation authority for funding orders.
@@ -335,22 +335,35 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
     if (!user.bankDetails?.accountNumber || !user.bankDetails?.ifscCode)
       throw Object.assign(new Error('Please add your bank account details before withdrawing'), { status: 400 });
 
+    // ── Admission is decided from the WALLET ────────────────────────────────
+    //
+    // This is the path where money LEAVES the platform, and all four numbers
+    // below — the overdraft guard, the sufficiency check, what the refusal
+    // tells the player, and what it reports as available — used to come off the
+    // user record while `debitWinningsForWithdrawal` moves the `wallets` row.
+    // A withdrawal could therefore be ADMITTED against winnings the wallet does
+    // not hold, and refused with a figure no wallet ever had.
+    //
+    // ONE read, used for every one of them, from the rows the debit will lock.
+    const balances = await getBalances(String(user._id));
+    const availableWinnings = balances.winningsBalance || 0;
+
     // Pending withdrawal total guard (prevents overdraft across concurrent requests)
     const [pagg] = await mongoose.model('PaymentOrder').aggregate([
       { $match: { userId: user._id, type: 'WITHDRAWAL', status: { $in: ['PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID'] } } },
       { $group: { _id: null, total: { $sum: '$tokenAmount' } } },
     ]);
     const pendingTotal = pagg?.total || 0;
-    if (pendingTotal + tokenAmount > (user.winningsBalance || 0))
+    if (pendingTotal + tokenAmount > availableWinnings)
       throw Object.assign(
-        new Error(`Insufficient winnings balance. Available: ${user.winningsBalance || 0} tokens (${pendingTotal} locked in pending orders).`),
+        new Error(`Insufficient winnings balance. Available: ${availableWinnings} tokens (${pendingTotal} locked in pending orders).`),
         { status: 400 }
       );
 
-    if (user.winningsBalance < tokenAmount)
+    if (availableWinnings < tokenAmount)
       throw Object.assign(
-        new Error(`Insufficient winnings balance. Available: ${user.winningsBalance} tokens`),
-        { status: 400, balance: { deposit: user.depositBalance, winnings: user.winningsBalance } }
+        new Error(`Insufficient winnings balance. Available: ${availableWinnings} tokens`),
+        { status: 400, balance: { deposit: balances.depositBalance || 0, winnings: availableWinnings } }
       );
 
     // Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08):

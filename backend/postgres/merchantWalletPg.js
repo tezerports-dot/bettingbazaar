@@ -90,6 +90,34 @@ export async function getMerchantBalances(merchantId) {
  * the callback the balances AS OF that lock. Same contract as walletPg's
  * withWalletLock — see there for why the lock rather than a hopeful pre-read.
  */
+/**
+ * Spendable balances for MANY merchants, in one round trip.
+ *
+ * Assignment picks a merchant for every deposit, so this is on the hot path of
+ * a money movement. A read per candidate turns one decision into N round trips
+ * and gives each candidate a slightly different moment to be judged at; one
+ * query judges them all against the same snapshot.
+ *
+ * A merchant with NO wallet row is absent from the result rather than reported
+ * as zero, and the difference matters at the call site: no row means the money
+ * system has never seen this merchant, which routes differently from a merchant
+ * that is merely empty.
+ *
+ * @returns {Promise<Map<string, number>>} merchant id -> available paise
+ */
+export async function getAvailablePaiseFor(merchantIds = []) {
+  const ids = [...new Set(merchantIds.filter(Boolean).map(String))];
+  if (!ids.length) return new Map();
+  const { rows } = await pgQuery(
+    `SELECT merchant_id, ${POCKET_COLUMN[POCKETS.AVAILABLE]} AS available
+       FROM merchant_wallets WHERE merchant_id = ANY($1::text[])`,
+    [ids], 'merchant_wallet_read_many',
+  );
+  // BIGINT arrives as a string; uncast, '900' >= 1000 is true and every
+  // eligibility comparison built on this map is wrong.
+  return new Map(rows.map((r) => [r.merchant_id, toPaise(r.available)]));
+}
+
 export async function withMerchantLock(merchantId, fn) {
   const mid = String(merchantId);
   const pool = await getPool();

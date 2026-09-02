@@ -20,6 +20,8 @@ import { emitAdminUpdate, emitMerchantUpdate, emitOrderUpdate, emitWalletUpdate 
 // Mongo owns the path, so converting a gate is monotonic — strictly more
 // correct under either store, never a behaviour change on the current one.
 import { getMerchantTokenBalance } from '../../postgres/merchantWalletPgAuthority.js';
+import { getAvailablePaiseFor } from '../../postgres/merchantWalletPg.js';
+import { rupeesToPaise, paiseToRupees } from '../../shared/money.js';
 
 const router = express.Router();
 
@@ -272,6 +274,12 @@ router.get('/queue/available-merchants', authenticate, isAdminOrSubAdminOrQueueM
     if (type === 'DEPOSIT')    merchantFilter.acceptsDeposits    = true;
     if (type === 'WITHDRAWAL') merchantFilter.acceptsWithdrawals = true;
     const merchantDocs = await Merchant.find(merchantFilter).lean();
+    // The token figure comes from the WALLET, in one batched read, because this
+    // list is what a queue manager assigns from — the number they see has to be
+    // the number the transfer will find. A merchant with no wallet row reports
+    // -1 paise below and is excluded rather than shown as empty: no row means
+    // the money system has never seen them.
+    const availablePaise = await getAvailablePaiseFor(merchantDocs.map((m) => m._id));
     const merchants = merchantDocs
       .map((m) => ({
         _id:               m._id,
@@ -282,7 +290,13 @@ router.get('/queue/available-merchants', authenticate, isAdminOrSubAdminOrQueueM
         isOnline:          m.isOnline,
         acceptsDeposits:   m.acceptsDeposits   !== false,
         acceptsWithdrawals:m.acceptsWithdrawals !== false,
-        tokenBalance:      m.tokenBalance || 0,
+        tokenBalance:      paiseToRupees(availablePaise.get(String(m._id)) ?? 0),
+        // The same figure, under a name that says where it came from: the
+        // filter below gates an assignment, and a reader should not have to
+        // trace thirty lines back to see that it reads the wallet.
+        walletAvailableTokens: availablePaise.has(String(m._id))
+          ? paiseToRupees(availablePaise.get(String(m._id)))
+          : null,
         merchantStats: {
           monthlyProcessed:     m.merchantStats?.monthlyProcessed     || 0,
           totalOrdersProcessed: m.merchantStats?.totalOrdersProcessed || 0,
@@ -291,13 +305,17 @@ router.get('/queue/available-merchants', authenticate, isAdminOrSubAdminOrQueueM
       }))
       .filter(m => {
         if (amount > 0) {
-          if (m.tokenBalance < amount)         return false;  // Finding 5
+          // Excluded, not merely outranked: a merchant the money system has
+          // never seen must not be offered for an assignment. `null` here is
+          // "no wallet row", which is a different thing from a zero balance.
+          if (m.walletAvailableTokens === null) return false;
+          if (m.walletAvailableTokens < amount) return false;  // Finding 5
           if (amount > m.limits.maxOrder)      return false;
           if (m.limits.minOrder > 0 && amount < m.limits.minOrder) return false;
         }
         return true;
       })
-      .sort((a, b) => b.tokenBalance - a.tokenBalance);
+      .sort((a, b) => b.walletAvailableTokens - a.walletAvailableTokens);
 
     res.json({ success: true, merchants, isPoolConfigured: true, poolSize: poolIds.length });
   } catch (error) {
