@@ -572,6 +572,75 @@ export const refundBet = (args) => settle(args, { name: 'refund', ...TRANSITIONS
  * reconciliation could not recover it, because the ledger legitimately shows
  * the debit.
  */
+/**
+ * A cycle's outstanding bets, with the pockets each stake came from.
+ *
+ * ── Why the slices come from the LEDGER ────────────────────────────────────
+ * The `bets` row records the stake total, not which pockets it was taken from.
+ * The provenance lives where the money moved: `place` writes one DEBIT per
+ * source pocket keyed `<betId>_stake_<field>`, so those rows ARE the record of
+ * the split — and reconstructing from them cannot disagree with what actually
+ * happened, which a second copy stored on the bet could.
+ *
+ * That matters because a returned stake must go back to the pocket it came out
+ * of. Crediting a deposit-funded stake into `winningsBalance` silently converts
+ * non-withdrawable money into withdrawable, which is a cash-out route rather
+ * than a rounding error.
+ *
+ * ── Why the settlement engine needs this at all ────────────────────────────
+ * The engine used to enumerate the bets to settle from the document store and
+ * then execute the transitions here — a money decision read from one store and
+ * carried out in another, which is the one thing the single-store rule forbids
+ * outright. The rows it settles and the rows it reads are now the same rows.
+ *
+ * Phantom bets are excluded. They are created with no balance deduction and no
+ * provenance, so there is no stake to consume and `settle` would refuse them.
+ */
+export async function listSettleableBets(cycleId, { side = null, limit = 1000, after = 0 } = {}) {
+  const params = [String(cycleId), Number(after) || 0];
+  let sideClause = '';
+  if (side === 'WINNING' || side === 'LOSING') {
+    // The winning side is the cycle's own `winner`, read in the statement, so a
+    // pass cannot settle against a result that changed after it started.
+    sideClause = side === 'WINNING'
+      ? 'AND b.side = (SELECT winner FROM cycles WHERE cycle_id = $1)'
+      : 'AND b.side <> (SELECT winner FROM cycles WHERE cycle_id = $1)';
+  }
+
+  const { rows } = await pgQuery(
+    `SELECT b.id, b.bet_id, b.mongo_id, b.user_id, b.side, b.stake_paise,
+            COALESCE(
+              (SELECT jsonb_agg(jsonb_build_object(
+                        'field', l.field, 'amountPaise', ABS(l.amount_paise)))
+                 FROM wallet_ledger l
+                WHERE l.ref_id = b.bet_id
+                  AND l.tx_id LIKE b.bet_id || '_stake_%'
+                  AND l.tx_type = 'DEBIT'),
+              '[]'::jsonb) AS slices
+       FROM bets b
+      WHERE b.cycle_id = $1 AND b.status = 'PENDING' AND NOT b.is_phantom
+        AND b.id > $2
+        ${sideClause}
+      ORDER BY b.id
+      LIMIT ${Math.min(Math.max(Number(limit) || 1000, 1), 5000)}`,
+    params, 'bets_list_settleable',
+  );
+
+  return rows.map((r) => ({
+    id: Number(r.id),
+    betId: r.bet_id,
+    mongoId: r.mongo_id,
+    userId: r.user_id,
+    side: r.side,
+    stakePaise: Number(r.stake_paise),
+    // An empty array here is a bet whose stake movement was never recorded.
+    // Passed through as-is rather than defaulted: `settle` refuses it and the
+    // engine reports it, which is what leaves it for a human instead of
+    // guessing at a split and returning the money to the wrong pocket.
+    slices: (r.slices ?? []).map((s) => ({ field: s.field, amountPaise: Number(s.amountPaise) })),
+  }));
+}
+
 export async function claimPendingBetForRefund(betId) {
   const { rows } = await pgQuery(
     `DELETE FROM bets WHERE bet_id = $1 AND status = 'PENDING' RETURNING *`,

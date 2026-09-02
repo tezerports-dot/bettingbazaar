@@ -29,6 +29,7 @@ import { getBalancesPaise, applyDeltaPaise } from '../repositories/wallets.core.
 import {
   BET_STATUS, placeBet, winBet, loseBet, voidBet, refundBet,
   getBet, getBetHistory, reconcileUserStakes, findBetsMissingStakeMovement,
+  listSettleableBets,
 } from '../repositories/bets.core.js';
 
 const hasPg = pgConfigured();
@@ -229,6 +230,123 @@ describePg('Bet lifecycle (PostgreSQL)', () => {
   });
 
   // ── The state machine ─────────────────────────────────────────────────────
+  // ── Enumerating what a settlement pass has to settle ──────────────────────
+  describe('the settlement pass reads the rows it settles', () => {
+    /** A cycle row, so the winning/losing split can be resolved in the statement. */
+    const declareCycle = (cycleId, winner) => pgQuery(
+      `INSERT INTO cycles (cycle_id, cycle_type, status, winner, start_time, end_time)
+       VALUES ($1, '30_MIN', 'RESULT_DECLARED', $2,
+               now() - interval '30 minutes', now())
+       ON CONFLICT (cycle_id) DO UPDATE SET winner = EXCLUDED.winner`,
+      [cycleId, winner],
+    );
+
+    it('reconstructs each stake\'s funding split from the ledger', async () => {
+      await fund('depositBalance', 30_000, 'f1');
+      await fund('winningsBalance', 20_000, 'f2');
+      await place('b-split', [slice('depositBalance', 30_000), slice('winningsBalance', 20_000)]);
+      await declareCycle('cyc1', 'DELHI');
+
+      const [bet] = await listSettleableBets('cyc1');
+      // The bets row holds the TOTAL; the pockets it came out of live in the
+      // placement ledger. Reconstructing from there cannot disagree with what
+      // actually moved, which a second copy stored on the bet could.
+      expect(bet.stakePaise).toBe(50_000);
+      expect(bet.slices).toEqual([
+        { field: 'depositBalance', amountPaise: 30_000 },
+        { field: 'winningsBalance', amountPaise: 20_000 },
+      ]);
+    });
+
+    it('gives back slices that settle without being refused', async () => {
+      await fund('depositBalance', 40_000, 'f1');
+      await place('b-round', [slice('depositBalance', 40_000)]);
+      await declareCycle('cyc1', 'DELHI');
+
+      const [bet] = await listSettleableBets('cyc1', { side: 'WINNING' });
+      // The round trip is the point: `settle` refuses slices that do not sum
+      // exactly to the stake, so this proves the enumeration and the transition
+      // agree about the same bet.
+      const won = await winBet({
+        betId: bet.betId, userId: bet.userId, slices: bet.slices,
+        payoutPaise: 76_000, platformFeePaise: 4_000, actor: 'test',
+      });
+      expect(won.ok).toBe(true);
+      expect((await bal()).winningsBalance).toBe(76_000);
+    });
+
+    it('splits winning from losing against the cycle\'s own winner', async () => {
+      await fund('depositBalance', 60_000, 'f1');
+      await place('b-delhi', [slice('depositBalance', 20_000)]);
+      await placeBet({
+        betId: 'b-bombay', userId: U, cycleId: 'cyc1', side: 'BOMBAY',
+        slices: [slice('depositBalance', 20_000)],
+      });
+      await declareCycle('cyc1', 'DELHI');
+
+      // The side is resolved IN the statement from `cycles.winner`, so a pass
+      // cannot settle against a result that changed after it started.
+      expect((await listSettleableBets('cyc1', { side: 'WINNING' })).map((b) => b.betId))
+        .toEqual(['b-delhi']);
+      expect((await listSettleableBets('cyc1', { side: 'LOSING' })).map((b) => b.betId))
+        .toEqual(['b-bombay']);
+    });
+
+    it('leaves out bets an earlier pass already settled', async () => {
+      await fund('depositBalance', 40_000, 'f1');
+      await place('b-1', [slice('depositBalance', 20_000)]);
+      await place('b-2', [slice('depositBalance', 20_000)]);
+      await declareCycle('cyc1', 'DELHI');
+
+      await loseBet({ betId: 'b-1', userId: U, slices: [slice('depositBalance', 20_000)], actor: 'test' });
+
+      // Only PENDING. A resumed pass re-processes what is left rather than
+      // re-settling what is done — which is what makes the pass restartable.
+      expect((await listSettleableBets('cyc1')).map((b) => b.betId)).toEqual(['b-2']);
+    });
+
+    it('leaves phantom bets out entirely', async () => {
+      await fund('depositBalance', 20_000, 'f1');
+      await place('b-real', [slice('depositBalance', 20_000)]);
+      await pgQuery(
+        `INSERT INTO bets (bet_id, user_id, cycle_id, side, stake_paise, status, is_phantom)
+         VALUES ('b-phantom','house','cyc1','DELHI',900_00,'PENDING',TRUE)`, [],
+      );
+      await declareCycle('cyc1', 'DELHI');
+
+      // A phantom bet moved no money and has no provenance, so there is no
+      // stake to consume and `settle` would refuse it.
+      expect((await listSettleableBets('cyc1')).map((b) => b.betId)).toEqual(['b-real']);
+    });
+
+    it('reports a bet whose stake movement was never recorded, rather than guessing', async () => {
+      await pgQuery(
+        `INSERT INTO bets (bet_id, user_id, cycle_id, side, stake_paise, status)
+         VALUES ('b-orphan','u-orphan','cyc1','DELHI',20_000,'PENDING')`, [],
+      );
+      await declareCycle('cyc1', 'DELHI');
+
+      const [bet] = await listSettleableBets('cyc1');
+      // Empty, not defaulted. Inventing a split would return the money to a
+      // pocket it never came from — and returning a deposit-funded stake into
+      // winningsBalance turns non-withdrawable money withdrawable.
+      expect(bet.slices).toEqual([]);
+    });
+
+    it('pages through a cycle by row id, so a large cycle settles in batches', async () => {
+      await fund('depositBalance', 60_000, 'f1');
+      for (const id of ['p1', 'p2', 'p3']) {
+        await place(id, [slice('depositBalance', 20_000)]);
+      }
+      await declareCycle('cyc1', 'DELHI');
+
+      const first = await listSettleableBets('cyc1', { limit: 2 });
+      expect(first.map((b) => b.betId)).toEqual(['p1', 'p2']);
+      const next = await listSettleableBets('cyc1', { limit: 2, after: first[first.length - 1].id });
+      expect(next.map((b) => b.betId)).toEqual(['p3']);
+    });
+  });
+
   describe('transition guards', () => {
     const stake = [slice('depositBalance', 30_000)];
     beforeEach(async () => {
