@@ -8,6 +8,9 @@ import { createRateLimitStore } from './redisRateLimitStore.js';
 // values unchanged; edit the config to change policy.
 import { RATE_LIMIT_TIERS } from '../config/security.config.js';
 import { betBehaviorLimiter } from './behavioralRateLimit.js';
+// The IP deny-list. Was a model registered nowhere; every call threw into a
+// silent fail-open catch, so nothing was ever blocked. Now a real table.
+import { isIpBlocked, blockIp, unblockIp } from '../postgres/securityPg.js';
 
 // ==================== AUTHENTICATION RATE LIMITERS ====================
 
@@ -267,36 +270,53 @@ export const securityMonitor = async (req, res, next) => {
  * Blocks IPs that have been flagged for suspicious activity
  * In production, you'd store blocked IPs in Redis or database
  */
-// IP blocking now uses MongoDB via BlockedIP model for persistence across restarts
-
+/**
+ * The IP deny-list, which until now has never blocked anything.
+ *
+ * All three of these asked for a model registered NOWHERE. Every call raised
+ * MissingSchemaError; `ipBlocker`'s catch swallowed it silently and let the
+ * request through, and `blockIP` logged a success it had not achieved. An
+ * operator blocking an abusive address got a confirmation and no effect, for as
+ * long as this code has existed.
+ *
+ * FAIL-OPEN IS KEPT and made loud. A deny-list that failed closed would lock
+ * every user out when the database blinks — worse than letting a few blocked
+ * addresses through meanwhile. But the failure is LOGGED now rather than
+ * swallowed, because a control that stops working quietly is how this stayed
+ * dead. (Contrast `isTokenRevoked`, which fails CLOSED: a revoked token is a
+ * credential its holder is not entitled to, while a blocked IP is a coarse
+ * abuse control whose false positives are ordinary users.)
+ */
 export const ipBlocker = async (req, res, next) => {
     try {
-        const mongoose = (await import('mongoose')).default;
-        const BlockedIP = mongoose.model('BlockedIP');
-        const blocked = await BlockedIP.findOne({ ip: req.ip, active: true }).lean();
-        if (blocked) {
+        if (await isIpBlocked(req.ip)) {
             console.warn('🚫 BLOCKED IP attempted access:', req.ip);
             return res.status(403).json({ success: false, message: 'Access denied.' });
         }
-    } catch { /* DB unavailable — fail open to avoid locking out legitimate users */ }
+    } catch (e) {
+        // Deliberately open — see above — but never silent again.
+        console.error('[security] IP deny-list unavailable, allowing request:', e.message);
+    }
     next();
 };
 
-// Function to block an IP (call this from admin panel or automated detection)
-export const blockIP = async (ip, reason = 'Suspicious activity') => {
+/** Block an address. Called from the admin panel and from automated detection. */
+export const blockIP = async (ip, reason = 'Suspicious activity', actor = null) => {
     try {
-        const mongoose = (await import('mongoose')).default;
-        const BlockedIP = mongoose.model('BlockedIP');
-        await BlockedIP.findOneAndUpdate({ ip }, { ip, reason, active: true, blockedAt: new Date() }, { upsert: true });
+        await blockIp(ip, { reason, actor });
         console.log('🚫 IP blocked:', ip);
-    } catch (e) { console.error('blockIP failed:', e.message); }
+        return true;
+    } catch (e) {
+        // Reported, not swallowed: the caller told an operator this worked.
+        console.error('blockIP failed:', e.message);
+        return false;
+    }
 };
 
-export const unblockIP = async (ip) => {
+export const unblockIP = async (ip, actor = null) => {
     try {
-        const mongoose = (await import('mongoose')).default;
-        const BlockedIP = mongoose.model('BlockedIP');
-        await BlockedIP.findOneAndUpdate({ ip }, { active: false });
+        await unblockIp(ip, { actor });
         console.log('✅ IP unblocked:', ip);
-    } catch (e) { console.error('unblockIP failed:', e.message); }
+        return true;
+    } catch (e) { console.error('unblockIP failed:', e.message); return false; }
 };

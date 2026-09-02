@@ -36,6 +36,9 @@ import { debitMerchantTokens, creditMerchantTokens } from './merchantWallet.serv
 import { getMerchantTokenBalance } from '../../postgres/merchantWalletPgAuthority.js';
 import { publish as publishDomainEvent, EVENTS as DOMAIN_EVENTS } from '../../services/eventBus.service.js';
 import { getRiskRules } from '../risk/riskValidation.service.js';
+// Order chat. Every write here named a model registered nowhere, so the thread
+// echoed over the socket and never survived a reload.
+import { listMessages, postMessage, postSystemMessage } from '../../postgres/chatPg.js';
 import { FLAGS, isEnabled } from '../../services/featureFlags.service.js';
 import { rupeesToPaise } from '../../shared/money.js';
 import { isPostgresAuthoritative, MONEY_PATHS } from '../../postgres/moneyAuthority.js';
@@ -129,19 +132,14 @@ const formatMerchant = (merchant, user = null) => {
 
 // ── Auto system message helper ────────────────────────────────────────────────
 async function sendSystemMessage(orderId, message, io) {
-    try {
-        const ChatMessage = mongoose.model('ChatMessage');
-        const chat = await ChatMessage.create({
-            orderId, senderId: null, senderType: 'SYSTEM',
-            senderName: 'System', message, isSystem: true, timestamp: new Date(),
-        });
-        if (io) {
-            const oid = orderId.toString();
-            const payload = { id: chat._id, orderId: oid, senderType: 'SYSTEM',
-                senderName: 'System', message, isSystem: true, timestamp: chat.timestamp };
-            io.to(`order_${oid}`).emit(`chat_${oid}`, payload);
-        }
-    } catch(e) { console.error('[SystemMsg]', e.message); }
+    // postSystemMessage swallows-and-logs its own failure: the order really did
+    // change state whether or not the note about it landed. It returns null in
+    // that case, and there is then nothing to broadcast.
+    const chat = await postSystemMessage(orderId, message);
+    if (chat && io) {
+        const oid = String(orderId);
+        io.to(`order_${oid}`).emit(`chat_${oid}`, { ...chat, orderId: oid });
+    }
 }
 
 router.post('/auth/signup', async (req, res) => {
@@ -1230,19 +1228,15 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
             res.json({ success: true, message: 'Order rejected. Searching for next available merchant.', order: sanitizeMerchantOrder(order) });
         }
 
-        try {
-            const ChatMessage = mongoose.model('ChatMessage');
-            await ChatMessage.create({
-                orderId: order._id, senderId: req.merchantId, senderType: 'SYSTEM',
-                message:
-                    `❌ ORDER REJECTED BY MERCHANT\n` +
-                    `Reason: ${reason}\n` +
-                    (reAssigned
-                        ? `✅ A new merchant has been assigned to your order.`
-                        : `⏳ We are searching for another merchant.`),
-                isSystem: true,
-            });
-        } catch (_) {}
+        await postSystemMessage(
+            order._id,
+            `❌ ORDER REJECTED BY MERCHANT\n` +
+            `Reason: ${reason}\n` +
+            (reAssigned
+                ? `✅ A new merchant has been assigned to your order.`
+                : `⏳ We are searching for another merchant.`),
+            { senderId: req.merchantId },
+        );
     } catch (err) {
         console.error('POST /merchant/reject/:id error:', err);
         res.status(500).json({ success: false, message: 'Failed to reject order.' });
@@ -1309,9 +1303,8 @@ router.post('/order/:id/dispute', merchantAuth, async (req, res) => {
 router.get('/chat/:id', merchantAuth, async (req, res) => {
     try {
         const PaymentOrder    = mongoose.model('PaymentOrder');
-        const ChatMessage = mongoose.model('ChatMessage');
 
-        // Allow lookup by MongoDB _id or by orderId string
+        // Allow lookup by document id or by orderId string
         const order = await PaymentOrder.findOne({
             $or: [
                 { _id: (req.params.id && /^[a-f\d]{24}$/i.test(req.params.id) ? req.params.id : null) },
@@ -1326,26 +1319,13 @@ router.get('/chat/:id', merchantAuth, async (req, res) => {
             return res.status(403).json({ success: false, message: 'Access denied.' });
         }
 
-        const messages = await ChatMessage.find({ orderId: order._id })
-            .populate('senderId', 'username mobile')
-            .sort({ timestamp: 1 })
-            .limit(200)
-            .lean();
+        const messages = await listMessages(order._id, { limit: 200 });
 
         res.json({
             success: true,
-            messages: messages.map(m => ({
-                id:            m._id.toString(),
-                orderId:       order.orderId || order._id.toString(),
-                senderId:      m.senderId?._id?.toString() || m.senderId?.toString() || '',
-                senderName:    m.senderType === 'MERCHANT' ? 'Merchant' : m.senderType === 'SYSTEM' ? 'System' : 'User',
-                senderType:    m.senderType,
-                text:          m.message,
-                message:       m.message,
-                attachmentUrl: m.attachmentUrl || null,
-                isSystem:      m.isSystem || false,
-                timestamp:     m.timestamp,
-            })),
+            // The thread is stored against the order's id; the panel labels each
+            // message with the human-facing orderId, which is a different string.
+            messages: messages.map(m => ({ ...m, orderId: order.orderId || String(order._id) })),
         });
     } catch (err) {
         console.error('GET /merchant/chat/:id error:', err);
@@ -1361,7 +1341,6 @@ router.post('/chat/:id', merchantAuth, async (req, res) => {
         }
 
         const PaymentOrder    = mongoose.model('PaymentOrder');
-        const ChatMessage = mongoose.model('ChatMessage');
 
         const order = await PaymentOrder.findOne({
             $or: [
@@ -1376,30 +1355,19 @@ router.post('/chat/:id', merchantAuth, async (req, res) => {
             return res.status(403).json({ success: false, message: 'Access denied.' });
         }
 
-        const chat = await ChatMessage.create({
+        const chat = await postMessage({
             orderId:       order._id,
             senderId:      req.userId,
             senderType:    'MERCHANT',
             message:       text.trim(),
-            attachmentUrl: attachmentUrl || undefined,
+            attachmentUrl: attachmentUrl || null,
             isSystem:      false,
-            timestamp:     new Date(),
         });
 
-        
-        const merchantName = 'Merchant';
-        const chatPayload = {
-            id:            chat._id.toString(),
-            orderId:       order.orderId || order._id.toString(),
-            senderId:      req.userId?.toString() || '',
-            senderName:    merchantName,
-            senderType:    'MERCHANT',
-            text:          chat.message,
-            message:       chat.message,
-            attachmentUrl: chat.attachmentUrl || null,
-            isSystem:      false,
-            timestamp:     chat.timestamp,
-        };
+
+        // The stored message, relabelled with the human-facing orderId — the
+        // panel joins on that, not on the order document's id.
+        const chatPayload = { ...chat, orderId: order.orderId || String(order._id) };
 
         
         try {
@@ -1462,17 +1430,11 @@ router.post('/orders/:id/red-flag', merchantAuth, async (req, res) => {
         Object.assign(order, flagged.order);
 
         
-        try {
-            const ChatMessage = mongoose.model('ChatMessage');
-            await ChatMessage.create({
-                orderId:    order._id,
-                senderId:   req.userId,
-                senderType: 'SYSTEM',
-                message:    `⚠️ Order flagged by merchant: ${reason.trim()}. Admin has been notified.`,
-                isSystem:   true,
-                timestamp:  new Date(),
-            });
-        } catch (_) {}
+        await postSystemMessage(
+            order._id,
+            `⚠️ Order flagged by merchant: ${reason.trim()}. Admin has been notified.`,
+            { senderId: req.userId },
+        );
 
         // Notify admins via SSE
         if (global.sseManager) {

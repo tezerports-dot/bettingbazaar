@@ -5,6 +5,9 @@ import { creditDeposit, creditWinnings } from '../wallet/walletAuthority.service
 // The order state machine. Resolving a dispute is a guarded transition, and it
 // runs BEFORE any money moves so that it is what decides the race.
 import { completeOrder, cancelOrder } from '../payment/orderLifecycle.service.js';
+// Order chat — the record a dispute is decided from. Every write here used to
+// name a model registered nowhere, so nothing was ever recorded.
+import { listMessages, postMessage, postSystemMessage } from '../../postgres/chatPg.js';
 
 const router = express.Router();
 
@@ -77,10 +80,7 @@ router.get('/dispute-orders/:orderId', authenticate, hasPermission('canResolveDi
 
 router.get('/dispute-orders/:orderId/chat', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
   try {
-    const ChatMessage = mongoose.model('ChatMessage');
-    const messages = await ChatMessage.find({ orderId: req.params.orderId })
-      .sort({ createdAt: 1 })
-      .lean();
+    const messages = await listMessages(req.params.orderId);
     res.json({ success: true, messages });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to fetch chat' });
@@ -93,8 +93,7 @@ router.post('/dispute-orders/:orderId/chat', authenticate, hasPermission('canRes
     const { message } = req.body;
     if (!message?.trim()) return res.status(400).json({ success: false, message: 'Message required' });
     
-    const ChatMessage = mongoose.model('ChatMessage');
-    const msg = await ChatMessage.create({
+    const msg = await postMessage({
       orderId:    req.params.orderId,
       senderId:   req.user.userId,
       senderType: 'ADMIN',
@@ -143,7 +142,6 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, isAdmin, async (re
     }
 
     const { PaymentOrder, User } = getModels();
-    const ChatMessage = mongoose.model('ChatMessage');
     const order = await PaymentOrder.findById(req.params.orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     if (!['DISPUTED', 'PROCESSING', 'PAID', 'ASSIGNED'].includes(order.status)) {
@@ -283,11 +281,13 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, isAdmin, async (re
     Object.assign(order, moved.order);
 
     
-    await ChatMessage.create({
-      orderId: order._id, senderId: req.user.userId, senderType: 'ADMIN',
-      message: `⚖️ DISPUTE RESOLVED by ${adminName}\n${systemMessage}`,
-      isSystem: true,
-    });
+    // A notice, not the resolution: the money and the transition are already
+    // committed above, and a failure to narrate them must not undo them.
+    await postSystemMessage(
+      order._id,
+      `⚖️ DISPUTE RESOLVED by ${adminName}\n${systemMessage}`,
+      { senderId: req.user.userId, senderType: 'ADMIN' },
+    );
 
     // ── Notify both parties ───────────────────────────────────────────────────
     const payload = { orderId: order._id, status: newStatus, decision, resolution };
@@ -313,8 +313,7 @@ router.post('/dispute-orders/:orderId/escalate', authenticate, hasPermission('ca
   try {
     const { notes } = req.body;
     const { PaymentOrder } = getModels();
-    const ChatMessage = mongoose.model('ChatMessage');
-    
+
     const order = await PaymentOrder.findById(req.params.orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     
@@ -323,11 +322,11 @@ router.post('/dispute-orders/:orderId/escalate', authenticate, hasPermission('ca
     order.disputeEscalationNotes = notes || 'Escalated to senior admin';
     await order.save();
 
-    await ChatMessage.create({
-      orderId: order._id, senderId: req.user.userId, senderType: 'ADMIN',
-      message: `🔺 Dispute ESCALATED to senior admin.\nNotes: ${notes || 'No additional notes'}`,
-      isSystem: true,
-    });
+    await postSystemMessage(
+      order._id,
+      `🔺 Dispute ESCALATED to senior admin.\nNotes: ${notes || 'No additional notes'}`,
+      { senderId: req.user.userId, senderType: 'ADMIN' },
+    );
 
     res.json({ success: true, message: 'Dispute escalated successfully' });
   } catch (err) {

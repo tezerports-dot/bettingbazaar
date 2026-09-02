@@ -4,43 +4,58 @@ import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels 
 // Cycle-type vocabulary — phantom access is scoped to one type, or BOTH.
 import { CYCLE_TYPE_VALUES } from '../../domains/markets/cycleTypes.js';
 import { adminAdjustment } from '../../domains/wallet/walletAuthority.service.js';
+import { getUser } from '../../postgres/userPg.js';
+import { randomBytes } from 'node:crypto';
 
 const router = express.Router();
 
 
 /**
  * POST /api/admin/users/:userId/adjust-balance
- * ACID-SAFE: delegates to wallet.service.adminAdjust() which wraps in session.withTransaction().
- * The original direct user.save() + Transaction.create() sequence was NOT atomic.
+ *
+ * The affordability check used to read `user[field]` off the account document
+ * while the debit moved `wallets` — two different numbers, and the guard held
+ * the one that was not going to change. It now happens inside `adminAdjustment`
+ * against the locked wallet row, so what this route does is translate a signed
+ * rupee amount into a CREDIT/DEBIT and render the answer.
+ *
+ * The balances echoed back are the ones the movement itself reported, not a
+ * re-read: a re-read can pick up a later movement and attribute it to this one.
  */
 router.post('/users/:userId/adjust-balance', authenticate, isAdmin, async (req, res) => {
   try {
     const { amount, reason, walletType } = req.body;
     const userId = req.params.userId;
-    const { User } = getModels();
-    const user = await User.findById(userId);
+    if (!Number.isFinite(Number(amount)) || Number(amount) === 0) {
+      return res.status(400).json({ success: false, message: 'amount must be a non-zero number' });
+    }
+    const user = await getUser(userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
     const field = (walletType === 'winnings' || walletType === 'winningsBalance')
       ? 'winningsBalance' : 'depositBalance';
+    const type = Number(amount) >= 0 ? 'CREDIT' : 'DEBIT';
 
-    if (amount < 0 && (user[field] || 0) + amount < 0) {
-      return res.status(400).json({ success: false, message: `Insufficient ${field}` });
+    const result = await adminAdjustment(
+      req.user.userId, userId, type, field, Math.abs(Number(amount)),
+      reason || 'Admin adjustment', randomBytes(12).toString('hex'),
+    );
+    if (!result.ok) {
+      return res.status(400).json({
+        success: false,
+        message: `Insufficient ${field}: have ₹${result.availableRupees}`,
+      });
     }
 
-    const adjustmentId = new (await import('mongoose')).default.Types.ObjectId().toString();
-    const type = amount >= 0 ? 'CREDIT' : 'DEBIT';
-    // adminAdjust is ACID-safe: wraps debitForBet/creditWinnings in session.withTransaction()
-    await adminAdjustment(req.user.userId, userId, type, field, Math.abs(amount), reason || `Admin adjustment`, adjustmentId);
-
-    const updated = await User.findById(userId).select('depositBalance winningsBalance').lean();
+    const newBalance = {
+      depositBalance:  result.balances?.depositBalance  ?? 0,
+      winningsBalance: result.balances?.winningsBalance ?? 0,
+    };
     if (global.io) {
-      global.io.to(`user-${userId}`).emit('user_update', {
-        depositBalance: updated.depositBalance, winningsBalance: updated.winningsBalance, server_ts: Date.now()
-      });
+      global.io.to(`user-${userId}`).emit('user_update', { ...newBalance, server_ts: Date.now() });
       global.io.to('admin-room').emit('admin_stats_delta', { type: 'BALANCE_ADJUSTED', server_ts: Date.now() });
     }
-    res.json({ success: true, newBalance: updated });
+    res.json({ success: true, newBalance, adjustment: result.adjustment });
   } catch (error) {
     console.error('Adjust balance error:', error);
     res.status(500).json({ success: false, message: 'Failed to adjust balance' });

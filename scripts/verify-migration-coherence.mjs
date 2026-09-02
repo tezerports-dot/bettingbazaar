@@ -24,7 +24,7 @@
  *   node scripts/verify-migration-coherence.mjs           summary
  *   node scripts/verify-migration-coherence.mjs --list    every finding
  *
- * A GAP always fails. A SPLIT fails when the count RISES: 185 of them remain
+ * A GAP always fails. A SPLIT fails when the count RISES: 181 of them remain
  * while the migration is in flight, so a hard zero would be red for the whole
  * job and would say nothing about the change in front of it. The ratchet below
  * is what makes it useful today — it cannot go up, so a newly-created split
@@ -57,6 +57,12 @@ const MIGRATED = [
   { model: 'TelegramIdentity',    table: 'telegram_identities',    repo: 'postgres/telegramPg.js' },
   { model: 'TelegramPendingLink', table: 'telegram_pending_links', repo: 'postgres/telegramPg.js' },
   { model: 'TelegramLoginToken',  table: 'telegram_login_tokens',  repo: 'postgres/telegramPg.js' },
+  // The three that were referenced in five files and DEFINED NOWHERE. They had
+  // no schema to compare against, so the SPLIT they represented was total: every
+  // write threw, and the reads found nothing because nothing was ever written.
+  { model: 'BlockedIP',           table: 'blocked_ips',            repo: 'postgres/securityPg.js' },
+  { model: 'ChatMessage',         table: 'chat_messages',          repo: 'postgres/chatPg.js' },
+  { model: 'BalanceAdjustment',   table: 'balance_adjustments',    repo: 'postgres/balanceAdjustmentPg.js' },
 ];
 
 /**
@@ -178,7 +184,7 @@ for (const entry of MIGRATED) {
  * Raising this to make a build pass is the one thing that turns this check into
  * decoration: the number is the whole mechanism.
  */
-const SPLIT_BUDGET = 185;
+const SPLIT_BUDGET = 181;
 
 const list = process.argv.includes('--list');
 console.log('\nMigration coherence — is what replaced the document store complete?\n');

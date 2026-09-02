@@ -6,6 +6,8 @@ import mongoose from 'mongoose';
 import cdnService from '../services/cdn.service.js';
 import { authenticate, isAdmin } from '../domains/identity/auth.middleware.js';
 import { merchantAuth } from '../middleware/merchantAuth.js';
+// Order chat. An attachment that is not recorded is an upload nobody can find.
+import { postMessage } from '../postgres/chatPg.js';
 
 const router = express.Router();
 
@@ -72,7 +74,6 @@ router.post('/user/chat/:orderId/confirm-upload', authenticate, async (req, res)
     }
 
     const PaymentOrder  = mongoose.model('PaymentOrder');
-    const ChatMessage = mongoose.model('ChatMessage');
 
     const order = await PaymentOrder.findOne({ $or: [{ orderId }, { _id: orderId }] });
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
@@ -84,7 +85,7 @@ router.post('/user/chat/:orderId/confirm-upload', authenticate, async (req, res)
       fileKey, cdnUrl, expectedUserId: req.user.userId.toString(), expectedOrderId: orderId, expectedCategory: 'chat'
     });
 
-    const chatMsg = await ChatMessage.create({
+    const chatMsg = await postMessage({
       orderId:       order._id,
       senderId:      req.user.userId,
       senderType:    'USER',
@@ -158,7 +159,6 @@ router.post('/merchant/chat/:orderId/confirm-upload', merchantAuth, async (req, 
     }
 
     const PaymentOrder  = mongoose.model('PaymentOrder');
-    const ChatMessage = mongoose.model('ChatMessage');
 
     const order = await PaymentOrder.findOne({ $or: [{ orderId }, { _id: orderId }] });
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
@@ -170,7 +170,7 @@ router.post('/merchant/chat/:orderId/confirm-upload', merchantAuth, async (req, 
       fileKey, cdnUrl, expectedUserId: req.merchant._id.toString(), expectedOrderId: orderId, expectedCategory: 'chat'
     });
 
-    const chatMsg = await ChatMessage.create({
+    const chatMsg = await postMessage({
       orderId:       order._id,
       senderId:      req.merchant._id,
       senderType:    'MERCHANT',

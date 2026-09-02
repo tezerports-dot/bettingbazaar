@@ -22,6 +22,11 @@
 import { sseBalancePush } from '../notification/realtimeEmitters.js';
 import { rupeesToPaise } from '../../shared/money.js';
 import * as pg from '../../postgres/walletPgAuthority.js';
+import { applyAdjustment, listAdjustments, ADJUSTABLE_FIELDS } from '../../postgres/balanceAdjustmentPg.js';
+
+/** Pockets an admin may adjust by hand. Re-exported so routes validate against
+ *  the same list the writer enforces, rather than a second copy that drifts. */
+export { ADJUSTABLE_FIELDS };
 
 // ── Source-of-truth routing (hybrid money DB, LAUNCH_READINESS.md §E) ────────
 /**
@@ -225,17 +230,38 @@ const LOCK_PROVENANCE = {
 
 
 /**
- * Admin manual balance adjustment.
- * type = 'CREDIT' | 'DEBIT'
- * field = 'depositBalance' | 'winningsBalance'
+ * Admin manual balance adjustment — money and its audit row, one transaction.
+ *
+ * ── `field` used to be accepted and ignored ─────────────────────────────────
+ * This function took a `field` argument and never passed it on: every CREDIT
+ * went to winnings and every DEBIT came out of deposit first, whatever the
+ * admin named. So an admin debiting winnings moved deposit, and the audit row
+ * recorded the pocket they asked for rather than the one that moved. It now
+ * credits and debits the pocket it was given, and refuses a pocket it cannot
+ * honour instead of silently substituting one (`ADJUSTABLE_FIELDS`).
+ *
+ * ── The refusal moved inside the lock ───────────────────────────────────────
+ * Both callers decided "insufficient balance" from the account document before
+ * calling, which is a number nothing was going to debit. The check now happens
+ * against the locked wallet row, where it cannot be stale, and comes back as a
+ * RETURNED refusal rather than a thrown error — see the return shape.
+ *
+ * @returns {{ok:true, adjustment, balances, beforeRupees, afterRupees}}
+ *          {{ok:false, reason:'INSUFFICIENT', availableRupees}}
+ *          {{ok:true, idempotent:true, adjustment}}
  */
 export async function adminAdjustment(adminId, userId, type, field, amount, reason, adjustmentId) {
-  const fullReason = `[Admin:${adminId}] ${reason}`;
-  const txId = `admin_${adjustmentId}`;
-  return pushBalances(userId, type === 'CREDIT'
-    ? await pg.creditWinnings(userId, amount, fullReason, 'AdminAdjustment', adjustmentId, txId)
-    // Admin debit: same spend order as a bet (deposit first, winnings shortfall).
-    : await pg.debitForBet(userId, amount, fullReason, 'AdminAdjustment', adjustmentId, txId));
+  const result = await applyAdjustment({
+    adjustmentId, userId, adminId, type, field,
+    amountRupees: amount, reason,
+  });
+  if (result.ok && result.balances) pushBalances(userId, result);
+  return result;
+}
+
+/** The adjustment history — read side of the above. */
+export async function getBalanceAdjustments(filter) {
+  return listAdjustments(filter);
 }
 
 

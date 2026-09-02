@@ -1,5 +1,11 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-import { adminAdjustment } from '../domains/wallet/walletAuthority.service.js';
+import { adminAdjustment, getBalanceAdjustments, ADJUSTABLE_FIELDS } from '../domains/wallet/walletAuthority.service.js';
+import { getUser } from '../postgres/userPg.js';
+import { randomBytes } from 'node:crypto';
+
+/** The adjustment's identity, and its idempotency key. Generated per request so
+ *  a double-submit creates two adjustments; a retry of the SAME id is a no-op. */
+const newAdjustmentId = () => randomBytes(12).toString('hex');
 /**
  * retention.routes.js — Leaderboard, Announcements, Bonus history,
  * Balance Adjustment, VIP, Recharge requests
@@ -152,44 +158,65 @@ router.get('/bonuses/my', authenticate, async (req, res) => {
 });
 
 // ── ADMIN BALANCE ADJUSTMENT ──────────────────────────────────────────────────
+/**
+ * Move a player's balance by hand.
+ *
+ * Everything that made a decision here has moved behind `adminAdjustment`,
+ * which does it under the wallet row lock: the affordability check (which used
+ * to compare a number on the account document while the debit hit `wallets`),
+ * the pocket selection (which used to be discarded), and the audit row (which
+ * used to be written first, in rupee floats, and never actually landed because
+ * the model it named did not exist).
+ *
+ * What is left here is the HTTP shape: validate, call, translate the answer.
+ */
 router.post('/admin/balance-adjust', authenticate, isAdmin, async (req, res) => {
   try {
-    const User = mongoose.model('User');
-    const BalanceAdjustment = mongoose.model('BalanceAdjustment');
-    const BonusRecord = mongoose.model('BonusRecord');
     const { userId, type, field, amount, reason } = req.body;
     if (!userId || !type || !field || !amount || !reason)
       return res.status(400).json({ success: false, message: 'All fields required' });
     if (!['CREDIT','DEBIT'].includes(type)) return res.status(400).json({ success: false, message: 'type must be CREDIT or DEBIT' });
-    if (!['depositBalance','winningsBalance','tokenBalance'].includes(field)) return res.status(400).json({ success: false, message: 'Invalid field' });
+    // The writer's own list, not a second copy of it — a route that accepts a
+    // pocket the writer refuses is a 500 dressed as a validation pass.
+    if (!ADJUSTABLE_FIELDS.includes(field))
+      return res.status(400).json({ success: false, message: `Invalid field. Adjustable: ${ADJUSTABLE_FIELDS.join(', ')}` });
+    if (!(Number(amount) > 0)) return res.status(400).json({ success: false, message: 'amount must be positive' });
 
-    const user = await User.findById(userId);
+    const user = await getUser(userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
-    const before = user[field] || 0;
-    const delta = type === 'CREDIT' ? Number(amount) : -Number(amount);
-    if (type === 'DEBIT' && before < Number(amount)) return res.status(400).json({ success: false, message: 'Insufficient balance' });
 
-    // Atomic: admin adjustment via wallet service (ledger + SSE)
-    const adjustDoc = await BalanceAdjustment.create({ userId, adminId: req.user.userId, type, field, amount: Number(amount), reason, beforeBalance: before, afterBalance: before + (type==='CREDIT'?1:-1)*Number(amount) });
-    await adminAdjustment(req.user.userId, userId, type, field, Number(amount), reason, adjustDoc._id.toString());
-    const after = before + (type === 'CREDIT' ? Number(amount) : -Number(amount));
-    if (type === 'CREDIT') await BonusRecord.create({ userId, type: 'ADMIN_CREDIT', amount: Number(amount), description: reason });
+    const result = await adminAdjustment(
+      req.user.userId, userId, type, field, Number(amount), reason, newAdjustmentId(),
+    );
+    if (!result.ok) {
+      return res.status(400).json({
+        success: false,
+        message: `Insufficient ${field}: have ₹${result.availableRupees}`,
+      });
+    }
 
-    res.json({ success: true, message: `${type === 'CREDIT' ? 'Credited' : 'Debited'} ₹${amount} ${type==='CREDIT'?'to':'from'} ${user.username}`, before, after });
+    // The bonus record follows the money; it is not part of deciding it.
+    if (type === 'CREDIT') {
+      try {
+        await mongoose.model('BonusRecord').create({ userId, type: 'ADMIN_CREDIT', amount: Number(amount), description: reason });
+      } catch (e) { console.error('[balance-adjust] bonus record not written:', e.message); }
+    }
+
+    res.json({
+      success: true,
+      message: `${type === 'CREDIT' ? 'Credited' : 'Debited'} ₹${amount} ${type==='CREDIT'?'to':'from'} ${user.username}`,
+      before: result.beforeRupees,
+      after:  result.afterRupees,
+      adjustment: result.adjustment,
+    });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
 
 router.get('/admin/balance-adjustments', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
-    const BalanceAdjustment = mongoose.model('BalanceAdjustment');
     const { userId, page=1, limit=30 } = req.query;
-    const filter = userId ? { userId } : {};
-    const skip = (Number(page)-1)*Number(limit);
-    const [items, total] = await Promise.all([
-      BalanceAdjustment.find(filter).sort({ createdAt:-1 }).skip(skip).limit(Number(limit)).populate('userId','username mobile').populate('adminId','username').lean(),
-      BalanceAdjustment.countDocuments(filter),
-    ]);
-    res.json({ success: true, adjustments: items, total });
+    const { adjustments, total } = await getBalanceAdjustments({ userId: userId || null, page, limit });
+    res.json({ success: true, adjustments, total });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
 

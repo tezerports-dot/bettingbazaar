@@ -1142,3 +1142,108 @@ CREATE TABLE IF NOT EXISTS kyc_batches (
   CONSTRAINT kyc_batches_kind_check CHECK (kind IN ('EXPORT','IMPORT'))
 );
 CREATE INDEX IF NOT EXISTS kyc_batches_kind_idx ON kyc_batches (kind, created_at DESC);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THREE TABLES FOR CODE THAT WAS ALREADY DEAD
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- BlockedIP, ChatMessage and BalanceAdjustment were referenced through the
+-- document store in five files and DEFINED NOWHERE. Every call raised
+-- MissingSchemaError, and every call site swallowed it — so the IP block never
+-- blocked, order chat never persisted, and the admin adjustment audit row was
+-- never written. Nothing reported any of it.
+
+-- ── The IP deny-list ─────────────────────────────────────────────────────────
+--
+-- A REAL SECURITY CONTROL THAT HAS NEVER FUNCTIONED. `ipBlocker` runs on every
+-- request, asked for a model that does not exist, threw, and hit a catch that
+-- fails open with no log. `blockIP` did nothing at all: an operator blocking an
+-- abusive address got a success message and no effect.
+CREATE TABLE IF NOT EXISTS blocked_ips (
+  ip          TEXT PRIMARY KEY,
+  reason      TEXT NOT NULL DEFAULT '',
+  active      BOOLEAN NOT NULL DEFAULT TRUE,
+  blocked_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  blocked_by  TEXT,
+  -- An unblock keeps the row, marked. "Was this address ever blocked, and why?"
+  -- is what an appeal asks, and deleting the row destroys the answer.
+  unblocked_at TIMESTAMPTZ,
+  unblocked_by TEXT,
+  -- Optional expiry for a temporary block. NULL means indefinite. Enforced by
+  -- the READ, like every other expiry here — a sweep that is late must not let
+  -- a live block lapse.
+  expires_at  TIMESTAMPTZ,
+  notes       TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS blocked_ips_active_idx ON blocked_ips (ip) WHERE active;
+
+-- ── Order chat ───────────────────────────────────────────────────────────────
+-- The conversation between a player and a merchant about one payment order.
+-- It is the evidence a dispute is decided from, so it is append-only in
+-- practice: nothing edits a message, and deleting one destroys the record of
+-- what was agreed.
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id          BIGSERIAL PRIMARY KEY,
+  order_id    TEXT NOT NULL,
+  -- NULLABLE, and that is the point: a SYSTEM message has no sender. The call
+  -- sites pass `senderId: null` for those.
+  sender_id   TEXT,
+  sender_type TEXT NOT NULL,
+  message     TEXT NOT NULL DEFAULT '',
+  -- The CDN object, and the key it was verified under. The key is kept so an
+  -- attachment can be traced back to the upload that was checked, which is the
+  -- only thing separating a verified object from an arbitrary URL a client sent.
+  attachment_url TEXT,
+  attachment_key TEXT,
+  -- Not derivable from sender_type: a dispute resolution posts a SYSTEM notice
+  -- as senderType 'ADMIN', and the client renders those differently.
+  is_system   BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  CONSTRAINT chat_messages_sender_type_check
+    CHECK (sender_type IN ('USER','MERCHANT','ADMIN','SYSTEM')),
+  -- A message with neither text nor an attachment is not a message.
+  CONSTRAINT chat_messages_has_content
+    CHECK (message <> '' OR attachment_url IS NOT NULL),
+  -- Only a SYSTEM message may have no sender. Anything else without one is a
+  -- message nobody can be held to.
+  CONSTRAINT chat_messages_sender_required
+    CHECK (sender_id IS NOT NULL OR sender_type = 'SYSTEM')
+);
+CREATE INDEX IF NOT EXISTS chat_messages_order_idx ON chat_messages (order_id, created_at, id);
+
+-- ── Admin balance adjustments ────────────────────────────────────────────────
+--
+-- WHO moved money by hand, for whom, how much, and why. The wallet ledger
+-- records the movement; this records the DECISION behind it, which is what an
+-- audit of an adjustment actually asks about.
+--
+-- The amounts are integer paise like every other money column here. The route
+-- that writes this spoke rupees and floats, which is how an adjustment of
+-- ₹0.1 + ₹0.2 becomes ₹0.30000000000000004 in an audit record.
+CREATE TABLE IF NOT EXISTS balance_adjustments (
+  adjustment_id  TEXT PRIMARY KEY,
+  user_id        TEXT NOT NULL,
+  admin_id       TEXT NOT NULL,
+  tx_type        TEXT NOT NULL,
+  field          TEXT NOT NULL,
+  amount_paise   BIGINT NOT NULL CHECK (amount_paise > 0),
+  before_paise   BIGINT NOT NULL,
+  after_paise    BIGINT NOT NULL,
+  reason         TEXT NOT NULL,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  CONSTRAINT balance_adjustments_type_check CHECK (tx_type IN ('CREDIT','DEBIT')),
+  CONSTRAINT balance_adjustments_field_check
+    CHECK (field IN ('depositBalance','winningsBalance','tokenBalance','reserveBalance')),
+  -- The arithmetic has to close. An audit row whose before and after do not
+  -- differ by the amount it claims is worse than no row: it looks authoritative
+  -- and is wrong.
+  CONSTRAINT balance_adjustments_arithmetic
+    CHECK (after_paise = before_paise + (CASE WHEN tx_type = 'CREDIT' THEN amount_paise ELSE -amount_paise END)),
+  -- A reason is not optional. "Adjusted by admin, reason blank" is an audit
+  -- trail that answers nothing.
+  CONSTRAINT balance_adjustments_has_reason CHECK (reason <> '')
+);
+CREATE INDEX IF NOT EXISTS balance_adjustments_user_idx  ON balance_adjustments (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS balance_adjustments_admin_idx ON balance_adjustments (admin_id, created_at DESC);

@@ -207,6 +207,60 @@ const MUTATIONS = [
   const r = await credit({
     userId, field: 'depositBalance', amount,`,
   },
+  // ── The three controls that were defined nowhere ─────────────────────────
+  {
+    id: 'M57', file: 'backend/postgres/securityPg.js', config: PG,
+    test: 'backend/tests/postgres/securityChatAdjustmentPg.test.js',
+    why: 'expiry is left to a sweep, so a lapsed temporary block still blocks',
+    from: `      WHERE ip = $1 AND active AND (expires_at IS NULL OR expires_at > now())`,
+    to: `      WHERE ip = $1 AND active`,
+  },
+  {
+    id: 'M58', file: 'backend/postgres/securityPg.js', config: PG,
+    test: 'backend/tests/postgres/securityChatAdjustmentPg.test.js',
+    why: 'a new block waits out the cache TTL — slow to stop an attacker',
+    from: `  // Applied immediately, not at the next TTL: slow to stop an attacker is the
+  // expensive direction of this trade.
+  invalidateIpCache(ip);
+  return rows[0];`,
+    to: `  return rows[0];`,
+  },
+  {
+    id: 'M59', file: 'backend/postgres/balanceAdjustmentPg.js', config: PG,
+    test: 'backend/tests/postgres/securityChatAdjustmentPg.test.js',
+    why: 'the negative-balance guard is lifted, so an admin can debit a pocket below zero',
+    from: `      legs: [{ field, deltaPaise: delta }],`,
+    to: `      legs: [{ field, deltaPaise: delta }],
+      allowNegative: true,`,
+  },
+  {
+    id: 'M60', file: 'backend/postgres/balanceAdjustmentPg.js', config: PG,
+    test: 'backend/tests/postgres/securityChatAdjustmentPg.test.js',
+    why: '`field` is ignored again — every adjustment lands on winnings while the audit row names the pocket the admin asked for',
+    from: `    const moved = await applyMovementWithin(ctx, {
+      legs: [{ field, deltaPaise: delta }],`,
+    to: `    const moved = await applyMovementWithin(ctx, {
+      legs: [{ field: 'winningsBalance', deltaPaise: delta }],`,
+  },
+  {
+    id: 'M61', file: 'backend/postgres/balanceAdjustmentPg.js', config: PG,
+    test: 'backend/tests/postgres/securityChatAdjustmentPg.test.js',
+    why: 'the audit row is written from the caller\'s arguments rather than the locked balance, so a stale `before` can enter the record',
+    from: `        amountPaise, beforePaise, beforePaise + delta, String(reason).trim()],`,
+    to: `        amountPaise, 0, delta, String(reason).trim()],`,
+  },
+  {
+    id: 'M62', file: 'backend/postgres/chatPg.js', config: PG,
+    test: 'backend/tests/postgres/securityChatAdjustmentPg.test.js',
+    why: 'a system notice throws again, so a failed note fails the order it describes',
+    from: `  } catch (e) {
+    console.error('[chat] system notice not recorded for order', String(orderId), '—', e.message);
+    return null;
+  }`,
+    to: `  } catch (e) {
+    throw e;
+  }`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that
