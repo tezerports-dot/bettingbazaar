@@ -217,6 +217,12 @@ router.post('/payment-orders/:id/reassign', authenticate, isAdminOrSubAdminOrQue
 
     const expiresAt = new Date(Date.now() + ASSIGN_WINDOW_MS);
 
+    // Captured before the move, for the audit entry below: afterwards the row
+    // carries the NEW merchant and the question "who lost this order" has no
+    // answer left in it.
+    const previousMerchantId = order.merchantId;
+    const previousState = order.status;
+
     // An assignee change, not a lifecycle move — the order stays ASSIGNED.
     const moved = await reassignOrder(order.orderId, {
       set: {
@@ -231,6 +237,22 @@ router.post('/payment-orders/:id/reassign', authenticate, isAdminOrSubAdminOrQue
       return res.status(409).json({ success: false, message: `Order is ${moved.status ?? 'missing'}, cannot reassign` });
     }
     Object.assign(order, moved.order);
+
+    // Recorded HERE, not in the lifecycle history. A reassignment from ASSIGNED
+    // to ASSIGNED moves no state, so it is not a transition and the
+    // `order_transitions_moves` constraint correctly refuses one — but "who
+    // moved this order off my queue" is the first thing the previous merchant
+    // asks, and the admin audit log is where every other operator action lives.
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, action: 'ORDER_REASSIGNED', category: 'MERCHANT',
+      targetType: 'PaymentOrder', targetId: order.orderId,
+      details: {
+        fromMerchant: previousMerchantId ?? null,
+        toMerchant: merchant.merchantId,
+        fromState: previousState,
+        tokenAmount: order.tokenAmount,
+      },
+    });
 
     announceAssignment(order, merchant, expiresAt);
     res.json({ success: true, message: 'Order reassigned with new merchant snapshot', order });

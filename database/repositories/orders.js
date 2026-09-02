@@ -46,16 +46,11 @@
  * the authoritative store says it did not, and reconciliation reports drift
  * that is really a bug in this file.
  */
-import mongoose from 'mongoose';
-import { MONEY_PATHS } from '../moneyPaths.js';
-import { rupeesToPaise } from '../../backend/shared/money.js';
 import {
-  transition as pgTransition, openOrder as pgOpenOrder, getOrder as pgGetOrder,
-  ORDER_TYPES, REVISITABLE,
+  transition as pgTransition, reassign as pgReassign, REVISITABLE,
 } from './orders.core.js';
+import { setOrderFields, getOrderRecord } from './orders.record.js';
 import { pgQuery } from '../client.js';
-
-/** Is Postgres the source of truth for the order lifecycle? */
 
 /**
  * The outcomes, matching orderLifecycle.service.js's LIFECYCLE vocabulary so
@@ -97,59 +92,16 @@ async function keyForRepeatableMove(orderId, to, txId) {
 }
 
 /**
- * Make sure Postgres has the order before trying to move it.
+ * Move an order.
  *
- * The forward mirror (`dualWrite.mirrorPaymentOrder`) populates
- * `payment_orders`, which is the projection — NOT `order_states`, which is the
- * lifecycle. An order created before this path was flipped therefore has no
- * lifecycle row, and its first transition would come back `not_found` and be
- * surfaced to the user as a missing order.
- *
- * So the row is opened lazily from the Mongo document, AT THE STATUS THE ORDER
- * IS ACTUALLY IN. `openOrder` is `ON CONFLICT DO NOTHING`, so concurrent
- * first-transitions on one order open it once.
- *
- * Adopting at the current status rather than at PENDING_QUEUE is the whole
- * point, and getting it wrong is not subtle: an order sitting at PAID would be
- * adopted as PENDING_QUEUE, and its next transition — the merchant's confirm —
- * asks for COMPLETED, which accepts PAID/PROCESSING/DISPUTED. Refused. Every
- * order in flight at the moment of a cutover would strand that way, with the
- * money unmoved and the merchant looking at a 409.
+ * ── What used to be in front of this ────────────────────────────────────────
+ * A lazy `ensureLifecycleRow` that read the order out of the document store and
+ * opened a lifecycle row for it, at whatever status it happened to be in. That
+ * existed so a cutover would not strand orders already in flight. There is no
+ * cutover and no second store: an order without a row does not exist, and
+ * saying so is the correct answer rather than conjuring one.
  */
-async function ensureLifecycleRow(orderId) {
-  if (await pgGetOrder(orderId)) return true;
-
-  const doc = await mongoose.model('PaymentOrder').findById(orderId)
-    .select('orderId userId merchantId type tokenAmount fiatAmount status').lean();
-  if (!doc) return false;
-  if (!ORDER_TYPES[doc.type]) return false;
-
-  await pgOpenOrder({
-    orderId:          String(orderId),
-    userId:           String(doc.userId),
-    merchantId:       doc.merchantId ? String(doc.merchantId) : null,
-    type:             doc.type,
-    tokenAmountPaise: rupeesToPaise(Number(doc.tokenAmount) || 0),
-    fiatAmountPaise:  rupeesToPaise(Number(doc.fiatAmount) || 0),
-    // AT ITS CURRENT STATUS, not at the start of the lifecycle. See openOrder.
-    state:            doc.status,
-  });
-  return true;
-}
-
-/**
- * Move an order, with Postgres deciding when it owns the path.
- *
- * Returns `{ handled }` false when Mongo is authoritative, which tells the seam
- * to run its own guarded update. Anything else is the final answer and the seam
- * returns it unchanged.
- */
-export async function transitionOrderOnPostgres(orderId, to, { set = {}, expectFrom = null, actor = null, reason = null, txId = null } = {}) {
-
-  if (!(await ensureLifecycleRow(orderId))) {
-    return { handled: true, ok: false, reason: REASON.NOT_FOUND };
-  }
-
+export async function transitionOrder(orderId, to, { set = {}, expectFrom = null, actor = null, reason = null, txId = null } = {}) {
   const key = await keyForRepeatableMove(orderId, to, txId);
   const result = await pgTransition({
     orderId: String(orderId), to, actor, reason,
@@ -158,11 +110,8 @@ export async function transitionOrderOnPostgres(orderId, to, { set = {}, expectF
   });
 
   if (!result.ok) {
-    // SURFACED, not swallowed, and Mongo is not written. The store that owns
-    // the lifecycle said no; writing Mongo anyway would advance the order in the
-    // store everything reads while the source of truth says it never moved.
     return {
-      handled: true, ok: false,
+      ok: false,
       reason: result.reason === 'not_found' ? REASON.NOT_FOUND : REASON.ILLEGAL_TRANSITION,
       status: result.state ?? null,
       attempted: to,
@@ -176,15 +125,64 @@ export async function transitionOrderOnPostgres(orderId, to, { set = {}, expectF
   // the table has refused anything it forbids.
   const state = result.order?.state ?? to;
 
+  // ── The fields that travel WITH the transition ──────────────────────────
+  // `set` was passed down to a mirror that wrote them onto the document. There
+  // is no mirror, so they are written here, AFTER the state has moved and only
+  // when it did. An order can therefore never be found in the new state without
+  // the facts that justify it, and a refused transition writes nothing.
+  const detail = Object.keys(set).length ? await setOrderFields(orderId, set) : null;
+
   return {
-    handled: true, ok: true,
+    ok: true,
     idempotent: Boolean(result.idempotent),
     reason: result.idempotent ? REASON.ALREADY_THERE : REASON.APPLIED,
     status: state,
-    // The seam's callers read fields off this. It is the Mongo document,
-    // re-read AFTER the mirror, so it carries the whole order rather than the
-    // handful of columns order_states holds.
-    order: await mongoose.model('PaymentOrder').findById(orderId).lean(),
+    // The whole order, not the handful of columns the lifecycle holds — callers
+    // read the merchant snapshot, the amounts and the UTR off this.
+    order: detail ?? await getOrderRecord(orderId),
     ledgerKey: result.ledgerKey ?? null,
+  };
+}
+
+/**
+ * Hand a live order to a different merchant.
+ *
+ * ── This wrote to the document store, with a string id ──────────────────────
+ * `reassignOrder` in the lifecycle service was the one function the migration
+ * never moved. It called `findOneAndUpdate({_id: orderId})` with an order id
+ * like `WD_9f3a…` where an ObjectId was expected, so admin reassignment threw a
+ * cast error — and had it not, it would have written to a store nothing reads
+ * and reported success while the order kept its old merchant.
+ */
+export async function reassignOrder(orderId, { set = {}, from, actor = null, reason = null } = {}) {
+  const merchantId = set.merchantId;
+  if (!merchantId) throw new Error('reassignOrder requires set.merchantId');
+
+  const result = await pgReassign({
+    orderId: String(orderId), merchantId: String(merchantId), actor, reason,
+    ...(from ? { from: Array.isArray(from) ? from : [from] } : {}),
+  });
+
+  if (!result.ok) {
+    return {
+      ok: false,
+      reason: result.reason === 'not_found' ? REASON.NOT_FOUND : REASON.ILLEGAL_TRANSITION,
+      status: result.state ?? null,
+      attempted: 'ASSIGNED',
+      allowedFrom: result.allowedFrom ?? [],
+    };
+  }
+
+  // The snapshot and the new deadline are written after the assignee moved, so
+  // a refused reassignment cannot leave the previous merchant's order carrying
+  // the next merchant's payment details.
+  const detail = Object.keys(set).length ? await setOrderFields(orderId, set) : null;
+
+  return {
+    ok: true,
+    idempotent: Boolean(result.idempotent),
+    reason: result.idempotent ? REASON.ALREADY_THERE : REASON.APPLIED,
+    status: 'ASSIGNED',
+    order: detail ?? await getOrderRecord(orderId),
   };
 }

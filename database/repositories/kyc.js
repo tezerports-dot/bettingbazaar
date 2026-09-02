@@ -30,12 +30,12 @@
  *   - refuse a repeat decision that carries no key of its own, which is what
  *     stops a resubmission being swallowed as a replay.
  */
-import mongoose from 'mongoose';
 import { MONEY_PATHS } from '../moneyPaths.js';
 import {
   KYC_STATES, KYC_REVISITABLE, transitionKyc, openKyc, getKyc,
 } from './kyc.core.js';
 import { pgQuery } from '../client.js';
+import { getUser } from './users.js';
 
 /** Is Postgres the source of truth for KYC decisions? */
 
@@ -66,36 +66,16 @@ async function keyForRepeatDecision(userId, to, txId) {
 }
 
 /**
- * Make sure Postgres has the KYC row before trying to decide it.
+ * Decide a user's KYC.
  *
- * `dualWrite.mirrorUserKyc` populates `user_kyc` from the User document's
- * post-save hook, but a user who has not touched their KYC since the mirror was
- * added has no row — and their first decision would come back `not_found` and
- * surface to an admin as a missing user. Opened lazily at the status Mongo
- * currently holds, so the decision that follows is judged from the right place.
+ * ── What used to be in front of this ────────────────────────────────────────
+ * A lazy `ensureKycRow` that read the user's status out of the document store
+ * and opened a `user_kyc` row at whatever it found, so a cutover would not make
+ * every un-mirrored user's first decision look like a missing account. There is
+ * no cutover: a user with no KYC row is one who has never started KYC, and
+ * `openKyc` at signup is where that row comes from.
  */
-async function ensureKycRow(userId) {
-  if (await getKyc(userId)) return true;
-  const doc = await mongoose.model('User').findById(userId).select('kycStatus').lean();
-  if (!doc) return false;
-  await openKyc({ userId: String(userId), status: doc.kycStatus || KYC_STATES.PENDING_SUBMISSION });
-  return true;
-}
-
-/**
- * Decide a user's KYC, with Postgres deciding when it owns the path.
- *
- * `{ handled: false }` tells the seam to run its own guarded Mongo update.
- * Anything else is the final answer — including a refusal, which is SURFACED
- * rather than retried against Mongo. The store that owns the decision saying no
- * must not be overruled by the store that has no opinion.
- */
-export async function decideKycOnPostgres(userId, to, { actor = null, reason = null, set = {}, txId = null } = {}) {
-
-  if (!(await ensureKycRow(userId))) {
-    return { handled: true, ok: false, reason: REASON.NOT_FOUND };
-  }
-
+export async function decideKyc(userId, to, { actor = null, reason = null, set = {}, txId = null } = {}) {
   const result = await transitionKyc({
     userId: String(userId), to, actor, reason,
     txId: await keyForRepeatDecision(userId, to, txId),
@@ -104,7 +84,7 @@ export async function decideKycOnPostgres(userId, to, { actor = null, reason = n
 
   if (!result.ok) {
     return {
-      handled: true, ok: false,
+      ok: false,
       reason: result.reason === 'not_found' ? REASON.NOT_FOUND : REASON.ILLEGAL_TRANSITION,
       status: result.status ?? null,
       attempted: to,
@@ -112,15 +92,16 @@ export async function decideKycOnPostgres(userId, to, { actor = null, reason = n
     };
   }
 
-  // Mongo follows, AWAITED — every KYC gate in the app reads User.kycStatus, and
-  // an admin who approves someone then watches them be refused a withdrawal
-  // because the mirror was still in flight is not a acceptable outcome.
+  // `users.kyc_status` — the column every gate in the app reads — was written
+  // inside the decision's own transaction by `transitionKyc`. Nothing was
+  // writing it before, so an approved player was still refused a withdrawal.
+  const user = await getUser(userId);
 
   return {
-    handled: true, ok: true,
+    ok: true,
     idempotent: Boolean(result.idempotent),
     reason: result.idempotent ? REASON.ALREADY_THERE : REASON.APPLIED,
     status: result.kyc?.status ?? to,
-    user: await mongoose.model('User').findById(userId).lean(),
+    user,
   };
 }

@@ -17,7 +17,7 @@ import { pgConfigured, pgQuery, applySchema, closePg, getPool } from '../client.
 import {
   ORDER_STATES, ORDER_TYPES, REVISITABLE, openOrder, transition, getOrder, getOrderHistory,
   assignOrder, startOrder, markPaid, completeOrder, disputeOrder, cancelOrder, failOrder,
-  findOrdersMissingLedgerEvents, findLedgerEventsMissingOrders,
+  reassign, findOrdersMissingLedgerEvents, findLedgerEventsMissingOrders,
 } from '../repositories/orders.core.js';
 import { trialBalance, accountBalancePaise, getEvent } from '../repositories/ledger.core.js';
 
@@ -266,6 +266,111 @@ describePg('Payment orders (PostgreSQL state machine)', () => {
   });
 
   // ── Money moves with the state ─────────────────────────────────────────────
+  describe('reassignment', () => {
+    // ── This wrote to the wrong store, with the wrong kind of id ────────────
+    // `reassignOrder` was the one function the migration never moved. It called
+    // `findOneAndUpdate({_id: orderId})` against the document store with an
+    // order id like `WD_9f3a…` where an ObjectId was expected — so admin
+    // reassignment threw a cast error, and had it not, it would have written
+    // where nothing reads and reported success while the order kept its old
+    // merchant.
+    it('hands an assigned order to a different merchant', async () => {
+      await open('r1');
+      await assignOrder({ orderId: 'r1', txId: 'r1_assign_1' });
+      expect((await getOrder('r1')).merchantId).toBe('m1');
+
+      const moved = await reassign({ orderId: 'r1', merchantId: 'm2', actor: 'admin-3' });
+      expect(moved).toMatchObject({ ok: true, idempotent: false });
+      expect((await getOrder('r1')).merchantId).toBe('m2');
+      // Still ASSIGNED — a change of assignee is not a lifecycle move.
+      expect((await getOrder('r1')).state).toBe(ORDER_STATES.ASSIGNED);
+    });
+
+    it('normalises a PROCESSING order back to ASSIGNED', async () => {
+      await open('r2');
+      await assignOrder({ orderId: 'r2', txId: 'r2_assign_1' });
+      await startOrder({ orderId: 'r2' });
+
+      const moved = await reassign({ orderId: 'r2', merchantId: 'm2' });
+      expect(moved.ok).toBe(true);
+      expect((await getOrder('r2')).state).toBe(ORDER_STATES.ASSIGNED);
+      expect((await getOrder('r2')).merchantId).toBe('m2');
+    });
+
+    it('records a reassignment that MOVED the state, and nothing when it did not', async () => {
+      // `order_transitions_moves` refuses a row whose from and to are equal,
+      // and it is right to: a transition that does not transition is not one.
+      // ASSIGNED → ASSIGNED changes the assignee and nothing else, so it leaves
+      // no lifecycle row — the change is on the order, and who did it goes in
+      // the admin audit log with every other operator action.
+      await open('r3');
+      await assignOrder({ orderId: 'r3', txId: 'r3_assign_1' });
+      const before = (await getOrderHistory('r3')).length;
+      await reassign({ orderId: 'r3', merchantId: 'm2', actor: 'admin-3', reason: 'merchant offline' });
+      expect(await getOrderHistory('r3')).toHaveLength(before);
+
+      // From PROCESSING it IS a state move, and gets its row.
+      await open('r3b');
+      await assignOrder({ orderId: 'r3b', txId: 'r3b_assign_1' });
+      await startOrder({ orderId: 'r3b' });
+      await reassign({ orderId: 'r3b', merchantId: 'm2', actor: 'admin-3', reason: 'merchant offline' });
+
+      const row = (await getOrderHistory('r3b')).find((h) => h.actor === 'admin-3');
+      expect(row).toBeTruthy();
+      expect(row.reason).toBe('merchant offline');
+      expect(row.to).toBe(ORDER_STATES.ASSIGNED);
+      expect(row.from).toBe(ORDER_STATES.PROCESSING);
+    });
+
+    it('treats reassigning to the same merchant as a no-op, not a conflict', async () => {
+      await open('r4');
+      await assignOrder({ orderId: 'r4', txId: 'r4_assign_1' });
+      // An admin double-clicking must not get a 409.
+      expect(await reassign({ orderId: 'r4', merchantId: 'm1' }))
+        .toMatchObject({ ok: true, idempotent: true });
+    });
+
+    it('refuses an order that is not assigned to anyone', async () => {
+      await open('r5');
+      expect(await reassign({ orderId: 'r5', merchantId: 'm2' }))
+        .toMatchObject({ ok: false, reason: 'invalid_transition', state: ORDER_STATES.PENDING_QUEUE });
+    });
+
+    it('refuses an order that has already completed', async () => {
+      await toPaid('r6');
+      await completeOrder({ orderId: 'r6' });
+      expect(await reassign({ orderId: 'r6', merchantId: 'm2' })).toMatchObject({ ok: false });
+      expect((await getOrder('r6')).merchantId).toBe('m1');
+    });
+
+    it('lets exactly ONE of two admins reassigning at once win', async () => {
+      await open('r7');
+      await assignOrder({ orderId: 'r7', txId: 'r7_assign_1' });
+
+      const results = await Promise.all([
+        reassign({ orderId: 'r7', merchantId: 'm2', actor: 'admin-a' }),
+        reassign({ orderId: 'r7', merchantId: 'm3', actor: 'admin-b' }),
+      ]);
+      // Both may report ok — they serialise on the row lock, so the second
+      // reassigns from the first's result. What must NOT happen is the order
+      // ending up with a merchant neither admin chose, or with two.
+      expect(results.every((r) => r.ok)).toBe(true);
+      expect(['m2', 'm3']).toContain((await getOrder('r7')).merchantId);
+    });
+
+    it('reassigns repeatedly without colliding on its own transition key', async () => {
+      await open('r8');
+      await assignOrder({ orderId: 'r8', txId: 'r8_assign_1' });
+      // A key derived from the state alone would collide on the second move and
+      // be reported as an idempotent replay — the order would silently stop
+      // moving. The key carries the destination.
+      expect((await reassign({ orderId: 'r8', merchantId: 'm2' })).ok).toBe(true);
+      expect((await reassign({ orderId: 'r8', merchantId: 'm3' })).ok).toBe(true);
+      expect((await reassign({ orderId: 'r8', merchantId: 'm2' })).ok).toBe(true);
+      expect((await getOrder('r8')).merchantId).toBe('m2');
+    });
+  });
+
   describe('ledger events', () => {
     it('posts a deposit event when the order completes, in the same transaction', async () => {
       await toPaid('l1', ORDER_TYPES.DEPOSIT, 250_000);

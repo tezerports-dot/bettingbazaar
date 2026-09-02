@@ -441,6 +441,90 @@ export async function transition({
 }
 
 // ── Named transitions, so call sites read as intent rather than as strings ───
+/**
+ * Hand a LIVE order to a different merchant.
+ *
+ * ── Why this is not `transition` ────────────────────────────────────────────
+ * Admin reassignment accepts an order that is ASSIGNED *or* PROCESSING and
+ * leaves it ASSIGNED to someone else. Neither is a lifecycle move:
+ * ASSIGNED→ASSIGNED does not change the state at all, and ALLOWED_FROM only
+ * admits ASSIGNED from PENDING_QUEUE.
+ *
+ * Widening ALLOWED_FROM to accept ASSIGNED from ASSIGNED would also let the
+ * ORDINARY assignment path silently re-assign an order a merchant is already
+ * working. Splitting it into requeue-then-assign is worse: between the two
+ * writes the order sits in PENDING_QUEUE with nothing holding it, and the
+ * automatic assigner will hand it to a third merchant.
+ *
+ * So it is what it actually is — a guarded change of assignee that happens to
+ * normalise the state — and it keeps the property that matters: the acceptable
+ * states are in the UPDATE's WHERE clause, so two admins reassigning the same
+ * order produce one winner rather than a last-write-wins overwrite.
+ *
+ * The transition row is recorded with an explicit key including the new
+ * merchant, because an order may legitimately be reassigned several times and a
+ * key derived from the state alone would collide on the second.
+ */
+export async function reassign({
+  orderId, merchantId, actor = null, reason = null,
+  from = [ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING],
+}) {
+  if (!merchantId) throw new Error('reassign requires a merchantId');
+
+  return withOrderLock(orderId, async ({ client, oid, order }) => {
+    if (!order) return { commit: false, value: { ok: false, reason: 'not_found' } };
+    if (!from.includes(order.state)) {
+      return {
+        commit: false,
+        value: { ok: false, reason: 'invalid_transition', state: order.state, allowedFrom: from },
+      };
+    }
+    // Reassigning to the merchant who already holds it is a no-op, not an
+    // error: an admin double-clicking must not produce a 409.
+    if (String(order.merchantId) === String(merchantId)) {
+      return { commit: false, value: { ok: true, idempotent: true, order } };
+    }
+
+    const moved = await client.query(
+      `UPDATE order_states
+          SET merchant_id = $2, state = $3, updated_at = now()
+        WHERE order_id = $1 AND state = ANY($4)
+        RETURNING *`,
+      [oid, String(merchantId), ORDER_STATES.ASSIGNED, from],
+    );
+    if (!moved.rowCount) {
+      return {
+        commit: false,
+        value: { ok: false, reason: 'invalid_transition', state: order.state, allowedFrom: from },
+      };
+    }
+
+    // ── Recorded only when the STATE actually moved ─────────────────────────
+    // `order_transitions_moves` refuses a row whose from and to are the same,
+    // and it is right to: a transition that does not transition is not one. A
+    // reassignment from ASSIGNED to ASSIGNED changes the assignee and nothing
+    // else, so it has no place in the lifecycle history — the change lives on
+    // the order row (`merchant_id`, and `assigned_by`/`assigned_at` written by
+    // the caller), and WHO did it belongs in the admin audit log, which is
+    // where every other operator action is already recorded.
+    //
+    // A reassignment from PROCESSING IS a state move, and gets its row. The key
+    // carries the destination merchant so repeated reassignments each get their
+    // own rather than colliding on the second and being reported as a replay.
+    if (order.state !== ORDER_STATES.ASSIGNED) {
+      await client.query(
+        `INSERT INTO order_transitions (tx_id, order_id, from_state, to_state, actor, reason)
+         VALUES ($1,$2,$3,$4,$5,$6)
+         ON CONFLICT (tx_id) DO NOTHING`,
+        [`ord_${oid}_reassign_${merchantId}`, oid, order.state, ORDER_STATES.ASSIGNED,
+          actor, reason ?? `Reassigned to merchant ${merchantId}`],
+      );
+    }
+
+    return { commit: true, value: { ok: true, idempotent: false, order: rowToOrder(moved.rows[0]) } };
+  });
+}
+
 export const assignOrder   = (a) => transition({ ...a, to: ORDER_STATES.ASSIGNED });
 export const startOrder    = (a) => transition({ ...a, to: ORDER_STATES.PROCESSING });
 export const markPaid      = (a) => transition({ ...a, to: ORDER_STATES.PAID });

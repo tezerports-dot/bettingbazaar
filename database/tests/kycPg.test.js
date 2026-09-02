@@ -101,6 +101,59 @@ describePg('KYC decisions (PostgreSQL state machine)', () => {
 
   // ── The defects this domain exists to remove ─────────────────────────────
 
+  describe('the column authorisation actually reads', () => {
+    // ── The defect this pins ─────────────────────────────────────────────────
+    // `user_kyc` OWNS the decision, but every gate in the app — deposit,
+    // withdrawal, bet placement — checks `users.kyc_status`. Nothing wrote that
+    // copy. So an admin could approve somebody, `user_kyc` would say APPROVED,
+    // and the player would still be refused a withdrawal — two tables
+    // disagreeing with neither obviously wrong.
+    //
+    // `setKycStatus` existed and DEMANDED a transaction client precisely
+    // because a denormalised copy is only safe when written alongside the
+    // original. It had no caller passing one. It has one now, inside
+    // `transitionKyc`.
+    const player = async (id) => {
+      await pgQuery(
+        `INSERT INTO users (user_id, username, mobile) VALUES ($1, $2, $3)
+         ON CONFLICT (user_id) DO NOTHING`,
+        [id, `Player ${id}`, `9${String(Date.now()).slice(-6)}${String(Math.random()).slice(2, 5)}`],
+      );
+      await awaitingReview(id);
+    };
+
+    it('moves users.kyc_status with the decision', async () => {
+      await player('kyc-col-1');
+      expect((await pgQuery('SELECT kyc_status FROM users WHERE user_id = $1', ['kyc-col-1']))
+        .rows[0].kyc_status).toBe(KYC_STATES.PENDING_APPROVAL);
+
+      await approveKyc({ userId: 'kyc-col-1', actor: 'admin-7' });
+
+      expect((await getKyc('kyc-col-1')).status).toBe(KYC_STATES.APPROVED);
+      expect((await pgQuery('SELECT kyc_status FROM users WHERE user_id = $1', ['kyc-col-1']))
+        .rows[0].kyc_status).toBe(KYC_STATES.APPROVED);
+    });
+
+    it('moves it on a rejection too', async () => {
+      await player('kyc-col-2');
+      await rejectKyc({ userId: 'kyc-col-2', actor: 'admin-7', reason: 'Document unreadable' });
+      expect((await pgQuery('SELECT kyc_status FROM users WHERE user_id = $1', ['kyc-col-2']))
+        .rows[0].kyc_status).toBe(KYC_STATES.REJECTED);
+    });
+
+    it('does not move it when the decision is refused', async () => {
+      await player('kyc-col-3');
+      await approveKyc({ userId: 'kyc-col-3', actor: 'admin-7' });
+
+      // APPROVED → REJECTED is not a legal move. The copy must not drift ahead
+      // of a decision the state machine never made.
+      const refused = await rejectKyc({ userId: 'kyc-col-3', actor: 'admin-9', reason: 'changed my mind' });
+      expect(refused.ok).toBe(false);
+      expect((await pgQuery('SELECT kyc_status FROM users WHERE user_id = $1', ['kyc-col-3']))
+        .rows[0].kyc_status).toBe(KYC_STATES.APPROVED);
+    });
+  });
+
   describe('a decision carries the facts that justify it', () => {
     it('REFUSES a rejection with no reason', async () => {
       // The Mongo route assigns the reason to `user.kyc.rejectionReason`, and

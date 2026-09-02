@@ -56,6 +56,7 @@
  * docs/ORDERS_REQUEUE_CYCLE.md.
  */
 import { getPool, pgQuery, connectGuarded } from '../client.js';
+import { setKycStatus } from './users.js';
 
 export const KYC_STATES = Object.freeze({
   PENDING_SUBMISSION: 'PENDING_SUBMISSION',
@@ -249,6 +250,19 @@ export async function transitionKyc({ userId, to, actor = null, reason = null, t
     if (!moved.rowCount) {
       return { commit: false, value: { ok: false, reason: 'invalid_transition', status: kyc.status, allowedFrom } };
     }
+
+    // ── The column authorisation actually reads ─────────────────────────────
+    // `user_kyc` OWNS the decision and `kyc_transitions` is its audit trail,
+    // but every gate in the app — deposit, withdrawal, bet placement — checks
+    // `users.kyc_status`. That copy was written by nothing at all: an admin
+    // could approve somebody in `user_kyc` and the player would still be
+    // refused a withdrawal, with the two tables disagreeing and neither
+    // obviously wrong.
+    //
+    // Written HERE, inside the transaction that records the decision, which is
+    // the only thing that makes a denormalised copy safe. `setKycStatus`
+    // demands a client for exactly this reason and had no caller passing one.
+    await setKycStatus(client, uid, to);
 
     // One decision per user per target status unless a key says otherwise. A
     // double-clicked approve collides here, INSIDE the transaction, so the

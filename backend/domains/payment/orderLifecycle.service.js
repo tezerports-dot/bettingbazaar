@@ -44,10 +44,8 @@
  * migrate — but replicating that on the Mongo side would mean rewriting every
  * caller, which is a different job from giving them a guard.
  */
-import mongoose from 'mongoose';
 import { ORDER_STATES, ALLOWED_FROM } from '#db/repositories/orders.core.js';
-// Stage 2. This is the ONLY file that may import it — see the header there.
-import { transitionOrderOnPostgres as routeTransition } from '#db/repositories/orders.js';
+import { transitionOrder as pgTransitionOrder, reassignOrder as pgReassignOrder } from '#db/repositories/orders.js';
 
 export { ORDER_STATES };
 
@@ -58,27 +56,6 @@ export const LIFECYCLE = Object.freeze({
   ALREADY_THERE:      'already_there',
   NOT_FOUND:          'not_found',
 });
-
-const PaymentOrder = () => mongoose.model('PaymentOrder');
-
-/**
- * Why did a transition match no row? Called only AFTER the guarded update has
- * already failed, so it can never become the gate itself.
- */
-async function describe(orderId, to) {
-  const current = await PaymentOrder().findById(orderId).select('status').lean();
-  if (!current) return { ok: false, reason: LIFECYCLE.NOT_FOUND };
-  // Landing where you wanted to go is not a failure. A redelivered callback
-  // finds the order already COMPLETED, and treating that as an error turns
-  // ordinary provider behaviour into a page at 3am.
-  if (current.status === to) {
-    return { ok: true, idempotent: true, reason: LIFECYCLE.ALREADY_THERE, status: to };
-  }
-  return {
-    ok: false, reason: LIFECYCLE.ILLEGAL_TRANSITION,
-    status: current.status, attempted: to, allowedFrom: ALLOWED_FROM[to] ?? [],
-  };
-}
 
 /**
  * Move an order to `to`, but only from a state the rules allow.
@@ -93,60 +70,40 @@ async function describe(orderId, to) {
  * table does not allow is a programming error and throws, rather than quietly
  * widening the machine.
  */
-export async function transitionOrder(orderId, to, { set = {}, expectFrom = null, session = null, actor = null, reason = null, txId = null } = {}) {
+export async function transitionOrder(orderId, to, { set = {}, expectFrom = null, actor = null, reason = null, txId = null } = {}) {
   const allowed = ALLOWED_FROM[to];
   if (!allowed) throw new Error(`transitionOrder: '${to}' is not a state anything transitions into`);
 
-  // ── Stage 2: the resolver, asked ONCE ────────────────────────────────────
-  // This is the whole reason stage 1 replaced 31 scattered status writes with
-  // one service. When Postgres owns the ORDERS path the transition happens
-  // there — inside a transaction with its accounting event, guarded by the row
-  // lock, recorded in append-only history — and Mongo is updated afterwards as
-  // the mirror everything else reads.
-  //
-  // A refusal from Postgres comes back as a refusal. It is NOT retried against
-  // Mongo: the store that owns the lifecycle saying no, overruled by the store
-  // that has no opinion, is worse than either alone.
-  //
-  // The Postgres path cannot join a Mongo session, so a caller inside a
-  // transaction stays on Mongo. That is not a gap to close later — a
-  // transaction spanning two stores is the "one settlement, two sources of
-  // truth" hazard the ordering gate in moneyAuthority.js exists to prevent, and
-  // the two call sites that pass a session (payment.routes deposit confirm,
-  // merchant.routes approve) both move merchant AND user balances inside it.
-  // ORDERS cannot be authoritative until those balances are too, which the
-  // dependency graph already enforces: ORDERS depends on WALLET and LEDGER.
-  if (!session) {
-    const routed = await routeTransition(orderId, to, { set, expectFrom, actor, reason, txId });
-    if (routed.handled) {
-      const { handled, ...answer } = routed;
-      return answer;
-    }
-  }
-
-  let from = allowed;
+  // `expectFrom` narrows the allowed set for a caller that knows more than the
+  // rule table does. It may only ever be a SUBSET: passing a state the table
+  // does not allow is a programming error and throws, rather than quietly
+  // widening the machine. Validated HERE, before the call, because the
+  // repository deliberately ignores it — the row lock and ALLOWED_FROM are the
+  // real guard, and a narrowing that the table already forbids is a bug in the
+  // caller, not a rule to enforce twice.
   if (expectFrom) {
     const wanted = Array.isArray(expectFrom) ? expectFrom : [expectFrom];
-    const illegal = wanted.filter((s) => !allowed.includes(s));
+    const illegal = wanted.filter((state) => !allowed.includes(state));
     if (illegal.length) {
       throw new Error(
         `transitionOrder: expectFrom ${illegal.join(',')} is not allowed into ${to} ` +
-        `(allowed: ${allowed.join(',')}). Widen ALLOWED_FROM in postgres/orderPg.js if this is intended.`,
+        `(allowed: ${allowed.join(',')}). Widen ALLOWED_FROM in orders.core.js if this is intended.`,
       );
     }
-    from = wanted;
   }
 
-  const q = PaymentOrder().findOneAndUpdate(
-    { _id: orderId, status: { $in: from } },
-    { $set: { status: to, ...set } },
-    { new: true },
-  );
-  if (session) q.session(session);
-  const updated = await q.lean();
-
-  if (updated) return { ok: true, idempotent: false, reason: LIFECYCLE.APPLIED, status: to, order: updated };
-  return describe(orderId, to);
+  // ── One path ──────────────────────────────────────────────────────────────
+  // This asked a resolver and, when it declined, ran a second implementation
+  // against the document store — including a `describe()` that re-read the
+  // document to explain a refusal. The transition happens inside a transaction
+  // with its accounting event, guarded by the row lock, recorded in append-only
+  // history, and it explains its own refusals.
+  //
+  // The `session` parameter is gone with it. It existed so a caller inside a
+  // document-store transaction could stay on that store; a transaction spanning
+  // two stores was the hazard the whole migration exists to remove, and no
+  // caller passes one.
+  return pgTransitionOrder(orderId, to, { set, expectFrom, actor, reason, txId });
 }
 
 // ── Named transitions ────────────────────────────────────────────────────────
@@ -199,19 +156,8 @@ export const rejectOrder    = (id, o) => transitionOrder(id, ORDER_STATES.REJECT
  * a state change. See docs/ORDERS_REQUEUE_CYCLE.md for the neighbouring
  * decision about keys on repeatable edges.
  */
-export async function reassignOrder(orderId, { set = {}, from = [ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING], session = null } = {}) {
-  const q = PaymentOrder().findOneAndUpdate(
-    { _id: orderId, status: { $in: from } },
-    { $set: { status: ORDER_STATES.ASSIGNED, ...set } },
-    { new: true },
-  );
-  if (session) q.session(session);
-  const updated = await q.lean();
-  if (updated) return { ok: true, idempotent: false, reason: LIFECYCLE.APPLIED, status: ORDER_STATES.ASSIGNED, order: updated };
-
-  const current = await PaymentOrder().findById(orderId).select('status').lean();
-  if (!current) return { ok: false, reason: LIFECYCLE.NOT_FOUND };
-  return { ok: false, reason: LIFECYCLE.ILLEGAL_TRANSITION, status: current.status, attempted: ORDER_STATES.ASSIGNED, allowedFrom: from };
+export async function reassignOrder(orderId, { set = {}, from = [ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING], actor = null, reason = null } = {}) {
+  return pgReassignOrder(orderId, { set, from, actor, reason });
 }
 
 /**
