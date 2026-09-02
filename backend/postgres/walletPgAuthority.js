@@ -14,7 +14,7 @@
  * 1. RETURN SHAPES. Callers (settlement, payouts, admin routes) read fields
  *    like `winningsAfter` and `idempotent` off these results. A cutover must
  *    not make them learn a new vocabulary, so every function here returns what
- *    its Mongo counterpart in wallet.service.js / walletAuthority.service.js
+ *    walletAuthority.service.js, the single entry point above it
  *    returns. Amounts crossing back out are RUPEES, because that is what the
  *    Mongo path speaks; paise stops at this wall.
  *

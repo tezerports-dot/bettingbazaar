@@ -9,17 +9,17 @@
  *  - User schema has flat fields: depositBalance, winningsBalance, lockedBalance,
  *    lockedDepositAmount, lockedWinningsAmount  (NOT user.wallet.*)
  *  - WalletLedger already exists in wallet.model.js with txId uniqueness guard
- *  - wallet.service.js already has correct patterns — this service wraps it
+ *  - the wallet writers live in postgres/walletPg.js — this service wraps them
  *    and adds the missing withdrawal lifecycle + admin paths
  *
- * This is NOT a rewrite of wallet.service.js. It is the single-entry-point
+ * This is the single-entry-point
  * that every route and engine must call for balance mutations. It delegates
- * to wallet.service.js for bet/credit/debit operations (keeping SSE push,
+ * for bet/credit/debit operations (keeping SSE push,
  * idempotency, and ledger logic intact) and adds the missing pieces.
  * ══════════════════════════════════════════════════════════════════════════════
  */
 
-import { sseBalancePush } from './wallet.service.js';
+import { sseBalancePush } from '../notification/realtimeEmitters.js';
 import { rupeesToPaise } from '../../shared/money.js';
 import * as pg from '../../postgres/walletPgAuthority.js';
 
@@ -46,7 +46,7 @@ function pushBalances(userId, result) {
   return result;
 }
 
-// ── Internal ledger helper (for operations wallet.service.js doesn't cover) ──
+// ── Internal helpers ────────────────────────────────────────────────────────
 
 /**
  * getBalances — THE read counterpart to this module's write authority.

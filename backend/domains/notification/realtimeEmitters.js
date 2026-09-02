@@ -110,6 +110,30 @@ export async function emitPayoutSuccessBatch({ io, payouts, balanceMap, cycleId,
  * @param {string} event — SSE event name, e.g. 'order_assigned', 'order_paid', 'order_completed'
  * @param {object} data  — order payload
  */
+/**
+ * Push a balance change down the user's SSE channel.
+ *
+ * Lived in `wallet.service.js` until the document-store wallet was deleted, and
+ * was the only thing keeping that 441-line module reachable. It never belonged
+ * there: telling a browser about a number is a notification concern, and the
+ * wallet's job ends when the transaction commits.
+ *
+ * Best-effort by construction. A failed push must never unwind a movement that
+ * has already committed — the client re-reads its balance on the next request
+ * regardless, so a dropped event costs a stale figure for seconds, and throwing
+ * here would cost the transaction.
+ */
+export function sseBalancePush(userId, depositBalance, winningsBalance) {
+  try {
+    const round2 = (n) => Math.round((n || 0) * 100) / 100;
+    global.sseManager?.sendToUser?.(String(userId), 'balance_update', {
+      depositBalance:  round2(depositBalance),
+      winningsBalance: round2(winningsBalance),
+      totalBalance:    round2(depositBalance + winningsBalance),
+    });
+  } catch { /* SSE is best-effort — never block the transaction */ }
+}
+
 export function emitOrderUpdate(userId, event, data) {
   try {
     if (global.sseManager) {

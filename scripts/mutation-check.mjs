@@ -188,6 +188,25 @@ const MUTATIONS = [
     from: `    baseQuery.acceptsDeposits = true;`,
     to: `    baseQuery.acceptsDeposits = true;\n    baseQuery.tokenBalance = { $gte: tokenAmount };`,
   },
+  // ── The order-facing wallet writers ───────────────────────────────────────
+  {
+    id: 'M55', file: 'backend/postgres/walletPgAuthority.js', config: PG,
+    test: 'backend/tests/postgres/walletWriters.test.js',
+    why: 'a deposit reserve is credited to the withdrawable pocket instead',
+    from: `    userId, field: 'reserveBalance', amount,`,
+    to: `    userId, field: 'depositBalance', amount,`,
+  },
+  {
+    id: 'M56', file: 'backend/postgres/walletPgAuthority.js', config: PG,
+    test: 'backend/tests/postgres/walletWriters.test.js',
+    why: 'a refund ignores the pocket it was told to credit',
+    from: `export async function refundOrder(userId, amount, orderId, field = 'depositBalance') {
+  const r = await credit({
+    userId, field, amount,`,
+    to: `export async function refundOrder(userId, amount, orderId, field = 'depositBalance') {
+  const r = await credit({
+    userId, field: 'depositBalance', amount,`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that
