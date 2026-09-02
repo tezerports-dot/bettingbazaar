@@ -36,8 +36,8 @@
  * disagreement no reconciliation can tell apart from real drift.
  */
 import mongoose from 'mongoose';
-import { KYC_STATES, KYC_ALLOWED_FROM } from '../../postgres/kycPg.js';
-import { decideKycOnPostgres } from '../../postgres/kycPgAuthority.js';
+import { KYC_STATES, KYC_ALLOWED_FROM } from '#db/repositories/kyc.core.js';
+import { decideKycOnPostgres } from '#db/repositories/kyc.js';
 
 export { KYC_STATES };
 

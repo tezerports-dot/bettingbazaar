@@ -19,8 +19,8 @@ const PG = 'vitest.pg.config.ts';
 const MUTATIONS = [
   // ── The fee, in the store that decides it ─────────────────────────────────
   {
-    id: 'M15', file: 'backend/postgres/betPg.js', config: PG,
-    test: 'backend/tests/postgres/betSettlementPg.test.js',
+    id: 'M15', file: 'database/repositories/bets.core.js', config: PG,
+    test: 'database/tests/betSettlementPg.test.js',
     why: 'the settling UPDATE does not write the fee',
     from: `      \`UPDATE bets SET status = $2, payout_paise = $3, platform_fee_paise = $5,
                        settled_at = now(), updated_at = now()
@@ -34,8 +34,8 @@ const MUTATIONS = [
       [ctx.bid, spec.to, payoutPaise, spec.expect],`,
   },
   {
-    id: 'M16', file: 'backend/postgres/betPg.js', config: PG,
-    test: 'backend/tests/postgres/betSettlementPg.test.js',
+    id: 'M16', file: 'database/repositories/bets.core.js', config: PG,
+    test: 'database/tests/betSettlementPg.test.js',
     why: 'a fractional or negative fee is accepted and silently truncated',
     from: `  if (!Number.isInteger(platformFeePaise) || platformFeePaise < 0) {
     throw new TypeError(\`\${spec.name}Bet: platformFeePaise must be a non-negative integer, got \${platformFeePaise}\`);
@@ -74,15 +74,15 @@ const MUTATIONS = [
     to: `  if (!usable) return { depositCredit: 0, reserveCredit: 0, total, split: false };`,
   },
   {
-    id: 'M30', file: 'backend/postgres/betPg.js', config: PG,
-    test: 'backend/tests/postgres/betSettlementPg.test.js',
+    id: 'M30', file: 'database/repositories/bets.core.js', config: PG,
+    test: 'database/tests/betSettlementPg.test.js',
     why: 'resolveBetId stops looking at mongo_id, so a placed bet is unreachable',
     from: `    \`SELECT bet_id FROM bets WHERE bet_id = $1 OR mongo_id = $1 LIMIT 1\`,`,
     to: `    \`SELECT bet_id FROM bets WHERE bet_id = $1 LIMIT 1\`,`,
   },
   // ── Money-domain READS follow authority (docs/MONEY_READS_MIGRATION.md) ───
   {
-    id: 'M31', file: 'backend/postgres/merchantWalletPgAuthority.js', config: UNIT,
+    id: 'M31', file: 'database/repositories/merchantWallets.js', config: UNIT,
     test: 'backend/tests/unit/merchantEligibilityReads.test.js',
     why: 'committed tokens are reported as spendable, admitting orders nobody can fund',
     from: `const spendable = (balances) => paiseToRupees(balances.available);`,
@@ -99,44 +99,44 @@ const MUTATIONS = [
   },
   // ── The accounts table: four properties, each verified to be load-bearing ──
   {
-    id: 'M43', file: 'backend/postgres/userPg.js', config: PG,
-    test: 'backend/tests/postgres/userPg.test.js',
+    id: 'M43', file: 'database/repositories/users.js', config: PG,
+    test: 'database/tests/userPg.test.js',
     why: 'a racing signup on one mobile creates two accounts',
     from: `     ON CONFLICT (mobile) DO NOTHING\n`,
     to: '',
   },
   {
-    id: 'M44', file: 'backend/postgres/userPg.js', config: PG,
-    test: 'backend/tests/postgres/userPg.test.js',
+    id: 'M44', file: 'database/repositories/users.js', config: PG,
+    test: 'database/tests/userPg.test.js',
     why: 'a write to an unknown column is silently discarded again',
     from: `  if (unknown.length) {`,
     to: `  if (false) {`,
   },
   {
-    id: 'M45', file: 'backend/postgres/userPg.js', config: PG,
-    test: 'backend/tests/postgres/userPg.test.js',
+    id: 'M45', file: 'database/repositories/users.js', config: PG,
+    test: 'database/tests/userPg.test.js',
     why: "BIGINT stays a string, so '900' >= 1000 is true",
     from: `const toInt = (v) => (v == null ? null : Number(v));`,
     to: `const toInt = (v) => v;`,
   },
   {
-    id: 'M46', file: 'backend/postgres/userPg.js', config: PG,
-    test: 'backend/tests/postgres/userPg.test.js',
+    id: 'M46', file: 'database/repositories/users.js', config: PG,
+    test: 'database/tests/userPg.test.js',
     why: 'the denormalised kyc_status can be written outside the decision transaction',
     from: `  if (!client) throw new Error('setKycStatus must run inside the transaction that records the decision');`,
     to: `  if (!client) return null;`,
   },
   // ── The sign-in surface: expiry, single use, and disclosure control ────────
   {
-    id: 'M47', file: 'backend/postgres/telegramPg.js', config: PG,
-    test: 'backend/tests/postgres/telegramPg.test.js',
+    id: 'M47', file: 'database/repositories/telegram.js', config: PG,
+    test: 'database/tests/telegramPg.test.js',
     why: 'a forwarded login link can be redeemed twice, minting two sessions',
     from: `        AND consumed_at IS NULL\n`,
     to: '',
   },
   {
-    id: 'M48', file: 'backend/postgres/telegramPg.js', config: PG,
-    test: 'backend/tests/postgres/telegramPg.test.js',
+    id: 'M48', file: 'database/repositories/telegram.js', config: PG,
+    test: 'database/tests/telegramPg.test.js',
     why: 'an expired onboarding stays readable until a sweep happens to run',
     from: `      WHERE telegram_user_id = $1 AND expires_at > now()\`,
     [String(telegramUserId)], 'tg_pending_get',`,
@@ -144,22 +144,22 @@ const MUTATIONS = [
     [String(telegramUserId)], 'tg_pending_get',`,
   },
   {
-    id: 'M49', file: 'backend/postgres/identityPg.js', config: PG,
-    test: 'backend/tests/postgres/identityPg.test.js',
+    id: 'M49', file: 'database/repositories/identity.js', config: PG,
+    test: 'database/tests/identityPg.test.js',
     why: 'two concurrent exports disclose the same Aadhaar in two files',
     from: `          FOR UPDATE SKIP LOCKED)`,
     to: `          )`,
   },
   {
-    id: 'M50', file: 'backend/postgres/identityPg.js', config: PG,
-    test: 'backend/tests/postgres/identityPg.test.js',
+    id: 'M50', file: 'database/repositories/identity.js', config: PG,
+    test: 'database/tests/identityPg.test.js',
     why: 'a VERIFIED Aadhaar row can be deleted, freeing a number that is in use',
     from: `WHERE user_id = $1 AND status = 'FAILED'`,
     to: `WHERE user_id = $1`,
   },
   {
-    id: 'M51', file: 'backend/postgres/identityPg.js', config: PG,
-    test: 'backend/tests/postgres/identityPg.test.js',
+    id: 'M51', file: 'database/repositories/identity.js', config: PG,
+    test: 'database/tests/identityPg.test.js',
     why: 'a revoked token becomes valid again once its row expires',
     from: `WHERE token = $1 AND expires_at > now()`,
     to: `WHERE token = $1`,
@@ -190,15 +190,15 @@ const MUTATIONS = [
   },
   // ── The order-facing wallet writers ───────────────────────────────────────
   {
-    id: 'M55', file: 'backend/postgres/walletPgAuthority.js', config: PG,
-    test: 'backend/tests/postgres/walletWriters.test.js',
+    id: 'M55', file: 'database/repositories/wallets.js', config: PG,
+    test: 'database/tests/walletWriters.test.js',
     why: 'a deposit reserve is credited to the withdrawable pocket instead',
     from: `    userId, field: 'reserveBalance', amount,`,
     to: `    userId, field: 'depositBalance', amount,`,
   },
   {
-    id: 'M56', file: 'backend/postgres/walletPgAuthority.js', config: PG,
-    test: 'backend/tests/postgres/walletWriters.test.js',
+    id: 'M56', file: 'database/repositories/wallets.js', config: PG,
+    test: 'database/tests/walletWriters.test.js',
     why: 'a refund ignores the pocket it was told to credit',
     from: `export async function refundOrder(userId, amount, orderId, field = 'depositBalance') {
   const r = await credit({
@@ -209,15 +209,15 @@ const MUTATIONS = [
   },
   // ── The three controls that were defined nowhere ─────────────────────────
   {
-    id: 'M57', file: 'backend/postgres/securityPg.js', config: PG,
-    test: 'backend/tests/postgres/securityChatAdjustmentPg.test.js',
+    id: 'M57', file: 'database/repositories/security.js', config: PG,
+    test: 'database/tests/securityChatAdjustmentPg.test.js',
     why: 'expiry is left to a sweep, so a lapsed temporary block still blocks',
     from: `      WHERE ip = $1 AND active AND (expires_at IS NULL OR expires_at > now())`,
     to: `      WHERE ip = $1 AND active`,
   },
   {
-    id: 'M58', file: 'backend/postgres/securityPg.js', config: PG,
-    test: 'backend/tests/postgres/securityChatAdjustmentPg.test.js',
+    id: 'M58', file: 'database/repositories/security.js', config: PG,
+    test: 'database/tests/securityChatAdjustmentPg.test.js',
     why: 'a new block waits out the cache TTL — slow to stop an attacker',
     from: `  // Applied immediately, not at the next TTL: slow to stop an attacker is the
   // expensive direction of this trade.
@@ -226,16 +226,16 @@ const MUTATIONS = [
     to: `  return rows[0];`,
   },
   {
-    id: 'M59', file: 'backend/postgres/balanceAdjustmentPg.js', config: PG,
-    test: 'backend/tests/postgres/securityChatAdjustmentPg.test.js',
+    id: 'M59', file: 'database/repositories/balanceAdjustments.js', config: PG,
+    test: 'database/tests/securityChatAdjustmentPg.test.js',
     why: 'the negative-balance guard is lifted, so an admin can debit a pocket below zero',
     from: `      legs: [{ field, deltaPaise: delta }],`,
     to: `      legs: [{ field, deltaPaise: delta }],
       allowNegative: true,`,
   },
   {
-    id: 'M60', file: 'backend/postgres/balanceAdjustmentPg.js', config: PG,
-    test: 'backend/tests/postgres/securityChatAdjustmentPg.test.js',
+    id: 'M60', file: 'database/repositories/balanceAdjustments.js', config: PG,
+    test: 'database/tests/securityChatAdjustmentPg.test.js',
     why: '`field` is ignored again — every adjustment lands on winnings while the audit row names the pocket the admin asked for',
     from: `    const moved = await applyMovementWithin(ctx, {
       legs: [{ field, deltaPaise: delta }],`,
@@ -243,15 +243,15 @@ const MUTATIONS = [
       legs: [{ field: 'winningsBalance', deltaPaise: delta }],`,
   },
   {
-    id: 'M61', file: 'backend/postgres/balanceAdjustmentPg.js', config: PG,
-    test: 'backend/tests/postgres/securityChatAdjustmentPg.test.js',
+    id: 'M61', file: 'database/repositories/balanceAdjustments.js', config: PG,
+    test: 'database/tests/securityChatAdjustmentPg.test.js',
     why: 'the audit row is written from the caller\'s arguments rather than the locked balance, so a stale `before` can enter the record',
     from: `        amountPaise, beforePaise, beforePaise + delta, String(reason).trim()],`,
     to: `        amountPaise, 0, delta, String(reason).trim()],`,
   },
   {
-    id: 'M62', file: 'backend/postgres/chatPg.js', config: PG,
-    test: 'backend/tests/postgres/securityChatAdjustmentPg.test.js',
+    id: 'M62', file: 'database/repositories/chat.js', config: PG,
+    test: 'database/tests/securityChatAdjustmentPg.test.js',
     why: 'a system notice throws again, so a failed note fails the order it describes',
     from: `  } catch (e) {
     console.error('[chat] system notice not recorded for order', String(orderId), '—', e.message);

@@ -12,7 +12,7 @@ import { betLimiter } from '../../middleware/security.js';
 // bounded-window policy when Telegram is unreachable.
 import { requireChannelMembership } from '../../middleware/requireChannelMembership.js';
 import { requireIdempotencyKey, IdempotencyKeyError } from '../../middleware/idempotencyKey.js';
-import * as betAuthority from '../../postgres/betPgAuthority.js';
+import * as betAuthority from '#db/repositories/bets.js';
 // Risk Platform (Phase 010): the single validation authority for bets.
 // Phase A (2026-07-10): computeBetFundingPlan owns the stake-split arithmetic.
 import { assessBet, computeBetFundingPlan, computeMaxStake } from '../risk/riskValidation.service.js';
@@ -117,7 +117,6 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
     const Cycle        = mongoose.model('Cycle');
     const Bet          = mongoose.model('Bet');
     const Transaction  = mongoose.model('Transaction');
-    const SystemConfig = mongoose.model('SystemConfig');
 
     // ── Server-enforced idempotency (M-2) ────────────────────────────────────
     // The bet's identity comes from the caller's Idempotency-Key, REQUIRED here.
@@ -155,7 +154,7 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
     // ternary. Under the ternary a type that was neither silently inherited the
     // 30-minute bounds — which happens to be right for the 1-minute block and
     // would have been wrong, invisibly, for the next type added.
-    const config    = await SystemConfig.findOne({ key: 'main' }).lean();
+    const config    = await getSystemConfig();
     const isFullDay = type === CYCLE_TYPES.FULL_DAY;
     const limitsKey = isCycleType(type) ? limitsKeyFor(type) : 'thirtyMin';
     const minBet    = config?.betLimits?.[limitsKey]?.min ?? (isFullDay ? 100  : 10);
@@ -330,8 +329,7 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
     //
     // On POSTGRES both are ONE transaction (betPg.placeBet), so the window
     // cannot open. Which store runs is the authority resolver's decision.
-    const betsOnPostgres = betAuthority.onPostgres();
-
+    
     let stakeLock;
     let pgBet = null;
     // moneyMoved IS the idempotency decision: true only for the single delivery

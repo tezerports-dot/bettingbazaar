@@ -10,7 +10,7 @@ import { RATE_LIMIT_TIERS } from '../config/security.config.js';
 import { betBehaviorLimiter } from './behavioralRateLimit.js';
 // The IP deny-list. Was a model registered nowhere; every call threw into a
 // silent fail-open catch, so nothing was ever blocked. Now a real table.
-import { isIpBlocked, blockIp, unblockIp } from '../postgres/securityPg.js';
+import { isIpBlocked, blockIp, unblockIp } from '#db/repositories/security.js';
 
 // ==================== AUTHENTICATION RATE LIMITERS ====================
 

@@ -6,7 +6,7 @@ import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels 
 import { creditMerchantTokens, debitMerchantTokens } from './merchantWallet.service.js';
 import { generateMerchantPublicRef } from './merchant.model.js';
 import { MERCHANT_CURRENCY, MERCHANT_CURRENCIES, merchantTypeOf } from './merchantCurrency.js';
-import * as issuance from '../../postgres/adminIssuanceAuthority.js';
+import * as issuance from '#db/repositories/adminIssuance.js';
 import { requireIdempotencyKey } from '../../middleware/idempotencyKey.js';
 
 const router = express.Router();

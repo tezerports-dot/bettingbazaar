@@ -33,21 +33,20 @@ import { holdMinutes } from '../payment/withdrawalHold.service.js';
 // One rule for how a confirmed deposit splits across the user's two pockets.
 import { depositCreditSplit } from '../payment/depositCredit.js';
 import { debitMerchantTokens, creditMerchantTokens } from './merchantWallet.service.js';
-import { getMerchantTokenBalance } from '../../postgres/merchantWalletPgAuthority.js';
+import { getMerchantTokenBalance } from '#db/repositories/merchantWallets.js';
 import { publish as publishDomainEvent, EVENTS as DOMAIN_EVENTS } from '../../services/eventBus.service.js';
 import { getRiskRules } from '../risk/riskValidation.service.js';
 // Order chat. Every write here named a model registered nowhere, so the thread
 // echoed over the socket and never survived a reload.
-import { listMessages, postMessage, postSystemMessage } from '../../postgres/chatPg.js';
+import { listMessages, postMessage, postSystemMessage } from '#db/repositories/chat.js';
 import { FLAGS, isEnabled } from '../../services/featureFlags.service.js';
 import { rupeesToPaise } from '../../shared/money.js';
-import { isPostgresAuthoritative, MONEY_PATHS } from '../../postgres/moneyAuthority.js';
+import { MONEY_PATHS } from '#db/moneyPaths.js';
 import {
   DIRECTIONS as SETTLEMENT_DIRECTIONS, openSettlement,
-} from '../../postgres/merchantSettlementPg.js';
+} from '#db/repositories/merchantSettlements.js';
 
 /** Is Postgres the source of truth for the merchant side of a settlement? */
-const settlementOnPostgres = () => isPostgresAuthoritative(MONEY_PATHS.MERCHANT_SETTLEMENT);
 import { buildBulkPayoutExportRows } from './bulkPayoutExport.js';
 import { MERCHANT_CURRENCY, isTrc20Address, merchantTypeOf } from './merchantCurrency.js';
 
@@ -615,11 +614,10 @@ router.post('/admin-token-orders', merchantAuth, async (req, res) => {
     try {
         const tokenAmount = Number(req.body.tokenAmount);
         const usdtTxHash = String(req.body.usdtTxHash || '').trim();
-        const SystemConfig = mongoose.model('SystemConfig');
         const Merchant = mongoose.model('Merchant');
         const MerchantAdminTokenOrder = mongoose.model('MerchantAdminTokenOrder');
         const [cfg, merchant] = await Promise.all([
-            SystemConfig.findOne({ key: 'main' }).lean(),
+            getSystemConfig(),
             Merchant.findById(req.merchantId).lean(),
         ]);
         if (!merchant || merchant.status !== 'ACTIVE' || merchant.merchantApprovalStatus !== 'APPROVED') {
@@ -745,8 +743,7 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
             return res.status(400).json({ success: false, message: 'Merchant is not enabled for sell orders.' });
         }
 
-        const SystemConfig = mongoose.model('SystemConfig');
-        const cfg = await SystemConfig.findOne({ key: 'main' }).lean();
+        const cfg = await getSystemConfig();
         const typeLimit = order.type === 'DEPOSIT'
             ? (merchant.maxConcurrentDepositOrders ?? cfg?.merchantOrderLimits?.maxConcurrentDepositOrders ?? 1)
             : (merchant.maxConcurrentWithdrawalOrders ?? cfg?.merchantOrderLimits?.maxConcurrentWithdrawalOrders ?? 1);

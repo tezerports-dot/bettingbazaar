@@ -35,7 +35,7 @@ import { AccountingEvent } from './accountingEvent.model.js';
 import {
   recordEventOnPostgres, trialBalanceOnPostgres,
   accountBalanceOnPostgres, getLedgerOnPostgres,
-} from '../../postgres/ledgerPgAuthority.js';
+} from '#db/repositories/ledger.js';
 import { ACCOUNTS, ACCOUNT_CODES, EVENT_TYPES, toMinor } from './chartOfAccounts.js';
 
 // ═════════════════════════════════════════════════════════════════════════════

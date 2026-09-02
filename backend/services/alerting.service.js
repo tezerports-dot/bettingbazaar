@@ -19,8 +19,7 @@ const lastSent = new Map();         // key -> ts (per-instance; duplicates acros
 
 async function getWebhookUrl() {
   try {
-    const SystemConfig = mongoose.model('SystemConfig');
-    const cfg = await SystemConfig.findOne({ key: 'main' }).select('alertWebhookUrl').lean();
+    const cfg = await getSystemConfig();
     if (cfg?.alertWebhookUrl) return cfg.alertWebhookUrl;
   } catch { /* fall through to env */ }
   return process.env.ALERT_WEBHOOK_URL || '';

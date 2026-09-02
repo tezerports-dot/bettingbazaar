@@ -17,7 +17,7 @@ import { readFileSync } from 'node:fs';
 
 const pgBalance = vi.hoisted(() => ({ value: 0, calls: [] }));
 
-vi.mock('../../postgres/merchantWalletPg.js', async (importOriginal) => {
+vi.mock('#db/repositories/merchantWallets.core.js', async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...actual,
@@ -46,7 +46,7 @@ vi.mock('mongoose', () => ({
   },
 }));
 
-const { getMerchantTokenBalance } = await import('../../postgres/merchantWalletPgAuthority.js');
+const { getMerchantTokenBalance } = await import('#db/repositories/merchantWallets.js');
 
 beforeEach(() => {
   pgBalance.value = 0;

@@ -1,6 +1,6 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import { adminAdjustment, getBalanceAdjustments, ADJUSTABLE_FIELDS } from '../domains/wallet/walletAuthority.service.js';
-import { getUser } from '../postgres/userPg.js';
+import { getUser } from '#db/repositories/users.js';
 import { randomBytes } from 'node:crypto';
 
 /** The adjustment's identity, and its idempotency key. Generated per request so

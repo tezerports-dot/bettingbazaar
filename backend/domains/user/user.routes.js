@@ -553,8 +553,7 @@ router.get('/user/:userId/transactions', authenticate, async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/v1/system/config', async (req, res) => {
   try {
-    const SystemConfig = mongoose.model('SystemConfig');
-    const config = await SystemConfig.findOne({ key: 'main' }).lean();
+    const config = await getSystemConfig();
 
     res.json({
       success: true,
@@ -659,11 +658,10 @@ router.get('/v1/content/faq', async (req, res) => {
 router.get('/v1/content/support-links', async (req, res) => {
   try {
     const SupportLinks = mongoose.model('SupportLinks');
-    const SystemConfig  = mongoose.model('SystemConfig');
     // Try dedicated SupportLinks collection first, fall back to SystemConfig.supportLinks
     let raw = await SupportLinks.findOne({ key: 'main' }).lean();
     if (!raw) {
-      const cfg = await SystemConfig.findOne({ key: 'main' }).select('supportLinks').lean();
+      const cfg = await getSystemConfig();
       raw = cfg?.supportLinks || {};
     }
     res.json({
@@ -848,8 +846,7 @@ router.get('/v1/wallet/ledger', authenticate, async (req, res) => { // paginated
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/v1/tokens/rate', async (req, res) => {
   try {
-    const SystemConfig = mongoose.model('SystemConfig');
-    const config = await SystemConfig.findOne({ key: 'main' }).lean();
+    const config = await getSystemConfig();
     res.json({
       success:        true,
       buyRate:        1,
@@ -872,8 +869,7 @@ router.get('/v1/tokens/rate', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/v1/token/rates', async (req, res) => {
   try {
-    const SystemConfig = mongoose.model('SystemConfig');
-    const config = await SystemConfig.findOne({ key: 'main' }).lean();
+    const config = await getSystemConfig();
     res.json({
       success:  true,
       rates: { buyRate: 1, sellRate: 1, updatedAt: null },

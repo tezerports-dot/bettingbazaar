@@ -70,7 +70,7 @@ for (const rel of walk(join(ROOT, 'backend'))) {
   // The wallet modules ARE the source of truth; reads inside them are the
   // authoritative ones by definition. Tests are excluded because a fixture
   // asserting on a balance is not a production read.
-  if (rel.startsWith('backend/postgres/') || rel.includes('/tests/')) continue;
+  if (rel.startsWith('database/') || rel.includes('/tests/')) continue;
 
   const lines = readFileSync(join(ROOT, rel), 'utf8').split('\n');
   lines.forEach((text, i) => {
@@ -94,7 +94,7 @@ const unsafeDecisions = findings.filter((f) => f.decision && !f.safe);
 const unsafeDisplay = findings.filter((f) => !f.decision && !f.safe);
 const safe = findings.filter((f) => f.safe);
 
-console.log('\nBalance reads outside backend/postgres/\n');
+console.log('\nBalance reads outside database/\n');
 console.log(`  ${findings.length} total`);
 console.log(`  ${safe.length} read from the wallet (sanctioned)`);
 console.log(`  ${unsafeDisplay.length} display reads not from the wallet`);

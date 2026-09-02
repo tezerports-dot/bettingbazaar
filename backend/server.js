@@ -27,14 +27,13 @@ dotenv.config();
 // platform safe (missing any is fatal in prod; a loud warning otherwise).
 validateEnv();
 
-// Hybrid money DB: report which store is authoritative for each money path, and
-// refuse to boot on an incoherent cutover (e.g. the accounting ledger moved to
-// Postgres while balances are still in Mongo — a settlement would then span two
-// sources of truth). Silent in the default all-Mongo posture.
-// See postgres/moneyAuthority.js and LAUNCH_READINESS.md §E.
-const moneyAuthorityCheck = reportAuthorityAtBoot();
-if (!moneyAuthorityCheck.ok) {
-  console.error('❌ Refusing to start: the money-authority configuration is inconsistent (see above).');
+// PostgreSQL is the only datastore. There is no authority to resolve, no
+// cutover to be incoherent about, and no posture to report — so the boot check
+// that did all three is gone. What remains is the one thing that was always
+// true underneath it: without a database there is nothing to serve, and the
+// process says so rather than starting and failing per request.
+if (!process.env.DATABASE_URL) {
+  console.error('❌ Refusing to start: DATABASE_URL is not set. PostgreSQL is the only datastore.');
   process.exit(1);
 }
 
@@ -43,7 +42,6 @@ const __dirname  = path.dirname(__filename);
 
 // ─── STARTUP MODULES ──────────────────────────────────────────────────────────
 import { validateEnv }        from './startup/validateEnv.js'; // AQ-1: fail-fast env gate
-import { reportAuthorityAtBoot } from './postgres/moneyAuthority.js'; // hybrid money DB: source-of-truth per path
 import { runtimeProfile }     from './startup/runtimeRole.js';
 import { connectMongoDB }     from './startup/mongoConnect.js';
 import { connectRedis }       from './startup/redisConnect.js';
@@ -473,16 +471,14 @@ app.post('/api/internal/error-report', errorReportLimiter, async (req, res) => {
 
 app.get('/api/download/android', async (req, res) => {
   try {
-    const SystemConfig = mongoose.model('SystemConfig');
-    const config = await SystemConfig.findOne({ key: 'main' }).lean();
+    const config = await getSystemConfig();
     if (config?.androidUrl) return res.redirect(302, config.androidUrl);
     res.status(404).json({ success: false, message: 'APK not yet available.' });
   } catch { res.status(500).json({ success: false, message: 'Server error' }); }
 });
 app.get('/api/download/ios', async (req, res) => {
   try {
-    const SystemConfig = mongoose.model('SystemConfig');
-    const config = await SystemConfig.findOne({ key: 'main' }).lean();
+    const config = await getSystemConfig();
     if (config?.iosUrl) return res.redirect(302, config.iosUrl);
     res.status(404).json({ success: false, message: 'Use Safari → Add to Home Screen for iOS.' });
   } catch { res.status(500).json({ success: false, message: 'Server error' }); }
@@ -646,12 +642,12 @@ Promise.allSettled([
   // Hybrid money DB (plan step 1): apply the Postgres schema when
   // DATABASE_URL is set; silent no-op otherwise. Dual-write hooks in the
   // money models activate on the same signal.
-  import('./postgres/pgClient.js').then(m => m.applySchema()).catch(e => console.error('[pg] schema apply failed:', e.message)),
+  import('#db/client.js').then(m => m.applySchema()).catch(e => console.error('[pg] schema apply failed:', e.message)),
   // CAP-71: RAG vector store. Apply the pgvector schema ONLY when RAG retrieval
   // is actually configured (DATABASE_URL + embedding provider key) — so a
   // money-only Postgres without the pgvector extension is never touched.
   import('./domains/support/ragService.js')
-    .then(m => (m.retrievalReady() ? import('./domains/support/ragStore.js').then(s => s.initSchema()) : null))
+    .then(m => (m.retrievalReady() ? import('#db/repositories/supportDocuments.js').then(s => s.initSchema()) : null))
     .catch(e => console.error('[rag] schema init skipped:', e.message)),
   // CAP-74: attach the external event backbone (Kafka) when KAFKA_BROKERS is set.
   // No-op otherwise — the monolith keeps using the in-process bus only.
@@ -686,7 +682,7 @@ async function closeResources() {
   await Promise.allSettled([
     import('./services/jobQueue.service.js').then(m => m.closeJobQueue()),      // 17+56: finish/close queue
     import('./services/eventBackbone.js').then(m => m.resetBackbone()),         // CAP-74: disconnect Kafka producer
-    import('./postgres/pgClient.js').then(m => m.closePg()),                    // hybrid money DB: drain PG pool
+    import('#db/client.js').then(m => m.closePg()),                    // hybrid money DB: drain PG pool
     import('./services/workerPool.service.js').then(m => m.closeWorkerPool()),  // item 5: terminate CPU threads
   ]);
   try { await mongoose.connection.close(false); } catch (_) {}

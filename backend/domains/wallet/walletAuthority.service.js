@@ -21,8 +21,8 @@
 
 import { sseBalancePush } from '../notification/realtimeEmitters.js';
 import { rupeesToPaise } from '../../shared/money.js';
-import * as pg from '../../postgres/walletPgAuthority.js';
-import { applyAdjustment, listAdjustments, ADJUSTABLE_FIELDS } from '../../postgres/balanceAdjustmentPg.js';
+import * as pg from '#db/repositories/wallets.js';
+import { applyAdjustment, listAdjustments, ADJUSTABLE_FIELDS } from '#db/repositories/balanceAdjustments.js';
 
 /** Pockets an admin may adjust by hand. Re-exported so routes validate against
  *  the same list the writer enforces, rather than a second copy that drifts. */

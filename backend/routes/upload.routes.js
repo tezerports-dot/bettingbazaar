@@ -7,7 +7,7 @@ import cdnService from '../services/cdn.service.js';
 import { authenticate, isAdmin } from '../domains/identity/auth.middleware.js';
 import { merchantAuth } from '../middleware/merchantAuth.js';
 // Order chat. An attachment that is not recorded is an upload nobody can find.
-import { postMessage } from '../postgres/chatPg.js';
+import { postMessage } from '#db/repositories/chat.js';
 
 const router = express.Router();
 

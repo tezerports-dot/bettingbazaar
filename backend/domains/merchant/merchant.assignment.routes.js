@@ -19,8 +19,8 @@ import { emitAdminUpdate, emitMerchantUpdate, emitOrderUpdate, emitWalletUpdate 
 // there misroutes it. getMerchantTokenBalance returns the Mongo value while
 // Mongo owns the path, so converting a gate is monotonic — strictly more
 // correct under either store, never a behaviour change on the current one.
-import { getMerchantTokenBalance } from '../../postgres/merchantWalletPgAuthority.js';
-import { getAvailablePaiseFor } from '../../postgres/merchantWalletPg.js';
+import { getMerchantTokenBalance } from '#db/repositories/merchantWallets.js';
+import { getAvailablePaiseFor } from '#db/repositories/merchantWallets.core.js';
 import { rupeesToPaise, paiseToRupees } from '../../shared/money.js';
 
 const router = express.Router();
@@ -79,8 +79,7 @@ router.post('/payment-orders/:id/assign', authenticate, isAdmin, async (req, res
     // curated pool (see domains/configuration/systemConfig.model.js queueManagerPool). This keeps
     // manual/forced assignment from competing with merchantScoring.service.js's
     // full ACTIVE merchant set for automatic assignment. ─────────────────────
-    const SystemConfig_pa = mongoose.model('SystemConfig');
-    const poolConfig_pa   = await SystemConfig_pa.findOne({ key: 'main' }).lean();
+    const poolConfig_pa   = await getSystemConfig();
     const pool_pa         = (poolConfig_pa?.queueManagerPool || []).map(String);
     if (pool_pa.length === 0) {
       return res.status(400).json({ success: false, message: 'No merchant pool configured. Set one via PUT /api/admin/queue/merchant-pool (any number, 1+) before assigning manually.' });
@@ -174,8 +173,7 @@ router.post('/payment-orders/:id/reassign', authenticate, isAdminOrSubAdminOrQue
     }
 
     // ── Queue Manager Pool guard (same rule as /payment-orders/:id/assign) ──
-    const SystemConfig_pr = mongoose.model('SystemConfig');
-    const poolConfig_pr   = await SystemConfig_pr.findOne({ key: 'main' }).lean();
+    const poolConfig_pr   = await getSystemConfig();
     const pool_pr         = (poolConfig_pr?.queueManagerPool || []).map(String);
     if (pool_pr.length === 0) {
       return res.status(400).json({ success: false, message: 'No merchant pool configured. Set one via PUT /api/admin/queue/merchant-pool (any number, 1+) before reassigning manually.' });
@@ -256,9 +254,8 @@ router.get('/queue/available-merchants', authenticate, isAdminOrSubAdminOrQueueM
     const { type, orderAmount } = req.query;
     const amount = parseFloat(orderAmount) || 0;
     const Merchant = mongoose.model('Merchant');
-    const SystemConfig = mongoose.model('SystemConfig');
 
-    const poolConfig = await SystemConfig.findOne({ key: 'main' }).lean();
+    const poolConfig = await getSystemConfig();
     const poolIds = poolConfig?.queueManagerPool || [];
 
     if (poolIds.length === 0) {
@@ -329,9 +326,8 @@ router.get('/queue/available-merchants', authenticate, isAdminOrSubAdminOrQueueM
 // available-merchants above) so the settings UI can show and edit it.
 router.get('/queue/merchant-pool', authenticate, isAdminOrSubAdminOrQueueManager, async (req, res) => {
   try {
-    const SystemConfig = mongoose.model('SystemConfig');
     const Merchant = mongoose.model('Merchant');
-    const config = await SystemConfig.findOne({ key: 'main' }).lean();
+    const config = await getSystemConfig();
     const poolIds = config?.queueManagerPool || [];
 
     const merchants = poolIds.length
@@ -371,7 +367,6 @@ router.put('/queue/merchant-pool', authenticate, isAdminOrSubAdminOrQueueManager
       return res.status(400).json({ success: false, message: 'Duplicate merchant IDs in pool.' });
     }
 
-    const SystemConfig = mongoose.model('SystemConfig');
     const Merchant = mongoose.model('Merchant');
     const EnhancedAuditLog = mongoose.model('EnhancedAuditLog');
 
@@ -388,7 +383,7 @@ router.put('/queue/merchant-pool', authenticate, isAdminOrSubAdminOrQueueManager
       });
     }
 
-    const before = await SystemConfig.findOne({ key: 'main' }).lean();
+    const before = await getSystemConfig();
 
     await SystemConfig.findOneAndUpdate(
       { key: 'main' },
@@ -495,8 +490,7 @@ router.post('/queue/assign/:orderId', authenticate, isAdminOrSubAdminOrQueueMana
     }
 
     // ── Queue Manager Pool guard (same rule as payment-orders assign/reassign) ─
-    const SystemConfig_qa = mongoose.model('SystemConfig');
-    const poolConfig_qa   = await SystemConfig_qa.findOne({ key: 'main' }).lean();
+    const poolConfig_qa   = await getSystemConfig();
     const pool_qa         = (poolConfig_qa?.queueManagerPool || []).map(String);
     if (pool_qa.length === 0) {
       return res.status(400).json({ success: false, message: 'No merchant pool configured. Set one via PUT /api/admin/queue/merchant-pool (any number, 1+) before assigning manually.' });

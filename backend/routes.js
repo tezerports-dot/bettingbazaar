@@ -27,7 +27,7 @@ import { signToken, verifyJwt, decodeTokenClaims } from './domains/identity/jwt.
 import { hashPassword, verifyPassword } from './domains/identity/password.util.js';
 import mongoose    from 'mongoose';
 import { buildPublicKycData } from './domains/user/kycPublicData.js';
-import { isTokenRevoked, revokeToken } from './postgres/identityPg.js';
+import { isTokenRevoked, revokeToken } from '#db/repositories/identity.js';
 import { issueChallenge, verifyChallenge, CHALLENGE_AUDIENCE } from './domains/identity/twoFactorChallenge.js';
 import { verifySecondFactor, SECOND_FACTOR_RESULT } from './domains/identity/verifySecondFactor.js';
 

@@ -26,7 +26,7 @@ router.get('/cycles/phases', authenticate, isAdminOrSubAdmin, async (req, res) =
     // know it fell through to the full-day arm, which for a 1-minute cycle
     // puts "merge" five minutes before a block that lasts sixty seconds.
     // Reading the config is the only version that cannot drift.
-    const cfg = await SystemConfig.findOne({ key: 'main' }).select('cyclePhases').lean();
+    const cfg = await getSystemConfig();
 
     const cyclesWithPhases = activeCycles.map(cycle => {
       // An unrecognised type is skipped rather than defaulted. `phasesFor`

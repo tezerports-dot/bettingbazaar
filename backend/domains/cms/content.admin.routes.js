@@ -32,7 +32,7 @@ router.get('/content/faq', authenticate, isAdminOrSubAdmin, async (req, res) => 
      * REMOVED (2026-08-26): a "migrate legacy FAQs out of SystemConfig" block
      * that could never run, and would have corrupted data if it had.
      *
-     * It read `SystemConfig.findOne({ key: 'faq' })`. `SystemConfig.key`
+     * It read `getSystemConfig()`. `SystemConfig.key`
      * defaults to 'main' and is unique, and nothing in the codebase has ever
      * created a document with any other key — so the lookup matched nothing,
      * every time, on every admin FAQ page load.
@@ -104,9 +104,8 @@ router.delete('/content/faq/:faqId', authenticate, isAdmin, async (req, res) => 
 // Get support links
 router.get('/content/support-links', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
-    const { SystemConfig } = getModels();
     
-    const config = await SystemConfig.findOne();
+    const config = await getSystemConfig();
     if (!config || !config.supportLinks) {
       return res.json({
         success: true,
@@ -139,9 +138,8 @@ router.put('/content/support-links', authenticate, isAdmin, async (req, res) => 
   try {
     const { whatsapp, telegram, telegramUsername, telegramGroupUrl, telegramChannelUrl,
             email, helpCenterUrl, termsUrl, privacyUrl } = req.body;
-    const { SystemConfig } = getModels();
 
-    let config = await SystemConfig.findOne();
+    let config = await getSystemConfig();
     if (!config) {
       config = new SystemConfig();
     }

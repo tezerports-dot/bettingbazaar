@@ -16,11 +16,11 @@ import { settlementRuns } from '../../services/metrics.service.js';
 import { refreshRealPools, forgetCycle } from './cyclePool.service.js';
 // The settlement RUN is a row with a UNIQUE cycle_id, opened before any payout
 // and closed after the last one — not a flag that can be written back.
-import { beginSettlement, finishSettlement } from '../../postgres/settlementPg.js';
+import { beginSettlement, finishSettlement } from '#db/repositories/settlements.js';
 // The bet lifecycle's other half. Placement has routed through the resolver for
 // a while; settlement wrote Bet.status directly here and in settlementService,
 // which left half the lifecycle authoritative in each store.
-import { onPostgres as betsOnPostgres, settleBetOnPostgres } from '../../postgres/betPgAuthority.js';
+import { settleBetOnPostgres } from '#db/repositories/bets.js';
 // unlockLostBet and executeSettlementBatch moved to domains/settlement/ on 2026-07-03.
 // processPayoutsOptimized stays here as the orchestrator -- see domains/settlement/README.md.
 
@@ -198,7 +198,7 @@ class GameEngine {
         // split no reconciliation can tell apart from the two stores genuinely
         // disagreeing. docs/BETS_SETTLEMENT_ROUTING.md; same rule ORDERS was
         // built as one seam for.
-        const onPg = betsOnPostgres();
+        const onPg = true;
 
         // Every bet this pass could not settle, with the reason. Reported, never
         // swallowed — a refused bet still has its stake locked, and a settlement

@@ -38,14 +38,13 @@ import { creditMerchantTokens } from '../merchant/merchantWallet.service.js';
 import { emitOrderUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import { sendAlert } from '../../services/alerting.service.js';
 import { rupeesToPaise } from '../../shared/money.js';
-import { isPostgresAuthoritative, MONEY_PATHS } from '../../postgres/moneyAuthority.js';
+import { MONEY_PATHS } from '#db/moneyPaths.js';
 import {
   DIRECTIONS, openSettlement, completeSettlement, cancelSettlement, reverseSettlement,
   getSettlement,
-} from '../../postgres/merchantSettlementPg.js';
+} from '#db/repositories/merchantSettlements.js';
 
 /** Is Postgres the source of truth for the merchant side of a settlement? */
-const onPostgres = () => isPostgresAuthoritative(MONEY_PATHS.MERCHANT_SETTLEMENT);
 
 /** One deterministic settlement per order, so a retry addresses the same one. */
 const settlementIdFor = (order) => `ms_${order._id}`;
@@ -59,8 +58,7 @@ const DEFAULT_HOLD_MINUTES = 60;
  */
 export async function holdMinutes() {
   try {
-    const SystemConfig = mongoose.model('SystemConfig');
-    const cfg = await SystemConfig.findOne({ key: 'main' }).select('withdrawalHoldMinutes').lean();
+    const cfg = await getSystemConfig();
     const m = cfg?.withdrawalHoldMinutes;
     // schema default: 60 — an explicit 0 is meaningful and must survive.
     if (Number.isFinite(m) && m >= 0 && m <= 1440) return m;
@@ -99,7 +97,7 @@ export async function holdMinutes() {
 export async function settleHold(orderId) {
   const PaymentOrder = mongoose.model('PaymentOrder');
 
-  if (onPostgres()) return settleHoldOnPostgres(orderId);
+  return settleHoldOnPostgres(orderId);
 
   return settleHoldOnMongo(orderId);
 }
@@ -308,7 +306,7 @@ async function settleHoldOnMongo(orderId) {
  */
 export async function reverseHold(orderId, opts = {}) {
   const { reason = 'Dispute upheld — merchant payment not received', by = null } = opts;
-  if (onPostgres()) return reverseHoldOnPostgres(orderId, { reason, by });
+  return reverseHoldOnPostgres(orderId, { reason, by });
   return reverseHoldOnMongo(orderId, { reason, by });
 }
 
@@ -396,7 +394,7 @@ async function reverseHoldOnMongo(orderId, { reason, by }) {
   // Mongo-only deployment has no Postgres to ask, and reverseHoldOnPostgres
   // delegates here only for pre-flip orders — which it has already established
   // have no settlement row at all.
-  if (onPostgres()) {
+  {
     await cancelSettlement({
       settlementId: settlementIdFor(order), merchantId: order.merchantId,
       actor: by ? String(by) : 'dispute', reason: String(reason).slice(0, 500),

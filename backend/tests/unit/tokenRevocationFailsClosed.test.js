@@ -19,7 +19,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 process.env.JWT_SECRET ||= 'test-only-paseto-seed';
 
 const pgIsTokenRevoked = vi.fn();
-vi.mock('../../postgres/identityPg.js', () => ({ isTokenRevoked: pgIsTokenRevoked }));
+vi.mock('#db/repositories/identity.js', () => ({ isTokenRevoked: pgIsTokenRevoked }));
 
 const { isTokenRevoked } = await import('../../domains/identity/auth.middleware.js');
 

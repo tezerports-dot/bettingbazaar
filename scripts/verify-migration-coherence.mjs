@@ -47,22 +47,22 @@ const SKIP = new Set(['.git', 'node_modules', 'dist', 'build', 'coverage']);
  * script tries to falsify.
  */
 const MIGRATED = [
-  { model: 'User',                table: 'users',                  repo: 'postgres/userPg.js' },
-  { model: 'TokenBlacklist',      table: 'token_blacklist',        repo: 'postgres/identityPg.js' },
-  { model: 'KycVerification',     table: 'kyc_verifications',      repo: 'postgres/identityPg.js' },
-  { model: 'KycBatch',            table: 'kyc_batches',            repo: 'postgres/identityPg.js' },
-  { model: 'TelegramConfig',      table: 'telegram_configs',       repo: 'postgres/telegramPg.js' },
-  { model: 'TelegramBot',         table: 'telegram_bots',          repo: 'postgres/telegramPg.js' },
-  { model: 'TelegramTemplate',    table: 'telegram_templates',     repo: 'postgres/telegramPg.js' },
-  { model: 'TelegramIdentity',    table: 'telegram_identities',    repo: 'postgres/telegramPg.js' },
-  { model: 'TelegramPendingLink', table: 'telegram_pending_links', repo: 'postgres/telegramPg.js' },
-  { model: 'TelegramLoginToken',  table: 'telegram_login_tokens',  repo: 'postgres/telegramPg.js' },
+  { model: 'User',                table: 'users',                  repo: 'database/repositories/users.js' },
+  { model: 'TokenBlacklist',      table: 'token_blacklist',        repo: 'database/repositories/identity.js' },
+  { model: 'KycVerification',     table: 'kyc_verifications',      repo: 'database/repositories/identity.js' },
+  { model: 'KycBatch',            table: 'kyc_batches',            repo: 'database/repositories/identity.js' },
+  { model: 'TelegramConfig',      table: 'telegram_configs',       repo: 'database/repositories/telegram.js' },
+  { model: 'TelegramBot',         table: 'telegram_bots',          repo: 'database/repositories/telegram.js' },
+  { model: 'TelegramTemplate',    table: 'telegram_templates',     repo: 'database/repositories/telegram.js' },
+  { model: 'TelegramIdentity',    table: 'telegram_identities',    repo: 'database/repositories/telegram.js' },
+  { model: 'TelegramPendingLink', table: 'telegram_pending_links', repo: 'database/repositories/telegram.js' },
+  { model: 'TelegramLoginToken',  table: 'telegram_login_tokens',  repo: 'database/repositories/telegram.js' },
   // The three that were referenced in five files and DEFINED NOWHERE. They had
   // no schema to compare against, so the SPLIT they represented was total: every
   // write threw, and the reads found nothing because nothing was ever written.
-  { model: 'BlockedIP',           table: 'blocked_ips',            repo: 'postgres/securityPg.js' },
-  { model: 'ChatMessage',         table: 'chat_messages',          repo: 'postgres/chatPg.js' },
-  { model: 'BalanceAdjustment',   table: 'balance_adjustments',    repo: 'postgres/balanceAdjustmentPg.js' },
+  { model: 'BlockedIP',           table: 'blocked_ips',            repo: 'database/repositories/security.js' },
+  { model: 'ChatMessage',         table: 'chat_messages',          repo: 'database/repositories/chat.js' },
+  { model: 'BalanceAdjustment',   table: 'balance_adjustments',    repo: 'database/repositories/balanceAdjustments.js' },
 ];
 
 /**
@@ -104,7 +104,7 @@ function walk(dir, acc = []) {
 
 const FILES = walk(join(ROOT, 'backend')).filter((f) => !f.includes('/tests/'));
 const SOURCE = new Map(FILES.map((f) => [f, readFileSync(join(ROOT, f), 'utf8')]));
-const SCHEMA = readFileSync(join(ROOT, 'backend/postgres/schema.sql'), 'utf8');
+const SCHEMA = readFileSync(join(ROOT, 'database/schema.sql'), 'utf8');
 
 /** Every column the schema declares for a table, including later ALTERs. */
 function columnsOf(table) {
@@ -135,7 +135,7 @@ for (const entry of MIGRATED) {
   const pattern = new RegExp(
     `mongoose\\.model\\(['"]${entry.model}['"]\\)|\\b${entry.model}\\.(find|create|updateOne|updateMany|deleteOne|deleteMany|findById|findOne|aggregate|countDocuments)`);
   for (const [file, src] of SOURCE) {
-    if (file === entry.repo || file.startsWith('backend/postgres/')) continue;
+    if (file === entry.repo || file.startsWith('database/')) continue;
     src.split('\n').forEach((line, i) => {
       if (line.trim().startsWith('*') || line.trim().startsWith('//')) return;
       if (pattern.test(line)) {

@@ -18,7 +18,7 @@ import { debitForGameProviderBet, creditWinnings, refundOrder } from '../wallet/
 // Domain 9's resolver. When Postgres owns the path the round's running totals
 // move under its row lock in the SAME transaction as the wallet movement, and
 // the refund bound is a CHECK CONSTRAINT rather than a read-then-compare.
-import { applyCallbackOnPostgres } from '../../postgres/casinoPgAuthority.js';
+import { applyCallbackOnPostgres } from '#db/repositories/casino.js';
 import mongoose from 'mongoose';
 import crypto from 'crypto';
 import { authenticate, isAdmin, isAdminOrSubAdmin } from '../identity/auth.middleware.js';

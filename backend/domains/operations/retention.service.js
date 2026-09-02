@@ -98,8 +98,7 @@ export async function runRetention({ months, dryRun = false } = {}) {
   let m = months;
   if (m === undefined) {
     try {
-      const SystemConfig = mongoose.model('SystemConfig');
-      const cfg = await SystemConfig.findOne({ key: 'main' }).select('retentionMonths').lean();
+      const cfg = await getSystemConfig();
       m = cfg?.retentionMonths;
     } catch { /* fall back to default below */ }
   }

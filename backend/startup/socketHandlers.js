@@ -23,8 +23,7 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
     // payoutMultiplier is now a SystemConfig field (not a hardcoded literal).
     const sendSystemConfig = async () => {
       try {
-        const SystemConfig = mongoose.model('SystemConfig');
-        const cfg   = await SystemConfig.findOne({ key: 'main' }).lean();
+        const cfg   = await getSystemConfig();
         const configData = {
           minBet:             cfg?.betLimits?.thirtyMin?.min  ?? 10,      // schema default: 10
           maxBet:             cfg?.betLimits?.thirtyMin?.max  ?? 100000,  // schema default: 100000

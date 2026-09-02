@@ -6,7 +6,7 @@
 // settlement passes (engine tick + recovery task, or two nodes) safe.
 import { Bet, Transaction } from '../../models/index.js';
 import { creditWinnings, releaseLockedStake } from '../wallet/walletAuthority.service.js';
-import { onPostgres as betsOnPostgres, settleBetOnPostgres } from '../../postgres/betPgAuthority.js';
+import { settleBetOnPostgres } from '#db/repositories/bets.js';
 
 export async function unlockLostBet(userId, amount, betId, fromDeposit, fromWinnings) {
     // txId format predates F-2 — kept identical so historical ledger entries
@@ -38,7 +38,7 @@ export async function unlockLostBet(userId, amount, betId, fromDeposit, fromWinn
  *   not transition. Never empty-and-silent: the caller alerts on them, because a
  *   refused bet still has its stake locked.
  */
-export async function executeSettlementBatch(userOps, txOps, { onPg = betsOnPostgres() } = {}) {
+export async function executeSettlementBatch(userOps, txOps, { onPg = true } = {}) {
     const refused = [];
 
     if (onPg) {

@@ -29,8 +29,7 @@ function normalizeHashes(values) {
 
 async function refreshConfig({ throwOnError = false } = {}) {
   try {
-    const SystemConfig = mongoose.model('SystemConfig');
-    const doc = await SystemConfig.findOne({ key: 'main' }).select('tlsFingerprintDefense').lean();
+    const doc = await getSystemConfig();
     const s = doc?.tlsFingerprintDefense || {};
     cfg = {
       enabled: s.enabled !== undefined ? !!s.enabled : DEFAULTS.enabled,

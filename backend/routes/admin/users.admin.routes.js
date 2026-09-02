@@ -4,7 +4,7 @@ import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels 
 // Cycle-type vocabulary — phantom access is scoped to one type, or BOTH.
 import { CYCLE_TYPE_VALUES } from '../../domains/markets/cycleTypes.js';
 import { adminAdjustment } from '../../domains/wallet/walletAuthority.service.js';
-import { getUser } from '../../postgres/userPg.js';
+import { getUser } from '#db/repositories/users.js';
 import { randomBytes } from 'node:crypto';
 
 const router = express.Router();

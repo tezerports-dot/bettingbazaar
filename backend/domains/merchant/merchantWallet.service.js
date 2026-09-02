@@ -19,12 +19,11 @@
 
 import mongoose from 'mongoose';
 import { MerchantWalletLedger } from './merchantWallet.model.js';
-import { isPostgresAuthoritative, MONEY_PATHS } from '../../postgres/moneyAuthority.js';
+import { MONEY_PATHS } from '#db/moneyPaths.js';
 import { moneyOperations } from '../../services/metrics.service.js';
-import * as pg from '../../postgres/merchantWalletPgAuthority.js';
+import * as pg from '#db/repositories/merchantWallets.js';
 
 /** Is Postgres the source of truth for merchant balances right now? */
-const onPostgres = () => isPostgresAuthoritative(MONEY_PATHS.MERCHANT_WALLET);
 
 /**
  * Count this movement under the SAME metric the Postgres path uses, differing
@@ -124,7 +123,7 @@ export async function debitMerchantTokens({
   if (!(amount > 0)) throw new Error(`debitMerchantTokens: amount must be positive, got ${amount}`);
   if (!txId) throw new Error('debitMerchantTokens: txId is required (idempotency).');
 
-  if (onPostgres()) {
+  {
     return pg.debitMerchantTokens({
       merchantId, amount, reason, refModel, refId, txId, session, allowOverdraft,
     });
@@ -176,7 +175,7 @@ export async function creditMerchantTokens({
   if (!(amount > 0)) throw new Error(`creditMerchantTokens: amount must be positive, got ${amount}`);
   if (!txId) throw new Error('creditMerchantTokens: txId is required (idempotency).');
 
-  if (onPostgres()) {
+  {
     return pg.creditMerchantTokens({
       merchantId, amount, reason, refModel, refId, txId, session,
     });

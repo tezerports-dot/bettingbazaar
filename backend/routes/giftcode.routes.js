@@ -1,6 +1,6 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import { creditWinnings, creditDeposit } from '../domains/wallet/walletAuthority.service.js';
-import { grant as grantBonus } from '../postgres/bonusPgAuthority.js';
+import { grant as grantBonus } from '#db/repositories/bonuses.js';
 import express from 'express';
 import mongoose from 'mongoose';
 import { authenticate, isAdmin, isAdminOrSubAdmin } from '../domains/identity/auth.middleware.js';

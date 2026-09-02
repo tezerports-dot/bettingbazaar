@@ -48,7 +48,6 @@ function bust(url, ts) {
 
 router.get('/branding', authenticate, isAdmin, async (req, res) => {
   try {
-    const { SystemConfig } = getModels();
     
     // FIX: Use Branding model (has proper schema) not SystemConfig.value (field doesn't exist)
     const Branding = mongoose.model('Branding');

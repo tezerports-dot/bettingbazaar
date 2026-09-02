@@ -78,7 +78,7 @@ capabilities:
     implementation_status: full
     activation_status: active
     dependencies: [CAP-09, CAP-13]
-    evidence: [backend/postgres/schema.sql, backend/postgres/pgClient.js]
+    evidence: [database/schema.sql, database/client.js]
     docs: [CLAUDE.md, docs/governance/04-GOVERNANCE.md]
   - id: CAP-08
     name: Append-Only Ledger
@@ -86,14 +86,14 @@ capabilities:
     owner: app
     implementation_status: full
     activation_status: active
-    evidence: [backend/domains/revenue, backend/postgres/schema.sql]
+    evidence: [backend/domains/revenue, database/schema.sql]
   - id: CAP-09
     name: Integer Money Engine
     bucket: A
     owner: app
     implementation_status: full
     activation_status: active
-    evidence: [backend/shared/money.js, backend/postgres/pgClient.js]
+    evidence: [backend/shared/money.js, database/client.js]
     verification: { test: backend/tests/unit/money.test.js }
   - id: CAP-10
     name: Database Transactions
@@ -105,7 +105,7 @@ capabilities:
     # all, under the wallet row lock.
     implementation_status: full
     activation_status: active
-    evidence: [backend/domains/wallet/walletAuthority.service.js, backend/postgres/walletPg.js, backend/postgres/pgClient.js]
+    evidence: [backend/domains/wallet/walletAuthority.service.js, database/repositories/wallets.core.js, database/client.js]
     docs: [docs/governance/04-GOVERNANCE.md, CLAUDE.md]
   - id: CAP-11
     name: CDC Migration
@@ -147,10 +147,10 @@ capabilities:
     activation_status: active
     evidence:
       - backend/domains/revenue/revenueSettlement.service.js
-      - backend/postgres/merchantSettlementPg.js
-      - backend/postgres/ledgerPg.js
+      - database/repositories/merchantSettlements.js
+      - database/repositories/ledger.core.js
       - backend/startup/cronJobs.js
-    verification: { test: backend/tests/postgres/merchantSettlementPg.test.js }
+    verification: { test: database/tests/merchantSettlementPg.test.js }
   - id: CAP-14
     name: Rollback Strategy
     bucket: A
@@ -171,7 +171,7 @@ capabilities:
     owner: app
     implementation_status: full
     activation_status: active
-    evidence: [backend/postgres/pgClient.js, backend/startup/mongoConnect.js, backend/services/metrics.service.js]
+    evidence: [database/client.js, backend/startup/mongoConnect.js, backend/services/metrics.service.js]
   - id: CAP-16
     name: Partitioning Strategy
     bucket: A
@@ -183,7 +183,7 @@ capabilities:
     # volume-gated operational step, not something the app does at boot -- see
     # the PARTITIONING STRATEGY header in schema.sql for the global-uniqueness
     # constraint any application of it must preserve.
-    evidence: [backend/postgres/migrations/001_partition_ledger.sql, backend/postgres/schema.sql]
+    evidence: [database/migrations/001_partition_ledger.sql, database/schema.sql]
   - id: CAP-17
     name: Point-in-Time Recovery
     bucket: C
@@ -213,7 +213,7 @@ capabilities:
     owner: database-platform
     implementation_status: partial
     activation_status: infra-gated
-    evidence: [backend/postgres/schema.sql]
+    evidence: [database/schema.sql]
 
   # ── D. Redis Platform ──────────────────────────────────────────────────────
   - id: CAP-21
@@ -564,7 +564,7 @@ capabilities:
     implementation_status: full
     activation_status: active
     dependencies: [CAP-15, CAP-44]
-    evidence: [backend/services/metrics.service.js, backend/postgres/pgClient.js]
+    evidence: [backend/services/metrics.service.js, database/client.js]
   - id: CAP-65
     name: Continuous Reconciliation Metrics
     bucket: A
@@ -625,7 +625,7 @@ capabilities:
     dependencies: [CAP-07]
     evidence:
       - backend/domains/support/ragService.js
-      - backend/domains/support/ragStore.js
+      - database/repositories/supportDocuments.js
       - backend/domains/support/embeddings.js
       - backend/domains/support/chunk.js
       - backend/domains/support/support.routes.js

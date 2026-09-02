@@ -170,7 +170,7 @@ compute, or default this value independently.
 - `Merchant.minOrder` / `Merchant.maxOrder` own per-merchant order caps. Admin edits these
   via the merchant Limits tab. They are NOT hardcoded defaults — each merchant has their own.
 - Every config field exposed via an admin PUT route must have its default in exactly one place
-  (the column `DEFAULT` in `backend/postgres/schema.sql`, or the single exported constant the
+  (the column `DEFAULT` in `database/schema.sql`, or the single exported constant the
   repository module applies when a JSONB key is absent). Every server-side fallback must match
   that default.
   **Citation required:** add a code comment like `// schema default: 500` next to every `??` or
@@ -590,7 +590,7 @@ Portable today (audited): a scan of `backend/**` found **zero** hardcoded platfo
 - **Any container host:** the `Dockerfile` starts `node backend/server.js` — no platform SDK, no `.env` at boot (env injected). Runs on ECS/Fargate, Cloud Run, Azure, DO, Fly, Render, k8s, bare VM.
 - **Observability is portable:** structured JSON logs to stdout; any system ingests them.
 - **Migrate:** provision PostgreSQL (+ optional Redis + S3 bucket + CDN) → set `.env.example` vars → `docker build`/buildpack → point DNS + set `APP_BASE_URL`/`ALLOWED_ORIGINS`. Railway files (`railway.json`, `nixpacks.toml`, `Procfile`, `Caddyfile`) are optional convenience; the Dockerfile is the neutral path.
-- **The former DB-engine limit is closed.** Earlier revisions recorded an honest caveat here: the app was built on a document store with 200+ ODM models and no data-access abstraction, so swapping the engine meant a data-layer rewrite. That rewrite was done. State lives in PostgreSQL behind repository modules in `backend/postgres/`, so the host is a `DATABASE_URL` swap and no call site knows which host it is talking to.
+- **The former DB-engine limit is closed.** Earlier revisions recorded an honest caveat here: the app was built on a document store with 200+ ODM models and no data-access abstraction, so swapping the engine meant a data-layer rewrite. That rewrite was done. State lives in PostgreSQL behind repository modules in `database/`, so the host is a `DATABASE_URL` swap and no call site knows which host it is talking to.
 - **Resolved caveats:** app-asset uploads write to S3 when configured (multi-instance correct); SSE/socket fan-out uses a Redis pub/sub bridge (`startup/realtimeBridge.js`, graceful no-op without Redis).
 
 ---
@@ -617,7 +617,7 @@ Portable today (audited): a scan of `backend/**` found **zero** hardcoded platfo
 
 **Inter-service security.** Inside the monolith the process boundary *is* the trust boundary — do not add service-auth ceremony to in-process calls. When a domain goes remote: app-identity service tokens (built, `serviceAuth.js`) + mTLS (mesh/Envoy, infra) + default-deny network policies (infra) + rotated `SERVICE_JWT_SECRET` (infra).
 
-**One database (PostgreSQL).** Every domain — money, identity, configuration, content, engagement — is stored in PostgreSQL and reached through the repository modules in `backend/postgres/`. The financial core is what the rest of the schema is held to: integer paise in `BIGINT`, row-level locking around every balance mutation, an append-only double-entry ledger, unique `tx_id` idempotency gates, `*_transitions` audit tables, and `CHECK` constraints that make an impossible row impossible. Read-mostly configuration and CMS documents are JSONB columns, which is the appropriate shape for them and is not a second store. pgvector rides the same PostgreSQL for RAG. Redis stays the cache + lock + rate-limit + queue layer and holds no durable state. **There is deliberately no sync layer, because there is nothing to sync to** — a dual-write, a reverse mirror, a reconciler and a CDC pipeline are all answers to a question this architecture does not ask.
+**One database (PostgreSQL).** Every domain — money, identity, configuration, content, engagement — is stored in PostgreSQL and reached through the repository modules in `database/`. The financial core is what the rest of the schema is held to: integer paise in `BIGINT`, row-level locking around every balance mutation, an append-only double-entry ledger, unique `tx_id` idempotency gates, `*_transitions` audit tables, and `CHECK` constraints that make an impossible row impossible. Read-mostly configuration and CMS documents are JSONB columns, which is the appropriate shape for them and is not a second store. pgvector rides the same PostgreSQL for RAG. Redis stays the cache + lock + rate-limit + queue layer and holds no durable state. **There is deliberately no sync layer, because there is nothing to sync to** — a dual-write, a reverse mirror, a reconciler and a CDC pipeline are all answers to a question this architecture does not ask.
 
 **HA / resilience — app vs infra.** **App (done):** health/readiness/drain, load-shed/bulkhead, backoff+jitter, tiered + per-subnet rate limiting + surge breaker, consistent-hash primitive, Prometheus + Grafana-as-code. **Infra (Bucket C):** reverse proxy w/ dynamic upstreams + geo-routing, multi-region/multi-provider + DNS failover, managed WAF (`owaspFilter` is the app-side complement), IaC, encrypted cross-region backups. The app is HA-*ready* (stateless, Redis-backed shared state); multi-region/WAF/DNS are operational programs the app integrates with.
 
@@ -779,7 +779,7 @@ Grounded in what the repo exposes: Prometheus metrics (`services/metrics.service
 
 **Rollback:** Railway → redeploy previous deployment (or revert the merge on `main`). k8s → `kubectl rollout undo deployment/bettingbazaar` or flip the blue/green Service selector. Deploys are boot-safe: `validateEnv` fails fast on missing secrets, so a misconfigured rollout refuses to start.
 
-**On-call quick reference:** dashboards `deploy/grafana/bettingbazaar-dashboard.json` · scrape `GET /metrics` (Bearer `METRICS_TOKEN` if set) · health `/health/live` (process) + `/health/ready` (deps+drain) · alert sink `SystemConfig.alertWebhookUrl` / `ALERT_WEBHOOK_URL` · DR `docs/governance/DISASTER_RECOVERY.md` · money rollback `backend/postgres/DATA_ROLLBACK_PLAN.md`.
+**On-call quick reference:** dashboards `deploy/grafana/bettingbazaar-dashboard.json` · scrape `GET /metrics` (Bearer `METRICS_TOKEN` if set) · health `/health/live` (process) + `/health/ready` (deps+drain) · alert sink `SystemConfig.alertWebhookUrl` / `ALERT_WEBHOOK_URL` · DR `docs/governance/DISASTER_RECOVERY.md` · money rollback `database/DATA_ROLLBACK_PLAN.md`.
 
 ---
 

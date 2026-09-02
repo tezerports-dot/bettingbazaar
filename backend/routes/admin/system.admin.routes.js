@@ -87,8 +87,7 @@ router.get('/transactions', authenticate, isAdminOrSubAdmin, async (req, res) =>
 // The merchants list guarantees this. No User._id fallback.
 router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
-    const SystemConfig = mongoose.model('SystemConfig');
-    const config = await SystemConfig.findOne({ key: 'main' }).lean() || {};
+    const config = await getSystemConfig();
     res.json({
       success: true,
       config: {
@@ -182,7 +181,6 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
 
 router.put('/system/config', authenticate, isAdmin, async (req, res) => {
   try {
-    const SystemConfig = mongoose.model('SystemConfig');
     const actor = { userId: req.user.userId, userName: req.user.username };
 
     const {
@@ -236,7 +234,7 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
       if (!merchantOrderLimits || typeof merchantOrderLimits !== 'object' || Array.isArray(merchantOrderLimits)) {
         return res.status(400).json({ success: false, message: 'merchantOrderLimits must be an object.' });
       }
-      const currentConfig = await SystemConfig.findOne({ key: 'main' }).select('merchantOrderLimits').lean();
+      const currentConfig = await getSystemConfig();
       const validateUsdtLimitPair = (label, minKey, maxKey) => {
         const minUsdt = merchantOrderLimits[minKey];
         const maxUsdt = merchantOrderLimits[maxKey];
@@ -396,7 +394,7 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     }
 
     if (global.io) {
-      const updatedConfig = await SystemConfig.findOne({ key: 'main' }).lean() || {};
+      const updatedConfig = await getSystemConfig();
       const broadcastPayload = {
         minBet:          updatedConfig.betLimits?.thirtyMin?.min   || 10,
         maxBet:          updatedConfig.betLimits?.thirtyMin?.max   || 100000,
@@ -446,8 +444,7 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
 // ─── DOWNLOAD LINK ADMIN ROUTES ──────────────────────────────────────────────
 router.get('/download/android', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
-    const SystemConfig = mongoose.model('SystemConfig');
-    const config = await SystemConfig.findOne({ key: 'main' }).lean();
+    const config = await getSystemConfig();
     if (config?.androidUrl) return res.redirect(302, config.androidUrl);
     res.status(404).json({ success: false, message: 'Android APK URL not set. Add it in System Settings → App Distribution.' });
   } catch (e) {
@@ -457,8 +454,7 @@ router.get('/download/android', authenticate, isAdminOrSubAdmin, async (req, res
 
 router.get('/download/ios', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
-    const SystemConfig = mongoose.model('SystemConfig');
-    const config = await SystemConfig.findOne({ key: 'main' }).lean();
+    const config = await getSystemConfig();
     if (config?.iosUrl) return res.redirect(302, config.iosUrl);
     res.status(404).json({ success: false, message: 'iOS URL not set. Add it in System Settings → App Distribution.' });
   } catch (e) {
@@ -468,8 +464,7 @@ router.get('/download/ios', authenticate, isAdminOrSubAdmin, async (req, res) =>
 
 router.get('/download/links', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
-    const SystemConfig = mongoose.model('SystemConfig');
-    const config = await SystemConfig.findOne({ key: 'main' }).lean();
+    const config = await getSystemConfig();
     res.json({
       success: true,
       androidUrl: config?.androidUrl || '',

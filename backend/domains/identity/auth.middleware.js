@@ -22,8 +22,8 @@
  */
 
 import { SystemConfig } from '../../models/index.js';
-import { isTokenRevoked as pgIsTokenRevoked } from '../../postgres/identityPg.js';
-import { getUser } from '../../postgres/userPg.js';
+import { isTokenRevoked as pgIsTokenRevoked } from '#db/repositories/identity.js';
+import { getUser } from '#db/repositories/users.js';
 import { setContextUser } from '../../middleware/requestContext.js'; // X-6
 // AQ-2 (2026-07-13): every sign/verify goes through the single PASETO authority —
 // Ed25519 signature verification, iss/aud stamped on sign. No raw token-library calls remain here.
@@ -214,7 +214,7 @@ const KYC_REFUSAL = {
 
 export async function requireApprovedKyc(req, res, next) {
   try {
-    const cfg = await SystemConfig.findOne({ key: 'main' }).select('kycRequired').lean();
+    const cfg = await getSystemConfig();
     if (cfg?.kycRequired === false || req.user?.kycStatus === 'APPROVED') return next();
 
     const status = req.user?.kycStatus || 'PENDING_SUBMISSION';

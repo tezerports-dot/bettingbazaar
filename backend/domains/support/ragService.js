@@ -27,8 +27,8 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { chunkDocument } from './chunk.js';
 import { embedDocuments, embedQuery, embeddingsConfigured, embeddingInfo } from './embeddings.js';
-import { replaceDocument, retrieve, listDocuments, deleteDocument, stats } from './ragStore.js';
-import { pgConfigured } from '../../postgres/pgClient.js';
+import { replaceDocument, retrieve, listDocuments, deleteDocument, stats } from '#db/repositories/supportDocuments.js';
+import { pgConfigured } from '#db/client.js';
 import { networkClient } from '../../services/networkClient.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

@@ -63,8 +63,7 @@ let refreshTimer = null;
 async function refreshConfig() {
   try {
     const mongoose = (await import('mongoose')).default;
-    const SystemConfig = mongoose.model('SystemConfig');
-    const doc = await SystemConfig.findOne({ key: 'main' }).select('loadShedding').lean();
+    const doc = await getSystemConfig();
     const s = doc?.loadShedding;
     if (s) {
       cfg = {

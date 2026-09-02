@@ -30,14 +30,14 @@
 import {
   getIdentityByTelegramId, getIdentityByUserId, getPendingLink, getPendingAadhaar,
   upsertPendingLink, deletePendingLink, createAccountFromOnboarding,
-} from '../../postgres/telegramPg.js';
+} from '#db/repositories/telegram.js';
 import {
   getUser, getUserByReferralCode, claimJoiningNumber,
   claimKycSubmission, releaseKycSubmission, newUserId,
-} from '../../postgres/userPg.js';
+} from '#db/repositories/users.js';
 import {
   findRegisteredAadhaar, submitVerification, releaseFailedSubmission,
-} from '../../postgres/identityPg.js';
+} from '#db/repositories/identity.js';
 import { hashAadhaar, hashAadhaarCandidates } from '../identity/aadhaarHash.util.js';
 import { encryptField } from '../identity/fieldCrypto.util.js';
 import { generateReferralCode, recordEarningsFor } from '../referral/referral.service.js';

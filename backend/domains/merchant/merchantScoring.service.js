@@ -9,7 +9,7 @@
 
 import mongoose from 'mongoose';
 import { MERCHANT_CURRENCY } from './merchantCurrency.js';
-import { getAvailablePaiseFor } from '../../postgres/merchantWalletPg.js';
+import { getAvailablePaiseFor } from '#db/repositories/merchantWallets.core.js';
 import { rupeesToPaise } from '../../shared/money.js';
 
 const ACTIVE_ASSIGNMENT_STATUSES = ['ASSIGNED', 'PROCESSING', 'PAID'];
@@ -29,8 +29,7 @@ function scoreMerchant(merchant) {
 }
 
 async function getFundingLimits() {
-  const SystemConfig = mongoose.model('SystemConfig');
-  const cfg = await SystemConfig.findOne({ key: 'main' }).lean();
+  const cfg = await getSystemConfig();
   return {
     maxDepositOrders: cfg?.merchantOrderLimits?.maxConcurrentDepositOrders ?? 1, // schema default: 1
     maxWithdrawalOrders: cfg?.merchantOrderLimits?.maxConcurrentWithdrawalOrders ?? 1, // schema default: 1

@@ -308,9 +308,7 @@ export function computeWinningsPayout({ amount, feePercent, multiplier = 2 }) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 async function getRiskRules() {
-  const SystemConfig = mongoose.model('SystemConfig');
-  const cfg = await SystemConfig.findOne({ key: 'main' })
-    .select('riskRules payoutFeePercent winningsFeePercent betReservePercent payoutMultiplier').lean();
+  const cfg = await getSystemConfig();
   return {
     // schema default: true (2026-07-09 owner directive — multiples of 10)
     enforceMultiplesOf10: cfg?.riskRules?.enforceMultiplesOf10 ?? true,

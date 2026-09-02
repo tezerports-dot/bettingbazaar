@@ -7,7 +7,7 @@ import { creditDeposit, creditWinnings } from '../wallet/walletAuthority.service
 import { completeOrder, cancelOrder } from '../payment/orderLifecycle.service.js';
 // Order chat — the record a dispute is decided from. Every write here used to
 // name a model registered nowhere, so nothing was ever recorded.
-import { listMessages, postMessage, postSystemMessage } from '../../postgres/chatPg.js';
+import { listMessages, postMessage, postSystemMessage } from '#db/repositories/chat.js';
 
 const router = express.Router();
 

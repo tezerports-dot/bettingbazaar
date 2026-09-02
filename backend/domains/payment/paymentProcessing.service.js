@@ -90,8 +90,7 @@ function buildMerchantSnapshot(merchantDoc, expiresAt) {
 // edits it. Returns milliseconds for direct Date arithmetic.
 async function getOrderExpiryMs() {
   try {
-    const SystemConfig = mongoose.model('SystemConfig');
-    const cfg = await SystemConfig.findOne({ key: 'main' }).select('orderExpiryMinutes').lean();
+    const cfg = await getSystemConfig();
     const m = cfg?.orderExpiryMinutes;
     if (Number.isFinite(m) && m >= 1 && m <= 1440) return m * 60 * 1000;
   } catch { /* fall through to default */ }
@@ -229,9 +228,8 @@ export async function createDepositOrder(userId, tokenAmount) {
   try {
     const User         = mongoose.model('User');
     const PaymentOrder = mongoose.model('PaymentOrder');
-    const SystemConfig = mongoose.model('SystemConfig');
 
-    const cfg        = await SystemConfig.findOne({ key: 'main' }).lean();
+    const cfg        = await getSystemConfig();
     const minDeposit = cfg?.minDeposit || 100; // schema default: 100
     const maxDeposit = cfg?.maxDeposit || 50000; // schema default: 50000
 
@@ -316,9 +314,8 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
   try {
     const User         = mongoose.model('User');
     const PaymentOrder = mongoose.model('PaymentOrder');
-    const SystemConfig = mongoose.model('SystemConfig');
 
-    const cfg         = await SystemConfig.findOne({ key: 'main' }).lean();
+    const cfg         = await getSystemConfig();
     const minWithdraw = cfg?.minWithdrawal || 500; // schema default: 500
     const maxWithdraw = cfg?.maxWithdrawal || 50000; // schema default: 50000
 

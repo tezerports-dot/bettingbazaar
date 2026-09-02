@@ -74,8 +74,7 @@ class CycleGenerator {
         }
         let result = DEFAULT_CYCLE_PHASES;
         try {
-            const SystemConfig = mongoose.model('SystemConfig');
-            const cfg = await SystemConfig.findOne({ key: 'main' }).select('cyclePhases').lean();
+            const cfg = await getSystemConfig();
             const cp = cfg?.cyclePhases;
             if (cp) {
                 // Merged and validated per key, so one bad admin value falls back
@@ -102,8 +101,7 @@ class CycleGenerator {
      */
     async getCycleDurationMinutes() {
         try {
-            const SystemConfig = mongoose.model('SystemConfig');
-            const cfg = await SystemConfig.findOne({ key: 'main' }).select('cycleDurationMinutes').lean();
+            const cfg = await getSystemConfig();
             const d = cfg?.cycleDurationMinutes;
             if (Number.isInteger(d) && d >= 10 && d <= 60 && 60 % d === 0) return d;
         } catch { /* fall through to default */ }

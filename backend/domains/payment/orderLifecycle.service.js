@@ -45,9 +45,9 @@
  * caller, which is a different job from giving them a guard.
  */
 import mongoose from 'mongoose';
-import { ORDER_STATES, ALLOWED_FROM } from '../../postgres/orderPg.js';
+import { ORDER_STATES, ALLOWED_FROM } from '#db/repositories/orders.core.js';
 // Stage 2. This is the ONLY file that may import it — see the header there.
-import { transitionOrderOnPostgres as routeTransition } from '../../postgres/orderPgAuthority.js';
+import { transitionOrderOnPostgres as routeTransition } from '#db/repositories/orders.js';
 
 export { ORDER_STATES };
 

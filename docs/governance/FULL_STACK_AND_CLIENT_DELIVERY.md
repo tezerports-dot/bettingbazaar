@@ -163,7 +163,7 @@ percentages are integer basis points; floats appear only in storage, never in ma
 (`postgres/dualWrite.js`), a leader-locked 5-minute cron reconciles both directions,
 and `postgres/reverseMirror.js` gives the rollback path zero RPO. Flipping authority
 is an owner-gated production sequence, not a code change —
-`LAUNCH_READINESS.md` §E and `backend/postgres/DATA_ROLLBACK_PLAN.md` own it.
+`LAUNCH_READINESS.md` §E and `database/DATA_ROLLBACK_PLAN.md` own it.
 
 ## 1.6 Realtime — three transports, one namespace
 

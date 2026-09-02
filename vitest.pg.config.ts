@@ -17,7 +17,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['backend/tests/postgres/**/*.test.js'],
+    include: ['database/tests/**/*.test.js'],
     testTimeout: 30000,
     fileParallelism: false, // shared database
   },
