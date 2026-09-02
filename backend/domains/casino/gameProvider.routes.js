@@ -14,6 +14,7 @@
  *  4. Provider calls our webhook on every bet/win → we debit/credit user wallet
  */
 import express from 'express';
+import { db } from '#db';
 import { debitForGameProviderBet, creditWinnings, refundOrder } from '../wallet/walletAuthority.service.js';
 // Domain 9's resolver. When Postgres owns the path the round's running totals
 // move under its row lock in the SAME transaction as the wallet movement, and
@@ -110,7 +111,6 @@ router.post('/launch', authenticate, async (req, res) => {
     const { providerKey, gameId = '', gameName = '', mode = 'real' } = req.body;
     const GameProvider = mongoose.model('GameProvider');
     const GameSession  = mongoose.model('GameSession');
-    const User         = mongoose.model('User');
 
     const provider = await GameProvider.findOne({ key: providerKey });
     if (!provider?.enabled) {
@@ -120,7 +120,7 @@ router.post('/launch', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Provider is not fully configured' });
     }
 
-    const user = await User.findById(req.user.userId).select('username mobile depositBalance winningsBalance');
+    const user = await db.users.getUser(req.user.userId);
     const balance = (user.depositBalance || 0) + (user.winningsBalance || 0);
     const sessionId = crypto.randomUUID();
     const expiresAt = new Date(Date.now() + 4 * 3600000); // 4h
@@ -239,7 +239,6 @@ router.post('/wallet/:providerKey', async (req, res) => {
     const { providerKey } = req.params;
     const GameProvider    = mongoose.model('GameProvider');
     const GameTransaction = mongoose.model('GameTransaction');
-    const User            = mongoose.model('User');
 
     const provider = await GameProvider.findOne({ key: providerKey });
     if (!provider) return res.status(404).json({ success: false });
@@ -263,11 +262,11 @@ router.post('/wallet/:providerKey', async (req, res) => {
     if (dup) {
       // `.lean()` yields null for a since-deleted player; dereferencing it here
       // turned a benign replay into a 500.
-      const prior = await User.findById(dup.userId).lean();
+      const prior = await db.users.getUser(dup.userId);
       return res.json({ success: true, balance: prior?.depositBalance || 0 });
     }
 
-    const user = await User.findById(userId);
+    const user = await db.users.getUser(userId);
     if (!user) return res.status(404).json({ success: false, message: 'Player not found' });
 
     const balance = (user.depositBalance || 0) + (user.winningsBalance || 0);
@@ -346,7 +345,7 @@ router.post('/wallet/:providerKey', async (req, res) => {
       await refundOrder(userId, amount, roundId, 'depositBalance');
     }
 
-    const updatedUser  = await User.findById(userId).lean();
+    const updatedUser  = await db.users.getUser(userId);
     const newBalance   = (updatedUser.depositBalance || 0) + (updatedUser.winningsBalance || 0);
 
     await GameTransaction.create({

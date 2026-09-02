@@ -112,6 +112,7 @@
     "esbuild@0.28.1": true
   },
   "imports": {
+    "#db": "./database/index.js",
     "#db/*": "./database/*"
   }
 }

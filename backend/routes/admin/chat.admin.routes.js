@@ -16,6 +16,7 @@
  * configurable business values.
  */
 import { express, mongoose, hasPermission } from './_adminShared.js';
+import { db } from '#db';
 
 const router = express.Router();
 const canManageSupport = hasPermission('canManageSupport');
@@ -30,7 +31,7 @@ const M = () => ({
 /** Best-effort audit trail entry; never fails the request. */
 async function audit(req, { action, category, targetType, targetId, targetName, details }) {
   try {
-    await mongoose.model('EnhancedAuditLog').create({
+    await db.audit.recordDetailed({
       performedBy: req.user.userId,
       performedByName: req.user.username,
       performedByRole: req.user.isAdmin ? 'admin' : 'subadmin',

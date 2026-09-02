@@ -7,6 +7,7 @@
 // ledger's bonus events) — this service stores nothing and mutates nothing.
 
 import mongoose from 'mongoose';
+import { db } from '#db';
 
 /**
  * getMerchantLeaderboard — merchants ranked by completed volume over a
@@ -77,11 +78,10 @@ export async function getMerchantFundingStats(merchantId) {
   const PaymentOrder = mongoose.model('PaymentOrder');
   const AccountingEvent = mongoose.model('AccountingEvent');
   const MerchantWalletLedger = mongoose.model('MerchantWalletLedger');
-  const Merchant = mongoose.model('Merchant');
 
   const oid = new mongoose.Types.ObjectId(String(merchantId));
   const [merchant, orderRows, bonusRow, topupRow] = await Promise.all([
-    Merchant.findById(oid, 'username tokenBalance status isOnline successRate avgResponseMinutes').lean(),
+    db.merchants.getMerchant(oid, 'username tokenBalance status isOnline successRate avgResponseMinutes'),
     PaymentOrder.aggregate([
       { $match: { merchantId: oid, status: 'COMPLETED' } },
       { $group: { _id: '$type', fiat: { $sum: '$fiatAmount' }, count: { $sum: 1 } } },

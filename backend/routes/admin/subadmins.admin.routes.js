@@ -1,6 +1,7 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** subadmins.admin.routes.js — Sub-admin CRUD and permissions */
 import { express, mongoose, authenticate, isAdmin, getModels } from './_adminShared.js';
+import { db } from '#db';
 // AQ-8: hash via the password authority (argon2id).
 import { hashPassword } from '../../domains/identity/password.util.js';
 
@@ -57,7 +58,7 @@ router.put('/sub-admins/:subAdminId/permissions', authenticate, isAdmin, async (
     const { User } = getModels();
     const { permissions } = req.body;
     
-    const subAdmin = await User.findById(req.params.subAdminId);
+    const subAdmin = await db.users.getUser(req.params.subAdminId);
     if (!subAdmin || !subAdmin.isSubAdmin) {
       return res.status(404).json({ success: false, message: 'Sub-admin not found' });
     }
@@ -77,7 +78,7 @@ router.delete('/sub-admins/:subAdminId', authenticate, isAdmin, async (req, res)
   try {
     const { User } = getModels();
     
-    const subAdmin = await User.findById(req.params.subAdminId);
+    const subAdmin = await db.users.getUser(req.params.subAdminId);
     if (!subAdmin || !subAdmin.isSubAdmin) {
       return res.status(404).json({ success: false, message: 'Sub-admin not found' });
     }

@@ -7,6 +7,7 @@
  * same pattern as merchant.admin.routes.js / content.admin.routes.js).
  */
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import { db } from '#db';
 import {
   getActivePolicy,
   getPolicyHistory,
@@ -89,8 +90,7 @@ router.put('/deposit-policy/:currency', authenticate, isAdmin, async (req, res) 
       return res.status(400).json({ success: false, message: validationError.message });
     }
 
-    const EnhancedAuditLog = mongoose.model('EnhancedAuditLog');
-    await EnhancedAuditLog.create({
+    await db.audit.recordDetailed({
       performedBy: req.user.userId,
       performedByName: req.user.username,
       performedByRole: 'admin',
@@ -132,8 +132,7 @@ router.post('/deposit-policy/version/:versionId/approve', authenticate, isAdmin,
       return res.status(400).json({ success: false, message: e.message });
     }
 
-    const EnhancedAuditLog = mongoose.model('EnhancedAuditLog');
-    await EnhancedAuditLog.create({
+    await db.audit.recordDetailed({
       performedBy: req.user.userId,
       performedByName: req.user.username,
       performedByRole: 'admin',
@@ -166,8 +165,7 @@ router.post('/deposit-policy/version/:versionId/rollback', authenticate, isAdmin
       return res.status(400).json({ success: false, message: e.message });
     }
 
-    const EnhancedAuditLog = mongoose.model('EnhancedAuditLog');
-    await EnhancedAuditLog.create({
+    await db.audit.recordDetailed({
       performedBy: req.user.userId,
       performedByName: req.user.username,
       performedByRole: 'admin',

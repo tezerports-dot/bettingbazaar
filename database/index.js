@@ -74,6 +74,7 @@ import * as compliance from './repositories/compliance.js';
 import * as operations from './repositories/operations.js';
 import * as paymentConfig from './repositories/paymentConfig.js';
 import * as supportDocuments from './repositories/supportDocuments.js';
+import * as stats from './repositories/stats.js';
 
 import * as walletsCore from './repositories/wallets.core.js';
 import * as walletsApi from './repositories/wallets.js';
@@ -148,6 +149,7 @@ export const db = Object.freeze({
   config,
   operations,
   supportDocuments,
+  stats,
 });
 
 export default db;
@@ -156,4 +158,4 @@ export default db;
 export { users, identity, security, telegram, merchants, chat, config };
 export { treasury, settlements, merchantSettlements, adminIssuance, balanceAdjustments };
 export { markets, games, content, engagement, social, referrals };
-export { audit, compliance, operations, paymentConfig, supportDocuments };
+export { audit, compliance, operations, paymentConfig, supportDocuments, stats };

@@ -9,6 +9,7 @@
  * distributable-revenue cap) is enforced in the service, never here.
  */
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import { db } from '#db';
 import {
   getTrialBalance,
   getDistributableRevenueMinor,
@@ -94,8 +95,7 @@ router.post('/revenue/bonus-pool/fund', authenticate, isAdmin, async (req, res) 
       return res.status(400).json({ success: false, message: ruleError.message });
     }
 
-    const EnhancedAuditLog = mongoose.model('EnhancedAuditLog');
-    await EnhancedAuditLog.create({
+    await db.audit.recordDetailed({
       performedBy: req.user.userId,
       performedByName: req.user.username,
       performedByRole: 'admin',

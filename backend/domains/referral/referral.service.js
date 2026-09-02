@@ -17,6 +17,7 @@
  * never touches a balance directly.
  */
 import mongoose from 'mongoose';
+import { db } from '#db';
 import crypto from 'crypto';
 import {
   ReferralEarning, ReferralDisbursal, ReferralProgramme, ReferralClick, Counter,
@@ -78,10 +79,10 @@ export async function recordEarningsFor(user) {
 
   // Walk up at most two edges. Level 1 is the direct referrer; level 2 is that
   // referrer's own referrer. Nothing deeper is ever paid.
-  const level1 = await User.findById(user.referredBy).select('_id referredBy').lean();
+  const level1 = await db.users.getUser(user.referredBy);
   if (!level1) return { recorded: 0, levels: [] };
   const level2 = level1.referredBy
-    ? await User.findById(level1.referredBy).select('_id').lean()
+    ? await db.users.getUser(level1.referredBy)
     : null;
 
   const earners = [
@@ -128,7 +129,7 @@ export async function eligibilityFor(earning) {
   const { KycVerification } = await import('../identity/kycVerification.model.js');
   const { TelegramIdentity } = await import('../telegram/telegram.model.js');
 
-  const earner = await User.findById(earning.earnerId).select('_id status isBlocked').lean();
+  const earner = await db.users.getUser(earning.earnerId);
   if (!earner) return { ok: false, reason: 'Referrer account no longer exists' };
   if (earner.isBlocked || earner.status === 'BLOCKED') {
     return { ok: false, reason: 'Referrer account is blocked' };
@@ -414,7 +415,7 @@ export async function referralSummaryFor(userId, { limit = 200 } = {}) {
   const User = mongooseLib.model('User');
   const { KycVerification } = await import('../identity/kycVerification.model.js');
 
-  const me = await User.findById(userId).select('referralCode joiningNumber referralClicks').lean();
+  const me = await db.users.getUser(userId);
 
   const rows = await ReferralEarning.find({ earnerId: userId })
     .sort({ queuePosition: 1, level: 1 })

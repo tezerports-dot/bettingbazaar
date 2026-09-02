@@ -8,6 +8,7 @@
 // call through a proper Merchant-domain public interface instead of a direct import).
 
 import mongoose from 'mongoose';
+import { db } from '#db';
 import crypto   from 'crypto';
 import { debitWinningsForWithdrawal, refundWithdrawal, getBalances } from '../wallet/walletAuthority.service.js';
 import { selectBestMerchant } from '../merchant/merchantScoring.service.js';
@@ -171,7 +172,7 @@ function startPendingRetryLoop(orderId) {
     attempts++;
     try {
       const PaymentOrder = mongoose.model('PaymentOrder');
-      const order = await PaymentOrder.findById(orderId);
+      const order = await db.orders.getOrderRecord(orderId);
       if (!order || order.status !== 'PENDING_QUEUE') return; // already assigned/cancelled
 
       const assigned = await tryAssignMerchant(order);

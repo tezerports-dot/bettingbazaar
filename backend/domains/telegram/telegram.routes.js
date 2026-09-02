@@ -19,8 +19,8 @@
  * than through a status code that makes Telegram replay them.
  */
 import express from 'express';
+import { db } from '#db';
 import crypto from 'crypto';
-import mongoose from 'mongoose';
 import { TelegramIdentity, TelegramPendingLink } from './telegram.model.js';
 import { activeConfig, sendMessage, liveBot } from './telegramClient.js';
 import { applyMemberUpdate, isJoinedStatus, joinPrompt, membershipFor } from './telegramMembership.js';
@@ -562,8 +562,7 @@ router.post('/exchange', async (req, res) => {
       return res.status(401).json({ success: false, message: 'This login link is invalid or has already been used. Send /start to the bot for a new one.' });
     }
 
-    const User = mongoose.model('User');
-    const user = await User.findById(claim.userId).select('+phantomAccess');
+    const user = await db.users.getUser(claim.userId);
     if (!user) return res.status(401).json({ success: false, message: 'Account not found' });
     if (user.isBlocked || user.status === 'BLOCKED') {
       return res.status(403).json({ success: false, message: 'Account blocked. Contact support.' });

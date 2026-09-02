@@ -8,6 +8,7 @@
  */
 
 import mongoose from 'mongoose';
+import { db } from '#db';
 import { MERCHANT_CURRENCY } from './merchantCurrency.js';
 import { getAvailablePaiseFor } from '#db/repositories/merchantWallets.core.js';
 import { rupeesToPaise } from '../../shared/money.js';
@@ -166,5 +167,5 @@ export async function selectBestMerchant(orderType, tokenAmount, currency = MERC
     });
   }
 
-  return Merchant.findById(candidates[0]._id);
+  return db.merchants.getMerchant(candidates[0]._id);
 }

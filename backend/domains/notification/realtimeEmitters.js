@@ -1,7 +1,7 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 
 
-import mongoose from 'mongoose';
+import { db } from '#db';
 
 // ─── WALLET UPDATE ─────────────────────────────────────────────────────────────
 /**
@@ -24,9 +24,7 @@ export async function emitWalletUpdate(userId, balanceOverride = null) {
         timestamp: Date.now(),
       };
     } else {
-      const User  = mongoose.model('User');
-      const fresh = await User.findById(userId)
-        .select('depositBalance winningsBalance reserveBalance lockedBalance').lean();
+      const fresh = await db.users.getUser(userId);
       if (!fresh) return;
       payload = {
         depositBalance:  fresh.depositBalance  || 0,

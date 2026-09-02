@@ -9,7 +9,7 @@
 //   { code, label, active, send({ userId, type, title, message, actionUrl,
 //     actionLabel, relatedId, relatedType, expiresAt }) → per-channel result }
 
-import mongoose from 'mongoose';
+import { db } from '#db';
 import { networkClient } from '../../services/networkClient.js';
 
 // ── IN_APP — live: persists a Notification document (the existing bell-icon
@@ -20,8 +20,7 @@ const inApp = {
   label: 'In-app notification inbox',
   active: true,
   async send({ userId, type = 'INFO', title, message, actionUrl, actionLabel, relatedId, relatedType, expiresAt }) {
-    const Notification = mongoose.model('Notification');
-    const doc = await Notification.create({
+    const doc = await db.engagement.notify({
       userId, type, title, message, actionUrl, actionLabel, relatedId, relatedType, expiresAt,
     });
     return { delivered: true, id: String(doc._id) };
@@ -76,8 +75,7 @@ const sms = {
     if (!smsConfigured()) {
       return { delivered: false, reason: 'SMS gateway not configured (SMS_API_URL env).' };
     }
-    const User = mongoose.model('User');
-    const user = await User.findById(userId).select('mobile').lean();
+    const user = await db.users.getUser(userId);
     if (!user?.mobile) return { delivered: false, reason: 'User has no mobile on file.' };
 
     const text = [title, message].filter(Boolean).join(': ').slice(0, 480);

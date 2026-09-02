@@ -24,7 +24,7 @@
  * the same unrecoverable lockout by a different route.
  */
 import express from 'express';
-import mongoose from 'mongoose';
+import { db } from '#db';
 import { authenticate } from './auth.middleware.js';
 import { twoFactorLimiter } from '../../middleware/security.js';
 import {
@@ -77,8 +77,7 @@ function accountLabel(user) {
 
 // ── Status ──────────────────────────────────────────────────────────────────
 router.get('/status', authenticate, async (req, res) => {
-  const User = mongoose.model('User');
-  const user = await User.findById(req.user.userId).select('+backupCodes').lean();
+  const user = await db.users.getUser(req.user.userId);
   if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
   return res.json({
@@ -92,8 +91,7 @@ router.get('/status', authenticate, async (req, res) => {
 
 // ── Step 1: mint a pending secret and hand back a scannable URI ─────────────
 router.post('/setup', authenticate, async (req, res) => {
-  const User = mongoose.model('User');
-  const user = await User.findById(req.user.userId).select('+twoFactorSecret');
+  const user = await db.users.getUser(req.user.userId);
   if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
   if (user.twoFactorEnabled) {
@@ -122,8 +120,7 @@ router.post('/setup', authenticate, async (req, res) => {
 
 // ── Step 2: prove the app was actually added, then go live ─────────────────
 router.post('/activate', authenticate, twoFactorLimiter, async (req, res) => {
-  const User = mongoose.model('User');
-  const user = await User.findById(req.user.userId).select('+twoFactorPendingSecret +twoFactorSecret');
+  const user = await db.users.getUser(req.user.userId);
   if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
   if (!user.twoFactorPendingSecret) {
@@ -164,8 +161,7 @@ router.post('/activate', authenticate, twoFactorLimiter, async (req, res) => {
 
 // ── Disable ─────────────────────────────────────────────────────────────────
 router.post('/disable', authenticate, twoFactorLimiter, async (req, res) => {
-  const User = mongoose.model('User');
-  const user = await User.findById(req.user.userId).select('+twoFactorSecret');
+  const user = await db.users.getUser(req.user.userId);
   if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
   if (requires2FA(user)) {

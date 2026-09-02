@@ -8,6 +8,7 @@
 // See backend/domains/README.md.
 
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels, isAdminOrSubAdminOrQueueManager } from '../../routes/admin/_adminShared.js';
+import { db } from '#db';
 import { creditDeposit, creditWinnings } from '../wallet/walletAuthority.service.js';
 // The order state machine — the expected state is in the update's filter, so
 // two admins assigning the same order produce one winner, not a silent overwrite.
@@ -66,13 +67,13 @@ router.post('/payment-orders/:id/assign', authenticate, isAdmin, async (req, res
     const { PaymentOrder } = getModels();
     const Merchant     = mongoose.model('Merchant');
 
-    const order    = await PaymentOrder.findById(id);
+    const order    = await db.orders.getOrderRecord(id);
     if (!order)    return res.status(404).json({ success: false, message: 'Order not found' });
     if (order.status !== 'PENDING_QUEUE') {
       return res.status(400).json({ success: false, message: `Order is ${order.status}, cannot assign` });
     }
 
-    const merchant = await Merchant.findById(merchantId);
+    const merchant = await db.merchants.getMerchant(merchantId);
     if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
 
     // ── Queue Manager Pool guard: manual assignment is confined to the
@@ -160,13 +161,13 @@ router.post('/payment-orders/:id/reassign', authenticate, isAdminOrSubAdminOrQue
     const { PaymentOrder } = getModels();
     const Merchant     = mongoose.model('Merchant');
 
-    const order    = await PaymentOrder.findById(id);
+    const order    = await db.orders.getOrderRecord(id);
     if (!order)    return res.status(404).json({ success: false, message: 'Order not found' });
     if (!['ASSIGNED', 'PROCESSING'].includes(order.status)) {
       return res.status(400).json({ success: false, message: `Order is ${order.status}, cannot reassign` });
     }
 
-    const merchant = await Merchant.findById(merchantId);
+    const merchant = await db.merchants.getMerchant(merchantId);
     if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
     if (merchant.status !== 'ACTIVE') {
       return res.status(400).json({ success: false, message: 'Merchant is not ACTIVE' });
@@ -368,7 +369,6 @@ router.put('/queue/merchant-pool', authenticate, isAdminOrSubAdminOrQueueManager
     }
 
     const Merchant = mongoose.model('Merchant');
-    const EnhancedAuditLog = mongoose.model('EnhancedAuditLog');
 
     const foundMerchants = await Merchant.find({ _id: { $in: uniqueIds } })
       .select('name username status merchantApprovalStatus').lean();
@@ -391,7 +391,7 @@ router.put('/queue/merchant-pool', authenticate, isAdminOrSubAdminOrQueueManager
       { upsert: true, new: true }
     );
 
-    await EnhancedAuditLog.create({
+    await db.audit.recordDetailed({
       performedBy: req.user.userId,
       performedByName: req.user.username,
       performedByRole: req.user.isAdmin ? 'admin' : (req.user.isSubAdmin ? 'subadmin' : 'queue_manager'),
@@ -478,13 +478,13 @@ router.post('/queue/assign/:orderId', authenticate, isAdminOrSubAdminOrQueueMana
     const PaymentOrder  = mongoose.model('PaymentOrder');
     const Merchant  = mongoose.model('Merchant');
 
-    const order = await PaymentOrder.findById(orderId);
+    const order = await db.orders.getOrderRecord(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     if (order.status !== 'PENDING_QUEUE') {
       return res.status(400).json({ success: false, message: `Order status is ${order.status}, cannot assign` });
     }
 
-    const merchantDoc = await Merchant.findById(merchantId);
+    const merchantDoc = await db.merchants.getMerchant(merchantId);
     if (!merchantDoc || merchantDoc.merchantApprovalStatus !== 'APPROVED') {
       return res.status(400).json({ success: false, message: 'Invalid or unapproved merchant' });
     }
@@ -545,8 +545,7 @@ router.post('/queue/assign/:orderId', authenticate, isAdminOrSubAdminOrQueueMana
     res.json({
       success: true,
       message: 'Order assigned successfully',
-      order: await PaymentOrder.findById(orderId)
-        .populate('userId', 'username mobile')
+      order: await db.orders.getOrderRecord(orderId)
         .populate('merchantId', 'username mobile'),
     });
   } catch (error) {

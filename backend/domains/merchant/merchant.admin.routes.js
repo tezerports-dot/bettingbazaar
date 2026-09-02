@@ -3,6 +3,7 @@
  * (BBEPS Phase 003 §3.3). Moved from backend/routes/admin/merchants.admin.routes.js
  * on 2026-07-01 (BBEPS Phase 004 migration). */
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from '../../routes/admin/_adminShared.js';
+import { db } from '#db';
 import { creditMerchantTokens, debitMerchantTokens } from './merchantWallet.service.js';
 import { generateMerchantPublicRef } from './merchant.model.js';
 import { MERCHANT_CURRENCY, MERCHANT_CURRENCIES, merchantTypeOf } from './merchantCurrency.js';
@@ -143,7 +144,7 @@ router.get('/merchants/:merchantId', authenticate, isAdmin, async (req, res) => 
   try {
     const { merchantId } = req.params;
     const Merchant = mongoose.model('Merchant');
-    const merchant = await Merchant.findById(merchantId).select('-password');
+    const merchant = await db.merchants.getMerchant(merchantId);
     if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
     res.json({ success: true, merchant });
   } catch (error) {
@@ -217,9 +218,9 @@ router.put('/merchants/:merchantId/limits', authenticate, isAdmin, async (req, r
     const { User } = getModels();
 
     // merchantId = Merchant._id; admin limits live on User.merchantLimits (queue cap)
-    const merchantDoc = await Merchant.findById(merchantId);
+    const merchantDoc = await db.merchants.getMerchant(merchantId);
     if (!merchantDoc) return res.status(404).json({ success: false, message: 'Merchant not found' });
-    const userDoc = await User.findById(merchantDoc.userId);
+    const userDoc = await db.users.getUser(merchantDoc.userId);
     if (!userDoc) return res.status(404).json({ success: false, message: 'Linked user not found' });
     if (!userDoc.merchantLimits) userDoc.merchantLimits = {};
     const newMax = maxOrder ?? perTransactionLimit;
@@ -236,7 +237,7 @@ router.put('/merchants/:merchantId/limits', authenticate, isAdmin, async (req, r
     }
     // M-01: Return current tokenBalance so UI can display buy/sell capacity.
     // Buy capacity = tokenBalance; Sell capacity = lifetime top-up (tracked separately).
-    const merchantForBalance = await Merchant.findById(merchantId).select('tokenBalance').lean();
+    const merchantForBalance = await db.merchants.getMerchant(merchantId);
     res.json({
       success: true,
       message: 'Merchant limits updated successfully',
@@ -260,7 +261,7 @@ router.put('/merchants/:merchantId/capabilities', authenticate, isAdmin, async (
     const { merchantId } = req.params;
     const { acceptsDeposits, acceptsWithdrawals, acceptedCurrencies, merchantType, minOrder, maxOrder } = req.body;
 
-    const merchant = await Merchant.findById(merchantId);
+    const merchant = await db.merchants.getMerchant(merchantId);
     if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
 
     // A merchant settles on exactly ONE rail (2026-07-27) — an INR merchant
@@ -304,7 +305,7 @@ router.put('/merchants/:merchantId/capabilities', authenticate, isAdmin, async (
     await merchant.save();
 
     try {
-      await mongoose.model('EnhancedAuditLog').create({
+      await db.audit.recordDetailed({
         performedBy: req.user.userId, performedByName: req.user.username, performedByRole: 'admin',
         action: 'UPDATE_MERCHANT_CAPABILITIES', category: 'MERCHANT',
         targetType: 'Merchant', targetId: String(merchant._id),
@@ -341,7 +342,7 @@ router.get('/merchants/:merchantId/earnings', authenticate, isAdmin, async (req,
     const Merchant = mongoose.model('Merchant');
     const PaymentOrder = mongoose.model('PaymentOrder');
 
-    const merchant = await Merchant.findById(merchantId).lean();
+    const merchant = await db.merchants.getMerchant(merchantId);
     if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
 
     const [totalOrders, completedOrders, pendingOrders] = await Promise.all([
@@ -370,7 +371,7 @@ router.get('/merchants/:merchantId/profile', authenticate, isAdmin, async (req, 
     const { merchantId } = req.params;
     const Merchant   = mongoose.model('Merchant');
     const PaymentOrder   = mongoose.model('PaymentOrder');
-    const merchant = await Merchant.findById(merchantId).lean();
+    const merchant = await db.merchants.getMerchant(merchantId);
     if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
     const [totalOrders, completedOrders, failedOrders] = await Promise.all([
       PaymentOrder.countDocuments({ merchantId: merchant._id }),
@@ -493,7 +494,7 @@ router.get('/merchants/:merchantId/transactions', authenticate, isAdmin, async (
     const User = mongoose.model('User');
     const PaymentOrder = mongoose.model('PaymentOrder');
     
-    const merchantDoc = await mongoose.model('Merchant').findById(merchantId);
+    const merchantDoc = await db.merchants.getMerchant(merchantId);
     if (!merchantDoc) return res.status(404).json({ success: false, message: 'Merchant not found' });
     const query = { merchantId: merchantDoc._id };
     if (type) query.type = type;
@@ -736,7 +737,7 @@ router.post('/merchants/:merchantId/deduct', authenticate, isAdmin, async (req, 
       // Either the merchant doesn't exist or the balance is short — look up
       // which, so the admin gets an actionable message.
       const Merchant = mongoose.model('Merchant');
-      const exists = await Merchant.findById(merchantId).select('tokenBalance').lean();
+      const exists = await db.merchants.getMerchant(merchantId);
       if (!exists) {
         return res.status(404).json({ success: false, message: 'Merchant not found' });
       }
@@ -842,7 +843,7 @@ router.get('/merchants/:merchantId/profit-engine', authenticate, isAdmin, async 
     const Merchant   = mongoose.model('Merchant');
     const PaymentOrder   = mongoose.model('PaymentOrder');
 
-    const merchant = await Merchant.findById(merchantId).lean();
+    const merchant = await db.merchants.getMerchant(merchantId);
     if (!merchant)
       return res.status(404).json({ success: false, message: 'Merchant not found' });
 

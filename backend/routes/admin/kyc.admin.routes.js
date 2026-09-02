@@ -20,6 +20,7 @@
  * place a KYC status can change.
  */
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, hasPermission, getModels } from './_adminShared.js';
+import { db } from '#db';
 // The KYC state machine. Every decision goes through here, so an illegal one is
 // refused by the database rather than by whichever request finished last — and
 // the reason and reviewer land in the fields that are actually read.
@@ -78,7 +79,7 @@ router.post('/kyc/:userId/approve', authenticate, hasPermission('canVerifyKYC'),
   try {
     const { User } = getModels();
     
-    const user = await User.findById(req.params.userId);
+    const user = await db.users.getUser(req.params.userId);
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
@@ -115,8 +116,7 @@ router.post('/kyc/:userId/approve', authenticate, hasPermission('canVerifyKYC'),
 
     // MED-08 FIX: write audit log for KYC approval
     try {
-      const EnhancedAuditLog = mongoose.model('EnhancedAuditLog');
-      await EnhancedAuditLog.create({
+      await db.audit.recordDetailed({
         performedBy:     req.user.userId,
         performedByName: req.user.username || req.user.mobile || 'admin',
         performedByRole: req.user.isAdmin ? 'admin' : 'subadmin',
@@ -143,7 +143,7 @@ router.post('/kyc/:userId/reject', authenticate, hasPermission('canVerifyKYC'), 
     const { User } = getModels();
     const { reason } = req.body;
     
-    const user = await User.findById(req.params.userId);
+    const user = await db.users.getUser(req.params.userId);
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }

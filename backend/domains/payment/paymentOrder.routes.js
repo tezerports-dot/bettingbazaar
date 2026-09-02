@@ -6,6 +6,7 @@
 // of the Merchant+Payment domain migration (BBEPS Phase 004). See backend/domains/README.md.
 
 import { express, mongoose, authenticate, hasPermission, getModels } from '../../routes/admin/_adminShared.js';
+import { db } from '#db';
 import { creditDeposit, creditWinnings } from '../wallet/walletAuthority.service.js';
 // The order state machine. Every status change goes through here so an illegal
 // move is refused by the database rather than by whichever check ran first.
@@ -63,7 +64,7 @@ router.post('/payment-orders/:orderId/action', authenticate, hasPermission('canR
       return res.status(400).json({ success: false, message: 'action must be APPROVE, REJECT, or CANCEL' });
     }
     const { PaymentOrder } = getModels();
-    const order = await PaymentOrder.findById(orderId);
+    const order = await db.orders.getOrderRecord(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     if (['COMPLETED', 'CANCELLED'].includes(order.status)) {
       return res.status(400).json({ success: false, message: `Order already ${order.status}` });
@@ -139,9 +140,8 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
       return res.status(400).json({ success: false, message: 'reason is required' });
 
     const { PaymentOrder } = getModels();
-    const Merchant = mongoose.model('Merchant');
 
-    const order = await PaymentOrder.findById(orderId);
+    const order = await db.orders.getOrderRecord(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     if (order.status !== 'DISPUTED')
       return res.status(400).json({ success: false, message: `Can only resolve DISPUTED orders. Current: ${order.status}` });

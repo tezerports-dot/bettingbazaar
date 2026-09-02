@@ -1,6 +1,7 @@
 
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import mongoose from 'mongoose';
+import { db } from '#db';
 // AQ-2: verify via the single PASETO authority (Ed25519 signature + iss/aud stamped).
 import { verifyJwt } from '../domains/identity/jwt.util.js';
 import { cycleSnapshotPublisher } from '../domains/markets/cycleSnapshotPublisher.js';
@@ -166,8 +167,7 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
 
     const loadActiveUser = async (decoded) => {
       if (!decoded?.userId) return null;
-      const User = mongoose.model('User');
-      const user = await User.findById(decoded.userId).select('isAdmin isSubAdmin isBlocked status').lean();
+      const user = await db.users.getUser(decoded.userId);
       if (!user || user.isBlocked || user.status === 'BLOCKED') return null;
       return user;
     };
@@ -192,8 +192,7 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
       try {
         const decoded = verifyJwt(token);
         if (decoded.isMerchant && decoded.merchantId?.toString() === merchantId?.toString()) {
-          const Merchant = mongoose.model('Merchant');
-          const merchant = await Merchant.findById(decoded.merchantId).select('status merchantApprovalStatus').lean();
+          const merchant = await db.merchants.getMerchant(decoded.merchantId);
           if (merchant?.status === 'ACTIVE' && merchant?.merchantApprovalStatus === 'APPROVED') socket.join(`merchant-${merchantId}`);
           return;
         }

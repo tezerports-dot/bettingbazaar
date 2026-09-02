@@ -7,6 +7,7 @@
  *   PUT /utr-registry/:utr/flag — Admin flags UTR as FRAUD
  */
 import { express, mongoose, authenticate, isAdmin, getModels } from './_adminShared.js';
+import { db } from '#db';
 
 const router = express.Router();
 
@@ -130,7 +131,7 @@ router.post('/utr/resolve/:orderId', authenticate, isAdmin, async (req, res) => 
       return res.status(400).json({ success: false, message: 'action must be approve or reject' });
     }
     const PaymentOrder = mongoose.model('PaymentOrder');
-    const order    = await PaymentOrder.findById(orderId);
+    const order    = await db.orders.getOrderRecord(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     order.requiresReview = false;
     order.reviewedBy     = req.user.userId;

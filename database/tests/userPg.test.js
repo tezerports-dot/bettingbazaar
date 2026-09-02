@@ -197,6 +197,32 @@ describePg('accounts (PostgreSQL)', () => {
     });
   });
 
+  describe('the patch vocabulary', () => {
+    it('accepts camelCase as well as column names', async () => {
+      await createUser(mk());
+      const updated = await updateUser('u-1', {
+        profilePic: '/x.png', walletAddress: '0xabc',
+        warning_count: 2,            // the column name still works
+      });
+      expect(updated).toMatchObject({ profilePic: '/x.png', walletAddress: '0xabc', warningCount: 2 });
+    });
+
+    it('still cannot half-block an account through the patch path', async () => {
+      // Blocking sets a flag, a reason, a time and an actor, and the row
+      // refuses any subset — which is why `setBlocked` exists and why a patch
+      // is not a way around it.
+      await createUser(mk());
+      await expect(updateUser('u-1', { isBlocked: true, blockReason: 'no time set' }))
+        .rejects.toThrow(/users_blocked_has_reason/);
+    });
+
+    it('refuses mobile with a message that says why', async () => {
+      await createUser(mk());
+      await expect(updateUser('u-1', { mobile: '9000000000' }))
+        .rejects.toThrow(/`mobile` is never mutable/);
+    });
+  });
+
   describe('blocking', () => {
     it('records the reason, the time and the actor', async () => {
       await createUser(mk());

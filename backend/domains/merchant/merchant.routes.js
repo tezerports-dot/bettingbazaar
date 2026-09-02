@@ -4,6 +4,7 @@
 
 
 import express   from 'express';
+import { db } from '#db';
 import { creditDeposit, creditReserve, refundWithdrawal, releaseWithdrawal } from '../wallet/walletAuthority.service.js';
 import mongoose  from 'mongoose';
 // AQ-2/AQ-8: sign via the single JWT authority; hash via the password authority
@@ -319,7 +320,7 @@ router.post('/auth/login/2fa', twoFactorLimiter, async (req, res) => {
             return res.status(401).json({ success: false, twoFactorExpired: true,
                 message: 'Login session expired. Please sign in again.' });
 
-        const merchant = await mongoose.model('Merchant').findById(challenge.id)
+        const merchant = await db.merchants.getMerchant(challenge.id)
             .select('+twoFactorSecret +twoFactorLastCounter +backupCodes');
         if (!merchant)
             return res.status(401).json({ success: false, message: 'Invalid credentials' });
@@ -369,7 +370,7 @@ router.get('/2fa/status', merchantAuth, async (req, res) => {
 
 router.post('/2fa/setup', merchantAuth, twoFactorLimiter, async (req, res) => {
     try {
-        const merchant = await mongoose.model('Merchant').findById(req.merchantId).select('+twoFactorSecret');
+        const merchant = await db.merchants.getMerchant(req.merchantId).select('+twoFactorSecret');
         if (merchant.twoFactorEnabled)
             return res.status(400).json({ success: false,
                 message: 'Two-factor authentication is already active. Disable it first to re-enrol.' });
@@ -398,7 +399,7 @@ router.post('/2fa/activate', merchantAuth, twoFactorLimiter, async (req, res) =>
         const { code } = req.body;
         if (!code) return res.status(400).json({ success: false, message: 'Code is required' });
 
-        const merchant = await mongoose.model('Merchant').findById(req.merchantId)
+        const merchant = await db.merchants.getMerchant(req.merchantId)
             .select('+twoFactorPendingSecret +twoFactorSecret +twoFactorLastCounter +backupCodes');
         if (!merchant.twoFactorPendingSecret)
             return res.status(400).json({ success: false, message: 'Start setup first.' });
@@ -438,7 +439,7 @@ router.post('/2fa/activate', merchantAuth, twoFactorLimiter, async (req, res) =>
 
 router.get('/profile', merchantAuth, async (req, res) => {
     try {
-        const merchant = await mongoose.model('Merchant').findById(req.merchantId).lean();
+        const merchant = await db.merchants.getMerchant(req.merchantId);
         if (!merchant) return res.status(404).json({ success: false, message: 'Merchant profile not found.' });
         // Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08):
         // no buy/sell spread. Shape kept for merchant-panel compatibility;
@@ -467,7 +468,7 @@ router.put('/profile', merchantAuth, async (req, res) => {
         const { upiId, qrCodeUrl, bankDetails, usdtWalletAddress } = req.body;
 
         const Merchant = mongoose.model('Merchant');
-        const current  = await Merchant.findById(req.merchantId).lean();
+        const current  = await db.merchants.getMerchant(req.merchantId);
         if (!current) return res.status(404).json({ success: false, message: 'Merchant profile not found.' });
 
         const isUsdt  = merchantTypeOf(current) === MERCHANT_CURRENCY.USDT;
@@ -618,7 +619,7 @@ router.post('/admin-token-orders', merchantAuth, async (req, res) => {
         const MerchantAdminTokenOrder = mongoose.model('MerchantAdminTokenOrder');
         const [cfg, merchant] = await Promise.all([
             getSystemConfig(),
-            Merchant.findById(req.merchantId).lean(),
+            db.merchants.getMerchant(req.merchantId),
         ]);
         if (!merchant || merchant.status !== 'ACTIVE' || merchant.merchantApprovalStatus !== 'APPROVED') {
             return res.status(403).json({ success: false, message: 'Only approved active merchants can buy admin tokens.' });
@@ -706,7 +707,7 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         const PaymentOrder = mongoose.model('PaymentOrder');
         const Merchant     = mongoose.model('Merchant');
 
-        const order = await PaymentOrder.findById(req.params.id);
+        const order = await db.orders.getOrderRecord(req.params.id);
         if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
 
         if (order.merchantId && order.merchantId.toString() !== req.merchantId.toString()) {
@@ -716,7 +717,7 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
             return res.status(400).json({ success: false, message: `Order cannot be accepted in status: ${order.status}` });
         }
 
-        const merchant = await Merchant.findById(req.merchantId);
+        const merchant = await db.merchants.getMerchant(req.merchantId);
         if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found.' });
 
         // Rail check (2026-07-27). Assignment already matches currency, but an
@@ -1899,7 +1900,7 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
         const { id }   = req.params;
         const { reason } = req.body;
 
-        const order = await PaymentOrder.findById(id);
+        const order = await db.orders.getOrderRecord(id);
         if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
         if (order.merchantId?.toString() !== req.merchantId?.toString()) {

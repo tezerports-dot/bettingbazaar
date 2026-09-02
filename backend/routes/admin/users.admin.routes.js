@@ -1,6 +1,7 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** users.admin.routes.js — User management, balance adjust, block/unblock, phantom, queue managers */
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from './_adminShared.js';
+import { db } from '#db';
 // Cycle-type vocabulary — phantom access is scoped to one type, or BOTH.
 import { CYCLE_TYPE_VALUES } from '../../domains/markets/cycleTypes.js';
 import { adminAdjustment } from '../../domains/wallet/walletAuthority.service.js';
@@ -111,7 +112,7 @@ router.get('/users', authenticate, isAdminOrSubAdmin, async (req, res) => {
 router.get('/users/:userId', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
     const { User, Bet, Transaction } = getModels();
-    const user = await User.findById(req.params.userId).select('-passwordHash -twoFactorSecret');
+    const user = await db.users.getUser(req.params.userId);
     
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
@@ -139,7 +140,7 @@ router.put('/users/:userId/roles', authenticate, isAdmin, async (req, res) => {
     const { User } = getModels();
     const { roles } = req.body;
     
-    const user = await User.findById(req.params.userId);
+    const user = await db.users.getUser(req.params.userId);
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
@@ -167,7 +168,7 @@ router.put('/users/:userId/block', authenticate, isAdmin, async (req, res) => {
     const { User } = getModels();
     const { reason } = req.body;
     
-    const user = await User.findById(req.params.userId);
+    const user = await db.users.getUser(req.params.userId);
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
@@ -192,7 +193,7 @@ router.put('/users/:userId/unblock', authenticate, isAdmin, async (req, res) => 
     const { User } = getModels();
     const { resetWarnings = false } = req.body;
 
-    const user = await User.findById(req.params.userId);
+    const user = await db.users.getUser(req.params.userId);
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
@@ -242,7 +243,7 @@ router.delete('/users/:userId', authenticate, isAdmin, async (req, res) => {
   try {
     const { User, Bet, Transaction } = getModels();
     
-    const user = await User.findById(req.params.userId);
+    const user = await db.users.getUser(req.params.userId);
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
@@ -302,7 +303,7 @@ router.post('/users/:userId/phantom-access', authenticate, isAdmin, async (req, 
       });
     }
     
-    const user = await User.findById(userId);
+    const user = await db.users.getUser(userId);
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
@@ -382,7 +383,7 @@ router.post('/users/:userId/queue-manager', authenticate, isAdmin, async (req, r
     const { enable } = req.body; // true or false
     const { User } = getModels();
     
-    const user = await User.findById(userId);
+    const user = await db.users.getUser(userId);
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }

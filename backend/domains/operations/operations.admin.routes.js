@@ -11,6 +11,7 @@
  * surface points at the platform that configures it.
  */
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import { db } from '#db';
 import { runRetention } from './retention.service.js';
 import { getTrialBalance, getDistributableRevenueMinor } from '../revenue/revenueSettlement.service.js';
 import { ACCOUNTS, toRupees } from '../revenue/chartOfAccounts.js';
@@ -35,8 +36,7 @@ router.get('/operations/overview', authenticate, isAdminOrSubAdmin, async (req, 
       getActiveBonusPolicy(),
       getRiskRules(),
       getMerchantLeaderboard({ days: 7, limit: 5 }),
-      mongoose.model('PaymentOrder').countDocuments({ status: { $in: ['PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID'] } }),
-      mongoose.model('PaymentOrder').countDocuments({ status: 'DISPUTED' }),
+      db.orders.orderCounts(),
     ]);
 
     const bal = code => toRupees(trial.accounts[code]?.reportedMinor ?? 0);

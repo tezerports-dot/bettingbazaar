@@ -1,6 +1,7 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, hasPermission, getModels } from '../../routes/admin/_adminShared.js';
+import { db } from '#db';
 import { creditDeposit, creditWinnings } from '../wallet/walletAuthority.service.js';
 // The order state machine. Resolving a dispute is a guarded transition, and it
 // runs BEFORE any money moves so that it is what decides the race.
@@ -66,8 +67,7 @@ router.get('/dispute-orders', authenticate, hasPermission('canResolveDisputes'),
 router.get('/dispute-orders/:orderId', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
   try {
     const { PaymentOrder } = getModels();
-    const order = await PaymentOrder.findById(req.params.orderId)
-      .populate('userId', 'username mobile kycStatus walletBalance depositBalance')
+    const order = await db.orders.getOrderRecord(req.params.orderId)
       .populate('merchantId', 'username mobile')
       .lean();
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
@@ -103,7 +103,7 @@ router.post('/dispute-orders/:orderId/chat', authenticate, hasPermission('canRes
 
     // Notify both parties in real time
     const { PaymentOrder } = getModels();
-    const order = await PaymentOrder.findById(req.params.orderId).lean();
+    const order = await db.orders.getOrderRecord(req.params.orderId);
     if (order) {
       global.io?.to(`user-${order.userId}`).emit('support_reply', { orderId: order._id, message: message.trim() });
       global.io?.to(`merchant-${order.merchantId}`).emit('order_update', { orderId: order._id, type: 'ADMIN_MESSAGE' });
@@ -141,8 +141,8 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, isAdmin, async (re
       return res.status(400).json({ success: false, message: 'Resolution notes required' });
     }
 
-    const { PaymentOrder, User } = getModels();
-    const order = await PaymentOrder.findById(req.params.orderId);
+    const { PaymentOrder } = getModels();
+    const order = await db.orders.getOrderRecord(req.params.orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     if (!['DISPUTED', 'PROCESSING', 'PAID', 'ASSIGNED'].includes(order.status)) {
       return res.status(400).json({ success: false, message: `Cannot resolve order in status: ${order.status}` });
@@ -314,7 +314,7 @@ router.post('/dispute-orders/:orderId/escalate', authenticate, hasPermission('ca
     const { notes } = req.body;
     const { PaymentOrder } = getModels();
 
-    const order = await PaymentOrder.findById(req.params.orderId);
+    const order = await db.orders.getOrderRecord(req.params.orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     
     order.disputeEscalated = true;

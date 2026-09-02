@@ -22,6 +22,7 @@
  */
 
 import { SystemConfig } from '../../models/index.js';
+import { db } from '#db';
 import { isTokenRevoked as pgIsTokenRevoked } from '#db/repositories/identity.js';
 import { getUser } from '#db/repositories/users.js';
 import { setContextUser } from '../../middleware/requestContext.js'; // X-6
@@ -490,7 +491,6 @@ const authenticateMerchant = async (req, res, next) => {
 
     // Fetch merchant from database
     // HIGH-01 FIX: use Merchant model (decoded.merchantId is Merchant._id, not User._id)
-    const MerchantModel = mongoose.model('Merchant');
     const merchant = await MerchantModel.findById(decoded.merchantId);
     
     if (!merchant) {
@@ -671,7 +671,7 @@ const auditLog = (action) => {
       req.auditAction.response = data;
       
       // Log to database (implement AuditLog model if needed)
-      // Example: AuditLog.create(req.auditAction).catch(err => console.error('Audit log failed:', err));
+      // Example: db.audit.record(req.auditAction).catch(err => console.error('Audit log failed:', err));
       
       return originalJson(data);
     };

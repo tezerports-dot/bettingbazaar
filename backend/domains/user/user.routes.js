@@ -37,6 +37,7 @@
  */
 
 import express from 'express';
+import { db } from '#db';
 import mongoose from 'mongoose';
 import { authenticate } from '../identity/auth.middleware.js';
 import { getUserLedger } from '../wallet/walletAuthority.service.js';
@@ -258,9 +259,7 @@ router.get('/v1/user/:id/data', authenticate, async (req, res) => {
     const Bet  = mongoose.model('Bet');
 
     const [user, recentBets] = await Promise.all([
-      User.findById(id).select(
-        'username mobile depositBalance winningsBalance lockedBalance kycStatus kycData bankDetails profilePic joinedAt lastLogin roles isAdmin phantomAccess'
-      ).lean(),
+      db.users.getUser(id),
       Bet.find({ userId: new mongoose.Types.ObjectId(id), isPhantom: false })
         .sort({ timestamp: -1 })
         .limit(50)
@@ -467,8 +466,7 @@ router.get('/user/bet-limits', authenticate, async (req, res) => {
     const { getRiskRules } = await import('../risk/riskValidation.service.js');
 
     const User = mongoose.model('User');
-    const user = await User.findById(req.user.userId)
-      .select('depositBalance winningsBalance reserveBalance lockedBalance').lean();
+    const user = await db.users.getUser(req.user.userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
     const deposit  = user.depositBalance  || 0;
@@ -893,9 +891,7 @@ export default router;
 router.get('/v1/user/profile', authenticate, async (req, res) => {
   try {
     const User = mongoose.model('User');
-    const user = await User.findById(req.user.userId)
-      .select('username mobile depositBalance winningsBalance lockedBalance kycStatus bankDetails profilePic joinedAt')
-      .lean();
+    const user = await db.users.getUser(req.user.userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     res.json({
       success: true,

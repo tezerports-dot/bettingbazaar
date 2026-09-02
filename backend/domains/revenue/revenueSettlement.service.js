@@ -414,7 +414,6 @@ async function unrecordedSources(Model, matchStage, refModel, localRefExpr, limi
  * Per-item failures are collected, never thrown.
  */
 export async function reconcileCompletedOrders(limit = 200) {
-  const PaymentOrder = mongoose.model('PaymentOrder');
   const due = await unrecordedSources(
     PaymentOrder,
     { status: 'COMPLETED', type: { $in: ['DEPOSIT', 'WITHDRAWAL'] } },
@@ -458,7 +457,6 @@ export async function reconcileCompletedOrders(limit = 200) {
  * cycles (isSettled: 'COMPLETED') that have no ledger entry yet.
  */
 export async function reconcileSettledCycles(limit = 200) {
-  const Cycle = mongoose.model('Cycle');
   const due = await unrecordedSources(
     Cycle,
     { isSettled: 'COMPLETED' },

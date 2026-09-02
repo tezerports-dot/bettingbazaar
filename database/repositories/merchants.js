@@ -390,6 +390,67 @@ const UPDATABLE = new Set([
   'max_concurrent_orders', 'max_concurrent_deposit_orders', 'max_concurrent_withdrawal_orders',
 ]);
 
+/** camelCase → column, derived from the allowlist so the two cannot drift. */
+const CAMEL_TO_COLUMN = Object.freeze(Object.fromEntries(
+  [...UPDATABLE].map((col) => [col.replace(/_([a-z])/g, (_, c) => c.toUpperCase()), col]),
+));
+
+/**
+ * Nested names the panels use, mapped to the flat columns behind them.
+ *
+ * The bank details were an embedded object in the document model and the whole
+ * admin panel writes `bankDetails.upiId`. They are columns now, because two
+ * merchants sharing a UPI id must be refused by an index and an index cannot
+ * reach inside a JSON blob — but the caller keeps its vocabulary.
+ */
+const NESTED_TO_COLUMN = Object.freeze({
+  'bankDetails.accountHolderName': 'bank_account_holder_name',
+  'bankDetails.upiId': 'bank_upi_id',
+  'bankDetails.bankName': 'bank_name',
+  'bankDetails.accountNo': 'bank_account_no',
+  'bankDetails.ifsc': 'bank_ifsc',
+  'limits.minDeposit': 'min_deposit_paise',
+  'limits.maxDeposit': 'max_deposit_paise',
+  'limits.minWithdraw': 'min_withdraw_paise',
+  'limits.maxWithdraw': 'max_withdraw_paise',
+});
+
+/** Columns holding money, so a caller passing rupees gets paise stored. */
+const MONEY_COLUMNS = new Set([
+  'min_deposit_paise', 'max_deposit_paise', 'min_withdraw_paise',
+  'max_withdraw_paise', 'min_order_paise', 'max_order_paise',
+]);
+
+/** Flatten `{ bankDetails: { upiId } }` into the dotted names above. */
+function flatten(patch, prefix = '') {
+  const out = {};
+  for (const [key, value] of Object.entries(patch)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (value && typeof value === 'object' && !Array.isArray(value)
+        && !(value instanceof Date) && (path === 'bankDetails' || path === 'limits')) {
+      Object.assign(out, flatten(value, path));
+    } else {
+      out[path] = value;
+    }
+  }
+  return out;
+}
+
+function toColumns(patch, fn) {
+  const out = {};
+  const unknown = [];
+  for (const [key, value] of Object.entries(flatten(patch))) {
+    if (value === undefined) continue;
+    const column = UPDATABLE.has(key) ? key : (CAMEL_TO_COLUMN[key] ?? NESTED_TO_COLUMN[key]);
+    if (!column) { unknown.push(key); continue; }
+    out[column] = MONEY_COLUMNS.has(column) ? rupeesToPaise(value) : value;
+  }
+  if (unknown.length) {
+    throw new Error(`${fn}: refusing to write unknown or protected column(s): ${unknown.join(', ')}`);
+  }
+  return out;
+}
+
 /**
  * Create a merchant.
  *
@@ -438,13 +499,8 @@ export async function createMerchant({
 /** Patch a merchant. Unknown or protected columns are REFUSED, not dropped. */
 export async function updateMerchant(merchantId, patch = {}) {
   if (!merchantId) throw new Error('updateMerchant requires a merchantId');
-  const entries = Object.entries(patch).filter(([, v]) => v !== undefined);
+  const entries = Object.entries(toColumns(patch, 'updateMerchant'));
   if (!entries.length) return getMerchant(merchantId);
-
-  const unknown = entries.map(([k]) => k).filter((k) => !UPDATABLE.has(k));
-  if (unknown.length) {
-    throw new Error(`updateMerchant: refusing to write unknown or protected column(s): ${unknown.join(', ')}`);
-  }
 
   const sets = entries.map(([col], i) => `${col} = $${i + 2}`);
   const { rows } = await pgQuery(

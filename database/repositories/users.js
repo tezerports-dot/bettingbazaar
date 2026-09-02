@@ -68,6 +68,11 @@ const COLUMNS = `
  * is absent deliberately — it is never mutable by anyone (§1) — and so are
  * `user_id`, `joining_number` and every balance-adjacent name that does not
  * exist on this table anyway.
+ *
+ * Callers may use EITHER the column name or the camelCase name the application
+ * speaks (`isBlocked` as well as `is_blocked`). The column names are this
+ * module's business; a route that has to know them is a route coupled to the
+ * schema, and the coupling is what makes a rename a hundred-file change.
  */
 const UPDATABLE = Object.freeze(new Set([
   'username', 'password_hash', 'referral_code', 'referral_clicks', 'referred_by',
@@ -80,6 +85,34 @@ const UPDATABLE = Object.freeze(new Set([
   'is_blocked', 'block_reason', 'blocked_at', 'blocked_by',
   'bank_details', 'last_login',
 ]));
+
+/** camelCase → column, derived from the allowlist so the two cannot drift. */
+const CAMEL_TO_COLUMN = Object.freeze(Object.fromEntries(
+  [...UPDATABLE].map((col) => [col.replace(/_([a-z])/g, (_, c) => c.toUpperCase()), col]),
+));
+
+/**
+ * Normalise a patch to columns, refusing anything the allowlist does not name.
+ *
+ * `mobile` gets its own message because it is the one people reach for most and
+ * the refusal is deliberate rather than an oversight.
+ */
+function toColumns(patch, fn) {
+  const out = {};
+  const unknown = [];
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) continue;
+    const column = UPDATABLE.has(key) ? key : CAMEL_TO_COLUMN[key];
+    if (!column) { unknown.push(key); continue; }
+    out[column] = value;
+  }
+  if (unknown.length) {
+    const mobile = unknown.includes('mobile')
+      ? ' `mobile` is never mutable — it is the account\'s identity.' : '';
+    throw new Error(`${fn}: refusing to write unknown or protected column(s): ${unknown.join(', ')}.${mobile}`);
+  }
+  return out;
+}
 
 /**
  * Row → the shape the application speaks.
@@ -243,13 +276,8 @@ export async function createUser({
  */
 export async function updateUser(userId, patch = {}) {
   if (!userId) throw new Error('updateUser requires a userId');
-  const entries = Object.entries(patch).filter(([, v]) => v !== undefined);
+  const entries = Object.entries(toColumns(patch, 'updateUser'));
   if (!entries.length) return getUser(userId);
-
-  const unknown = entries.map(([k]) => k).filter((k) => !UPDATABLE.has(k));
-  if (unknown.length) {
-    throw new Error(`updateUser: refusing to write unknown or protected column(s): ${unknown.join(', ')}`);
-  }
 
   const sets = entries.map(([col], i) => `${col} = $${i + 2}`);
   const { rows } = await pgQuery(
@@ -401,8 +429,9 @@ export async function setBlocked(userId, { blocked, reason = null, actor = null 
  * cursor total when two accounts share a timestamp.
  */
 export async function listUsers({
-  status = null, isAdmin = null, flagged = null, search = null,
-  limit = 50, cursor = null,
+  status = null, isAdmin = null, isSubAdmin = null, isQueueManager = null,
+  kycStatus = null, blocked = null, flagged = null, search = null,
+  excludeRole = null, limit = 50, cursor = null,
 } = {}) {
   const where = [];
   const params = [];
@@ -410,7 +439,14 @@ export async function listUsers({
 
   if (status) add('status = $?', status);
   if (isAdmin !== null) add('is_admin = $?', Boolean(isAdmin));
+  if (isSubAdmin !== null) add('is_sub_admin = $?', Boolean(isSubAdmin));
+  if (isQueueManager !== null) add('is_queue_manager = $?', Boolean(isQueueManager));
+  if (kycStatus) add('kyc_status = $?', String(kycStatus));
+  if (blocked !== null) add('is_blocked = $?', Boolean(blocked));
   if (flagged !== null) add('payment_flagged = $?', Boolean(flagged));
+  // Merchants are a separate entity with their own record and login; the
+  // player list excludes them by the role they were created with.
+  if (excludeRole) add('NOT ($? = ANY(roles))', String(excludeRole));
   // Anchored prefix match, so the index is usable and the pattern cannot be
   // turned into a leading-wildcard scan of every account by the search box.
   if (search) add('(username ILIKE $? || \'%\' OR mobile LIKE $? || \'%\')', String(search));
@@ -423,7 +459,10 @@ export async function listUsers({
   params.push(capped);
 
   const { rows } = await pgQuery(
-    `SELECT ${COLUMNS} FROM users
+    // COUNT(*) OVER () rather than a second query: two statements outside a
+    // transaction can disagree, and a total that contradicts the page it labels
+    // is how a paginator grows a phantom last page.
+    `SELECT ${COLUMNS}, COUNT(*) OVER () AS total_count FROM users
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
       ORDER BY joined_at DESC, user_id DESC
       LIMIT $${params.length}`,
@@ -433,6 +472,7 @@ export async function listUsers({
   const last = users[users.length - 1];
   return {
     users,
+    total: rows[0] ? Number(rows[0].total_count) : 0,
     // Absent when the page was not full: there is nothing after it, and handing
     // back a cursor anyway makes a caller do one more round trip to learn that.
     nextCursor: users.length === capped && last

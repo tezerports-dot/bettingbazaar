@@ -369,6 +369,26 @@ describePg('the merchant record', () => {
     expect(on.lastOnlineToggle).toBeInstanceOf(Date);
   });
 
+  it('speaks the domain vocabulary, not the schema', async () => {
+    // A route that has to know a column name is a route coupled to the schema,
+    // and that coupling is what makes a rename a hundred-file change.
+    await make();
+    await updateMerchant(ID, {
+      isOnline: true, panelUrl: 'https://panel.test',
+      bankDetails: { upiId: `v${RUN}${seq}@bank`, ifsc: 'HDFC0009' },
+      limits: { minDeposit: 250 },
+    });
+    const m = await getMerchant(ID);
+    expect(m.isOnline).toBe(true);
+    expect(m.panelUrl).toBe('https://panel.test');
+    expect(m.bankDetails.upiId).toBe(`v${RUN}${seq}@bank`);
+    // Rupees in, paise stored.
+    expect(m.limits.minDeposit).toBe(250);
+    const { rows } = await pgQuery(
+      'SELECT min_deposit_paise FROM merchants WHERE merchant_id = $1', [ID]);
+    expect(Number(rows[0].min_deposit_paise)).toBe(25000);
+  });
+
   it('REFUSES to write an unknown or protected column', async () => {
     await make();
     await expect(updateMerchant(ID, { tokenBalance: 500 }))

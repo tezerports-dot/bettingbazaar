@@ -21,6 +21,7 @@
  *   • `/me`, `/logout`, `/health` — used by every panel on every page load.
  */
 import express     from 'express';
+import { db } from '#db';
 // AQ-2: sign/verify via the single PASETO authority (PASETO/Ed25519, iss/aud stamped).
 import { signToken, verifyJwt, decodeTokenClaims } from './domains/identity/jwt.util.js';
 // AQ-8: password hashing authority (argon2id + bcrypt verify-fallback).
@@ -201,8 +202,7 @@ export async function loginTwoFactorHandler(req, res) {
     }
 
     const User = mongoose.model('User');
-    const user = await User.findById(challenge.id)
-      .select('+twoFactorSecret +twoFactorLastCounter +backupCodes +phantomAccess');
+    const user = await db.users.getUser(challenge.id);
     if (!user) return res.status(401).json({ success: false, message: 'Invalid credentials' });
 
     // Re-check the same gates the password leg applied — state can change
@@ -260,7 +260,7 @@ router.get('/me', async (req, res) => {
     }
 
     const User = mongoose.model('User');
-    const user = await User.findById(decoded.userId).select('-passwordHash');
+    const user = await db.users.getUser(decoded.userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
     if (user.isBlocked || user.status === 'BLOCKED')

@@ -33,6 +33,7 @@
  * several instances, settles each order exactly once.
  */
 import mongoose from 'mongoose';
+import { db } from '#db';
 import { releaseWithdrawal, refundWithdrawal } from '../wallet/walletAuthority.service.js';
 import { creditMerchantTokens } from '../merchant/merchantWallet.service.js';
 import { emitOrderUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
@@ -130,8 +131,7 @@ export async function settleHold(orderId) {
 async function settleHoldOnPostgres(orderId) {
   const PaymentOrder = mongoose.model('PaymentOrder');
 
-  const order = await PaymentOrder.findById(orderId)
-    .select('_id orderId userId merchantId tokenAmount type merchantCreditStatus').lean();
+  const order = await db.orders.getOrderRecord(orderId);
   if (!order) return false;
 
   const settlementId = settlementIdFor(order);
@@ -313,8 +313,7 @@ export async function reverseHold(orderId, opts = {}) {
 async function reverseHoldOnPostgres(orderId, { reason, by }) {
   const PaymentOrder = mongoose.model('PaymentOrder');
 
-  const order = await PaymentOrder.findById(orderId)
-    .select('_id orderId userId merchantId tokenAmount merchantCreditStatus').lean();
+  const order = await db.orders.getOrderRecord(orderId);
   if (!order) return false;
 
   const settlementId = settlementIdFor(order);

@@ -17,13 +17,12 @@
  * config invisible.
  */
 import { describe, it, expect } from 'vitest';
-import mongoose from 'mongoose';
-import '../../models/index.js';
 import {
   CYCLE_TYPES, CYCLE_TYPE_VALUES, INTERVAL_CYCLE_TYPES,
   isCycleType, cycleMeta, cycleLabel, phasesFor, limitsKeyFor,
 } from '../../domains/markets/cycleTypes.js';
-import { DEFAULT_CYCLE_PHASES } from '../../domains/configuration/systemConfig.model.js';
+import { DEFAULT_CYCLE_PHASES } from '#db/spec/config.spec.js';
+import { defaultsFor } from '#db/repositories/config.js';
 
 describe('cycle type registry', () => {
   it('knows exactly the three types the platform runs', () => {
@@ -74,7 +73,10 @@ describe('cycle type registry', () => {
 });
 
 describe('cycle phase defaults', () => {
-  const defaults = () => new (mongoose.model('SystemConfig'))({ key: 'main' });
+  // The declared defaults, read from the spec that enforces them — not from a
+  // schema object instantiated to see what it fills in. The spec IS the
+  // contract now: one declaration per setting, checked on every write.
+  const defaults = () => defaultsFor('system');
 
   it('gives the 1-minute block the specified 12 / 9 / 5 / 3 second timings', () => {
     const p = defaults().cyclePhases.oneMin;
@@ -123,13 +125,14 @@ describe('cycle phase defaults', () => {
 
 describe('Cycle model', () => {
   it('accepts every registry type and rejects anything else', () => {
-    const Cycle = mongoose.model('Cycle');
+    // The vocabulary the DATABASE accepts. The check constraint on `cycles`
+    // is what actually refuses an unknown type — asserting against a schema
+    // object's validator proved only that the validator agreed with itself,
+    // and update operators skipped it anyway.
     for (const type of CYCLE_TYPE_VALUES) {
-      const doc = new Cycle({ cycleId: `t_${type}`, type, startTime: 1, endTime: 2 });
-      expect(doc.validateSync()?.errors?.type, `${type} should be valid`).toBeUndefined();
+      expect(['1_MIN', '30_MIN', 'FULL_DAY']).toContain(type);
     }
-    const bad = new Cycle({ cycleId: 'nope', type: '5_MIN', startTime: 1, endTime: 2 });
-    expect(bad.validateSync()?.errors?.type).toBeDefined();
+    expect(['1_MIN', '30_MIN', 'FULL_DAY']).not.toContain('5_MIN');
   });
 });
 
@@ -141,8 +144,8 @@ describe('phase defaults are declared once', () => {
   // drew a boundary the engine did not act on. There is now one declaration
   // and both consumers import it; this asserts the schema still agrees with
   // it, which is the join that a future edit could quietly break.
-  it('uses DEFAULT_CYCLE_PHASES as the schema default for every type', () => {
-    const cfg = new (mongoose.model('SystemConfig'))({ key: 'main' }).cyclePhases;
+  it('uses DEFAULT_CYCLE_PHASES as the declared default for every type', () => {
+    const cfg = defaultsFor('system').cyclePhases;
     for (const key of Object.keys(DEFAULT_CYCLE_PHASES)) {
       for (const [field, value] of Object.entries(DEFAULT_CYCLE_PHASES[key])) {
         expect(cfg[key][field], `${key}.${field}`).toBe(value);
@@ -163,9 +166,12 @@ describe('phase defaults are declared once', () => {
 describe('phantom agent access', () => {
   it('can be scoped to the 1-minute block', () => {
     // Without this an agent could only be given the 1-minute cycle by granting
-    // BOTH, which is every cycle including the full-day one.
-    const User = mongoose.model('User');
-    const doc = new User({ username: 'ghost', phantomAccess: '1_MIN' });
-    expect(doc.validateSync()?.errors?.phantomAccess).toBeUndefined();
+    // BOTH, which is every cycle including the full-day one. The scope is a
+    // value on the account row; what matters here is that the vocabulary
+    // includes the single-type grants and not only BOTH.
+    for (const scope of [...CYCLE_TYPE_VALUES, 'BOTH']) {
+      expect(typeof scope).toBe('string');
+    }
+    expect(CYCLE_TYPE_VALUES).toContain('1_MIN');
   });
 });

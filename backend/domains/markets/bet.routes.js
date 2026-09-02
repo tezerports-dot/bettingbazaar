@@ -2,6 +2,7 @@
 
 
 import express from 'express';
+import { db } from '#db';
 import { creditWinnings, lockBetStake, unlockBetStake, getBalances } from '../wallet/walletAuthority.service.js'; // HIGH-03: atomicBet removed (never called; inline atomic pattern used instead)
 import mongoose from 'mongoose';
 import { authenticate, requireApprovedKyc } from '../identity/auth.middleware.js';
@@ -113,7 +114,6 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
     const amount = Number(rawAmount);
     const userId = req.user.userId;
 
-    const User         = mongoose.model('User');
     const Cycle        = mongoose.model('Cycle');
     const Bet          = mongoose.model('Bet');
     const Transaction  = mongoose.model('Transaction');
@@ -229,7 +229,7 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
 
     // ── Read user ONCE to compute the balance split ──────────────────────────
     // .lean() for speed — we won't save this document, just read current values.
-    const user = await User.findById(userId).lean();
+    const user = await db.users.getUser(userId);
 
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
@@ -640,12 +640,11 @@ router.post('/phantom', authenticate, async (req, res) => {
     const { cycleId, side, amount } = req.body;
     const userId = req.user.userId;
 
-    const User    = mongoose.model('User');
     const Cycle   = mongoose.model('Cycle');
     const Bet     = mongoose.model('Bet');
 
     // ── Auth: only phantom agents may call this ────────────────────────────
-    const agent = await User.findById(userId).select('phantomAccess').lean();
+    const agent = await db.users.getUser(userId);
     if (!agent || !agent.phantomAccess || agent.phantomAccess === 'NONE') {
       return res.status(403).json({ success: false, message: 'Phantom access not granted' });
     }

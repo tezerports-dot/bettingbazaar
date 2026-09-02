@@ -5,6 +5,7 @@
  * Mounted at /api/admin via routes/admin/index.js.
  */
 import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import { db } from '#db';
 import {
   getActiveBonusPolicy,
   getBonusPolicyHistory,
@@ -51,8 +52,7 @@ router.put('/merchant-bonus-policy', authenticate, isAdmin, async (req, res) => 
       return res.status(400).json({ success: false, message: validationError.message });
     }
 
-    const EnhancedAuditLog = mongoose.model('EnhancedAuditLog');
-    await EnhancedAuditLog.create({
+    await db.audit.recordDetailed({
       performedBy: req.user.userId,
       performedByName: req.user.username,
       performedByRole: 'admin',
@@ -83,8 +83,7 @@ router.post('/merchant-bonus-policy/version/:versionId/rollback', authenticate, 
       return res.status(400).json({ success: false, message: e.message });
     }
 
-    const EnhancedAuditLog = mongoose.model('EnhancedAuditLog');
-    await EnhancedAuditLog.create({
+    await db.audit.recordDetailed({
       performedBy: req.user.userId,
       performedByName: req.user.username,
       performedByRole: 'admin',
