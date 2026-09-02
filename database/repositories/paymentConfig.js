@@ -139,6 +139,36 @@ export async function getGatewayConfig(key = 'main') {
   };
 }
 
+/**
+ * The settings an ADMIN screen renders: the config, plus whether each
+ * credential is set.
+ *
+ * The three `has*` flags are computed in the database, so the screen can show
+ * what is configured without the secret travelling to render a row of dots. The
+ * route used to SELECT the credentials and blank them out in JavaScript for
+ * sub-admins — one forgotten field, one new credential column, or one caller
+ * that skipped the masking, and a payment gateway secret is in a response body.
+ * Not selecting it cannot be forgotten.
+ */
+export async function getGatewayConfigForAdmin(key = 'main') {
+  const { rows } = await pgQuery(
+    `SELECT *,
+            (gateway_api_key_encrypted        IS NOT NULL) AS has_api_key,
+            (gateway_api_secret_encrypted     IS NOT NULL) AS has_api_secret,
+            (gateway_webhook_secret_encrypted IS NOT NULL) AS has_webhook_secret
+       FROM payment_gateway_configs WHERE config_key = $1`,
+    [String(key)], 'gateway_config_admin',
+  );
+  const r = rows[0];
+  const base = await getGatewayConfig(key);
+  return {
+    ...base,
+    hasApiKey: r ? r.has_api_key : false,
+    hasApiSecret: r ? r.has_api_secret : false,
+    hasWebhookSecret: r ? r.has_webhook_secret : false,
+  };
+}
+
 /** The credentials, for the code that calls the gateway. Asked for by name. */
 export async function getGatewaySecrets(key = 'main') {
   const { rows } = await pgQuery(

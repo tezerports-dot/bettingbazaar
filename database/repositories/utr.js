@@ -194,6 +194,91 @@ export async function clearFraudFlag(utr, { actor }) {
   return rows[0] ? { ok: true, entry: toEntry(rows[0]) } : { ok: false, reason: 'NOT_FLAGGED' };
 }
 
+/**
+ * The registry, paged, with the player and order attached.
+ *
+ * ── The join a populate cannot do ───────────────────────────────────────────
+ * The admin screen showed the order's amount and the player's username beside
+ * each reference. Two `populate` calls fetched them per page and yielded null
+ * for a since-deleted player or order — rendered as a blank cell that reads as
+ * missing data rather than as a closed account.
+ *
+ * Page and total come from one query, so a reference claimed while an operator
+ * is paging cannot make the footer disagree with the rows.
+ */
+export async function listRegistry({ status = null, page = 1, limit = 50 } = {}) {
+  const params = []; const where = [];
+  if (status) { params.push(String(status)); where.push(`r.status = $${params.length}`); }
+
+  const size = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const offset = Math.max((Number(page) || 1) - 1, 0) * size;
+  params.push(size, offset);
+
+  const { rows } = await pgQuery(
+    `SELECT ${COLUMNS.split(',').map((c) => `r.${c.trim()}`).join(', ')},
+            u.username, u.mobile, u.kyc_status,
+            o.order_type, o.state AS order_state,
+            o.fiat_amount_paise, o.token_amount_paise, o.proof_screenshot,
+            COUNT(*) OVER () AS total_rows
+       FROM utr_registry r
+       LEFT JOIN users u        ON u.user_id  = r.user_id
+       LEFT JOIN order_states o ON o.order_id = r.order_id
+      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      ORDER BY r.registered_at DESC
+      LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params, 'utr_list_registry',
+  );
+
+  return {
+    total: rows.length ? Number(rows[0].total_rows) : 0,
+    page: Math.max(Number(page) || 1, 1),
+    limit: size,
+    entries: rows.map((r) => ({
+      ...toEntry(r),
+      user: r.username === null ? null : {
+        username: r.username, mobile: r.mobile, kycStatus: r.kyc_status,
+      },
+      order: r.order_type === null ? null : {
+        orderId: r.order_id, type: r.order_type, status: r.order_state,
+        fiatAmount: paiseToRupees(Number(r.fiat_amount_paise)),
+        tokenAmount: paiseToRupees(Number(r.token_amount_paise)),
+        proofScreenshot: r.proof_screenshot,
+      },
+    })),
+  };
+}
+
+/** One reference with everything an operator reviewing it needs. */
+export async function getRegistryEntry(utr) {
+  const normalized = normalizeUtr(utr);
+  if (!normalized) return null;
+  const { rows } = await pgQuery(
+    `SELECT ${COLUMNS.split(',').map((c) => `r.${c.trim()}`).join(', ')},
+            u.username, u.mobile, u.kyc_status,
+            o.order_type, o.state AS order_state,
+            o.fiat_amount_paise, o.token_amount_paise, o.proof_screenshot
+       FROM utr_registry r
+       LEFT JOIN users u        ON u.user_id  = r.user_id
+       LEFT JOIN order_states o ON o.order_id = r.order_id
+      WHERE r.utr = $1`,
+    [normalized], 'utr_registry_entry',
+  );
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    ...toEntry(r),
+    user: r.username === null ? null : {
+      username: r.username, mobile: r.mobile, kycStatus: r.kyc_status,
+    },
+    order: r.order_type === null ? null : {
+      orderId: r.order_id, type: r.order_type, status: r.order_state,
+      fiatAmount: paiseToRupees(Number(r.fiat_amount_paise)),
+      tokenAmount: paiseToRupees(Number(r.token_amount_paise)),
+      proofScreenshot: r.proof_screenshot,
+    },
+  };
+}
+
 /** A player's payment references, most recent first. */
 export async function userUtrHistory(userId, { limit = 20 } = {}) {
   const { rows } = await pgQuery(

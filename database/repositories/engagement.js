@@ -489,6 +489,93 @@ export async function listFakeWinners({ publicOnly = true, limit = 50 } = {}) {
   return rows.map(toFakeWinner);
 }
 
+/**
+ * Real winners: settled winning bets in a window, with the player attached.
+ *
+ * ── The query that never matched ────────────────────────────────────────────
+ * The public feed filtered on `isWinner` and `winAmount`, two fields that have
+ * NEVER existed on a bet — it is `status = 'WON'` and a payout. So the query
+ * matched nothing and the winners feed showed ONLY the curated entries. A
+ * marketing carousel with no real winners in it, indefinitely, and nothing to
+ * say so: an empty result from a wrong field looks exactly like a quiet day.
+ *
+ * The payout is the NET figure actually credited, after the winnings fee. The
+ * gross would overstate what a player received on a public page.
+ */
+export async function realWinners({ sinceHours = 24, limit = 20 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT b.bet_id, b.user_id, b.cycle_id, b.side, b.payout_paise, b.settled_at,
+            COALESCE(u.username, 'Player') AS username,
+            COALESCE(u.profile_pic, '')    AS profile_pic
+       FROM bets b
+       LEFT JOIN users u ON u.user_id = b.user_id
+      WHERE b.status = 'WON'
+        AND b.settled_at IS NOT NULL
+        AND b.settled_at >= now() - ($1 || ' hours')::interval
+        AND b.payout_paise > 0
+      ORDER BY b.payout_paise DESC
+      LIMIT $2`,
+    [String(Math.max(Number(sinceHours) || 24, 1)),
+      Math.min(Math.max(Number(limit) || 20, 1), 100)],
+    'engagement_real_winners',
+  );
+  return rows.map((r) => ({
+    displayName: r.username,
+    profilePic: r.profile_pic,
+    amount: paiseToRupees(Number(r.payout_paise)),
+    game: 'Delhi/Bombay',
+    cycleId: r.cycle_id,
+    side: r.side,
+    city: '',
+    displayTime: r.settled_at,
+    isReal: true,
+  }));
+}
+
+/** Curated carousel entries inside a window, newest first. */
+export async function curatedWinners({ sinceHours = 24, limit = 50 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT * FROM fake_winners
+      WHERE is_public
+        AND display_time >= now() - ($1 || ' hours')::interval
+      ORDER BY sort_order ASC, display_time DESC
+      LIMIT $2`,
+    [String(Math.max(Number(sinceHours) || 24, 1)),
+      Math.min(Math.max(Number(limit) || 50, 1), 200)],
+    'engagement_curated_winners',
+  );
+  return rows.map((r) => ({ ...toFakeWinner(r), isReal: false }));
+}
+
+/** Edit a curated entry. Returns null for an id that does not exist. */
+export async function updateFakeWinner(id, patch = {}) {
+  const COLUMN = {
+    displayName: 'display_name', profilePic: 'profile_pic', city: 'city',
+    game: 'game', badge: 'badge', isPublic: 'is_public',
+    sortOrder: 'sort_order', displayTime: 'display_time',
+  };
+  const sets = []; const params = [Number(id)];
+  for (const [key, column] of Object.entries(COLUMN)) {
+    if (patch[key] === undefined) continue;
+    params.push(column === 'sort_order' ? (Number(patch[key]) || 0)
+      : column === 'is_public' ? Boolean(patch[key]) : patch[key]);
+    sets.push(`${column} = $${params.length}`);
+  }
+  if (patch.amount !== undefined) {
+    params.push(rupeesToPaise(patch.amount));
+    sets.push(`amount_paise = $${params.length}`);
+  }
+  if (!sets.length) {
+    const { rows } = await pgQuery('SELECT * FROM fake_winners WHERE id = $1', [Number(id)], 'fake_winner_get');
+    return toFakeWinner(rows[0]);
+  }
+  const { rows } = await pgQuery(
+    `UPDATE fake_winners SET ${sets.join(', ')} WHERE id = $1 RETURNING *`,
+    params, 'fake_winner_update',
+  );
+  return toFakeWinner(rows[0]);
+}
+
 export async function deleteFakeWinner(id) {
   const { rowCount } = await pgQuery(
     'DELETE FROM fake_winners WHERE id = $1', [Number(id)], 'fake_winner_delete',
