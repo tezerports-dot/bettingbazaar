@@ -342,6 +342,48 @@ export async function merchantDailyEarnings(merchantId, { days = 7, timezone = '
   }));
 }
 
+/**
+ * A merchant's profit picture, derived from the orders they settled.
+ *
+ * ── One statement, and no fetch-then-sum ────────────────────────────────────
+ * This was three separate `find()` calls pulling EVERY order the merchant had
+ * ever touched — deposits, withdrawals, and all of them again for a status
+ * breakdown — to add up in JavaScript. It works on a new merchant and stops
+ * working on a busy one, and the three reads could see the table at three
+ * different moments, so revenue and exposure need not describe the same set of
+ * orders.
+ *
+ * Every figure here comes from one pass over one snapshot.
+ */
+export async function merchantProfitEngine(merchantId) {
+  const { rows } = await pgQuery(
+    `SELECT
+       COUNT(*) FILTER (WHERE order_type = 'DEPOSIT'    AND state IN ('COMPLETED','PAID'))::int AS deposits,
+       COUNT(*) FILTER (WHERE order_type = 'WITHDRAWAL' AND state IN ('COMPLETED','PAID'))::int AS withdrawals,
+       COALESCE(SUM(token_amount_paise) FILTER (WHERE order_type = 'DEPOSIT'    AND state IN ('COMPLETED','PAID')), 0) AS tokens_out,
+       COALESCE(SUM(token_amount_paise) FILTER (WHERE order_type = 'WITHDRAWAL' AND state IN ('COMPLETED','PAID')), 0) AS tokens_back,
+       COALESCE(SUM(fiat_amount_paise)  FILTER (WHERE order_type = 'DEPOSIT'    AND state IN ('COMPLETED','PAID')), 0) AS revenue,
+       COALESCE(SUM(fiat_amount_paise)  FILTER (WHERE order_type = 'WITHDRAWAL' AND state IN ('COMPLETED','PAID')), 0) AS exposure,
+       jsonb_object_agg(state, cnt) FILTER (WHERE state IS NOT NULL) AS status_map
+     FROM (
+       SELECT order_type, state, token_amount_paise, fiat_amount_paise,
+              COUNT(*) OVER (PARTITION BY state)::int AS cnt
+         FROM order_states WHERE merchant_id = $1
+     ) o`,
+    [String(merchantId)], 'stats_merchant_profit',
+  );
+  const r = rows[0];
+  return {
+    deposits: r.deposits,
+    withdrawals: r.withdrawals,
+    tokensDispensed: rupees(r.tokens_out),
+    tokensReturned: rupees(r.tokens_back),
+    revenue: rupees(r.revenue),
+    withdrawalExposure: rupees(r.exposure),
+    orderStatus: r.status_map ?? {},
+  };
+}
+
 /** A merchant's live queue counts, in one pass. */
 export async function merchantQueueCounts(merchantId) {
   const { rows } = await pgQuery(
