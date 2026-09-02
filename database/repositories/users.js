@@ -629,10 +629,14 @@ export async function listQueueManagers() {
 }
 
 /** How many accounts match a status. Counted from rows, never accumulated. */
-export async function countUsers({ status = null } = {}) {
+export async function countUsers({ status = null, kycStatus = null } = {}) {
+  const where = []; const params = [];
+  if (status) { params.push(String(status)); where.push(`status = $${params.length}`); }
+  if (kycStatus) { params.push(String(kycStatus)); where.push(`kyc_status = $${params.length}`); }
   const { rows } = await pgQuery(
-    `SELECT count(*)::bigint AS n FROM users ${status ? 'WHERE status = $1' : ''}`,
-    status ? [status] : [], 'user_count',
+    `SELECT count(*)::bigint AS n FROM users
+      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`,
+    params, 'user_count',
   );
   return toInt(rows[0]?.n) ?? 0;
 }

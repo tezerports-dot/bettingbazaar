@@ -12,16 +12,19 @@
  * and all three are implemented here rather than left to operator discipline:
  *
  *   1. Sensitive PII segregated from operational data. Aadhaar lives in its own
- *      collection, as ciphertext, `select: false` — reaching it takes the
- *      deliberate `.select('+aadhaarEncrypted')` that appears in exactly one
- *      function below.
+ *      table, as ciphertext, and the ordinary read never projects it — reaching
+ *      it takes `exportPending`, the one audited function that returns it, and
+ *      that function stamps the batch id in the SAME statement that selects the
+ *      rows. There is no way to read the ciphertext without leaving a record.
  *   2. Raw KYC reachable only by MFA'd staff. The route enforces isAdmin, and
  *      admin 2FA is mandatory platform-wide, so an export cannot be pulled by a
  *      sub-admin or a session that never presented a second factor.
  *   3. An immutable audit record of every decision — who, what, when, why. Both
- *      halves write a KycBatch row, and rows carry the batch that exported and
- *      the batch that decided them, so a disputed verdict traces to a file and
- *      a person.
+ *      halves write a batch row IN THE SAME TRANSACTION as the change, and rows
+ *      carry the batch that exported and the batch that decided them, so a
+ *      disputed verdict traces to a file and a person. The version this
+ *      replaced wrote the batch record as a separate statement afterwards: a
+ *      failure in between disclosed identity numbers with nothing recording it.
  *
  * ── What is deliberately NOT here ───────────────────────────────────────────
  * Nothing writes a CSV to disk. The export streams to the requesting admin and
@@ -29,8 +32,7 @@
  * survive into a backup, and answer to no access control.
  */
 import crypto from 'crypto';
-import mongoose from 'mongoose';
-import { KycVerification, KycBatch } from './kycVerification.model.js';
+import { db } from '#db';
 import { decryptField } from './fieldCrypto.util.js';
 
 /** Excel and most verifier tooling expect CRLF; a bare \n silently mangles rows. */
@@ -63,54 +65,50 @@ export async function buildExport({ actorId, limit = 10_000 }) {
 
   const batchId = `kycexp_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
 
-  // Oldest first, so nobody waits behind a later signup.
-  const rows = await KycVerification.find({ status: 'PENDING_VERIFICATION' })
-    .sort({ createdAt: 1 })
-    .limit(limit)
-    .select('+aadhaarEncrypted')
-    .lean();
+  // The claim, the batch stamp and the batch record are ONE transaction, and
+  // the rows come back already marked as disclosed. The shape this replaced
+  // read the rows, built the file, and stamped them afterwards — so two exports
+  // running at once both claimed the same rows and put one Aadhaar in two
+  // files, and a failure after the read handed over a file the platform had no
+  // record of.
+  const rows = await db.identity.exportPending({
+    batchId, limit, actorId,
+    note: 'Aadhaar verification export',
+  });
 
   const lines = ['reference,aadhaar_number,mobile_number,verified_yes_no,remarks'];
-  const exported = [];
+  let excluded = 0;
 
   for (const row of rows) {
     let aadhaar;
     try {
       aadhaar = decryptField(row.aadhaarEncrypted);
     } catch (err) {
-      // A row that cannot be decrypted is skipped, never exported blank: a blank
-      // Aadhaar would come back NO and permanently fail an innocent player.
-      console.error(`[kyc] row ${row._id} could not be decrypted — excluded from ${batchId}: ${err.message}`);
+      // A row that cannot be decrypted is excluded, never exported blank: a
+      // blank Aadhaar would come back NO and permanently fail an innocent
+      // player. It stays claimed by this batch, so the exclusion is traceable
+      // rather than silently rolling back into the next export.
+      console.error(`[kyc] row ${row.userId} could not be decrypted — excluded from ${batchId}: ${err.message}`);
+      excluded += 1;
       continue;
     }
-    // `reference` is the row id, and it is what the import matches on. The
-    // verifier never needs to know which player this is.
+    // `reference` is the USER id, and it is what the import matches on. The
+    // verifier never learns anything else about the person.
     lines.push([
-      csvCell(String(row._id)),
+      csvCell(row.userId),
       csvCell(aadhaar),
       csvCell(row.phone),
       '',
       '',
     ].join(','));
-    exported.push(row._id);
   }
 
-  // Mark what went out BEFORE handing over the file. If the download fails the
-  // rows are still attributable to a batch that exists; the reverse — a file in
-  // someone's hands that the platform has no record of — is the bad direction.
-  if (exported.length) {
-    await KycVerification.updateMany(
-      { _id: { $in: exported } },
-      { $set: { exportBatchId: batchId, exportedAt: new Date(), updatedAt: new Date() } },
-    );
+  if (excluded) {
+    console.warn(`[kyc] ${batchId}: ${excluded} row(s) excluded as undecryptable — `
+      + 'they remain claimed by this batch and need a key check, not a re-export');
   }
 
-  await KycBatch.create({
-    batchId, kind: 'EXPORT', actorId, rowCount: exported.length,
-    note: `Exported ${exported.length} pending verification(s)`,
-  });
-
-  return { batchId, csv: lines.join(CRLF) + CRLF, rowCount: exported.length };
+  return { batchId, csv: lines.join(CRLF) + CRLF, rowCount: rows.length - excluded };
 }
 
 /** Accepts the verifier's spelling of yes/no without guessing at anything else. */
@@ -169,10 +167,9 @@ export async function applyImport({ csv, actorId }) {
     remarks:   hasHeader ? header.findIndex((h) => h.includes('remark') || h.includes('reason')) : 4,
   };
 
-  let verified = 0;
-  let failed = 0;
-  let skipped = 0;
+  const verdicts = [];
   const errors = [];
+  let unparseable = 0;
 
   for (const [n, line] of body.entries()) {
     const cells = splitCsvLine(line);
@@ -180,50 +177,54 @@ export async function applyImport({ csv, actorId }) {
     const verdict = parseVerdict(cells[idx.verdict]);
     const remarks = idx.remarks >= 0 ? (cells[idx.remarks] || '') : '';
 
-    if (!reference) { skipped += 1; continue; }
+    if (!reference) { unparseable += 1; continue; }
     if (!verdict) {
       // Unrecognised verdicts are left PENDING and REPORTED. Defaulting either
       // way would be worse: defaulting to VERIFIED activates payouts on an
       // unchecked identity, defaulting to FAILED voids an innocent player's
       // referral commissions upstream.
-      skipped += 1;
+      unparseable += 1;
       errors.push(`row ${n + 1}: unrecognised verdict "${cells[idx.verdict] ?? ''}"`);
       continue;
     }
 
-    // Only rows that are still awaiting a decision are moved. Re-importing the
-    // same file is therefore a no-op rather than a way to flip a settled
-    // verdict, and a late duplicate cannot overturn a decision quietly.
-    const res = await KycVerification.updateOne(
-      { _id: reference, status: 'PENDING_VERIFICATION' },
-      {
-        $set: {
-          status: verdict,
-          importBatchId: batchId,
-          verifiedAt: new Date(),
-          failureReason: verdict === 'FAILED' ? (remarks || 'Verification failed') : '',
-          updatedAt: new Date(),
-        },
-      },
-    ).catch((err) => { errors.push(`row ${n + 1}: ${err.message}`); return { modifiedCount: 0 }; });
-
-    if (res.modifiedCount) {
-      if (verdict === 'VERIFIED') verified += 1; else failed += 1;
-    } else {
-      skipped += 1;
-    }
+    verdicts.push({
+      userId: reference,
+      verified: verdict === 'VERIFIED',
+      reason: verdict === 'FAILED' ? (remarks || 'Verification failed') : '',
+    });
   }
 
-  // Mirror the verdicts onto the User documents the rest of the platform reads.
-  if (verified || failed) errors.push(...await syncDecidedUsers(batchId));
-
-  await KycBatch.create({
-    batchId, kind: 'IMPORT', actorId,
-    rowCount: body.length, verifiedCount: verified, failedCount: failed, skippedCount: skipped,
+  // ── ONE transaction for the whole file ──────────────────────────────────
+  // The verdicts and the batch record commit together. The loop this replaced
+  // issued an update per row and wrote the batch record afterwards, so a
+  // failure partway left verdicts applied that no batch accounted for — in the
+  // one place where "which file decided this, and who applied it" is the
+  // question a disputed verification turns on.
+  //
+  // Only rows still awaiting a decision move, so re-importing the same file is
+  // a no-op rather than a way to flip a settled verdict.
+  const applied = await db.identity.importVerdicts({
+    batchId, verdicts, actorId,
     note: errors.length ? `${errors.length} row(s) needed attention` : 'Clean import',
   });
 
-  return { batchId, verified, failed, skipped, errors: errors.slice(0, 50) };
+  // Mirror the verdicts onto the accounts the rest of the platform reads.
+  if (applied.verifiedCount || applied.failedCount) {
+    errors.push(...await syncDecidedUsers(batchId));
+  }
+
+  return {
+    batchId,
+    verified: applied.verifiedCount,
+    failed: applied.failedCount,
+    // Rows the file itself could not express, plus rows that were already
+    // decided. Counted apart in the log below, because "the verifier sent
+    // garbage" and "we already handled this" are different problems that the
+    // single `skipped` number could not tell apart.
+    skipped: applied.skipped + unparseable,
+    errors: errors.slice(0, 50),
+  };
 }
 
 /**
@@ -242,49 +243,50 @@ export async function applyImport({ csv, actorId }) {
  * A FAILED verdict is mirrored too. Without it a player whose Aadhaar did not
  * check out keeps `kycStatus: PENDING_APPROVAL` forever: never allowed to
  * withdraw, never told why, and invisible in the pending queue because the
- * KycVerification row says the batch already dealt with them.
+ * verification row says the batch already dealt with them.
  *
  * @returns {Promise<string[]>} per-user problems, folded into the batch report
  */
 async function syncDecidedUsers(batchId) {
   const { decideKyc, KYC_STATES } = await import('../user/kycDecision.service.js');
-  const { ReferralProgramme } = await import('../referral/referral.model.js');
 
-  const decided = await KycVerification.find({ importBatchId: batchId, status: { $in: ['VERIFIED', 'FAILED'] } })
-    .select('userId status failureReason').lean();
+  const decided = await db.identity.listDecidedInBatch(batchId);
   if (!decided.length) return [];
 
   const problems = [];
-  let approved = 0;
 
   for (const row of decided) {
     const to = row.status === 'VERIFIED' ? KYC_STATES.APPROVED : KYC_STATES.REJECTED;
     try {
       const out = await decideKyc(row.userId, to, {
-        actor: null,   // a batch has no individual reviewer; the KycBatch names the admin
+        actor: null,   // a batch has no individual reviewer; the batch row names the admin
         reason: to === KYC_STATES.REJECTED
           ? (row.failureReason || 'Identity verification failed')
           : null,
       });
-      // `idempotent` is a re-import landing on a settled user, which is fine.
-      // A genuine refusal means the user was not where the batch assumed, and
-      // that is worth surfacing rather than silently dropping.
-      if (!out.ok) problems.push(`user ${row.userId}: ${out.reason} (is ${out.status})`);
-      else if (to === KYC_STATES.APPROVED && !out.idempotent) approved += 1;
+      // `idempotent` is a re-import landing on a settled account, which is fine.
+      // A genuine refusal means the account was not where the batch assumed,
+      // and that is worth surfacing rather than silently dropping.
+      if (!out.ok) {
+        problems.push(`user ${row.userId}: ${out.reason} (is ${out.status})`);
+        continue;
+      }
+
+      // The membership cap counts VERIFIED members, and it is counted ONE AT A
+      // TIME because the cap is enforced per member: the guard is
+      // `verified_members < member_cap`, so the member who would cross it is
+      // refused and every member before them is not. Adding the batch total in
+      // one increment sails straight past the cap, which is exactly what a cap
+      // on a real-money referral programme must not do.
+      if (to === KYC_STATES.APPROVED && !out.idempotent) {
+        const counted = await db.referrals.countVerifiedMember('main');
+        if (!counted.ok) {
+          problems.push(`user ${row.userId}: verified, but the programme member cap is reached`);
+        }
+      }
     } catch (err) {
       problems.push(`user ${row.userId}: ${err.message}`);
     }
-  }
-
-  // The 8-crore cap counts VERIFIED members, so it moves here and only here —
-  // and counts only the users this batch actually moved, so a re-import does
-  // not inflate it.
-  if (approved) {
-    await ReferralProgramme.updateOne(
-      { key: 'main' },
-      { $inc: { verifiedMembers: approved }, $set: { updatedAt: new Date() } },
-      { upsert: true },
-    );
   }
 
   problems.push(...await releaseFailedSubmissions(batchId));
@@ -305,7 +307,7 @@ async function syncDecidedUsers(batchId) {
  *
  * ── What is kept ────────────────────────────────────────────────────────────
  * The verdict, which is what anyone actually needs later: `User.kycStatus` is
- * REJECTED with the reason on `kycData.rejectionReason`, and the `KycBatch`
+ * REJECTED with the reason recorded alongside it, and the batch row
  * records how many failed and who imported the file. What goes is the identity
  * data — the hash, the ciphertext and the last four digits of a number that did
  * not check out. There is no reason to hold an Aadhaar the platform has just
@@ -318,56 +320,43 @@ async function syncDecidedUsers(batchId) {
  * why — the exact bug this file already carries a comment about.
  */
 async function releaseFailedSubmissions(batchId) {
-  const problems = [];
   try {
-    // Only rows this batch failed AND whose user actually reached REJECTED. A
-    // decision that did not land (`problems` above) must keep its evidence.
-    const failedRows = await KycVerification
-      .find({ importBatchId: batchId, status: 'FAILED' })
-      .select('_id userId').lean();
-    if (!failedRows.length) return problems;
-
-    const User = mongoose.model('User');
-    const rejected = await User
-      .find({ _id: { $in: failedRows.map((r) => r.userId) }, kycStatus: 'REJECTED' })
-      .select('_id').lean();
-    const rejectedIds = new Set(rejected.map((u) => String(u._id)));
-
-    const releasable = failedRows.filter((r) => rejectedIds.has(String(r.userId)));
-    if (!releasable.length) return problems;
-
-    const res = await KycVerification.deleteMany({ _id: { $in: releasable.map((r) => r._id) } });
-    console.warn(`[kyc] released ${res.deletedCount} failed submission(s) from batch ${batchId} — `
-      + 'the Aadhaar numbers are no longer held and are free to be used by their real owners');
+    // ONE statement, joined against the accounts. The version this replaced ran
+    // three queries — the failed rows, the accounts that reached REJECTED, then
+    // a delete — and filtered between them in JavaScript, so an account that
+    // moved between the second and third had its evidence deleted on a verdict
+    // that was no longer true.
+    const released = await db.identity.releaseFailedBatch(batchId);
+    if (released.length) {
+      console.warn(`[kyc] released ${released.length} failed submission(s) from batch ${batchId} — `
+        + 'the Aadhaar numbers are no longer held and are free to be used by their real owners');
+    }
+    return [];
   } catch (err) {
     // Never fails the import: the verdicts are already applied, and a retained
     // row is a smaller problem than an import that reports failure after doing
     // most of its work.
-    problems.push(`releasing failed submissions: ${err.message}`);
+    return [`releasing failed submissions: ${err.message}`];
   }
-  return problems;
 }
 
 /** Counts for the admin dashboard. */
 export async function kycStats() {
-  const [byStatus, batches] = await Promise.all([
-    KycVerification.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
-    KycBatch.find({}).sort({ createdAt: -1 }).limit(20).populate('actorId', 'username').lean(),
+  const [counts, batches, failed] = await Promise.all([
+    db.identity.verificationCounts(),
+    db.identity.listBatches({ limit: 20 }),
+    // FAILED is counted from the ACCOUNTS, not from the verification rows. A
+    // failed submission's row is DELETED so the Aadhaar it holds is released
+    // (see releaseFailedSubmissions), which means counting rows here would
+    // report zero failures no matter how many there were. The verdict lives on
+    // the account.
+    db.users.countUsers({ kycStatus: 'REJECTED' }),
   ]);
-  const counts = Object.fromEntries(byStatus.map((r) => [r._id, r.count]));
-  // FAILED is counted from the USERS, not from KycVerification. A failed
-  // submission's row is deleted so the Aadhaar it holds is released (see
-  // releaseFailedSubmissions), which means counting rows here would report zero
-  // failures no matter how many there were. The verdict lives on the user.
-  const failed = await mongoose.model('User').countDocuments({ kycStatus: 'REJECTED' });
+
   return {
-    pending:  counts.PENDING_VERIFICATION || 0,
-    verified: counts.VERIFIED || 0,
+    pending:  counts.PENDING_VERIFICATION,
+    verified: counts.VERIFIED,
     failed,
-    recentBatches: batches.map((b) => ({
-      batchId: b.batchId, kind: b.kind, rowCount: b.rowCount,
-      verified: b.verifiedCount, failed: b.failedCount, skipped: b.skippedCount,
-      actor: b.actorId?.username || 'unknown', at: b.createdAt, note: b.note,
-    })),
+    recentBatches: batches,
   };
 }

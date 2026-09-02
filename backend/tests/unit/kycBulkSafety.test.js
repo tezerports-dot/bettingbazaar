@@ -30,7 +30,7 @@ describe('the export cannot be turned into a spreadsheet attack', () => {
 
   it('routes every exported field through csvCell', () => {
     // A single unescaped interpolation would defeat the guard entirely.
-    const row = code.slice(code.indexOf('lines.push(['), code.indexOf('exported.push'));
+    const row = code.slice(code.indexOf('lines.push(['), code.indexOf('].join(\',\')'));
     const cells = row.match(/csvCell\(/g) || [];
     expect(cells.length).toBeGreaterThanOrEqual(3);
     expect(row).not.toMatch(/\$\{(?!.*csvCell)/);
@@ -42,17 +42,28 @@ describe('the export cannot be turned into a spreadsheet attack', () => {
 });
 
 describe('the export leaves an audit trail and no artefacts', () => {
-  it('records who exported what, as a KycBatch row', () => {
-    expect(code).toMatch(/KycBatch\.create\(\{[\s\S]*?kind: 'EXPORT'[\s\S]*?actorId/);
+  it('records who exported what, in the same transaction as the disclosure', () => {
+    // `exportPending` claims the rows, stamps them with the batch id and writes
+    // the batch record in ONE transaction. The shape this replaced wrote the
+    // batch record as a separate statement afterwards, so a failure in between
+    // disclosed identity numbers with nothing recording it.
+    expect(code).toMatch(/db\.identity\.exportPending\(\{[\s\S]*?actorId/);
+    expect(code).not.toMatch(/updateMany[\s\S]*?exportBatchId/);
   });
 
   it('refuses to build an export without a named actor', () => {
     expect(code).toMatch(/if \(!actorId\) throw/);
   });
 
-  it('reaches ciphertext through a deliberate select, not by default', () => {
-    // `select: false` on the model means an ordinary query cannot return it.
-    expect(code).toMatch(/\.select\('\+aadhaarEncrypted'\)/);
+  it('reaches ciphertext only through the one audited function', () => {
+    // The ordinary read never projects the ciphertext. `exportPending` is the
+    // single function that returns it, and it stamps the batch id in the same
+    // statement that selects the rows — so there is no way to read an Aadhaar
+    // without leaving a record of who read it and in which file it went out.
+    expect(code).toMatch(/exportPending/);
+    expect(code).toMatch(/decryptField\(row\.aadhaarEncrypted\)/);
+    // Nothing here reads the ciphertext by any other route.
+    expect(code).not.toMatch(/getVerification[\s\S]{0,120}aadhaarEncrypted/);
   });
 
   it('never writes the file to disk', () => {
@@ -61,11 +72,14 @@ describe('the export leaves an audit trail and no artefacts', () => {
     expect(code).not.toMatch(/writeFile|createWriteStream|fs\.write/);
   });
 
-  it('marks rows as exported before handing the file over', () => {
-    const updateAt = code.indexOf('exportBatchId: batchId');
+  it('marks rows as exported in the statement that selects them', () => {
+    // Not "before the return" — IN the same statement. Reading the rows and
+    // stamping them afterwards let two exports running at once both claim the
+    // same rows and put one Aadhaar in two files.
+    const claimAt = code.indexOf('exportPending');
     const returnAt = code.indexOf('return { batchId, csv');
-    expect(updateAt).toBeGreaterThan(-1);
-    expect(updateAt).toBeLessThan(returnAt);
+    expect(claimAt).toBeGreaterThan(-1);
+    expect(claimAt).toBeLessThan(returnAt);
   });
 
   it('skips a row it cannot decrypt rather than exporting it blank', () => {
@@ -83,20 +97,23 @@ describe('importing verdicts', () => {
     expect(code).toMatch(/return null;/);
   });
 
-  it('only moves rows still awaiting a decision', () => {
-    // Re-importing the same file is then a no-op, and a late duplicate cannot
-    // quietly overturn a settled verdict.
-    expect(code).toMatch(/_id: reference, status: 'PENDING_VERIFICATION'/);
+  it('applies the whole file in one transaction, with its audit row', () => {
+    // The verdicts and the batch record commit together. The per-row loop this
+    // replaced wrote the batch record afterwards, so a failure partway left
+    // verdicts applied that no batch accounted for — in the one place where
+    // "which file decided this, and who applied it" is the question a disputed
+    // verification turns on.
+    expect(code).toMatch(/db\.identity\.importVerdicts\(\{/);
+    expect(code).not.toMatch(/for \([\s\S]{0,400}updateOne\([\s\S]{0,200}PENDING_VERIFICATION/);
   });
 
-  it('records the import as its own audit row', () => {
-    expect(code).toMatch(/KycBatch\.create\(\{[\s\S]*?kind: 'IMPORT'/);
-  });
-
-  it('counts verified members only where the verdict is applied', () => {
-    // The 8-crore cap must move in exactly one place or it drifts.
-    const occurrences = code.match(/verifiedMembers/g) || [];
-    expect(occurrences.length).toBe(1);
+  it('counts verified members one at a time, so the cap holds', () => {
+    // The membership cap is enforced PER MEMBER — the guard is
+    // `verified_members < member_cap`. Adding a batch total in one increment
+    // sails straight past it, which is what a cap on a real-money referral
+    // programme must not do.
+    expect(code).toMatch(/countVerifiedMember\('main'\)/);
+    expect(code).not.toMatch(/verifiedMembers: approved|\+= approved/);
   });
 });
 
@@ -108,7 +125,7 @@ describe('a batch decision is still a KYC decision', () => {
     // times. A raw updateMany here would be a second way to decide KYC that
     // honours none of it.
     expect(code).toMatch(/decideKyc\(row\.userId, to/);
-    expect(code).not.toMatch(/User\.updateMany[\s\S]*?kycStatus/);
+    expect(code).not.toMatch(/updateUser\([\s\S]{0,80}kycStatus/);
     expect(code).not.toMatch(/\$set: \{ kycStatus/);
   });
 
@@ -117,7 +134,9 @@ describe('a batch decision is still a KYC decision', () => {
     // PENDING_APPROVAL forever: never able to withdraw, never told why, and
     // absent from the pending queue because their row says the batch handled
     // them.
-    expect(code).toMatch(/status: \{ \$in: \['VERIFIED', 'FAILED'\] \}/);
+    // `listDecidedInBatch` returns BOTH verdicts — the repository's query is
+    // `status IN ('VERIFIED', 'FAILED')` — and both are mirrored here.
+    expect(code).toMatch(/listDecidedInBatch\(batchId\)/);
     expect(code).toMatch(/KYC_STATES\.APPROVED : KYC_STATES\.REJECTED/);
   });
 
@@ -128,12 +147,12 @@ describe('a batch decision is still a KYC decision', () => {
   });
 
   it('reports a user the batch could not move instead of dropping it', () => {
-    expect(code).toMatch(/if \(!out\.ok\) problems\.push/);
+    expect(code).toMatch(/if \(!out\.ok\) \{[\s\S]{0,120}problems\.push/);
   });
 
   it('counts only the users this batch actually approved', () => {
-    // Counting rows instead would let a re-import inflate the cap.
-    expect(code).toMatch(/!out\.idempotent\) approved \+= 1/);
-    expect(code).toMatch(/\$inc: \{ verifiedMembers: approved \}/);
+    // `idempotent` is a re-import landing on a settled account. Counting it
+    // would let a re-import inflate the cap.
+    expect(code).toMatch(/!out\.idempotent/);
   });
 });

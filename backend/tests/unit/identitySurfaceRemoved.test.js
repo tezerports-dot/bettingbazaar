@@ -132,7 +132,11 @@ describe('a failed Aadhaar does not stay held', () => {
 
   it('deletes the submission rows a batch failed', () => {
     expect(bulk).toMatch(/releaseFailedSubmissions/);
-    expect(bulk).toMatch(/KycVerification\.deleteMany/);
+    // ONE statement, joined against the accounts. The three-query version this
+    // replaced filtered between them in JavaScript, so an account that moved
+    // between the read and the delete had its evidence destroyed on a verdict
+    // that was no longer true.
+    expect(bulk).toMatch(/db\.identity\.releaseFailedBatch\(batchId\)/);
   });
 
   it('releases only AFTER the verdicts reach the users', () => {
@@ -145,9 +149,11 @@ describe('a failed Aadhaar does not stay held', () => {
     expect(release).toBeGreaterThan(sync);
   });
 
-  it('counts failures from the users, not from the deleted rows', () => {
-    // Counting KycVerification rows would report zero failures forever.
-    expect(bulk).toMatch(/countDocuments\(\{ kycStatus: 'REJECTED' \}\)/);
+  it('counts failures from the accounts, not from the deleted rows', () => {
+    // A failed submission's row is deleted so the Aadhaar it holds is released,
+    // which means counting verification rows would report zero failures forever
+    // no matter how many there were. The verdict lives on the account.
+    expect(bulk).toMatch(/countUsers\(\{ kycStatus: 'REJECTED' \}\)/);
   });
 
   it('bounds how many Aadhaar numbers one account may submit', async () => {

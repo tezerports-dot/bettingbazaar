@@ -326,3 +326,161 @@ describePg('KYC decisions (PostgreSQL state machine)', () => {
     });
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Bulk verification — the one path where national identity numbers leave the
+// platform. Every assertion here is about a property an operator-obligations
+// audit asks for: traceable disclosure, no double-disclosure, no verdict
+// without an accounting batch, and a failed number released back to its owner.
+// ─────────────────────────────────────────────────────────────────────────────
+import {
+  submitVerification, exportPending, importVerdicts, listDecidedInBatch,
+  releaseFailedBatch, verificationCounts, listBatches, getVerification,
+} from '../repositories/identity.js';
+import { createUser, updateUser } from '../repositories/users.js';
+
+describePg('bulk Aadhaar verification', () => {
+  beforeAll(async () => { await applySchema(); });
+  afterAll(async () => { await closePg(); });
+  beforeEach(async () => {
+    await pgQuery('TRUNCATE kyc_verifications, kyc_batches, users RESTART IDENTITY CASCADE');
+  });
+
+  const submit = async (userId, aadhaarHash) => {
+    await createUser({ userId, username: userId, mobile: `999000${userId.slice(-4)}` });
+    return submitVerification({
+      userId, aadhaarHash, aadhaarEncrypted: `cipher:${aadhaarHash}`,
+      aadhaarLast4: aadhaarHash.slice(-4), phone: `999000${userId.slice(-4)}`,
+    });
+  };
+
+  it('stamps the batch id in the statement that selects the rows', async () => {
+    await submit('u0001', 'hash-1');
+    await submit('u0002', 'hash-2');
+
+    const rows = await exportPending({ batchId: 'exp-1', actorId: 'admin-1' });
+    expect(rows).toHaveLength(2);
+    // The ciphertext comes back — this is the audited disclosure path — and the
+    // row it came from now names the batch it went out in. A disputed result is
+    // reconstructed from exactly that pairing.
+    expect(rows[0].aadhaarEncrypted).toMatch(/^cipher:/);
+    expect((await getVerification('u0001')).exportBatchId).toBe('exp-1');
+  });
+
+  it('never puts one Aadhaar in two files', async () => {
+    await submit('u0001', 'hash-1');
+
+    const first = await exportPending({ batchId: 'exp-1', actorId: 'admin-1' });
+    const second = await exportPending({ batchId: 'exp-2', actorId: 'admin-1' });
+
+    expect(first.map((r) => r.userId)).toEqual(['u0001']);
+    // Already claimed. Reading the rows and stamping them afterwards let two
+    // exports running at once both claim the same rows and disclose one
+    // person's identity number in two separate files.
+    expect(second).toEqual([]);
+  });
+
+  it('records the disclosure even when the export is empty', async () => {
+    await exportPending({ batchId: 'exp-empty', actorId: 'admin-1' });
+    const [batch] = await listBatches({ limit: 1 });
+    // The log answers "what did we send out on this date" — an empty answer is
+    // still an answer, and a missing row is indistinguishable from a lost one.
+    expect(batch).toMatchObject({ batchId: 'exp-empty', kind: 'EXPORT', rowCount: 0 });
+  });
+
+  it('applies both verdicts and counts them from the rows it touched', async () => {
+    await submit('u0001', 'hash-1');
+    await submit('u0002', 'hash-2');
+    await exportPending({ batchId: 'exp-1', actorId: 'admin-1' });
+
+    const applied = await importVerdicts({
+      batchId: 'imp-1', actorId: 'admin-1',
+      verdicts: [
+        { userId: 'u0001', verified: true },
+        { userId: 'u0002', verified: false, reason: 'Name mismatch' },
+      ],
+    });
+
+    // Applying only the VERIFIED half leaves a player whose number did not
+    // check out sitting at PENDING for ever — never able to withdraw, never
+    // told why, and absent from the queue because the batch says it handled them.
+    expect(applied).toEqual({ verifiedCount: 1, failedCount: 1, skipped: 0 });
+    expect((await getVerification('u0002')).failureReason).toBe('Name mismatch');
+  });
+
+  it('is a no-op when the same file is imported twice', async () => {
+    await submit('u0001', 'hash-1');
+    const verdicts = [{ userId: 'u0001', verified: true }];
+
+    await importVerdicts({ batchId: 'imp-1', actorId: 'admin-1', verdicts });
+    const again = await importVerdicts({ batchId: 'imp-2', actorId: 'admin-1', verdicts });
+
+    // Only rows still awaiting a decision move, so a late duplicate cannot
+    // quietly overturn a settled verdict.
+    expect(again).toEqual({ verifiedCount: 0, failedCount: 0, skipped: 1 });
+    expect((await getVerification('u0001')).importBatchId).toBe('imp-1');
+  });
+
+  it('refuses a whole batch that names a user it cannot identify', async () => {
+    await submit('u0001', 'hash-1');
+    // A verdict with no user is a MALFORMED FILE, not a row to skip. Counting
+    // it as `skipped` makes it indistinguishable from a legitimately stale row,
+    // so an operator reading the number cannot tell "already decided" from "the
+    // verifier sent us garbage".
+    await expect(importVerdicts({
+      batchId: 'imp-bad', actorId: 'admin-1',
+      verdicts: [{ userId: 'u0001', verified: true }, { verified: false }],
+    })).rejects.toThrow(/name no user — refusing the batch/);
+
+    // Nothing was applied.
+    expect((await getVerification('u0001')).status).toBe('PENDING_VERIFICATION');
+  });
+
+  it('lists only the rows a batch actually decided', async () => {
+    await submit('u0001', 'hash-1');
+    await submit('u0002', 'hash-2');
+    await importVerdicts({
+      batchId: 'imp-1', actorId: 'admin-1',
+      verdicts: [{ userId: 'u0001', verified: true }],
+    });
+
+    // u0002 was left PENDING. Mirroring it would move an account on a verdict
+    // the verifier never gave.
+    expect(await listDecidedInBatch('imp-1')).toEqual([
+      { userId: 'u0001', status: 'VERIFIED', failureReason: '' },
+    ]);
+  });
+
+  it('releases a failed Aadhaar only once the account is actually REJECTED', async () => {
+    await submit('u0001', 'hash-1');
+    await importVerdicts({
+      batchId: 'imp-1', actorId: 'admin-1',
+      verdicts: [{ userId: 'u0001', verified: false, reason: 'Mismatch' }],
+    });
+
+    // The verdict has not reached the account yet, so the evidence must stay.
+    expect(await releaseFailedBatch('imp-1')).toEqual([]);
+    expect(await getVerification('u0001')).not.toBeNull();
+
+    await updateUser('u0001', { kycStatus: 'REJECTED' });
+
+    // Now it goes. `aadhaar_hash` is UNIQUE, so holding a failed number keeps
+    // it parked against a rejected account — and its REAL owner is refused at
+    // signup for a number they never gave us.
+    expect(await releaseFailedBatch('imp-1')).toEqual(['u0001']);
+    expect(await getVerification('u0001')).toBeNull();
+  });
+
+  it('counts failures from the accounts, since the rows are gone', async () => {
+    await submit('u0001', 'hash-1');
+    await importVerdicts({
+      batchId: 'imp-1', actorId: 'admin-1',
+      verdicts: [{ userId: 'u0001', verified: false, reason: 'Mismatch' }],
+    });
+    await updateUser('u0001', { kycStatus: 'REJECTED' });
+    await releaseFailedBatch('imp-1');
+
+    // Counting verification rows here would report zero failures forever.
+    expect((await verificationCounts()).FAILED).toBe(0);
+  });
+});

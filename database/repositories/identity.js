@@ -313,6 +313,52 @@ export async function importVerdicts({ batchId, verdicts = [], actorId = null, n
   });
 }
 
+/**
+ * The rows a batch DECIDED — the work list for mirroring verdicts onto accounts.
+ *
+ * Only VERIFIED and FAILED. A row the import left PENDING was not decided by
+ * this batch and must not be mirrored: doing so would move an account on a
+ * verdict the verifier never gave.
+ */
+export async function listDecidedInBatch(batchId) {
+  const { rows } = await pgQuery(
+    `SELECT user_id, status, failure_reason
+       FROM kyc_verifications
+      WHERE import_batch_id = $1 AND status IN ('VERIFIED', 'FAILED')
+      ORDER BY user_id`,
+    [String(batchId)], 'kyc_batch_decided',
+  );
+  return rows.map((r) => ({
+    userId: r.user_id, status: r.status, failureReason: r.failure_reason,
+  }));
+}
+
+/**
+ * Release the submission rows of everyone a batch FAILED, once their account
+ * has actually reached REJECTED.
+ *
+ * ── The reason that is not about storage ───────────────────────────────────
+ * `aadhaar_hash` is UNIQUE — one Aadhaar, one account. Correct while a
+ * submission is live, and actively harmful once it has failed: the number stays
+ * held against an account that was rejected, so its REAL owner can never
+ * register. Releasing it frees the number.
+ *
+ * The `REJECTED` join is the guard. A verdict that did not land on the account
+ * must KEEP its evidence — releasing there would destroy the record of a
+ * decision that is still outstanding.
+ */
+export async function releaseFailedBatch(batchId) {
+  const { rows } = await pgQuery(
+    `DELETE FROM kyc_verifications k
+      USING users u
+      WHERE k.import_batch_id = $1 AND k.status = 'FAILED'
+        AND u.user_id = k.user_id AND u.kyc_status = 'REJECTED'
+      RETURNING k.user_id`,
+    [String(batchId)], 'kyc_release_failed_batch',
+  );
+  return rows.map((r) => r.user_id);
+}
+
 /** The batch record — who disclosed what, and when. */
 export async function getBatch(batchId) {
   const { rows } = await pgQuery(
@@ -328,6 +374,31 @@ export async function getBatch(batchId) {
     failedCount: r.failed_count, skippedCount: r.skipped_count,
     note: r.note, createdAt: r.created_at,
   } : null;
+}
+
+/** The recent batches, newest first — the disclosure log an audit reads. */
+export async function listBatches({ limit = 20 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT b.batch_id, b.kind, b.actor_id, b.row_count, b.verified_count,
+            b.failed_count, b.skipped_count, b.note, b.created_at,
+            u.username AS actor_username
+       FROM kyc_batches b
+       LEFT JOIN users u ON u.user_id = b.actor_id
+      ORDER BY b.created_at DESC
+      LIMIT $1`,
+    [Math.min(Math.max(Number(limit) || 20, 1), 200)], 'kyc_batch_list',
+  );
+  return rows.map((r) => ({
+    batchId: r.batch_id, kind: r.kind,
+    actorId: r.actor_id,
+    // A LEFT JOIN, so a batch outlives the admin account that made it. The
+    // disclosure log is the point: losing WHO exported national identity
+    // numbers because their account was later deleted defeats it.
+    actor: r.actor_username ?? r.actor_id ?? 'unknown',
+    rowCount: r.row_count,
+    verified: r.verified_count, failed: r.failed_count, skipped: r.skipped_count,
+    note: r.note, at: r.created_at,
+  }));
 }
 
 /** How many rows sit at each status. Counted from rows, never accumulated. */
