@@ -417,6 +417,90 @@ export async function findOrders({
  *
  * Oldest deadline first: a hold that expired an hour ago has a player waiting.
  */
+/**
+ * The admin payment queue: orders grouped by state, with the parties named.
+ *
+ * ── The join replaces two populates ────────────────────────────────────────
+ * The route this serves called `.populate('userId', …)` and
+ * `.populate('merchantId', …)` on plain rows — a TypeError — and before that
+ * shape the populates were two extra round trips per page. One statement names
+ * both parties.
+ *
+ * ── The counts come from the same rows as the list ─────────────────────────
+ * The route derived its per-state counts by filtering the array it had just
+ * fetched, which sounds consistent and is not: the array is CAPPED at 200, so
+ * every count was "how many of the most recent 200", presented as the queue
+ * depth. A queue with 900 pending orders reported 200 and looked calm.
+ *
+ * `COUNT(*) FILTER` over the whole table gives the real depths; the list stays
+ * capped because a page is a page.
+ */
+export async function paymentQueue({ state = null, limit = 200 } = {}) {
+  const params = [];
+  let filter = '';
+  if (state && state !== 'all') { params.push(String(state)); filter = 'WHERE o.state = $1'; }
+
+  const size = Math.min(Math.max(Number(limit) || 200, 1), 500);
+  params.push(size);
+
+  const [{ rows }, { rows: counts }] = await Promise.all([
+    pgQuery(
+      `SELECT o.*,
+              u.username AS user_username, u.mobile AS user_mobile,
+              u.kyc_status AS user_kyc_status,
+              m.name AS merchant_name, m.mobile AS merchant_mobile
+         FROM order_states o
+         LEFT JOIN users u     ON u.user_id = o.user_id
+         LEFT JOIN merchants m ON m.merchant_id = o.merchant_id
+        ${filter}
+        ORDER BY o.created_at DESC
+        LIMIT $${params.length}`,
+      params, 'orders_payment_queue',
+    ),
+    pgQuery(
+      `SELECT state, COUNT(*)::int AS n FROM order_states GROUP BY state`,
+      [], 'orders_payment_queue_counts',
+    ),
+  ]);
+
+  const byState = Object.fromEntries(counts.map((r) => [r.state, r.n]));
+  const orders = rows.map((r) => ({
+    ...toOrder(r),
+    // A LEFT JOIN, so an order survives a party row that is gone. The money
+    // moved; losing the order because an account was deleted would put a hole
+    // in the queue an operator has to work.
+    user: r.user_username
+      ? { userId: r.user_id, username: r.user_username, mobile: r.user_mobile, kycStatus: r.user_kyc_status }
+      : null,
+    merchant: r.merchant_name
+      ? { merchantId: r.merchant_id, name: r.merchant_name, mobile: r.merchant_mobile }
+      : null,
+  }));
+
+  return {
+    orders,
+    grouped: {
+      pending:    orders.filter((o) => o.status === 'PENDING_QUEUE'),
+      assigned:   orders.filter((o) => o.status === 'ASSIGNED'),
+      processing: orders.filter((o) => o.status === 'PROCESSING'),
+      paid:       orders.filter((o) => o.status === 'PAID'),
+      disputed:   orders.filter((o) => o.status === 'DISPUTED'),
+      completed:  orders.filter((o) => o.status === 'COMPLETED'),
+    },
+    // Real depths, over every order — not "how many of the most recent 200".
+    stats: {
+      pending:    byState.PENDING_QUEUE ?? 0,
+      assigned:   byState.ASSIGNED ?? 0,
+      processing: byState.PROCESSING ?? 0,
+      paid:       byState.PAID ?? 0,
+      disputed:   byState.DISPUTED ?? 0,
+      completed:  byState.COMPLETED ?? 0,
+      total:      counts.reduce((sum, r) => sum + r.n, 0),
+      listed:     orders.length,
+    },
+  };
+}
+
 export async function findDueHolds({ limit = 200 } = {}) {
   const { rows } = await pgQuery(
     `SELECT * FROM order_states

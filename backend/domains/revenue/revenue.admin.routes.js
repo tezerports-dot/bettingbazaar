@@ -8,7 +8,7 @@
  * balance, idempotency, the platform-funded-only bonus rule, the
  * distributable-revenue cap) is enforced in the service, never here.
  */
-import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import {
   getTrialBalance,

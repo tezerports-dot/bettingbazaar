@@ -5,7 +5,7 @@
 // Split out of the old backend/routes/admin/queue.admin.routes.js on 2026-07-01 as part
 // of the Merchant+Payment domain migration (BBEPS Phase 004). See backend/domains/README.md.
 
-import { express, mongoose, authenticate, hasPermission, getModels } from '../../routes/admin/_adminShared.js';
+import { express, authenticate, hasPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import { creditDeposit, creditWinnings } from '../wallet/walletAuthority.service.js';
 // The order state machine. Every status change goes through here so an illegal
@@ -20,35 +20,12 @@ const router = express.Router();
 router.get('/payment-queue', authenticate, hasPermission('canViewTransactions'), async (req, res) => {
   try {
     const { status } = req.query;
-    const { PaymentOrder } = getModels();
-    const query = {};
-    if (status && status !== 'all') query.status = status;
-    const orders = await PaymentOrder.find(query)
-      .populate('userId',     'username mobile kycStatus')
-      .populate('merchantId', 'username mobile')
-      .sort({ createdAt: -1 })
-      .limit(200)
-      .lean();
-    const grouped = {
-      pending:    orders.filter(o => o.status === 'PENDING_QUEUE'),
-      assigned:   orders.filter(o => o.status === 'ASSIGNED'),
-      processing: orders.filter(o => o.status === 'PROCESSING'),
-      paid:       orders.filter(o => o.status === 'PAID'),
-      disputed:   orders.filter(o => o.status === 'DISPUTED'),
-      completed:  orders.filter(o => o.status === 'COMPLETED'),
-    };
-    res.json({
-      success: true, orders, grouped,
-      stats: {
-        pending:    grouped.pending.length,
-        assigned:   grouped.assigned.length,
-        processing: grouped.processing.length,
-        paid:       grouped.paid.length,
-        disputed:   grouped.disputed.length,
-        completed:  grouped.completed.length,
-        total:      orders.length,
-      },
-    });
+    // The parties come from a join rather than two populates, and the per-state
+    // counts from the whole table rather than from the capped list. The route
+    // this replaced derived its stats by filtering the 200 rows it had just
+    // fetched, so a queue with 900 pending orders reported 200 and looked calm.
+    const queue = await db.orders.paymentQueue({ state: status, limit: 200 });
+    res.json({ success: true, ...queue });
   } catch (error) {
     console.error('GET /payment-queue error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch Payment queue' });
@@ -63,7 +40,6 @@ router.post('/payment-orders/:orderId/action', authenticate, hasPermission('canR
     if (!['APPROVE', 'REJECT', 'CANCEL'].includes(action)) {
       return res.status(400).json({ success: false, message: 'action must be APPROVE, REJECT, or CANCEL' });
     }
-    const { PaymentOrder } = getModels();
     const order = await db.orders.getOrderRecord(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     if (['COMPLETED', 'CANCELLED'].includes(order.status)) {
@@ -139,8 +115,6 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
     if (!reason?.trim())
       return res.status(400).json({ success: false, message: 'reason is required' });
 
-    const { PaymentOrder } = getModels();
-
     const order = await db.orders.getOrderRecord(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     if (order.status !== 'DISPUTED')
@@ -180,11 +154,18 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
     if (resolution === 'release') {
       // Release: complete the order — credit tokens to user (DEPOSIT) or mark complete (WITHDRAWAL)
       if (order.type === 'DEPOSIT') {
-        await creditDeposit(order.userId, order.tokenAmount, order._id.toString());
+        await creditDeposit(order.userId, order.tokenAmount, String(order.orderId));
       } else {
-        // WITHDRAWAL release: tokens were already locked/debited on order creation
-        // Just mark complete and debit from lockedBalance (already done by escrow)
-        order.escrowLocked = false;
+        // WITHDRAWAL release: the tokens were locked when the order was created
+        // and the escrow already debited them, so completing is all that is
+        // left — but the escrow flag has to be CLEARED IN THE DATABASE.
+        //
+        // The line this replaced assigned `order.escrowLocked = false` on a
+        // plain object and never wrote it back, so every released withdrawal
+        // dispute left the order still marked escrow-locked. The refund branch
+        // below reads that same flag, so a later refund on the same order would
+        // have credited the player a second time for money already released.
+        await db.orders.setOrderFields(order.orderId, { escrowLocked: false });
         await emitWalletUpdate(order.userId);
       }
 
@@ -197,8 +178,8 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
         await debitMerchantTokens({
           merchantId: order.merchantId, amount: order.tokenAmount,
           reason: `Deposit ${order.orderId} released via dispute resolution`,
-          refModel: 'PaymentOrder', refId: order._id.toString(),
-          txId: `mw_dep_deduct_${order._id}`, allowOverdraft: true,
+          refModel: 'PaymentOrder', refId: String(order.orderId),
+          txId: `mw_dep_deduct_${order.orderId}`, allowOverdraft: true,
         }).catch(e => console.error('[dispute resolve] tokenBalance decrement:', e.message));
       }
 
@@ -207,15 +188,22 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
       // tokens have moved but the order does not yet say so.
       Object.assign(order, resolved.order);
 
-      // Merchant stats: success
+      // Merchant statistics, through the one function that owns them. The two
+      // `$inc`s this replaced moved `totalOrdersAll` and `totalOrdersCompleted`
+      // and nothing else — so `successRate`, which is DERIVED from exactly
+      // those two counters, was left describing the pair as they were before
+      // the order it was meant to include. A merchant's success rate drifted
+      // further from its own counters with every dispute resolved.
       if (order.merchantId) {
-        await mongoose.model('Merchant').findByIdAndUpdate(order.merchantId, {
-          $inc: { totalOrdersAll: 1, totalOrdersCompleted: 1 },
+        await db.merchants.recordCompletedOrder(order.merchantId, {
+          direction: order.type,
+          amountRupees: order.tokenAmount,
+          disputed: true,
         });
       }
 
-      emitOrderUpdate(order.userId.toString(), 'order_completed', {
-        orderId:   order.orderId, _id: order._id, status: 'COMPLETED', server_ts: Date.now(),
+      emitOrderUpdate(String(order.userId), 'order_completed', {
+        orderId: order.orderId, _id: order.orderId, status: 'COMPLETED', server_ts: Date.now(),
       });
     } else {
       // Refund: cancel order, refund escrow/tokens
@@ -227,28 +215,41 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
           await creditWinnings(
             order.userId, order.tokenAmount,
             `Admin dispute refund: ${order.orderId}`,
-            'PaymentOrder', order._id, `dispute_refund_${order._id}`
+            'PaymentOrder', order.orderId, `dispute_refund_${order.orderId}`,
           );
-          order.escrowLocked = false;
+          // Cleared in the DATABASE, and AFTER the credit — so a failure
+          // between them leaves an order that still says the escrow is held,
+          // which the keyed credit makes safe to retry. Clearing it first would
+          // leave money locked with nothing recording that it still is.
+          await db.orders.setOrderFields(order.orderId, { escrowLocked: false });
         }
       }
 
       Object.assign(order, resolved.order);
 
-      // Merchant stats: failure
+      // Same owner for the failure side. The `$inc` this replaced also
+      // decremented `activeOrderCount` — a field that does not exist on the
+      // merchant record, so the decrement went nowhere and the counter it was
+      // meant to maintain has always been whatever it started as. Concurrency
+      // is measured from the ORDERS a merchant currently holds, which cannot
+      // drift because there is nothing to keep in step.
       if (order.merchantId) {
-        await mongoose.model('Merchant').findByIdAndUpdate(order.merchantId, {
-          $inc: { totalOrdersAll: 1, activeOrderCount: -1 },
+        await db.merchants.recordCompletedOrder(order.merchantId, {
+          direction: order.type,
+          amountRupees: 0,
+          disputed: true,
         });
       }
 
       await emitWalletUpdate(order.userId);
-      emitOrderUpdate(order.userId.toString(), 'order_update', {
-        orderId:   order.orderId, _id: order._id, status: 'CANCELLED', server_ts: Date.now(),
+      emitOrderUpdate(String(order.userId), 'order_update', {
+        orderId: order.orderId, _id: order.orderId, status: 'CANCELLED', server_ts: Date.now(),
       });
     }
 
-    emitAdminUpdate('queue_order_update', { orderId: order._id, status: order.status, server_ts: Date.now() });
+    emitAdminUpdate('queue_order_update', {
+      orderId: order.orderId, status: order.status, server_ts: Date.now(),
+    });
 
     res.json({ success: true, message: `Dispute resolved: ${resolution}`, order });
   } catch (error) {

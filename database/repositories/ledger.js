@@ -77,11 +77,7 @@ function toMongoShape(event) {
 }
 
 /**
- * Post an accounting event, with Postgres deciding when it owns the ledger.
- *
- * Returns `{ handled: false }` when Mongo is authoritative, which tells
- * revenueSettlement to write the AccountingEvent itself. Anything else is the
- * final answer.
+ * Post an accounting event.
  *
  * `idempotent: true` comes back when the key already exists. That is not an
  * error and must not be turned into one — the reconcilers that call this replay
@@ -109,7 +105,6 @@ export async function recordEventOnPostgres({
   const stored = result.event ?? await pgGetEvent(idempotencyKey);
 
   return {
-    handled: true,
     idempotent: Boolean(result.idempotent),
     event: toMongoShape(stored),
   };
@@ -118,13 +113,14 @@ export async function recordEventOnPostgres({
 /**
  * The trial balance, in the shape `getTrialBalance()` has always returned.
  *
- * Callers (the admin ledger view, the certification report,
- * `trialBalanceCompare`) branch on `integrityOk` and index `accounts` by code,
- * so the Postgres answer is translated into that vocabulary rather than
- * exposing a second one. `ok` there already folds in a check Mongo has no
- * equivalent for — postings against an account that is not in the chart — and
- * that must not be dropped on the way through: an unknown account balances
- * perfectly against nothing anyone can name.
+ * Callers (the admin ledger view, the certification report) branch on
+ * `integrityOk` and index `accounts` by code, so the answer is translated into
+ * that vocabulary rather than exposing a second one.
+ *
+ * `unknownAccounts` is carried through and must not be dropped: a posting
+ * against an account that is not in the chart balances perfectly against
+ * nothing anyone can name, so a ledger can be internally consistent and still
+ * describe money nobody can account for.
  */
 export async function trialBalanceOnPostgres() {
 
@@ -141,7 +137,6 @@ export async function trialBalanceOnPostgres() {
     };
   }
   return {
-    handled: true,
     accounts,
     integrityOk: pg.ok,
     grandTotalMinor: pg.grandTotalPaise,
@@ -151,14 +146,13 @@ export async function trialBalanceOnPostgres() {
 
 /** One account's reported balance in minor units. */
 export async function accountBalanceOnPostgres(accountCode) {
-  return { handled: true, reportedMinor: await pgAccountBalance(accountCode) };
+  return { reportedMinor: await pgAccountBalance(accountCode) };
 }
 
 /** A page of the ledger, in the shape getLedger() returns. */
 export async function getLedgerOnPostgres({ page = 1, limit = 50, eventType = null } = {}) {
   const pg = await pgGetLedger({ page, limit, eventType });
   return {
-    handled: true,
     entries: pg.entries.map(toMongoShape),
     total: pg.total,
     page: pg.page,

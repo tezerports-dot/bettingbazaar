@@ -557,3 +557,83 @@ describePg('Payment orders (PostgreSQL state machine)', () => {
       .rejects.toThrow(/foreign key|violates/i);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The admin payment queue, and the escrow flag a dispute resolution clears.
+// ─────────────────────────────────────────────────────────────────────────────
+import {
+  paymentQueue, setOrderFields, getOrderRecord, createOrderRecord,
+} from '../repositories/orders.record.js';
+
+describePg('the payment queue an operator works', () => {
+  beforeAll(async () => { await applySchema(); });
+  afterAll(async () => { await closePg(); });
+  beforeEach(async () => {
+    await pgQuery('TRUNCATE order_transitions, order_states, users, merchants RESTART IDENTITY CASCADE');
+  });
+
+  const order = (orderId, state, { userId = 'u1', merchantId = null, type = 'DEPOSIT' } = {}) =>
+    pgQuery(
+      `INSERT INTO order_states (order_id, user_id, merchant_id, order_type, state,
+                                 token_amount_paise, fiat_amount_paise)
+       VALUES ($1,$2,$3,$4,$5,100_00,100_00)`,
+      [orderId, userId, merchantId, type, state],
+    );
+
+  it('counts the whole queue, not just the page it returned', async () => {
+    for (let i = 0; i < 7; i += 1) await order(`o-${i}`, 'PENDING_QUEUE');
+    await order('o-done', 'COMPLETED');
+
+    const queue = await paymentQueue({ limit: 3 });
+
+    // The list is capped; the DEPTHS are not. The route this replaced derived
+    // its counts by filtering the capped array, so a queue with 900 pending
+    // orders reported the cap and looked calm.
+    expect(queue.orders).toHaveLength(3);
+    expect(queue.stats.pending).toBe(7);
+    expect(queue.stats.completed).toBe(1);
+    expect(queue.stats.total).toBe(8);
+    expect(queue.stats.listed).toBe(3);
+  });
+
+  it('names both parties in one statement', async () => {
+    await pgQuery(
+      `INSERT INTO users (user_id, username, mobile, referral_code)
+       VALUES ('u1','Asha','9990001111','ASHA1')`, [],
+    );
+    await pgQuery(
+      `INSERT INTO merchants (merchant_id, name, public_ref, mobile, accepted_currencies)
+       VALUES ('m1','Ravi Payments','MER-1','9990002222', ARRAY['INR'])`, [],
+    );
+    await order('o-1', 'ASSIGNED', { userId: 'u1', merchantId: 'm1' });
+
+    const [row] = (await paymentQueue({})).orders;
+    expect(row.user.username).toBe('Asha');
+    expect(row.merchant.name).toBe('Ravi Payments');
+  });
+
+  it('keeps an order whose party rows are gone', async () => {
+    await order('o-orphan', 'DISPUTED', { userId: 'u-deleted', merchantId: 'm-deleted' });
+    const [row] = (await paymentQueue({})).orders;
+    // The money moved. Dropping the order because an account was deleted would
+    // put a hole in the queue an operator has to work.
+    expect(row.orderId).toBe('o-orphan');
+    expect(row.user).toBeNull();
+    expect(row.merchant).toBeNull();
+  });
+
+  it('persists the escrow release, so a later refund cannot pay twice', async () => {
+    await order('o-escrow', 'DISPUTED', { type: 'WITHDRAWAL' });
+    await setOrderFields('o-escrow', { escrowLocked: true });
+    expect((await getOrderRecord('o-escrow')).escrowLocked).toBe(true);
+
+    // What the release branch does. The line this replaced assigned
+    // `order.escrowLocked = false` on a plain object and never wrote it back,
+    // so every released withdrawal dispute left the order still marked
+    // escrow-locked — and the refund branch reads that same flag, so a later
+    // refund on the same order would credit the player for money already
+    // released.
+    await setOrderFields('o-escrow', { escrowLocked: false });
+    expect((await getOrderRecord('o-escrow')).escrowLocked).toBe(false);
+  });
+});
