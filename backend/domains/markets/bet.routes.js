@@ -227,17 +227,25 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
       });
     }
 
-    // ── Read user ONCE to compute the balance split ──────────────────────────
-    // .lean() for speed — we won't save this document, just read current values.
-    const user = await db.users.getUser(userId);
+    // ── The balances come from the WALLET ────────────────────────────────────
+    // This is a MONEY DECISION: it decides whether a stake can be funded, and
+    // the funding plan below executes against `wallets`. Reading it anywhere
+    // else is trap 7 — and reading it off the account is worse than stale,
+    // because that table has no balance columns at all: every figure comes
+    // back undefined, the `|| 0` makes it a confident zero, and no player can
+    // place any bet.
+    const [user, balances] = await Promise.all([
+      db.users.getUser(userId),
+      getBalances(String(userId)),
+    ]);
 
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    const availableDeposit  = user.depositBalance  || 0;
-    const availableWinnings = user.winningsBalance  || 0;
-    const availableReserve  = user.reserveBalance   || 0;
+    const availableDeposit  = balances.depositBalance  || 0;
+    const availableWinnings = balances.winningsBalance || 0;
+    const availableReserve  = balances.reserveBalance  || 0;
     const totalAvailable    = availableDeposit + availableWinnings + availableReserve;
 
     const reservePercent = config?.betReservePercent ?? 1; // schema default: 1

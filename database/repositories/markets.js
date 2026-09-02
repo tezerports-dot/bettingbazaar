@@ -25,9 +25,24 @@
 import { pgQuery } from '../client.js';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
 
+/**
+ * The states a cycle moves through, in order.
+ *
+ * OPEN takes bets · MERGED folds in the phantom pools · CLOSED stops betting ·
+ * RESULT_DECLARED names the winner · COMPLETED settles. PAUSED and CANCELLED
+ * are admin interventions rather than steps.
+ *
+ * This is the ENGINE's vocabulary, not a tidier one: a state the engine uses
+ * and the table refuses is a betting round that stops mid-cycle.
+ */
 export const CYCLE_STATUS = Object.freeze({
-  OPEN: 'OPEN', CLOSED: 'CLOSED', COMPLETED: 'COMPLETED', CANCELLED: 'CANCELLED',
+  OPEN: 'OPEN', MERGED: 'MERGED', CLOSED: 'CLOSED',
+  RESULT_DECLARED: 'RESULT_DECLARED', COMPLETED: 'COMPLETED',
+  PAUSED: 'PAUSED', CANCELLED: 'CANCELLED',
 });
+
+/** The states in which a cycle is still taking or holding live bets. */
+export const LIVE_STATUSES = Object.freeze(['OPEN', 'MERGED', 'CLOSED', 'RESULT_DECLARED']);
 export const SIDES = Object.freeze(['DELHI', 'BOMBAY']);
 
 const COLUMNS = `cycle_id, cycle_type, start_time, end_time, status,
@@ -87,6 +102,55 @@ export async function getOpenCycle(cycleType) {
     [String(cycleType)], 'cycle_get_open',
   );
   return toCycle(rows[0]);
+}
+
+/**
+ * Every cycle still running, across all types — the public "what can I bet on"
+ * read.
+ *
+ * `end_time > now()` as well as the status, because a cycle whose generator
+ * died still reads OPEN and offering it would take bets on a round that will
+ * never settle.
+ */
+export async function listActiveCycles() {
+  const { rows } = await pgQuery(
+    `SELECT ${COLUMNS} FROM cycles
+      WHERE status = ANY($1::text[]) AND end_time > now()
+      ORDER BY cycle_type ASC, start_time ASC`,
+    [['OPEN', 'MERGED']], 'cycle_list_active',
+  );
+  return rows.map(toCycle);
+}
+
+/**
+ * The cycle covering an instant, for a type.
+ *
+ * A two-minute tolerance either side, because the caller's clock and the
+ * server's differ and a page loading on the boundary must still find the round
+ * it is showing. Falls back to the most recent declared result: during the
+ * celebration window the current cycle has completed and the next has not
+ * opened, and returning nothing would blank the page mid-animation.
+ */
+export async function getCycleAt(cycleType, atMs, { toleranceMs = 120_000 } = {}) {
+  const at = new Date(Number(atMs));
+  const { rows } = await pgQuery(
+    `SELECT ${COLUMNS} FROM cycles
+      WHERE cycle_type = $1
+        AND start_time <= $2::timestamptz + ($3 || ' milliseconds')::interval
+        AND end_time   >= $2::timestamptz - ($3 || ' milliseconds')::interval
+        AND status = ANY($4::text[])
+      ORDER BY start_time DESC LIMIT 1`,
+    [String(cycleType), at, String(toleranceMs), LIVE_STATUSES], 'cycle_get_at',
+  );
+  if (rows[0]) return toCycle(rows[0]);
+
+  const { rows: declared } = await pgQuery(
+    `SELECT ${COLUMNS} FROM cycles
+      WHERE cycle_type = $1 AND winner IS NOT NULL
+      ORDER BY end_time DESC LIMIT 1`,
+    [String(cycleType)], 'cycle_get_last_declared',
+  );
+  return toCycle(declared[0]);
 }
 
 /**

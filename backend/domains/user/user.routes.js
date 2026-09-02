@@ -40,7 +40,7 @@ import express from 'express';
 import { db } from '#db';
 import mongoose from 'mongoose';
 import { authenticate } from '../identity/auth.middleware.js';
-import { getUserLedger } from '../wallet/walletAuthority.service.js';
+import { getUserLedger, getBalances } from '../wallet/walletAuthority.service.js';
 // The withdrawal rate limiters (withdrawalLimiter, createSubnetLimiter,
 // globalSurgeBreaker) and the alerting import were removed with the withdrawal
 // routes on 2026-08-24 — they guarded only those. The live P2P withdrawal
@@ -97,13 +97,11 @@ const sanitiseCycleForUser = publicCycleView;
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/cycles/active', async (req, res) => {
   try {
-    const Cycle = mongoose.model('Cycle');
-    const now = Date.now();
-    const cycles = await Cycle.find({
-      status: { $in: ['OPEN', 'MERGED'] },
-      endTime: { $gt: now }
-    }).sort({ type: 1, startTime: 1 }).lean();
-
+    // `end_time > now()` as well as the status. A cycle whose generator died
+    // still reads OPEN, and offering it takes bets on a round that will never
+    // settle — the exact failure that let the engine look healthy while
+    // nothing was being resolved.
+    const cycles = await db.markets.listActiveCycles();
     res.json({ success: true, cycles: cycles.map(sanitiseCycleForUser) });
   } catch (error) {
     console.error('Get active cycles error:', error);
@@ -117,8 +115,7 @@ router.get('/cycles/active', async (req, res) => {
 router.get('/cycles/:cycleId', async (req, res) => {
   try {
     const { cycleId } = req.params;
-    const Cycle = mongoose.model('Cycle');
-    const cycle = await Cycle.findOne({ cycleId }).lean();
+    const cycle = await db.markets.getCycle(cycleId);
     if (!cycle) return res.status(404).json({ success: false, message: 'Cycle not found' });
     res.json({ success: true, cycle: sanitiseCycleForUser(cycle) });
   } catch (error) {
@@ -134,26 +131,14 @@ router.get('/cycles/:cycleId', async (req, res) => {
 router.get('/v1/game/cycle/:type/:startTime', async (req, res) => {
   try {
     const { type, startTime } = req.params;
-    const startMs = parseInt(startTime);
-    const Cycle = mongoose.model('Cycle');
+    const startMs = parseInt(startTime, 10);
 
-    // Primary: find an active cycle that overlaps the requested start time
-    let cycle = await Cycle.findOne({
-      type,
-      startTime: { $lte: startMs + 120000 },
-      endTime:   { $gte: startMs - 120000 },
-      status:    { $in: ['OPEN', 'MERGED', 'CLOSED', 'RESULT_DECLARED'] }
-    }).sort({ startTime: -1 }).lean();
-
-    // Fallback: for hard page-loads during the 12s celebration lock, the active
-    // cycle query above returns nothing (cycle just completed). Return the last
-    // RESULT_DECLARED cycle so the page still shows the winner while celebrating.
-    
-    if (!cycle) {
-      cycle = await Cycle.findOne({ type, status: 'RESULT_DECLARED' })
-        .sort({ endTime: -1 })
-        .lean();
-    }
+    // The tolerance and the celebration-window fallback both live in the
+    // repository now: a page loading on a cycle boundary must still find the
+    // round it is showing, and during the celebration the current cycle has
+    // completed while the next has not opened — returning nothing there blanks
+    // the page mid-animation.
+    const cycle = await db.markets.getCycleAt(type, startMs);
 
     if (!cycle) return res.status(404).json({ success: false, message: 'Cycle not found' });
     res.json({ success: true, cycle: sanitiseCycleForUser(cycle) });
@@ -258,30 +243,32 @@ router.get('/v1/user/:id/data', authenticate, async (req, res) => {
     const User = mongoose.model('User');
     const Bet  = mongoose.model('Bet');
 
-    const [user, recentBets] = await Promise.all([
+    // The balances come from the WALLET, not the account. The accounts table
+    // has no balance columns — they live in `wallets`, behind the row lock
+    // every movement takes — so reading them off the account returns undefined
+    // for all of them and shows the player zero.
+    const [user, balances, recentBets] = await Promise.all([
       db.users.getUser(id),
-      Bet.find({ userId: new mongoose.Types.ObjectId(id), isPhantom: false })
-        .sort({ timestamp: -1 })
-        .limit(50)
-        .lean()
+      getBalances(String(id)),
+      db.bets.getBetHistory(id, { limit: 50, includePhantom: false }),
     ]);
 
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    const depositBalance  = user.depositBalance  || 0;
-    const winningsBalance = user.winningsBalance || 0;
-    const lockedBalance   = user.lockedBalance   || 0;
-    const walletBalance   = depositBalance + winningsBalance; // BUG-U6 fix
+    const depositBalance  = balances.depositBalance  || 0;
+    const winningsBalance = balances.winningsBalance || 0;
+    const lockedBalance   = balances.lockedBalance   || 0;
+    const walletBalance   = depositBalance + winningsBalance;
 
     const normalizedBets = recentBets.map(b => ({
-      id:        b._id,
+      id:        b.betId,
       cycleId:   b.cycleId,
       side:      b.side,
       amount:    b.amount,
       status:    b.status,
       payout:    b.payout    || 0,
       cycleType: b.cycleType || null,
-      timestamp: b.timestamp
+      timestamp: b.placedAt,
     }));
 
     // history = last 20 cycle IDs the user bet in (for LiveTicker dots)
@@ -465,13 +452,14 @@ router.get('/user/bet-limits', authenticate, async (req, res) => {
     const { computeMaxStake } = await import('../risk/riskValidation.service.js');
     const { getRiskRules } = await import('../risk/riskValidation.service.js');
 
-    const User = mongoose.model('User');
-    const user = await db.users.getUser(req.user.userId);
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    // From the WALLET. This computes the maximum stake the panel OFFERS, so a
+    // balance read that comes back empty does not merely display wrong — it
+    // shows the player a ceiling of zero and they cannot bet at all.
+    const balances = await getBalances(String(req.user.userId));
 
-    const deposit  = user.depositBalance  || 0;
-    const winnings = user.winningsBalance || 0;
-    const reserve  = user.reserveBalance  || 0;
+    const deposit  = balances.depositBalance  || 0;
+    const winnings = balances.winningsBalance || 0;
+    const reserve  = balances.reserveBalance  || 0;
     const { betReservePercent } = await getRiskRules();
 
     const { maxStake } = computeMaxStake({
@@ -487,7 +475,7 @@ router.get('/user/bet-limits', authenticate, async (req, res) => {
     return res.json({
       success: true,
       deposit, winnings, reserve,
-      locked: user.lockedBalance || 0,
+      locked: balances.lockedBalance || 0,
       total: totalMinor / 100,
       maxStake,
       reservePercent: betReservePercent,
@@ -890,18 +878,22 @@ export default router;
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/v1/user/profile', authenticate, async (req, res) => {
   try {
-    const User = mongoose.model('User');
-    const user = await db.users.getUser(req.user.userId);
+    // The wallet page reads this for the balance it shows. From `wallets`, not
+    // the account — the accounts table has no balance columns.
+    const [user, balances] = await Promise.all([
+      db.users.getUser(req.user.userId),
+      getBalances(String(req.user.userId)),
+    ]);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     res.json({
       success: true,
       user: {
-        id:               user._id,
+        id:               user.userId,
         username:         user.username,
         mobile:           user.mobile,
-        depositBalance:   user.depositBalance  || 0,
-        winningsBalance:  user.winningsBalance || 0,
-        lockedBalance:    user.lockedBalance   || 0,
+        depositBalance:   balances.depositBalance  || 0,
+        winningsBalance:  balances.winningsBalance || 0,
+        lockedBalance:    balances.lockedBalance   || 0,
         kycStatus:        user.kycStatus,
         bankDetails:      user.bankDetails     || null,
         profilePic:       user.profilePic      || null,

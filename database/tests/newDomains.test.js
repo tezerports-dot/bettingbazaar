@@ -59,6 +59,54 @@ describePg('the domains written from scratch', () => {
       expect(a.cycle.cycleId).toBe(b.cycle.cycleId);
     });
 
+    it('accepts every status the ENGINE uses, not a tidier subset', async () => {
+      // The first draft of the CHECK declared four states. The engine moves a
+      // cycle through seven — a cycle it moved to MERGED would have been
+      // refused by the row, which is a betting round that stops mid-cycle.
+      await makeCycle();
+      for (const status of ['MERGED', 'CLOSED', 'PAUSED']) {
+        await pgQuery('UPDATE cycles SET status = $2 WHERE cycle_id = $1', [`c-${ID}`, status]);
+        expect((await markets.getCycle(`c-${ID}`)).status).toBe(status);
+      }
+      await expect(pgQuery('UPDATE cycles SET status = $2 WHERE cycle_id = $1', [`c-${ID}`, 'SETTLING']))
+        .rejects.toThrow(/cycles_status_known/);
+    });
+
+    it('refuses RESULT_DECLARED without a result, as well as COMPLETED', async () => {
+      // Both states claim the result is in. Neither may claim it without one.
+      await makeCycle();
+      await expect(pgQuery(
+        `UPDATE cycles SET status = 'RESULT_DECLARED' WHERE cycle_id = $1`, [`c-${ID}`],
+      )).rejects.toThrow(/cycles_completed_has_winner/);
+    });
+
+    it('lists only cycles that are still running', async () => {
+      // A cycle whose generator died still reads OPEN. Offering it takes bets
+      // on a round that will never settle — which is how the engine looked
+      // healthy while nothing was being resolved.
+      const start = new Date(Date.now() - 7200_000);
+      await markets.ensureCycle({
+        cycleId: `c-${ID}-dead`, cycleType: '1_MIN',
+        startTime: start, endTime: new Date(start.getTime() + 60_000),
+      });
+      const active = (await markets.listActiveCycles()).map((c) => c.cycleId);
+      expect(active).not.toContain(`c-${ID}-dead`);
+    });
+
+    it('finds the cycle covering an instant, and falls back to the last result', async () => {
+      const cycle = await makeCycle();
+      const midpoint = new Date(cycle.startTime).getTime() + 30_000;
+      expect((await markets.getCycleAt('30_MIN', midpoint)).cycleId).toBe(`c-${ID}`);
+
+      // Outside every live window: during the celebration the current cycle
+      // has completed and the next has not opened, so returning nothing would
+      // blank the page mid-animation.
+      await markets.declareWinner(`c-${ID}`, 'DELHI');
+      const far = await markets.getCycleAt('30_MIN', Date.now() + 86_400_000);
+      expect(far).not.toBeNull();
+      expect(far.winner).not.toBeNull();
+    });
+
     it('writes the winner and the status in ONE statement', async () => {
       await makeCycle();
       const r = await markets.declareWinner(`c-${ID}`, 'DELHI', { by: 'engine', confidence: 0.9 });

@@ -40,7 +40,24 @@ const READ = new RegExp(`\\.(${BALANCE_FIELDS.join('|')})\\b`);
  * the write will lock. `getBalances`, `getBalancesPaise`, `getBalancesRupees`
  * and the walletPg/walletAuthority modules are the sanctioned sources.
  */
-const SAFE_SOURCE = /getBalances|walletPg|walletAuthority|merchantWalletPg|getAvailablePaise/;
+const SAFE_SOURCE = /getBalances|walletPg|walletAuthority|merchantWalletPg|getAvailablePaise|wallets\.js/;
+
+/**
+ * Sources that CANNOT carry a balance, whatever the read looks like.
+ *
+ * `users` and `merchants` have no balance columns — the money lives in
+ * `wallets` and `merchant_wallets`, behind the row lock every movement takes.
+ * So a balance read off one of these objects is not stale, which is what the
+ * display/decision split is about; it is ALWAYS `undefined`, and the `|| 0`
+ * beside it turns that into a confident zero.
+ *
+ * That is a worse failure than staleness and this audit did not catch it. Four
+ * of them were introduced in one pass while moving call sites onto the
+ * repositories, including the wallet page, the maximum-stake calculation a
+ * player is offered, and the balance pushed to a winner at the moment they are
+ * paid. Every one showed zero.
+ */
+const EMPTY_SOURCE = /\b(?:db\.users\.getUser|db\.merchants\.getMerchant|getUser|getMerchant)\s*\(/;
 
 /**
  * Verbs that mean the number is about to gate something.
@@ -81,8 +98,11 @@ for (const rel of walk(join(ROOT, 'backend'))) {
     // that produced the object being read, not the read itself.
     const context = lines.slice(Math.max(0, i - 6), i + 1).join('\n');
     const safe = SAFE_SOURCE.test(context);
-    const decision = DECISION_HINT.test(text);
-    findings.push({ file: rel, line: i + 1, text: text.trim(), safe, decision });
+    // A read from a source that HAS no balance columns is always empty, never
+    // merely stale — so it is fatal whether or not it gates money.
+    const empty = !safe && EMPTY_SOURCE.test(context);
+    const decision = DECISION_HINT.test(text) || empty;
+    findings.push({ file: rel, line: i + 1, text: text.trim(), safe, decision, empty });
   });
 }
 
@@ -99,11 +119,16 @@ console.log(`  ${findings.length} total`);
 console.log(`  ${safe.length} read from the wallet (sanctioned)`);
 console.log(`  ${unsafeDisplay.length} display reads not from the wallet`);
 console.log(`  ${unsafeDecisions.length} DECISION reads not from the wallet\n`);
+const alwaysEmpty = findings.filter((f) => f.empty);
+if (alwaysEmpty.length) {
+  console.log(`  ${alwaysEmpty.length} of those read from a table with NO balance columns —`);
+  console.log('  they return undefined, and the `|| 0` beside them shows a confident zero.\n');
+}
 
 const show = onlyDecisions ? unsafeDecisions : [...unsafeDecisions, ...unsafeDisplay];
 if (list || onlyDecisions) {
   for (const f of show) {
-    console.log(`${f.decision ? 'DECISION' : 'display '} ${f.file}:${f.line}`);
+    console.log(`${f.empty ? 'ALWAYS-0' : f.decision ? 'DECISION' : 'display '} ${f.file}:${f.line}`);
     console.log(`         ${f.text.slice(0, 120)}`);
   }
 } else {

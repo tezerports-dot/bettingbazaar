@@ -21,6 +21,7 @@
  *   • `/me`, `/logout`, `/health` — used by every panel on every page load.
  */
 import express     from 'express';
+import { getBalances } from './domains/wallet/walletAuthority.service.js';
 import { db } from '#db';
 // AQ-2: sign/verify via the single PASETO authority (PASETO/Ed25519, iss/aud stamped).
 import { signToken, verifyJwt, decodeTokenClaims } from './domains/identity/jwt.util.js';
@@ -259,23 +260,26 @@ router.get('/me', async (req, res) => {
       return res.status(401).json({ success: false, message: 'Token invalidated. Please login again.' });
     }
 
-    const User = mongoose.model('User');
+    // The balances come from the WALLET. The accounts table has no balance
+    // columns, so reading them there returns undefined for every one and the
+    // session-check endpoint hands the panel a zero wallet on every page load.
     const user = await db.users.getUser(decoded.userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
     if (user.isBlocked || user.status === 'BLOCKED')
       return res.status(403).json({ success: false, message: 'Account blocked' });
 
-    const dep = user.depositBalance  || 0;
-    const win = user.winningsBalance || 0;
+    const balances = await getBalances(String(decoded.userId));
+    const dep = balances.depositBalance  || 0;
+    const win = balances.winningsBalance || 0;
     res.json({
       success: true,
       user: {
-        id: user._id, _id: user._id, username: user.username, mobile: user.mobile,
+        id: user.userId, _id: user.userId, username: user.username, mobile: user.mobile,
         role: decoded.role, isAdmin: user.isAdmin || false, isSubAdmin: user.isSubAdmin || false,
         isQueueManager: user.isQueueManager || false, permissions: user.subAdminPermissions || {},
-        depositBalance: dep, winningsBalance: win, lockedBalance: user.lockedBalance || 0,
-        reserveBalance: user.reserveBalance || 0,
+        depositBalance: dep, winningsBalance: win, lockedBalance: balances.lockedBalance || 0,
+        reserveBalance: balances.reserveBalance || 0,
         walletBalance: dep + win, kycStatus: user.kycStatus,
         kycData: buildPublicKycData(user),
         bankDetails: user.bankDetails || null, profilePic: user.profilePic || '',

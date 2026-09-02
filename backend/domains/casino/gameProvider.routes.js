@@ -14,6 +14,8 @@
  *  4. Provider calls our webhook on every bet/win → we debit/credit user wallet
  */
 import express from 'express';
+// Balances go to a third-party provider. They come from the wallet.
+import { getBalances } from '../wallet/walletAuthority.service.js';
 import { db } from '#db';
 import { debitForGameProviderBet, creditWinnings, refundOrder } from '../wallet/walletAuthority.service.js';
 // Domain 9's resolver. When Postgres owns the path the round's running totals
@@ -120,8 +122,11 @@ router.post('/launch', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Provider is not fully configured' });
     }
 
-    const user = await db.users.getUser(req.user.userId);
-    const balance = (user.depositBalance || 0) + (user.winningsBalance || 0);
+    // From the WALLET. This is the balance handed to a third-party provider as
+    // the player's starting figure — a zero here does not merely display
+    // wrong, it tells the provider the player cannot stake anything.
+    const balances = await getBalances(String(req.user.userId));
+    const balance = (balances.depositBalance || 0) + (balances.winningsBalance || 0);
     const sessionId = crypto.randomUUID();
     const expiresAt = new Date(Date.now() + 4 * 3600000); // 4h
 
@@ -262,14 +267,18 @@ router.post('/wallet/:providerKey', async (req, res) => {
     if (dup) {
       // `.lean()` yields null for a since-deleted player; dereferencing it here
       // turned a benign replay into a 500.
-      const prior = await db.users.getUser(dup.userId);
+      const prior = await getBalances(String(dup.userId));
       return res.json({ success: true, balance: prior?.depositBalance || 0 });
     }
 
     const user = await db.users.getUser(userId);
     if (!user) return res.status(404).json({ success: false, message: 'Player not found' });
 
-    const balance = (user.depositBalance || 0) + (user.winningsBalance || 0);
+    // The balance the provider is told, and the one recorded as `balanceBefore`
+    // on the transaction below — both from the wallet, so the audit trail says
+    // what the money actually was.
+    const balancesBefore = await getBalances(String(userId));
+    const balance = (balancesBefore.depositBalance || 0) + (balancesBefore.winningsBalance || 0);
 
     // ── The resolver, asked once ─────────────────────────────────────────
     // Returns handled:false while Mongo owns the path, and the branch below
@@ -345,8 +354,8 @@ router.post('/wallet/:providerKey', async (req, res) => {
       await refundOrder(userId, amount, roundId, 'depositBalance');
     }
 
-    const updatedUser  = await db.users.getUser(userId);
-    const newBalance   = (updatedUser.depositBalance || 0) + (updatedUser.winningsBalance || 0);
+    const after      = await getBalances(String(userId));
+    const newBalance = (after.depositBalance || 0) + (after.winningsBalance || 0);
 
     await GameTransaction.create({
       roundId, txId, sessionId: body.sessionId || '', userId,

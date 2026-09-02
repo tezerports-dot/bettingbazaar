@@ -1531,13 +1531,26 @@ CREATE TABLE IF NOT EXISTS cycles (
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
 
   CONSTRAINT cycles_type_known   CHECK (cycle_type IN ('1_MIN', '30_MIN', 'FULL_DAY')),
-  CONSTRAINT cycles_status_known CHECK (status IN ('OPEN', 'CLOSED', 'COMPLETED', 'CANCELLED')),
+  -- The seven states the engine actually uses, in the order it moves through
+  -- them: OPEN takes bets, MERGED folds in the phantom pools, CLOSED stops
+  -- betting, RESULT_DECLARED names the winner, COMPLETED settles. PAUSED and
+  -- CANCELLED are the admin interventions.
+  --
+  -- The first draft of this constraint declared four of them. A cycle the
+  -- engine moved to MERGED would have been refused by the row, which is a
+  -- betting round that stops mid-cycle — the vocabulary has to be the engine's,
+  -- not a tidier one.
+  CONSTRAINT cycles_status_known CHECK (status IN (
+    'OPEN', 'MERGED', 'CLOSED', 'RESULT_DECLARED', 'COMPLETED', 'PAUSED', 'CANCELLED')),
   CONSTRAINT cycles_side_known   CHECK (winner IS NULL OR winner IN ('DELHI', 'BOMBAY')),
   CONSTRAINT cycles_pending_side_known CHECK (pending_result IS NULL OR pending_result IN ('DELHI', 'BOMBAY')),
   CONSTRAINT cycles_window_ordered CHECK (end_time > start_time),
   -- Rules 2 and 3. A completed cycle HAS a winner; an unsettled one has not
   -- paid anything out.
-  CONSTRAINT cycles_completed_has_winner CHECK (status <> 'COMPLETED' OR winner IS NOT NULL),
+  -- A cycle cannot say the result is in without saying what it is. Covers both
+  -- states that make that claim.
+  CONSTRAINT cycles_completed_has_winner CHECK (
+    status NOT IN ('COMPLETED', 'RESULT_DECLARED') OR winner IS NOT NULL),
   CONSTRAINT cycles_settled_has_winner   CHECK (NOT is_settled OR winner IS NOT NULL),
   CONSTRAINT cycles_unsettled_paid_nothing CHECK (is_settled OR total_paid_out_paise = 0),
   CONSTRAINT cycles_phantom_non_negative CHECK (
@@ -1545,6 +1558,22 @@ CREATE TABLE IF NOT EXISTS cycles (
 );
 -- One cycle per type per start instant. Two generators waking together must
 -- produce one cycle, and the index is what decides rather than a pre-read.
+-- The two constraints above are also applied as ALTERs, because a CHECK written
+-- inside `CREATE TABLE IF NOT EXISTS` is skipped entirely on a database where
+-- the table already exists — so widening the status vocabulary would have
+-- reached a fresh install and no other. Every constraint whose definition
+-- CHANGES needs this shape; a new one on a new table does not.
+DO $$ BEGIN
+  ALTER TABLE cycles DROP CONSTRAINT IF EXISTS cycles_status_known;
+  ALTER TABLE cycles ADD CONSTRAINT cycles_status_known CHECK (status IN (
+    'OPEN', 'MERGED', 'CLOSED', 'RESULT_DECLARED', 'COMPLETED', 'PAUSED', 'CANCELLED'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE cycles DROP CONSTRAINT IF EXISTS cycles_completed_has_winner;
+  ALTER TABLE cycles ADD CONSTRAINT cycles_completed_has_winner CHECK (
+    status NOT IN ('COMPLETED', 'RESULT_DECLARED') OR winner IS NOT NULL);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
 CREATE UNIQUE INDEX IF NOT EXISTS cycles_type_start_unique ON cycles (cycle_type, start_time);
 CREATE INDEX IF NOT EXISTS cycles_open_idx   ON cycles (cycle_type, status, end_time);
 CREATE INDEX IF NOT EXISTS cycles_recent_idx ON cycles (cycle_type, start_time DESC);

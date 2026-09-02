@@ -21,6 +21,8 @@ import { beginSettlement, finishSettlement } from '#db/repositories/settlements.
 // a while; settlement wrote Bet.status directly here and in settlementService,
 // which left half the lifecycle authoritative in each store.
 import { settleBetOnPostgres } from '#db/repositories/bets.js';
+// Balances come from the wallet. The accounts table has none.
+import { getBalances } from '../wallet/walletAuthority.service.js';
 // unlockLostBet and executeSettlementBatch moved to domains/settlement/ on 2026-07-03.
 // processPayoutsOptimized stays here as the orchestrator -- see domains/settlement/README.md.
 
@@ -440,14 +442,15 @@ class GameEngine {
 
         if (paidWinners.length > 0 && this.io) {
             try {
-                const winnerIds   = paidWinners.map(w => w.userId);
-                const freshUsers  = await User.find({ _id: { $in: winnerIds } })
-                                              .select('winningsBalance depositBalance lockedBalance')
-                                              .lean();
-
-                const balanceMap  = {};
-                for (const u of freshUsers) {
-                    balanceMap[u._id.toString()] = u;
+                // From the WALLET, one read per winner. The accounts table has
+                // no balance columns — reading them there returns undefined for
+                // every winner and pushes ZERO to a player who has just been
+                // paid, which is the single worst moment to show a wrong
+                // number.
+                const winnerIds  = [...new Set(paidWinners.map(w => String(w.userId)))];
+                const balanceMap = {};
+                for (const uid of winnerIds) {
+                    balanceMap[uid] = await getBalances(uid);
                 }
 
                 // Fresh balances are embedded, so winners do not need to poll an API.

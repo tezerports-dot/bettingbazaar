@@ -2,6 +2,8 @@
 
 
 import { db } from '#db';
+// The wallet is the only place a balance is read from. See sseBalancePush.
+import { getBalances } from '#db/repositories/wallets.js';
 
 // ─── WALLET UPDATE ─────────────────────────────────────────────────────────────
 /**
@@ -24,7 +26,11 @@ export async function emitWalletUpdate(userId, balanceOverride = null) {
         timestamp: Date.now(),
       };
     } else {
-      const fresh = await db.users.getUser(userId);
+      // From the WALLET. The accounts table has no balance columns — they live
+      // in `wallets`, behind the row lock every movement takes — so reading
+      // them off an account object returns undefined for all four and pushes
+      // ZERO to a player whose money is fine.
+      const fresh = await getBalances(String(userId));
       if (!fresh) return;
       payload = {
         depositBalance:  fresh.depositBalance  || 0,
