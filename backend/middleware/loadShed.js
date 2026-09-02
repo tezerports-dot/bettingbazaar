@@ -63,7 +63,6 @@ let refreshTimer = null;
 /** Pull SystemConfig.loadShedding over the env/defaults. Safe before DB is up. */
 async function refreshConfig() {
   try {
-    const mongoose = (await import('mongoose')).default;
     const doc = await getSystemConfig();
     const s = doc?.loadShedding;
     if (s) {
@@ -73,7 +72,7 @@ async function refreshConfig() {
         maxEventLoopLagMs: Number.isFinite(s.maxEventLoopLagMs) && s.maxEventLoopLagMs >= 0 ? s.maxEventLoopLagMs : DEFAULTS.maxEventLoopLagMs,
       };
     }
-  } catch { /* DB not ready / model absent — keep current cfg (env+defaults) */ }
+  } catch { /* DB not ready — keep current cfg (env + defaults) */ }
 }
 
 /** Start the periodic config refresh. Called once from server startup. */

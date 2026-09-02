@@ -2468,6 +2468,13 @@ SELECT setval('joining_number_seq', GREATEST(
 -- Added as ALTERs rather than folded into the CREATE so the lifecycle tables
 -- and their 19 tested functions keep their shape. Money is integer paise
 -- throughout, like everywhere else.
+-- Tamper evidence: an HMAC over the order id under a server-held secret, so a
+-- guessed or forged order id cannot be presented as a real order. Written at
+-- creation and never updated — a re-signed order is exactly what the tag exists
+-- to detect. The scheme (middleware/order-crypto-access.js) accepts retained
+-- rotation secrets on verify, so rotating the key never 403s an in-flight order.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS order_hmac TEXT;
+
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'INR';
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS rate_used NUMERIC(18, 6);
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS merchant_profit_paise BIGINT NOT NULL DEFAULT 0;

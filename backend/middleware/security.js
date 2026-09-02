@@ -1,6 +1,6 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
-import { AuditLog } from '../models/index.js';
+import { db } from '#db';
 // F-3 (2026-07-10): counters shared across instances via Redis; graceful
 // per-instance fallback when Redis is absent/unreachable.
 import { createRateLimitStore } from './redisRateLimitStore.js';
@@ -40,13 +40,12 @@ export const authLimiter = rateLimit({
         });
         
         // Log to audit trail
-        AuditLog.create({
+        db.audit.record({
             adminId: 'SYSTEM_SECURITY',
             action: 'RATE_LIMIT_EXCEEDED',
-            details: `Too many auth attempts from ${req.ip} to ${req.path}`,
+            details: { message: `Too many auth attempts from ${req.ip} to ${req.path}` },
             ip: req.ip,
-            timestamp: new Date()
-        }).catch(console.error);
+        });
         
         res.status(429).json({
             success: false,
@@ -76,13 +75,12 @@ export const adminAuthLimiter = rateLimit({
             timestamp: new Date().toISOString()
         });
         
-        AuditLog.create({
+        db.audit.record({
             adminId: 'SYSTEM_SECURITY',
             action: 'ADMIN_RATE_LIMIT_EXCEEDED',
-            details: `Multiple failed admin login attempts from ${req.ip}`,
+            details: { message: `Multiple failed admin login attempts from ${req.ip}` },
             ip: req.ip,
-            timestamp: new Date()
-        }).catch(console.error);
+        });
         
         res.status(429).json({
             success: false,
@@ -115,12 +113,12 @@ export const merchantAuthLimiter = rateLimit({
         console.error('🚨 SECURITY ALERT: Merchant auth rate limit exceeded', {
             ip: req.ip, path: req.path, timestamp: new Date().toISOString(),
         });
-        AuditLog.create({
+        db.audit.record({
             adminId: 'SYSTEM_SECURITY',
             action: 'MERCHANT_RATE_LIMIT_EXCEEDED',
-            details: `Multiple failed merchant login attempts from ${req.ip}`,
-            ip: req.ip, timestamp: new Date(),
-        }).catch(console.error);
+            details: { message: `Multiple failed merchant login attempts from ${req.ip}` },
+            ip: req.ip,
+        });
         res.status(429).json({
             success: false,
             message: "Too many failed merchant login attempts. Please try again in an hour.",
@@ -155,12 +153,18 @@ export const twoFactorLimiter = rateLimit({
         console.error('🚨 SECURITY ALERT: 2FA code rate limit exceeded — possible account takeover in progress', {
             ip: req.ip, userId: req.user?.id, path: req.path, timestamp: new Date().toISOString(),
         });
-        AuditLog.create({
+        db.audit.record({
             adminId: 'SYSTEM_SECURITY',
             action: 'TWO_FACTOR_RATE_LIMIT_EXCEEDED',
-            details: `Repeated invalid 2FA codes from ${req.ip} for account ${req.user?.id || req.body?.mobile || 'unknown'} — password already accepted`,
-            ip: req.ip, timestamp: new Date(),
-        }).catch(console.error);
+            // The account is a FIELD. A takeover investigation asks "which
+            // accounts saw repeated 2FA failures", and that is a query over a
+            // column rather than a substring hunt through prose.
+            details: {
+                message: `Repeated invalid 2FA codes from ${req.ip} — password already accepted`,
+                account: req.user?.id || req.body?.mobile || null,
+            },
+            ip: req.ip,
+        });
         res.status(429).json({
             success: false,
             message: "Too many incorrect authentication codes. Please wait before trying again.",
@@ -240,20 +244,23 @@ export const securityMonitor = async (req, res, next) => {
         // Log all failed authentication/authorization attempts
         if (res.statusCode >= 400) {
             if (res.statusCode === 401 || res.statusCode === 403) {
-                const logData = {
-                    adminId: 'SYSTEM_WATCHDOG',
-                    action: 'SECURITY_VIOLATION_ATTEMPT',
-                    details: `Blocked ${req.method} request to ${req.originalUrl} from IP ${req.ip}`,
-                    ip: req.ip,
-                    timestamp: new Date()
+                const details = {
+                    message: `Blocked ${req.method} request to ${req.originalUrl} from IP ${req.ip}`,
+                    method: req.method,
+                    path: req.originalUrl,
+                    statusCode: res.statusCode,
                 };
-                
-                // Add extra context for critical endpoints
+
+                // Extra context for critical endpoints. As a FIELD, not appended
+                // to a string: `details` is JSONB, so a security review can
+                // filter on the mobile a burst of 401s was aimed at instead of
+                // pattern-matching it back out of prose.
                 if (req.path.includes('/admin') || req.path.includes('/login')) {
-                    logData.details += ` | Mobile: ${req.body?.mobile || 'N/A'}`;
+                    details.mobile = req.body?.mobile ?? null;
                 }
-                
-                AuditLog.create(logData).catch(console.error);
+
+                db.audit.record({ adminId: 'SYSTEM_WATCHDOG',
+                    action: 'SECURITY_VIOLATION_ATTEMPT', details, ip: req.ip });
             }
         }
         

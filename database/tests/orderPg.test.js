@@ -20,6 +20,7 @@ import {
   reassign, findOrdersMissingLedgerEvents, findLedgerEventsMissingOrders,
 } from '../repositories/orders.core.js';
 import { trialBalance, accountBalancePaise, getEvent } from '../repositories/ledger.core.js';
+import { verifyOrderHmac } from '../../backend/middleware/order-crypto-access.js';
 
 const hasPg = pgConfigured();
 const describePg = hasPg ? describe : describe.skip;
@@ -87,6 +88,49 @@ describePg('Payment orders (PostgreSQL state machine)', () => {
       expect((await getOrder('o3')).merchantId).toBe('m9');
     });
   });
+
+    it('signs a new order with its tamper-evidence tag, in the same statement', async () => {
+      // The suite runs with no secret configured, which is the deployment the
+      // tag has to degrade gracefully for — so the tests that check SIGNING
+      // supply one, and the rest prove creation still works without it.
+      process.env.ORDER_HMAC_SECRET = 'test-order-secret';
+      const { order } = await open('ORD-HMAC-1');
+      // Written WITH the row. Signing afterwards leaves a window in which an
+      // order exists unsigned, and an unsigned order cannot be told apart from
+      // one whose tag was stripped — the only thing the tag is for.
+      expect(order.orderHmac).toMatch(/^[a-f0-9]{64}$/);
+      expect(verifyOrderHmac('ORD-HMAC-1', order.orderHmac)).toBe(true);
+    });
+
+    it('gives two orders different tags, so one cannot be replayed as another', async () => {
+      process.env.ORDER_HMAC_SECRET = 'test-order-secret';
+      const a = await open('ORD-HMAC-A');
+      const b = await open('ORD-HMAC-B');
+      expect(a.order.orderHmac).not.toBe(b.order.orderHmac);
+      expect(verifyOrderHmac('ORD-HMAC-A', b.order.orderHmac)).toBe(false);
+    });
+
+    it('keeps the tag the order was created with across a transition', async () => {
+      process.env.ORDER_HMAC_SECRET = 'test-order-secret';
+      const { order } = await open('ORD-HMAC-2');
+      await transition({ orderId: 'ORD-HMAC-2', to: 'ASSIGNED', txId: 'tx-hmac-2' });
+      const after = await getOrder('ORD-HMAC-2');
+      // A re-signed order is exactly what the tag exists to detect, so nothing
+      // in the lifecycle may rewrite it.
+      expect(after.orderHmac).toBe(order.orderHmac);
+      delete process.env.ORDER_HMAC_SECRET;
+    });
+
+    it('creates an order with no tag when no secret is configured', async () => {
+      delete process.env.ORDER_HMAC_SECRET;
+      const before = process.env.JWT_SECRET;
+      delete process.env.JWT_SECRET;
+      // The tag is OPTIONAL. Throwing here would take down order creation — the
+      // money path — over a missing key for a detection control.
+      const { order } = await open('ORD-HMAC-NONE');
+      expect(order.orderHmac).toBeNull();
+      if (before !== undefined) process.env.JWT_SECRET = before;
+    });
 
   // ── The guard ──────────────────────────────────────────────────────────────
   describe('state guard', () => {

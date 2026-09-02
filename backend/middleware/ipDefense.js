@@ -72,7 +72,6 @@ let refreshTimer = null;
 
 async function refreshConfig() {
   try {
-    const mongoose = (await import('mongoose')).default;
     const doc = await getSystemConfig();
     const s = doc?.ipDefense;
     if (s) {

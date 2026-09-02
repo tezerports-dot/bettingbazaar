@@ -42,6 +42,7 @@
  */
 import { getPool, pgQuery, connectGuarded } from '../client.js';
 import { EVENT_TYPES } from '../../backend/domains/revenue/chartOfAccounts.js';
+import { deriveOrderHmac } from '../../backend/middleware/order-crypto-access.js';
 
 export const ORDER_STATES = Object.freeze({
   PENDING_QUEUE: 'PENDING_QUEUE',
@@ -207,6 +208,10 @@ function rowToOrder(row) {
     state:      row.state,
     tokenAmountPaise: toPaise(row.token_amount_paise),
     fiatAmountPaise:  toPaise(row.fiat_amount_paise),
+    // The tamper-evidence tag, for the guard that checks it. Null on orders
+    // created before the column existed; a guard that refused those would lock
+    // their owners out of their own money.
+    orderHmac:  row.order_hmac ?? null,
     createdAt:  row.created_at,
     updatedAt:  row.updated_at,
   };
@@ -286,14 +291,19 @@ export async function openOrder({
     throw new TypeError(`openOrder: tokenAmountPaise must be a positive integer, got ${tokenAmountPaise}`);
   }
 
+  // The tamper-evidence tag is written WITH the row, in the same statement.
+  // Signing it afterwards would leave a window in which an order exists
+  // unsigned, and an unsigned order is indistinguishable from one whose tag was
+  // stripped — which is the only thing the tag is for.
   const { rows } = await pgQuery(
     `INSERT INTO order_states
-       (order_id, user_id, merchant_id, order_type, state, token_amount_paise, fiat_amount_paise)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)
+       (order_id, user_id, merchant_id, order_type, state, token_amount_paise,
+        fiat_amount_paise, order_hmac)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
      ON CONFLICT (order_id) DO NOTHING
      RETURNING *`,
     [String(orderId), String(userId), merchantId ? String(merchantId) : null,
-     type, state, tokenAmountPaise, fiatAmountPaise],
+     type, state, tokenAmountPaise, fiatAmountPaise, deriveOrderHmac(orderId)],
     'order_open',
   );
 

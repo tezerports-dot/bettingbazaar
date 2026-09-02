@@ -6,9 +6,8 @@
  * Node/Express app behind a TLS terminator cannot randomize inbound handshakes;
  * the TLS edge must compute JA3 and forward x-ja3-hash / x-tls-ja3-hash. This
  * middleware makes that signal actionable everywhere in the app through
- * SystemConfig.tlsFingerprintDefense.
+ * the platform's `tlsFingerprintDefense` configuration.
  */
-import mongoose from 'mongoose';
 import logger from '../services/logger.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 

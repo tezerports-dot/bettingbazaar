@@ -21,7 +21,6 @@
  * @requires ../models
  */
 
-import { SystemConfig } from '../../models/index.js';
 import { db } from '#db';
 import { isTokenRevoked as pgIsTokenRevoked } from '#db/repositories/identity.js';
 import { getUser } from '#db/repositories/users.js';
