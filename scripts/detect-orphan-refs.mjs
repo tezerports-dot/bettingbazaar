@@ -28,7 +28,14 @@ import { readFileSync, globSync } from 'node:fs';
 import { parse } from 'acorn';
 import * as walk from 'acorn-walk';
 
-const files = globSync('backend/**/*.js', { exclude: (p) => p.includes('node_modules') });
+// `database/` is scanned too. Nothing else parse-checks it: the unit suite does
+// not import it, and a repository whose SQL template literal was terminated
+// early by a backtick in a comment fails to parse — which surfaces as an opaque
+// import error inside whichever suite happens to load it first, if any does.
+const files = [
+  ...globSync('backend/**/*.js', { exclude: (p) => p.includes('node_modules') }),
+  ...globSync('database/**/*.js', { exclude: (p) => p.includes('node_modules') }),
+];
 
 const GLOBALS = new Set([
   'console','process','Math','JSON','Date','Object','Array','String','Number','Boolean',
@@ -45,6 +52,7 @@ const GLOBALS = new Set([
 ]);
 
 const findings = [];
+const parseErrors = [];
 
 for (const file of files) {
   const src = readFileSync(file, 'utf8');
@@ -52,7 +60,10 @@ for (const file of files) {
   try {
     ast = parse(src, { ecmaVersion: 'latest', sourceType: 'module', locations: true });
   } catch (e) {
-    findings.push({ file, name: '(parse error)', line: 0, note: e.message });
+    // A file that does not parse is a hard failure, reported first and on its
+    // own terms: every "undefined identifier" finding below is meaningless
+    // until it parses.
+    parseErrors.push({ file, message: e.message });
     continue;
   }
 
@@ -120,6 +131,13 @@ const byName = new Map();
 for (const f of findings) {
   if (!byName.has(f.name)) byName.set(f.name, []);
   byName.get(f.name).push(f);
+}
+
+if (parseErrors.length) {
+  console.log(`${parseErrors.length} file(s) do not parse:\n`);
+  for (const e of parseErrors) console.log(`  ${e.file}\n      ${e.message}`);
+  console.log('\nFix these before anything else — nothing downstream can be trusted.');
+  process.exit(1);
 }
 
 const sorted = [...byName.entries()].sort((a, b) => b[1].length - a[1].length);

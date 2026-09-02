@@ -240,6 +240,151 @@ export async function accountBalancePaise(code) {
  * transaction is held, so this can run on a replica and cannot contend with a
  * money path.
  */
+/**
+ * Period activity per account: movement, not just a closing balance.
+ *
+ * ── Why movement and not balance ────────────────────────────────────────────
+ * A balance answers "where do we stand"; a regulator asks "what happened in
+ * March". Two accounts with identical closing balances can have had ten
+ * thousand rupees pass through one and nothing through the other, and only the
+ * debit and credit totals distinguish them.
+ *
+ * Debits and credits are split by SIGN of the posting rather than by a stored
+ * flag, so the two always add back to the net and there is no third field to
+ * disagree with them.
+ */
+export async function accountActivity({ from = null, to = null } = {}) {
+  const where = []; const params = [];
+  if (from) { params.push(new Date(from)); where.push(`created_at >= $${params.length}`); }
+  if (to) { params.push(new Date(to)); where.push(`created_at <= $${params.length}`); }
+  const filter = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+  const { rows } = await pgQuery(
+    `SELECT p->>'account' AS account,
+            COALESCE(SUM((p->>'amountPaise')::BIGINT) FILTER (WHERE (p->>'amountPaise')::BIGINT > 0), 0) AS debit_paise,
+            COALESCE(SUM(ABS((p->>'amountPaise')::BIGINT)) FILTER (WHERE (p->>'amountPaise')::BIGINT < 0), 0) AS credit_paise,
+            COALESCE(SUM((p->>'amountPaise')::BIGINT), 0) AS net_paise
+       FROM accounting_events e
+       CROSS JOIN LATERAL jsonb_array_elements(e.postings) p
+       ${filter}
+      GROUP BY 1`,
+    params, 'ledger_account_activity',
+  );
+  return rows.map((r) => ({
+    account: r.account,
+    debitPaise: Number(r.debit_paise),
+    creditPaise: Number(r.credit_paise),
+    netPaise: Number(r.net_paise),
+  }));
+}
+
+/** Event counts by type over a period, and the total. */
+export async function eventTypeTotals({ from = null, to = null } = {}) {
+  const where = []; const params = [];
+  if (from) { params.push(new Date(from)); where.push(`created_at >= $${params.length}`); }
+  if (to) { params.push(new Date(to)); where.push(`created_at <= $${params.length}`); }
+  const { rows } = await pgQuery(
+    `SELECT event_type, COUNT(*)::int AS events, COUNT(*) OVER ()::int AS type_count,
+            SUM(COUNT(*)) OVER ()::int AS total_events
+       FROM accounting_events
+       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      GROUP BY event_type
+      ORDER BY events DESC`,
+    params, 'ledger_event_totals',
+  );
+  return {
+    // Counted in the SAME query as the breakdown. A separate count() is a
+    // second read of a table that accepts an event between them, so the total
+    // and the rows it is meant to total describe different instants.
+    totalEvents: rows.length ? Number(rows[0].total_events) : 0,
+    byEventType: rows.map((r) => ({ eventType: r.event_type, events: r.events })),
+  };
+}
+
+/** Daily ledger activity by event type, gap-filled, chart-ready. */
+export async function dailyActivity({ from = null, to = null, timezone = 'Asia/Kolkata' } = {}) {
+  const { rows } = await pgQuery(
+    `WITH bounds AS (
+       SELECT CAST(COALESCE($1::timestamptz, (SELECT MIN(created_at) FROM accounting_events), now())
+                   AT TIME ZONE $3 AS DATE) AS lo,
+              CAST(COALESCE($2::timestamptz, now()) AT TIME ZONE $3 AS DATE) AS hi
+     ), span AS (
+       SELECT generate_series(lo, hi, '1 day'::interval)::date AS day FROM bounds
+     ), activity AS (
+       SELECT CAST(e.created_at AT TIME ZONE $3 AS DATE) AS day, e.event_type,
+              COUNT(*)::int AS events,
+              COALESCE(SUM((
+                SELECT SUM((p->>'amountPaise')::BIGINT)
+                  FROM jsonb_array_elements(e.postings) p
+                 WHERE (p->>'amountPaise')::BIGINT > 0
+              )), 0) AS gross_paise
+         FROM accounting_events e
+        WHERE ($1::timestamptz IS NULL OR e.created_at >= $1)
+          AND ($2::timestamptz IS NULL OR e.created_at <= $2)
+        GROUP BY 1, 2
+     )
+     SELECT s.day, a.event_type, a.events, a.gross_paise
+       FROM span s LEFT JOIN activity a ON a.day = s.day
+      ORDER BY s.day, a.event_type`,
+    [from ? new Date(from) : null, to ? new Date(to) : null, timezone], 'ledger_daily_activity',
+  );
+
+  const byDay = new Map();
+  for (const r of rows) {
+    const day = r.day instanceof Date ? r.day.toISOString().slice(0, 10) : String(r.day);
+    if (!byDay.has(day)) byDay.set(day, { day, byEventType: [], totalEvents: 0 });
+    if (!r.event_type) continue;   // a day with no activity: kept, as a zero
+    const bucket = byDay.get(day);
+    bucket.byEventType.push({
+      eventType: r.event_type,
+      events: r.events,
+      grossPaise: Number(r.gross_paise),
+    });
+    bucket.totalEvents += r.events;
+  }
+  return [...byDay.values()];
+}
+
+/**
+ * Every posting in a period, one row each, for export and external audit.
+ *
+ * Flattened IN THE DATABASE. The document version fetched whole events and
+ * expanded their postings in JavaScript, which meant the `limit` bounded EVENTS
+ * rather than rows — a ten-thousand-event limit could return forty thousand
+ * rows, and an export that was meant to be bounded was not.
+ */
+export async function postingExport({ from = null, to = null, limit = 10000 } = {}) {
+  const where = []; const params = [];
+  if (from) { params.push(new Date(from)); where.push(`e.created_at >= $${params.length}`); }
+  if (to) { params.push(new Date(to)); where.push(`e.created_at <= $${params.length}`); }
+
+  const { rows } = await pgQuery(
+    `SELECT e.id, e.created_at, e.event_type, e.idempotency_key, e.ref_model, e.ref_id,
+            e.description, p->>'account' AS account,
+            (p->>'amountPaise')::BIGINT AS amount_paise
+       FROM accounting_events e
+       CROSS JOIN LATERAL jsonb_array_elements(e.postings) p
+       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      ORDER BY e.created_at ASC, e.id ASC
+      LIMIT ${Math.min(Math.max(Number(limit) || 10000, 1), 100000)}`,
+    params, 'ledger_posting_export',
+  );
+
+  return rows.map((r) => ({
+    entryId: String(r.id),
+    occurredAt: r.created_at?.toISOString?.() ?? '',
+    recordedAt: r.created_at?.toISOString?.() ?? '',
+    eventType: r.event_type,
+    idempotencyKey: r.idempotency_key,
+    refModel: r.ref_model,
+    refId: r.ref_id,
+    account: r.account,
+    side: Number(r.amount_paise) >= 0 ? 'DEBIT' : 'CREDIT',
+    amountPaise: Math.abs(Number(r.amount_paise)),
+    description: r.description,
+  }));
+}
+
 export async function reconcileAgainstSubLedgers() {
   const [ledger, wallets, merchants, treasury] = await Promise.all([
     trialBalance(),
