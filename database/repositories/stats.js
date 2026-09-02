@@ -1145,3 +1145,114 @@ export async function cycleAndQueueCounts({ timezone = 'Asia/Kolkata' } = {}) {
     },
   };
 }
+
+/**
+ * Phantom betting per cycle — what the house staked to shape the displayed pool.
+ *
+ * Phantom bets live on `bets` with `is_phantom`, so this is the same table the
+ * real pools come from and the two cannot disagree about a cycle.
+ */
+export async function phantomBetsByCycle({ limit = 10 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT b.cycle_id,
+            COUNT(*)::int AS bets,
+            COALESCE(SUM(b.stake_paise), 0) AS total,
+            COALESCE(SUM(b.stake_paise) FILTER (WHERE b.side = 'DELHI'), 0)  AS delhi,
+            COALESCE(SUM(b.stake_paise) FILTER (WHERE b.side = 'BOMBAY'), 0) AS bombay,
+            MAX(c.start_time) AS start_time, MAX(c.cycle_type) AS cycle_type,
+            MAX(c.winner) AS winner
+       FROM bets b
+       LEFT JOIN cycles c ON c.cycle_id = b.cycle_id
+      WHERE b.is_phantom
+      GROUP BY b.cycle_id
+      -- Ordered by WHEN the cycle ran, not by its id. The aggregate this
+      -- replaced sorted on the grouped id, so the 'most recent 10' were
+      -- whichever cycle ids sorted highest as strings.
+      ORDER BY MAX(c.start_time) DESC NULLS LAST
+      LIMIT $1`,
+    [Math.min(Math.max(Number(limit) || 10, 1), 100)], 'stats_phantom_by_cycle',
+  );
+  return rows.map((r) => ({
+    cycleId: r.cycle_id, cycleType: r.cycle_type,
+    startTime: r.start_time, winner: r.winner,
+    totalPhantomBets: int(r.bets),
+    totalPhantomAmount: rupees(r.total),
+    delhiPhantom: rupees(r.delhi), bombayPhantom: rupees(r.bombay),
+  }));
+}
+
+/**
+ * One player's whole history, merged and paginated IN THE DATABASE.
+ *
+ * ── Why the merge is a UNION ALL and not three finds ───────────────────────
+ * The endpoint this replaced fetched EVERY wallet entry, EVERY bet and EVERY
+ * order for the player with no limit at all, concatenated the three arrays,
+ * sorted them in JavaScript and then sliced fifty rows out of the result. On a
+ * player with a year of activity that is tens of thousands of rows pulled
+ * across the wire to return a page — and the sort ran on every request.
+ *
+ * `COUNT(*) OVER ()` gives the total from the same statement, so the page and
+ * the count of pages describe one instant.
+ *
+ * Phantom bets are excluded: they are house figures, not something the player
+ * did, and showing them on a player's own history would be a lie about their
+ * account.
+ */
+export async function userTimeline(userId, { page = 1, limit = 50 } = {}) {
+  const uid = String(userId);
+  const size = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const wanted = Math.max(Number(page) || 1, 1);
+
+  const { rows } = await pgQuery(
+    `WITH timeline AS (
+       SELECT 'transaction' AS source, l.tx_id AS id, l.tx_type AS kind,
+              l.amount_paise AS amount_paise, NULL::text AS status,
+              l.created_at AS at, l.description AS note, l.field AS wallet_field,
+              l.ref_id AS reference, NULL::text AS side, 0::bigint AS payout_paise,
+              NULL::text AS cycle_id, NULL::text AS counterparty
+         FROM wallet_ledger l WHERE l.user_id = $1
+
+       UNION ALL
+
+       SELECT 'bet', b.bet_id, 'BET_' || b.side,
+              b.stake_paise, b.status, b.placed_at, NULL, NULL, NULL,
+              b.side, b.payout_paise, b.cycle_id, NULL
+         FROM bets b WHERE b.user_id = $1 AND NOT b.is_phantom
+
+       UNION ALL
+
+       SELECT 'p2p_order', o.order_id, 'P2P_' || o.order_type,
+              o.token_amount_paise, o.state, o.created_at, NULL, NULL, NULL,
+              NULL, 0, NULL,
+              -- The merchant's name, joined here rather than by a populate per
+              -- order. The old handler called .populate() on plain rows, which
+              -- is a TypeError, so this endpoint threw for every player who had
+              -- ever placed a funding order.
+              m.name
+         FROM order_states o
+         LEFT JOIN merchants m ON m.merchant_id = o.merchant_id
+        WHERE o.user_id = $1
+     )
+     SELECT t.*, c.cycle_type, c.winner AS cycle_winner,
+            COUNT(*) OVER () AS total_matching
+       FROM timeline t
+       LEFT JOIN cycles c ON c.cycle_id = t.cycle_id
+      ORDER BY t.at DESC
+      LIMIT $2 OFFSET $3`,
+    [uid, size, (wanted - 1) * size], 'stats_user_timeline',
+  );
+
+  const total = rows.length ? Number(rows[0].total_matching) : 0;
+  return {
+    total, page: wanted, limit: size,
+    pages: Math.max(Math.ceil(total / size), 1),
+    entries: rows.map((r) => ({
+      _id: r.id, source: r.source, type: r.kind,
+      amount: rupees(r.amount_paise), status: r.status, date: r.at,
+      note: r.note, walletType: r.wallet_field, referenceId: r.reference,
+      side: r.side, payout: rupees(r.payout_paise),
+      cycleId: r.cycle_id, cycleType: r.cycle_type, cycleWinner: r.cycle_winner,
+      merchantName: r.counterparty,
+    })),
+  };
+}

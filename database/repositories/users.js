@@ -58,7 +58,7 @@ const COLUMNS = `
   two_factor_enabled, two_factor_secret, two_factor_pending_secret,
   two_factor_last_counter, two_factor_enrolled_at,
   is_blocked, block_reason, blocked_at, blocked_by,
-  bank_details, last_login, joined_at, updated_at`;
+  bank_details, last_login, roles, deleted_at, deleted_by, joined_at, updated_at`;
 
 /**
  * The columns a caller may set through `updateUser`.
@@ -83,7 +83,7 @@ const UPDATABLE = Object.freeze(new Set([
   'two_factor_enabled', 'two_factor_secret', 'two_factor_pending_secret',
   'two_factor_last_counter', 'two_factor_enrolled_at',
   'is_blocked', 'block_reason', 'blocked_at', 'blocked_by',
-  'bank_details', 'last_login',
+  'bank_details', 'last_login', 'roles',
 ]));
 
 /** camelCase → column, derived from the allowlist so the two cannot drift. */
@@ -159,6 +159,12 @@ function toUser(row) {
     blockedBy: row.blocked_by,
     bankDetails: row.bank_details ?? null,
     lastLogin: row.last_login,
+    roles: row.roles ?? [],
+    // Present so an admin reading a deleted account can see who removed it and
+    // when. `users_deleted_has_actor` guarantees both are set whenever the
+    // status is DELETED, so a caller never has to handle one without the other.
+    deletedAt: row.deleted_at ?? null,
+    deletedBy: row.deleted_by ?? null,
     joinedAt: row.joined_at,
     updatedAt: row.updated_at,
   };
@@ -469,6 +475,60 @@ export async function setBlocked(userId, { blocked, reason = null, actor = null 
 }
 
 /**
+ * Set an account's roles and the flags derived from them, in one statement.
+ *
+ * ── isAdmin is DERIVED from roles, not stored beside it ────────────────────
+ * The handler this replaced assigned `roles`, then `isAdmin`, `isSubAdmin` and
+ * `isQueueManager` as four separate properties on a document and saved it. Any
+ * failure between them left an account whose roles array and whose flags
+ * disagreed — and the flags are what every authorisation check reads, so the
+ * roles column would have said "not an admin" while the platform treated the
+ * account as one. Derived in the statement, they cannot come apart.
+ *
+ * `merchant` is deliberately absent from the flags. It is a role only in the
+ * sense that it keeps an account out of the player list; merchant panel access
+ * comes from the merchant record and its own login.
+ */
+export async function setRoles(userId, roles = []) {
+  const list = [...new Set(roles.map(String))];
+  const { rows } = await pgQuery(
+    `UPDATE users SET
+       roles = $2::text[],
+       is_admin         = 'admin'         = ANY($2::text[]),
+       is_sub_admin     = 'subadmin'      = ANY($2::text[]),
+       is_queue_manager = 'queue_manager' = ANY($2::text[]),
+       updated_at = now()
+      WHERE user_id = $1
+      RETURNING ${COLUMNS}`,
+    [String(userId), list], 'user_set_roles',
+  );
+  return toUser(rows[0]);
+}
+
+/**
+ * Soft-delete an account.
+ *
+ * `users_deleted_has_actor` requires the actor and the timestamp alongside the
+ * status, so this cannot write a deletion nobody is accountable for. Nothing is
+ * erased: the bets, orders and ledger rows stay exactly where they are, because
+ * a deleted account's money still has to reconcile.
+ *
+ * Returns null for an account that was already deleted, so the route can say so
+ * rather than reporting a second successful deletion.
+ */
+export async function softDeleteUser(userId, { actor }) {
+  if (!actor) throw new Error('softDeleteUser requires an actor');
+  const { rows } = await pgQuery(
+    `UPDATE users SET status = 'DELETED', deleted_at = now(), deleted_by = $2,
+            updated_at = now()
+      WHERE user_id = $1 AND status <> 'DELETED'
+      RETURNING ${COLUMNS}`,
+    [String(userId), String(actor)], 'user_soft_delete',
+  );
+  return toUser(rows[0]);
+}
+
+/**
  * A page of accounts for the admin list.
  *
  * KEYSET pagination on (joined_at, user_id), not OFFSET: an offset scan re-reads
@@ -480,7 +540,7 @@ export async function setBlocked(userId, { blocked, reason = null, actor = null 
 export async function listUsers({
   status = null, isAdmin = null, isSubAdmin = null, isQueueManager = null,
   kycStatus = null, blocked = null, flagged = null, search = null,
-  excludeRole = null, limit = 50, cursor = null,
+  excludeRole = null, limit = 50, cursor = null, page = null,
 } = {}) {
   const where = [];
   const params = [];
@@ -507,6 +567,17 @@ export async function listUsers({
   const capped = Math.min(Math.max(Number(limit) || 50, 1), 200);
   params.push(capped);
 
+  // An OFFSET path for the admin panel, which asks for page numbers. It is the
+  // WORSE option and stays available only because the panel draws page links:
+  // a signup arriving mid-pagination shifts every later row by one, so page two
+  // silently skips an account. `cursor` wins whenever the caller supplies one,
+  // and the response hands back the next cursor so a caller can switch.
+  let offsetClause = '';
+  if (!cursor && page && Number(page) > 1) {
+    params.push((Math.max(Number(page), 1) - 1) * capped);
+    offsetClause = ` OFFSET $${params.length}`;
+  }
+
   const { rows } = await pgQuery(
     // COUNT(*) OVER () rather than a second query: two statements outside a
     // transaction can disagree, and a total that contradicts the page it labels
@@ -514,7 +585,7 @@ export async function listUsers({
     `SELECT ${COLUMNS}, COUNT(*) OVER () AS total_count FROM users
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
       ORDER BY joined_at DESC, user_id DESC
-      LIMIT $${params.length}`,
+      LIMIT $${params.length - (offsetClause ? 1 : 0)}${offsetClause}`,
     params, 'user_list',
   );
   const users = rows.map(toUser);
@@ -528,6 +599,33 @@ export async function listUsers({
       ? { joinedAt: last.joinedAt, userId: last.userId }
       : null,
   };
+}
+
+/**
+ * Accounts holding a phantom-betting grant.
+ *
+ * `NOT phantom_access = 'NONE'` rather than `$ne`, and the mapper drops every
+ * credential column on the way out — so the `.select('-passwordHash …')` the
+ * route carried, a denylist that grants any credential column added later, is
+ * neither needed nor forgettable.
+ */
+export async function listPhantomAgents() {
+  const { rows } = await pgQuery(
+    `SELECT ${COLUMNS} FROM users
+      WHERE phantom_access <> 'NONE' AND status <> 'DELETED'
+      ORDER BY username`, [], 'user_list_phantom_agents',
+  );
+  return rows.map(toUser);
+}
+
+/** Accounts with the queue-manager flag. */
+export async function listQueueManagers() {
+  const { rows } = await pgQuery(
+    `SELECT ${COLUMNS} FROM users
+      WHERE is_queue_manager AND status <> 'DELETED'
+      ORDER BY username`, [], 'user_list_queue_managers',
+  );
+  return rows.map(toUser);
 }
 
 /** How many accounts match a status. Counted from rows, never accumulated. */

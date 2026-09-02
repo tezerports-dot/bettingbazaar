@@ -806,6 +806,19 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS backup_codes TEXT[] NOT NULL DEFAULT 
 -- start authorising from it — two sources for one decision is how they drift.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS roles TEXT[] NOT NULL DEFAULT '{}';
 
+-- Soft deletion, with its provenance. `status = 'DELETED'` says an account is
+-- gone; these say WHO removed it and WHEN, which is the part a dispute needs.
+-- The admin route set all three on the document and only status survived the
+-- move, so a deleted account carried no record of the deletion at all.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_by TEXT;
+-- A deleted account must say who deleted it. Without this the two columns are
+-- optional decoration and the first busy afternoon leaves them empty.
+DO $$ BEGIN
+  ALTER TABLE users ADD CONSTRAINT users_deleted_has_actor
+    CHECK (status <> 'DELETED' OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
 -- How many Aadhaar numbers this account has ever submitted.
 --
 -- ON `users`, NOT on `kyc_verifications`, and the placement is the whole point.

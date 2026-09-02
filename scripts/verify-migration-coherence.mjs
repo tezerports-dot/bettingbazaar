@@ -184,7 +184,7 @@ for (const entry of MIGRATED) {
  * Raising this to make a build pass is the one thing that turns this check into
  * decoration: the number is the whole mechanism.
  */
-const SPLIT_BUDGET = 64;
+const SPLIT_BUDGET = 60;
 
 const list = process.argv.includes('--list');
 console.log('\nMigration coherence — is what replaced the document store complete?\n');

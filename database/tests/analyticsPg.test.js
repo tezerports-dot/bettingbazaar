@@ -242,3 +242,112 @@ describe('admin analytics', () => {
     expect(rows.map((r) => r.adminId)).toEqual(['a1']);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The player timeline and the phantom report — both merged in the database.
+// ─────────────────────────────────────────────────────────────────────────────
+import { userTimeline, phantomBetsByCycle } from '../repositories/stats.js';
+
+describe('a player history', () => {
+  beforeAll(async () => { await applySchema(); });
+  afterAll(async () => { await closePg(); });
+  beforeEach(async () => {
+    await pgQuery(`TRUNCATE bets, bet_transitions, order_transitions, order_states,
+                            wallet_ledger, cycles, merchants
+                   RESTART IDENTITY CASCADE`);
+  });
+
+  it('merges wallet movement, bets and orders into one ordered page', async () => {
+    const t = (minutesAgo) => new Date(Date.now() - minutesAgo * 60_000);
+
+    await pgQuery(
+      `INSERT INTO wallet_ledger (tx_id, user_id, field, amount_paise,
+                                  balance_after_paise, tx_type, description, created_at)
+       VALUES ('t1','u1','depositBalance',100_00,100_00,'CREDIT','Deposit',$1)`,
+      [t(30)],
+    );
+    await pgQuery(
+      `INSERT INTO bets (bet_id, user_id, cycle_id, side, stake_paise, status, placed_at)
+       VALUES ('b1','u1','c1','DELHI',50_00,'PENDING',$1)`, [t(20)],
+    );
+    await pgQuery(
+      `INSERT INTO order_states (order_id, user_id, order_type, state,
+                                 token_amount_paise, fiat_amount_paise, created_at)
+       VALUES ('o1','u1','DEPOSIT','COMPLETED',100_00,100_00,$1)`, [t(10)],
+    );
+
+    const page = await userTimeline('u1', { limit: 10 });
+    expect(page.total).toBe(3);
+    // Newest first, across all three sources — the ordering the JavaScript
+    // merge had to pull every row of every table to produce.
+    expect(page.entries.map((e) => e.source)).toEqual(['p2p_order', 'bet', 'transaction']);
+  });
+
+  it('leaves phantom bets out of a player history', async () => {
+    await pgQuery(
+      `INSERT INTO bets (bet_id, user_id, cycle_id, side, stake_paise, status, is_phantom)
+       VALUES ('b1','u1','c1','DELHI',50_00,'PENDING',FALSE),
+              ('b2','u1','c1','BOMBAY',900_00,'PENDING',TRUE)`, [],
+    );
+    const page = await userTimeline('u1', {});
+    // A house figure is not something the player did; showing it on their own
+    // history would be a lie about their account.
+    expect(page.total).toBe(1);
+    expect(page.entries[0]._id).toBe('b1');
+  });
+
+  it('names the merchant on a funding order without a per-row lookup', async () => {
+    await pgQuery(
+      // merchant_type is GENERATED from accepted_currencies[1] — it cannot be
+      // inserted directly, which is the schema making one field the owner.
+      `INSERT INTO merchants (merchant_id, name, public_ref, mobile, accepted_currencies)
+       VALUES ('m1','Ravi Payments','MER-0001','9990001111', ARRAY['INR'])`, [],
+    );
+    await pgQuery(
+      `INSERT INTO order_states (order_id, user_id, merchant_id, order_type, state,
+                                 token_amount_paise, fiat_amount_paise)
+       VALUES ('o1','u1','m1','DEPOSIT','COMPLETED',100_00,100_00)`, [],
+    );
+    const page = await userTimeline('u1', {});
+    expect(page.entries[0].merchantName).toBe('Ravi Payments');
+  });
+
+  it('pages without re-sorting the whole history', async () => {
+    for (let i = 0; i < 7; i += 1) {
+      await pgQuery(
+        `INSERT INTO bets (bet_id, user_id, cycle_id, side, stake_paise, status, placed_at)
+         VALUES ($1,'u1','c1','DELHI',10_00,'PENDING', now() - ($2 || ' minutes')::interval)`,
+        [`b${i}`, String(i)],
+      );
+    }
+    const first = await userTimeline('u1', { page: 1, limit: 3 });
+    const last  = await userTimeline('u1', { page: 3, limit: 3 });
+    expect(first.total).toBe(7);
+    expect(first.pages).toBe(3);
+    expect(first.entries).toHaveLength(3);
+    expect(last.entries).toHaveLength(1);
+  });
+
+  it('reports phantom stakes per cycle, newest cycle first', async () => {
+    for (const [id, minutes] of [['c-old', 120], ['c-new', 5]]) {
+      await pgQuery(
+        `INSERT INTO cycles (cycle_id, cycle_type, status, start_time, end_time)
+         VALUES ($1, '30_MIN', 'OPEN', now() - ($2 || ' minutes')::interval,
+                 now() - ($2 || ' minutes')::interval + interval '30 minutes')`,
+        [id, String(minutes)],
+      );
+      await pgQuery(
+        `INSERT INTO bets (bet_id, user_id, cycle_id, side, stake_paise, status, is_phantom)
+         VALUES ($1 || '_d','house',$1,'DELHI',400_00,'PENDING',TRUE),
+                ($1 || '_b','house',$1,'BOMBAY',600_00,'PENDING',TRUE)`,
+        [id],
+      );
+    }
+    const stats = await phantomBetsByCycle({ limit: 10 });
+    // By start time, not by id sorted as a string.
+    expect(stats.map((s) => s.cycleId)).toEqual(['c-new', 'c-old']);
+    expect(stats[0].delhiPhantom).toBe(400);
+    expect(stats[0].bombayPhantom).toBe(600);
+    expect(stats[0].totalPhantomBets).toBe(2);
+  });
+});

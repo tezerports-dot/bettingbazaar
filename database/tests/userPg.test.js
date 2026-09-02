@@ -15,6 +15,7 @@ import {
   createUser, getUser, getUserByMobile, getUserByReferralCode, getUsers,
   getUserCredentials, updateUser, bumpReferralClicks, claimJoiningNumber,
   setKycStatus, setBlocked, listUsers, countUsers, withUserTransaction,
+  setRoles, softDeleteUser,
 } from '../repositories/users.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -323,8 +324,38 @@ describePg('accounts (PostgreSQL)', () => {
 
     it('counts from rows rather than an accumulator', async () => {
       expect(await countUsers()).toBe(5);
-      await updateUser('u-2', { status: 'DELETED' });
+      // Through softDeleteUser, not a bare status write: users_deleted_has_actor
+      // refuses a DELETED row with nobody accountable for it, which is the
+      // point — an account that vanished with no record of who removed it is
+      // the one a dispute cannot be answered from.
+      await softDeleteUser('u-2', { actor: 'admin-1' });
       expect(await countUsers({ status: 'ACTIVE' })).toBe(4);
+    });
+
+    it('records who deleted an account, and refuses a second deletion', async () => {
+      const deleted = await softDeleteUser('u-3', { actor: 'admin-7' });
+      expect(deleted.status).toBe('DELETED');
+      expect(deleted.deletedBy).toBe('admin-7');
+      expect(deleted.deletedAt).toBeInstanceOf(Date);
+      // Already deleted: null, so the route answers 404 rather than reporting a
+      // second successful deletion of the same account.
+      expect(await softDeleteUser('u-3', { actor: 'admin-7' })).toBeNull();
+    });
+
+    it('derives the authorisation flags from the roles it is given', async () => {
+      const admin = await setRoles('u-4', ['admin', 'queue_manager']);
+      expect(admin.roles.sort()).toEqual(['admin', 'queue_manager']);
+      expect(admin.isAdmin).toBe(true);
+      expect(admin.isQueueManager).toBe(true);
+      expect(admin.isSubAdmin).toBe(false);
+
+      // Removing the role removes the flag in the same statement. The four
+      // separate assignments this replaced could leave `roles` saying one thing
+      // and `is_admin` — which every authorisation check reads — saying another.
+      const stripped = await setRoles('u-4', []);
+      expect(stripped.roles).toEqual([]);
+      expect(stripped.isAdmin).toBe(false);
+      expect(stripped.isQueueManager).toBe(false);
     });
   });
 });
