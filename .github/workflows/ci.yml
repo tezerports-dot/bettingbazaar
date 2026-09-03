@@ -103,6 +103,27 @@ jobs:
       # The wallet path: row locking, the negative-balance guard and the
       # unique-tx_id idempotency gate are behaviours of the database, so they are
       # proven against a real one (see vitest.pg.config.ts).
+      # The backup drill in this suite shells out to pg_dump/pg_restore, and
+      # `pg_dump` REFUSES to dump a server newer than itself. The service above
+      # is Postgres 18; the runner image ships client 16, so without this the
+      # drill fails on a version mismatch that has nothing to do with the code.
+      # Same version and same reason as the Dockerfile.
+      - name: Install postgresql-client 18 (matches the service)
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
+          echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client-18
+      # The drill skips itself when the tooling is absent, which is right for a
+      # laptop and WRONG for CI: a restore test that quietly stops running is
+      # the same as not having one. Fail here instead.
+      - name: Backup tooling must be present (the drill must not skip)
+        run: |
+          pg_dump --version
+          pg_restore --version
       - name: Postgres money-path tests (real Postgres)
         run: npm run test:pg -- --reporter=default --reporter=github-actions
         env:

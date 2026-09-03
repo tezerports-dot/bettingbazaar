@@ -20,8 +20,17 @@
  * SQL dump is all-or-nothing at exactly the moment somebody needs one table
  * back and cannot afford to drop the rest.
  *
- * RESTORE — test this on staging before you ever need it. An untested backup is
- * not a backup; see docs/governance/DISASTER_RECOVERY.md:
+ * ── RESTORE IS TESTED, NOT DOCUMENTED ──────────────────────────────────────
+ * "An untested backup is not a backup" was a sentence in this header telling
+ * somebody else to go and try it. `dumpToFile` and `restoreFromFile` are
+ * exported so the round trip is exercised by `backupRestorePg.test.js` against
+ * a real database on every CI run: dump a populated database, restore it into
+ * an empty one, and assert the money survives — balances, the ledger, the trial
+ * balance, AND the constraints and triggers, because a restore that brings back
+ * rows without the rules that guard them hands you a database that looks right
+ * and accepts impossible rows.
+ *
+ * The operator procedure, unchanged (docs/governance/DISASTER_RECOVERY.md):
  *   1. Download the archive from S3: backups/bb-<timestamp>.dump
  *   2. pg_restore --dbname "$DATABASE_URL" --clean --if-exists bb-<ts>.dump
  */
@@ -63,12 +72,79 @@ function libpqEnv(url) {
   }
 }
 
-function pgDumpAvailable() {
+/** Is `tool` on PATH and runnable? */
+function toolAvailable(tool) {
   return new Promise((resolve) => {
-    const p = spawn('pg_dump', ['--version']);
+    const p = spawn(tool, ['--version']);
     p.on('error', () => resolve(false));
     p.on('exit', (code) => resolve(code === 0));
   });
+}
+
+const pgDumpAvailable = () => toolAvailable('pg_dump');
+export const pgRestoreAvailable = () => toolAvailable('pg_restore');
+
+/**
+ * Run a libpq tool against `url`, with the password kept out of argv.
+ *
+ * ── THE PASSWORD DOES NOT GO IN argv ───────────────────────────────────────
+ * `--dbname=postgres://user:pass@host/db` works, and puts the money database's
+ * password in the process arguments — world-readable through /proc on most
+ * hosts, and captured by anything that logs a process list. libpq reads
+ * PGHOST/PGUSER/PGPASSWORD from the environment instead, so the URL is
+ * decomposed into those.
+ *
+ * `PGDATABASE` will NOT take a URI: libpq treats it as a bare database NAME, so
+ * passing the connection string there connects to a database literally called
+ * "postgres://…" as the OS user and fails. Verified, because it looks like it
+ * should work.
+ */
+function runPgTool(tool, args, url, { allowExitCodes = [0] } = {}) {
+  return new Promise((resolve, reject) => {
+    const p = spawn(tool, args, {
+      env: { ...process.env, ...libpqEnv(url), PGCONNECT_TIMEOUT: '30' },
+    });
+    let stderr = '';
+    p.stderr.on('data', (d) => { stderr += d; });
+    p.on('error', reject);
+    p.on('exit', (code) => (allowExitCodes.includes(code)
+      ? resolve({ code, stderr })
+      : reject(new Error(`${tool} exit ${code}: ${stderr.slice(-400)}`))));
+  });
+}
+
+/**
+ * Dump `url` to `destPath` in the custom format.
+ *
+ * Written to a FILE, not held in a buffer: a whole database in memory is an
+ * out-of-memory kill at exactly the size where the backup starts to matter.
+ */
+export async function dumpToFile(destPath, url = process.env.DATABASE_URL) {
+  await runPgTool('pg_dump', ['--format=custom', '--compress=6', `--file=${destPath}`], url);
+  return { path: destPath, sizeBytes: fs.statSync(destPath).size };
+}
+
+/**
+ * Restore an archive into `url`.
+ *
+ * `--clean --if-exists` so the target is replaced rather than merged into —
+ * restoring on top of existing rows is how a "successful" restore leaves a
+ * database holding two eras of the same account.
+ *
+ * pg_restore exits NON-ZERO on warnings that are not failures (dropping an
+ * object that was never there, an owner role the target does not have), so exit
+ * 1 is accepted and its stderr returned for the caller to judge. Treating those
+ * as failure is how a restore drill gets abandoned as "broken" when it worked.
+ */
+export async function restoreFromFile(srcPath, url) {
+  if (!fs.existsSync(srcPath)) throw new Error(`restoreFromFile: no archive at ${srcPath}`);
+  const { code, stderr } = await runPgTool(
+    'pg_restore',
+    ['--clean', '--if-exists', '--no-owner', '--no-privileges', '--dbname', libpqEnv(url).PGDATABASE ?? '', srcPath],
+    url,
+    { allowExitCodes: [0, 1] },
+  );
+  return { ok: true, hadWarnings: code === 1, stderr };
 }
 
 export async function runBackup() {
@@ -90,31 +166,9 @@ export async function runBackup() {
     // 1. Dump to a temp file — bounded disk, not memory. A whole database held
     //    in a buffer is an out-of-memory kill at exactly the size where the
     //    backup starts to matter.
-    await new Promise((resolve, reject) => {
-      // ── THE PASSWORD DOES NOT GO IN argv ─────────────────────────────────
-      // `--dbname=postgres://user:pass@host/db` works, and puts the money
-      // database's password in the process arguments — world-readable through
-      // /proc on most hosts, and captured by anything that logs a process list.
-      // libpq reads PGHOST/PGUSER/PGPASSWORD from the environment instead, so
-      // the URL is decomposed into those.
-      //
-      // `PGDATABASE` will NOT take a URI: libpq treats it as a bare database
-      // NAME, so passing the connection string there connects to a database
-      // literally called "postgres://…" as the OS user and fails. Verified,
-      // because it looks like it should work.
-      const p = spawn('pg_dump', ['--format=custom', '--compress=6', `--file=${tmp}`], {
-        env: { ...process.env, ...libpqEnv(process.env.DATABASE_URL), PGCONNECT_TIMEOUT: '30' },
-      });
-      let stderr = '';
-      p.stderr.on('data', (d) => { stderr += d; });
-      p.on('error', reject);
-      p.on('exit', (code) => (code === 0
-        ? resolve()
-        : reject(new Error(`pg_dump exit ${code}: ${stderr.slice(-400)}`))));
-    });
+    const { sizeBytes: size } = await dumpToFile(tmp, process.env.DATABASE_URL);
 
     // 2. Stream to S3.
-    const size = fs.statSync(tmp).size;
     const key = `${PREFIX}bb-${stamp}.dump`;
     await uploadStreamToS3(key, fs.createReadStream(tmp), 'application/octet-stream');
     console.log(`[backup] uploaded ${key} (${(size / 1024 / 1024).toFixed(1)} MB)`);
