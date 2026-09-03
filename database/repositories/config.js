@@ -260,7 +260,25 @@ export async function applyConfig({
 
     const settings = JSON.parse(JSON.stringify(current.settings ?? {}));
     for (const [dotted, value] of Object.entries(flat)) setPath(settings, dotted, value);
-    const nextVersion = currentVersion + 1;
+
+    // ── THE COUNTER IS MONOTONIC AGAINST THE HISTORY, NOT THE DOCUMENT ──────
+    // Taking `currentVersion + 1` alone assumes the document's counter is
+    // always ahead of every version ever recorded for it. It is not: the
+    // version table is APPEND-ONLY and outlives the document, so anything that
+    // removes a `config_documents` row — a restore of an older snapshot, a
+    // cleanup, a truncate — leaves the counter at 0 with versions 1..N still
+    // on file. Every subsequent write then collides with
+    // `config_versions_unique` and configuration becomes PERMANENTLY
+    // unwritable for that scope, which is a platform nobody can reconfigure.
+    //
+    // Reading the high-water mark from the history costs one indexed lookup on
+    // a table that is written a handful of times a day, and makes the counter
+    // depend on the record that cannot be deleted rather than the one that can.
+    const { rows: [high] } = await client.query(
+      `SELECT COALESCE(MAX(version), 0) AS v FROM config_document_versions
+        WHERE scope = $1 AND doc_key = $2`, [scope, docKey],
+    );
+    const nextVersion = Math.max(currentVersion, Number(high.v)) + 1;
 
     await client.query(
       `UPDATE config_documents

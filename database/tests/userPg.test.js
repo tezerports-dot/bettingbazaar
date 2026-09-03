@@ -428,3 +428,87 @@ describePg('the KYC submission cap', () => {
     expect(await claimKycSubmission('u-1', 3)).toBeNull();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The admin seed — the account that can do everything, created on first boot.
+// ─────────────────────────────────────────────────────────────────────────────
+describePg('seeding the first admin', () => {
+  let seedAdminAccount;
+
+  beforeAll(async () => {
+    await applySchema();
+    ({ seedAdminAccount } = await import('../../backend/startup/seedAdmin.js'));
+  });
+  afterAll(async () => { await closePg(); });
+  beforeEach(async () => {
+    await pgQuery('TRUNCATE users RESTART IDENTITY CASCADE');
+    process.env.DEFAULT_ADMIN_MOBILE = '9999000001';
+    process.env.DEFAULT_ADMIN_PASSWORD = 'seed-test-password';
+  });
+
+  it('creates one admin with the flags derived from its roles', async () => {
+    await seedAdminAccount();
+
+    const { users } = await listUsers({ isAdmin: true });
+    expect(users).toHaveLength(1);
+    // The flags come from `setRoles`, in the same statement as the array, so
+    // the roles and the flags every authorisation check reads cannot diverge.
+    expect(users[0].isAdmin).toBe(true);
+    expect(users[0].roles).toEqual(['admin']);
+    expect(users[0].mobile).toBe('9999000001');
+  });
+
+  it('hashes the password with argon2id and never stores it in the clear', async () => {
+    await seedAdminAccount();
+    const { users: [admin] } = await listUsers({ isAdmin: true });
+
+    const credentials = await getUserCredentials(admin.userId);
+    expect(credentials.passwordHash).toMatch(/^\$argon2id\$/);
+    expect(credentials.passwordHash).not.toContain('seed-test-password');
+    // And an ordinary read cannot carry it: the projection that builds a user
+    // does not select the hash at all.
+    expect(admin).not.toHaveProperty('passwordHash');
+  });
+
+  it('does not re-hash on a second boot with the same credentials', async () => {
+    await seedAdminAccount();
+    const { users: [first] } = await listUsers({ isAdmin: true });
+    const before = (await getUserCredentials(first.userId)).passwordHash;
+
+    await seedAdminAccount();
+
+    const { users } = await listUsers({ isAdmin: true });
+    expect(users).toHaveLength(1);
+    // argon2 salts every hash, so an unnecessary re-hash is visible as a changed
+    // digest. The check that prevents it reads the stored hash through
+    // `getUserCredentials`; taking it off the user object — where it is
+    // deliberately absent — compared against undefined and re-hashed on EVERY
+    // boot.
+    expect((await getUserCredentials(users[0].userId)).passwordHash).toBe(before);
+  });
+
+  it('updates the password when the environment changes', async () => {
+    await seedAdminAccount();
+    const { users: [admin] } = await listUsers({ isAdmin: true });
+    const before = (await getUserCredentials(admin.userId)).passwordHash;
+
+    process.env.DEFAULT_ADMIN_PASSWORD = 'a-different-password';
+    await seedAdminAccount();
+
+    expect((await getUserCredentials(admin.userId)).passwordHash).not.toBe(before);
+  });
+
+  it('seeds ONE admin when two instances boot together', async () => {
+    // The UNIQUE constraint on `mobile` decides, not a prior existence check a
+    // concurrent boot fits between.
+    await Promise.all([seedAdminAccount(), seedAdminAccount(), seedAdminAccount()]);
+    expect((await listUsers({ isAdmin: true })).users).toHaveLength(1);
+  });
+
+  it('does nothing at all without the environment variables', async () => {
+    delete process.env.DEFAULT_ADMIN_MOBILE;
+    delete process.env.DEFAULT_ADMIN_PASSWORD;
+    await seedAdminAccount();
+    expect((await listUsers({ isAdmin: true })).users).toHaveLength(0);
+  });
+});

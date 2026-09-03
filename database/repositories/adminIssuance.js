@@ -43,8 +43,8 @@
  * Mongo counts TOKENS (rupees). Postgres counts PAISE. The conversion happens
  * here, at the boundary, through the Integer Money Engine.
  */
-import mongoose from 'mongoose';
 import { paiseToRupees, rupeesToPaise } from '../../backend/shared/money.js';
+import { getSystemConfig } from './config.js';
 import { moneyOperations } from '../../backend/services/metrics.service.js';
 import {
   ACCOUNTS, DEFAULT_SUPPLY_CAP_PAISE, mintToMerchantFloat, burnFromMerchantFloat,
@@ -73,11 +73,16 @@ const capExceeded = (detail) =>
 // `mintToMerchantFloat` inside the same transaction that moves the treasury,
 // where two concurrent mints cannot both claim headroom only one of them has.
 
-/** The admin-configured ceiling, so the guard enforces the number an admin set. */
+/**
+ * The admin-configured ceiling, so the guard enforces the number an admin set.
+ *
+ * Falls back to the built-in default when the setting is absent or unusable.
+ * That fallback is deliberate and must stay: this cap bounds how many tokens
+ * can exist, and a configuration read that fails must not read as "no limit".
+ */
 async function configuredCapPaise() {
   try {
-    const cfg = await mongoose.model('SystemConfig')
-      .findOne({ key: 'main' }).select('adminTokenSupply.cap').lean();
+    const cfg = await getSystemConfig();
     const cap = cfg?.adminTokenSupply?.cap;
     if (Number.isFinite(cap) && cap >= 0) return rupeesToPaise(cap);
   } catch { /* fall through to the built-in default */ }

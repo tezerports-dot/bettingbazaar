@@ -25,35 +25,51 @@
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 
-const mongoCap = vi.hoisted(() => ({ value: null }));
-
-// The supply ceiling is still read from the configuration document, which has
-// not moved to PostgreSQL yet. It is stubbed rather than absent so that
-// `mongoCap.value = null` exercises the fall-through to the built-in default —
-// the branch that runs when an admin has never set a ceiling.
-vi.mock('mongoose', () => ({
-  default: {
-    model: () => ({
-      findOne: () => ({
-        select: () => ({ lean: async () => (mongoCap.value === null ? null : { adminTokenSupply: { cap: mongoCap.value } }) }),
-      }),
-      // Writes REFUSE rather than being absent: nothing in this domain may
-      // write to the configuration document, and a stub that quietly succeeded
-      // would let such a write go unnoticed.
-      findOneAndUpdate: () => ({
-        lean: () => Promise.reject(new Error('this domain does not write config')),
-        catch: (fn) => Promise.resolve().then(() => fn(new Error('this domain does not write config'))),
-      }),
-      updateOne: () => Promise.reject(new Error('this domain does not write config')),
-    }),
-  },
-}));
-
 const { pgConfigured, pgQuery, applySchema, closePg, getPool } = await import('../client.js');
 const { ACCOUNTS, getTreasuryBalances, trialBalance } = await import('../repositories/treasury.js');
 const {
   reserveAdminMint, rollbackAdminMint, adminTokenSupply, DEFAULT_CAP_TOKENS,
 } = await import('../repositories/adminIssuance.js');
+const {
+  applySystemConfig, invalidateConfigCache,
+} = await import('../repositories/config.js');
+
+/**
+ * Set the admin-configured ceiling for real.
+ *
+ * The cap used to be read from a document store and this suite stubbed the
+ * driver to supply it. It is a declared configuration setting now, so the test
+ * writes it the way an admin does — which means the spec's own bounds apply and
+ * a cap the code could never legally see cannot be tested into existence.
+ *
+ * The cache is invalidated because config reads are cached for a few seconds,
+ * and a test that set a value and then read the previous one would pass or fail
+ * on timing.
+ */
+async function setCapTokens(cap) {
+  await applySystemConfig({ adminTokenSupply: { cap } }, { actor: 'test' });
+  invalidateConfigCache();
+}
+
+/**
+ * Put the ceiling back to the platform default.
+ *
+ * NOT by deleting the configuration row. Two reasons, and the second is the
+ * interesting one:
+ *
+ *   • The version table is append-only, so a deleted document's versions
+ *     survive it and the next write restarts the counter straight into a
+ *     unique-constraint collision.
+ *   • A missing document is not "no ceiling" any more. `getConfig` fills every
+ *     absent key with its DECLARED default, and the spec declares the same
+ *     10,000,000,000 the code carries as its built-in — deliberately, so the
+ *     two cannot drift. "An admin has never set a ceiling" and "an admin set it
+ *     back to the default" are the same state, which is the point of declaring
+ *     defaults in one place.
+ */
+async function clearCap() {
+  await setCapTokens(DEFAULT_CAP_TOKENS);
+}
 
 const hasPg = pgConfigured();
 const describePg = hasPg ? describe : describe.skip;
@@ -74,7 +90,7 @@ describePg('Admin token issuance (PostgreSQL)', () => {
   afterAll(async () => { await closePg(); });
   beforeEach(async () => {
     await pgQuery('TRUNCATE treasury_entries, treasury_accounts RESTART IDENTITY CASCADE');
-    mongoCap.value = null;
+    await clearCap();
     vi.clearAllMocks();
   });
 
@@ -172,7 +188,7 @@ describePg('Admin token issuance (PostgreSQL)', () => {
   // ── The cap ───────────────────────────────────────────────────────────────
   describe('the supply ceiling', () => {
     it('refuses a mint that would breach it, with the shape the routes turn into a 400', async () => {
-      mongoCap.value = 10_000;
+      await setCapTokens(10_000);
       await mint(9_000, 'mv_cap1');
 
       const err = await mint(2_000, 'mv_cap2').catch((e) => e);
@@ -185,14 +201,14 @@ describePg('Admin token issuance (PostgreSQL)', () => {
     });
 
     it('enforces the cap an ADMIN configured, not a constant compiled in', async () => {
-      mongoCap.value = 1_000;
+      await setCapTokens(1_000);
       await expect(mint(1_001, 'mv_cap3')).rejects.toThrow(/cap exceeded/);
-      mongoCap.value = 2_000;
+      await setCapTokens(2_000);
       await expect(mint(1_001, 'mv_cap4')).resolves.toMatchObject({ minted: 1_001 });
     });
 
     it('falls back to the built-in ceiling when SystemConfig has never been written', async () => {
-      mongoCap.value = null;
+      await clearCap();
       expect(await mint(100, 'mv_cap5')).toMatchObject({ cap: DEFAULT_CAP_TOKENS });
     });
   });
@@ -221,7 +237,7 @@ describePg('Admin token issuance (PostgreSQL)', () => {
     });
 
     it('is unchanged when the ceiling refused the mint', async () => {
-      mongoCap.value = 100;
+      await setCapTokens(100);
       await mint(100, 'mv_ok');
 
       await mint(1, 'mv_refused').catch(() => {});
@@ -244,7 +260,7 @@ describePg('Admin token issuance (PostgreSQL)', () => {
     });
 
     it('50 concurrent mints against a cap that fits 10 admit exactly 10', async () => {
-      mongoCap.value = 1_000;
+      await setCapTokens(1_000);
       const results = await Promise.all(
         Array.from({ length: 50 }, (_, i) => mint(100, `mv_cap_race_${i}`).catch((e) => e)),
       );
