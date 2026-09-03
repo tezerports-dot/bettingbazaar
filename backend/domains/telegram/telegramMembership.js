@@ -26,7 +26,7 @@
  * new channel". That is what lets a channel be replaced without anyone having
  * to invalidate anything by hand.
  */
-import { TelegramIdentity } from './telegram.model.js';
+import { db } from '#db';
 import { activeConfig, fetchChatMemberStatus } from './telegramClient.js';
 
 /** Statuses that count as being in the channel. */
@@ -47,23 +47,24 @@ export function isJoinedStatus(status) {
  */
 export async function applyMemberUpdate({ telegramUserId, status, generation }) {
   if (!telegramUserId) return { updated: false };
-  const res = await TelegramIdentity.updateOne(
-    { telegramUserId: String(telegramUserId) },
-    {
-      $set: {
-        channelStatus: status || 'unknown',
-        channelCheckedAt: new Date(),
-        channelGeneration: generation,
-      },
-    },
-  );
-  return { updated: res.modifiedCount > 0 };
+  // The observation timestamp is the DATABASE's clock, stamped inside the
+  // UPDATE, not one computed here. The TTL below is measured against it, and a
+  // node whose clock has drifted would otherwise write a freshness it does not
+  // have — trusting a stale "member" for as long as the drift.
+  const identity = await db.telegram.setChannelStatus(telegramUserId, {
+    status: status || 'unknown',
+    generation,
+  });
+  // Null means no row matched: the Telegram account is not linked to any
+  // platform account. Not an error — an update can arrive for someone who
+  // joined the channel without ever signing up.
+  return { updated: identity !== null, identity };
 }
 
 /**
  * The gate's question, answered from cache where possible.
  *
- * @param {object} identity a TelegramIdentity document or lean object
+ * @param {object} identity a telegram identity row, from db.telegram
  * @param {{refresh?: boolean}} [opts] refresh:false serves cache only, never calls Telegram
  * @returns {Promise<{joined: boolean, status: string, stale: boolean, checked: boolean}>}
  */

@@ -27,7 +27,7 @@
  *    signup offline — which is exactly what it would do, silently, since the
  *    failure is a 400 on a fire-and-forget send nobody is watching.
  */
-import { TelegramTemplate } from './telegram.model.js';
+import { db } from '#db';
 import { callApi, activeConfig, liveBot } from './telegramClient.js';
 
 /**
@@ -156,8 +156,8 @@ export async function bodyFor(key) {
   if (!Object.prototype.hasOwnProperty.call(DEFAULT_TEMPLATES, key)) {
     throw Object.assign(new Error(`Unknown template "${key}"`), { status: 400 });
   }
-  const row = await TelegramTemplate.findOne({ key }).lean();
-  const custom = row?.body?.trim();
+  const overrides = await db.telegram.getTemplates();
+  const custom = overrides[key]?.trim();
   return { body: custom || DEFAULT_TEMPLATES[key], custom: Boolean(custom) };
 }
 
@@ -212,7 +212,7 @@ async function resolveSender(role) {
 
 /** Every key with its current body and whether it has been customised. */
 export async function listTemplates() {
-  const rows = await TelegramTemplate.find({}).lean();
+  const rows = await db.telegram.listTemplateRows();
   const byKey = new Map(rows.map((r) => [r.key, r]));
   return TEMPLATE_KEYS.map((key) => {
     const row = byKey.get(key);
@@ -235,17 +235,16 @@ export async function saveTemplate({ key, body, actorId }) {
   }
 
   if (!String(body || '').trim()) {
-    await TelegramTemplate.deleteOne({ key });
+    // Reverting means REMOVING the override, not storing a blank one: the
+    // default lives in code, and a stored empty string would be a second way to
+    // spell the same state that every read would then have to handle.
+    await db.telegram.deleteTemplate(key);
     return { key, body: DEFAULT_TEMPLATES[key], customised: false };
   }
 
   const check = validateTemplate(body);
   if (!check.ok) throw Object.assign(new Error(check.error), { status: 400 });
 
-  await TelegramTemplate.findOneAndUpdate(
-    { key },
-    { $set: { body, updatedAt: new Date(), updatedBy: actorId } },
-    { upsert: true },
-  );
+  await db.telegram.setTemplate({ key, body, updatedBy: actorId });
   return { key, body, customised: true };
 }

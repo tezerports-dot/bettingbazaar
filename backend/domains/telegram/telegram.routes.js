@@ -21,7 +21,6 @@
 import express from 'express';
 import { db } from '#db';
 import crypto from 'crypto';
-import { TelegramIdentity, TelegramPendingLink } from './telegram.model.js';
 import { activeConfig, sendMessage, liveBot } from './telegramClient.js';
 import { applyMemberUpdate, isJoinedStatus, joinPrompt, membershipFor } from './telegramMembership.js';
 import { authenticate } from '../identity/auth.middleware.js';
@@ -186,13 +185,15 @@ async function handleMessage(message, cfg) {
   }
 
   // Anything else, while a signup is open, is treated as the Aadhaar attempt.
-  const pending = await TelegramPendingLink.findOne({ telegramUserId }).select('step').lean();
+  // Filters on expiry, so an abandoned signup left behind by a sweep that has
+  // not run is correctly read as "no signup in progress" rather than resumed.
+  const pending = await db.telegram.getPendingLink(telegramUserId);
   if (!pending) {
     // No signup in progress. If this is a REJECTED player sending a corrected
     // Aadhaar, that is the reapply path — their signup conversation ended long
     // ago, which is exactly why sending a new number used to do nothing at all.
     if (isValidAadhaar(text)) {
-      const linked = await TelegramIdentity.findOne({ telegramUserId }).select('userId').lean();
+      const linked = await db.telegram.getIdentityByTelegramId(telegramUserId);
       if (linked) return handleReapply({ chatId, userId: linked.userId, aadhaar: text });
     }
     return sendMessage(chatId, 'Send /start to begin.');
@@ -319,7 +320,7 @@ async function handleChatMember(chatMember, cfg) {
   if (!isJoinedStatus(status)) return;
 
   // They just joined. If a signup was waiting on exactly this, finish it.
-  const identity = await TelegramIdentity.findOne({ telegramUserId }).select('userId').lean();
+  const identity = await db.telegram.getIdentityByTelegramId(telegramUserId);
   if (!identity) return;
 
   const done = await completeOnboarding({ userId: identity.userId });
@@ -519,9 +520,10 @@ function mayCheckLive(userId) {
 
 router.get('/membership', authenticate, async (req, res) => {
   try {
-    const identity = await TelegramIdentity.findOne({ userId: req.user.userId })
-      .select('telegramUserId channelStatus channelCheckedAt channelGeneration')
-      .lean();
+    // Active identities only. A retired one — the row account recovery leaves
+    // behind when a number moves to a new Telegram account — must not answer
+    // the membership question for the account it no longer drives.
+    const identity = await db.telegram.getIdentityByUserId(req.user.userId);
 
     const wantsLive = req.query.verify === '1';
     const refresh = wantsLive && mayCheckLive(req.user.userId);

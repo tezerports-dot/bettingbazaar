@@ -16,9 +16,10 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import { createUser } from '../repositories/users.js';
 import {
-  getActiveConfig, getActiveConfigSecrets, activateConfig,
+  getActiveConfig, getActiveConfigSecrets, getActiveConfigWithSecrets,
+  activateConfig, listConfigHistory,
   listBots, getLiveBot, getLiveBotSecrets, addBot, promoteBot, recordBotError,
-  getTemplates, setTemplate,
+  getTemplates, setTemplate, listTemplateRows, deleteTemplate,
   getIdentityByTelegramId, getIdentityByUserId, createIdentity, relinkIdentity,
   listIdentitiesForUser,
   setChannelStatus, deactivateContact,
@@ -80,6 +81,43 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
       expect(await getActiveConfigSecrets()).toMatchObject({
         botTokenEncrypted: 'TOKENCIPHER', webhookSecret: 'HOOKSECRET',
       });
+    });
+
+    it('reads the channel and its credentials in ONE statement', async () => {
+      await activateConfig({
+        channelId: '-100123', channelUsername: '@live', botUsername: 'bot',
+        botTokenEncrypted: 'TOKENCIPHER', webhookSecret: 'HOOKSECRET',
+      });
+      // The send path needs both halves, and reading them as two queries would
+      // let a channel swap land between them — composing a config whose channel
+      // belongs to one generation and whose token belongs to another.
+      const cfg = await getActiveConfigWithSecrets();
+      expect(cfg).toMatchObject({
+        generation: 1,
+        channelId: '-100123',
+        channelUsername: '@live',
+        botUsername: 'bot',
+        botTokenEncrypted: 'TOKENCIPHER',
+        webhookSecret: 'HOOKSECRET',
+      });
+    });
+
+    it('answers null for the combined read before anything is configured', async () => {
+      // The state a fresh deployment sits in. Callers must read it as "Telegram
+      // auth is unavailable", never as an error to retry.
+      expect(await getActiveConfigWithSecrets()).toBeNull();
+    });
+
+    it('lists generations newest first, with no token among them', async () => {
+      await activateConfig({ channelId: '-1001', botTokenEncrypted: 'TOKENCIPHER' });
+      await activateConfig({ channelId: '-1002' });
+      await activateConfig({ channelId: '-1003' });
+
+      const history = await listConfigHistory({ limit: 10 });
+      expect(history.map((h) => h.generation)).toEqual([3, 2, 1]);
+      // There is no read path for a bot token by design, and a history that
+      // carried one would be exactly that.
+      expect(JSON.stringify(history)).not.toContain('TOKENCIPHER');
     });
   });
 
@@ -181,6 +219,31 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
       // outcome this table can produce.
       await setTemplate({ key: 'welcome', body: '   ' });
       expect(await getTemplates()).toEqual({});
+    });
+
+    it('carries the edit metadata the admin screen needs', async () => {
+      // getTemplates() answers only "what is the body". The panel also has to
+      // show WHEN a key was last edited, which is why the row reader exists.
+      await setTemplate({ key: 'welcome', body: 'Hi', updatedBy: 'admin-1' });
+      const rows = await listTemplateRows();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ key: 'welcome', body: 'Hi', updatedBy: 'admin-1' });
+      expect(rows[0].updatedAt).toBeInstanceOf(Date);
+    });
+
+    it('reverts a key by REMOVING the override, not by storing a blank one', async () => {
+      // Two spellings of "use the default" would mean every read has to handle
+      // both, and the one that forgets sends an empty message.
+      await setTemplate({ key: 'welcome', body: 'Hi' });
+      expect(await deleteTemplate('welcome')).toEqual({ removed: true });
+      expect(await listTemplateRows()).toEqual([]);
+      expect(await getTemplates()).toEqual({});
+    });
+
+    it('reports a no-op revert rather than failing', async () => {
+      // Reverting a key that was never customised is an admin clicking twice,
+      // not an error.
+      expect(await deleteTemplate('welcome')).toEqual({ removed: false });
     });
   });
 

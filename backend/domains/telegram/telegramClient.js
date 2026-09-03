@@ -15,7 +15,7 @@
  * NOT made here — for channel membership it is made in the gate, where the
  * safe answer (deny betting, keep the session) is a policy choice.
  */
-import { TelegramConfig, TelegramBot } from './telegram.model.js';
+import { db } from '#db';
 import { decryptField } from '../identity/fieldCrypto.util.js';
 
 const API_ROOT = 'https://api.telegram.org';
@@ -41,9 +41,10 @@ export async function activeConfig({ force = false } = {}) {
   if (!force && _cache.config && Date.now() - _cache.at < CONFIG_TTL_MS) {
     return _cache.config;
   }
-  const doc = await TelegramConfig.findOne({ active: true })
-    .select('+botTokenEncrypted +webhookSecret +recoveryBotTokenEncrypted +recoveryWebhookSecret')
-    .lean();
+  // One statement for the channel and the credentials together: read as two,
+  // an admin's channel swap could land between them and compose a config whose
+  // channel and token belong to different generations.
+  const doc = await db.telegram.getActiveConfigWithSecrets();
   if (!doc) { _cache = { at: Date.now(), config: null }; return null; }
 
   // The bot REGISTRY wins over the credentials embedded in the generation.
@@ -94,15 +95,15 @@ export async function activeConfig({ force = false } = {}) {
  * it would mean a promotion had two independent expiries to wait out.
  */
 export async function liveBot(role) {
-  const doc = await TelegramBot.findOne({ role, status: 'ACTIVE' })
-    .select('+tokenEncrypted +webhookSecret')
-    .sort({ activatedAt: -1 })
-    .lean();
+  // The live bot for a role is a UNIQUE row, not the newest of several: the
+  // table has a partial unique index on the live slot. Sorting by activation
+  // date and taking the first was the document store's way of coping with two
+  // rows that both claimed to be live — a state that is now unrepresentable.
+  const doc = await db.telegram.getLiveBotSecrets(role);
   if (!doc) return null;
 
   return {
-    id: String(doc._id),
-    role: doc.role,
+    role,
     botId: doc.botId,
     username: doc.username,
     token: safeDecrypt(doc.tokenEncrypted),

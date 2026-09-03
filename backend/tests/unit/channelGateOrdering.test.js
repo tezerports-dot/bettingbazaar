@@ -24,12 +24,8 @@ const identityFindOne = vi.fn();
 const membershipFor = vi.fn();
 const joinPrompt = vi.fn();
 
-vi.mock('../../domains/telegram/telegram.model.js', () => ({
-  TelegramIdentity: {
-    findOne: (...a) => ({
-      select: () => ({ lean: () => identityFindOne(...a) }),
-    }),
-  },
+vi.mock('#db', () => ({
+  db: { telegram: { getIdentityByUserId: (...a) => identityFindOne(...a) } },
 }));
 
 vi.mock('../../domains/telegram/telegramMembership.js', () => ({

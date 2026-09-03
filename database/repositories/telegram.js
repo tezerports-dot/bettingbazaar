@@ -58,6 +58,23 @@ export async function getActiveConfig() {
 }
 
 /**
+ * Recent generations, newest first. The record of every channel and bot swap.
+ *
+ * Public columns only — `CONFIG_PUBLIC` names them, and no token is among them.
+ * This is what an admin panel renders, and a config history that could leak a
+ * bot token would be a read path for a credential the platform deliberately
+ * has none of.
+ */
+export async function listConfigHistory({ limit = 10 } = {}) {
+  const capped = Math.min(Math.max(Number(limit) || 10, 1), 100);
+  const { rows } = await pgQuery(
+    `SELECT ${CONFIG_PUBLIC} FROM telegram_configs
+      ORDER BY generation DESC LIMIT ${capped}`, [], 'tg_config_history',
+  );
+  return rows.map(toConfig);
+}
+
+/**
  * The live generation's SECRETS. Separate function, deliberately: no route that
  * renders a config calls this one.
  */
@@ -75,6 +92,38 @@ export async function getActiveConfigSecrets() {
     recoveryBotTokenEncrypted: r.recovery_bot_token_encrypted,
     recoveryWebhookSecret: r.recovery_webhook_secret,
   } : null;
+}
+
+/**
+ * The live generation, public fields AND secrets, in ONE statement.
+ *
+ * The send path needs both halves: the channel to check membership against and
+ * the token to check it with. Reading them as two queries would let an admin's
+ * channel swap land between them, composing a config whose channel belongs to
+ * one generation and whose credentials belong to another — and the generation
+ * number, which is what makes every cached membership answer stale, would be
+ * whichever of the two the caller happened to keep.
+ *
+ * Kept SEPARATE from `getActiveConfig` rather than merged into it, for the same
+ * reason `getActiveConfigSecrets` is: a route that renders a config to a panel
+ * calls the one that cannot return a token.
+ */
+export async function getActiveConfigWithSecrets() {
+  const { rows } = await pgQuery(
+    `SELECT ${CONFIG_PUBLIC},
+            bot_token_encrypted, webhook_secret,
+            recovery_bot_token_encrypted, recovery_webhook_secret
+       FROM telegram_configs WHERE active LIMIT 1`, [], 'tg_config_active_secrets',
+  );
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    ...toConfig(r),
+    botTokenEncrypted: r.bot_token_encrypted,
+    webhookSecret: r.webhook_secret,
+    recoveryBotTokenEncrypted: r.recovery_bot_token_encrypted,
+    recoveryWebhookSecret: r.recovery_webhook_secret,
+  };
 }
 
 /**
@@ -349,6 +398,39 @@ export async function getTemplates() {
 }
 
 /** Write a template. Upsert, because an admin edits by key, not by row id. */
+/**
+ * Every stored override with its metadata, keyed for a lookup.
+ *
+ * Distinct from `getTemplates()`, which answers only "what is the current body"
+ * and drops blanks. The admin screen also has to show WHEN a key was last
+ * edited, and it has to distinguish a key that was never customised from one
+ * customised back to the default — so it needs the row, not the string.
+ */
+export async function listTemplateRows() {
+  const { rows } = await pgQuery(
+    `SELECT key, body, updated_at, updated_by FROM telegram_templates`,
+    [], 'tg_template_rows',
+  );
+  return rows.map((r) => ({
+    key: r.key, body: r.body, updatedAt: r.updated_at, updatedBy: r.updated_by,
+  }));
+}
+
+/**
+ * Remove an override, reverting the key to its shipped default.
+ *
+ * A DELETE rather than a blank body: the default lives in code, and storing an
+ * empty string to mean "use the default" makes two representations of one
+ * state — the read path would then have to treat blank as absent everywhere it
+ * touches a template, which is exactly the bug that silences a bot.
+ */
+export async function deleteTemplate(key) {
+  const { rowCount } = await pgQuery(
+    `DELETE FROM telegram_templates WHERE key = $1`, [String(key)], 'tg_template_delete',
+  );
+  return { removed: rowCount > 0 };
+}
+
 export async function setTemplate({ key, body, updatedBy = null }) {
   const { rows } = await pgQuery(
     `INSERT INTO telegram_templates (key, body, updated_by, updated_at)
