@@ -51,10 +51,12 @@ const toEntry = (r) => (r ? {
   registeredAt: r.registered_at, releasedAt: r.released_at,
   flaggedAt: r.flagged_at, flaggedBy: r.flagged_by, flagReason: r.flag_reason,
   duplicateAttempts: r.duplicate_attempts,
+  lastContestedAt: r.last_contested_at,
 } : null);
 
 const COLUMNS = `utr, order_id, user_id, amount_paise, status, registered_at,
-  released_at, flagged_at, flagged_by, flag_reason, duplicate_attempts`;
+  released_at, flagged_at, flagged_by, flag_reason, duplicate_attempts,
+  last_contested_at`;
 
 /**
  * Claim a reference for an order.
@@ -88,7 +90,8 @@ export async function claimUtr({ utr, orderId, userId = null, amountRupees = nul
   // Taken. Count the attempt and report whose it is — the count is what turns a
   // refusal into a reviewable pattern.
   const { rows: contested } = await pgQuery(
-    `UPDATE utr_registry SET duplicate_attempts = duplicate_attempts + 1
+    `UPDATE utr_registry SET duplicate_attempts = duplicate_attempts + 1,
+                             last_contested_at  = now()
       WHERE utr = $1 AND order_id <> $2
       RETURNING ${COLUMNS}`,
     [normalized, String(orderId)], 'utr_duplicate_attempt',
@@ -173,7 +176,8 @@ export async function flagFraud(utr, { actor, reason }) {
   if (!String(reason ?? '').trim()) throw new Error('flagFraud requires a reason');
   const { rows } = await pgQuery(
     `UPDATE utr_registry SET
-       status = 'FRAUD', flagged_at = now(), flagged_by = $2, flag_reason = $3
+       status = 'FRAUD', flagged_at = now(), flagged_by = $2, flag_reason = $3,
+       last_contested_at = now()
       WHERE utr = $1 RETURNING ${COLUMNS}`,
     [normalizeUtr(utr), String(actor), String(reason).trim()], 'utr_flag_fraud',
   );
@@ -295,14 +299,38 @@ export async function userUtrHistory(userId, { limit = 20 } = {}) {
  * The review queue. A refused duplicate is a signal, and a signal nobody looks
  * at is not a control.
  */
-export async function contestedUtrs({ limit = 100 } = {}) {
+/**
+ * The review queue, NEWEST CONTEST FIRST.
+ *
+ * It used to be ordered by `duplicate_attempts DESC`, and that made it a queue
+ * nobody could work. Nothing ever leaves this table — a released reference is
+ * spent, not free — so contested rows accumulate for the life of the platform.
+ * A count-ordered queue therefore converges on a fixed list of the oldest, most
+ * attacked references, and every new attempt sorts underneath it. A manual
+ * FRAUD flag starts at zero attempts and sorted DEAD LAST, so the one entry a
+ * human had already judged worth flagging was the one an operator could never
+ * reach. Recency is what a queue is worked by; the count is still the tiebreak.
+ *
+ * Paged, and it reports the total, because a fixed slice of an unbounded list
+ * silently hides everything past it.
+ */
+export async function contestedUtrs({ limit = 100, page = 1 } = {}) {
+  const size = Math.min(Math.max(Number(limit) || 100, 1), 500);
+  const offset = Math.max((Number(page) || 1) - 1, 0) * size;
   const { rows } = await pgQuery(
-    `SELECT ${COLUMNS} FROM utr_registry
+    `SELECT ${COLUMNS}, COUNT(*) OVER () AS total_rows FROM utr_registry
       WHERE duplicate_attempts > 0 OR status = 'FRAUD'
-      ORDER BY duplicate_attempts DESC, registered_at DESC LIMIT $1`,
-    [Math.min(Math.max(Number(limit) || 100, 1), 500)], 'utr_contested',
+      ORDER BY COALESCE(last_contested_at, flagged_at, registered_at) DESC,
+               duplicate_attempts DESC
+      LIMIT $1 OFFSET $2`,
+    [size, offset], 'utr_contested',
   );
-  return rows.map(toEntry);
+  return {
+    entries: rows.map(toEntry),
+    total: rows.length ? Number(rows[0].total_rows) : 0,
+    page: Math.max(Number(page) || 1, 1),
+    limit: size,
+  };
 }
 
 /** Registry totals, in one pass so the figures cannot contradict each other. */

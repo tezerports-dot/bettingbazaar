@@ -133,10 +133,23 @@ router.get('/utr/flagged', authenticate, isAdmin, async (req, res) => {
  * A refused duplicate is the signal this control exists to catch, and a signal
  * nobody looks at is not a control. The attempt increments a counter on the row
  * rather than vanishing into a 400.
+ *
+ * Paged, and newest contest first. This asked for a fixed slice of 200 ordered
+ * by attempt count, which made it a queue nobody could work: nothing ever
+ * leaves the registry, so contested rows accumulate forever and the top 200 by
+ * count is the same list every day. A reference an operator flagged by hand
+ * starts at zero attempts and sorted below all of them, so it never appeared at
+ * all.
  */
 router.get('/utr/contested', authenticate, isAdmin, async (req, res) => {
   try {
-    res.json({ success: true, contested: await db.utr.contestedUtrs({ limit: 200 }) });
+    const { page = 1, limit = 50 } = req.query;
+    const result = await db.utr.contestedUtrs({ page, limit });
+    res.json({
+      success: true,
+      contested: result.entries,
+      pagination: { total: result.total, page: result.page, limit: result.limit },
+    });
   } catch (error) {
     console.error('GET /utr/contested error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch contested UTRs' });

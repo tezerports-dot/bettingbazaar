@@ -73,7 +73,7 @@ describePg('the bank-reference registry', () => {
     const entry = await getUtr(u);
     expect(entry.duplicateAttempts).toBe(3);
     // …and it reaches the review queue rather than vanishing into a 400.
-    expect((await contestedUtrs({ limit: 500 })).map((e) => e.utr)).toContain(u);
+    expect((await contestedUtrs({ limit: 500 })).entries.map((e) => e.utr)).toContain(u);
   });
 
   it('reports who holds a reference, so support has an answer', async () => {

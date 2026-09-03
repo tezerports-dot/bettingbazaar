@@ -2637,6 +2637,14 @@ ALTER TABLE utr_registry ADD COLUMN IF NOT EXISTS flagged_at TIMESTAMPTZ;
 ALTER TABLE utr_registry ADD COLUMN IF NOT EXISTS flagged_by TEXT;
 ALTER TABLE utr_registry ADD COLUMN IF NOT EXISTS flag_reason TEXT;
 ALTER TABLE utr_registry ADD COLUMN IF NOT EXISTS duplicate_attempts INTEGER NOT NULL DEFAULT 0;
+-- When the reference was last contested. The counter alone cannot order a
+-- review queue: nothing ever leaves this table, so attempts accumulate forever
+-- and a queue sorted by count converges on a fixed list of the oldest, most
+-- attacked references while everything new sorts underneath it and is never
+-- seen. A manual FRAUD flag starts at zero attempts, so it sorted LAST — the
+-- one entry a human had already looked at was the one an operator could not
+-- reach.
+ALTER TABLE utr_registry ADD COLUMN IF NOT EXISTS last_contested_at TIMESTAMPTZ;
 
 DO $$ BEGIN
   ALTER TABLE utr_registry ADD CONSTRAINT utr_registry_status_known
@@ -2654,8 +2662,17 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 CREATE INDEX IF NOT EXISTS utr_registry_user_idx ON utr_registry (user_id, registered_at DESC);
--- The review queue: references somebody tried to use more than once.
-CREATE INDEX IF NOT EXISTS utr_registry_contested_idx ON utr_registry (duplicate_attempts DESC)
+-- The review queue: references somebody tried to use more than once, newest
+-- contest first. Ordered by the same expression the query uses, so the queue is
+-- an index scan rather than a sort over a table that only ever grows.
+--
+-- Named for the ordering rather than reusing `utr_registry_contested_idx`:
+-- CREATE INDEX IF NOT EXISTS leaves an existing index of that name alone, so an
+-- already-provisioned database would keep the count-ordered one and silently
+-- sort. The old index is dropped by name for the same reason.
+DROP INDEX IF EXISTS utr_registry_contested_idx;
+CREATE INDEX IF NOT EXISTS utr_registry_contested_recent_idx
+  ON utr_registry ((COALESCE(last_contested_at, flagged_at, registered_at)) DESC, duplicate_attempts DESC)
   WHERE duplicate_attempts > 0 OR status = 'FRAUD';
 
 -- Nothing deletes a registered reference.
