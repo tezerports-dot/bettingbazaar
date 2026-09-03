@@ -3,6 +3,9 @@
 import React, { useEffect, useState } from 'react';
 import Modal from '../ui/Modal';
 import { getBackend, getAssetUrl } from '../../services/backend.service';
+import { apiUrl } from '../../services/apiUrl';
+import { currentOrigin } from '../../services/originFailover';
+import { isNativeShell } from '../../services/nativeLifecycle';
 import { SystemConfigData } from '../../types';
 
 const backend = getBackend();
@@ -35,8 +38,16 @@ const ShareModal: React.FC<ShareModalProps> = ({ onClose }) => {
     }
   };
 
-  const handleCopy = (text: string, label: string) => {
-    navigator.clipboard.writeText(text);
+  // Only claim "Copied!" once the clipboard has actually taken it. `navigator
+  // .clipboard` is undefined in an insecure context and rejects when the
+  // permission is refused, and the old unguarded call both threw inside the
+  // click handler and reported success on a copy that never happened.
+  const handleCopy = async (text: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      return void setCopied('failed');
+    }
     setCopied(label);
     setTimeout(() => setCopied(''), 2000);
   };
@@ -45,12 +56,20 @@ const ShareModal: React.FC<ShareModalProps> = ({ onClose }) => {
       window.open(url, '_blank');
   };
 
-  // Safe fallback URLs if config hasn't loaded or is empty
-  // webUrl comes from SystemConfig — admin updates it when domain changes
-  // androidUrl redirects through backend which reads SystemConfig.androidUrl
-  const webUrl = config?.webUrl || window.location.origin;
-  const androidUrl = `${(config as any)?.backendUrl || ''}/api/download/android` ||
-                     `${window.location.origin}/api/download/android`;
+  // ── The two destinations ────────────────────────────────────────────────
+  // Both are configured server-side so a domain change takes effect without a
+  // rebuild, and both have to be right inside the Capacitor Android shell,
+  // where `window.location.origin` is `https://localhost` — the handset itself.
+  //
+  // The site to invite a friend to. An unset webUrl falls back to the page
+  // origin on the web; in the shell that would hand out a link to the player's
+  // own device, so the deployed API origin stands in for it there.
+  const webUrl = config?.webUrl || (isNativeShell() ? currentOrigin() : window.location.origin);
+  // The APK. `/api/download/android` 302s to whatever androidUrl an admin has
+  // set, so the indirection survives every build; `apiUrl` resolves it against
+  // the API origin — byte-identical to the relative path on a same-origin web
+  // deploy, and the real host in the shell.
+  const androidUrl = apiUrl('/api/download/android');
   // H-06 fix: read logo from branding (GOVERNANCE §3: logos must originate from Branding).
   // Falls back to /app-assets/logo.png only when branding.logo is empty.
   const branding   = (() => { try { return JSON.parse(localStorage.getItem('app_branding') || '{}'); } catch { return {}; } })();
@@ -87,9 +106,10 @@ const ShareModal: React.FC<ShareModalProps> = ({ onClose }) => {
                 </div>
                 <button 
                     onClick={() => handleShare('Join me on Bazaar Clash!', webUrl)}
-                    className="bg-[#D4AF37] hover:bg-[#B8860B] text-black font-bold px-4 py-2 rounded-lg text-xs shadow-lg transition-transform active:scale-95"
+                    disabled={!webUrl}
+                    className="bg-[#D4AF37] hover:bg-[#B8860B] text-black font-bold px-4 py-2 rounded-lg text-xs shadow-lg transition-transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                    {copied === 'link' ? 'Copied!' : 'Share Link'}
+                    {!webUrl ? 'Unavailable' : copied === 'failed' ? 'Copy failed' : copied === 'link' ? 'Copied!' : 'Share Link'}
                 </button>
             </div>
 
