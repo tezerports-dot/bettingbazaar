@@ -71,7 +71,7 @@ router.post('/kyc/:userId/approve', authenticate, hasPermission('canVerifyKYC'),
     // The reviewer is now recorded, which it was not: `user.kyc` is not a path
     // on the User schema (only `kycData` is), so the block that set reviewedBy
     // never executed and every approval on this route was anonymous.
-    const decided = await approveKyc(user._id, { actor: req.user.userId });
+    const decided = await approveKyc(user.userId, { actor: req.user.userId });
     if (!decided.ok) {
       return res.status(409).json({
         success: false,
@@ -83,12 +83,12 @@ router.post('/kyc/:userId/approve', authenticate, hasPermission('canVerifyKYC'),
     if (global.io) {
       const pendingCount = await db.kyc.countKycQueue();
       global.io.to('admin-room').emit('kyc_update', {
-        userId: user._id,
+        userId: user.userId,
         newStatus: 'APPROVED',
         pendingCount,
         server_ts: Date.now()
       });
-      global.io.to(`user-${user._id}`).emit('user_update', {
+      global.io.to(`user-${user.userId}`).emit('user_update', {
         kycStatus: 'APPROVED',
         server_ts: Date.now()
       });
@@ -102,7 +102,7 @@ router.post('/kyc/:userId/approve', authenticate, hasPermission('canVerifyKYC'),
         performedByRole: req.user.isAdmin ? 'admin' : 'subadmin',
         action:          'KYC_APPROVED',
         category:        'USER_MANAGEMENT',
-        targetId:        user._id,
+        targetId:        user.userId,
         targetModel:     'User',
         success:         true,
         timestamp:       new Date(),
@@ -137,7 +137,7 @@ router.post('/kyc/:userId/reject', authenticate, hasPermission('canVerifyKYC'), 
     if (!reason?.trim()) {
       return res.status(400).json({ success: false, message: 'A rejection reason is required — it is what the user is shown.' });
     }
-    const decided = await rejectKyc(user._id, { actor: req.user.userId, reason: reason.trim() });
+    const decided = await rejectKyc(user.userId, { actor: req.user.userId, reason: reason.trim() });
     if (!decided.ok) {
       return res.status(409).json({
         success: false,
@@ -149,12 +149,12 @@ router.post('/kyc/:userId/reject', authenticate, hasPermission('canVerifyKYC'), 
     if (global.io) {
       const pendingCount = await db.kyc.countKycQueue();
       global.io.to('admin-room').emit('kyc_update', {
-        userId: user._id,
+        userId: user.userId,
         newStatus: 'REJECTED',
         pendingCount,
         server_ts: Date.now()
       });
-      global.io.to(`user-${user._id}`).emit('user_update', {
+      global.io.to(`user-${user.userId}`).emit('user_update', {
         kycStatus: 'REJECTED',
         server_ts: Date.now()
       });

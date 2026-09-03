@@ -67,7 +67,7 @@ function effectiveRole(user) {
 /** A label that tells the user WHICH account a code belongs to, in their app. */
 function accountLabel(user) {
   // `email` was removed from User on 2026-08-26; mobile is the identity.
-  const who = user.mobile || String(user._id);
+  const who = user.mobile || String(user.userId);
   // effectiveRole, not user.role — the schema has no singular `role` field, so
   // reading it gave every admin an unlabelled entry indistinguishable from
   // their player account in the same authenticator app.

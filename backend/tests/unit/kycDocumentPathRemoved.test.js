@@ -112,8 +112,14 @@ describe('there is one KYC decision path', () => {
     // Removing duplicates must not remove the real one: this is the exception
     // path an operator needs when a batch got a case wrong.
     const admin = read('../../routes/admin/kyc.admin.routes.js');
-    expect(admin).toMatch(/approveKyc\(user\._id/);
-    expect(admin).toMatch(/rejectKyc\(user\._id/);
+    // Through the state-machine decision functions, keyed on the PostgreSQL id.
+    // This asserted `user._id` — the document-store key the users repository
+    // does NOT return, so the decision ran against undefined and every manual
+    // approve/reject 409'd. The routes now pass `user.userId`; a regression back
+    // to `._id` would silently break the operator's exception path again.
+    expect(admin).toMatch(/approveKyc\(user\.userId/);
+    expect(admin).toMatch(/rejectKyc\(user\.userId/);
+    expect(admin).not.toMatch(/user\._id/);
     expect(admin).not.toMatch(/user\.kycStatus = /);
   });
 });

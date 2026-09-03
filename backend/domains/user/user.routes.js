@@ -231,7 +231,7 @@ router.get('/v1/user/:id/data', authenticate, async (req, res) => {
     res.json({
       success: true,
       user: {
-        id:               user._id,
+        id:               user.userId,
         username:         user.username,
         mobile:           user.mobile,
         depositBalance,
