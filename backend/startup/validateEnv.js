@@ -4,7 +4,7 @@
  *
  * A money platform must never boot into a state where a missing secret silently
  * degrades security (e.g. a fallback JWT secret that lets anyone forge tokens,
- * or an unset Mongo URI that connects to localhost). This module makes the
+ * or an unset database URL that quietly connects to localhost). This makes the
  * required configuration a HARD boot gate in production and a loud warning in
  * development, so misconfiguration surfaces at deploy time — not as a 3 a.m.
  * incident.

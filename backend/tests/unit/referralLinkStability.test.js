@@ -36,7 +36,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '../../..');
 
 // The route's two collaborators are stubbed: this is about the redirect's
-// contract, not about Telegram or Mongo.
+// contract, not about Telegram or the database.
 let liveBotUsername = 'bazaar_signin_bot';
 const clicks = [];
 

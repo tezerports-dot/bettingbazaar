@@ -24,11 +24,12 @@
  * how a leak ships. `cyclePublicView.test.js` asserts no forbidden field can
  * cross this line.
  *
- * ── Store-independent, so it survives the money flip ────────────────────────
+ * ── Independent of where the totals come from ───────────────────────────────
  * This projects whatever a cycle object carries, so it does not care whether
- * the pool totals come from Mongo `$inc`, the derived-from-bets projection
- * (`cyclePool.service.js`), or a Postgres counter after the money-authority
- * cutover. The public boundary is the same in every mode.
+ * the pool totals are the phantom figures on the row or the real ones derived
+ * from `bets` (`cyclePool.service.js`). The public boundary is the same either
+ * way — which matters, because the real totals are exactly what must not
+ * cross it.
  */
 
 /**

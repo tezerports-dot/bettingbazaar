@@ -19,8 +19,8 @@
  * writes. Every rejected user is told they were rejected and never told why,
  * so they cannot fix the submission and resubmit.
  *
- * `reviewedBy` and `reviewedAt` are lost to the same dead branch, so no
- * approval on the Mongo path records who made it.
+ * `reviewedBy` and `reviewedAt` were lost to the same dead branch, so no
+ * approval recorded who made it.
  *
  * ── The race ────────────────────────────────────────────────────────────────
  * That route also reads the user, assigns the status and saves — a
@@ -29,11 +29,11 @@
  * happened. The expected previous status now goes in the FILTER, so exactly one
  * reviewer's decision lands.
  *
- * ── One rule table, shared with Postgres ────────────────────────────────────
- * KYC_ALLOWED_FROM is imported from postgres/kycPg.js rather than restated, for
- * the same reason the order seam does it: two copies are two rules the moment
- * either changes, and a decision Postgres refuses while Mongo permits is a
- * disagreement no reconciliation can tell apart from real drift.
+ * ── One rule table ──────────────────────────────────────────────────────────
+ * KYC_ALLOWED_FROM is imported from the kyc repository rather than restated,
+ * for the same reason the order seam does it: two copies are two rules the
+ * moment either changes, and the copy nobody updated is the one that lets an
+ * illegal decision through.
  */
 import { db } from '#db';
 import { KYC_STATES, KYC_ALLOWED_FROM } from '#db/repositories/kyc.core.js';

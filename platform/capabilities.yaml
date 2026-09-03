@@ -171,7 +171,10 @@ capabilities:
     owner: app
     implementation_status: full
     activation_status: active
-    evidence: [database/client.js, backend/startup/mongoConnect.js, backend/services/metrics.service.js]
+    # One pool, in the data layer, with its stats exported to the metrics
+    # registry through setPoolStatsProvider. The second pool this used to name
+    # belonged to the second store and went with it.
+    evidence: [database/client.js, backend/services/metrics.service.js]
   - id: CAP-16
     name: Partitioning Strategy
     bucket: A
@@ -196,9 +199,16 @@ capabilities:
     name: Read Replicas
     bucket: B
     owner: app
-    implementation_status: architecture-ready
+    # DOWNGRADED from architecture-ready, deliberately. The only code that ever
+    # existed was a helper that set a read preference on a document-store query
+    # object -- an API this platform no longer speaks -- and it had no callers.
+    # Routing analytics reads to a PostgreSQL replica is a different mechanism
+    # (a second pool against a replica DSN, plus a rule for which reads may be
+    # stale), and none of it is written. Calling that architecture-ready would
+    # be claiming a readiness that has no code behind it.
+    implementation_status: absent
     activation_status: infra-gated
-    evidence: [backend/services/readPreference.service.js]
+    docs: [docs/governance/04-GOVERNANCE.md]
   - id: CAP-19
     name: Backup Verification
     bucket: B

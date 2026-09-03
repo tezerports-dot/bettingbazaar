@@ -32,10 +32,10 @@ describe('depositCreditSplit', () => {
       .toEqual({ depositCredit: 1000, reserveCredit: 0, total: 1000, split: true });
   });
 
-  it('falls back to all-deposit for an order predating the split — read HYDRATED', () => {
-    // A Mongoose document applies the schema default, so the fields read 0 —
-    // not undefined. `?? tokenAmount` therefore never fired here, and a site
-    // with no fallback credited nothing while the merchant was debited in full.
+  it('falls back to all-deposit for an order predating the split — fields read 0', () => {
+    // Where the column defaults, the fields read 0 — not undefined. So
+    // `?? tokenAmount` never fired here, and a site with no fallback credited
+    // nothing while the merchant was debited in full.
     expect(depositCreditSplit({ tokenAmount: 1000, depositAllocation: 0, reserveAllocation: 0 }))
       .toEqual({ depositCredit: 1000, reserveCredit: 0, total: 1000, split: false });
   });

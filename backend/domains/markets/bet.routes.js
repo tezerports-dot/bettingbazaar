@@ -301,11 +301,11 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
     ].filter((s) => s.amount > 0);
 
     // ── Stake + bet record ─────────────────────────────────────────────────
-    // On MONGO these are two operations: lock the stake, then insert the bet.
+    // These were once two operations: lock the stake, then insert the bet.
     // Between them the user's money is locked against a bet that does not
     // exist, and nothing sweeps that — the stake is attributed to a bet id
-    // never written, so no settlement releases it and no reconciliation can
-    // attribute it. The balance is simply short until a human finds it.
+    // never written, so no settlement releases it and nothing can attribute
+    // it. The balance is simply short until a human finds it.
     //
     // The stake movement and the bet row are ONE transaction (`placeBet`), so
     // the window cannot open at all.

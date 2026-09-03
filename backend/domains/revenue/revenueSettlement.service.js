@@ -358,12 +358,12 @@ export async function issueMerchantBonus({ merchantId, amountMinor, idempotencyK
 /**
  * The two reconciliation reads live in the repository now.
  *
- * `unrecordedSources` was one generic aggregate parameterised by a Mongoose
- * model, a match stage and a `$lookup` — and it was called with `PaymentOrder`
- * and `Cycle`, both deleted with the ODM, so BOTH reconciliation passes threw
- * a ReferenceError. Silently: they are called from a cron whose per-item
- * failures are collected rather than raised, so a revenue reconciliation that
- * had never run once still reported a clean, empty result.
+ * `unrecordedSources` was one generic aggregation parameterised by a model, a
+ * match stage and a join — and it was called with two models that had already
+ * been deleted, so BOTH reconciliation passes threw a ReferenceError.
+ * Silently: they are called from a cron whose per-item failures are collected
+ * rather than raised, so a revenue reconciliation that had never run once
+ * still reported a clean, empty result.
  *
  * A LEFT JOIN with a NULL test answers the same question in one pass, and each
  * source gets a named query rather than a generic one that has to be told what

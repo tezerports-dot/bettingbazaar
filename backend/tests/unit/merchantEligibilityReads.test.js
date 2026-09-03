@@ -105,9 +105,9 @@ describe('the assignment routes no longer read the mirror', () => {
 
   it('has no direct tokenBalance comparison left in an eligibility gate', () => {
     // The three gates read `merchant.tokenBalance < order.tokenAmount` off the
-    // Mongo document. Asserted against the source because the alternative is an
-    // integration test per route, and what matters is that no FOURTH gate gets
-    // added the old way.
+    // merchant RECORD — a copy of a number the wallet owns. Asserted against
+    // the source because the alternative is an integration test per route, and
+    // what matters is that no FOURTH gate gets added the old way.
     expect(source).not.toMatch(/\w+\.tokenBalance\s*<\s*order\.tokenAmount/);
   });
 

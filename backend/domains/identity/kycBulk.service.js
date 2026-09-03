@@ -231,11 +231,11 @@ export async function applyImport({ csv, actorId }) {
  * Mirror a batch's verdicts onto the User documents, and keep the programme's
  * verified-member counter honest.
  *
- * ── Why this goes through decideKyc rather than an updateMany ────────────────
+ * ── Why this goes through decideKyc rather than a bulk update ───────────────
  * `kycStatus` has a state machine (domains/user/kycDecision.service.js): legal
  * transitions only, the rejection reason written in the SAME update as the
- * status, the reviewer recorded, and the Postgres/Mongo authority resolved in
- * one place. A bulk `updateMany` here would be a second way to decide KYC that
+ * status, and the reviewer recorded — all in one place. A bulk update here
+ * would be a second way to decide KYC that
  * honours none of that — the exact duplicate-decision-path shape this codebase
  * has been paying for elsewhere. A batch is not a reason to skip the rules; it
  * is a reason to apply them ten thousand times.

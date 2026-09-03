@@ -119,11 +119,10 @@ describe('importing verdicts', () => {
 
 describe('a batch decision is still a KYC decision', () => {
   it('goes through the state machine, never a bulk write on kycStatus', () => {
-    // decideKyc owns legal transitions, the rejection reason landing in the same
-    // update as the status, and the Mongo/Postgres authority resolution. A batch
-    // is not a reason to skip that — it is a reason to apply it ten thousand
-    // times. A raw updateMany here would be a second way to decide KYC that
-    // honours none of it.
+    // decideKyc owns the legal transitions, the reviewer, and the rejection
+    // reason landing in the same update as the status. A batch is not a reason
+    // to skip that — it is a reason to apply it ten thousand times. A bulk
+    // update here would be a second way to decide KYC that honours none of it.
     expect(code).toMatch(/decideKyc\(row\.userId, to/);
     expect(code).not.toMatch(/updateUser\([\s\S]{0,80}kycStatus/);
     expect(code).not.toMatch(/\$set: \{ kycStatus/);

@@ -550,15 +550,11 @@ router.get('/v1/content/promo/:location', async (req, res) => {
 router.get('/v1/content/faq', async (req, res) => {
   try {
     /*
-     * The FAQ model is the only store. A `SystemConfig({ key: 'faq' })`
-     * fallback used to sit here and was unreachable: `SystemConfig.key`
-     * defaults to 'main' and is unique, nothing has ever written another key,
-     * and `value` is not a declared path on that schema — so the fallback read
-     * a field that could not exist on a document that could not exist.
-     *
-     * It was also reachable only from a `catch` around `mongoose.model('FAQ')`,
-     * which throws solely when the model is unregistered — a startup fault, not
-     * a data condition. Swallowing that told the caller "no FAQs" instead.
+     * One owner. A config-document fallback used to sit here and was
+     * unreachable twice over: it read a key nothing had ever written, off a
+     * field that was not declared — and it was reachable only from a `catch`
+     * that fired on a startup fault rather than on any data condition.
+     * Swallowing that told the caller "no FAQs" instead of failing.
      */
     const faqs = await db.content.listFaqs({ publishedOnly: true });
 

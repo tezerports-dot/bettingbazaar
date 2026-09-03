@@ -4,8 +4,8 @@
  *
  * ── What this is guarding against ───────────────────────────────────────────
  * A shipped bug, not a hypothetical. `/admin/merchants/:id/fund` keyed its
- * merchant credit on `mw_topup_${new mongoose.Types.ObjectId()}` — a fresh
- * value per delivery, which is `random()`. The UNIQUE constraint behind it
+ * merchant credit on a freshly generated id — a new value per delivery,
+ * which is `random()`. The UNIQUE constraint behind it
  * could never fire, so every retry funded the merchant again while the code
  * read as though it were protected.
  *

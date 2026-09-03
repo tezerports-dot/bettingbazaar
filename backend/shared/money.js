@@ -11,12 +11,11 @@
  *   3. within range — |paise| ≤ MAX_SAFE_PAISE, so a runaway computation can't
  *      silently exceed IEEE-754 integer safety (overflow protection).
  *
- * SCOPE (per the A/B/C plan): this is the canonical engine and the paise
- * boundary for the Postgres money layer (pgClient.paise delegates here). The
- * MongoDB wallet still stores float rupees at rest; converting that store to
- * integer-paise-at-rest is the Postgres cutover step (single source of truth) —
- * NOT a live rewrite of the proven float paths, which would create two money
- * representations mid-migration. New money code should use these helpers.
+ * SCOPE: this is the canonical engine and the paise boundary for the money
+ * layer (the database client's paise helpers delegate here). Money is integer
+ * paise at rest, in BIGINT, everywhere — these helpers are the one place
+ * rupees become paise and back, so there is a single conversion to audit
+ * rather than one per call site.
  */
 
 // MAX_SAFE_INTEGER paise ≈ ₹90.07 trillion — far above any real balance, but a

@@ -19,10 +19,10 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
     console.log('👤 Client connected:', socket.id);
 
     // Push-on-connect helpers
-    // M-04 fix: all fallback values match Mongoose schema defaults exactly.
-    // GOVERNANCE §5: every server-side fallback must literally match the schema default.
-    // Schema: SystemConfig — betLimits.thirtyMin.min=10, maxDeposit=50000, minWithdrawal=500
-    // payoutMultiplier is now a SystemConfig field (not a hardcoded literal).
+    // M-04 fix: every fallback here matches the config spec's declared default
+    // exactly. GOVERNANCE §5: a server-side fallback that differs from the
+    // declared default is a second, invisible configuration — the client is
+    // then told one number while the engine uses another.
     const sendSystemConfig = async () => {
       try {
         const cfg   = await getSystemConfig();

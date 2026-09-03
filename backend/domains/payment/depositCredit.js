@@ -30,10 +30,10 @@
  *     deposit share exactly zero. `||` treats that as absent and substitutes
  *     the whole token amount, so the user is credited the full amount to
  *     deposit AND the full amount to reserve.
- *   - an order predating the split fields reads 0 through a hydrated Mongoose
- *     document (the schema default applies) but `undefined` through `.lean()`.
- *     So `??` fires or does not fire depending on how the order was READ, which
- *     is not a property any money decision should depend on.
+ *   - an order predating the split fields reads 0 where the column defaults
+ *     and `undefined` where it does not, so `??` fired or did not fire
+ *     depending on how the order was READ — not a property any money decision
+ *     should depend on.
  *
  * ── The rule ────────────────────────────────────────────────────────────────
  * The user receives exactly `tokenAmount`. It is split by the recorded
