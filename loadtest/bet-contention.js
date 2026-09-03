@@ -1,18 +1,20 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
- * loadtest/bet-contention.js — find where the Cycle document stops scaling.
+ * loadtest/bet-contention.js — find where one cycle stops scaling.
  *
  * WHAT THIS MEASURES, AND WHY IT IS THE ONLY TEST THAT MATTERS HERE
  *
- * Every bet on a cycle updates the SAME Mongo document:
+ * Every bet on a cycle contends for the SAME cycle row. A placement takes
+ * `FOR SHARE` on it — enough to guarantee the cycle is still open while the
+ * stake moves, and deliberately not more: an `UPDATE` of a running total on
+ * that row would make two concurrent bets block on each other and deadlock
+ * (40P01), which is why the real pools are DERIVED from `bets` and only the
+ * phantom figures are stored.
  *
- *     Cycle.findOneAndUpdate({ cycleId, status: { $in: ['OPEN','MERGED'] } },
- *                            { $inc: { realDelhi: amount, totalDelhi: amount } })
- *
- * (domains/markets/bet.routes.js). MongoDB locks at document granularity, so
- * bet #2 waits for bet #1. Adding application instances does not help — they
- * all queue on the same document. That is the horizontal-scaling ceiling
- * described in docs/governance/LATENCY.md, and its height is UNMEASURED.
+ * So the contention here is a shared row lock plus the per-user wallet lock
+ * each bet takes, not a queue behind one exclusive writer. Whether that ceiling
+ * is high enough is UNMEASURED, and this is what measures it —
+ * docs/governance/LATENCY.md, "horizontal scaling".
  *
  * So every VU here targets ONE cycleId on purpose. Spreading load across
  * cycles would produce a flattering number that says nothing about the real
@@ -20,10 +22,9 @@
  * hitting one document inside one window.
  *
  * WHY LATENCY, NOT ERRORS
- * WiredTiger uses optimistic concurrency: the loser of a write race gets a
- * WriteConflictError and MongoDB retries it INTERNALLY. Contention therefore
- * does not surface as failed requests. It surfaces as p99 latency, and only
- * past a threshold. A run with 0% errors can still be past the knee.
+ * A row lock makes the loser of a race WAIT rather than fail. Contention
+ * therefore does not surface as failed requests. It surfaces as p99 latency,
+ * and only past a threshold. A run with 0% errors can still be past the knee.
  *
  * READING THE RESULT
  * Plot p99 against achieved bets/sec across the stages. Flat, then a knee —
@@ -31,14 +32,13 @@
  * load balancer:
  *
  *   - throughput roughly DOUBLES  -> the bottleneck is the app tier. There is
- *     no document-contention problem yet; do not rewrite the bet path.
- *   - throughput barely moves     -> the bottleneck is the Cycle document.
- *     That is the trigger for sharded counters or the Postgres guard
- *     (LATENCY.md, "horizontal scaling").
+ *     no contention problem yet; do not rewrite the bet path.
+ *   - throughput barely moves     -> the bottleneck is the cycle row and the
+ *     locks taken around it (LATENCY.md, "horizontal scaling").
  *
  * That second comparison is the actual experiment. A single-instance number
- * on its own cannot distinguish "the database document is the limit" from
- * "one Node process is the limit", and those have opposite fixes.
+ * on its own cannot distinguish "the database is the limit" from "one Node
+ * process is the limit", and those have opposite fixes.
  *
  * USAGE
  *   BASE_URL=https://staging.example.com \
@@ -134,7 +134,7 @@ export default function () {
   check(res, {
     'bet accepted': () => ok,
     'not rate limited': () => res.status !== 429,   // a 429 means the limiter
-                                                    // is the ceiling, not Mongo
+                                                    // is the ceiling, not the DB
   });
 }
 
@@ -152,8 +152,8 @@ export function handleSummary(data) {
     `  insufficient    ${m.bb_insufficient_balance?.values?.count ?? 0}   (benign — seed more funds)`,
     '',
     '  Now re-run with TWO app instances behind the balancer.',
-    '  Throughput roughly doubles -> app tier is the limit, Mongo is fine.',
-    '  Throughput barely moves    -> the Cycle document is the ceiling.',
+    '  Throughput roughly doubles -> app tier is the limit, the DB is fine.',
+    '  Throughput barely moves    -> the cycle row and its locks are the ceiling.',
     '',
   ];
   return { stdout: lines.join('\n') };
