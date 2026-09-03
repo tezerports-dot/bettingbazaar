@@ -10,7 +10,7 @@
  * it, and be told their account did not exist.
  *
  * No unit test caught it, because each half worked. No integration test caught
- * it, because that tier is deleted. `check:no-mongo` did not, because it counts
+ * it, because that tier is deleted. The single-store gate did not, because it counts
  * references rather than asking whether reads and writes agree on a store.
  *
  * So this walks the seam directly: create through the signup path, then read

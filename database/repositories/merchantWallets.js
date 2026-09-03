@@ -91,7 +91,7 @@ async function move({
       reason,
       refModel,
       refId,
-      // The Mongo path's allowOverdraft:true is a blind $inc that may drive the
+      // The old allowOverdraft:true was a blind increment that could drive the
       // balance negative; the same authorisation is what lifts the Postgres
       // guard. Neither store silently refuses it, and both record it.
       allowNegativeAvailable: allowOverdraft,
@@ -109,7 +109,7 @@ async function move({
   }
   if (!result.ok) {
     count(operation, 'insufficient');
-    // Insufficient balance — no mutation happened. The Mongo path signals this
+    // Insufficient balance — no mutation happened. The old path signalled this
     // the same way, and callers keep their own rollback/response logic.
     return { merchant: null, idempotent: false };
   }

@@ -24,14 +24,14 @@
  * second. See docs/ORDERS_ROUTING_DESIGN.md.
  *
  * ── Minor units are the same unit, under two names ──────────────────────────
- * Mongo's postings carry `amountMinor`; Postgres carries `amountPaise`. Both
+ * Older postings carried `amountMinor`; these carry `amountPaise`. Both
  * are integer paise — the rename is historical, not a conversion, and nothing
  * here multiplies or divides. Getting that wrong would be a hundredfold error
  * in the books, so the translation lives in ONE pair of functions below rather
  * than being repeated at each call site.
  *
  * ── Reads follow authority too ──────────────────────────────────────────────
- * A trial balance derived from Mongo while writes go to Postgres is a report
+ * A trial balance derived from anything but the rows the writes landed in is a report
  * about a store that is no longer the source of truth, and it would read as
  * clean the whole time it was wrong. The plan's "reads before writes" ordering
  * is about the CUTOVER SEQUENCE — read paths are exercised against Postgres
@@ -62,7 +62,7 @@ function toPgPostings(postings) {
 }
 
 /** The inverse, for handing a Postgres row back in the vocabulary callers use. */
-function toMongoShape(event) {
+function toCallerShape(event) {
   if (!event) return null;
   return {
     idempotencyKey: event.idempotencyKey,
@@ -106,7 +106,7 @@ export async function recordEventOnPostgres({
 
   return {
     idempotent: Boolean(result.idempotent),
-    event: toMongoShape(stored),
+    event: toCallerShape(stored),
   };
 }
 
@@ -153,7 +153,7 @@ export async function accountBalanceOnPostgres(accountCode) {
 export async function getLedgerOnPostgres({ page = 1, limit = 50, eventType = null } = {}) {
   const pg = await pgGetLedger({ page, limit, eventType });
   return {
-    entries: pg.entries.map(toMongoShape),
+    entries: pg.entries.map(toCallerShape),
     total: pg.total,
     page: pg.page,
     pages: pg.pages,

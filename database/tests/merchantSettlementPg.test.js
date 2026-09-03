@@ -103,7 +103,7 @@ describePg('Merchant settlement (PostgreSQL)', () => {
     it('holds the merchant\'s tokens in settlement before releasing them', async () => {
       const held = await open('ms_w1', DIRECTIONS.WITHDRAWAL, 25_000);
       expect(held).toMatchObject({ ok: true, idempotent: false });
-      // Owed, and NOT spendable. The Mongo path has no way to say this — there
+      // Owed, and NOT spendable. A single balance cannot say this — there
       // the tokens simply do not exist until the hold expires.
       expect(await bal()).toMatchObject({ available: 0, settlement: 25_000, liability: 25_000 });
 

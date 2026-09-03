@@ -19,7 +19,7 @@
  *      success and changed nothing — for as long as nobody checked the value
  *      it was supposed to have changed.
  *
- *   2. BOUNDS ARE ENFORCED ON EVERY WRITE. Mongoose `min`/`max` on a nested
+ *   2. BOUNDS ARE ENFORCED ON EVERY WRITE. Declared bounds on a nested
  *      path is validated on a document save and SKIPPED ENTIRELY by an update
  *      operator, which is what the admin routes use. A payout fee of 900% or a
  *      negative reserve percentage was accepted by every one of them. Both feed
@@ -138,7 +138,7 @@ export const SYSTEM_CONFIG_SPEC = group({
 
   // ── The four that feed money arithmetic ───────────────────────────────────
   // Every one of these was writable out of range through an update operator,
-  // because Mongoose skips min/max there. They are bounded on write now.
+  // because the update operators skipped them. They are bounded on write now.
   payoutFeePercent:      n(0, 0, 100),
   betReservePercent:     n(1, 0, 100),
   winningsFeePercent:    n(1, 0, 100),

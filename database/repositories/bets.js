@@ -74,7 +74,7 @@ const BET_SOURCE_FIELD = Object.freeze({
   reserveBalance:  'fromReserveBalance',
 });
 
-/** wallet-field slices → the Mongo document's three columns. */
+/** wallet-field slices -> the three keys the placement response carries. */
 export function sourcesFromSlices(slices) {
   const out = { fromDepositBalance: 0, fromWinningsBalance: 0, fromReserveBalance: 0 };
   for (const s of slices) {
@@ -92,7 +92,8 @@ export function sourcesFromSlices(slices) {
  *   { ok: true,  bet, balances, idempotent }
  *   { ok: false, reason: 'insufficient' }   the caller answers 400
  *
- * `bet` is a MONGO-SHAPED plain object (rupees, `amount`, `status`), because
+ * `bet` is a plain object in the response's vocabulary (rupees, `amount`,
+ * `status`), because
  * that is what the route serialises into its response and what the client
  * renders. The Postgres row is paise and is not the thing anyone reads.
  */

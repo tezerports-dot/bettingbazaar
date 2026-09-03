@@ -156,7 +156,7 @@ describePg('KYC decisions (PostgreSQL state machine)', () => {
 
   describe('a decision carries the facts that justify it', () => {
     it('REFUSES a rejection with no reason', async () => {
-      // The Mongo route assigns the reason to `user.kyc.rejectionReason`, and
+      // The old route assigned the reason to an undeclared path, and
       // the User schema has no `kyc` subdocument — only `kycData` — so the
       // guarded block never runs and every rejected user is told they were
       // rejected and never told why. Here it is not representable.
@@ -194,7 +194,7 @@ describePg('KYC decisions (PostgreSQL state machine)', () => {
     });
 
     it('reports approvals with no reviewer, and rejections with no reason', async () => {
-      // Both gap checks. On the Mongo path EVERY approval is anonymous, so
+      // Both gap checks. Before this, EVERY approval was anonymous, so
       // these are the queries that make that visible after a backfill.
       await pgQuery(
         `INSERT INTO user_kyc (user_id, kyc_status) VALUES ('ghost1','APPROVED'), ('ghost2','REJECTED')`);
@@ -252,7 +252,7 @@ describePg('KYC decisions (PostgreSQL state machine)', () => {
 
   describe('concurrency', () => {
     it('lets exactly ONE of a racing approve and reject win', async () => {
-      // The defect in one line: the Mongo route reads the user, assigns the
+      // The defect in one line: the old route read the user, assigned the
       // status and saves. Two reviewers deciding at once both pass the read and
       // the last save wins, with no record that the other decision happened.
       await awaitingReview('c1');

@@ -5,15 +5,14 @@
  * Domain 5, and the glue. Orders are what every other financial domain hangs
  * off: a settlement is driven by an order's state, a ledger event is produced
  * by an order reaching a state, a merchant's inventory is committed because an
- * order asked for it. Until this state is authoritative here, every one of
- * those still depends on Mongo to say where the order is.
+ * order asked for it. All of them ask this table where the order is.
  *
- * ── What `payment_orders` already was, and why it is not this ───────────────
- * That table is a MIRROR — the Mongo document projected on every save,
- * overwritten in place, with no history and no guard on what may follow what.
- * It answers "where is this order now" and nothing else. It cannot refuse a
+ * ── Why the state is a machine and not a column ─────────────────────────────
+ * `payment_orders` holds the order's current shape, overwritten in place. It
+ * answers "where is this order now" and nothing else: it cannot refuse a
  * transition, cannot say how the order got here, and cannot connect a state
- * change to the accounting entry it produced.
+ * change to the accounting entry it produced. `order_states` plus the
+ * append-only `order_transitions` answer all three.
  *
  * ── The state machine ───────────────────────────────────────────────────────
  *
@@ -31,9 +30,9 @@
  * ── Money moves with the state, in one transaction ──────────────────────────
  * A transition that produces an accounting event writes BOTH inside the same
  * transaction, and records the ledger key on the transition row. Either the
- * order advanced and the books recorded it, or neither happened. The Mongo path
- * changes status first and records the event afterwards, which is the shape
- * that leaves an order COMPLETED with no entry when the second step fails.
+ * order advanced and the books recorded it, or neither happened. Changing the
+ * status first and recording the event afterwards is the shape that leaves an
+ * order COMPLETED with no entry when the second step fails.
  *
  * ── Idempotency ─────────────────────────────────────────────────────────────
  * `order_transitions.tx_id` is UNIQUE and derived from the order and the target
@@ -63,17 +62,16 @@ export const ORDER_TYPES = Object.freeze({ DEPOSIT: 'DEPOSIT', WITHDRAWAL: 'WITH
  * whole rule can be read at once and compared against the diagram above.
  */
 /**
- * EXPORTED so the Mongo-side seam (domains/payment/orderLifecycle.service.js)
- * guards with the SAME table rather than a copy of it.
+ * EXPORTED so `domains/payment/orderLifecycle.service.js` guards with the SAME
+ * table rather than a copy of it.
  *
  * Two tables would be two rules, and they would drift the first time someone
- * added a state to one of them — leaving a transition Postgres refuses and
- * Mongo permits, which is the exact class of disagreement no reconciliation can
- * distinguish from real drift. One definition, both stores.
+ * added a state to one of them — and the copy nobody updated is the one that
+ * lets an illegal transition through. One definition.
  *
  * ── PENDING_QUEUE is re-enterable, and used not to be ───────────────────────
  * This table said "nothing transitions INTO PENDING_QUEUE; that is where an
- * order is opened", and two tests asserted it. The live Mongo path disagreed:
+ * order is opened", and two tests asserted it. The live code disagreed:
  * merchant.routes.js's reject handler sets an ASSIGNED order back to
  * PENDING_QUEUE and immediately looks for another merchant. That is the whole
  * point of rejecting — the order returns to the queue.
@@ -274,13 +272,12 @@ export async function openOrder({
   state = ORDER_STATES.PENDING_QUEUE,
 }) {
   if (!orderId) throw new Error('openOrder requires an orderId');
-  // ADOPTION. A cutover has to take on orders that are already in flight, and
-  // they are not at the start of the lifecycle — an order sitting at PAID in
-  // Mongo must be adopted AT PAID. Opening it at PENDING_QUEUE instead would
+  // An order may be opened at a state OTHER than the start of the lifecycle.
+  // That is deliberate: an order already in flight has to be recorded where it
+  // actually is. Opening one at PENDING_QUEUE when it is really at PAID would
   // make its very next transition illegal (COMPLETED accepts PAID/PROCESSING/
   // DISPUTED), so the merchant's confirm would be refused and the order would
-  // strand with the money unmoved. Every in-flight order would break that way
-  // at the moment of the flip.
+  // strand with the money unmoved.
   if (!ORDER_STATES[state]) {
     throw new Error(`openOrder: unknown state '${state}'. Known: ${Object.keys(ORDER_STATES).join(', ')}`);
   }
@@ -427,10 +424,9 @@ export async function transition({
       throw error;
     }
 
-    // The accounting event, in the SAME transaction as the state change. This
-    // is the property the Mongo path cannot offer: there, status is written
-    // first and the event afterwards, so a failure between them leaves an order
-    // COMPLETED with nothing in the books.
+    // The accounting event, in the SAME transaction as the state change. Write
+    // the status first and the event afterwards and a failure between them
+    // leaves an order COMPLETED with nothing in the books.
     if (spec) {
       const { eventType, postings } = spec(order.tokenAmountPaise);
       await client.query(

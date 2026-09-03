@@ -6,7 +6,7 @@
  * each one moves a real player balance.
  *
  * ── The defect this exists to remove ────────────────────────────────────────
- * Recorded in docs/FINANCIAL_DOMAIN_MATRIX.md and MONGO_MONEY_AUDIT.md:
+ * Recorded in docs/FINANCIAL_DOMAIN_MATRIX.md:
  *
  *     A ROLLBACK or REFUND credit does not currently have to prove a matching
  *     prior debit.
@@ -224,7 +224,7 @@ export async function recordCallback({
 
     const debiting = type === CASINO_TX.BET;
     const movement = await applyMovementWithin(ctx, {
-      // A BET takes from deposit; everything else gives back. The Mongo path
+      // A BET takes from deposit; everything else gives back. The old path
       // refunds into `depositBalance` too, so the two stores agree on which
       // pocket a reversal lands in.
       legs: [{ field: 'depositBalance', deltaPaise: debiting ? 0 - amountPaise : amountPaise }],

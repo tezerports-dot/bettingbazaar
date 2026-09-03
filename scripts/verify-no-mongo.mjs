@@ -114,6 +114,7 @@ const isJs = (rel) => ['.js', '.mjs', '.cjs'].includes(extname(rel));
 const isJsLike = (rel) => isJs(rel) || ['.ts', '.tsx', '.jsx'].includes(extname(rel));
 const isMarkdown = (rel) => extname(rel) === '.md';
 const inBackend = (rel) => rel.startsWith('backend/');
+const inDatabase = (rel) => rel.startsWith('database/');
 const inDocs = (rel) => rel.startsWith('docs/');
 
 // ---------------------------------------------------------------------------
@@ -292,6 +293,13 @@ const BASELINE = Object.freeze({
   5: 894,   // comment lines
   6: 390,   // documentation lines
   7: 1689,  // code references
+  // Measured at the same commit as the rest, by the same script, when check 8
+  // was added. The data layer was never scanned before — the original seven
+  // checks covered backend/, docs/ and config, and the whole of database/ sat
+  // outside all of them. It is a SEPARATE check with its own baseline rather
+  // than an extension of 5 and 7, so the six earlier figures stay comparable
+  // with every report already quoted.
+  8: 186,   // data-layer references (database/**, code and comments)
 });
 const BASELINE_COMMIT = '6e66b52';
 const BASELINE_TOTAL = Object.values(BASELINE).reduce((a, b) => a + b, 0);
@@ -480,6 +488,42 @@ const checks = [];
   checks.push({
     id: 7,
     title: 'document-store references in backend/**/*.js code (identifiers, strings)',
+    unit: 'lines',
+    total,
+    files,
+  });
+}
+
+// 8. The DATA LAYER — database/**, code and comments together.
+//
+// Checks 5 and 7 stop at backend/. That left the single largest body of prose
+// in the repository unscanned, and it is the prose a reader is most likely to
+// trust: a header on the wallet repository that says which store owns balances
+// is read as current. 186 lines described a second store that no longer
+// existed, and two of them were hiding live defects — a grant that reported
+// success while moving nothing, and a reconciliation caveat saying drift could
+// be benign.
+//
+// Code and comments are ONE check here rather than two. The split in 5/7 exists
+// because they were removed in different passes at very different rates; there
+// is no such history to preserve for a check that starts at zero.
+{
+  const files = [];
+  let total = 0;
+  for (const rel of ALL_FILES) {
+    if (!inDatabase(rel) || !isText(rel)) continue;
+    if (!isJsLike(rel) && extname(rel) !== '.sql') continue;
+    const found = read(rel).split('\n')
+      .map((text, i) => ({ line: i + 1, text }))
+      .filter(({ text }) => hits(text, RE_MONGO_WORD))
+      .map(({ line, text }) => ({ line, text: text.trim() }));
+    if (found.length === 0) continue;
+    total += found.length;
+    files.push({ file: rel, count: found.length, samples: found.slice(0, 3) });
+  }
+  checks.push({
+    id: 8,
+    title: 'document-store references in the data layer (database/**)',
     unit: 'lines',
     total,
     files,

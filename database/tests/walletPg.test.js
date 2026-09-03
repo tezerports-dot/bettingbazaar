@@ -3,7 +3,7 @@
  * The Postgres-authoritative wallet path — the first path the cutover flips.
  *
  * These run against a REAL PostgreSQL (skipped when DATABASE_URL is unset), for
- * the same reason the Mongo money tests exist: row locking, the negative-balance
+ * the reason the money tests exist at all: row locking, the negative-balance
  * guard and the unique-tx_id idempotency gate are behaviours of the database,
  * and asserting them against a mock proves nothing about production.
  */
@@ -33,7 +33,7 @@ describePg('Postgres-authoritative wallet', () => {
       });
     });
 
-    it('converts to rupees for callers still speaking the Mongo shape', async () => {
+    it('converts to rupees for callers above the paise wall', async () => {
       await applyDeltaPaise({ userId: USER, field: 'depositBalance', deltaPaise: 12345, txId: 'r1' });
       const rupees = await getBalancesRupees(USER);
       expect(rupees.depositBalance).toBe(123.45);
@@ -108,7 +108,7 @@ describePg('Postgres-authoritative wallet', () => {
     });
 
     it('holds under CONCURRENT replays of one movement', async () => {
-      // The bug class GOVERNANCE §20 (2026-07-10) records for the Mongo path:
+      // The bug class GOVERNANCE §20 (2026-07-10) records:
       // concurrent calls both pass a pre-read check and double-credit. The gate
       // has to be the unique index inside the transaction, not a read.
       const attempts = await Promise.all(
@@ -169,7 +169,7 @@ describePg('Postgres-authoritative wallet', () => {
       // Amounts are stored as a positive magnitude with the direction in
       // tx_type — the convention the forward mirror writes, and the one the
       // reverse mirror copies straight into WalletLedger.amount (a positive
-      // Number on the Mongo side).
+      // a positive Number).
       const { rows } = await pgQuery(
         'SELECT tx_id, field, amount_paise, tx_type FROM wallet_ledger WHERE tx_id LIKE $1 ORDER BY tx_id', ['lock-1%'],
       );

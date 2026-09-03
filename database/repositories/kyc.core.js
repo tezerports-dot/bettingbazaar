@@ -66,7 +66,7 @@ export const KYC_STATES = Object.freeze({
 });
 
 /**
- * Which statuses each target accepts, as DATA. Shared with the Mongo-side seam
+ * Which statuses each target accepts, as DATA. Shared with the decision seam
  * so the two stores cannot hold two different rules.
  *
  * PENDING_SUBMISSION has no entry: that is where a user starts, not somewhere
@@ -174,7 +174,7 @@ async function withKycLock(userId, fn) {
  *
  * The reason and the reviewer are written in the SAME statement as the status,
  * so a decision can never be found without the facts that justify it — which is
- * exactly the gap the Mongo path has, where the reason is assigned to a
+ * exactly the gap the old route had, where the reason was assigned to a
  * subdocument that does not exist.
  *
  * Outcomes match orderPg.transition so callers branch the same way:
@@ -290,8 +290,8 @@ export const rejectKyc  = (a) => transitionKyc({ ...a, to: KYC_STATES.REJECTED }
 /**
  * Approvals with no reviewer recorded.
  *
- * The gap check for this domain, and it is not hypothetical: the Mongo route
- * intends to record one and cannot, so on the Mongo path EVERY approval is
+ * The gap check for this domain, and it is not hypothetical: the old route
+ * intended to record one and could not, so EVERY approval was
  * anonymous. A non-empty result once Postgres owns the path means something
  * approved a user without going through this module.
  */

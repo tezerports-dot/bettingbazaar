@@ -3,7 +3,8 @@
  * The retained platform fee, against a REAL PostgreSQL.
  *
  * ── Why this column exists, and why it needed tests before it existed ───────
- * Routing bet settlement moves the WON transition into Postgres. The Mongo path
+ * Bet settlement writes the WON transition and the payout together. The shape
+ * this replaced
  * stamps `status`, `payout` and `platformFee` in one `$set`, and
  * `Cycle.totalPlatformFees` is derived by summing `Bet.platformFee` over the
  * cycle's WON bets. So a Postgres path that owned the status and the payout but
@@ -15,7 +16,7 @@
  * is stored by the settling transaction, that it survives a re-read, and that a
  * value the column cannot hold exactly is REFUSED rather than truncated.
  *
- * The reverse-mirror half of the round trip (Postgres row → Mongo document)
+ * The half of the round trip that hands the settled row back to a caller
  * needs both stores and lives in the cross-store integration suite.
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
@@ -127,14 +128,14 @@ describePg('the retained platform fee (PostgreSQL)', () => {
 /**
  * A bet has two identities, and settlement only ever holds one of them.
  *
- * Every settlement path reads its bets from MONGO — gameEngine's `Bet.find` for
+ * A caller may address a bet by either of its two ids —
  * the losing side and its aggregation for the winners — so the id it hands to
- * the authority is always the Mongo `_id`. But a bet PLACED under Postgres
+ * the one it was given back at placement. But a bet is keyed
  * authority has `bet_id` = the idempotency key and `public_id` = the ObjectId
- * derived from it, while a bet MIRRORED from Mongo has `bet_id` = the Mongo
+ * on its idempotency key, and the id a client holds is the PUBLIC one
  * `_id` and no `public_id` at all.
  *
- * So settling by the Mongo id alone matched nothing for every bet the routed
+ * So settling by one id alone matched nothing for every bet the other
  * placement path had created: refused `not_found`, stake still locked, on
  * exactly the configuration the routing exists to support. These pin the
  * translation, in both directions of origin.
@@ -147,7 +148,7 @@ describePg('resolving a bet by whichever id the caller holds', () => {
     await fund('depositBalance', 1_000_000, 'fee_seed');
   });
 
-  it('finds a POSTGRES-placed bet by its derived Mongo _id', async () => {
+  it('finds a bet by its derived public id', async () => {
     const key = 'bet_pgfee_placed';
     const publicId = publicIdFor(key);
     await placeBet({
@@ -182,7 +183,7 @@ describePg('resolving a bet by whichever id the caller holds', () => {
     expect(await resolveBetId(null)).toBeNull();
   });
 
-  it('SETTLES a Postgres-placed bet addressed by its Mongo _id', async () => {
+  it('SETTLES a bet addressed by its public id', async () => {
     // The end-to-end shape of the bug: this is exactly what gameEngine does.
     const key = 'bet_pgfee_settle';
     const publicId = publicIdFor(key);

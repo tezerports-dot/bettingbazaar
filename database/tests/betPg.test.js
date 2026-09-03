@@ -3,7 +3,8 @@
  * The bet lifecycle — domain 5, against a REAL PostgreSQL.
  *
  * ── What is on trial ────────────────────────────────────────────────────────
- * Not "does Postgres work". The Mongo original has two structural defects, and
+ * Not "does the database work". The shape this replaced had two structural
+ * defects, and
  * this domain exists to remove them rather than reproduce them somewhere
  * faster. Each gets tests that FAIL if it comes back:
  *
@@ -132,7 +133,7 @@ describePg('Bet lifecycle (PostgreSQL)', () => {
       const again = await place('bet_dup', [slice('depositBalance', 30_000)]);
       expect(again).toMatchObject({ ok: true, idempotent: true });
 
-      // The defect, in one number: 70,000 and not 40,000. On Mongo the bare
+      // The defect, in one number: 70,000 and not 40,000. The bare
       // $inc runs a second time and the user is charged twice for one bet.
       expect(await bal()).toMatchObject({ depositBalance: 70_000, lockedBalance: 30_000 });
       expect(await ledgerFor('bet_dup')).toHaveLength(1);
@@ -481,7 +482,7 @@ describePg('Bet lifecycle (PostgreSQL)', () => {
       await fund('depositBalance', 100_000, 'f1');
       await place('r1', [slice('depositBalance', 30_000)]);
 
-      // Exactly what M-4 produces on the Mongo path: a bet advanced to a
+      // Exactly what M-4 produces: a bet advanced to a
       // settled status with no ledger row behind it. The row is INSERTED
       // rather than a real bet stripped of its ledger, because wallet_ledger
       // is append-only and the database refuses the deletion — which is itself

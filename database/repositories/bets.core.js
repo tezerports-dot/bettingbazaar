@@ -6,11 +6,12 @@
  * out of bets, and casino settlement rides the same wallet primitives.
  *
  * ── The two defects this exists to remove ───────────────────────────────────
- * Both are recorded in docs/MONGO_MONEY_AUDIT.md, and a straight port would
- * reproduce them in a better database.
+ * A straight port of the shape it replaced would reproduce both in a better
+ * database.
  *
- * M-2 — NO IDEMPOTENCY KEY ON THE BALANCE MOVE. `_mongoBetStake` is a bare
- * `$inc`; call it twice with the same `txId` and the stake is debited twice.
+ * M-2 — NO IDEMPOTENCY KEY ON THE BALANCE MOVE. The stake move was an
+ * unconditional increment; call it twice with the same `txId` and the stake is
+ * debited twice.
  * The current call site hides it — `bet.routes.js` builds
  * `bet_<userId>_<randomUUID()>` fresh per request — but that is not
  * idempotency, it is a NEW BET on every retry. A user whose connection dropped
@@ -117,23 +118,19 @@ export async function getBet(betId) {
 /**
  * The canonical `bet_id` for a key that may be either one — or null.
  *
- * A bet has TWO identities and which one you hold depends on where it was born:
+ * A bet has TWO identities:
  *
- *   placed on Postgres   bet_id = the idempotency key (`bet_<user>_<key>`)
- *                        public_id = the ObjectId DERIVED from that key
- *   mirrored from Mongo  bet_id = the Mongo `_id`, public_id = NULL
+ *   bet_id     the idempotency key the placement was made under
+ *              (`bet_<user>_<key>`) — what a retry collides on
+ *   public_id  24 hex characters DERIVED from that key — the shape a client
+ *              holds and sends back
  *
- * Settlement reads its bets from MONGO in both cases — gameEngine's `Bet.find`
- * and its winner aggregation — so the id it holds is always the Mongo `_id`,
- * which matches `bet_id` for a mirrored bet and `public_id` for a placed one.
- * Settling by the Mongo id alone therefore found nothing for every bet the
- * routed placement path had created, and refused it as `not_found` with the
- * stake still locked. Verified against a real PostgreSQL before it was fixed;
- * `betSettlementPg.test.js` keeps it verified.
+ * A caller may hold either, so both are accepted. Settling by only one of them
+ * found nothing for every bet created through the other path and refused it as
+ * `not_found` with the stake still locked — verified against a real PostgreSQL
+ * before it was fixed, and `betSettlementPg.test.js` keeps it verified.
  *
- * One indexed lookup per settle. Both columns carry a UNIQUE index, and there
- * is no way to avoid it: Mongo does not store the Postgres key, so the
- * translation has to happen somewhere.
+ * One indexed lookup per settle: both columns carry a UNIQUE index.
  */
 export async function resolveBetId(idOrPublicId) {
   if (!idOrPublicId) return null;
@@ -341,9 +338,9 @@ export async function placeBet({
       return { commit: false, value: { ok: true, idempotent: true, bet: null } };
     }
 
-    // The stake, in the SAME transaction. This is the M-4 fix: the Mongo path
-    // moves the balance and then writes the ledger, so a ledger failure leaves
-    // money moved with nothing recording it.
+    // The stake, in the SAME transaction. This is the M-4 fix: moving the
+    // balance and then writing the ledger lets a ledger failure leave money
+    // moved with nothing recording it.
     const movement = await applyMovementWithin(ctx, {
       legs: stakeLegs(slices, true),
       ledger: slices.map((s) => ({

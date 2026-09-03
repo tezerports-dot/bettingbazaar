@@ -4,7 +4,7 @@
  *
  * ── What this replaces, and why it is not the same test ─────────────────────
  * There was a unit suite over the same four writers on the document-store path,
- * with mongoose MOCKED. It existed because a refactor had rewritten `refId:
+ * with the data layer MOCKED. It existed because a refactor had rewritten `refId:
  * orderId` to a shorthand `refId` at four call sites while declaring the
  * variable at one — so deposits, reserve credits and withdrawals all threw
  * ReferenceError inside the transaction, and every one of them returned 500.

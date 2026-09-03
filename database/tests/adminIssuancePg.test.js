@@ -3,7 +3,8 @@
  * Admin token issuance — domain 4, against a REAL PostgreSQL.
  *
  * ── What is actually on trial here ──────────────────────────────────────────
- * Not "does Postgres work". The Mongo original has three named defects, and a
+ * Not "does the database work". The counter this replaced had three named
+ * defects, and a
  * port that reproduced them in a better database would be worthless. Each one
  * gets a test that FAILS if the defect comes back:
  *
@@ -96,7 +97,7 @@ describePg('Admin token issuance (PostgreSQL)', () => {
 
   // ── Defect 1: no idempotency key ──────────────────────────────────────────
   describe('a mint happens once however many times the request arrives', () => {
-    it('mints, and reports the Mongo counter shape in tokens', async () => {
+    it('mints, and reports the {cap, minted} shape in tokens', async () => {
       const r = await mint(5_000, 'mv1');
 
       expect(r).toMatchObject({ minted: 5_000, cap: DEFAULT_CAP_TOKENS, idempotent: false, store: 'postgres' });
@@ -156,7 +157,7 @@ describePg('Admin token issuance (PostgreSQL)', () => {
       const again = await rollbackAdminMint({ amountTokens: 5_000, movementId: 'mv_twice' });
 
       expect(again).toMatchObject({ ok: true, idempotent: true });
-      // Mongo's `$inc: -amount` would be at -5,000 here: headroom released
+      // A blind decrement would be at -5,000 here: headroom released
       // twice for one mint, and a supply figure that says fewer tokens exist
       // than actually do.
       expect(await adminTokenSupply()).toMatchObject({ minted: 0 });
@@ -194,7 +195,7 @@ describePg('Admin token issuance (PostgreSQL)', () => {
       const err = await mint(2_000, 'mv_cap2').catch((e) => e);
       expect(err.status).toBe(400);
       expect(err.message).toBe('Admin token supply cap exceeded');
-      // Detail the Mongo path never had: what the ceiling is, how much is out,
+      // Detail a single counter never had: what the ceiling is, how much is out,
       // and what was asked for.
       expect(err.detail).toEqual({ capTokens: 10_000, circulatingTokens: 9_000, requestedTokens: 2_000 });
       expect(await adminTokenSupply()).toMatchObject({ minted: 9_000 });

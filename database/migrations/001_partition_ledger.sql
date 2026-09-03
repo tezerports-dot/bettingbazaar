@@ -25,7 +25,6 @@ CREATE TABLE IF NOT EXISTS accounting_events_idem (
 -- wallet_ledger_p: same columns as wallet_ledger, RANGE partitioned by created_at.
 CREATE TABLE IF NOT EXISTS wallet_ledger_p (
   id                  BIGSERIAL,
-  mongo_id            TEXT,
   tx_id               TEXT,
   user_id             TEXT NOT NULL,
   field               TEXT NOT NULL,
@@ -41,7 +40,6 @@ CREATE INDEX IF NOT EXISTS wallet_ledger_p_user_idx ON wallet_ledger_p (user_id,
 
 CREATE TABLE IF NOT EXISTS accounting_events_p (
   id              BIGSERIAL,
-  mongo_id        TEXT,
   idempotency_key TEXT NOT NULL,
   event_type      TEXT NOT NULL,
   amount_paise    BIGINT NOT NULL,

@@ -8,7 +8,7 @@
  * Every write goes through `applyConfig`, which:
  *   • REFUSES a key the spec does not declare (the document model silently
  *     discarded these and reported success);
- *   • REFUSES a value outside its declared bounds (Mongoose skips `min`/`max`
+ *   • REFUSES a value outside its declared bounds (the update operators skipped
  *     entirely on the update operators the admin routes use, so a 900% payout
  *     fee was accepted by all of them);
  *   • records the previous version and the keys that changed IN THE SAME

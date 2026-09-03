@@ -6,27 +6,18 @@
  * decides per call, and only `domains/user/kycDecision.service.js` may call
  * this — the same single-seam rule the order lifecycle follows, for the same
  * reason: a route reaching past the seam would leave some decisions
- * authoritative in Postgres and others in Mongo, which no reconciliation can
- * tell apart from the two stores genuinely disagreeing.
+ * guarded by the state machine and others written directly, which is how an
+ * illegal decision gets in.
  *
- * ── KYC moves LAST, and the graph enforces it ───────────────────────────────
- * KYC gates who may move money, so it cuts over after every path it gates:
- * PATH_SPEC declares `dependsOn: [WALLET, LEDGER, ORDERS]`. Until all three are
- * authoritative in Postgres this returns `handled: false` on every call and the
- * Mongo seam does the work. That is not a limitation to route around — a user
- * approved in one store while the wallet that checks their approval reads the
- * other is exactly the split the ordering gate exists to prevent.
- *
- * ── What routing buys ───────────────────────────────────────────────────────
- * The Mongo seam already guards the transition and writes the reason to the
- * field the user-facing projection reads, which is the live bug fixed. What it
- * cannot do:
+ * ── What the state machine buys over a status field ─────────────────────────
+ * Guarding the transition and writing the reason in the same statement is the
+ * live bug this fixed. What a status field cannot do:
  *
  *   - keep HISTORY. `kyc_transitions` is append-only, so "was this user ever
- *     rejected, and why?" survives a resubmission overwriting the status. On
- *     Mongo the answer is destroyed the moment the user resubmits.
+ *     rejected, and why?" survives a resubmission overwriting the status.
+ *     Without it the answer is destroyed the moment the user resubmits.
  *   - make an anonymous approval impossible. `findApprovalsMissingReviewer`
- *     is a query here; on Mongo it is unanswerable.
+ *     is a query here; against a bare status field it is unanswerable.
  *   - refuse a repeat decision that carries no key of its own, which is what
  *     stops a resubmission being swallowed as a replay.
  */

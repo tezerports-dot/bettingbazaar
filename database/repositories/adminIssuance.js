@@ -10,7 +10,7 @@
  * `true`.
  *
  * ── The three defects that must not be carried across ───────────────────────
- * Recorded in treasuryPg.js's header and in docs/MONGO_MONEY_AUDIT.md. They are
+ * Recorded in treasury.js's header. They are
  * the reason this domain is worth moving at all — a straight port would be a
  * rewrite of the same bug in a better database.
  *
@@ -32,7 +32,7 @@
  *    that caused it.
  *
  * ── Which number means what ─────────────────────────────────────────────────
- * Mongo's `minted` and the treasury's circulating supply are THE SAME QUANTITY
+ * The old `minted` counter and the treasury's circulating supply are THE SAME QUANTITY
  * reached two ways: `minted` is a running counter, circulating supply is
  * `0 - TOKEN_SUPPLY` derived from double-entry rows. A mint raises both; a
  * rollback lowers both. That equality is what reconcileAdminSupply checks, and
@@ -40,7 +40,7 @@
  * a counter you can decrement can be made to agree with anything.
  *
  * ── Units ───────────────────────────────────────────────────────────────────
- * Mongo counts TOKENS (rupees). Postgres counts PAISE. The conversion happens
+ * The panels count TOKENS (rupees). The ledger counts PAISE. The conversion happens
  * here, at the boundary, through the Integer Money Engine.
  */
 import { paiseToRupees, rupeesToPaise } from '../../backend/shared/money.js';
@@ -96,10 +96,10 @@ async function configuredCapPaise() {
  *
  * @param {object} args
  * @param {number} args.amountTokens
- * @param {string} args.movementId  REQUIRED. The idempotency key the Mongo
+ * @param {string} args.movementId  REQUIRED. The idempotency key the
  *   original does not have. A retried request under the same key mints once.
  * @returns {Promise<{cap:number, minted:number, idempotent:boolean, store:string}>}
- *   `{cap, minted}` is the Mongo `adminTokenSupply` shape the routes render.
+ *   `{cap, minted}` is the `adminTokenSupply` shape the routes render.
  * @throws {Error & {status:400}} when the cap would be exceeded.
  */
 export async function reserveAdminMint({
@@ -160,7 +160,7 @@ export async function rollbackAdminMint({
 /**
  * The current supply position, from whichever store owns it.
  *
- * Returned in the Mongo `{cap, minted}` shape in TOKENS, because that is what
+ * Returned in the `{cap, minted}` shape in TOKENS, because that is what
  * the admin panel renders and what every caller already expects.
  */
 export async function adminTokenSupply() {
@@ -168,7 +168,7 @@ export async function adminTokenSupply() {
 }
 
 /**
- * treasury balances → the Mongo counter's shape.
+ * treasury balances -> the shape the panel renders.
  *
  * `minted` is the CIRCULATING SUPPLY, which is the negation of the contra
  * account. `0 - x` rather than `-x` so an untouched treasury reports 0 and not

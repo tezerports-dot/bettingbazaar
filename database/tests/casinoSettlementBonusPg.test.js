@@ -6,7 +6,7 @@
  * Each domain has ONE property that is the reason it was built, and each gets
  * tests that fail if that property is lost:
  *
- *   CASINO      a ROLLBACK/REFUND must prove a matching prior debit. The Mongo
+ *   CASINO      a ROLLBACK/REFUND must prove a matching prior debit. The old
  *               path calls refundOrder() with no such check and no bound, so a
  *               provider that is buggy, replayed or hostile can MINT REAL MONEY
  *               by rolling back a round that was never bet on.
@@ -53,7 +53,7 @@ describePg('Domains 6-8 (PostgreSQL)', () => {
   // ══ DOMAIN 7: casino ══════════════════════════════════════════════════════
   describe('casino callbacks: a refund must prove its debit', () => {
     it('refuses a rollback for a round that was never bet on', async () => {
-      // THE defect. On Mongo this call reaches
+      // THE defect. Before this, the call reached
       // refundOrder(userId, amount, roundId, 'depositBalance') and credits real
       // money for a round that does not exist — free money for any provider
       // that asks, by accident or otherwise.

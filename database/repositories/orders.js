@@ -12,16 +12,16 @@
  * the entire point of stage 1 and it is enforced by there being nothing else to
  * call it from — a route that reached past the seam would be back to the
  * situation the design document exists to prevent, where some transitions are
- * authoritative in Postgres and others in Mongo and no reconciliation can tell
- * that apart from the two stores genuinely disagreeing.
+ * guarded by the state machine and others written directly, which is how an
+ * illegal transition gets in.
  *
- * ── What routing buys, beyond a second copy of the data ─────────────────────
- * The Mongo seam guards `status: {$in: ALLOWED_FROM[to]}` in the update filter,
- * which is real and was worth doing on its own. What it cannot do:
+ * ── What the state machine buys over a status field ─────────────────────────
+ * A guarded conditional update is real and worth doing on its own. What it
+ * cannot do:
  *
  *   - bind the state change and the accounting event into ONE transaction.
- *     Mongo writes the status and posts the event afterwards, so a failure
- *     between them leaves an order COMPLETED with nothing in the books.
+ *     Writing the status and posting the event afterwards lets a failure
+ *     between them leave an order COMPLETED with nothing in the books.
  *   - record HOW an order reached a state. `order_transitions` is append-only
  *     and links each move to the ledger entry it produced; `PaymentOrder` has a
  *     status field and no history.
@@ -31,19 +31,11 @@
  *     callback from a genuine second visit is not something a status field can
  *     do at all.
  *
- * ── The Mongo write is not skipped when Postgres wins ───────────────────────
- * It becomes the MIRROR. Every panel, the merchant queue, the expiry cron and
- * the settlement sweep read `PaymentOrder.status`; a Postgres-authoritative
- * transition that stopped writing it would leave all of them blind. The reverse
- * mirror is what keeps the field current, and it is also what makes falling
- * back a redeploy rather than a data recovery.
- *
  * ── A refusal is surfaced, never swallowed ──────────────────────────────────
- * When Postgres refuses a transition the answer is returned to the caller as a
- * refusal, and Mongo is NOT written. Falling back to the Mongo path on a
- * Postgres refusal would mean the store that says no is overruled by the store
- * that has no opinion, which is worse than either alone: the order advances,
- * the authoritative store says it did not, and reconciliation reports drift
+ * When a transition is refused the answer is returned to the caller as a
+ * refusal. Retrying it through some other path that has no opinion would mean
+ * the check that says no is simply overruled: the order advances, the record
+ * says it did not, and the books report drift
  * that is really a bug in this file.
  */
 import {

@@ -218,7 +218,7 @@ setPoolStatsProvider(getPoolStats);
 /** Rupees(float) → integer paise at the Postgres boundary. THE money unit.
  *  Delegates to the Integer Money Engine (shared/money.js) for the canonical
  *  conversion + overflow guard; tolerates null/undefined/NaN as 0 (the PG
- *  boundary is fed by optional Mongo fields). */
+ *  boundary is fed by optional fields). */
 export function paise(rupees) {
   const n = Number(rupees);
   return rupeesToPaise(Number.isFinite(n) ? n : 0);

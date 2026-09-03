@@ -5,7 +5,7 @@
  * Domain 6. A cycle closes, a side wins, and every bet on it becomes WON or
  * LOST. The per-bet money movements belong to betPg; this module owns the RUN.
  *
- * ── What the Mongo path is missing, and what it gets right ──────────────────
+ * ── What a settled flag is missing, and what it gets right ──────────────────
  * It gets the hard part right. `Cycle.isSettled` PENDING→PROCESSING deliberately
  * RE-ADMITS a PROCESSING cycle so a recovery task can resume an interrupted
  * payout, which means two passes over one cycle is a SUPPORTED scenario rather
@@ -27,7 +27,7 @@
  * not a new settlement; it is the same one being resumed, and it finds the row
  * already there. That single constraint is what makes "settle this cycle twice"
  * structurally impossible rather than merely guarded against — and it is the
- * property the Mongo `isSettled` flag cannot express, because a flag can be
+ * property an `isSettled` flag cannot express, because a flag can be
  * flipped back.
  *
  * ── Why the result cannot change under a resumed run ────────────────────────
@@ -122,14 +122,13 @@ export async function openSettlement({ cycleId, winningSide, betsTotal = 0, stak
  * meaningful across a resume instead of inflating on every pass.
  *
  * ── `betId` here is the POSTGRES key, and no caller is likely to hold it ─────
- * This function and `voidSettlement` are exercised only by tests today;
- * gameEngine settles through betPgAuthority instead. If either is ever wired to
- * a production path, note that every settlement path reads its bets from MONGO,
- * and a bet placed under Postgres authority is keyed on its idempotency key
- * with the Mongo id in `public_id` — so the id the caller holds is NOT this one.
- * Run it through `betPg.resolveBetId` first. Passing the Mongo id straight
- * through is exactly the defect fixed in betPgAuthority at 2be4452: it matched
- * no row, refused `not_found`, and left the stake locked.
+ * This function and `voidSettlement` are exercised only by tests today; the
+ * game engine settles through the bets repository instead. If either is ever
+ * wired to a production path, note that a bet is keyed on its idempotency key
+ * here while a caller usually holds the PUBLIC id — so run it through
+ * `resolveBetId` first. Passing the public id straight through is exactly the
+ * defect fixed at 2be4452: it matched no row, refused `not_found`, and left the
+ * stake locked.
  */
 export async function settleBet({
   settlementId, cycleId, betId, userId, slices, won, payoutPaise = 0, actor = 'settlement',

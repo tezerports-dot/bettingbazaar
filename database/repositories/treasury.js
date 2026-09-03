@@ -31,12 +31,12 @@
  *
  * ── Signed amounts, unlike the wallet ledgers ───────────────────────────────
  * merchant_wallet_entries and wallet_ledger store a positive magnitude with the
- * direction in a separate column, because Mongo stores positive amounts and the
- * two stores had to agree on sums. This table has no Mongo counterpart, and in
+ * direction in a separate column, because every sum-based check reads the
+ * direction from that column. This table is double-entry, and in
  * double entry the sign IS the meaning: the legs of one movement sum to zero,
  * and a magnitude-plus-direction encoding would make that sum express nothing.
  *
- * ── What the Mongo original cannot do ───────────────────────────────────────
+ * ── What a single counter cannot do ─────────────────────────────────────────
  * `SystemConfig.adminTokenSupply.minted` is one counter with a 10B cap,
  * incremented on mint and decremented by a blind, error-swallowing $inc on
  * rollback. It cannot say where tokens went, it is not idempotent (a retried
@@ -59,7 +59,7 @@ export const ACCOUNTS = Object.freeze({
 const ALL_ACCOUNTS = Object.freeze(Object.values(ACCOUNTS));
 
 /**
- * The supply ceiling, in paise. Mirrors the Mongo cap of 10,000,000,000 tokens
+ * The supply ceiling, in paise. The cap is 10,000,000,000 tokens
  * so the two agree during the migration; overridable for testing and for the
  * day the business changes it.
  */

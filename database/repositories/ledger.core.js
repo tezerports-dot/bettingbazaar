@@ -2,9 +2,9 @@
 /**
  * postgres/ledgerPg.js — the global accounting ledger, in PostgreSQL.
  *
- * The audit trail. `accounting_events` was mirrored from Mongo since the
+ * The audit trail. `accounting_events` was a projection of another store since the
  * hybrid-DB work began, but nothing READ it, so every audit answer still came
- * from Mongo. This is the reader and the writer that ends that.
+ * elsewhere. This is the reader and the writer that ends that.
  *
  * ── Two invariants, enforced in different places ────────────────────────────
  *
@@ -19,7 +19,7 @@
  * `idempotency_key` is UNIQUE. The write is an INSERT … ON CONFLICT DO NOTHING
  * with a RETURNING, so a replay reports `idempotent: true` and writes nothing —
  * no pre-read, because a pre-read is a race two callers can both pass. The
- * Mongo original does exactly that pre-read and then catches the 11000 as a
+ * shape this replaced did exactly that pre-read and then caught the collision as a
  * fallback; here the single statement IS the gate.
  *
  * ── The one number this file exists to produce ──────────────────────────────
@@ -157,7 +157,7 @@ export async function getLedger({ page = 1, limit = 50, eventType = null } = {})
 
 /**
  * trialBalance — every account's derived balance, and whether the whole ledger
- * conserves to zero. Same shape as the Mongo getTrialBalance so a cutover does
+ * conserves to zero. Shaped so a reader of the old report does
  * not make callers learn a new vocabulary.
  *
  * Balances are DERIVED from postings, never stored. A stored balance is a

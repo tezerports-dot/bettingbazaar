@@ -10,7 +10,7 @@
  * Two of them assert something the document model could NOT do:
  *   • an undeclared key is REFUSED — the document model silently discarded a
  *     write to a path it did not declare and reported success;
- *   • bounds hold on EVERY write — Mongoose validates `min`/`max` on a document
+ *   • bounds hold on EVERY write — the old model validated `min`/`max` on a
  *     save and skips them entirely on the update operators the admin routes
  *     use, so a 900% payout fee was accepted by all of them.
  */
@@ -86,7 +86,7 @@ describePg('the configuration store', () => {
   });
 
   it('ENFORCES bounds on every write — these feed money arithmetic', async () => {
-    // Mongoose validates min/max on a document save and skips it on the update
+    // The old model validated min/max on a save and skipped it on the update
     // operators the admin routes use, so all four of these were accepted.
     const bad = [
       [{ payoutFeePercent: 900 }, /'payoutFeePercent' must be <= 100/],
