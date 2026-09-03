@@ -857,7 +857,15 @@ router.post('/merchants/:merchantId/deduct', authenticate, isAdmin, async (req, 
 
   } catch (error) {
     console.error('❌ Admin deduct merchant error:', error);
-    res.status(500).json({ success: false, message: 'Failed to deduct merchant wallet' });
+    // `error.status` and `error.message`, the way the funding route already
+    // answers. A hardcoded 500 with a generic message turned a missing
+    // Idempotency-Key — the one refusal that tells the caller exactly what to
+    // do — into "the server broke", on a money route where a 500 also reads as
+    // "it may have half-applied". Nothing had moved.
+    res.status(error.status || 500).json({
+      success: false,
+      message: error.status ? error.message : 'Failed to deduct merchant wallet',
+    });
   }
 });
 
