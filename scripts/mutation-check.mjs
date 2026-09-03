@@ -76,8 +76,8 @@ const MUTATIONS = [
   {
     id: 'M30', file: 'database/repositories/bets.core.js', config: PG,
     test: 'database/tests/betSettlementPg.test.js',
-    why: 'resolveBetId stops looking at mongo_id, so a placed bet is unreachable',
-    from: `    \`SELECT bet_id FROM bets WHERE bet_id = $1 OR mongo_id = $1 LIMIT 1\`,`,
+    why: 'resolveBetId stops looking at public_id, so a placed bet is unreachable',
+    from: `    \`SELECT bet_id FROM bets WHERE bet_id = $1 OR public_id = $1 LIMIT 1\`,`,
     to: `    \`SELECT bet_id FROM bets WHERE bet_id = $1 LIMIT 1\`,`,
   },
   // ── Money-domain READS follow authority (docs/MONEY_READS_MIGRATION.md) ───
@@ -91,11 +91,9 @@ const MUTATIONS = [
   {
     id: 'M32', file: 'backend/domains/merchant/merchant.assignment.routes.js', config: UNIT,
     test: 'backend/tests/unit/merchantEligibilityReads.test.js',
-    why: 'an eligibility gate goes back to reading the Mongo document directly',
-    from: `    const balance_pa = await getMerchantTokenBalance(merchant._id);
-    if (balance_pa < order.tokenAmount) {`,
-    to: `    const balance_pa = merchant.tokenBalance;
-    if (merchant.tokenBalance < order.tokenAmount) {`,
+    why: 'an eligibility gate goes back to reading a stored balance off the merchant record',
+    from: `  const balance = await getMerchantTokenBalance(merchantId);`,
+    to: `  const balance = merchant.tokenBalance < order.tokenAmount ? 0 : merchant.tokenBalance;`,
   },
   // ── The accounts table: four properties, each verified to be load-bearing ──
   {
@@ -178,15 +176,19 @@ const MUTATIONS = [
     id: 'M53', file: 'backend/domains/payment/paymentProcessing.service.js', config: UNIT,
     test: 'backend/tests/unit/moneyDecisionsReadTheWallet.test.js',
     why: 'withdrawal admission decided from a record field again — money leaves on this path',
-    from: `if (availableWinnings < tokenAmount)`,
-    to: `if (user.winningsBalance < tokenAmount)`,
+    // The three pre-checks that used to stand here are gone: they raced each
+    // other and double-counted the escrow. Admission IS the locked debit now,
+    // so the mutation is to put a record-field gate back in FRONT of it.
+    from: `  let debitResult;`,
+    to: `  if (user.winningsBalance < tokenAmount) throw Object.assign(new Error('Insufficient winnings'), { status: 400 });
+  let debitResult;`,
   },
   {
     id: 'M54', file: 'backend/domains/merchant/merchantScoring.service.js', config: UNIT,
     test: 'backend/tests/unit/moneyDecisionsReadTheWallet.test.js',
     why: 'assignment filters candidates on a stored balance, routing orders nobody can fund',
-    from: `    baseQuery.acceptsDeposits = true;`,
-    to: `    baseQuery.acceptsDeposits = true;\n    baseQuery.tokenBalance = { $gte: tokenAmount };`,
+    from: `    candidates = candidates.filter((m) => (availablePaise.get(String(m.merchantId)) ?? -1) >= neededPaise);`,
+    to: `    candidates = candidates.filter((m) => m.tokenBalance >= neededPaise);`,
   },
   // ── The order-facing wallet writers ───────────────────────────────────────
   {
@@ -329,6 +331,7 @@ for (const m of selected) {
 
 const survived = results.filter((r) => r.outcome === 'SURVIVED');
 const unmeasured = results.filter((r) => r.outcome === 'NOT-MEASURED');
+const unapplied = results.filter((r) => r.outcome === 'ANCHOR-MISSING');
 console.log(`\n${results.filter((r) => r.outcome === 'KILLED').length}/${results.length} mutations killed.`);
 if (unmeasured.length) {
   console.log('NOT MEASURED (the suite ran no tests — do not read these as passes):');
@@ -338,4 +341,13 @@ if (survived.length) {
   console.log('SURVIVED (a hole in the suite):');
   for (const s of survived) console.log(`  ${s.id} ${s.file} — ${s.why}`);
 }
-if (survived.length || unmeasured.length) process.exit(1);
+// An anchor that no longer matches is a mutation that silently stopped running.
+// This used to print and continue, so a rename could retire a check without
+// anyone noticing and the run stayed green while measuring less than it claimed
+// — 6 of 29 had drifted out this way before it was caught by hand. Retarget the
+// anchor at whatever the code became, or delete the entry deliberately.
+if (unapplied.length) {
+  console.log('ANCHOR MISSING (the mutation never ran — retarget or delete it):');
+  for (const s of unapplied) console.log(`  ${s.id} ${s.file} — ${s.why}`);
+}
+if (survived.length || unmeasured.length || unapplied.length) process.exit(1);

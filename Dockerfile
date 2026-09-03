@@ -21,21 +21,6 @@
 # Build:  docker build -t bettingbazaar .
 # Run:    docker run -p 8080:8080 --env-file .env bettingbazaar
 
-# ── Stage 1: mongodump, extracted away from the runtime image ────────────────
-# services/backup.service.js shells out to `mongodump` for the daily backup. It
-# is fetched here rather than in the runtime stage so that wget, gnupg, the
-# MongoDB apt keyring and the apt lists never exist in the shipped image — the
-# runtime receives the binaries and nothing else. (If this stage is removed the
-# backup job degrades to a logged + alerted skip; it never crashes the app.)
-FROM node:22-slim AS mongotools
-RUN apt-get update \
- && apt-get install -y --no-install-recommends wget gnupg ca-certificates \
- && wget -qO- https://pgp.mongodb.com/server-7.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb.gpg \
- && echo "deb [signed-by=/usr/share/keyrings/mongodb.gpg] http://repo.mongodb.org/apt/debian bookworm/mongodb-org/7.0 main" > /etc/apt/sources.list.d/mongodb.list \
- && apt-get update \
- && apt-get install -y --no-install-recommends mongodb-database-tools \
- && rm -rf /var/lib/apt/lists/*
-
 # ── Stage 2: build the three frontends (needs devDeps: vite/tsc) ─────────────
 FROM node:22-slim AS builder
 WORKDIR /app
@@ -63,8 +48,30 @@ FROM node:22-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
-# Backup tooling, binaries only — no package manager state, no keyring, no wget.
-COPY --from=mongotools /usr/bin/mongodump /usr/bin/mongorestore /usr/bin/
+# Backup tooling. `services/backup.service.js` shells out to `pg_dump`, and
+# without it the daily backup degrades to a logged-and-alerted skip on every
+# run — a money platform with no backups, failing quietly.
+#
+# The image previously carried the dump/restore binaries of the deleted
+# document store and NOT this one — the wrong tool for the only datastore this
+# platform has. Nothing ever called them.
+#
+# PINNED TO 18, from PGDG rather than Debian's default (15). `pg_dump` refuses
+# to dump a server newer than itself, so a 15 client against the 18 server this
+# platform runs fails with a version-mismatch error rather than a backup.
+#
+# Installed in the runtime stage rather than copied from a builder: `pg_dump`
+# links against libpq and its transitive libraries, so letting apt resolve them
+# here is what makes the binary actually runnable. The keyring and apt lists are
+# removed in the SAME layer, so none of that state reaches the shipped image.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends wget gnupg ca-certificates \
+ && wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/pgdg.gpg \
+ && echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends postgresql-client-18 \
+ && apt-get purge -y --auto-remove wget gnupg \
+ && rm -rf /var/lib/apt/lists/*
 
 # Production dependencies only — no vite/tsc/vitest/tailwind in the runtime image.
 COPY package.json package-lock.json* ./
@@ -73,6 +80,11 @@ RUN npm ci --omit=dev --legacy-peer-deps && npm cache clean --force
 # App source + built frontends (server.js serves ../dist, ../admin-panel/dist,
 # ../merchant-panel/dist relative to backend/).
 COPY backend ./backend
+# The data layer. `#db` resolves to ./database/index.js (see package.json
+# imports), so without this the container cannot start: the first `import { db }
+# from '#db'` fails at module load. It was never copied, which was survivable
+# only while something else answered for the data.
+COPY database ./database
 COPY scripts ./scripts
 COPY --from=builder /app/user-panel/dist      ./dist
 COPY --from=builder /app/admin-panel/dist     ./admin-panel/dist
