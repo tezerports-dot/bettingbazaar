@@ -48,14 +48,15 @@ export const ledgerReconcileErrors = new client.Counter({
   registers: [registry],
 });
 
-// A balance moved but its audit rows did not land. The Mongo bet-stake path
-// (walletAuthority._mongoBetStake) writes balance and ledger as two separate
-// operations and deliberately lets the money stand if the ledger write fails —
-// stranding a placed bet is judged worse than a missing audit row. That
-// tradeoff is defensible; doing it SILENTLY is not, because the missing row is
-// exactly what reconciliation and the trial balance are computed from.
+// A balance moved but its audit rows did not land.
 //
-// Any non-zero value here means the ledger no longer explains the balances.
+// This should now be unreachable: every balance mutation writes its movement
+// and its ledger rows in ONE transaction, so either both land or neither does.
+// The counter stays precisely because that is a claim rather than a guarantee a
+// reader can see — if it ever increments, the invariant the whole money design
+// rests on has been broken somewhere, and the ledger no longer explains the
+// balances.
+//
 // Alert on it: `increase(bb_unaudited_money_movements_total[15m]) > 0`.
 export const unauditedMoneyMovements = new client.Counter({
   name: 'bb_unaudited_money_movements_total',
@@ -82,62 +83,20 @@ export const requestsShed = new client.Counter({
   registers: [registry],
 });
 
-// AQ-9: hybrid money-DB continuous reconciliation signals. Dormant (stay at 0)
-// until Postgres is provisioned and dual-write is live. A nonzero drift gauge or
-// a trial-balance flip to 0 means Mongo and Postgres disagree on money data —
-// alert on `bb_pg_drift_rows > 0` or `bb_pg_trial_balance_ok == 0`.
-export const pgDriftRows = new client.Gauge({
-  name: 'bb_pg_drift_rows',
-  help: 'Money rows present in MongoDB but missing from the Postgres mirror (0 = in sync)',
-  registers: [registry],
-});
-export const pgTrialBalanceOk = new client.Gauge({
-  name: 'bb_pg_trial_balance_ok',
-  help: 'Postgres ledger trial balance conserves to zero (1) or not (0)',
-  registers: [registry],
-});
-export const pgReconcileErrors = new client.Counter({
-  name: 'bb_pg_reconcile_errors_total',
-  help: 'Postgres reconciliation run failures',
-  registers: [registry],
-});
-// The cutover-readiness gate: consecutive clean reconciliation passes. Any drift
-// or crashed run resets it to 0. Flipping money authority to Postgres
-// (DATA_ROLLBACK_PLAN.md) requires this to stay high over a sustained window —
-// drift DETECTION alone is not proof; sustained agreement is.
-export const pgReconcileConsecutiveClean = new client.Gauge({
-  name: 'bb_pg_reconcile_consecutive_clean',
-  help: 'Consecutive clean hybrid-DB reconciliation passes (0 = last run drifted or failed)',
-  registers: [registry],
-});
-
-// ── Reverse direction (cutover Phase B) ──────────────────────────────────────
-// Once a money path is authoritative in Postgres, MongoDB becomes the copy that
-// can fall behind — and the zero-RPO rollback guarantee in DATA_ROLLBACK_PLAN.md
-// depends on it staying complete. The forward gauges above cannot see that:
-// bb_pg_drift_rows only counts rows missing from Postgres. Without these two,
-// bb_pg_reconcile_consecutive_clean would keep climbing while Mongo silently
-// lost writes, and the gate the whole cutover rests on would be lying.
-// Alert on `bb_mongo_drift_rows > 0` or `bb_ledgers_agree == 0`.
-export const mongoDriftRows = new client.Gauge({
-  name: 'bb_mongo_drift_rows',
-  help: 'Money rows present in Postgres but missing from MongoDB (0 = in sync; only meaningful once a path is PG-authoritative)',
-  registers: [registry],
-});
-export const ledgersAgree = new client.Gauge({
-  name: 'bb_ledgers_agree',
-  help: 'Mongo and Postgres ledgers agree account-by-account and both conserve to zero (1) or not (0)',
-  registers: [registry],
-});
-// Which stores own money right now, as a labelled gauge: one series per path,
-// 1 = Postgres is authoritative, 0 = MongoDB. Makes the cutover visible on the
-// dashboard and lets an alert fire if a path moves unexpectedly.
-export const moneyAuthorityPostgres = new client.Gauge({
-  name: 'bb_money_authority_postgres',
-  help: 'Postgres is the source of truth for this money path (1) or MongoDB is (0)',
-  labelNames: ['path'],
-  registers: [registry],
-});
+// ── Why there is no drift or reconciliation gauge here ──────────────────────
+//
+// Seven metrics used to sit at this point: drift row counts in both directions,
+// a trial-balance flag, a reconciliation error counter, a consecutive-clean
+// gauge that gated a cutover, a ledgers-agree flag, and a labelled gauge saying
+// which store owned each money path.
+//
+// Every one of them measured the DISTANCE BETWEEN TWO STORES. There is one
+// store, so each had exactly zero writers and would have reported 0 forever —
+// and a gauge pinned at 0 reads on a dashboard as "in sync", which is the most
+// dangerous possible reading for a number that is not being computed. The
+// trial balance itself is not lost: it is asserted against a real database in
+// the money suites, where a violation fails a build rather than needing
+// somebody to notice a panel.
 
 // ── Per-domain money operations ──────────────────────────────────────────────
 // One counter for every balance mutation, labelled by which money path it
@@ -158,26 +117,6 @@ export const moneyOperations = new client.Counter({
   help: 'Balance mutations by money path, serving store and outcome',
   // outcome: applied | idempotent | insufficient | not_found | error
   labelNames: ['path', 'store', 'operation', 'outcome'],
-  registers: [registry],
-});
-
-// ── Cross-store balance drift ────────────────────────────────────────────────
-// bb_pg_drift_rows counts rows MISSING from a store. It cannot see the failure
-// that actually matters for a balance: a row present in both stores whose
-// NUMBER differs. These two gauges are that check — the money equivalent of the
-// trial balance, per domain. Both must be zero for a path to be cutover-ready,
-// and staying zero is what the certification checklist means by "reconciled".
-// Alert on `bb_balance_drift_paise != 0`.
-export const balanceDriftPaise = new client.Gauge({
-  name: 'bb_balance_drift_paise',
-  help: 'Absolute Mongo↔Postgres balance disagreement in paise, by money path (0 = agree)',
-  labelNames: ['path'],
-  registers: [registry],
-});
-export const balanceDriftAccounts = new client.Gauge({
-  name: 'bb_balance_drift_accounts',
-  help: 'Number of accounts whose Mongo and Postgres balances disagree, by money path',
-  labelNames: ['path'],
   registers: [registry],
 });
 

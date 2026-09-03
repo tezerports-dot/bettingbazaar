@@ -54,7 +54,7 @@ import {
  * It carries no embedded timestamp, so anything reading creation time must use
  * `placedAt`, which the row sets explicitly.
  */
-export function mongoIdFor(betId) {
+export function publicIdFor(betId) {
   return createHash('sha256').update(String(betId)).digest('hex').slice(0, 24);
 }
 
@@ -100,9 +100,9 @@ export async function placeBet({
   betId, userId, cycleId, side, amount, slices, reason = null,
 }) {
 
-  const mongoId = mongoIdFor(betId);
+  const publicId = publicIdFor(betId);
   const result = await placeBetPg({
-    betId, mongoId, userId: String(userId), cycleId: String(cycleId), side,
+    betId, publicId, userId: String(userId), cycleId: String(cycleId), side,
     slices: slices.map((s) => ({ field: s.field, amountPaise: rupeesToPaise(s.amount) })),
     reason,
   });
@@ -110,7 +110,7 @@ export async function placeBet({
   if (!result.ok) return result;
 
   const doc = {
-    _id: mongoId,
+    _id: publicId,
     userId: String(userId),
     cycleId: String(cycleId),
     amount,
@@ -147,7 +147,7 @@ function mapRupees(balancesPaise) {
  * The bet an id names, in the shape the route serialises.
  *
  * Accepts EITHER key. A bet placed through this module carries two: `bet_id`,
- * the caller's idempotency key, and `mongo_id`, the stable hash derived from
+ * the caller's idempotency key, and `public_id`, the stable hash derived from
  * it. The route holds one and the row is found by whichever it is — see
  * `resolveBetId`, which exists because handing back "not found" for a bet that
  * demonstrably exists is worse than the lookup costing one extra statement.
@@ -158,8 +158,8 @@ function mapRupees(balancesPaise) {
  * after placing a bet came from a different store than the bet itself, so the
  * two could disagree about the status of the thing they were both describing.
  */
-export async function getBetDoc(betIdOrMongoId) {
-  const betId = await resolveBetId(betIdOrMongoId);
+export async function getBetDoc(betIdOrPublicId) {
+  const betId = await resolveBetId(betIdOrPublicId);
   if (!betId) return null;
   const bet = await getBet(betId);
   if (!bet) return null;
@@ -167,7 +167,7 @@ export async function getBetDoc(betIdOrMongoId) {
     ...bet,
     // The document-shaped keys the client renders. Rupees, because that is what
     // the response has always carried.
-    _id: bet.mongoId ?? bet.betId,
+    _id: bet.publicId ?? bet.betId,
     amount: paiseToRupees(bet.stakePaise),
     payout: paiseToRupees(bet.payoutPaise),
     platformFee: paiseToRupees(bet.platformFeePaise ?? 0),

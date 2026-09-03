@@ -2,7 +2,7 @@
 // Unit tests for the AQ-6 Express-5-safe NoSQL sanitizer (replaces
 // express-mongo-sanitize, which reassigns the read-only req.query on Express 5).
 import { describe, it, expect } from 'vitest';
-import { sanitizeInPlace, mongoSanitize } from '../../middleware/mongoSanitize.js';
+import { sanitizeInPlace, inputSanitize } from '../../middleware/inputSanitize.js';
 
 describe('sanitizeInPlace', () => {
   it('strips $-prefixed operator keys (NoSQL injection)', () => {
@@ -44,7 +44,7 @@ describe('sanitizeInPlace', () => {
   });
 });
 
-describe('mongoSanitize middleware', () => {
+describe('inputSanitize middleware', () => {
   it('sanitizes body, params, and query, then calls next()', () => {
     const req = {
       body: { $set: { role: 'admin' }, name: 'ok' },
@@ -52,7 +52,7 @@ describe('mongoSanitize middleware', () => {
       query: { 'a.b': 1, page: '2' },
     };
     let called = false;
-    mongoSanitize(req, {}, () => { called = true; });
+    inputSanitize(req, {}, () => { called = true; });
     expect(called).toBe(true);
     expect(req.body.$set).toBeUndefined();
     expect(req.body.name).toBe('ok');
@@ -63,7 +63,7 @@ describe('mongoSanitize middleware', () => {
 
   it('tolerates missing body/params/query', () => {
     let called = false;
-    expect(() => mongoSanitize({}, {}, () => { called = true; })).not.toThrow();
+    expect(() => inputSanitize({}, {}, () => { called = true; })).not.toThrow();
     expect(called).toBe(true);
   });
 });

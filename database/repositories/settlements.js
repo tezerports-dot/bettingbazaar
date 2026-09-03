@@ -126,7 +126,7 @@ export async function openSettlement({ cycleId, winningSide, betsTotal = 0, stak
  * gameEngine settles through betPgAuthority instead. If either is ever wired to
  * a production path, note that every settlement path reads its bets from MONGO,
  * and a bet placed under Postgres authority is keyed on its idempotency key
- * with the Mongo id in `mongo_id` — so the id the caller holds is NOT this one.
+ * with the Mongo id in `public_id` — so the id the caller holds is NOT this one.
  * Run it through `betPg.resolveBetId` first. Passing the Mongo id straight
  * through is exactly the defect fixed in betPgAuthority at 2be4452: it matched
  * no row, refused `not_found`, and left the stake locked.

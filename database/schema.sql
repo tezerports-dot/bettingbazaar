@@ -29,7 +29,6 @@
 -- ── USER WALLET LEDGER (mirrors WalletLedger — every balance mutation) ───────
 CREATE TABLE IF NOT EXISTS wallet_ledger (
   id                  BIGSERIAL PRIMARY KEY,
-  mongo_id            TEXT UNIQUE,
   tx_id               TEXT UNIQUE,          -- the idempotency gate (nullable, unique when present)
   user_id             TEXT NOT NULL,
   field               TEXT NOT NULL,        -- depositBalance|winningsBalance|tokenBalance|reserveBalance|lockedBalance
@@ -83,7 +82,6 @@ ALTER TABLE wallets ADD COLUMN IF NOT EXISTS locked_winnings_paise BIGINT NOT NU
 -- ── ACCOUNTING LEDGER (mirrors AccountingEvent — THE most important table) ───
 CREATE TABLE IF NOT EXISTS accounting_events (
   id              BIGSERIAL PRIMARY KEY,
-  mongo_id        TEXT UNIQUE,
   idempotency_key TEXT NOT NULL UNIQUE,     -- recording the same source event twice is impossible
   event_type      TEXT NOT NULL,
   amount_paise    BIGINT NOT NULL,
@@ -543,8 +541,23 @@ CREATE TABLE IF NOT EXISTS bets (
 -- already exists, so a column added to it never reaches a deployed database —
 -- exactly how merchant_wallet_entries.movement_id went missing and took its
 -- index down with a 42703.
-ALTER TABLE bets ADD COLUMN IF NOT EXISTS mongo_id TEXT;
-CREATE UNIQUE INDEX IF NOT EXISTS bets_mongo_id_key ON bets (mongo_id);
+-- The bet's PUBLIC id: a 24-character hex string derived from the idempotency
+-- key, which is the shape every client in this platform expects an entity id to
+-- be. Derived rather than generated, so a replayed placement resolves to the
+-- same bet instead of minting a second identity for it.
+ALTER TABLE bets ADD COLUMN IF NOT EXISTS public_id TEXT;
+DO $rename$ BEGIN
+  -- Carry an existing deployment's data across the rename. Both guards matter:
+  -- the old column may already be gone, and the new one is created above, so a
+  -- bare RENAME would fail on a fresh database and a re-run alike.
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+              WHERE table_name = 'bets' AND column_name = 'mongo_id') THEN
+    UPDATE bets SET public_id = mongo_id WHERE public_id IS NULL;
+    ALTER TABLE bets DROP COLUMN mongo_id;
+  END IF;
+END $rename$;
+DROP INDEX IF EXISTS bets_mongo_id_key;
+CREATE UNIQUE INDEX IF NOT EXISTS bets_public_id_key ON bets (public_id);
 
 -- The winnings platform fee retained from THIS bet's gross payout.
 --
@@ -2757,3 +2770,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS merchant_bonus_policies_one_active
   ON merchant_bonus_policies (status) WHERE status = 'ACTIVE';
 CREATE INDEX IF NOT EXISTS merchant_bonus_policies_history_idx
   ON merchant_bonus_policies (version DESC);
+
+-- ── Dropping two columns nothing ever wrote ──────────────────────────────────
+--
+-- `wallet_ledger.mongo_id` and `accounting_events.mongo_id` were the mirror's
+-- correlation keys. No writer ever set either — every INSERT in the ledger
+-- repositories omits them — so both held NULL for every row that has ever
+-- existed and there is nothing to preserve. A nullable UNIQUE column that
+-- nothing writes is not harmless: it is a column a future reader will assume
+-- means something.
+ALTER TABLE wallet_ledger     DROP COLUMN IF EXISTS mongo_id;
+ALTER TABLE accounting_events DROP COLUMN IF EXISTS mongo_id;

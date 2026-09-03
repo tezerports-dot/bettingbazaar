@@ -22,8 +22,7 @@
 
 const REQUIRED = [
   ['JWT_SECRET',  'signs/verifies every auth token — a fallback would let anyone forge sessions'],
-  ['MONGODB_URI', 'primary datastore — unset silently connects to localhost'],
-  ['DATABASE_URL', 'PostgreSQL money datastore — required for active MongoDB + Postgres hybrid dual-write'],
+  ['DATABASE_URL', 'the datastore — every balance, order, bet and identity lives in PostgreSQL and there is no second store to fall back on'],
   ['ORDER_HMAC_SECRET', 'dedicated payment-order HMAC secret; prevents JWT key reuse for order signing'],
   ['AADHAAR_HMAC_SECRET', 'dedicated Aadhaar HMAC secret; prevents reversible duplicate-document hashes'],
   // Encrypts the values that must be RECOVERABLE rather than merely comparable:

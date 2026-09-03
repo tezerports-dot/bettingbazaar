@@ -13,7 +13,7 @@
  * can assert it directly. Importing gameProvider.routes.js instead would pull in
  * auth.middleware → paseto.util, which throws at import time without
  * PASETO_SECRET_KEY — a security boundary should be provable without booting the
- * app's secret gate or a MongoDB.
+ * app's secret gate or the database behind it.
  */
 import crypto from 'crypto';
 

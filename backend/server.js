@@ -10,10 +10,10 @@ import cors         from 'cors';
 import helmet       from 'helmet';
 import compression  from 'compression';
 import rateLimit    from 'express-rate-limit';
-// AQ-6 (Express 5): express-mongo-sanitize@2 reassigns the now read-only
+// AQ-6 (Express 5): the sanitizer package this replaced reassigned the now read-only
 // req.query and throws on every request under Express 5 — replaced with an
 // in-place sanitizer that behaves identically on Express 4 and 5.
-import { mongoSanitize } from './middleware/mongoSanitize.js';
+import { inputSanitize } from './middleware/inputSanitize.js';
 import dotenv       from 'dotenv';
 import path         from 'path';
 import fs           from 'fs';
@@ -42,7 +42,6 @@ const __dirname  = path.dirname(__filename);
 // ─── STARTUP MODULES ──────────────────────────────────────────────────────────
 import { validateEnv }        from './startup/validateEnv.js'; // AQ-1: fail-fast env gate
 import { runtimeProfile }     from './startup/runtimeRole.js';
-import { connectMongoDB }     from './startup/mongoConnect.js';
 import { connectRedis }       from './startup/redisConnect.js';
 import { seedAdminAccount }   from './startup/seedAdmin.js';
 import { registerCronJobs }   from './startup/cronJobs.js';
@@ -50,9 +49,6 @@ import { attachSocketHandlers } from './startup/socketHandlers.js';
 import { cycleSnapshotPublisher } from './domains/markets/cycleSnapshotPublisher.js';
 import { initRealtimeBridge } from './startup/realtimeBridge.js'; // Phase X: multi-instance real-time
 import { registerFundingEventSubscribers } from './domains/funding/fundingEvents.js';
-
-// ─── MODELS (must load before any route that calls mongoose.model()) ──────────
-import './models/index.js';
 
 // ─── ROUTES ───────────────────────────────────────────────────────────────────
 import authRoutes, { loginHandler, loginTwoFactorHandler } from './routes.js';
@@ -235,7 +231,7 @@ app.use((req, res, next) => (_ASSET_UPLOAD_PATHS.has(req.path) ? _assetJson : _t
 // dropping cookie auth for the Authorization header everywhere, is the
 // structural answer and needs a decision spanning all three panels plus the
 // Android shell. See docs/governance/SECURITY_CODE_REVIEW_CHECKLIST.md.
-app.use(mongoSanitize);
+app.use(inputSanitize);
 app.use(cookieParser());
 app.use(requestContext); // X-6: correlation id (before the logger, so it's logged)
 app.use(tlsFingerprintDefense); // JA3/TLS fingerprint policy from admin-managed SystemConfig
@@ -587,28 +583,27 @@ app.use(errorHandler);
 app.set('io', io);
 
 // ─── START ────────────────────────────────────────────────────────────────────
-// Open the listener FIRST, before the datastores are up.
+// Open the listener FIRST, before the datastore is up.
 //
 // This used to live inside the .then() of the Promise.allSettled below, so the
-// port did not open until connectMongoDB() settled. That function retries 10
-// times with serverSelectionTimeoutMS=30000 and a 5s pause between attempts, so
-// a MongoDB that is merely slow to accept connections — a service still
-// starting, the normal case on a fresh Railway/compose deploy — kept the
-// process from binding for up to ~5.75 minutes. Every probe in that window got
-// ECONNREFUSED rather than an answer, which is precisely what Railway's
-// healthcheck (healthcheckPath=/health, healthcheckTimeout=60) reads as "this
-// deploy is dead", and restartPolicyMaxRetries then repeats the whole cycle.
+// port did not open until the database connection settled. A database that is
+// merely slow to accept connections — a service still starting, the normal case
+// on a fresh Railway/compose deploy — kept the process from binding for minutes.
+// Every probe in that window got ECONNREFUSED rather than an answer, which is
+// precisely what Railway's healthcheck (healthcheckPath=/health,
+// healthcheckTimeout=60) reads as "this deploy is dead", and
+// restartPolicyMaxRetries then repeats the whole cycle.
 //
 // The readiness endpoints above were already written for this: /health and
-// /health/ready return 503 with `mongodb: 'disconnected'` until the connection
-// is live. They just could not be reached, because nothing was listening. With
-// the listener open from the start, an orchestrator gets an honest
-// "not ready yet" it can wait on, and a real answer the moment Mongo attaches.
+// /health/ready return 503 until the connection is live. They just could not be
+// reached, because nothing was listening. With the listener open from the start,
+// an orchestrator gets an honest "not ready yet" it can wait on, and a real
+// answer the moment the database attaches.
 //
-// Serving before Mongo is up is safe: readiness fails, so a load balancer does
-// not route to this instance, and any request that does arrive fails the same
-// way it would have anyway. Nothing below depends on a datastore — the cron
-// jobs and event subscribers that DO are still registered in the .then().
+// Serving before the database is up is safe: readiness fails, so a load balancer
+// does not route to this instance, and any request that does arrive fails the
+// same way it would have anyway. Nothing below depends on the datastore — the
+// cron jobs and event subscribers that DO are still registered in the .then().
 activeListener = listenWithOptionalProxyProtocol(server, {
   port: PORT,
   host: '0.0.0.0',
@@ -638,17 +633,20 @@ activeListener = listenWithOptionalProxyProtocol(server, {
 });
 
 Promise.allSettled([
-  // Load the TLS policy before opening the listener. A failed initial read must
-  // fail startup rather than serving requests with the log-only defaults.
-  connectMongoDB()
+  // PostgreSQL is the only datastore, so applying its schema is the FIRST thing
+  // that must succeed and everything else in this chain depends on it. It is
+  // deliberately NOT wrapped in a .catch that logs and continues: this used to
+  // be a side entry that swallowed its own failure, because the platform still
+  // had a second store to fall back on. It has none. A failed schema apply now
+  // fails startup, which is the only honest outcome — the alternative is a
+  // process that binds a port, passes nothing, and serves every request an
+  // error about a table that was never created.
+  import('#db/client.js')
+    .then((m) => m.applySchema())
     .then(() => seedAdminAccount())
     .then(() => seedGameRegistry())
     .then(() => startTlsFingerprintDefenseConfigRefresh()),
   connectRedis().then(r => { global.redis = r; }),
-  // Hybrid money DB (plan step 1): apply the Postgres schema when
-  // DATABASE_URL is set; silent no-op otherwise. Dual-write hooks in the
-  // money models activate on the same signal.
-  import('#db/client.js').then(m => m.applySchema()).catch(e => console.error('[pg] schema apply failed:', e.message)),
   // CAP-71: RAG vector store. Apply the pgvector schema ONLY when RAG retrieval
   // is actually configured (DATABASE_URL + embedding provider key) — so a
   // money-only Postgres without the pgvector extension is never touched.
@@ -663,7 +661,9 @@ Promise.allSettled([
     // The listener is already open by this point, so failing startup has to
     // close it — leaving it bound would keep the process alive and advertise a
     // port that will never become ready.
-    console.error('❌ Startup failed while loading TLS fingerprint policy:', results[0].reason);
+    // results[0] is the PostgreSQL chain: schema, admin seed, game registry,
+    // TLS policy. Any of them failing means this instance cannot serve.
+    console.error('❌ Startup failed while preparing PostgreSQL:', results[0].reason);
     process.exitCode = 1;
     try { activeListener?.close(); } catch { /* nothing to close */ }
     return;

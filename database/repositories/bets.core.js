@@ -92,7 +92,7 @@ function rowToBet(row) {
   if (!row) return null;
   return {
     betId:       row.bet_id,
-    mongoId:     row.mongo_id,
+    publicId:     row.public_id,
     userId:      row.user_id,
     cycleId:     row.cycle_id,
     side:        row.side,
@@ -120,12 +120,12 @@ export async function getBet(betId) {
  * A bet has TWO identities and which one you hold depends on where it was born:
  *
  *   placed on Postgres   bet_id = the idempotency key (`bet_<user>_<key>`)
- *                        mongo_id = the ObjectId DERIVED from that key
- *   mirrored from Mongo  bet_id = the Mongo `_id`, mongo_id = NULL
+ *                        public_id = the ObjectId DERIVED from that key
+ *   mirrored from Mongo  bet_id = the Mongo `_id`, public_id = NULL
  *
  * Settlement reads its bets from MONGO in both cases — gameEngine's `Bet.find`
  * and its winner aggregation — so the id it holds is always the Mongo `_id`,
- * which matches `bet_id` for a mirrored bet and `mongo_id` for a placed one.
+ * which matches `bet_id` for a mirrored bet and `public_id` for a placed one.
  * Settling by the Mongo id alone therefore found nothing for every bet the
  * routed placement path had created, and refused it as `not_found` with the
  * stake still locked. Verified against a real PostgreSQL before it was fixed;
@@ -135,11 +135,11 @@ export async function getBet(betId) {
  * is no way to avoid it: Mongo does not store the Postgres key, so the
  * translation has to happen somewhere.
  */
-export async function resolveBetId(idOrMongoId) {
-  if (!idOrMongoId) return null;
-  const key = String(idOrMongoId);
+export async function resolveBetId(idOrPublicId) {
+  if (!idOrPublicId) return null;
+  const key = String(idOrPublicId);
   const { rows } = await pgQuery(
-    `SELECT bet_id FROM bets WHERE bet_id = $1 OR mongo_id = $1 LIMIT 1`,
+    `SELECT bet_id FROM bets WHERE bet_id = $1 OR public_id = $1 LIMIT 1`,
     [key], 'bet_resolve_id',
   );
   return rows[0]?.bet_id ?? null;
@@ -307,7 +307,7 @@ const sumSlices = (slices) => slices.reduce((s, x) => s + x.amountPaise, 0);
  *   { ok: false, reason: 'insufficient' }            the guard refused the debit
  */
 export async function placeBet({
-  betId, userId, cycleId, side, slices, mongoId = null, actor = null, reason = null,
+  betId, userId, cycleId, side, slices, publicId = null, actor = null, reason = null,
 }) {
   if (!betId) throw new Error('placeBet requires a betId (idempotency key)');
   if (!Array.isArray(slices) || !slices.length) {
@@ -330,9 +330,9 @@ export async function placeBet({
     }
 
     await ctx.client.query(
-      `INSERT INTO bets (bet_id, mongo_id, user_id, cycle_id, side, stake_paise, status)
+      `INSERT INTO bets (bet_id, public_id, user_id, cycle_id, side, stake_paise, status)
        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [ctx.bid, mongoId ? String(mongoId) : null, ctx.uid, String(cycleId), String(side), stakePaise, BET_STATUS.PENDING],
+      [ctx.bid, publicId ? String(publicId) : null, ctx.uid, String(cycleId), String(side), stakePaise, BET_STATUS.PENDING],
     );
 
     if (!await recordTransition(ctx.client, ctx.bid, {
@@ -371,7 +371,7 @@ export async function placeBet({
       commit: true,
       value: {
         ok: true, idempotent: false,
-        bet: { betId: ctx.bid, mongoId, userId: ctx.uid, cycleId: String(cycleId), side: String(side), stakePaise, status: BET_STATUS.PENDING },
+        bet: { betId: ctx.bid, publicId, userId: ctx.uid, cycleId: String(cycleId), side: String(side), stakePaise, status: BET_STATUS.PENDING },
         balances: movement.balancesAfterPaise,
       },
     };
@@ -608,7 +608,7 @@ export async function listSettleableBets(cycleId, { side = null, limit = 1000, a
   }
 
   const { rows } = await pgQuery(
-    `SELECT b.id, b.bet_id, b.mongo_id, b.user_id, b.side, b.stake_paise,
+    `SELECT b.id, b.bet_id, b.public_id, b.user_id, b.side, b.stake_paise,
             COALESCE(
               (SELECT jsonb_agg(jsonb_build_object(
                         'field', l.field, 'amountPaise', ABS(l.amount_paise)))
@@ -629,7 +629,7 @@ export async function listSettleableBets(cycleId, { side = null, limit = 1000, a
   return rows.map((r) => ({
     id: Number(r.id),
     betId: r.bet_id,
-    mongoId: r.mongo_id,
+    publicId: r.public_id,
     userId: r.user_id,
     side: r.side,
     stakePaise: Number(r.stake_paise),

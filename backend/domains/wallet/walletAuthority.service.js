@@ -28,22 +28,13 @@ import { applyAdjustment, listAdjustments, ADJUSTABLE_FIELDS } from '#db/reposit
  *  the same list the writer enforces, rather than a second copy that drifts. */
 export { ADJUSTABLE_FIELDS };
 
-// ── Source-of-truth routing (hybrid money DB, LAUNCH_READINESS.md §E) ────────
 /**
- * Which store owns balances right now. MongoDB unless an operator has
- * deliberately set MONEY_AUTHORITY_WALLET=postgres on a deploy that has a
- * DATABASE_URL — see postgres/moneyAuthority.js, which also refuses an
- * incoherent combination at boot.
+ * Push the new balances to the user's SSE channel after a mutation.
  *
- * This is asked PER CALL rather than cached at import time so a process does
- * not have to be rebuilt to be re-pointed, and so tests can exercise both
- * halves in one run.
- */
-/**
- * The Postgres path returns balances with every mutation; the Mongo path pushes
- * them to the user's SSE channel as a side effect. This keeps that behaviour
- * identical across the two, for the operations that had it — the ones that
- * never pushed (reserve credits, withdrawal locking) still do not.
+ * Only for the operations that are meant to have it. Reserve credits and
+ * withdrawal locking deliberately do not push: the first is not the player's
+ * money to see move, and the second would show a balance dropping before the
+ * withdrawal it belongs to has been admitted.
  */
 function pushBalances(userId, result) {
   const b = result?.balances;
@@ -265,7 +256,7 @@ export async function getBalanceAdjustments(filter) {
 }
 
 
-export async function creditDeposit(userId, amount, orderId, extSession) {
+export async function creditDeposit(userId, amount, orderId) {
   return pushBalances(userId, await pg.creditDeposit(userId, amount, orderId));
 }
 
@@ -273,14 +264,14 @@ export async function creditDeposit(userId, amount, orderId, extSession) {
  * Credit a deposit's reserve-allocation share to reserveBalance — the
  * sanctioned single writer for reserveBalance (§7). Idempotent, ledgered.
  */
-export async function creditReserve(userId, amount, orderId, extSession) {
-  // No SSE push here — the Mongo counterpart does not push either, and the
-  // reserve pocket is not shown on the balance widget.
+export async function creditReserve(userId, amount, orderId) {
+  // No SSE push here — see pushBalances: the reserve is not the player's money
+  // to watch move, and it is not shown on the balance widget.
   return pg.creditReserve(userId, amount, orderId);
 }
 
 
-export async function debitWinningsForWithdrawal(userId, amount, orderId, extSession) {
+export async function debitWinningsForWithdrawal(userId, amount, orderId) {
   return pushBalances(userId, await pg.debitWinningsForWithdrawal(userId, amount, orderId));
 }
 
@@ -289,7 +280,7 @@ export async function debitWinningsForWithdrawal(userId, amount, orderId, extSes
  * Accepts field param: 'depositBalance' or 'winningsBalance'.
  * Unlike refundWithdrawal, this does not hardcode the balance field.
  */
-export async function refundOrder(userId, amount, orderId, field, extSession) {
+export async function refundOrder(userId, amount, orderId, field) {
   return pushBalances(userId, await pg.refundOrder(userId, amount, orderId, field));
 }
 

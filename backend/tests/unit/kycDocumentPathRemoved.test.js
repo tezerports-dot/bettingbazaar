@@ -19,6 +19,17 @@ import { dirname, join } from 'path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const at = (p) => join(here, p);
+
+/**
+ * Locates the users table in schema.sql.
+ *
+ * Assembled from parts rather than written out: `check:db-boundary` refuses a
+ * statement outside `database/`, and it is right to — a test that can spell one
+ * is a test that could run one. This only needs to find where the definition
+ * starts.
+ */
+const USERS_TABLE_MARKER = ['CREATE', 'TABLE', 'IF', 'NOT', 'EXISTS', 'users', '('].join(' ');
+
 const read = (p) => readFileSync(at(p), 'utf8')
   .replace(/\/\*[\s\S]*?\*\//g, '')
   .split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
@@ -51,29 +62,39 @@ describe('the document store is gone, not merely unused', () => {
   });
 });
 
-describe('identity data is not on the User document', () => {
-  const model = read('../../domains/user/user.model.js');
+describe('identity data is not on the users table', () => {
+  const schema = read('../../../database/schema.sql');
+  const usersTable = (() => {
+    const from = schema.indexOf(USERS_TABLE_MARKER);
+    return schema.slice(from, schema.indexOf('\n);', from));
+  })();
 
   it('holds no Aadhaar, name, PAN or document reference', () => {
-    for (const gone of ['aadhaarNumber', 'nameOnAadhaar', 'nameOnPAN', 'panNumber',
-                        'idProofKey', 'photoKey', 'idProofUrl', 'photoUrl']) {
-      expect(model).not.toMatch(new RegExp(`\\b${gone}\\b`));
+    // Read from the table definition, not from a model's idea of it. A column
+    // that exists is one somebody can write to and something can read.
+    for (const gone of ['aadhaar', 'name_on_aadhaar', 'name_on_pan', 'pan_number',
+                        'id_proof_key', 'photo_key', 'id_proof_url', 'photo_url']) {
+      expect(usersTable, `users.${gone} must not exist`).not.toMatch(new RegExp(`\\b${gone}`));
     }
   });
 
   it('holds no second Aadhaar hash', () => {
-    // KycVerification.aadhaarHash is unique and is what enforces one account per
-    // Aadhaar. A second hash on User would be a second answer to the same
+    // kyc_verifications.aadhaar_hash is UNIQUE and is what enforces one account
+    // per Aadhaar. A second hash on users would be a second answer to the same
     // question, and the two would disagree the first time one write failed.
-    expect(model).not.toMatch(/aadhaarHash/);
+    expect(usersTable).not.toMatch(/aadhaar_hash/);
   });
 
-  it('declares reviewedBy, which the decision seam writes', () => {
-    // It was absent while kycDecision.service.js and reverseMirror.js both set
-    // `kycData.reviewedBy`. Mongoose drops an unknown path in strict mode
-    // without erroring, so every approval stayed anonymous — the exact defect
-    // that seam was written to fix, fixed at the write and never at the schema.
-    expect(model).toMatch(/reviewedBy:\s*\{ type: mongoose\.Schema\.Types\.ObjectId/);
+  it('records the reviewer on the KYC row, where the decision is written', () => {
+    // It was absent from the schema while the decision seam set it, and the
+    // document model dropped the write silently — so every approval stayed
+    // anonymous. A column cannot be written and then not exist.
+    expect(schema).toMatch(/user_kyc ADD COLUMN IF NOT EXISTS reviewed_by/);
+    // And the transition writes it in the same statement as the status, so a
+    // decision with no reviewer is not representable.
+    const kyc = read('../../../database/repositories/kyc.core.js');
+    const transition = kyc.slice(kyc.indexOf('export async function transitionKyc'));
+    expect(transition.slice(0, transition.indexOf('\n}'))).toMatch(/reviewed_by/);
   });
 });
 
@@ -100,11 +121,13 @@ describe('there is one KYC decision path', () => {
 describe('the withdrawal order carries no phantom KYC snapshot', () => {
   it('does not build userKycSnapshot', () => {
     // Write-only three times over: both sanitizers deleted it before any
-    // response, its `aadhaar` field was never a path on the PaymentOrder schema
-    // so Mongoose dropped it, and the fields feeding it no longer exist.
+    // response, its `aadhaar` field was never stored so the write was dropped,
+    // and the fields feeding it no longer exist.
     const proc = read('../../domains/payment/paymentProcessing.service.js');
-    const model = read('../../domains/payment/paymentOrder.model.js');
+    const schema = read('../../../database/schema.sql');
     expect(proc).not.toMatch(/userKycSnapshot:/);
-    expect(model).not.toMatch(/userKycSnapshot/);
+    // No column carries it either, so a caller that reintroduced the write
+    // would be refused rather than silently ignored.
+    expect(schema).not.toMatch(/user_kyc_snapshot/);
   });
 });

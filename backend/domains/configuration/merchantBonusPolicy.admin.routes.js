@@ -4,7 +4,7 @@
  * Performance Bonus policy (Business Policy Platform).
  * Mounted at /api/admin via routes/admin/index.js.
  */
-import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import {
   getActiveBonusPolicy,

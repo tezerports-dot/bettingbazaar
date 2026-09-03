@@ -167,7 +167,7 @@ describe('staff and failures', () => {
   });
 
   it('refuses rather than admits when the check throws', async () => {
-    identityFindOne.mockRejectedValue(new Error('mongo is down'));
+    identityFindOne.mockRejectedValue(new Error('the database is down'));
     const res = makeRes();
     const next = vi.fn();
     await requireChannelMembership()({ user: PLAYER }, res, next);

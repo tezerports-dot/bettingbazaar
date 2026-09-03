@@ -3,21 +3,17 @@
  * domains/payment/orderLifecycle.service.js — the one place an order changes state.
  *
  * ── The bug this closes ─────────────────────────────────────────────────────
- * `PaymentOrder.status` is a plain string, and before this file 31 places
- * across 8 files assigned it directly. None of them checked what state the
- * order was actually in, which means the Mongo path had NO state machine — only
- * an ordering of checks in the routes that happened to prevent most illegal
- * moves. Ordering is not an invariant. A cancelled order could be completed. An
- * expired one could be paid.
- *
- * Postgres has refused those since orderPg.js was written; Mongo could not,
- * because there was nothing to refuse them WITH. This is that missing piece,
- * and it is worth having whether or not the migration ever finishes.
+ * An order's status is a plain string, and before this file 31 places across 8
+ * files assigned it directly. None of them checked what state the order was
+ * actually in, so there was NO state machine — only an ordering of checks in
+ * the routes that happened to prevent most illegal moves. Ordering is not an
+ * invariant. A cancelled order could be completed. An expired one could be paid.
  *
  * ── The guard is in the query, never in a pre-read ──────────────────────────
- * The expected previous state goes in the FILTER:
+ * The expected previous state goes in the WHERE clause, alongside a row lock:
  *
- *     findOneAndUpdate({ _id, status: { $in: ALLOWED_FROM[to] } }, …)
+ *     UPDATE order_states SET status = $2
+ *      WHERE order_id = $1 AND status = ANY(ALLOWED_FROM[to])
  *
  * so two concurrent callers racing the same transition both hit the database
  * and exactly one matches a row. Reading the status first and then updating
@@ -30,19 +26,17 @@
  * re-reading AFTER the fact — which is safe precisely because it is not the
  * gate.
  *
- * ── One rule table, shared with Postgres ────────────────────────────────────
- * ALLOWED_FROM is imported from postgres/orderPg.js rather than restated here.
- * Two copies would be two rules the moment either changed, and a transition
- * Postgres refuses while Mongo permits is a disagreement no reconciliation can
- * tell apart from genuine drift.
+ * ── One rule table ──────────────────────────────────────────────────────────
+ * ALLOWED_FROM is imported from the orders repository rather than restated
+ * here. Two copies would be two rules the moment either changed, and the copy
+ * that was not updated is the one that lets an illegal transition through.
  *
  * ── What this deliberately does NOT do ──────────────────────────────────────
- * It does not move money, post ledger events, or credit wallets. Those already
- * live in the services that call it, and pulling them in here would make a
- * state-machine change a money change. The Postgres path DOES bind the state
- * and its accounting event into one transaction — that is one of the reasons to
- * migrate — but replicating that on the Mongo side would mean rewriting every
- * caller, which is a different job from giving them a guard.
+ * It does not move money, post ledger events, or credit wallets. Those live in
+ * the services that call it, and pulling them in here would make every
+ * state-machine change a money change. The repository underneath DOES bind the
+ * state and its accounting event into one transaction, which is what makes a
+ * transition that moves money atomic with the money it moves.
  */
 import { ORDER_STATES, ALLOWED_FROM } from '#db/repositories/orders.core.js';
 import { transitionOrder as pgTransitionOrder, reassignOrder as pgReassignOrder } from '#db/repositories/orders.js';
@@ -115,10 +109,10 @@ export const assignOrder    = (id, o) => transitionOrder(id, ORDER_STATES.ASSIGN
  * Back to the queue, because the assigned merchant declined.
  *
  * The one transition that moves an order BACKWARDS, and the reason
- * PENDING_QUEUE had to become a state the rule table can enter. On the Mongo
- * side it needs nothing special — the guard is `status: {$in: ['ASSIGNED']}` in
- * the filter like every other transition. On the Postgres side it made the
- * lifecycle cyclic, which is a larger story: docs/ORDERS_REQUEUE_CYCLE.md.
+ * PENDING_QUEUE had to become a state the rule table can enter. The guard is
+ * the same `status = ANY(ALLOWED_FROM)` clause every other transition uses;
+ * what it cost was making the lifecycle CYCLIC, which is a larger story:
+ * docs/ORDERS_REQUEUE_CYCLE.md.
  */
 export const requeueOrder   = (id, o) => transitionOrder(id, ORDER_STATES.PENDING_QUEUE, o);
 export const startOrder     = (id, o) => transitionOrder(id, ORDER_STATES.PROCESSING, o);

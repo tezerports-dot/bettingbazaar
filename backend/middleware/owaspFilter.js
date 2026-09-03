@@ -6,7 +6,7 @@
  * SQL-injection, XSS payloads, path traversal, null bytes — matched against
  * WHAT the request contains, never WHO sent it. No client IP / geography /
  * ISP input exists anywhere in this file, by design (see plan items 24/29-31
- * notes). Complements the existing layers: mongoSanitize (NoSQL operator
+ * notes). Complements the existing layers: inputSanitize (NoSQL operator
  * stripping), helmet CSP, and per-route rate limits; the SQLi signatures are
  * forward defense for the Postgres money layer.
  *

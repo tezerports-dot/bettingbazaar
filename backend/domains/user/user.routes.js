@@ -33,7 +33,6 @@
  * CROSS-2 — New: GET /v1/branding  → CDN base URL + all asset names so the
  *                frontend getAssetUrl() works without manual localStorage setup.
  *
- * ALL WRITES use safeSession() atomic transactions (Replica Set aware).
  */
 
 import express from 'express';
@@ -57,22 +56,6 @@ import { getSystemConfig } from '#db/repositories/config.js';
 
 const router = express.Router();
 
-// ─────────────────────────────────────────────────────────────────────────────
-// The session helpers, now no-ops.
-//
-// `safeSession` opened a document-store transaction and, when the server was
-// standalone — which Railway and a plain VPS both are — caught the failure and
-// returned null. So every route that "wraps this in a transaction" ran without
-// one in exactly the deployment most likely to need it, and said nothing.
-//
-// Each write below is now its own PostgreSQL statement, and the ones that move
-// money carry a deterministic idempotency key, which is what makes a retry safe
-// without an enclosing session. The names survive because the routes thread
-// `session` through; a no-op is clearer than deleting an argument from each.
-// ─────────────────────────────────────────────────────────────────────────────
-const safeSession  = async () => null;
-const commitOrEnd  = async () => {};
-const abortOrEnd   = async () => {};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // sanitiseCycleForUser()
@@ -283,11 +266,9 @@ router.get('/v1/user/:id/data', authenticate, async (req, res) => {
 // PUT /api/user/:userId/profile  (auth required, atomic)
 // ─────────────────────────────────────────────────────────────────────────────
 router.put('/user/:userId/profile', authenticate, async (req, res) => {
-  const session = await safeSession();
   try {
     const { userId } = req.params;
     if (req.user.userId.toString() !== userId) {
-      await abortOrEnd(session);
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
 
@@ -309,16 +290,13 @@ router.put('/user/:userId/profile', authenticate, async (req, res) => {
     if (username) updates.username = username.trim();
 
     if (!Object.keys(updates).length) {
-      await abortOrEnd(session);
       return res.status(400).json({ success: false, message: 'Nothing to update.' });
     }
 
     const updatedUser = await db.users.updateUser(userId, updates);
-    await commitOrEnd(session);
 
     res.json({ success: true, user: { id: updatedUser.userId, username: updatedUser.username, profilePic: updatedUser.profilePic } });
   } catch (error) {
-    await abortOrEnd(session);
     console.error('Update profile error:', error);
     res.status(500).json({ success: false, message: 'Failed to update profile' });
   }
@@ -347,17 +325,14 @@ router.put('/user/:userId/profile', authenticate, async (req, res) => {
 // PUT /api/user/:userId/bank-details  (auth required, atomic)
 // ─────────────────────────────────────────────────────────────────────────────
 router.put('/user/:userId/bank-details', authenticate, async (req, res) => {
-  const session = await safeSession();
   try {
     const { userId } = req.params;
     if (req.user.userId.toString() !== userId) {
-      await abortOrEnd(session);
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
 
     const { accountHolderName, accountNumber, ifscCode, bankName } = req.body;
     if (!accountHolderName || !accountNumber || !ifscCode || !bankName) {
-      await abortOrEnd(session);
       return res.status(400).json({ success: false, message: 'All bank detail fields are required' });
     }
 
@@ -371,10 +346,8 @@ router.put('/user/:userId/bank-details', authenticate, async (req, res) => {
       },
     });
 
-    await commitOrEnd(session);
     res.json({ success: true });
   } catch (error) {
-    await abortOrEnd(session);
     console.error('Update bank details error:', error);
     res.status(500).json({ success: false, message: 'Failed to update bank details' });
   }

@@ -39,7 +39,6 @@ export const FLAGS = Object.freeze({
   // Infrastructure
   KAFKA_EVENT_BUS:      'KAFKA_EVENT_BUS',
   REDIS_RATE_LIMITER:   'REDIS_RATE_LIMITER',
-  READ_REPLICA:         'READ_REPLICA',
   // Multi-tenancy
   MULTI_TENANT:         'MULTI_TENANT',
   // Operations
@@ -70,7 +69,6 @@ const DEFAULTS = {
   [FLAGS.PUSH_NOTIFICATIONS]:    false,
   [FLAGS.KAFKA_EVENT_BUS]:       false,
   [FLAGS.REDIS_RATE_LIMITER]:    true,
-  [FLAGS.READ_REPLICA]:          false,
   [FLAGS.MULTI_TENANT]:          false,
   [FLAGS.MAINTENANCE_MODE]:      false,
   [FLAGS.WAF_FILTER]:            true,

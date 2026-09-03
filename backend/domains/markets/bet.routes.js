@@ -108,7 +108,7 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
       throw keyErr;
     }
     const betTxBase  = `bet_${userId}_${clientKey}`;
-    const betMongoId = betAuthority.mongoIdFor(betTxBase);
+    const betPublicId = betAuthority.publicIdFor(betTxBase);
 
     // Fast replay gate: this exact request already produced a bet. Answer with it
     // and touch NOTHING — no stake move, no pool change, no second Transaction
@@ -287,7 +287,7 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
     // split the source of truth mid-bet. The authority now owns it, and picks
     // the store per postgres/moneyAuthority.js.
     // ── The stake, split across pockets ─────────────────────────────────────
-    // The bet's identity (betTxBase / betMongoId) was established at the top of
+    // The bet's identity (betTxBase / betPublicId) was established at the top of
     // the handler from the REQUIRED Idempotency-Key. It is the txId of every
     // slice's ledger row and the Bet row's _id, so on both stores the unique
     // index — not a convention — is what makes a redelivery idempotent.

@@ -9,7 +9,7 @@ const STRONG_JWT   = 'a-strong-random-jwt-signing-secret-value';
 const STRONG_ORDER = 'a-strong-random-order-hmac-secret-value';
 
 const full = {
-  JWT_SECRET: STRONG_JWT, ORDER_HMAC_SECRET: STRONG_ORDER, AADHAAR_HMAC_SECRET: 'a-secure-aadhaar-hmac-secret-value', IDENTITY_ENCRYPTION_KEY: 'Ej8mQ2xVbn5rT9wYzA1cD3eF6gH0iJkLmNoPqRsTuVw=', MONGODB_URI: 'mongodb://x', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb',
+  JWT_SECRET: STRONG_JWT, ORDER_HMAC_SECRET: STRONG_ORDER, AADHAAR_HMAC_SECRET: 'a-secure-aadhaar-hmac-secret-value', IDENTITY_ENCRYPTION_KEY: 'Ej8mQ2xVbn5rT9wYzA1cD3eF6gH0iJkLmNoPqRsTuVw=', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb',
   REDIS_URL: 'r', ALLOWED_ORIGINS: 'o', METRICS_TOKEN: 'a-secure-random-metrics-token-value',
   // All four S3 vars: production boot requires isS3Configured(), which needs
   // bucket + access key + secret key + endpoint, not the bucket alone.
@@ -82,11 +82,11 @@ describe('validateEnv', () => {
 
   it('lists every missing required var in the thrown message', () => {
     expect(() => validateEnv({ NODE_ENV: 'production' }, true))
-      .toThrow(/JWT_SECRET[\s\S]*MONGODB_URI[\s\S]*DATABASE_URL/);
+      .toThrow(/JWT_SECRET[\s\S]*DATABASE_URL/);
   });
 
   it('requires production hardening vars instead of silently falling back', () => {
-    expect(() => validateEnv({ JWT_SECRET: STRONG_JWT, MONGODB_URI: 'm', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb', NODE_ENV: 'production' }, true))
+    expect(() => validateEnv({ JWT_SECRET: STRONG_JWT, DATABASE_URL: 'postgresql://u:p@localhost:5432/bb', NODE_ENV: 'production' }, true))
       .toThrow(/ORDER_HMAC_SECRET[\s\S]*REDIS_URL[\s\S]*ALLOWED_ORIGINS[\s\S]*S3_BUCKET_NAME[\s\S]*METRICS_TOKEN/);
   });
 

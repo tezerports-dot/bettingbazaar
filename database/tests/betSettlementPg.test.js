@@ -22,7 +22,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import { applyDeltaPaise } from '../repositories/wallets.core.js';
 import { BET_STATUS, placeBet, winBet, loseBet, getBet, resolveBetId } from '../repositories/bets.core.js';
-import { mongoIdFor } from '../repositories/bets.js';
+import { publicIdFor } from '../repositories/bets.js';
 
 const hasPg = pgConfigured();
 const describePg = hasPg ? describe : describe.skip;
@@ -130,9 +130,9 @@ describePg('the retained platform fee (PostgreSQL)', () => {
  * Every settlement path reads its bets from MONGO — gameEngine's `Bet.find` for
  * the losing side and its aggregation for the winners — so the id it hands to
  * the authority is always the Mongo `_id`. But a bet PLACED under Postgres
- * authority has `bet_id` = the idempotency key and `mongo_id` = the ObjectId
+ * authority has `bet_id` = the idempotency key and `public_id` = the ObjectId
  * derived from it, while a bet MIRRORED from Mongo has `bet_id` = the Mongo
- * `_id` and no `mongo_id` at all.
+ * `_id` and no `public_id` at all.
  *
  * So settling by the Mongo id alone matched nothing for every bet the routed
  * placement path had created: refused `not_found`, stake still locked, on
@@ -149,15 +149,15 @@ describePg('resolving a bet by whichever id the caller holds', () => {
 
   it('finds a POSTGRES-placed bet by its derived Mongo _id', async () => {
     const key = 'bet_pgfee_placed';
-    const mongoId = mongoIdFor(key);
+    const publicId = publicIdFor(key);
     await placeBet({
-      betId: key, mongoId, userId: U, cycleId: 'fee-cycle', side: 'DELHI',
+      betId: key, publicId, userId: U, cycleId: 'fee-cycle', side: 'DELHI',
       slices: [{ field: 'depositBalance', amountPaise: 10_000 }],
     });
 
     // The two are genuinely different strings — otherwise this proves nothing.
-    expect(mongoId).not.toBe(key);
-    expect(await resolveBetId(mongoId)).toBe(key);
+    expect(publicId).not.toBe(key);
+    expect(await resolveBetId(publicId)).toBe(key);
     // …and by its own key, for any caller that already holds it.
     expect(await resolveBetId(key)).toBe(key);
   });
@@ -167,7 +167,7 @@ describePg('resolving a bet by whichever id the caller holds', () => {
     // under test belongs to the resolver: a row it did not create itself must
     // still resolve by the only id that row carries.
     await pgQuery(
-      `INSERT INTO bets (bet_id, mongo_id, user_id, cycle_id, side, stake_paise, status, placed_at)
+      `INSERT INTO bets (bet_id, public_id, user_id, cycle_id, side, stake_paise, status, placed_at)
        VALUES ($1, NULL, $2, 'fee-cycle', 'DELHI', 10000, 'PENDING', now())`,
       ['507f1f77bcf86cd799439011', U],
     );
@@ -185,14 +185,14 @@ describePg('resolving a bet by whichever id the caller holds', () => {
   it('SETTLES a Postgres-placed bet addressed by its Mongo _id', async () => {
     // The end-to-end shape of the bug: this is exactly what gameEngine does.
     const key = 'bet_pgfee_settle';
-    const mongoId = mongoIdFor(key);
+    const publicId = publicIdFor(key);
     await placeBet({
-      betId: key, mongoId, userId: U, cycleId: 'fee-cycle', side: 'DELHI',
+      betId: key, publicId, userId: U, cycleId: 'fee-cycle', side: 'DELHI',
       slices: [{ field: 'depositBalance', amountPaise: 10_000 }],
     });
 
     // Before the fix this returned { ok: false, reason: 'not_found' }.
-    const resolved = await resolveBetId(mongoId);
+    const resolved = await resolveBetId(publicId);
     const r = await winBet({
       betId: resolved, userId: U,
       slices: [{ field: 'depositBalance', amountPaise: 10_000 }],

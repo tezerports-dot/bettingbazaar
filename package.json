@@ -22,7 +22,6 @@
     "check:no-mongo": "node scripts/verify-no-mongo.mjs",
     "check:balance-reads": "node scripts/audit-balance-reads.mjs",
     "check:coherence": "node scripts/verify-migration-coherence.mjs",
-    "sync:indexes": "node backend/scripts/sync-indexes.mjs",
     "verify:capabilities": "node scripts/verify-capabilities.mjs",
     "loadtest:seed": "node loadtest/seed-accounts.mjs",
     "loadtest:bets": "k6 run loadtest/bet-contention.js",
@@ -57,7 +56,6 @@
     "ipaddr.js": "^2.5.0",
     "jsonwebtoken": "^9.0.2",
     "kafkajs": "^2.2.4",
-    "mongoose": "^9.9.4",
     "path-to-regexp": "^8.4.2",
     "pg": "^8.23.0",
     "prom-client": "^15.1.3",
@@ -71,7 +69,6 @@
   "devDependencies": {
     "@types/qrcode": "^1.5.6",
     "dependency-cruiser": "^18.2.0",
-    "mongodb-memory-server": "^11.2.0",
     "nodemon": "^3.1.14",
     "stylelint": "^17.14.1",
     "stylelint-config-standard": "^40.0.0",
@@ -107,7 +104,6 @@
   },
   "allowScripts": {
     "argon2@0.44.0": true,
-    "mongodb-memory-server@11.2.0": true,
     "msgpackr-extract@3.0.4": true,
     "esbuild@0.28.1": true
   },

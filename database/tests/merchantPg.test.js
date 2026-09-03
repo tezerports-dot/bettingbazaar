@@ -138,6 +138,26 @@ describePg('the merchant record', () => {
     expect((await getMerchant(ID)).merchantType).toBe('INR');
   });
 
+  it('defaults to the INR rail, so a merchant created without one is usable', async () => {
+    // A merchant with no rail matches no assignment query, which is a merchant
+    // that silently never receives an order.
+    await make();
+    const m = await getMerchant(ID);
+    expect(m.acceptedCurrencies).toEqual(['INR']);
+    expect(m.merchantType).toBe('INR');
+  });
+
+  it('allows a USDT merchant with no address yet — it is configured later', async () => {
+    // Onboarding is two steps: the merchant exists before their wallet address
+    // is confirmed. Refusing this would force an address to be invented at
+    // creation, and an invented USDT address is unrecoverable money.
+    const m = await createMerchant({
+      merchantId: `${ID}-noaddr`, name: 'Pending address', currency: 'USDT',
+    });
+    expect(m.merchantType).toBe('USDT');
+    expect(m.usdtWalletAddress ?? null).toBeNull();
+  });
+
   it('refuses a merchant on two rails, or on none', async () => {
     await expect(pgQuery(
       `INSERT INTO merchants (merchant_id, name, public_ref, accepted_currencies)

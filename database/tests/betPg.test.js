@@ -261,7 +261,7 @@ describePg('Bet lifecycle (PostgreSQL)', () => {
     });
 
     it('finds a bet by either of the two keys it carries', async () => {
-      const { placeBet: placeThroughApi, getBetDoc, mongoIdFor } = await import('../repositories/bets.js');
+      const { placeBet: placeThroughApi, getBetDoc, publicIdFor } = await import('../repositories/bets.js');
       await fund('depositBalance', 50_00, 'f-keys');
       await placeThroughApi({
         betId: 'bet-keys-1', userId: U, cycleId: 'cyc1', side: 'DELHI',
@@ -270,7 +270,7 @@ describePg('Bet lifecycle (PostgreSQL)', () => {
 
       // The idempotency key and the derived public id both resolve to one row.
       const byKey = await getBetDoc('bet-keys-1');
-      const byPublicId = await getBetDoc(mongoIdFor('bet-keys-1'));
+      const byPublicId = await getBetDoc(publicIdFor('bet-keys-1'));
       expect(byKey.betId).toBe('bet-keys-1');
       expect(byPublicId.betId).toBe('bet-keys-1');
       // Rupees, because that is what the response carries.

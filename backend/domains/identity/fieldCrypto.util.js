@@ -15,7 +15,7 @@
  *     every message sent to it, and message every user who has ever started it.
  *
  * Both are written once and read rarely, by one audited path each. Storing them
- * in plaintext would mean a single `mongodump` hands over every player's
+ * in plaintext would mean a single database dump hands over every player's
  * national identity number and the ability to speak as the platform.
  *
  * ── Why a separate key from TOTP ────────────────────────────────────────────

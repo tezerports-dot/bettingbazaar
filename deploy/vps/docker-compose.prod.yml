@@ -9,8 +9,7 @@
 #   api        BB_RUNTIME_ROLE=api        HTTP + the three panels
 #   realtime   BB_RUNTIME_ROLE=realtime   WebSocket + SSE
 #   scheduler  BB_RUNTIME_ROLE=scheduler  game cycles + cron  (EXACTLY ONE)
-#   mongo      MongoDB 7, single-node replica set (money transactions need one)
-#   postgres   PostgreSQL 18, the money ledger
+#   postgres   PostgreSQL 18, the datastore — money, identity, config, content
 #   redis      cache, locks, rate-limit counters, realtime fan-out
 #   minio      S3-compatible storage (OPTIONAL — see the profile note below)
 #
@@ -40,7 +39,6 @@ x-app-base: &app-base
   environment: &app-env
     NODE_ENV: production
     # Container hostnames, not localhost — these override anything in .env.
-    MONGODB_URI: mongodb://mongo:27017/bettingbazaar?replicaSet=rs0&directConnection=true
     DATABASE_URL: postgresql://${POSTGRES_USER:-bb}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bettingbazaar}
     REDIS_URL: redis://redis:6379
     # Loopback-equivalent link inside the Docker network — no TLS needed, and
@@ -52,7 +50,6 @@ x-app-base: &app-base
     # at once — four wrong passwords from anyone would lock out everyone.
     TRUST_PROXY: "1"
   depends_on:
-    mongo-init: { condition: service_completed_successfully }
     postgres:   { condition: service_healthy }
     redis:      { condition: service_started }
   networks: [bb]
@@ -104,30 +101,6 @@ services:
       PORT: "8080"
 
   # ── Datastores (no published ports — internal network only) ─────────────────
-  mongo:
-    image: mongo:7
-    restart: unless-stopped
-    command: ["--replSet", "rs0", "--bind_ip_all"]
-    volumes: ["mongo-data:/data/db"]
-    healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
-      interval: 5s
-      timeout: 5s
-      retries: 12
-    networks: [bb]
-
-  # One-shot: promote the standalone node to a single-member replica set, which
-  # is what makes multi-document money transactions possible. Idempotent.
-  mongo-init:
-    image: mongo:7
-    depends_on:
-      mongo: { condition: service_healthy }
-    entrypoint: >
-      mongosh --host mongo --quiet --eval
-      "try { rs.status().ok } catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]}) }"
-    restart: "no"
-    networks: [bb]
-
   postgres:
     image: postgres:18
     restart: unless-stopped
@@ -189,7 +162,6 @@ networks:
     driver: bridge
 
 volumes:
-  mongo-data:
   postgres-data:
   redis-data:
   minio-data:

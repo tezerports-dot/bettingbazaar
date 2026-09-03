@@ -24,11 +24,13 @@ const router = express.Router();
  */
 
 /**
- * Issuance goes through the authority resolver (postgres/moneyAuthority.js).
+ * Issuance goes through the double-entry treasury.
  *
- * Both implementations live in postgres/adminIssuanceAuthority.js — the Mongo
- * counter this file used to hold inline, and the double-entry treasury. Which
- * one runs is decided per call, and MongoDB is still the default.
+ * It used to be a counter held inline in this file: a number incremented on
+ * mint and decremented on issue, with nothing recording where the tokens went.
+ * The treasury posts both sides of every movement, so "how many tokens exist
+ * and who holds them" is answerable from the ledger rather than from a total
+ * nobody can reconstruct.
  *
  * ── The contract change ─────────────────────────────────────────────────────
  * Every mint carries a `movementId`, because the operation is not idempotent

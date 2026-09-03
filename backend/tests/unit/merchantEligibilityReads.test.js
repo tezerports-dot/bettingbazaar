@@ -33,17 +33,18 @@ vi.mock('#db/repositories/merchantWallets.core.js', async (importOriginal) => {
   };
 });
 
-// The merchant record is stubbed so that a read of `tokenBalance` from it would
+// The merchant RECORD is stubbed so that a read of `tokenBalance` from it would
 // return an OBVIOUSLY WRONG number. Nothing under test may consult it; if
 // something starts to, the assertions below go red rather than silently
 // agreeing with the wallet by coincidence.
-vi.mock('mongoose', () => ({
-  default: {
-    model: () => ({
-      findById: () => ({ lean: async () => ({ _id: 'm1', tokenBalance: 999_999 }) }),
-      findOne: async () => ({ _id: 'm1', tokenBalance: 999_999 }),
-    }),
-  },
+//
+// This is the defect the test exists for: merchant assignment used to filter
+// candidates by a balance stored on the merchant record while the money it was
+// deciding about lived in the wallet. A money DECISION read from a copy is
+// wrong however small the drift.
+vi.mock('#db/repositories/merchants.js', () => ({
+  getMerchant: async () => ({ merchantId: 'm1', tokenBalance: 999_999 }),
+  listMerchants: async () => ({ merchants: [{ merchantId: 'm1', tokenBalance: 999_999 }] }),
 }));
 
 const { getMerchantTokenBalance } = await import('#db/repositories/merchantWallets.js');

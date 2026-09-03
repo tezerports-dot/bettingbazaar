@@ -239,7 +239,14 @@ export async function loginTwoFactorHandler(req, res) {
     if (t === 'subadmin'      && !user.isSubAdmin)     return res.status(403).json({ success: false, message: 'Sub-admin access required' });
     if (t === 'queue_manager' && !user.isQueueManager) return res.status(403).json({ success: false, message: 'Queue manager access required' });
 
-    const verdict = await verifySecondFactor(user, code);
+    // Credentials, not the account record: the 2FA columns are excluded from
+    // the general read, so passing `user` here would look exactly like "not
+    // enrolled" and admit a 2FA-protected account without a second factor.
+    const creds = await db.users.getUserCredentials(user.userId);
+    const verdict = await verifySecondFactor(creds, code, {
+      spendCounter: (counter) => db.users.spendTwoFactorCounter(user.userId, counter),
+      consumeBackupCode: (arg) => db.users.consumeTwoFactorBackupCode(user.userId, arg),
+    });
     if (!verdict.ok) {
       if (verdict.result === SECOND_FACTOR_RESULT.MALFORMED_SECRET) {
         // Nothing the user types can succeed — do not send them in circles.

@@ -309,9 +309,12 @@ router.post('/auth/login/2fa', twoFactorLimiter, async (req, res) => {
             return res.status(401).json({ success: false, twoFactorExpired: true,
                 message: 'Login session expired. Please sign in again.' });
 
-        const merchant = await db.merchants.getMerchant(challenge.id)
-            .select('+twoFactorSecret +twoFactorLastCounter +backupCodes');
-        if (!merchant)
+        // Credentials, not the ordinary record: the 2FA columns are excluded
+        // from the general read, so passing the plain merchant here would look
+        // exactly like "not enrolled" and let a 2FA account in without one.
+        const merchant = await db.merchants.getMerchant(challenge.id);
+        const creds = await db.merchants.getMerchantCredentials(challenge.id);
+        if (!merchant || !creds)
             return res.status(401).json({ success: false, message: 'Invalid credentials' });
 
         if (merchant.merchantApprovalStatus !== 'APPROVED' || merchant.status !== 'ACTIVE') {
@@ -321,7 +324,10 @@ router.post('/auth/login/2fa', twoFactorLimiter, async (req, res) => {
                 message: msgs[merchant.status] || msgs[merchant.merchantApprovalStatus] || 'Account not active.' });
         }
 
-        const verdict = await verifySecondFactor(merchant, code);
+        const verdict = await verifySecondFactor(creds, code, {
+            spendCounter: (counter) => db.merchants.spendTwoFactorCounter(challenge.id, counter),
+            consumeBackupCode: (arg) => db.merchants.consumeTwoFactorBackupCode(challenge.id, arg),
+        });
         if (!verdict.ok) {
             if (verdict.result === SECOND_FACTOR_RESULT.MALFORMED_SECRET) {
                 console.error(`🚨 2FA secret undecryptable for merchant ${merchant._id} — check TOTP_ENCRYPTION_KEY`);
@@ -359,14 +365,19 @@ router.get('/2fa/status', merchantAuth, async (req, res) => {
 
 router.post('/2fa/setup', merchantAuth, twoFactorLimiter, async (req, res) => {
     try {
-        const merchant = await db.merchants.getMerchant(req.merchantId).select('+twoFactorSecret');
-        if (merchant.twoFactorEnabled)
+        const creds = await db.merchants.getMerchantCredentials(req.merchantId);
+        if (!creds)
+            return res.status(404).json({ success: false, message: 'Merchant not found' });
+        if (creds.twoFactorEnabled)
             return res.status(400).json({ success: false,
                 message: 'Two-factor authentication is already active. Disable it first to re-enrol.' });
 
         const secret = generateSecret();
-        merchant.twoFactorPendingSecret = encryptSecret(secret);   // PENDING, not live
-        await merchant.save();
+        // PENDING, not live: the secret only becomes the account's second factor
+        // once the merchant proves they can generate a code from it.
+        const merchant = await db.merchants.updateMerchant(req.merchantId, {
+            twoFactorPendingSecret: encryptSecret(secret),
+        });
 
         res.json({
             success: true,
@@ -388,25 +399,27 @@ router.post('/2fa/activate', merchantAuth, twoFactorLimiter, async (req, res) =>
         const { code } = req.body;
         if (!code) return res.status(400).json({ success: false, message: 'Code is required' });
 
-        const merchant = await db.merchants.getMerchant(req.merchantId)
-            .select('+twoFactorPendingSecret +twoFactorSecret +twoFactorLastCounter +backupCodes');
-        if (!merchant.twoFactorPendingSecret)
+        const creds = await db.merchants.getMerchantCredentials(req.merchantId);
+        if (!creds?.twoFactorPendingSecret)
             return res.status(400).json({ success: false, message: 'Start setup first.' });
 
-        const pending = decryptSecret(merchant.twoFactorPendingSecret);
+        const pending = decryptSecret(creds.twoFactorPendingSecret);
         const verdict = verifyToken({ secret: pending, token: String(code) });
         if (!verdict.valid)
             return res.status(400).json({ success: false, message: 'That code did not match. Check your authenticator and try again.' });
 
-        // Only now does the secret become live.
+        // Only now does the secret become live — and all of it in ONE update,
+        // so the account is never found enrolled with no recovery codes, or
+        // with a live secret whose activation code has not been spent.
         const codes = generateBackupCodes();
-        merchant.twoFactorSecret = merchant.twoFactorPendingSecret;
-        merchant.twoFactorPendingSecret = undefined;
-        merchant.twoFactorEnabled = true;
-        merchant.twoFactorEnrolledAt = new Date();
-        merchant.twoFactorLastCounter = verdict.counter;   // the activation code is spent
-        merchant.backupCodes = codes.map(hashBackupCode);
-        await merchant.save();
+        await db.merchants.updateMerchant(req.merchantId, {
+            twoFactorSecret: creds.twoFactorPendingSecret,
+            twoFactorPendingSecret: null,
+            twoFactorEnabled: true,
+            twoFactorEnrolledAt: new Date(),
+            twoFactorLastCounter: verdict.counter,   // the activation code is spent
+            backupCodes: codes.map(hashBackupCode),
+        });
 
         res.json({
             success: true,
@@ -988,12 +1001,11 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             // 90/10 fallback if none configured). Both credits are idempotent
             // via their canonical keys (dep_complete_/reserve_credit_<orderId>).
             //
-            // The `?? order.tokenAmount` this used to carry never fired: a
-            // hydrated Mongoose document applies the schema default, so a legacy
-            // order reads 0 rather than undefined — while the same order read
-            // `.lean()` reads undefined and DOES fire it. domains/payment/
-            // depositCredit.js states the rule once so the answer stops
-            // depending on how the order was fetched.
+            // The `?? order.tokenAmount` this used to carry never fired: an
+            // order whose split fields were never written reads 0, not
+            // undefined, so the fallback was dead and a legacy order credited
+            // nothing. domains/payment/depositCredit.js states the rule once,
+            // so the answer no longer depends on how the order was fetched.
             const { depositCredit, reserveCredit } = depositCreditSplit(order);
             try {
                 if (depositCredit > 0) await creditDeposit(order.userId, depositCredit, order.orderId);
@@ -1033,10 +1045,10 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             // that follow it.
             if (holdFor > 0) {
                 // Record what the platform now OWES this merchant, in a pocket
-                // they cannot spend. On Mongo the tokens simply do not exist
-                // during the hold, so nothing shows the liability; opening the
-                // settlement here makes it visible and gives the sweeper a real
-                // state machine to advance. Idempotent on the order's key, and
+                // they cannot spend. Without this row the tokens simply do not
+                // exist during the hold and nothing shows the liability;
+                // opening the settlement here makes it visible and gives the
+                // sweeper a real state machine to advance. Idempotent on the order's key, and
                 // fire-and-forget: the hold itself must not fail because the
                 // settlement could not be opened — settleHold opens it lazily.
                 // Unconditional. This was `if (settlementOnPostgres())`, and that
@@ -1744,12 +1756,11 @@ router.post('/orders/:id/approve', merchantAuth, async (req, res) => {
         // 2026-07-10). This route previously credited via a raw $inc + a
         // hand-written WalletLedger, bypassing walletAuthority (§7) and — more
         // importantly — with NO idempotency key: the ONLY double-credit defense
-        // was the PAID→COMPLETED status guard, and safeSession() silently
-        // degrades non-atomic on standalone Mongo. creditDeposit/creditReserve
-        // are idempotent on canonical keys (so this is now mutually idempotent
-        // with the /confirm path — an order credits at most once total) and
-        // run atomically under the route session on a replica set. Closes
-        // Known Open Item #6.
+        // was the PAID->COMPLETED status guard, which a concurrent retry could
+        // pass twice. creditDeposit/creditReserve are idempotent on canonical
+        // keys — so this is now mutually idempotent with the /confirm path, and
+        // an order credits at most once in total — and each runs in its own
+        // transaction. Closes Known Open Item #6.
         if (depositCredit > 0) await creditDeposit(order.userId, depositCredit, order.orderId, session);
         if (reserveCredit > 0) await creditReserve(order.userId, reserveCredit, order.orderId, session);
         const updatedUser = await db.users.getUser(order.userId);

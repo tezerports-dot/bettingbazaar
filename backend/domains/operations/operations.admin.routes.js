@@ -10,7 +10,7 @@
  * authority + endpoint that edits it. Nothing is configured HERE; this
  * surface points at the platform that configures it.
  */
-import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import { runRetention } from './retention.service.js';
 import { getTrialBalance, getDistributableRevenueMinor } from '../revenue/revenueSettlement.service.js';

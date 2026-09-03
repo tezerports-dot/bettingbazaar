@@ -153,13 +153,18 @@ export async function search({
  */
 export async function feed({
   category = null, action = null, performedBy = null,
-  page = 1, limit = 50,
+  since = null, until = null, page = 1, limit = 50,
 } = {}) {
   const where = []; const params = [];
   const add = (sql, value) => { params.push(value); where.push(sql.replace('$?', `$${params.length}`)); };
   if (category)    add('category = $?', String(category));
   if (action)      add('action = $?', String(action));
   if (performedBy) add('performed_by = $?', String(performedBy));
+  // The window filters the SAME column the feed orders by. The route this
+  // replaced filtered one field and sorted by another, which is how a date
+  // range came back empty for entries that were plainly there.
+  if (since)       add('created_at >= $?', since);
+  if (until)       add('created_at <= $?', until);
 
   const size = Math.min(Math.max(Number(limit) || 50, 1), 200);
   const wanted = Math.max(Number(page) || 1, 1);
