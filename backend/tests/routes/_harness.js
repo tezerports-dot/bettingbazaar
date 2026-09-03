@@ -24,6 +24,10 @@ import cookieParser from 'cookie-parser';
 import request from 'supertest';
 import { signToken } from '../../domains/identity/paseto.util.js';
 import { createUser, updateUser, setRoles } from '#db/repositories/users.js';
+import {
+  createMerchant, updateMerchant, newMerchantId, generateMerchantPublicRef,
+} from '#db/repositories/merchants.js';
+import { creditMerchantTokens } from '../../domains/merchant/merchantWallet.service.js';
 
 /**
  * Mount one router on a bare app, with only the middleware the router itself
@@ -69,6 +73,34 @@ export async function actor({
 
   const token = signToken({ userId: id });
   return { userId: id, mobile, token, auth: `Bearer ${token}` };
+}
+
+/**
+ * The same, for a merchant.
+ *
+ * A merchant token is a different shape — `{ merchantId, isMerchant: true }` —
+ * and `merchantAuth` checks the row behind it, not just the signature: status,
+ * approval, revocation. Building the merchant here means a route that admits a
+ * suspended or unapproved merchant fails the test rather than passing it.
+ */
+export async function merchantActor({
+  status = 'ACTIVE', approval = 'APPROVED', name = null, tokensRupees = 0,
+} = {}) {
+  const merchantId = newMerchantId();
+  const mobile = `8${String(Date.now()).slice(-9)}`.slice(0, 10);
+  await createMerchant({
+    merchantId, name: name || `RT Merchant ${merchantId.slice(-6)}`,
+    publicRef: generateMerchantPublicRef(), mobile, status,
+  });
+  if (approval !== 'PENDING') await updateMerchant(merchantId, { merchantApprovalStatus: approval });
+  if (tokensRupees > 0) {
+    await creditMerchantTokens({
+      merchantId, amount: tokensRupees, reason: 'route test float',
+      refModel: 'Test', refId: merchantId, txId: `rt_float_${merchantId}`,
+    });
+  }
+  const token = signToken({ merchantId, userId: merchantId, mobile, isMerchant: true, isAdmin: false });
+  return { merchantId, mobile, token, auth: `Bearer ${token}` };
 }
 
 /** `request(app)` with the Authorization header already attached. */
