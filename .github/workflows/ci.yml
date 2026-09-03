@@ -271,9 +271,14 @@ jobs:
       - name: User panel typecheck + unit tests + build
         working-directory: user-panel
         run: npm ci --legacy-peer-deps && npx tsc --noEmit && npm test && npm run build
-      - name: Admin panel typecheck + build
+      # The admin and merchant panels carry their own logic worth testing — the
+      # money formatters an operator reads, the sub-admin permission catalogue,
+      # and the settlement-rail rules (which unit money is shown in, whether a
+      # TRC-20 payout address is valid, whether a counterparty is named). A test
+      # that never runs in CI rots, so both panels run their suites here too.
+      - name: Admin panel typecheck + unit tests + build
         working-directory: admin-panel
-        run: npm ci --legacy-peer-deps && npx tsc --noEmit && npx vite build
-      - name: Merchant panel typecheck + build
+        run: npm ci --legacy-peer-deps && npx tsc --noEmit && npm test && npx vite build
+      - name: Merchant panel typecheck + unit tests + build
         working-directory: merchant-panel
-        run: npm ci --legacy-peer-deps && npx tsc --noEmit && npx vite build
+        run: npm ci --legacy-peer-deps && npx tsc --noEmit && npm test && npx vite build
