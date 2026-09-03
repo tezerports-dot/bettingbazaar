@@ -75,6 +75,7 @@ import * as operations from './repositories/operations.js';
 import * as paymentConfig from './repositories/paymentConfig.js';
 import * as supportDocuments from './repositories/supportDocuments.js';
 import * as depositPolicy from './repositories/depositPolicy.js';
+import * as merchantBonusPolicy from './repositories/merchantBonusPolicy.js';
 import * as stats from './repositories/stats.js';
 import * as utr from './repositories/utr.js';
 
@@ -151,6 +152,7 @@ export const db = Object.freeze({
   // Platform
   config,
   depositPolicy,
+  merchantBonusPolicy,
   operations,
   supportDocuments,
   stats,
@@ -162,4 +164,4 @@ export default db;
 export { users, identity, security, telegram, merchants, chat, config };
 export { treasury, settlements, merchantSettlements, adminIssuance, balanceAdjustments };
 export { markets, games, content, engagement, social, referrals };
-export { audit, compliance, depositPolicy, operations, paymentConfig, supportDocuments, stats, utr };
+export { audit, compliance, depositPolicy, merchantBonusPolicy, operations, paymentConfig, supportDocuments, stats, utr };

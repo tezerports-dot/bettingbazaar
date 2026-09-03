@@ -2,8 +2,7 @@
 /** cycles.admin.routes.js — Cycle phases, history, equalization, manage-cycle */
 import { express, authenticate, isAdmin, isAdminOrSubAdmin } from './_adminShared.js';
 import { db } from '#db';
-import { isCycleType, phasesFor } from '../../domains/markets/cycleTypes.js';
-import { DEFAULT_CYCLE_PHASES } from '../../domains/configuration/systemConfig.model.js';
+import { DEFAULT_CYCLE_PHASES, isCycleType, phasesFor } from '../../domains/markets/cycleTypes.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 
 const router = express.Router();

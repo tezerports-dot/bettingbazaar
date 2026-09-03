@@ -1,9 +1,6 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import { db } from '#db';
 import { fetchCycleHistory } from './cycleHistory.service.js';
-// Fallback phase offsets when SystemConfig is missing or fails validPhaseSet.
-// Imported, never restated — see the header on DEFAULT_CYCLE_PHASES.
-import { DEFAULT_CYCLE_PHASES } from '../configuration/systemConfig.model.js';
 // Derived cycle pools (FLAGS.DERIVED_CYCLE_POOLS, default off) — see
 // cyclePool.service.js for why the running total is the scaling ceiling.
 import { computeRealPools } from './cyclePool.service.js';
@@ -11,10 +8,11 @@ import { computeRealPools } from './cyclePool.service.js';
 // minority-side winner). assertPublicCycleSafe throws if one slips in.
 import { assertPublicCycleSafe } from './cyclePublicView.js';
 // One vocabulary for cycle types — labels, which config keys hold each type's
-// phases and stake limits, and which types tile the hour. See cycleTypes.js for
-// why this is a module and not a set of ternaries.
+// phases and stake limits, which types tile the hour, and the fallback phase
+// offsets used when the config is missing or fails validPhaseSet. See
+// cycleTypes.js for why this is a module and not a set of ternaries.
 import {
-  CYCLE_TYPES, CYCLE_TYPE_VALUES, INTERVAL_CYCLE_TYPES,
+  CYCLE_TYPES, CYCLE_TYPE_VALUES, DEFAULT_CYCLE_PHASES, INTERVAL_CYCLE_TYPES,
   isCycleType, cycleMeta, cycleLabel, phasesFor,
 } from './cycleTypes.js';
 import { getSystemConfig } from '#db/repositories/config.js';

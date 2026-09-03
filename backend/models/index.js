@@ -23,7 +23,6 @@ export * from '../domains/merchant/merchantWallet.model.js';
 export * from '../domains/merchant/merchantAdminTokenOrder.model.js';
 export * from '../domains/payment/paymentOrder.model.js';
 export * from './audit.model.js';
-export * from '../domains/configuration/systemConfig.model.js';
 export * from '../domains/configuration/depositPolicy.model.js';
 export * from '../domains/configuration/merchantBonusPolicy.model.js';
 // Revenue & Settlement Platform (BBEPS Phase 007) — the settlement ledger

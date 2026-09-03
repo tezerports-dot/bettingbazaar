@@ -2697,3 +2697,63 @@ ALTER TABLE bets ADD COLUMN IF NOT EXISTS phantom_manager_id TEXT;
 -- A player's history, newest first — the query the panel makes on every load.
 CREATE INDEX IF NOT EXISTS bets_user_history_idx
   ON bets (user_id, placed_at DESC, id DESC) WHERE NOT is_phantom;
+
+-- ── Merchant performance bonus policy ────────────────────────────────────────
+--
+-- The ONLY place the merchant bonus percentage and its enablement live. The
+-- bonus engine READS this and never owns the number.
+--
+-- Whole-document versioning, mirroring deposit_policies: each row IS a version,
+-- exactly one ACTIVE at a time, and a rollback is a NEW version copying an old
+-- one's values forward rather than a mutation. History is therefore append-only
+-- and a reviewer can always answer "what was in force at time T".
+--
+-- One ACTIVE row is the INDEX's rule, not the writer's. The document-store
+-- version created the new ACTIVE row and only then superseded the old one,
+-- leaving a window in which two policies were ACTIVE and the engine picked
+-- whichever sorted first. Here the supersede and the insert are one
+-- transaction and the partial unique index refuses the overlap outright.
+CREATE TABLE IF NOT EXISTS merchant_bonus_policies (
+  id            BIGSERIAL PRIMARY KEY,
+  version       BIGINT NOT NULL UNIQUE,
+  status        TEXT NOT NULL DEFAULT 'ACTIVE',
+
+  -- Master switch. The engine does nothing while false, which is the shipped
+  -- default: installing the policy changes no live behaviour until an admin
+  -- turns it on.
+  enabled       BOOLEAN NOT NULL DEFAULT FALSE,
+  -- % of newly matched buy->sell volume issued as bonus. Never derived from
+  -- buy/sell rates, never deducted from users: it draws only on the
+  -- platform-funded MERCHANT_BONUS_POOL.
+  bonus_percent NUMERIC(6,3) NOT NULL DEFAULT 0,
+  -- Minimum newly matched volume, in RUPEES, before an issuance triggers.
+  -- Rupees rather than paise because it is a policy threshold an admin types,
+  -- converted to minor units at the one place the engine compares it.
+  min_matched_volume NUMERIC(14,2) NOT NULL DEFAULT 100,
+
+  is_rollback   BOOLEAN NOT NULL DEFAULT FALSE,
+  rollback_of_version BIGINT,
+
+  justification TEXT NOT NULL,
+  changed_by    TEXT,
+  changed_by_name TEXT NOT NULL DEFAULT '',
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  superseded_at TIMESTAMPTZ,
+
+  CONSTRAINT merchant_bonus_policies_status_known
+    CHECK (status IN ('ACTIVE', 'SUPERSEDED')),
+  CONSTRAINT merchant_bonus_policies_percent_range
+    CHECK (bonus_percent >= 0 AND bonus_percent <= 100),
+  CONSTRAINT merchant_bonus_policies_volume_range
+    CHECK (min_matched_volume >= 0),
+  -- An enabled policy at 0% does nothing while reading as switched on, which
+  -- is the shape most likely to be mistaken for a working bonus programme.
+  CONSTRAINT merchant_bonus_policies_enabled_has_percent
+    CHECK (NOT enabled OR bonus_percent > 0),
+  CONSTRAINT merchant_bonus_policies_justified
+    CHECK (length(btrim(justification)) > 0)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS merchant_bonus_policies_one_active
+  ON merchant_bonus_policies (status) WHERE status = 'ACTIVE';
+CREATE INDEX IF NOT EXISTS merchant_bonus_policies_history_idx
+  ON merchant_bonus_policies (version DESC);

@@ -19,55 +19,37 @@
  * go through the same state machine the batch does, so there is exactly one
  * place a KYC status can change.
  */
-import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, hasPermission, getModels } from './_adminShared.js';
+import { express, authenticate, hasPermission } from './_adminShared.js';
 import { db } from '#db';
 // The KYC state machine. Every decision goes through here, so an illegal one is
 // refused by the database rather than by whichever request finished last — and
 // the reason and reviewer land in the fields that are actually read.
 import { approveKyc, rejectKyc } from '../../domains/user/kycDecision.service.js';
-import { KycVerification } from '../../domains/identity/kycVerification.model.js';
 
 const router = express.Router();
 
 /**
  * GET /api/admin/kyc/queue — who is still waiting on a verdict.
  *
- * Joined to the KycVerification row so a reviewer can see WHY someone is
+ * Joined to the verification row so a reviewer can see WHY someone is
  * waiting — never submitted, exported and awaiting the verifier, or failed and
  * needing a second look — which is the only question this screen can answer now
  * that there is no document to inspect.
  *
- * The Aadhaar itself is NOT here. `aadhaarEncrypted` is select:false and this
- * route does not ask for it; a queue of dozens of users is the last place a
- * national identity number should be shipped to a browser. The bulk export is
- * the one audited path that releases them.
+ * The Aadhaar itself is NOT here: the query names its columns and neither the
+ * ciphertext nor the hash is among them. A queue of hundreds of users is the
+ * last place a national identity number should be shipped to a browser, and the
+ * audited bulk export is the one path that releases them.
  */
 router.get('/kyc/queue', authenticate, hasPermission('canVerifyKYC'), async (req, res) => {
   try {
-    const { User } = getModels();
-
-    // New users start at PENDING_SUBMISSION and the bot moves them to
-    // PENDING_APPROVAL, so both belong in the queue.
-    const pendingKYC = await User.find({
-      kycStatus: { $in: ['PENDING_SUBMISSION', 'PENDING_APPROVAL'] },
-    })
-      .select('-passwordHash -twoFactorSecret')
-      .sort({ createdAt: 1 })
-      .limit(500)
-      .lean();
-
-    // One query for the whole page rather than one per row.
-    const verifications = await KycVerification.find({
-      userId: { $in: pendingKYC.map((u) => u._id) },
-    }).select('userId status aadhaarLast4 exportBatchId failureReason updatedAt').lean();
-
-    const byUser = new Map(verifications.map((v) => [String(v.userId), v]));
-    const queue = pendingKYC.map((u) => ({
-      ...u,
-      verification: byUser.get(String(u._id)) || null,
-    }));
-
-    res.json({ success: true, queue });
+    // One statement: the users awaiting a verdict, each already joined to the
+    // verification row that explains why, and the total counted over the same
+    // scan. It was three round trips — a user query, a verification query, and
+    // a separate count — and the count described a different instant from the
+    // list it labelled.
+    const { queue, pendingTotal } = await db.kyc.listKycQueue({ limit: 500 });
+    res.json({ success: true, queue, pendingTotal });
   } catch (error) {
     console.error('KYC queue error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch KYC queue' });
@@ -77,8 +59,6 @@ router.get('/kyc/queue', authenticate, hasPermission('canVerifyKYC'), async (req
 // Approve KYC
 router.post('/kyc/:userId/approve', authenticate, hasPermission('canVerifyKYC'), async (req, res) => {
   try {
-    const { User } = getModels();
-    
     const user = await db.users.getUser(req.params.userId);
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
@@ -101,7 +81,7 @@ router.post('/kyc/:userId/approve', authenticate, hasPermission('canVerifyKYC'),
 
     // REALTIME: Notify admin room and user
     if (global.io) {
-      const pendingCount = await User.countDocuments({ kycStatus: { $in: ['PENDING_SUBMISSION', 'PENDING_APPROVAL'] } });
+      const pendingCount = await db.kyc.countKycQueue();
       global.io.to('admin-room').emit('kyc_update', {
         userId: user._id,
         newStatus: 'APPROVED',
@@ -140,9 +120,8 @@ router.post('/kyc/:userId/approve', authenticate, hasPermission('canVerifyKYC'),
 // Reject KYC
 router.post('/kyc/:userId/reject', authenticate, hasPermission('canVerifyKYC'), async (req, res) => {
   try {
-    const { User } = getModels();
     const { reason } = req.body;
-    
+
     const user = await db.users.getUser(req.params.userId);
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
@@ -168,7 +147,7 @@ router.post('/kyc/:userId/reject', authenticate, hasPermission('canVerifyKYC'), 
 
     // REALTIME: Notify admin room and user
     if (global.io) {
-      const pendingCount = await User.countDocuments({ kycStatus: { $in: ['PENDING_SUBMISSION', 'PENDING_APPROVAL'] } });
+      const pendingCount = await db.kyc.countKycQueue();
       global.io.to('admin-room').emit('kyc_update', {
         userId: user._id,
         newStatus: 'REJECTED',

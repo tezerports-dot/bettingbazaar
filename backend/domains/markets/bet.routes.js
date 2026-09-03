@@ -19,10 +19,9 @@ import { assessBet, computeBetFundingPlan, computeMaxStake } from '../risk/riskV
 // Shared trading vocabulary (Phase 011) — one source for sides/statuses.
 import { MARKET_SIDES } from '../trading/tradingModels.js';
 // Cycle-type vocabulary: which betLimits key belongs to which type.
-import { CYCLE_TYPES, isCycleType, limitsKeyFor, phasesFor } from './cycleTypes.js';
+import { CYCLE_TYPES, DEFAULT_CYCLE_PHASES, isCycleType, limitsKeyFor, phasesFor } from './cycleTypes.js';
 // Phase offsets, for the clock-based betting cutoff below. Same single
 // declaration the generator and the admin phase view read.
-import { DEFAULT_CYCLE_PHASES } from '../configuration/systemConfig.model.js';
 // Derived cycle pools (FLAGS.DERIVED_CYCLE_POOLS, default off) — see
 // cyclePool.service.js for why the running total is the scaling ceiling.
 import { computeRealPools } from './cyclePool.service.js';

@@ -317,3 +317,86 @@ export async function findRejectionsMissingReason() {
   );
   return rows.map((r) => r.user_id);
 }
+
+/**
+ * The review queue: everyone still awaiting a verdict, with the verification
+ * record that explains WHY they are waiting.
+ *
+ * ── Why the count comes from this statement, not a second one ───────────────
+ * The route used to fetch the page and then call `countDocuments` separately,
+ * so the number it displayed and the rows it displayed described two different
+ * instants — a reviewer approving between the two made the header disagree with
+ * the list. `COUNT(*) OVER ()` is computed over the same scan that produced the
+ * rows, so they cannot disagree.
+ *
+ * ── What is deliberately absent ─────────────────────────────────────────────
+ * `aadhaar_encrypted` and `aadhaar_hash`. This is a queue of hundreds of
+ * people; a national identity number has no business being shipped to a browser
+ * in bulk. The audited export is the one path that releases them, and it is not
+ * this one. `aadhaar_last4` is enough to match a row against a verifier's reply.
+ */
+export async function listKycQueue({ limit = 500 } = {}) {
+  const capped = Math.min(Math.max(Number(limit) || 500, 1), 1000);
+  const { rows } = await pgQuery(
+    `SELECT u.user_id, u.username, u.mobile, u.status, u.kyc_status,
+            u.joined_at, u.profile_pic, u.referral_code,
+            k.submitted_at, k.rejection_reason, k.reviewed_by, k.reviewed_at,
+            v.status         AS verification_status,
+            v.aadhaar_last4  AS verification_aadhaar_last4,
+            v.export_batch_id AS verification_export_batch_id,
+            v.failure_reason AS verification_failure_reason,
+            v.updated_at     AS verification_updated_at,
+            COUNT(*) OVER () AS pending_total
+       FROM users u
+       LEFT JOIN user_kyc k          ON k.user_id = u.user_id
+       LEFT JOIN kyc_verifications v ON v.user_id = u.user_id
+      WHERE u.kyc_status IN ('PENDING_SUBMISSION', 'PENDING_APPROVAL')
+      ORDER BY u.joined_at ASC
+      LIMIT ${capped}`,
+    [], 'kyc_queue',
+  );
+
+  return {
+    // Zero rows means zero pending, which no row is left to carry.
+    pendingTotal: rows.length ? Number(rows[0].pending_total) : 0,
+    queue: rows.map((r) => ({
+      userId:      r.user_id,
+      _id:         r.user_id,
+      username:    r.username,
+      mobile:      r.mobile,
+      status:      r.status,
+      kycStatus:   r.kyc_status,
+      joinedAt:    r.joined_at,
+      createdAt:   r.joined_at,
+      profilePic:  r.profile_pic,
+      referralCode: r.referral_code,
+      submittedAt: r.submitted_at,
+      rejectionReason: r.rejection_reason,
+      reviewedBy:  r.reviewed_by,
+      reviewedAt:  r.reviewed_at,
+      // null when the person has not started the Aadhaar step at all, which is
+      // itself the answer to "why is this one still waiting".
+      verification: r.verification_status === null ? null : {
+        userId:        r.user_id,
+        status:        r.verification_status,
+        aadhaarLast4:  r.verification_aadhaar_last4,
+        exportBatchId: r.verification_export_batch_id,
+        failureReason: r.verification_failure_reason,
+        updatedAt:     r.verification_updated_at,
+      },
+    })),
+  };
+}
+
+/**
+ * How many people are awaiting a verdict. Used by the realtime badge after a
+ * decision lands, where the list itself is not being re-sent.
+ */
+export async function countKycQueue() {
+  const { rows } = await pgQuery(
+    `SELECT COUNT(*)::bigint AS n FROM users
+      WHERE kyc_status IN ('PENDING_SUBMISSION', 'PENDING_APPROVAL')`,
+    [], 'kyc_queue_count',
+  );
+  return Number(rows[0].n);
+}

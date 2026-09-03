@@ -125,3 +125,26 @@ export function phasesFor(type, allPhases) {
 export function limitsKeyFor(type) {
   return cycleMeta(type).limitsKey;
 }
+
+/**
+ * The fallback phase offsets, in seconds before the cycle end.
+ *
+ * RE-EXPORTED, NOT DEFINED. The one owner is the config store's spec, which is
+ * where a fresh install gets its `cyclePhases` from — so the fallback a
+ * consumer uses when the stored set is missing or invalid is the same object
+ * the stored set was seeded from, and the two cannot drift apart. It used to be
+ * declared three times (schema defaults, the generator's fallback, and the
+ * admin route's timeline) and had ALREADY drifted: the admin panel drew the
+ * 30-minute block closing betting at 60s while the engine closed it at 30s.
+ *
+ * It surfaces here because `phasesFor()` is the only thing that reads it, and
+ * every consumer already imports that from this module. The dependency runs
+ * backend -> #db and never the other way, which is why the constant lives on
+ * that side of the boundary rather than this one.
+ *
+ * The invariant every set must satisfy: merge > equalizer > close >
+ * celebrate >= 0, and merge < the cycle's duration. `validPhaseSet` in the
+ * generator enforces it at read time; `cycleTypes.test.js` pins it for every
+ * type so a bad default can never be what a consumer falls back to.
+ */
+export { DEFAULT_CYCLE_PHASES } from '#db/spec/config.spec.js';

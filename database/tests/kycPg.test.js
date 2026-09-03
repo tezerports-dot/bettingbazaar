@@ -484,3 +484,125 @@ describePg('bulk Aadhaar verification', () => {
     expect((await verificationCounts()).FAILED).toBe(0);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The review queue. What a reviewer sees, and what they must not see.
+// ─────────────────────────────────────────────────────────────────────────────
+import { listKycQueue, countKycQueue } from '../repositories/kyc.core.js';
+
+describePg('the KYC review queue', () => {
+  beforeAll(async () => { await applySchema(); });
+  afterAll(async () => { await closePg(); });
+  beforeEach(async () => {
+    await pgQuery(
+      'TRUNCATE kyc_verifications, kyc_batches, kyc_transitions, user_kyc, users RESTART IDENTITY CASCADE');
+  });
+
+  let n = 0;
+  const person = async (kycStatus) => {
+    n += 1;
+    const userId = `q${String(n).padStart(4, '0')}`;
+    await createUser({ userId, username: userId, mobile: `9991${String(n).padStart(6, '0')}` });
+    await updateUser(userId, { kycStatus });
+    return userId;
+  };
+
+  it('holds both statuses that are still awaiting a verdict', async () => {
+    // New accounts open at PENDING_SUBMISSION and the bot moves them to
+    // PENDING_APPROVAL. A queue that showed only one of those would hide half
+    // the people waiting.
+    await person('PENDING_SUBMISSION');
+    await person('PENDING_APPROVAL');
+    await person('APPROVED');
+    await person('REJECTED');
+
+    const { queue, pendingTotal } = await listKycQueue();
+    expect(queue).toHaveLength(2);
+    expect(pendingTotal).toBe(2);
+    expect(queue.map((q) => q.kycStatus).sort())
+      .toEqual(['PENDING_APPROVAL', 'PENDING_SUBMISSION']);
+  });
+
+  it('counts over the same scan that produced the rows', async () => {
+    for (let i = 0; i < 5; i += 1) await person('PENDING_APPROVAL');
+    // The count used to come from a second statement, so the header and the
+    // list described two different instants and a decision landing between
+    // them made them disagree.
+    const { queue, pendingTotal } = await listKycQueue({ limit: 2 });
+    expect(queue).toHaveLength(2);
+    expect(pendingTotal).toBe(5);
+  });
+
+  it('reports zero pending when nobody is waiting', async () => {
+    await person('APPROVED');
+    // No row is left to carry the window count, so this is the one case the
+    // repository has to answer without one.
+    expect(await listKycQueue()).toEqual({ queue: [], pendingTotal: 0 });
+    expect(await countKycQueue()).toBe(0);
+  });
+
+  it('says WHY someone is waiting, via their verification row', async () => {
+    const waiting = await person('PENDING_APPROVAL');
+    await submitVerification({
+      userId: waiting, aadhaarHash: 'qh-1', aadhaarEncrypted: 'cipher:qh-1',
+      aadhaarLast4: '4321', phone: '9991000001',
+    });
+    await exportPending({ batchId: 'exp-q', actorId: 'admin-1' });
+
+    const { queue } = await listKycQueue();
+    expect(queue[0].verification).toMatchObject({
+      status: 'PENDING_VERIFICATION',
+      aadhaarLast4: '4321',
+      exportBatchId: 'exp-q',
+    });
+  });
+
+  it('carries a null verification for somebody who never started', async () => {
+    await person('PENDING_SUBMISSION');
+    const { queue } = await listKycQueue();
+    // Not an empty object: "has not submitted" is the answer the screen exists
+    // to give, and it has to be distinguishable from "submitted, no verdict".
+    expect(queue[0].verification).toBeNull();
+  });
+
+  it('NEVER ships the Aadhaar itself', async () => {
+    const waiting = await person('PENDING_APPROVAL');
+    await submitVerification({
+      userId: waiting, aadhaarHash: 'qh-2', aadhaarEncrypted: 'cipher:qh-2',
+      aadhaarLast4: '9876', phone: '9991000002',
+    });
+
+    // A queue of hundreds of people is the last place a national identity
+    // number belongs. The audited bulk export is the one path that releases
+    // them, and it is not this one.
+    const serialised = JSON.stringify(await listKycQueue());
+    expect(serialised).not.toContain('cipher:');
+    expect(serialised).not.toContain('qh-2');
+    expect(serialised).toContain('9876');   // the last 4 are enough to match a row
+  });
+
+  it('never ships a password hash or a second-factor secret', async () => {
+    const waiting = await person('PENDING_APPROVAL');
+    await updateUser(waiting, { passwordHash: 'argon2id$secret-hash' });
+    const serialised = JSON.stringify(await listKycQueue());
+    expect(serialised).not.toContain('argon2id');
+    expect(serialised).not.toContain('passwordHash');
+  });
+
+  it('orders oldest first, so the longest wait is reviewed first', async () => {
+    const a = await person('PENDING_APPROVAL');
+    const b = await person('PENDING_APPROVAL');
+    await pgQuery("UPDATE users SET joined_at = now() - interval '3 days' WHERE user_id = $1", [b]);
+    const { queue } = await listKycQueue();
+    expect(queue.map((q) => q.userId)).toEqual([b, a]);
+  });
+
+  it('counts the queue the same way the list does', async () => {
+    await person('PENDING_SUBMISSION');
+    await person('PENDING_APPROVAL');
+    await person('APPROVED');
+    // The realtime badge and the list must never quote different numbers.
+    const { pendingTotal } = await listKycQueue();
+    expect(await countKycQueue()).toBe(pendingTotal);
+  });
+});
