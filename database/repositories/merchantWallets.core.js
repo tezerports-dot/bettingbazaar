@@ -2,28 +2,25 @@
 /**
  * postgres/merchantWalletPg.js — the Postgres merchant token wallet.
  *
- * Domain 1 of the full-authority migration (docs/POSTGRES_FULL_AUTHORITY_PLAN.md).
- * The Mongo original, domains/merchant/merchantWallet.service.js, is the sole
- * writer of `Merchant.tokenBalance` and had no Postgres counterpart at all —
- * only its ledger was mirrored, never the balance. That made it the single
- * largest gap: every user↔merchant settlement and admin↔merchant issuance runs
- * through it, so no "Postgres owns the money" claim was possible without it.
+ * A merchant's money, in pockets, with an append-only entry per movement. It
+ * replaced a single mutable counter on the merchant record; every
+ * user<->merchant settlement and admin<->merchant issuance runs through here,
+ * and a counter cannot say where the value came from or where it went.
  *
- * ── Which shape this copies, and which it does not ──────────────────────────
- * It follows walletPg.js: one transaction per movement, the wallet row locked
+ * ── The shape ───────────────────────────────────────────────────────────────
+ * The same as the player wallet: one transaction per movement, the row locked
  * with SELECT … FOR UPDATE, the guard in the UPDATE's WHERE clause, and the
  * ledger row written in the SAME transaction. A balance can never move without
  * its entry.
  *
- * It deliberately does NOT copy _mongoBetStake, which moves the balance and
- * writes the ledger as two separate operations (M-4) with no idempotency key on
- * the movement (M-2). Those defects are recorded in docs/MONGO_MONEY_AUDIT.md
- * and must not be carried across.
+ * Two defects of the shape it replaced are deliberately NOT carried across:
+ * moving the balance and writing the ledger as two separate operations (M-4),
+ * and no idempotency key on the movement (M-2).
  *
- * The Mongo merchant path's own reserve→move→complete idea IS carried across,
- * but expressed properly: instead of a row with a null balanceAfter that a
- * crash can strand, a reservation is a real balance movement (available →
- * reserved) inside one transaction. It cannot be half-done.
+ * The reserve->move->complete idea IS carried across, but expressed properly:
+ * instead of a row with a null balanceAfter that a crash can strand, a
+ * reservation is a real balance movement (available -> reserved) inside one
+ * transaction. It cannot be half-done.
  *
  * ── Pockets ─────────────────────────────────────────────────────────────────
  *   available   spendable now
@@ -257,9 +254,9 @@ export async function applyMerchantMovement({
  * Split out from applyMerchantMovement so a caller that must do MORE than move
  * pockets — advance a settlement's state, in the same transaction, or not at
  * all — can compose with it instead of opening a second transaction.
- * merchantSettlementPg is that caller, and the composition is the whole point:
- * the Mongo original moves state and money separately and documents the
- * stranding window that creates.
+ * merchantSettlements is that caller, and the composition is the whole point:
+ * moving state and money separately is what creates the stranding window this
+ * design exists to close.
  *
  * Does NOT commit or roll back. The lock holder decides that, because only it
  * knows whether the rest of the transaction succeeded.
@@ -294,10 +291,9 @@ export async function applyMovementWithin(
   if (!await appendEntries(client, mid, entries)) {
     return { ok: true, idempotent: true, balances };
   }
-  // `entries` travels back out so the caller can mirror exactly what committed
-  // rather than reconstructing it — merchantWalletPgAuthority's rollback leg
-  // copies these rows into Mongo, and a reconstruction that drifted from what
-  // the transaction actually wrote would make the fallback silently wrong.
+  // `entries` travels back out so a caller reports exactly what committed
+  // rather than reconstructing it. A reconstruction that drifted from what the
+  // transaction actually wrote would describe a movement that did not happen.
   return { ok: true, idempotent: false, balances: after, entries };
 }
 
@@ -373,13 +369,10 @@ function requirePositive(amountPaise, fn) {
  * is designed to make impossible; a non-zero result is therefore evidence of
  * something outside it having written.
  *
- * ONE such thing exists by design: the Phase A dual-write
- * (dualWrite.mirrorMerchantBalance) sets available_paise directly from Mongo,
- * because during Phase A Mongo owns the movement and its ledger. Balances that
- * arrived that way are unexplained here until recordOpeningBalances() posts the
- * opening entry — which is the cutover step that makes this check meaningful
- * from the flip forward. Before that step, drift equal to the mirrored balance
- * is expected, not a defect.
+ * There is no longer any legitimate source of drift. A mirror used to set a
+ * balance directly, so an unexplained figure had a benign explanation and this
+ * check had to be read with a caveat; there is nothing outside this module that
+ * writes a merchant balance now. ANY non-zero drift is a defect.
  */
 export async function reconcileMerchant(merchantId) {
   const fromLedger = await ledgerSums(merchantId, pgQuery);
@@ -404,69 +397,3 @@ async function ledgerSums(merchantId, run) {
   return sums;
 }
 
-/**
- * recordOpeningBalances — the cutover step that gives the Postgres ledger a
- * starting point.
- *
- * THE ONLY FUNCTION HERE THAT WRITES AN ENTRY WITHOUT MOVING A BALANCE, and it
- * is deliberate. At cutover, merchant_wallets already holds each merchant's
- * balance — put there by the Phase A mirror, which is a projection of movements
- * that were ledgered in MONGO. Postgres has the number but not the history, so
- * `reconcileMerchant` would report drift equal to the opening balance forever
- * and the entries-explain-balance invariant could never hold.
- *
- * Posting an opening entry per pocket closes that gap the way a ledger
- * migration is supposed to: the pre-migration history stays where it happened,
- * and one entry states the position it left behind. From that point every
- * further movement writes its own entry inside its own transaction, so the
- * invariant holds from the flip forward.
- *
- * Idempotent by construction — `mw_opening_<merchantId>_<pocket>` is UNIQUE, so
- * a second run inserts nothing. Safe to re-run, and safe to run before the flip.
- *
- * @returns {{ merchantId: string, posted: string[], balances: object, conflicts: string[] }}
- */
-export async function recordOpeningBalances(merchantId, { actor = 'cutover' } = {}) {
-  return withMerchantLock(merchantId, async ({ client, mid, balances }) => {
-    const sums = await ledgerSums(mid, (text, params) => client.query(text, params));
-    const posted = [];
-
-    for (const pocket of ALL_POCKETS) {
-      const delta = balances[pocket] - sums[pocket];
-      // Nothing to open: the ledger already explains this pocket. This is the
-      // ordinary second-run outcome, and it is not a conflict.
-      if (delta === 0) continue;
-
-      const txId = `mw_opening_${mid}_${pocket}`;
-      const ok = await appendEntries(client, mid, [{
-        txId,
-        pocket,
-        amountPaise: delta,
-        // before = what the ledger already explains; after = the real balance.
-        // The arithmetic CHECK holds by construction, and a partially-opened
-        // wallet (some entries already present) opens for the remainder only.
-        balanceBefore: sums[pocket],
-        balanceAfter: balances[pocket],
-        entryType: delta > 0 ? 'CREDIT' : 'DEBIT',
-        operation: 'OPENING_BALANCE',
-        actor,
-        reason: 'Opening balance at PostgreSQL cutover — history predates this ledger',
-      }]);
-
-      // The key collided while the pocket STILL does not reconcile. That is not
-      // a repeat run — it means the balance moved after this pocket was opened,
-      // without writing an entry. Something outside this module wrote. Unwind
-      // and report it rather than papering over it with a second opening entry,
-      // which would silently launder the unexplained movement into the ledger.
-      if (!ok) {
-        return {
-          commit: false,
-          value: { merchantId: mid, posted: [], balances, conflicts: [pocket] },
-        };
-      }
-      posted.push(txId);
-    }
-
-    return { commit: posted.length > 0, value: { merchantId: mid, posted, balances, conflicts: [] } };
-  });
-}

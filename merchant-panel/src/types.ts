@@ -78,7 +78,7 @@ export interface ChatMessage {
 
 export interface PaymentOrder {
   id: string;
-  _id: string; // always present on orders from the backend (Mongo _id)
+  _id: string; // always present on orders from the backend (the public id)
   orderId: string;
   shortId: string;
   type: 'DEPOSIT' | 'WITHDRAWAL';

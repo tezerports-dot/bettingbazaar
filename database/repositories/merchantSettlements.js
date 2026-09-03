@@ -7,8 +7,8 @@
  * back, with a correction path if it was applied wrongly.
  *
  * ── The defect this design exists to remove ─────────────────────────────────
- * The Mongo original keeps this state on the PaymentOrder and moves the money
- * AFTERWARDS. withdrawalHold.settleHold names the consequence in its own
+ * This state used to live on the payment order, with the money moved
+ * AFTERWARDS. withdrawalHold.settleHold named the consequence in its own
  * comment: the order is flipped out of HELD first, and "if this throws, the
  * merchant is not credited and the next sweep cannot retry (the order has left
  * HELD)". The settlement is stranded — no automatic path forward, a human has
@@ -46,10 +46,10 @@
  *     cancel    settlement → (gone)    dispute upheld; never owed after all
  *     reverse   available  → (gone)    released in error; clawed back
  *
- * Reserving a WITHDRAWAL is the part the Mongo path cannot express. There, a
- * merchant's tokens simply do not exist during the hold window, so nothing
- * shows what the platform owes them. Here it is a real balance in a pocket that
- * cannot be spent, which is both more honest and what makes the reversal a
+ * Reserving a WITHDRAWAL is the part the old shape could not express: a
+ * merchant's tokens simply did not exist during the hold window, so nothing
+ * showed what the platform owed them. Here it is a real balance in a pocket
+ * that cannot be spent, which is both more honest and what makes the reversal a
  * movement rather than an absence.
  *
  * ── Idempotency ─────────────────────────────────────────────────────────────
@@ -57,17 +57,6 @@
  * UNIQUE stops the MONEY moving twice. `merchant_settlement_transitions.tx_id`
  * UNIQUE stops the STATE advancing twice. Both fire inside the transaction, so
  * a duplicate unwinds the whole thing rather than half of it.
- *
- * ── The rollback leg ────────────────────────────────────────────────────────
- * Every committed transition is mirrored back into Mongo, because this module
- * composes applyMovementWithin DIRECTLY rather than going through
- * merchantWalletPgAuthority — so it does not inherit that module's reverse
- * mirror, and without one of its own a settlement would move a merchant's
- * tokens in Postgres and leave `Merchant.tokenBalance` and the whole
- * MerchantWalletLedger untouched. Two things break at once if that happens:
- * falling back to Mongo silently loses the movement, and Mongo's idempotency
- * gate (`MerchantWalletLedger.findOne({ txId })`) no longer recognises it, so
- * the first retry after a fallback applies it a SECOND time.
  */
 import { getPool, pgQuery, connectGuarded } from '../client.js';
 import { POCKETS, applyMovementWithin } from './merchantWallets.core.js';
@@ -122,27 +111,16 @@ function count(operation, outcome) {
 }
 
 /**
- * Push a committed transition back into Mongo, and count the outcome.
+ * Record what a committed transition did, for the operations counters.
  *
- * Runs ONLY while Postgres is authoritative for this path. On a
- * Mongo-authoritative path the forward mirror (dualWrite) owns the direction and
- * a reverse write would fight the real one — and it is also what keeps the
- * Postgres-only test suites, which have no Mongo connection at all, from
- * logging a mirror failure per assertion.
- *
- * Fire-and-forget by design: Postgres has already committed, so a Mongo failure
- * must not turn a settled transition into a thrown error. mirrorBack() logs,
- * counts and pages on a streak, and the reverse reconcile repairs the rest.
+ * `idempotent` is counted separately from `applied` deliberately: a retry that
+ * matched an existing row is a healthy outcome, and folding it into `applied`
+ * would make the rate of real movements unreadable.
  */
 function afterCommit(operation, result) {
   const outcome = !result?.ok ? (result?.reason ?? 'error')
     : result.idempotent ? 'idempotent' : 'applied';
   count(operation, outcome);
-
-  if (!result?.ok || result.idempotent ) {
-    return result;
-  }
-  const s = result.settlement;
   return result;
 }
 
@@ -449,11 +427,9 @@ async function applyTransition(ctx, {
   }
 
   // The whole settlement as it now stands, including the orderId and the
-  // timestamp the transition itself wrote. The mirror needs both — it addresses
-  // the PaymentOrder by id, and stamps `completedAt` from the moment Postgres
-  // decided rather than the moment Mongo caught up — and reading them back off
-  // ctx.settlement would give the values from BEFORE the transition (or, on an
-  // open, no values at all, since there was no row to read).
+  // timestamp the transition itself wrote. Reading these back off ctx.settlement
+  // would give the values from BEFORE the transition — or, on an open, no values
+  // at all, since there was no row to read.
   const settlement = {
     ...(ctx.settlement ?? {}),
     settlementId: ctx.sid, merchantId: ctx.mid, orderId: String(orderId),

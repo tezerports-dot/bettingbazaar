@@ -1,40 +1,32 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
- * postgres/walletPgAuthority.js — walletAuthority's operations, executed against
- * Postgres.
+ * repositories/wallets.js — every balance mutation, in the vocabulary the
+ * application speaks.
  *
- * walletAuthority.service.js is the single entry point every route and engine
- * calls for a balance mutation. This module is the OTHER implementation behind
- * it: same operations, same return shapes, same idempotency keys — Postgres
- * instead of the Mongo User document. Which one runs is decided per call by
- * `true`, and MongoDB is the default.
+ * `walletAuthority.service.js` is the single entry point every route and engine
+ * calls to move money; this is what it calls. There is one implementation.
  *
  * ── The two contracts this file must not break ──────────────────────────────
  *
  * 1. RETURN SHAPES. Callers (settlement, payouts, admin routes) read fields
- *    like `winningsAfter` and `idempotent` off these results. A cutover must
- *    not make them learn a new vocabulary, so every function here returns what
- *    walletAuthority.service.js, the single entry point above it
- *    returns. Amounts crossing back out are RUPEES, because that is what the
- *    Mongo path speaks; paise stops at this wall.
+ *    like `winningsAfter` and `idempotent` off these results. Amounts crossing
+ *    back out are RUPEES: paise stops at this wall, because rupees are what the
+ *    routes serialise and the panels render. Inside, and at rest, money is
+ *    integer paise in BIGINT and nothing else.
  *
- * 2. IDEMPOTENCY KEYS. Every txId string is byte-identical to the one the Mongo
- *    path would have generated (`wd_lock_<id>`, `dep_complete_<id>`,
- *    `<base>_dep`/`_win`, …). This is load-bearing in both directions: the
- *    reverse mirror copies these rows back into Mongo where
- *    `WalletLedger.findOne({ txId })` is the idempotency gate, so a rollback
- *    must recognise movements Postgres made — and reconcile matches
- *    wallet_ledger.tx_id to WalletLedger.txId, so a different scheme would read
- *    as permanent drift.
+ * 2. IDEMPOTENCY KEYS. Every txId is deterministic and derived from the thing
+ *    it pays for (`wd_lock_<id>`, `dep_complete_<id>`, `<base>_dep`/`_win`, …),
+ *    never generated per call. `wallet_ledger.tx_id` is UNIQUE, so the retry of
+ *    a request that already moved money matches the existing row instead of
+ *    moving it again. A random key would leave that constraint unable to fire —
+ *    a gate that exists, is tested, and protects nothing.
  *
- * ── What genuinely changes at cutover ───────────────────────────────────────
- * A Mongo session passed as `extSession` has no meaning here: the Postgres
- * movement is its own transaction and will NOT roll back if an enclosing Mongo
- * transaction aborts. What makes that safe is that every movement is keyed by a
- * deterministic txId, so the retry that follows an aborted outer transaction is
- * a no-op rather than a double spend. Callers that need a single atomic unit
- * spanning a balance and a non-money document must not assume the outer session
- * covers both once this path is live (see LAUNCH_READINESS.md §E).
+ * ── Why a movement is its own transaction ───────────────────────────────────
+ * Each function here opens and commits its own transaction: the balance and its
+ * ledger rows land together or not at all, under `SELECT … FOR UPDATE` on the
+ * wallet row. A caller cannot enlist a movement in some larger unit of its own,
+ * and does not need to — the deterministic txId means a retry after any outer
+ * failure is a no-op rather than a double spend.
  */
 import { paiseToRupees, rupeesToPaise } from '../../backend/shared/money.js';
 import { pgQuery } from '../client.js';
@@ -42,7 +34,7 @@ import {
   applyMovementPaise, debitSpendOrderPaise, getBalancesPaise,
 } from './wallets.core.js';
 
-/** Every balance a caller might read, in rupees — the Mongo User doc's shape. */
+/** Every balance a caller might read, in rupees. */
 export async function getBalances(userId) {
   const paise = await getBalancesPaise(userId);
   return Object.fromEntries(
@@ -54,7 +46,7 @@ const rupees = paiseToRupees;
 
 /**
  * Credit one field. Covers creditWinnings / creditDeposit / creditReserve,
- * which differ in Mongo only by field, reason and key format.
+ * which differ only by field, reason and key format.
  */
 async function credit({ userId, field, amount, txId, reason, refId, type = 'CREDIT' }) {
   const amountPaise = rupeesToPaise(amount);
@@ -130,7 +122,8 @@ export async function refundOrder(userId, amount, orderId, field = 'depositBalan
 
 /**
  * wallet.service.debitForBet — deposit first, winnings covers the shortfall.
- * Rows are keyed `<base>_dep` / `<base>_win`, matching Mongo exactly.
+ * Rows are keyed `<base>_dep` / `<base>_win`, one per pocket the stake drew
+ * from, so a partially funded bet is reconstructable from the ledger alone.
  */
 export async function debitForBet(userId, amount, reason, refModel, refId, txId) {
   if (!txId) throw new Error('debitForBet on Postgres requires a deterministic txId');
@@ -147,7 +140,7 @@ export async function debitForBet(userId, amount, reason, refModel, refId, txId)
 
   if (result.idempotent) return { idempotent: true, txId };
   if (!result.ok) {
-    // Same message and failure mode as the Mongo path — callers match on it.
+    // Callers match on this message and failure mode — do not reword it.
     throw new Error(`Insufficient balance: have ₹${rupees(result.availablePaise ?? 0)}, need ₹${amount}`);
   }
 
@@ -253,9 +246,9 @@ export async function lockWithdrawal(userId, amount, withdrawalId) {
  * platform. txId `wd_release_<id>`.
  *
  * The ledger row is labelled `lockedBalance`, which is the balance that
- * actually moved. The Mongo counterpart labels the same row `winningsBalance`
- * while reporting locked numbers — reproducing that here would make the reverse
- * mirror write the locked figure into User.winningsBalance and corrupt a
+ * actually moved. Labelling it `winningsBalance` while reporting locked figures
+ * — as this once did — makes the ledger describe a movement that did not happen
+ * and corrupts a
  * rollback, so this path records the field it moved.
  */
 export async function releaseWithdrawal(userId, amount, withdrawalId) {
@@ -325,9 +318,9 @@ export async function refundWithdrawal(userId, amount, withdrawalId) {
  * pockets into `locked`, recording which pocket each slice came from.
  *
  * ONE transaction covers the balance move, the lock-provenance counters and
- * every audit row. The Mongo counterpart cannot do that: it guards a
- * three-field `findOneAndUpdate` with `$gte` filters and then writes the ledger
- * rows fire-and-forget, so a crash in between leaves a debited balance with no
+ * every audit row. This used to be a guarded multi-field update followed by
+ * fire-and-forget ledger writes, so a crash in between left a debited balance
+ * with no
  * audit trail. Here that window does not exist.
  *
  * @param {Array<{field:string, suffix:string, amountPaise:number, reason:string}>} slices
@@ -344,8 +337,8 @@ export async function lockBetStake(userId, { amountPaise, txId, refId, slices })
       { field: 'lockedBalance', deltaPaise: amountPaise },
       ...slices.flatMap((s) => [
         { field: s.field, deltaPaise: -s.amountPaise },
-        // The reserve slice has no provenance counter on the Mongo side, so it
-        // gets none here either — the two stores must agree on what is tracked.
+        // The reserve slice has no provenance counter: reserve is platform
+        // money, not the player's, so there is no split to unwind later.
         ...(provenance[s.field] ? [{ field: provenance[s.field], deltaPaise: s.amountPaise }] : []),
       ]),
     ],
@@ -397,9 +390,9 @@ export async function unlockBetStake(userId, { amountPaise, txId, refId, slices 
  * walletAuthority.releaseLockedStake — settlement releases a bet's locked
  * stake, and the lock-provenance counters unwind with it.
  *
- * The provenance legs are allowed to go negative, matching the Mongo path's
- * unguarded `$inc`: a stale split must not be able to strand a settled stake
- * in `locked` forever, which is the worse failure of the two.
+ * The provenance legs are allowed to go negative, deliberately: a stale split
+ * must not be able to strand a settled stake in `locked` forever, which is the
+ * worse failure of the two.
  */
 export async function releaseLockedStake(userId, { amount, fromDeposit = 0, fromWinnings = 0, txId, reason }) {
   if (!txId) throw new Error('releaseLockedStake requires a deterministic txId');

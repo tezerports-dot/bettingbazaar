@@ -70,7 +70,7 @@ ufw allow from "$EDGE_PUBLIC_IP" to any port "$WG_PORT" proto udp comment 'wireg
 # to the tunnel address (10.10.0.2), so this is how it is reached.
 ufw allow in on wg0 comment 'app traffic over the tunnel'
 
-# Loopback is where Mongo/Postgres/Redis/MinIO listen (VPS_UBUNTU_SETUP §11).
+# Loopback is where Postgres/Redis/MinIO listen (VPS_UBUNTU_SETUP §11).
 # They must never be reachable from anywhere else, tunnel included.
 ufw allow in on lo
 

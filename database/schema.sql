@@ -1,16 +1,17 @@
 -- GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
--- POSTGRES MONEY SCHEMA — hybrid architecture step 1 (plan items 6/10/11).
--- 2026-07-13. Requires PostgreSQL >= 14 (CREATE OR REPLACE TRIGGER).
+-- THE SCHEMA. Requires PostgreSQL >= 14 (CREATE OR REPLACE TRIGGER).
 --
--- PERMANENT SPLIT (per the locked plan): Postgres = source of truth for money
--- (wallets, transactions, ledger, payment orders, UTR, merchant wallet, KYC);
--- MongoDB keeps everything else forever. Every money column is BIGINT *paise*
--- (smallest unit) — this schema IS the fix for the round2() float-rupee
--- pattern: once Postgres is authoritative, integer paise is the only
--- representation money has at rest.
+-- Every piece of state this platform holds is here: money, identity,
+-- configuration, content, engagement. There is no second store.
 --
--- Applied idempotently by pgClient.applySchema() at boot when DATABASE_URL is
--- set (every statement is IF NOT EXISTS / OR REPLACE).
+-- Every money column is BIGINT *paise* — the smallest unit. That is this
+-- schema's central claim and the fix for the float-rupee round2() pattern it
+-- replaced: integer paise is the only representation money has at rest, and
+-- rupees exist only above the data layer, for callers and responses.
+--
+-- Applied idempotently by applySchema() at boot; a failed apply fails startup
+-- rather than serving a half-built database (every statement is
+-- IF NOT EXISTS / OR REPLACE).
 --
 -- PARTITIONING STRATEGY (capability 16 — apply WHEN VOLUME WARRANTS, not now):
 -- The two unbounded append-only tables (wallet_ledger, accounting_events) are
@@ -40,9 +41,9 @@ CREATE TABLE IF NOT EXISTS wallet_ledger (
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- WalletLedger.balanceBefore is `required` on the Mongo side, so a row that
--- travels back through the reverse mirror needs it. Nullable because rows
--- written before this column existed genuinely do not have one — readers
+-- The balance a movement started from, so a ledger row is auditable on its own
+-- without replaying every row before it. Nullable because rows written before
+-- this column existed genuinely do not have one — readers
 -- derive those as balance_after ∓ amount from tx_type.
 ALTER TABLE wallet_ledger ADD COLUMN IF NOT EXISTS balance_before_paise BIGINT;
 CREATE INDEX IF NOT EXISTS wallet_ledger_user_idx ON wallet_ledger (user_id, created_at DESC);
@@ -100,7 +101,7 @@ CREATE OR REPLACE TRIGGER accounting_events_append_only
   BEFORE UPDATE OR DELETE ON accounting_events FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
 
 -- Double-entry invariant: every event's postings conserve to zero — the same
--- rule ledgerReconcile.integration.test.js proves on the Mongo side.
+-- rule the money suites assert against a real database.
 CREATE OR REPLACE FUNCTION bb_check_postings_balance() RETURNS trigger AS $$
 DECLARE total BIGINT;
 BEGIN
@@ -153,10 +154,12 @@ CREATE TABLE IF NOT EXISTS utr_registry (
 );
 ALTER TABLE utr_registry ADD COLUMN IF NOT EXISTS amount_paise BIGINT;
 
--- ── USER KYC (split OUT of user.model.js per the plan — identity documents
--- need ACID + compliance guarantees; the rest of the user stays on Mongo).
--- NOTE: last in the CUTOVER order (plan step 7) — mirrored from day one, made
--- authoritative only after wallet/ledger/payment/UTR are proven in production.
+-- ── USER KYC ────────────────────────────────────────────────────────────────
+-- Held apart from the `users` row deliberately: a KYC decision needs an actor,
+-- a reason and an append-only history, and a status string on the account can
+-- carry none of those. `users.kyc_status` is the denormalised copy the
+-- authorisation checks read, written only by the same transaction as the
+-- decision itself.
 CREATE TABLE IF NOT EXISTS user_kyc (
   user_id          TEXT PRIMARY KEY,
   kyc_status       TEXT,
@@ -169,9 +172,9 @@ CREATE TABLE IF NOT EXISTS user_kyc (
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- WHO decided, and WHEN. The Mongo route intended to record both — it assigns
--- to `user.kyc.reviewedBy` — but the User schema has no `kyc` subdocument, only
--- `kycData`, so the guarded block never executes and nothing is stored. A KYC
+-- WHO decided, and WHEN. The route this replaced intended to record both, but
+-- assigned them to a path its schema did not declare, so the write was silently
+-- dropped and every approval was anonymous. A KYC
 -- approval with no reviewer is not auditable, which is the one thing a KYC
 -- decision has to be.
 ALTER TABLE user_kyc ADD COLUMN IF NOT EXISTS reviewed_by TEXT;
@@ -183,9 +186,9 @@ ALTER TABLE user_kyc ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
 ALTER TABLE user_kyc ADD COLUMN IF NOT EXISTS id_proof_key TEXT;
 ALTER TABLE user_kyc ADD COLUMN IF NOT EXISTS photo_key    TEXT;
 
--- Every KYC decision, append-only. The Mongo path has no history at all: the
--- status is a string on the User document, so "was this user ever rejected, and
--- why?" — the question every compliance review asks — cannot be answered from
+-- Every KYC decision, append-only. A status string alone has no history, so
+-- "was this user ever rejected, and why?" — the question every compliance
+-- review asks — cannot be answered from
 -- it once a resubmission overwrites the field.
 --
 -- `tx_id` UNIQUE is the idempotency gate, same as order_transitions: a double
@@ -206,11 +209,11 @@ CREATE OR REPLACE TRIGGER kyc_transitions_append_only
   BEFORE UPDATE OR DELETE ON kyc_transitions FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
 
 
--- ── MERCHANT WALLET (Postgres authority, integer paise) ─────────────────────
--- The Postgres counterpart of domains/merchant/merchantWallet.service.js, which
--- is Mongo-only and is the sole writer of Merchant.tokenBalance. Until this
--- exists there is no meaningful "Postgres owns the money" claim, because every
--- user↔merchant settlement and admin↔merchant issuance lives on that path.
+-- ── MERCHANT WALLET (integer paise) ─────────────────────────────────────────
+-- A merchant's money, in pockets, with an append-only entry per movement. It
+-- replaced a single mutable counter on the merchant record: every user<->merchant
+-- settlement and admin<->merchant issuance moves through here, and a counter
+-- cannot say where the value came from or where it went.
 --
 -- Pockets, per the financial domain graph:
 --   available_paise   spendable now
@@ -269,9 +272,10 @@ CREATE TABLE IF NOT EXISTS merchant_wallet_entries (
     CHECK (pocket IN ('available', 'reserved', 'settlement')),
   CONSTRAINT merchant_wallet_entries_type_known
     CHECK (entry_type IN ('CREDIT', 'DEBIT')),
-  -- Amount is a positive magnitude; direction lives in entry_type. Storing a
-  -- signed amount here would make every sum-based reconciliation disagree with
-  -- the Mongo side, which stores positive amounts.
+  -- Amount is a positive magnitude; direction lives in entry_type. A signed
+  -- amount here would be counted twice in the same direction by every sum-based
+  -- check, which is how a conservation test starts disagreeing with the balances
+  -- it is computed from.
   CONSTRAINT merchant_wallet_entries_amount_positive CHECK (amount_paise > 0),
   -- The arithmetic must be internally consistent: a row that claims a before
   -- and after which its own amount cannot explain is corrupt on its face.
@@ -302,9 +306,9 @@ CREATE OR REPLACE TRIGGER merchant_wallet_entries_append_only
 -- The lifecycle of one user↔merchant settlement, as a state machine the
 -- database enforces rather than the application remembers.
 --
--- The Mongo original keeps this state on the PaymentOrder
--- (`merchantCreditStatus`) and moves the money in SEPARATE operations after the
--- transition commits. withdrawalHold.settleHold documents the consequence in
+-- This state used to live on the payment order (`merchantCreditStatus`), with
+-- the money moved in SEPARATE operations after the transition committed.
+-- withdrawalHold.settleHold documented the consequence in
 -- its own comment: if the player-side release throws, "the merchant is not
 -- credited and the next sweep cannot retry (the order has left HELD)". The
 -- order is stranded and needs a human.
@@ -380,9 +384,9 @@ CREATE OR REPLACE TRIGGER merchant_settlement_transitions_append_only
 -- TOKEN_SUPPLY is therefore the number of tokens in existence, and a query that
 -- says otherwise means something bypassed this table.
 --
--- The Mongo original is a single counter — SystemConfig.adminTokenSupply.minted
--- with a 10B cap — incremented on mint and decremented by a blind, swallowed
--- $inc on rollback. That counter cannot say WHERE the tokens went, is not
+-- This replaced a single counter — a minted total with a 10B cap — incremented
+-- on mint and decremented by a blind, swallowed write on rollback. A counter
+-- cannot say WHERE the tokens went, is not
 -- idempotent (a retried rollback decrements twice), and permanently overstates
 -- supply if the rollback's .catch(() => {}) ever fires.
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -405,9 +409,9 @@ CREATE TABLE IF NOT EXISTS treasury_accounts (
 -- Every leg of every movement, append-only.
 --
 -- amount_paise is SIGNED here, unlike the wallet ledgers. Those store a
--- magnitude with the direction in entry_type because Mongo stores positive
--- amounts and the two had to agree. This table has no Mongo counterpart and is
--- double-entry, where the sign IS the meaning: the legs of one movement sum to
+-- magnitude with the direction in entry_type, because every sum-based check
+-- over them reads the direction from the type. This table is double-entry,
+-- where the sign IS the meaning: the legs of one movement sum to
 -- zero, and a magnitude-plus-direction encoding would make that sum express
 -- nothing.
 CREATE TABLE IF NOT EXISTS treasury_entries (
@@ -467,9 +471,9 @@ CREATE TABLE IF NOT EXISTS order_states (
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT order_states_type_known CHECK (order_type IN ('DEPOSIT', 'WITHDRAWAL')),
   CONSTRAINT order_states_amount_positive CHECK (token_amount_paise > 0),
-  -- The same nine states the Mongo enum declares. Kept identical on purpose:
-  -- during the migration both stores describe the same order, and a state one
-  -- of them cannot represent would make the mirror lossy in one direction.
+  -- Nine states, and the CHECK is what makes them the only nine. A state the
+  -- constraint does not name cannot be written, so "what can an order be?" is
+  -- answered here rather than by reading every writer.
   CONSTRAINT order_states_known CHECK (state IN (
     'PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID', 'COMPLETED',
     'DISPUTED', 'CANCELLED', 'FAILED', 'REJECTED'
@@ -504,9 +508,8 @@ CREATE OR REPLACE TRIGGER order_transitions_append_only
   BEFORE UPDATE OR DELETE ON order_transitions FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
 
 -- ── Domain 5: bet lifecycle ────────────────────────────────────────────────
--- The Mongo original keeps a bet's status on the Bet document and moves the
--- stake separately (walletAuthority._mongoBetStake). Two defects follow from
--- that split and neither is ported here:
+-- A bet's status used to live on the bet record with the stake moved
+-- separately. Two defects follow from that split and neither survives here:
 --   M-2  the balance move has NO idempotency key, so a replayed request
 --        debits twice; and
 --   M-4  the ledger is written outside the transaction, so money can move
@@ -530,11 +533,10 @@ CREATE TABLE IF NOT EXISTS bets (
   CONSTRAINT bets_status_check
     CHECK (status IN ('PENDING','WON','LOST','VOID','REFUNDED'))
 );
--- The Mongo document's _id. Derived from bet_id (see betPgAuthority.mongoIdFor)
--- rather than generated, because Mongo types _id as an ObjectId and cannot hold
--- the idempotency key itself — and a freshly generated one per attempt would
--- let a replay create a SECOND Mongo document behind the one Postgres bet,
--- which is the very duplication bet_id exists to prevent.
+-- The bet's PUBLIC id: 24 hex characters, which is the shape every client here
+-- expects an entity id to be. DERIVED from bet_id (see publicIdFor) rather than
+-- generated, because a freshly generated one per attempt would give a replayed
+-- placement a second identity — the very duplication bet_id exists to prevent.
 --
 -- ALTER, not a column in the CREATE above, and it must stay BEFORE anything
 -- that references it. `CREATE TABLE IF NOT EXISTS` is a NO-OP on a table that
@@ -546,27 +548,16 @@ CREATE TABLE IF NOT EXISTS bets (
 -- be. Derived rather than generated, so a replayed placement resolves to the
 -- same bet instead of minting a second identity for it.
 ALTER TABLE bets ADD COLUMN IF NOT EXISTS public_id TEXT;
-DO $rename$ BEGIN
-  -- Carry an existing deployment's data across the rename. Both guards matter:
-  -- the old column may already be gone, and the new one is created above, so a
-  -- bare RENAME would fail on a fresh database and a re-run alike.
-  IF EXISTS (SELECT 1 FROM information_schema.columns
-              WHERE table_name = 'bets' AND column_name = 'mongo_id') THEN
-    UPDATE bets SET public_id = mongo_id WHERE public_id IS NULL;
-    ALTER TABLE bets DROP COLUMN mongo_id;
-  END IF;
-END $rename$;
-DROP INDEX IF EXISTS bets_mongo_id_key;
 CREATE UNIQUE INDEX IF NOT EXISTS bets_public_id_key ON bets (public_id);
 
 -- The winnings platform fee retained from THIS bet's gross payout.
 --
 -- Not a display field. `Cycle.totalPlatformFees` is derived by summing
 -- `Bet.platformFee` over the cycle's WON bets, so a store that owns the
--- settlement but not the fee cannot answer what it retained — and the Mongo
--- path writes the fee in the SAME statement as the status and the payout
--- (settlementService's stampOps). Splitting them across stores would put the
--- accounting number behind a second writer, so a crash between the two leaves a
+-- settlement but not the fee cannot answer what it retained. The fee is written
+-- in the SAME statement as the status and the payout; splitting them would put
+-- the accounting number behind a second writer, so a crash between the two
+-- leaves a
 -- WON bet with a zero fee and silently understates platform revenue.
 --
 -- payout_paise is NET of this, so gross = payout_paise + platform_fee_paise.
@@ -596,9 +587,9 @@ CREATE TRIGGER bet_transitions_append_only
   FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
 
 -- ── Domain 6: cycle settlement ─────────────────────────────────────────────
--- The Mongo path settles a cycle by flipping `Cycle.isSettled` and then running
--- payouts, and it deliberately RE-ADMITS a PROCESSING cycle so a recovery task
--- can resume an interrupted run. Two passes over one cycle is therefore a
+-- Settlement used to be a flag flipped on the cycle followed by payouts, with a
+-- PROCESSING cycle deliberately RE-ADMITTED so a recovery task could resume an
+-- interrupted run. Two passes over one cycle is therefore a
 -- supported scenario, and money safety rests entirely on per-bet idempotency.
 -- That is a correct design, but it leaves nothing that records what a pass
 -- ACTUALLY DID — so a half-finished run cannot be told from a finished one
@@ -625,11 +616,11 @@ CREATE TABLE IF NOT EXISTS cycle_settlements (
 CREATE INDEX IF NOT EXISTS cycle_settlements_status_idx ON cycle_settlements (status, started_at);
 
 -- ── Domain 7: casino provider callbacks ────────────────────────────────────
--- The defect this table exists to remove (docs/MONGO_MONEY_AUDIT, matrix):
--- a ROLLBACK or REFUND callback credits the player WITHOUT having to prove a
--- matching prior debit. A provider that is buggy, replayed, or hostile can
--- therefore mint real money by sending a rollback for a round that never had a
--- bet — and nothing in the current path can tell that from a legitimate one.
+-- The defect this table exists to remove: a ROLLBACK or REFUND callback that
+-- credits the player WITHOUT having to prove a matching prior debit. A provider
+-- that is buggy, replayed, or hostile can then mint real money by sending a
+-- rollback for a round that never had a bet, and nothing distinguishes that
+-- from a legitimate one.
 --
 -- Every callback is a row keyed on the provider's own tx id, and a rollback
 -- must name the round it reverses. The `debited_paise`/`refunded_paise`
@@ -2770,14 +2761,3 @@ CREATE UNIQUE INDEX IF NOT EXISTS merchant_bonus_policies_one_active
   ON merchant_bonus_policies (status) WHERE status = 'ACTIVE';
 CREATE INDEX IF NOT EXISTS merchant_bonus_policies_history_idx
   ON merchant_bonus_policies (version DESC);
-
--- ── Dropping two columns nothing ever wrote ──────────────────────────────────
---
--- `wallet_ledger.mongo_id` and `accounting_events.mongo_id` were the mirror's
--- correlation keys. No writer ever set either — every INSERT in the ledger
--- repositories omits them — so both held NULL for every row that has ever
--- existed and there is nothing to preserve. A nullable UNIQUE column that
--- nothing writes is not harmless: it is a column a future reader will assume
--- means something.
-ALTER TABLE wallet_ledger     DROP COLUMN IF EXISTS mongo_id;
-ALTER TABLE accounting_events DROP COLUMN IF EXISTS mongo_id;

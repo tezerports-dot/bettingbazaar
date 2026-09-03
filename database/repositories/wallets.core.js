@@ -1,13 +1,11 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
- * postgres/walletPg.js — the Postgres-authoritative wallet path (cutover step 3,
- * the FIRST path the plan flips).
+ * repositories/wallets.core.js — the mechanism every balance mutation runs on.
  *
- * When `MONEY_AUTHORITY_WALLET=postgres`, balance reads and mutations happen
- * here instead of against the Mongo User document. Everything is integer paise
- * end to end — this is the schema's stated purpose: "once Postgres is
- * authoritative, integer paise is the only representation money has at rest".
- * The float-rupee round2() pattern stops at this wall.
+ * Every balance read and every movement happens here. Money is integer paise
+ * end to end, which is the schema's stated purpose: integer paise is the only
+ * representation money has at rest. Rupees exist above this wall, for callers
+ * and responses, and nowhere below it.
  *
  * ── The reference implementation that used to sit beside this ───────────────
  * `secureBetPlacement.js` demonstrated the serializable-with-outbox pattern on
@@ -25,25 +23,24 @@
  * ── Concurrency ─────────────────────────────────────────────────────────────
  * Every mutation runs in one transaction that:
  *   1. locks the wallet row (SELECT … FOR UPDATE), serialising concurrent
- *      movements for that user — the guarantee Mongo needed a replica-set
- *      transaction to approximate;
+ *      movements for that user;
  *   2. applies the delta with a guard that refuses to leave a balance negative;
  *   3. appends the ledger row in the SAME transaction, so a balance can never
- *      move without its audit row (in Mongo these are two writes that a crash
- *      between could separate).
+ *      move without its audit row — these were once two writes that a crash
+ *      between could separate.
  *
  * ── Idempotency ─────────────────────────────────────────────────────────────
  * `tx_id` is UNIQUE on wallet_ledger. A replay of the same movement hits that
  * constraint, and the caller gets `{ idempotent: true }` with the balance the
- * original produced — the same contract walletAuthority already exposes, so
- * callers do not learn a new one at cutover. This mirrors the hard-won Mongo
- * lesson recorded in GOVERNANCE §20 (2026-07-10): the unique index INSIDE the
- * transaction is the idempotency gate, not a pre-read.
+ * original produced — the same contract walletAuthority exposes. This is the
+ * hard-won lesson recorded in GOVERNANCE §20 (2026-07-10): the unique index
+ * INSIDE the transaction is the idempotency gate, never a pre-read, because a
+ * concurrent caller fits between a pre-read and the write it guards.
  */
 import { getPool, pgQuery, connectGuarded } from '../client.js';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
 
-/** Mongo balance field → its paise column on `wallets`. */
+/** The balance name a caller uses → its paise column on `wallets`. */
 export const FIELD_COLUMN = Object.freeze({
   depositBalance:  'deposit_paise',
   winningsBalance: 'winnings_paise',
@@ -51,8 +48,8 @@ export const FIELD_COLUMN = Object.freeze({
   reserveBalance:  'reserve_paise',
   lockedBalance:   'locked_paise',
   // Lock provenance — how much of lockedBalance came from each pocket. These
-  // are never the `field` of a ledger row (Mongo doesn't ledger them either);
-  // they move as extra legs alongside a lockedBalance movement.
+  // are never the `field` of a ledger row; they move as extra legs alongside a
+  // lockedBalance movement.
   lockedDepositAmount:  'locked_deposit_paise',
   lockedWinningsAmount: 'locked_winnings_paise',
 });
@@ -74,8 +71,8 @@ function toPaise(value) {
 
 /**
  * getBalancesPaise — every balance for a user, in integer paise.
- * Returns zeros for a user with no wallet row yet, which is the same thing the
- * Mongo path reports for a user who has never transacted.
+ * Returns zeros for a user with no wallet row yet — a user who has never
+ * transacted has no row, and that is not an error.
  */
 export async function getBalancesPaise(userId) {
   const { rows } = await pgQuery(
@@ -90,7 +87,7 @@ export async function getBalancesPaise(userId) {
   );
 }
 
-/** The same balances in rupees, for callers still speaking the Mongo shape. */
+/** The same balances in rupees, which is what routes serialise. */
 export async function getBalancesRupees(userId) {
   const paise = await getBalancesPaise(userId);
   return Object.fromEntries(
@@ -116,7 +113,7 @@ function rowToBalances(row = {}) {
  * can read or write, so a decision made inside the callback — an existence
  * probe, a spend-order split across two pockets — is DURABLE rather than a
  * hopeful pre-read that a concurrent writer can invalidate. That is the
- * property the Mongo path has to approximate with a `$gte` filter and a retry.
+ * property a guarded conditional update can only approximate with a retry.
  *
  * The callback returns `{ commit, value }`; `commit:false` rolls back and still
  * returns `value`, which is the shape "this was refused, and here is why"
@@ -224,12 +221,11 @@ async function moveBalances(client, uid, merged) {
  *
  * ── Sign convention ─────────────────────────────────────────────────────────
  * Callers pass `amountPaise` SIGNED because that is what a balance leg means,
- * but the row is STORED the way the forward mirror stores it: a positive
- * magnitude with the direction in `tx_type`. That is not a style choice —
- * `WalletLedger.amount` is a positive Number on the Mongo side, and the
- * reverse mirror copies `amount_paise` straight into it. Storing −500 here
- * would push a negative amount back into Mongo on rollback and make every
- * sum-based check disagree between the two stores.
+ * but the row STORES a positive magnitude with the direction in `tx_type`.
+ * That is not a style choice: every sum-based check — the trial balance, the
+ * conservation triggers — adds `amount_paise` and reads the direction from the
+ * type. A stored −500 would be counted twice in the same direction and make
+ * those checks disagree with the balances they are computed from.
  */
 async function appendLedgerRows(client, uid, rows, after) {
   try {
@@ -286,23 +282,20 @@ async function replayedBalances(txIds) {
  * applyMovementPaise — THE general mutation: move N balance fields and append M
  * ledger rows, atomically, under one row lock.
  *
- * Why N legs and M rows rather than a series of single-field calls: a Mongo
- * movement like "lock a withdrawal" is ONE `$inc` touching winnings and locked
- * together with ONE ledger row. Composing that from two independent
- * single-field transactions would open a window where the money is in neither
- * pocket, and would write twice the ledger rows the forward mirror has been
- * producing.
+ * Why N legs and M rows rather than a series of single-field calls: a movement
+ * like "lock a withdrawal" touches winnings and locked together and is ONE
+ * ledger row. Composing it from two independent single-field transactions would
+ * open a window where the money is in neither pocket, and would write twice the
+ * ledger rows the movement actually made.
  *
- * ── txId parity (the reason ledger rows are caller-supplied) ────────────────
- * The caller passes the EXACT txId strings the Mongo path uses
- * (`wd_lock_<id>`, `bet_<u>_<c>_<b>_dep`, …). That is not cosmetic:
- *   • the reverse mirror copies these rows back into Mongo, where
- *     `WalletLedger.findOne({ txId })` is the idempotency gate — a rolled-back
- *     deployment must recognise movements made while Postgres was
- *     authoritative, or it will replay them;
- *   • reconcile matches wallet_ledger.tx_id against WalletLedger.txId, so a
- *     divergent key scheme would read as permanent drift.
- * Generating keys here instead would break both.
+ * ── Why ledger rows are caller-supplied ────────────────────────────────────
+ * The caller passes the EXACT txId strings (`wd_lock_<id>`,
+ * `bet_<u>_<c>_<b>_dep`, …), because the key must be derived from the thing
+ * being paid for rather than generated here. A key generated per call is
+ * `random()`: the UNIQUE constraint behind it can never fire, so a retry moves
+ * the money a second time while the code reads as protected — a gate that
+ * exists, is tested, and protects nothing. Generating keys here would be
+ * exactly that.
  *
  * @param {object} args
  * @param {string} args.userId
@@ -344,11 +337,11 @@ export async function applyMovementPaise({ userId, legs, ledger, allowNegative =
  * Split out from applyMovementPaise so a caller that must do MORE than move a
  * balance — write a bet row and its stake debit, in the same transaction or not
  * at all — can compose with it instead of opening a second one. betPg is that
- * caller, and the composition is the entire point of the domain: the Mongo
- * original writes the bet, moves the balance and appends the ledger as three
- * separate operations, which is defect M-4 (money moves unaudited when the
- * ledger write fails, and the ledger is what reconciliation is computed from,
- * so the failure erases its own symptom).
+ * caller, and the composition is the entire point of the domain: writing the
+ * bet, moving the balance and appending the ledger as three separate operations
+ * is defect M-4 — money moves unaudited when the ledger write fails, and the
+ * ledger is what every check is computed from, so the failure erases its own
+ * symptom.
  *
  * Does NOT commit or roll back. The lock holder decides that, because only it
  * knows whether the rest of the transaction succeeded.
@@ -394,7 +387,7 @@ export async function applyMovementWithin({ client, uid }, { legs, merged, ledge
  *
  * @returns {Promise<{ok, idempotent, balanceAfterPaise, insufficient?}>}
  *   ok:false + insufficient:true when the guard refused the debit — the caller
- *   decides how to surface it, exactly as the Mongo path does.
+ *   decides how to surface it — a refused debit is not an exception.
  */
 export async function applyDeltaPaise({
   userId, field, deltaPaise, txId,
@@ -420,7 +413,7 @@ export async function applyDeltaPaise({
   };
 }
 
-/** Rupee-denominated convenience over applyDeltaPaise, for Mongo-shaped callers. */
+/** Rupee-denominated convenience over applyDeltaPaise, for callers above the wall. */
 export async function applyDeltaRupees({ userId, field, deltaRupees, ...rest }) {
   return applyDeltaPaise({ userId, field, deltaPaise: rupeesToPaise(deltaRupees), ...rest });
 }
@@ -428,12 +421,12 @@ export async function applyDeltaRupees({ userId, field, deltaRupees, ...rest }) 
 /**
  * transferPaise — move value between two fields of the SAME user atomically
  * (locking a withdrawal, releasing a stake). Both legs and both ledger rows
- * commit together or not at all; the two-write window the Mongo path has
- * between them does not exist here.
+ * commit together or not at all, so there is no window in which the value is
+ * in neither pocket.
  *
  * Ledger rows are keyed `${txId}:from` / `${txId}:to` so the pair replays as a
  * unit under one caller-supplied idempotency key. Callers that must reproduce
- * a specific Mongo ledger shape (one row for a two-pocket move) should use
+ * a specific ledger shape — one row for a two-pocket move — should use
  * applyMovementPaise directly and supply the exact txIds instead.
  */
 export async function transferPaise({
@@ -481,8 +474,8 @@ export async function transferPaise({
  *
  * Under the lock the probe below is exact: if any ledger row already exists
  * for one of the keys THIS movement would write, the movement has happened and
- * we stop. The Mongo path's equivalent pre-read is explicitly documented there
- * as a fast path rather than a guarantee — here it is a guarantee.
+ * we stop. An equivalent probe taken OUTSIDE the lock is a fast path, never a
+ * guarantee; under the lock it is a guarantee.
  *
  * ── Why the probe enumerates keys instead of matching a prefix ───────────────
  * This was `tx_id LIKE '<txId>%'`, which is wrong in two ways that both END IN

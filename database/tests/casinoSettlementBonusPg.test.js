@@ -390,3 +390,44 @@ describePg('Domains 6-8 (PostgreSQL)', () => {
     expect(await trialBalance()).toMatchObject({ conservesToZero: true });
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The vocabulary layer over grantBonus: which record types map to which pool,
+// and what happens to one that maps to none.
+// ─────────────────────────────────────────────────────────────────────────────
+import { grant as grantByRecordType, KIND_FROM_RECORD_TYPE } from '../repositories/bonuses.js';
+
+describePg('granting by record type', () => {
+  beforeAll(async () => { await applySchema(); });
+  afterAll(async () => { await closePg(); });
+
+  it('REFUSES a record type with no pool behind it', async () => {
+    // This used to answer `{ ok: true, applied: false }`, on the reasoning that
+    // another store's credit path would handle it. There is no other store, so
+    // that told the caller a grant had succeeded while nothing moved — and the
+    // gift-code route goes on to write an audit row saying the player received
+    // the money. An audit trail recording a payment the ledger never made is
+    // worse than a failed promotion.
+    const res = await grantByRecordType({
+      grantId: 'g-unmapped-1', userId: 'u-unmapped', recordType: 'ADMIN_CREDIT',
+      amountRupees: 100,
+    });
+    expect(res.ok).toBe(false);
+    expect(res.applied).toBe(false);
+    expect(res.reason).toBe('unmapped_kind');
+  });
+
+  it('REFUSES a non-positive amount rather than recording a zero grant', async () => {
+    const res = await grantByRecordType({
+      grantId: 'g-zero-1', userId: 'u-zero', recordType: 'GIFT_CODE', amountRupees: 0,
+    });
+    expect(res).toMatchObject({ ok: false, applied: false, reason: 'non_positive_amount' });
+  });
+
+  it('leaves ADMIN_CREDIT unmapped on purpose', () => {
+    // A manual adjustment has no pool behind it. Inventing one would make the
+    // treasury claim it financed something it did not.
+    expect(KIND_FROM_RECORD_TYPE.ADMIN_CREDIT).toBeUndefined();
+    expect(KIND_FROM_RECORD_TYPE.GIFT_CODE).toBe('PROMO');
+  });
+});

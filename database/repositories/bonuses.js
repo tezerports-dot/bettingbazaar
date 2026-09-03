@@ -1,26 +1,24 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
- * postgres/bonusPgAuthority.js — bonuses and commissions, behind the resolver.
+ * repositories/bonuses.js — bonuses and commissions.
  *
- * The Mongo path grants a bonus in two independent writes: a wallet credit
- * (`creditWinnings` / `creditDeposit`) and a `BonusRecord` for history. The
- * Postgres path (`bonusPg.grantBonus`) makes it one movement funded from the
- * treasury pool that exists to pay for it. Which one runs is decided per call
- * by `true`.
+ * A grant used to be two independent writes: a wallet credit and a record for
+ * history. It is ONE movement now, funded from the treasury pool that exists to
+ * pay for it.
  *
  * ── The property this domain is actually about ──────────────────────────────
- * A bonus is a TRANSFER, not a mint. The Mongo path credits the user from
- * nowhere: tokens appear on the user side with nothing on the other, so
+ * A bonus is a TRANSFER, not a mint. Crediting the user from nowhere makes
+ * tokens appear on one side with nothing on the other, so
  * `User + Merchant + Treasury = Total Supply` stops holding and every
  * downstream conservation check starts failing for a reason unrelated to the
- * bug it was built to catch. Routing this is what makes the giveaway come out
- * of a pool that can run dry — which is also the only thing that can stop a
- * misconfigured promotion from printing money indefinitely.
+ * bug it was built to catch. Funding it from a pool is what makes the giveaway
+ * come out of somewhere that can run dry — which is also the only thing that
+ * stops a misconfigured promotion printing money indefinitely.
  *
  * ── Rupees in, paise inside ────────────────────────────────────────────────
- * Callers are Mongo-shaped and speak float rupees; `bonusPg` speaks integer
- * paise and refuses anything else. The conversion happens here, at the
- * boundary, which is the same wall the mirrors use in both directions.
+ * Callers speak rupees, because that is what routes serialise; the movement
+ * speaks integer paise and refuses anything else. The conversion happens here,
+ * at the boundary, once.
  *
  * ── A refusal is a refusal ─────────────────────────────────────────────────
  * `grantBonus` returns `{ ok: false, reason: 'pool_movement_failed' }` when the
@@ -36,12 +34,11 @@ import { grantBonus, clawBackBonus, getGrant, BONUS_KIND } from './bonuses.core.
 /** Is Postgres the source of truth for bonuses and commissions? */
 
 /**
- * Which Postgres bonus kind a Mongo `BonusRecord.type` corresponds to.
+ * Which pool a bonus record type is funded from.
  *
- * Identical to the forward mirror's mapping, and deliberately so — a grant must
- * land in the same pool whichever direction it travelled. ADMIN_CREDIT is
- * absent from both: a manual adjustment has no pool behind it, and inventing
- * one would make the treasury claim it financed something it did not.
+ * ADMIN_CREDIT is deliberately absent: a manual adjustment has no pool behind
+ * it, and inventing one would make the treasury claim it financed something it
+ * did not. An absent type is a refusal, not a default — see `grant`.
  */
 export const KIND_FROM_RECORD_TYPE = Object.freeze({
   GIFT_CODE:           'PROMO',
@@ -53,33 +50,38 @@ export const KIND_FROM_RECORD_TYPE = Object.freeze({
 });
 
 /**
- * Grant a bonus, from whichever store owns the domain.
+ * Grant a bonus: move it out of the pool that funds it, into the player's
+ * wallet, in one transaction.
  *
- * On the Mongo path this returns `{ source: 'mongo', applied: false }` and the
- * caller keeps doing what it already does. It is NOT a no-op that hides a
- * missing implementation: the Mongo credit is a real, working path, and this
- * function's job is only to decide whether Postgres should own the movement
- * instead.
+ * ── An unmapped record type is a REFUSAL ────────────────────────────────────
+ * It used to return `{ ok: true, applied: false }`, on the reasoning that the
+ * other store's credit path would handle it. There is no other store, so that
+ * answer told the caller a grant had succeeded when nothing had moved — and the
+ * gift-code route goes on to write an audit row saying the player received the
+ * money. An audit trail that records a payment the ledger never made is worse
+ * than a failed promotion.
+ *
+ * `ok: false` is the honest answer and the caller already handles it: the claim
+ * stands, the player is told the reward is processing, and it is retried.
  */
 export async function grant({
   grantId, userId, recordType, amountRupees, refModel = 'BonusRecord', refId = null, reason = null,
 }) {
 
   const kind = KIND_FROM_RECORD_TYPE[recordType];
-  // An unmapped type is not an error to throw at a user mid-promotion — it is a
-  // giveaway with no pool to fund it, which the Mongo path still handles. Say
-  // so plainly rather than failing the request.
+  // A giveaway with no pool to fund it. Not thrown — a promotion failing is not
+  // an exception the player should see — but not reported as success either.
   if (!kind || !BONUS_KIND[kind]) {
-    return { ok: true, source: 'mongo', applied: false, reason: 'unmapped_kind', recordType };
+    return { ok: false, applied: false, reason: 'unmapped_kind', recordType };
   }
 
   const amountPaise = rupeesToPaise(Number(amountRupees) || 0);
-  if (amountPaise <= 0) return { ok: false, source: 'postgres', reason: 'non_positive_amount' };
+  if (amountPaise <= 0) return { ok: false, applied: false, reason: 'non_positive_amount' };
 
   const result = await grantBonus({
     grantId, userId, kind, amountPaise, refModel, refId, reason,
   });
-  return { ...result, source: 'postgres', applied: result.ok };
+  return { ...result, applied: result.ok };
 }
 
 /**
@@ -91,10 +93,10 @@ export async function grant({
  */
 export async function clawBack({ grantId, userId, actor = null, reason = null }) {
   const result = await clawBackBonus({ grantId, userId, actor, reason });
-  return { ...result, source: 'postgres', applied: result.ok };
+  return { ...result, applied: result.ok };
 }
 
-/** A grant in rupees, for callers that report to a Mongo-shaped surface. */
+/** A grant in rupees, which is what the routes serialise. */
 export async function read(grantId) {
   const g = await getGrant(grantId);
   return g && { ...g, amount: paiseToRupees(g.amountPaise) };

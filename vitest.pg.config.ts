@@ -3,12 +3,11 @@
 // — row locking, the negative-balance guard, the unique-tx_id idempotency gate,
 // the append-only and conserve-to-zero triggers.
 //
-// Deliberately separate from vitest.integration.config.ts, which boots an
-// in-memory MongoDB. These tests need NO MongoDB, so splitting them means they
-// run anywhere a Postgres is reachable — including the restricted build sandbox,
-// where the mongod binary download is blocked. That matters: the authoritative
-// wallet path is the code the cutover flips to, and "CI will check it" is a
-// weaker guarantee than being able to run it while writing it.
+// Separate from the unit config because these need a real PostgreSQL: the
+// properties they assert — row locking, the conserve-to-zero trigger, a UNIQUE
+// refusing a second row — belong to the database and cannot be demonstrated
+// against a stub. They run anywhere a Postgres is reachable, which is what
+// makes "run it while writing it" possible rather than "CI will check it".
 //
 // Skips itself (not fails) when DATABASE_URL is unset.
 import { defineConfig } from 'vitest/config';
