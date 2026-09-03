@@ -20,10 +20,16 @@ const inApp = {
   label: 'In-app notification inbox',
   active: true,
   async send({ userId, type = 'INFO', title, message, actionUrl, actionLabel, relatedId, relatedType, expiresAt }) {
+    // The communication domain speaks `type`; the notifications repository
+    // speaks `kind`. This seam translates. It used to pass `type` straight
+    // through, so `notify` never saw a `kind`, defaulted it to 'INFO', and every
+    // notification — WARNING, ALERT, whatever — was stored as INFO. And the id
+    // is `doc.id`: `toNotification` returns `id`, not the document store's
+    // `_id`, so `doc._id` was undefined and the caller got id "undefined".
     const doc = await db.engagement.notify({
-      userId, type, title, message, actionUrl, actionLabel, relatedId, relatedType, expiresAt,
+      userId, kind: type, title, message, actionUrl, actionLabel, relatedId, relatedType, expiresAt,
     });
-    return { delivered: true, id: String(doc._id) };
+    return { delivered: true, id: String(doc.id) };
   },
 };
 
