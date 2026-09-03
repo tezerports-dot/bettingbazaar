@@ -16,7 +16,16 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['database/tests/**/*.test.js'],
+    // Route tests live under backend/ but need a real PostgreSQL for the same
+    // reason the repository tests do: they mount the real routers against the
+    // real data layer, and a handler that would throw in production must throw
+    // here. Splitting them into a third config would mean a third CI step and
+    // a third place to forget.
+    include: ['database/tests/**/*.test.js', 'backend/tests/routes/**/*.test.js'],
+    // Route modules refuse to load without signing keys, so they are set
+    // before any import runs. Repository tests do not need them and are
+    // unaffected by their presence.
+    setupFiles: ['backend/tests/routes/setup.js'],
     testTimeout: 30000,
     fileParallelism: false, // shared database
   },
