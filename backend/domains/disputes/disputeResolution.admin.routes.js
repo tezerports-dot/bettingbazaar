@@ -162,8 +162,13 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, isAdmin, async (re
       set: {
         disputeDecision:   decision,
         disputeResolution: resolution,
-        resolvedAt:        new Date(),
-        resolvedBy:        req.user.userId,
+        // The settable columns are dispute_resolved_at / dispute_resolved_by.
+        // This wrote `resolvedAt` / `resolvedBy`, which setOrderFields refuses as
+        // unknown — so the detail write threw AFTER the status had already moved,
+        // leaving the order COMPLETED/CANCELLED with no decision recorded and no
+        // money moved, and the admin a 500. Every dispute resolution failed.
+        disputeResolvedAt: new Date(),
+        disputeResolvedBy: req.user.userId,
         ...(newStatus === 'COMPLETED' ? { completedAt: new Date() } : { cancelledAt: new Date() }),
       },
     });
