@@ -190,6 +190,13 @@ const MUTATIONS = [
     from: `    candidates = candidates.filter((m) => (availablePaise.get(String(m.merchantId)) ?? -1) >= neededPaise);`,
     to: `    candidates = candidates.filter((m) => m.tokenBalance >= neededPaise);`,
   },
+  {
+    id: 'M63', file: 'database/repositories/wallets.core.js', config: PG,
+    test: 'database/tests/workflowEndToEndPg.test.js',
+    why: 'a redelivered refund throws instead of being a no-op — the replay probe is gone',
+    from: `  const keys = ledger.map((r) => r.txId);`,
+    to: `  const keys = [];`,
+  },
   // ── The order-facing wallet writers ───────────────────────────────────────
   {
     id: 'M55', file: 'database/repositories/wallets.js', config: PG,

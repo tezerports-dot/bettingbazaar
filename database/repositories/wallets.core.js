@@ -361,10 +361,38 @@ export async function applyMovementWithin({ client, uid }, { legs, merged, ledge
   }
   const columns = merged ?? mergeLegs(legs, allowNegative);
 
+  // ── THE REPLAY PROBE COMES FIRST ─────────────────────────────────────────
+  // Moving the balances first and letting the ledger's UNIQUE detect the replay
+  // only works when the replayed movement would still PASS the balance guard.
+  // When it would not, the guard refuses before the collision is ever reached
+  // and the caller cannot tell "already done" from "cannot afford" — so a
+  // redelivered callback throws instead of being a no-op.
+  //
+  // That was real: replaying a withdrawal refund tried `locked -= X` against a
+  // `locked` the first refund had already emptied, was refused for going
+  // negative, and the caller raised an error on an operation that had in fact
+  // succeeded. Every movement that RETURNS value to a pocket has this shape.
+  //
+  // The probe is exact rather than a fast path because the wallet row is
+  // already locked here: no concurrent movement for this user can land between
+  // the probe and the write. An equivalent read taken outside the lock would be
+  // a guess.
+  const keys = ledger.map((r) => r.txId);
+  const { rows: replayed } = await client.query(
+    `SELECT 1 FROM wallet_ledger WHERE user_id = $1 AND tx_id = ANY($2) LIMIT 1`,
+    [uid, keys],
+  );
+  if (replayed.length) {
+    return { ok: true, idempotent: true, balancesAfterPaise: null };
+  }
+
   const after = await moveBalances(client, uid, columns);
   if (!after) {
     return { ok: false, insufficient: true, idempotent: false, balancesAfterPaise: null };
   }
+  // Still checked: the probe closes the window this transaction can see, and
+  // the UNIQUE closes the one it cannot — a movement committed by another
+  // transaction between our lock being taken and this insert.
   if (!await appendLedgerRows(client, uid, ledger, after)) {
     return { ok: true, idempotent: true, balancesAfterPaise: null };
   }
