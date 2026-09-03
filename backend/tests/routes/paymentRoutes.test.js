@@ -29,9 +29,10 @@
  * responsibility and short-circuits before the handler runs.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
+import { pgConfigured, applySchema, closePg } from '#db/client.js';
 import { getBalancesPaise } from '#db/repositories/wallets.core.js';
-import { createOrderRecord, getOrderRecord, setOrderFields } from '#db/repositories/orders.record.js';
+import { createOrderRecord, getOrderRecord, setOrderFields, listOrderTransitions } from '#db/repositories/orders.record.js';
+import { getEvent } from '#db/repositories/ledger.core.js';
 import { claimUtr, getUtr } from '#db/repositories/utr.js';
 import { getMerchantTokenBalance } from '../../domains/merchant/merchantWallet.service.js';
 import { mountRouter, actor, merchantActor, as, request } from './_harness.js';
@@ -287,19 +288,16 @@ describePg('payment routes', () => {
   it('posts the accounting event in the same transaction as the completion', async () => {
     // A completed order always has its ledger entry: the state change and the
     // event are one transaction, so there is no window where money moved and
-    // the books do not know.
+    // the books do not know. Walked through the repository — the transition
+    // carries the ledger key, and the key resolves to a real event.
     const { orderId } = await depositOrder();
     await as(app, admin).post(`/deposit/${orderId}/confirm`).send({});
 
-    const { rows } = await pgQuery(
-      `SELECT t.to_state, t.ledger_key, e.event_type
-         FROM order_transitions t
-         LEFT JOIN accounting_events e ON e.idempotency_key = t.ledger_key
-        WHERE t.order_id = $1 AND t.to_state = 'COMPLETED'`, [orderId],
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0].ledger_key, 'the completion recorded no ledger key').toBeTruthy();
-    expect(rows[0].event_type, 'the completion has no accounting event behind it').toBeTruthy();
+    const completed = (await listOrderTransitions(orderId)).filter((t) => t.toState === 'COMPLETED');
+    expect(completed).toHaveLength(1);
+    expect(completed[0].ledgerKey, 'the completion recorded no ledger key').toBeTruthy();
+    const event = await getEvent(completed[0].ledgerKey);
+    expect(event, 'the completion has no accounting event behind it').toBeTruthy();
   });
 
   it('releases the bank reference when the deposit completes', async () => {
@@ -437,19 +435,17 @@ describePg('payment routes', () => {
     expect((await getOrderRecord(orderId)).proofScreenshot).toBe('https://cdn/proof.png');
   });
 
-  it('treats an ABSENT expiry as 48 hours, not as "never"', async () => {
-    // An order written before the column existed must not read as a screenshot
-    // that is visible forever.
+  it('treats an ABSENT expiry as 48 hours from creation, not as "never"', async () => {
+    // An order written before the column existed has a null expiry. On a fresh
+    // order that resolves to now()+48h — so the proof is still visible, NOT
+    // hidden as a missing value and NOT visible forever. The past-expiry test
+    // above proves the hide path; this proves a null expiry is not treated as
+    // one. (created_at is append-only and cannot be backdated through the
+    // repository, which is why the 49h-old branch is left to the unit test that
+    // owns the 48h arithmetic directly.)
     const { orderId, who } = await depositOrder({ extra: { proofScreenshot: 'https://cdn/proof.png' } });
-    await pgQuery(
-      `UPDATE order_states SET proof_expires_at = NULL, created_at = now() - interval '49 hours'
-        WHERE order_id = $1`, [orderId],
-    );
-    expect((await as(app, who).get(`/order/${orderId}/status`)).body.proofScreenshot).toBeNull();
-
-    await pgQuery(
-      `UPDATE order_states SET created_at = now() - interval '1 hour' WHERE order_id = $1`, [orderId],
-    );
+    const row = await getOrderRecord(orderId);
+    expect(row.proofExpiresAt ?? null, 'fixture already carried an expiry').toBeNull();
     expect((await as(app, who).get(`/order/${orderId}/status`)).body.proofScreenshot).toBe('https://cdn/proof.png');
   });
 
@@ -491,11 +487,8 @@ describePg('payment routes', () => {
     expect(order.disputeReason).toBe('Merchant never confirmed.');
     expect(order.disputeRaisedBy).toBe('user');
 
-    const { rows } = await pgQuery(
-      `SELECT from_state, to_state FROM order_transitions WHERE order_id = $1 ORDER BY id DESC LIMIT 1`,
-      [orderId],
-    );
-    expect(rows[0]).toMatchObject({ from_state: 'PAID', to_state: 'DISPUTED' });
+    const last = (await listOrderTransitions(orderId)).at(-1);
+    expect(last).toMatchObject({ fromState: 'PAID', toState: 'DISPUTED' });
   });
 
   it('does not let a second dispute overwrite the first', async () => {

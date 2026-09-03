@@ -774,7 +774,19 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         const counts = await db.merchants.getActiveOrderCounts([req.merchantId]);
         const active = counts.get(String(req.merchantId));
         const activeForType = order.type === 'DEPOSIT' ? active.deposit : active.withdrawal;
-        if (activeForType >= typeLimit) {
+        // The count includes ASSIGNED orders, and THIS order — when it was
+        // assigned to this merchant rather than taken from the open pool — is
+        // one of them. Accepting it does not add to the merchant's plate, it
+        // moves an order already on it from ASSIGNED to PROCESSING, so it must
+        // not be counted against the ceiling for accepting it. Without this a
+        // merchant at the default limit of 1 could be ASSIGNED an order and then
+        // be refused when they tried to accept it — the one order they had was
+        // the one blocking them.
+        const alreadyMine = order.merchantId
+            && String(order.merchantId) === String(req.merchantId)
+            && ['ASSIGNED', 'PROCESSING', 'PAID'].includes(order.status);
+        const effectiveActive = activeForType - (alreadyMine ? 1 : 0);
+        if (effectiveActive >= typeLimit) {
             return res.status(400).json({ success: false, message: `Merchant has reached ${order.type} active order limit (${typeLimit}).` });
         }
 

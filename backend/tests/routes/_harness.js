@@ -30,6 +30,20 @@ import {
 import { creditMerchantTokens } from '../../domains/merchant/merchantWallet.service.js';
 
 /**
+ * A mobile number nothing else in the run holds.
+ *
+ * `users.mobile` and `merchants.mobile` are both UNIQUE, and a generator built
+ * on `Date.now()` alone repeats whenever a test builds several actors inside
+ * one millisecond — which `Promise.all` does every time. The counter is what
+ * makes it monotonic; the random suffix keeps two vitest workers apart.
+ */
+let mobileSeq = Math.floor(Math.random() * 90_000);
+function uniqueMobile(prefix) {
+  mobileSeq = (mobileSeq + 1) % 1_000_000_000;
+  return `${prefix}${String(mobileSeq).padStart(9, '0')}`;
+}
+
+/**
  * Mount one router on a bare app, with only the middleware the router itself
  * relies on: a JSON body parser and cookies.
  *
@@ -63,7 +77,7 @@ export async function actor({
   isQueueManager = false, kycStatus = 'APPROVED', permissions = null,
 } = {}) {
   const id = userId || `rt-${Math.random().toString(36).slice(2, 10)}`;
-  const mobile = `9${String(Date.now()).slice(-9)}`.slice(0, 10);
+  const mobile = uniqueMobile('9');
 
   await createUser({ userId: id, username: id, mobile, kycStatus });
   const patch = { isAdmin, isSubAdmin, isQueueManager };
@@ -85,13 +99,18 @@ export async function actor({
  */
 export async function merchantActor({
   status = 'ACTIVE', approval = 'APPROVED', name = null, tokensRupees = 0,
+  suspensionReason = 'route test suspension',
 } = {}) {
   const merchantId = newMerchantId();
-  const mobile = `8${String(Date.now()).slice(-9)}`.slice(0, 10);
+  const mobile = uniqueMobile('8');
   await createMerchant({
     merchantId, name: name || `RT Merchant ${merchantId.slice(-6)}`,
-    publicRef: generateMerchantPublicRef(), mobile, status,
+    publicRef: generateMerchantPublicRef(), mobile,
+    // A merchant created straight into SUSPENDED needs the reason the CHECK
+    // insists on: a suspension nobody can explain is one nobody can appeal.
+    ...(status === 'SUSPENDED' ? { status: 'ACTIVE' } : { status }),
   });
+  if (status === 'SUSPENDED') await updateMerchant(merchantId, { status, suspensionReason });
   if (approval !== 'PENDING') await updateMerchant(merchantId, { merchantApprovalStatus: approval });
   if (tokensRupees > 0) {
     await creditMerchantTokens({

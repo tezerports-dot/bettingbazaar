@@ -24,8 +24,9 @@
  * keyed on the order, so a failure leaves it PENDING with nothing to undo.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
+import { pgConfigured, applySchema, closePg } from '#db/client.js';
 import { getMerchant } from '#db/repositories/merchants.js';
+import { historyFor } from '#db/repositories/audit.js';
 import { createTokenOrder, getTokenOrder } from '#db/repositories/paymentConfig.js';
 import { getMerchantTokenBalance } from '../../domains/merchant/merchantWallet.service.js';
 import { mountRouter, actor, merchantActor, as, request } from './_harness.js';
@@ -166,13 +167,10 @@ describePg('merchant admin routes', () => {
     const k = key('audited');
     await fund(m.merchantId, { tokenAmount: 250, note: 'seed float' }, k);
 
-    const { rows } = await pgQuery(
-      `SELECT performed_by, details FROM enhanced_audit_logs
-        WHERE action = 'MERCHANT_FUNDED' AND target_id = $1`, [m.merchantId],
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0].performed_by).toBe(admin.userId);
-    expect(rows[0].details).toMatchObject({ tokenAmount: 250, note: 'seed float', movementId: `mint_${k}` });
+    const entries = (await historyFor(m.merchantId)).filter((e) => e.action === 'MERCHANT_FUNDED');
+    expect(entries).toHaveLength(1);
+    expect(entries[0].performedBy).toBe(admin.userId);
+    expect(entries[0].details).toMatchObject({ tokenAmount: 250, note: 'seed float', movementId: `mint_${k}` });
   });
 
   it('reads the new balance back from the WALLET, not from the merchant row', async () => {
@@ -234,13 +232,10 @@ describePg('merchant admin routes', () => {
     const k = key('deduct-audit');
     await deduct(m.merchantId, { tokenAmount: 300, reason: '  duplicate top-up  ' }, k);
 
-    const { rows } = await pgQuery(
-      `SELECT performed_by, details FROM enhanced_audit_logs
-        WHERE action = 'MERCHANT_TOKENS_DEDUCTED' AND target_id = $1`, [m.merchantId],
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0].performed_by).toBe(admin.userId);
-    expect(rows[0].details).toMatchObject({ tokenAmount: 300, reason: 'duplicate top-up', movementId: `mw_deduct_${k}` });
+    const entries = (await historyFor(m.merchantId)).filter((e) => e.action === 'MERCHANT_TOKENS_DEDUCTED');
+    expect(entries).toHaveLength(1);
+    expect(entries[0].performedBy).toBe(admin.userId);
+    expect(entries[0].details).toMatchObject({ tokenAmount: 300, reason: 'duplicate top-up', movementId: `mw_deduct_${k}` });
   });
 
   it('funds and deducts to the same balance it started from', async () => {

@@ -21,9 +21,10 @@
  * and it blocks a real customer who then has nobody to appeal to.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
+import { pgConfigured, applySchema, closePg } from '#db/client.js';
 import { claimUtr, getUtr, releaseUtr } from '#db/repositories/utr.js';
-import { createOrderRecord, getOrderRecord, setOrderFields } from '#db/repositories/orders.record.js';
+import { createOrderRecord, getOrderRecord, setOrderFields, listOrderTransitions } from '#db/repositories/orders.record.js';
+import { historyFor } from '#db/repositories/audit.js';
 import { mountRouter, actor, as, request } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -155,13 +156,10 @@ describePg('UTR admin routes', () => {
   it('writes the flag to the audit log, attributed', async () => {
     const { utr, orderId } = await claimed();
     await as(app, admin).put(`/utr-registry/${utr}/flag`).send({ reason: 'Duplicate transfer' });
-    const { rows } = await pgQuery(
-      `SELECT performed_by, action, target_id, details FROM enhanced_audit_logs
-        WHERE action = 'UTR_FLAGGED_FRAUD' AND target_id = $1`, [utr],
-    );
-    expect(rows, 'the flag left no audit trail').toHaveLength(1);
-    expect(rows[0].performed_by).toBe(admin.userId);
-    expect(rows[0].details).toMatchObject({ reason: 'Duplicate transfer', orderId });
+    const entries = (await historyFor(utr)).filter((e) => e.action === 'UTR_FLAGGED_FRAUD');
+    expect(entries, 'the flag left no audit trail').toHaveLength(1);
+    expect(entries[0].performedBy).toBe(admin.userId);
+    expect(entries[0].details).toMatchObject({ reason: 'Duplicate transfer', orderId });
   });
 
   it('does NOT touch the order it flags', async () => {
@@ -350,10 +348,8 @@ describePg('UTR admin routes', () => {
     // it — that is what makes the audit reconstructable from the rows.
     const { orderId } = await claimed({ state: 'PROCESSING' });
     await as(app, admin).post(`/utr/resolve/${orderId}`).send({ action: 'reject' });
-    const { rows } = await pgQuery(
-      `SELECT from_state, to_state FROM order_transitions WHERE order_id = $1 ORDER BY id`, [orderId],
-    );
-    expect(rows.at(-1)).toMatchObject({ from_state: 'PROCESSING', to_state: 'CANCELLED' });
+    const last = (await listOrderTransitions(orderId)).at(-1);
+    expect(last).toMatchObject({ fromState: 'PROCESSING', toState: 'CANCELLED' });
   });
 
   it('409s rather than cancelling an order that is already final', async () => {
@@ -372,13 +368,13 @@ describePg('UTR admin routes', () => {
     await as(app, admin).post(`/utr/resolve/${approved.orderId}`).send({ action: 'approve', notes: 'ok' });
     await as(app, admin).post(`/utr/resolve/${rejected.orderId}`).send({ action: 'reject', notes: 'no' });
 
-    const { rows } = await pgQuery(
-      `SELECT action, target_id, details FROM enhanced_audit_logs
-        WHERE target_id = ANY($1) AND action LIKE 'UTR_REVIEW_%' ORDER BY action`,
-      [[approved.orderId, rejected.orderId]],
-    );
-    expect(rows.map((r) => r.action)).toEqual(['UTR_REVIEW_APPROVED', 'UTR_REVIEW_REJECTED']);
-    expect(rows[0].details).toMatchObject({ notes: 'ok', utr: approved.utr });
-    expect(rows[1].details).toMatchObject({ notes: 'no', utr: rejected.utr });
+    const entries = [
+      ...await historyFor(approved.orderId),
+      ...await historyFor(rejected.orderId),
+    ].filter((e) => e.action.startsWith('UTR_REVIEW_'));
+    const byAction = Object.fromEntries(entries.map((e) => [e.action, e]));
+    expect(Object.keys(byAction).sort()).toEqual(['UTR_REVIEW_APPROVED', 'UTR_REVIEW_REJECTED']);
+    expect(byAction.UTR_REVIEW_APPROVED.details).toMatchObject({ notes: 'ok', utr: approved.utr });
+    expect(byAction.UTR_REVIEW_REJECTED.details).toMatchObject({ notes: 'no', utr: rejected.utr });
   });
 });

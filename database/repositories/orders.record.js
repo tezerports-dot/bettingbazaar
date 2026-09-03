@@ -723,6 +723,30 @@ export async function getMerchantOrder(orderId, merchantId) {
   return toOrder(rows[0]);
 }
 
+/**
+ * The transitions an order went through, oldest first.
+ *
+ * The audit walk an order-history screen shows and a test asserts on: each row
+ * carries the states it moved between and the ledger key it produced, so an
+ * auditor can step from a status change to the accounting entry behind it
+ * without guessing at a key format. A READ of the append-only history — it
+ * writes nothing.
+ */
+export async function listOrderTransitions(orderId) {
+  if (!orderId) return [];
+  const { rows } = await pgQuery(
+    `SELECT id, tx_id, from_state, to_state, actor, reason, ledger_key, created_at
+       FROM order_transitions WHERE order_id = $1 ORDER BY id ASC`,
+    [String(orderId)], 'order_list_transitions',
+  );
+  return rows.map((r) => ({
+    id: Number(r.id), txId: r.tx_id,
+    fromState: r.from_state, toState: r.to_state,
+    actor: r.actor, reason: r.reason,
+    ledgerKey: r.ledger_key, createdAt: r.created_at,
+  }));
+}
+
 /** One order by its UTR — the reconciliation lookup. */
 export async function findOrderByUtr(utr) {
   const { rows } = await pgQuery(
