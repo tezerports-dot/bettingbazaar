@@ -1,4 +1,5 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+import { randomInt } from 'node:crypto';
 import { db } from '#db';
 import { fetchCycleHistory } from './cycleHistory.service.js';
 // Derived cycle pools (FLAGS.DERIVED_CYCLE_POOLS, default off) — see
@@ -378,7 +379,23 @@ class CycleGenerator {
             } else if (realBombay > realDelhi) {
                 winner = 'DELHI';
             } else {
-                winner = Math.random() < 0.5 ? 'DELHI' : 'BOMBAY';
+                // EXACT TIE — the only branch where a real-money outcome is
+                // decided by chance rather than by the pools, so it must be
+                // decided by a CSPRNG.
+                //
+                // This was `Math.random() < 0.5`. V8 implements Math.random as
+                // xorshift128+, which is seeded per isolate and RECOVERABLE from
+                // a modest run of observed outputs — an adversary who can force
+                // ties (trivial in a low-liquidity cycle: bet the two sides
+                // equally) and watch the results could predict subsequent
+                // tie-breaks and bet the winning side. Independently of
+                // exploitability, GLI-19, UKGC RTS 2A and the MGA technical
+                // requirements all demand that anything determining a game
+                // outcome come from a cryptographically secure generator.
+                //
+                // randomInt(2) is crypto-backed and rejection-samples, so the
+                // two sides are exactly equiprobable (no modulo bias).
+                winner = randomInt(2) === 0 ? 'DELHI' : 'BOMBAY';
             }
 
             // The winner and the status in ONE statement, guarded on
