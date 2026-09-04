@@ -98,6 +98,15 @@ function toMerchant(row) {
   if (!row) return null;
   return {
     merchantId: row.merchant_id,
+    // SECURITY-RELEVANT: merchant_id aliases _id/id for downstream authorization.
+    // merchantAuth.js reads merchant._id and assigns it to req.merchantId, which
+    // every merchant handler then passes as the SECOND argument of
+    // getMerchantOrder(orderId, merchantId) — the ownership test lives in that
+    // query's WHERE clause. Do not remove or rename this alias without updating
+    // the authorization flow: req.merchantId would become undefined and every
+    // lookup would match no row. That fails CLOSED (no data leak) but silently
+    // breaks the merchant panel. Covered by the regression test in
+    // backend/tests/routes/merchantPanelRoutes.test.js.
     _id: row.merchant_id,
     id: row.merchant_id,
     userId: row.user_id,

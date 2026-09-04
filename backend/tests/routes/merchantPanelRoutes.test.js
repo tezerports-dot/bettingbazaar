@@ -27,7 +27,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg } from '#db/client.js';
 import { getBalancesPaise } from '#db/repositories/wallets.core.js';
-import { createOrderRecord, getOrderRecord, setOrderFields } from '#db/repositories/orders.record.js';
+import { createOrderRecord, getOrderRecord, setOrderFields, getMerchantOrder } from '#db/repositories/orders.record.js';
 import { updateMerchant, getMerchant } from '#db/repositories/merchants.js';
 import { getMerchantTokenBalance } from '../../domains/merchant/merchantWallet.service.js';
 import { mountRouter, actor, merchantActor, as, request } from './_harness.js';
@@ -392,6 +392,39 @@ describePg('merchant panel routes', () => {
     const ids = (res.body.orders || []).map((o) => o.orderId);
     expect(ids).toContain(a.orderId);
     expect(ids).not.toContain(b.orderId);
+  });
+
+  // ── The authorization data flow, made explicit ────────────────────────────
+  it('carries merchant identity all the way from the token to the order lookup', async () => {
+    // This pins a dependency that is otherwise invisible: `toMerchant` aliases
+    // merchant_id to `_id`, `merchantAuth` reads `merchant._id` into
+    // `req.merchantId`, and every merchant handler passes that as the SECOND
+    // argument of getMerchantOrder(orderId, merchantId) — where the ownership
+    // test actually lives, in the WHERE clause.
+    //
+    // Drop the alias in a future cleanup and req.merchantId becomes undefined:
+    // the lookup then matches no row, which fails CLOSED (a merchant still
+    // cannot reach anyone else's order) but silently 404s every one of their
+    // OWN orders. A green suite without this test would not notice.
+    const m = await merchantActor({ tokensRupees: 5000 });
+
+    // The repository alias itself — the first link in the chain.
+    const row = await getMerchant(m.merchantId);
+    expect(row._id, 'toMerchant no longer aliases merchant_id to _id').toBe(m.merchantId);
+    expect(row.id).toBe(m.merchantId);
+
+    // And the chain end to end: a real token → merchantAuth → the scoped
+    // lookup returns THIS merchant's order.
+    const mine = await order({ state: 'PROCESSING', merchantId: m.merchantId });
+    const res = await as(app, m).get('/orders?limit=100');
+    expect(res.status, res.body.message).toBe(200);
+    expect((res.body.orders || []).map((o) => o.orderId)).toContain(mine.orderId);
+
+    // The same lookup the handlers use, driven directly with the id the
+    // middleware would have set.
+    const scoped = await getMerchantOrder(mine.orderId, row._id);
+    expect(scoped, 'getMerchantOrder did not resolve with the aliased id').toBeTruthy();
+    expect(scoped.orderId).toBe(mine.orderId);
   });
 
   it('serves the merchant’s own profile and nobody else’s', async () => {
