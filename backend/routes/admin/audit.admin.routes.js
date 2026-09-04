@@ -1,46 +1,49 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** audit.admin.routes.js — Audit logs */
-import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin, getModels } from './_adminShared.js';
-import adminService from '../../services/admin.service.js';
+import { express, authenticate, isAdmin } from './_adminShared.js';
+import { db } from '#db';
 
 const router = express.Router();
 
 router.get('/audit-logs', authenticate, isAdmin, async (req, res) => {
   try {
     const { page = 1, limit = 50, category, action, adminId, startDate, endDate } = req.query;
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    
-    const query = {};
-    if (category)   query.category    = category;
-    if (action)     query.action      = action;
-    if (adminId)    query.performedBy = adminId;
-    // FIX DATA 3.9: EnhancedAuditLog schema uses 'timestamp', not 'createdAt'. Wrong field = empty results.
-    if (startDate || endDate) {
-      query.timestamp = {};
-      if (startDate) query.timestamp.$gte = new Date(startDate);
-      if (endDate)   query.timestamp.$lte = new Date(endDate);
-    }
-    
-    const { EnhancedAuditLog } = getModels();
-    
-    const [logs, total] = await Promise.all([
-      EnhancedAuditLog.find(query)
-        .sort({ timestamp: -1 })
-        .skip(skip)
-        .limit(parseInt(limit))
-        .populate('performedBy', 'username mobile'),
-      EnhancedAuditLog.countDocuments(query)
-    ]);
-    
+
+    // A malformed date used to become `new Date('...')` => Invalid Date, which
+    // silently matched nothing. Null it instead, so a bad filter is ignored
+    // rather than returning an empty page an auditor would read as "no
+    // activity in that window".
+    const at = (v) => {
+      if (!v) return null;
+      const d = new Date(v);
+      return Number.isNaN(d.getTime()) ? null : d;
+    };
+
+    // The page and its total come from ONE statement (COUNT(*) OVER ()), so an
+    // entry written mid-request cannot make the page count disagree with the
+    // rows — in the one place where a row nobody can account for is the point.
+    const result = await db.audit.feed({
+      category: category || null,
+      action: action || null,
+      performedBy: adminId || null,
+      since: at(startDate),
+      until: at(endDate),
+      page: parseInt(page, 10),
+      limit: parseInt(limit, 10),
+    });
+
     res.json({
       success: true,
-      logs,
+      logs: result.entries,
       pagination: {
-        total,
-        page: parseInt(page),
-        limit: parseInt(limit),
-        pages: Math.ceil(total / parseInt(limit))
-      }
+        total: result.total,
+        page: result.page,
+        limit: result.size,
+        pages: result.pages,
+        // True when the requested page is past the end. Without it a caller
+        // cannot tell "no entries match" from "you paged too far".
+        beyondEnd: result.beyondEnd,
+      },
     });
   } catch (error) {
     console.error('Get audit logs error:', error);

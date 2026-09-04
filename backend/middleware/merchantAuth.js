@@ -19,9 +19,9 @@
 
 // AQ-2: verify via the single PASETO authority (Ed25519 signature + iss/aud stamped).
 import { verifyJwt } from '../domains/identity/jwt.util.js';
+import { db } from '#db';
 import { isTokenRevoked } from '../domains/identity/auth.middleware.js';
 import { isChallengeToken } from '../domains/identity/twoFactorChallenge.js';
-import mongoose from 'mongoose';
 
 /**
  * Merchant authentication middleware
@@ -64,7 +64,7 @@ export const merchantAuth = async (req, res, next) => {
     if (!decoded.isMerchant || !decoded.merchantId)
       return res.status(403).json({ success: false, message: 'Merchant token required.' });
 
-    const merchant = await mongoose.model('Merchant').findById(decoded.merchantId);
+    const merchant = await db.merchants.getMerchant(decoded.merchantId);
     if (!merchant)
       return res.status(404).json({ success: false, message: 'Merchant account not found.' });
 

@@ -2,7 +2,7 @@
 // Unit tests for the AQ-3 money-DB TLS resolver. The default MUST be verified
 // TLS — the regression this guards against is silently accepting any cert.
 import { describe, it, expect } from 'vitest';
-import { resolvePgSsl } from '../../postgres/pgClient.js';
+import { resolvePgSsl } from '#db/client.js';
 
 describe('resolvePgSsl', () => {
   it('DEFAULTS to verified TLS (rejectUnauthorized: true)', () => {

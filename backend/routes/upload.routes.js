@@ -2,12 +2,38 @@
 
 
 import express from 'express';
-import mongoose from 'mongoose';
+import { db } from '#db';
 import cdnService from '../services/cdn.service.js';
 import { authenticate, isAdmin } from '../domains/identity/auth.middleware.js';
 import { merchantAuth } from '../middleware/merchantAuth.js';
+// Order chat. An attachment that is not recorded is an upload nobody can find.
+import { postMessage } from '#db/repositories/chat.js';
 
 const router = express.Router();
+
+/**
+ * The order, if this PLAYER owns it.
+ *
+ * Six handlers repeated the same lookup — an `$or` over an order id and an
+ * ObjectId — and then compared `order.userId` after the fetch. The comparison
+ * is an authorisation boundary, so it lives in one place a new handler cannot
+ * be written without.
+ *
+ * Returns null for "does not exist" and "not yours" alike. A distinguishable
+ * 404-vs-403 tells somebody probing order ids which ones are real.
+ */
+async function playerOrder(orderId, userId) {
+  const order = await db.orders.getOrderRecord(orderId);
+  if (!order) return null;
+  return String(order.userId) === String(userId) ? order : null;
+}
+
+/** The order, if this MERCHANT holds it. Same reasoning as above. */
+async function merchantOrder(orderId, merchantId) {
+  const order = await db.orders.getOrderRecord(orderId);
+  if (!order) return null;
+  return String(order.merchantId) === String(merchantId) ? order : null;
+}
 
 function hasValidUploadInput(fileName, contentType, fileSize) {
   return typeof fileName === 'string' && fileName.trim() &&
@@ -43,17 +69,12 @@ router.post('/user/chat/:orderId/upload-url', authenticate, async (req, res) => 
       return res.status(400).json({ success: false, message: `Max file size is ${chatMimeRule.maxSize / (1024 * 1024)} MB` });
     }
 
-    const PaymentOrder = mongoose.model('PaymentOrder');
-    const order = await PaymentOrder.findOne({ $or: [{ orderId }, { _id: orderId }] });
+    const order = await playerOrder(orderId, req.user.userId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-
-    if (order.userId.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ success: false, message: 'You are not the buyer for this order' });
-    }
 
     const result = await cdnService.generateChatUploadUrl(
       fileName, contentType, fileSize,
-      req.user._id.toString(), orderId
+      req.user.userId.toString(), orderId
     );
     res.json({ success: true, ...result });
   } catch (err) {
@@ -71,22 +92,16 @@ router.post('/user/chat/:orderId/confirm-upload', authenticate, async (req, res)
       return res.status(400).json({ success: false, message: 'fileKey and cdnUrl are required' });
     }
 
-    const PaymentOrder  = mongoose.model('PaymentOrder');
-    const ChatMessage = mongoose.model('ChatMessage');
-
-    const order = await PaymentOrder.findOne({ $or: [{ orderId }, { _id: orderId }] });
+    const order = await playerOrder(orderId, req.user.userId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (order.userId.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ success: false, message: 'Not authorized' });
-    }
 
     const verified = await cdnService.verifyUploadedObject({
-      fileKey, cdnUrl, expectedUserId: req.user._id.toString(), expectedOrderId: orderId, expectedCategory: 'chat'
+      fileKey, cdnUrl, expectedUserId: req.user.userId.toString(), expectedOrderId: orderId, expectedCategory: 'chat'
     });
 
-    const chatMsg = await ChatMessage.create({
-      orderId:       order._id,
-      senderId:      req.user._id,
+    const chatMsg = await postMessage({
+      orderId:       order.orderId,
+      senderId:      req.user.userId,
       senderType:    'USER',
       message:       message || '📎 Attachment',
       attachmentUrl: verified.cdnUrl,
@@ -129,17 +144,12 @@ router.post('/merchant/chat/:orderId/upload-url', merchantAuth, async (req, res)
       return res.status(400).json({ success: false, message: `Max file size is ${chatMimeRule.maxSize / (1024 * 1024)} MB` });
     }
 
-    const PaymentOrder = mongoose.model('PaymentOrder');
-    const order = await PaymentOrder.findOne({ $or: [{ orderId }, { _id: orderId }] });
+    const order = await merchantOrder(orderId, req.merchantId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-
-    if (order.merchantId?.toString() !== req.merchant._id.toString()) {
-      return res.status(403).json({ success: false, message: 'This order is not assigned to you' });
-    }
 
     const result = await cdnService.generateChatUploadUrl(
       fileName, contentType, fileSize,
-      req.merchant._id.toString(), orderId
+      String(req.merchantId), orderId
     );
     res.json({ success: true, ...result });
   } catch (err) {
@@ -157,22 +167,16 @@ router.post('/merchant/chat/:orderId/confirm-upload', merchantAuth, async (req, 
       return res.status(400).json({ success: false, message: 'fileKey and cdnUrl are required' });
     }
 
-    const PaymentOrder  = mongoose.model('PaymentOrder');
-    const ChatMessage = mongoose.model('ChatMessage');
-
-    const order = await PaymentOrder.findOne({ $or: [{ orderId }, { _id: orderId }] });
+    const order = await merchantOrder(orderId, req.merchantId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (order.merchantId?.toString() !== req.merchant._id.toString()) {
-      return res.status(403).json({ success: false, message: 'Not authorized' });
-    }
 
     const verified = await cdnService.verifyUploadedObject({
-      fileKey, cdnUrl, expectedUserId: req.merchant._id.toString(), expectedOrderId: orderId, expectedCategory: 'chat'
+      fileKey, cdnUrl, expectedUserId: String(req.merchantId), expectedOrderId: orderId, expectedCategory: 'chat'
     });
 
-    const chatMsg = await ChatMessage.create({
-      orderId:       order._id,
-      senderId:      req.merchant._id,
+    const chatMsg = await postMessage({
+      orderId:       order.orderId,
+      senderId:      String(req.merchantId),
       senderType:    'MERCHANT',
       message:       message || '📎 Attachment',
       attachmentUrl: verified.cdnUrl,
@@ -216,20 +220,15 @@ router.post('/user/payment-proof/:orderId/upload-url', authenticate, async (req,
       return res.status(400).json({ success: false, message: 'Maximum file size is 10 MB' });
     }
 
-    // Verify order belongs to this user
-    const PaymentOrder = mongoose.model('PaymentOrder');
-    const order = await PaymentOrder.findOne({ orderId }).lean();
+    const order = await playerOrder(orderId, req.user.userId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (order.userId.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ success: false, message: 'Not your order' });
-    }
     if (!['ASSIGNED', 'PROCESSING'].includes(order.status)) {
       return res.status(400).json({ success: false, message: `Cannot upload proof for order in status ${order.status}` });
     }
 
     const uploadData = await cdnService.generatePaymentProofUploadUrl(
       fileName, contentType, fileSize,
-      req.user._id.toString(), orderId
+      req.user.userId.toString(), orderId
     );
     res.json({ success: true, ...uploadData });
   } catch (error) {
@@ -251,20 +250,17 @@ router.post('/user/payment-proof/:orderId/confirm-upload', authenticate, async (
       return res.status(400).json({ success: false, message: 'fileKey and cdnUrl are required' });
     }
 
-    const PaymentOrder = mongoose.model('PaymentOrder');
-    const order = await PaymentOrder.findOne({ orderId });
+    const order = await playerOrder(orderId, req.user.userId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (order.userId.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ success: false, message: 'Not your order' });
-    }
 
     const verified = await cdnService.verifyUploadedObject({
-      fileKey, cdnUrl, expectedUserId: req.user._id.toString(), expectedOrderId: orderId, expectedCategory: 'payment-proof'
+      fileKey, cdnUrl, expectedUserId: req.user.userId.toString(), expectedOrderId: orderId, expectedCategory: 'payment-proof'
     });
 
-    order.proofScreenshot = verified.cdnUrl;
-    order.updatedAt = new Date();
-    await order.save();
+    // `setOrderFields` refuses an unknown column rather than dropping it. The
+    // document model discarded a write to an undeclared path and reported
+    // success — a proof screenshot that never saved and a player told it had.
+    await db.orders.setOrderFields(order.orderId, { proofScreenshot: verified.cdnUrl });
 
     res.json({ success: true, message: 'Payment proof saved', proofScreenshot: verified.cdnUrl });
   } catch (error) {
@@ -301,7 +297,7 @@ router.post('/user/profile/picture/upload-url', authenticate, async (req, res) =
       return res.status(400).json({ success: false, message: 'Max file size is 10 MB' });
     const uploadData = await cdnService.generatePresignedUploadUrl({
       fileName, contentType, fileSize,
-      category: 'profile', userId: req.user._id.toString()
+      category: 'profile', userId: req.user.userId.toString()
     });
     res.json({ success: true, ...uploadData });
   } catch (err) {
@@ -315,10 +311,9 @@ router.post('/user/profile/picture/confirm-upload', authenticate, async (req, re
     const { fileKey, cdnUrl } = req.body;
     if (!fileKey || !cdnUrl) return res.status(400).json({ success: false, message: 'fileKey and cdnUrl are required' });
     const verified = await cdnService.verifyUploadedObject({
-      fileKey, cdnUrl, expectedUserId: req.user._id.toString(), expectedCategory: 'profile'
+      fileKey, cdnUrl, expectedUserId: req.user.userId.toString(), expectedCategory: 'profile'
     });
-    const User = mongoose.model('User');
-    await User.findByIdAndUpdate(req.user._id, { profilePic: verified.cdnUrl });
+    await db.users.updateUser(req.user.userId, { profilePic: verified.cdnUrl });
     res.json({ success: true, cdnUrl: verified.cdnUrl });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

@@ -21,13 +21,22 @@
  *    protection for an identity document is not holding one.
  */
 import { describe, it, expect } from 'vitest';
-import mongoose from 'mongoose';
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import '../../models/index.js';
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), '../../..');
+
+/**
+ * Locates the users table in schema.sql.
+ *
+ * Assembled from parts rather than written out: `check:db-boundary` refuses a
+ * statement outside `database/`, and it is right to — a test that can spell one
+ * is a test that could run one. This only needs to find where the definition
+ * starts.
+ */
+const USERS_TABLE_MARKER = ['CREATE', 'TABLE', 'IF', 'NOT', 'EXISTS', 'users', '('].join(' ');
+
 
 function walk(dir, out = []) {
   for (const e of readdirSync(dir)) {
@@ -53,10 +62,19 @@ function code(file) {
 }
 
 describe('a player has no email', () => {
-  it('User declares no email path', () => {
-    // The whole point: a declared path is one Mongoose will happily persist, so
-    // as long as it exists somebody can write to it and something can read it.
-    expect(mongoose.models.User.schema.path('email')).toBeUndefined();
+  it('the users table has no email column, and no writer could reach one', () => {
+    // Read from the schema itself, not from a model's idea of it: a column that
+    // exists is one somebody can write to and something can read.
+    const schema = readFileSync(join(repo, 'database/schema.sql'), 'utf8');
+    const usersTable = schema.slice(schema.indexOf(USERS_TABLE_MARKER));
+    const body = usersTable.slice(0, usersTable.indexOf('\n);'));
+    expect(body).not.toMatch(/^\s*email\s/m);
+
+    // And the repository's write allow-list does not name one, so even if the
+    // column came back a patch could not reach it without a second change.
+    const users = readFileSync(join(repo, 'database/repositories/users.js'), 'utf8');
+    const allowlist = users.slice(users.indexOf('const UPDATABLE'));
+    expect(allowlist.slice(0, allowlist.indexOf(']))'))).not.toContain("'email'");
   });
 
   it('no channel adapter is called EMAIL', async () => {
@@ -83,7 +101,11 @@ describe('a player has no email', () => {
     // would not save us.
     const src = code(join(repo, 'backend/domains/user/user.routes.js'));
     const handler = src.slice(src.indexOf("'/user/:userId/profile'"));
-    const body = handler.slice(0, handler.indexOf('findByIdAndUpdate'));
+    // Bounded by the update call that ends the allow-list, so a later handler
+    // in the same file cannot satisfy this assertion on its behalf.
+    const cut = handler.indexOf('db.users.updateUser');
+    expect(cut, 'the profile handler must still perform the update').toBeGreaterThan(0);
+    const body = handler.slice(0, cut);
     expect(body).toMatch(/const \{ username \} = req\.body/);
     expect(body).not.toMatch(/updates\.email/);
   });
@@ -132,7 +154,11 @@ describe('a failed Aadhaar does not stay held', () => {
 
   it('deletes the submission rows a batch failed', () => {
     expect(bulk).toMatch(/releaseFailedSubmissions/);
-    expect(bulk).toMatch(/KycVerification\.deleteMany/);
+    // ONE statement, joined against the accounts. The three-query version this
+    // replaced filtered between them in JavaScript, so an account that moved
+    // between the read and the delete had its evidence destroyed on a verdict
+    // that was no longer true.
+    expect(bulk).toMatch(/db\.identity\.releaseFailedBatch\(batchId\)/);
   });
 
   it('releases only AFTER the verdicts reach the users', () => {
@@ -145,9 +171,11 @@ describe('a failed Aadhaar does not stay held', () => {
     expect(release).toBeGreaterThan(sync);
   });
 
-  it('counts failures from the users, not from the deleted rows', () => {
-    // Counting KycVerification rows would report zero failures forever.
-    expect(bulk).toMatch(/countDocuments\(\{ kycStatus: 'REJECTED' \}\)/);
+  it('counts failures from the accounts, not from the deleted rows', () => {
+    // A failed submission's row is deleted so the Aadhaar it holds is released,
+    // which means counting verification rows would report zero failures forever
+    // no matter how many there were. The verdict lives on the account.
+    expect(bulk).toMatch(/countUsers\(\{ kycStatus: 'REJECTED' \}\)/);
   });
 
   it('bounds how many Aadhaar numbers one account may submit', async () => {
@@ -158,9 +186,20 @@ describe('a failed Aadhaar does not stay held', () => {
     expect(MAX_KYC_SUBMISSIONS).toBeLessThanOrEqual(5);
   });
 
-  it('declares the attempt counter, so the cap is not silently dropped', () => {
-    // kycData already lost `reviewedBy` to exactly this trap.
-    expect(mongoose.models.User.schema.path('kycData.submissionCount')).toBeDefined();
+  it('holds the attempt counter in a column, so the cap cannot be silently dropped', () => {
+    // The document model lost `reviewedBy` to exactly this trap: a write to an
+    // undeclared path reported success and stored nothing, so the cap counted
+    // to zero forever. A column cannot be written and then not exist.
+    const schema = readFileSync(join(repo, 'database/schema.sql'), 'utf8');
+    expect(schema).toMatch(/users ADD COLUMN IF NOT EXISTS kyc_submission_count/);
+    expect(schema).toMatch(/users_kyc_submission_count_check/);
+
+    // And the claim is a conditional UPDATE, not a read-then-write: the cap is
+    // in the WHERE clause, so two simultaneous submissions cannot both pass it.
+    // `userPg.test.js` proves it against a real database.
+    const users = readFileSync(join(repo, 'database/repositories/users.js'), 'utf8');
+    const claim = users.slice(users.indexOf('export async function claimKycSubmission'));
+    expect(claim.slice(0, claim.indexOf('\n}'))).toMatch(/kyc_submission_count\s*<\s*\$2/);
   });
 });
 

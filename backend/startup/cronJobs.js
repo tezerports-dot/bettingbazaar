@@ -4,7 +4,7 @@
  * Single responsibility: register cron intervals, nothing else.
  * Import and call registerCronJobs(rebuildLeaderboard) from server.js after DB init.
  */
-import mongoose from 'mongoose';
+import { db } from '#db';
 import { emitOrderUpdate, emitAdminUpdate } from '../domains/notification/realtimeEmitters.js';
 // Items 17+56 (2026-07-13): every job runs through the Background Job Platform
 // (services/jobQueue.service.js) — BullMQ repeatables with retry/backoff when
@@ -59,11 +59,11 @@ export function registerCronJobs(rebuildLeaderboard) {
     }
   });
 
-  // ── Scheduled policy/config apply worker — runs every 60 seconds ────────────
-  // Activates DepositPolicy versions and ConfigVersion field changes whose
-  // effectiveAt has passed. Both functions process every due item independently
-  // and return a per-item result; a single item's failure is logged, never
-  // thrown, so it can't block the rest of the batch or crash the interval.
+  // ── Scheduled policy apply worker — runs every 60 seconds ──────────────────
+  // Activates deposit-policy versions whose effectiveAt has passed. It processes
+  // every due item independently and returns a per-item result; a single item's
+  // failure is logged, never thrown, so it cannot block the rest of the batch or
+  // crash the interval.
   registerRecurring('scheduled-apply', 60 * 1000, async () => {
     try {
       const { applyScheduledPolicyChanges } = await import('../domains/configuration/depositPolicy.service.js');
@@ -75,15 +75,12 @@ export function registerCronJobs(rebuildLeaderboard) {
       if (applied > 0) console.log(`[scheduled-policy] Applied ${applied} DepositPolicy version(s)`);
     } catch (e) { console.error('[scheduled-policy] cron error:', e.message); }
 
-    try {
-      const { applyScheduledConfigChanges } = await import('../domains/configuration/configVersioning.service.js');
-      const results = await applyScheduledConfigChanges();
-      for (const r of results) {
-        if (!r.applied) console.error(`[scheduled-config] Failed to apply version ${r.versionId}:`, r.error);
-      }
-      const applied = results.filter(r => r.applied).length;
-      if (applied > 0) console.log(`[scheduled-config] Applied ${applied} config version(s)`);
-    } catch (e) { console.error('[scheduled-config] cron error:', e.message); }
+    // The scheduled-CONFIG sweep that sat here is gone. It swept for config
+    // versions marked SCHEDULED, and nothing could ever create one: the single
+    // caller of setConfigField passes no effectiveAt, no route exposed an
+    // approval endpoint, and no screen offered a future date. It ran every 60
+    // seconds over rows that could not exist. The deposit-policy sweep above
+    // is different — that one has a real scheduling surface.
   });
 
   // ── Settlement-ledger reconciliation — runs every 60 seconds ────────────────
@@ -159,22 +156,22 @@ export function registerCronJobs(rebuildLeaderboard) {
 
 
   // ── Payment proof retention — runs hourly ──────────────────────────────────
-  // Keeps PaymentOrder transaction records while removing high-volume proof
-  // image references after 48 hours. Mongo TTL cannot unset a single field, so
-  // this job scrubs proofScreenshot/proofExpiresAt without deleting the order.
+  // Keeps the ORDER — it is the financial record — while dropping the
+  // high-volume proof screenshot once its retention window has passed. One
+  // statement clears both the image and its expiry, so an order cannot end up
+  // with a cleared expiry and a proof still attached.
   registerRecurring('payment-proof-retention', 60 * 60 * 1000, async () => {
     try {
-      const PaymentOrder = mongoose.model('PaymentOrder');
-      const result = await PaymentOrder.scrubExpiredProofs();
-      const modified = result.modifiedCount || 0;
-      if (modified > 0) console.log(`[retention] Scrubbed ${modified} expired payment proof(s)`);
+      const scrubbed = await db.orders.scrubExpiredProofs();
+      if (scrubbed > 0) console.log(`[retention] Scrubbed ${scrubbed} expired payment proof(s)`);
     } catch (e) { console.error('[retention] payment proof scrub error:', e.message); }
   });
 
-  // ── Automated database backup — runs daily (plan item 45) ───────────────────
-  // mongodump → gzip archive → S3 (backups/), keep newest BACKUP_KEEP (14).
-  // Skips loudly (log + alert) when mongodump or S3 is unavailable; a failed
-  // backup pages the alert webhook. Restore steps: docs/governance/DISASTER_RECOVERY.md.
+  // ── Automated database backup — runs daily ─────────────────────────────────
+  // pg_dump (custom format) → S3 (backups/), keeping the newest BACKUP_KEEP
+  // (14). Skips loudly (log + alert) when pg_dump or S3 is unavailable; a
+  // failed backup pages the alert webhook. Restore steps:
+  // docs/governance/DISASTER_RECOVERY.md.
   registerRecurring('db-backup', 24 * 60 * 60 * 1000, async () => {
     try {
       const { runBackup } = await import('../services/backup.service.js');
@@ -183,105 +180,6 @@ export function registerCronJobs(rebuildLeaderboard) {
     } catch (e) { console.error('[backup] cron error:', e.message); }
   });
 
-  // ── Hybrid money-DB continuous reconciliation (AQ-9) — every 5 minutes ──────
-  // No-ops unless DATABASE_URL is set (Postgres provisioned + dual-write live).
-  // While dual-write runs toward cutover, this proves Mongo and Postgres agree
-  // on every money table and that the PG ledger conserves to zero — surfacing
-  // drift as a metric + alert instead of waiting for a manual `reconcile:pg`.
-  // Detection ONLY: it never auto-backfills — a human decides how to resolve
-  // drift. Leader-locked (via the platform) so one instance reconciles.
-  registerRecurring('pg-reconcile', 5 * 60 * 1000, async () => {
-    try {
-      const { pgConfigured } = await import('../postgres/pgClient.js');
-      if (!pgConfigured()) return; // dormant until Postgres is wired
-      const { runReconcile } = await import('../postgres/reconcile.js');
-      const { ALL_PATHS, isPostgresAuthoritative, anyPathOnPostgres } =
-        await import('../postgres/moneyAuthority.js');
-      const {
-        pgDriftRows, pgTrialBalanceOk, pgReconcileConsecutiveClean,
-        mongoDriftRows, ledgersAgree, moneyAuthorityPostgres,
-        balanceDriftPaise, balanceDriftAccounts,
-      } = await import('../services/metrics.service.js');
-
-      // Publish the current source-of-truth matrix so the dashboard shows which
-      // paths have moved, and an alert can fire if one moves unexpectedly.
-      for (const path of ALL_PATHS) {
-        moneyAuthorityPostgres.set({ path }, isPostgresAuthoritative(path) ? 1 : 0);
-      }
-
-      // runReconcile turns the reverse pass on by itself once any path is
-      // PG-authoritative; asking for it explicitly keeps this job's behaviour
-      // readable at the call site rather than implicit.
-      const cutoverActive = anyPathOnPostgres();
-      const report = await runReconcile({ hours: 24, reverse: cutoverActive });
-
-      const missing = report.results.reduce((s, r) => s + r.missingInPg, 0);
-      pgDriftRows.set(missing);
-      pgTrialBalanceOk.set(report.trialBalance.conservesToZero ? 1 : 0);
-
-      // Reverse direction: only meaningful after a cutover, but the gauges are
-      // always published so a Grafana panel never shows "no data" — before the
-      // cutover the honest reading is "zero drift, ledgers agree".
-      const missingInMongo = (report.reverse || []).reduce((s, r) => s + r.missingInMongo, 0);
-      mongoDriftRows.set(missingInMongo);
-      ledgersAgree.set(report.ledgersAgree ? (report.ledgersAgree.agree ? 1 : 0) : 1);
-
-      // Balance disagreement, which the row counts above cannot see. An orphan
-      // wallet row counts as a drifted account: it is money in Postgres that no
-      // Mongo merchant owns, and it must not read as clean.
-      const mb = report.merchantBalances;
-      balanceDriftPaise.set({ path: 'merchant_wallet' }, mb.totalDriftPaise);
-      balanceDriftAccounts.set(
-        { path: 'merchant_wallet' },
-        mb.driftedBeforeRepair + mb.orphansInPg + report.merchantLedgers.unexplained,
-      );
-
-      if (report.drift) {
-        pgReconcileConsecutiveClean.set(0); // any drift breaks the cutover-readiness streak
-        console.error(
-          `[pg-reconcile] DRIFT: ${missing} row(s) missing in PG, ${missingInMongo} missing in Mongo, ` +
-          `pgTrialBalanceOk=${report.trialBalance.conservesToZero}, ` +
-          `merchantBalanceDrift=${mb.driftedBeforeRepair} account(s)/${mb.totalDriftPaise}p, ` +
-          `merchantOrphanWallets=${mb.orphansInPg}, unexplainedMerchantBalances=${report.merchantLedgers.unexplained}` +
-          (report.ledgersAgree ? `, ledgersAgree=${report.ledgersAgree.agree}` : '')
-        );
-        sendAlert('pg-drift', 'Hybrid money-DB drift detected (Mongo vs Postgres)', {
-          missingInPg: missing,
-          missingInMongo,
-          trialBalanceOk: report.trialBalance.conservesToZero,
-          merchantBalanceDrift: {
-            accounts: mb.driftedBeforeRepair,
-            totalPaise: mb.totalDriftPaise,
-            orphanWalletsInPg: mb.orphansInPg,
-            sample: mb.sampleDrift,
-          },
-          unexplainedMerchantBalances: report.merchantLedgers.sample,
-          // After a cutover, a Mongo shortfall is the more urgent of the two: it
-          // is the store the rollback plan falls back to, so every missing row
-          // is a write that a fallback would lose.
-          cutoverActive,
-          ledgerDifferences: report.ledgersAgree?.differences?.slice(0, 10) ?? [],
-          perTable: report.results.filter(r => r.missingInPg > 0)
-            .map(r => ({ table: r.table, missing: r.missingInPg, sample: r.sampleMissing })),
-          perTableReverse: (report.reverse || []).filter(r => r.missingInMongo > 0)
-            .map(r => ({ table: r.table, missing: r.missingInMongo, sample: r.sampleMissing })),
-        });
-      } else {
-        // Clean pass — advance the cutover gate. This is the signal to watch
-        // before a cutover: it must stay high over a sustained window
-        // (DATA_ROLLBACK_PLAN.md). Any drift or crash resets it to 0.
-        pgReconcileConsecutiveClean.inc();
-      }
-    } catch (e) {
-      console.error('[pg-reconcile] cron error:', e.message);
-      try {
-        const { pgReconcileErrors, pgReconcileConsecutiveClean } = await import('../services/metrics.service.js');
-        pgReconcileErrors.inc();
-        pgReconcileConsecutiveClean.set(0); // a failed run is not a clean run
-      } catch { /* metrics optional */ }
-      sendAlert('pg-reconcile-cron', 'Postgres reconciliation cron crashed', { error: e.message });
-    }
-  });
 
   console.log('✅ Cron jobs registered');
 }

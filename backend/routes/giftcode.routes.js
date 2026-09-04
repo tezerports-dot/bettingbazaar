@@ -1,128 +1,174 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-import { creditWinnings, creditDeposit } from '../domains/wallet/walletAuthority.service.js';
-import { grant as grantBonus } from '../postgres/bonusPgAuthority.js';
+/**
+ * routes/giftcode.routes.js — promotional codes.
+ *
+ * ── The redemption is one transaction, and the credit is a retry ────────────
+ * This route used to claim a use, insert a redemption, credit the player, and
+ * — whenever any step after the first failed — UNDO the earlier ones: delete
+ * the redemption, decrement `usedCount`, tell the player nothing happened.
+ * Three writes to unwind one, each able to fail on its own, every one of them
+ * `.catch(() => {})`. A crash between any two burned the code and paid nobody.
+ *
+ * The claim and the redemption row now commit TOGETHER (`redeemGiftCode`), and
+ * the credit is keyed on a deterministic txId derived from them. So a failed
+ * credit is RETRYABLE, not reversible: the player keeps their claim, the retry
+ * collides on the key rather than paying twice, and
+ * `db.engagement.findUnpaidRedemptions()` is the list a reconciliation job
+ * works through. Detect and repair, never compensate and hope.
+ *
+ * ── The money is paid FROM a funded pool ────────────────────────────────────
+ * `db.bonuses.grant` moves the reward out of the promotional pool that funds
+ * it, in one movement, rather than crediting it from nowhere. Promotional
+ * liability that appears in player balances without leaving a pool is money the
+ * books cannot explain, and explaining it is what an audit asks for.
+ */
 import express from 'express';
-import mongoose from 'mongoose';
+import { db } from '#db';
 import { authenticate, isAdmin, isAdminOrSubAdmin } from '../domains/identity/auth.middleware.js';
+
 const router = express.Router();
+
+/** The credit's idempotency key. Derived, so a repair reproduces it exactly. */
+const txIdFor = (code, userId) => `giftcode_${code}_${userId}`;
 
 // POST /api/giftcode/redeem
 router.post('/redeem', authenticate, async (req, res) => {
   try {
     const { code } = req.body;
     if (!code) return res.status(400).json({ success: false, message: 'Code is required' });
-    const GiftCode = mongoose.model('GiftCode');
-    const GiftCodeRedemption = mongoose.model('GiftCodeRedemption');
-    const BonusRecord = mongoose.model('BonusRecord');
-    const normalizedCode = code.toUpperCase().trim();
-    const alreadyUsed = await GiftCodeRedemption.findOne({ code: normalizedCode, userId: req.user._id });
-    if (alreadyUsed) return res.status(400).json({ success: false, message: 'You have already used this code' });
 
-    const now = new Date();
-    const consumed = await GiftCode.findOneAndUpdate(
-      {
-        code: normalizedCode,
-        isActive: true,
-        $expr: { $lt: ['$usedCount', '$maxUses'] },
-        $or: [{ expiresAt: { $exists: false } }, { expiresAt: null }, { expiresAt: { $gt: now } }],
-      },
-      { $inc: { usedCount: 1 } },
-      { new: true }
-    );
-    if (!consumed) return res.status(400).json({ success: false, message: 'Invalid, expired, or fully redeemed code' });
-
-    try {
-      await GiftCodeRedemption.create({ codeId: consumed._id, code: consumed.code, userId: req.user._id, amount: consumed.amount });
-    } catch (err) {
-      if (err.code === 11000) {
-        await GiftCode.findByIdAndUpdate(consumed._id, { $inc: { usedCount: -1 } }).catch(() => {});
-        return res.status(400).json({ success: false, message: 'You have already used this code' });
-      }
-      await GiftCode.findByIdAndUpdate(consumed._id, { $inc: { usedCount: -1 } }).catch(() => {});
-      throw err;
+    // Claim and record, or neither. The refusal says WHICH rule stopped it,
+    // because "invalid code" for an expired one sends the player to support.
+    const claim = await db.engagement.redeemGiftCode(code, req.user.userId);
+    if (!claim.ok) {
+      const message = {
+        NOT_FOUND: 'That code does not exist.',
+        INACTIVE: 'That code is no longer active.',
+        EXPIRED: 'That code has expired.',
+        FULLY_REDEEMED: 'That code has already been fully redeemed.',
+        ALREADY_REDEEMED: 'You have already used this code.',
+      }[claim.reason] || 'That code cannot be redeemed.';
+      return res.status(400).json({ success: false, message });
     }
 
-    // Gift code credits: WINNINGS_BALANCE → creditWinnings, others → depositBalance
-    // NOTE: Only winningsBalance is withdrawable; DEPOSIT type goes to non-withdrawable deposit balance
-    const txId = `giftcode_${consumed.code}_${req.user._id}`;
+    const txId = txIdFor(claim.code ?? String(code).toUpperCase(), req.user.userId);
 
-    // Hybrid money DB: once Postgres owns bonuses, the giveaway is paid FROM the
-    // pool that funds it in one movement, rather than credited from nowhere.
-    // `grant` no-ops and reports source 'mongo' until that flag is flipped, so
-    // the two branches below stay the live path in the meantime.
-    const granted = await grantBonus({
-      grantId: txId, userId: req.user._id, recordType: 'GIFT_CODE',
-      amountRupees: consumed.amount, refModel: 'GiftCode', refId: consumed._id,
-      reason: `Gift code: ${consumed.code}`,
+    // Paid out of the promotional pool. A refusal here means the promotion is
+    // not funded — the claim STANDS and reconciliation retries it, because
+    // taking the code back is three more writes that can fail.
+    const granted = await db.bonuses.grant({
+      grantId: txId,
+      userId: req.user.userId,
+      recordType: 'GIFT_CODE',
+      amountRupees: claim.amount,
+      refModel: 'GiftCode',
+      refId: claim.code,
+      reason: `Gift code: ${claim.code}`,
     });
 
-    // A refused grant means the promotion is not funded. Give the code back
-    // rather than telling the user they were paid — the redemption row and the
-    // usedCount increment both have to come off, or the code is burned for
-    // nothing.
     if (!granted.ok) {
-      await GiftCodeRedemption.deleteOne({ codeId: consumed._id, userId: req.user._id }).catch(() => {});
-      await GiftCode.findByIdAndUpdate(consumed._id, { $inc: { usedCount: -1 } }).catch(() => {});
-      return res.status(503).json({
-        success: false,
-        message: 'This reward is temporarily unavailable. Your code has not been used — please try again later.',
+      console.error('[giftcode] reward not funded for', claim.code, granted.reason);
+      return res.status(202).json({
+        success: true,
+        pending: true,
+        amount: claim.amount,
+        message: 'Your code was accepted. The reward is being processed and will appear shortly.',
       });
     }
 
-    if (!granted.applied) {
-      if (consumed.bonusType === 'WINNINGS_BALANCE' || consumed.bonusType === 'TOKENS') {
-        await creditWinnings(req.user._id, consumed.amount, `Gift code: ${consumed.code}`, 'GiftCode', consumed._id, txId);
-      } else {
-        await creditDeposit(req.user._id, consumed.amount, txId);
-      }
-    }
-    await BonusRecord.create({ userId: req.user._id, type: 'GIFT_CODE', amount: consumed.amount, description: `Gift code: ${consumed.code}`, refId: consumed.code });
+    // The audit record of WHY the money moved, beside the ledger row that says
+    // it did. Keyed on the same id, so a retry records once.
+    await db.engagement.recordBonus({
+      bonusId: txId,
+      userId: req.user.userId,
+      bonusType: 'GIFT_CODE',
+      amountRupees: claim.amount,
+      description: `Gift code: ${claim.code}`,
+      refId: claim.code,
+    });
 
-    res.json({ success: true, amount: consumed.amount, message: `🎁 ₹${consumed.amount} credited to your account!` });
+    res.json({
+      success: true,
+      amount: claim.amount,
+      message: `🎁 ₹${claim.amount} credited to your account!`,
+    });
   } catch (err) {
-    if (err.code === 11000) return res.status(400).json({ success: false, message: 'You have already used this code' });
-    res.status(500).json({ success: false, message: err.message });
+    console.error('POST /giftcode/redeem error:', err);
+    res.status(500).json({ success: false, message: 'Could not redeem that code.' });
   }
 });
 
-// GET /api/admin/giftcodes
+// ─── ADMIN ───────────────────────────────────────────────────────────────────
+
 router.get('/admin/giftcodes', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
-    const GiftCode = mongoose.model('GiftCode');
-    const codes = await GiftCode.find().sort({ createdAt: -1 }).lean();
-    res.json({ success: true, codes });
+    res.json({ success: true, codes: await db.engagement.listGiftCodes({ limit: 500 }) });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
 
-// POST /api/admin/giftcodes
 router.post('/admin/giftcodes', authenticate, isAdmin, async (req, res) => {
   try {
-    const GiftCode = mongoose.model('GiftCode');
     const { code, amount, bonusType, maxUses, expiresAt, note } = req.body;
     if (!code || !amount) return res.status(400).json({ success: false, message: 'Code and amount required' });
-    const gc = await GiftCode.create({ code: code.toUpperCase(), amount, bonusType, maxUses: maxUses || 1, expiresAt: expiresAt ? new Date(expiresAt) : undefined, note, createdBy: req.user._id });
-    res.json({ success: true, giftCode: gc });
+    if (!(Number(amount) > 0)) return res.status(400).json({ success: false, message: 'Amount must be positive' });
+
+    const giftCode = await db.engagement.createGiftCode({
+      code, amountRupees: Number(amount), bonusType,
+      maxUses: Number(maxUses) || 1,
+      expiresAt: expiresAt ? new Date(expiresAt) : null,
+      note: note || '', createdBy: req.user.userId,
+    });
+
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, action: 'GIFT_CODE_CREATED', category: 'PROMOTIONS',
+      targetType: 'GiftCode', targetId: giftCode.code,
+      details: { amount: giftCode.amount, maxUses: giftCode.maxUses, expiresAt: giftCode.expiresAt },
+    });
+    res.json({ success: true, giftCode });
   } catch (err) {
-    if (err.code === 11000) return res.status(400).json({ success: false, message: 'Code already exists' });
+    if (err.code === '23505') return res.status(400).json({ success: false, message: 'Code already exists' });
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// DELETE /api/admin/giftcodes/:id
-router.delete('/admin/giftcodes/:id', authenticate, isAdmin, async (req, res) => {
+/**
+ * Retire a code.
+ *
+ * DEACTIVATED, not deleted. The redemptions reference it, and "who was paid
+ * what, under which promotion" is a question a finance review asks months
+ * later — a delete that cascaded would take the answer with it.
+ */
+router.delete('/admin/giftcodes/:code', authenticate, isAdmin, async (req, res) => {
   try {
-    const GiftCode = mongoose.model('GiftCode');
-    await GiftCode.findByIdAndDelete(req.params.id);
-    res.json({ success: true });
+    const updated = await db.engagement.setGiftCodeActive(req.params.code, false);
+    if (!updated) return res.status(404).json({ success: false, message: 'Code not found' });
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, action: 'GIFT_CODE_RETIRED', category: 'PROMOTIONS',
+      targetType: 'GiftCode', targetId: updated.code,
+      details: { usedCount: updated.usedCount, maxUses: updated.maxUses },
+    });
+    res.json({ success: true, giftCode: updated });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
 
-// GET /api/admin/giftcodes/:id/redemptions
-router.get('/admin/giftcodes/:id/redemptions', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/admin/giftcodes/:code/redemptions', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
-    const GiftCodeRedemption = mongoose.model('GiftCodeRedemption');
-    const redemptions = await GiftCodeRedemption.find({ codeId: req.params.id }).sort({ redeemedAt: -1 }).lean();
-    res.json({ success: true, redemptions });
+    res.json({
+      success: true,
+      redemptions: await db.engagement.listRedemptions({ code: req.params.code, limit: 500 }),
+    });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+});
+
+/**
+ * Redemptions whose reward never landed.
+ *
+ * The operator's view of the repair queue. It is money owed, so it is visible
+ * rather than buried in a log line.
+ */
+router.get('/admin/giftcodes/unpaid', authenticate, isAdminOrSubAdmin, async (req, res) => {
+  try {
+    res.json({ success: true, unpaid: await db.engagement.findUnpaidRedemptions() });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
 

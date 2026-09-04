@@ -59,11 +59,11 @@ that does not exist is worse than a missing one (§20, 2026-07-27).
                     │  26 bounded domains, dependency-cruiser CI   │
                     └──┬────────┬─────────┬──────────┬─────────────┘
                        │        │         │          │
-                MongoDB 7   PostgreSQL 18  Redis 8   S3-compatible
-                (authorit-  (money shadow  (cache,   (KYC docs,
-                 ative)      + pgvector)   locks,     proofs,
-                                           rate-lim,  branding,
-                                           pub/sub,   app assets)
+                            PostgreSQL 18  Redis 8   S3-compatible
+                            (EVERYTHING    (cache,   (chat files,
+                             + pgvector)    locks,    proofs,
+                                            rate-lim, branding,
+                                            pub/sub,  app assets)
                                            BullMQ)
                        │
                  Kafka (dormant — KAFKA_BROKERS)
@@ -75,7 +75,6 @@ that does not exist is worse than a missing one (§20, 2026-07-27).
 |---|---|---|
 | Node | **22 LTS** (`engines: >=22`) | `package.json`, `Dockerfile`, CI |
 | Web framework | **Express 5.2** | root `package.json` |
-| ODM | Mongoose 8 | root `package.json` |
 | SQL driver | `pg` 8 | root `package.json` |
 | React | **19.2.8** — all three panels | each panel's `package.json` |
 | Router | **`react-router` v8** (single package; `react-router-dom` removed) | all three panels |
@@ -100,7 +99,7 @@ and P-2 requires `npm ci` from the committed lockfile in every environment.
 | 3 | Compression, Helmet (CSP/HSTS), canonical-host 301 | `config/security.config.js`, `config/network.config.js` |
 | 4 | CORS allow-list | `ALLOWED_ORIGINS` |
 | 5 | Body parsing — 1 MB default, 8 MB scoped to app-asset upload | `JSON_BODY_LIMIT` |
-| 6 | Mongo operator sanitisation (Express-5 safe) | `middleware/mongoSanitize.js` |
+| 6 | Prototype-pollution key stripping on body/params/query (Express-5 safe) | `middleware/inputSanitize.js` |
 | 7 | Correlation IDs (W3C `traceparent` interop) | `middleware/requestContext.js` |
 | 8 | TLS/JA3 fingerprint policy (admin-configured) | `middleware/tlsFingerprintDefense.js` |
 | 9 | Structured request log + Prometheus histogram | `services/logger.js`, `services/metrics.service.js` |
@@ -118,7 +117,7 @@ runs them as separate Deployments with independent HPAs (api 3→30, realtime 2�
 
 **Graceful drain.** SIGTERM flips readiness to 503 first, waits `SHUTDOWN_DRAIN_MS`
 for the LB to notice, then closes the listener, drains in-flight work, closes
-BullMQ/Kafka/PG/worker-pool/Mongo/Redis, with a hard deadline backstop for SSE
+BullMQ/Kafka/PostgreSQL/worker-pool/Redis, with a hard deadline backstop for SSE
 connections that never end on their own.
 
 ## 1.4 Domain map (26 bounded contexts)
@@ -151,10 +150,9 @@ no placeholder code. This is deliberate (repo rule since Phase 003).
 
 ## 1.5 Data stores
 
-| Store | Role | Authoritative today |
+| Store | Role | Authoritative |
 |---|---|---|
-| **MongoDB 7** (replica set required) | Everything: users, cycles, bets, orders, content, logs, and money | **Yes, for every path** |
-| **PostgreSQL 18** | Financial integrity — wallets, ledger, orders, KYC in integer paise, append-only + conserve-to-zero DB triggers, RANGE partitioning ready. Also hosts **pgvector** for RAG. | **No — verified shadow** |
+| **PostgreSQL 18** | **Everything durable.** Money — wallets, ledger, orders, KYC — in integer paise (`BIGINT`), row-locked, append-only + conserve-to-zero triggers, unique `tx_id` idempotency gates, `*_transitions` audit tables, RANGE partitioning ready. And every other domain: identity, cycles, bets, configuration, CMS, engagement. Also hosts **pgvector** for RAG. | **No — verified shadow** |
 | **Redis 8** | Cache · distributed locks (cron leader) · rate-limit counters · realtime pub/sub fan-out · BullMQ job queue | n/a |
 | **S3-compatible** | Payment proofs, P2P chat attachments, branding images, app assets. Presigned direct-to-bucket uploads. **No identity documents** — KYC is an Aadhaar number. | n/a |
 
@@ -165,7 +163,7 @@ percentages are integer basis points; floats appear only in storage, never in ma
 (`postgres/dualWrite.js`), a leader-locked 5-minute cron reconciles both directions,
 and `postgres/reverseMirror.js` gives the rollback path zero RPO. Flipping authority
 is an owner-gated production sequence, not a code change —
-`LAUNCH_READINESS.md` §E and `backend/postgres/DATA_ROLLBACK_PLAN.md` own it.
+`LAUNCH_READINESS.md` §E and `database/DATA_ROLLBACK_PLAN.md` own it.
 
 ## 1.6 Realtime — three transports, one namespace
 
@@ -204,10 +202,12 @@ anywhere. Rate limiting is the only automated-abuse control
 
 ## 1.8 Build, CI and deploy
 
-**CI** (`.github/workflows/ci.yml`) — 5 jobs on every push/PR to `main`:
+**CI** (`.github/workflows/ci.yml`) — 6 jobs on every push/PR to `main`:
 
-1. `test` — unit (no DB) + **real Postgres 18** money-path suite + integration
-   against in-memory MongoDB 7 + **real Redis 8**.
+0. `single-store` — the definition of done for the one-datastore rule
+   (`npm run check:no-mongo`, `CLAUDE.md`). Pure Node, no install, no services,
+   so it reports in seconds and gates every job below it.
+1. `test` — unit (no DB) + **real Postgres 18** money-path suite + **real Redis 8**.
 2. `audit` — `npm audit --audit-level=high`, blocking.
 3. `sbom` — CycloneDX for production deps, 90-day artifact.
 4. `secret-scan` — gitleaks (report-only today).
@@ -216,8 +216,8 @@ anywhere. Rate limiting is the only automated-abuse control
    (user panel additionally runs its own unit tests, because origin failover is
    logic worth catching a regression in).
 
-**Container** — 3-stage `Dockerfile`: `mongodump` binaries extracted to their own
-stage so no apt/keyring/wget survives into the image; panel builds in a builder
+**Container** — 3-stage `Dockerfile`: the database-dump client extracted to its
+own stage so no apt/keyring/wget survives into the image; panel builds in a builder
 stage; runtime is prod deps + backend + three `dist/` folders, running as the
 non-root `node` user with a readiness-based `HEALTHCHECK`.
 

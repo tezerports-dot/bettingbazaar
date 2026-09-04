@@ -34,7 +34,7 @@
 //   AFTER the ledger event exists; a crash between the two is healed on the
 //   next run because the same key is recomputed and each side no-ops if done.
 
-import mongoose from 'mongoose';
+import { db } from '#db';
 import { getActiveBonusPolicy } from '../configuration/merchantBonusPolicy.service.js';
 import { issueMerchantBonus, getAccountBalanceMinor } from '../revenue/revenueSettlement.service.js';
 import { ACCOUNTS, toMinor, toRupees } from '../revenue/chartOfAccounts.js';
@@ -54,42 +54,33 @@ export function computeBonusMinor({ matchedMinor, lastBonusedMatchedMinor, bonus
   return { newMatchedMinor, bonusMinor };
 }
 
-/** Cycle Tracker: per-merchant completed deposit/withdrawal fiat volume (minor units). */
-export async function getMerchantMatchedVolumes() {
-  const PaymentOrder = mongoose.model('PaymentOrder');
-  const rows = await PaymentOrder.aggregate([
-    { $match: { status: 'COMPLETED', merchantId: { $ne: null }, type: { $in: ['DEPOSIT', 'WITHDRAWAL'] } } },
-    { $group: {
-        _id: { merchantId: '$merchantId', type: '$type' },
-        fiat: { $sum: '$fiatAmount' },
-    } },
-  ]);
-  const byMerchant = {};
-  for (const r of rows) {
-    const id = String(r._id.merchantId);
-    byMerchant[id] = byMerchant[id] || { depositMinor: 0, withdrawalMinor: 0 };
-    if (r._id.type === 'DEPOSIT') byMerchant[id].depositMinor = toMinor(r.fiat || 0);
-    else byMerchant[id].withdrawalMinor = toMinor(r.fiat || 0);
-  }
-  for (const id of Object.keys(byMerchant)) {
-    const m = byMerchant[id];
-    m.matchedMinor = Math.min(m.depositMinor, m.withdrawalMinor);
-  }
-  return byMerchant;
-}
+/**
+ * Cycle Tracker: per-merchant matched buy→sell volume, in minor units.
+ *
+ * The smaller of what a merchant took in and what they paid out — which is
+ * what a completed cycle actually is. One statement, rather than two aggregates
+ * merged in a loop that defaulted whichever side it did not find.
+ */
+export const getMerchantMatchedVolumes = () => db.orders.merchantMatchedVolumes();
 
-/** High-water marks from the ledger (latest MERCHANT_BONUS_ISSUED per merchant). */
-export async function getBonusHighWaterMarks() {
-  const AccountingEvent = mongoose.model('AccountingEvent');
-  const rows = await AccountingEvent.aggregate([
-    { $match: { eventType: 'MERCHANT_BONUS_ISSUED' } },
-    { $sort: { createdAt: -1 } },
-    { $group: { _id: '$refId', cumulativeMatchedMinor: { $first: '$metadata.cumulativeMatchedMinor' } } },
-  ]);
-  const marks = {};
-  for (const r of rows) marks[r._id] = r.cumulativeMatchedMinor || 0;
-  return marks;
-}
+/**
+ * High-water marks, from the ledger.
+ *
+ * ── The mark that was always zero ───────────────────────────────────────────
+ * This read `$metadata.cumulativeMatchedMinor` off the accounting event. There
+ * is no metadata column on an accounting event and nothing stores one, so every
+ * mark came back undefined and defaulted to 0 — and the engine would treat a
+ * merchant's ENTIRE lifetime matched volume as newly matched on every pass.
+ * Enabling the bonus engine would have paid every merchant their whole history
+ * again, each run. It ships disabled, which is the only reason this never
+ * fired.
+ *
+ * The mark now comes from the idempotency KEY the engine already writes:
+ * `acct_bonusissue_<merchantId>_<cumulativeMatchedMinor>`. That key exists, is
+ * UNIQUE, and is the thing that makes the payment idempotent — so the mark and
+ * the idempotency cannot disagree, which a separate metadata field could.
+ */
+export const getBonusHighWaterMarks = () => db.ledger.bonusHighWaterMarks();
 
 /**
  * runBonusEngine — one full pass. Reads the ACTIVE MerchantBonusPolicy;

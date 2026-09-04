@@ -10,10 +10,10 @@
  * whether it is a retried request or a second deliberate top-up, so a key the
  * server derives from the payload cannot tell them apart — it would collapse
  * two intentional top-ups into one. A key the server generates per request
- * (`new ObjectId()`) has the opposite failure and is worse, because it looks
- * like idempotency while providing none:
+ * has the opposite failure and is worse, because it looks like idempotency
+ * while providing none:
  *
- *     txId: `mw_topup_${new mongoose.Types.ObjectId()}`   // shipped in production
+ *     txId: `mw_topup_${freshRandomId()}`   // shipped in production
  *
  * That is `random()`. Every delivery got a fresh key, so the UNIQUE gate behind
  * it could never fire and every retry funded the merchant again. The gate

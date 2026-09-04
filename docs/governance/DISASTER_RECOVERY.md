@@ -23,27 +23,34 @@ Money safety: settlement/reconcile jobs are idempotent + crash-resume-proven
 (CI); a mid-settlement crash resumes via payoutRecoveryTask on next boot.
 
 ## 2. Database restore (data corruption / loss)
-Backups: daily `mongodump` gzip archives in S3 `backups/` (newest 14 kept),
+Backups: daily `pg_dump` gzip archives in S3 `backups/` (newest 14 kept),
 failure pages the webhook (services/backup.service.js).
 1. STOP writes: enable maintenance mode (System Settings) — the guard blocks
    user traffic while admins keep access.
 2. Download the chosen archive from S3.
-3. `mongorestore --uri "$MONGODB_URI" --gzip --archive=bb-<ts>.archive.gz --drop`
+3. `gunzip -c bb-<ts>.sql.gz | psql "$DATABASE_URL"` into a **freshly created,
+   empty** database — never over a live one. Then repoint `DATABASE_URL`.
 4. Run the ledger integrity check (GET /api/admin/revenue/summary →
-   `integrityOk` must be true) before disabling maintenance mode.
+   `integrityOk` must be true) before disabling maintenance mode. A restore that
+   loads without error but fails this check is a restore you must not serve
+   from: the balances and the ledger disagree.
 **Drill (required, staging):** restore last night's archive into a scratch
-cluster and boot the app against it. An untested backup is not a backup — do
+database and boot the app against it. An untested backup is not a backup — do
 this once now, then quarterly.
 
 ## 3. Point-in-time recovery (item 46)
-- **Mongo (today): OWNER ACTION** — enable *Continuous Cloud Backup* on the
-  Atlas cluster (Atlas → Backup). That provides oplog-based PITR to any minute
-  in the window; restores happen from the Atlas UI to a new cluster, then point
-  `MONGODB_URI` at it (§2 steps 1+4 still apply). In-repo daily dumps remain
-  the provider-independent floor.
-- **Postgres (once the hybrid money DB lands):**
-  native WAL archiving gives PITR for the ledger — prioritized there because
-  restoring MONEY tables to the exact moment before an incident matters most.
+- **OWNER ACTION, and the highest-priority one in this document.** Enable
+  PostgreSQL **WAL archiving to off-box storage** (`archive_mode=on`,
+  `archive_command` shipping to S3, or the managed host's equivalent). That gives
+  point-in-time recovery to any second in the retention window, which is what
+  actually matters for money: an incident is discovered minutes to hours after
+  it starts, and a daily dump loses everything in between.
+- **The daily dumps remain the provider-independent floor**, not the plan. With
+  one database holding every domain, a dump-only posture means an incident at
+  23:00 costs the whole day for money *and* identity *and* content at once.
+- **Rehearse the PITR restore, not just the dump restore.** Restoring to a
+  timestamp is a different procedure with different failure modes; the first time
+  you run it should not be during an incident.
 
 ## 4. Domain / DNS failover (item 30 runbook)
 Trigger: `tools/health-watch.mjs` (run OUTSIDE the primary host) pages after 3

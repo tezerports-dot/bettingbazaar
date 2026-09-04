@@ -1,7 +1,13 @@
 # CI — the proof that money-path code actually runs.
-# Unit tests (no DB) run always; integration tests boot an in-memory MongoDB
-# (mongodb-memory-server downloads a mongod binary — reachable on GitHub
-# runners, unlike the restricted build sandbox). See vitest*.config.ts.
+#
+# The single-store gate runs FIRST and needs no dependencies: it is pure Node
+# over the working tree, so it fails in seconds rather than after an install.
+# See CLAUDE.md for the rule it enforces and the exit criteria it counts.
+#
+# Unit tests need no database. The money-path suites run against a real
+# PostgreSQL service container, because row locking, the negative-balance guard
+# and the unique-tx_id idempotency gate are behaviours of the database and are
+# not worth asserting against a fake. See vitest*.config.ts.
 name: CI
 
 on:
@@ -11,6 +17,24 @@ on:
     branches: [main]
 
 jobs:
+  # The definition of done for the single-store architecture (CLAUDE.md).
+  # Pure Node over the checked-out tree — no install, no services, so it reports
+  # in seconds.
+  #
+  # It deliberately does NOT gate the other jobs. It stays red for the whole
+  # removal (that is what it is for), and a `needs:` on it would skip the test,
+  # typecheck, audit and sbom jobs for the entire migration — surrendering the
+  # signal exactly when the work is riskiest. The failing check still blocks the
+  # merge, which is the part that matters.
+  single-store:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with: { node-version: '22' }
+      - name: Single-store verification (PostgreSQL only)
+        run: npm run check:no-mongo -- --verbose
+
   test:
     runs-on: ubuntu-latest
     services:
@@ -20,10 +44,10 @@ jobs:
         image: redis:8
         ports:
           - 6379:6379
-      # Hybrid money DB (plan steps 1-4): real Postgres so the BIGINT-paise
-      # schema, append-only + conserve-to-zero triggers, dual-write hooks, and
-      # the reconcile/backfill loop are PROVEN in CI. AQ-7 + decision D-2:
-      # PostgreSQL 18 (the version the money cutover will provision).
+      # The money database — the only database. Real Postgres so the
+      # BIGINT-paise schema, the append-only + conserve-to-zero triggers and the
+      # row-locked wallet path are PROVEN in CI rather than assumed. AQ-7 +
+      # decision D-2: PostgreSQL 18 (the version production provisions).
       postgres:
         image: postgres:18
         env:
@@ -48,6 +72,20 @@ jobs:
       # package.json and the lockfile disagree — production runs exactly this.
       - name: Install dependencies (reproducible)
         run: npm ci --legacy-peer-deps
+      # The concurrency suites provoke constraint violations ON PURPOSE, and
+      # Postgres logs every refused ERROR with its full statement. The runner
+      # dumps the whole container log at teardown, which pushes vitest's output
+      # and its failure annotations out of the retrievable window — the suite
+      # fails and the reason is unreadable. A service container has no
+      # `command:` key to pass server flags through, so turn the logging down at
+      # runtime instead, before any suite runs.
+      - name: Quiet expected Postgres error logging (keeps test output readable)
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -d bb_test -v ON_ERROR_STOP=1 <<'SQL'
+          ALTER SYSTEM SET log_min_error_statement = 'panic';
+          ALTER SYSTEM SET log_min_messages = 'fatal';
+          SELECT pg_reload_conf();
+          SQL
       # ── `--reporter=github-actions` on every suite, deliberately ────────────
       # Vitest's GitHub reporter emits `::error file=…,line=…::` workflow
       # commands, which GitHub turns into ANNOTATIONS on the check run. Those
@@ -62,20 +100,49 @@ jobs:
       # message regardless.
       - name: Unit tests (money math — no DB)
         run: npm run test:unit -- --reporter=default --reporter=github-actions
-      # The Postgres-authoritative wallet path: row locking, the negative-balance
-      # guard and the unique-tx_id idempotency gate are behaviours of the
-      # database, so they are proven against a real one. Needs no MongoDB, which
-      # is why it is a separate suite (see vitest.pg.config.ts).
-      - name: Postgres money-path tests (real Postgres, no MongoDB)
+      # The wallet path: row locking, the negative-balance guard and the
+      # unique-tx_id idempotency gate are behaviours of the database, so they are
+      # proven against a real one (see vitest.pg.config.ts).
+      # The backup drill in this suite shells out to pg_dump/pg_restore, and
+      # `pg_dump` REFUSES to dump a server newer than itself. The service above
+      # is Postgres 18; the runner image ships client 16, so without this the
+      # drill fails on a version mismatch that has nothing to do with the code.
+      # Same version and same reason as the Dockerfile.
+      - name: Install postgresql-client 18 (matches the service)
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
+          echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client-18
+      # The drill skips itself when the tooling is absent, which is right for a
+      # laptop and WRONG for CI: a restore test that quietly stops running is
+      # the same as not having one. Fail here instead.
+      - name: Backup tooling must be present (the drill must not skip)
+        run: |
+          pg_dump --version
+          pg_restore --version
+      - name: Postgres money-path tests (real Postgres)
         run: npm run test:pg -- --reporter=default --reporter=github-actions
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bb_test
           PG_SSL: 'false'
-      - name: Integration tests (real in-memory MongoDB + real Redis + real Postgres)
-        run: npm run test:integration -- --reporter=default --reporter=github-actions
+      # Horizontal-scale properties only a real Redis can prove: rate-limit
+      # counters shared across instances, and SSE fan-out crossing instances.
+      # Needs no database — see vitest.redis.config.ts.
+      - name: Redis tests (real Redis — cross-instance behaviour)
+        run: npm run test:redis -- --reporter=default --reporter=github-actions
         env:
-          MONGOMS_VERSION: 7.0.14
           REDIS_URL: redis://localhost:6379
+      # A passing suite proves nothing about a test that would pass anyway. Each
+      # entry breaks one behaviour the money paths rely on and asserts the test
+      # for it goes red. It refuses to run without a database rather than
+      # reporting an unrun Postgres mutation as a hole that does not exist.
+      - name: Mutation check (the suites actually bite)
+        run: node scripts/mutation-check.mjs
+        env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bb_test
           PG_SSL: 'false'
 
@@ -162,11 +229,38 @@ jobs:
         run: npm ci --legacy-peer-deps
       - name: Backend syntax check
         run: node --check backend/server.js
+      # A deleted import with its call sites left behind is a ReferenceError
+      # that PARSES, LINTS and passes every test that does not execute the line
+      # — so it surfaces as a 500 on one route in production. The first run of
+      # this found 29, including one on the bet-placement path and one that made
+      # every merchant-authenticated request answer 500.
+      - name: No orphaned references (deleted imports still called)
+        run: npm run check:orphans
+      # Nothing outside database/ writes SQL, imports the driver, or reaches the
+      # folder by relative path. The single data layer is a boundary or it is a
+      # directory name.
+      - name: Data-layer boundary
+        run: npm run check:db-boundary
       # Items 5+58: architecture validation — circular imports and governance
       # boundary violations (domain core importing routes, wallet importing
       # products) fail the build instead of waiting for human review.
       - name: Architecture validation (dependency-cruiser)
         run: npm run check:deps
+      # Trap 7, mechanically: a number that GATES a transfer must be read from
+      # the rows the write will lock. Four gates were once decided from a stored
+      # copy of a balance while the movement touched the wallet.
+      - name: Money decisions read the wallet
+        run: npm run check:balance-reads
+      # A migrated entity must be WRITTEN and READ in the same store. A split
+      # write-here/read-there succeeds on the write, finds nothing on the read,
+      # and errors nowhere — invisible to check:no-mongo, which counts
+      # references rather than asking whether the replacement is complete.
+      - name: Migration coherence (no entity split across stores)
+        run: npm run check:coherence
+      # The single-store gate is NOT repeated here, deliberately. It has its own
+      # job, it stays red for the whole removal, and a copy of it in this job
+      # would fail before the three panel builds below ever run — costing the
+      # signal without adding any. Read it from the `single-store` job.
       # Capability registry drift check (CAP-06/CAP-59): every capability the
       # registry claims must have its evidence/docs/tests present on disk.
       - name: Capability registry verification
@@ -177,9 +271,14 @@ jobs:
       - name: User panel typecheck + unit tests + build
         working-directory: user-panel
         run: npm ci --legacy-peer-deps && npx tsc --noEmit && npm test && npm run build
-      - name: Admin panel typecheck + build
+      # The admin and merchant panels carry their own logic worth testing — the
+      # money formatters an operator reads, the sub-admin permission catalogue,
+      # and the settlement-rail rules (which unit money is shown in, whether a
+      # TRC-20 payout address is valid, whether a counterparty is named). A test
+      # that never runs in CI rots, so both panels run their suites here too.
+      - name: Admin panel typecheck + unit tests + build
         working-directory: admin-panel
-        run: npm ci --legacy-peer-deps && npx tsc --noEmit && npx vite build
-      - name: Merchant panel typecheck + build
+        run: npm ci --legacy-peer-deps && npx tsc --noEmit && npm test && npx vite build
+      - name: Merchant panel typecheck + unit tests + build
         working-directory: merchant-panel
-        run: npm ci --legacy-peer-deps && npx tsc --noEmit && npx vite build
+        run: npm ci --legacy-peer-deps && npx tsc --noEmit && npm test && npx vite build

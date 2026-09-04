@@ -15,8 +15,7 @@ Generate every secret with: `openssl rand -base64 48`
 | Variable | Purpose |
 |---|---|
 | `JWT_SECRET` | Signs/verifies every auth token (PASETO Ed25519 seed). A weak/fallback value lets anyone forge sessions. |
-| `MONGODB_URI` | Primary datastore. Must be a **replica set** (even 1 node) — money transactions require it. Unset silently connects to localhost. |
-| `DATABASE_URL` | PostgreSQL money datastore (hybrid dual-write). `postgresql://user:pass@host:5432/db`. |
+| `DATABASE_URL` | **The** datastore — money, identity, configuration, content, engagement. `postgresql://user:pass@host:5432/db`. The boot gate refuses to start without it; there is no local-only fallback and no second store to degrade to. |
 | `ORDER_HMAC_SECRET` | Dedicated payment-order integrity HMAC (separate from the auth key). |
 | `AADHAAR_HMAC_SECRET` | Dedicated Aadhaar dedup HMAC (prevents reversible document hashes). |
 | `REDIS_URL` | Cross-instance rate limits, realtime fan-out, job queue. Required at >1 replica. |
@@ -140,8 +139,7 @@ after the overlap (token TTL / order lifetime). Verification accepts current **o
 | `APP_BASE_URL` / `CANONICAL_HOST` | Public URL; optional canonical-host 301. |
 | `ALERT_WEBHOOK_URL` | Fallback money-path alert sink (or set `SystemConfig.alertWebhookUrl` in-app). |
 | `DEFAULT_ADMIN_MOBILE` / `DEFAULT_ADMIN_PASSWORD` | First-boot admin bootstrap — **change the password immediately after first login**. |
-| `MONGO_AUTO_INDEX` | `true` (build indexes at boot). Set `false` + run `npm run sync:indexes` in the pipeline to avoid boot-time builds on a scaled fleet. |
-| `PG_POOL_SIZE` | Postgres pool per instance. Keep `instances × (Mongo pool + PG pool) ≤` the DB tier's connection cap (§21). |
+| `PG_POOL_SIZE` | Postgres pool per instance. Keep `instances × PG_POOL_SIZE ≤` the database's `max_connections`, minus what admin tooling and replication reserve (§21). |
 | `ARGON2_MEMORY_KIB` / `ARGON2_TIME_COST` / `ARGON2_PARALLELISM` | Password-hash cost (OWASP minimum by default; raise on capable hardware). |
 | `BB_RUNTIME_ROLE` | `api` / `realtime` / `scheduler` for a split k8s fleet (see `deploy/k8s/`). |
 
@@ -223,9 +221,6 @@ System Settings.
 >   (`domains/support/ragService.js`). The provider is configurable — governance
 >   §18 names `ANTHROPIC_API_KEY` as the RAG trigger, so set the provider vars
 >   deliberately rather than relying on whichever key happens to be in the env.
-> - **`MONGO_URI`** (no `DB`) is accepted *only* by
->   `backend/scripts/enforce-public-chat-retention.js`, which falls back to
->   `MONGODB_URI`. Everything else uses `MONGODB_URI`. Set `MONGODB_URI`.
 
 ---
 

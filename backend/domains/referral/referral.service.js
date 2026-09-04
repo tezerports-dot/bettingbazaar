@@ -16,12 +16,9 @@
  * already owns idempotency, the ledger row and the store routing. This module
  * never touches a balance directly.
  */
-import mongoose from 'mongoose';
+import { db } from '#db';
 import crypto from 'crypto';
-import {
-  ReferralEarning, ReferralDisbursal, ReferralProgramme, ReferralClick, Counter,
-  REFERRAL_REWARD_PAISE,
-} from './referral.model.js';
+import { REFERRAL_REWARD_PAISE } from './referralRewards.js';
 import { creditWinnings } from '../wallet/walletAuthority.service.js';
 import { paiseToRupees } from '../../shared/money.js';
 
@@ -31,22 +28,15 @@ const LEVELS = [1, 2];
 // ── Joining numbers ─────────────────────────────────────────────────────────
 
 /**
- * Allocate the next unique joining number.
+ * `nextJoiningNumber` is GONE, with no replacement here.
  *
- * `findOneAndUpdate` with `$inc` is atomic on a single document, so two
- * simultaneous signups cannot receive the same value however they interleave or
- * whichever process serves them. Counting existing users instead would hand out
- * duplicates under exactly the concurrency this platform is built for.
+ * It incremented a counter document to hand out queue positions. Nothing called
+ * it: onboarding claims the number through `db.users.claimJoiningNumber`, which
+ * uses a SEQUENCE — atomic on its own, idempotent per account (an account that
+ * already holds a number keeps it), and deliberately not rolled back. A signup
+ * that fails after taking a number leaves a gap, which is correct: this is an
+ * ORDER, not a count, and reusing the number would hand it to somebody else.
  */
-export async function nextJoiningNumber(session = null) {
-  const opts = { new: true, upsert: true, ...(session ? { session } : {}) };
-  const doc = await Counter.findOneAndUpdate(
-    { key: 'joiningNumber' },
-    { $inc: { value: 1 } },
-    opts,
-  );
-  return doc.value;
-}
 
 /** A short, unambiguous public referral code. */
 export function generateReferralCode() {
@@ -74,41 +64,35 @@ export function generateReferralCode() {
 export async function recordEarningsFor(user) {
   if (!user?.referredBy || !user?.joiningNumber) return { recorded: 0, levels: [] };
 
-  const User = mongoose.model('User');
-
   // Walk up at most two edges. Level 1 is the direct referrer; level 2 is that
   // referrer's own referrer. Nothing deeper is ever paid.
-  const level1 = await User.findById(user.referredBy).select('_id referredBy').lean();
+  const level1 = await db.users.getUser(user.referredBy);
   if (!level1) return { recorded: 0, levels: [] };
   const level2 = level1.referredBy
-    ? await User.findById(level1.referredBy).select('_id').lean()
+    ? await db.users.getUser(level1.referredBy)
     : null;
 
   const earners = [
-    { level: 1, earnerId: level1._id },
-    ...(level2 ? [{ level: 2, earnerId: level2._id }] : []),
+    { level: 1, earnerId: level1.userId },
+    ...(level2 ? [{ level: 2, earnerId: level2.userId }] : []),
   ]
     // A self-referral loop would pay a user for their own signup. The tree is
     // built from ids the bot supplied, so it is not assumed to be acyclic.
-    .filter((e) => String(e.earnerId) !== String(user._id));
+    .filter((e) => String(e.earnerId) !== String(user.userId));
 
   const levels = [];
   for (const { level, earnerId } of earners) {
-    try {
-      await ReferralEarning.create({
-        earnerId,
-        sourceUserId: user._id,
-        level,
-        amountPaise: REFERRAL_REWARD_PAISE,
-        queuePosition: user.joiningNumber,
-        status: 'PENDING',
-      });
-      levels.push(level);
-    } catch (err) {
-      // 11000 = this earning already exists. That is the index doing its job on
-      // a replay, not a failure.
-      if (err?.code !== 11000) throw err;
-    }
+    // The earning id is DERIVED from the pair and the level, so a replayed
+    // onboarding collides on the primary key and books nothing further — the
+    // index does the work, rather than a prior read two deliveries would pass.
+    const result = await db.referrals.recordEarning({
+      earningId: `ref_${earnerId}_${user.userId}_L${level}`,
+      earnerId,
+      sourceUserId: user.userId,
+      level,
+      amountRupees: paiseToRupees(REFERRAL_REWARD_PAISE),
+    });
+    if (!result.idempotent) levels.push(level);
   }
   return { recorded: levels.length, levels };
 }
@@ -124,25 +108,21 @@ export async function recordEarningsFor(user) {
  * this ₹25 still pending" should never require a support ticket.
  */
 export async function eligibilityFor(earning) {
-  const User = mongoose.model('User');
-  const { KycVerification } = await import('../identity/kycVerification.model.js');
-  const { TelegramIdentity } = await import('../telegram/telegram.model.js');
-
-  const earner = await User.findById(earning.earnerId).select('_id status isBlocked').lean();
+  const earner = await db.users.getUser(earning.earnerId);
   if (!earner) return { ok: false, reason: 'Referrer account no longer exists' };
   if (earner.isBlocked || earner.status === 'BLOCKED') {
     return { ok: false, reason: 'Referrer account is blocked' };
   }
 
   // The referrer's own KYC must have come back YES.
-  const earnerKyc = await KycVerification.findOne({ userId: earning.earnerId }).select('status').lean();
+  const earnerKyc = await db.identity.getVerification(earning.earnerId);
   if (earnerKyc?.status !== 'VERIFIED') {
     return { ok: false, reason: 'Referrer KYC is not verified' };
   }
 
   // And the JOINER's KYC must have passed — a failed KYC invalidates the
   // commissions that signup generated, for every level above it.
-  const sourceKyc = await KycVerification.findOne({ userId: earning.sourceUserId }).select('status').lean();
+  const sourceKyc = await db.identity.getVerification(earning.sourceUserId);
   if (sourceKyc?.status === 'FAILED') {
     return { ok: false, reason: 'Referred user failed KYC — commission void' };
   }
@@ -151,8 +131,7 @@ export async function eligibilityFor(earning) {
   }
 
   // The referrer must still be in the channel, on the number they verified.
-  const identity = await TelegramIdentity.findOne({ userId: earning.earnerId })
-    .select('channelStatus contactActive').lean();
+  const identity = await db.telegram.getIdentityByUserId(earning.earnerId);
   if (!identity) return { ok: false, reason: 'Referrer has no linked Telegram account' };
   if (!identity.contactActive) {
     return { ok: false, reason: 'Referrer’s shared contact is no longer active' };
@@ -200,8 +179,8 @@ export async function disburse({ poolPaise, actorId, maxRows = 50_000 }) {
   const pool = Math.min(poolPaise, remainingBudget);
 
   const batchId = `refdisb_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
-  const batch = await ReferralDisbursal.create({
-    batchId, poolPaise: pool, actorId, status: 'RUNNING',
+  await db.referrals.openBatch({
+    batchId, poolRupees: paiseToRupees(pool), actorId,
   });
 
   let spent = 0;
@@ -210,63 +189,69 @@ export async function disburse({ poolPaise, actorId, maxRows = 50_000 }) {
   let lastPosition = 0;
 
   try {
-    // Strict queue order. `level` breaks ties within one joiner so level 1 is
-    // always settled before level 2 for the same signup.
-    const cursor = ReferralEarning.find({ status: 'PENDING' })
-      .sort({ queuePosition: 1, level: 1 })
-      .limit(maxRows)
-      .cursor();
+    // Strict queue order — the payout order the programme promised, and the
+    // thing that makes it defensible to the people waiting in it.
+    const payable = await db.referrals.claimPayable({ limit: maxRows });
 
-    for await (const earning of cursor) {
-      // Never split a reward. When the remaining pool cannot cover the next
-      // ₹25 the run stops, leaving the queue intact for the next top-up.
-      if (spent + earning.amountPaise > pool) break;
-
+    for (const earning of payable) {
       const verdict = await eligibilityFor(earning);
       if (!verdict.ok) {
-        earning.status = 'BLOCKED';
-        earning.blockedReason = verdict.reason;
-        earning.disbursalBatchId = batchId;
-        await earning.save();
+        // Recorded against the batch, and deliberately consuming NO pool: a
+        // blocked earning is money still owed, not money spent.
+        await db.referrals.markBlocked(earning.earningId, verdict.reason, { batchId });
+        await db.referrals.spendFromBatch(batchId, 0, { blocked: true });
         blocked += 1;
-        continue;   // deliberately does NOT consume pool
+        continue;
       }
 
-      // Deterministic — a re-run credits nothing further because the wallet
-      // authority keys off this id.
-      const walletTxId = `ref_${earning._id}`;
+      // ── The pool ceiling is enforced by the ROW ──────────────────────────
+      // `spent_paise + amount <= pool_paise` lives in the UPDATE's WHERE
+      // clause. A JavaScript `if (spent + amount > pool) break` compares a
+      // total this process is holding, so two disbursal runs against the same
+      // batch would each stay under the pool on their own count and together
+      // exceed it. Never splits a reward: the whole amount fits or the run
+      // stops, leaving the queue intact for the next top-up.
+      const reserved = await db.referrals.spendFromBatch(
+        batchId, paiseToRupees(earning.amountPaise),
+      );
+      if (!reserved.ok) break;
+
+      // Deterministic, so a re-run credits nothing further — the wallet
+      // authority keys off this id, and two runs reaching the same earning
+      // produce the SAME key and therefore one movement.
+      const walletTxId = `ref_${earning.earningId}`;
       await creditWinnings(
         String(earning.earnerId),
         paiseToRupees(earning.amountPaise),
         `Referral reward — level ${earning.level}`,
         'ReferralEarning',
-        String(earning._id),
+        String(earning.earningId),
         walletTxId,
       );
 
-      earning.status = 'DISBURSED';
-      earning.disbursalBatchId = batchId;
-      earning.disbursedAt = new Date();
-      earning.walletTxId = walletTxId;
-      await earning.save();
+      // MONEY FIRST, then the status. `markPaid`'s `status = 'QUEUED'` guard is
+      // what stops two disbursal runs paying the same earning: the loser gets
+      // NOT_QUEUED, and because the wallet credit is keyed it moved nothing
+      // either. The credit before the mark means a failure leaves a payable
+      // earning and a keyed credit that the retry collides with — never a PAID
+      // row with no money behind it.
+      const marked = await db.referrals.markPaid(earning.earningId, { batchId, walletTxId });
+      if (!marked.ok) continue;   // another run got there first
 
       spent += earning.amountPaise;
       paid += 1;
       lastPosition = earning.queuePosition;
     }
 
-    await ReferralProgramme.updateOne(
-      { key: 'main' },
-      { $inc: { disbursedPaise: spent }, $set: { updatedAt: new Date() } },
-    );
+    // The programme budget is a second ceiling, enforced the same way: an
+    // application-side check lets two concurrent disbursals both read the same
+    // total and both pass it.
+    if (spent > 0) await db.referrals.drawFromProgramme('main', paiseToRupees(spent));
 
-    batch.spentPaise = spent;
-    batch.paidCount = paid;
-    batch.blockedCount = blocked;
-    batch.lastQueuePosition = lastPosition;
-    batch.status = 'COMPLETED';
-    batch.completedAt = new Date();
-    await batch.save();
+    // The counts and the spend are already on the batch — `spendFromBatch`
+    // moved them as each earning settled, so a crash mid-run leaves a batch
+    // that reports what it actually did rather than nothing.
+    await db.referrals.closeBatch(batchId, { lastQueuePosition: lastPosition });
 
     return {
       batchId, paid, blocked,
@@ -275,39 +260,30 @@ export async function disburse({ poolPaise, actorId, maxRows = 50_000 }) {
       lastQueuePosition: lastPosition,
     };
   } catch (err) {
-    batch.status = 'FAILED';
-    batch.error = err.message;
-    batch.spentPaise = spent;
-    batch.paidCount = paid;
-    batch.blockedCount = blocked;
-    await batch.save().catch(() => { /* the throw below is the real signal */ });
+    // Recorded as FAILED with what it managed to pay, so a half-run batch is
+    // legible rather than looking like it never happened.
+    await db.referrals.closeBatch(batchId, {
+      lastQueuePosition: lastPosition, error: err.message,
+    }).catch(() => { /* the throw below is the real signal */ });
     throw err;
   }
 }
 
 // ── Reporting ───────────────────────────────────────────────────────────────
 
-/** The programme document, created on first read. */
+/** The programme row, created on first read. */
 export async function getProgramme() {
-  return ReferralProgramme.findOneAndUpdate(
-    { key: 'main' }, { $setOnInsert: { key: 'main' } },
-    { new: true, upsert: true },
-  ).lean();
+  return (await db.referrals.getProgramme('main'))
+    ?? (await db.referrals.upsertProgramme({ key: 'main' }));
 }
 
 /** What the admin dashboard needs in one call. */
 export async function programmeStats() {
   const programme = await getProgramme();
-  const [pending] = await ReferralEarning.aggregate([
-    { $match: { status: 'PENDING' } },
-    { $group: { _id: null, count: { $sum: 1 }, paise: { $sum: '$amountPaise' } } },
-  ]);
-  const [blocked] = await ReferralEarning.aggregate([
-    { $match: { status: 'BLOCKED' } },
-    { $group: { _id: null, count: { $sum: 1 }, paise: { $sum: '$amountPaise' } } },
-  ]);
-  const nextInQueue = await ReferralEarning.findOne({ status: 'PENDING' })
-    .sort({ queuePosition: 1, level: 1 }).select('queuePosition').lean();
+  // One statement for the whole queue: the counts, the money and the head of
+  // the queue describe the same instant. Three reads a moment apart can show a
+  // queue whose head has already been paid.
+  const queue = await db.referrals.queueSummary();
 
   return {
     budgetPaise:     programme.budgetPaise,
@@ -316,11 +292,11 @@ export async function programmeStats() {
     memberCap:       programme.memberCap,
     verifiedMembers: programme.verifiedMembers,
     active:          programme.active,
-    pendingCount:    pending?.count || 0,
-    pendingPaise:    pending?.paise || 0,
-    blockedCount:    blocked?.count || 0,
-    blockedPaise:    blocked?.paise || 0,
-    nextQueuePosition: nextInQueue?.queuePosition ?? null,
+    pendingCount:    queue.queuedCount,
+    pendingPaise:    queue.queuedPaise,
+    blockedCount:    queue.blockedCount,
+    blockedPaise:    queue.blockedPaise,
+    nextQueuePosition: queue.nextQueuePosition,
   };
 }
 
@@ -369,25 +345,23 @@ export async function programmeStats() {
 export async function recordReferralClick({ code, ip }) {
   if (!code) return { counted: false, reason: 'no_code' };
 
-  const User = mongoose.model('User');
+  // One click per viewer per code inside the window, decided by the unique
+  // constraint rather than by a prior read two refreshes would both pass. The
+  // expected duplicate is a link preview followed by the human's own tap.
+  const { counted } = await db.referrals.recordClick({
+    code, viewerHash: hashViewer(ip, code),
+  });
+  if (!counted) return { counted: false, reason: 'duplicate' };
 
-  try {
-    await ReferralClick.create({ code, viewerHash: hashViewer(ip, code) });
-  } catch (err) {
-    // 11000: this viewer already counted for this code inside the window. The
-    // expected case for a link preview followed by the human's own tap.
-    if (err?.code === 11000) return { counted: false, reason: 'duplicate' };
-    throw err;
-  }
-
-  // The count lives on the User so reading it is one field, not an aggregation
-  // over a collection that is being deleted from continuously by TTL.
-  const res = await User.updateOne({ referralCode: code }, { $inc: { referralClicks: 1 } });
+  // The running total lives on the user so reading it is one column rather than
+  // a count over rows that retention is continuously deleting — the evidence
+  // expires, the aggregate must not.
+  const bumped = await db.referrals.bumpClickCount(code);
 
   // A code nobody owns is not an error — it is a mistyped or retired link, and
-  // the visitor was still sent to the bot. Recorded as uncounted so the caller
+  // the visitor was still sent to the bot. Reported as uncounted so the caller
   // can tell "nobody has this code" from "counted".
-  return { counted: res.modifiedCount > 0, reason: res.modifiedCount ? 'counted' : 'unknown_code' };
+  return { counted: bumped, reason: bumped ? 'counted' : 'unknown_code' };
 }
 
 /**
@@ -410,24 +384,15 @@ function hashViewer(ip, code) {
 }
 
 export async function referralSummaryFor(userId, { limit = 200 } = {}) {
-  const mongooseLib = (await import('mongoose')).default;
-  const User = mongooseLib.model('User');
-  const { KycVerification } = await import('../identity/kycVerification.model.js');
+  const me = await db.users.getUser(userId);
 
-  const me = await User.findById(userId).select('referralCode joiningNumber referralClicks').lean();
+  const rows = await db.referrals.listEarnings({ earnerId: userId, limit });
 
-  const rows = await ReferralEarning.find({ earnerId: userId })
-    .sort({ queuePosition: 1, level: 1 })
-    .limit(limit)
-    .select('level amountPaise status blockedReason queuePosition sourceUserId disbursedAt')
-    .lean();
-
-  // One query for every source, rather than one per row.
+  // One query for every source, rather than one per row. A referral report can
+  // list two hundred joiners, and a lookup each would be two hundred round
+  // trips to render one page.
   const sourceIds = [...new Set(rows.map((r) => String(r.sourceUserId)))];
-  const kycRows = sourceIds.length
-    ? await KycVerification.find({ userId: { $in: sourceIds } }).select('userId status').lean()
-    : [];
-  const kycBySource = new Map(kycRows.map((k) => [String(k.userId), k.status]));
+  const kycBySource = await db.identity.verificationStatusFor(sourceIds);
 
   // Per level, and per state within it. `confirmed` is the only figure a
   // referrer should treat as theirs.

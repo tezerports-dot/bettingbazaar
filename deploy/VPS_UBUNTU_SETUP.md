@@ -2,9 +2,9 @@
 
 <!-- GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. -->
 
-Provisions the whole platform on one Ubuntu box: Node 22, MongoDB 7 as a
-single-node replica set, PostgreSQL 18 + pgvector, Redis, MinIO (S3-compatible),
-PM2 with the three runtime roles, and NGINX terminating TLS in front.
+Provisions the whole platform on one Ubuntu box: Node 22, PostgreSQL 18 +
+pgvector, Redis, MinIO (S3-compatible), PM2 with the three runtime roles, and
+NGINX terminating TLS in front.
 
 **Read §0 first.** Four things about this codebase will stop a generic Node
 deployment dead, and all four fail *after* you think you are finished.
@@ -20,13 +20,13 @@ deployment dead, and all four fail *after* you think you are finished.
 **1. The boot gate is a hard gate.** `backend/startup/validateEnv.js` refuses to
 start in production unless **all eleven** required variables are present, and
 holds the signing secrets to ≥32 non-placeholder characters. A missing one is a
-fatal throw at boot, not a warning. The full list is in §7.
+fatal throw at boot, not a warning. The full list is in §6.
 
 **2. Object storage is mandatory in production.** `backend/server.js` throws
 `FATAL: production storage requires a fully configured S3-compatible provider;
 refusing local-disk fallback.` unless `S3_BUCKET_NAME`, `S3_ACCESS_KEY`,
 `S3_SECRET_KEY` **and** `S3_ENDPOINT` are all set. "Single VPS" therefore means
-running MinIO on the same box (§6) or pointing at an external bucket (R2, B2,
+running MinIO on the same box (§5) or pointing at an external bucket (R2, B2,
 Vultr, iDrive e2). There is no local-disk production mode.
 
 **3. You need TLS before you can log anyone in.** In production the session
@@ -55,8 +55,8 @@ sudo apt install -y curl gnupg lsb-release ca-certificates build-essential git u
 `build-essential` is not optional — `argon2` compiles a native addon.
 
 **Sizing.** Argon2id holds ~19 MiB per concurrent hash on the libuv threadpool
-(default 4 threads), so budget ≥2 GB RAM for the app alone before MongoDB,
-Postgres, Redis and MinIO. On a 2 GB box add swap:
+(default 4 threads), so budget ≥2 GB RAM for the app alone before PostgreSQL,
+Redis and MinIO. On a 2 GB box add swap:
 
 ```bash
 sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
@@ -76,52 +76,9 @@ sudo npm install -g pm2
 
 Run PM2 as your **deploy user**, never as root — `sudo pm2` creates a second
 daemon under root, and a later `pm2 save` as your own user then saves an empty
-process list. Set up boot persistence after the apps are running (§9).
+process list. Set up boot persistence after the apps are running (§8).
 
-## 3. MongoDB 7 — single-node replica set
-
-Money transactions require a replica set, even with one member.
-
-> **Ubuntu 24.04:** MongoDB 7.0's apt repository has no `noble` suite. Pin
-> `jammy` on 24.04; `$(lsb_release -cs)` is correct on 22.04 only.
-
-```bash
-curl -fsSL https://www.mongodb.org/static/pgp/server-7.0.asc | \
-  sudo gpg -o /usr/share/keyrings/mongodb-server-7.0.gpg --dearmor
-
-# 22.04 → jammy · 24.04 → also jammy (no noble suite exists for 7.0)
-MONGO_SUITE=jammy
-echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] https://repo.mongodb.org/apt/ubuntu ${MONGO_SUITE}/mongodb-org/7.0 multiverse" | \
-  sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list
-
-sudo apt update && sudo apt install -y mongodb-org
-```
-
-Enable replication in `/etc/mongod.conf` and confirm the bind address is loopback:
-
-```yaml
-net:
-  bindIp: 127.0.0.1
-
-replication:
-  replSetName: "rs0"
-```
-
-```bash
-sudo systemctl enable --now mongod
-```
-
-**Initialise with an explicit member address.** A bare `rs.initiate()` registers
-the machine's hostname; the driver then reads that config back and tries to
-reach a name that may not resolve, and every connection fails with "no primary"
-even though `mongod` is healthy:
-
-```bash
-mongosh --eval 'rs.initiate({_id:"rs0", members:[{_id:0, host:"127.0.0.1:27017"}]})'
-mongosh --eval 'rs.status().ok'   # → 1
-```
-
-## 4. PostgreSQL 18 + pgvector
+## 3. PostgreSQL 18 + pgvector
 
 ```bash
 sudo apt install -y postgresql-common
@@ -154,7 +111,7 @@ this codebase — `backend/postgres/pgClient.js` reads `process.env.DATABASE_URL
 and nothing else. A `127.0.0.1` URL disables TLS automatically (`resolvePgSsl`),
 which is correct for a loopback connection.
 
-## 5. Redis
+## 4. Redis
 
 ```bash
 sudo apt install -y redis-server
@@ -168,7 +125,7 @@ Redis is not optional above one process. Rate-limit counters, the cron leader
 lock and the realtime fan-out bridge all share state through it, and you are
 running three processes.
 
-## 6. MinIO — the S3-compatible bucket (see §0.2)
+## 5. MinIO — the S3-compatible bucket (see §0.2)
 
 Skip only if you are using an external S3 provider.
 
@@ -192,7 +149,7 @@ the bucket with `mc`. Keep MinIO on loopback — NGINX does not need to expose i
 unless you serve user uploads directly from it, in which case front it on a
 separate subdomain rather than widening this vhost.
 
-## 7. Clone, build, and place the panel bundles
+## 6. Clone, build, and place the panel bundles
 
 ```bash
 sudo mkdir -p /var/www && cd /var/www
@@ -223,7 +180,7 @@ ln -sfn user-panel/dist /var/www/bettingbazaar/dist
 /app/user-panel/dist ./dist`. Without it the player app 404s while the other two
 panels work — a confusing failure to diagnose.)
 
-## 8. Environment
+## 7. Environment
 
 ```bash
 cd /var/www/bettingbazaar
@@ -241,7 +198,6 @@ PORT=3000
 
 # ── Required: the boot gate throws without these ────────────────────────────
 JWT_SECRET=<openssl rand -base64 48>
-MONGODB_URI=mongodb://127.0.0.1:27017/bettingbazaar?replicaSet=rs0
 DATABASE_URL=postgresql://bb_user:PASSWORD@127.0.0.1:5432/bb_money
 ORDER_HMAC_SECRET=<openssl rand -base64 48>
 AADHAAR_HMAC_SECRET=<openssl rand -base64 48>
@@ -301,14 +257,14 @@ Notes that cost people hours:
   existing players able to recover their accounts after a rotation.
 - **Nobody can sign up until the bot is configured.** That is an admin-panel step
   after deploy (**Telegram Setup**), not an env var — see
-  `docs/IDENTITY_AND_REFERRALS.md` §7.
+  `docs/IDENTITY_AND_REFERRALS.md` §6.
 - **`UV_THREADPOOL_SIZE`** — at 4 threads and ~80 ms per Argon2 verify, one
   process tops out near 50 logins/second. Raising it costs ~19 MiB of hashing
   memory per thread; benchmark rather than guessing
   (`docs/governance/LATENCY.md`).
 - `chmod 600 .env`.
 
-## 9. PM2 — the three runtime roles
+## 8. PM2 — the three runtime roles
 
 **The repository already ships `ecosystem.config.cjs`.** Extend that file; do not
 create `ecosystem.config.js`. The root `package.json` declares `"type": "module"`,
@@ -354,7 +310,7 @@ pm2 startup systemd          # prints a command — RUN THE COMMAND IT PRINTS
 pm2 install pm2-logrotate    # or the logs will fill the disk
 ```
 
-## 10. NGINX + TLS
+## 9. NGINX + TLS
 
 Get the certificate first (§0.3) — the app will not boot without an https
 `PUBLIC_APP_ORIGIN`, and login is broken without a real certificate.
@@ -447,7 +403,7 @@ sudo certbot --nginx -d yourdomain.com
 CDN, use the CIDR form (`docs/governance/ENV.md` §1). Never `TRUST_PROXY=true`:
 any client can then forge `X-Forwarded-For` and impersonate an arbitrary IP.
 
-## 11. Firewall
+## 10. Firewall
 
 ```bash
 sudo ufw allow OpenSSH
@@ -455,17 +411,16 @@ sudo ufw allow 'Nginx Full'
 sudo ufw enable
 ```
 
-MongoDB, Postgres, Redis and MinIO stay on loopback and are never opened. Verify
+PostgreSQL, Redis and MinIO stay on loopback and are never opened. Verify
 rather than assume:
 
 ```bash
-sudo ss -tlnp | grep -E '27017|5432|6379|9000'   # every line must show 127.0.0.1
+sudo ss -tlnp | grep -E '5432|6379|9000'   # every line must show 127.0.0.1
 ```
 
-## 12. Verify
+## 11. Verify
 
 ```bash
-mongosh --eval 'rs.status().ok'                              # 1
 sudo -u postgres psql -d bb_money -c '\dx'                   # vector listed
 redis-cli ping                                               # PONG
 pm2 status                                                   # 3 apps online
@@ -487,7 +442,7 @@ Then the checks that actually prove it works end to end:
 5. **Upload a branding asset from the admin panel** — that proves the bucket.
    (Not a KYC document: none exist. KYC is an Aadhaar number typed into the bot.)
 
-## 13. After first boot
+## 12. After first boot
 
 - **Change the seeded admin password immediately**, then enrol admin 2FA. 2FA is
   mandatory for admin and sub-admin roles and is enforced at login.
@@ -507,17 +462,15 @@ Then the checks that actually prove it works end to end:
 
 Honest limits, so they are decisions rather than surprises:
 
-- **No high availability.** One box is one failure domain — the app, all four
-  datastores and the proxy die together.
-- **No PITR by default.** Enable Postgres WAL archiving and Mongo oplog backups
-  off-box, or you can only restore to the last daily dump.
+- **No high availability.** One box is one failure domain — the app, every
+  datastore and the proxy die together.
+- **No PITR by default.** Enable PostgreSQL WAL archiving off-box, or you can
+  only restore to the last daily dump. Then **rehearse the restore once** — an
+  untested backup is not a backup.
 - **Backups on the same disk are not backups.** Ship the bucket off-host.
-- **The Postgres money cutover is an owner decision.** By default (flags unset)
-  Postgres runs as a verified shadow with reconciliation. The **current launch
-  plan flips it ON** — `MONEY_AUTHORITY_*=postgres` — from day one, after the
-  readiness gate passes (`docs/GO_LIVE_RUNBOOK.md` Phase 4; the gate is
-  `LAUNCH_READINESS.md` §E and `npm run preflight:flip`). On a fresh database
-  there is no data to migrate, which is what makes the direct flip low-risk.
+- **There is no money cutover to decide.** PostgreSQL is the only store and is
+  authoritative for everything from the first boot — no flags, no shadow mode,
+  no reconciliation window (`CLAUDE.md`, `LAUNCH_READINESS.md` §E).
 - Deploying updates means downtime unless you add a second process and shift the
   upstream. The app drains gracefully on SIGTERM, so `pm2 reload` is close.
 

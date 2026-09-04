@@ -17,8 +17,7 @@ secrets first.
 
 | Dependency | Purpose | Notes |
 |---|---|---|
-| **MongoDB** | primary datastore | must be a **replica set** (even 1 node) — money transactions require it |
-| **PostgreSQL 18** | hybrid money ledger (`DATABASE_URL`) | required in prod; pin the CA via `PG_CA_CERT` |
+| **PostgreSQL 18** | the datastore — money, identity, config, content, engagement (`DATABASE_URL`) | required; pin the CA via `PG_CA_CERT` |
 | **Redis** | rate limits, realtime fan-out, job queue | required at >1 replica |
 | **S3-compatible storage** | Payment proofs, P2P chat attachments, branding assets (`S3_BUCKET_NAME`). No identity documents — KYC is an Aadhaar number. | AWS S3, Cloudflare R2, Backblaze B2, MinIO… |
 
@@ -27,7 +26,7 @@ be **≥32 chars and non-placeholder** — the boot gate rejects weak ones:
 
 - Secrets: `JWT_SECRET`, `ORDER_HMAC_SECRET`, `AADHAAR_HMAC_SECRET`, `METRICS_TOKEN`
   (generate with `openssl rand -base64 48`)
-- Data: `MONGODB_URI`, `DATABASE_URL`, `REDIS_URL`, `S3_BUCKET_NAME` (+ S3 creds/endpoint)
+- Data: `DATABASE_URL`, `REDIS_URL`, `S3_BUCKET_NAME` (+ S3 creds/endpoint)
 - Web: `ALLOWED_ORIGINS`, `PUBLIC_APP_ORIGIN`, `PUBLIC_APP_ALLOWED_ORIGINS`
 - Money-DB TLS: set `PG_CA_CERT` (verified TLS). `PG_SSL=no-verify` is **refused in
   production** unless `ALLOW_INSECURE_PG_TLS=true`; `PG_SSL=false` is for local plaintext only.
@@ -43,22 +42,19 @@ Install with `npm ci` (the user-panel no longer needs `--legacy-peer-deps`).
 > **[`docs/GO_LIVE_RUNBOOK.md`](docs/GO_LIVE_RUNBOOK.md)** (the ordered non-coder
 > runbook) and **[`deploy/VPS_UBUNTU_SETUP.md`](deploy/VPS_UBUNTU_SETUP.md)** (every
 > command). The Railway steps below are kept only as a generic managed-PaaS
-> reference; note Railway's single-node MongoDB plugin does **not** satisfy the
-> replica-set requirement, so it cannot run the money paths as-is.
+> reference.
 >
 > Architecture/sizing reference: **[`docs/PRODUCTION_ARCHITECTURE.md`](docs/PRODUCTION_ARCHITECTURE.md)**
-> covers which database owns which data, Hetzner sizing and cost for ~50k DAU,
-> and why Kubernetes is not recommended at this scale.
+> covers Hetzner sizing and cost for ~50k DAU, and why Kubernetes is not
+> recommended at this scale.
 
 `railway.json` + `nixpacks.toml` are already committed (Nixpacks, Node 22, builds all
 three panels, starts `node backend/server.js`, healthcheck `/health`).
 
 1. **New Project → Deploy from GitHub** → `tezerports-dot/bettingbazaar`.
-2. Add plugins to the project: **Redis**, **PostgreSQL**, and **MongoDB**. Railway's
-   MongoDB is single-node — enable a replica set on it, or use **MongoDB Atlas** (free
-   M0) and point `MONGODB_URI` at it (transactions need a replica set).
+2. Add plugins to the project: **Redis** and **PostgreSQL**.
 3. Create an S3 bucket (Cloudflare R2 / Backblaze B2 are cheap) → set `S3_BUCKET_NAME` + creds.
-4. **Variables** → paste the required env; map `MONGODB_URI` / `DATABASE_URL` / `REDIS_URL`
+4. **Variables** → paste the required env; map `DATABASE_URL` / `REDIS_URL`
    to the plugin references; set the four strong secrets and your origins.
 5. Deploy, then attach your domain in **Settings → Domains** (Railway terminates TLS;
    the host-agnostic Caddyfile means every attached domain serves identical content).
@@ -73,8 +69,7 @@ the k8s manifests in `deploy/` (native `RollingUpdate` + blue/green selector fli
 
 ### B1 — Docker Compose (simplest, reproducible)
 
-`deploy/docker-compose.yml` now stands up **app + MongoDB (1-node RS) + Redis + Postgres 18**
-from scratch. Provide S3 (managed R2/B2/MinIO) and your secrets via a `.env` file.
+`deploy/docker-compose.yml` stands up **app + PostgreSQL 18 + Redis** from scratch. Provide S3 (managed R2/B2/MinIO) and your secrets via a `.env` file.
 
 ```bash
 git clone https://github.com/tezerports-dot/bettingbazaar && cd bettingbazaar
@@ -98,9 +93,9 @@ pm2 start ecosystem.config.cjs && pm2 save && pm2 startup   # survives reboot
 # multi-core: PM2_INSTANCES=max and exec_mode:'cluster'
 ```
 
-Provide Mongo (RS) + Redis + Postgres + S3 (managed or self-run) and front with Caddy
-(auto-HTTPS) or Nginx. Start sizing ~2 vCPU / 4 GB for the app tier; give the databases
-their own resources.
+Provide PostgreSQL + Redis + S3 (managed or self-run) and front with Caddy
+(auto-HTTPS) or Nginx. Start sizing ~2 vCPU / 4 GB for the app tier; give the
+database its own resources.
 
 ---
 
@@ -127,7 +122,7 @@ regulators or law enforcement. The low-latency-compatible pattern:
   crypto-paid in-region VPS + CDN front gives privacy *and* speed.
 
 **Minimal fast/anonymous stack:** in-region privacy VPS → Caddy (auto-HTTPS, HTTP/2/3) →
-`node backend/server.js` (PM2 cluster) → Mongo Atlas (nearest region) + Redis + Postgres;
+`node backend/server.js` (PM2 cluster) → managed PostgreSQL (nearest region) + Redis;
 BunnyCDN in front of static assets; origin firewalled to the CDN/edge only.
 
 ---
@@ -136,6 +131,7 @@ BunnyCDN in front of static assets; origin firewalled to the CDN/edge only.
 
 - `curl -I https://<domain>/health` → 200; `curl -I --http2 …` confirms HTTP/2.
 - `/metrics` protected by `METRICS_TOKEN`; import `deploy/grafana/bettingbazaar-dashboard.json`.
-- MongoDB backups tested by **restore** (`backend/services/backup.service.js` mongodump job).
-- Postgres reconcile clean (`npm run reconcile:pg`).
+- PostgreSQL backups tested by **restore** — actually run one
+  (`backend/services/backup.service.js`). An untested backup is not a backup.
+- WAL archiving enabled off-box, so point-in-time recovery exists at all.
 - Boot fails loudly on a weak/missing secret or unverified money-DB TLS — that's the gate working.

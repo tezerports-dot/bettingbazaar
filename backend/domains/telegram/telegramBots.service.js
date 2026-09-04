@@ -24,8 +24,7 @@
  * message — read live from `public-config`, never baked into a build.
  */
 import crypto from 'crypto';
-import mongoose from 'mongoose';
-import { TelegramBot, SINGULAR_BOT_ROLES } from './telegram.model.js';
+import { db } from '#db';
 import { encryptField, decryptField } from '../identity/fieldCrypto.util.js';
 import { verifyBotToken, setWebhook, deleteWebhook, invalidateConfigCache } from './telegramClient.js';
 
@@ -46,23 +45,30 @@ export function webhookPathForRole(role) {
   return WEBHOOK_PATH[role] || null;
 }
 
-/** Strip the fields no panel may ever see. */
-function publicView(doc) {
+/**
+ * Strip the fields no panel may ever see.
+ *
+ * The bot objects the repository returns already omit the token and the webhook
+ * secret — its projection does not select them — so this is a shaping step
+ * rather than the security boundary. That boundary is `getBotSecrets`, which a
+ * caller has to ASK for, and which nothing on this path passes to a response.
+ */
+function publicView(bot) {
   return {
-    id: String(doc._id),
-    label: doc.label,
-    role: doc.role,
-    botId: doc.botId,
-    username: doc.username,
-    status: doc.status,
-    live: doc.status === 'ACTIVE',
-    webhookUrl: doc.webhookUrl || '',
-    webhookRegisteredAt: doc.webhookRegisteredAt || null,
-    lastError: doc.lastError || '',
-    addedAt: doc.addedAt,
-    activatedAt: doc.activatedAt || null,
-    retiredAt: doc.retiredAt || null,
-    notes: doc.notes || '',
+    id: bot.botId,
+    label: bot.label,
+    role: bot.role,
+    botId: bot.botId,
+    username: bot.username,
+    status: bot.status,
+    live: bot.status === 'ACTIVE',
+    webhookUrl: bot.webhookUrl || '',
+    webhookRegisteredAt: bot.webhookRegisteredAt || null,
+    lastError: bot.lastError || '',
+    addedAt: bot.addedAt,
+    activatedAt: bot.activatedAt || null,
+    retiredAt: bot.retiredAt || null,
+    notes: bot.notes || '',
   };
 }
 
@@ -85,10 +91,10 @@ export async function registerBot({ label, role, token, notes = '', actorId }) {
     throw Object.assign(new Error(`Telegram rejected that bot token: ${probe.error}`), { status: 400 });
   }
 
-  // The unique index on botId is the real guarantee; this read only makes the
-  // message useful. Registering the same bot twice would leave two rows that
-  // could each claim to be live.
-  const existing = await TelegramBot.findOne({ botId: String(probe.id) }).lean();
+  // `bot_id` is the PRIMARY KEY, which is the real guarantee; this read only
+  // makes the message useful. Registering the same bot twice would leave two
+  // rows that could each claim to be live.
+  const existing = await db.telegram.getBot(String(probe.id));
   if (existing) {
     throw Object.assign(
       new Error(`@${probe.username} is already registered as "${existing.label}" (${existing.status}).`),
@@ -96,10 +102,10 @@ export async function registerBot({ label, role, token, notes = '', actorId }) {
     );
   }
 
-  const doc = new TelegramBot({
+  const bot = await db.telegram.addBot({
+    botId: String(probe.id),
     label: String(label).trim(),
     role,
-    botId: String(probe.id),
     username: probe.username || '',
     tokenEncrypted: encryptField(token),
     // Minted now rather than at promotion: the secret is what authenticates
@@ -110,8 +116,7 @@ export async function registerBot({ label, role, token, notes = '', actorId }) {
     notes: String(notes || '').slice(0, 500),
     addedBy: actorId,
   });
-  await doc.save();
-  return publicView(doc);
+  return publicView(bot);
 }
 
 /**
@@ -136,79 +141,39 @@ export async function registerBot({ label, role, token, notes = '', actorId }) {
  * the posture the config activation path already takes.
  */
 export async function promote({ id, actorId, webhookBaseUrl }) {
-  const probe = await TelegramBot.findById(id).select('role status username');
+  const probe = await db.telegram.getBot(id);
   if (!probe) throw Object.assign(new Error('No such bot'), { status: 404 });
   if (probe.status === 'ACTIVE') {
     return { alreadyLive: true, bot: publicView(probe), webhook: 'unchanged' };
   }
   if (probe.status === 'RETIRED') {
-    throw Object.assign(new Error('A retired bot cannot be promoted. Register it again if it is genuinely back.'), { status: 400 });
+    throw Object.assign(
+      new Error('A retired bot cannot be promoted. Register it again if it is genuinely back.'),
+      { status: 400 },
+    );
   }
 
-  const singular = SINGULAR_BOT_ROLES.has(probe.role);
-  let target = null;
-  let displaced = null;
-
-  const session = await mongoose.startSession();
+  // ── ONE STATEMENT PAIR, ONE TRANSACTION ──────────────────────────────────
+  // The stand-down and the promotion commit together. The partial unique index
+  // refuses two live bots in a singular role, so splitting them either fails
+  // outright or leaves a window with NO live bot — every inbound update
+  // rejected, nobody able to sign in.
+  //
+  // The version this replaced ran the pair through a document-store
+  // transaction whose callback had to re-read both documents on EVERY attempt,
+  // because a retried callback holding a document loaded outside it would issue
+  // a second save that sent nothing — committing successfully having written
+  // nothing, and reporting a promotion that did not happen. The whole hazard is
+  // a property of documents that carry their own dirty state; two UPDATEs do
+  // not have it.
+  let promoted;
   try {
-    await session.withTransaction(async () => {
-      /**
-       * Both documents are re-read INSIDE the callback, on every attempt.
-       *
-       * `withTransaction` re-runs this function on a transient error, and a
-       * Mongoose document does not survive that. `save()` clears the document's
-       * dirty state as soon as it has issued its write — so on a retry, a
-       * document loaded outside this callback believes it has no pending
-       * changes and its second `save()` sends nothing. The transaction then
-       * commits successfully having written nothing at all, and this function
-       * reports a promotion that did not happen: the panel shows the new bot
-       * live, Telegram is pointed at it, and every update is authenticated
-       * against a secret the database never adopted.
-       *
-       * Re-reading per attempt is the standard remedy and the only one that
-       * keeps the pre-validate hook — which is what maintains `liveSlot`, and
-       * therefore what the unique index is guarding.
-       */
-      displaced = null;
-
-      // `+tokenEncrypted +webhookSecret`: both are needed after the commit, for
-      // the new bot's webhook registration and the old one's revocation.
-      target = await TelegramBot.findById(id)
-        .select('+tokenEncrypted +webhookSecret')
-        .session(session);
-      if (!target) throw Object.assign(new Error('No such bot'), { status: 404 });
-
-      if (singular) {
-        // Stand the incumbent down IN THE SAME transaction. The sparse unique
-        // index on liveSlot refuses two live bots in one singular role, so
-        // doing this in two steps would either fail outright or leave a window
-        // with no sign-in bot at all.
-        //
-        // `.save()` rather than `updateOne`: liveSlot is maintained by the
-        // schema's pre-validate hook, and Mongoose does not run hooks for
-        // update operations. An updateOne here would clear `status` and leave a
-        // stale `liveSlot` behind, which is precisely the invariant this index
-        // exists to hold.
-        const current = await TelegramBot.findOne({ liveSlot: target.role })
-          .select('+tokenEncrypted')
-          .session(session);
-        if (current && String(current._id) !== String(target._id)) {
-          current.status = 'STANDBY';
-          current.activatedAt = undefined;
-          await current.save({ session });
-          displaced = current;
-        }
-      }
-
-      target.status = 'ACTIVE';
-      target.activatedAt = new Date();
-      target.activatedBy = actorId;
-      target.lastError = '';
-      await target.save({ session });
-    });
-  } finally {
-    await session.endSession();
+    promoted = await db.telegram.promoteBot({ botId: probe.botId, role: probe.role, actor: actorId });
+  } catch (err) {
+    throw Object.assign(new Error(`Could not promote @${probe.username}: ${err.message}`), { status: 409 });
   }
+
+  const { bot: target, secrets, displaced } = promoted;
 
   // The client caches the resolved bot for 30s; a promotion must be visible
   // immediately or the first minute after a flip still uses the dead token.
@@ -216,7 +181,7 @@ export async function promote({ id, actorId, webhookBaseUrl }) {
 
   const result = {
     bot: publicView(target),
-    displaced: displaced ? publicView(displaced) : null,
+    displaced: displaced ? publicView(displaced.bot) : null,
     webhook: 'not_required',
   };
 
@@ -226,12 +191,14 @@ export async function promote({ id, actorId, webhookBaseUrl }) {
   const base = String(webhookBaseUrl || process.env.PUBLIC_APP_ORIGIN || '').replace(/\/+$/, '');
   if (!base) {
     result.webhook = 'not registered: no webhook base URL configured';
-    target.lastError = result.webhook;
-    await target.save();
+    // Recorded on the ROW, so the panel shows an operator what is wrong and
+    // `retryWebhook` is one click. The row is already correct; only Telegram
+    // has not been told.
+    await db.telegram.recordBotError(target.botId, result.webhook);
     return result;
   }
 
-  const outcome = await registerWebhookFor(target, `${base}${path}`);
+  const outcome = await registerWebhook(target, secrets, `${base}${path}`);
   result.webhook = outcome.ok ? 'registered' : `not registered: ${outcome.error}`;
 
   // Point the displaced bot at nothing, so a bot that is merely suspected of
@@ -240,11 +207,12 @@ export async function promote({ id, actorId, webhookBaseUrl }) {
   // must not fail because the thing it is replacing is already dead.
   if (displaced) {
     try {
-      const token = decryptField(displaced.get('tokenEncrypted'));
-      const cleared = await deleteWebhook(token);
-      if (!cleared.ok) console.warn(`[telegram] could not clear webhook on displaced @${displaced.username}: ${cleared.error}`);
+      const cleared = await deleteWebhook(decryptField(displaced.secrets.tokenEncrypted));
+      if (!cleared.ok) {
+        console.warn(`[telegram] could not clear webhook on displaced @${displaced.bot.username}: ${cleared.error}`);
+      }
     } catch (err) {
-      console.warn(`[telegram] could not clear webhook on displaced @${displaced.username}: ${err.message}`);
+      console.warn(`[telegram] could not clear webhook on displaced @${displaced.bot.username}: ${err.message}`);
     }
   }
 
@@ -255,35 +223,42 @@ export async function promote({ id, actorId, webhookBaseUrl }) {
  * (Re)register a bot's webhook. Separated so a failed promotion is fixed by a
  * retry rather than by promoting something else.
  */
-export async function registerWebhookFor(doc, url) {
-  const token = decryptField(doc.get('tokenEncrypted'));
-  const res = await setWebhook({ token, url, secret: doc.get('webhookSecret') });
-
-  if (res.ok) {
-    doc.webhookUrl = url;
-    doc.webhookRegisteredAt = new Date();
-    doc.lastError = '';
-  } else {
-    doc.lastError = String(res.error || 'unknown error').slice(0, 500);
-  }
-  await doc.save();
+export async function registerWebhook(bot, secrets, url) {
+  const res = await setWebhook({
+    token: decryptField(secrets.tokenEncrypted),
+    url,
+    secret: secrets.webhookSecret,
+  });
+  // The outcome is recorded either way, in ONE statement: a success stamps
+  // where Telegram was told to deliver and when it accepted; a failure records
+  // why, so the panel can show it and a retry needs no operator input beyond a
+  // click.
+  await db.telegram.recordWebhookRegistration(bot.botId, {
+    url,
+    error: res.ok ? null : String(res.error || 'unknown error'),
+  });
   return res;
 }
 
 export async function retryWebhook({ id, webhookBaseUrl }) {
-  const doc = await TelegramBot.findById(id).select('+tokenEncrypted +webhookSecret');
-  if (!doc) throw Object.assign(new Error('No such bot'), { status: 404 });
+  const secrets = await db.telegram.getBotSecrets(id);
+  if (!secrets) throw Object.assign(new Error('No such bot'), { status: 404 });
 
-  const path = webhookPathForRole(doc.role);
+  const path = webhookPathForRole(secrets.role);
   if (!path) {
-    throw Object.assign(new Error(`A ${doc.role} bot receives no updates, so it has no webhook to register.`), { status: 400 });
+    throw Object.assign(
+      new Error(`A ${secrets.role} bot receives no updates, so it has no webhook to register.`),
+      { status: 400 },
+    );
   }
   const base = String(webhookBaseUrl || process.env.PUBLIC_APP_ORIGIN || '').replace(/\/+$/, '');
   if (!base) throw Object.assign(new Error('No webhook base URL configured'), { status: 400 });
 
-  const res = await registerWebhookFor(doc, `${base}${path}`);
+  const res = await registerWebhook({ botId: secrets.botId }, secrets, `${base}${path}`);
   if (!res.ok) throw Object.assign(new Error(`Telegram refused: ${res.error}`), { status: 502 });
-  return publicView(doc);
+  // Re-read, so the response carries what the row now says rather than what
+  // this function believes it wrote.
+  return publicView(await db.telegram.getBot(secrets.botId));
 }
 
 /**
@@ -296,30 +271,37 @@ export async function retryWebhook({ id, webhookBaseUrl }) {
  * part of the same transaction.
  */
 export async function retire({ id, actorId }) {
-  const doc = await TelegramBot.findById(id).select('+tokenEncrypted');
-  if (!doc) throw Object.assign(new Error('No such bot'), { status: 404 });
+  const secrets = await db.telegram.getBotSecrets(id);
+  if (!secrets) throw Object.assign(new Error('No such bot'), { status: 404 });
 
-  if (doc.status === 'ACTIVE' && doc.role === 'signin') {
-    throw Object.assign(
-      new Error('This is the live sign-in bot. Promote its replacement instead — that stands this one down in the same step, with no window where nobody can sign in.'),
-      { status: 409 },
-    );
+  // The refusal is IN the statement, guarded on the generated `live_slot`
+  // column. The check this replaced read the status first and wrote after, so a
+  // promotion landing in between could make this bot live and the retire would
+  // still go through — leaving the platform with nobody answering the webhook.
+  const retired = await db.telegram.retireBot(id, { actor: actorId });
+  if (!retired.ok) {
+    if (retired.reason === 'IS_LIVE') {
+      throw Object.assign(
+        new Error(
+          'This is the live bot for its role. Promote its replacement instead — that stands '
+          + 'this one down in the same step, with no window where nobody can sign in.',
+        ),
+        { status: 409 },
+      );
+    }
+    if (retired.reason === 'ALREADY_RETIRED') return publicView(await db.telegram.getBot(id));
+    throw Object.assign(new Error('No such bot'), { status: 404 });
   }
 
-  const wasLive = doc.status === 'ACTIVE';
-  doc.status = 'RETIRED';
-  doc.retiredAt = new Date();
-  doc.retiredBy = actorId;
-  await doc.save();
   invalidateConfigCache();
 
-  if (wasLive && webhookPathForRole(doc.role)) {
+  if (webhookPathForRole(retired.bot.role)) {
     try {
-      await deleteWebhook(decryptField(doc.get('tokenEncrypted')));
+      await deleteWebhook(decryptField(secrets.tokenEncrypted));
     } catch { /* a dead bot cannot be told anything; the row is what matters */ }
   }
 
-  return publicView(doc);
+  return publicView(retired.bot);
 }
 
 /**
@@ -332,8 +314,7 @@ export async function retire({ id, actorId }) {
  */
 export { liveBot } from './telegramClient.js';
 
-/** Every bot, newest first, with no secrets. */
+/** Every bot, with no secrets. */
 export async function listBots() {
-  const docs = await TelegramBot.find({}).sort({ status: 1, addedAt: -1 }).lean();
-  return docs.map(publicView);
+  return (await db.telegram.listBots({})).map(publicView);
 }

@@ -308,9 +308,8 @@ Everything about this path assumes the file is dangerous:
 **Verdicts reach the `User` through `decideKyc`, not a bulk write.** A batch is
 not a reason to skip the state machine — it is a reason to apply it ten thousand
 times. That is what gets the legal-transition guard, the reviewer field, the
-rejection reason landing in the field the player is actually shown, and the
-Mongo/Postgres authority resolution. **Both** verdicts are mirrored: without the
-FAILED half, a player whose Aadhaar did not check out keeps `PENDING_APPROVAL`
+rejection reason landing in the field the player is actually shown. **Both**
+verdicts must be written: without the FAILED half, a player whose Aadhaar did not check out keeps `PENDING_APPROVAL`
 forever — never able to withdraw, never told why, and absent from the queue
 because their verification row says the batch already handled them.
 
@@ -352,9 +351,9 @@ implementation has to satisfy — each learned expensively:
    "fall back to the old path" means publishing an identity document.
 7. **Re-check ownership when minting a grant.** If a mirror or migration ever
    crossed two records, refuse rather than show a reviewer the wrong person's ID.
-8. **Enumerate projection leaves, never a parent and its child.** MongoDB 4.4+
-   rejects a projection containing both a path and its prefix, and it throws at
-   query time against a real server only.
+8. **Select the columns you mean, never `SELECT *` on an identity table.** An
+   Aadhaar HMAC and its ciphertext leave through whatever a careless projection
+   widens; name the columns so adding one later cannot silently export it.
 
 Proof the path is gone: `tests/unit/kycDocumentPathRemoved.test.js` and
 `tests/unit/identitySurfaceRemoved.test.js`.
@@ -426,9 +425,11 @@ Consequences worth knowing:
   generation was created" vs "what is live now"). `activeConfig()` reads the
   registry first and falls back to the embedded fields, which is what an install
   that never registered a spare has.
-- **Writers must use `.save()`, not `updateOne`.** Mongoose runs no middleware
-  for update operations, so an `updateOne` that changed `status` would leave a
-  stale `liveSlot` behind and the index would guard nothing.
+- **`live_slot` is a generated column, not something a writer sets.** It is
+  derived from the row's role and status by the database, so the partial unique
+  index over it cannot be defeated by a writer that updates `status` and forgets
+  to recompute the slot. Deriving it was the fix for exactly that class of bug —
+  do not replace it with an application-side assignment.
 - **Database first, webhook second.** The two writes cannot be made atomic across
   two systems. Webhook-first would leave Telegram delivering as the new bot while
   we authenticate against the old secret — every update rejected 401, with the
@@ -685,8 +686,8 @@ non-staff.
 | `telegramFleet.test.js` | One live bot per singular role, via the derived `liveSlot` and its sparse unique index; outbound-only roles get no webhook; a template Telegram would refuse is caught on save; a player-chosen name cannot become markup |
 | `channelGateOrdering.test.js` | The gate asks whether a channel exists *before* blaming the player for not having joined one |
 | `referralLinkStability.test.js` | A shared link follows a bot swap; the redirect is never cacheable and never an open redirect; the panel does not mint a `t.me/<bot>` link |
-| `schemaPathWrites.test.js` | No update writes to a path its schema does not declare — the class Mongoose strict mode discards silently, which has caused six bugs here |
-| `telegramSignupJourney.integration.test.js` | The launch path against real MongoDB: referral link → `/start` → Aadhaar → contact → channel join → login link → session, plus the forged webhook, the duplicate Aadhaar, the forwarded contact card, both sides of the flip-storm branch, and a channel replacement leaving balances and referral positions untouched |
+| `schemaPathWrites.test.js` | No write targets a column the table does not declare. PostgreSQL errors on an unknown column rather than discarding it silently — this test keeps that from being the *first* place anyone finds out, which is what caused six bugs here |
+| `telegramSignupJourney` (in `tests/postgres/`) | The launch path against a real PostgreSQL: referral link → `/start` → Aadhaar → contact → channel join → login link → session, plus the forged webhook, the duplicate Aadhaar, the forwarded contact card, both sides of the flip-storm branch, and a channel replacement leaving balances and referral positions untouched |
 
 Most of these assert **absence**, which no feature test can do: a happy-path
 suite for bulk verification passes perfectly well with an upload endpoint still

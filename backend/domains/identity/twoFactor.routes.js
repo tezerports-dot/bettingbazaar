@@ -24,7 +24,7 @@
  * the same unrecoverable lockout by a different route.
  */
 import express from 'express';
-import mongoose from 'mongoose';
+import { db } from '#db';
 import { authenticate } from './auth.middleware.js';
 import { twoFactorLimiter } from '../../middleware/security.js';
 import {
@@ -67,7 +67,7 @@ function effectiveRole(user) {
 /** A label that tells the user WHICH account a code belongs to, in their app. */
 function accountLabel(user) {
   // `email` was removed from User on 2026-08-26; mobile is the identity.
-  const who = user.mobile || String(user._id);
+  const who = user.mobile || String(user.userId);
   // effectiveRole, not user.role — the schema has no singular `role` field, so
   // reading it gave every admin an unlabelled entry indistinguishable from
   // their player account in the same authenticator app.
@@ -77,8 +77,14 @@ function accountLabel(user) {
 
 // ── Status ──────────────────────────────────────────────────────────────────
 router.get('/status', authenticate, async (req, res) => {
-  const User = mongoose.model('User');
-  const user = await User.findById(req.user.id).select('+backupCodes').lean();
+  const [user, creds] = await Promise.all([
+    db.users.getUser(req.user.userId),
+    // The recovery codes are CREDENTIALS and are absent from the ordinary
+    // account read. Counting them off `user` reported 0 remaining for everyone,
+    // which reads as "you have none left" to precisely the person about to need
+    // one.
+    db.users.getUserCredentials(req.user.userId),
+  ]);
   if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
   return res.json({
@@ -86,14 +92,13 @@ router.get('/status', authenticate, async (req, res) => {
     enabled: !!user.twoFactorEnabled,
     mandatory: requires2FA(user),
     enrolledAt: user.twoFactorEnrolledAt || null,
-    backupCodesRemaining: (user.backupCodes || []).length,
+    backupCodesRemaining: (creds?.backupCodes || []).length,
   });
 });
 
 // ── Step 1: mint a pending secret and hand back a scannable URI ─────────────
 router.post('/setup', authenticate, async (req, res) => {
-  const User = mongoose.model('User');
-  const user = await User.findById(req.user.id).select('+twoFactorSecret');
+  const user = await db.users.getUser(req.user.userId);
   if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
   if (user.twoFactorEnabled) {
@@ -107,8 +112,12 @@ router.post('/setup', authenticate, async (req, res) => {
   }
 
   const secret = generateSecret();
-  user.twoFactorPendingSecret = encryptSecret(secret);
-  await user.save();
+  // PENDING, not live. If this enabled 2FA immediately, anyone who closed the
+  // tab before scanning would own an account demanding codes from an
+  // authenticator entry that does not exist.
+  await db.users.updateUser(req.user.userId, {
+    twoFactorPendingSecret: encryptSecret(secret),
+  });
 
   return res.json({
     success: true,
@@ -122,18 +131,18 @@ router.post('/setup', authenticate, async (req, res) => {
 
 // ── Step 2: prove the app was actually added, then go live ─────────────────
 router.post('/activate', authenticate, twoFactorLimiter, async (req, res) => {
-  const User = mongoose.model('User');
-  const user = await User.findById(req.user.id).select('+twoFactorPendingSecret +twoFactorSecret');
-  if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+  const user = await db.users.getUser(req.user.userId);
+  const creds = await db.users.getUserCredentials(req.user.userId);
+  if (!user || !creds) return res.status(404).json({ success: false, message: 'User not found' });
 
-  if (!user.twoFactorPendingSecret) {
+  if (!creds.twoFactorPendingSecret) {
     return res.status(400).json({
       success: false, code: '2FA_NO_PENDING_SETUP',
       message: 'Start with /api/2fa/setup before activating.',
     });
   }
 
-  const secret = decryptSecret(user.twoFactorPendingSecret);
+  const secret = decryptSecret(creds.twoFactorPendingSecret);
   const result = verifyToken({ secret, token: req.body?.otp });
   if (!result.valid) {
     return res.status(400).json({
@@ -142,15 +151,18 @@ router.post('/activate', authenticate, twoFactorLimiter, async (req, res) => {
     });
   }
 
-  // Only now does the secret become the thing that guards the account.
+  // Only now does the secret become the thing that guards the account — and
+  // all of it in ONE update, so the account is never found enrolled without
+  // recovery codes, or live with its activation code unspent.
   const backupCodes = generateBackupCodes();
-  user.twoFactorSecret = user.twoFactorPendingSecret;
-  user.twoFactorPendingSecret = undefined;
-  user.twoFactorEnabled = true;
-  user.twoFactorLastCounter = result.counter;
-  user.twoFactorEnrolledAt = new Date();
-  user.backupCodes = backupCodes.map(hashBackupCode);
-  await user.save();
+  await db.users.updateUser(req.user.userId, {
+    twoFactorSecret: creds.twoFactorPendingSecret,
+    twoFactorPendingSecret: null,
+    twoFactorEnabled: true,
+    twoFactorLastCounter: result.counter,
+    twoFactorEnrolledAt: new Date(),
+    backupCodes: backupCodes.map(hashBackupCode),
+  });
 
   return res.json({
     success: true,
@@ -164,9 +176,9 @@ router.post('/activate', authenticate, twoFactorLimiter, async (req, res) => {
 
 // ── Disable ─────────────────────────────────────────────────────────────────
 router.post('/disable', authenticate, twoFactorLimiter, async (req, res) => {
-  const User = mongoose.model('User');
-  const user = await User.findById(req.user.id).select('+twoFactorSecret');
-  if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+  const user = await db.users.getUser(req.user.userId);
+  const creds = await db.users.getUserCredentials(req.user.userId);
+  if (!user || !creds) return res.status(404).json({ success: false, message: 'User not found' });
 
   if (requires2FA(user)) {
     // An admin who can switch off their own second factor does not have one in
@@ -182,9 +194,9 @@ router.post('/disable', authenticate, twoFactorLimiter, async (req, res) => {
 
   // Turning it off is itself a privileged action: require a current code, so a
   // hijacked session cannot quietly strip the protection it is meant to defeat.
-  const secret = decryptSecret(user.twoFactorSecret);
+  const secret = decryptSecret(creds.twoFactorSecret);
   const result = verifyToken({
-    secret, token: req.body?.otp, lastCounter: user.twoFactorLastCounter ?? null,
+    secret, token: req.body?.otp, lastCounter: creds.twoFactorLastCounter ?? null,
   });
   if (!result.valid) {
     return res.status(400).json({
@@ -193,13 +205,16 @@ router.post('/disable', authenticate, twoFactorLimiter, async (req, res) => {
     });
   }
 
-  user.twoFactorEnabled = false;
-  user.twoFactorSecret = undefined;
-  user.twoFactorPendingSecret = undefined;
-  user.twoFactorLastCounter = undefined;
-  user.twoFactorEnrolledAt = undefined;
-  user.backupCodes = [];
-  await user.save();
+  // One update: an account must never be readable as "2FA off" while its
+  // secret is still on file, nor as "2FA on" with the secret already cleared.
+  await db.users.updateUser(req.user.userId, {
+    twoFactorEnabled: false,
+    twoFactorSecret: null,
+    twoFactorPendingSecret: null,
+    twoFactorLastCounter: null,
+    twoFactorEnrolledAt: null,
+    backupCodes: [],
+  });
 
   return res.json({ success: true, message: 'Two-factor authentication disabled.' });
 });

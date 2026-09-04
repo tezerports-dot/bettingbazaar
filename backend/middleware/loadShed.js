@@ -31,6 +31,7 @@
  * to know when to scale.
  */
 import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 // Never shed or count these — health/metrics must answer even under overload
 // (so orchestrators can see the instance is alive and scrapers keep working),
@@ -62,9 +63,7 @@ let refreshTimer = null;
 /** Pull SystemConfig.loadShedding over the env/defaults. Safe before DB is up. */
 async function refreshConfig() {
   try {
-    const mongoose = (await import('mongoose')).default;
-    const SystemConfig = mongoose.model('SystemConfig');
-    const doc = await SystemConfig.findOne({ key: 'main' }).select('loadShedding').lean();
+    const doc = await getSystemConfig();
     const s = doc?.loadShedding;
     if (s) {
       cfg = {
@@ -73,7 +72,7 @@ async function refreshConfig() {
         maxEventLoopLagMs: Number.isFinite(s.maxEventLoopLagMs) && s.maxEventLoopLagMs >= 0 ? s.maxEventLoopLagMs : DEFAULTS.maxEventLoopLagMs,
       };
     }
-  } catch { /* DB not ready / model absent — keep current cfg (env+defaults) */ }
+  } catch { /* DB not ready — keep current cfg (env + defaults) */ }
 }
 
 /** Start the periodic config refresh. Called once from server startup. */

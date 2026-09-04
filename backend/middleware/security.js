@@ -1,6 +1,6 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
-import { AuditLog } from '../models/index.js';
+import { db } from '#db';
 // F-3 (2026-07-10): counters shared across instances via Redis; graceful
 // per-instance fallback when Redis is absent/unreachable.
 import { createRateLimitStore } from './redisRateLimitStore.js';
@@ -8,6 +8,9 @@ import { createRateLimitStore } from './redisRateLimitStore.js';
 // values unchanged; edit the config to change policy.
 import { RATE_LIMIT_TIERS } from '../config/security.config.js';
 import { betBehaviorLimiter } from './behavioralRateLimit.js';
+// The IP deny-list. Was a model registered nowhere; every call threw into a
+// silent fail-open catch, so nothing was ever blocked. Now a real table.
+import { isIpBlocked, blockIp, unblockIp } from '#db/repositories/security.js';
 
 // ==================== AUTHENTICATION RATE LIMITERS ====================
 
@@ -37,13 +40,12 @@ export const authLimiter = rateLimit({
         });
         
         // Log to audit trail
-        AuditLog.create({
+        db.audit.record({
             adminId: 'SYSTEM_SECURITY',
             action: 'RATE_LIMIT_EXCEEDED',
-            details: `Too many auth attempts from ${req.ip} to ${req.path}`,
+            details: { message: `Too many auth attempts from ${req.ip} to ${req.path}` },
             ip: req.ip,
-            timestamp: new Date()
-        }).catch(console.error);
+        });
         
         res.status(429).json({
             success: false,
@@ -73,13 +75,12 @@ export const adminAuthLimiter = rateLimit({
             timestamp: new Date().toISOString()
         });
         
-        AuditLog.create({
+        db.audit.record({
             adminId: 'SYSTEM_SECURITY',
             action: 'ADMIN_RATE_LIMIT_EXCEEDED',
-            details: `Multiple failed admin login attempts from ${req.ip}`,
+            details: { message: `Multiple failed admin login attempts from ${req.ip}` },
             ip: req.ip,
-            timestamp: new Date()
-        }).catch(console.error);
+        });
         
         res.status(429).json({
             success: false,
@@ -112,12 +113,12 @@ export const merchantAuthLimiter = rateLimit({
         console.error('🚨 SECURITY ALERT: Merchant auth rate limit exceeded', {
             ip: req.ip, path: req.path, timestamp: new Date().toISOString(),
         });
-        AuditLog.create({
+        db.audit.record({
             adminId: 'SYSTEM_SECURITY',
             action: 'MERCHANT_RATE_LIMIT_EXCEEDED',
-            details: `Multiple failed merchant login attempts from ${req.ip}`,
-            ip: req.ip, timestamp: new Date(),
-        }).catch(console.error);
+            details: { message: `Multiple failed merchant login attempts from ${req.ip}` },
+            ip: req.ip,
+        });
         res.status(429).json({
             success: false,
             message: "Too many failed merchant login attempts. Please try again in an hour.",
@@ -152,12 +153,18 @@ export const twoFactorLimiter = rateLimit({
         console.error('🚨 SECURITY ALERT: 2FA code rate limit exceeded — possible account takeover in progress', {
             ip: req.ip, userId: req.user?.id, path: req.path, timestamp: new Date().toISOString(),
         });
-        AuditLog.create({
+        db.audit.record({
             adminId: 'SYSTEM_SECURITY',
             action: 'TWO_FACTOR_RATE_LIMIT_EXCEEDED',
-            details: `Repeated invalid 2FA codes from ${req.ip} for account ${req.user?.id || req.body?.mobile || 'unknown'} — password already accepted`,
-            ip: req.ip, timestamp: new Date(),
-        }).catch(console.error);
+            // The account is a FIELD. A takeover investigation asks "which
+            // accounts saw repeated 2FA failures", and that is a query over a
+            // column rather than a substring hunt through prose.
+            details: {
+                message: `Repeated invalid 2FA codes from ${req.ip} — password already accepted`,
+                account: req.user?.id || req.body?.mobile || null,
+            },
+            ip: req.ip,
+        });
         res.status(429).json({
             success: false,
             message: "Too many incorrect authentication codes. Please wait before trying again.",
@@ -237,20 +244,23 @@ export const securityMonitor = async (req, res, next) => {
         // Log all failed authentication/authorization attempts
         if (res.statusCode >= 400) {
             if (res.statusCode === 401 || res.statusCode === 403) {
-                const logData = {
-                    adminId: 'SYSTEM_WATCHDOG',
-                    action: 'SECURITY_VIOLATION_ATTEMPT',
-                    details: `Blocked ${req.method} request to ${req.originalUrl} from IP ${req.ip}`,
-                    ip: req.ip,
-                    timestamp: new Date()
+                const details = {
+                    message: `Blocked ${req.method} request to ${req.originalUrl} from IP ${req.ip}`,
+                    method: req.method,
+                    path: req.originalUrl,
+                    statusCode: res.statusCode,
                 };
-                
-                // Add extra context for critical endpoints
+
+                // Extra context for critical endpoints. As a FIELD, not appended
+                // to a string: `details` is JSONB, so a security review can
+                // filter on the mobile a burst of 401s was aimed at instead of
+                // pattern-matching it back out of prose.
                 if (req.path.includes('/admin') || req.path.includes('/login')) {
-                    logData.details += ` | Mobile: ${req.body?.mobile || 'N/A'}`;
+                    details.mobile = req.body?.mobile ?? null;
                 }
-                
-                AuditLog.create(logData).catch(console.error);
+
+                db.audit.record({ adminId: 'SYSTEM_WATCHDOG',
+                    action: 'SECURITY_VIOLATION_ATTEMPT', details, ip: req.ip });
             }
         }
         
@@ -267,36 +277,53 @@ export const securityMonitor = async (req, res, next) => {
  * Blocks IPs that have been flagged for suspicious activity
  * In production, you'd store blocked IPs in Redis or database
  */
-// IP blocking now uses MongoDB via BlockedIP model for persistence across restarts
-
+/**
+ * The IP deny-list, which until now has never blocked anything.
+ *
+ * All three of these asked for a model registered NOWHERE. Every call raised
+ * MissingSchemaError; `ipBlocker`'s catch swallowed it silently and let the
+ * request through, and `blockIP` logged a success it had not achieved. An
+ * operator blocking an abusive address got a confirmation and no effect, for as
+ * long as this code has existed.
+ *
+ * FAIL-OPEN IS KEPT and made loud. A deny-list that failed closed would lock
+ * every user out when the database blinks — worse than letting a few blocked
+ * addresses through meanwhile. But the failure is LOGGED now rather than
+ * swallowed, because a control that stops working quietly is how this stayed
+ * dead. (Contrast `isTokenRevoked`, which fails CLOSED: a revoked token is a
+ * credential its holder is not entitled to, while a blocked IP is a coarse
+ * abuse control whose false positives are ordinary users.)
+ */
 export const ipBlocker = async (req, res, next) => {
     try {
-        const mongoose = (await import('mongoose')).default;
-        const BlockedIP = mongoose.model('BlockedIP');
-        const blocked = await BlockedIP.findOne({ ip: req.ip, active: true }).lean();
-        if (blocked) {
+        if (await isIpBlocked(req.ip)) {
             console.warn('🚫 BLOCKED IP attempted access:', req.ip);
             return res.status(403).json({ success: false, message: 'Access denied.' });
         }
-    } catch { /* DB unavailable — fail open to avoid locking out legitimate users */ }
+    } catch (e) {
+        // Deliberately open — see above — but never silent again.
+        console.error('[security] IP deny-list unavailable, allowing request:', e.message);
+    }
     next();
 };
 
-// Function to block an IP (call this from admin panel or automated detection)
-export const blockIP = async (ip, reason = 'Suspicious activity') => {
+/** Block an address. Called from the admin panel and from automated detection. */
+export const blockIP = async (ip, reason = 'Suspicious activity', actor = null) => {
     try {
-        const mongoose = (await import('mongoose')).default;
-        const BlockedIP = mongoose.model('BlockedIP');
-        await BlockedIP.findOneAndUpdate({ ip }, { ip, reason, active: true, blockedAt: new Date() }, { upsert: true });
+        await blockIp(ip, { reason, actor });
         console.log('🚫 IP blocked:', ip);
-    } catch (e) { console.error('blockIP failed:', e.message); }
+        return true;
+    } catch (e) {
+        // Reported, not swallowed: the caller told an operator this worked.
+        console.error('blockIP failed:', e.message);
+        return false;
+    }
 };
 
-export const unblockIP = async (ip) => {
+export const unblockIP = async (ip, actor = null) => {
     try {
-        const mongoose = (await import('mongoose')).default;
-        const BlockedIP = mongoose.model('BlockedIP');
-        await BlockedIP.findOneAndUpdate({ ip }, { active: false });
+        await unblockIp(ip, { actor });
         console.log('✅ IP unblocked:', ip);
-    } catch (e) { console.error('unblockIP failed:', e.message); }
+        return true;
+    } catch (e) { console.error('unblockIP failed:', e.message); return false; }
 };

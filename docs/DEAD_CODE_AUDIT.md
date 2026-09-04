@@ -22,7 +22,7 @@ below as they happen.
 
 ## The measurement was wrong the first time, and that is the point
 
-The first pass listed `connectMongoDB`, `connectRedis` and `seedAdminAccount` as
+The first pass listed the database connector, `connectRedis` and `seedAdminAccount` as
 referenced by **nothing**. All three are called from `backend/server.js`. The
 file list came from `git ls-files backend/**/*.js`, and the shell expanded `**`
 as a single `*` — so `backend/server.js`, one level down, was never scanned.
@@ -36,9 +36,9 @@ program. Anything acting on one needs to state what it searched.
 
 | What | Where | Why it was safe, and why it stays gone |
 |---|---|---|
-| `secureBetPlacement.js` (whole module, 111 lines) | `backend/postgres/` | A reference implementation of the serializable-with-outbox pattern on a **different table set** (`user_wallets` NUMERIC, `financial_ledger`, `operational_bet_outbox`) and a **string-decimal money model** rather than integer paise. Nothing imported it. Its tables never held the balances the dual-write mirror populates, so an authoritative path built on it would have switched to an empty set of balances at cutover. It was a second, plausible-looking money path sitting next to the real one. |
+| `secureBetPlacement.js` (whole module, 111 lines) | `database/` | A reference implementation of the serializable-with-outbox pattern on a **different table set** (`user_wallets` NUMERIC, `financial_ledger`, `operational_bet_outbox`) and a **string-decimal money model** rather than integer paise. Nothing imported it. Its tables never held the balances the dual-write mirror populates, so an authoritative path built on it would have switched to an empty set of balances at cutover. It was a second, plausible-looking money path sitting next to the real one. |
 | `_tlsFingerprintDefenseConfig`, `_setTlsFingerprintDefenseConfig` | `backend/middleware/tlsFingerprintDefense.js` | Underscore-prefixed test seams with **no test anywhere**. The sibling middlewares (`ipDefense`, `loadShed`) have the same pair and theirs *are* used, which is what made these look load-bearing. |
-| `recordWin` | `backend/postgres/casinoPg.js` | A two-line wrapper: `recordCallback({ ...args, type: CASINO_TX.WIN })`. `casinoPgAuthority` imports `recordCallback` directly. Superseded, not dead-on-arrival. |
+| `recordWin` | `database/repositories/casino.core.js` | A two-line wrapper: `recordCallback({ ...args, type: CASINO_TX.WIN })`. `casinoPgAuthority` imports `recordCallback` directly. Superseded, not dead-on-arrival. |
 
 | `generateKYCUploadUrl` | `backend/services/cdn.service.js` | Minted a **writable** S3 URL under a `kyc/` prefix. Its route and service were removed 2026-08-25; this survived with no caller, which is exactly what made it dangerous — an unused working tool for collecting identity documents is how document collection returns without a decision being taken. The platform collects a 12-digit Aadhaar NUMBER and nothing else. Constraints for any future proposal: `IDENTITY_AND_REFERRALS.md` §6a. |
 | `generateDisputeUploadUrl`, `generateProfilePictureUploadUrl`, `generatePromoUploadUrl` | `backend/services/cdn.service.js` | No caller anywhere in the repo — the live routes call `generatePresignedUploadUrl` directly. **Note the trap:** all four were still listed in the file's `export default` after their definitions went, which is a ReferenceError at module load in a file every upload route imports. Removing a function means removing it from the barrel too. |
@@ -57,7 +57,7 @@ Not "looks unused" — provably not built or served:
   never been installed on its own — the Docker image runs `npm ci` at `/app`
   from the ROOT lockfile (which carries every backend dep), and `backend/*.js`
   resolve ESM via the root's `"type":"module"`. The stray manifest was a second,
-  drifting dependency source (root=mongoose 9, stray=mongoose 8).
+  drifting dependency source (two copies of the same package at different majors).
 - **`docs/NEXT_SESSION_HANDOFF.md`** — a transient AI-session handoff pinned to a
   merged PR (#121) and a deleted branch. Superseded by `docs/GO_LIVE_RUNBOOK.md`.
 - **`docs/RAILWAY_STAGING.md`** — Railway is off-plan; the platform now self-hosts

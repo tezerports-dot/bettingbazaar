@@ -96,13 +96,13 @@ mandatory). Nothing in the current evidence justifies it today.
   stuck records (`status: 'ACTIVE', merchantApprovalStatus: 'APPROVED'` together).
 
 **What's actually unverified:** whether `002-fix-everything.js` was run against the live
-Railway MongoDB, or only locally/staging. If it wasn't, stuck merchants could still exist in
+the deployed database, or only locally/staging. If it wasn't, stuck merchants could still exist in
 production data even though the code path is now correct. I've written a read-only check —
 `audit/verify-merchant-status-integrity.mjs` — run it against Railway to confirm. It makes
 no writes.
 
 ```bash
-# from repo root, with MONGODB_URI pointed at Railway prod
+# from repo root, with DATABASE_URL pointed at the deployed database
 node audit/verify-merchant-status-integrity.mjs
 ```
 

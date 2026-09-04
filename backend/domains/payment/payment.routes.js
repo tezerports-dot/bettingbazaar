@@ -2,7 +2,7 @@
 /** payment.routes.js — player-facing Payment domain routes (BBEPS Phase 003 §3.3).
  * Moved from backend/routes/payment.routes.js on 2026-07-01 (BBEPS Phase 004 migration). */
 import express   from 'express';
-import mongoose  from 'mongoose';
+import { db }    from '#db';
 import { authenticate, requireApprovedKyc } from '../identity/auth.middleware.js';
 import { tryVerifyJwt } from '../identity/jwt.util.js';
 import { merchantAuth } from '../../middleware/merchantAuth.js';
@@ -37,14 +37,16 @@ function paymentActorAuth(req, res, next) {
   return authenticate(req, res, next);
 }
 
-async function safeSession() {
-  try { const s = await mongoose.startSession(); s.startTransaction(); return s; } catch { return null; }
-}
-async function commitOrEnd(s) { if (!s) return; try { await s.commitTransaction(); } finally { s.endSession(); } }
-async function abortOrEnd(s)  { if (!s) return; try { await s.abortTransaction(); }  finally { s.endSession(); } }
-function withSession(s) { return s ? { session: s } : {}; }
+/**
+ * What a merchant may see of an order.
+ *
+ * The player's phone number, bank details and UPI id are on the order because a
+ * merchant needs them to PAY a withdrawal — they have no business in a deposit
+ * response, where the money flows the other way. Stripped by construction
+ * rather than by remembering not to send them.
+ */
 function sanitizeOrderForMerchant(order) {
-  const plain = typeof order?.toObject === 'function' ? order.toObject() : { ...(order || {}) };
+  const plain = { ...(order || {}) };
   delete plain.userPhone;
   delete plain.merchantSnapshot;
   delete plain.userBankDetails;
@@ -54,14 +56,14 @@ function sanitizeOrderForMerchant(order) {
 
 router.post('/deposit/create', authenticate, requireApprovedKyc, requireChannelMembership({ action: 'add funds' }), async (req, res) => {
   try {
-    const result = await requestDeposit({ userId: req.user._id, tokenAmount: Number(req.body.tokenAmount) });
+    const result = await requestDeposit({ userId: req.user.userId, tokenAmount: Number(req.body.tokenAmount) });
     res.json({ success: true, message: 'Deposit request created. Waiting for merchant assignment.', ...result });
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code }); }
 });
 
 router.post('/withdrawal/create', authenticate, requireApprovedKyc, requireChannelMembership({ action: 'withdraw' }), withdrawalLimiter, createSubnetLimiter('withdrawal'), globalSurgeBreaker('withdrawal'), async (req, res) => {
   try {
-    const result = await requestWithdrawal({ userId: req.user._id, tokenAmount: Number(req.body.tokenAmount) });
+    const result = await requestWithdrawal({ userId: req.user.userId, tokenAmount: Number(req.body.tokenAmount) });
     res.json({ success: true, message: 'Withdrawal request created. Waiting for merchant assignment.', ...result });
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code, cutoffPassed: err.cutoffPassed, balance: err.balance }); }
 });
@@ -71,102 +73,176 @@ router.post('/order/:orderId/mark-paid', authenticate, async (req, res) => {
     const { utrNumber, proofFileKey, proofCdnUrl } = req.body;
     if (!utrNumber?.trim()) return res.status(400).json({ success: false, message: 'utrNumber is required' });
     if (!proofFileKey?.trim()) return res.status(400).json({ success: false, message: 'proofFileKey is required. Upload a payment screenshot file first.' });
-    const order = await markOrderPaid(req.user._id, req.params.orderId, utrNumber, proofFileKey, proofCdnUrl);
+    const order = await markOrderPaid(req.user.userId, req.params.orderId, utrNumber, proofFileKey, proofCdnUrl);
     res.json({ success: true, message: 'Payment marked. Awaiting merchant review.', order });
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code, originalOrderId: err.originalOrderId }); }
 });
 
+/**
+ * POST /api/payment/:orderId/confirm — the merchant (or an admin) asserts the
+ * player's money arrived, and the tokens are dispensed.
+ *
+ * ── Ordering, and what a failure leaves behind ──────────────────────────────
+ * The money moves BEFORE the status does. Every movement is idempotent on a
+ * deterministic key, so a failure part-way through leaves a retryable position
+ * rather than something to unwind: the order is still PAID, the next confirm
+ * replays the movements as no-ops and completes it.
+ *
+ * The other order — status first, then money — is what this was, and it has a
+ * worse failure: the order reads COMPLETED while the merchant was never debited
+ * and the player never credited, and nothing in the system is looking for that.
+ *
+ * The TRANSITION is still the gate for the RESPONSE. Two confirms in flight (a
+ * merchant clicking while an admin force-approves is the real case) both move
+ * no money the second time, and exactly one is told it completed the order.
+ *
+ * The `session` this used to open is gone. `safeSession` caught a failure to
+ * start a transaction and carried on WITHOUT one, so the atomicity it appeared
+ * to provide was conditional on nobody looking.
+ */
 router.post('/deposit/:orderId/confirm', paymentActorAuth, async (req, res) => {
   const isMerchantActor = Boolean(req.merchantId);
   const isAdminActor = Boolean(req.user?.isAdmin);
-  if (!isMerchantActor && !isAdminActor) return res.status(403).json({ success: false, message: 'Only merchants or admins can confirm deposits' });
-  const session = await safeSession();
+  if (!isMerchantActor && !isAdminActor) {
+    return res.status(403).json({ success: false, message: 'Only merchants or admins can confirm deposits' });
+  }
   try {
-    const PaymentOrder = mongoose.model('PaymentOrder');
-    const order = await PaymentOrder.findOne({ orderId: req.params.orderId }, null, withSession(session));
-    if (!order || order.type !== 'DEPOSIT') { await abortOrEnd(session); return res.status(404).json({ success: false, message: 'Order not found' }); }
-    if (isMerchantActor && order.merchantId?.toString() !== req.merchantId.toString()) { await abortOrEnd(session); return res.status(403).json({ success: false, message: 'This order is not assigned to you' }); }
+    const order = await db.orders.getOrderRecord(req.params.orderId);
+    if (!order || order.type !== 'DEPOSIT') {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+    if (isMerchantActor && String(order.merchantId) !== String(req.merchantId)) {
+      return res.status(403).json({ success: false, message: 'This order is not assigned to you' });
+    }
+    if (!['PAID', 'PROCESSING'].includes(order.status)) {
+      // A read, not the gate — the transition below settles the race. This
+      // exists so an already-completed order gets a clear answer instead of a
+      // 409 the merchant panel renders as a failure.
+      if (order.status === 'COMPLETED') {
+        return res.json({
+          success: true, message: 'Deposit already completed',
+          order: isMerchantActor ? sanitizeOrderForMerchant(order) : order,
+        });
+      }
+      return res.status(409).json({ success: false, message: `Cannot confirm in ${order.status} status` });
+    }
 
-    // THE TRANSITION IS THE GATE, and it runs before the money — inside the
-    // session, so an abort below unwinds it with everything else.
-    //
-    // This used to debit the merchant, credit the user and only then set the
-    // status, guarded by the `order.status` read above. Two confirms in flight
-    // (a merchant clicking while an admin force-approves is the real case) both
-    // passed that read; only the canonical txIds on the two wallet calls stopped
-    // the money moving twice. Now exactly one caller matches a row.
-    const confirmed = await completeOrder(order._id, {
-      expectFrom: ['PAID', 'PROCESSING'],
-      set: {
-        completedAt: new Date(), approvedBy: req.merchantId || req.user._id,
-        approvedAt: new Date(), updatedAt: new Date(),
-      },
-      session,
-    });
-    if (!confirmed.ok) {
-      await abortOrEnd(session);
-      return res.status(409).json({ success: false, message: `Cannot confirm in ${confirmed.status ?? 'unknown'} status` });
-    }
-    if (confirmed.idempotent) {
-      // Already completed by a previous delivery. The money moved with it.
-      await abortOrEnd(session);
-      return res.json({ success: true, message: 'Deposit already completed', order: isMerchantActor ? sanitizeOrderForMerchant(order) : order });
-    }
-    // The user's pockets are split; the merchant's side is not. This route used
-    // to debit `depositAllocation || tokenAmount` and then credit
-    // `depositAllocation + reserveAllocation` — so every deposit with a reserve
-    // share credited more than it debited, and the same canonical txId was used
-    // for two different amounts across routes. domains/payment/depositCredit.js
-    // has the rule and why it is one rule.
+    // The player's pockets are split; the merchant's side is not. This route
+    // once debited `depositAllocation || tokenAmount` and credited
+    // `depositAllocation + reserveAllocation`, so every deposit with a reserve
+    // share credited more than it debited. `depositCredit.js` holds the one
+    // rule and why it is one rule.
     const { depositCredit, reserveCredit, total } = depositCreditSplit(order);
-    // GOVERNANCE §1: via merchantWallet.service.js (sole tokenBalance writer);
-    // canonical txId shared with every other deposit-deduction path.
-    const { merchant: updatedMerchant } = await debitMerchantTokens({
+
+    // ── The merchant's side, first ──────────────────────────────────────────
+    // Refusing here is the ordinary case (a merchant confirming more than they
+    // hold) and it must refuse BEFORE anything else moves. Keyed so a retry
+    // debits once.
+    const { merchant: debited } = await debitMerchantTokens({
       merchantId: order.merchantId, amount: total,
       reason: `Deposit ${order.orderId} confirmed — tokens dispensed to user`,
-      refModel: 'PaymentOrder', refId: order._id.toString(),
-      txId: `mw_dep_deduct_${order._id}`, session,
+      refModel: 'PaymentOrder', refId: order.orderId,
+      txId: `mw_dep_deduct_${order.orderId}`,
     });
-    if (!updatedMerchant) { await abortOrEnd(session); return res.status(400).json({ success: false, message: 'Merchant insufficient token balance' }); }
-    if (depositCredit > 0) await creditDeposit(order.userId, depositCredit, order._id.toString(), session);
-    // GOVERNANCE §7: reserveBalance is written ONLY via walletAuthority now
-    // (was a raw $inc with no ledger trail). Idempotent + ledgered.
-    if (reserveCredit > 0) await creditReserve(order.userId, reserveCredit, order._id.toString(), session);
-    await releaseUTR(order._id);
-    await mongoose.model('Transaction').create([{ userId: order.userId, type: 'DEPOSIT', amount: order.tokenAmount, balanceType: 'DEPOSIT', status: 'SUCCESS', referenceId: order._id.toString(), description: `Deposit completed: ${order.tokenAmount} tokens`, timestamp: new Date() }], withSession(session));
-    await commitOrEnd(session);
+    if (!debited) {
+      return res.status(400).json({ success: false, message: 'Merchant insufficient token balance' });
+    }
+
+    // ── The player's side ───────────────────────────────────────────────────
+    // Both keyed on the order, so a retry after a partial failure credits once.
+    // `reserveBalance` goes through the wallet authority like everything else;
+    // it was once a raw increment with no ledger trail behind it.
+    if (depositCredit > 0) await creditDeposit(order.userId, depositCredit, order.orderId);
+    if (reserveCredit > 0) await creditReserve(order.userId, reserveCredit, order.orderId);
+    await releaseUTR(order.orderId);
+
+    // ── The gate, and the record that the money moved ───────────────────────
+    // `completeOrder` posts the DEPOSIT_COMPLETED accounting event in the SAME
+    // transaction as the state change, so a completed order always has its
+    // ledger entry.
+    const confirmed = await completeOrder(order.orderId, {
+      expectFrom: ['PAID', 'PROCESSING'],
+      set: {
+        completedAt: new Date(),
+        approvedBy: req.merchantId || req.user.userId,
+        approvedAt: new Date(),
+      },
+    });
+    if (!confirmed.ok) {
+      // The money moved and the order would not advance. That is a repair case,
+      // not a rollback: the movements are keyed, so the next confirm replays
+      // them as no-ops. It must be loud rather than silent.
+      console.error(`[deposit-confirm] ${order.orderId} money moved but transition refused:`, confirmed.reason);
+      return res.status(409).json({
+        success: false,
+        message: `Cannot confirm in ${confirmed.status ?? 'unknown'} status`,
+      });
+    }
+
     await emitWalletUpdate(order.userId);
-    // The POST-transition document, not the stale one read at the top.
+
+    // The POST-transition order, not the one read at the top.
     const settled = confirmed.order ?? order;
-    res.json({ success: true, message: 'Deposit completed', order: isMerchantActor ? sanitizeOrderForMerchant(settled) : settled });
-  } catch (err) { await abortOrEnd(session); res.status(500).json({ success: false, message: 'Failed to confirm deposit' }); }
+    res.json({
+      success: true,
+      message: confirmed.idempotent ? 'Deposit already completed' : 'Deposit completed',
+      order: isMerchantActor ? sanitizeOrderForMerchant(settled) : settled,
+    });
+  } catch (err) {
+    console.error('POST /deposit/:orderId/confirm error:', err);
+    res.status(500).json({ success: false, message: 'Failed to confirm deposit' });
+  }
 });
 
 router.get('/orders', authenticate, async (req, res) => {
   try {
     const { status, type, limit = 20, skip = 0 } = req.query;
-    const parsedLimit = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
-    const parsedSkip  = Math.max(parseInt(skip) || 0, 0);
-    const PaymentOrder = mongoose.model('PaymentOrder');
-    const query = { userId: req.user._id };
-    if (status) query.status = status;
-    if (type)   query.type   = type;
-    const [orders, total] = await Promise.all([
-      PaymentOrder.find(query).sort({ createdAt: -1 }).limit(parsedLimit).skip(parsedSkip),
-      PaymentOrder.countDocuments(query),
-    ]);
+    const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+    const parsedSkip  = Math.max(parseInt(skip, 10) || 0, 0);
+    // Page and total from ONE query. `find()` plus `countDocuments()` are two
+    // reads of a table that accepts an order between them, so a player watching
+    // their own history saw a footer that disagreed with the rows above it.
+    const { orders, total } = await db.orders.findOrders({
+      userId: req.user.userId,
+      state: status || null,
+      orderType: type || null,
+      limit: parsedLimit,
+      offset: parsedSkip,
+    });
     res.json({ success: true, orders, pagination: { total, limit: parsedLimit, skip: parsedSkip } });
-  } catch { res.status(500).json({ success: false, message: 'Failed to fetch orders' }); }
+  } catch (err) {
+    console.error('GET /payment/orders error:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch orders' });
+  }
 });
+
+/**
+ * One order, and the ownership check that goes with it.
+ *
+ * Three handlers below repeated the same `$or` over an order id and a
+ * conditionally-valid ObjectId, then compared `order.userId` after the fetch.
+ * An order id is the id now — there is no second key to match on — and the
+ * ownership test lives here so a handler cannot be added without one.
+ *
+ * Returns null when the order does not exist OR the caller may not see it: a
+ * distinguishable 404-vs-403 tells someone probing ids which ones are real.
+ */
+async function ownedOrder(req) {
+  const order = await db.orders.getOrderRecord(req.params.orderId);
+  if (!order) return null;
+  if (String(order.userId) !== String(req.user.userId) && !req.user.isAdmin) return null;
+  return order;
+}
 
 router.get('/order/:orderId', authenticate, async (req, res) => {
   try {
-    const PaymentOrder = mongoose.model('PaymentOrder');
-    const order = await PaymentOrder.findOne({ $or: [{ orderId: req.params.orderId }, { _id: req.params.orderId.match(/^[0-9a-fA-F]{24}$/) ? req.params.orderId : null }] }).lean();
+    const order = await ownedOrder(req);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (order.userId.toString() !== req.user._id.toString() && !req.user.isAdmin) return res.status(403).json({ success: false, message: 'Access denied' });
     res.json({ success: true, order });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+  } catch (err) {
+    console.error('GET /payment/order/:orderId error:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch order' });
+  }
 });
 
 // Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08) — no
@@ -177,7 +253,7 @@ router.get('/rates', async (req, res) => {
 
 router.post('/order/cancel', authenticate, async (req, res) => {
   try {
-    await cancelOrder(req.user._id, req.user.isAdmin, req.body.orderId);
+    await cancelOrder(req.user.userId, req.user.isAdmin, req.body.orderId);
     res.json({ success: true, message: 'Order cancelled' });
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message }); }
 });
@@ -186,15 +262,16 @@ router.post('/order/cancel', authenticate, async (req, res) => {
 // Returns only the fields the frontend needs to poll during active payment flow.
 router.get('/order/:orderId/status', authenticate, async (req, res) => {
   try {
-    const PaymentOrder = mongoose.model('PaymentOrder');
-    const order = await PaymentOrder.findOne({
-      $or: [{ orderId: req.params.orderId }, { _id: req.params.orderId.match(/^[0-9a-fA-F]{24}$/) ? req.params.orderId : null }],
-    }).lean();
+    const order = await ownedOrder(req);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (order.userId.toString() !== req.user._id.toString() && !req.user.isAdmin)
-      return res.status(403).json({ success: false, message: 'Access denied' });
-    const proofExpiresAt = order.proofExpiresAt || new Date(new Date(order.createdAt).getTime() + 48 * 60 * 60 * 1000);
+
+    // The proof screenshot expires. The fallback is 48 hours from creation for
+    // an order written before the column existed — an absent expiry must not
+    // read as "never expires" on a payment screenshot.
+    const proofExpiresAt = order.proofExpiresAt
+      || new Date(new Date(order.createdAt).getTime() + 48 * 60 * 60 * 1000);
     const proofVisible = new Date(proofExpiresAt).getTime() > Date.now();
+
     res.json({
       success: true,
       status:           order.status,
@@ -203,7 +280,10 @@ router.get('/order/:orderId/status', authenticate, async (req, res) => {
       utrNumber:        order.utrNumber,
       proofScreenshot:  proofVisible ? order.proofScreenshot : null,
     });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+  } catch (err) {
+    console.error('GET /payment/order/:orderId/status error:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch order status' });
+  }
 });
 
 // ─── POST /api/payment/order/:orderId/dispute — user raises dispute (Section 2B) ─
@@ -213,13 +293,8 @@ router.post('/order/:orderId/dispute', authenticate, async (req, res) => {
     const { reason } = req.body;
     if (!reason?.trim()) return res.status(400).json({ success: false, message: 'reason is required' });
 
-    const PaymentOrder = mongoose.model('PaymentOrder');
-    const order = await PaymentOrder.findOne({
-      $or: [{ orderId: req.params.orderId }, { _id: req.params.orderId.match(/^[0-9a-fA-F]{24}$/) ? req.params.orderId : null }],
-    });
+    const order = await ownedOrder(req);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (order.userId.toString() !== req.user._id.toString())
-      return res.status(403).json({ success: false, message: 'Access denied' });
     if (order.status !== 'PAID')
       return res.status(400).json({ success: false, message: 'Can only dispute PAID orders' });
 
@@ -231,13 +306,12 @@ router.post('/order/:orderId/dispute', authenticate, async (req, res) => {
     if (Date.now() - paidAt < tenMin)
       return res.status(400).json({ success: false, message: 'Please wait at least 10 minutes before raising a dispute' });
 
-    const disputed = await disputeOrder(order._id, {
+    const disputed = await disputeOrder(order.orderId, {
       expectFrom: 'PAID',
       set: {
         disputeReason:   reason.trim(),
         disputeRaisedAt: new Date(),
         disputeRaisedBy: 'user',
-        updatedAt:       new Date(),
       },
     });
     if (!disputed.ok) {
@@ -248,7 +322,7 @@ router.post('/order/:orderId/dispute', authenticate, async (req, res) => {
 
     // Notify admin SSE (GOVERNANCE §11: order_disputed)
     emitAdminUpdate('order_disputed', {
-      orderId:   order._id,
+      orderId:   order.orderId,
       raisedBy:  'user',
       reason:    reason.trim(),
       server_ts: Date.now(),
@@ -262,25 +336,20 @@ router.post('/order/:orderId/status', authenticate, async (req, res) => {
   try {
     const { status, reason = 'User requested dispute' } = req.body;
     if (status !== 'DISPUTED') return res.status(400).json({ success: false, message: 'Only DISPUTED transition is supported here' });
-    const PaymentOrder = mongoose.model('PaymentOrder');
-    const order = await PaymentOrder.findOne({
-      $or: [{ orderId: req.params.orderId }, { _id: req.params.orderId.match(/^[0-9a-fA-F]{24}$/) ? req.params.orderId : null }],
-      userId: req.user._id,
-    });
+    const order = await ownedOrder(req);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    const moved = await disputeOrder(order._id, {
+    const moved = await disputeOrder(order.orderId, {
       expectFrom: 'PAID',
       set: {
         disputeReason:   String(reason).trim().slice(0, 1000),
         disputeRaisedAt: new Date(),
         disputeRaisedBy: 'user',
-        updatedAt:       new Date(),
       },
     });
     if (!moved.ok) {
       return res.status(409).json({ success: false, message: `Cannot transition ${moved.status ?? 'unknown'} → ${status}` });
     }
-    emitAdminUpdate('queue_order_update', { orderId: order._id, status: moved.status });
+    emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: moved.status });
     res.json({ success: true, order: moved.order ?? order });
   } catch (err) { res.status(500).json({ success: false, message: 'Failed to update status' }); }
 });

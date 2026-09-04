@@ -9,8 +9,8 @@
  * one.
  *
  * These assert the boundary function directly rather than through the route,
- * because the route needs a live MongoDB (the integration suite covers that) and
- * an authentication boundary should be provable without one.
+ * because the route needs a live database and an authentication boundary
+ * should be provable without one.
  */
 import { describe, it, expect } from 'vitest';
 import crypto from 'crypto';

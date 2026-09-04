@@ -3,7 +3,7 @@
  * services/cpuWorker.js — the worker-thread ENTRY for the CPU pool (item 5).
  *
  * Runs on a Node worker_thread, NOT the main event loop. It imports ONLY pure,
- * side-effect-free task functions (no mongoose, no network) and dispatches by
+ * side-effect-free task functions (no data layer, no network) and dispatches by
  * task name. You cannot pass a function across the thread boundary, so tasks are
  * registered here by name and invoked with the structured-cloned payload.
  *

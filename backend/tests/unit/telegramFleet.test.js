@@ -22,79 +22,21 @@
  *      person and substituted into HTML we send as the platform.
  */
 import { describe, it, expect } from 'vitest';
-import { TelegramBot, SINGULAR_BOT_ROLES, BOT_ROLES } from '../../domains/telegram/telegram.model.js';
 import {
   validateTemplate, render, escapeHtml, DEFAULT_TEMPLATES, TEMPLATE_KEYS, TEMPLATE_VARIABLES,
 } from '../../domains/telegram/telegramTemplates.service.js';
 import { webhookPathForRole } from '../../domains/telegram/telegramBots.service.js';
 
 /**
- * Build a bot document and run the real validation path.
+ * The "at most one live bot per singular role" invariant is NOT tested here any
+ * more. It is a GENERATED column plus a partial unique index, so the only thing
+ * that can demonstrate it is a real database refusing the second row — which
+ * `database/tests/telegramPg.test.js` does, including the UPDATE path that a
+ * validation hook could never have seen.
  *
- * `doc.validate()` and not `validateSync()`: Mongoose runs no middleware at all
- * for the synchronous variant, so a test built on it would report `liveSlot`
- * unset no matter what the hook does — passing whether the invariant held or
- * not. `.save()` runs pre-validate, and `.validate()` is the same door without
- * a database, which makes this the path the service actually takes.
+ * What stays here is what is genuinely pure: the webhook routing table and the
+ * template validator and renderer.
  */
-async function bot(overrides = {}) {
-  const doc = new TelegramBot({
-    label: 'test', role: 'signin', botId: '1', username: 'b',
-    tokenEncrypted: 'x', webhookSecret: 'y',
-    ...overrides,
-  });
-  await doc.validate();
-  return doc;
-}
-
-describe('at most one bot can claim a singular role', () => {
-  it('stamps liveSlot on an ACTIVE bot in a singular role', async () => {
-    // liveSlot is what the unique index watches. If the hook does not set it,
-    // the index guards nothing and two live sign-in bots become writable.
-    for (const role of SINGULAR_BOT_ROLES) {
-      expect((await bot({ role, status: 'ACTIVE' })).liveSlot).toBe(role);
-    }
-  });
-
-  it('leaves liveSlot unset for STANDBY and RETIRED bots', async () => {
-    // Spares are the whole point of the collection: any number may exist.
-    expect((await bot({ status: 'STANDBY' })).liveSlot).toBeUndefined();
-    expect((await bot({ status: 'RETIRED' })).liveSlot).toBeUndefined();
-  });
-
-  it('leaves liveSlot unset for roles that may have many live bots', async () => {
-    // Broadcast, moderation and generic bots are outbound only — nothing
-    // authenticates an inbound update against them, so several may run at once.
-    for (const role of BOT_ROLES.filter(r => !SINGULAR_BOT_ROLES.has(r))) {
-      expect((await bot({ role, status: 'ACTIVE' })).liveSlot, role).toBeUndefined();
-    }
-  });
-
-  it('clears liveSlot when a live bot is stood down', async () => {
-    // The failure this guards: a bot demoted with `status` alone but a stale
-    // liveSlot left behind would keep occupying the slot, and promoting its
-    // replacement would then fail on a duplicate key.
-    const doc = await bot({ status: 'ACTIVE' });
-    expect(doc.liveSlot).toBe('signin');
-    doc.status = 'STANDBY';
-    await doc.validate();
-    expect(doc.liveSlot).toBeUndefined();
-  });
-
-  it('declares the index the invariant relies on', () => {
-    const indexes = TelegramBot.schema.indexes();
-    const slot = indexes.find(([keys]) => keys.liveSlot === 1);
-    expect(slot, 'liveSlot must be indexed or nothing enforces one live bot per role').toBeTruthy();
-    expect(slot[1].unique).toBe(true);
-    // Sparse, or every standby and multi-role bot would collide on `null`.
-    expect(slot[1].sparse).toBe(true);
-  });
-
-  it('refuses two rows for the same Telegram bot', () => {
-    const botId = TelegramBot.schema.path('botId');
-    expect(botId.options.unique, 'one row per real bot, or "which is live?" is ambiguous').toBe(true);
-  });
-});
 
 describe('only the roles that receive updates have a webhook', () => {
   it('routes sign-in and recovery to their own endpoints', () => {

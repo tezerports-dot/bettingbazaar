@@ -147,7 +147,7 @@ class SSEManager {
 
     /**
      * sendToUser — push balance_update or order_status to a specific user.
-     * Called by wallet.service.js after every atomic wallet operation.
+     * Called by realtimeEmitters.sseBalancePush after every wallet movement.
      * Zero extra infrastructure: reuses the existing SSE HTTP connection.
      */
     sendToUser(userId, event, data) {

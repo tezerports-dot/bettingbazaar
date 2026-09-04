@@ -1,23 +1,22 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-import { Cycle } from '../../models/index.js';
+import { randomInt } from 'node:crypto';
+import { db } from '#db';
 import { fetchCycleHistory } from './cycleHistory.service.js';
-// Fallback phase offsets when SystemConfig is missing or fails validPhaseSet.
-// Imported, never restated — see the header on DEFAULT_CYCLE_PHASES.
-import { DEFAULT_CYCLE_PHASES } from '../configuration/systemConfig.model.js';
-import mongoose from 'mongoose';
 // Derived cycle pools (FLAGS.DERIVED_CYCLE_POOLS, default off) — see
 // cyclePool.service.js for why the running total is the scaling ceiling.
-import { derivedPoolsEnabled, refreshRealPools } from './cyclePool.service.js';
+import { computeRealPools } from './cyclePool.service.js';
 // Public cycle payloads must never carry real/phantom pools (they reveal the
 // minority-side winner). assertPublicCycleSafe throws if one slips in.
 import { assertPublicCycleSafe } from './cyclePublicView.js';
 // One vocabulary for cycle types — labels, which config keys hold each type's
-// phases and stake limits, and which types tile the hour. See cycleTypes.js for
-// why this is a module and not a set of ternaries.
+// phases and stake limits, which types tile the hour, and the fallback phase
+// offsets used when the config is missing or fails validPhaseSet. See
+// cycleTypes.js for why this is a module and not a set of ternaries.
 import {
-  CYCLE_TYPES, CYCLE_TYPE_VALUES, INTERVAL_CYCLE_TYPES,
+  CYCLE_TYPES, CYCLE_TYPE_VALUES, DEFAULT_CYCLE_PHASES, INTERVAL_CYCLE_TYPES,
   isCycleType, cycleMeta, cycleLabel, phasesFor,
 } from './cycleTypes.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 // ── CYCLE PHASE OFFSETS (Business Config Audit, 2026-07-11) ───────────────────
 // Seconds BEFORE a cycle's endTime that each phase fires. Previously hardcoded
@@ -74,8 +73,7 @@ class CycleGenerator {
         }
         let result = DEFAULT_CYCLE_PHASES;
         try {
-            const SystemConfig = mongoose.model('SystemConfig');
-            const cfg = await SystemConfig.findOne({ key: 'main' }).select('cyclePhases').lean();
+            const cfg = await getSystemConfig();
             const cp = cfg?.cyclePhases;
             if (cp) {
                 // Merged and validated per key, so one bad admin value falls back
@@ -102,8 +100,7 @@ class CycleGenerator {
      */
     async getCycleDurationMinutes() {
         try {
-            const SystemConfig = mongoose.model('SystemConfig');
-            const cfg = await SystemConfig.findOne({ key: 'main' }).select('cycleDurationMinutes').lean();
+            const cfg = await getSystemConfig();
             const d = cfg?.cycleDurationMinutes;
             if (Number.isInteger(d) && d >= 10 && d <= 60 && 60 % d === 0) return d;
         } catch { /* fall through to default */ }
@@ -156,7 +153,12 @@ class CycleGenerator {
         // ensureActive*Cycle() above already force-expired any stale ones,
         // but guard on endTime here too in case any slip through.
         const nowMs = Date.now();
-        const existing = await Cycle.find({ status: { $in: ['OPEN', 'MERGED', 'CLOSED'] } }).lean();
+        // With their pools, because that is what the broadcast carries. Reading
+        // them per cycle afterwards would be one round trip per type on every
+        // boot, each seeing the database at its own instant.
+        const existing = await db.markets.activeCyclesWithPools({
+            statuses: ['OPEN', 'MERGED', 'CLOSED'], includeExpired: true,
+        });
         for (const c of existing) {
             const endMs = new Date(c.endTime).getTime();
             if (endMs > nowMs - 60000) {  // allow 60s grace for cycles in CLOSED/celebration
@@ -207,9 +209,12 @@ class CycleGenerator {
         try {
             const now = Date.now();
 
-            // Exclude RESULT_DECLARED — GameEngine handles those for payout
-            const activeCycles = await Cycle.find({
-                status: { $in: ['OPEN', 'MERGED', 'CLOSED'] }
+            // Exclude RESULT_DECLARED — the settlement engine handles those.
+            // `includeExpired` is what finds a cycle the server was down for:
+            // every other read filters those out, and a cycle nothing can see
+            // is a round players' stakes are locked against forever.
+            const activeCycles = await db.markets.activeCyclesWithPools({
+                statuses: ['OPEN', 'MERGED', 'CLOSED'], includeExpired: true,
             });
 
             // Admin-configured phase offsets (cached 30s). Read once per tick,
@@ -226,7 +231,11 @@ class CycleGenerator {
                 // can create the correct current cycle on the next tick.
                 if (cycleEndMs <= now && cycle.status !== 'CLOSED') {
                     console.warn(`⚠️  updateCycleStatuses: force-closing stale ${cycle.type} cycle ${cycle.cycleId}`);
-                    await Cycle.updateOne({ _id: cycle._id }, { status: 'CLOSED' });
+                    // Guarded on the statuses it may move FROM, so a tick that
+                    // lost a race does not drag a cycle backwards out of CLOSED.
+                    await db.markets.setCycleStatus(cycle.cycleId, 'CLOSED', {
+                        from: ['OPEN', 'MERGED'],
+                    });
                     cycle.status = 'CLOSED';
                 }
                 if (cycleEndMs <= now - 10000 && cycle.status === 'CLOSED') {
@@ -265,7 +274,10 @@ class CycleGenerator {
 
                 // ─── PHASE 1: MERGE ─────────────────────────────────────────
                 if (now >= mergeTime && now < equalizerTime && cycle.status === 'OPEN') {
-                    await Cycle.updateOne({ _id: cycle._id }, { status: 'MERGED' });
+                    const merged = await db.markets.setCycleStatus(cycle.cycleId, 'MERGED', { from: ['OPEN'] });
+                    // Another tick got there first. Not an error — but the
+                    // announcement below must not fire twice, so skip it.
+                    if (!merged.ok) continue;
                     cycle.status = 'MERGED';
                     this.emitPublic('cycle_phase', {
                         cycleId: cycle.cycleId,
@@ -290,7 +302,10 @@ class CycleGenerator {
                 // silently skipped and cycle stayed OPEN forever.
                 // Fix: allow OPEN or MERGED → both can transition to CLOSED.
                 if (now >= betsClosedTime && now < fireworksTime && ['OPEN', 'MERGED'].includes(cycle.status)) {
-                    await Cycle.updateOne({ _id: cycle._id }, { status: 'CLOSED' });
+                    const closed = await db.markets.setCycleStatus(cycle.cycleId, 'CLOSED', {
+                        from: ['OPEN', 'MERGED'],
+                    });
+                    if (!closed.ok) continue;
                     cycle.status = 'CLOSED';
                     this.emitPublic('cycle_phase', {
                         cycleId: cycle.cycleId,
@@ -341,17 +356,21 @@ class CycleGenerator {
             // them would pick a winner from pools that are not the real ones and
             // pay out accordingly. The cycle stays un-completed and the next
             // tick retries, which is a delay rather than a mispayment.
-            const derived = await derivedPoolsEnabled();
-            const exactPools = await refreshRealPools(cycle.cycleId, { exact: true }).catch((e) => {
-                console.error(`[Cycle] exact pool refresh failed for ${cycle.cycleId}:`, e.message);
+            const exactPools = await computeRealPools(cycle.cycleId).catch((e) => {
+                console.error(`[Cycle] pool read failed for ${cycle.cycleId}:`, e.message);
                 return null;
             });
-            if (derived && !exactPools) {
-                console.error(`[Cycle] ⛔ Refusing to settle ${cycle.cycleId} on unverified pools — retrying next tick.`);
+            // No fallback to a figure on the cycle row. There is none — the real
+            // pools are derived and the row carries only the phantom ones — and
+            // settling on a stale number picks the winning SIDE from pools that
+            // are not the real ones and pays out accordingly. The cycle stays
+            // un-completed and the next tick retries: a delay, not a mispayment.
+            if (!exactPools) {
+                console.error(`[Cycle] Refusing to settle ${cycle.cycleId} on unread pools — retrying next tick.`);
                 return;
             }
-            const realDelhi  = exactPools ? exactPools.realDelhi  : (cycle.realDelhi  || 0);
-            const realBombay = exactPools ? exactPools.realBombay : (cycle.realBombay || 0);
+            const realDelhi  = exactPools.realDelhi;
+            const realBombay = exactPools.realBombay;
 
             // Winner = minority real-bet side (platform profits from majority)
             let winner;
@@ -360,29 +379,58 @@ class CycleGenerator {
             } else if (realBombay > realDelhi) {
                 winner = 'DELHI';
             } else {
-                winner = Math.random() < 0.5 ? 'DELHI' : 'BOMBAY';
+                // EXACT TIE — the only branch where a real-money outcome is
+                // decided by chance rather than by the pools, so it must be
+                // decided by a CSPRNG.
+                //
+                // This was `Math.random() < 0.5`. V8 implements Math.random as
+                // xorshift128+, which is seeded per isolate and RECOVERABLE from
+                // a modest run of observed outputs — an adversary who can force
+                // ties (trivial in a low-liquidity cycle: bet the two sides
+                // equally) and watch the results could predict subsequent
+                // tie-breaks and bet the winning side. Independently of
+                // exploitability, GLI-19, UKGC RTS 2A and the MGA technical
+                // requirements all demand that anything determining a game
+                // outcome come from a cryptographically secure generator.
+                //
+                // randomInt(2) is crypto-backed and rejection-samples, so the
+                // two sides are exactly equiprobable (no modulo bias).
+                winner = randomInt(2) === 0 ? 'DELHI' : 'BOMBAY';
             }
 
-            await Cycle.updateOne(
-                { _id: cycle._id },
-                { status: 'RESULT_DECLARED', winner, completedAt: new Date(), isSettled: 'PENDING' }
-            );
-
-            const cycleType      = cycleLabel(cycle.type);
-            // FIX 2 — send combined totals (same numbers users were watching during betting)
-            // Old code sent realDelhi/realBombay — users could infer phantom by comparing to totalDelhi
+            // The winner and the status in ONE statement, guarded on
+            // `winner IS NULL` — trap 3. Two statements open a window in which
+            // the cycle reads as declared with no winner, and the settlement
+            // sweep reads exactly that.
             //
-            // Recomputed from the exact pools rather than read off `cycle`: the
-            // refresh above rewrote realDelhi/totalDelhi in the database, but
-            // this in-memory document was loaded before that and still carries
-            // the pre-refresh totals. Publishing those would announce a final
-            // result that disagrees with the settled cycle.
-            const combinedDelhi  = exactPools
-                ? realDelhi  + (cycle.phantomDelhi  || 0)
-                : (cycle.totalDelhi  || 0);
-            const combinedBombay = exactPools
-                ? realBombay + (cycle.phantomBombay || 0)
-                : (cycle.totalBombay || 0);
+            // A refusal means another tick declared it first. Stop rather than
+            // announcing a result this pass did not decide: the winner in hand
+            // is from THIS adjudication, and the one players are about to be
+            // paid on is the other tick's.
+            const declared = await db.markets.declareWinner(cycle.cycleId, winner, {
+                by: 'engine', confidence: null,
+            });
+            if (!declared.ok) {
+                if (declared.reason === 'ALREADY_DECLARED') {
+                    console.log(`[Cycle] ${cycle.cycleId} was declared by another tick — ${declared.winner}`);
+                } else {
+                    console.error(`[Cycle] could not declare ${cycle.cycleId}:`, declared.reason);
+                }
+                return;
+            }
+
+            const cycleType = cycleLabel(cycle.type);
+            // COMBINED totals only — the same numbers players watched during
+            // betting. Sending realDelhi/realBombay would let anyone infer the
+            // phantom split by subtraction, and since the winner is the
+            // MINORITY real side, that is the result itself.
+            //
+            // Built from the pools this adjudication actually used, not from
+            // whatever the cached cycle object carried: announcing a total that
+            // disagrees with the one the winner was decided from is how a
+            // result comes to look arbitrary.
+            const combinedDelhi  = realDelhi  + cycle.phantomDelhi;
+            const combinedBombay = realBombay + cycle.phantomBombay;
 
             // Public result — combined pool only, guarded against a real/phantom
             // field being added here later.
@@ -403,8 +451,8 @@ class CycleGenerator {
                 winner,
                 realDelhi,
                 realBombay,
-                phantomDelhi:  cycle.phantomDelhi  || 0,
-                phantomBombay: cycle.phantomBombay || 0,
+                phantomDelhi:  cycle.phantomDelhi,
+                phantomBombay: cycle.phantomBombay,
                 totalDelhi:    combinedDelhi,
                 totalBombay:   combinedBombay,
                 timestamp:     new Date()
@@ -493,62 +541,76 @@ class CycleGenerator {
      */
     async runPhantomEqualizer(cycle) {
         try {
-            // Guard on phantomBetsClosed rather than a snapshot comparison:
-            // makes the write idempotent if two ticks overlap. `new: false`
-            // returns the PRE-image — the exact document the pipeline ran
-            // against — so the equalized figure and the "was it already
-            // balanced?" decision come from what the write actually saw, in
-            // one round trip and with no second read to go stale.
-            const before = await Cycle.findOneAndUpdate(
-                { _id: cycle._id, phantomBetsClosed: false },
-                [
-                    // Stage 1 — both phantom sides go to the higher of the two.
-                    // Every expression in a $set stage is evaluated against the
-                    // stage's INPUT, so both fields see the original pair.
-                    { $set: { phantomDelhi:  { $max: ['$phantomDelhi', '$phantomBombay'] },
-                              phantomBombay: { $max: ['$phantomDelhi', '$phantomBombay'] } } },
-                    // Stage 2 — restore total = real + phantom against the
-                    // equalized values from stage 1. realDelhi and realBombay
-                    // are READ here and never written: real money belongs to
-                    // the bet routes' $inc alone.
-                    { $set: { totalDelhi:  { $add: ['$realDelhi',  '$phantomDelhi'] },
-                              totalBombay: { $add: ['$realBombay', '$phantomBombay'] },
-                              phantomBetsClosed: true,
-                              phantomBalanced:   true } },
-                ],
-                { new: false }
-            );
+            // The arithmetic is IN the statement and guarded on
+            // `phantom_bets_closed`, so two overlapping ticks equalize once.
+            //
+            // What this replaced read the cycle, took the max of the two phantom
+            // sides in JavaScript and wrote both back as ABSOLUTE values — and
+            // it ran while real betting was still open, so a bet landing between
+            // the read and the write had its pool contribution silently
+            // overwritten. Players watched the pool SHRINK just after they bet.
+            const result = await db.markets.equalizePhantomPools(cycle.cycleId);
+            if (!result.ok) return;   // already closed, or already declared
 
-            // Another tick already closed phantom betting — nothing to announce.
-            if (!before) return;
-
-            const priorDelhi  = before.phantomDelhi  || 0;
-            const priorBombay = before.phantomBombay || 0;
-            const equalizedValue = Math.max(priorDelhi, priorBombay);
+            const { cycle: after } = result;
+            const equalizedValue = after.phantomDelhi;
             const cycleType = cycleLabel(cycle.type);
 
-            if (priorDelhi === priorBombay) {
-                // Nothing to balance — the write only closed phantom betting.
+            // Nothing to balance — the write only closed phantom betting.
+            if (cycle.phantomDelhi === cycle.phantomBombay) {
                 console.log(`⚖️  Phantom equalizer: ${cycle.cycleId} — already balanced at ₹${equalizedValue}`);
                 return;
             }
 
-            // FIX 3 — phantom_equalized → ADMIN ROOM ONLY
-            // Before: this.io.emit('phantom_equalized', ...) → all users saw phantom amounts
-            // After:  this.emitAdmin('phantom_equalized', ...) → admins only
+            // ADMIN ROOM ONLY. Phantom figures expose the house's balancing, and
+            // the winner is the minority REAL side — so a client that can see
+            // them can infer the result before it is declared.
             this.emitAdmin('phantom_equalized', {
                 cycleId:       cycle.cycleId,
                 type:          cycle.type,
                 phantomDelhi:  equalizedValue,
                 phantomBombay: equalizedValue,
                 message:       `${cycleType} phantom pools balanced to ₹${equalizedValue}`,
-                timestamp:     new Date()
+                timestamp:     new Date(),
             });
 
             console.log(`⚖️  Phantom equalizer: ${cycle.cycleId} (${cycleType}) → ₹${equalizedValue} each side`);
         } catch (error) {
             console.error('❌ Phantom equalizer error:', error);
         }
+    }
+
+    /**
+     * A cycle whose end time passed while nobody was running: adjudicate it.
+     *
+     * ══════════════════════════════════════════════════════════════════════
+     * WHAT THIS REPLACED WAS A MONEY BUG, NOT A HOUSEKEEPING ONE
+     * ══════════════════════════════════════════════════════════════════════
+     * Both ensure paths force-expired a stale cycle by writing
+     * `{ status: 'RESULT_DECLARED', winner: 'DELHI' }` — a HARDCODED winner, on
+     * a round nobody adjudicated, chosen because DELHI is the first side in the
+     * list.
+     *
+     * That is not an inert placeholder. The settlement engine claims on
+     * `winner IS NOT NULL`, so the very next tick would pay every DELHI bet on
+     * that cycle at 2x and consume every BOMBAY stake — real money, decided by
+     * alphabetical order, every time a deploy or a crash outlasted a block.
+     *
+     * A stale cycle gets the SAME adjudication as any other: the minority real
+     * pool wins. Those pools are derived from the bets, so they are just as
+     * computable an hour late as they were on time, and `completeCycle` is the
+     * one place that decides a winner.
+     *
+     * If the pools cannot be read, the cycle is left alone and the next tick
+     * retries. A delay is not a mispayment.
+     */
+    async adjudicateStaleCycle(cycle, label) {
+        console.warn(
+            `⚠️  Stale ${label} cycle detected: ${cycle.cycleId} `
+            + `(ended ${new Date(cycle.endTime).toISOString()}). Adjudicating.`,
+        );
+        await this.completeCycle(cycle);
+        delete this.liveCycleCache[cycle.type];
     }
 
     /**
@@ -590,9 +652,8 @@ class CycleGenerator {
             // winner=null to any user who loads the page mid-celebration.
             if (Date.now() < this.celebrationLockUntil[type]) return;
 
-            const existing = await Cycle.findOne({
-                type,
-                status: { $in: ['OPEN', 'MERGED', 'CLOSED'] }
+            const existing = await db.markets.currentCycleWithPools(type, {
+                statuses: ['OPEN', 'MERGED', 'CLOSED'],
             });
 
             if (existing) {
@@ -602,17 +663,12 @@ class CycleGenerator {
                     // Healthy active cycle — nothing to do
                     return;
                 }
-                // ── STALE CYCLE RECOVERY ─────────────────────────────────────────
-                // Server was down (deploy, crash, cold start) while this cycle was live.
-                // endTime has already passed but status never advanced to RESULT_DECLARED.
-                // Force-expire it so a fresh cycle can be created for the current block.
-                console.warn(`⚠️  Stale ${label} cycle detected: ${existing.cycleId} (ended ${new Date(endMs).toISOString()}). Force-expiring.`);
-                await Cycle.updateOne(
-                    { _id: existing._id },
-                    { status: 'RESULT_DECLARED', winner: 'DELHI', isSettled: 'PENDING',
-                      completedAt: new Date(), _forceExpired: true }
-                );
-                delete this.liveCycleCache[type];
+                // ── STALE CYCLE RECOVERY ─────────────────────────────────────
+                // The server was down (deploy, crash, cold start) while this
+                // cycle was live: its end time has passed but no result was
+                // declared. It is ADJUDICATED, not stamped with a hardcoded
+                // winner — see adjudicateStaleCycle for what that used to cost.
+                await this.adjudicateStaleCycle(existing, label);
                 // Fall through — create the new current-block cycle below
             }
 
@@ -642,45 +698,27 @@ class CycleGenerator {
             startTime.setMilliseconds(0);
             const endTime = new Date(startTime.getTime() + durationMin * 60 * 1000);
 
-            // FIX 5: Duplicate cycle prevention — use findOneAndUpdate with upsert
-            // so that if two service instances or two rapid interval ticks both
-            // reach this point simultaneously, only ONE document is created.
-            // MongoDB's unique index on {type, startTime} (defined in models/cycle.model.js)
-            // guarantees at most one cycle per type per time block.
-            // On a duplicate-key error (code 11000) we silently abort — the
-            // winning instance already created the cycle.
-            let cycle;
-            try {
-                cycle = await Cycle.findOneAndUpdate(
-                    { type, startTime: startTime.getTime() },
-                    {
-                        $setOnInsert: {
-                            cycleId:           `${meta.idPrefix}_${Date.now()}`,
-                            type,
-                            startTime:         startTime.getTime(),
-                            endTime:           endTime.getTime(),
-                            status:            'OPEN',
-                            realDelhi:         0,
-                            realBombay:        0,
-                            totalDelhi:        0,
-                            totalBombay:       0,
-                            phantomDelhi:      0,
-                            phantomBombay:     0,
-                            phantomBetsClosed: false,
-                            isSettled:         'PENDING'
-                        }
-                    },
-                    { upsert: true, new: true, setDefaultsOnInsert: true }
-                );
-            } catch (err) {
-                if (err.code === 11000) {
-                    // Another instance just created this cycle — not an error, skip silently.
-                    return;
-                }
-                throw err;
-            }
-            // If the document already existed (no insert), skip broadcast.
-            if (!cycle.__v && cycle.status !== 'OPEN') return;
+            // Two instances or two rapid ticks reaching here must produce ONE
+            // cycle. The unique index on (cycle_type, start_time) decides —
+            // `ensureCycle` uses ON CONFLICT DO NOTHING, so the loser is a
+            // no-op that then reads the winner's row rather than an error to
+            // catch by code number.
+            //
+            // No pool fields are written. Real pools are DERIVED from the bets
+            // (trap 4 — storing them on this row deadlocks against the bets that
+            // update it) and the phantom ones default to zero.
+            const { cycle, created } = await db.markets.ensureCycle({
+                cycleId:  `${meta.idPrefix}_${Date.now()}`,
+                cycleType: type,
+                startTime,
+                endTime,
+            });
+
+            // Another instance created it — it announced it, so this one must
+            // not announce it again. `created` says which, from the INSERT
+            // itself; the old check read a document version counter and a
+            // status, which could not tell "I made this" from "I found this".
+            if (!created) return;
 
             this.liveCycleCache[type] = cycle;  // seed broadcast cache immediately
             console.log(`🆕 Created new ${label} cycle: ${cycle.cycleId}`);
@@ -723,9 +761,8 @@ class CycleGenerator {
             // Celebration lock — same reason as 30-MIN (see above)
             if (Date.now() < this.celebrationLockUntil['FULL_DAY']) return;
 
-            const existing = await Cycle.findOne({
-                type: 'FULL_DAY',
-                status: { $in: ['OPEN', 'MERGED', 'CLOSED'] }
+            const existing = await db.markets.currentCycleWithPools('FULL_DAY', {
+                statuses: ['OPEN', 'MERGED', 'CLOSED'],
             });
 
             if (existing) {
@@ -735,18 +772,11 @@ class CycleGenerator {
                     // Healthy active cycle — nothing to do
                     return;
                 }
-                // ── STALE CYCLE RECOVERY ─────────────────────────────────────────
-                // Server was down while this FULL_DAY cycle was running.
-                // This is the exact bug that showed "13 Feb 2026" with a frozen 00:00 timer:
-                // the old cycle was still OPEN in DB so ensureActiveFullDayCycle returned
-                // immediately and never created the current day's cycle.
-                console.warn(`⚠️  Stale FULL_DAY cycle detected: ${existing.cycleId} (ended ${new Date(endMs).toISOString()}). Force-expiring.`);
-                await Cycle.updateOne(
-                    { _id: existing._id },
-                    { status: 'RESULT_DECLARED', winner: 'DELHI', isSettled: 'PENDING',
-                      completedAt: new Date(), _forceExpired: true }
-                );
-                delete this.liveCycleCache['FULL_DAY'];
+                // ── STALE CYCLE RECOVERY ─────────────────────────────────────
+                // The bug this guards against showed a stale date with a frozen
+                // 00:00 timer: the old cycle was still OPEN, so this function
+                // returned immediately and never created the current day's.
+                await this.adjudicateStaleCycle(existing, 'FULL-DAY');
                 // Fall through — create today's cycle below
             }
 
@@ -770,35 +800,15 @@ class CycleGenerator {
             const startTime = new Date(startIST.getTime() - this.IST_OFFSET);
             const endTime   = new Date(startTime.getTime() + 24 * 60 * 60 * 1000);
 
-            // FIX 5: Duplicate prevention for FULL_DAY cycles — same pattern as 30_MIN
-            let cycle;
-            try {
-                cycle = await Cycle.findOneAndUpdate(
-                    { type: 'FULL_DAY', startTime: startTime.getTime() },
-                    {
-                        $setOnInsert: {
-                            cycleId:           `FULLDAY_${Date.now()}`,
-                            type:              'FULL_DAY',
-                            startTime:         startTime.getTime(),
-                            endTime:           endTime.getTime(),
-                            status:            'OPEN',
-                            realDelhi:         0,
-                            realBombay:        0,
-                            totalDelhi:        0,
-                            totalBombay:       0,
-                            phantomDelhi:      0,
-                            phantomBombay:     0,
-                            phantomBetsClosed: false,
-                            isSettled:         'PENDING'
-                        }
-                    },
-                    { upsert: true, new: true, setDefaultsOnInsert: true }
-                );
-            } catch (err) {
-                if (err.code === 11000) { return; }
-                throw err;
-            }
-            if (!cycle.__v && cycle.status !== 'OPEN') return;
+            // Same one-winner guarantee as the interval path: the unique index
+            // on (cycle_type, start_time) decides, and the loser is a no-op.
+            const { cycle, created } = await db.markets.ensureCycle({
+                cycleId:  `FULLDAY_${Date.now()}`,
+                cycleType: 'FULL_DAY',
+                startTime,
+                endTime,
+            });
+            if (!created) return;
 
             const startIST2 = new Date(startTime.getTime() + this.IST_OFFSET);
             const endIST2   = new Date(endTime.getTime()   + this.IST_OFFSET);
@@ -845,23 +855,13 @@ class CycleGenerator {
     }
 
     async getCycleSnapshotData() {
-        // FIX (2026-07-09): was '../models/index.js' which resolves to the
-        // nonexistent domains/models/ — a latent runtime bug (dynamic import,
-        // so node --check never caught it) that crashed every SSE
-        // cycle_snapshot and cycle-ensure. Correct depth is ../../models/.
-        const Cycle = (await import('../../models/index.js')).Cycle;
         // Every known type — a snapshot that omits one leaves clients with no
         // authoritative state for that tab until the next new_cycle fires.
         const types = CYCLE_TYPE_VALUES;
         const snapshot = {};
 
         for (const type of types) {
-            // Primary: active cycle
-            let cycle = await Cycle.findOne({
-                type,
-                status: { $in: ['OPEN', 'MERGED', 'CLOSED', 'RESULT_DECLARED'] }
-            }).sort({ startTime: -1 }).lean();
-
+            const cycle = await db.markets.currentCycleWithPools(type);
             if (!cycle) continue;
 
             const now            = Date.now();
@@ -869,8 +869,12 @@ class CycleGenerator {
             const msLeft         = Math.max(0, endTime - now);
             const timeRemaining  = Math.max(0, Math.floor(msLeft / 1000));
             const timeRemainingMs = msLeft;
-            const combinedDelhi  = (cycle.realDelhi  || 0) + (cycle.phantomDelhi  || 0);
-            const combinedBombay = (cycle.realBombay || 0) + (cycle.phantomBombay || 0);
+            // Real halves derived from the bets, phantom halves off the row.
+            // The read this replaced took `realDelhi` as a document field — not
+            // a column — so both sides fell through to `|| 0` and every
+            // connecting client was told the pools were empty.
+            const combinedDelhi  = cycle.totalDelhi;
+            const combinedBombay = cycle.totalBombay;
 
             // Wrapped: this is the live state pushed to every connecting client,
             // so it is the highest-value place to prove no real/phantom pool
@@ -880,9 +884,7 @@ class CycleGenerator {
                 cycleId:         cycle.cycleId,
                 type:            cycle.type,
                 status:          cycle.status,
-                startTime:       cycle.startTime instanceof Date
-                                   ? cycle.startTime.getTime()
-                                   : cycle.startTime,
+                startTime:       new Date(cycle.startTime).getTime(),
                 endTime:         endTime,
                 // SNAPSHOT FIX: was only sending timeRemaining (seconds).
                 // CycleControl reads timeRemainingMs first — missing it caused timer = 0 on load.
@@ -892,8 +894,8 @@ class CycleGenerator {
                 totalBombay:     combinedBombay,
                 delhiPool:       combinedDelhi,
                 bombayPool:      combinedBombay,
-                winner:          cycle.winner    || null,
-                isSettled:       cycle.isSettled || 'PENDING',
+                winner:          cycle.winner,
+                isSettled:       cycle.isSettled ? 'COMPLETED' : 'PENDING',
                 timestamp:       now,
             });
         }
@@ -913,9 +915,9 @@ class CycleGenerator {
 
     async getActiveCycles() {
         try {
-            return await Cycle.find({
-                status: { $in: ['OPEN', 'MERGED', 'CLOSED'] }
-            }).select('cycleId type status startTime endTime realDelhi realBombay phantomDelhi phantomBombay');
+            return await db.markets.activeCyclesWithPools({
+                statuses: ['OPEN', 'MERGED', 'CLOSED'], includeExpired: true,
+            });
         } catch (error) {
             console.error('❌ Error getting active cycles:', error);
             return [];

@@ -21,12 +21,15 @@
  * @requires ../models
  */
 
-import { SystemConfig, User } from '../../models/index.js';
+import { db } from '#db';
+import { isTokenRevoked as pgIsTokenRevoked } from '#db/repositories/identity.js';
+import { getUser } from '#db/repositories/users.js';
 import { setContextUser } from '../../middleware/requestContext.js'; // X-6
 // AQ-2 (2026-07-13): every sign/verify goes through the single PASETO authority —
 // Ed25519 signature verification, iss/aud stamped on sign. No raw token-library calls remain here.
 import { signToken, verifyJwt, JWT_SECRET, JWT_EXPIRES_IN } from './jwt.util.js';
 import { isChallengeToken } from './twoFactorChallenge.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 // JWT_SECRET / JWT_EXPIRES_IN now come from jwt.util.js (imported above), which
 // fail-fasts on a missing secret and owns the 24h default. Re-exported at the
@@ -53,15 +56,25 @@ import { isChallengeToken } from './twoFactorChallenge.js';
  * @param {Function} next - Express next middleware function
  * @returns {void}
  */
+/**
+ * Has this token been revoked? Checked on every authenticated request.
+ *
+ * FAILS CLOSED. The previous implementation returned `false` when the lookup
+ * threw — so a signed-out session stayed valid for as long as the check was
+ * broken, which is the failure mode a revocation list exists to prevent. It
+ * cost nothing to be correct here: the platform has one datastore and refuses
+ * to boot without it, so "the database is unreachable" is not a state in which
+ * this process should be answering authenticated requests anyway.
+ *
+ * A caller that genuinely cannot tolerate a 401 on a database blip should be
+ * fixing the blip, not weakening the check.
+ */
 export async function isTokenRevoked(token) {
   try {
-    const TokenBlacklist = (await import('mongoose')).default.model('TokenBlacklist');
-    return Boolean(await TokenBlacklist.findOne({ token }).lean());
-  } catch {
-    // Model may not be registered during early tests/bootstraps; fail open for
-    // compatibility with the existing auth path, but all production boot paths
-    // import models/index.js before serving traffic.
-    return false;
+    return await pgIsTokenRevoked(token);
+  } catch (e) {
+    console.error('[auth] revocation check failed — refusing the token:', e.message);
+    return true;
   }
 }
 
@@ -117,8 +130,16 @@ const authenticate = async (req, res, next) => {
       return res.status(401).json({ success: false, message: 'Token has been invalidated. Please login again.' });
     }
 
-    // Fetch user from database
-    const user = await User.findById(decoded.userId).select('+twoFactorSecret +twoFactorEnabled');
+    // The account, from the SAME table signup writes to. It used to come from
+    // the document while `createAccountFromOnboarding` wrote the row — so a
+    // player could sign up and then not log in: the write succeeded, this read
+    // found nothing, and nothing errored anywhere.
+    //
+    // Credentials are NOT loaded here. This runs on every authenticated
+    // request, and a TOTP secret on `req.user` is a secret one careless
+    // `res.json(req.user)` puts in a response body. The paths that verify a
+    // second factor ask for them by name.
+    const user = await getUser(decoded.userId);
     
     if (!user) {
       return res.status(401).json({ 
@@ -137,10 +158,10 @@ const authenticate = async (req, res, next) => {
 
     // Attach user to request object for use in subsequent middleware/routes
     req.user = user;
-    req.userId = user._id;
+    req.userId = user.userId;
     // X-6: tag the request-context so structured logs in downstream services
     // (wallet, settlement, …) are attributable to this user by correlation id.
-    try { setContextUser(user._id); } catch { /* context is best-effort */ }
+    try { setContextUser(user.userId); } catch { /* context is best-effort */ }
 
     
     // Merchant PASETO contains { merchantId, isMerchant: true } — set by domains/merchant/merchant.routes.js /auth/login.
@@ -194,7 +215,7 @@ const KYC_REFUSAL = {
 
 export async function requireApprovedKyc(req, res, next) {
   try {
-    const cfg = await SystemConfig.findOne({ key: 'main' }).select('kycRequired').lean();
+    const cfg = await getSystemConfig();
     if (cfg?.kycRequired === false || req.user?.kycStatus === 'APPROVED') return next();
 
     const status = req.user?.kycStatus || 'PENDING_SUBMISSION';
@@ -468,11 +489,12 @@ const authenticateMerchant = async (req, res, next) => {
       });
     }
 
-    // Fetch merchant from database
-    // HIGH-01 FIX: use Merchant model (decoded.merchantId is Merchant._id, not User._id)
-    const MerchantModel = mongoose.model('Merchant');
-    const merchant = await MerchantModel.findById(decoded.merchantId);
-    
+    // The merchant, by the id the token carries. This read `MerchantModel`,
+    // which was deleted with the ODM — so every merchant-authenticated request
+    // died with a ReferenceError inside the catch below and answered 500. The
+    // merchant panel was entirely unreachable.
+    const merchant = await db.merchants.getMerchant(decoded.merchantId);
+
     if (!merchant) {
       return res.status(401).json({ 
         success: false,
@@ -480,19 +502,25 @@ const authenticateMerchant = async (req, res, next) => {
       });
     }
 
-    // Check if merchant account is active
-    if (merchant.isBlocked || merchant.isSuspended) {
+    // One column decides, rather than two booleans that could disagree.
+    // `isBlocked || isSuspended` was two fields the row does not have, so a
+    // suspended merchant would have passed this guard even once the lookup was
+    // fixed. `status` is a CHECKed vocabulary: anything but ACTIVE is refused.
+    if (merchant.status !== 'ACTIVE') {
       return res.status(403).json({ 
         success: false,
-        message: 'Merchant account is suspended' 
+        message: merchant.status === 'SUSPENDED'
+          ? `Merchant account is suspended${merchant.suspensionReason ? `: ${merchant.suspensionReason}` : ''}`
+          : 'Merchant account is not active',
       });
     }
 
-    // Check if user has merchant role
-    if (!merchant.roles || !merchant.roles.includes('merchant')) {
+    // Approval is separate from status: an applicant is ACTIVE and not yet
+    // approved, and must not be able to take orders.
+    if (merchant.merchantApprovalStatus !== 'APPROVED') {
       return res.status(403).json({ 
         success: false,
-        message: 'User does not have merchant privileges' 
+        message: 'Merchant account is awaiting approval',
       });
     }
 
@@ -526,7 +554,7 @@ const authenticateMerchant = async (req, res, next) => {
  */
 const generateToken = (user, options = {}) => {
   const payload = {
-    userId: user._id,
+    userId: user.userId,
     mobile: user.mobile,
     isAdmin: user.isAdmin || false,
     isSubAdmin: user.isSubAdmin || false,
@@ -598,11 +626,11 @@ const optionalAuth = async (req, res, next) => {
     
     try {
       const decoded = verifyJwt(token);
-      const user = await User.findById(decoded.userId);
-      
+      const user = await getUser(decoded.userId);
+
       if (user && !user.isBlocked) {
         req.user = user;
-        req.userId = user._id;
+        req.userId = user.userId;
       }
     } catch (jwtError) {
       // Invalid token, but we don't fail - just continue without user
@@ -651,7 +679,7 @@ const auditLog = (action) => {
       req.auditAction.response = data;
       
       // Log to database (implement AuditLog model if needed)
-      // Example: AuditLog.create(req.auditAction).catch(err => console.error('Audit log failed:', err));
+      // Example: db.audit.record(req.auditAction).catch(err => console.error('Audit log failed:', err));
       
       return originalJson(data);
     };

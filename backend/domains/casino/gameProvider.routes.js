@@ -14,16 +14,15 @@
  *  4. Provider calls our webhook on every bet/win → we debit/credit user wallet
  */
 import express from 'express';
-import { debitForGameProviderBet, creditWinnings, refundOrder } from '../wallet/walletAuthority.service.js';
-// Domain 9's resolver. When Postgres owns the path the round's running totals
-// move under its row lock in the SAME transaction as the wallet movement, and
-// the refund bound is a CHECK CONSTRAINT rather than a read-then-compare.
-import { applyCallbackOnPostgres } from '../../postgres/casinoPgAuthority.js';
-import mongoose from 'mongoose';
+// Balances go to a third-party provider. They come from the wallet.
+import { getBalances } from '../wallet/walletAuthority.service.js';
+import { db } from '#db';
 import crypto from 'crypto';
 import { authenticate, isAdmin, isAdminOrSubAdmin } from '../identity/auth.middleware.js';
 import { networkClient } from '../../services/networkClient.js';
 import { verifyWebhookSignature } from './webhookSignature.js';
+// Credentials are ciphertext in the row; they become usable only here.
+import { sealCredential, openProviderSecrets } from './providerCredentials.js';
 
 const router = express.Router();
 
@@ -73,10 +72,19 @@ const DEFAULT_PROVIDERS = [
   },
 ];
 
+/**
+ * Register the providers the platform knows about.
+ *
+ * The upsert deliberately does NOT carry credentials, and `upsertProvider`
+ * treats a null credential as "unchanged" — so running this on every request,
+ * as the routes below do, cannot wipe an API key an admin configured.
+ */
 async function seedProviders() {
-  const GameProvider = mongoose.model('GameProvider');
   for (const p of DEFAULT_PROVIDERS) {
-    await GameProvider.findOneAndUpdate({ key: p.key }, p, { upsert: true, setDefaultsOnInsert: true });
+    await db.games.upsertProvider({
+      providerKey: p.key, name: p.name, category: p.category,
+      description: p.description, logoUrl: p.logoUrl,
+    });
   }
 }
 
@@ -85,12 +93,13 @@ async function seedProviders() {
 // GET /api/game/providers — called by user panel on page load
 router.get('/providers', async (req, res) => {
   try {
-    const GameProvider = mongoose.model('GameProvider');
     await seedProviders();
-    const providers = await GameProvider.find()
-      .select('key name category enabled description logoUrl')
-      .lean();
-    // Group by category
+    // The public reader selects five columns and none of them is a credential
+    // — an API secret in a public response is published however it is labelled,
+    // and so, more quietly, is the fact that a switched-off supplier already
+    // has keys loaded. Only enabled providers come back, so the lobby cannot
+    // render a tile that refuses to launch.
+    const providers = await db.games.listPublicProviders();
     const grouped = { casino: [], crash: [], sports: [] };
     for (const p of providers) {
       if (grouped[p.category]) grouped[p.category].push(p);
@@ -108,20 +117,30 @@ router.get('/providers', async (req, res) => {
 router.post('/launch', authenticate, async (req, res) => {
   try {
     const { providerKey, gameId = '', gameName = '', mode = 'real' } = req.body;
-    const GameProvider = mongoose.model('GameProvider');
-    const GameSession  = mongoose.model('GameSession');
-    const User         = mongoose.model('User');
 
-    const provider = await GameProvider.findOne({ key: providerKey });
-    if (!provider?.enabled) {
+    const listed = await db.games.getProvider(providerKey);
+    if (!listed?.enabled) {
       return res.status(400).json({ success: false, message: 'This game provider is not available yet' });
     }
+    // The credentials, asked for by name — this is the one place that signs a
+    // launch, and the only reason to read them. They come out of the row as
+    // ciphertext and are opened here; signing with the stored value directly
+    // produces a signature every provider rejects.
+    const provider = { ...listed, ...openProviderSecrets(await db.games.getProviderSecrets(providerKey)) };
     if (!provider.apiKey || !provider.apiUrl) {
       return res.status(400).json({ success: false, message: 'Provider is not fully configured' });
     }
+    // Named to the provider. Read here rather than assumed: the handler used to
+    // reference a `user` that no longer existed in scope, which threw on every
+    // Evolution launch — the one provider path that sends a player name.
+    const player = await db.users.getUser(String(req.user.userId));
+    if (!player) return res.status(404).json({ success: false, message: 'Account not found' });
 
-    const user = await User.findById(req.user._id).select('username mobile depositBalance winningsBalance');
-    const balance = (user.depositBalance || 0) + (user.winningsBalance || 0);
+    // From the WALLET. This is the balance handed to a third-party provider as
+    // the player's starting figure — a zero here does not merely display
+    // wrong, it tells the provider the player cannot stake anything.
+    const balances = await getBalances(String(req.user.userId));
+    const balance = (balances.depositBalance || 0) + (balances.winningsBalance || 0);
     const sessionId = crypto.randomUUID();
     const expiresAt = new Date(Date.now() + 4 * 3600000); // 4h
 
@@ -133,15 +152,15 @@ router.post('/launch', authenticate, async (req, res) => {
       // Real endpoint: {apiUrl}/api/auth  with HMAC-SHA256 signed body
       const timestamp  = Date.now();
       const signature  = crypto.createHmac('sha256', provider.apiSecret)
-        .update(`${provider.merchantId}${req.user._id}${timestamp}`)
+        .update(`${provider.merchantId}${req.user.userId}${timestamp}`)
         .digest('hex');
       try {
         const body = {
           uuid:      sessionId,
           player: {
-            id:       String(req.user._id),
+            id:       String(req.user.userId),
             update:   true,
-            firstName: user.username || 'Player',
+            firstName: player.username || 'Player',
             lastName:  '',
             currency:  'INR',
             session:  { id: sessionId, ip: req.ip || '0.0.0.0' },
@@ -171,15 +190,15 @@ router.post('/launch', authenticate, async (req, res) => {
     // ── Spribe (Aviator) launch ──────────────────────────────────────────────
     else if (providerKey === 'spribe') {
       const token = crypto.createHmac('sha256', provider.apiSecret)
-        .update(`${req.user._id}:${sessionId}:${Date.now()}`)
+        .update(`${req.user.userId}:${sessionId}:${Date.now()}`)
         .digest('hex');
-      launchUrl = `${provider.apiUrl}/launch/${gameId || 'aviator'}?operatorId=${provider.merchantId}&token=${token}&currency=INR&lang=en&userId=${req.user._id}&returnUrl=${encodeURIComponent(process.env.APP_BASE_URL || '')}`;
+      launchUrl = `${provider.apiUrl}/launch/${gameId || 'aviator'}?operatorId=${provider.merchantId}&token=${token}&currency=INR&lang=en&userId=${req.user.userId}&returnUrl=${encodeURIComponent(process.env.APP_BASE_URL || '')}`;
     }
 
     // ── Betby Sports launch ──────────────────────────────────────────────────
     else if (providerKey === 'betby') {
       const token = Buffer.from(JSON.stringify({
-        userId: String(req.user._id),
+        userId: String(req.user.userId),
         balance,
         currency: 'INR',
         sessionId,
@@ -191,7 +210,7 @@ router.post('/launch', authenticate, async (req, res) => {
     // ── Pragmatic Play launch ────────────────────────────────────────────────
     else if (providerKey === 'pragmatic') {
       const hash = crypto.createHash('md5')
-        .update(`${req.user._id}${provider.apiSecret}`)
+        .update(`${req.user.userId}${provider.apiSecret}`)
         .digest('hex');
       launchUrl = `${provider.apiUrl}/gs2c/do?token=${hash}&stylename=${provider.merchantId}&game=${gameId || 'vs20sugardance'}&jurisdiction=INR&lobby_url=${encodeURIComponent(process.env.APP_BASE_URL || '')}`;
     }
@@ -199,7 +218,7 @@ router.post('/launch', authenticate, async (req, res) => {
     // ── Ezugi launch ─────────────────────────────────────────────────────────
     else if (providerKey === 'ezugi') {
       const token = crypto.createHmac('sha256', provider.apiSecret)
-        .update(`${provider.merchantId}${req.user._id}${Date.now()}`)
+        .update(`${provider.merchantId}${req.user.userId}${Date.now()}`)
         .digest('hex');
       launchUrl = `${provider.apiUrl}/ezglaunch?operatorId=${provider.merchantId}&token=${token}&gameId=${gameId || '1'}&lang=en&currency=INR`;
     }
@@ -209,20 +228,18 @@ router.post('/launch', authenticate, async (req, res) => {
       launchUrl = `${provider.apiUrl}/${gameId || 'JetX'}?token=${sessionId}&currency=INR&lang=en&operatorId=${provider.merchantId}`;
     }
 
-    // Save session
-    await GameSession.create({
-      sessionId,
-      userId:      req.user._id,
-      providerKey,
-      gameId,
-      gameName,
-      launchUrl,
-      expiresAt,
-    });
-
+    // The session is recorded only once there is a URL to record. It used to
+    // be written first and the failure checked after, so a provider whose
+    // credentials were wrong left a live session for a game that never opened
+    // — and a callback arriving against it would have been honoured.
     if (!launchUrl) {
       return res.status(500).json({ success: false, message: 'Could not generate game launch URL. Check provider credentials.' });
     }
+
+    await db.games.openSession({
+      sessionId, userId: req.user.userId, providerKey, gameId, gameName,
+      launchUrl, ttlMinutes: 240,
+    });
 
     res.json({ success: true, launchUrl, sessionId });
   } catch (err) {
@@ -233,249 +250,270 @@ router.post('/launch', authenticate, async (req, res) => {
 
 // ── WALLET WEBHOOK — provider calls this on every bet / win / rollback ───────
 // Mounted at POST /api/game/wallet/:providerKey
-// Each provider has a different payload format; we normalise before processing.
+//
+// This route carries no `authenticate` middleware: the caller is a game
+// supplier, not a signed-in player. The HMAC below is therefore the ONLY thing
+// between the open internet and a wallet movement, and everything after it runs
+// on the supplier's word.
+//
+// ── One decision, in one transaction ────────────────────────────────────────
+// The handler used to read the balance, compare it to the stake, and then debit
+// — a check two concurrent callbacks both pass — and to sum a round's prior
+// transactions in JavaScript before allowing a rollback, which two rollbacks
+// carrying different provider ids both pass. `applyProviderCallback` makes the
+// round's running totals move under the round's row lock inside the same
+// transaction as the money, with `refunded_paise <= debited_paise` as a CHECK
+// constraint underneath. There is no branch here that can get it wrong,
+// because there is no branch here.
 router.post('/wallet/:providerKey', async (req, res) => {
   try {
     const { providerKey } = req.params;
-    const GameProvider    = mongoose.model('GameProvider');
-    const GameTransaction = mongoose.model('GameTransaction');
-    const User            = mongoose.model('User');
 
-    const provider = await GameProvider.findOne({ key: providerKey });
-    if (!provider) return res.status(404).json({ success: false });
+    // Only the webhook secret is read, and only to verify the signature.
+    const secrets = await db.games.getProviderSecrets(providerKey);
+    if (!secrets) return res.status(404).json({ success: false });
 
-    const verdict = verifyWebhookSignature(provider.webhookSecret, req.headers, req.body);
+    const verdict = verifyWebhookSignature(openProviderSecrets(secrets).webhookSecret, req.headers, req.body);
     if (!verdict.ok) return res.status(verdict.status).json({ success: false, message: verdict.message });
 
-    // Normalise payload across providers
-    const body = req.body;
+    // Normalise the payload — every supplier spells these differently.
+    const body    = req.body || {};
     const txId    = body.transactionId || body.txId || body.uuid || body.transaction_id;
     const userId  = body.playerId || body.player_id || body.userId;
-    const type    = (body.type || body.action || '').toUpperCase().replace('DEBIT', 'BET').replace('CREDIT', 'WIN');
-    const amount  = Math.abs(Number(body.amount || body.bet || 0));
+    const type    = body.type || body.action || '';
+    const amount  = Math.abs(Number(body.amount ?? body.bet ?? 0));
     const roundId = body.roundId || body.round_id || body.gameRound || txId;
     const gameId  = body.gameId || body.game_id || '';
 
-    if (!txId || !userId || !amount || !type) return res.status(400).json({ success: false, message: 'Missing fields' });
-
-    // Idempotency — reject duplicate txId
-    const dup = await GameTransaction.findOne({ txId });
-    if (dup) {
-      // `.lean()` yields null for a since-deleted player; dereferencing it here
-      // turned a benign replay into a 500.
-      const prior = await User.findById(dup.userId).lean();
-      return res.json({ success: true, balance: prior?.depositBalance || 0 });
+    if (!txId || !userId || !type || !(amount > 0)) {
+      return res.status(400).json({ success: false, message: 'Missing fields' });
     }
 
-    const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ success: false, message: 'Player not found' });
+    // The balance recorded as `balanceBefore` on the audit row. A read, not a
+    // gate: the gate is the wallet's own row lock, one call below.
+    const balanceBefore = await db.casino.spendableBalance(userId);
 
-    const balance = (user.depositBalance || 0) + (user.winningsBalance || 0);
-
-    // ── The resolver, asked once ─────────────────────────────────────────
-    // Returns handled:false while Mongo owns the path, and the branch below
-    // runs unchanged. When Postgres owns it, a REFUSAL IS SURFACED to the
-    // provider rather than retried against Mongo — in this domain the refusal
-    // is the product: it is what stops a buggy or hostile provider minting
-    // money by rolling back a round that never had a bet.
-    const routed = await applyCallbackOnPostgres({
+    // ── The whole decision ───────────────────────────────────────────────────
+    // Idempotency included: a redelivered callback collides on `tx_id` INSIDE
+    // the transaction and comes back `idempotent`, rather than being screened
+    // out by a prior read that a concurrent redelivery would pass.
+    const applied = await db.casino.applyProviderCallback({
       txId, roundId, userId, type, amountRupees: amount,
       providerKey, gameId,
-      reason: `Casino ${type}: ${gameId} round ${roundId}`,
-    });
-    if (routed.handled) {
-      if (!routed.ok) {
-        const message = routed.reason === 'no_prior_debit'
-          ? 'No prior debit for this round'
-          : routed.reason === 'refund_exceeds_debit'
-            ? 'Refund exceeds the amount debited for this round'
-            : `Callback refused: ${routed.reason}`;
-        console.error(`[casino] refusing ${type} for round ${roundId}: ${routed.reason}`);
-        return res.status(400).json({ success: false, message });
-      }
-      // The GameTransaction document is written by the reverse mirror, so the
-      // record exists in both stores without this route writing it twice.
-      return res.json({ success: true, balance: routed.balanceRupees, currency: 'INR' });
-    }
-
-    if (type === 'BET') {
-      if (balance < amount) return res.status(400).json({ success: false, message: 'Insufficient balance', balance });
-      // Deduct from winnings first, then deposit
-      // Casino bet: deposit first, winnings covers shortfall — wallet service enforces this
-      // These two strings used to be escaped (`\${gameId}`), so every casino
-      // ledger row recorded the literal text "${gameId}" instead of the value —
-      // and `gameId` was not in scope, so simply removing the escape would have
-      // thrown. It is derived from the payload above; both now interpolate.
-      await debitForGameProviderBet(userId, amount, `Casino BET: ${gameId} round ${roundId}`, txId);
-    } else if (type === 'WIN') {
-      await creditWinnings(userId, amount, `Casino WIN: ${gameId} round ${roundId}`, 'GameTransaction', null, 'win_' + txId);
-    } else if (type === 'ROLLBACK' || type === 'REFUND') {
-      // ── M-7: a reversal must prove the debit it reverses ─────────────────
-      // This used to be a bare `refundOrder(...)`: no check that the round was
-      // ever bet on, and no bound on the amount. A provider that is buggy,
-      // replayed, or hostile could therefore CREDIT REAL MONEY by rolling back
-      // a round that never had a bet, or by rolling back more than was staked.
-      //
-      // The duplicate-txId check above does not help. It stops the SAME
-      // callback applying twice; it says nothing about a DIFFERENT callback
-      // that should never have been honoured at all, which is the exposure.
-      //
-      // Both sums are computed over this round's recorded transactions, so
-      // partial rollbacks accumulate correctly — a per-callback check against
-      // the bet alone would let any number of them through.
-      const priorTx = await GameTransaction.find({ roundId, userId })
-        .select('type amount').lean();
-      const debited = priorTx
-        .filter((t) => t.type === 'BET')
-        .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
-      const refunded = priorTx
-        .filter((t) => t.type === 'ROLLBACK' || t.type === 'REFUND')
-        .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
-
-      if (debited <= 0) {
-        console.error(`[casino] refusing ${type} for round ${roundId} with no prior debit`);
-        return res.status(400).json({ success: false, message: 'No prior debit for this round' });
-      }
-      if (refunded + amount > debited) {
-        console.error(
-          `[casino] refusing ${type} for round ${roundId}: would refund ${refunded + amount} of ${debited} debited`,
-        );
-        return res.status(400).json({ success: false, message: 'Refund exceeds the amount debited for this round' });
-      }
-
-      await refundOrder(userId, amount, roundId, 'depositBalance');
-    }
-
-    const updatedUser  = await User.findById(userId).lean();
-    const newBalance   = (updatedUser.depositBalance || 0) + (updatedUser.winningsBalance || 0);
-
-    await GameTransaction.create({
-      roundId, txId, sessionId: body.sessionId || '', userId,
-      providerKey, type, amount,
-      balanceBefore: balance, balanceAfter: newBalance,
-      gameId, gameName: body.gameName || '',
+      reason: `Casino ${String(type).toUpperCase()}: ${gameId} round ${roundId}`,
     });
 
-    res.json({ success: true, balance: newBalance, currency: 'INR' });
+    if (!applied.ok) {
+      const message = {
+        no_prior_debit:       'No prior debit for this round',
+        refund_exceeds_debit: 'Refund exceeds the amount debited for this round',
+        insufficient:         'Insufficient balance',
+        unknown_type:         'Unrecognised transaction type',
+        invalid_amount:       'Invalid amount',
+      }[applied.reason] || `Callback refused: ${applied.reason}`;
+      console.error(`[casino] refusing ${type} for round ${roundId}: ${applied.reason}`);
+      // A refusal is 400 with the balance attached: suppliers reconcile against
+      // it, and one told nothing retries the same refused callback for hours.
+      return res.status(400).json({
+        success: false, message, balance: await db.casino.spendableBalance(userId),
+      });
+    }
+
+    // The provider-facing record of the callback. Keyed on the supplier's own
+    // id, so a redelivery records once — and written AFTER the money moved, so
+    // a row here always has a ledger row behind it.
+    await db.games.recordGameTransaction({
+      txId, roundId, sessionId: body.sessionId || null, userId,
+      providerKey, txType: db.casino.normaliseType(type), amountRupees: amount,
+      balanceBeforeRupees: balanceBefore, balanceAfterRupees: applied.balanceRupees,
+      gameId, gameName: body.gameName || null,
+    });
+
+    res.json({ success: true, balance: applied.balanceRupees, currency: 'INR' });
   } catch (err) {
-    console.error('Wallet webhook error:', err.message);
-    res.status(500).json({ success: false, message: err.message });
+    console.error('Wallet webhook error:', err);
+    res.status(500).json({ success: false, message: 'Callback could not be processed.' });
   }
 });
 
 // ── ADMIN: CRUD for provider config ─────────────────────────────────────────
+//
+// No handler below reads a credential. `listProviders` does not select them and
+// reports only WHETHER each is set; the update writes them without reading them
+// back; the connectivity test asks for the secrets by name, uses them, and
+// returns a verdict. An operator screen therefore cannot leak a key it never
+// received, which is a stronger guarantee than masking one it did.
 
 // GET /api/admin/game-providers
 router.get('/admin/game-providers', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
-    const GameProvider = mongoose.model('GameProvider');
     await seedProviders();
-    const providers = await GameProvider.find().sort({ category: 1, name: 1 }).lean();
-    // Mask secrets for sub-admins
-    if (!req.user.isAdmin) {
-      for (const p of providers) {
-        if (p.apiSecret) p.apiSecret = p.apiSecret.slice(0, 4) + '••••••';
-        if (p.webhookSecret) p.webhookSecret = '••••••';
-      }
-    }
-    res.json({ success: true, providers });
+    res.json({ success: true, providers: await db.games.listProviders() });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    console.error('GET /admin/game-providers error:', err);
+    res.status(500).json({ success: false, message: 'Could not load providers.' });
   }
 });
 
-// PUT /api/admin/game-providers/:key
+/**
+ * PUT /api/admin/game-providers/:key — edit a provider.
+ *
+ * A credential key that is absent from the body leaves the stored one alone; an
+ * explicit empty string clears it. The form shows `hasApiKey`, never the key,
+ * so "unchanged" is the only thing a re-submitted form can mean.
+ */
 router.put('/admin/game-providers/:key', authenticate, isAdmin, async (req, res) => {
   try {
-    const GameProvider = mongoose.model('GameProvider');
-    const { key } = req.params;
-    const allowed = ['enabled', 'apiUrl', 'apiKey', 'apiSecret', 'merchantId', 'webhookSecret', 'extraConfig', 'logoUrl', 'description'];
-    const update = { updatedBy: req.user._id, updatedAt: new Date() };
-    for (const k of allowed) if (req.body[k] !== undefined) update[k] = req.body[k];
-    const provider = await GameProvider.findOneAndUpdate({ key }, update, { new: true });
-    if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
-    res.json({ success: true, provider });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// POST /api/admin/game-providers/:key/test
-router.post('/admin/game-providers/:key/test', authenticate, isAdmin, async (req, res) => {
-  try {
-    const GameProvider = mongoose.model('GameProvider');
-    const provider = await GameProvider.findOne({ key: req.params.key });
-    if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
-    if (!provider.apiKey || !provider.apiUrl) return res.status(400).json({ success: false, message: 'API URL and API Key are required to test' });
-
-    // Simple connectivity test
-    try {
-      const ctrl = new AbortController();
-      const timeout = setTimeout(() => ctrl.abort(), 5000);
-      await networkClient.request(provider.apiUrl, { method: 'HEAD', signal: ctrl.signal });
-      clearTimeout(timeout);
-      res.json({ success: true, message: `✓ ${provider.name} endpoint is reachable` });
-    } catch (e) {
-      res.json({ success: false, message: `✗ Could not reach ${provider.apiUrl}: ${e.message}` });
+    const b = req.body || {};
+    const patch = {};
+    for (const k of ['name', 'category', 'enabled', 'apiUrl', 'providerMerchantId',
+      'extraConfig', 'logoUrl', 'description']) {
+      if (b[k] !== undefined) patch[k] = b[k];
     }
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
+    // Accepted under their plain names from the form; stored in the encrypted
+    // columns. The mapping is explicit so a new form field cannot arrive in a
+    // credential column by matching a name.
+    if (b.apiKey !== undefined) patch.apiKeyEncrypted = b.apiKey === '' ? null : sealCredential(b.apiKey);
+    if (b.apiSecret !== undefined) patch.apiSecretEncrypted = b.apiSecret === '' ? null : sealCredential(b.apiSecret);
+    if (b.webhookSecret !== undefined) patch.webhookSecretEncrypted = b.webhookSecret === '' ? null : sealCredential(b.webhookSecret);
 
-// GET /api/admin/game-providers/transactions — game wallet transaction history
-router.get('/admin/game-transactions', authenticate, isAdminOrSubAdmin, async (req, res) => {
-  try {
-    const GameTransaction = mongoose.model('GameTransaction');
-    const { providerKey, userId, page = 1, limit = 30 } = req.query;
-    const filter = {};
-    if (providerKey) filter.providerKey = providerKey;
-    if (userId) filter.userId = userId;
-    const skip = (Number(page) - 1) * Number(limit);
-    const [items, total] = await Promise.all([
-      GameTransaction.find(filter).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).populate('userId', 'username mobile').lean(),
-      GameTransaction.countDocuments(filter),
-    ]);
-    res.json({ success: true, transactions: items, total });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
+    const provider = await db.games.updateProvider(req.params.key, patch, { updatedBy: req.user.userId });
+    if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
 
-
-// POST /api/game/admin/game-providers — create a brand-new provider (any name, key, category)
-router.post('/admin/game-providers', authenticate, isAdmin, async (req, res) => {
-  try {
-    const GameProvider = mongoose.model('GameProvider');
-    const { key, name, category, description, logoUrl, apiUrl, apiKey, apiSecret, merchantId, webhookSecret, extraConfig } = req.body;
-    if (!key || !name || !category) {
-      return res.status(400).json({ success: false, message: 'key, name, and category are required' });
-    }
-    const slug = key.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_');
-    const existing = await GameProvider.findOne({ key: slug });
-    if (existing) return res.status(409).json({ success: false, message: `Provider "${slug}" already exists` });
-    const provider = await GameProvider.create({
-      key: slug, name: name.trim(), category,
-      description: description || '', logoUrl: logoUrl || '',
-      apiUrl: apiUrl || '', apiKey: apiKey || '', apiSecret: apiSecret || '',
-      merchantId: merchantId || '', webhookSecret: webhookSecret || '',
-      extraConfig: extraConfig || {}, enabled: false, updatedBy: req.user._id,
+    // Who changed a payment-facing integration, and which fields — without the
+    // values, because an audit log is not a place to put an API secret.
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, action: 'GAME_PROVIDER_UPDATED', category: 'CONFIG',
+      targetType: 'GameProvider', targetId: provider.key,
+      details: { fields: Object.keys(patch), enabled: provider.enabled },
     });
     res.json({ success: true, provider });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    // An enabled provider with no endpoint is refused by the row, not by a
+    // branch here — the constraint holds for every writer, including a script.
+    if (err.code === '23514') {
+      return res.status(400).json({ success: false, message: 'A provider cannot be enabled without an API URL.' });
+    }
+    console.error('PUT /admin/game-providers error:', err);
+    res.status(500).json({ success: false, message: 'Could not update that provider.' });
   }
 });
 
-// DELETE /api/game/admin/game-providers/:key
+/**
+ * POST /api/admin/game-providers/:key/test — is the endpoint reachable?
+ *
+ * The credentials are fetched by name and stay in this function. The response
+ * says reachable or not and why; it never echoes what it authenticated with.
+ */
+router.post('/admin/game-providers/:key/test', authenticate, isAdmin, async (req, res) => {
+  try {
+    const provider = await db.games.getProvider(req.params.key);
+    if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
+
+    const secrets = openProviderSecrets(await db.games.getProviderSecrets(req.params.key));
+    if (!secrets?.apiUrl || !secrets?.apiKey) {
+      return res.status(400).json({ success: false, message: 'API URL and API Key are required to test' });
+    }
+
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), 5000);
+    try {
+      await networkClient.request(secrets.apiUrl, { method: 'HEAD', signal: ctrl.signal });
+      res.json({ success: true, message: `✓ ${provider.name} endpoint is reachable` });
+    } catch (e) {
+      res.json({ success: false, message: `✗ Could not reach ${secrets.apiUrl}: ${e.message}` });
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch (err) {
+    console.error('POST /admin/game-providers/:key/test error:', err);
+    res.status(500).json({ success: false, message: 'Could not run that test.' });
+  }
+});
+
+// GET /api/admin/game-transactions — provider callback history
+router.get('/admin/game-transactions', authenticate, isAdminOrSubAdmin, async (req, res) => {
+  try {
+    const { providerKey, userId, txType, page = 1, limit = 30 } = req.query;
+    // The page and its total come back from one query, so the footer count and
+    // the rows below it describe the same instant.
+    const result = await db.games.adminGameTransactions({ providerKey, userId, txType, page, limit });
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('GET /admin/game-transactions error:', err);
+    res.status(500).json({ success: false, message: 'Could not load transactions.' });
+  }
+});
+
+/**
+ * POST /api/admin/game-providers — register a new provider.
+ *
+ * Created disabled: enabling happens after the credentials are entered and the
+ * test passes, which is a second, deliberate action.
+ */
+router.post('/admin/game-providers', authenticate, isAdmin, async (req, res) => {
+  try {
+    const { key, name, category, description, logoUrl, apiUrl,
+      apiKey, apiSecret, merchantId, webhookSecret, extraConfig } = req.body || {};
+    if (!key || !name || !category) {
+      return res.status(400).json({ success: false, message: 'key, name, and category are required' });
+    }
+    const slug = String(key).trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+    if (!slug) return res.status(400).json({ success: false, message: 'key must contain a letter or digit' });
+
+    // The key decides. Two admins submitting the same name at once get one
+    // provider and one 409, never a silent overwrite of the other's credentials.
+    const provider = await db.games.createProvider({
+      providerKey: slug, name: String(name).trim(), category,
+      description: description || '', logoUrl: logoUrl || null, apiUrl: apiUrl || null,
+      apiKeyEncrypted: sealCredential(apiKey),
+      apiSecretEncrypted: sealCredential(apiSecret),
+      webhookSecretEncrypted: sealCredential(webhookSecret),
+      providerMerchantId: merchantId || null, extraConfig: extraConfig || {},
+      updatedBy: req.user.userId,
+    });
+    if (!provider) return res.status(409).json({ success: false, message: `Provider "${slug}" already exists` });
+
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, action: 'GAME_PROVIDER_CREATED', category: 'CONFIG',
+      targetType: 'GameProvider', targetId: provider.key,
+      details: { name: provider.name, category: provider.category },
+    });
+    res.json({ success: true, provider });
+  } catch (err) {
+    console.error('POST /admin/game-providers error:', err);
+    res.status(500).json({ success: false, message: 'Could not create that provider.' });
+  }
+});
+
+/**
+ * DELETE /api/admin/game-providers/:key
+ *
+ * Refused while games still point at it. Deleting the provider under a live
+ * tile leaves a lobby entry that fails at the click, and the player is the one
+ * who discovers it.
+ */
 router.delete('/admin/game-providers/:key', authenticate, isAdmin, async (req, res) => {
   try {
-    const GameProvider = mongoose.model('GameProvider');
-    const provider = await GameProvider.findOneAndDelete({ key: req.params.key });
-    if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
-    res.json({ success: true, message: `${provider.name} deleted` });
+    const result = await db.games.deleteProvider(req.params.key);
+    if (!result.ok && result.reason === 'NOT_FOUND') {
+      return res.status(404).json({ success: false, message: 'Provider not found' });
+    }
+    if (!result.ok) {
+      return res.status(409).json({
+        success: false,
+        message: `${result.games} game${result.games === 1 ? '' : 's'} still use this provider. Remove or reassign them first.`,
+      });
+    }
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, action: 'GAME_PROVIDER_DELETED', category: 'CONFIG',
+      targetType: 'GameProvider', targetId: req.params.key,
+      details: { name: result.name },
+    });
+    res.json({ success: true, message: `${result.name} deleted` });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    console.error('DELETE /admin/game-providers error:', err);
+    res.status(500).json({ success: false, message: 'Could not delete that provider.' });
   }
 });
 

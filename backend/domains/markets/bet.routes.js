@@ -2,8 +2,8 @@
 
 
 import express from 'express';
+import { db } from '#db';
 import { creditWinnings, lockBetStake, unlockBetStake, getBalances } from '../wallet/walletAuthority.service.js'; // HIGH-03: atomicBet removed (never called; inline atomic pattern used instead)
-import mongoose from 'mongoose';
 import { authenticate, requireApprovedKyc } from '../identity/auth.middleware.js';
 import { betLimiter } from '../../middleware/security.js';
 // Betting is for members of the official Telegram channel. The gate serves a
@@ -12,20 +12,19 @@ import { betLimiter } from '../../middleware/security.js';
 // bounded-window policy when Telegram is unreachable.
 import { requireChannelMembership } from '../../middleware/requireChannelMembership.js';
 import { requireIdempotencyKey, IdempotencyKeyError } from '../../middleware/idempotencyKey.js';
-import * as betAuthority from '../../postgres/betPgAuthority.js';
+import * as betAuthority from '#db/repositories/bets.js';
 // Risk Platform (Phase 010): the single validation authority for bets.
 // Phase A (2026-07-10): computeBetFundingPlan owns the stake-split arithmetic.
 import { assessBet, computeBetFundingPlan, computeMaxStake } from '../risk/riskValidation.service.js';
 // Shared trading vocabulary (Phase 011) — one source for sides/statuses.
 import { MARKET_SIDES } from '../trading/tradingModels.js';
 // Cycle-type vocabulary: which betLimits key belongs to which type.
-import { CYCLE_TYPES, isCycleType, limitsKeyFor, phasesFor } from './cycleTypes.js';
+import { CYCLE_TYPES, DEFAULT_CYCLE_PHASES, isCycleType, limitsKeyFor, phasesFor } from './cycleTypes.js';
 // Phase offsets, for the clock-based betting cutoff below. Same single
 // declaration the generator and the admin phase view read.
-import { DEFAULT_CYCLE_PHASES } from '../configuration/systemConfig.model.js';
 // Derived cycle pools (FLAGS.DERIVED_CYCLE_POOLS, default off) — see
 // cyclePool.service.js for why the running total is the scaling ceiling.
-import { derivedPoolsEnabled, refreshRealPools } from './cyclePool.service.js';
+import { computeRealPools } from './cyclePool.service.js';
 // Real/phantom pools reveal the minority-side winner — the public bet broadcast
 // must carry totals only. assertPublicCycleSafe throws if one slips in.
 import { assertPublicCycleSafe } from './cyclePublicView.js';
@@ -35,31 +34,9 @@ import { cycleSnapshotPublisher } from './cycleSnapshotPublisher.js';
 // Pages the operator when a bet's stake cannot be conclusively refunded or
 // released — the one outcome no automated path can resolve on its own.
 import { sendAlert } from '../../services/alerting.service.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 const router = express.Router();
-
-// ─────────────────────────────────────────────────────────────────────────────
-// safeSession — kept for phantom route which still uses it
-// ─────────────────────────────────────────────────────────────────────────────
-async function safeSession() {
-  try {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-    return session;
-  } catch {
-    return null;
-  }
-}
-
-async function commitOrEnd(session) {
-  if (!session) return;
-  try { await session.commitTransaction(); } finally { session.endSession(); }
-}
-
-async function abortOrEnd(session) {
-  if (!session) return;
-  try { await session.abortTransaction(); } finally { session.endSession(); }
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // idempotentBetResponse — the success body for a bet that ALREADY exists, i.e. a
@@ -111,13 +88,7 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
   try {
     const { cycleId, side, amount: rawAmount, type } = req.body;
     const amount = Number(rawAmount);
-    const userId = req.user._id;
-
-    const User         = mongoose.model('User');
-    const Cycle        = mongoose.model('Cycle');
-    const Bet          = mongoose.model('Bet');
-    const Transaction  = mongoose.model('Transaction');
-    const SystemConfig = mongoose.model('SystemConfig');
+    const userId = req.user.userId;
 
     // ── Server-enforced idempotency (M-2) ────────────────────────────────────
     // The bet's identity comes from the caller's Idempotency-Key, REQUIRED here.
@@ -137,13 +108,13 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
       throw keyErr;
     }
     const betTxBase  = `bet_${userId}_${clientKey}`;
-    const betMongoId = betAuthority.mongoIdFor(betTxBase);
+    const betPublicId = betAuthority.publicIdFor(betTxBase);
 
     // Fast replay gate: this exact request already produced a bet. Answer with it
     // and touch NOTHING — no stake move, no pool change, no second Transaction
     // row, no double broadcast. This resolves the common (sequential) retry before
     // any work, on both stores, with one primary-key lookup.
-    const priorBet = await Bet.findById(betMongoId).lean();
+    const priorBet = await db.bets.getBet(betTxBase);
     if (priorBet) {
       return res.json(await idempotentBetResponse(priorBet, userId, type));
     }
@@ -155,7 +126,7 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
     // ternary. Under the ternary a type that was neither silently inherited the
     // 30-minute bounds — which happens to be right for the 1-minute block and
     // would have been wrong, invisibly, for the next type added.
-    const config    = await SystemConfig.findOne({ key: 'main' }).lean();
+    const config    = await getSystemConfig();
     const isFullDay = type === CYCLE_TYPES.FULL_DAY;
     const limitsKey = isCycleType(type) ? limitsKeyFor(type) : 'thirtyMin';
     const minBet    = config?.betLimits?.[limitsKey]?.min ?? (isFullDay ? 100  : 10);
@@ -176,7 +147,7 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
     }
 
     // ── Cycle check ──────────────────────────────────────────────────────────
-    const cycle = await Cycle.findOne({ cycleId });
+    const cycle = await db.markets.getCycle(cycleId);
 
     if (!cycle) {
       return res.status(404).json({ success: false, message: 'Cycle not found' });
@@ -228,17 +199,25 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
       });
     }
 
-    // ── Read user ONCE to compute the balance split ──────────────────────────
-    // .lean() for speed — we won't save this document, just read current values.
-    const user = await User.findById(userId).lean();
+    // ── The balances come from the WALLET ────────────────────────────────────
+    // This is a MONEY DECISION: it decides whether a stake can be funded, and
+    // the funding plan below executes against `wallets`. Reading it anywhere
+    // else is trap 7 — and reading it off the account is worse than stale,
+    // because that table has no balance columns at all: every figure comes
+    // back undefined, the `|| 0` makes it a confident zero, and no player can
+    // place any bet.
+    const [user, balances] = await Promise.all([
+      db.users.getUser(userId),
+      getBalances(String(userId)),
+    ]);
 
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    const availableDeposit  = user.depositBalance  || 0;
-    const availableWinnings = user.winningsBalance  || 0;
-    const availableReserve  = user.reserveBalance   || 0;
+    const availableDeposit  = balances.depositBalance  || 0;
+    const availableWinnings = balances.winningsBalance || 0;
+    const availableReserve  = balances.reserveBalance  || 0;
     const totalAvailable    = availableDeposit + availableWinnings + availableReserve;
 
     const reservePercent = config?.betReservePercent ?? 1; // schema default: 1
@@ -308,7 +287,7 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
     // split the source of truth mid-bet. The authority now owns it, and picks
     // the store per postgres/moneyAuthority.js.
     // ── The stake, split across pockets ─────────────────────────────────────
-    // The bet's identity (betTxBase / betMongoId) was established at the top of
+    // The bet's identity (betTxBase / betPublicId) was established at the top of
     // the handler from the REQUIRED Idempotency-Key. It is the txId of every
     // slice's ledger row and the Bet row's _id, so on both stores the unique
     // index — not a convention — is what makes a redelivery idempotent.
@@ -322,41 +301,33 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
     ].filter((s) => s.amount > 0);
 
     // ── Stake + bet record ─────────────────────────────────────────────────
-    // On MONGO these are two operations: lock the stake, then insert the bet.
+    // These were once two operations: lock the stake, then insert the bet.
     // Between them the user's money is locked against a bet that does not
     // exist, and nothing sweeps that — the stake is attributed to a bet id
-    // never written, so no settlement releases it and no reconciliation can
-    // attribute it. The balance is simply short until a human finds it.
+    // never written, so no settlement releases it and nothing can attribute
+    // it. The balance is simply short until a human finds it.
     //
-    // On POSTGRES both are ONE transaction (betPg.placeBet), so the window
-    // cannot open. Which store runs is the authority resolver's decision.
-    const betsOnPostgres = betAuthority.onPostgres();
-
-    let stakeLock;
-    let pgBet = null;
-    // moneyMoved IS the idempotency decision: true only for the single delivery
-    // that actually debited. placeBet (Postgres) and lockBetStake (Mongo) are
-    // both idempotent on the key, so every other delivery reports idempotent and
-    // moved nothing — and must not run the pool increment, the Transaction row or
-    // the broadcast. The invariant is "the delivery that moved the money owns the
-    // side-effects", and it deliberately does NOT depend on who wins the bet-row
-    // insert race below (a money-mover that loses that race still owns them).
-    let moneyMoved = false;
-    if (betsOnPostgres) {
-      const placed = await betAuthority.placeBet({
-        betId: betTxBase, userId, cycleId, side, amount,
-        slices: stakeSlices,
-        reason: `BET_PLACED — ₹${amount} on ${side}`,
-      });
-      stakeLock = { ok: placed.ok, balances: placed.balances };
-      pgBet = placed.ok ? placed.bet : null;
-      moneyMoved = placed.ok && placed.idempotent !== true;
-    } else {
-      stakeLock = await lockBetStake(userId, {
-        amount, txId: betTxBase, refId: betMongoId, slices: stakeSlices,
-      });
-      moneyMoved = stakeLock.ok && stakeLock.idempotent !== true;
-    }
+    // The stake movement and the bet row are ONE transaction (`placeBet`), so
+    // the window cannot open at all.
+    //
+    // This used to be `if (betsOnPostgres) { … } else { … }` — and
+    // `betsOnPostgres` was deleted with the rest of the store resolver, so the
+    // condition threw a ReferenceError on EVERY bet placed. The path is the
+    // hottest one on the platform.
+    //
+    // `moneyMoved` IS the idempotency decision: true only for the single
+    // delivery that actually debited. `placeBet` is idempotent on the key, so
+    // every other delivery reports idempotent and moved nothing — and must not
+    // run the pool increment, the transaction row or the broadcast. The
+    // invariant is "the delivery that moved the money owns the side-effects".
+    const placed = await betAuthority.placeBet({
+      betId: betTxBase, userId, cycleId, side, amount,
+      slices: stakeSlices,
+      reason: `BET_PLACED — ₹${amount} on ${side}`,
+    });
+    const stakeLock = { ok: placed.ok, balances: placed.balances };
+    const pgBet = placed.ok ? placed.bet : null;
+    const moneyMoved = placed.ok && placed.idempotent !== true;
 
     if (!stakeLock.ok) {
       // Concurrent request won the race — our pre-computed split is now stale.
@@ -367,40 +338,12 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
       });
     }
 
-    // ── The bet record (deterministic _id) ───────────────────────────────────
-    // On Postgres it is already written inside the stake's transaction and
-    // mirrored to Mongo before placeBet returned. On Mongo it is inserted here
-    // under the DETERMINISTIC _id derived from the idempotency key, so a delivery
-    // that raced past the fast gate collides on the primary key (11000) and
-    // ADOPTS the existing row rather than writing a second. Adopting the row does
-    // not change who moved the money — `moneyMoved` alone gates the side-effects.
-    let bet;
-    if (betsOnPostgres) {
-      bet = await betAuthority.getBetDoc(pgBet._id);
-    } else {
-      try {
-        const created = await Bet.create([{
-          _id: betMongoId,
-          userId,
-          cycleId,
-          amount,
-          side,
-          fromDepositBalance:  fromDeposit,
-          fromWinningsBalance: fromWinnings,
-          fromReserveBalance:  fromReserve,   // Section 6.2: stored for exact refund
-          status:    'PENDING',
-          isPhantom: false,
-          timestamp: new Date()
-        }]);
-        bet = created[0];
-      } catch (createErr) {
-        if (createErr?.code === 11000) {
-          bet = await Bet.findById(betMongoId).lean();
-        } else {
-          throw createErr;
-        }
-      }
-    }
+    // ── The bet record ───────────────────────────────────────────────────────
+    // Already written inside the stake's transaction, under `bet_id` UNIQUE —
+    // so a delivery that raced past the fast gate collides INSIDE the
+    // transaction rather than creating a second bet. There is no separate
+    // insert here to get wrong.
+    const bet = await betAuthority.getBetDoc(pgBet._id);
 
     // Every delivery except the one that moved the money is a replay: the bet
     // exists once, the money moved at most once, and the pool / Transaction /
@@ -441,23 +384,11 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
     // because the delete is conditional on the bet still being PENDING — if
     // settlement already relabelled it WON/LOST, our delete matches nothing and
     // we must not refund. See the conditional `claimed` delete below.
-    const useDerivedPools = await derivedPoolsEnabled();
-
-    let cycleStillOpen;
-    if (useDerivedPools) {
-      cycleStillOpen = await Cycle.findOne({ cycleId, status: { $in: ['OPEN', 'MERGED'] } }).lean();
-    } else {
-      const poolUpdate = side === 'DELHI'
-        ? { $inc: { realDelhi: amount, totalDelhi: amount } }
-        : { $inc: { realBombay: amount, totalBombay: amount } };
-
-      // FIX-8a: atomic conditional update closes TOCTOU window
-      cycleStillOpen = await Cycle.findOneAndUpdate(
-        { cycleId, status: { $in: ['OPEN', 'MERGED'] } },
-        poolUpdate,
-        { new: true }
-      );
-    }
+    // The cycle must still be taking bets. A READ, not an increment: the pool
+    // totals are derived from the bets and nothing on this path writes them —
+    // a bet that also UPDATEd the cycle row would block against every other bet
+    // doing the same, which is a 40P01 deadlock on the hottest path here.
+    const cycleStillOpen = await db.markets.getAcceptingCycle(cycleId);
     if (!cycleStillOpen) {
       // Cycle closed between the pre-check and the commit — restore the stake
       // through the same authority that took it, so the compensating CREDIT
@@ -482,16 +413,18 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
       // cannot recover it either: both stores agree the debit happened.
       let claimed;
       try {
-        claimed = await Bet.findOneAndDelete({ _id: bet._id, status: 'PENDING' });
+        // `status = 'PENDING'` is in the DELETE's WHERE clause, so the database
+        // settles who owns this bet rather than a read either side could pass.
+        ({ claimed } = await db.bets.claimPendingBetForRefund(bet.betId ?? bet._id));
       } catch (claimErr) {
         // Ownership genuinely unknown. Refunding risks paying twice; not
         // refunding risks locking the stake. Do neither silently — page the
         // operator with the identifiers needed to resolve it by hand, and tell
         // the user the truth rather than a comforting guess.
-        console.error(`🚨 Bet ${bet._id} compensation unresolved:`, claimErr.message);
+        console.error(`Bet ${bet.betId ?? bet._id} compensation unresolved:`, claimErr.message);
         sendAlert('bet-compensation-unresolved',
           'Could not determine bet ownership while refunding a closed-cycle bet', {
-            betId: String(bet._id), userId: String(userId), cycleId, amount,
+            betId: String(bet.betId ?? bet._id), userId: String(userId), cycleId, amount,
             error: claimErr.message,
           }).catch(() => { /* alerting must never mask the original failure */ });
         return res.status(500).json({
@@ -502,7 +435,7 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
 
       if (claimed) {
         await unlockBetStake(userId, {
-          amount, txId: `refund_bet_${bet._id}`, refId: bet._id.toString(),
+          amount, txId: `refund_bet_${bet.betId ?? bet._id}`, refId: String(bet.betId ?? bet._id),
           slices: stakeSlices.map((s) => ({
             ...s,
             reason: `Bet refund — cycle closed during placement (${s.field.replace('Balance', '')} portion)`,
@@ -521,56 +454,36 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
       });
     }
 
-    // ── Transaction log ──────────────────────────────────────────────────────
-    await Transaction.create([{
-      userId,
-      type: 'BET_PLACED',
-      amount,
-      balanceType: fromDeposit > 0 && fromWinnings > 0 ? 'BOTH'
-                 : fromDeposit > 0 ? 'DEPOSIT' : 'WINNINGS',
-      depositBalanceBefore:  availableDeposit,
-      depositBalanceAfter:   availableDeposit  - fromDeposit,
-      winningsBalanceBefore: availableWinnings,
-      winningsBalanceAfter:  availableWinnings - fromWinnings,
-      lockedBalanceBefore:   user.lockedBalance  || 0,
-      lockedBalanceAfter:    (user.lockedBalance || 0) + amount,
-      referenceId: bet._id.toString(),
-      description: `Bet ₹${amount} on ${side} (₹${fromDeposit} deposit + ₹${fromWinnings} winnings)`,
-      status: 'SUCCESS'
-    }]);
+    // ── No separate transaction row ─────────────────────────────────────────
+    // A second audit record of the same fact used to be written here, with its
+    // own before/after balances taken from figures read BEFORE the stake moved
+    // — so a concurrent bet made them describe a position that never existed.
+    // `placeBet` writes the ledger rows inside the same transaction as the
+    // stake movement, which is the record, and the only one that cannot
+    // disagree with the money.
 
     // ── Pool figures for the broadcast ───────────────────────────────────────
-    // STORED: `cycleStillOpen` is the post-increment document — already exact.
+    // Summed from the bets, INCLUDING the one just placed. The read above was
+    // taken before this stake existed, so reusing it would broadcast a total
+    // that trails by exactly this bet — the bettor's own stake missing from the
+    // pool they are looking at.
     //
-    // DERIVED: it is a read taken BEFORE this bet existed, so its pools trail by
-    // this stake. `refreshRealPools` recomputes and republishes them, but it is
-    // memoised (CYCLE_POOL_REFRESH_MS, default 1s) precisely so that a burst of
-    // bets does not turn into a burst of writes to the Cycle document — which
-    // is the contention this whole change removes. Most calls therefore return
-    // a cached answer and write nothing.
-    //
-    // The consequence is honest and bounded: a broadcast can trail the very
-    // latest bets by up to one refresh interval. That is acceptable here and
-    // nowhere else — the live pool is a throttled display value, already
-    // rebroadcast on a timer rather than per bet. The two places where the
-    // number becomes money (winner determination, netProfit) call
-    // `refreshRealPools(..., { exact: true })` instead and never read a memo.
-    let updatedCycle = cycleStillOpen; // FIX-8b: reuse result from FIX-8a
-    if (useDerivedPools) {
-      const pools = await refreshRealPools(cycleId).catch(() => null);
-      const realD = pools ? pools.realDelhi : (cycleStillOpen.realDelhi || 0);
-      const realB = pools ? pools.realBombay : (cycleStillOpen.realBombay || 0);
-      const phantomD = cycleStillOpen.phantomDelhi || 0;
-      const phantomB = cycleStillOpen.phantomBombay || 0;
-      updatedCycle = {
-        realDelhi: realD,
-        realBombay: realB,
-        phantomDelhi: phantomD,
-        phantomBombay: phantomB,
-        totalDelhi: realD + phantomD,
-        totalBombay: realB + phantomB,
-      };
-    }
+    // There is no memo and no refresh interval. Both existed because each
+    // recompute was a WRITE to the cycle document and a burst of bets became a
+    // burst of contending writes. A sum over an indexed column writes nothing.
+    const pools = await computeRealPools(cycleId).catch(() => null);
+    const realD = pools ? pools.realDelhi : 0;
+    const realB = pools ? pools.realBombay : 0;
+    const phantomD = cycleStillOpen.phantomDelhi || 0;
+    const phantomB = cycleStillOpen.phantomBombay || 0;
+    const updatedCycle = {
+      realDelhi: realD,
+      realBombay: realB,
+      phantomDelhi: phantomD,
+      phantomBombay: phantomB,
+      totalDelhi: realD + phantomD,
+      totalBombay: realB + phantomB,
+    };
 
     {
       // PUBLIC pool update — coalesced. Instead of fanning a `bet_placed` out to
@@ -580,8 +493,8 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
       // assertPublicCycleSafe so no real/phantom field can ever leak.
       cycleSnapshotPublisher.recordBet(cycleId, {
         cycleType:  cycle.type,
-        totalDelhi: updatedCycle.totalDelhi,
-        totalBombay: updatedCycle.totalBombay,
+        totalDelhi,
+        totalBombay,
       });
 
       // ADMINS get the full real/phantom breakdown, per bet, on admin-room only
@@ -591,12 +504,12 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
         side,
         amount,
         cycleType:        cycle.type,
-        newRealDelhi:     updatedCycle.realDelhi,
-        newRealBombay:    updatedCycle.realBombay,
+        newRealDelhi:     realNow.realDelhi,
+        newRealBombay:    realNow.realBombay,
         newPhantomDelhi:  updatedCycle.phantomDelhi,
         newPhantomBombay: updatedCycle.phantomBombay,
-        newTotalDelhi:    updatedCycle.totalDelhi,
-        newTotalBombay:   updatedCycle.totalBombay,
+        newTotalDelhi:    totalDelhi,
+        newTotalBombay:   totalBombay,
       });
     }
 
@@ -640,82 +553,78 @@ router.post('/place', authenticate, requireApprovedKyc, requireChannelMembership
 router.post('/phantom', authenticate, async (req, res) => {
   try {
     const { cycleId, side, amount } = req.body;
-    const userId = req.user._id;
-
-    const User    = mongoose.model('User');
-    const Cycle   = mongoose.model('Cycle');
-    const Bet     = mongoose.model('Bet');
+    const userId = req.user.userId;
 
     // ── Auth: only phantom agents may call this ────────────────────────────
-    const agent = await User.findById(userId).select('phantomAccess').lean();
+    const agent = await db.users.getUser(userId);
     if (!agent || !agent.phantomAccess || agent.phantomAccess === 'NONE') {
       return res.status(403).json({ success: false, message: 'Phantom access not granted' });
     }
 
-    // ── Cycle access check ─────────────────────────────────────────────────
-    const cycle = await Cycle.findOne({ cycleId });
+    const cycle = await db.markets.getCycle(cycleId);
     if (!cycle) return res.status(404).json({ success: false, message: 'Cycle not found' });
 
-    // Verify agent has access to this cycle type
+    // Verify the agent has access to this cycle type.
     const access = agent.phantomAccess;
     if (access !== 'BOTH' && access !== cycle.type) {
       return res.status(403).json({
         success: false,
-        message: `Your phantom access is for ${access} cycles only`
+        message: `Your phantom access is for ${access} cycles only`,
       });
-    }
-
-    if (!['OPEN', 'MERGED'].includes(cycle.status)) {
-      return res.status(400).json({ success: false, message: `Betting closed. Cycle status: ${cycle.status}` });
-    }
-
-    if (cycle.phantomBetsClosed) {
-      return res.status(400).json({ success: false, message: 'Phantom betting is closed for this cycle' });
     }
 
     if (!amount || amount < 1) {
       return res.status(400).json({ success: false, message: 'Invalid amount' });
     }
-
     if (!MARKET_SIDES.includes(side)) {
       return res.status(400).json({ success: false, message: 'Invalid side' });
     }
 
-    // ── Create phantom bet record — no balance deduction ───────────────────
-    const betDoc = await Bet.create([{
-      userId,
-      cycleId,
-      amount,
-      side,
-      fromDepositBalance:  0,  // phantom: no real money
-      fromWinningsBalance: 0,
-      status:    'PENDING',
-      isPhantom: true,
-      phantomManagerId: userId,
-      timestamp: new Date()
-    }]);
-    const bet = betDoc[0];
+    // ── The bet row and the phantom pool, in ONE transaction ────────────────
+    // They were two writes with the status checks in front of them, so a cycle
+    // closing in between left a phantom bet the pools did not include —
+    // invisible in the total a player sees, and still there at settlement. The
+    // status and the phantom-closed flag are now re-checked under the cycle's
+    // row lock, so an admin closing phantom betting cannot be raced by an
+    // agent's last bet.
+    const placed = await db.markets.placePhantomBet({
+      betId: `phantom_${cycleId}_${userId}_${Date.now()}`,
+      userId, cycleId, side, amountRupees: amount, cycleType: cycle.type,
+    });
 
-    // ── Update phantom pool counters only ─────────────────────────────────
-    // Phantom pools stay STORED under both flag settings. They are not a sum of
-    // phantom Bet rows — `cycleGenerator.equalizePhantomPools` overwrites them
-    // with max(delhi, bombay) — so no aggregation can reproduce them. They also
-    // never needed deriving: these come from a handful of admin agents, not
-    // from thousands of users, so they were never the contention source.
-    const phantomPoolUpdate = side === 'DELHI'
-      ? { $inc: { phantomDelhi: amount, totalDelhi: amount } }
-      : { $inc: { phantomBombay: amount, totalBombay: amount } };
-    const updatedCycle = await Cycle.findOneAndUpdate({ cycleId }, phantomPoolUpdate, { new: true });
+    if (!placed.ok) {
+      const message = {
+        CYCLE_NOT_FOUND: 'Cycle not found',
+        CYCLE_CLOSED: `Betting closed. Cycle status: ${placed.status}`,
+        PHANTOM_CLOSED: 'Phantom betting is closed for this cycle',
+      }[placed.reason] || 'That phantom bet was refused.';
+      return res.status(placed.reason === 'CYCLE_NOT_FOUND' ? 404 : 400)
+        .json({ success: false, message });
+    }
+    if (placed.idempotent) {
+      return res.json({ success: true, message: 'Phantom bet already recorded' });
+    }
 
-    
+    const updatedCycle = placed.cycle;
+
+    // ── The pools the broadcast carries ───────────────────────────────────
+    // Phantom pools stay STORED: `equalizePhantomPools` OVERWRITES them with
+    // max(delhi, bombay) rather than adding, so no sum over rows reproduces
+    // them, and they come from a handful of admin agents rather than the
+    // contention path. The REAL pools are summed from the bets — a phantom bet
+    // moves neither, but the public number is the total, so both are needed.
+    const realNow = await db.markets.realPools(cycleId).catch(() => ({ realDelhi: 0, realBombay: 0 }));
+    const totalDelhi = realNow.realDelhi + (updatedCycle.phantomDelhi || 0);
+    const totalBombay = realNow.realBombay + (updatedCycle.phantomBombay || 0);
+
     {
       // PUBLIC pool update — coalesced (same path as a real bet). A phantom bet
       // only moves the phantom pool, but the PUBLIC number is the total, so the
       // publisher carries the updated total exactly as it does for a real bet.
       cycleSnapshotPublisher.recordBet(cycleId, {
         cycleType:  cycle.type,
-        totalDelhi: updatedCycle.totalDelhi,
-        totalBombay: updatedCycle.totalBombay,
+        totalDelhi,
+        totalBombay,
       });
 
       // ADMINS see the phantom breakdown per bet on admin-room only.
@@ -725,19 +634,19 @@ router.post('/phantom', authenticate, async (req, res) => {
         amount,
         isPhantom:        true,
         cycleType:        cycle.type,
-        newRealDelhi:     updatedCycle.realDelhi,
-        newRealBombay:    updatedCycle.realBombay,
+        newRealDelhi:     realNow.realDelhi,
+        newRealBombay:    realNow.realBombay,
         newPhantomDelhi:  updatedCycle.phantomDelhi,
         newPhantomBombay: updatedCycle.phantomBombay,
-        newTotalDelhi:    updatedCycle.totalDelhi,
-        newTotalBombay:   updatedCycle.totalBombay,
+        newTotalDelhi:    totalDelhi,
+        newTotalBombay:   totalBombay,
       });
     }
 
     res.json({
       success: true,
       message: 'Phantom bet placed',
-      bet: { id: bet._id, cycleId, side, amount, isPhantom: true }
+      bet: { cycleId, side, amount, isPhantom: true }
     });
 
   } catch (error) {

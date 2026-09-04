@@ -19,8 +19,8 @@
  * writes. Every rejected user is told they were rejected and never told why,
  * so they cannot fix the submission and resubmit.
  *
- * `reviewedBy` and `reviewedAt` are lost to the same dead branch, so no
- * approval on the Mongo path records who made it.
+ * `reviewedBy` and `reviewedAt` were lost to the same dead branch, so no
+ * approval recorded who made it.
  *
  * ── The race ────────────────────────────────────────────────────────────────
  * That route also reads the user, assigns the status and saves — a
@@ -29,15 +29,14 @@
  * happened. The expected previous status now goes in the FILTER, so exactly one
  * reviewer's decision lands.
  *
- * ── One rule table, shared with Postgres ────────────────────────────────────
- * KYC_ALLOWED_FROM is imported from postgres/kycPg.js rather than restated, for
- * the same reason the order seam does it: two copies are two rules the moment
- * either changes, and a decision Postgres refuses while Mongo permits is a
- * disagreement no reconciliation can tell apart from real drift.
+ * ── One rule table ──────────────────────────────────────────────────────────
+ * KYC_ALLOWED_FROM is imported from the kyc repository rather than restated,
+ * for the same reason the order seam does it: two copies are two rules the
+ * moment either changes, and the copy nobody updated is the one that lets an
+ * illegal decision through.
  */
-import mongoose from 'mongoose';
-import { KYC_STATES, KYC_ALLOWED_FROM } from '../../postgres/kycPg.js';
-import { decideKycOnPostgres } from '../../postgres/kycPgAuthority.js';
+import { db } from '#db';
+import { KYC_STATES, KYC_ALLOWED_FROM } from '#db/repositories/kyc.core.js';
 
 export { KYC_STATES };
 
@@ -48,7 +47,6 @@ export const KYC_OUTCOME = Object.freeze({
   NOT_FOUND:          'not_found',
 });
 
-const User = () => mongoose.model('User');
 
 /**
  * Move a user's KYC to `to`, but only from a status the rules allow.
@@ -64,47 +62,17 @@ export async function decideKyc(userId, to, { actor = null, reason = null, set =
     throw new Error('decideKyc: a REJECTED decision requires a reason — it is what the user is shown.');
   }
 
-  // The resolver, asked once. KYC cuts over LAST, so this returns
-  // `handled: false` until every path it gates has moved.
-  const routed = await decideKycOnPostgres(userId, to, { actor, reason, set, txId });
-  if (routed.handled) {
-    const { handled, ...answer } = routed;
-    return answer;
-  }
-
-  const patch = {
-    kycStatus: to,
-    // Written to the field the projection reads, which is the whole fix.
-    // Cleared on any non-rejection so an approved user does not carry the
-    // reason they were once refused.
-    'kycData.rejectionReason': to === KYC_STATES.REJECTED ? String(reason).trim() : undefined,
-    'kycData.reviewedBy':      actor ?? undefined,
-    'kycData.reviewedAt':      actor ? new Date() : undefined,
-    ...set,
-  };
-  for (const k of Object.keys(patch)) if (patch[k] === undefined) delete patch[k];
-  const unset = to === KYC_STATES.REJECTED ? {} : { 'kycData.rejectionReason': '' };
-
-  const updated = await User().findOneAndUpdate(
-    { _id: userId, kycStatus: { $in: allowed } },
-    { $set: patch, ...(Object.keys(unset).length ? { $unset: unset } : {}) },
-    { new: true },
-  ).lean();
-
-  if (updated) {
-    return { ok: true, idempotent: false, reason: KYC_OUTCOME.APPLIED, status: to, user: updated };
-  }
-
-  // Why did it match nothing? Re-read AFTER the fact, so it can never be the gate.
-  const current = await User().findById(userId).select('kycStatus').lean();
-  if (!current) return { ok: false, reason: KYC_OUTCOME.NOT_FOUND };
-  if (current.kycStatus === to) {
-    return { ok: true, idempotent: true, reason: KYC_OUTCOME.ALREADY_THERE, status: to };
-  }
-  return {
-    ok: false, reason: KYC_OUTCOME.ILLEGAL_TRANSITION,
-    status: current.kycStatus, attempted: to, allowedFrom: allowed,
-  };
+  // ── One decision, and it is this one ──────────────────────────────────────
+  // This used to ask a resolver and then carry a whole second implementation
+  // for the case where it declined. Both wrote a status; only one of them wrote
+  // the audit trail, and neither wrote `users.kyc_status` — the column every
+  // authorisation gate in the app actually reads. An approved player was still
+  // refused a withdrawal.
+  //
+  // `decideKyc` in the repository now moves `user_kyc`, appends to
+  // `kyc_transitions` and updates `users.kyc_status` in ONE transaction, so the
+  // decision, its evidence and the copy authorisation reads cannot disagree.
+  return db.kyc.decideKyc(userId, to, { actor, reason, set, txId });
 }
 
 export const submitKycForReview = (id, o) => decideKyc(id, KYC_STATES.PENDING_APPROVAL, o);

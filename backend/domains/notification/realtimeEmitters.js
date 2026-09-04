@@ -1,7 +1,9 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 
 
-import mongoose from 'mongoose';
+import { db } from '#db';
+// The wallet is the only place a balance is read from. See sseBalancePush.
+import { getBalances } from '#db/repositories/wallets.js';
 
 // ─── WALLET UPDATE ─────────────────────────────────────────────────────────────
 /**
@@ -24,9 +26,11 @@ export async function emitWalletUpdate(userId, balanceOverride = null) {
         timestamp: Date.now(),
       };
     } else {
-      const User  = mongoose.model('User');
-      const fresh = await User.findById(userId)
-        .select('depositBalance winningsBalance reserveBalance lockedBalance').lean();
+      // From the WALLET. The accounts table has no balance columns — they live
+      // in `wallets`, behind the row lock every movement takes — so reading
+      // them off an account object returns undefined for all four and pushes
+      // ZERO to a player whose money is fine.
+      const fresh = await getBalances(String(userId));
       if (!fresh) return;
       payload = {
         depositBalance:  fresh.depositBalance  || 0,
@@ -110,6 +114,30 @@ export async function emitPayoutSuccessBatch({ io, payouts, balanceMap, cycleId,
  * @param {string} event — SSE event name, e.g. 'order_assigned', 'order_paid', 'order_completed'
  * @param {object} data  — order payload
  */
+/**
+ * Push a balance change down the user's SSE channel.
+ *
+ * Lived in `wallet.service.js` until the document-store wallet was deleted, and
+ * was the only thing keeping that 441-line module reachable. It never belonged
+ * there: telling a browser about a number is a notification concern, and the
+ * wallet's job ends when the transaction commits.
+ *
+ * Best-effort by construction. A failed push must never unwind a movement that
+ * has already committed — the client re-reads its balance on the next request
+ * regardless, so a dropped event costs a stale figure for seconds, and throwing
+ * here would cost the transaction.
+ */
+export function sseBalancePush(userId, depositBalance, winningsBalance) {
+  try {
+    const round2 = (n) => Math.round((n || 0) * 100) / 100;
+    global.sseManager?.sendToUser?.(String(userId), 'balance_update', {
+      depositBalance:  round2(depositBalance),
+      winningsBalance: round2(winningsBalance),
+      totalBalance:    round2(depositBalance + winningsBalance),
+    });
+  } catch { /* SSE is best-effort — never block the transaction */ }
+}
+
 export function emitOrderUpdate(userId, event, data) {
   try {
     if (global.sseManager) {

@@ -70,37 +70,43 @@ capabilities:
 
   # ── B. Financial Platform ──────────────────────────────────────────────────
   - id: CAP-07
-    name: PostgreSQL as Financial Source of Truth
-    bucket: B
+    name: PostgreSQL as Source of Truth
+    bucket: A
     owner: app
-    implementation_status: architecture-ready
-    activation_status: infra-gated
-    dependencies: [CAP-09, CAP-12, CAP-13, CAP-14]
-    evidence: [backend/postgres/schema.sql, backend/postgres/pgClient.js, backend/postgres/dualWrite.js]
-    docs: [backend/postgres/DATA_ROLLBACK_PLAN.md]
+    # Unconditional as of 2026-09-01: PostgreSQL is the only datastore, so this
+    # is no longer gated on a cutover, a flag or any infrastructure decision.
+    implementation_status: full
+    activation_status: active
+    dependencies: [CAP-09, CAP-13]
+    evidence: [database/schema.sql, database/client.js]
+    docs: [CLAUDE.md, docs/governance/04-GOVERNANCE.md]
   - id: CAP-08
     name: Append-Only Ledger
     bucket: A
     owner: app
     implementation_status: full
     activation_status: active
-    evidence: [backend/domains/revenue, backend/postgres/schema.sql]
+    evidence: [backend/domains/revenue, database/schema.sql]
   - id: CAP-09
     name: Integer Money Engine
     bucket: A
     owner: app
     implementation_status: full
     activation_status: active
-    evidence: [backend/shared/money.js, backend/postgres/pgClient.js]
+    evidence: [backend/shared/money.js, database/client.js]
     verification: { test: backend/tests/unit/money.test.js }
   - id: CAP-10
     name: Database Transactions
     bucket: A
     owner: app
-    implementation_status: partial
+    # Was PARTIAL because a money movement spanned two stores and could not be
+    # one transaction. With a single store it can be, and is: the balance move,
+    # the row it belongs to and its ledger entries commit together or not at
+    # all, under the wallet row lock.
+    implementation_status: full
     activation_status: active
-    evidence: [backend/domains/wallet/walletAuthority.service.js, backend/postgres/dualWrite.js]
-    docs: [docs/governance/04-GOVERNANCE.md]
+    evidence: [backend/domains/wallet/walletAuthority.service.js, database/repositories/wallets.core.js, database/client.js]
+    docs: [docs/governance/04-GOVERNANCE.md, CLAUDE.md]
   - id: CAP-11
     name: CDC Migration
     bucket: decision
@@ -118,27 +124,45 @@ capabilities:
     docs: [docs/governance/04-GOVERNANCE.md]
   - id: CAP-12
     name: Dual-Write Migration
-    bucket: B
+    bucket: decision
     owner: app
-    implementation_status: full
-    activation_status: active
-    evidence: [backend/postgres/dualWrite.js]
-    verification: { test: backend/tests/integration/postgresDualWrite.integration.test.js }
+    # REMOVED 2026-09-01. This was a mechanism for keeping a second store in
+    # step during a migration. There is no second store and no migration, so
+    # the capability is not "absent pending work" — it is a recorded decision
+    # not to have one. Do not reintroduce it. See CLAUDE.md.
+    implementation_status: decision
+    activation_status: n/a
+    docs: [CLAUDE.md]
   - id: CAP-13
     name: Reconciliation Engine
     bucket: A
     owner: app
+    # Rescoped 2026-09-01. The cross-store reconciler is deleted along with the
+    # store it compared against — drift between two copies is not a failure mode
+    # with one copy. What remains, and is what "reconciliation" should have
+    # meant all along, is INTERNAL consistency: accounting events derived from
+    # completed orders and settled cycles, committed merchant pockets explained
+    # by outstanding settlements, and a ledger that conserves to zero.
     implementation_status: full
     activation_status: active
-    evidence: [backend/postgres/reconcile.js, backend/startup/cronJobs.js, backend/services/metrics.service.js]
+    evidence:
+      - backend/domains/revenue/revenueSettlement.service.js
+      - database/repositories/merchantSettlements.js
+      - database/repositories/ledger.core.js
+      - backend/startup/cronJobs.js
+    verification: { test: database/tests/merchantSettlementPg.test.js }
   - id: CAP-14
     name: Rollback Strategy
     bucket: A
     owner: app
+    # Scoped to DEPLOYMENT rollback (redeploy the previous release, or flip the
+    # blue/green selector), which is what remains real. The store-level rollback
+    # plan this used to point at was the fallback path for a cutover between two
+    # stores; both are gone. Data recovery is now PITR — see CAP-15.
     implementation_status: full
     activation_status: active
-    docs: [backend/postgres/DATA_ROLLBACK_PLAN.md]
-    evidence: [backend/postgres/DATA_ROLLBACK_PLAN.md]
+    docs: [docs/governance/04-GOVERNANCE.md, DEPLOYMENT.md]
+    evidence: [deploy/k8s, ecosystem.config.cjs]
 
   # ── C. PostgreSQL Platform ─────────────────────────────────────────────────
   - id: CAP-15
@@ -147,15 +171,22 @@ capabilities:
     owner: app
     implementation_status: full
     activation_status: active
-    evidence: [backend/postgres/pgClient.js, backend/startup/mongoConnect.js, backend/services/metrics.service.js]
+    # One pool, in the data layer, with its stats exported to the metrics
+    # registry through setPoolStatsProvider. The second pool this used to name
+    # belonged to the second store and went with it.
+    evidence: [database/client.js, backend/services/metrics.service.js]
   - id: CAP-16
     name: Partitioning Strategy
     bucket: A
     owner: app
     implementation_status: architecture-ready
     activation_status: volume-gated
-    evidence: [backend/postgres/migrations/001_partition_ledger.sql, backend/postgres/migratePartitions.js]
-    verification: { command: 'npm run pg:migrate:partition' }
+    # The migration SQL and the schema's own notes are the strategy; the runner
+    # that applied it went with the migration scaffolding. Applying it is a
+    # volume-gated operational step, not something the app does at boot -- see
+    # the PARTITIONING STRATEGY header in schema.sql for the global-uniqueness
+    # constraint any application of it must preserve.
+    evidence: [database/migrations/001_partition_ledger.sql, database/schema.sql]
   - id: CAP-17
     name: Point-in-Time Recovery
     bucket: C
@@ -168,9 +199,16 @@ capabilities:
     name: Read Replicas
     bucket: B
     owner: app
-    implementation_status: architecture-ready
+    # DOWNGRADED from architecture-ready, deliberately. The only code that ever
+    # existed was a helper that set a read preference on a document-store query
+    # object -- an API this platform no longer speaks -- and it had no callers.
+    # Routing analytics reads to a PostgreSQL replica is a different mechanism
+    # (a second pool against a replica DSN, plus a rule for which reads may be
+    # stale), and none of it is written. Calling that architecture-ready would
+    # be claiming a readiness that has no code behind it.
+    implementation_status: absent
     activation_status: infra-gated
-    evidence: [backend/services/readPreference.service.js]
+    docs: [docs/governance/04-GOVERNANCE.md]
   - id: CAP-19
     name: Backup Verification
     bucket: B
@@ -185,7 +223,7 @@ capabilities:
     owner: database-platform
     implementation_status: partial
     activation_status: infra-gated
-    evidence: [backend/postgres/schema.sql]
+    evidence: [database/schema.sql]
 
   # ── D. Redis Platform ──────────────────────────────────────────────────────
   - id: CAP-21
@@ -199,10 +237,16 @@ capabilities:
     name: Distributed Locks
     bucket: A
     owner: app
-    implementation_status: full
+    # PARTIAL as of 2026-09-01, and this is a real gap, not bookkeeping.
+    # startup/cronLock.js elects a leader using a TTL document in the store
+    # being removed — despite Redis backing every other lock in the platform.
+    # Until it is rewritten on PostgreSQL, scheduled jobs are guarded only by
+    # their own idempotency, which for settlement means duplicated work on
+    # every instance every tick. Its concurrency test went with the integration
+    # tier and is restored in tests/postgres/ when the lock moves.
+    implementation_status: partial
     activation_status: active
     evidence: [backend/startup/cronLock.js]
-    verification: { test: backend/tests/integration/cronLock.integration.test.js }
   - id: CAP-23
     name: Redis Sessions
     bucket: decision
@@ -233,7 +277,7 @@ capabilities:
     implementation_status: full
     activation_status: active
     evidence: [backend/middleware/redisRateLimitStore.js]
-    verification: { test: backend/tests/integration/rateLimitStore.integration.test.js }
+    verification: { test: backend/tests/redis/rateLimitStore.test.js }
   - id: CAP-26
     name: Cache Strategy (TTL/Invalidation)
     bucket: A
@@ -530,7 +574,7 @@ capabilities:
     implementation_status: full
     activation_status: active
     dependencies: [CAP-15, CAP-44]
-    evidence: [backend/services/metrics.service.js, backend/postgres/pgClient.js]
+    evidence: [backend/services/metrics.service.js, database/client.js]
   - id: CAP-65
     name: Continuous Reconciliation Metrics
     bucket: A
@@ -591,7 +635,7 @@ capabilities:
     dependencies: [CAP-07]
     evidence:
       - backend/domains/support/ragService.js
-      - backend/domains/support/ragStore.js
+      - database/repositories/supportDocuments.js
       - backend/domains/support/embeddings.js
       - backend/domains/support/chunk.js
       - backend/domains/support/support.routes.js

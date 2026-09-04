@@ -21,10 +21,9 @@
  * calls for on raw-KYC access.
  */
 import express from 'express';
+import { db } from '#db';
 import crypto from 'crypto';
-import mongoose from 'mongoose';
 import { authenticate, isAdmin } from '../../domains/identity/auth.middleware.js';
-import { TelegramConfig } from '../../domains/telegram/telegram.model.js';
 import { encryptField } from '../../domains/identity/fieldCrypto.util.js';
 import {
   verifyBotToken, setWebhook, invalidateConfigCache, activeConfig, liveBot,
@@ -47,11 +46,9 @@ const router = express.Router();
 router.get('/telegram/config', authenticate, isAdmin, async (req, res) => {
   try {
     const cfg = await activeConfig({ force: true });
-    const history = await TelegramConfig.find({})
-      .sort({ generation: -1 }).limit(10)
-      .select('generation botUsername channelId channelUsername active activatedAt reason')
-      .populate('activatedBy', 'username')
-      .lean();
+    // Public columns only. There is no read path for a bot token by design,
+    // and a history that carried one would be exactly that.
+    const history = await db.telegram.listConfigHistory({ limit: 10 });
 
     res.json({
       success: true,
@@ -88,7 +85,6 @@ router.get('/telegram/config', authenticate, isAdmin, async (req, res) => {
  * than "the value pasted was wrong".
  */
 router.post('/telegram/config', authenticate, isAdmin, async (req, res) => {
-  const session = await mongoose.startSession();
   try {
     const {
       botToken, recoveryBotToken, channelId, channelUsername, channelInviteLink,
@@ -119,33 +115,23 @@ router.post('/telegram/config', authenticate, isAdmin, async (req, res) => {
     const webhookSecret = crypto.randomBytes(32).toString('hex');
     const recoveryWebhookSecret = recoveryBotToken ? crypto.randomBytes(32).toString('hex') : null;
 
-    let created;
-    await session.withTransaction(async () => {
-      const latest = await TelegramConfig.findOne({}).sort({ generation: -1 }).select('generation').session(session).lean();
-      const generation = (latest?.generation || 0) + 1;
-
-      // Deactivate the old one IN THE SAME transaction as activating the new.
-      // The partial unique index refuses two active configs, so doing this in
-      // two steps would either fail or leave a window with none active.
-      await TelegramConfig.updateMany({ active: true }, { $set: { active: false } }, { session });
-
-      const [doc] = await TelegramConfig.create([{
-        generation,
-        botTokenEncrypted: encryptField(botToken),
-        botUsername: probe.username || '',
-        webhookSecret,
-        recoveryBotTokenEncrypted: recoveryBotToken ? encryptField(recoveryBotToken) : undefined,
-        recoveryBotUsername: recoveryUsername,
-        recoveryWebhookSecret: recoveryWebhookSecret || undefined,
-        channelId: String(channelId),
-        channelUsername: channelUsername || '',
-        channelInviteLink: channelInviteLink || '',
-        active: true,
-        activatedAt: new Date(),
-        activatedBy: req.user._id,
-        reason: reason || '',
-      }], { session });
-      created = doc;
+    // Deactivating the old generation and activating the new one is ONE
+    // transaction inside the repository, and the generation number is MAX + 1
+    // taken inside it — two admins activating at once cannot be handed the
+    // same number, and the partial unique index refuses two active rows, so a
+    // half-applied swap cannot leave the platform with none.
+    const created = await db.telegram.activateConfig({
+      botTokenEncrypted: encryptField(botToken),
+      botUsername: probe.username || '',
+      webhookSecret,
+      recoveryBotTokenEncrypted: recoveryBotToken ? encryptField(recoveryBotToken) : null,
+      recoveryBotUsername: recoveryUsername,
+      recoveryWebhookSecret: recoveryWebhookSecret || null,
+      channelId: String(channelId),
+      channelUsername: channelUsername || '',
+      channelInviteLink: channelInviteLink || '',
+      activatedBy: req.user.userId,
+      reason: reason || '',
     });
 
     invalidateConfigCache();
@@ -173,8 +159,6 @@ router.post('/telegram/config', authenticate, isAdmin, async (req, res) => {
   } catch (err) {
     console.error('[admin/telegram] activation failed:', err.message);
     res.status(500).json({ success: false, message: err.message });
-  } finally {
-    await session.endSession();
   }
 });
 
@@ -202,7 +186,6 @@ router.post('/telegram/config', authenticate, isAdmin, async (req, res) => {
  * channel and continues exactly where they were.
  */
 router.post('/telegram/channel', authenticate, isAdmin, async (req, res) => {
-  const session = await mongoose.startSession();
   try {
     const { channelId, channelUsername, channelInviteLink, reason } = req.body || {};
     if (!channelId) {
@@ -210,12 +193,10 @@ router.post('/telegram/channel', authenticate, isAdmin, async (req, res) => {
     }
 
     // A generation with no reachable bot would take signup and login down the
-    // moment it activated. `botTokenEncrypted` is no longer `required` on the
-    // schema — the registry may hold the credential instead — so the invariant
-    // is checked HERE, where both sources are visible.
-    const current = await TelegramConfig.findOne({ active: true })
-      .select('+botTokenEncrypted +webhookSecret +recoveryBotTokenEncrypted +recoveryWebhookSecret')
-      .lean();
+    // moment it activated. The credential may live in the registry OR on the
+    // generation, so the invariant is checked HERE, where both sources are
+    // visible — neither one alone can express it.
+    const current = await db.telegram.getActiveConfigWithSecrets();
     const registrySignin = await liveBot('signin');
 
     if (!current && !registrySignin) {
@@ -225,46 +206,34 @@ router.post('/telegram/channel', authenticate, isAdmin, async (req, res) => {
       });
     }
 
-    let created;
-    await session.withTransaction(async () => {
-      const latest = await TelegramConfig.findOne({}).sort({ generation: -1 }).select('generation').session(session).lean();
-      const generation = (latest?.generation || 0) + 1;
+    // Bot credentials are carried forward ONLY when they are not already in
+    // the registry. Copying a token the registry owns would create a second
+    // copy of a secret that a later promotion would silently leave stale.
+    const carryBot = registrySignin ? {} : {
+      botTokenEncrypted: current.botTokenEncrypted,
+      botUsername: current.botUsername,
+      webhookSecret: current.webhookSecret,
+    };
+    const carryRecovery = (await liveBot('recovery')) ? {} : {
+      recoveryBotTokenEncrypted: current?.recoveryBotTokenEncrypted,
+      recoveryBotUsername: current?.recoveryBotUsername,
+      recoveryWebhookSecret: current?.recoveryWebhookSecret,
+    };
 
-      await TelegramConfig.updateMany({ active: true }, { $set: { active: false } }, { session });
-
-      // Bot credentials are carried forward ONLY when they are not already in
-      // the registry. Copying a token the registry owns would create a second
-      // copy of a secret that a later promotion would silently leave stale.
-      const carryBot = registrySignin ? {} : {
-        botTokenEncrypted: current.botTokenEncrypted,
-        botUsername: current.botUsername,
-        webhookSecret: current.webhookSecret,
-      };
-      const carryRecovery = (await liveBot('recovery')) ? {} : {
-        recoveryBotTokenEncrypted: current?.recoveryBotTokenEncrypted,
-        recoveryBotUsername: current?.recoveryBotUsername,
-        recoveryWebhookSecret: current?.recoveryWebhookSecret,
-      };
-
-      const [doc] = await TelegramConfig.create([{
-        generation,
-        ...carryBot,
-        ...carryRecovery,
-        channelId: String(channelId),
-        channelUsername: channelUsername || '',
-        channelInviteLink: channelInviteLink || '',
-        active: true,
-        activatedAt: new Date(),
-        activatedBy: req.user._id,
-        reason: reason || 'channel replaced',
-      }], { session });
-      created = doc;
+    const created = await db.telegram.activateConfig({
+      ...carryBot,
+      ...carryRecovery,
+      channelId: String(channelId),
+      channelUsername: channelUsername || '',
+      channelInviteLink: channelInviteLink || '',
+      activatedBy: req.user.userId,
+      reason: reason || 'channel replaced',
     });
 
     invalidateConfigCache();
 
     console.warn(`[admin/telegram] CHANNEL FLIP to generation ${created.generation} `
-      + `(${channelUsername || channelId}) by admin ${req.user._id}`);
+      + `(${channelUsername || channelId}) by admin ${req.user.userId}`);
 
     return res.json({
       success: true,
@@ -277,8 +246,6 @@ router.post('/telegram/channel', authenticate, isAdmin, async (req, res) => {
   } catch (err) {
     console.error('[admin/telegram] channel flip failed:', err.message);
     return res.status(500).json({ success: false, message: err.message });
-  } finally {
-    await session.endSession();
   }
 });
 
@@ -299,8 +266,8 @@ router.get('/telegram/bots', authenticate, isAdmin, async (req, res) => {
 router.post('/telegram/bots', authenticate, isAdmin, async (req, res) => {
   try {
     const { label, role, token, notes } = req.body || {};
-    const bot = await registerBot({ label, role, token, notes, actorId: req.user._id });
-    console.warn(`[admin/telegram] bot @${bot.username} registered as ${bot.role} by admin ${req.user._id}`);
+    const bot = await registerBot({ label, role, token, notes, actorId: req.user.userId });
+    console.warn(`[admin/telegram] bot @${bot.username} registered as ${bot.role} by admin ${req.user.userId}`);
     res.json({ success: true, bot, message: `@${bot.username} is registered and on standby.` });
   } catch (err) {
     res.status(err.status || 500).json({ success: false, message: err.message });
@@ -319,10 +286,10 @@ router.post('/telegram/bots/:id/promote', authenticate, isAdmin, async (req, res
   try {
     const result = await promote({
       id: req.params.id,
-      actorId: req.user._id,
+      actorId: req.user.userId,
       webhookBaseUrl: req.body?.webhookBaseUrl,
     });
-    console.warn(`[admin/telegram] PROMOTE @${result.bot.username} (${result.bot.role}) by admin ${req.user._id}`
+    console.warn(`[admin/telegram] PROMOTE @${result.bot.username} (${result.bot.role}) by admin ${req.user.userId}`
       + `${result.displaced ? `, displacing @${result.displaced.username}` : ''} — webhook ${result.webhook}`);
     res.json({
       success: true,
@@ -349,8 +316,8 @@ router.post('/telegram/bots/:id/webhook', authenticate, isAdmin, async (req, res
 /** POST /api/admin/telegram/bots/:id/retire — stand a bot down for good. */
 router.post('/telegram/bots/:id/retire', authenticate, isAdmin, async (req, res) => {
   try {
-    const bot = await retire({ id: req.params.id, actorId: req.user._id });
-    console.warn(`[admin/telegram] RETIRE @${bot.username} (${bot.role}) by admin ${req.user._id}`);
+    const bot = await retire({ id: req.params.id, actorId: req.user.userId });
+    console.warn(`[admin/telegram] RETIRE @${bot.username} (${bot.role}) by admin ${req.user.userId}`);
     res.json({ success: true, bot, message: `@${bot.username} is retired.` });
   } catch (err) {
     res.status(err.status || 500).json({ success: false, message: err.message });
@@ -382,7 +349,7 @@ router.put('/telegram/templates/:key', authenticate, isAdmin, async (req, res) =
     const saved = await saveTemplate({
       key: req.params.key,
       body: req.body?.body,
-      actorId: req.user._id,
+      actorId: req.user.userId,
     });
     res.json({
       success: true,
@@ -417,13 +384,13 @@ router.get('/kyc/bulk/stats', authenticate, isAdmin, async (req, res) => {
 router.get('/kyc/bulk/export', authenticate, isAdmin, async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 10_000, 50_000);
-    const { batchId, csv, rowCount } = await buildExport({ actorId: req.user._id, limit });
+    const { batchId, csv, rowCount } = await buildExport({ actorId: req.user.userId, limit });
 
     if (!rowCount) {
       return res.status(404).json({ success: false, message: 'There are no pending verifications to export.' });
     }
 
-    console.warn(`[kyc] EXPORT ${batchId}: ${rowCount} Aadhaar row(s) released to admin ${req.user._id}`);
+    console.warn(`[kyc] EXPORT ${batchId}: ${rowCount} Aadhaar row(s) released to admin ${req.user.userId}`);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${batchId}.csv"`);
     // Identity data must never sit in a shared cache.
@@ -439,8 +406,8 @@ router.get('/kyc/bulk/export', authenticate, isAdmin, async (req, res) => {
 router.post('/kyc/bulk/import', authenticate, isAdmin, async (req, res) => {
   try {
     const csv = typeof req.body === 'string' ? req.body : req.body?.csv;
-    const result = await applyImport({ csv, actorId: req.user._id });
-    console.warn(`[kyc] IMPORT ${result.batchId} by admin ${req.user._id}: `
+    const result = await applyImport({ csv, actorId: req.user.userId });
+    console.warn(`[kyc] IMPORT ${result.batchId} by admin ${req.user.userId}: `
       + `${result.verified} verified, ${result.failed} failed, ${result.skipped} skipped`);
     res.json({ success: true, ...result });
   } catch (err) {
@@ -492,10 +459,10 @@ router.post('/referral/disburse', authenticate, isAdmin, async (req, res) => {
 
     const result = await disburse({
       poolPaise: rupeesToPaise(amount),
-      actorId: req.user._id,
+      actorId: req.user.userId,
     });
 
-    console.warn(`[referral] DISBURSAL ${result.batchId} by admin ${req.user._id}: `
+    console.warn(`[referral] DISBURSAL ${result.batchId} by admin ${req.user.userId}: `
       + `₹${paiseToRupees(result.spentPaise)} to ${result.paid} earner(s), ${result.blocked} blocked`);
 
     res.json({

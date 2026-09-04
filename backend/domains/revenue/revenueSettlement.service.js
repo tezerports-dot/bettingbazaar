@@ -27,16 +27,13 @@
 // flow was modified to produce ledger entries — completion code paths stay
 // untouched, the ledger self-heals, and history backfills automatically.
 
-import mongoose from 'mongoose';
-import { AccountingEvent } from './accountingEvent.model.js';
-// The hybrid-DB resolver. Every function below asks it once and either gets the
-// Postgres answer or falls through to the Mongo implementation it has always
-// had — see postgres/ledgerPgAuthority.js for why reads route as well as writes.
+import { createHash } from 'node:crypto';
 import {
   recordEventOnPostgres, trialBalanceOnPostgres,
   accountBalanceOnPostgres, getLedgerOnPostgres,
-} from '../../postgres/ledgerPgAuthority.js';
+} from '#db/repositories/ledger.js';
 import { ACCOUNTS, ACCOUNT_CODES, EVENT_TYPES, toMinor } from './chartOfAccounts.js';
+import { db } from '#db';
 
 // ═════════════════════════════════════════════════════════════════════════════
 // Pure validation + posting builders (exported for tests — no DB required)
@@ -156,6 +153,35 @@ export function buildBonusIssuePostings(amountMinor) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 /**
+ * An idempotency key for an operation that did not bring one.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * A GENERATED KEY IS NOT AN IDEMPOTENCY KEY
+ * ══════════════════════════════════════════════════════════════════════════
+ * `fundMerchantBonusPool` defaulted its key to a freshly generated id. That
+ * looks guarded — the column is UNIQUE, the gate is right there — and the gate
+ * could never fire, because a value invented per call never collides with
+ * anything. An admin double-clicking "fund the pool" funded it TWICE, out of
+ * platform revenue, and the ledger recorded both as legitimate distinct events.
+ * A duplicate on a ledger is the one duplicate that cannot be netted out later.
+ *
+ * This derives the key from what actually makes the operation unique: who, how
+ * much, why, and WHICH MINUTE. The minute bucket is the deliberate part — two
+ * deliveries of one click land in the same bucket and collide, while a genuine
+ * second funding an hour later is a different key and goes through. It is a
+ * fallback, not a substitute: a caller that supplies its own key gets exact
+ * semantics, and the admin route passes one through when the client sends it.
+ */
+function derivedIdempotencyKey(kind, parts) {
+  const minuteBucket = Math.floor(Date.now() / 60_000);
+  const digest = createHash('sha256')
+    .update([kind, ...parts.map(String), minuteBucket].join('\u0000'))
+    .digest('hex')
+    .slice(0, 32);
+  return `acct_${kind}_${digest}`;
+}
+
+/**
  * recordAccountingEvent — the ONLY way an entry enters the ledger.
  * Idempotent: if idempotencyKey already exists, returns the existing entry
  * with { idempotent: true } and writes nothing.
@@ -172,32 +198,17 @@ export async function recordAccountingEvent({
   }
   validatePostings(postings);
 
-  // The resolver, asked once. Validation runs FIRST and on both paths: a
-  // malformed event must be refused identically whichever store owns the
-  // ledger, or a cutover would quietly change what the books accept.
-  const routed = await recordEventOnPostgres({
+  // Validation runs FIRST: a malformed event is refused before anything is
+  // written, so a bad posting cannot reach the books and then need unwinding.
+  //
+  // The idempotency gate is the UNIQUE constraint inside the INSERT, not a
+  // read-then-write. A pre-read followed by an insert lets two deliveries both
+  // see "not there" and both write — which on a ledger means the same money
+  // recorded twice, in the one place a duplicate can never be netted out.
+  const recorded = await recordEventOnPostgres({
     eventType, idempotencyKey, postings, refModel, refId, occurredAt, description,
   });
-  if (routed.handled) return { idempotent: routed.idempotent, event: routed.event };
-
-  const existing = await AccountingEvent.findOne({ idempotencyKey }).lean();
-  if (existing) return { idempotent: true, event: existing };
-
-  try {
-    const event = await AccountingEvent.create({
-      eventType, idempotencyKey, postings, refModel, refId: String(refId),
-      occurredAt: occurredAt || new Date(), description, metadata, recordedBy,
-    });
-    return { idempotent: false, event };
-  } catch (err) {
-    // Duplicate-key race between the findOne above and create — resolve to
-    // the winner's entry (same semantics as the idempotent early return).
-    if (err.code === 11000) {
-      const winner = await AccountingEvent.findOne({ idempotencyKey }).lean();
-      if (winner) return { idempotent: true, event: winner };
-    }
-    throw err;
-  }
+  return { idempotent: recorded.idempotent, event: recorded.event };
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -211,34 +222,11 @@ export async function recordAccountingEvent({
  * Also returns integrityOk: whether ALL postings across the ledger sum to 0.
  */
 export async function getTrialBalance() {
-  // A trial balance derived from Mongo while writes go to Postgres is a report
-  // about a store that is no longer the source of truth — and it would read
-  // clean the whole time it was wrong.
-  const routed = await trialBalanceOnPostgres();
-  if (routed.handled) {
-    const { handled, ...answer } = routed;
-    return answer;
-  }
-  const rows = await AccountingEvent.aggregate([
-    { $unwind: '$postings' },
-    { $group: { _id: '$postings.account', rawMinor: { $sum: '$postings.amountMinor' }, postings: { $sum: 1 } } },
-  ]);
-  const byAccount = {};
-  let grandTotal = 0;
-  for (const code of ACCOUNT_CODES) {
-    const row = rows.find(r => r._id === code);
-    const raw = row ? row.rawMinor : 0;
-    grandTotal += raw;
-    byAccount[code] = {
-      account: code,
-      normalBalance: ACCOUNTS[code].normalBalance,
-      description: ACCOUNTS[code].description,
-      rawMinor: raw,
-      reportedMinor: ACCOUNTS[code].normalBalance === 'CREDIT' ? -raw : raw,
-      postings: row ? row.postings : 0,
-    };
-  }
-  return { accounts: byAccount, integrityOk: grandTotal === 0, grandTotalMinor: grandTotal };
+  // Derived from the postings, in one statement. A trial balance computed
+  // anywhere other than where the entries live is a report about a store that
+  // is not the source of truth — and it would read CLEAN the whole time it was
+  // wrong, which is the only kind of accounting error that matters.
+  return trialBalanceOnPostgres();
 }
 
 /** Reported balance (minor units) of one account. */
@@ -246,16 +234,7 @@ export async function getAccountBalanceMinor(accountCode) {
   if (!ACCOUNT_CODES.includes(accountCode)) {
     throw new Error(`Unknown ledger account '${accountCode}'.`);
   }
-  const routed = await accountBalanceOnPostgres(accountCode);
-  if (routed.handled) return routed.reportedMinor;
-
-  const [row] = await AccountingEvent.aggregate([
-    { $unwind: '$postings' },
-    { $match: { 'postings.account': accountCode } },
-    { $group: { _id: null, rawMinor: { $sum: '$postings.amountMinor' } } },
-  ]);
-  const raw = row ? row.rawMinor : 0;
-  return ACCOUNTS[accountCode].normalBalance === 'CREDIT' ? -raw : raw;
+  return (await accountBalanceOnPostgres(accountCode)).reportedMinor;
 }
 
 /**
@@ -270,19 +249,7 @@ export async function getDistributableRevenueMinor() {
 
 /** Paginated ledger read (newest first), optional eventType filter. */
 export async function getLedger({ page = 1, limit = 50, eventType } = {}) {
-  const routed = await getLedgerOnPostgres({ page, limit, eventType: eventType ?? null });
-  if (routed.handled) {
-    const { handled, ...answer } = routed;
-    return answer;
-  }
-  const filter = {};
-  if (eventType) filter.eventType = eventType;
-  const [entries, total] = await Promise.all([
-    AccountingEvent.find(filter).sort({ createdAt: -1 })
-      .skip((page - 1) * limit).limit(limit).lean(),
-    AccountingEvent.countDocuments(filter),
-  ]);
-  return { entries, total, page, pages: Math.ceil(total / limit) || 1 };
+  return getLedgerOnPostgres({ page, limit, eventType: eventType ?? null });
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -327,7 +294,9 @@ export async function fundMerchantBonusPool({ amountMinor, actor, justification,
 
   return recordAccountingEvent({
     eventType: EVENT_TYPES.MERCHANT_BONUS_FUNDED,
-    idempotencyKey: idempotencyKey || `acct_bonusfund_${new mongoose.Types.ObjectId().toString()}`,
+    idempotencyKey: idempotencyKey || derivedIdempotencyKey('bonusfund', [
+      actor.userId, amountMinor, justification.trim(),
+    ]),
     postings,
     refModel: 'Manual',
     refId: String(actor.userId),
@@ -386,27 +355,20 @@ export async function issueMerchantBonus({ merchantId, amountMinor, idempotencyK
 // If source volume makes the scan expensive, add a checkpoint optimization —
 // flagged in docs/governance/04-GOVERNANCE.md.
 
-async function unrecordedSources(Model, matchStage, refModel, localRefExpr, limit) {
-  return Model.aggregate([
-    { $match: matchStage },
-    { $sort: { _id: 1 } },
-    { $lookup: {
-        from: 'accountingevents',
-        let: { rid: localRefExpr },
-        pipeline: [
-          { $match: { $expr: { $and: [
-            { $eq: ['$refModel', refModel] },
-            { $eq: ['$refId', '$$rid'] },
-          ] } } },
-          { $limit: 1 },
-          { $project: { _id: 1 } },
-        ],
-        as: 'ledger',
-    } },
-    { $match: { ledger: { $size: 0 } } },
-    { $limit: limit },
-  ]);
-}
+/**
+ * The two reconciliation reads live in the repository now.
+ *
+ * `unrecordedSources` was one generic aggregation parameterised by a model, a
+ * match stage and a join — and it was called with two models that had already
+ * been deleted, so BOTH reconciliation passes threw a ReferenceError.
+ * Silently: they are called from a cron whose per-item failures are collected
+ * rather than raised, so a revenue reconciliation that had never run once
+ * still reported a clean, empty result.
+ *
+ * A LEFT JOIN with a NULL test answers the same question in one pass, and each
+ * source gets a named query rather than a generic one that has to be told what
+ * a source is.
+ */
 
 /**
  * reconcileCompletedOrders — record DEPOSIT_COMPLETED / WITHDRAWAL_COMPLETED
@@ -414,14 +376,7 @@ async function unrecordedSources(Model, matchStage, refModel, localRefExpr, limi
  * Per-item failures are collected, never thrown.
  */
 export async function reconcileCompletedOrders(limit = 200) {
-  const PaymentOrder = mongoose.model('PaymentOrder');
-  const due = await unrecordedSources(
-    PaymentOrder,
-    { status: 'COMPLETED', type: { $in: ['DEPOSIT', 'WITHDRAWAL'] } },
-    'PaymentOrder',
-    { $toString: '$_id' },
-    limit
-  );
+  const due = await db.orders.findCompletedOrdersMissingEvents({ limit });
 
   const results = [];
   for (const order of due) {
@@ -458,14 +413,7 @@ export async function reconcileCompletedOrders(limit = 200) {
  * cycles (isSettled: 'COMPLETED') that have no ledger entry yet.
  */
 export async function reconcileSettledCycles(limit = 200) {
-  const Cycle = mongoose.model('Cycle');
-  const due = await unrecordedSources(
-    Cycle,
-    { isSettled: 'COMPLETED' },
-    'Cycle',
-    '$cycleId',
-    limit
-  );
+  const due = await db.markets.findSettledCyclesMissingEvents({ limit });
 
   const results = [];
   for (const cycle of due) {

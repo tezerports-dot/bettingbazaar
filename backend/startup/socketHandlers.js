@@ -1,10 +1,12 @@
 
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-import mongoose from 'mongoose';
+import { db } from '#db';
+import { brandingPayload, currentBranding } from '../domains/branding/brandingPayload.js';
 // AQ-2: verify via the single PASETO authority (Ed25519 signature + iss/aud stamped).
 import { verifyJwt } from '../domains/identity/jwt.util.js';
 import { cycleSnapshotPublisher } from '../domains/markets/cycleSnapshotPublisher.js';
 import { fetchCycleHistory } from '../domains/markets/cycleHistory.service.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 // Public cycle-room id guard: the room name is client-supplied, so bound it to
 // the shape a real cycleId has (no auth needed — pool totals are public — but a
@@ -17,14 +19,13 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
     console.log('👤 Client connected:', socket.id);
 
     // Push-on-connect helpers
-    // M-04 fix: all fallback values match Mongoose schema defaults exactly.
-    // GOVERNANCE §5: every server-side fallback must literally match the schema default.
-    // Schema: SystemConfig — betLimits.thirtyMin.min=10, maxDeposit=50000, minWithdrawal=500
-    // payoutMultiplier is now a SystemConfig field (not a hardcoded literal).
+    // M-04 fix: every fallback here matches the config spec's declared default
+    // exactly. GOVERNANCE §5: a server-side fallback that differs from the
+    // declared default is a second, invisible configuration — the client is
+    // then told one number while the engine uses another.
     const sendSystemConfig = async () => {
       try {
-        const SystemConfig = mongoose.model('SystemConfig');
-        const cfg   = await SystemConfig.findOne({ key: 'main' }).lean();
+        const cfg   = await getSystemConfig();
         const configData = {
           minBet:             cfg?.betLimits?.thirtyMin?.min  ?? 10,      // schema default: 10
           maxBet:             cfg?.betLimits?.thirtyMin?.max  ?? 100000,  // schema default: 100000
@@ -64,46 +65,19 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
     
     const sendBranding = async () => {
       try {
-        const Branding = mongoose.model('Branding');
-        const b = await Branding.findOne({ key: 'main' }).lean() || {};
-        const cdnBaseUrl = b.cdnBaseUrl || process.env.CDN_URL || '';
-        const brandingData = {
-          appName:              b.appName              || 'Betting Bazaar',
-          cdnBaseUrl,
-          primaryColor:         b.primaryColor         || '#D4AF37',
-          secondaryColor:       b.secondaryColor       || '#8B5CF6',
-          accentColor:          b.accentColor          || '#F59E0B',
-          logo:                 b.logo                 || '',
-          icon:                 b.icon                 || '',
-          favicon:              b.favicon              || '',
-          splashScreen:         b.splashScreen         || '',
-          userPanelName:        b.userPanelName        || 'Betting Bazaar',
-          adminPanelName:       b.adminPanelName       || 'Bazaar Admin',
-          merchantPanelName:    b.merchantPanelName    || 'Merchant Panel',
-          queueManagerPanelName:b.queueManagerPanelName|| 'Queue Manager',
-          homePopupImageUrl:    b.homePopupImageUrl    || '',
-          homePopupLinkUrl:     b.homePopupLinkUrl     || '',
-          homePopupEnabled:     b.homePopupEnabled     || false,
-          tricksTipsBannerUrl:  b.tricksTipsBannerUrl  || '',
-          rulesPageImageUrl:    b.rulesPageImageUrl     || '',
-          depositPageBannerUrl:   b.depositPageBannerUrl   || '',
-          withdrawalPageBannerUrl:b.withdrawalPageBannerUrl|| '',
-          loginPageBannerUrl:   b.loginPageBannerUrl   || '',
-          registerPageBannerUrl:b.registerPageBannerUrl|| '',
-        };
-        global.cachedBranding = brandingData;
-        socket.emit('branding', brandingData);
+        // One owner for this object. The twenty-eight-field literal that used
+        // to sit here was a copy of the one in branding.admin.routes.js, so a
+        // field added to that one reached an admin who had just saved but not
+        // a client who had just connected.
+        const payload = await currentBranding();
+        global.cachedBranding = payload;
+        socket.emit('branding', payload);
       } catch (e) {
-        // Minimal safe fallback — NO hardcoded asset filenames (C-04 fix)
-        socket.emit('branding', {
-          appName: 'Betting Bazaar',
-          cdnBaseUrl: process.env.CDN_URL || '',
-          primaryColor: '#D4AF37',
-          secondaryColor: '#8B5CF6',
-          accentColor: '#F59E0B',
-          logo: '', icon: '', favicon: '', splashScreen: '',
-          homePopupEnabled: false,
-        });
+        // The declared defaults, not a second hardcoded copy of them: a client
+        // that connects while the database is unreachable draws itself the same
+        // way an unbranded platform does, rather than in colours that exist
+        // nowhere else in the codebase.
+        socket.emit('branding', brandingPayload(db.config.defaultsFor('branding')));
       }
     };
 
@@ -127,8 +101,14 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
 
     socket.on('request_promo', async ({ location } = {}) => {
       try {
-        const PromoContent = mongoose.model('PromoContent');
-        const content = await PromoContent.find({ location, isActive: true }).sort({ order: 1 }).lean();
+        // PUBLISHED and active, most important first — `listLivePromos` is the
+        // same read the panels make. The old query filtered on `isActive` alone
+        // and sorted by an `order` field promos have never had, so a draft
+        // someone had flagged active leaked to every client and the ordering
+        // was whatever the store felt like.
+        const content = await db.content.listLivePromos(
+          location ? String(location).toUpperCase() : 'HOME',
+        );
         socket.emit('promo_data', { location, content });
       } catch (e) { socket.emit('promo_data', { location, content: [] }); }
     });
@@ -167,8 +147,7 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
 
     const loadActiveUser = async (decoded) => {
       if (!decoded?.userId) return null;
-      const User = mongoose.model('User');
-      const user = await User.findById(decoded.userId).select('isAdmin isSubAdmin isBlocked status').lean();
+      const user = await db.users.getUser(decoded.userId);
       if (!user || user.isBlocked || user.status === 'BLOCKED') return null;
       return user;
     };
@@ -193,8 +172,7 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
       try {
         const decoded = verifyJwt(token);
         if (decoded.isMerchant && decoded.merchantId?.toString() === merchantId?.toString()) {
-          const Merchant = mongoose.model('Merchant');
-          const merchant = await Merchant.findById(decoded.merchantId).select('status merchantApprovalStatus').lean();
+          const merchant = await db.merchants.getMerchant(decoded.merchantId);
           if (merchant?.status === 'ACTIVE' && merchant?.merchantApprovalStatus === 'APPROVED') socket.join(`merchant-${merchantId}`);
           return;
         }

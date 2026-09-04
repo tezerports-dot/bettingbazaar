@@ -23,9 +23,10 @@
 // placeholders — see docs/governance/04-GOVERNANCE.md): AML screening, fraud-signal
 // scoring, device risk, behaviour analysis, responsible-gaming limits.
 
-import mongoose from 'mongoose';
+import { db } from '#db';
 // Shared trading vocabulary (Phase 011) — canonical sides, no local strings.
 import { oppositeSide } from '../trading/tradingModels.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 function reject(message, code = 'RISK_VALIDATION') {
   return Object.assign(new Error(message), { status: 400, code });
@@ -308,9 +309,7 @@ export function computeWinningsPayout({ amount, feePercent, multiplier = 2 }) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 async function getRiskRules() {
-  const SystemConfig = mongoose.model('SystemConfig');
-  const cfg = await SystemConfig.findOne({ key: 'main' })
-    .select('riskRules payoutFeePercent winningsFeePercent betReservePercent payoutMultiplier').lean();
+  const cfg = await getSystemConfig();
   return {
     // schema default: true (2026-07-09 owner directive — multiples of 10)
     enforceMultiplesOf10: cfg?.riskRules?.enforceMultiplesOf10 ?? true,
@@ -349,9 +348,11 @@ export async function assessFundingOrder({ userId, tokenAmount, type, min, max }
   // Velocity limit: orders created in the trailing hour (any status —
   // cancellation churn counts as velocity).
   if (rules.maxFundingOrdersPerHour > 0) {
-    const PaymentOrder = mongoose.model('PaymentOrder');
-    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
-    const recent = await PaymentOrder.countDocuments({ userId, createdAt: { $gte: oneHourAgo } });
+    // The window is the DATABASE's hour, not this instance's. Several app
+    // servers each subtracting an hour from their own clock disagree by however
+    // far those clocks have drifted, and this decides whether a player is
+    // refused.
+    const recent = await db.orders.countRecentOrders(userId, { withinMinutes: 60 });
     if (recent >= rules.maxFundingOrdersPerHour) {
       throw Object.assign(
         new Error(`Too many funding requests — limit is ${rules.maxFundingOrdersPerHour} per hour. Please try later.`),
@@ -373,11 +374,10 @@ export async function assessBet({ userId, cycleId, side, amount, min, max }) {
   validateBetAmount({ amount, min, max, enforceMultiples: rules.enforceMultiplesOf10 });
 
   if (rules.blockOppositeSideBetting) {
-    const Bet = mongoose.model('Bet');
-    const existing = await Bet.findOne({
-      userId, cycleId, side: oppositeSide(side), status: 'PENDING', isPhantom: false,
-    }).select('_id').lean();
-    if (existing) {
+    // `side <> $3` in the query rather than `oppositeSide(side)` here: with two
+    // sides they agree, and the query keeps agreeing if a third is ever added,
+    // where a helper returning one "opposite" would quietly stop guarding.
+    if (await db.bets.hasOppositeSideBet({ userId, cycleId, side })) {
       throw Object.assign(
         new Error('You already have a bet on the other side of this cycle — opposite-side betting is not allowed.'),
         { status: 400, code: 'OPPOSITE_SIDE_BLOCKED' }

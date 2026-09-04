@@ -33,13 +33,12 @@
  * CROSS-2 — New: GET /v1/branding  → CDN base URL + all asset names so the
  *                frontend getAssetUrl() works without manual localStorage setup.
  *
- * ALL WRITES use safeSession() atomic transactions (Replica Set aware).
  */
 
 import express from 'express';
-import mongoose from 'mongoose';
+import { db } from '#db';
 import { authenticate } from '../identity/auth.middleware.js';
-import { getUserLedger } from '../wallet/walletAuthority.service.js';
+import { getUserLedger, getBalances } from '../wallet/walletAuthority.service.js';
 // The withdrawal rate limiters (withdrawalLimiter, createSubnetLimiter,
 // globalSurgeBreaker) and the alerting import were removed with the withdrawal
 // routes on 2026-08-24 — they guarded only those. The live P2P withdrawal
@@ -53,31 +52,10 @@ import { buildPublicKycData } from './kycPublicData.js';
 // so every user-facing cycle response goes through here (cyclePublicView.js).
 import { publicCycleView } from '../markets/cyclePublicView.js';
 import { fetchCycleHistory } from '../markets/cycleHistory.service.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 const router = express.Router();
 
-// ─────────────────────────────────────────────────────────────────────────────
-// safeSession — works on both standalone MongoDB and Replica Sets.
-// On Railway/VPS without a Replica Set, startTransaction() throws.
-// safeSession() catches that → bets still process without ACID but safely.
-// ─────────────────────────────────────────────────────────────────────────────
-async function safeSession() {
-  try {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-    return session;
-  } catch {
-    return null;
-  }
-}
-async function commitOrEnd(session) {
-  if (!session) return;
-  try { await session.commitTransaction(); } finally { session.endSession(); }
-}
-async function abortOrEnd(session) {
-  if (!session) return;
-  try { await session.abortTransaction(); } finally { session.endSession(); }
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // sanitiseCycleForUser()
@@ -96,13 +74,11 @@ const sanitiseCycleForUser = publicCycleView;
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/cycles/active', async (req, res) => {
   try {
-    const Cycle = mongoose.model('Cycle');
-    const now = Date.now();
-    const cycles = await Cycle.find({
-      status: { $in: ['OPEN', 'MERGED'] },
-      endTime: { $gt: now }
-    }).sort({ type: 1, startTime: 1 }).lean();
-
+    // `end_time > now()` as well as the status. A cycle whose generator died
+    // still reads OPEN, and offering it takes bets on a round that will never
+    // settle — the exact failure that let the engine look healthy while
+    // nothing was being resolved.
+    const cycles = await db.markets.listActiveCycles();
     res.json({ success: true, cycles: cycles.map(sanitiseCycleForUser) });
   } catch (error) {
     console.error('Get active cycles error:', error);
@@ -116,8 +92,7 @@ router.get('/cycles/active', async (req, res) => {
 router.get('/cycles/:cycleId', async (req, res) => {
   try {
     const { cycleId } = req.params;
-    const Cycle = mongoose.model('Cycle');
-    const cycle = await Cycle.findOne({ cycleId }).lean();
+    const cycle = await db.markets.getCycle(cycleId);
     if (!cycle) return res.status(404).json({ success: false, message: 'Cycle not found' });
     res.json({ success: true, cycle: sanitiseCycleForUser(cycle) });
   } catch (error) {
@@ -133,26 +108,14 @@ router.get('/cycles/:cycleId', async (req, res) => {
 router.get('/v1/game/cycle/:type/:startTime', async (req, res) => {
   try {
     const { type, startTime } = req.params;
-    const startMs = parseInt(startTime);
-    const Cycle = mongoose.model('Cycle');
+    const startMs = parseInt(startTime, 10);
 
-    // Primary: find an active cycle that overlaps the requested start time
-    let cycle = await Cycle.findOne({
-      type,
-      startTime: { $lte: startMs + 120000 },
-      endTime:   { $gte: startMs - 120000 },
-      status:    { $in: ['OPEN', 'MERGED', 'CLOSED', 'RESULT_DECLARED'] }
-    }).sort({ startTime: -1 }).lean();
-
-    // Fallback: for hard page-loads during the 12s celebration lock, the active
-    // cycle query above returns nothing (cycle just completed). Return the last
-    // RESULT_DECLARED cycle so the page still shows the winner while celebrating.
-    
-    if (!cycle) {
-      cycle = await Cycle.findOne({ type, status: 'RESULT_DECLARED' })
-        .sort({ endTime: -1 })
-        .lean();
-    }
+    // The tolerance and the celebration-window fallback both live in the
+    // repository now: a page loading on a cycle boundary must still find the
+    // round it is showing, and during the celebration the current cycle has
+    // completed while the next has not opened — returning nothing there blanks
+    // the page mid-animation.
+    const cycle = await db.markets.getCycleAt(type, startMs);
 
     if (!cycle) return res.status(404).json({ success: false, message: 'Cycle not found' });
     res.json({ success: true, cycle: sanitiseCycleForUser(cycle) });
@@ -204,36 +167,22 @@ router.get('/user/:userId/bets', authenticate, async (req, res) => {
     const parsedLimit = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
     const parsedSkip  = Math.max(parseInt(skip) || 0, 0);
 
-    if (req.user._id.toString() !== userId) {
+    if (req.user.userId.toString() !== userId) {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
 
-    const Bet = mongoose.model('Bet');
-    const query = { userId: new mongoose.Types.ObjectId(userId), isPhantom: false };
-    if (cycleId) query.cycleId = cycleId;
-    if (status)  query.status  = status;
-
-    const [bets, total] = await Promise.all([
-      Bet.find(query)
-        .sort({ timestamp: -1 })
-        .limit(parsedLimit)
-        .skip(parsedSkip)
-        .lean(),
-      Bet.countDocuments(query)
-    ]);
+    // Phantom bets are house liquidity placed under a managed account. They
+    // are excluded by DEFAULT in the repository — showing a player wagers they
+    // never made is not a display bug, it is a dispute.
+    const { bets, total } = await db.bets.listUserBets(userId, {
+      cycleId: cycleId || null,
+      status: status || null,
+      limit: parsedLimit,
+    });
 
     res.json({
       success: true,
-      bets: bets.map(b => ({
-        id:        b._id,
-        cycleId:   b.cycleId,
-        side:      b.side,
-        amount:    b.amount,
-        status:    b.status,
-        payout:    b.payout    || 0,
-        cycleType: b.cycleType || null,
-        timestamp: b.timestamp
-      })),
+      bets,
       pagination: { total, limit: parsedLimit, skip: parsedSkip }
     });
   } catch (error) {
@@ -250,40 +199,29 @@ router.get('/user/:userId/bets', authenticate, async (req, res) => {
 router.get('/v1/user/:id/data', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    if (req.user._id.toString() !== id) {
+    if (req.user.userId.toString() !== id) {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
 
-    const User = mongoose.model('User');
-    const Bet  = mongoose.model('Bet');
 
-    const [user, recentBets] = await Promise.all([
-      User.findById(id).select(
-        'username mobile depositBalance winningsBalance lockedBalance kycStatus kycData bankDetails profilePic joinedAt lastLogin roles isAdmin phantomAccess'
-      ).lean(),
-      Bet.find({ userId: new mongoose.Types.ObjectId(id), isPhantom: false })
-        .sort({ timestamp: -1 })
-        .limit(50)
-        .lean()
+    // The balances come from the WALLET, not the account. The accounts table
+    // has no balance columns — they live in `wallets`, behind the row lock
+    // every movement takes — so reading them off the account returns undefined
+    // for all of them and shows the player zero.
+    const [user, balances, recentBets] = await Promise.all([
+      db.users.getUser(id),
+      getBalances(String(id)),
+      db.bets.listUserBets(id, { limit: 50 }),
     ]);
 
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    const depositBalance  = user.depositBalance  || 0;
-    const winningsBalance = user.winningsBalance || 0;
-    const lockedBalance   = user.lockedBalance   || 0;
-    const walletBalance   = depositBalance + winningsBalance; // BUG-U6 fix
+    const depositBalance  = balances.depositBalance  || 0;
+    const winningsBalance = balances.winningsBalance || 0;
+    const lockedBalance   = balances.lockedBalance   || 0;
+    const walletBalance   = depositBalance + winningsBalance;
 
-    const normalizedBets = recentBets.map(b => ({
-      id:        b._id,
-      cycleId:   b.cycleId,
-      side:      b.side,
-      amount:    b.amount,
-      status:    b.status,
-      payout:    b.payout    || 0,
-      cycleType: b.cycleType || null,
-      timestamp: b.timestamp
-    }));
+    const normalizedBets = recentBets.bets;
 
     // history = last 20 cycle IDs the user bet in (for LiveTicker dots)
     const historyCycleIds = [...new Set(normalizedBets.map(b => b.cycleId))].slice(0, 20);
@@ -293,7 +231,7 @@ router.get('/v1/user/:id/data', authenticate, async (req, res) => {
     res.json({
       success: true,
       user: {
-        id:               user._id,
+        id:               user.userId,
         username:         user.username,
         mobile:           user.mobile,
         depositBalance,
@@ -328,11 +266,9 @@ router.get('/v1/user/:id/data', authenticate, async (req, res) => {
 // PUT /api/user/:userId/profile  (auth required, atomic)
 // ─────────────────────────────────────────────────────────────────────────────
 router.put('/user/:userId/profile', authenticate, async (req, res) => {
-  const session = await safeSession();
   try {
     const { userId } = req.params;
-    if (req.user._id.toString() !== userId) {
-      await abortOrEnd(session);
+    if (req.user.userId.toString() !== userId) {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
 
@@ -350,21 +286,17 @@ router.put('/user/:userId/profile', authenticate, async (req, res) => {
      * and strict mode would not save us — those are all declared paths.
      */
     const { username } = req.body;
-    const User    = mongoose.model('User');
     const updates = {};
     if (username) updates.username = username.trim();
 
     if (!Object.keys(updates).length) {
-      await abortOrEnd(session);
       return res.status(400).json({ success: false, message: 'Nothing to update.' });
     }
 
-    const updatedUser = await User.findByIdAndUpdate(userId, updates, { new: true, session }).lean();
-    await commitOrEnd(session);
+    const updatedUser = await db.users.updateUser(userId, updates);
 
-    res.json({ success: true, user: { id: updatedUser._id, username: updatedUser.username, profilePic: updatedUser.profilePic } });
+    res.json({ success: true, user: { id: updatedUser.userId, username: updatedUser.username, profilePic: updatedUser.profilePic } });
   } catch (error) {
-    await abortOrEnd(session);
     console.error('Update profile error:', error);
     res.status(500).json({ success: false, message: 'Failed to update profile' });
   }
@@ -393,31 +325,29 @@ router.put('/user/:userId/profile', authenticate, async (req, res) => {
 // PUT /api/user/:userId/bank-details  (auth required, atomic)
 // ─────────────────────────────────────────────────────────────────────────────
 router.put('/user/:userId/bank-details', authenticate, async (req, res) => {
-  const session = await safeSession();
   try {
     const { userId } = req.params;
-    if (req.user._id.toString() !== userId) {
-      await abortOrEnd(session);
+    if (req.user.userId.toString() !== userId) {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
 
     const { accountHolderName, accountNumber, ifscCode, bankName } = req.body;
     if (!accountHolderName || !accountNumber || !ifscCode || !bankName) {
-      await abortOrEnd(session);
       return res.status(400).json({ success: false, message: 'All bank detail fields are required' });
     }
 
-    const User = mongoose.model('User');
-    await User.findByIdAndUpdate(
-      userId,
-      { bankDetails: { accountHolderName, accountNumber, ifscCode: ifscCode.toUpperCase(), bankName } },
-      { session }
-    );
+    // The IFSC is uppercased once, here. A code stored in two cases is two
+    // different bank accounts as far as any comparison is concerned, and a
+    // withdrawal is paid to whichever spelling the panel last wrote.
+    await db.users.updateUser(userId, {
+      bankDetails: {
+        accountHolderName, accountNumber,
+        ifscCode: String(ifscCode).toUpperCase(), bankName,
+      },
+    });
 
-    await commitOrEnd(session);
     res.json({ success: true });
   } catch (error) {
-    await abortOrEnd(session);
     console.error('Update bank details error:', error);
     res.status(500).json({ success: false, message: 'Failed to update bank details' });
   }
@@ -438,7 +368,7 @@ router.put('/user/:userId/bank-details', authenticate, async (req, res) => {
 router.get('/user/referrals', authenticate, async (req, res) => {
   try {
     const { referralSummaryFor } = await import('../referral/referral.service.js');
-    const summary = await referralSummaryFor(req.user._id);
+    const summary = await referralSummaryFor(req.user.userId);
     return res.json({ success: true, ...summary });
   } catch (error) {
     console.error('Referral summary error:', error);
@@ -466,14 +396,14 @@ router.get('/user/bet-limits', authenticate, async (req, res) => {
     const { computeMaxStake } = await import('../risk/riskValidation.service.js');
     const { getRiskRules } = await import('../risk/riskValidation.service.js');
 
-    const User = mongoose.model('User');
-    const user = await User.findById(req.user._id)
-      .select('depositBalance winningsBalance reserveBalance lockedBalance').lean();
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    // From the WALLET. This computes the maximum stake the panel OFFERS, so a
+    // balance read that comes back empty does not merely display wrong — it
+    // shows the player a ceiling of zero and they cannot bet at all.
+    const balances = await getBalances(String(req.user.userId));
 
-    const deposit  = user.depositBalance  || 0;
-    const winnings = user.winningsBalance || 0;
-    const reserve  = user.reserveBalance  || 0;
+    const deposit  = balances.depositBalance  || 0;
+    const winnings = balances.winningsBalance || 0;
+    const reserve  = balances.reserveBalance  || 0;
     const { betReservePercent } = await getRiskRules();
 
     const { maxStake } = computeMaxStake({
@@ -489,7 +419,7 @@ router.get('/user/bet-limits', authenticate, async (req, res) => {
     return res.json({
       success: true,
       deposit, winnings, reserve,
-      locked: user.lockedBalance || 0,
+      locked: balances.lockedBalance || 0,
       total: totalMinor / 100,
       maxStake,
       reservePercent: betReservePercent,
@@ -504,41 +434,36 @@ router.get('/user/bet-limits', authenticate, async (req, res) => {
 router.get('/user/:userId/transactions', authenticate, async (req, res) => {
   try {
     const { userId } = req.params;
-    if (req.user._id.toString() !== userId) {
+    if (req.user.userId.toString() !== userId) {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
 
-    const Transaction = mongoose.model('Transaction');
     const { limit = 30, skip = 0 } = req.query;
     // SEC 2.7 FIX: cap pagination to prevent DoS
     const parsedLimit = Math.min(Math.max(parseInt(limit) || 30, 1), 100);
     const parsedSkip  = Math.max(parseInt(skip) || 0, 0);
 
-    const [transactions, total] = await Promise.all([
-      Transaction.find({
-        userId: new mongoose.Types.ObjectId(userId),
-        type: { $in: ['DEPOSIT', 'WITHDRAWAL'] } // TXNS-CLEAN-V6
-      })
-        .sort({ createdAt: -1 })
-        .limit(parsedLimit)
-        .skip(parsedSkip)
-        .lean(),
-      Transaction.countDocuments({
-        userId: new mongoose.Types.ObjectId(userId),
-        type: { $in: ['DEPOSIT', 'WITHDRAWAL'] }
-      })
-    ]);
+    // The player's funding history comes from their ORDERS, which is where a
+    // deposit or a withdrawal actually lives. The separate transaction
+    // collection this read was a projection written alongside them, and a
+    // projection of one store by another is a second record that can disagree
+    // with the first — it is deleted.
+    const { orders, total } = await db.orders.findOrders({
+      userId,
+      states: null,
+      limit: parsedLimit,
+    });
 
     res.json({
       success: true,
-      transactions: transactions.map(t => ({
-        id:        t._id,
-        type:      t.type,
-        amount:    t.amount,
-        status:    t.status,
-        reference: t.utrNumber || t.orderId || '',
-        note:      t.note || '',
-        createdAt: t.createdAt
+      transactions: orders.map((o) => ({
+        id:        o.orderId,
+        type:      o.type,
+        amount:    o.tokenAmount,
+        status:    o.status,
+        reference: o.utr || o.orderId || '',
+        note:      o.cancelReason || o.rejectedReason || '',
+        createdAt: o.createdAt,
       })),
       pagination: { total, limit: parsedLimit, skip: parsedSkip }
     });
@@ -553,8 +478,7 @@ router.get('/user/:userId/transactions', authenticate, async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/v1/system/config', async (req, res) => {
   try {
-    const SystemConfig = mongoose.model('SystemConfig');
-    const config = await SystemConfig.findOne({ key: 'main' }).lean();
+    const config = await getSystemConfig();
 
     res.json({
       success: true,
@@ -607,8 +531,10 @@ router.get('/v1/system/time', (req, res) => {
 router.get('/v1/content/promo/:location', async (req, res) => {
   try {
     const { location } = req.params;
-    const PromoContent = mongoose.model('PromoContent');
-    const content = await PromoContent.find({ location, isActive: true }).sort({ priority: -1 }) /* FIX H-4: was 'order' (non-existent field = silent no-op); priority field is correct */.lean();
+    // PUBLISHED and active, not merely active. A draft with `isActive` left
+    // on was reaching the home page — the two flags mean different things and
+    // the query only checked one of them.
+    const content = await db.content.listLivePromos(location);
     res.json({ success: true, content });
   } catch (error) {
     console.error('Promo content error:', error);
@@ -624,27 +550,22 @@ router.get('/v1/content/promo/:location', async (req, res) => {
 router.get('/v1/content/faq', async (req, res) => {
   try {
     /*
-     * The FAQ model is the only store. A `SystemConfig({ key: 'faq' })`
-     * fallback used to sit here and was unreachable: `SystemConfig.key`
-     * defaults to 'main' and is unique, nothing has ever written another key,
-     * and `value` is not a declared path on that schema — so the fallback read
-     * a field that could not exist on a document that could not exist.
-     *
-     * It was also reachable only from a `catch` around `mongoose.model('FAQ')`,
-     * which throws solely when the model is unregistered — a startup fault, not
-     * a data condition. Swallowing that told the caller "no FAQs" instead.
+     * One owner. A config-document fallback used to sit here and was
+     * unreachable twice over: it read a key nothing had ever written, off a
+     * field that was not declared — and it was reachable only from a `catch`
+     * that fired on a startup fault rather than on any data condition.
+     * Swallowing that told the caller "no FAQs" instead of failing.
      */
-    const FAQ = mongoose.model('FAQ');
-    const faqs = await FAQ.find({ isPublished: true }).sort({ category: 1, order: 1 }).lean();
+    const faqs = await db.content.listFaqs({ publishedOnly: true });
 
     res.json({
       success: true,
       faqs: faqs.map(f => ({
-        id:       f._id || f.id,
+        id:       f.faqId,
         question: f.question,
         answer:   f.answer,
-        category: f.category || 'General'
-      }))
+        category: f.category || 'General',
+      })),
     });
   } catch (error) {
     console.error('FAQ fetch error:', error);
@@ -658,29 +579,17 @@ router.get('/v1/content/faq', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/v1/content/support-links', async (req, res) => {
   try {
-    const SupportLinks = mongoose.model('SupportLinks');
-    const SystemConfig  = mongoose.model('SystemConfig');
-    // Try dedicated SupportLinks collection first, fall back to SystemConfig.supportLinks
-    let raw = await SupportLinks.findOne({ key: 'main' }).lean();
-    if (!raw) {
-      const cfg = await SystemConfig.findOne({ key: 'main' }).select('supportLinks').lean();
-      raw = cfg?.supportLinks || {};
-    }
-    res.json({
-      success: true,
-      links: {
-        whatsapp:           raw.whatsapp           || '',
-        telegram:           raw.telegram           || '',
-        telegramUsername:   raw.telegramUsername   || '',
-        telegramGroupUrl:   raw.telegramGroupUrl   || '',
-        telegramChannelUrl: raw.telegramChannelUrl || '',
-        instagram:          raw.instagram          || '',
-        youtube:            raw.youtube            || '',
-        email:              raw.email              || '',
-        phone:              raw.phone              || '',
-        helpCenterUrl:      raw.helpCenterUrl      || '',
-      }
-    });
+    // ONE source. There were two — a dedicated collection and a nested field
+    // on the system config — with a fallback from the first to the second, so
+    // whichever an admin last edited was whichever the page happened to show.
+    // Both are the `supportLinks` configuration scope now, and every key it
+    // declares reads as its default when nothing has been set.
+    const { key, version, updatedAt, updatedBy, ...links } = await db.config.getConfig('supportLinks');
+    // No per-field `|| ''`: `getConfig` already filled every declared key with
+    // its default, and the list those fallbacks re-stated had drifted — it
+    // omitted `termsUrl` and `privacyUrl`, so two links an admin could set were
+    // dropped on the way out.
+    res.json({ success: true, links });
   } catch (error) {
     console.error('Support links error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch support links' });
@@ -695,16 +604,10 @@ router.get('/v1/content/support-links', async (req, res) => {
 router.get('/v1/content/ai-analysis', async (req, res) => {
   try {
     const { type = 'THIRTY_MIN' } = req.query;
-    const Cycle = mongoose.model('Cycle');
-
-    const cycles = await Cycle.find({
-      type,
-      status: { $in: ['RESULT_DECLARED', 'COMPLETED'] },
-      winner: { $in: ['DELHI', 'BOMBAY'] }
-    })
-      .sort({ endTime: -1 })
-      .limit(10)
-      .lean();
+    // Filtered on the WINNER, not the status: a cycle whose result is in is
+    // what this reads, and a status filter would miss a declared cycle whose
+    // settlement is still running.
+    const cycles = await db.markets.recentResults(type, { limit: 10 });
 
     if (!cycles.length) {
       return res.json({
@@ -768,20 +671,21 @@ router.get('/v1/content/ai-analysis', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/v1/branding', async (req, res) => {
   try {
-    // FIX: Read from Branding model (has proper schema) not SystemConfig.value (no value field in schema)
-    const Branding = mongoose.model('Branding');
-    const b = await Branding.findOne({ key: 'main' }).lean() || {};
+    // Branding is a configuration scope, so every key reads as its declared
+    // default when nothing has been set — no `|| {}` and no per-field fallback
+    // scattered through the response below.
+    const b = await db.config.getConfig('branding');
 
-    // CDN_URL env var is the primary source for CDN base URL.
-    // Admin can also set cdnBaseUrl field in the Branding document.
+    // The environment variable is the BOOTSTRAP value; an admin setting one
+    // here overrides it without a redeploy.
     const cdnBaseUrl = b.cdnBaseUrl || process.env.CDN_URL || '';
 
     res.json({
       success: true,
       branding: {
-        appName:      b.appName      || 'BettingBazaar',
+        appName:      b.appName,
         cdnBaseUrl,
-        primaryColor: b.primaryColor || '#D4AF37',
+        primaryColor: b.primaryColor,
         assets: {
           logo:    'logo.jpeg',
           appIcon: 'App icon.jpeg',
@@ -834,7 +738,7 @@ router.get('/v1/branding', async (req, res) => {
 router.get('/v1/wallet/ledger', authenticate, async (req, res) => { // paginated
   try {
     const { page = 1, limit = 30 } = req.query;
-    const result = await getUserLedger(req.user._id, Number(page), Number(limit));
+    const result = await getUserLedger(req.user.userId, Number(page), Number(limit));
     res.json({ success: true, ...result });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -848,8 +752,7 @@ router.get('/v1/wallet/ledger', authenticate, async (req, res) => { // paginated
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/v1/tokens/rate', async (req, res) => {
   try {
-    const SystemConfig = mongoose.model('SystemConfig');
-    const config = await SystemConfig.findOne({ key: 'main' }).lean();
+    const config = await getSystemConfig();
     res.json({
       success:        true,
       buyRate:        1,
@@ -872,8 +775,7 @@ router.get('/v1/tokens/rate', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/v1/token/rates', async (req, res) => {
   try {
-    const SystemConfig = mongoose.model('SystemConfig');
-    const config = await SystemConfig.findOne({ key: 'main' }).lean();
+    const config = await getSystemConfig();
     res.json({
       success:  true,
       rates: { buyRate: 1, sellRate: 1, updatedAt: null },
@@ -896,20 +798,22 @@ export default router;
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/v1/user/profile', authenticate, async (req, res) => {
   try {
-    const User = mongoose.model('User');
-    const user = await User.findById(req.user._id)
-      .select('username mobile depositBalance winningsBalance lockedBalance kycStatus bankDetails profilePic joinedAt')
-      .lean();
+    // The wallet page reads this for the balance it shows. From `wallets`, not
+    // the account — the accounts table has no balance columns.
+    const [user, balances] = await Promise.all([
+      db.users.getUser(req.user.userId),
+      getBalances(String(req.user.userId)),
+    ]);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     res.json({
       success: true,
       user: {
-        id:               user._id,
+        id:               user.userId,
         username:         user.username,
         mobile:           user.mobile,
-        depositBalance:   user.depositBalance  || 0,
-        winningsBalance:  user.winningsBalance || 0,
-        lockedBalance:    user.lockedBalance   || 0,
+        depositBalance:   balances.depositBalance  || 0,
+        winningsBalance:  balances.winningsBalance || 0,
+        lockedBalance:    balances.lockedBalance   || 0,
         kycStatus:        user.kycStatus,
         bankDetails:      user.bankDetails     || null,
         profilePic:       user.profilePic      || null,

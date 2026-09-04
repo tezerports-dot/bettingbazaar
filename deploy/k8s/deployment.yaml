@@ -3,7 +3,7 @@
 # split by BB_RUNTIME_ROLE so API pods do short HTTP work, realtime pods own
 # SSE/WebSocket clients, and scheduler pods own cron/game-cycle producers.
 #
-# Prereqs: MongoDB Atlas/replica set or sharded cluster, Redis Cluster, optional
+# Prereqs: a managed PostgreSQL (the only datastore), Redis Cluster, optional
 # Kafka/Redpanda, managed Postgres, object storage/CDN, and bb-env secrets.
 apiVersion: apps/v1
 kind: Deployment
@@ -39,7 +39,6 @@ spec:
           envFrom: [{ secretRef: { name: bb-env } }]
           env:
             - { name: BB_RUNTIME_ROLE, value: api }
-            - { name: MONGO_POOL_SIZE, value: "50" }
             - { name: PG_POOL_SIZE, value: "20" }
           securityContext:
             allowPrivilegeEscalation: false
@@ -103,7 +102,6 @@ spec:
           envFrom: [{ secretRef: { name: bb-env } }]
           env:
             - { name: BB_RUNTIME_ROLE, value: realtime }
-            - { name: MONGO_POOL_SIZE, value: "25" }
             - { name: PG_POOL_SIZE, value: "10" }
           securityContext:
             allowPrivilegeEscalation: false
@@ -161,7 +159,6 @@ spec:
           envFrom: [{ secretRef: { name: bb-env } }]
           env:
             - { name: BB_RUNTIME_ROLE, value: scheduler }
-            - { name: MONGO_POOL_SIZE, value: "20" }
             - { name: PG_POOL_SIZE, value: "10" }
           securityContext:
             allowPrivilegeEscalation: false

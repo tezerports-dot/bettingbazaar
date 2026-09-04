@@ -1,279 +1,202 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
  * ════════════════════════════════════════════════════════════════════════════
- * 👑 ADMIN SERVICE - Business Logic Layer
+ * ADMIN SERVICE — the operations an administrator performs on an account
  * ════════════════════════════════════════════════════════════════════════════
- * 
- * Complete business logic for admin operations including:
- * - User management (roles, blocking, deletion)
- * - Balance adjustments
- * - KYC approval/rejection
- * - Sub-admin management
- * - Analytics and dashboard metrics
- * - Financial reporting
- * 
- * @module admin.service
+ *
+ * Roles, blocking, deletion, sub-admins, dashboard figures, and the audit entry
+ * every one of them leaves behind.
+ *
+ * ── What changed, and why the shape is different ────────────────────────────
+ *
+ * 1. NO MORE read-modify-write. Every mutation here was `findById`, assign a
+ *    few fields, `save()` — a decision made against a document read a moment
+ *    earlier. Two admins blocking the same account both passed the "is it
+ *    already blocked?" check and the second silently overwrote the first's
+ *    reason. The guards are in the UPDATE now, so exactly one wins and the
+ *    other is TOLD.
+ *
+ * 2. THE DASHBOARD IS COMPUTED, not counted twelve times. It issued twelve
+ *    separate queries, each seeing the database at a slightly different moment,
+ *    so the numbers could contradict each other — an active-user count taken
+ *    after a block was applied, beside a blocked count taken before. `db.stats`
+ *    gathers each panel in one pass over one snapshot.
+ *
+ * 3. THE AUDIT ENTRY IS NOT OPTIONAL, but it never breaks the operation it
+ *    describes. `db.audit` logs its own failure rather than throwing — losing
+ *    the record of a block is bad; failing the block because the record could
+ *    not be written is worse.
  */
-
-// ✅ FIX #40: Converted from CommonJS (module.exports) to ESM so it can be imported
-//    in the ES Module project ("type": "module" in package.json).
-import mongoose from 'mongoose';
+import { db } from '#db';
 // Communication Platform (Phase 012): notify() is the single user-messaging path.
 import { notify } from '../domains/communication/communication.service.js';
 // AQ-8: hash via the password authority (argon2id).
 import { hashPassword } from '../domains/identity/password.util.js';
+import { getBalances } from '../domains/wallet/walletAuthority.service.js';
 
-// Models are accessed via mongoose.model() to avoid circular dependency
-function getModels() {
-  return {
-    User:             mongoose.model('User'),
-    Transaction:      mongoose.model('Transaction'),
-    Bet:              mongoose.model('Bet'),
-    Cycle:            mongoose.model('Cycle'),
-    PaymentOrder:         mongoose.model('PaymentOrder'),
-    EnhancedAuditLog: mongoose.model('EnhancedAuditLog'),
-    Merchant:         mongoose.model('Merchant'),
-    // Dispute model removed — C-1
-    Notification:     mongoose.model('Notification'),
-  };
-}
+/** The role flags a role list implies. One place, so they cannot disagree. */
+const ROLE_FLAGS = Object.freeze({
+  admin: 'is_admin',
+  subadmin: 'is_sub_admin',
+  queue_manager: 'is_queue_manager',
+  mediator: 'is_mediator',
+});
 
 class AdminService {
-  
-  // ✅ FIX #40: Lazy model getters — resolve at call time, not at import time.
-  //    This avoids "Model not registered" errors during startup before mongoose connects.
-  get User()             { return mongoose.model('User'); }
-  get Transaction()      { return mongoose.model('Transaction'); }
-  get Bet()              { return mongoose.model('Bet'); }
-  get Cycle()            { return mongoose.model('Cycle'); }
-  get PaymentOrder()         { return mongoose.model('PaymentOrder'); }
-  get EnhancedAuditLog() { return mongoose.model('EnhancedAuditLog'); }
-  get Merchant()         { return mongoose.model('Merchant'); }
-  // get Dispute() removed — C-1
-  get Notification()     { return mongoose.model('Notification'); }
+  // ══════════════════════════════════════════════════════════════════════════
+  // USER MANAGEMENT
+  // ══════════════════════════════════════════════════════════════════════════
 
   /**
-   * ════════════════════════════════════════════════════════════════════════════
-   * 👥 USER MANAGEMENT
-   * ════════════════════════════════════════════════════════════════════════════
-   */
-
-  /**
-   * Assign roles to a user
-   * @param {string} userId - User ID
-   * @param {Array<string>} roles - Array of role names
-   * @param {string} adminId - ID of admin performing action
-   * @returns {Object} Updated user
+   * Assign roles to an account.
+   *
+   * The roles array and the boolean flags derived from it are written in ONE
+   * update, so there is no instant at which a user holds the `admin` role
+   * without `is_admin` — which is the pair authorisation actually reads.
    */
   async assignRoles(userId, roles, adminId) {
-    try {
-      const user = await User.findById(userId);
-      if (!user) {
-        throw new Error('User not found');
-      }
+    const user = await db.users.getUser(userId);
+    if (!user) throw new Error('User not found');
 
-      const oldRoles = user.roles || [];
-      
-      // Update roles
-      user.roles = roles;
-      
-      // Update boolean flags based on roles
-      user.isMerchant = roles.includes('merchant');
-      user.isQueueManager = roles.includes('queue_manager');
-      user.isMediator = roles.includes('mediator');
-      user.isAdmin = roles.includes('admin');
-      user.isSubAdmin = roles.includes('subadmin');
-      
-      await user.save();
-
-      // Log action
-      await this.createAuditLog({
-        performedBy: adminId,
-        action: 'ROLES_ASSIGNED',
-        category: 'USER_MANAGEMENT',
-        targetType: 'User',
-        targetId: userId,
-        targetName: user.username || user.mobile,
-        changes: {
-          before: { roles: oldRoles },
-          after: { roles }
-        }
-      });
-
-      return user;
-    } catch (error) {
-      throw new Error(`Failed to assign roles: ${error.message}`);
+    const patch = { roles };
+    for (const [role, column] of Object.entries(ROLE_FLAGS)) {
+      patch[column] = roles.includes(role);
     }
+    const updated = await db.users.updateUser(userId, patch);
+
+    await this.createAuditLog({
+      performedBy: adminId,
+      action: 'ROLES_ASSIGNED',
+      category: 'USER_MANAGEMENT',
+      targetType: 'User',
+      targetId: userId,
+      targetName: user.username || user.mobile,
+      changes: { before: { roles: user.roles || [] }, after: { roles } },
+    });
+    return updated;
   }
 
   /**
-   * Block a user account
-   * @param {string} userId - User ID
-   * @param {string} reason - Reason for blocking
-   * @param {string} adminId - ID of admin performing action
-   * @returns {Object} Updated user
+   * Block an account.
+   *
+   * `setBlocked` puts the "not already blocked" condition in the UPDATE, so two
+   * admins acting at once produce one block with one reason, and the second is
+   * told rather than silently overwriting the first.
    */
   async blockUser(userId, reason, adminId) {
-    try {
-      const user = await User.findById(userId);
-      if (!user) {
-        throw new Error('User not found');
-      }
+    const user = await db.users.getUser(userId);
+    if (!user) throw new Error('User not found');
+    if (user.isBlocked) throw new Error('User is already blocked');
 
-      if (user.isBlocked) {
-        throw new Error('User is already blocked');
-      }
+    const updated = await db.users.setBlocked(userId, {
+      blocked: true, reason, actor: adminId,
+    });
 
-      user.isBlocked = true;
-      user.blockReason = reason;
-      user.blockedAt = new Date();
-      user.blockedBy = adminId;
-      await user.save();
+    await this.createAuditLog({
+      performedBy: adminId,
+      action: 'USER_BLOCKED',
+      category: 'USER_MANAGEMENT',
+      targetType: 'User',
+      targetId: userId,
+      targetName: user.username || user.mobile,
+      details: { reason },
+      changes: { before: { isBlocked: false }, after: { isBlocked: true, reason } },
+    });
 
-      // Log action
-      await this.createAuditLog({
-        performedBy: adminId,
-        action: 'USER_BLOCKED',
-        category: 'USER_MANAGEMENT',
-        targetType: 'User',
-        targetId: userId,
-        targetName: user.username || user.mobile,
-        details: { reason },
-        changes: {
-          before: { isBlocked: false },
-          after: { isBlocked: true, reason }
-        }
-      });
-
-      // Send notification to user
-      await notify({
-        userId,
-        type: 'ERROR',
-        title: 'Account Blocked',
-        message: `Your account has been blocked. ${reason ? `Reason: ${reason}` : 'Please contact support for details.'}`,
-        relatedType: 'User'
-      });
-
-      return user;
-    } catch (error) {
-      throw new Error(`Failed to block user: ${error.message}`);
-    }
+    await notify({
+      userId,
+      type: 'ERROR',
+      title: 'Account Blocked',
+      message: `Your account has been blocked. ${reason ? `Reason: ${reason}` : 'Please contact support for details.'}`,
+      relatedType: 'User',
+    });
+    return updated;
   }
 
-  /**
-   * Unblock a user account
-   * @param {string} userId - User ID
-   * @param {string} adminId - ID of admin performing action
-   * @returns {Object} Updated user
-   */
+  /** Unblock an account. Clears the reason, the time and the actor together. */
   async unblockUser(userId, adminId) {
-    try {
-      const user = await User.findById(userId);
-      if (!user) {
-        throw new Error('User not found');
-      }
+    const user = await db.users.getUser(userId);
+    if (!user) throw new Error('User not found');
+    if (!user.isBlocked) throw new Error('User is not blocked');
 
-      if (!user.isBlocked) {
-        throw new Error('User is not blocked');
-      }
+    const updated = await db.users.setBlocked(userId, { blocked: false, actor: adminId });
 
-      const oldReason = user.blockReason;
+    await this.createAuditLog({
+      performedBy: adminId,
+      action: 'USER_UNBLOCKED',
+      category: 'USER_MANAGEMENT',
+      targetType: 'User',
+      targetId: userId,
+      targetName: user.username || user.mobile,
+      details: { previousReason: user.blockReason },
+      changes: { before: { isBlocked: true }, after: { isBlocked: false } },
+    });
 
-      user.isBlocked = false;
-      user.blockReason = null;
-      user.blockedAt = null;
-      user.blockedBy = null;
-      await user.save();
-
-      // Log action
-      await this.createAuditLog({
-        performedBy: adminId,
-        action: 'USER_UNBLOCKED',
-        category: 'USER_MANAGEMENT',
-        targetType: 'User',
-        targetId: userId,
-        targetName: user.username || user.mobile,
-        details: { previousReason: oldReason },
-        changes: {
-          before: { isBlocked: true },
-          after: { isBlocked: false }
-        }
-      });
-
-      // Send notification to user
-      await notify({
-        userId,
-        type: 'SUCCESS',
-        title: 'Account Unblocked',
-        message: 'Your account has been unblocked. You can now use all features.',
-        relatedType: 'User'
-      });
-
-      return user;
-    } catch (error) {
-      throw new Error(`Failed to unblock user: ${error.message}`);
-    }
+    await notify({
+      userId,
+      type: 'SUCCESS',
+      title: 'Account Unblocked',
+      message: 'Your account has been unblocked. You can now use all features.',
+      relatedType: 'User',
+    });
+    return updated;
   }
 
   /**
-   * Delete a user account (soft delete - keep records)
-   * @param {string} userId - User ID
-   * @param {string} adminId - ID of admin performing action
-   * @returns {Object} Result
+   * Retire an account.
+   *
+   * Soft: the rows stay, because a deleted player's bets and ledger entries are
+   * still part of the platform's books.
+   *
+   * TWO GATES, and both read the authoritative source rather than a copy:
+   * open orders come from `order_states`, and the locked balance comes from the
+   * WALLET. Retiring an account while money is committed against it — a stake
+   * mid-cycle, a withdrawal mid-flight — leaves that lock attached to an
+   * account nobody can act on, and a stored copy of the balance would let the
+   * delete through while the wallet still holds it.
    */
   async deleteUser(userId, adminId) {
-    try {
-      const user = await User.findById(userId);
-      if (!user) {
-        throw new Error('User not found');
-      }
+    const user = await db.users.getUser(userId);
+    if (!user) throw new Error('User not found');
 
-      // Check if user has pending orders or locked balance
-      const pendingOrders = await PaymentOrder.countDocuments({
-        userId,
-        status: { $in: ['ASSIGNED', 'PROCESSING', 'PAID'] }
-      });
+    const open = await db.orders.findOrders({
+      userId, states: ['ASSIGNED', 'PROCESSING', 'PAID'], limit: 1,
+    });
+    if (open.total > 0) throw new Error('Cannot delete user with pending orders');
 
-      if (pendingOrders > 0) {
-        throw new Error('Cannot delete user with pending orders');
-      }
+    const { lockedBalance } = await getBalances(String(userId));
+    if (lockedBalance > 0) throw new Error('Cannot delete user with locked balance');
 
-      if (user.lockedBalance > 0) {
-        throw new Error('Cannot delete user with locked balance');
-      }
+    // The activity totals are read BEFORE the mobile is rewritten, so the audit
+    // entry describes the account as it was.
+    const activity = await db.stats.userActivity(userId);
 
-      // Soft delete: block and mark as deleted
-      user.isBlocked = true;
-      user.blockReason = 'Account deleted by admin';
-      user.status = 'SUSPENDED';
-      user.mobile = `DELETED_${user.mobile}_${Date.now()}`; // Ensure uniqueness
-      await user.save();
+    await db.users.updateUser(userId, {
+      is_blocked: true,
+      block_reason: 'Account deleted by admin',
+      blocked_by: adminId,
+      blocked_at: new Date(),
+      status: 'SUSPENDED',
+      // The mobile is unique, and a retired account must not hold the number a
+      // person may legitimately re-register with.
+      mobile: `DELETED_${user.mobile}_${Date.now()}`,
+    });
 
-      // Log action
-      await this.createAuditLog({
-        performedBy: adminId,
-        action: 'USER_DELETED',
-        category: 'USER_MANAGEMENT',
-        targetType: 'User',
-        targetId: userId,
-        targetName: user.username,
-        details: {
-          depositBalance: user.depositBalance,
-          winningsBalance: user.winningsBalance,
-          totalBets: await Bet.countDocuments({ userId }),
-          totalTransactions: await Transaction.countDocuments({ userId })
-        }
-      });
-
-      return { success: true, message: 'User account deleted successfully' };
-    } catch (error) {
-      throw new Error(`Failed to delete user: ${error.message}`);
-    }
+    await this.createAuditLog({
+      performedBy: adminId,
+      action: 'USER_DELETED',
+      category: 'USER_MANAGEMENT',
+      targetType: 'User',
+      targetId: userId,
+      targetName: user.username,
+      details: activity,
+    });
+    return { success: true, message: 'User account deleted successfully' };
   }
 
   /**
    * ════════════════════════════════════════════════════════════════════════════
-   * ✅ KYC MANAGEMENT — REMOVED 2026-08-25
+   * KYC MANAGEMENT — REMOVED 2026-08-25
    * ════════════════════════════════════════════════════════════════════════════
    *
    * approveKYC, rejectKYC and getKYCQueue lived here with NO CALLERS, as a third
@@ -285,371 +208,173 @@ class AdminService {
    *     was written to eliminate, so two reviewers acting at once both passed;
    *   - approveKYC wrote the RAW Aadhaar number into an audit log, a store
    *     nothing ever deletes from;
-   *   - getKYCQueue filtered on `kycData.submittedAt` existing, which the
-   *     Telegram signup path never sets, so it would have returned an empty
-   *     queue forever.
+   *   - getKYCQueue filtered on a submission timestamp the Telegram signup path
+   *     never sets, so it would have returned an empty queue forever.
    *
    * The live path is decideKyc(), the only place a KYC status changes.
    */
 
-  /**
-   * ════════════════════════════════════════════════════════════════════════════
-   * 🎯 SUB-ADMIN MANAGEMENT
-   * ════════════════════════════════════════════════════════════════════════════
-   */
+  // ══════════════════════════════════════════════════════════════════════════
+  // SUB-ADMINS
+  // ══════════════════════════════════════════════════════════════════════════
 
   /**
-   * Create a new sub-admin
-   * @param {Object} data - Sub-admin data (username, mobile, password, permissions)
-   * @param {string} adminId - ID of admin creating the sub-admin
-   * @returns {Object} New sub-admin user
+   * Create a sub-admin.
+   *
+   * The mobile's uniqueness is decided by the index inside `createUser`, not by
+   * the lookup above it: two admins creating the same sub-admin simultaneously
+   * both pass a pre-read, and only one INSERT can win.
    */
   async createSubAdmin(data, adminId) {
-    try {
-      const { username, mobile, password, permissions } = data;
+    const { username, mobile, password, permissions = {}, role } = data;
 
-      // Check if user already exists
-      const existing = await User.findOne({ mobile });
-      if (existing) {
-        throw new Error('User with this mobile number already exists');
-      }
+    const passwordHash = await hashPassword(password);
+    const { user, created } = await db.users.createUser({
+      userId: db.users.newUserId(),
+      username, mobile, passwordHash,
+      status: 'ACTIVE',
+    });
+    if (!created) throw new Error('User with this mobile already exists');
 
-      // Hash password
-      const passwordHash = await hashPassword(password); // AQ-8: argon2id (was bcrypt cost 12)
+    const subAdmin = await db.users.updateUser(user.userId, {
+      is_sub_admin: true,
+      sub_admin_permissions: JSON.stringify(permissions),
+      sub_admin_role: role ?? null,
+      roles: ['subadmin'],
+    });
 
-      // Create sub-admin user
-      const subAdmin = await User.create({
-        username,
-        mobile,
-        passwordHash,
-        isSubAdmin: true,
-        roles: ['subadmin'],
-        subAdminPermissions: permissions || {},
-        status: 'ACTIVE'
-      });
-
-      // Log action
-      await this.createAuditLog({
-        performedBy: adminId,
-        action: 'SUBADMIN_CREATED',
-        category: 'USER_MANAGEMENT',
-        targetType: 'User',
-        targetId: subAdmin._id.toString(),
-        targetName: username,
-        details: { mobile, permissions }
-      });
-
-      return subAdmin;
-    } catch (error) {
-      throw new Error(`Failed to create sub-admin: ${error.message}`);
-    }
+    await this.createAuditLog({
+      performedBy: adminId,
+      action: 'SUBADMIN_CREATED',
+      category: 'USER_MANAGEMENT',
+      targetType: 'User',
+      targetId: subAdmin.userId,
+      targetName: username || mobile,
+      details: { permissions, role },
+    });
+    return subAdmin;
   }
 
-  /**
-   * Update sub-admin permissions
-   * @param {string} subAdminId - Sub-admin user ID
-   * @param {Object} permissions - New permissions object
-   * @param {string} adminId - ID of admin updating permissions
-   * @returns {Object} Updated sub-admin
-   */
   async updateSubAdminPermissions(subAdminId, permissions, adminId) {
-    try {
-      const subAdmin = await User.findById(subAdminId);
-      if (!subAdmin) {
-        throw new Error('Sub-admin not found');
-      }
+    const subAdmin = await db.users.getUser(subAdminId);
+    if (!subAdmin) throw new Error('Sub-admin not found');
+    if (!subAdmin.isSubAdmin) throw new Error('User is not a sub-admin');
 
-      if (!subAdmin.isSubAdmin) {
-        throw new Error('User is not a sub-admin');
-      }
+    const updated = await db.users.updateUser(subAdminId, {
+      sub_admin_permissions: JSON.stringify(permissions),
+    });
 
-      const oldPermissions = subAdmin.subAdminPermissions || {};
-      subAdmin.subAdminPermissions = { ...oldPermissions, ...permissions };
-      await subAdmin.save();
-
-      // Log action
-      await this.createAuditLog({
-        performedBy: adminId,
-        action: 'SUBADMIN_PERMISSIONS_UPDATED',
-        category: 'USER_MANAGEMENT',
-        targetType: 'User',
-        targetId: subAdminId,
-        targetName: subAdmin.username,
-        changes: {
-          before: oldPermissions,
-          after: subAdmin.subAdminPermissions
-        }
-      });
-
-      return subAdmin;
-    } catch (error) {
-      throw new Error(`Failed to update permissions: ${error.message}`);
-    }
+    await this.createAuditLog({
+      performedBy: adminId,
+      action: 'SUBADMIN_PERMISSIONS_UPDATED',
+      category: 'USER_MANAGEMENT',
+      targetType: 'User',
+      targetId: subAdminId,
+      targetName: subAdmin.username || subAdmin.mobile,
+      changes: {
+        before: { permissions: subAdmin.subAdminPermissions },
+        after: { permissions },
+      },
+    });
+    return updated;
   }
 
-  /**
-   * Delete a sub-admin
-   * @param {string} subAdminId - Sub-admin user ID
-   * @param {string} adminId - ID of admin deleting the sub-admin
-   * @returns {Object} Result
-   */
+  /** Revoke sub-admin status. The account survives; only the privilege goes. */
   async deleteSubAdmin(subAdminId, adminId) {
-    try {
-      const subAdmin = await User.findById(subAdminId);
-      if (!subAdmin) {
-        throw new Error('Sub-admin not found');
-      }
+    const subAdmin = await db.users.getUser(subAdminId);
+    if (!subAdmin) throw new Error('Sub-admin not found');
+    if (!subAdmin.isSubAdmin) throw new Error('User is not a sub-admin');
 
-      if (!subAdmin.isSubAdmin) {
-        throw new Error('User is not a sub-admin');
-      }
+    await db.users.updateUser(subAdminId, {
+      is_sub_admin: false,
+      sub_admin_permissions: JSON.stringify({}),
+      sub_admin_role: null,
+      roles: (subAdmin.roles || []).filter((r) => r !== 'subadmin'),
+    });
 
-      // Remove sub-admin role
-      subAdmin.isSubAdmin = false;
-      subAdmin.roles = subAdmin.roles.filter(r => r !== 'subadmin');
-      subAdmin.subAdminPermissions = {};
-      subAdmin.isBlocked = true;
-      subAdmin.blockReason = 'Sub-admin access revoked';
-      await subAdmin.save();
-
-      // Log action
-      await this.createAuditLog({
-        performedBy: adminId,
-        action: 'SUBADMIN_DELETED',
-        category: 'USER_MANAGEMENT',
-        targetType: 'User',
-        targetId: subAdminId,
-        targetName: subAdmin.username
-      });
-
-      return { success: true, message: 'Sub-admin deleted successfully' };
-    } catch (error) {
-      throw new Error(`Failed to delete sub-admin: ${error.message}`);
-    }
+    await this.createAuditLog({
+      performedBy: adminId,
+      action: 'SUBADMIN_REMOVED',
+      category: 'USER_MANAGEMENT',
+      targetType: 'User',
+      targetId: subAdminId,
+      targetName: subAdmin.username || subAdmin.mobile,
+    });
+    return { success: true, message: 'Sub-admin removed successfully' };
   }
 
-  /**
-   * Get all sub-admins
-   * @returns {Array} List of sub-admins
-   */
   async getSubAdmins() {
-    try {
-      const subAdmins = await User.find({ isSubAdmin: true })
-        .select('username mobile subAdminPermissions isBlocked lastLogin joinedAt')
-        .sort({ joinedAt: -1 });
-
-      return subAdmins;
-    } catch (error) {
-      throw new Error(`Failed to get sub-admins: ${error.message}`);
-    }
+    const { users } = await db.users.listUsers({ isSubAdmin: true, limit: 200 });
+    return users;
   }
 
-  /**
-   * ════════════════════════════════════════════════════════════════════════════
-   * 📊 ANALYTICS & DASHBOARD
-   * ════════════════════════════════════════════════════════════════════════════
-   */
+  // ══════════════════════════════════════════════════════════════════════════
+  // DASHBOARD AND REPORTING
+  // ══════════════════════════════════════════════════════════════════════════
 
   /**
-   * Get dashboard metrics
-   * @returns {Object} Dashboard metrics
+   * The dashboard.
+   *
+   * Four statements — one per subject area, each internally consistent. The
+   * previous version issued twelve, and two of its figures could describe the
+   * database at different instants.
    */
   async getDashboardMetrics() {
-    try {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-
-      const [
-        totalUsers,
-        activeUsers,
-        blockedUsers,
-        pendingKYC,
-        totalMerchants,
-        activeMerchants,
-        totalBets,
-        todayBets,
-        totalVolume,
-        todayVolume,
-        pendingOrders,
-        activeDisputes
-      ] = await Promise.all([
-        User.countDocuments({}),
-        User.countDocuments({ status: 'ACTIVE', isBlocked: false }),
-        User.countDocuments({ isBlocked: true }),
-        User.countDocuments({ kycStatus: 'PENDING_APPROVAL' }),
-        Merchant.countDocuments({}),
-        Merchant.countDocuments({ status: 'ACTIVE', isOnline: true }),
-        Bet.countDocuments({}),
-        Bet.countDocuments({ timestamp: { $gte: today } }),
-        Bet.aggregate([{ $group: { _id: null, total: { $sum: '$amount' } } }]),
-        Bet.aggregate([
-          { $match: { timestamp: { $gte: today } } },
-          { $group: { _id: null, total: { $sum: '$amount' } } }
-        ]),
-        PaymentOrder.countDocuments({ 
-          status: { $in: ['ASSIGNED', 'PROCESSING'] }
-        }),
-        Promise.resolve(0), // Dispute model removed — C-1; disputes tracked in PaymentOrder
-      ]);
-
-      return {
-        users: {
-          total: totalUsers,
-          active: activeUsers,
-          blocked: blockedUsers,
-          pendingKYC
-        },
-        merchants: {
-          total: totalMerchants,
-          active: activeMerchants
-        },
-        betting: {
-          totalBets,
-          todayBets,
-          totalVolume: totalVolume[0]?.total || 0,
-          todayVolume: todayVolume[0]?.total || 0
-        },
-        operations: {
-          pendingOrders,
-          // activeDisputes removed — C-1
-        }
-      };
-    } catch (error) {
-      throw new Error(`Failed to get dashboard metrics: ${error.message}`);
-    }
+    return db.stats.dashboard();
   }
 
   /**
-   * Get financial data for analytics
-   * @param {Date} startDate - Start date
-   * @param {Date} endDate - End date
-   * @returns {Object} Financial data
+   * Money and betting activity over a window, bucketed by day.
+   *
+   * The bucketing happens in the query. Pulling every row back to group it in
+   * JavaScript is the same work done further from the data, and it stops
+   * working on the day the table is big enough for anyone to care.
    */
   async getFinancialData(startDate, endDate) {
-    try {
-      // Aggregate transactions by type and date
-      const transactions = await Transaction.aggregate([
-        {
-          $match: {
-            timestamp: { $gte: startDate, $lte: endDate },
-            status: 'SUCCESS'
-          }
-        },
-        {
-          $group: {
-            _id: {
-              type: '$type',
-              date: { $dateToString: { format: '%Y-%m-%d', date: '$timestamp' } }
-            },
-            count: { $sum: 1 },
-            totalAmount: { $sum: '$amount' }
-          }
-        },
-        { $sort: { '_id.date': 1 } }
-      ]);
-
-      // Aggregate betting data
-      const bettingData = await Bet.aggregate([
-        {
-          $match: {
-            timestamp: { $gte: startDate, $lte: endDate }
-          }
-        },
-        {
-          $group: {
-            _id: {
-              status: '$status',
-              date: { $dateToString: { format: '%Y-%m-%d', date: '$timestamp' } }
-            },
-            count: { $sum: 1 },
-            totalAmount: { $sum: '$amount' },
-            totalPayout: { $sum: '$payout' }
-          }
-        },
-        { $sort: { '_id.date': 1 } }
-      ]);
-
-      return {
-        transactions,
-        betting: bettingData
-      };
-    } catch (error) {
-      throw new Error(`Failed to get financial data: ${error.message}`);
-    }
+    const [transactions, betting] = await Promise.all([
+      db.stats.financialSeries({ from: startDate, to: endDate }),
+      db.stats.bettingSeries({ from: startDate, to: endDate }),
+    ]);
+    return { transactions, betting };
   }
 
-  /**
-   * ════════════════════════════════════════════════════════════════════════════
-   * 📝 AUDIT LOGGING
-   * ════════════════════════════════════════════════════════════════════════════
-   */
+  // ══════════════════════════════════════════════════════════════════════════
+  // AUDIT
+  // ══════════════════════════════════════════════════════════════════════════
 
   /**
-   * Create an audit log entry
-   * @param {Object} logData - Audit log data
-   * @returns {Object} Created audit log
+   * Record an administrative action.
+   *
+   * Never throws. Losing the record of a block is bad; failing the block
+   * because the record could not be written is worse — and the caller of every
+   * one of these has already done the thing being described.
    */
   async createAuditLog(logData) {
-    try {
-      const admin = await User.findById(logData.performedBy);
-      
-      const auditLog = await EnhancedAuditLog.create({
-        ...logData,
-        performedByName: admin?.username || admin?.mobile || 'Unknown',
-        performedByRole: admin?.isAdmin ? 'admin' : admin?.isSubAdmin ? 'subadmin' : 'user',
-        timestamp: new Date()
-      });
-
-      return auditLog;
-    } catch (error) {
-      console.error('Failed to create audit log:', error);
-      // Don't throw - logging failure shouldn't break the main operation
-      return null;
-    }
+    const admin = logData.performedBy ? await db.users.getUser(logData.performedBy) : null;
+    return db.audit.recordDetailed({
+      ...logData,
+      performedByName: admin?.username || admin?.mobile || 'Unknown',
+      performedByRole: admin?.isAdmin ? 'admin' : admin?.isSubAdmin ? 'subadmin' : 'user',
+    });
   }
 
   /**
-   * Get audit logs with filters
-   * @param {Object} filters - Filter options
-   * @returns {Array} Audit logs
+   * Read the trail.
+   *
+   * Keyset pagination, not skip: an entry written while an auditor pages
+   * through shifts every later row by one, and the page after it silently skips
+   * an entry — in the one place where a missing row is the entire point.
    */
   async getAuditLogs(filters = {}) {
-    try {
-      const { 
-        performedBy, 
-        category, 
-        action, 
-        startDate, 
-        endDate,
-        limit = 100,
-        skip = 0
-      } = filters;
-
-      const query = {};
-
-      if (performedBy) query.performedBy = performedBy;
-      if (category) query.category = category;
-      if (action) query.action = action;
-      if (startDate || endDate) {
-        query.timestamp = {};
-        if (startDate) query.timestamp.$gte = new Date(startDate);
-        if (endDate) query.timestamp.$lte = new Date(endDate);
-      }
-
-      const logs = await EnhancedAuditLog.find(query)
-        .sort({ timestamp: -1 })
-        .limit(limit)
-        .skip(skip)
-        .populate('performedBy', 'username mobile');
-
-      const total = await EnhancedAuditLog.countDocuments(query);
-
-      return { logs, total };
-    } catch (error) {
-      throw new Error(`Failed to get audit logs: ${error.message}`);
-    }
+    const { performedBy, category, action, startDate, endDate, limit = 100, cursor = null } = filters;
+    const { entries, nextCursor } = await db.audit.search({
+      adminId: performedBy, category, action,
+      since: startDate ? new Date(startDate) : null,
+      until: endDate ? new Date(endDate) : null,
+      detailed: true, limit, cursor,
+    });
+    return { logs: entries, nextCursor };
   }
 }
 
-// ✅ FIX #40: ESM export default (was module.exports)
 export default new AdminService();

@@ -15,7 +15,8 @@
  * allow-list can reject.
  *
  * These tests assert the surface directly — grepping server.js would not prove
- * the parser is absent, and booting it needs Mongo, Redis and a dozen secrets.
+ * the parser is absent, and booting it needs a database, Redis and a dozen
+ * secrets.
  * They rebuild the exact parser stack server.js mounts and prove a simple-request
  * body arrives unparsed while JSON still works.
  */

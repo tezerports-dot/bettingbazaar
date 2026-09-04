@@ -3,7 +3,7 @@
 // no DB, no network. The gates read process.env lazily, so toggling env in a
 // test flips them.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { toVectorLiteral } from '../../domains/support/ragStore.js';
+import { toVectorLiteral } from '#db/repositories/supportDocuments.js';
 import { retrievalReady, generationReady, ragEnabled } from '../../domains/support/ragService.js';
 
 describe('toVectorLiteral', () => {

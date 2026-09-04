@@ -1,107 +1,145 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-import { Cycle, Bet, User } from '../../models/index.js';
-import mongoose from 'mongoose';
+/**
+ * gameEngine.js — the settlement engine.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * WHAT THIS FILE USED TO DO, AND WHY IT WAS THE LAST THING TO FIX
+ * ══════════════════════════════════════════════════════════════════════════
+ * It enumerated the bets to settle from the document store and executed their
+ * money transitions in PostgreSQL. A money decision read from one store and
+ * carried out in another — the one thing the single-store rule forbids
+ * outright, and it was here, on the platform's largest money path.
+ *
+ * The failure that shape invites is not theoretical. If the two stores ever
+ * disagreed about which bets on a cycle were still PENDING, this pass would
+ * settle the set one store believed in and leave the other's stakes locked,
+ * with nothing in either store recording that it had happened.
+ *
+ * Every read below is now from the rows the pass writes.
+ *
+ * ── The claim is a COLUMN, not a status flag ───────────────────────────────
+ * The old lock was `isSettled: 'PENDING' -> 'PROCESSING'` on the cycle. Three
+ * things were wrong with that. It overloaded the settled flag with a lease, so
+ * a worker that died left a cycle stuck at PROCESSING forever with no way to
+ * tell a live pass from a dead one. It could not be released. And a recovery
+ * task had to sweep for the stuck value, which meant the recovery task and the
+ * tick could both pick up the same cycle.
+ *
+ * `claimSettleable` takes a real claim with a LEASE: a worker that dies gives
+ * its cycles back when the lease expires, and one query serves both the tick
+ * and the recovery sweep because an expired claim is simply claimable again.
+ *
+ * ── Totals are DERIVED, never accumulated (trap 6) ─────────────────────────
+ * A pass resumed after a crash re-processes only the bets still PENDING, so an
+ * in-memory accumulator undercounts every bet an earlier pass already paid —
+ * and the cycle's recorded payout, which the platform's profit is computed
+ * from, is then permanently wrong while the money itself is correct. Nothing
+ * afterwards can tell which number lied. `cyclePayoutTotals` sums the rows.
+ *
+ * ── Order of operations ────────────────────────────────────────────────────
+ * Money moves BEFORE the cycle is marked settled, so a failure leaves a cycle
+ * that will be picked up and finished rather than one marked done with bets
+ * still open. Each bet's transition and its money commit in ONE transaction, so
+ * a settled bet with no ledger row is structurally unrepresentable.
+ */
 import { CacheService } from '../../services/cache.service.js';
-import { creditWinnings } from '../wallet/walletAuthority.service.js';
-import { unlockLostBet, executeSettlementBatch } from '../settlement/settlementService.js';
-import { emitPayoutSuccessBatch } from '../notification/realtimeEmitters.js';
-// Risk Platform (Phase A, 2026-07-10): payout arithmetic authority — winners
-// are paid gross 2x minus the admin-editable winnings platform fee.
+import { db } from '#db';
+// Risk Platform: payout arithmetic authority — winners are paid gross 2x minus
+// the admin-editable winnings platform fee, in integer paise.
 import { getRiskRules, computeWinningsPayout } from '../risk/riskValidation.service.js';
-// Items 33/38 (2026-07-13): settlement outcomes feed /metrics; a settlement
-// failure on a declared cycle pages the admin-configured alert webhook.
+import { emitPayoutSuccessBatch } from '../notification/realtimeEmitters.js';
+// A settlement failure on a declared cycle pages the admin-configured webhook.
 import { sendAlert } from '../../services/alerting.service.js';
 import { settlementRuns } from '../../services/metrics.service.js';
-// Derived cycle pools (FLAGS.DERIVED_CYCLE_POOLS, default off).
-import { refreshRealPools, forgetCycle } from './cyclePool.service.js';
-// Hybrid money DB: the settlement RUN is mirrored into Postgres from the two
-// points that change its state. See the note on the Cycle model's hooks for why
-// those hooks alone cannot see either of them.
-import { mirrorCycleSettlement } from '../../postgres/dualWrite.js';
-// …and routed through the resolver, so that once Postgres owns this path the
-// run is a row with a UNIQUE cycle_id rather than a flag that can be written
-// back. beginSettlement/finishSettlement no-op while Mongo is authoritative.
-import { beginSettlement, finishSettlement } from '../../postgres/settlementPgAuthority.js';
-// The bet lifecycle's other half. Placement has routed through the resolver for
-// a while; settlement wrote Bet.status directly here and in settlementService,
-// which left half the lifecycle authoritative in each store.
-import { onPostgres as betsOnPostgres, settleBetOnPostgres } from '../../postgres/betPgAuthority.js';
-// unlockLostBet and executeSettlementBatch moved to domains/settlement/ on 2026-07-03.
-// processPayoutsOptimized stays here as the orchestrator -- see domains/settlement/README.md.
+// The settlement RUN is a row with a UNIQUE cycle_id, opened before any payout
+// and closed after the last one — not a flag that can be written back.
+import { beginSettlement, finishSettlement } from '#db/repositories/settlements.js';
+// Balances come from the wallet. The accounts table has none.
+import { getBalances } from '../wallet/walletAuthority.service.js';
 
+/** How many bets one enumeration pulls at a time. */
+const BATCH_SIZE = 500;
+
+/**
+ * How long a claimed cycle stays claimed.
+ *
+ * Long enough that a large settlement finishes inside it, short enough that a
+ * worker killed mid-pass does not strand its cycles for an hour. A pass that
+ * overruns is not a correctness problem — every transition below is guarded and
+ * idempotent, so the second worker advances only what is left.
+ */
+const SETTLEMENT_LEASE_MINUTES = 15;
 
 class GameEngine {
     constructor(io) {
         this.io = io;
         this.isProcessing = false;
-        this.currentCycle = null; // Track current active cycle
+        this.currentCycle = null;
+        this.worker = `engine-${process.pid}`;
         this.tickInterval = setInterval(() => this.tick(), 1000);
-        // Recovery task runs every 5 minutes
-        this.recoveryInterval = setInterval(() => this.payoutRecoveryTask(), 300000);
+        // The recovery sweep exists to pick up cycles whose claim lease has
+        // expired. It runs on the SAME claim query as the tick, because an
+        // expired claim is simply claimable again — there is no second code
+        // path that can disagree with the first about what is settleable.
+        this.recoveryInterval = setInterval(() => this.payoutRecoveryTask(), 300_000);
     }
 
     start() {
-        console.log("🎮 Game Engine: Payout System Active");
-        // Load current cycle on startup
+        console.log('🎮 Game Engine: Payout System Active');
         this.loadCurrentCycle();
     }
 
-    /**
-     * ✅ FIX #1: Load current active cycle — uses statuses that actually exist
-     */
+    /** The live cycle, with its pools derived from the bets. */
     async loadCurrentCycle() {
         try {
-            // ✅ FIX: OPEN/MERGED/CLOSED are what CycleGenerator creates
-            this.currentCycle = await Cycle.findOne({
-                status: { $in: ['OPEN', 'MERGED', 'CLOSED', 'RESULT_DECLARED'] }
-            }).sort({ createdAt: -1 });
+            const [live] = await db.markets.activeCyclesWithPools();
+            this.currentCycle = live ?? null;
         } catch (error) {
             console.error('❌ Error loading current cycle:', error);
         }
     }
 
     /**
-     * ✅ FIX #4: Get current game state — uses correct schema field names
+     * The game state a client renders.
+     *
+     * Pools come from `activeCyclesWithPools`, which derives the real halves
+     * from the bets and reads only the phantom halves off the cycle row —
+     * trap 4. The version this replaced read `realDelhi` and `realBombay` as
+     * document fields; they are not columns, so every one of them fell through
+     * to its `|| 0` and the admin view of a live cycle showed no real volume at
+     * all.
      */
     async getGameState() {
         try {
             await this.loadCurrentCycle();
-            
+
             if (!this.currentCycle) {
                 return {
                     status: 'NO_ACTIVE_CYCLE',
                     message: 'No active betting cycle available',
-                    timestamp: new Date()
+                    timestamp: new Date(),
                 };
             }
 
-            const now = Date.now();
-            const endTime = new Date(this.currentCycle.endTime).getTime();
-            const timeRemaining = Math.max(0, Math.floor((endTime - now) / 1000));
-
-            // ✅ FIX #4: Use correct schema field names (realDelhi not delhiPool)
-            const realDelhi  = this.currentCycle.realDelhi  || 0;
-            const realBombay = this.currentCycle.realBombay || 0;
-            const phantomDelhi  = this.currentCycle.phantomDelhi  || 0;
-            const phantomBombay = this.currentCycle.phantomBombay || 0;
+            const c = this.currentCycle;
+            const endMs = new Date(c.endTime).getTime();
 
             return {
-                cycleId: this.currentCycle.cycleId,
-                status: this.currentCycle.status,
-                startTime: this.currentCycle.startTime,
-                endTime: this.currentCycle.endTime,
-                timeRemaining,
-                // Display pools include phantom (so UI sees balanced view)
-                delhiPool:  realDelhi  + phantomDelhi,
-                bombayPool: realBombay + phantomBombay,
-                totalPool:  realDelhi  + realBombay + phantomDelhi + phantomBombay,
-                // Admin fields — real only
-                realDelhiPool:  realDelhi,
-                realBombayPool: realBombay,
-                winner:    this.currentCycle.winner    || null,
-                result:    this.currentCycle.result    || null,
-                isSettled: this.currentCycle.isSettled || 'PENDING',
-                timestamp: new Date()
+                cycleId: c.cycleId,
+                status: c.status,
+                startTime: c.startTime,
+                endTime: c.endTime,
+                timeRemaining: Math.max(0, Math.floor((endMs - Date.now()) / 1000)),
+                // Display pools include phantom, so the client sees the balanced view.
+                delhiPool:  c.totalDelhi,
+                bombayPool: c.totalBombay,
+                totalPool:  c.totalDelhi + c.totalBombay,
+                // Admin fields — real only.
+                realDelhiPool:  c.realDelhi,
+                realBombayPool: c.realBombay,
+                winner: c.winner,
+                isSettled: c.isSettled,
+                timestamp: new Date(),
             };
         } catch (error) {
             console.error('❌ Error getting game state:', error);
@@ -109,39 +147,52 @@ class GameEngine {
                 status: 'ERROR',
                 message: 'Failed to retrieve game state',
                 error: error.message,
-                timestamp: new Date()
+                timestamp: new Date(),
             };
         }
     }
 
+    /**
+     * Pick up cycles whose claim lease expired — a worker that died mid-pass.
+     *
+     * Same claim query as the tick. A pass that was interrupted left its
+     * already-settled bets settled, so this finishes what is left rather than
+     * re-paying anything.
+     */
     async payoutRecoveryTask() {
-        // Find cycles that got stuck in 'PROCESSING' state due to server restart
-        const stuckCycles = await Cycle.find({ isSettled: 'PROCESSING' });
-        for (const cycle of stuckCycles) {
-            console.warn(`[Recovery] Resuming interrupted payout for cycle: ${cycle.cycleId}`);
-            await this.processPayoutsOptimized(cycle);
+        try {
+            const stranded = await db.markets.claimSettleable({
+                limit: 5, worker: `${this.worker}-recovery`,
+                leaseMinutes: SETTLEMENT_LEASE_MINUTES,
+            });
+            for (const cycle of stranded) {
+                console.warn(`[Recovery] Resuming interrupted payout for cycle: ${cycle.cycleId}`);
+                await this.settleCycle(cycle);
+            }
+        } catch (e) {
+            console.error('[Recovery] sweep failed:', e.message);
         }
     }
 
     async tick() {
-        if (this.isProcessing) return; 
+        if (this.isProcessing) return;
         this.isProcessing = true;
 
         try {
-            // ✅ FIX #1/#2: Look for RESULT_DECLARED — set by fixed CycleGenerator.completeCycle()
-            const cyclesToSettle = await Cycle.find({ 
-                status: 'RESULT_DECLARED', 
-                isSettled: 'PENDING' 
-            }).limit(1);
-            
-            if (cyclesToSettle.length > 0) {
-                await this.processPayoutsOptimized(cyclesToSettle[0]);
-                await this.loadCurrentCycle();
-                settlementRuns.inc({ outcome: 'success' });
-            }
+            // The claim IS the query: `claimSettleable` returns only cycles with
+            // a winner, not yet settled, past their end, and unclaimed. Rule 3 —
+            // a cycle with no result must never be offered for settlement,
+            // whatever its status column says.
+            const [cycle] = await db.markets.claimSettleable({
+                limit: 1, worker: this.worker, leaseMinutes: SETTLEMENT_LEASE_MINUTES,
+            });
+            if (!cycle) return;
 
+            await this.settleCycle(cycle);
+            await this.loadCurrentCycle();
+            settlementRuns.inc({ outcome: 'success' });
         } catch (e) {
-            console.error("GameEngine Tick Error:", e);
+            console.error('GameEngine Tick Error:', e);
             settlementRuns.inc({ outcome: 'error' });
             sendAlert('settlement-error', 'Cycle settlement tick failed', { error: e.message });
         } finally {
@@ -150,445 +201,308 @@ class GameEngine {
     }
 
     /**
-     * ✅ FIX #4, #5: Optimized Payout Engine with Dual Balance System
-     * - 2x payout (bet amount × 2)
-     * - ALL payouts go to winningsBalance (withdrawable)
-     * - Unlocks both deposit and winnings portions of locked balance
-     * Uses MongoDB cursors and bulk writes for O(1) memory usage.
-     * Ensures transaction logs are created for every wallet credit.
+     * Settle one claimed cycle.
+     *
+     * The caller has already claimed it. Every step below is guarded and
+     * idempotent, so a pass that dies partway can be resumed by the next worker
+     * to take the lease.
      */
-    async processPayoutsOptimized(cycle) {
-        const BATCH_SIZE = 500; 
-
-        // Lock cycle to prevent concurrent settlement by multiple nodes
-        const lock = await Cycle.findOneAndUpdate(
-            { _id: cycle._id, $or: [{ isSettled: 'PENDING' }, { isSettled: 'PROCESSING' }] }, 
-            { $set: { isSettled: 'PROCESSING' } }
-        );
-        
-        if (!lock) {
-            console.log(`[Engine] Cycle ${cycle.cycleId} already being processed`);
-            return;
-        }
-
-        // Open the settlement RUN. While Mongo is authoritative this is the
-        // mirror — explicit rather than left to the model hook, because
-        // findOneAndUpdate above has no `new: true`, so the hook is handed the
-        // PRE-update document and would still read PENDING. Fire-and-forget by
-        // design: a mirror failure must never stop a payout.
-        mirrorCycleSettlement({ ...lock.toObject?.() ?? lock, isSettled: 'PROCESSING' });
-
-        // Once Postgres owns the path this is the real claim, and it is AWAITED
-        // — a run that failed to open must not go on to pay anybody. `resumed`
-        // is not a refusal: gameEngine re-admits a PROCESSING cycle on purpose
-        // so an interrupted payout can be finished, and treating a resume as a
-        // stop would strand the cycles that most need finishing.
+    async settleCycle(cycle) {
+        // Open the settlement RUN. AWAITED — a run that failed to open must not
+        // go on to pay anybody. `resumed` is NOT a refusal: an interrupted
+        // payout is re-admitted on purpose, and treating a resume as a stop
+        // would strand exactly the cycles that most need finishing.
         const claim = await beginSettlement({
             cycleId: cycle.cycleId, winningSide: cycle.winner,
         });
         if (!claim.ok) {
-            console.error(`[Engine] Postgres refused the settlement claim for ${cycle.cycleId}:`, claim.reason);
-            sendAlert('settlement-error', 'Postgres refused a settlement claim', {
+            console.error(`[Engine] settlement claim refused for ${cycle.cycleId}:`, claim.reason);
+            sendAlert('settlement-error', 'Settlement claim refused', {
                 cycleId: cycle.cycleId, reason: claim.reason,
             });
+            // Hand the cycle back rather than sitting on a lease we cannot use.
+            await db.markets.releaseSettlementClaim(cycle.cycleId);
             return;
         }
 
         console.log(`[Engine] Starting payout for cycle ${cycle.cycleId}, Winner: ${cycle.winner}`);
 
-        // Winnings platform fee + payout multiplier (Phase A / Business Config
-        // Audit): both owned by Business Policy (SystemConfig.winningsFeePercent,
-        // SystemConfig.payoutMultiplier), read ONCE per settlement so every bet
-        // in this cycle settles under the same snapshot.
+        // Read ONCE per settlement, so every bet in this cycle settles under the
+        // same fee and multiplier. Reading per bet would let an admin editing
+        // the rate mid-pass pay two winners on the same cycle differently.
         const { winningsFeePercent, payoutMultiplier } = await getRiskRules();
 
-        // ── WHICH STORE SETTLES THIS CYCLE ────────────────────────────────────
-        // Read ONCE, for the whole pass, and passed down to the winning side
-        // rather than asked again there. Both halves of the lifecycle must
-        // settle in the SAME store: a cycle whose losing bets are authoritative
-        // in Postgres and whose winning bets are authoritative in Mongo is the
-        // split no reconciliation can tell apart from the two stores genuinely
-        // disagreeing. docs/BETS_SETTLEMENT_ROUTING.md; same rule ORDERS was
-        // built as one seam for.
-        const onPg = betsOnPostgres();
-
         // Every bet this pass could not settle, with the reason. Reported, never
-        // swallowed — a refused bet still has its stake locked, and a settlement
-        // pass that returned quietly would leave that for someone to find by
-        // hand months later.
+        // swallowed — a refused bet still has its stake locked, and a pass that
+        // returned quietly would leave that for someone to find by hand.
         const refusals = [];
-
-        // Mark losing bets immediately and unlock their balances
-        const losingBets = await Bet.find({
-            cycleId: cycle.cycleId,
-            side: { $ne: cycle.winner },
-            status: 'PENDING',
-            isPhantom: false
-        });
-
-        if (onPg) {
-            // betPg.loseBet consumes the locked stake and stamps the status in
-            // ONE transaction, so unlockLostBet must NOT also run — the wallet
-            // path is already on Postgres (BETS dependsOn WALLET), and calling
-            // both would release the same stake twice.
-            //
-            // The bulk updateMany is skipped for the reason it must be: the
-            // reverse mirror has already written each status, so re-stamping
-            // would overwrite the bets Postgres deliberately REFUSED and turn a
-            // reported failure into a silent one.
-            for (const bet of losingBets) {
-                const r = await settleBetOnPostgres({
-                    bet, outcome: 'LOST', reason: 'Lost bet unlock — cycle result',
-                });
-                if (!r.handled) {
-                    // The resolver changed answer underneath a running pass.
-                    // Loud rather than a half-settled cycle.
-                    throw new Error(
-                        `[Engine] bets authority changed mid-settlement of ${cycle.cycleId} — `
-                        + 'refusing to settle the rest of the cycle in a different store',
-                    );
-                }
-                if (!r.ok) {
-                    refusals.push({ betId: String(bet._id), userId: String(bet.userId), outcome: 'LOST', reason: r.reason });
-                }
-            }
-        } else {
-            // Unlock losing bet balances via WalletAuthority helper
-            for (const bet of losingBets) {
-                await unlockLostBet(bet.userId, bet.amount, bet._id,
-                    bet.fromDepositBalance || 0, bet.fromWinningsBalance || 0);
-            }
-
-            await Bet.updateMany(
-                { cycleId: cycle.cycleId, side: { $ne: cycle.winner }, status: 'PENDING', isPhantom: false },
-                { $set: { status: 'LOST' } }
-            );
-        }
-
-        // Process winning bets
-        const cursor = Bet.aggregate([
-            { $match: { cycleId: cycle.cycleId, side: cycle.winner, status: 'PENDING', isPhantom: false } },
-            // The projected names are the Bet document's OWN names, not aliases.
-            // They used to be `fromDeposit`/`fromWinnings`, which the Mongo path
-            // read back consistently and nothing else could: betPgAuthority's
-            // `slicesFromBet` looks for `fromDepositBalance` and read `undefined`
-            // from every one of these. `fromReserveBalance` was not projected at
-            // all, and `betPg.settle` requires the slices to sum EXACTLY to the
-            // stake — so a reserve-funded bet threw rather than settling.
-            { $group: {
-                _id: "$userId",
-                totalBetAmount: { $sum: "$amount" },
-                betIds: { $push: "$_id" },
-                bets: {
-                    $push: {
-                        betId: "$_id",
-                        amount: "$amount",
-                        fromDepositBalance:  "$fromDepositBalance",
-                        fromWinningsBalance: "$fromWinningsBalance",
-                        fromReserveBalance:  "$fromReserveBalance",
-                        timestamp: "$timestamp"
-                    }
-                }
-            } }
-        ]).cursor({ batchSize: BATCH_SIZE });
-
-        let userBulkOps = [];
-        let txBulkOps = [];
-
-        // Track winner payouts so we can emit per-user payout_success via WS
-        const winnerPayouts = []; // { userId, payout, betAmount }
-        // How many winning bets each user had in this pass, so a refusal count
-        // can be compared against it rather than against the number of users.
+        const winnerPayouts = [];
         const betsPerWinner = new Map();
 
-        for await (const winGroup of cursor) {
-            // Phase A: per-bet NET payout (gross 2x − winnings platform fee),
-            // computed by the Risk Platform arithmetic authority in integer
-            // paise. Per-bet stamps let executeSettlementBatch persist the
-            // exact net/fee on each Bet document.
-            let payoutMinor = 0;
-            let feeMinor = 0;
-            // { betId, payout, platformFee, bet } — the DOCUMENT travels with the
-            // stamp because the Postgres path settles per bet and needs its
-            // funding slices. It used to carry the three scalars alone, so
-            // routing the winning side had nothing to derive the slices from.
-            // The pieces the aggregation cannot know per bet (they are constant
-            // across the group) are filled from the group key and the cycle.
-            const betStamps = [];
-            for (const bet of winGroup.bets) {
-                const p = computeWinningsPayout({ amount: bet.amount, feePercent: winningsFeePercent, multiplier: payoutMultiplier });
-                payoutMinor += p.netMinor;
-                feeMinor    += p.feeMinor;
-                betStamps.push({
-                    betId: bet.betId,
-                    payout: p.net,
-                    platformFee: p.fee,
-                    bet: {
-                        _id:    bet.betId,
-                        userId: winGroup._id,
-                        cycleId: cycle.cycleId,
-                        side:    cycle.winner,
-                        amount:  bet.amount,
-                        fromDepositBalance:  bet.fromDepositBalance,
-                        fromWinningsBalance: bet.fromWinningsBalance,
-                        fromReserveBalance:  bet.fromReserveBalance,
-                        timestamp: bet.timestamp,
-                    },
-                });
-            }
-            const payout = payoutMinor / 100;
-
-            // ✅ FIX #4: Calculate locked amounts to release
-            let totalLockedDeposit = 0;
-            let totalLockedWinnings = 0;
-
-            for (const bet of winGroup.bets) {
-                totalLockedDeposit += bet.fromDepositBalance || 0;
-                totalLockedWinnings += bet.fromWinningsBalance || 0;
-            }
-
-            // Queue payout — executed via WalletAuthority in executeSettlementBatch
-            userBulkOps.push({
-                userId: winGroup._id.toString(),
-                payout,
-                feePercent: winningsFeePercent,
-                totalBetAmount: winGroup.totalBetAmount,
-                totalLockedDeposit,
-                totalLockedWinnings,
-                betIds: winGroup.betIds,
-                betStamps,
+        try {
+            await this.settleLosingBets(cycle, refusals);
+            await this.settleWinningBets(cycle, {
+                winningsFeePercent, payoutMultiplier, refusals, winnerPayouts, betsPerWinner,
             });
-
-            // Track for WS emit after batch
-            winnerPayouts.push({
-                userId:    winGroup._id.toString(),
-                payout,
-                betAmount: winGroup.totalBetAmount,
+        } catch (e) {
+            // The money that moved is real and the bets that settled are
+            // settled. Release the claim so the next pass picks the cycle up
+            // rather than waiting out the lease, and do NOT mark it settled.
+            console.error(`[Engine] settlement of ${cycle.cycleId} failed partway:`, e.message);
+            sendAlert('settlement-error', 'Settlement failed partway — cycle left unsettled', {
+                cycleId: cycle.cycleId, error: e.message,
             });
-            betsPerWinner.set(winGroup._id.toString(), betStamps.length);
-
-            txBulkOps.push({
-                insertOne: {
-                    document: {
-                        userId: winGroup._id,
-                        type: 'BET_WIN',
-                        amount: payout,
-                        balanceType: 'WINNINGS',  // ✅ FIX #4: Track that this went to winnings
-                        status: 'SUCCESS',
-                        referenceId: cycle.cycleId,
-                        description: `Payout: ${cycle.cycleId} - ${cycle.winner} won - 2x ${winGroup.totalBetAmount} minus ${winningsFeePercent}% platform fee (₹${feeMinor / 100}) = ${payout}`,
-                        timestamp: new Date()
-                    }
-                }
-            });
-
-            if (userBulkOps.length >= BATCH_SIZE) {
-                refusals.push(...(await executeSettlementBatch(userBulkOps, txBulkOps, { onPg })).refused);
-                userBulkOps = []; txBulkOps = [];
-            }
+            await db.markets.releaseSettlementClaim(cycle.cycleId);
+            throw e;
         }
 
-        if (userBulkOps.length > 0) {
-            refusals.push(...(await executeSettlementBatch(userBulkOps, txBulkOps, { onPg })).refused);
-        }
-
-        // ── REFUSALS ──────────────────────────────────────────────────────────
-        // A refused bet is one Postgres would not transition — a legacy bet with
-        // no recorded funding split, slices that do not sum to the stake, a
-        // status that is no longer PENDING. Its stake is still locked.
+        // ── REFUSALS ────────────────────────────────────────────────────────
+        // A refused bet is one the store would not transition — no recorded
+        // funding split, slices that do not sum to the stake, a status that is
+        // no longer PENDING. Its stake is still locked.
         //
         // The pass CONTINUES rather than aborting: the bets that did settle are
-        // settled, the money that moved is real, and every transition here is
-        // guarded and idempotent, so a re-run advances only what is left. Failing
-        // the whole cycle would strand the bets that succeeded alongside the one
-        // that did not.
-        //
-        // What must not happen is that it goes unreported, and there are two
-        // independent detectors: this alert, and findIncompleteSettlements —
-        // which is precisely the query for "a COMPLETED run with bets still
-        // PENDING", i.e. a stake locked with nothing coming to release it.
+        // settled, and every transition is guarded, so a re-run advances only
+        // what is left. Failing the whole cycle would strand the bets that
+        // succeeded alongside the one that did not.
         if (refusals.length > 0) {
-            console.error(`[Engine] Postgres refused ${refusals.length} bet settlement(s) on ${cycle.cycleId}:`,
+            console.error(`[Engine] ${refusals.length} bet settlement(s) refused on ${cycle.cycleId}:`,
                 refusals.slice(0, 10));
-            sendAlert('settlement-error', 'Postgres refused bet settlements — stakes remain locked', {
+            sendAlert('settlement-error', 'Bet settlements refused — stakes remain locked', {
                 cycleId: cycle.cycleId, refused: refusals.length, sample: refusals.slice(0, 10),
             });
         }
 
-        // Cycle totals are DERIVED from the stamped WON bets, not from this
-        // run's in-memory accumulators (F-2 recovery fix, 2026-07-10): a
-        // resume after a mid-batch crash only re-processes still-PENDING
-        // bets, so accumulators would undercount — the DB sees every bet
-        // paid across all passes. Round: payout/platformFee are 2-decimal
-        // values whose float sum can drift at the 1e-12 scale.
-        const [wonTotals] = await Bet.aggregate([
-            { $match: { cycleId: cycle.cycleId, status: 'WON', isPhantom: false } },
-            { $group: {
-                _id: null,
-                paid: { $sum: '$payout' },
-                fees: { $sum: '$platformFee' },
-                winners: { $addToSet: '$userId' },
-            } },
-        ]);
-        const totalPaidOut      = Math.round((wonTotals?.paid || 0) * 100) / 100;
-        const totalPlatformFees = Math.round((wonTotals?.fees || 0) * 100) / 100;
-        const totalWinners      = wonTotals?.winners?.length || 0;
+        // Phantom bets never win and move no money. One UPDATE, so the history
+        // does not leave synthetic bets at PENDING forever.
+        await db.bets.closePhantomBets(cycle.cycleId);
 
-        // ── REALTIME PAYOUT NOTIFICATION ──────────────────────────────────────
-        // Emit payout_success to each winner's personal room so their wallet
+        // ── TOTALS, FROM THE ROWS ───────────────────────────────────────────
+        // Not from this pass's accumulators. See the header — a resumed pass
+        // would undercount every bet an earlier pass paid.
+        const totals = await db.bets.cyclePayoutTotals(cycle.cycleId);
+        const totalPaidOut = totals.paidOutPaise / 100;
+        const totalPlatformFees = totals.platformFeesPaise / 100;
 
-        // We query fresh balances so the frontend gets the exact new values.
-        //
-        // A user whose EVERY bet was refused is dropped: `payout` here is the
-        // amount the pass intended to pay, and telling someone they were paid
-        // when the transition was refused is worse than telling them nothing.
-        // Partially-refused users keep their event — the embedded balances are
-        // read fresh from the store, so what they see is what they actually have.
-        const refusedByUser = refusals.reduce((m, r) => m.set(r.userId, (m.get(r.userId) || 0) + 1), new Map());
-        const paidWinners = refusedByUser.size === 0 ? winnerPayouts : winnerPayouts.filter((w) => {
-            const settledForUser = betsPerWinner.get(w.userId) || 0;
-            return settledForUser > (refusedByUser.get(w.userId) || 0);
-        });
+        await this.notifyWinners(cycle, winnerPayouts, betsPerWinner, refusals);
 
-        if (paidWinners.length > 0 && this.io) {
-            try {
-                const winnerIds   = paidWinners.map(w => w.userId);
-                const freshUsers  = await User.find({ _id: { $in: winnerIds } })
-                                              .select('winningsBalance depositBalance lockedBalance')
-                                              .lean();
-
-                const balanceMap  = {};
-                for (const u of freshUsers) {
-                    balanceMap[u._id.toString()] = u;
-                }
-
-                // Fresh balances are embedded, so winners do not need to poll an API.
-                // Fan-out is chunked/yielding to keep very large settlements from
-                // monopolizing the event loop while preserving live per-user updates.
-                await emitPayoutSuccessBatch({
-                    io: this.io,
-                    payouts: paidWinners,
-                    balanceMap,
-                    cycleId: cycle.cycleId,
-                    winner: cycle.winner,
-                    batchSize: BATCH_SIZE,
-                });
-            } catch (emitErr) {
-                // Non-critical — payouts were already written to DB
-                console.warn('[Engine] payout_success emit error:', emitErr.message);
-            }
-        }
-
-        // ✅ FIX #6: Mark phantom bets as lost (they never win)
-        //
-        // UNCONDITIONAL — this one bulk update is correct on both branches, and
-        // it is the only Bet write here that is. A phantom bet is synthetic: it
-        // is created with no balance deduction and zero funding provenance, so
-        // there is no stake to consume and nothing for `betPg.settle` to settle
-        // against. dualWrite.mirrorBet therefore keeps phantom bets out of
-        // Postgres entirely, which is what makes stamping them here a Mongo-side
-        // bookkeeping write rather than a lifecycle transition behind the
-        // resolver's back.
-        await Bet.updateMany(
-            { cycleId: cycle.cycleId, isPhantom: true, status: 'PENDING' },
-            { $set: { status: 'LOST' } }
-        );
-
-        // Calculate final stats. totalPaidOut is NET of the winnings platform
-        // fee, so netProfit (realPool − totalPaidOut) already contains the
-        // retained fee — it reaches PLATFORM_REVENUE through the existing
-        // BET_CYCLE_SETTLED posting with no ledger change. The fee fields
-        // below itemize it for audit/reporting.
-        // The second place a pool figure becomes money: netProfit is what the
-        // BET_CYCLE_SETTLED ledger posting records as platform revenue. Under
-        // FLAGS.DERIVED_CYCLE_POOLS the stored fields are a periodic projection,
-        // so recompute exactly (no-op with the flag off).
-        //
-        // Unlike winner determination this does not abort on failure: the
-        // payouts above have already been written and the money has moved.
-        // Refusing to finish would leave the cycle un-marked and re-run the
-        // payout pass. The stored fields are the correct fallback here — they
-        // are at worst slightly stale, and the reconciler derives the
-        // authoritative ledger entry from the bets regardless.
-        const settlePools = await refreshRealPools(cycle.cycleId, { exact: true }).catch((e) => {
-            console.error(`[Engine] exact pool refresh failed for ${cycle.cycleId}, using stored:`, e.message);
-            return null;
-        });
-        const realPool = settlePools
-            ? settlePools.realDelhi + settlePools.realBombay
-            : (cycle.realDelhi || 0) + (cycle.realBombay || 0);
+        // The real pool is derived from the bets, never read off the cycle row —
+        // trap 4. netProfit is what the BET_CYCLE_SETTLED ledger posting records
+        // as platform revenue, and totalPaidOut is NET of the winnings fee, so
+        // the retained fee is already inside it.
+        const pools = await db.markets.realPools(cycle.cycleId);
+        const realPool = pools.realDelhi + pools.realBombay;
         const netProfit = realPool - totalPaidOut;
 
-        await Cycle.updateOne(
-            { _id: cycle._id },
-            {
-                isSettled: 'COMPLETED',
-                settledAt: Date.now(),
-                totalPaidOut: totalPaidOut,
-                netProfit: netProfit,
-                totalPlatformFees: totalPlatformFees,
-                winningsFeePercentUsed: winningsFeePercent
-            }
-        );
-
-        // Close the run in Postgres with the totals that were just written.
-        // `updateOne` gives a post hook no document, so this is the only point
-        // that can report the finish — and reporting it is what lets
-        // findIncompleteSettlements tell a finished payout from a stalled one.
-        mirrorCycleSettlement({
-            cycleId: cycle.cycleId, winner: cycle.winner,
-            isSettled: 'COMPLETED', settledAt: new Date(), totalPaidOut,
+        // MONEY FIRST, THEN THE STATUS. Everything above has already moved
+        // money; this only records what happened. A failure here leaves a cycle
+        // that gets picked up and finished, which is the safe direction.
+        const settled = await db.markets.markSettled(cycle.cycleId, {
+            paidOutRupees: totalPaidOut,
+            netProfitRupees: netProfit,
+            platformFeesRupees: totalPlatformFees,
+            feePercentUsed: winningsFeePercent,
         });
+        if (!settled.ok) {
+            // Another pass finished it first. Not an error — the guard is in the
+            // UPDATE's WHERE clause and exactly one pass wins.
+            console.warn(`[Engine] ${cycle.cycleId} was already settled:`, settled.reason);
+        }
 
-        // …and close the run for real once Postgres owns the path. Awaited, but
-        // a refusal is NOT fatal here, unlike the claim: the money has already
-        // moved and the bets are already stamped, so failing the pass now would
-        // re-run a payout that is finished. It is logged and paged instead, and
-        // findIncompleteSettlements is the query that finds it later.
-        const finish = await finishSettlement({ cycleId: cycle.cycleId, payoutRupees: totalPaidOut });
+        // Close the run. A refusal here is NOT fatal, unlike the claim: the money
+        // has moved and the bets are stamped, so failing now would re-run a
+        // finished payout. It is logged and paged; findIncompleteSettlements is
+        // the query that finds it later.
+        const finish = await finishSettlement({ cycleId: cycle.cycleId });
         if (!finish.ok) {
-            console.error(`[Engine] Postgres refused to close settlement ${cycle.cycleId}:`, finish.reason);
-            sendAlert('settlement-error', 'Postgres refused to close a completed settlement', {
+            console.error(`[Engine] refused to close settlement ${cycle.cycleId}:`, finish.reason);
+            sendAlert('settlement-error', 'Refused to close a completed settlement', {
                 cycleId: cycle.cycleId, reason: finish.reason,
             });
         }
 
-        await CacheService.del('financial_stats');
-        // Drop the freshness memo so a settled cycle can never serve a cached
-        // projection to a later reader.
-        forgetCycle(cycle.cycleId);
+        // A settled cycle with bets still PENDING is a stake locked with nothing
+        // coming to release it — the exact condition findIncompleteSettlements
+        // exists to surface. Reported here too, so it is seen in the same pass
+        // rather than at the next sweep.
+        if (totals.stillPending > 0) {
+            sendAlert('settlement-error', 'Cycle settled with bets still pending', {
+                cycleId: cycle.cycleId, stillPending: totals.stillPending,
+            });
+        }
 
-        console.log(`[Engine] ✅ Cycle ${cycle.cycleId} settled successfully`);
-        console.log(`   Winners: ${totalWinners} users`);
-        console.log(`   Total Paid: ₹${totalPaidOut.toLocaleString()} (2x minus ${winningsFeePercent}% fee)`);
+        await CacheService.del('financial_stats');
+
+        console.log(`[Engine] ✅ Cycle ${cycle.cycleId} settled`);
+        console.log(`   Winners: ${totals.winners} users across ${totals.wonBets} bets`);
+        console.log(`   Total Paid: ₹${totalPaidOut.toLocaleString()} (${payoutMultiplier}x minus ${winningsFeePercent}% fee)`);
         console.log(`   Platform Fees Retained: ₹${totalPlatformFees.toLocaleString()}`);
         console.log(`   Net Profit: ₹${netProfit.toLocaleString()}`);
         if (realPool > 0) console.log(`   Profit Margin: ${((netProfit / realPool) * 100).toFixed(2)}%`);
 
-        // Broadcast settlement complete
         this.io?.emit('payout_complete', {
-            cycleId: cycle.cycleId,
-            winner: cycle.winner,
-            totalPaidOut,
-            netProfit,
-            winners: totalWinners
+            cycleId: cycle.cycleId, winner: cycle.winner,
+            totalPaidOut, netProfit, winners: totals.winners,
         });
 
-        // REALTIME: Push financial delta to admin dashboard — no page reload needed
         this.io?.to('admin-room').emit('admin_stats_update', {
-            type:        'PAYOUT_COMPLETE',
-            cycleId:     cycle.cycleId,
-            totalPaidOut,
-            totalPlatformFees,
-            netProfit,
-            winners:     totalWinners,
-            server_ts:   Date.now()
+            type: 'PAYOUT_COMPLETE',
+            cycleId: cycle.cycleId,
+            totalPaidOut, totalPlatformFees, netProfit,
+            winners: totals.winners,
+            server_ts: Date.now(),
         });
     }
 
     /**
-     * Cleanup on shutdown
+     * The losing side: each stake is consumed and the bet stamped, in ONE
+     * transaction per bet.
+     *
+     * Paged by row id rather than pulled in full, so a cycle with a hundred
+     * thousand bets does not need all of them in memory at once. Each page is
+     * re-read AFTER the previous one settled, so bets an earlier pass already
+     * handled simply are not in the next page.
      */
+    async settleLosingBets(cycle, refusals) {
+        for (;;) {
+            const batch = await db.bets.listSettleableBets(cycle.cycleId, {
+                side: 'LOSING', limit: BATCH_SIZE,
+            });
+            if (!batch.length) return;
+
+            let settledAny = false;
+            for (const bet of batch) {
+                const r = await db.bets.loseBet({
+                    betId: bet.betId, userId: bet.userId, slices: bet.slices,
+                    actor: 'settlement', reason: 'Lost bet — cycle result',
+                }).catch((e) => ({ ok: false, reason: e.message }));
+
+                if (r.ok) { settledAny = true; continue; }
+                refusals.push({ betId: bet.betId, userId: bet.userId, outcome: 'LOST', reason: r.reason });
+            }
+
+            // Nothing in this page moved, so the next read returns the same page.
+            // Stopping is what turns a refused batch into a reported failure
+            // instead of an infinite loop holding the lease open.
+            if (!settledAny) return;
+        }
+    }
+
+    /**
+     * The winning side: stake consumed and payout credited, in ONE transaction
+     * per bet, under one wallet lock.
+     *
+     * ── Per bet, not per user ──────────────────────────────────────────────
+     * The payout is computed per BET because the fee is, and because a settled
+     * bet with no ledger row has to be structurally unrepresentable. Grouping by
+     * user and paying a summed amount would make one refused bet inside a group
+     * either block the whole group or silently pay for bets that were refused.
+     */
+    async settleWinningBets(cycle, ctx) {
+        const { winningsFeePercent, payoutMultiplier, refusals, winnerPayouts, betsPerWinner } = ctx;
+        const paidPerUser = new Map();
+
+        for (;;) {
+            const batch = await db.bets.listSettleableBets(cycle.cycleId, {
+                side: 'WINNING', limit: BATCH_SIZE,
+            });
+            if (!batch.length) break;
+
+            let settledAny = false;
+            for (const bet of batch) {
+                // `computeWinningsPayout` returns { gross, fee, net, … } and has
+                // NO `payout` key. Reading `p.payout ?? 0` pays ZERO while still
+                // charging the fee — trap 1. It is `net`.
+                const p = computeWinningsPayout({
+                    amount: bet.stakePaise / 100,
+                    feePercent: winningsFeePercent,
+                    multiplier: payoutMultiplier,
+                });
+
+                const r = await db.bets.winBet({
+                    betId: bet.betId, userId: bet.userId, slices: bet.slices,
+                    payoutPaise: p.netMinor, platformFeePaise: p.feeMinor,
+                    actor: 'settlement',
+                    reason: winningsFeePercent > 0
+                        ? `Cycle win payout (${payoutMultiplier}x minus ${winningsFeePercent}% platform fee)`
+                        : `Cycle win payout (${payoutMultiplier}x)`,
+                }).catch((e) => ({ ok: false, reason: e.message }));
+
+                if (!r.ok) {
+                    refusals.push({ betId: bet.betId, userId: bet.userId, outcome: 'WON', reason: r.reason });
+                    continue;
+                }
+                settledAny = true;
+
+                // Accumulated ONLY for the realtime notification, which is about
+                // what this pass paid. The cycle's recorded totals come from the
+                // rows — see the header.
+                const before = paidPerUser.get(bet.userId) ?? { payoutPaise: 0, stakePaise: 0 };
+                paidPerUser.set(bet.userId, {
+                    payoutPaise: before.payoutPaise + p.netMinor,
+                    stakePaise: before.stakePaise + bet.stakePaise,
+                });
+                betsPerWinner.set(bet.userId, (betsPerWinner.get(bet.userId) ?? 0) + 1);
+            }
+
+            if (!settledAny) break;
+        }
+
+        for (const [userId, sums] of paidPerUser) {
+            winnerPayouts.push({
+                userId,
+                payout: sums.payoutPaise / 100,
+                betAmount: sums.stakePaise / 100,
+            });
+        }
+    }
+
+    /**
+     * Tell each winner, with the balance they actually have now.
+     *
+     * Balances are read from the WALLET, one per winner. The accounts table has
+     * no balance columns — reading them there returns undefined for every winner
+     * and pushes ZERO to a player who has just been paid, which is the single
+     * worst moment to show a wrong number.
+     *
+     * A user whose EVERY winning bet was refused is dropped: telling somebody
+     * they were paid when the transition was refused is worse than telling them
+     * nothing. Partially-refused users keep their event, because the embedded
+     * balance is read fresh and is therefore true.
+     */
+    async notifyWinners(cycle, winnerPayouts, betsPerWinner, refusals) {
+        if (!winnerPayouts.length || !this.io) return;
+
+        const refusedByUser = refusals.reduce(
+            (m, r) => m.set(r.userId, (m.get(r.userId) ?? 0) + 1), new Map(),
+        );
+        const paidWinners = refusedByUser.size === 0 ? winnerPayouts : winnerPayouts.filter(
+            (w) => (betsPerWinner.get(w.userId) ?? 0) > (refusedByUser.get(w.userId) ?? 0),
+        );
+        if (!paidWinners.length) return;
+
+        try {
+            const balanceMap = {};
+            for (const uid of new Set(paidWinners.map((w) => String(w.userId)))) {
+                balanceMap[uid] = await getBalances(uid);
+            }
+
+            // Chunked and yielding, so a very large settlement does not
+            // monopolise the event loop while still sending per-user updates.
+            await emitPayoutSuccessBatch({
+                io: this.io,
+                payouts: paidWinners,
+                balanceMap,
+                cycleId: cycle.cycleId,
+                winner: cycle.winner,
+                batchSize: BATCH_SIZE,
+            });
+        } catch (emitErr) {
+            // Non-critical — the payouts are already written.
+            console.warn('[Engine] payout_success emit error:', emitErr.message);
+        }
+    }
+
     stop() {
         if (this.tickInterval) clearInterval(this.tickInterval);
         if (this.recoveryInterval) clearInterval(this.recoveryInterval);

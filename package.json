@@ -15,25 +15,23 @@
     "start:local": "node --env-file=.env backend/server.js",
     "test": "vitest run",
     "test:unit": "vitest run --config vitest.config.ts",
-    "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:pg": "vitest run --config vitest.pg.config.ts",
+    "test:redis": "vitest run --config vitest.redis.config.ts",
     "test:watch": "vitest --config vitest.config.ts",
     "check:deps": "depcruise backend --config .dependency-cruiser.cjs",
-    "reconcile:pg": "node backend/postgres/reconcile.js",
-    "preflight:flip": "node backend/postgres/preflightFlip.js",
-    "sync:indexes": "node backend/scripts/sync-indexes.mjs",
-    "pg:migrate:partition": "node backend/postgres/migratePartitions.js",
-    "pg:seed-locks": "node backend/postgres/seedLockProvenance.js",
+    "check:no-mongo": "node scripts/verify-no-mongo.mjs",
+    "check:balance-reads": "node scripts/audit-balance-reads.mjs",
+    "check:coherence": "node scripts/verify-migration-coherence.mjs",
     "verify:capabilities": "node scripts/verify-capabilities.mjs",
-    "certify:report": "node scripts/certification-report.mjs",
-    "migrate:public-chat-retention": "node backend/scripts/enforce-public-chat-retention.js",
     "loadtest:seed": "node loadtest/seed-accounts.mjs",
     "loadtest:bets": "k6 run loadtest/bet-contention.js",
     "loadtest:realtime": "node loadtest/realtime-connections.mjs",
     "stack:up": "docker compose -f docker-compose.test.yml up -d --wait",
     "stack:down": "docker compose -f docker-compose.test.yml down -v",
     "stack:logs": "docker compose -f docker-compose.test.yml logs -f",
-    "test:all": "sh -c 'export MONGODB_URI=mongodb://127.0.0.1:27017/bb_test?replicaSet=rs0 DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/bb_test REDIS_URL=redis://127.0.0.1:6379; npm run test:unit && npm run test:pg && npm run test:integration'"
+    "test:all": "sh -c 'export DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/bb_test REDIS_URL=redis://127.0.0.1:6379; npm run check:no-mongo && npm run test:unit && npm run test:pg && npm run test:redis'",
+    "check:db-boundary": "node scripts/verify-db-boundary.mjs",
+    "check:orphans": "node scripts/detect-orphan-refs.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",
@@ -58,7 +56,6 @@
     "ipaddr.js": "^2.5.0",
     "jsonwebtoken": "^9.0.2",
     "kafkajs": "^2.2.4",
-    "mongoose": "^9.9.4",
     "path-to-regexp": "^8.4.2",
     "pg": "^8.23.0",
     "prom-client": "^15.1.3",
@@ -72,7 +69,6 @@
   "devDependencies": {
     "@types/qrcode": "^1.5.6",
     "dependency-cruiser": "^18.2.0",
-    "mongodb-memory-server": "^11.2.0",
     "nodemon": "^3.1.14",
     "stylelint": "^17.14.1",
     "stylelint-config-standard": "^40.0.0",
@@ -108,8 +104,11 @@
   },
   "allowScripts": {
     "argon2@0.44.0": true,
-    "mongodb-memory-server@11.2.0": true,
     "msgpackr-extract@3.0.4": true,
     "esbuild@0.28.1": true
+  },
+  "imports": {
+    "#db": "./database/index.js",
+    "#db/*": "./database/*"
   }
 }

@@ -1,7 +1,7 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Regression coverage for the 2026-07-16 security review fixes.
 import { describe, it, expect } from 'vitest';
-import { sanitizeInPlace } from '../../middleware/mongoSanitize.js';
+import { sanitizeInPlace } from '../../middleware/inputSanitize.js';
 import { parseTrustProxy } from '../../config/network.config.js';
 
 describe('security review regressions', () => {

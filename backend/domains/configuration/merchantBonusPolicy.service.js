@@ -1,11 +1,16 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 // Domain: Configuration / Business Policy Platform.
 //
-// Sole writer of MerchantBonusPolicy documents. Runtime consumer (read-only):
+// Sole writer of merchant bonus policy versions. Runtime consumer (read-only):
 // the Merchant Platform bonus engine (domains/merchant/merchantBonus.service.js)
 // via getActiveBonusPolicy().
+//
+// The versioning rules — one ACTIVE at a time, append-only history, rollback as
+// a new version — live in the table and its constraints, not here. What stays
+// here is the operator-facing validation: the same rules, checked early so the
+// panel gets a sentence rather than a constraint name.
 
-import { MerchantBonusPolicy } from './merchantBonusPolicy.model.js';
+import { db } from '#db';
 
 export function validateBonusPolicyFields({ enabled, bonusPercent, minMatchedVolume }) {
   if (typeof enabled !== 'boolean') {
@@ -25,36 +30,32 @@ export function validateBonusPolicyFields({ enabled, bonusPercent, minMatchedVol
 
 /** The runtime read path for the bonus engine. Read-only. */
 export async function getActiveBonusPolicy() {
-  return MerchantBonusPolicy.findOne({ status: 'ACTIVE' }).sort({ version: -1 }).lean();
+  return db.merchantBonusPolicy.getActivePolicy();
 }
 
 export async function getBonusPolicyHistory() {
-  return MerchantBonusPolicy.find({})
-    .sort({ version: -1 })
-    .populate('changedBy', 'username')
-    .lean();
+  return db.merchantBonusPolicy.getPolicyHistory();
 }
 
-async function nextVersionNumber() {
-  const latest = await MerchantBonusPolicy.findOne({}).sort({ version: -1 }).select('version').lean();
-  return latest ? latest.version + 1 : 1;
-}
-
-async function activate(doc) {
-  await MerchantBonusPolicy.updateMany(
-    { status: 'ACTIVE', _id: { $ne: doc._id } },
-    { $set: { status: 'SUPERSEDED' } }
-  );
-  return doc;
+/**
+ * A refusal from the table is an operator error with a specific answer. The
+ * routes above this already catch Error and render its message, so a refused
+ * write is raised rather than returned — the two failure shapes stay one.
+ */
+function unwrap(result) {
+  if (result?.ok) return result.policy;
+  const err = new Error(result?.message || 'Bonus policy change refused.');
+  err.reason = result?.reason;
+  throw err;
 }
 
 /**
  * createBonusPolicyVersion — the write path. Immediate-apply only in v1
- * (no scheduling/approval-gating — see model header + docs/governance/04-GOVERNANCE.md).
+ * (no scheduling/approval-gating — see docs/governance/04-GOVERNANCE.md).
  */
 export async function createBonusPolicyVersion(fields, actor, { justification } = {}) {
   if (!justification || !justification.trim()) {
-    throw new Error('businessJustification is required for every MerchantBonusPolicy change.');
+    throw new Error('businessJustification is required for every bonus policy change.');
   }
   const merged = {
     enabled: fields.enabled ?? false,
@@ -63,33 +64,25 @@ export async function createBonusPolicyVersion(fields, actor, { justification } 
   };
   validateBonusPolicyFields(merged);
 
-  const doc = await MerchantBonusPolicy.create({
+  return unwrap(await db.merchantBonusPolicy.createPolicyVersion({
     ...merged,
-    version: await nextVersionNumber(),
-    status: 'ACTIVE',
-    businessJustification: justification.trim(),
-    changedBy: actor.userId,
-    changedByName: actor.userName,
-  });
-  return activate(doc);
+    justification: justification.trim(),
+    changedBy: actor?.userId ?? null,
+    changedByName: actor?.userName ?? '',
+  }));
 }
 
 /** Rollback = new ACTIVE version copying an old version's values forward. */
 export async function rollbackToBonusPolicyVersion(versionId, actor) {
-  const target = await MerchantBonusPolicy.findById(versionId).lean();
-  if (!target) throw new Error('Policy version not found');
-
-  const doc = await MerchantBonusPolicy.create({
-    enabled: target.enabled,
-    bonusPercent: target.bonusPercent,
-    minMatchedVolume: target.minMatchedVolume,
-    version: await nextVersionNumber(),
-    status: 'ACTIVE',
-    isRollback: true,
-    rollbackOfVersionId: target._id,
-    businessJustification: `Rollback to v${target.version} (policy id ${target._id})`,
-    changedBy: actor.userId,
-    changedByName: actor.userName,
-  });
-  return activate(doc);
+  // Panels address a version as `v3`; the table addresses it as 3. Accept both
+  // so a link built from a history payload works without the caller unwrapping
+  // the id first.
+  const version = Number(String(versionId).replace(/^v/i, ''));
+  if (!Number.isInteger(version) || version < 1) {
+    throw new Error('Policy version not found');
+  }
+  return unwrap(await db.merchantBonusPolicy.rollbackToVersion(version, {
+    changedBy: actor?.userId ?? null,
+    changedByName: actor?.userName ?? '',
+  }));
 }

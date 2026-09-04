@@ -12,13 +12,13 @@ PostgreSQL as the money authority and the built-in manual (merchant) payment
 system. It sequences the deep guides for you:
 
 - **Build the server:** [`deploy/VPS_UBUNTU_SETUP.md`](deploy/VPS_UBUNTU_SETUP.md)
-  — one Ubuntu box: Node 22, MongoDB 7 (replica set), PostgreSQL 18, Redis,
+  — one Ubuntu box: Node 22, PostgreSQL 18, Redis,
   MinIO, PM2, NGINX + TLS.
 - **Every environment variable:** [`docs/governance/ENV.md`](docs/governance/ENV.md)
   and the annotated `.env.example`.
 - **The Android app / APK:** [`docs/governance/ANDROID_RELEASE_SETUP.md`](docs/governance/ANDROID_RELEASE_SETUP.md).
 
-The stack self-hosts every datastore (no MongoDB Atlas, no Railway) — the app
+The stack self-hosts its datastore (no managed database, no Railway) — the app
 boot-gate refuses to start on an incomplete or insecure config, which is
 deliberate. Read the runbook's Phase 0 before you rent anything.
 

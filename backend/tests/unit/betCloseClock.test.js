@@ -18,7 +18,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { CYCLE_TYPES, phasesFor } from '../../domains/markets/cycleTypes.js';
-import { DEFAULT_CYCLE_PHASES } from '../../domains/configuration/systemConfig.model.js';
+import { DEFAULT_CYCLE_PHASES } from '../../domains/markets/cycleTypes.js';
 
 /** The cutoff bet.routes.js computes: endTime − closeBeforeEndSec. */
 const closesAt = (endTime, type, cfg = DEFAULT_CYCLE_PHASES) =>

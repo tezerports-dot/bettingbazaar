@@ -33,15 +33,15 @@ One Shinjiru box runs everything:
         bb-api        bb-realtime   bb-scheduler   (3 PM2 processes, one codebase)
              └────────────┼────────────┘
         ┌──────────┬──────┴───┬──────────┬──────────┐
-     MongoDB    PostgreSQL   Redis    MinIO/R2   (all private, loopback only)
-   (app data)  (THE MONEY)  (live)   (KYC files)
+          PostgreSQL       Redis      MinIO/R2      (all private, loopback only)
+      (EVERYTHING durable)  (live)   (chat/proof files)
 ```
 
-- **PostgreSQL is the money authority** (your decision). Every wallet, bet,
-  order and ledger write is decided in Postgres; MongoDB keeps a live copy for
-  everything else and as a fallback.
-- **MongoDB is still required** and must be a **replica set** (even single-node) —
-  the app uses database transactions, which a plain MongoDB refuses.
+- **PostgreSQL holds everything** — wallets, bets, orders, the ledger, and also
+  identity, configuration, content and engagement. There is no second database
+  to install, keep in sync, or fall back to.
+- **Redis holds nothing durable** — cache, locks, rate limits and realtime
+  fan-out only. Losing it degrades the platform; it does not lose data.
 - **Payments are manual** — your merchant system. No third-party payment gateway
   is wired, and none is needed.
 
@@ -51,11 +51,10 @@ One Shinjiru box runs everything:
 
 1. **Licence & legal** — see the box above. This gates everything.
 2. **A domain name** you control (e.g. `yourdomain.com`) with access to its DNS.
-3. **Decide the money model is Postgres-authoritative** — you have. Because this
-   is a **fresh launch with no existing money data**, there is nothing to
-   migrate: Postgres simply starts empty and authoritative, and MongoDB mirrors
-   it. That removes the biggest risk of a "flip". The one risk that remains is
-   **behaviour under real load**, which you will measure in Phase 6.
+3. **Nothing to decide about the database.** PostgreSQL is the only store and is
+   authoritative from the first boot. There is no migration, no cutover and no
+   flag. The one risk that remains is **behaviour under real load**, which you
+   will measure in Phase 6.
 4. **A Shinjiru dedicated box**, Ubuntu 22.04 or 24.04 LTS, root/sudo access.
 
 ---
@@ -63,18 +62,17 @@ One Shinjiru box runs everything:
 ## Phase 1 — Build the server
 
 Follow **`deploy/VPS_UBUNTU_SETUP.md` top to bottom.** It is exact and tested-in-
-prose. It installs, in order: Node 22, MongoDB 7 (as a replica set), PostgreSQL
-18, Redis, MinIO (your private file bucket for KYC), then the app under PM2, then
-NGINX with a real TLS certificate, then the firewall.
+prose. It installs, in order: Node 22, PostgreSQL 18, Redis, MinIO (your private
+file bucket), then the app under PM2, then NGINX with a real TLS certificate,
+then the firewall.
 
-**The four things that will silently break it** (VPS doc §0 — read them, they
+**The three things that will silently break it** (VPS doc §0 — read them, they
 each fail *after* you think you're done):
-1. MongoDB must be a **replica set**, not standalone.
-2. Object storage (MinIO or Cloudflare R2) is **mandatory** — no local-disk mode.
-3. You need **HTTPS with a real certificate** before anyone can even log in.
-4. `TRUST_PROXY=1` must be set, or every user shares one rate-limit budget.
+1. Object storage (MinIO or Cloudflare R2) is **mandatory** — no local-disk mode.
+2. You need **HTTPS with a real certificate** before anyone can even log in.
+3. `TRUST_PROXY=1` must be set, or every user shares one rate-limit budget.
 
-**Success looks like:** VPS doc §12 — `pm2 status` shows 3 apps online,
+**Success looks like:** VPS doc §11 — `pm2 status` shows 3 apps online,
 `curl localhost:3000/health/ready` returns `ready: true`, and
 `https://yourdomain.com/` loads.
 
@@ -212,44 +210,42 @@ they join the new channel and carry on. Nothing has to be migrated.
 
 ---
 
-## Phase 4 — Turn on Postgres money authority (the readiness gate)
+## Phase 4 — Apply the schema and confirm the money tables exist
 
-This is the one step unique to your direct-Postgres decision. Do not skip the
-check.
+There is no authority to turn on. PostgreSQL is the only store and is
+authoritative from the first boot — no flags, no cutover, no reconciliation
+window. This phase is now a two-minute confirmation rather than a gate.
 
-1. **Apply the Postgres schema** (creates the money tables, triggers, guards):
+1. **Confirm the schema applied.** It is applied automatically on first boot.
    ```bash
    cd /var/www/bettingbazaar
-   npm run sync:indexes        # Mongo indexes
-   # the Postgres schema is applied automatically on first boot; confirm the
-   # tables exist:
-   sudo -u postgres psql -d bb_money -c '\dt' | grep -E 'wallet_ledger|accounting_events|payment_orders'
+   sudo -u postgres psql -d bb_money -c '\dt' | grep -E 'wallets|wallet_ledger|bets|cycles|payment_orders'
    ```
+   Every one of those must be listed. If the app booted, they are — the boot
+   fails loudly rather than running against a half-built schema.
 
-2. **Run the readiness check — this is the gate:**
+2. **Confirm the guards are actually on the tables**, not just in the file:
    ```bash
-   npm run preflight:flip
+   sudo -u postgres psql -d bb_money -c "\d wallet_ledger" | grep -E 'Check|Trigger'
    ```
-   It inspects every money path and prints, per path, whether Postgres may safely
-   hold authority. **Green everywhere → your `.env` flags from Phase 2 are safe.**
-   If any path is not ready, it names it — remove that one `MONEY_AUTHORITY_*`
-   line, leave it on Mongo for now, and it will mirror to Postgres until you flip
-   it later. **Never force a flag past this check.**
+   You are looking for the append-only trigger and the non-negative amount
+   check. These are what make a wrong balance impossible rather than unlikely.
 
-3. **Restart so the flags take effect and confirm what's authoritative:**
+3. **Restart and check readiness:**
    ```bash
    pm2 restart all --update-env
-   npm run certify:report       # shows which store owns each money path, live
+   curl -s localhost:3000/health/ready
    ```
 
-4. **Reconciliation on a schedule.** Add a cron (or PM2 cron) for
-   `npm run reconcile:pg`. It continuously proves Mongo and Postgres agree and
-   pages you (via your alert webhook) if they ever drift.
+**Success looks like:** `ready: true`, the tables listed, and the triggers
+present. If the database is unreachable the app **refuses to start** — that is
+the gate working, not a fault.
 
-**Success looks like:** `certify:report` shows wallet/ledger/orders/KYC on
-`postgres`, and `reconcile:pg` reports clean.
+**What you no longer do here, and should not go looking for:** there is no
+`preflight:flip`, no `certify:report`, no `reconcile:pg` cron and no
+`MONEY_AUTHORITY_*` variable. Those belonged to a two-store design that was
+removed (`CLAUDE.md`). If a stale note tells you to run one, ignore it.
 
----
 
 ## Phase 5 — Prove it works, by hand, on staging (not automatable)
 

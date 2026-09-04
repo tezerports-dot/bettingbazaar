@@ -4,7 +4,8 @@
  * Performance Bonus policy (Business Policy Platform).
  * Mounted at /api/admin via routes/admin/index.js.
  */
-import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import { db } from '#db';
 import {
   getActiveBonusPolicy,
   getBonusPolicyHistory,
@@ -42,7 +43,7 @@ router.get('/merchant-bonus-policy/history', authenticate, isAdminOrSubAdmin, as
 router.put('/merchant-bonus-policy', authenticate, isAdmin, async (req, res) => {
   try {
     const { enabled, bonusPercent, minMatchedVolume, justification } = req.body;
-    const actor = { userId: req.user._id, userName: req.user.username };
+    const actor = { userId: req.user.userId, userName: req.user.username };
 
     let doc;
     try {
@@ -51,9 +52,8 @@ router.put('/merchant-bonus-policy', authenticate, isAdmin, async (req, res) => 
       return res.status(400).json({ success: false, message: validationError.message });
     }
 
-    const EnhancedAuditLog = mongoose.model('EnhancedAuditLog');
-    await EnhancedAuditLog.create({
-      performedBy: req.user._id,
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId,
       performedByName: req.user.username,
       performedByRole: 'admin',
       action: 'UPDATE_MERCHANT_BONUS_POLICY',
@@ -75,7 +75,7 @@ router.put('/merchant-bonus-policy', authenticate, isAdmin, async (req, res) => 
 // POST /api/admin/merchant-bonus-policy/version/:versionId/rollback
 router.post('/merchant-bonus-policy/version/:versionId/rollback', authenticate, isAdmin, async (req, res) => {
   try {
-    const actor = { userId: req.user._id, userName: req.user.username };
+    const actor = { userId: req.user.userId, userName: req.user.username };
     let doc;
     try {
       doc = await rollbackToBonusPolicyVersion(req.params.versionId, actor);
@@ -83,9 +83,8 @@ router.post('/merchant-bonus-policy/version/:versionId/rollback', authenticate, 
       return res.status(400).json({ success: false, message: e.message });
     }
 
-    const EnhancedAuditLog = mongoose.model('EnhancedAuditLog');
-    await EnhancedAuditLog.create({
-      performedBy: req.user._id,
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId,
       performedByName: req.user.username,
       performedByRole: 'admin',
       action: 'ROLLBACK_MERCHANT_BONUS_POLICY',

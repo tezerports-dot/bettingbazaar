@@ -8,7 +8,8 @@
  * balance, idempotency, the platform-funded-only bonus rule, the
  * distributable-revenue cap) is enforced in the service, never here.
  */
-import { express, mongoose, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import { db } from '#db';
 import {
   getTrialBalance,
   getDistributableRevenueMinor,
@@ -81,7 +82,7 @@ router.post('/revenue/bonus-pool/fund', authenticate, isAdmin, async (req, res) 
       return res.status(400).json({ success: false, message: 'amount must be a positive number of rupees.' });
     }
 
-    const actor = { userId: req.user._id, userName: req.user.username };
+    const actor = { userId: req.user.userId, userName: req.user.username };
     let result;
     try {
       result = await fundMerchantBonusPool({
@@ -94,9 +95,8 @@ router.post('/revenue/bonus-pool/fund', authenticate, isAdmin, async (req, res) 
       return res.status(400).json({ success: false, message: ruleError.message });
     }
 
-    const EnhancedAuditLog = mongoose.model('EnhancedAuditLog');
-    await EnhancedAuditLog.create({
-      performedBy: req.user._id,
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId,
       performedByName: req.user.username,
       performedByRole: 'admin',
       action: 'FUND_MERCHANT_BONUS_POOL',

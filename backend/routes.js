@@ -21,12 +21,14 @@
  *   • `/me`, `/logout`, `/health` — used by every panel on every page load.
  */
 import express     from 'express';
+import { getBalances } from './domains/wallet/walletAuthority.service.js';
+import { db } from '#db';
 // AQ-2: sign/verify via the single PASETO authority (PASETO/Ed25519, iss/aud stamped).
 import { signToken, verifyJwt, decodeTokenClaims } from './domains/identity/jwt.util.js';
 // AQ-8: password hashing authority (argon2id + bcrypt verify-fallback).
 import { hashPassword, verifyPassword } from './domains/identity/password.util.js';
-import mongoose    from 'mongoose';
 import { buildPublicKycData } from './domains/user/kycPublicData.js';
+import { isTokenRevoked, revokeToken } from '#db/repositories/identity.js';
 import { issueChallenge, verifyChallenge, CHALLENGE_AUDIENCE } from './domains/identity/twoFactorChallenge.js';
 import { verifySecondFactor, SECOND_FACTOR_RESULT } from './domains/identity/verifySecondFactor.js';
 
@@ -73,27 +75,39 @@ export async function loginHandler(req, res) {
     if (!mobile || !password)
       return res.status(400).json({ success: false, message: 'Mobile and password are required' });
 
-    const User = mongoose.model('User');
-    const user = await User.findOne({ mobile: String(mobile) }).select('+passwordHash +phantomAccess');
+    const user = await db.users.getUserByMobile(String(mobile));
     if (!user)
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
 
     if (user.status === 'BLOCKED' || user.isBlocked)
       return res.status(403).json({ success: false, message: 'Account blocked. Contact support.' });
 
-    const { valid, needsRehash } = await verifyPassword(user.passwordHash, password);
+    // The hash comes from the credentials read, which is the ONLY function that
+    // returns it. An ordinary user read cannot leak a password hash into a
+    // response body by accident, because the projection that builds a user does
+    // not contain one.
+    const credentials = await db.users.getUserCredentials(user.userId);
+    const { valid, needsRehash } = await verifyPassword(credentials?.passwordHash, password);
     if (!valid)
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
-    // AQ-8: transparently upgrade a legacy bcrypt hash to argon2id on successful
-    // login. Persisted by the existing user.save() below (lastLogin update).
+
+    // Transparently upgrade a legacy bcrypt hash to argon2id on a successful
+    // login. PERSISTED HERE, in its own statement: the version this replaced
+    // assigned it to a document and relied on a `user.save()` further down for
+    // the lastLogin update to carry it — so every path that returned before
+    // that save (a 2FA challenge, most notably) verified the old hash, computed
+    // the new one, and threw it away. An account with 2FA enabled could never
+    // be upgraded at all.
     if (needsRehash) {
-      try { user.passwordHash = await hashPassword(password); } catch { /* best-effort upgrade */ }
+      try {
+        await db.users.updateUser(user.userId, { passwordHash: await hashPassword(password) });
+      } catch { /* best-effort upgrade — never fail a valid login over it */ }
     }
 
     // Checked AFTER the password, so a wrong password and a non-staff account
     // are indistinguishable to a caller probing for which numbers are staff.
     if (!isStaffAccount(user)) {
-      console.warn(`[auth] password login refused for non-staff account ${user._id}`);
+      console.warn(`[auth] password login refused for non-staff account ${user.userId}`);
       return res.status(403).json({ success: false, message: 'This account signs in through Telegram.' });
     }
 
@@ -111,7 +125,7 @@ export async function loginHandler(req, res) {
         success: false,               // deliberately NOT a logged-in success
         twoFactorRequired: true,
         challengeToken: issueChallenge({
-          id: user._id,
+          id: user.userId,
           audience: CHALLENGE_AUDIENCE.USER,
           loginType: loginType || null,   // re-applied on redemption
         }),
@@ -144,33 +158,44 @@ export async function issueSession(user, res) {
   else if (user.isMediator)  role = 'mediator';
 
   const token = signToken(
-    { userId: user._id, mobile: user.mobile, role,
+    { userId: user.userId, mobile: user.mobile, role,
       isAdmin: user.isAdmin || false, isSubAdmin: user.isSubAdmin || false,
       isQueueManager: user.isQueueManager || false,
       permissions: user.subAdminPermissions || {} }
   );
 
-  user.lastLogin = new Date();
-  await user.save();
+  // ── BALANCES COME FROM THE WALLET ───────────────────────────────────────
+  // There is no balance column on the accounts table, by design: balances live
+  // in `wallets`, in integer paise, behind a row lock, with one writer. The
+  // payload this replaced read `user.depositBalance` and `user.winningsBalance`
+  // off the account — fields that do not exist — so every one fell through to
+  // its `|| 0` and EVERY LOGIN told the player their wallet was empty. Both the
+  // staff password path and the Telegram path mint their session here, so it
+  // was every login on the platform.
+  const [balances, lastLogin] = await Promise.all([
+    getBalances(user.userId),
+    db.users.updateUser(user.userId, { lastLogin: new Date() }),
+  ]);
 
-  const dep = user.depositBalance  || 0;
-  const win = user.winningsBalance || 0;
+  const dep = balances.depositBalance;
+  const win = balances.winningsBalance;
   const userPayload = {
-    id: user._id, _id: user._id, username: user.username, mobile: user.mobile,
+    id: user.userId, _id: user.userId, username: user.username, mobile: user.mobile,
     role, isAdmin: user.isAdmin || false, isSubAdmin: user.isSubAdmin || false,
     isQueueManager: user.isQueueManager || false, permissions: user.subAdminPermissions || {},
-    depositBalance: dep, winningsBalance: win, lockedBalance: user.lockedBalance || 0,
+    depositBalance: dep, winningsBalance: win, lockedBalance: balances.lockedBalance,
     // Sent separately, and never folded into walletBalance. The reserve is NOT
     // freely spendable — only `betReservePercent` of a stake may come from it —
     // so adding it to a headline "available" figure is what made players try
     // bets the engine then refused. GET /api/user/bet-limits publishes the true
     // ceiling, computed by the same rule the bet route enforces.
-    reserveBalance: user.reserveBalance || 0,
+    reserveBalance: balances.reserveBalance,
     walletBalance: dep + win, kycStatus: user.kycStatus,
     kycData: buildPublicKycData(user),
     bankDetails: user.bankDetails || null, profilePic: user.profilePic || '',
     status: user.status || 'ACTIVE', joinedAt: user.joinedAt || null,
-    lastLogin: user.lastLogin, phantomAccess: user.phantomAccess || 'NONE',
+    lastLogin: lastLogin?.lastLogin ?? new Date(),
+    phantomAccess: user.phantomAccess || 'NONE',
     twoFactorEnabled: user.twoFactorEnabled || false,
   };
 
@@ -199,9 +224,7 @@ export async function loginTwoFactorHandler(req, res) {
         message: 'Login session expired. Please sign in again.' });
     }
 
-    const User = mongoose.model('User');
-    const user = await User.findById(challenge.id)
-      .select('+twoFactorSecret +twoFactorLastCounter +backupCodes +phantomAccess');
+    const user = await db.users.getUser(challenge.id);
     if (!user) return res.status(401).json({ success: false, message: 'Invalid credentials' });
 
     // Re-check the same gates the password leg applied — state can change
@@ -216,11 +239,18 @@ export async function loginTwoFactorHandler(req, res) {
     if (t === 'subadmin'      && !user.isSubAdmin)     return res.status(403).json({ success: false, message: 'Sub-admin access required' });
     if (t === 'queue_manager' && !user.isQueueManager) return res.status(403).json({ success: false, message: 'Queue manager access required' });
 
-    const verdict = await verifySecondFactor(user, code);
+    // Credentials, not the account record: the 2FA columns are excluded from
+    // the general read, so passing `user` here would look exactly like "not
+    // enrolled" and admit a 2FA-protected account without a second factor.
+    const creds = await db.users.getUserCredentials(user.userId);
+    const verdict = await verifySecondFactor(creds, code, {
+      spendCounter: (counter) => db.users.spendTwoFactorCounter(user.userId, counter),
+      consumeBackupCode: (arg) => db.users.consumeTwoFactorBackupCode(user.userId, arg),
+    });
     if (!verdict.ok) {
       if (verdict.result === SECOND_FACTOR_RESULT.MALFORMED_SECRET) {
         // Nothing the user types can succeed — do not send them in circles.
-        console.error(`🚨 2FA secret undecryptable for user ${user._id} — check TOTP_ENCRYPTION_KEY`);
+        console.error(`🚨 2FA secret undecryptable for user ${user.userId} — check TOTP_ENCRYPTION_KEY`);
         return res.status(500).json({ success: false,
           message: 'Two-factor verification is misconfigured on the server. Contact support.' });
       }
@@ -228,7 +258,7 @@ export async function loginTwoFactorHandler(req, res) {
     }
 
     if (verdict.usedBackupCode) {
-      console.warn(`🔐 Recovery code used for user ${user._id} — ${verdict.backupCodesRemaining} remaining`);
+      console.warn(`🔐 Recovery code used for user ${user.userId} — ${verdict.backupCodesRemaining} remaining`);
     }
     const response = await issueSession(user, res);
     return response;
@@ -251,30 +281,33 @@ router.get('/me', async (req, res) => {
 
     const decoded = verifyJwt(token);
 
-    // Check blacklist
-    try {
-      const TokenBlacklist = mongoose.model('TokenBlacklist');
-      const bl = await TokenBlacklist.findOne({ token }).lean();
-      if (bl) return res.status(401).json({ success: false, message: 'Token invalidated. Please login again.' });
-    } catch { /* model may not exist on first boot */ }
+    // Check the revocation list. NOT wrapped in a swallow: this used to ignore
+    // its own failure and continue, which meant a revoked token was accepted
+    // whenever the check broke. isTokenRevoked fails closed for the same reason.
+    if (await isTokenRevoked(token)) {
+      return res.status(401).json({ success: false, message: 'Token invalidated. Please login again.' });
+    }
 
-    const User = mongoose.model('User');
-    const user = await User.findById(decoded.userId).select('-passwordHash');
+    // The balances come from the WALLET. The accounts table has no balance
+    // columns, so reading them there returns undefined for every one and the
+    // session-check endpoint hands the panel a zero wallet on every page load.
+    const user = await db.users.getUser(decoded.userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
     if (user.isBlocked || user.status === 'BLOCKED')
       return res.status(403).json({ success: false, message: 'Account blocked' });
 
-    const dep = user.depositBalance  || 0;
-    const win = user.winningsBalance || 0;
+    const balances = await getBalances(String(decoded.userId));
+    const dep = balances.depositBalance  || 0;
+    const win = balances.winningsBalance || 0;
     res.json({
       success: true,
       user: {
-        id: user._id, _id: user._id, username: user.username, mobile: user.mobile,
+        id: user.userId, _id: user.userId, username: user.username, mobile: user.mobile,
         role: decoded.role, isAdmin: user.isAdmin || false, isSubAdmin: user.isSubAdmin || false,
         isQueueManager: user.isQueueManager || false, permissions: user.subAdminPermissions || {},
-        depositBalance: dep, winningsBalance: win, lockedBalance: user.lockedBalance || 0,
-        reserveBalance: user.reserveBalance || 0,
+        depositBalance: dep, winningsBalance: win, lockedBalance: balances.lockedBalance || 0,
+        reserveBalance: balances.reserveBalance || 0,
         walletBalance: dep + win, kycStatus: user.kycStatus,
         kycData: buildPublicKycData(user),
         bankDetails: user.bankDetails || null, profilePic: user.profilePic || '',
@@ -293,12 +326,24 @@ router.post('/logout', async (req, res) => {
   try {
     const token = extractToken(req);
     if (token) {
+      // A failed revocation used to be swallowed, and the response still said
+      // "Logged out successfully" — so somebody signing out on a shared device
+      // was told their session was dead while the token kept working until it
+      // expired. Report the failure instead: the cookie is cleared either way,
+      // but the caller must not be told the token is dead when it is not.
       try {
-        const TokenBlacklist = mongoose.model('TokenBlacklist');
         const decoded = decodeTokenClaims(token);
         const exp = decoded?.exp ? new Date(decoded.exp * 1000) : new Date(Date.now() + 7 * 86400000);
-        await TokenBlacklist.create({ token, expiresAt: exp }).catch(() => {});
-      } catch { /* ignore */ }
+        await revokeToken(token, { ttlSeconds: Math.max(1, Math.ceil((exp - Date.now()) / 1000)) });
+      } catch (e) {
+        console.error('[auth] logout could not revoke the token:', e.message);
+        res.clearCookie('auth_token', { path: '/' });
+        return res.status(500).json({
+          success: false,
+          message: 'Signed out on this device, but the session could not be revoked. '
+                 + 'Please try again — the token is still valid until you do.',
+        });
+      }
     }
     res.clearCookie('auth_token', { path: '/' });
     res.json({ success: true, message: 'Logged out successfully' });

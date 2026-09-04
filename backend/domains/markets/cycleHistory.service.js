@@ -38,7 +38,7 @@
  * so nothing leaked, but the next field added would have had to be remembered
  * three times.
  */
-import { Cycle } from '../../models/index.js';
+import { db } from '#db';
 import { CYCLE_TYPE_VALUES, isCycleType } from './cycleTypes.js';
 import { publicCycleView } from './cyclePublicView.js';
 
@@ -75,13 +75,15 @@ export function normaliseLimit(limit, typeCount) {
 
 /**
  * The most recent resolved cycles for one type, newest first.
- * Uses the `{type, status, endTime}` index — see cycle.model.js.
+ *
+ * Filtered on the WINNER rather than the status. The query this replaced
+ * matched `status: 'RESULT_DECLARED'`, so a cycle dropped out of the history
+ * the moment its settlement finished and moved it to COMPLETED — the roadmap
+ * showed only the handful of results that happened to be mid-settlement at
+ * that instant, which on a 1-minute block is usually one row or none.
  */
 async function historyForType(type, limit) {
-  const cycles = await Cycle.find({ type, status: 'RESULT_DECLARED' })
-    .sort({ endTime: -1 })
-    .limit(limit)
-    .lean();
+  const cycles = await db.markets.resolvedCyclesWithPools(type, { limit });
   return cycles.map(publicCycleView);
 }
 

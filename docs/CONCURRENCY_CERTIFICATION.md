@@ -19,20 +19,21 @@ below as a staging runbook rather than claimed.
 | 3 | Duplicate webhook delivery (×20) | **COVERED** | same |
 | 4 | Deposits/wins interleaved with betting | **COVERED** | same |
 | 5 | Racing writes on one idempotency key | **COVERED** | same |
-| 6 | Merchant token wallet under concurrency (user↔merchant, admin↔merchant) | **COVERED** | `merchantTokenConcurrency.integration.test.js` |
+| 6 | Merchant token wallet under concurrency (user↔merchant, admin↔merchant) | **COVERED** | `npm run test:pg` |
 | 7 | Postgres killed mid-transaction | **COVERED** | adversarial run — see §E |
 | 8 | Redis killed under a live server | **COVERED** | adversarial run — see §E |
 | 9 | 100–1000 simultaneous bets, multi-instance | **NOT VERIFIED** | staging — §A |
-| 10 | Process crash between debit and ledger write (Mongo) | **NOT VERIFIED** | staging — §B |
-| 11 | MongoDB failover during settlement | **NOT VERIFIED** | staging — §C |
+| 10 | Process crash between debit and ledger write | **COVERED — structurally** | the debit and its ledger rows are one transaction; see §B |
+| 11 | Database failover during settlement | **NOT VERIFIED** | staging — §C |
 | 12 | WebSocket/SSE reconnect during settlement | **NOT VERIFIED** | staging — §D |
 | 13 | Application instance / load balancer restart | **NOT VERIFIED** | staging — §F |
 
 ### Why single-process coverage is real, but not the production shape
 
 The automated tests fire concurrent calls **inside one Node process against one
-MongoDB**. That genuinely exercises MongoDB's transaction conflict handling —
-which is where the double-charge risk lives — so it is not a simulation.
+real PostgreSQL**. That genuinely exercises row locking, the negative-balance
+guard and the unique-`tx_id` gate — which is where the double-charge risk lives —
+so it is not a simulation.
 
 What it does **not** exercise is contention across **multiple app instances**,
 which is the production shape. The invariants are the same, but the retry
@@ -59,7 +60,7 @@ look plausible in isolation; a balance the ledger cannot account for cannot.
 
 ## §A — Multi-instance bet contention (staging)
 
-**Setup.** ≥2 app instances behind the load balancer, sharing one MongoDB and
+**Setup.** ≥2 app instances behind the load balancer, sharing one PostgreSQL and
 one Redis.
 
 **Run.** `loadtest/bet-contention.js` (k6), stepping 100 → 500 → 1000 virtual
@@ -80,38 +81,47 @@ balance === startingBalance + sum(credits) - sum(debits)
 ```
 
 **Watch during:** `bb_unaudited_money_movements_total` (must stay 0),
-MongoDB `writeConflicts`, transaction abort rate, p99 bet-placement latency.
+`pg_stat_database.deadlocks`, lock-wait time on `wallets`, transaction rollback rate, p99 bet-placement latency.
 
-**Expected first ceiling:** write conflicts on the hot wallet documents. Rising
-abort rates with latency still acceptable is normal — MongoDB retries. Aborts
-climbing while throughput falls means you have found the limit.
+**Expected first ceiling:** lock waits on the hot `wallets` rows. Queueing on a
+row lock with latency still acceptable is normal — that is the lock doing its
+job. Waits climbing while throughput falls means you have found the limit. **Any
+40P01 deadlock is a bug, not a ceiling** — it means something updates a row it
+also holds `FOR SHARE`.
 
 ## §B — Crash between debit and ledger write
 
-This is the failure mode `_mongoBetStake` is exposed to by design (M-2/M-4 in
-`MONGO_MONEY_AUDIT.md`): balance and ledger are separate operations there, so a
-crash in between leaves money moved and unaudited.
+**This failure mode has been designed out, and the scenario is now a regression
+check rather than a measurement.** It used to be real: one code path moved the
+balance and wrote its ledger rows as *separate* operations, so a crash in between
+left money moved and unaudited. That path is gone. The debit, the bet row and the
+ledger rows are written in **one transaction** — they commit together or not at
+all — so there is no window in which a balance can exist that the ledger cannot
+explain.
 
-**Run.** Under steady bet load, `kill -9` one app instance. Repeat ~10 times to
-hit the window.
+**Run it anyway.** Under steady bet load, `kill -9` one app instance. Repeat ~10
+times to hit whatever window you believe remains.
 
-**Then reconcile.** `npm run reconcile:pg`, and check
-`bb_unaudited_money_movements_total`.
+**Expected.** Zero unaudited movements, every time. A transaction either
+committed or it did not. **A non-zero count is a P1 bug**, not a tolerable
+window — it would mean something writes a balance outside the transaction that
+writes its ledger, which §7 of `04-GOVERNANCE.md` forbids.
 
-**Expected.** `debitForBet` (transactional) survives cleanly — the transaction
-either committed or did not. `_mongoBetStake` may show unaudited movements; each
-one is a balance the ledger cannot explain. **Count them.** A non-zero count is
-the empirical argument for doing the M-2/M-4 work before real money, and if it
-is zero across ten crashes that is real evidence the window is narrow.
+**Counters must be reconstructed from rows, not accumulated** while you measure:
+an accumulator counts passes, not rows, and the crash you are inducing is exactly
+what loses its count while the money stays correct.
 
 ## §C — Database failover during settlement
 
-**Run.** Trigger a MongoDB primary step-down mid-settlement:
-`rs.stepDown()` on the primary while a cycle settles.
+**Run.** Trigger a PostgreSQL failover mid-settlement: promote the standby
+(`pg_ctl promote`) while a cycle settles, or restart the primary under load.
 
-**Expected.** Transactions in flight abort with a retryable error; the driver
-reconnects to the new primary. Settlement should resume or fail cleanly, never
-half-apply.
+**Expected.** Transactions in flight abort with a connection error; the pool
+reconnects. Settlement should resume or fail cleanly, never half-apply — it is
+crash-resumable and idempotent per `tx_id`, so a retry re-runs the same pass
+without paying twice. **Check afterwards that the cycle still has its winner and
+that no cycle sits past its declaration time without one** — a cycle with no
+winner is never offered for settlement, so that state stalls silently.
 
 **Assert.** Every bet in that cycle ends `WON`, `LOST` or `PENDING` — never a
 winner without a payout, and never a payout without a `win_<betId>` ledger row.
@@ -188,7 +198,7 @@ errors rather than false successes.**
 
 `redis-cli shutdown nosave` against a running server, then restart.
 
-    before   /health 503 (Mongo absent in sandbox)   /health/live 200
+    before   /health 503 (no database in sandbox)    /health/live 200
     killed   /health 503                             /health/live 200   process ALIVE
     restart  /health 503                             process ALIVE
     60 Redis error lines logged, no crash
@@ -201,16 +211,15 @@ Two properties confirmed by reading the code this exercised:
   instances an attacker gets N× the limit during an outage — a real but bounded
   degradation, and far better than unlimited login attempts.
 - **Redis state does not affect readiness.** `readinessState()` reports Redis but
-  `ready` depends only on Mongo. So a Redis outage keeps the instance in the load
+  `ready` depends only on PostgreSQL. So a Redis outage keeps the instance in the load
   balancer. That is defensible (bets still work) but it is a *choice*; if
   realtime and rate limiting matter more than availability, readiness should
   include Redis.
 
 ### Not exercisable here
 
-MongoDB restart (sandbox cannot run mongod), app-instance restart and load
-balancer failover (single process, no LB), and network partition (no second
-host). §B, §C, §D and §F below remain the staging runbook.
+Database restart under load, app-instance restart and load balancer failover
+(single process, no LB), and network partition (no second host). §B, §C, §D and §F below remain the staging runbook.
 
 ## §F — Application instance and load balancer restart (staging)
 

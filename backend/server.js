@@ -3,7 +3,6 @@
 
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import express      from 'express';
-import mongoose     from 'mongoose';
 import http         from 'http';
 import https        from 'https';
 import { Server as SocketIOServer } from 'socket.io';
@@ -11,10 +10,10 @@ import cors         from 'cors';
 import helmet       from 'helmet';
 import compression  from 'compression';
 import rateLimit    from 'express-rate-limit';
-// AQ-6 (Express 5): express-mongo-sanitize@2 reassigns the now read-only
+// AQ-6 (Express 5): the sanitizer package this replaced reassigned the now read-only
 // req.query and throws on every request under Express 5 — replaced with an
 // in-place sanitizer that behaves identically on Express 4 and 5.
-import { mongoSanitize } from './middleware/mongoSanitize.js';
+import { inputSanitize } from './middleware/inputSanitize.js';
 import dotenv       from 'dotenv';
 import path         from 'path';
 import fs           from 'fs';
@@ -27,14 +26,13 @@ dotenv.config();
 // platform safe (missing any is fatal in prod; a loud warning otherwise).
 validateEnv();
 
-// Hybrid money DB: report which store is authoritative for each money path, and
-// refuse to boot on an incoherent cutover (e.g. the accounting ledger moved to
-// Postgres while balances are still in Mongo — a settlement would then span two
-// sources of truth). Silent in the default all-Mongo posture.
-// See postgres/moneyAuthority.js and LAUNCH_READINESS.md §E.
-const moneyAuthorityCheck = reportAuthorityAtBoot();
-if (!moneyAuthorityCheck.ok) {
-  console.error('❌ Refusing to start: the money-authority configuration is inconsistent (see above).');
+// PostgreSQL is the only datastore. There is no authority to resolve, no
+// cutover to be incoherent about, and no posture to report — so the boot check
+// that did all three is gone. What remains is the one thing that was always
+// true underneath it: without a database there is nothing to serve, and the
+// process says so rather than starting and failing per request.
+if (!process.env.DATABASE_URL) {
+  console.error('❌ Refusing to start: DATABASE_URL is not set. PostgreSQL is the only datastore.');
   process.exit(1);
 }
 
@@ -43,9 +41,7 @@ const __dirname  = path.dirname(__filename);
 
 // ─── STARTUP MODULES ──────────────────────────────────────────────────────────
 import { validateEnv }        from './startup/validateEnv.js'; // AQ-1: fail-fast env gate
-import { reportAuthorityAtBoot } from './postgres/moneyAuthority.js'; // hybrid money DB: source-of-truth per path
 import { runtimeProfile }     from './startup/runtimeRole.js';
-import { connectMongoDB }     from './startup/mongoConnect.js';
 import { connectRedis }       from './startup/redisConnect.js';
 import { seedAdminAccount }   from './startup/seedAdmin.js';
 import { registerCronJobs }   from './startup/cronJobs.js';
@@ -53,9 +49,6 @@ import { attachSocketHandlers } from './startup/socketHandlers.js';
 import { cycleSnapshotPublisher } from './domains/markets/cycleSnapshotPublisher.js';
 import { initRealtimeBridge } from './startup/realtimeBridge.js'; // Phase X: multi-instance real-time
 import { registerFundingEventSubscribers } from './domains/funding/fundingEvents.js';
-
-// ─── MODELS (must load before any route that calls mongoose.model()) ──────────
-import './models/index.js';
 
 // ─── ROUTES ───────────────────────────────────────────────────────────────────
 import authRoutes, { loginHandler, loginTwoFactorHandler } from './routes.js';
@@ -116,6 +109,9 @@ import GameEngine         from './domains/markets/gameEngine.js';
 import CycleGenerator     from './domains/markets/cycleGenerator.service.js';
 import SSEManager         from './domains/notification/sseManager.service.js';
 import { initSSERoutes }  from './routes/sse.routes.js';
+import { getSystemConfig } from '#db/repositories/config.js';
+import { db } from '#db';
+import { isDatabaseReachable } from '#db/client.js';
 
 // ─── APP SETUP ────────────────────────────────────────────────────────────────
 const runtime = runtimeProfile();
@@ -235,7 +231,7 @@ app.use((req, res, next) => (_ASSET_UPLOAD_PATHS.has(req.path) ? _assetJson : _t
 // dropping cookie auth for the Authorization header everywhere, is the
 // structural answer and needs a decision spanning all three panels plus the
 // Android shell. See docs/governance/SECURITY_CODE_REVIEW_CHECKLIST.md.
-app.use(mongoSanitize);
+app.use(inputSanitize);
 app.use(cookieParser());
 app.use(requestContext); // X-6: correlation id (before the logger, so it's logged)
 app.use(tlsFingerprintDefense); // JA3/TLS fingerprint policy from admin-managed SystemConfig
@@ -287,12 +283,12 @@ const isSafeAppAssetSlot = (slot) => /^[a-z0-9][a-z0-9-]*\.png$/.test(slot);
 app.get('/app-assets/:name', async (req, res, next) => {
   try {
     if (!isSafeAppAssetSlot(req.params.name)) return res.sendStatus(404);
-    const asset = await mongoose.model('AppAsset').findOne({
-      slot: req.params.name,
-      storage: 'LOCAL',
-    }).select('contentType').lean();
+    const asset = await db.content.getAsset(req.params.name);
     const filePath = path.join(appAssetsDir, req.params.name);
-    if (!asset || !asset.contentType) return next();
+    // Only a LOCAL asset is served from this directory. One stored on the CDN
+    // has its bytes somewhere else entirely, and sending a local file under its
+    // content type would serve whatever happened to be left on this disk.
+    if (!asset || asset.storage !== 'LOCAL' || !asset.contentType) return next();
     res.type(asset.contentType);
     return res.sendFile(filePath, (error) => {
       if (error?.code === 'ENOENT') return next();
@@ -374,18 +370,23 @@ if (fs.existsSync(merchantDistPath)) {
 // ─── HEALTH / PROBES (AQ-4) ─────────────────────────────────────────────────
 // Kubernetes-correct probe split (also drives Railway/Docker healthchecks):
 //   LIVENESS  = "is the process alive?" — NEVER depends on external deps. A
-//               Mongo outage must NOT make the orchestrator kill and restart
+//               database outage must NOT make the orchestrator kill and restart
 //               every pod (that turns a dependency blip into a full outage).
 //   READINESS = "should this instance receive traffic?" — deps up AND not
 //               draining. Flipping this to 503 on SIGTERM is how we bleed
 //               traffic off an instance before it stops accepting connections.
 let shuttingDown = false;
 
-function readinessState() {
-  const mongoUp = mongoose.connection.readyState === 1;
+async function readinessState() {
+  // A REAL round trip, not a connection-state flag. A pool with an open socket
+  // to a database that has stopped answering reports "connected" — and a
+  // readiness probe that stays green through an outage is worse than no probe,
+  // because it keeps the load balancer sending traffic to an instance that
+  // cannot serve it.
+  const databaseUp = await isDatabaseReachable();
   return {
-    ready: mongoUp && !shuttingDown,
-    mongodb: mongoUp ? 'connected' : 'disconnected',
+    ready: databaseUp && !shuttingDown,
+    database: databaseUp ? 'connected' : 'disconnected',
     redis: global.redis ? 'connected' : 'unavailable',
     draining: shuttingDown,
     uptime: process.uptime(),
@@ -399,15 +400,19 @@ app.get('/health/live', (req, res) => {
   res.status(shuttingDown ? 503 : 200).json({ status: shuttingDown ? 'draining' : 'alive', uptime: process.uptime() });
 });
 // Readiness — deps + drain aware.
-app.get('/health/ready', (req, res) => {
-  const s = readinessState();
+app.get('/health/ready', async (req, res) => {
+  // AWAITED. The probe is a real round trip now, and calling it without
+  // awaiting returns a pending Promise whose `.ready` is undefined — so every
+  // readiness check would answer 503 and the orchestrator would take every
+  // instance out of rotation.
+  const s = await readinessState();
   res.status(s.ready ? 200 : 503).json({ status: s.ready ? 'ready' : 'not-ready', ...s });
 });
 // Back-compat: /health and /api/v1/health keep readiness semantics (Railway's
 // healthcheckPath and the Docker HEALTHCHECK point here). Now also 503 while
 // draining so deploys route away from an instance that's shutting down.
-function legacyHealth(req, res) {
-  const s = readinessState();
+async function legacyHealth(req, res) {
+  const s = await readinessState();
   res.status(s.ready ? 200 : 503).json({ status: s.ready ? 'healthy' : 'unhealthy', ...s });
 }
 app.get('/health', legacyHealth);
@@ -453,16 +458,11 @@ app.use('/api/admin', adminRoutes);   // ← now routes/admin/index.js (13 sub-r
 const errorReportLimiter = rateLimit({ windowMs: 60000, max: 10, message: { success: false, message: 'Too many error reports' } });
 app.post('/api/internal/error-report', errorReportLimiter, async (req, res) => {
   try {
-    const FrontendErrorReport = mongoose.model('FrontendErrorReport'); // LOW-06: model defined in backend/models/payment.model.js
     const { message, stack, component, url, panel } = req.body;
     if (!message) return res.status(400).json({ success: false, message: 'message required' });
-    await FrontendErrorReport.create({
-      message:   String(message).slice(0, 2000),
-      stack:     stack     ? String(stack).slice(0, 10000)    : undefined,
-      component: component ? String(component).slice(0, 5000) : undefined,
-      url:       url       ? String(url).slice(0, 500)        : undefined,
-      panel:     ['user', 'merchant'].includes(panel) ? panel : 'unknown',
-      ts:        new Date(),
+    await db.operations.recordFrontendError({
+      message, stack, component, url,
+      panel: ['user', 'merchant'].includes(panel) ? panel : 'unknown',
     });
     res.json({ success: true });
   } catch (err) {
@@ -473,16 +473,14 @@ app.post('/api/internal/error-report', errorReportLimiter, async (req, res) => {
 
 app.get('/api/download/android', async (req, res) => {
   try {
-    const SystemConfig = mongoose.model('SystemConfig');
-    const config = await SystemConfig.findOne({ key: 'main' }).lean();
+    const config = await getSystemConfig();
     if (config?.androidUrl) return res.redirect(302, config.androidUrl);
     res.status(404).json({ success: false, message: 'APK not yet available.' });
   } catch { res.status(500).json({ success: false, message: 'Server error' }); }
 });
 app.get('/api/download/ios', async (req, res) => {
   try {
-    const SystemConfig = mongoose.model('SystemConfig');
-    const config = await SystemConfig.findOne({ key: 'main' }).lean();
+    const config = await getSystemConfig();
     if (config?.iosUrl) return res.redirect(302, config.iosUrl);
     res.status(404).json({ success: false, message: 'Use Safari → Add to Home Screen for iOS.' });
   } catch { res.status(500).json({ success: false, message: 'Server error' }); }
@@ -585,28 +583,27 @@ app.use(errorHandler);
 app.set('io', io);
 
 // ─── START ────────────────────────────────────────────────────────────────────
-// Open the listener FIRST, before the datastores are up.
+// Open the listener FIRST, before the datastore is up.
 //
 // This used to live inside the .then() of the Promise.allSettled below, so the
-// port did not open until connectMongoDB() settled. That function retries 10
-// times with serverSelectionTimeoutMS=30000 and a 5s pause between attempts, so
-// a MongoDB that is merely slow to accept connections — a service still
-// starting, the normal case on a fresh Railway/compose deploy — kept the
-// process from binding for up to ~5.75 minutes. Every probe in that window got
-// ECONNREFUSED rather than an answer, which is precisely what Railway's
-// healthcheck (healthcheckPath=/health, healthcheckTimeout=60) reads as "this
-// deploy is dead", and restartPolicyMaxRetries then repeats the whole cycle.
+// port did not open until the database connection settled. A database that is
+// merely slow to accept connections — a service still starting, the normal case
+// on a fresh Railway/compose deploy — kept the process from binding for minutes.
+// Every probe in that window got ECONNREFUSED rather than an answer, which is
+// precisely what Railway's healthcheck (healthcheckPath=/health,
+// healthcheckTimeout=60) reads as "this deploy is dead", and
+// restartPolicyMaxRetries then repeats the whole cycle.
 //
 // The readiness endpoints above were already written for this: /health and
-// /health/ready return 503 with `mongodb: 'disconnected'` until the connection
-// is live. They just could not be reached, because nothing was listening. With
-// the listener open from the start, an orchestrator gets an honest
-// "not ready yet" it can wait on, and a real answer the moment Mongo attaches.
+// /health/ready return 503 until the connection is live. They just could not be
+// reached, because nothing was listening. With the listener open from the start,
+// an orchestrator gets an honest "not ready yet" it can wait on, and a real
+// answer the moment the database attaches.
 //
-// Serving before Mongo is up is safe: readiness fails, so a load balancer does
-// not route to this instance, and any request that does arrive fails the same
-// way it would have anyway. Nothing below depends on a datastore — the cron
-// jobs and event subscribers that DO are still registered in the .then().
+// Serving before the database is up is safe: readiness fails, so a load balancer
+// does not route to this instance, and any request that does arrive fails the
+// same way it would have anyway. Nothing below depends on the datastore — the
+// cron jobs and event subscribers that DO are still registered in the .then().
 activeListener = listenWithOptionalProxyProtocol(server, {
   port: PORT,
   host: '0.0.0.0',
@@ -636,22 +633,25 @@ activeListener = listenWithOptionalProxyProtocol(server, {
 });
 
 Promise.allSettled([
-  // Load the TLS policy before opening the listener. A failed initial read must
-  // fail startup rather than serving requests with the log-only defaults.
-  connectMongoDB()
+  // PostgreSQL is the only datastore, so applying its schema is the FIRST thing
+  // that must succeed and everything else in this chain depends on it. It is
+  // deliberately NOT wrapped in a .catch that logs and continues: this used to
+  // be a side entry that swallowed its own failure, because the platform still
+  // had a second store to fall back on. It has none. A failed schema apply now
+  // fails startup, which is the only honest outcome — the alternative is a
+  // process that binds a port, passes nothing, and serves every request an
+  // error about a table that was never created.
+  import('#db/client.js')
+    .then((m) => m.applySchema())
     .then(() => seedAdminAccount())
     .then(() => seedGameRegistry())
     .then(() => startTlsFingerprintDefenseConfigRefresh()),
   connectRedis().then(r => { global.redis = r; }),
-  // Hybrid money DB (plan step 1): apply the Postgres schema when
-  // DATABASE_URL is set; silent no-op otherwise. Dual-write hooks in the
-  // money models activate on the same signal.
-  import('./postgres/pgClient.js').then(m => m.applySchema()).catch(e => console.error('[pg] schema apply failed:', e.message)),
   // CAP-71: RAG vector store. Apply the pgvector schema ONLY when RAG retrieval
   // is actually configured (DATABASE_URL + embedding provider key) — so a
   // money-only Postgres without the pgvector extension is never touched.
   import('./domains/support/ragService.js')
-    .then(m => (m.retrievalReady() ? import('./domains/support/ragStore.js').then(s => s.initSchema()) : null))
+    .then(m => (m.retrievalReady() ? import('#db/repositories/supportDocuments.js').then(s => s.initSchema()) : null))
     .catch(e => console.error('[rag] schema init skipped:', e.message)),
   // CAP-74: attach the external event backbone (Kafka) when KAFKA_BROKERS is set.
   // No-op otherwise — the monolith keeps using the in-process bus only.
@@ -661,7 +661,9 @@ Promise.allSettled([
     // The listener is already open by this point, so failing startup has to
     // close it — leaving it bound would keep the process alive and advertise a
     // port that will never become ready.
-    console.error('❌ Startup failed while loading TLS fingerprint policy:', results[0].reason);
+    // results[0] is the PostgreSQL chain: schema, admin seed, game registry,
+    // TLS policy. Any of them failing means this instance cannot serve.
+    console.error('❌ Startup failed while preparing PostgreSQL:', results[0].reason);
     process.exitCode = 1;
     try { activeListener?.close(); } catch { /* nothing to close */ }
     return;
@@ -686,10 +688,9 @@ async function closeResources() {
   await Promise.allSettled([
     import('./services/jobQueue.service.js').then(m => m.closeJobQueue()),      // 17+56: finish/close queue
     import('./services/eventBackbone.js').then(m => m.resetBackbone()),         // CAP-74: disconnect Kafka producer
-    import('./postgres/pgClient.js').then(m => m.closePg()),                    // hybrid money DB: drain PG pool
+    import('#db/client.js').then(m => m.closePg()),                    // hybrid money DB: drain PG pool
     import('./services/workerPool.service.js').then(m => m.closeWorkerPool()),  // item 5: terminate CPU threads
   ]);
-  try { await mongoose.connection.close(false); } catch (_) {}
   try { global.redis?.disconnect?.(); } catch (_) {}
 }
 

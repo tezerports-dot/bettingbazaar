@@ -9,7 +9,7 @@
 //   { code, label, active, send({ userId, type, title, message, actionUrl,
 //     actionLabel, relatedId, relatedType, expiresAt }) → per-channel result }
 
-import mongoose from 'mongoose';
+import { db } from '#db';
 import { networkClient } from '../../services/networkClient.js';
 
 // ── IN_APP — live: persists a Notification document (the existing bell-icon
@@ -20,11 +20,16 @@ const inApp = {
   label: 'In-app notification inbox',
   active: true,
   async send({ userId, type = 'INFO', title, message, actionUrl, actionLabel, relatedId, relatedType, expiresAt }) {
-    const Notification = mongoose.model('Notification');
-    const doc = await Notification.create({
-      userId, type, title, message, actionUrl, actionLabel, relatedId, relatedType, expiresAt,
+    // The communication domain speaks `type`; the notifications repository
+    // speaks `kind`. This seam translates. It used to pass `type` straight
+    // through, so `notify` never saw a `kind`, defaulted it to 'INFO', and every
+    // notification — WARNING, ALERT, whatever — was stored as INFO. And the id
+    // is `doc.id`: `toNotification` returns `id`, not the document store's
+    // `_id`, so `doc._id` was undefined and the caller got id "undefined".
+    const doc = await db.engagement.notify({
+      userId, kind: type, title, message, actionUrl, actionLabel, relatedId, relatedType, expiresAt,
     });
-    return { delivered: true, id: String(doc._id) };
+    return { delivered: true, id: String(doc.id) };
   },
 };
 
@@ -76,8 +81,7 @@ const sms = {
     if (!smsConfigured()) {
       return { delivered: false, reason: 'SMS gateway not configured (SMS_API_URL env).' };
     }
-    const User = mongoose.model('User');
-    const user = await User.findById(userId).select('mobile').lean();
+    const user = await db.users.getUser(userId);
     if (!user?.mobile) return { delivered: false, reason: 'User has no mobile on file.' };
 
     const text = [title, message].filter(Boolean).join(': ').slice(0, 480);

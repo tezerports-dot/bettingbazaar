@@ -8,19 +8,18 @@
 // Mattermost, or any generic HTTP collector works. Fire-and-forget: an alert
 // failure must NEVER break the money path that raised it. Per-key cooldown
 // stops a crash-looping job from flooding the channel.
-import mongoose from 'mongoose';
 // Item 3 (2026-07-13): transient webhook failures (429/503, network blips) get
 // a couple of JITTERED retries so a briefly-flaky collector still receives the
 // page — full jitter so many instances alerting at once don't retry in lockstep.
 import { fetchWithRetry } from '../utils/retry.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 const COOLDOWN_MS = 10 * 60 * 1000; // same alert key at most once per 10 min
 const lastSent = new Map();         // key -> ts (per-instance; duplicates across instances are acceptable for v1)
 
 async function getWebhookUrl() {
   try {
-    const SystemConfig = mongoose.model('SystemConfig');
-    const cfg = await SystemConfig.findOne({ key: 'main' }).select('alertWebhookUrl').lean();
+    const cfg = await getSystemConfig();
     if (cfg?.alertWebhookUrl) return cfg.alertWebhookUrl;
   } catch { /* fall through to env */ }
   return process.env.ALERT_WEBHOOK_URL || '';
