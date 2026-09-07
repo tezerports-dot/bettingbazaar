@@ -53,6 +53,7 @@ import { buildPublicKycData } from './kycPublicData.js';
 import { publicCycleView } from '../markets/cyclePublicView.js';
 import { fetchCycleHistory } from '../markets/cycleHistory.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
+import { systemConfigPayload } from '../configuration/systemConfigPayload.js';
 
 const router = express.Router();
 
@@ -478,35 +479,11 @@ router.get('/user/:userId/transactions', authenticate, async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/v1/system/config', async (req, res) => {
   try {
-    const config = await getSystemConfig();
-
-    res.json({
-      success: true,
-      config: {
-        // Bet limits — stored in betLimits subdoc, NOT config.value
-        minBet:           config?.betLimits?.thirtyMin?.min || 10,
-        maxBet:           config?.betLimits?.thirtyMin?.max || 100000,
-        maxFullDayBet:    config?.betLimits?.fullDay?.max   || 500000,
-        // Deposit/withdrawal limits — top-level fields on SystemConfig
-        minDeposit:       config?.minDeposit       || 100,
-        maxDeposit:       config?.maxDeposit       || 50000,
-        minWithdrawal:    config?.minWithdrawal    || 500  /* schema default — was incorrectly 100 (GOVERNANCE.md M-5) */,
-        maxWithdrawal:    config?.maxWithdrawal    || 50000,
-        // Fixed 1:1 conversion (Phase 006 flattening, 2026-07-08)
-        tokenBuyRate:     1,
-        tokenSellRate:    1,
-        // Admin-owned (Business Config Audit 2026-07-11) — was hardcoded 2.
-        payoutMultiplier: config?.payoutMultiplier ?? 2,
-        maintenanceMode:  config?.maintenanceMode  || false,
-        maintenanceMessage: config?.maintenanceMessage || '',
-        // Footer navigation (2026-07-13) — schema default: the historical five tabs
-        footerPages:      config?.footerPages?.length ? config.footerPages : ['home', 'results', 'winners', 'promo', 'profile'],
-        minVersion:       config?.minVersion       || '1.0.0',
-        latestVersion:    config?.latestVersion    || '1.0.0',
-        kycRequired:      config?.kycRequired      !== false,
-        registrationEnabled: config?.registrationEnabled !== false,
-      }
-    });
+    // One owner for this payload — see domains/configuration/systemConfigPayload.js.
+    // The literal that used to sit here was a copy of the socket's, written with
+    // `||` where that one used `??`, so an operator who set a limit to 0 ("no
+    // minimum") was served the default over HTTP and the real 0 over the socket.
+    res.json({ success: true, config: systemConfigPayload(await getSystemConfig()) });
   } catch (error) {
     console.error('System config error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch config' });

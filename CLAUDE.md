@@ -169,6 +169,78 @@ pay again.
 
 ---
 
+## Shipped means reachable
+
+A backend that works and a panel that calls it are two different facts, and this
+repository has repeatedly had one without the other. Every check here passed
+while five admin buttons hit paths the server has never served: the request
+404'd, the component caught it, and the screen rendered its empty state —
+indistinguishable from "no data". Nobody saw a stack trace. Nobody saw a red
+test. The dispute queue was permanently empty, release and refund did nothing,
+merchant scoring silently failed while reporting that the *limits* had failed,
+and every merchant's order history read "No orders found" however busy they were.
+
+A route test proves a handler works. It can never prove anything calls it.
+
+1. **A panel call that resolves to no route is a live defect**, not a loose end.
+   `npm run check:ui-coverage` fails the build on one. Three of the five above
+   shared a single cause — handlers moved out from under a `/queue` prefix and
+   the panel was never updated — so this is drift, and drift recurs.
+2. **A backend feature with no UI is not shipped.** It is built, tested, merged
+   and unreachable. `check:ui-coverage --unused` lists these; the list is
+   triage, not failure, because webhooks and SSE belong on it. Anything else on
+   it is either work someone forgot to finish or code to delete.
+3. **Do not describe a screen as working without following its calls to a
+   route.** Reading the handler is not enough. Reading the component is not
+   enough. The two must be checked against each other.
+
+## One owner per value, mechanically
+
+`04-GOVERNANCE.md` §1 has always said derive, do not duplicate. Say it here in
+the form it keeps being violated: **the same payload assembled in two places
+drifts, and it drifts silently.**
+
+The system-config payload was built twice — once in `socketHandlers.js`, once in
+`GET /api/v1/system/config` — with independently written fallbacks. They had
+already diverged: the socket carried `webUrl`/`androidUrl`/`iosUrl`, the HTTP
+route carried `kycRequired`/`registrationEnabled`, and a client got a different
+answer about the platform depending on which one it happened to ask.
+
+A value an operator can edit is only config if **every** consumer reads the same
+owner. Two builders with matching defaults are not one owner; they are one bug
+waiting for the next field.
+
+## No path that only works on one machine
+
+`verify-ui-coverage.mjs` shipped with `const ROOT = '/home/user/bettingbazaar'`
+— the author's own checkout, baked in. It passed locally and could not run
+anywhere else; CI died at the first `readFileSync`. Derive a root from
+`import.meta.url`, read a location from configuration, and never write an
+absolute path that assumes a particular machine. Running a script from the repo
+root is not evidence it runs — run it from somewhere else.
+
+## Do not call it perfect
+
+`Do not claim readiness` above governs the money path. This governs everything
+else, and it is the rule most often broken here.
+
+**"Clean", "complete", "perfect", "nothing missing" and "production-ready" are
+claims about evidence, not impressions.** Every one of them requires naming the
+gate that was run and the number it printed. A green CI run is not that claim:
+CI was green on every commit while all five dead buttons were live, because
+nothing was looking for them.
+
+When asked whether something is finished, answer with what was checked and what
+was **not**. An honest "I verified the handlers; I never checked that a button
+calls them" is worth more than a confident summary, and this session is the
+proof: that exact unasked question was hiding five defects, a duplicated config
+payload, and 71 endpoints no screen reaches.
+
+Absence of a failing check is not evidence of correctness when no check covers
+the thing being claimed.
+
+---
+
 ## Commands
 
 | Command | What it proves |
@@ -177,4 +249,6 @@ pay again.
 | `npm run test:unit` | Money arithmetic, risk validation, cycle types, SSE, winners. |
 | `npm run test:pg` | Money-path behaviour against a real PostgreSQL. |
 | `npm run check:deps` | No circular imports, no governance boundary violations. |
+| `npm run check:ui-coverage` | Every panel call reaches a real route. `--unused` lists endpoints no screen calls. |
+| `npm run check:db-boundary` | No SQL, driver or relative reach past `#db`. |
 | `npm run verify:capabilities` | Every claimed capability has its evidence on disk. |

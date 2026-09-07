@@ -7,6 +7,7 @@ import { verifyJwt } from '../domains/identity/jwt.util.js';
 import { cycleSnapshotPublisher } from '../domains/markets/cycleSnapshotPublisher.js';
 import { fetchCycleHistory } from '../domains/markets/cycleHistory.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
+import { systemConfigPayload, systemConfigFallback } from '../domains/configuration/systemConfigPayload.js';
 
 // Public cycle-room id guard: the room name is client-supplied, so bound it to
 // the shape a real cycleId has (no auth needed — pool totals are public — but a
@@ -25,38 +26,19 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
     // then told one number while the engine uses another.
     const sendSystemConfig = async () => {
       try {
-        const cfg   = await getSystemConfig();
-        const configData = {
-          minBet:             cfg?.betLimits?.thirtyMin?.min  ?? 10,      // schema default: 10
-          maxBet:             cfg?.betLimits?.thirtyMin?.max  ?? 100000,  // schema default: 100000
-          maxFullDayBet:      cfg?.betLimits?.fullDay?.max    ?? 500000,  // schema default: 500000
-          minDeposit:         cfg?.minDeposit                 ?? 100,     // schema default: 100
-          maxDeposit:         cfg?.maxDeposit                 ?? 50000,   // schema default: 50000
-          minWithdrawal:      cfg?.minWithdrawal              ?? 500,     // schema default: 500
-          maxWithdrawal:      cfg?.maxWithdrawal              ?? 50000,   // schema default: 50000
-          // payoutMultiplier from admin-editable config; fallback = GAME_CORE.ts PAYOUT.MULTIPLIER = 2
-          payoutMultiplier:   cfg?.payoutMultiplier           ?? 2,
-          tokenBuyRate:       1, // fixed 1:1 conversion (Phase 006 flattening, 2026-07-08)
-          tokenSellRate:      1, // fixed 1:1 conversion
-          maintenanceMode:    cfg?.maintenanceMode            ?? false,
-          maintenanceMessage: cfg?.maintenanceMessage         ?? '',
-          // Footer navigation (2026-07-13) — schema default: the historical five tabs
-          footerPages:        cfg?.footerPages?.length ? cfg.footerPages : ['home', 'results', 'winners', 'promo', 'profile'],
-          minVersion:         cfg?.minVersion                 ?? '1.0.0',
-          latestVersion:      cfg?.latestVersion              ?? '1.0.0',
-          webUrl:             cfg?.webUrl                     ?? '',
-          androidUrl:         cfg?.androidUrl                 ?? '',
-          iosUrl:             cfg?.iosUrl                     ?? '',
-        };
+        // One owner for this payload. The twenty-field literal that used to sit
+        // here was a copy of the one in GET /api/v1/system/config, and the two
+        // had already drifted — this one carried webUrl/androidUrl/iosUrl, that
+        // one carried kycRequired/registrationEnabled, so what a client learned
+        // about the platform depended on the transport it asked over.
+        const configData = systemConfigPayload(await getSystemConfig());
         global.cachedSystemConfig = configData;
         socket.emit('system_config', configData);
       } catch (e) {
-        // Minimal safe fallback matching schema defaults (no independently chosen numbers)
-        socket.emit('system_config', {
-          maintenanceMode: false, maintenanceMessage: '',
-          minVersion: '1.0.0', latestVersion: '1.0.0',
-          minBet: 10, maxBet: 100000, payoutMultiplier: 2,
-        });
+        // The same builder with no row, not a hand-written subset: the seven
+        // fields this used to emit told a client that connected during a
+        // database blip that there were no deposit limits and no footer.
+        socket.emit('system_config', systemConfigFallback());
       }
     };
 
