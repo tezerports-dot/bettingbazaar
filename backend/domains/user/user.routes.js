@@ -767,6 +767,84 @@ router.get('/v1/token/rates', async (req, res) => {
   }
 });
 
+// ── Notification inbox ──────────────────────────────────────────────────────
+/**
+ * The read side of a table the platform was already writing to.
+ *
+ * `notify()` persists a row on real events — an admin blocking or unblocking an
+ * account is the live one — and the IN_APP channel's comment described it as
+ * going to "the existing bell-icon inbox all three panels already read". No
+ * panel read it. There was no route to read it THROUGH. So a player was blocked,
+ * the system carefully recorded the explanation meant for them, and they could
+ * never see it: they simply found themselves locked out.
+ *
+ * Ownership is in the WHERE clause of every one of these, not in a check
+ * afterwards — `listNotifications`, `unreadCount` and `markRead` all take the
+ * user id and scope by it, so a caller cannot read or acknowledge somebody
+ * else's notification even by id.
+ */
+router.get('/user/notifications', authenticate, async (req, res) => {
+  try {
+    const unreadOnly = String(req.query.unreadOnly || '') === 'true';
+    // The repository clamps this to 1..200; parsing here keeps a bad query
+    // string from reaching it as NaN.
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+    const [notifications, unread] = await Promise.all([
+      db.engagement.listNotifications(String(req.user.userId), { unreadOnly, limit }),
+      db.engagement.unreadCount(String(req.user.userId)),
+    ]);
+    res.json({ success: true, notifications, unreadCount: unread });
+  } catch (err) {
+    console.error('GET /user/notifications error:', err);
+    res.status(500).json({ success: false, message: 'Failed to load notifications' });
+  }
+});
+
+/**
+ * Just the badge number.
+ *
+ * Separate from the list because a bell icon polls this and rendering the inbox
+ * is the rarer act — asking for fifty rows to show one integer is the kind of
+ * read that looks free until there are players.
+ */
+router.get('/user/notifications/unread-count', authenticate, async (req, res) => {
+  try {
+    res.json({ success: true, unreadCount: await db.engagement.unreadCount(String(req.user.userId)) });
+  } catch (err) {
+    console.error('GET /user/notifications/unread-count error:', err);
+    res.status(500).json({ success: false, message: 'Failed to load unread count' });
+  }
+});
+
+/**
+ * Acknowledge. `ids` marks those; omitting it marks everything unread.
+ *
+ * Returns how many rows actually changed, so a caller can tell "marked four"
+ * from "those were already read" — and so an id belonging to somebody else
+ * reports 0 rather than succeeding silently.
+ */
+router.post('/user/notifications/read', authenticate, async (req, res) => {
+  try {
+    const raw = req.body?.ids;
+    if (raw !== undefined && !Array.isArray(raw)) {
+      return res.status(400).json({ success: false, message: 'ids must be an array when provided' });
+    }
+    const ids = Array.isArray(raw)
+      ? raw.map(Number).filter((n) => Number.isInteger(n) && n > 0)
+      : null;
+    // An array that contained nothing usable marks nothing, and needs no guard
+    // here to do it: `markRead` takes the ids branch for ANY array — `[]`
+    // included — so the statement becomes `id = ANY('{}')` and matches no row.
+    // Only a null `ids` means "everything unread". An early return for the
+    // empty case would be a second place stating the same rule.
+    const marked = await db.engagement.markRead(String(req.user.userId), { ids });
+    res.json({ success: true, marked });
+  } catch (err) {
+    console.error('POST /user/notifications/read error:', err);
+    res.status(500).json({ success: false, message: 'Failed to mark notifications read' });
+  }
+});
+
 export default router;
 
 // ─────────────────────────────────────────────────────────────────────────────

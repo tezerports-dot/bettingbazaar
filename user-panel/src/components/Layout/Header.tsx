@@ -8,6 +8,7 @@
  */
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import React, { useState } from 'react';
+import NotificationBell from './NotificationBell';
 import { useGame } from '../../services/GameContext';
 import AuthModal from '../Modals/AuthModal';
 import ShareModal from '../Modals/ShareModal';
@@ -146,6 +147,12 @@ const Header: React.FC<HeaderProps> = ({ onAuthRequired }) => {
           }
         </div>
 
+        {/* Notification inbox — the read side of rows the platform was already
+            writing. Sits next to the menu because an account notice is chrome,
+            not a page. */}
+        <div className="flex items-center">
+          <NotificationBell isAuthenticated={isAuthenticated} />
+
         {/* Hamburger */}
         <button onClick={toggleMenu} className="w-10 h-10 flex items-center justify-center text-[#EAEAEA] hover:text-[#D4AF37] transition-colors">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
@@ -155,6 +162,7 @@ const Header: React.FC<HeaderProps> = ({ onAuthRequired }) => {
             }
           </svg>
         </button>
+        </div>
       </header>
 
       {/* Overlay */}
