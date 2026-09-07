@@ -1,0 +1,60 @@
+# Docker image verification — the one thing CI has never checked.
+#
+# Every job in ci.yml tests the SOURCE. None of them build the image, so every
+# claim about the Dockerfile was read off it rather than observed. Twice that
+# reading was wrong:
+#
+#   - `COPY database ./database` was missing, so every `import { db } from '#db'`
+#     would have thrown at startup — on the first request of a production
+#     deploy, not in any test.
+#   - The image carried a PostgreSQL 15 client against an 18 server. pg_dump
+#     refuses that pairing, backup.service.js catches the refusal and logs a
+#     skip, so the nightly backup would have quietly stopped existing.
+#
+# scripts/verify-docker.sh reads nothing: it builds the image cold, stands up a
+# real PostgreSQL 18 and Redis beside it, boots the container with every
+# REQUIRED name from backend/startup/validateEnv.js at production strength, and
+# interrogates what is actually running. This workflow is the button that runs
+# it, on a runner that has a Docker daemon and can reach Docker Hub.
+#
+# MANUAL ON PURPOSE. A --no-cache build of three frontends is ~15 minutes. That
+# is a release gate — run it before a deploy, or after touching the Dockerfile,
+# the data layer's location, or the base image — not a tax on every push.
+#
+#   Actions tab → "Docker image verification" → "Run workflow"
+#
+# The job's own exit code is the verdict: the script exits non-zero if any check
+# failed, so a green run means PASS and nothing else.
+
+name: Docker image verification
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify-image:
+    runs-on: ubuntu-latest
+    # A cold build of three frontends plus the boot probes. Generous, because a
+    # timeout kills the run without a verdict, which is the one useless outcome.
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # The runner ships ~25 GB free; this build wants the image layers, three
+      # node_modules trees inside the builder stage, and a PostgreSQL 18
+      # sidecar. Dropping toolchains no step here uses buys ~10 GB in seconds
+      # and turns a plausible disk failure into a non-event.
+      - name: Reclaim runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - name: Show the daemon this runner provides
+        run: docker version
+
+      # Everything is in the script, deliberately: the same command a person
+      # runs on a laptop is the command CI runs, so a green button here and a
+      # green run there mean the same thing.
+      - name: Build the image and interrogate the running container
+        run: bash scripts/verify-docker.sh
