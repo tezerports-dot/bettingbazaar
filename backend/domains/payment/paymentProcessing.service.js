@@ -46,7 +46,6 @@ import {
   cancelOrder as cancelOrderState,
 } from './orderLifecycle.service.js';
 import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
-import cdnService from '../../services/cdn.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 
 // ─── Shared admin SSE payload ─────────────────────────────────────────────────
@@ -444,9 +443,30 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// markOrderPaid  — user submits UTR + screenshot (DEPOSIT only)
+// markOrderPaid  — user submits the UTR (DEPOSIT only)
+//
+// ── The screenshot is gone, deliberately ─────────────────────────────────────
+// A screenshot proved nothing. It is trivially forged, nobody's approval
+// depended on it, and the merchant confirms against their own bank statement —
+// the UTR is what they match on, and it is the only piece of this submission
+// the platform can actually verify.
+//
+// It was not free, either. It is a user-supplied image, uploaded to durable
+// storage, retained, and carrying whatever else happened to be on the player's
+// screen. Collecting an identifying artefact that no decision reads is exactly
+// the data a platform should not hold.
+//
+// What did the real work is still here and unchanged: `markUTRAsUsed` claims
+// the reference in ONE statement, so the same UTR cannot be spent on two
+// orders, and the state transition is the gate for the response.
+//
+// The `proofScreenshot` COLUMN stays: orders that already carry an image still
+// display it and the retention job still expires it. Only the collection of new
+// ones is gone, and with it the presign route that produced the keys — so an
+// optional key parameter here would be a parameter nothing on the platform can
+// now supply.
 // ═════════════════════════════════════════════════════════════════════════════
-export async function markOrderPaid(userId, orderId, utrNumber, proofFileKey, proofCdnUrl = null) {
+export async function markOrderPaid(userId, orderId, utrNumber) {
   const order = await db.orders.getOrderRecord(orderId);
   if (!order) throw Object.assign(new Error('Order not found'), { status: 404 });
 
@@ -461,13 +481,6 @@ export async function markOrderPaid(userId, orderId, utrNumber, proofFileKey, pr
   if (normalizedUTR.length < 12)
     throw Object.assign(new Error('UTR must be at least 12 characters'), { status: 400 });
 
-  const verifiedProof = await cdnService.verifyUploadedObject({
-    fileKey: proofFileKey.trim(),
-    cdnUrl: proofCdnUrl || undefined,
-    expectedUserId: userId.toString(),
-    expectedOrderId: order.orderId,
-    expectedCategory: 'payment-proof',
-  });
 
   // The claim decides in ONE statement. It used to be a check followed by an
   // insert, so two submissions of the same reference arriving together both
@@ -496,7 +509,6 @@ export async function markOrderPaid(userId, orderId, utrNumber, proofFileKey, pr
     expectFrom: ['ASSIGNED', 'PROCESSING'],
     set: {
       utrNumber:       normalizedUTR,
-      proofScreenshot: verifiedProof.cdnUrl,
       paidAt:          new Date(),
     },
   });
@@ -511,7 +523,6 @@ export async function markOrderPaid(userId, orderId, utrNumber, proofFileKey, pr
   const paidOrder = paid.order ?? order;
   order.status          = 'PAID';
   order.utrNumber       = normalizedUTR;
-  order.proofScreenshot = verifiedProof.cdnUrl;
   order.paidAt          = paidOrder.paidAt;
 
   if (order.merchantId) {
@@ -520,7 +531,9 @@ export async function markOrderPaid(userId, orderId, utrNumber, proofFileKey, pr
       _id:             order.orderId,
       status:          'PAID',
       utrNumber:       normalizedUTR,
-      proofScreenshot: order.proofScreenshot,
+      // Whatever the order already carries, which is nothing for a new one —
+      // the merchant matches on the UTR, not on an image.
+      proofScreenshot: order.proofScreenshot ?? null,
       fiatAmount:      order.fiatAmount,
       tokenAmount:     order.tokenAmount,
       paidAt:          order.paidAt,

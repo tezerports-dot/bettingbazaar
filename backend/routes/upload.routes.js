@@ -194,80 +194,20 @@ router.post('/merchant/chat/:orderId/confirm-upload', merchantAuth, async (req, 
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-// 📸 PAYMENT PROOF — USER
-// User uploads a payment screenshot as a file (not a pasted URL).
-// A presigned upload returns fileKey + cdnUrl; later routes must verify the
-// object exists before storing the CDN URL. Users cannot submit arbitrary URLs.
+// 📸 PAYMENT PROOF — REMOVED
+//
+// `/user/payment-proof/:orderId/{upload-url,confirm-upload}` are gone. The
+// deposit flow no longer collects a payment screenshot: it proved nothing (it
+// is trivially forged and no approval read it), while the merchant matches the
+// UTR against their own bank statement, which is the only part of the
+// submission the platform can verify. Collecting an identifying image that no
+// decision reads is data a platform should not hold.
+//
+// `proofScreenshot` remains on the order and `cdn.service.js` still knows the
+// `payment-proof` category, so an image already stored is still served and the
+// retention job still expires it. Only the collection of new ones is gone.
 // ═══════════════════════════════════════════════════════════════════════
 
-router.post('/user/payment-proof/:orderId/upload-url', authenticate, async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    const { fileName, contentType, fileSize } = req.body;
-
-    if (!hasValidUploadInput(fileName, contentType, fileSize)) {
-      return res.status(400).json({ success: false, message: 'fileName, contentType, and fileSize are required' });
-    }
-
-    // Images only — strict exact MIME match (normalise before compare)
-    const PROOF_ALLOWED = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
-    const cleanProofMime = contentType.toLowerCase().split(';')[0].trim();
-    if (!PROOF_ALLOWED.includes(cleanProofMime)) {
-      return res.status(400).json({ success: false, message: 'Only JPEG, PNG, WebP, and GIF image files are supported' });
-    }
-
-    if (fileSize > 10 * 1024 * 1024) {
-      return res.status(400).json({ success: false, message: 'Maximum file size is 10 MB' });
-    }
-
-    const order = await playerOrder(orderId, req.user.userId);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (!['ASSIGNED', 'PROCESSING'].includes(order.status)) {
-      return res.status(400).json({ success: false, message: `Cannot upload proof for order in status ${order.status}` });
-    }
-
-    const uploadData = await cdnService.generatePaymentProofUploadUrl(
-      fileName, contentType, fileSize,
-      req.user.userId.toString(), orderId
-    );
-    res.json({ success: true, ...uploadData });
-  } catch (error) {
-    console.error('❌ Payment proof upload URL error:', error);
-    res.status(500).json({ success: false, message: error.message || 'Failed to generate upload URL' });
-  }
-});
-
-/**
- * POST /api/user/payment-proof/:orderId/confirm-upload
- * Save the uploaded CDN URL onto the PaymentOrder as proofScreenshot.
- * The object is verified before the CDN URL is stored.
- */
-router.post('/user/payment-proof/:orderId/confirm-upload', authenticate, async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    const { fileKey, cdnUrl } = req.body;
-    if (!fileKey || !cdnUrl) {
-      return res.status(400).json({ success: false, message: 'fileKey and cdnUrl are required' });
-    }
-
-    const order = await playerOrder(orderId, req.user.userId);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-
-    const verified = await cdnService.verifyUploadedObject({
-      fileKey, cdnUrl, expectedUserId: req.user.userId.toString(), expectedOrderId: orderId, expectedCategory: 'payment-proof'
-    });
-
-    // `setOrderFields` refuses an unknown column rather than dropping it. The
-    // document model discarded a write to an undeclared path and reported
-    // success — a proof screenshot that never saved and a player told it had.
-    await db.orders.setOrderFields(order.orderId, { proofScreenshot: verified.cdnUrl });
-
-    res.json({ success: true, message: 'Payment proof saved', proofScreenshot: verified.cdnUrl });
-  } catch (error) {
-    console.error('❌ Payment proof confirm-upload error:', error);
-    res.status(500).json({ success: false, message: error.message || 'Failed to confirm upload' });
-  }
-});
 // ═══════════════════════════════════════════════════════════════════════
 // 🪪 KYC DOCUMENTS — REMOVED 2026-08-25
 //

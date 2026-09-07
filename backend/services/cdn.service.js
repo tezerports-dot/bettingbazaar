@@ -435,23 +435,6 @@ export async function generateChatUploadUrl(fileName, contentType, fileSize, use
  * holding one.
  */
 
-/**
- * Generate presigned URL for payment proof
- */
-export async function generatePaymentProofUploadUrl(fileName, contentType, fileSize, userId, orderId) {
-  return generatePresignedUploadUrl({
-    fileName,
-    contentType,
-    fileSize,
-    category: 'payment-proof',
-    userId,
-    orderId,
-  });
-}
-
-/**
- * Generate presigned URL for admin branding image
- */
 export async function generateBrandingUploadUrl(fileName, contentType, fileSize, userId, brandingCategory) {
   return generatePresignedUploadUrl({
     fileName,
@@ -511,7 +494,6 @@ export default {
   deleteFile,
   verifyUploadedObject,
   generateChatUploadUrl,
-  generatePaymentProofUploadUrl,
   generateBrandingUploadUrl,
   mimeRulesForCategory,
   matchesMagicBytes,

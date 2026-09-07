@@ -70,10 +70,13 @@ router.post('/withdrawal/create', authenticate, requireApprovedKyc, requireChann
 
 router.post('/order/:orderId/mark-paid', authenticate, async (req, res) => {
   try {
-    const { utrNumber, proofFileKey, proofCdnUrl } = req.body;
+    // The UTR alone. A screenshot proved nothing — it is trivially forged and no
+    // approval read it, while the merchant matches the UTR against their own
+    // bank statement, which is the only part of this submission the platform
+    // can verify.
+    const { utrNumber } = req.body;
     if (!utrNumber?.trim()) return res.status(400).json({ success: false, message: 'utrNumber is required' });
-    if (!proofFileKey?.trim()) return res.status(400).json({ success: false, message: 'proofFileKey is required. Upload a payment screenshot file first.' });
-    const order = await markOrderPaid(req.user.userId, req.params.orderId, utrNumber, proofFileKey, proofCdnUrl);
+    const order = await markOrderPaid(req.user.userId, req.params.orderId, utrNumber);
     res.json({ success: true, message: 'Payment marked. Awaiting merchant review.', order });
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code, originalOrderId: err.originalOrderId }); }
 });

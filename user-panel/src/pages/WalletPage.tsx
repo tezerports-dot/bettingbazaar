@@ -3,7 +3,7 @@
  * WalletPage.tsx — 2026 "Bazaar" redesign.
  *
  * P2P token exchange (fixed 1:1, 1 BB token = ₹1). The data layer is UNCHANGED —
- * every apiClient endpoint, the order state machine, polling, QR/UTR/proof flow
+ * every apiClient endpoint, the order state machine, polling, the UPI link and UTR flow
  * and dispute handling are preserved exactly. Only the presentation is rebuilt on
  * the redesign theme tokens (dark/light) to match the handoff prototype.
  *
@@ -96,39 +96,42 @@ function CountdownTimer({ expiresAt, onExpire }: { expiresAt?: string; onExpire?
   );
 }
 
-// ── UPI QR Generator ───────────────────────────────────────────────────────────
-function UpiQrCode({ intentString }: { intentString: string }) {
-  const [qrDataUrl, setQrDataUrl] = useState<string>('');
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const QRCode = (await import('qrcode' as any)).default || (await import('qrcode' as any));
-        const url = await QRCode.toDataURL(intentString, { width: 220, margin: 2 });
-        if (!cancelled) setQrDataUrl(url);
-      } catch {
-        if (!cancelled) setQrDataUrl(`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(intentString)}`);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [intentString]);
-  if (!qrDataUrl) return <div style={{ width: 200, height: 200, background: 'var(--surface3)', borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text3)', fontSize: 13 }}>Generating QR…</div>;
-  return <img src={qrDataUrl} alt="UPI QR Code" style={{ width: 200, height: 200, borderRadius: 12, border: '4px solid #fff' }} />;
-}
-
 // ── Buy Payment UI (restyled; logic unchanged) ──────────────────────────────────
-function BuyPaymentUI({ order, onPaid, onExpire }: { order: PaymentOrder; onPaid: () => void; onExpire: () => void; }) {
+/**
+ * Exported for its own test. The buy flow is where a player's money leaves the
+ * platform's sight, and it had no coverage while it collected a screenshot no
+ * decision read and rendered a QR through a third-party service.
+ */
+export function BuyPaymentUI({ order, onPaid, onExpire }: { order: PaymentOrder; onPaid: () => void; onExpire: () => void; }) {
   const snap = order.merchantSnapshot;
   const [utr, setUtr] = useState('');
-  const [screenshot, setScreenshot] = useState<{ cdnUrl: string; fileKey: string } | null>(null);
-  const [uploading, setUploading] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [disputeVisible, setDisputeVisible] = useState(false);
   const [disputeReason, setDisputeReason] = useState('');
 
+  /**
+   * The pre-filled UPI payment link.
+   *
+   * Every field the payment needs is in it — payee, name, exact amount, and the
+   * order id as the note — so the player's UPI app opens with nothing left to
+   * type. A mistyped amount is the single most common cause of a deposit the
+   * merchant cannot match, and this removes the opportunity to make one.
+   *
+   * `am` is fixed to two decimals: UPI apps reject an amount with more, and a
+   * float like 100.10000000000001 is exactly what `fiatAmount` arithmetic
+   * produces.
+   *
+   * This replaced a QR code that was rendered by fetching
+   * api.qrserver.com — a THIRD PARTY, handed the merchant's UPI id, the
+   * merchant's name, the exact amount and the order id on every single deposit.
+   * A link needs no such request, and works on the handset where these players
+   * actually are: tapping it opens their UPI app directly, which scanning a QR
+   * on the same screen cannot do.
+   */
   const intentString = snap?.upiId
-    ? `upi://pay?pa=${snap.upiId}&pn=${encodeURIComponent(snap.merchantName || 'Merchant')}&am=${order.fiatAmount}&cu=INR&tn=${encodeURIComponent(`BettingBazaar-${order.orderId}`)}`
+    ? `upi://pay?pa=${encodeURIComponent(snap.upiId)}&pn=${encodeURIComponent(snap.merchantName || 'Merchant')}&am=${Number(order.fiatAmount).toFixed(2)}&cu=INR&tn=${encodeURIComponent(`BettingBazaar-${order.orderId}`)}`
     : '';
 
   useEffect(() => {
@@ -138,29 +141,14 @@ function BuyPaymentUI({ order, onPaid, onExpire }: { order: PaymentOrder; onPaid
     }
   }, [order.status, order.paidAt]);
 
-  const handleScreenshotUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true); setError('');
-    try {
-      // `/api/user/...`, NOT `/api/upload/user/...` — upload.routes.js is mounted
-      // at `/api`, so its paths already start `/user/`. The extra segment 404'd
-      // every payment-proof upload, which blocks the manual deposit flow at the
-      // point where the player proves they paid.
-      const urlRes: any = await apiClient.post(`/api/user/payment-proof/${order.orderId}/upload-url`, { fileName: file.name, contentType: file.type, fileSize: file.size });
-      await fetch(urlRes.uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type } });
-      if (!urlRes.fileKey || !urlRes.cdnUrl) throw new Error('Upload response missing file key');
-      setScreenshot({ cdnUrl: urlRes.cdnUrl, fileKey: urlRes.fileKey });
-    } catch (err: any) { setError(err?.message || 'Upload failed. Try again.'); }
-    finally { setUploading(false); }
-  };
-
   const handleSubmitPayment = async () => {
     if (utr.trim().length < 12) { setError('UTR must be at least 12 characters'); return; }
-    if (!screenshot) { setError('Please upload payment screenshot'); return; }
     setSubmitting(true); setError('');
     try {
-      await apiClient.post(`/api/payment/order/${order.orderId}/mark-paid`, { utrNumber: utr.trim(), proofFileKey: screenshot.fileKey, proofCdnUrl: screenshot.cdnUrl });
+      // The UTR alone. A screenshot proved nothing — trivially forged, read by
+      // no approval, and the merchant matches this reference against their own
+      // bank statement.
+      await apiClient.post(`/api/payment/order/${order.orderId}/mark-paid`, { utrNumber: utr.trim() });
       onPaid();
     } catch (err: any) { setError(err?.message || 'Failed to submit. Try again.'); }
     finally { setSubmitting(false); }
@@ -204,14 +192,25 @@ function BuyPaymentUI({ order, onPaid, onExpire }: { order: PaymentOrder; onPaid
       </div>
 
       {snap?.upiId && intentString ? (
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
-          <UpiQrCode intentString={intentString} />
-          <a href={intentString} style={{ width: '100%', background: 'var(--bombay)', color: '#fff', fontWeight: 800, padding: 12, borderRadius: 12, fontSize: 13, textAlign: 'center', display: 'block' }}>📱 Open UPI App</a>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <a href={intentString} style={{ width: '100%', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', color: '#1a1200', fontWeight: 800, padding: '15px 12px', borderRadius: 13, fontSize: 15, textAlign: 'center', display: 'block', textDecoration: 'none' }}>
+            Pay {fmtINR(order.fiatAmount)} in your UPI app
+          </a>
+          <p style={{ fontSize: 11, color: 'var(--text3)', textAlign: 'center', margin: 0, lineHeight: 1.5 }}>
+            Opens with the amount already filled in. Come back with the UTR.
+          </p>
+          {/* The UPI id stays visible and copyable: a player whose handset has
+              no UPI app registered for the link still needs to be able to pay,
+              and support asks for this when a payment goes missing. */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--surface2)', border: '1px solid var(--line)', borderRadius: 11, padding: '11px 13px', width: '100%' }}>
             <span style={{ flex: 1, minWidth: 0 }}>
               <span style={{ display: 'block', fontSize: 9, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text3)' }}>Merchant UPI · {snap.merchantName}</span>
               <span className="font-grotesk" style={{ display: 'block', fontSize: 12, fontWeight: 700, color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{snap.upiId}</span>
             </span>
+            <button onClick={() => { navigator.clipboard?.writeText(snap.upiId || ''); setCopied(true); setTimeout(() => setCopied(false), 1600); }}
+              style={{ flex: 'none', padding: '7px 11px', borderRadius: 9, border: '1px solid var(--line2)', background: 'var(--surface3)', color: 'var(--text2)', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+              {copied ? 'Copied' : 'Copy'}
+            </button>
           </div>
         </div>
       ) : (
@@ -224,16 +223,10 @@ function BuyPaymentUI({ order, onPaid, onExpire }: { order: PaymentOrder; onPaid
         {utr.length > 0 && utr.length < 12 && <span style={{ fontSize: 10, color: 'var(--red)', fontWeight: 700 }}>{12 - utr.length} more characters needed</span>}
       </div>
 
-      <label style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: 13, borderRadius: 11, cursor: 'pointer', border: `2px dashed ${screenshot ? 'var(--green)' : 'var(--line2)'}`, background: screenshot ? 'color-mix(in srgb,var(--green) 12%,transparent)' : 'var(--surface2)' }}>
-        <span style={{ fontSize: 18 }}>{screenshot ? '✅' : '📸'}</span>
-        <span style={{ fontSize: 12, fontWeight: 700, color: screenshot ? 'var(--green)' : 'var(--text2)' }}>{uploading ? 'Uploading…' : screenshot ? 'Screenshot attached' : 'Upload payment screenshot'}</span>
-        <input type="file" accept="image/*" style={{ display: 'none' }} onChange={handleScreenshotUpload} disabled={uploading} />
-      </label>
-
       {error && <p style={{ color: 'var(--red)', fontSize: 11, textAlign: 'center' }}>{error}</p>}
 
-      <button onClick={handleSubmitPayment} disabled={utr.trim().length < 12 || !screenshot || submitting}
-        style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 15, color: (utr.trim().length >= 12 && screenshot) ? '#1a1200' : 'var(--text3)', background: (utr.trim().length >= 12 && screenshot) ? 'linear-gradient(135deg,var(--gold2),var(--gold))' : 'var(--surface3)' }}>
+      <button onClick={handleSubmitPayment} disabled={utr.trim().length < 12 || submitting}
+        style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 15, color: utr.trim().length >= 12 ? '#1a1200' : 'var(--text3)', background: utr.trim().length >= 12 ? 'linear-gradient(135deg,var(--gold2),var(--gold))' : 'var(--surface3)' }}>
         {submitting ? '⏳ Submitting…' : "✅ I've Paid"}
       </button>
     </div>
@@ -503,7 +496,7 @@ const WalletPage: React.FC = () => {
             )}
           </div>
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 9, background: 'color-mix(in srgb,var(--gold) 7%,var(--surface))', border: '1px solid var(--line)', borderRadius: 13, padding: 13, marginTop: 12 }}>
-            <span style={{ fontSize: 16 }}>🛡️</span><span style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--text2)' }}>P2P exchange: a verified merchant is auto-assigned per order. Buy = pay merchant, submit UTR + screenshot, tokens credit on confirm. Sell = merchant pays your bank/UPI. Raise a dispute from Payment Orders if something goes wrong.</span>
+            <span style={{ fontSize: 16 }}>🛡️</span><span style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--text2)' }}>P2P exchange: a verified merchant is auto-assigned per order. Buy = pay the merchant from the pre-filled link, submit the UTR, tokens credit on confirm. Sell = merchant pays your bank/UPI. Raise a dispute from Payment Orders if something goes wrong.</span>
           </div>
         </>
       )}
