@@ -7,7 +7,6 @@ import cdnService from '../services/cdn.service.js';
 import { authenticate, isAdmin } from '../domains/identity/auth.middleware.js';
 import { merchantAuth } from '../middleware/merchantAuth.js';
 // Order chat. An attachment that is not recorded is an upload nobody can find.
-import { postMessage } from '#db/repositories/chat.js';
 
 const router = express.Router();
 
@@ -48,150 +47,26 @@ function hasValidUploadInput(fileName, contentType, fileSize) {
 
 // by the merchant panel and does a participant check).
 // ═══════════════════════════════════════════════════════════════════════
-
-router.post('/user/chat/:orderId/upload-url', authenticate, async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    const { fileName, contentType, fileSize } = req.body;
-
-    if (!hasValidUploadInput(fileName, contentType, fileSize)) {
-      return res.status(400).json({ success: false, message: 'fileName, contentType and fileSize are required' });
-    }
-
-    const CHAT_ALLOWED = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
-    const cleanMime = contentType.toLowerCase().split(';')[0].trim();
-    if (!CHAT_ALLOWED.includes(cleanMime)) {
-      return res.status(400).json({ success: false, message: 'Only JPEG, PNG, WebP, and GIF images are allowed' });
-    }
-
-    const chatMimeRule = cdnService.mimeRulesForCategory('chat')[cleanMime];
-    if (fileSize > chatMimeRule.maxSize) {
-      return res.status(400).json({ success: false, message: `Max file size is ${chatMimeRule.maxSize / (1024 * 1024)} MB` });
-    }
-
-    const order = await playerOrder(orderId, req.user.userId);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-
-    const result = await cdnService.generateChatUploadUrl(
-      fileName, contentType, fileSize,
-      req.user.userId.toString(), orderId
-    );
-    res.json({ success: true, ...result });
-  } catch (err) {
-    console.error('User chat upload-url error:', err);
-    res.status(500).json({ success: false, message: err.message || 'Failed to generate upload URL' });
-  }
-});
-
-router.post('/user/chat/:orderId/confirm-upload', authenticate, async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    const { fileKey, cdnUrl, message } = req.body;
-
-    if (!fileKey || !cdnUrl) {
-      return res.status(400).json({ success: false, message: 'fileKey and cdnUrl are required' });
-    }
-
-    const order = await playerOrder(orderId, req.user.userId);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-
-    const verified = await cdnService.verifyUploadedObject({
-      fileKey, cdnUrl, expectedUserId: req.user.userId.toString(), expectedOrderId: orderId, expectedCategory: 'chat'
-    });
-
-    const chatMsg = await postMessage({
-      orderId:       order.orderId,
-      senderId:      req.user.userId,
-      senderType:    'USER',
-      message:       message || '📎 Attachment',
-      attachmentUrl: verified.cdnUrl,
-      attachmentKey: verified.fileKey,
-      isSystem:      false,
-    });
-
-    global.io?.to(`order-${order._id}`).emit('newMessage', chatMsg);
-
-    res.json({ success: true, message: chatMsg });
-  } catch (err) {
-    console.error('User chat confirm-upload error:', err);
-    res.status(500).json({ success: false, message: err.message || 'Failed to save message' });
-  }
-});
-
+// 💬 ORDER CHAT ATTACHMENTS — REMOVED
+//
+// `/user/chat/:orderId/{upload-url,confirm-upload}` and the merchant pair are
+// gone, with the `GET|POST /api/merchant/chat/:id` routes they fed.
+//
+// There is no merchant-to-user order chat, by design. A player submits a UTR
+// as proof that they paid; the merchant matches it against their own bank
+// statement and confirms or rejects. The two never negotiate, which is the
+// point: a private channel between the party holding the money and the party
+// owed it is where an off-platform settlement gets agreed.
+//
+// The one conversation that exists is the DISPUTE chat, and it is between the
+// player and an admin or sub-admin — see
+// domains/disputes/disputeResolution.admin.routes.js. That still uses
+// `chat.js`, which is why the repository stays: `postSystemMessage` also writes
+// the order's own timeline, which is the record a dispute is decided from.
+//
+// The merchant QR presign below is NOT part of this. It uploads a merchant's
+// own UPI QR image for their profile, and has nothing to do with order chat.
 // ═══════════════════════════════════════════════════════════════════════
-
-
-// Validates that the requesting merchant owns the order.
-// ═══════════════════════════════════════════════════════════════════════
-
-router.post('/merchant/chat/:orderId/upload-url', merchantAuth, async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    const { fileName, contentType, fileSize } = req.body;
-
-    if (!hasValidUploadInput(fileName, contentType, fileSize)) {
-      return res.status(400).json({ success: false, message: 'fileName, contentType and fileSize are required' });
-    }
-
-    const CHAT_ALLOWED = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
-    const cleanMime = contentType.toLowerCase().split(';')[0].trim();
-    if (!CHAT_ALLOWED.includes(cleanMime)) {
-      return res.status(400).json({ success: false, message: 'Only JPEG, PNG, WebP, and GIF images are allowed' });
-    }
-
-    const chatMimeRule = cdnService.mimeRulesForCategory('chat')[cleanMime];
-    if (fileSize > chatMimeRule.maxSize) {
-      return res.status(400).json({ success: false, message: `Max file size is ${chatMimeRule.maxSize / (1024 * 1024)} MB` });
-    }
-
-    const order = await merchantOrder(orderId, req.merchantId);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-
-    const result = await cdnService.generateChatUploadUrl(
-      fileName, contentType, fileSize,
-      String(req.merchantId), orderId
-    );
-    res.json({ success: true, ...result });
-  } catch (err) {
-    console.error('Merchant chat upload-url error:', err);
-    res.status(500).json({ success: false, message: err.message || 'Failed to generate upload URL' });
-  }
-});
-
-router.post('/merchant/chat/:orderId/confirm-upload', merchantAuth, async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    const { fileKey, cdnUrl, message } = req.body;
-
-    if (!fileKey || !cdnUrl) {
-      return res.status(400).json({ success: false, message: 'fileKey and cdnUrl are required' });
-    }
-
-    const order = await merchantOrder(orderId, req.merchantId);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-
-    const verified = await cdnService.verifyUploadedObject({
-      fileKey, cdnUrl, expectedUserId: String(req.merchantId), expectedOrderId: orderId, expectedCategory: 'chat'
-    });
-
-    const chatMsg = await postMessage({
-      orderId:       order.orderId,
-      senderId:      String(req.merchantId),
-      senderType:    'MERCHANT',
-      message:       message || '📎 Attachment',
-      attachmentUrl: verified.cdnUrl,
-      attachmentKey: verified.fileKey,
-      isSystem:      false,
-    });
-
-    global.io?.to(`order-${order._id}`).emit('newMessage', chatMsg);
-
-    res.json({ success: true, message: chatMsg });
-  } catch (err) {
-    console.error('Merchant chat confirm-upload error:', err);
-    res.status(500).json({ success: false, message: err.message || 'Failed to save message' });
-  }
-});
 
 // ═══════════════════════════════════════════════════════════════════════
 // 📸 PAYMENT PROOF — REMOVED

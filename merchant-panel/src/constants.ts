@@ -38,8 +38,6 @@ export const ENDPOINTS = {
     ACCEPT: (id: string) => `/api/merchant/accept/${id}`,
     CONFIRM: (id: string) => `/api/merchant/confirm/${id}`,
     REJECT: (id: string) => `/api/merchant/reject/${id}`,
-    CHAT: (id: string) => `/api/merchant/chat/${id}`,
-    GET_CHAT: (id: string) => `/api/merchant/chat/${id}`,
   },
   EARNINGS: {
     GET:    '/api/merchant/earnings',
