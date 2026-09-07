@@ -6,7 +6,7 @@
  * configurable business value and where to edit it.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { RefreshCw, Activity, BookOpenCheck, Radio } from 'lucide-react';
+import { RefreshCw, Activity, BookOpenCheck, Radio, Megaphone, Trophy } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../../services/api';
 import { Toolbar } from '../../components/design';
@@ -14,7 +14,7 @@ import { Toolbar } from '../../components/design';
 const inr = (n: number) =>
   '₹' + (n ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 
-type Tab = 'overview' | 'catalog' | 'audit';
+type Tab = 'overview' | 'catalog' | 'audit' | 'channels';
 
 export const OperationsOverview: React.FC = () => {
   const [tab, setTab] = useState<Tab>('overview');
@@ -22,18 +22,27 @@ export const OperationsOverview: React.FC = () => {
   const [catalog, setCatalog] = useState<Array<{ value: string; owner: string; edit: string }>>([]);
   const [auditFeed, setAuditFeed] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  // Which ways of reaching a human are actually configured, and what admins
+  // have been doing. Both endpoints existed with no screen calling them.
+  const [channels, setChannels] = useState<Array<{ code: string; label: string; active: boolean }>>([]);
+  const [adminActivity, setAdminActivity] = useState<any[]>([]);
+  const [rebuilding, setRebuilding] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [ovRes, catRes, auditRes] = await Promise.all([
+      const [ovRes, catRes, auditRes, chanRes, actRes] = await Promise.all([
         api.get<any>('/api/admin/operations/overview'),
         api.get<any>('/api/admin/operations/config-catalog'),
         api.get<any>('/api/admin/communication/audit-feed', { params: { limit: 50 } }).catch(() => ({ data: null })),
+        api.get<any>('/api/admin/communication/channels').catch(() => ({ data: null })),
+        api.get<any>('/api/admin/communication/admin-activity', { params: { hours: 24 } }).catch(() => ({ data: null })),
       ]);
       if (ovRes.data?.success) setOverview(ovRes.data.overview);
       if (catRes.data?.success) setCatalog(catRes.data.catalog || []);
       if (auditRes.data?.success) setAuditFeed(auditRes.data.feed || auditRes.data.entries || auditRes.data.logs || []);
+      if (chanRes.data?.success) setChannels(chanRes.data.channels || []);
+      if (actRes.data?.success) setAdminActivity(actRes.data.activity || []);
     } catch {
       toast.error('Failed to load operations data');
     } finally {
@@ -42,6 +51,24 @@ export const OperationsOverview: React.FC = () => {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  /**
+   * Rebuild the leaderboard the player panel reads.
+   *
+   * A maintenance action, not a routine one: the board is derived, so this only
+   * matters after a correction or a backfill. Confirmed before firing because
+   * it recomputes every period.
+   */
+  const rebuildLeaderboard = async () => {
+    if (!window.confirm('Recompute every leaderboard period from the underlying rows?')) return;
+    setRebuilding(true);
+    try {
+      const r = await api.post<any>('/api/leaderboard/rebuild', {});
+      toast.success(`Leaderboard rebuilt — ${r.data?.periods ?? 0} period(s)`);
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Rebuild failed');
+    } finally { setRebuilding(false); }
+  };
 
   const Section: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
     <div className="card">
@@ -64,6 +91,7 @@ export const OperationsOverview: React.FC = () => {
           { label: 'Overview', active: tab === 'overview', onClick: () => setTab('overview') },
           { label: 'Config Catalog', active: tab === 'catalog', onClick: () => setTab('catalog') },
           { label: 'Audit Feed', active: tab === 'audit', onClick: () => setTab('audit') },
+          { label: 'Channels & Activity', active: tab === 'channels', onClick: () => setTab('channels') },
         ]}
         actions={[{ label: 'Refresh', icon: RefreshCw, onClick: load }]}
       />
@@ -177,6 +205,57 @@ export const OperationsOverview: React.FC = () => {
             ))}
             {auditFeed.length === 0 && <p className="text-gray-500 text-sm py-4 text-center">No audit entries.</p>}
           </div>
+        </div>
+      )}
+
+      {tab === 'channels' && (
+        <div className="space-y-6">
+          <Section title="Ways of reaching a player">
+            <p className="text-xs text-gray-400 mb-3">
+              Every channel is an adapter behind one interface. A declared channel that is not active
+              has no provider configured — sending to it fails, it does not silently do nothing.
+            </p>
+            <div className="space-y-2">
+              {channels.map((c) => (
+                <div key={c.code} className="flex items-center justify-between border-b border-dark-800 pb-2 last:border-0">
+                  <div className="flex items-center gap-2 text-sm">
+                    <Megaphone size={14} className={c.active ? 'text-green-400' : 'text-gray-600'} />
+                    <span className="text-gray-200 font-medium">{c.label}</span>
+                    <span className="text-xs text-gray-500 font-mono">{c.code}</span>
+                  </div>
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${c.active ? 'bg-green-500/20 text-green-300' : 'bg-dark-700 text-gray-400'}`}>
+                    {c.active ? 'Active' : 'Not configured'}
+                  </span>
+                </div>
+              ))}
+              {channels.length === 0 && <p className="text-gray-500 text-sm py-4 text-center">No channels reported.</p>}
+            </div>
+          </Section>
+
+          <Section title="Admin activity — last 24 hours">
+            <div className="space-y-2">
+              {adminActivity.map((a: any, i: number) => (
+                <div key={a.performedBy ?? i} className="flex justify-between gap-4 border-b border-dark-800 pb-2 last:border-0 text-sm">
+                  <span className="text-gray-200">{a.performedByName || a.performedBy || 'unknown'}</span>
+                  <span className="text-gray-400">{a.actions ?? a.count ?? 0} action(s)</span>
+                </div>
+              ))}
+              {adminActivity.length === 0 && <p className="text-gray-500 text-sm py-4 text-center">No admin actions in the window.</p>}
+            </div>
+          </Section>
+
+          <Section title="Maintenance">
+            <div className="flex items-center justify-between gap-4">
+              <p className="text-xs text-gray-400">
+                The leaderboard is derived from bet rows. Rebuild it after a correction or a backfill —
+                it is not part of normal operation.
+              </p>
+              <button onClick={rebuildLeaderboard} disabled={rebuilding}
+                className="btn-secondary text-sm flex items-center gap-1.5 shrink-0 disabled:opacity-50">
+                <Trophy size={14} />{rebuilding ? 'Rebuilding…' : 'Rebuild leaderboard'}
+              </button>
+            </div>
+          </Section>
         </div>
       )}
     </div>
