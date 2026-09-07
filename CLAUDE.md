@@ -250,5 +250,6 @@ the thing being claimed.
 | `npm run test:pg` | Money-path behaviour against a real PostgreSQL. |
 | `npm run check:deps` | No circular imports, no governance boundary violations. |
 | `npm run check:ui-coverage` | Every panel call reaches a real route. `--unused` lists endpoints no screen calls. |
+| `npm run check:dead-code` | No export is referenced by nothing. `--all` lists test-only and over-exported ones. |
 | `npm run check:db-boundary` | No SQL, driver or relative reach past `#db`. |
 | `npm run verify:capabilities` | Every claimed capability has its evidence on disk. |

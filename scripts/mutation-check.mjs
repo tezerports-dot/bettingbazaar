@@ -44,11 +44,17 @@ const MUTATIONS = [
   },
   // ── A deposit moves tokens; it must not create or destroy them ────────────
   {
-    id: 'M22', file: 'backend/domains/payment/payment.routes.js', config: UNIT,
+    // Retargeted 2026-09-07: this movement lived inline in payment.routes.js and
+    // now lives in depositCredit.js's `moveDepositMoney`, which BOTH routes that
+    // complete a deposit call — the merchant confirm and the admin queue
+    // override. The mutation therefore covers two call sites where it used to
+    // cover one. It was the admin override disagreeing with this arithmetic
+    // that minted tokens, so aiming it at the shared owner is the point.
+    id: 'M22', file: 'backend/domains/payment/depositCredit.js', config: UNIT,
     test: 'backend/tests/unit/depositCreditConservation.test.js',
     why: 'the merchant is debited the DEPOSIT SHARE while the user is credited the whole amount',
-    from: `      merchantId: order.merchantId, amount: total,`,
-    to: `      merchantId: order.merchantId, amount: depositCredit,`,
+    from: `    merchantId: order.merchantId, amount: total,`,
+    to: `    merchantId: order.merchantId, amount: depositCredit,`,
   },
   {
     id: 'M23', file: 'backend/domains/payment/depositCredit.js', config: UNIT,
