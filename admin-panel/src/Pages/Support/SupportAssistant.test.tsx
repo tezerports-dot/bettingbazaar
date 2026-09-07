@@ -42,7 +42,7 @@ const DOCS = {
   success: true,
   documents: [
     { doc_id: 'kb:withdrawals', title: 'Withdrawal policy', category: 'withdrawals', chunks: 12, updated_at: '2026-01-02T00:00:00.000Z' },
-    { doc_id: 'kb:kyc', title: null, category: 'kyc', chunks: 5, updated_at: '2026-01-01T00:00:00.000Z' },
+    { doc_id: 'kb:verification', title: null, category: 'onboarding', chunks: 5, updated_at: '2026-01-01T00:00:00.000Z' },
   ],
 };
 
@@ -73,7 +73,7 @@ describe('SupportAssistant', () => {
     // A doc with no title falls back to its id rather than rendering blank.
     // Exact match, so this is the title line falling back to the id — not the
     // metadata line below it, which also contains the id.
-    expect(screen.getByText('kb:kyc')).toBeInTheDocument();
+    expect(screen.getByText('kb:verification')).toBeInTheDocument();
     expect(screen.getByText(/Ingested documents \(2\)/)).toBeInTheDocument();
   });
 

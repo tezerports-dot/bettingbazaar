@@ -68,3 +68,58 @@ export function depositCreditSplit(order) {
   if (!usable) return { depositCredit: total, reserveCredit: 0, total, split: false };
   return { depositCredit: deposit, reserveCredit: reserve, total, split: true };
 }
+
+/**
+ * Move the money for a confirmed deposit. THE one place it happens.
+ *
+ * ── Why this is a function and not two copies ───────────────────────────────
+ * Two routes force-complete a deposit — the merchant/admin confirm
+ * (`POST /api/payment/deposit/:orderId/confirm`) and the admin queue override
+ * (`POST /api/admin/payment-orders/:orderId/action`) — and they did not agree.
+ * The override credited `tokenAmount` in one lump, never debited the merchant,
+ * and never released the UTR, so an admin approval MINTED tokens: the merchant
+ * kept their float and the player got tokens that came from nowhere.
+ *
+ * It also passed a sentence where `creditDeposit` expects an order id. That
+ * argument builds the idempotency key (`dep_complete_<orderId>`), so the two
+ * routes wrote DIFFERENT keys for the same deposit and each could credit the
+ * player once. The unique-tx_id gate was open for exactly as long as both
+ * routes existed.
+ *
+ * The split above already had one owner. The movement it belongs to did not.
+ * Now it does, and a third caller cannot invent a fourth arithmetic.
+ *
+ * ── Ordering ────────────────────────────────────────────────────────────────
+ * The merchant is debited FIRST, because refusing (a merchant confirming more
+ * than they hold) is the ordinary case and must refuse before anything else
+ * moves. Every movement is keyed on the order, so a failure part-way through
+ * leaves a retryable position rather than something to unwind.
+ *
+ * The caller applies the state transition AFTER this returns ok — money before
+ * status, so a crash between them leaves a PAID order whose next confirm
+ * replays these movements as no-ops, never a COMPLETED order that paid nobody.
+ *
+ * @param {object} order  the order record, read from the same rows this writes
+ * @returns {Promise<{ok: boolean, reason?: string, depositCredit, reserveCredit, total}>}
+ */
+export async function moveDepositMoney(order, {
+  debitMerchantTokens, creditDeposit, creditReserve, releaseUTR,
+}) {
+  const { depositCredit, reserveCredit, total } = depositCreditSplit(order);
+
+  const { merchant: debited } = await debitMerchantTokens({
+    merchantId: order.merchantId, amount: total,
+    reason: `Deposit ${order.orderId} confirmed — tokens dispensed to user`,
+    refModel: 'PaymentOrder', refId: order.orderId,
+    txId: `mw_dep_deduct_${order.orderId}`,
+  });
+  if (!debited) return { ok: false, reason: 'merchant_insufficient', depositCredit, reserveCredit, total };
+
+  // Both keyed on the ORDER ID, not on a message. A sentence here would make a
+  // second key for the same deposit and open the idempotency gate.
+  if (depositCredit > 0) await creditDeposit(order.userId, depositCredit, order.orderId);
+  if (reserveCredit > 0) await creditReserve(order.userId, reserveCredit, order.orderId);
+  await releaseUTR(order.orderId);
+
+  return { ok: true, depositCredit, reserveCredit, total };
+}

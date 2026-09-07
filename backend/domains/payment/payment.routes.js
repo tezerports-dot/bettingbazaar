@@ -19,7 +19,7 @@ import { requestDeposit, requestWithdrawal } from '../funding/fundingAuthority.s
 import { creditDeposit, creditReserve } from '../wallet/walletAuthority.service.js';
 // One rule for how a confirmed deposit splits across the user's two pockets,
 // and for what the merchant is debited against it.
-import { depositCreditSplit } from './depositCredit.js';
+import { moveDepositMoney } from './depositCredit.js';
 import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
 import { emitWalletUpdate, emitAdminUpdate, emitOrderUpdate } from '../notification/realtimeEmitters.js';
@@ -127,34 +127,15 @@ router.post('/deposit/:orderId/confirm', paymentActorAuth, async (req, res) => {
       return res.status(409).json({ success: false, message: `Cannot confirm in ${order.status} status` });
     }
 
-    // The player's pockets are split; the merchant's side is not. This route
-    // once debited `depositAllocation || tokenAmount` and credited
-    // `depositAllocation + reserveAllocation`, so every deposit with a reserve
-    // share credited more than it debited. `depositCredit.js` holds the one
-    // rule and why it is one rule.
-    const { depositCredit, reserveCredit, total } = depositCreditSplit(order);
-
-    // ── The merchant's side, first ──────────────────────────────────────────
-    // Refusing here is the ordinary case (a merchant confirming more than they
-    // hold) and it must refuse BEFORE anything else moves. Keyed so a retry
-    // debits once.
-    const { merchant: debited } = await debitMerchantTokens({
-      merchantId: order.merchantId, amount: total,
-      reason: `Deposit ${order.orderId} confirmed — tokens dispensed to user`,
-      refModel: 'PaymentOrder', refId: order.orderId,
-      txId: `mw_dep_deduct_${order.orderId}`,
+    // The player's pockets are split; the merchant's side is not. `depositCredit.js`
+    // owns both the split and the movement — the admin queue override calls the
+    // same function, which is the only reason the two can no longer disagree.
+    const moved = await moveDepositMoney(order, {
+      debitMerchantTokens, creditDeposit, creditReserve, releaseUTR,
     });
-    if (!debited) {
+    if (!moved.ok) {
       return res.status(400).json({ success: false, message: 'Merchant insufficient token balance' });
     }
-
-    // ── The player's side ───────────────────────────────────────────────────
-    // Both keyed on the order, so a retry after a partial failure credits once.
-    // `reserveBalance` goes through the wallet authority like everything else;
-    // it was once a raw increment with no ledger trail behind it.
-    if (depositCredit > 0) await creditDeposit(order.userId, depositCredit, order.orderId);
-    if (reserveCredit > 0) await creditReserve(order.userId, reserveCredit, order.orderId);
-    await releaseUTR(order.orderId);
 
     // ── The gate, and the record that the money moved ───────────────────────
     // `completeOrder` posts the DEPOSIT_COMPLETED accounting event in the SAME
