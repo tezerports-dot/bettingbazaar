@@ -35,6 +35,10 @@ router.get('/dispute-orders', authenticate, hasPermission('canResolveDisputes'),
       status:            o.status,
       createdAt:         o.createdAt,
       disputedAt:        o.disputeRaisedAt,
+      // Both consumers render "Raised by <who> · <when>"; the mapper dropped
+      // them, so that line silently never appeared.
+      disputeRaisedAt:   o.disputeRaisedAt,
+      disputeRaisedBy:   o.disputeRaisedBy,
       resolvedAt:        o.disputeResolvedAt,
       disputeReason:     o.disputeReason,
       disputeResolution: o.disputeResolution,

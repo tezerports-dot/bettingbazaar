@@ -2,6 +2,7 @@
 /** content.admin.routes.js — FAQ, support links, promo, announcements */
 import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
 import contentService from './content.service.js';
+import { generatePresignedUploadUrl } from '../../services/cdn.service.js';
 import { db } from '#db';
 
 const router = express.Router();
@@ -206,6 +207,48 @@ router.put('/content/support-links', authenticate, isAdmin, async (req, res) => 
 
 const PROMO_STATUS = { ACTIVE: 'PUBLISHED', PUBLISHED: 'PUBLISHED', DRAFT: 'DRAFT', ARCHIVED: 'ARCHIVED' };
 const promoStatus = (value) => PROMO_STATUS[String(value || '').toUpperCase()] ?? null;
+
+/**
+ * POST /api/admin/promo/upload-url — presigned S3 PUT for a promo slide image.
+ *
+ * ContentSlideManager.tsx has always had an upload button that called this
+ * path, and the route did not exist: the presign 404'd, the catch reported
+ * "Upload failed", and the only way to publish a slide was to paste a URL that
+ * was already hosted somewhere. The button looked like a working feature,
+ * which is the worst kind of missing one.
+ *
+ * Shaped like every other presign here — same validator, same response — so
+ * the client's two-step (presign, then PUT to S3) needs no special case.
+ * Images only: mimeRulesForCategory() falls through to the image allowlist for
+ * this category, and the extension blocklist independently refuses SVG and
+ * HTML, which would otherwise be stored XSS served from the CDN origin.
+ */
+router.post('/promo/upload-url', authenticate, isAdminOrSubAdmin, async (req, res) => {
+  try {
+    const { fileName, contentType, fileSize } = req.body || {};
+    if (typeof fileName !== 'string' || !fileName.trim()
+      || typeof contentType !== 'string' || !contentType.trim()
+      || !Number.isFinite(fileSize) || fileSize <= 0) {
+      return res.status(400).json({ success: false, message: 'fileName, contentType and fileSize are required' });
+    }
+    if (fileSize > 5 * 1024 * 1024) {
+      return res.status(400).json({ success: false, message: 'Max file size is 5 MB' });
+    }
+
+    const uploadData = await generatePresignedUploadUrl({
+      fileName, contentType, fileSize,
+      category: 'promo', userId: String(req.user.userId),
+    });
+    res.json({ success: true, ...uploadData });
+  } catch (error) {
+    // validateUpload throws on a refused MIME/extension — a client error, not a
+    // server one; anything else means S3 is not configured.
+    const refused = /mime|extension|file type|size|filename/i.test(error.message || '');
+    if (refused) return res.status(400).json({ success: false, message: error.message });
+    console.error('Promo upload-url error:', error.message);
+    res.status(503).json({ success: false, message: 'CDN storage is not configured. File upload is unavailable.' });
+  }
+});
 
 router.get('/promo', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {

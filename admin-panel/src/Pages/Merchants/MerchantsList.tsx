@@ -181,7 +181,10 @@ export const MerchantsList: React.FC = () => {
       // Save order amount limits
       await api.merchants.updateLimits(selectedMerchant._id, limitsForm);
       // Save maxConcurrentOrders via scoring endpoint (Section 8 / admin route)
-      await api.put(`/api/admin/queue/merchants/${selectedMerchant._id}/scoring`, {
+      // No /queue segment. With it this 404'd, and because it shares a try with
+      // updateLimits above, the admin saw "Failed to save limits" on a save that
+      // had already stored the limits — only the concurrency cap was lost.
+      await api.put(`/api/admin/merchants/${selectedMerchant._id}/scoring`, {
         maxConcurrentOrders: limitsForm.maxConcurrentOrders,
       });
       toast.success('Limits updated');

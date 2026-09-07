@@ -290,9 +290,13 @@ export const merchants = {
   },
 
   getOrders: async (merchantId: string) => {
-    const res = await api.get<any>(`/api/admin/merchants/${merchantId}/orders`);
-    if (res.data?.success && res.data?.orders) {
-      return { success: true, data: res.data.orders };
+    // /transactions, not /orders — the latter has never been served, so the
+    // merchant detail drawer's Orders tab caught the 404 and rendered "No
+    // orders found" for every merchant, however busy. The handler returns
+    // `transactions`, carrying exactly the fields that tab renders.
+    const res = await api.get<any>(`/api/admin/merchants/${merchantId}/transactions`);
+    if (res.data?.success && res.data?.transactions) {
+      return { success: true, data: res.data.transactions };
     }
     return res.data;
   },
@@ -949,19 +953,19 @@ export const system = {
 // ─── DISPUTES ──────────────────────────────────────────────────────────────
 export const disputes = {
   getAll: async (status?: string) => {
-    const res = await api.get<any>('/api/admin/disputes', { params: { status } });
+    const res = await api.get<any>('/api/admin/dispute-orders', { params: { status } });
     return res.data;
   },
   getOne: async (id: string) => {
-    const res = await api.get<any>(`/api/admin/disputes/${id}`);
+    const res = await api.get<any>(`/api/admin/dispute-orders/${id}`);
     return res.data;
   },
   resolve: async (id: string, data: { decision: string; resolution: string; refundAmount?: number; penaltyAmount?: number }) => {
-    const res = await api.post(`/api/admin/disputes/${id}/resolve`, data);
+    const res = await api.post(`/api/admin/dispute-orders/${id}/resolve`, data);
     return res.data;
   },
   escalate: async (id: string, notes: string) => {
-    const res = await api.post(`/api/admin/disputes/${id}/escalate`, { notes });
+    const res = await api.post(`/api/admin/dispute-orders/${id}/escalate`, { notes });
     return res.data;
   },
 };

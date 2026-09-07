@@ -241,6 +241,14 @@ jobs:
       # directory name.
       - name: Data-layer boundary
         run: npm run check:db-boundary
+      # A panel calling a path the API does not serve 404s, gets caught by the
+      # component, and renders an empty state — indistinguishable from "no
+      # data". Five were live at once (dispute queue, dispute resolve, merchant
+      # limits, promo upload, merchant order history); three shared one cause, a
+      # `/queue` prefix the handlers had moved out from under. No route test
+      # catches this: the handler works, nobody calls it correctly.
+      - name: Panels and API agree on what exists
+        run: npm run check:ui-coverage
       # Items 5+58: architecture validation — circular imports and governance
       # boundary violations (domain core importing routes, wallet importing
       # products) fail the build instead of waiting for human review.
