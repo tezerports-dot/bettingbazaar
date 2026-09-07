@@ -8,6 +8,14 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup } from '@testing-library/react';
 import { afterEach, vi } from 'vitest';
 
+// jsdom does not implement scrollIntoView. Every real browser and the Capacitor
+// WebView do, so this is a gap in the test environment rather than something a
+// component should have to guard — a `?.` in production code to satisfy jsdom
+// is test scaffolding smuggled into the app.
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = function scrollIntoView() { /* no layout in jsdom */ };
+}
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
