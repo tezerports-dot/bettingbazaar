@@ -95,13 +95,12 @@ describePg('payment routes', () => {
     }
   });
 
-  it('serves the rate card without a token — it is public', async () => {
-    const res = await request(app).get('/rates');
-    expect(res.status).toBe(200);
-    // Fixed 1:1 internal conversion, no spread. A rate that drifted from 1
-    // would mean tokens and rupees stopped being the same unit.
-    expect(res.body.rates).toEqual({ buyRate: 1, sellRate: 1, merchantProfitPerToken: 0 });
-  });
+  // The rate-card case moved rather than being deleted. GET /rates returned the
+  // 1:1 conversion as literals — a third declaration of it, and the one place
+  // an edit would silently not take effect — so the route is gone. The
+  // invariant it protected is not: "a rate that drifted from 1 would mean
+  // tokens and rupees stopped being the same unit" is now asserted against the
+  // owner of that value, in unit/systemConfigPayload.test.js.
 
   it('refuses deposits and withdrawals to an unverified player', async () => {
     // KYC gates the money routes and nothing else. A player who cannot deposit

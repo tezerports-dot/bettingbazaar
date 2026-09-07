@@ -136,58 +136,19 @@ const ASSIGN_WINDOW_MS = 10 * 60 * 1000;
 // canViewTransactions permission. Keeping this route here shadowed the Payment
 // route because merchant.assignment.routes.js is mounted first.
 
-// ─── POST /api/admin/payment-orders/:id/assign ───────────────────────────────
-// Dedicated assign endpoint. Creates merchantSnapshot + 10-min timer.
-// Spec Section 8 / 16.1 / Finding 5
-router.post('/payment-orders/:id/assign', authenticate, isAdmin, async (req, res) => {
-  try {
-    const { merchantId } = req.body || {};
-    if (!merchantId) return res.status(400).json({ success: false, message: 'merchantId is required' });
-
-    const order = await db.orders.getOrderRecord(req.params.id);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (order.status !== 'PENDING_QUEUE') {
-      return res.status(400).json({ success: false, message: `Order is ${order.status}, cannot assign` });
-    }
-
-    const merchant = await db.merchants.getMerchant(merchantId);
-    if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
-
-    const pooled = await poolRefusal(merchant.merchantId, 'assigning');
-    if (pooled) return res.status(pooled.status).json({ success: false, ...pooled });
-
-    const funded = await inventoryRefusal(merchant.merchantId, order.tokenAmount);
-    if (funded) return res.status(funded.status).json({ success: false, ...funded });
-
-    const expiresAt = new Date(Date.now() + ASSIGN_WINDOW_MS);
-
-    // The transition is the gate: the expected state is in the UPDATE's WHERE,
-    // so this route and the automatic assigner reaching the same queued order
-    // produce one winner rather than a silent overwrite.
-    const assigned = await assignOrder(order.orderId, {
-      set: {
-        merchantId:       merchant.merchantId,
-        merchantSnapshot: buildSnapshot(merchant, expiresAt),
-        assignedAt:       new Date(),
-        assignedBy:       req.user.userId,
-        expiresAt,
-      },
-    });
-    if (!assigned.ok || assigned.idempotent) {
-      return res.status(409).json({
-        success: false,
-        message: `Order is ${assigned.status ?? 'missing'}, cannot assign`,
-      });
-    }
-    Object.assign(order, assigned.order);
-
-    announceAssignment(order, merchant, expiresAt);
-    res.json({ success: true, message: 'Order assigned with merchant snapshot', order });
-  } catch (error) {
-    console.error('POST /payment-orders/:id/assign error:', error);
-    res.status(500).json({ success: false, message: 'Failed to assign order' });
-  }
-});
+/*
+ * REMOVED — POST /api/admin/payment-orders/:id/assign.
+ *
+ * A second manual-assignment route, near-identical to /queue/assign/:orderId
+ * below: same merchantId body, same PENDING_QUEUE precondition, same pool and
+ * inventory refusals, same assignOrder transition. Nothing called it.
+ *
+ * It was also the WEAKER copy. /queue/assign additionally requires
+ * merchantApprovalStatus === 'APPROVED'; this one only checked the merchant
+ * existed, so it would have routed a player's order to an unapproved merchant.
+ * An unreachable hole is still a hole, and keeping two copies of an assignment
+ * guarantees the next guard is added to one of them. §1 — one owner.
+ */
 
 // ─── POST /api/admin/payment-orders/:id/reassign ─────────────────────────────
 // Reassign to a different merchant. New snapshot, reset timer.

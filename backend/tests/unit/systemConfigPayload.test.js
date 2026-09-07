@@ -67,6 +67,23 @@ describe('the system-config payload', () => {
     expect(systemConfigPayload({ registrationEnabled: false }).registrationEnabled).toBe(false);
   });
 
+  it('keeps the conversion at exactly 1:1', () => {
+    // Moved here from paymentRoutes.test.js when GET /api/payment/rates was
+    // deleted: that route declared the rate as a literal, so it was a third
+    // copy AND the one an operator's edit would never reach. The invariant is
+    // what mattered — tokens and rupees are the same unit, and a rate that
+    // drifted from 1 would silently stop that being true.
+    //
+    // Asserted for a populated row too, not just an empty one: these are
+    // constants in the builder, so a future `cfg?.tokenBuyRate ?? 1` that made
+    // them configurable would have to come here and say so deliberately.
+    for (const cfg of [null, { tokenBuyRate: 3, tokenSellRate: 7, payoutMultiplier: 5 }]) {
+      const p = systemConfigPayload(cfg);
+      expect(p.tokenBuyRate, 'buy rate must be exactly 1').toBe(1);
+      expect(p.tokenSellRate, 'sell rate must be exactly 1').toBe(1);
+    }
+  });
+
   it('never hands back an empty footer', () => {
     // An admin cannot intend a panel with no navigation, so [] means unset.
     expect(systemConfigPayload({ footerPages: [] }).footerPages).toHaveLength(5);

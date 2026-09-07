@@ -245,11 +245,16 @@ router.get('/order/:orderId', authenticate, async (req, res) => {
   }
 });
 
-// Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08) — no
-// buy/sell spread. Response shape kept for client compatibility.
-router.get('/rates', async (req, res) => {
-  res.json({ success: true, rates: { buyRate: 1, sellRate: 1, merchantProfitPerToken: 0 } });
-});
+/*
+ * REMOVED — GET /api/payment/rates.
+ *
+ * It returned { buyRate: 1, sellRate: 1, merchantProfitPerToken: 0 } as
+ * literals: no database read, nothing an operator could change. That made it a
+ * THIRD declaration of the 1:1 conversion, beside the config spec's and the
+ * system-config payload's tokenBuyRate/tokenSellRate — and the one place where
+ * editing the rate would silently have no effect. Its comment said the shape
+ * was "kept for client compatibility"; no client was reading it. §1.
+ */
 
 router.post('/order/cancel', authenticate, async (req, res) => {
   try {

@@ -125,13 +125,23 @@ describe('the assignment routes no longer read the mirror', () => {
     // One call site, inside the helper — not a second gate that skipped it.
     expect([...source.matchAll(/await getMerchantTokenBalance\(/g)]).toHaveLength(1);
 
-    // All three paths still gate. A new assign endpoint that forgets to is the
-    // failure this protects against.
-    const assignHandlers = [...source.matchAll(/router\.post\('(\/payment-orders\/:id\/(?:re)?assign|\/queue\/assign\/:orderId)'/g)];
-    expect(assignHandlers).toHaveLength(3);
-    expect([...source.matchAll(/await inventoryRefusal\(/g)]).toHaveLength(3);
+    // EVERY assign path gates — asserted as a relation, not three magic
+    // numbers. It used to read `toHaveLength(3)` three times, which meant that
+    // deleting a path (the duplicate /payment-orders/:id/assign went in
+    // 2026-09) failed the test for the right count and the wrong reason, and
+    // that the repair was to lower a number — indistinguishable from lowering
+    // it to hide a handler that forgot to gate.
+    //
+    // Counting the handlers and requiring the guards to match keeps the
+    // invariant while surviving a path being added or removed. A new assign
+    // endpoint that forgets either guard still fails, which is the point.
+    const assignPaths = [...source.matchAll(/router\.post\('(\/payment-orders\/:id\/(?:re)?assign|\/queue\/assign\/:orderId)'/g)];
+    expect(assignPaths.length, 'there must be at least one assign path').toBeGreaterThan(0);
+    expect([...source.matchAll(/await inventoryRefusal\(/g)],
+      'every assign path must gate on merchant inventory').toHaveLength(assignPaths.length);
     // …and each is confined to the curated pool.
-    expect([...source.matchAll(/await poolRefusal\(/g)]).toHaveLength(3);
+    expect([...source.matchAll(/await poolRefusal\(/g)],
+      'every assign path must be confined to the curated pool').toHaveLength(assignPaths.length);
   });
 
   it('still reports the balance it actually gated on', () => {
