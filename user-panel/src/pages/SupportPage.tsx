@@ -18,6 +18,24 @@
  * was created, and whether anyone has replied yet — because on a platform
  * holding somebody's money, an invented "avg reply 2 min" is a promise the
  * product cannot keep.
+ *
+ * ── The assistant, and the line it must not cross ───────────────────────────
+ * POST /api/support/ask answers from the ingested knowledge base only, and is
+ * built to refuse rather than guess. It is offered BEFORE a ticket is opened,
+ * because most questions are policy questions an operator has already written
+ * down, and a player who gets the answer in two seconds is better served than
+ * one who waits for an agent.
+ *
+ * It never swallows the message. Three rules hold it there:
+ *   1. Every assistant reply carries a visible route to a human, and the text
+ *      the player typed is preserved so opening a ticket costs one tap.
+ *   2. An ungrounded answer (`grounded: false` — nothing matched) is not shown
+ *      as an answer at all. The ticket is the offer.
+ *   3. Once a ticket exists the assistant stops intercepting entirely. The
+ *      player has asked for a human; answering them with a robot again is the
+ *      behaviour this file was written to delete.
+ * If the assistant is dormant or its call fails, the composer opens a ticket
+ * exactly as it did before — the human path never depends on it.
  */
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router';
@@ -28,7 +46,7 @@ import ScreenShell, { card } from '../redesign/Screen';
 const backend = getBackend();
 
 interface SupportLinks { whatsapp: string; telegram: string; telegramGroupUrl: string; telegramChannelUrl: string; instagram: string; youtube: string; email: string; }
-interface ChatMsg { me: boolean; t: string; who?: string; }
+interface ChatMsg { me: boolean; t: string; who?: string; assistant?: boolean; }
 
 const authHeaders = () => {
   const token = localStorage.getItem('auth_token') || '';
@@ -42,6 +60,14 @@ const SupportChat: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  // Set only when BOTH halves of the assistant are configured. `enabled` is the
+  // server's own conjunction of retrievalReady && generationReady; asking with
+  // either half missing is a guaranteed 503 and a wasted round trip for a
+  // player who is already having a problem.
+  const [assistantOn, setAssistantOn] = useState(false);
+  // The question a failed/unhelpful assistant answer can still be escalated
+  // with, so the player never retypes what they already wrote.
+  const [escalate, setEscalate] = useState<string>('');
   const bottom = useRef<HTMLDivElement>(null);
 
   const render = (messages: any[]): ChatMsg[] =>
@@ -61,8 +87,84 @@ const SupportChat: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     finally { setLoading(false); }
   };
 
-  useEffect(() => { loadThread(); }, []);
+  /**
+   * Is the assistant worth asking? Unauthenticated on purpose (the route is),
+   * and failure is silently "no" — a status probe must never stop a player
+   * reaching a human.
+   */
+  const loadAssistant = async () => {
+    try {
+      const r = await fetch(apiUrl('/api/support/status'));
+      const d = await r.json();
+      setAssistantOn(Boolean(d?.success && d?.enabled));
+    } catch { setAssistantOn(false); }
+  };
+
+  useEffect(() => { loadThread(); loadAssistant(); }, []);
   useEffect(() => { bottom.current?.scrollIntoView({ behavior: 'smooth' }); }, [msgs.length]);
+
+  /**
+   * Open a ticket with `t`, or reply to the one already open.
+   * The optimistic line is assumed to be on screen already; on failure the
+   * caller removes it and puts the text back in the box.
+   */
+  const openOrReply = async (t: string) => {
+    if (!ticket) {
+      const r = await fetch(apiUrl('/api/support/tickets'), {
+        method: 'POST', headers: authHeaders(),
+        // The subject is the first line of what they wrote, so an agent sees
+        // the problem in the queue rather than a placeholder.
+        body: JSON.stringify({ subject: t.slice(0, 120), message: t }),
+      });
+      const d = await r.json();
+      if (!d?.success) throw new Error(d?.message || 'Could not open a ticket');
+      setTicket(d.ticket);
+    } else {
+      const r = await fetch(apiUrl(`/api/support/tickets/${ticket.ticketId}/reply`), {
+        method: 'POST', headers: authHeaders(), body: JSON.stringify({ content: t }),
+      });
+      const d = await r.json();
+      if (!d?.success) throw new Error(d?.message || 'Could not send your message');
+    }
+  };
+
+  /**
+   * Escalate the question the assistant could not settle. Nothing is retyped
+   * and nothing is lost — the same text becomes the ticket.
+   */
+  const escalateToHuman = async () => {
+    const t = escalate;
+    if (!t || busy) return;
+    setBusy(true); setError('');
+    setEscalate('');
+    try {
+      await openOrReply(t);
+      setMsgs(prev => [...prev, { me: false, t: 'Sent to our support team. Their replies appear here.', who: 'Support' }]);
+    } catch (e: any) {
+      setError(e.message || 'Could not send. Try one of the channels below.');
+      setEscalate(t); // still escalatable — the offer does not disappear on a failure
+    } finally { setBusy(false); }
+  };
+
+  /**
+   * Ask the assistant. Returns true when it produced a grounded answer, false
+   * for anything else — dormant, ungrounded, rate-limited or a network failure
+   * — so the caller falls through to a human every time it is not certain.
+   */
+  const askAssistant = async (t: string): Promise<boolean> => {
+    try {
+      const r = await fetch(apiUrl('/api/support/ask'), {
+        method: 'POST', headers: authHeaders(), body: JSON.stringify({ query: t }),
+      });
+      const d = await r.json();
+      // `grounded: false` means nothing in the knowledge base matched, and the
+      // server returns a canned "contact support" line for it. Showing that as
+      // an answer would be the fake reply this panel exists to have removed.
+      if (!r.ok || !d?.success || !d?.grounded || !String(d?.answer || '').trim()) return false;
+      setMsgs(prev => [...prev, { me: false, t: String(d.answer).trim(), who: 'Assistant', assistant: true }]);
+      return true;
+    } catch { return false; }
+  };
 
   const send = async () => {
     const t = text.trim();
@@ -72,24 +174,28 @@ const SupportChat: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     // server — never a fabricated reply alongside it.
     setMsgs(prev => [...prev, { me: true, t, who: 'You' }]);
     setText('');
+
+    // Only before a ticket exists. Once the player has a human thread open,
+    // every message goes to that thread.
+    if (assistantOn && !ticket) {
+      const answered = await askAssistant(t);
+      // Either way the question stays escalatable in one tap: answered, in case
+      // the answer missed; unanswered, because a human is now the only path.
+      setEscalate(t);
+      setBusy(false);
+      if (answered) return;
+      setMsgs(prev => [...prev, {
+        me: false, who: 'Assistant', assistant: true,
+        t: "I don't have an answer for that in our help centre. Send it to our support team below and a person will pick it up.",
+      }]);
+      return;
+    }
+
     try {
-      if (!ticket) {
-        const r = await fetch(apiUrl('/api/support/tickets'), {
-          method: 'POST', headers: authHeaders(),
-          // The subject is the first line of what they wrote, so an agent sees
-          // the problem in the queue rather than a placeholder.
-          body: JSON.stringify({ subject: t.slice(0, 120), message: t }),
-        });
-        const d = await r.json();
-        if (!d?.success) throw new Error(d?.message || 'Could not open a ticket');
-        setTicket(d.ticket);
-      } else {
-        const r = await fetch(apiUrl(`/api/support/tickets/${ticket.ticketId}/reply`), {
-          method: 'POST', headers: authHeaders(), body: JSON.stringify({ content: t }),
-        });
-        const d = await r.json();
-        if (!d?.success) throw new Error(d?.message || 'Could not send your message');
-      }
+      // One owner for the open-or-reply decision. `escalateToHuman` needs the
+      // same two calls, and two copies of it would drift the moment either the
+      // subject rule or the payload shape changed.
+      await openOrReply(t);
     } catch (e: any) {
       setError(e.message || 'Could not send. Try one of the channels below.');
       // The optimistic line is removed rather than left looking delivered.
@@ -100,6 +206,8 @@ const SupportChat: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 
   const statusLine = loading ? 'Loading…'
     : ticket ? `Ticket ${ticket.ticketId.slice(0, 8)} · ${String(ticket.status || 'OPEN').toLowerCase()}`
+    // Says which one is about to answer, so nobody is surprised by a robot.
+    : assistantOn ? 'Assistant answers first · a person is one tap away'
     : 'Send a message to open a ticket';
 
   return (
@@ -125,11 +233,21 @@ const SupportChat: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           {msgs.map((m, i) => (
             <div key={i} style={{ display: 'flex', justifyContent: m.me ? 'flex-end' : 'flex-start' }}>
               <div style={{ maxWidth: '78%' }}>
-                {!m.me && <div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.06em', color: 'var(--text3)', margin: '0 0 3px 4px' }}>{m.who}</div>}
+                {/* An assistant reply is labelled as one. A player deciding what
+                    to do about their money must never mistake it for a person. */}
+                {!m.me && <div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.06em', color: m.assistant ? 'var(--gold)' : 'var(--text3)', margin: '0 0 3px 4px' }}>{m.assistant ? 'ASSISTANT · AUTOMATED' : m.who}</div>}
                 <div style={{ padding: '10px 13px', borderRadius: 14, background: m.me ? 'linear-gradient(135deg,var(--gold2),var(--gold))' : 'var(--surface3)', color: m.me ? '#1a1200' : 'var(--text)', fontSize: 13, lineHeight: 1.45, boxShadow: 'var(--shadow-sm)' }}>{m.t}</div>
               </div>
             </div>
           ))}
+          {/* Always reachable after the assistant answers, whether it helped or
+              not. The typed question is carried into the ticket, so escalating
+              costs one tap and nothing is retyped. */}
+          {escalate && (
+            <button onClick={escalateToHuman} disabled={busy} style={{ alignSelf: 'center', marginTop: 2, padding: '9px 16px', borderRadius: 999, border: '1px solid var(--line2)', background: 'var(--surface3)', color: 'var(--text)', fontSize: 12, fontWeight: 700, cursor: 'pointer', opacity: busy ? .6 : 1 }}>
+              {busy ? 'Sending…' : ticket ? 'Send this to support too' : "This didn't answer it — talk to a person"}
+            </button>
+          )}
           {error && <div style={{ fontSize: 11, color: 'var(--red)', textAlign: 'center' }}>{error}</div>}
           <div ref={bottom} />
         </div>

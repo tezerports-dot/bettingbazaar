@@ -28,7 +28,29 @@ import SupportPage from './SupportPage';
 
 const fetchMock = vi.fn();
 
-const jsonOnce = (body: any) => Promise.resolve({ ok: true, json: () => Promise.resolve(body) } as any);
+const jsonOnce = (body: any, ok = true) => Promise.resolve({ ok, json: () => Promise.resolve(body) } as any);
+
+/**
+ * A backend with the assistant live. `enabled` is the server's own conjunction
+ * of retrievalReady && generationReady — the panel must not re-derive it.
+ */
+const withAssistant = (askBody: any, askOk = true) => {
+  fetchMock.mockImplementation((url: string, init?: any) => {
+    const u = String(url);
+    if (u.endsWith('/api/support/status')) return jsonOnce({ success: true, enabled: true });
+    if (u.endsWith('/api/support/ask')) return jsonOnce(askBody, askOk);
+    if (u.endsWith('/api/support/tickets') && (!init || init.method !== 'POST')) return jsonOnce({ success: true, tickets: [] });
+    if (u.endsWith('/api/support/tickets') && init?.method === 'POST') {
+      return jsonOnce({ success: true, ticket: { ticketId: 'tkt-abcdef12', status: 'OPEN' } });
+    }
+    if (u.includes('/reply')) return jsonOnce({ success: true, message: {} });
+    return jsonOnce({ success: true });
+  });
+};
+
+const asks = () => fetchMock.mock.calls.filter(([u]) => String(u).endsWith('/api/support/ask'));
+const tickets = () => fetchMock.mock.calls.filter(([u, i]) =>
+  i?.method === 'POST' && !String(u).endsWith('/api/support/ask'));
 
 beforeEach(() => {
   fetchMock.mockReset();
@@ -37,6 +59,8 @@ beforeEach(() => {
   // No existing ticket, so the first message must OPEN one.
   fetchMock.mockImplementation((url: string, init?: any) => {
     const u = String(url);
+    // Assistant dormant by default: these cases are about the human path.
+    if (u.endsWith('/api/support/status')) return jsonOnce({ success: true, enabled: false });
     if (u.endsWith('/api/support/tickets') && (!init || init.method !== 'POST')) return jsonOnce({ success: true, tickets: [] });
     if (u.endsWith('/api/support/tickets') && init?.method === 'POST') {
       return jsonOnce({ success: true, ticket: { ticketId: 'tkt-abcdef12', status: 'OPEN' } });
@@ -138,5 +162,114 @@ describe('the support chat', () => {
     type('thanks');
     await waitFor(() => expect(posts().length).toBe(1));
     expect(posts()[0][0]).toContain('/tickets/tkt-existing/reply');
+  });
+  // ── The assistant ─────────────────────────────────────────────────────────
+  // It answers first, and it must never become a wall between a player and a
+  // person. Every case below is about that boundary rather than about the
+  // answer text, which comes from the model and is not this panel's business.
+
+  it('asks the assistant before opening a ticket', async () => {
+    withAssistant({ success: true, grounded: true, answer: 'Withdrawals settle in 24 hours.' });
+    await openChat();
+    type('how long do withdrawals take');
+
+    await waitFor(() => expect(asks().length).toBe(1));
+    expect(JSON.parse(asks()[0][1].body)).toMatchObject({ query: 'how long do withdrawals take' });
+    expect(await screen.findByText('Withdrawals settle in 24 hours.')).toBeInTheDocument();
+    // A grounded answer does NOT open a ticket — that is the point of asking.
+    expect(tickets().length).toBe(0);
+  });
+
+  it('labels the answer as automated', async () => {
+    // A player deciding what to do about their money must not mistake this for
+    // a person. The old panel's whole defect was reading as human.
+    withAssistant({ success: true, grounded: true, answer: 'KYC takes one working day.' });
+    await openChat();
+    type('kyc');
+    expect(await screen.findByText(/ASSISTANT · AUTOMATED/)).toBeInTheDocument();
+  });
+
+  it('keeps a person one tap away after it answers, carrying the question over', async () => {
+    withAssistant({ success: true, grounded: true, answer: 'Deposits credit instantly.' });
+    await openChat();
+    type('my deposit of 5000 is missing');
+    await screen.findByText('Deposits credit instantly.');
+
+    // The answer may simply be wrong for this player's case.
+    fireEvent.click(screen.getByText(/talk to a person/i));
+    await waitFor(() => expect(tickets().length).toBe(1));
+    const body = JSON.parse(tickets()[0][1].body);
+    // Their own words, not retyped and not lost.
+    expect(body.message).toBe('my deposit of 5000 is missing');
+    expect(body.subject).toContain('deposit of 5000');
+  });
+
+  it('does not present an ungrounded answer as an answer', async () => {
+    // grounded:false means nothing matched; the server still returns a canned
+    // "contact human support" line. Showing that as a reply would be the exact
+    // fake this panel was written to delete.
+    const canned = "I couldn't find this in our help center. Please contact human support and they'll assist you.";
+    withAssistant({ success: true, grounded: false, answer: canned, citations: [] });
+    await openChat();
+    type('something obscure');
+
+    await waitFor(() => expect(asks().length).toBe(1));
+    expect(screen.queryByText(canned)).toBeNull();
+    expect(await screen.findByText(/talk to a person/i)).toBeInTheDocument();
+  });
+
+  it('falls through to a human when the assistant call fails', async () => {
+    withAssistant({ success: false, message: 'RAG retrieval not configured.' }, false);
+    await openChat();
+    type('help');
+
+    await waitFor(() => expect(asks().length).toBe(1));
+    // Nothing is claimed, and the human route is offered.
+    expect(screen.queryByText(/RAG retrieval/)).toBeNull();
+    expect(await screen.findByText(/talk to a person/i)).toBeInTheDocument();
+  });
+
+  it('never asks the assistant when the server reports it dormant', async () => {
+    // Default mock has enabled:false. A 503 on every message would be a wasted
+    // round trip for a player who already has a problem.
+    await openChat();
+    type('anything');
+    await waitFor(() => expect(tickets().length).toBe(1));
+    expect(asks().length).toBe(0);
+  });
+
+  it('stops intercepting once a human thread is open', async () => {
+    withAssistant({ success: true, grounded: true, answer: 'See our fees page.' });
+    await openChat();
+    type('what are the fees');
+    await screen.findByText('See our fees page.');
+    fireEvent.click(screen.getByText(/talk to a person/i));
+    await waitFor(() => expect(tickets().length).toBe(1));
+
+    // The player asked for a human. Answering them with a robot again is the
+    // behaviour this file exists to prevent.
+    const asksBefore = asks().length;
+    type('still not resolved');
+    await waitFor(() => expect(tickets().length).toBe(2));
+    expect(asks().length).toBe(asksBefore);
+    expect(tickets()[1][0]).toContain('/tickets/tkt-abcdef12/reply');
+  });
+
+  it('keeps the escalation offer alive when sending it fails', async () => {
+    fetchMock.mockImplementation((url: string, init?: any) => {
+      const u = String(url);
+      if (u.endsWith('/api/support/status')) return jsonOnce({ success: true, enabled: true });
+      if (u.endsWith('/api/support/ask')) return jsonOnce({ success: true, grounded: true, answer: 'Try again later.' });
+      if (u.endsWith('/api/support/tickets') && init?.method === 'POST') return jsonOnce({ success: false, message: 'queue full' });
+      return jsonOnce({ success: true, tickets: [] });
+    });
+    await openChat();
+    type('urgent money problem');
+    await screen.findByText('Try again later.');
+    fireEvent.click(screen.getByText(/talk to a person/i));
+
+    await waitFor(() => expect(screen.getByText('queue full')).toBeInTheDocument());
+    // The way to a person must not vanish because one attempt failed.
+    expect(screen.getByText(/talk to a person/i)).toBeInTheDocument();
   });
 });
