@@ -30,7 +30,10 @@
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
-const ROOT = '/home/user/bettingbazaar';
+import { fileURLToPath } from 'node:url';
+// Derived from this file's own location, never a hardcoded path: the first
+// version carried the author's checkout path and so could only run there.
+const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/\/$/, '');
 const walk = (d, re, acc = []) => {
   for (const e of readdirSync(d, { withFileTypes: true })) {
     if (['node_modules','dist','.git','build','coverage'].includes(e.name)) continue;
