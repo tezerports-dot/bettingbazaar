@@ -433,44 +433,25 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
  * Frontend admin panel calls: POST /api/admin/manage-cycle
  * ════════════════════════════════════════════════════════════════════════════
  */
-// AUDIT: /download/android and /download/ios were REMOVED from here.
-// They exist in server.js at GET /api/download/android and /api/download/ios.
-// Having them in both places was duplicate code with two different mount paths
-// (/api/admin/download/... vs /api/download/...) — server.js versions are canonical.
-
-// ─── DOWNLOAD LINK ADMIN ROUTES ──────────────────────────────────────────────
-router.get('/download/android', authenticate, isAdminOrSubAdmin, async (req, res) => {
-  try {
-    const config = await getSystemConfig();
-    if (config?.androidUrl) return res.redirect(302, config.androidUrl);
-    res.status(404).json({ success: false, message: 'Android APK URL not set. Add it in System Settings → App Distribution.' });
-  } catch (e) {
-    res.status(500).json({ success: false, message: 'Failed to fetch download link.' });
-  }
-});
-
-router.get('/download/ios', authenticate, isAdminOrSubAdmin, async (req, res) => {
-  try {
-    const config = await getSystemConfig();
-    if (config?.iosUrl) return res.redirect(302, config.iosUrl);
-    res.status(404).json({ success: false, message: 'iOS URL not set. Add it in System Settings → App Distribution.' });
-  } catch (e) {
-    res.status(500).json({ success: false, message: 'Failed to fetch download link.' });
-  }
-});
-
-router.get('/download/links', authenticate, isAdminOrSubAdmin, async (req, res) => {
-  try {
-    const config = await getSystemConfig();
-    res.json({
-      success: true,
-      androidUrl: config?.androidUrl || '',
-      iosUrl:     config?.iosUrl     || '',
-    });
-  } catch (e) {
-    res.status(500).json({ success: false, message: 'Failed to fetch download links.' });
-  }
-});
+/*
+ * REMOVED — the three /api/admin/download/* routes.
+ *
+ * The AUDIT note that used to sit here said /download/android and
+ * /download/ios "were REMOVED from here ... server.js versions are canonical".
+ * They had not been. The note described an intention; the routes were still
+ * mounted, and a comment claiming a deletion that did not happen is worse than
+ * no comment, because the next reader trusts it.
+ *
+ * server.js serves GET /api/download/android and /api/download/ios, PUBLIC and
+ * unauthenticated, which is the only way they can work: a browser following a
+ * download link carries no admin token, so the authenticated copies here would
+ * have 401'd every real click.
+ *
+ * /download/links was a third read of androidUrl and iosUrl. SystemSettings
+ * already loads both from the system-config endpoint and edits them under App
+ * Distribution, so this returned a stale second opinion about two fields that
+ * already had an owner. §1 — one owner per value.
+ */
 
 // ── Withdrawal approvals live in the P2P order flow, not here ───────────────
 // GET/POST /withdrawal-requests{,/:id/approve,/:id/reject} were removed on

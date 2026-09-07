@@ -1,6 +1,6 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import React, { useEffect, useState } from 'react';
-import { ShieldCheck, UserPlus, Edit, Trash2, Key } from 'lucide-react';
+import { ShieldCheck, UserPlus, Edit, Trash2, Key, Layers} from 'lucide-react';
 import { DataTable } from '../../components/DataTable';
 import { Kpis, Toolbar } from '../../components/design';
 import { Modal } from '../../components/Modal';
@@ -23,6 +23,9 @@ const PERMISSIONS = PERMISSION_KEYS.map(key => ({
 export const SubAdminsList: React.FC = () => {
   const [subAdmins, setSubAdmins] = useState<User[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [queueManagers, setQueueManagers] = useState<any[]>([]);
+  const [qmBusy, setQmBusy] = useState<string | null>(null);
+  const [grantMobile, setGrantMobile] = useState('');
 
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showPhantomModal, setShowPhantomModal] = useState(false);
@@ -48,9 +51,32 @@ export const SubAdminsList: React.FC = () => {
     'NONE'
   );
 
-  useEffect(() => {
-    loadSubAdmins();
-  }, []);
+  useEffect(() => { loadSubAdmins(); loadQueueManagers(); }, []);
+
+  /**
+   * Queue-manager authority — a separate grant from sub-admin permissions.
+   *
+   * A queue manager assigns payment orders to merchants, so this decides where
+   * a player's money is routed. Both endpoints existed with nothing calling
+   * them: the only way to grant it was to write the column by hand.
+   */
+  const loadQueueManagers = async () => {
+    try {
+      const r = await api.subAdmins.listQueueManagers();
+      if (r?.success) setQueueManagers(r.managers || []);
+    } catch { /* the section simply does not render */ }
+  };
+
+  const toggleQueueManager = async (userId: string, enable: boolean) => {
+    setQmBusy(userId);
+    try {
+      await api.subAdmins.setQueueManager(userId, enable);
+      toast.success(enable ? 'Queue-manager access granted' : 'Queue-manager access revoked');
+      loadQueueManagers();
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Failed to change queue-manager access');
+    } finally { setQmBusy(null); }
+  };
 
   const loadSubAdmins = async () => {
     setIsLoading(true);
@@ -220,6 +246,57 @@ export const SubAdminsList: React.FC = () => {
   return (
     <div className="om-fade space-y-6">
       <Toolbar actions={[{ label: 'Create Sub-Admin', icon: UserPlus, primary: true, onClick: () => setShowCreateModal(true) }]} />
+
+      {/* ── Queue-manager authority ─────────────────────────────────────────
+          Separate from sub-admin permissions: this grant lets an account route
+          a player's money to a merchant, so it is listed on its own and the
+          revoke is one click. */}
+      <div className="bg-dark-800 border border-dark-600 rounded-lg p-4 space-y-3">
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <div>
+            <p className="text-sm font-semibold text-gray-300 flex items-center gap-2">
+              <Layers size={14} className="text-blue-400" />
+              Queue managers ({queueManagers.length})
+            </p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              These accounts assign payment orders to merchants — they decide where a player's money goes.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              value={grantMobile}
+              onChange={(e) => setGrantMobile(e.target.value)}
+              className="input text-sm"
+              placeholder="User id to grant…"
+            />
+            <button
+              onClick={() => { if (grantMobile.trim()) { toggleQueueManager(grantMobile.trim(), true); setGrantMobile(''); } }}
+              disabled={!grantMobile.trim() || qmBusy !== null}
+              className="btn-secondary text-sm disabled:opacity-50"
+            >Grant</button>
+          </div>
+        </div>
+
+        {queueManagers.length === 0 ? (
+          <p className="text-xs text-gray-500">Nobody holds queue-manager access.</p>
+        ) : (
+          <div className="space-y-1.5">
+            {queueManagers.map((m: any) => (
+              <div key={m.userId ?? m._id} className="flex items-center justify-between bg-dark-700 rounded-lg px-4 py-2.5 text-sm">
+                <div className="min-w-0">
+                  <p className="text-gray-200">{m.username || 'Unnamed'}</p>
+                  <p className="text-xs text-gray-500 font-mono truncate">{m.mobile || m.userId || m._id}</p>
+                </div>
+                <button
+                  onClick={() => toggleQueueManager(String(m.userId ?? m._id), false)}
+                  disabled={qmBusy !== null}
+                  className="px-3 py-1.5 bg-red-500/20 text-red-300 text-xs font-semibold rounded-lg hover:bg-red-500/30 disabled:opacity-50"
+                >Revoke</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* Permission Reference */}
       <div className="bg-dark-800 border border-dark-600 rounded-lg p-4">

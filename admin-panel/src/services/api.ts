@@ -729,6 +729,23 @@ export const subAdmins = {
     return res.data;
   },
 
+  /**
+   * Queue-manager authority.
+   *
+   * A queue manager assigns payment orders to merchants, which decides where a
+   * player's money is routed. Both endpoints existed and nothing called them,
+   * so the grant could only be made by writing the row by hand.
+   */
+  listQueueManagers: async () => {
+    const res = await api.get<any>('/api/admin/queue-managers');
+    return res.data;
+  },
+
+  setQueueManager: async (userId: string, enable: boolean) => {
+    const res = await api.post(`/api/admin/users/${userId}/queue-manager`, { enable });
+    return res.data;
+  },
+
   delete: async (subAdminId: string) => {
     const res = await api.delete(`/api/admin/sub-admins/${subAdminId}`);
     return res.data;
