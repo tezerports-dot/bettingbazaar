@@ -20,11 +20,6 @@ export const ACTIVE_STATES: PaymentOrderState[] = [
   'PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID', 'DISPUTED',
 ];
 
-/** States where the order is terminal (UI stops polling) */
-export const TERMINAL_STATES: PaymentOrderState[] = [
-  'COMPLETED', 'REJECTED', 'FAILED', 'CANCELLED',
-];
-
 /** Human-readable labels for display */
 export const PAYMENT_STATE_LABELS: Record<PaymentOrderState, string> = {
   PENDING_QUEUE: 'Waiting for Merchant',

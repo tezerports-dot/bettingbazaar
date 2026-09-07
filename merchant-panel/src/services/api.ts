@@ -405,11 +405,6 @@ export const getWeeklyEarnings = async (): Promise<{ weekly: Array<{ date: strin
 
 
 
-export const formatDateShort = (dateString: string | number): string => {
-  if (!dateString) return 'N/A';
-  const date = new Date(dateString);
-  return date.toLocaleDateString('en-IN');
-};
 
 export const formatTime = (dateString: string | number): string => {
   if (!dateString) return 'N/A';
@@ -457,7 +452,6 @@ export const api = {
 
   // Red Flag
   // Utilities
-  formatDateShort,
   formatTime,
   // Direct request function for custom calls
   request,

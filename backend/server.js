@@ -98,7 +98,7 @@ import { errorHandler }   from './middleware/errorHandler.js';
 import { requestContext } from './middleware/requestContext.js'; // X-6: correlation ids
 import { tlsFingerprintDefense, startTlsFingerprintDefenseConfigRefresh } from './middleware/tlsFingerprintDefense.js';
 import { rejectAmbiguousFraming } from './middleware/headerNormalization.js';
-import { authLimiter, adminAuthLimiter, merchantAuthLimiter, betLimiter, twoFactorLimiter } from './middleware/security.js';
+import { authLimiter, adminAuthLimiter, merchantAuthLimiter, betLimiter, twoFactorLimiter, securityMonitor } from './middleware/security.js';
 // Item 12 (2026-07-13): IP-rotation defense — per-subnet backstop + optional
 // global surge breaker on sensitive endpoints, on top of the per-IP limiters.
 import { createSubnetLimiter, globalSurgeBreaker, startIpDefenseConfigRefresh } from './middleware/ipDefense.js';
@@ -236,6 +236,13 @@ app.use(cookieParser());
 app.use(requestContext); // X-6: correlation id (before the logger, so it's logged)
 app.use(tlsFingerprintDefense); // JA3/TLS fingerprint policy from admin-managed SystemConfig
 app.use(requestLogger);
+// Every 401 and 403 into the audit trail, with the attempted mobile on the
+// admin and login paths. It was written, exported and mounted NOWHERE, so a
+// burst of failed admin logins left no durable record anywhere — the one
+// signal a credential-stuffing attempt against a money platform produces.
+// Mounted after requestContext so each row carries the correlation id, and it
+// calls the original res.json through, so it observes rather than intercepts.
+app.use(securityMonitor);
 app.use(httpMetrics);    // item 33: Prometheus HTTP duration/count (bounded route labels)
 // Item 9: bound in-flight work at the edge — 503 the excess so overload can't
 // starve the event loop mid-transaction. Mounted BEFORE routers so rejection is

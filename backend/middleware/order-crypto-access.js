@@ -71,18 +71,6 @@ export function verifyOrderHmac(orderId, stored) {
   return ok;
 }
 
-/**
- * The document-model pre-save hook, kept only until those models go.
- *
- * `user.model.js` and `paymentOrder.model.js` still register it, and a missing
- * export makes their schema construction throw at import time — which takes
- * four unrelated test files down with it, since importing any model loads the
- * whole registry. It signs nothing that PostgreSQL reads: `openOrder` writes
- * the tag with the row. Delete this with the models.
- */
-export function setOrderHmacHook() {
-  if (this.isNew || !this.orderHmac) this.orderHmac = deriveOrderHmac(this.orderId);
-}
 
 /**
  * Guard a route that acts on somebody's funding order.
