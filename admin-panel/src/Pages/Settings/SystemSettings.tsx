@@ -43,7 +43,7 @@ export const SystemSettings: React.FC = () => {
       enforceMultiplesOf10: true,      // schema default: true
       blockOppositeSideBetting: false, // schema default: false
       maxFundingOrdersPerHour: 0,      // schema default: 0 (off)
-      maxWarnings: 3,                  // schema default: 3 (0 = never auto-block)
+      maxWarnings: 3,                  // schema default: 3 (0 = never mark for review)
     },
     // Footer navigation (2026-07-13) — schema default: the historical five tabs
     footerPages: ['home', 'results', 'winners', 'promo', 'profile'],
@@ -583,7 +583,7 @@ export const SystemSettings: React.FC = () => {
             </div>
 
             <div>
-              <label className="label">Auto-Block After N Payment Warnings</label>
+              <label className="label">Flag For Review After N Payment Warnings</label>
               <input
                 type="number" min={0} step={1}
                 value={formData.riskRules.maxWarnings}
@@ -591,8 +591,11 @@ export const SystemSettings: React.FC = () => {
                 className="input"
               />
               <p className="text-xs text-gray-500 mt-1">
-                A user is auto-blocked once a merchant has rejected their payment this many
-                times. Each merchant rejection adds one warning. 0 = never auto-block (off).
+                Each merchant rejection adds one warning. A player who reaches this many is
+                marked for review at the top of <strong>Flagged Players</strong>. It does
+                <strong> not</strong> block anyone — this box used to say it did, and the
+                block is now yours to make with the merchant's reason and proof in front of
+                you. 0 = never mark for review (off).
               </p>
             </div>
 

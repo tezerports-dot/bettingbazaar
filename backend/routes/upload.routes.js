@@ -50,9 +50,10 @@ function hasValidUploadInput(fileName, contentType, fileSize) {
 // 🧾 MERCHANT ORDER-REJECTION PROOF
 //
 // A merchant rejecting a PAID order is saying the player's money never
-// arrived. That adds a warning to the player's account and can auto-block
-// them, so the accusation carries evidence: a bank statement screenshot or a
-// photo showing no such credit.
+// arrived. That warns and flags the player's account and puts them in an
+// admin's review queue, so the accusation carries evidence: a bank statement
+// screenshot or a photo showing no such credit. The admin decides from this
+// image, so an unverifiable one is a decision made blind.
 //
 // The order must be the merchant's own and must be in a state where the claim
 // makes sense. Issuing a URL for somebody else's order would let a merchant

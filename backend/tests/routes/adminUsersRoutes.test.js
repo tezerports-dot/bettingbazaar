@@ -17,7 +17,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg } from '#db/client.js';
 import { getBalancesPaise, applyMovementPaise } from '#db/repositories/wallets.core.js';
-import { getUser } from '#db/repositories/users.js';
+import { getUser, flagPaymentWarning, softDeleteUser } from '#db/repositories/users.js';
 import { mountRouter, actor, as, request } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -159,6 +159,75 @@ describePg('admin user routes', () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect((await getUser(plain.userId)).isBlocked).toBe(false);
+  });
+
+  /**
+   * ── `status` and `is_blocked` are one decision, so they are one write ─────
+   *
+   * Sign-in reads `status`; every request guard reads `is_blocked`. They were
+   * set by two separate statements from the route, and this suite asserted only
+   * `is_blocked` — so an account the two halves disagreed about was invisible
+   * here. `setBlocked` writes both now, and these assert both.
+   */
+  it('moves status with the block, and back with the unblock', async () => {
+    plain = await subject();
+    await as(app, admin).put(`/users/${plain.userId}/block`).send({ reason: 'fraud review' });
+    const blocked = await getUser(plain.userId);
+    expect(blocked.isBlocked).toBe(true);
+    expect(blocked.status).toBe('BLOCKED');
+
+    await as(app, admin).put(`/users/${plain.userId}/unblock`).send({});
+    const unblocked = await getUser(plain.userId);
+    expect(unblocked.isBlocked).toBe(false);
+    expect(unblocked.status).toBe('ACTIVE');
+  });
+
+  /**
+   * ── This path was a 500, and a 500 after the unblock had committed ────────
+   *
+   * `resetWarnings` set `paymentFlagReason = null` through `updateUser`, and
+   * the column is `NOT NULL DEFAULT ''` — every call raised 23502. The unblock
+   * statement had already committed by then, so the admin was told it failed
+   * while `is_blocked` was already false and `status` was still BLOCKED: the
+   * player could not sign in, the request guards would have let them through,
+   * and retrying produced the identical 500 forever.
+   *
+   * Nothing caught it because no test ever sent `resetWarnings`.
+   */
+  it('unblocks and resets warnings without throwing', async () => {
+    plain = await subject();
+    await flagPaymentWarning(plain.userId, { reason: 'merchant says no credit', maxWarnings: 0 });
+    await as(app, admin).put(`/users/${plain.userId}/block`).send({ reason: 'under review' });
+
+    const res = await as(app, admin).put(`/users/${plain.userId}/unblock`)
+      .send({ resetWarnings: true });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const after = await getUser(plain.userId);
+    expect(after.isBlocked).toBe(false);
+    expect(after.status).toBe('ACTIVE');
+    expect(Number(after.warningCount)).toBe(0);
+    expect(after.paymentFlagged).toBe(false);
+    // '' is the column's default. null is what raised 23502.
+    expect(after.paymentFlagReason).toBe('');
+    expect(after.paymentFlaggedAt).toBeNull();
+    // The response reports the reset count, not a stale pre-reset read.
+    expect(Number(res.body.warningCount)).toBe(0);
+  });
+
+  it('does not resurrect a deleted account by unblocking it', async () => {
+    // The route set `status = 'ACTIVE'` unconditionally, so an unblock on a
+    // soft-deleted account brought it back to ACTIVE while `deleted_at` and
+    // `deleted_by` stayed set — a row the DELETED status was the only marker
+    // for, silently readmitted.
+    plain = await subject();
+    await softDeleteUser(plain.userId, { actor: admin.userId });
+
+    await as(app, admin).put(`/users/${plain.userId}/unblock`).send({});
+
+    const after = await getUser(plain.userId);
+    expect(after.status).toBe('DELETED');
+    expect(after.deletedAt).toBeTruthy();
   });
 
   it('sets roles, and the row carries them', async () => {

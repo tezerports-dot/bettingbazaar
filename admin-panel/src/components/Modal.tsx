@@ -43,7 +43,14 @@ export const Modal: React.FC<ModalProps> = ({
       style={{ background: 'var(--overlay)', backdropFilter: 'blur(3px)' }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
+      {/* `role="dialog"` + `aria-modal` so assistive tech announces this as a
+          dialog rather than as more page content — and so a test can scope a
+          query to the modal. Without it, a button in the modal and a button on
+          the card behind it are two indistinguishable matches. */}
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
         className={`om-pop w-full ${sizeClasses[size]} max-h-[90vh] overflow-hidden flex flex-col`}
         style={{ background: 'var(--surface)', border: '1px solid var(--border-2)', borderRadius: 16, boxShadow: 'var(--sh3)' }}
       >

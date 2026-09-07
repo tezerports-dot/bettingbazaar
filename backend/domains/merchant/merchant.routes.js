@@ -36,7 +36,6 @@ import { depositCreditSplit } from '../payment/depositCredit.js';
 import { debitMerchantTokens, creditMerchantTokens } from './merchantWallet.service.js';
 import { getMerchantTokenBalance } from '#db/repositories/merchantWallets.js';
 import { publish as publishDomainEvent, EVENTS as DOMAIN_EVENTS } from '../../services/eventBus.service.js';
-import { getRiskRules } from '../risk/riskValidation.service.js';
 // Order chat. Every write here named a model registered nowhere, so the thread
 // echoed over the socket and never survived a reload.
 // Only the order's own timeline now — the record a dispute is decided from.
@@ -1748,11 +1747,11 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
         const { reason, proofFileKey, proofCdnUrl } = req.body;
 
         // ── The accusation carries its evidence ──────────────────────────────
-        // Rejecting a PAID order says the player's money never arrived. It adds
-        // a warning to their account and can auto-block them, so neither half is
-        // optional: `reason` used to fall back to "Rejected by merchant", which
-        // told the player, support and the admin console nothing about why they
-        // had been flagged.
+        // Rejecting a PAID order says the player's money never arrived. It
+        // warns and flags their account and puts them in front of an admin, so
+        // neither half is optional: `reason` used to fall back to "Rejected by
+        // merchant", which told the player, support and the admin console
+        // nothing about why they had been flagged.
         if (!reason || reason.trim().length < 10) {
             return res.status(400).json({
                 success: false,
@@ -1791,10 +1790,10 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
         }
 
         // ── Transition order to CANCELLED (with rejection metadata) ───────────
-        // The guard is the transition. Everything after this point — the user's
-        // warning count, the payment flag, the auto-block — is a consequence of
-        // the rejection, and a merchant retrying a failed request used to run
-        // all of it a second time and increment the warning count again.
+        // The guard is the transition. Everything after this point — the
+        // user's warning count and the payment flag — is a consequence of the
+        // rejection, and a merchant retrying a failed request used to run all
+        // of it a second time and increment the warning count again.
         const rejected = await cancelOrderState(order.orderId, {
             expectFrom: ['PAID', 'PROCESSING'],
             set: {
@@ -1818,23 +1817,42 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
         }
         Object.assign(order, rejected.order);
 
-        // ── Warning engine + payment-complaint flag (Section 13.2; owner
-        //    directive 2026-07-14) ──────────────────────────────────────────────
-        // A merchant rejecting a PAID/PROCESSING order IS "the merchant complains
-        // the payment failed / wasn't received". Beyond the hidden warningCount,
-        // set an EXPLICIT paymentFlagged marker so support/admin can see and filter
-        // the user immediately. Auto-block threshold stays admin-owned
-        // (SystemConfig.riskRules.maxWarnings; 0 = never). Both mutations are one
-        // atomic $inc/$set so a flag can never be lost between two writes.
-        // The auto-block threshold stays admin-owned (riskRules.maxWarnings;
-        // 0 = never). The increment, the flag AND the block are ONE statement:
-        // it was two, and a failure between them left a player one warning past
-        // the limit and not blocked, with nothing to re-check it — the count
-        // only moves again when a new warning arrives.
-        const { maxWarnings } = await getRiskRules();
+        // ── Warning and flag — but NOT a block ───────────────────────────────
+        // A merchant rejecting a PAID order IS "the merchant says the payment
+        // never arrived". It raises the player's warning count and sets the
+        // explicit `paymentFlagged` marker, so support and the admin console can
+        // see and filter that player immediately.
+        //
+        // It does NOT block them, and that is deliberate (owner decision
+        // 2026-09-07). `maxWarnings` is passed as 0 — "never block from here" —
+        // so no code path reachable by a merchant can close a player's
+        // account.
+        //
+        // Why: a rejection is one merchant's unreviewed word. The same merchant
+        // looking at the same missing payment can instead raise a DISPUTE, which
+        // an admin rules on and which touches the player's account not at all.
+        // Nothing steered that choice, and the harsher of the two was the easier
+        // to reach — it closes the order immediately instead of waiting on an
+        // admin. At the default threshold of three, two honest mistakes and one
+        // bad actor locked a player out of their own balance: `is_blocked`
+        // refuses them at `authenticate`, so they could not see their wallet,
+        // their orders, or the notice explaining why.
+        //
+        // The block is now an admin decision about a FLAGGED player, taken with
+        // the reason and the proof image in front of them. The threshold itself
+        // is untouched and still governs every other path that warns.
+        //
+        // The increment and the flag remain ONE statement: they were two, and a
+        // failure between them left a player warned with no flag for anyone to
+        // act on.
         const flagReason = reason.trim();
         const flagged = await db.users.flagPaymentWarning(order.userId, {
-            reason: flagReason, maxWarnings,
+            reason: flagReason,
+            // 0 = never block from here. Deliberately NOT the risk rules'
+            // `maxWarnings`: that setting now decides when a flagged player is
+            // marked for review on GET /api/admin/users/flagged, which is the
+            // only place a block is decided.
+            maxWarnings: 0,
         });
 
         const updatedUser  = flagged?.user ?? null;

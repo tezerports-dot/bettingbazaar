@@ -182,6 +182,21 @@ export const users = {
     return res.data;
   },
 
+  // The review queue a merchant rejection feeds. `/users/flagged` is declared
+  // ABOVE `/users/:userId` on the server — reordered, this path resolves to a
+  // player id of "flagged" and 404s into an empty screen.
+  getFlagged: async (limit = 100) => {
+    const res = await api.get<any>('/api/admin/users/flagged', { params: { limit } });
+    return res.data;
+  },
+
+  // "Reviewed, no action." Separate from unblock, which needs a blocked player
+  // — and under the current rule a flagged player is not blocked.
+  clearFlag: async (userId: string, resetWarnings = false, note?: string) => {
+    const res = await api.post(`/api/admin/users/${userId}/clear-flag`, { resetWarnings, note });
+    return res.data;
+  },
+
   unblockUser: async (userId: string) => {
     const res = await api.put(`/api/admin/users/${userId}/unblock`);
     return res.data;

@@ -267,7 +267,7 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     // ── Business Config Audit fields ──────────────────────────────────────────
     if (riskRules?.maxWarnings !== undefined &&
         (!Number.isInteger(riskRules.maxWarnings) || riskRules.maxWarnings < 0)) {
-      return res.status(400).json({ success: false, message: 'riskRules.maxWarnings must be a non-negative integer (0 = never auto-block).' });
+      return res.status(400).json({ success: false, message: 'riskRules.maxWarnings must be a non-negative integer (0 = never mark for review).' });
     }
     if (payoutMultiplier !== undefined &&
         (!Number.isInteger(payoutMultiplier) || payoutMultiplier < 1 || payoutMultiplier > 10)) {
@@ -355,7 +355,9 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     if (riskRules?.blockOppositeSideBetting !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.blockOppositeSideBetting', !!riskRules.blockOppositeSideBetting]);
     if (riskRules?.maxFundingOrdersPerHour  !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.maxFundingOrdersPerHour', riskRules.maxFundingOrdersPerHour]);
     // Business Config Audit (2026-07-11) — formerly-hardcoded values, now admin-owned
-    // Auto-block threshold — consumed by merchant.routes.js reject handler
+    // Review threshold — consumed by users.admin.routes GET /users/flagged to
+    // mark a flagged player for review. It does NOT block: a merchant rejection
+    // passes 0 deliberately, so nothing a merchant can reach closes an account.
     if (riskRules?.maxWarnings !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.maxWarnings', riskRules.maxWarnings]);
     // Payout multiplier — consumed by markets/gameEngine.js via riskValidation.computeWinningsPayout
     if (payoutMultiplier   !== undefined) fieldWrites.push(['SystemConfig', 'payoutMultiplier', payoutMultiplier]);

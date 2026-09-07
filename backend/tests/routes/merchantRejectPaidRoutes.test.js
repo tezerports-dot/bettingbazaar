@@ -4,9 +4,12 @@
  *
  * ── Why this route needed both, and had neither ─────────────────────────────
  * `POST /api/merchant/orders/:id/reject` cancels an order the player has
- * already claimed to pay, adds a warning to that player's account, and
- * auto-blocks them once they cross the admin's threshold — with no admin in the
- * loop. It is the heaviest thing a merchant can do to a player.
+ * already claimed to pay and adds a warning to that player's account. It is the
+ * heaviest thing a merchant can do to a player.
+ *
+ * It USED to auto-block them once they crossed the admin's threshold, with no
+ * admin in the loop — see the last describe block, which is the test that keeps
+ * that from coming back.
  *
  * It took an OPTIONAL reason, falling back to the string "Rejected by
  * merchant", and no evidence at all. So a player could be warned, and
@@ -23,7 +26,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { pgConfigured, applySchema, closePg } from '#db/client.js';
 import { createOrderRecord, getOrderRecord } from '#db/repositories/orders.record.js';
-import { getUser } from '#db/repositories/users.js';
+import { getUser, setBlocked } from '#db/repositories/users.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -175,5 +178,79 @@ describePg('merchant rejects a paid order', () => {
 
     expect((await as(app, merchant).post(`/orders/${orderId}/reject`).send(good)).status).toBe(409);
     expect(Number((await getUser(player.userId)).warningCount || 0)).toBe(afterFirst);
+  });
+
+  /**
+   * ── A merchant cannot close a player's account ──────────────────────────
+   *
+   * This is the whole of the owner's decision, as a test.
+   *
+   * A rejection is one merchant's unreviewed word about someone else's money,
+   * and it used to be enough — at the default threshold of three, two honest
+   * mistakes and one bad actor locked a player out of their own balance.
+   * `is_blocked` is refused at `authenticate`, so a blocked player cannot see
+   * their wallet, their orders, or any notice explaining why. The same merchant
+   * looking at the same missing payment could instead raise a DISPUTE, which an
+   * admin rules on and which touches the account not at all — but nothing
+   * steered that choice and the harsher of the two closed the order sooner.
+   *
+   * So: the warning and the flag still happen, because support needs to see
+   * them. The block does not, from here, ever. It moved to an admin looking at
+   * the reason and the proof on GET /api/admin/users/flagged.
+   *
+   * The count is driven WELL past the default threshold of 3 on purpose. A test
+   * that rejected twice would pass against the old code too.
+   */
+  describe('the block moved to an admin', () => {
+    it('warns and flags without blocking, however far past the threshold', async () => {
+      cdn.verify.mockResolvedValue({ cdnUrl: 'https://cdn.test/x.jpg' });
+      const merchant = await merchantActor({});
+      const player = await actor({});
+
+      // Five, against a default `maxWarnings` of 3. The old code blocked on the
+      // third; nothing here may block on any of them.
+      for (let i = 1; i <= 5; i += 1) {
+        const orderId = await paidOrder(merchant, player);
+        const res = await as(app, merchant).post(`/orders/${orderId}/reject`).send(good);
+        expect(res.status, `rejection ${i}`).toBe(200);
+        // The response never claims a block happened either — a panel reading
+        // `autoBlocked` would otherwise tell the merchant it had.
+        expect(res.body.autoBlocked, `rejection ${i} reported a block`).toBe(false);
+
+        const mid = await getUser(player.userId);
+        expect(Number(mid.warningCount), `count after ${i}`).toBe(i);
+        expect(mid.isBlocked, `blocked after rejection ${i}`).toBe(false);
+      }
+
+      const after = await getUser(player.userId);
+      // Warned and flagged — the part support and the admin console need.
+      expect(Number(after.warningCount)).toBe(5);
+      expect(after.paymentFlagged).toBe(true);
+      expect(Number(after.paymentFlagCount)).toBe(5);
+      expect(after.paymentFlagReason).toBe(REASON);
+      expect(after.paymentFlaggedAt).toBeTruthy();
+      // And still able to sign in and see their own money.
+      expect(after.isBlocked).toBe(false);
+      expect(after.blockReason).toBeFalsy();
+      expect(after.status).not.toBe('BLOCKED');
+    });
+
+    it('leaves an already-blocked player blocked', async () => {
+      // The path passes `maxWarnings: 0`, and the UPDATE ORs into `is_blocked`.
+      // A wrong fix — assigning FALSE instead of leaving it alone — would
+      // silently UNBLOCK a player an admin had already acted on, which is worse
+      // than the bug being fixed.
+      cdn.verify.mockResolvedValue({ cdnUrl: 'https://cdn.test/x.jpg' });
+      const merchant = await merchantActor({});
+      const player = await actor({});
+      await setBlocked(player.userId, { blocked: true, reason: 'Blocked by an admin earlier', actor: 'admin-1' });
+
+      const orderId = await paidOrder(merchant, player);
+      expect((await as(app, merchant).post(`/orders/${orderId}/reject`).send(good)).status).toBe(200);
+
+      const after = await getUser(player.userId);
+      expect(after.isBlocked).toBe(true);
+      expect(after.blockReason).toBe('Blocked by an admin earlier');
+    });
   });
 });

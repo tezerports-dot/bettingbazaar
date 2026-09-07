@@ -6,6 +6,7 @@ import { Layout } from './components/Layout';
 import { Login } from './Pages/Login';
 import { Dashboard } from './Pages/Dashboard';
 import { UsersList } from './Pages/Users/UsersList';
+import { FlaggedPlayers } from './Pages/Users/FlaggedPlayers';
 import { MerchantsList } from './Pages/Merchants/MerchantsList';
 import { LiveCycles } from './Pages/Cycles/LiveCycles';
 import { CycleHistory } from './Pages/Cycles/CycleHistory';
@@ -194,6 +195,14 @@ const App: React.FC = () => {
         <Route path="/users" element={
           <PermRoute permission="canManageUsers">
             <Layout><UsersList /></Layout>
+          </PermRoute>
+        } />
+
+        {/* Flagged players — the review queue a merchant rejection feeds.
+            The rejection warns and flags; the block is decided here. */}
+        <Route path="/users/flagged" element={
+          <PermRoute permission="canManageUsers">
+            <Layout><FlaggedPlayers /></Layout>
           </PermRoute>
         } />
 

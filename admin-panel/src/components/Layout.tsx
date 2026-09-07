@@ -12,7 +12,7 @@ import {
   TrendingUp, ShieldCheck, HelpCircle, Image as ImageIcon,
   MessageCircle, Shield, History, Scale, Upload, Search, Sun, Moon, Bell,
   Zap, Gift, SlidersHorizontal, Trophy, Star, Gamepad2, Bot, FileSpreadsheet, Share2,
-  type LucideIcon, ArrowLeftRight, BookOpenCheck} from 'lucide-react';
+  type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag} from 'lucide-react';
 import { useAuthStore } from '../services/auth';
 import { usePermissions } from '../hooks/usePermission';
 import { useThemeStore } from '../services/theme';
@@ -58,6 +58,7 @@ const NAV_GROUPS: MenuGroup[] = [
   { key: 'people', label: 'Users & Merchants', items: [
     { path: '/users',               icon: Users,            label: 'Users',          title: 'Users',              sub: 'Player accounts, balances, status & KYC', permission: 'canManageUsers' },
     { path: '/users/balance-adjust',icon: SlidersHorizontal,label: 'Balance Adjust', title: 'Balance Adjustment', sub: 'Manual credit / debit with mandatory audit note', permission: 'canManageUsers' },
+    { path: '/users/flagged',       icon: Flag,             label: 'Flagged Players',title: 'Flagged Players',    sub: "A merchant disputed their payment — reason, proof, and the block decision", permission: 'canManageUsers' },
     { path: '/merchants',           icon: Store,            label: 'Merchants',      title: 'Merchants',          sub: 'P2P payment merchants, limits & availability', permission: 'canManageMerchants' },
     { path: '/kyc',                 icon: UserCheck,        label: 'KYC Queue',      title: 'KYC Queue',          sub: 'Accounts awaiting an Aadhaar verdict', permission: 'canVerifyKYC', badge: 'kyc' },
   ] },

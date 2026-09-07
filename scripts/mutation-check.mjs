@@ -276,6 +276,55 @@ const MUTATIONS = [
     throw e;
   }`,
   },
+
+  // ── A merchant cannot close a player's account ────────────────────────────
+  // The owner's decision of 2026-09-07, as a mutation. Restoring the risk
+  // rules' threshold here is the whole of the old behaviour: a merchant's third
+  // unreviewed rejection locks a player out of their own balance.
+  {
+    id: 'M67', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/merchantRejectPaidRoutes.test.js',
+    why: 'a merchant rejection auto-blocks the player again at the risk threshold',
+    from: `            maxWarnings: 0,
+        });`,
+    to: `            maxWarnings: 3,
+        });`,
+  },
+  // ── The review queue is reachable ─────────────────────────────────────────
+  // `/users/flagged` below `/users/:userId` resolves to a player whose id is
+  // the string "flagged": a 404 the screen renders as its empty state, which is
+  // indistinguishable from "nobody is flagged".
+  {
+    id: 'M68', file: 'backend/routes/admin/users.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/flaggedPlayersRoutes.test.js',
+    why: 'the flagged queue is no longer reachable at /users/flagged',
+    // NOT a rename of the path to another `/users/:something` — the handler
+    // ignores `req.params`, so it would answer just the same and the mutation
+    // survives (it did). Taking the path away is what declaring this route
+    // BELOW `/users/:userId` actually does: the request falls through to the
+    // single-user handler, which 404s on a player called "flagged".
+    from: `router.get('/users/flagged', authenticate, isAdminOrSubAdmin, async (req, res) => {`,
+    to: `router.get('/users/flagged-unreachable', authenticate, isAdminOrSubAdmin, async (req, res) => {`,
+  },
+  // ── status and is_blocked cannot come apart ───────────────────────────────
+  {
+    id: 'M69', file: 'database/repositories/users.js', config: PG,
+    test: 'backend/tests/routes/adminUsersRoutes.test.js',
+    why: 'status stops moving with is_blocked, so sign-in and the guards disagree',
+    from: `            status = CASE
+              WHEN $2 AND status = 'ACTIVE'  THEN 'BLOCKED'
+              WHEN NOT $2 AND status = 'BLOCKED' THEN 'ACTIVE'
+              ELSE status END,`,
+    to: '',
+  },
+  // ── The NOT NULL column that 500'd an unblock after it had committed ──────
+  {
+    id: 'M70', file: 'database/repositories/users.js', config: PG,
+    test: 'backend/tests/routes/adminUsersRoutes.test.js',
+    why: "clearing a flag writes NULL into a NOT NULL column and raises 23502 again",
+    from: `       payment_flag_reason = '',`,
+    to: `       payment_flag_reason = NULL,`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

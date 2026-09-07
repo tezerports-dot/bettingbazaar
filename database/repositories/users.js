@@ -369,7 +369,12 @@ export async function bumpReferralClicks(userId, by = 1) {
 }
 
 /**
- * Record a payment warning against a player, and auto-block at the threshold.
+ * Record a payment warning against a player, and block at the threshold.
+ *
+ * The only caller — a merchant rejecting a paid order — passes `maxWarnings: 0`
+ * and never blocks (owner decision 2026-09-07). The block clause stays because
+ * the threshold is what makes the increment and the block ONE statement; a
+ * future caller that should block must not have to reinvent that.
  *
  * ── One statement, because the threshold decision is the block ──────────────
  * This was two writes: increment the counters and set the flag, then read the
@@ -521,6 +526,21 @@ export async function setBlocked(userId, { blocked, reason = null, actor = null 
             block_reason = CASE WHEN $2 THEN $3 ELSE NULL END,
             blocked_at   = CASE WHEN $2 THEN now() ELSE NULL END,
             blocked_by   = CASE WHEN $2 THEN $4 ELSE NULL END,
+            -- status moves WITH is_blocked, in this statement, because the two
+            -- are read by different halves of the platform: sign-in reads
+            -- status, every request guard reads is_blocked. Both routes used to
+            -- write them separately, and a failure between the two writes
+            -- leaves an account that request guards admit and sign-in refuses —
+            -- a player who cannot log in to see the balance the platform still
+            -- says is theirs, and no screen showing anything wrong.
+            --
+            -- Only the BLOCKED/ACTIVE pair is touched. A SUSPENDED or DELETED
+            -- account keeps its status: unblocking must not resurrect a deleted
+            -- account, which is what an unconditional status = 'ACTIVE' did.
+            status = CASE
+              WHEN $2 AND status = 'ACTIVE'  THEN 'BLOCKED'
+              WHEN NOT $2 AND status = 'BLOCKED' THEN 'ACTIVE'
+              ELSE status END,
             updated_at   = now()
       WHERE user_id = $1
       RETURNING ${COLUMNS}`,
@@ -655,6 +675,106 @@ export async function listUsers({
       ? { joinedAt: last.joinedAt, userId: last.userId }
       : null,
   };
+}
+
+/**
+ * Players a merchant has flagged — the review queue the block decision moved to.
+ *
+ * ── Why this exists ─────────────────────────────────────────────────────────
+ * A merchant rejecting a paid order no longer blocks the player (owner decision
+ * 2026-09-07); it warns and flags, and an admin decides. That decision needs a
+ * screen, and there was not one: `payment_flagged` was written on every
+ * rejection, `users_flagged_idx` was created for it, `listUsers` grew a
+ * `flagged` filter — and NOTHING ever passed the filter or read the index. The
+ * flag went into the table and no query ever came back for it, so moving the
+ * block to "an admin decides" would have moved it to nobody.
+ *
+ * ── The rejection comes with it ─────────────────────────────────────────────
+ * A flag on its own is not reviewable. The admin needs the merchant's words and
+ * the merchant's evidence, so the most recent MERCHANT_REJECTED order for that
+ * player is joined in — reason, proof image, which merchant, when. A LATERAL
+ * with LIMIT 1 rather than a GROUP BY: it reads one row per player through
+ * `order_states_user_idx` instead of aggregating every order they ever placed.
+ *
+ * LEFT JOIN, not JOIN. A player can be flagged by a path that is not an order
+ * rejection, and an inner join would silently hide them from the only screen
+ * that looks — the same class of bug as the filter nothing passed.
+ *
+ * `overWarningThreshold` is computed by the CALLER against the admin's
+ * configured `maxWarnings`, not here: this module does not read config, and a
+ * threshold baked in at two levels is the duplication §1 forbids.
+ */
+export async function listFlaggedPlayers({ limit = 100 } = {}) {
+  const capped = Math.min(Math.max(Number(limit) || 100, 1), 200);
+  const prefixed = COLUMNS.split(',').map((c) => `u.${c.trim()}`).join(', ');
+  const { rows } = await pgQuery(
+    `SELECT ${prefixed},
+            r.order_id           AS reject_order_id,
+            r.rejected_reason    AS reject_reason,
+            r.rejection_proof_url AS reject_proof_url,
+            r.rejected_at        AS reject_at,
+            r.rejected_by        AS reject_merchant_id,
+            r.token_amount_paise AS reject_amount_paise
+       FROM users u
+       LEFT JOIN LATERAL (
+         SELECT order_id, rejected_reason, rejection_proof_url,
+                rejected_at, rejected_by, token_amount_paise
+           FROM order_states
+          WHERE user_id = u.user_id AND cancel_reason = 'MERCHANT_REJECTED'
+          ORDER BY rejected_at DESC NULLS LAST
+          LIMIT 1
+       ) r ON TRUE
+      WHERE u.payment_flagged AND u.status <> 'DELETED'
+      ORDER BY u.payment_flagged_at DESC NULLS LAST
+      LIMIT $1`,
+    [capped], 'user_list_flagged',
+  );
+  return rows.map((row) => ({
+    ...toUser(row),
+    // The rejection that put them here, or null when the flag came from
+    // somewhere else. Money in paise, cast at this boundary — BIGINT arrives
+    // as a string and `'50000' > 10000` is not the comparison anyone means.
+    lastRejection: row.reject_order_id ? {
+      orderId:      row.reject_order_id,
+      reason:       row.reject_reason,
+      proofUrl:     row.reject_proof_url,
+      rejectedAt:   row.reject_at,
+      merchantId:   row.reject_merchant_id,
+      amountPaise:  toInt(row.reject_amount_paise),
+    } : null,
+  }));
+}
+
+/**
+ * Clear a player's payment flag — the admin saying "reviewed, no action".
+ *
+ * ── Why this is not `updateUser` from the route ─────────────────────────────
+ * Clearing the flag was only reachable through `PUT /users/:userId/unblock`
+ * with `resetWarnings`, which means an admin could only clear a flag on a
+ * player who was BLOCKED. Under the rule that a rejection no longer blocks,
+ * that is every flagged player: to clear the flag you had to block them first.
+ *
+ * `resetWarnings` is the admin's choice and separate from clearing the flag.
+ * "This complaint was wrong" clears the flag; "this player has a clean record"
+ * also zeroes the count. Collapsing the two loses the history of every earlier
+ * complaint the moment one is dismissed.
+ */
+export async function clearPaymentFlag(userId, { resetWarnings = false } = {}) {
+  const { rows } = await pgQuery(
+    `UPDATE users SET
+       payment_flagged     = FALSE,
+       -- Empty string, not NULL: the column is NOT NULL DEFAULT ''. Writing
+       -- NULL raises 23502 and the whole statement is refused; the unblock
+       -- route did exactly that through updateUser and 500'd on every clear.
+       payment_flag_reason = '',
+       payment_flagged_at  = NULL,
+       warning_count       = CASE WHEN $2::boolean THEN 0 ELSE warning_count END,
+       updated_at          = now()
+     WHERE user_id = $1 AND status <> 'DELETED'
+     RETURNING ${COLUMNS}`,
+    [String(userId), Boolean(resetWarnings)], 'user_clear_payment_flag',
+  );
+  return toUser(rows[0]);
 }
 
 /**
