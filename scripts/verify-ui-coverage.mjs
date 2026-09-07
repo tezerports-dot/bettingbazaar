@@ -125,7 +125,13 @@ if (process.argv.includes('--unused')) {
   const loose = (path) => {
     const body = path.replace(/^\/api/, '').split('/').filter(Boolean)
       .map(x => x.startsWith(':') ? '[^/\\s\'"`]+' : x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('/');
-    return new RegExp('(?:/api)?/' + body + '(?![A-Za-z0-9_-])');
+    // The leading boundary is load-bearing. Without it `/api/admin/support/status`
+    // in a panel satisfied `/api/support/status`, because the substring is
+    // literally in there — a DIFFERENT endpoint marked this one reached, and it
+    // dropped off the triage list while no screen called it. `/api` stays
+    // optional because panels also write paths relative to a base URL, so the
+    // match must start at a string or interpolation boundary, never mid-path.
+    return new RegExp('(?<![A-Za-z0-9_\\-/])(?:/api)?/' + body + '(?![A-Za-z0-9_-])');
   };
   const unused = routes.filter(r => { const re = loose(r.path); return !Object.values(hay).some(h => re.test(h)); });
   console.log(`\nENDPOINTS WITH NO UI       : ${unused.length}  (informational)`);

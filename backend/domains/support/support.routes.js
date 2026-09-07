@@ -46,7 +46,13 @@ const askLimiter = rateLimit({
   max: Number(process.env.RAG_ASK_RATE || 10),
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => (req.user?._id ? `u:${req.user.userId}` : ipKeyGenerator(req.ip)),
+  // Key on `userId` — the ONLY identifier an authenticated request carries.
+  // This read `req.user?._id`, a field the users table has never produced
+  // (the row mapper emits `userId`), so the guard was always false and every
+  // authenticated ask fell through to the IP key. Behind a proxy or a mobile
+  // carrier NAT that is one shared 10/min budget: one player exhausts the
+  // assistant for everybody on that egress address.
+  keyGenerator: (req) => (req.user?.userId ? `u:${req.user.userId}` : ipKeyGenerator(req.ip)),
   message: { success: false, message: 'Too many support questions. Please wait a minute.' },
 });
 

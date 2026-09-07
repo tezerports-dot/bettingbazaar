@@ -167,6 +167,28 @@ describePg('player support tickets', () => {
     expect((await open(bystander, { subject: 'unaffected' })).status).toBe(200);
   });
 
+  it('rate-limits the assistant per player, not per address', async () => {
+    // The limiter keyed on `req.user?._id` — a field the users table has never
+    // produced, so the guard was always false and every authenticated ask fell
+    // through to the IP key. Behind a proxy or a carrier NAT that is ONE shared
+    // budget: the first player to ask ten questions silences the assistant for
+    // everybody on that egress address. supertest gives every request the same
+    // ::ffff:127.0.0.1, so a per-address key cannot pass the second half here.
+    const curious = await player();
+    const codes = [];
+    for (let i = 0; i < 12; i += 1) {
+      codes.push((await as(app, curious).post('/ask').send({ query: `q${i}` })).status);
+    }
+    expect(codes).toContain(429);
+
+    // A different player still has their own budget. The assertion is that this
+    // is NOT 429 — the status itself depends on whether RAG is configured
+    // (503 unconfigured, 200 configured), and neither is what is under test.
+    const bystander = await player();
+    const other = await as(app, bystander).post('/ask').send({ query: 'unaffected' });
+    expect(other.status).not.toBe(429);
+  });
+
   it('puts the ticket where the admin desk will find it', async () => {
     const alice = await player();
     // The whole point: the queue agents work must now have an input.
