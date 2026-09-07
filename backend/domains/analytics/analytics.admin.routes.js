@@ -1,14 +1,18 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-/** analytics.admin.routes.js — Dashboard, financial analytics, stats */
+/**
+ * analytics.admin.routes.js — the dashboard, financial analytics, token flow.
+ *
+ * GET /stats was removed here: it was a SECOND platform-summary endpoint over
+ * the same db.stats.* functions /analytics/dashboard already calls, no panel
+ * called it, and two summaries of one platform are two answers waiting to
+ * disagree. §1 — one owner per value.
+ */
 import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 // Analytics Platform trends (Phase 012 — Enterprise Services tier)
 import { growthTrend, businessTrend, revenueTrend, riskTrend } from './analyticsPlatform.service.js';
 
 const router = express.Router();
-
-/** A date that many days back, for the "last N days" windows below. */
-const daysAgo = (n) => new Date(Date.now() - n * 24 * 60 * 60 * 1000);
 
 /**
  * One direction of token flow, with the query string's window applied.
@@ -156,53 +160,6 @@ router.get('/analytics/financials', authenticate, isAdmin, async (req, res) => {
  * ════════════════════════════════════════════════════════════════════════════
  */
 
-router.get('/stats', authenticate, isAdminOrSubAdmin, async (req, res) => {
-  try {
-    const [core, counts, month, week] = await Promise.all([
-      db.stats.dashboard(),
-      db.stats.cycleAndQueueCounts({}),
-      // "This month" is the last thirty IST days rather than since the 1st.
-      // The route this replaced built its month boundary with setDate(1) in
-      // SERVER local time, so on a UTC host the first five and a half hours of
-      // the month landed in the previous one.
-      db.stats.tokenFlow({ direction: 'DEPOSIT', from: daysAgo(30) }),
-      db.stats.dailyFinance({ days: 7 }),
-    ]);
-
-    res.json({
-      success: true,
-      stats: {
-        users: { total: core.users.total, active: core.users.active },
-        merchants: { total: core.merchants.total },
-        orders: {
-          pending: counts.queue.inFlightOrders + counts.queue.pendingOrders,
-          completedThisMonth: month.orders,
-          disputed: counts.queue.disputedOrders,
-        },
-        volume: {
-          daily: week[week.length - 1]?.deposits ?? 0,
-          monthly: month.fiat,
-        },
-        bets: { weeklyCount: week.reduce((sum, day) => sum + day.betCount, 0) },
-      },
-    });
-  } catch (error) {
-    console.error('GET /stats error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch stats' });
-  }
-});
-
-/**
- * ════════════════════════════════════════════════════════════════════════════
- * 📢 FIX (Audit #24) — PROMO CONTENT MANAGEMENT
- * Frontend admin panel calls: GET/POST/PUT/DELETE /api/admin/promo
- * ════════════════════════════════════════════════════════════════════════════
- */
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /api/admin/analytics/deposit-dashboard
-// Shows ONLY TOKEN_PURCHASE transactions (real user INR→token purchases).
-// EXCLUDES merchant funding (MERCHANT_TOPUP / MERCHANT_RESERVE / MERCHANT_LIQUIDITY).
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/analytics/deposit-dashboard', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {

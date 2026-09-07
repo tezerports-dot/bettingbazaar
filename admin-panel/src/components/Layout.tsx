@@ -12,8 +12,7 @@ import {
   TrendingUp, ShieldCheck, HelpCircle, Image as ImageIcon,
   MessageCircle, Shield, History, Scale, Upload, Search, Sun, Moon, Bell,
   Zap, Gift, SlidersHorizontal, Trophy, Star, Gamepad2, Bot, FileSpreadsheet, Share2,
-  type LucideIcon,
-} from 'lucide-react';
+  type LucideIcon, ArrowLeftRight} from 'lucide-react';
 import { useAuthStore } from '../services/auth';
 import { usePermissions } from '../hooks/usePermission';
 import { useThemeStore } from '../services/theme';
@@ -54,6 +53,7 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/live-cycles',   icon: Activity,        label: 'Live Cycles',    title: 'Live Cycles',        sub: 'Active Delhi vs Bombay betting cycles & phantom book control', permission: 'canViewAnalytics' },
     { path: '/cycle-history', icon: History,         label: 'Cycle History',  title: 'Cycle History',      sub: 'Settled cycles, results and house profit', permission: 'canViewAnalytics' },
     { path: '/profit-loss',   icon: TrendingUp,      label: 'Profit & Loss',  title: 'Profit & Loss',      sub: 'Gross & net gaming revenue over time', permission: 'canViewAnalytics' },
+    { path: '/token-flow',    icon: ArrowLeftRight,  label: 'Token Flow',     title: 'Token Flow',         sub: 'Player purchases, player sells and merchant funding — never summed', permission: 'canViewAnalytics' },
   ] },
   { key: 'people', label: 'Users & Merchants', items: [
     { path: '/users',               icon: Users,            label: 'Users',          title: 'Users',              sub: 'Player accounts, balances, status & KYC', permission: 'canManageUsers' },
