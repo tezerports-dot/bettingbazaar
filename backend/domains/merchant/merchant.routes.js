@@ -43,6 +43,7 @@ import { getRiskRules } from '../risk/riskValidation.service.js';
 // listMessages/postMessage went with the merchant order chat above.
 import { postSystemMessage } from '#db/repositories/chat.js';
 import cdnService from '../../services/cdn.service.js';
+import { adminToMerchantUsdtRate } from '../configuration/tokenRates.js';
 import { FLAGS, isEnabled } from '../../services/featureFlags.service.js';
 import { rupeesToPaise } from '../../shared/money.js';
 import { MONEY_PATHS } from '#db/moneyPaths.js';
@@ -631,8 +632,10 @@ router.post('/admin-token-orders', merchantAuth, async (req, res) => {
         if (!Number.isFinite(tokenAmount) || tokenAmount <= 0) {
             return res.status(400).json({ success: false, message: 'Token amount must be greater than zero.' });
         }
-        const configuredUsdtRate = cfg?.usdtPricing?.merchantAdminBuyInr;
-        const usdtRate = configuredUsdtRate === undefined ? 1 : configuredUsdtRate; // schema default: SystemConfig.usdtPricing.merchantAdminBuyInr = 1
+        // Through the one owner — see domains/configuration/tokenRates.js. The
+        // `=== undefined ? 1` fallback here was a second statement of the
+        // default, in a different form from the schema's.
+        const usdtRate = adminToMerchantUsdtRate(cfg);
         if (!Number.isFinite(usdtRate) || usdtRate < 0.01) {
             return res.status(500).json({ success: false, message: 'Admin USDT buy rate is misconfigured.' });
         }

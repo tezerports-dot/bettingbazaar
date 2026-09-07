@@ -54,6 +54,7 @@ import { publicCycleView } from '../markets/cyclePublicView.js';
 import { fetchCycleHistory } from '../markets/cycleHistory.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { systemConfigPayload } from '../configuration/systemConfigPayload.js';
+import { INR_TOKEN_RATE } from '../configuration/tokenRates.js';
 
 const router = express.Router();
 
@@ -732,9 +733,9 @@ router.get('/v1/tokens/rate', async (req, res) => {
     const config = await getSystemConfig();
     res.json({
       success:        true,
-      buyRate:        1,
-      sellRate:       1,
-      ratesConfigured: true, // rates are no longer configurable — always 1:1
+      buyRate:        INR_TOKEN_RATE,
+      sellRate:       INR_TOKEN_RATE,
+      ratesConfigured: true, // the INR peg is not configurable — see tokenRates.js
       minExchange:    config?.minWithdrawal ?? 500  /* schema default — was incorrectly 100 (GOVERNANCE.md M-5) */,
       maxExchange:    config?.maxWithdrawal ?? 50000,
       currency:       'INR',
@@ -755,12 +756,12 @@ router.get('/v1/token/rates', async (req, res) => {
     const config = await getSystemConfig();
     res.json({
       success:  true,
-      rates: { buyRate: 1, sellRate: 1, updatedAt: null },
+      rates: { buyRate: INR_TOKEN_RATE, sellRate: INR_TOKEN_RATE, updatedAt: null },
       minExchange: config?.minWithdrawal ?? 500  /* schema default — was incorrectly 100 (GOVERNANCE.md M-5) */,
       maxExchange: config?.maxWithdrawal ?? 50000,
       // Flat fields for back-compat
-      buyRate:  1,
-      sellRate: 1,
+      buyRate:  INR_TOKEN_RATE,
+      sellRate: INR_TOKEN_RATE,
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

@@ -38,6 +38,9 @@ const DEFAULT_FOOTER_PAGES = Object.freeze(['home', 'results', 'winners', 'promo
  * @param {object|null} cfg the SystemConfig row, or null when it cannot be read
  * @returns {object} the full field set — never a partial one
  */
+// The INR peg comes from the one place that owns it.
+import { INR_TOKEN_RATE } from './tokenRates.js';
+
 export function systemConfigPayload(cfg) {
   return {
     // Bet limits live in the betLimits subdoc, not on config.value.
@@ -50,10 +53,12 @@ export function systemConfigPayload(cfg) {
     minWithdrawal:       cfg?.minWithdrawal ?? 500,
     maxWithdrawal:       cfg?.maxWithdrawal ?? 50000,
 
-    // Fixed 1:1 conversion (Phase 006 flattening, 2026-07-08). Not admin-owned,
-    // so it is a constant here rather than a fallback.
-    tokenBuyRate:        1,
-    tokenSellRate:       1,
+    // The INR peg. Not admin-owned, so it is a constant rather than a
+    // fallback — and it comes from tokenRates.js, which is the one place that
+    // says what a token is worth. It was a bare literal here and in two user
+    // routes, with nothing naming the rule or explaining why it cannot move.
+    tokenBuyRate:        INR_TOKEN_RATE,
+    tokenSellRate:       INR_TOKEN_RATE,
 
     // Admin-owned (Business Config Audit 2026-07-11) — was once hardcoded 2.
     payoutMultiplier:    cfg?.payoutMultiplier ?? 2,

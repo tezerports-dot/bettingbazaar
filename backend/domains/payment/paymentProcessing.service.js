@@ -33,6 +33,8 @@
  */
 import crypto from 'crypto';
 import { db } from '#db';
+// One owner for what a token is worth: the INR peg, and the two USDT legs.
+import { INR_TOKEN_RATE, rateForMerchant } from '../configuration/tokenRates.js';
 import { debitWinningsForWithdrawal, refundWithdrawal, getBalances } from '../wallet/walletAuthority.service.js';
 import { selectBestMerchant } from '../merchant/merchantScoring.service.js';
 import { merchantTypeOf } from '../merchant/merchantCurrency.js';
@@ -116,6 +118,23 @@ async function tryAssignMerchant(order) {
   const merchant = await selectBestMerchant(order.type, order.tokenAmount, order.currency);
   if (!merchant) return false;
 
+  // What this merchant settles at. An INR merchant is the peg; a USDT merchant
+  // is the admin's merchant-to-user rate, which is why the rate is stamped HERE
+  // and not at creation — the rail is not known until a merchant is chosen.
+  //
+  // No fallback. The USDT rate defaults to 0 and 0 is not a rate: pricing with
+  // it divides by zero, and substituting 1 would sell tokens at the INR peg to
+  // a merchant settling in USDT. If the admin has not set one, the order stays
+  // in the queue rather than being priced wrong.
+  const rateUsed = rateForMerchant(merchant, await getSystemConfig());
+  if (rateUsed === null) {
+    console.error(
+      `[assignment] ${order.orderId}: merchant ${merchant.merchantId} settles in USDT and `
+      + 'usdtPricing.userMerchantBuyInr is not set — leaving the order queued rather than pricing it at the INR peg',
+    );
+    return false;
+  }
+
   const expiresAt = new Date(Date.now() + await getOrderExpiryMs()); // admin-configurable window
   const snapshot  = buildMerchantSnapshot(merchant, expiresAt);
 
@@ -130,6 +149,7 @@ async function tryAssignMerchant(order) {
       assignedAt:       new Date(),
       expiresAt,
       merchantSnapshot: snapshot,
+      rateUsed,
     },
   });
   if (!moved.ok || moved.idempotent) return false;
@@ -138,6 +158,7 @@ async function tryAssignMerchant(order) {
   // emitters below describe the row that exists rather than a hoped-for one.
   Object.assign(order, {
     merchantId: merchant.merchantId,
+    rateUsed,
     status: 'ASSIGNED',
     assignedAt: moved.order.assignedAt,
     expiresAt,
@@ -255,7 +276,9 @@ export async function createDepositOrder(userId, tokenAmount) {
   // Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08): 1 BB
   // token = ₹1, no buy/sell spread. Merchant earnings come from the
   // cycle-completion Merchant Performance Bonus, never from a rate spread.
-  const fiatAmount = tokenAmount;
+  // The INR peg: one token, one rupee. Named rather than a bare 1 so the
+  // rule is legible and has one owner.
+  const fiatAmount = tokenAmount * INR_TOKEN_RATE;
 
   // ── The split, computed HERE ────────────────────────────────────────────
   // This was a pre-save hook on the order model: invisible, and a second
@@ -275,7 +298,9 @@ export async function createDepositOrder(userId, tokenAmount) {
     type:              'DEPOSIT',
     tokenAmountRupees: tokenAmount,
     fiatAmountRupees:  fiatAmount,
-    rateUsed:          1,
+    // Stamped again at assignment, where the merchant's rail is known: a
+    // USDT merchant settles at the admin's merchant-to-user rate, not the peg.
+    rateUsed:          INR_TOKEN_RATE,
     merchantProfit:    0,
     depositAllocation: split.depositAllocation,
     reserveAllocation: split.reserveAllocation,
@@ -388,7 +413,7 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
     tokenAmountRupees: tokenAmount,
     fiatAmountRupees:  fiatAmount,
     payoutFee,
-    rateUsed:          1,
+    rateUsed:          INR_TOKEN_RATE,
     escrowLocked:      true,
     escrowStatus:      'LOCKED',
     escrowAmount:      tokenAmount,

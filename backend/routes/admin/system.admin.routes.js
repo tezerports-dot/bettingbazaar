@@ -1,6 +1,7 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** system.admin.routes.js — System config, token rates, withdrawal requests, error logs */
 import { express, authenticate, isAdmin, isAdminOrSubAdmin } from './_adminShared.js';
+import { INR_TOKEN_RATE } from '../../domains/configuration/tokenRates.js';
 import { setConfigField } from '../../domains/configuration/configVersioning.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { db } from '#db';
@@ -97,8 +98,11 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
         minWithdrawal:         config.minWithdrawal         || 500,
         maxWithdrawal:         config.maxWithdrawal         || 50000,
         maxWinningsWithdrawal: config.maxWinningsWithdrawal || 500000,
-        tokenBuyRate:          1, // fixed 1:1 conversion (Phase 006 flattening, 2026-07-08)
-        tokenSellRate:         1, // fixed 1:1 conversion
+        // The INR peg, from its one owner. It was a literal here and in the
+        // response below, a third and fourth declaration of a rule that already
+        // had two.
+        tokenBuyRate:          INR_TOKEN_RATE,
+        tokenSellRate:         INR_TOKEN_RATE,
         // Risk Platform rules (Phase 010) — schema defaults cited inline
         payoutFeePercent:      config.payoutFeePercent ?? 0,  // schema default: 0
         usdtPricing: {
@@ -407,8 +411,8 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
           const normalized = raw.filter(k => FOOTER_PAGE_KEYS.includes(k));
           return normalized.length >= 2 ? normalized : ['home', 'results', 'winners', 'promo', 'profile'];
         })(),
-        tokenBuyRate:    1, // fixed 1:1 conversion (Phase 006 flattening, 2026-07-08)
-        tokenSellRate:   1, // fixed 1:1 conversion
+        tokenBuyRate:    INR_TOKEN_RATE,
+        tokenSellRate:   INR_TOKEN_RATE,
         webUrl:        updatedConfig.webUrl        || '',
         androidUrl:    updatedConfig.androidUrl    || '',
         iosUrl:        updatedConfig.iosUrl        || '',
