@@ -13,6 +13,7 @@ import { DepositPolicy } from './Pages/BusinessPolicy/DepositPolicy';
 import { TransactionsList } from './Pages/Finance/TransactionsList';
 import { ProfitLoss } from './Pages/Finance/ProfitLoss';
 import { TokenFlow } from './Pages/Finance/TokenFlow';
+import { SupportAssistant } from './Pages/Support/SupportAssistant';
 import { QueueDashboard } from './Pages/QueueManager/QueueDashboard';
 import { KYCQueue } from './Pages/KYC/KYCQueue';
 import { KycBulk } from './Pages/KYC/KycBulk';
@@ -285,6 +286,9 @@ const App: React.FC = () => {
           <PermRoute permission="canViewAnalytics">
             <Layout><TokenFlow /></Layout>
           </PermRoute>
+        } />
+        <Route path="/support-assistant" element={
+          <AdminOnly><Layout><SupportAssistant /></Layout></AdminOnly>
         } />
         <Route path="/reports" element={
           <PermRoute permission="canViewAnalytics">

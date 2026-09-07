@@ -12,7 +12,7 @@ import {
   TrendingUp, ShieldCheck, HelpCircle, Image as ImageIcon,
   MessageCircle, Shield, History, Scale, Upload, Search, Sun, Moon, Bell,
   Zap, Gift, SlidersHorizontal, Trophy, Star, Gamepad2, Bot, FileSpreadsheet, Share2,
-  type LucideIcon, ArrowLeftRight} from 'lucide-react';
+  type LucideIcon, ArrowLeftRight, BookOpenCheck} from 'lucide-react';
 import { useAuthStore } from '../services/auth';
 import { usePermissions } from '../hooks/usePermission';
 import { useThemeStore } from '../services/theme';
@@ -92,6 +92,7 @@ const NAV_GROUPS: MenuGroup[] = [
   { key: 'promos', label: 'Promotions', items: [
     { path: '/winners-manager',          icon: Trophy,        label: 'Winners Manager', title: 'Winners Manager', sub: 'Real & phantom winner surfacing', permission: 'canManageContent' },
     { path: '/chat-management',          icon: MessageCircle, label: 'Chat & Support',  title: 'Chat & Support',  sub: 'Public chat moderation & support console', permission: 'canModerateChatPublic' },
+    { path: '/support-assistant',        icon: BookOpenCheck, label: 'Support Assistant', title: 'Support Assistant', sub: 'Knowledge base the assistant answers players from', adminOnly: true },
     { path: '/promotions/announcements', icon: Bell,          label: 'Announcements',   title: 'Announcements',   sub: 'Platform-wide notices & popups', permission: 'canManageContent' },
     { path: '/promotions/gift-codes',    icon: Gift,          label: 'Gift Codes',      title: 'Gift Codes',      sub: 'Promo & gift code campaigns', permission: 'canManageContent' },
   ] },
