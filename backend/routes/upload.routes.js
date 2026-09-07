@@ -47,6 +47,57 @@ function hasValidUploadInput(fileName, contentType, fileSize) {
 
 // by the merchant panel and does a participant check).
 // ═══════════════════════════════════════════════════════════════════════
+// 🧾 MERCHANT ORDER-REJECTION PROOF
+//
+// A merchant rejecting a PAID order is saying the player's money never
+// arrived. That adds a warning to the player's account and can auto-block
+// them, so the accusation carries evidence: a bank statement screenshot or a
+// photo showing no such credit.
+//
+// The order must be the merchant's own and must be in a state where the claim
+// makes sense. Issuing a URL for somebody else's order would let a merchant
+// stage proof against an order they have nothing to do with.
+// ═══════════════════════════════════════════════════════════════════════
+router.post('/merchant/order-reject-proof/:orderId/upload-url', merchantAuth, async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { fileName, contentType, fileSize } = req.body;
+
+    if (!hasValidUploadInput(fileName, contentType, fileSize)) {
+      return res.status(400).json({ success: false, message: 'fileName, contentType and fileSize are required' });
+    }
+    if (fileSize > 10 * 1024 * 1024) {
+      return res.status(400).json({ success: false, message: 'Maximum file size is 10 MB' });
+    }
+
+    // Ownership in the WHERE clause — `getMerchantOrder` matches the order id
+    // AND the merchant id, so an order that is not theirs is simply not found.
+    const order = await db.orders.getMerchantOrder(orderId, req.merchantId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (!['PAID', 'PROCESSING'].includes(order.status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Proof applies to a paid order. This one is ${order.status}.`,
+      });
+    }
+
+    // Images only — the category falls through to the image allowlist, and the
+    // extension blocklist independently refuses SVG and HTML, which served from
+    // the panels' own origin would be stored XSS.
+    const uploadData = await cdnService.generatePresignedUploadUrl({
+      fileName, contentType, fileSize,
+      category: 'merchant-reject-proof',
+      userId: String(req.merchantId),
+      orderId,
+    });
+    res.json({ success: true, ...uploadData });
+  } catch (error) {
+    console.error('❌ Merchant reject-proof upload URL error:', error);
+    res.status(error.status || 500).json({ success: false, message: error.message || 'Failed to generate upload URL' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════
 // 💬 ORDER CHAT ATTACHMENTS — REMOVED
 //
 // `/user/chat/:orderId/{upload-url,confirm-upload}` and the merchant pair are

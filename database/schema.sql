@@ -2540,6 +2540,11 @@ ALTER TABLE order_states ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS review_action TEXT;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS review_notes TEXT;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS rejected_reason TEXT;
+-- The merchant's evidence for rejecting a PAID order — a bank statement
+-- screenshot or a photo showing the credit never arrived. Rejecting a PAID
+-- order accuses the player of not paying, adds a warning to their account and
+-- can auto-block them, so the accusation carries its proof.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS rejection_proof_url TEXT;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_reason TEXT;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_raised_at TIMESTAMPTZ;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_raised_by TEXT;

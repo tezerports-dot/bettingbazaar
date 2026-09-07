@@ -106,6 +106,7 @@ export function toOrder(r) {
 
     approvedBy: r.approved_by, approvedAt: r.approved_at,
     rejectedBy: r.rejected_by, rejectedAt: r.rejected_at,
+    rejectionProofUrl: r.rejection_proof_url,
     cancelReason: r.cancel_reason, cancelledAt: r.cancelled_at,
     warningIssued: r.warning_issued,
     paidAt: r.paid_at, completedAt: r.completed_at, expiresAt: r.expires_at,
@@ -193,7 +194,8 @@ const SETTABLE = Object.freeze({
   merchantSnapshot: ['merchant_snapshot', JSON.stringify],
 
   approvedBy: 'approved_by', approvedAt: 'approved_at',
-  rejectedBy: 'rejected_by', rejectedAt: 'rejected_at',
+  rejectedBy: 'rejected_by',
+  rejectionProofUrl: 'rejection_proof_url', rejectedAt: 'rejected_at',
   cancelReason: 'cancel_reason', cancelledAt: 'cancelled_at',
   warningIssued: 'warning_issued',
   paidAt: 'paid_at', completedAt: 'completed_at', expiresAt: 'expires_at',

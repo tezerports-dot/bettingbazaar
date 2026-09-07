@@ -42,6 +42,7 @@ import { getRiskRules } from '../risk/riskValidation.service.js';
 // Only the order's own timeline now — the record a dispute is decided from.
 // listMessages/postMessage went with the merchant order chat above.
 import { postSystemMessage } from '#db/repositories/chat.js';
+import cdnService from '../../services/cdn.service.js';
 import { FLAGS, isEnabled } from '../../services/featureFlags.service.js';
 import { rupeesToPaise } from '../../shared/money.js';
 import { MONEY_PATHS } from '#db/moneyPaths.js';
@@ -1741,13 +1742,49 @@ router.post('/orders/:id/approve', merchantAuth, async (req, res) => {
 router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
     try {
         const { id }   = req.params;
-        const { reason } = req.body;
+        const { reason, proofFileKey, proofCdnUrl } = req.body;
+
+        // ── The accusation carries its evidence ──────────────────────────────
+        // Rejecting a PAID order says the player's money never arrived. It adds
+        // a warning to their account and can auto-block them, so neither half is
+        // optional: `reason` used to fall back to "Rejected by merchant", which
+        // told the player, support and the admin console nothing about why they
+        // had been flagged.
+        if (!reason || reason.trim().length < 10) {
+            return res.status(400).json({
+                success: false,
+                message: 'A rejection reason of at least 10 characters is required — it is what the player is shown.',
+            });
+        }
+        if (!proofFileKey?.trim()) {
+            return res.status(400).json({
+                success: false,
+                message: 'Proof is required: upload a screenshot or photo showing the payment did not arrive.',
+            });
+        }
 
         const order = await db.orders.getOrderRecord(id);
         if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
         if (order.merchantId?.toString() !== req.merchantId?.toString()) {
             return res.status(403).json({ success: false, message: 'This order is not assigned to you' });
+        }
+
+        // Bound to THIS merchant and THIS order. Without the check a merchant
+        // could name a key they never uploaded, or one staged against a
+        // different order, and the stored proof would point at somebody else's
+        // evidence.
+        let verifiedProof;
+        try {
+            verifiedProof = await cdnService.verifyUploadedObject({
+                fileKey: proofFileKey.trim(),
+                cdnUrl: proofCdnUrl || undefined,
+                expectedUserId: String(req.merchantId),
+                expectedOrderId: order.orderId,
+                expectedCategory: 'merchant-reject-proof',
+            });
+        } catch (e) {
+            return res.status(400).json({ success: false, message: `Proof could not be verified: ${e.message}` });
         }
 
         // ── Transition order to CANCELLED (with rejection metadata) ───────────
@@ -1760,10 +1797,14 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
             set: {
                 rejectedBy:     req.merchantId,
                 rejectedAt:     new Date(),
-                rejectedReason: reason || 'Rejected by merchant',
+                rejectedReason: reason.trim(),
+                rejectionProofUrl: verifiedProof.cdnUrl,
                 cancelReason:   'MERCHANT_REJECTED',
                 cancelledAt:    new Date(),
-                updatedAt:      new Date(),
+                // `updatedAt` was here and `setOrderFields` refuses it — the
+                // column is maintained by the write itself, not by callers — so
+                // this route threw on EVERY call and 500'd. No screen called it,
+                // so nothing noticed that the endpoint had never once worked.
             },
         });
         if (!rejected.ok || rejected.idempotent) {
@@ -1788,7 +1829,7 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
         // the limit and not blocked, with nothing to re-check it — the count
         // only moves again when a new warning arrives.
         const { maxWarnings } = await getRiskRules();
-        const flagReason = (reason && reason.trim()) || 'Merchant reported payment not received / failed';
+        const flagReason = reason.trim();
         const flagged = await db.users.flagPaymentWarning(order.userId, {
             reason: flagReason, maxWarnings,
         });

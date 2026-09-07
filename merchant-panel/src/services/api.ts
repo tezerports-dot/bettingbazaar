@@ -249,6 +249,46 @@ export const confirmPayment = async (orderId: string, proof?: string, utrNumber?
   return data.order || data;
 };
 
+/**
+ * Reject an order the player says they paid, because the money never arrived.
+ *
+ * Different from `rejectOrder` above, which declines an order BEFORE payment
+ * and returns it to the queue. This one cancels the order, adds a warning to
+ * the player's account and can auto-block them — so the backend requires a
+ * reason of at least ten characters and a proof image, and refuses without
+ * either.
+ *
+ * Three steps, in this order: ask for a presigned URL (which also checks the
+ * order is this merchant's and is actually awaiting confirmation), PUT the
+ * file, then send the reference. The proof is verified server-side against
+ * THIS merchant and THIS order before it is stored, so a key from somewhere
+ * else is refused.
+ */
+export const rejectPaidOrder = async (
+  orderId: string, reason: string, proof: File,
+): Promise<PaymentOrder> => {
+  const presigned = await request<any>(ENDPOINTS.ORDERS.REJECT_PROOF_UPLOAD_URL(orderId), {
+    method: 'POST',
+    body: JSON.stringify({ fileName: proof.name, contentType: proof.type, fileSize: proof.size }),
+  });
+  if (!presigned?.uploadUrl || !presigned?.fileKey) {
+    throw new Error('Could not prepare the proof upload');
+  }
+
+  const put = await fetch(presigned.uploadUrl, {
+    method: 'PUT', body: proof, headers: { 'Content-Type': proof.type },
+  });
+  if (!put.ok) throw new Error('The proof image failed to upload');
+
+  const data = await request<any>(ENDPOINTS.ORDERS.REJECT_PAID(orderId), {
+    method: 'POST',
+    body: JSON.stringify({
+      reason, proofFileKey: presigned.fileKey, proofCdnUrl: presigned.cdnUrl,
+    }),
+  });
+  return data.order || data;
+};
+
 export const rejectOrder = async (orderId: string, reason: string): Promise<PaymentOrder> => {
   const data = await request<any>(ENDPOINTS.ORDERS.REJECT(orderId), {
     method: 'POST',
@@ -435,6 +475,7 @@ export const api = {
   acceptOrder,
   confirmPayment,
   rejectOrder,
+  rejectPaidOrder,
   
   
   // Dispute

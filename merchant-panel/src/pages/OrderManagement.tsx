@@ -8,6 +8,7 @@ import { RefreshCw, Search } from 'lucide-react';
 import { useAuth } from '../services/AuthContext';
 import { useOrders } from '../hooks/useOrders';
 import { useOrderActions } from '../hooks/useOrderActions';
+import PaymentNotReceivedDialog from '../components/PaymentNotReceivedDialog';
 import { useNow } from '../hooks/useCountdown';
 import { useViewport } from '../hooks/useViewport';
 import { railOf } from '../utils/rail';
@@ -35,7 +36,8 @@ const OrderManagement: React.FC = () => {
   const [search, setSearch] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const { actions, confirmRequest, dismissConfirm, shouldCloseDetail, acknowledgeCloseDetail } =
+  const { actions, confirmRequest, dismissConfirm, shouldCloseDetail, acknowledgeCloseDetail,
+          rejectTarget, rejectBusy, dismissReject, submitPaymentNotReceived } =
     useOrderActions(rail, reload);
 
   useEffect(() => {
@@ -179,6 +181,13 @@ const OrderManagement: React.FC = () => {
         actions={cardActions}
       />
       <ConfirmDialog request={confirmRequest} onClose={dismissConfirm} />
+      <PaymentNotReceivedDialog
+        open={rejectTarget !== null}
+        orderRef={String(rejectTarget?.orderId || rejectTarget?._id || '')}
+        busy={rejectBusy}
+        onCancel={dismissReject}
+        onSubmit={submitPaymentNotReceived}
+      />
     </div>
   );
 };
