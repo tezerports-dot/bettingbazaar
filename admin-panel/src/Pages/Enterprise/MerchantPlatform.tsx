@@ -5,7 +5,7 @@
  * leaderboard, per-merchant wallet ledger, on-demand bonus engine run.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { RefreshCw, Play, Trophy, ScrollText } from 'lucide-react';
+import { RefreshCw, Play, Trophy, ScrollText, RotateCcw} from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../../services/api';
 import { usePermissions } from '../../hooks/usePermission';
@@ -18,6 +18,7 @@ export const MerchantPlatform: React.FC = () => {
   const { isAdmin } = usePermissions();
   const [policy, setPolicy] = useState<any>(null);
   const [history, setHistory] = useState<any[]>([]);
+  const [rollingBack, setRollingBack] = useState<string | null>(null);
   const [leaderboard, setLeaderboard] = useState<any[]>([]);
   const [days, setDays] = useState(30);
   const [loading, setLoading] = useState(true);
@@ -61,6 +62,29 @@ export const MerchantPlatform: React.FC = () => {
   }, [days]);
 
   useEffect(() => { load(); }, [load]);
+  /**
+   * Restore a previous bonus-policy version.
+   *
+   * The history has been listed here since the page shipped and there was no
+   * way to act on it: the endpoint existed, nothing called it, so undoing a bad
+   * policy meant re-typing the old numbers from the list and hoping they were
+   * read correctly. This restores the version as a NEW one — the trail is
+   * append-only, so a rollback is another entry rather than an erasure.
+   *
+   * Confirmed first: the policy decides what merchants are paid.
+   */
+  const rollback = async (h: any) => {
+    if (!window.confirm(`Restore v${h.version} as the live merchant bonus policy?\n\nThis is recorded as a new version, not an edit.`)) return;
+    setRollingBack(h._id);
+    try {
+      await api.post(`/api/admin/merchant-bonus-policy/version/${h._id}/rollback`, {});
+      toast.success(`Restored v${h.version}`);
+      load();
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Rollback failed');
+    } finally { setRollingBack(null); }
+  };
+
 
   const savePolicy = async () => {
     if (!form.justification.trim()) return toast.error('Business justification required');
@@ -165,10 +189,24 @@ export const MerchantPlatform: React.FC = () => {
               <summary className="text-xs text-gray-400 cursor-pointer">Version history ({history.length})</summary>
               <div className="mt-2 space-y-1 text-xs text-gray-500">
                 {history.map((h: any) => (
-                  <p key={h._id}>
-                    v{h.version} · {h.enabled ? `ON @ ${h.bonusPercent}%` : 'disabled'} · min {inr(h.minMatchedVolume || 0)} ·{' '}
-                    {h.status} · {new Date(h.createdAt).toLocaleString()}
-                  </p>
+                  <div key={h._id} className="flex items-center justify-between gap-3 py-1">
+                    <p className="min-w-0">
+                      v{h.version} · {h.enabled ? `ON @ ${h.bonusPercent}%` : 'disabled'} · min {inr(h.minMatchedVolume || 0)} ·{' '}
+                      {h.status} · {new Date(h.createdAt).toLocaleString()}
+                    </p>
+                    {/* The live version is not offered as a rollback target —
+                        restoring what is already active would add a version
+                        that changes nothing and muddies the trail. */}
+                    {h.status !== 'ACTIVE' && (
+                      <button
+                        onClick={() => rollback(h)}
+                        disabled={rollingBack !== null}
+                        className="shrink-0 px-2.5 py-1 bg-dark-700 hover:bg-dark-600 rounded-md text-[11px] font-semibold disabled:opacity-50 flex items-center gap-1"
+                      >
+                        <RotateCcw size={11} />{rollingBack === h._id ? 'Restoring…' : 'Restore'}
+                      </button>
+                    )}
+                  </div>
                 ))}
               </div>
             </details>
