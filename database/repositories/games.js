@@ -248,13 +248,6 @@ export async function getProviderSecrets(providerKey) {
   } : null;
 }
 
-export async function setProviderEnabled(providerKey, enabled) {
-  const { rows } = await pgQuery(
-    'UPDATE game_providers SET enabled = $2, updated_at = now() WHERE provider_key = $1 RETURNING *',
-    [String(providerKey), Boolean(enabled)], 'provider_set_enabled',
-  );
-  return toProvider(rows[0]);
-}
 
 // ── Sessions ────────────────────────────────────────────────────────────────
 
@@ -281,49 +274,9 @@ export async function openSession({
   return toSession(rows[0]);
 }
 
-/**
- * A live session, or null.
- *
- * Expiry is in the READ — a provider callback arriving against a session whose
- * sweep has not run yet must still be refused, and one whose sweep is overdue
- * must still work.
- */
-export async function getLiveSession(sessionId) {
-  const { rows } = await pgQuery(
-    `SELECT * FROM game_sessions
-      WHERE session_id = $1 AND status = 'ACTIVE'
-        AND (expires_at IS NULL OR expires_at > now())`,
-    [String(sessionId)], 'session_get_live',
-  );
-  return toSession(rows[0]);
-}
 
-export async function closeSession(sessionId) {
-  const { rows } = await pgQuery(
-    `UPDATE game_sessions SET status = 'CLOSED' WHERE session_id = $1 AND status = 'ACTIVE'
-      RETURNING *`,
-    [String(sessionId)], 'session_close',
-  );
-  return toSession(rows[0]);
-}
 
-export async function listUserSessions(userId, { limit = 50 } = {}) {
-  const { rows } = await pgQuery(
-    'SELECT * FROM game_sessions WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2',
-    [String(userId), Math.min(Math.max(Number(limit) || 50, 1), 200)], 'session_list',
-  );
-  return rows.map(toSession);
-}
 
-/** Reclaim space. The expiry itself is already enforced by every read. */
-export async function sweepExpiredSessions() {
-  const { rowCount } = await pgQuery(
-    `UPDATE game_sessions SET status = 'EXPIRED'
-      WHERE status = 'ACTIVE' AND expires_at IS NOT NULL AND expires_at <= now()`,
-    [], 'session_sweep',
-  );
-  return rowCount;
-}
 
 // ── Provider transactions ───────────────────────────────────────────────────
 
@@ -357,69 +310,8 @@ export async function recordGameTransaction({
     : { recorded: false, idempotent: true };
 }
 
-/**
- * What a round has been debited and refunded so far.
- *
- * ── Why this is a sum and not a lookup ──────────────────────────────────────
- * A hostile or buggy provider can mint money two ways: by rolling back a round
- * that never had a bet, or by rolling back more than was staked. The duplicate
- * `tx_id` gate does not help — it stops the SAME callback applying twice and
- * says nothing about a DIFFERENT callback that should never have been honoured.
- *
- * Both totals are computed over every transaction recorded for the round, so
- * partial rollbacks accumulate correctly. Checking a single callback against
- * the bet alone would let any number of them through.
- */
-export async function roundTotals(roundId, userId) {
-  const { rows } = await pgQuery(
-    `SELECT
-       COALESCE(SUM(amount_paise) FILTER (WHERE tx_type = 'BET'), 0)                    AS debited,
-       COALESCE(SUM(amount_paise) FILTER (WHERE tx_type IN ('ROLLBACK','REFUND')), 0)   AS refunded,
-       COALESCE(SUM(amount_paise) FILTER (WHERE tx_type = 'WIN'), 0)                    AS won
-     FROM game_transactions WHERE round_id = $1 AND user_id = $2`,
-    [String(roundId), String(userId)], 'game_round_totals',
-  );
-  const r = rows[0];
-  return {
-    debited: paiseToRupees(Number(r.debited)),
-    refunded: paiseToRupees(Number(r.refunded)),
-    won: paiseToRupees(Number(r.won)),
-  };
-}
 
-/** One provider transaction by its id — the replay lookup. */
-export async function getGameTransaction(txId) {
-  const { rows } = await pgQuery(
-    'SELECT * FROM game_transactions WHERE tx_id = $1', [String(txId)], 'game_tx_get',
-  );
-  const r = rows[0];
-  return r ? {
-    txId: r.tx_id, roundId: r.round_id, userId: r.user_id,
-    providerKey: r.provider_key, type: r.tx_type,
-    amount: paiseToRupees(Number(r.amount_paise)),
-    balanceAfter: r.balance_after_paise === null ? null : paiseToRupees(Number(r.balance_after_paise)),
-    createdAt: r.created_at,
-  } : null;
-}
 
-export async function listGameTransactions({ userId = null, roundId = null, limit = 100 } = {}) {
-  const where = []; const params = [];
-  if (userId) { params.push(String(userId)); where.push(`user_id = $${params.length}`); }
-  if (roundId) { params.push(String(roundId)); where.push(`round_id = $${params.length}`); }
-  const { rows } = await pgQuery(
-    `SELECT * FROM game_transactions ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-      ORDER BY created_at DESC LIMIT ${Math.min(Math.max(Number(limit) || 100, 1), 500)}`,
-    params, 'game_tx_list',
-  );
-  return rows.map((r) => ({
-    id: Number(r.id), txId: r.tx_id, roundId: r.round_id, sessionId: r.session_id,
-    userId: r.user_id, providerKey: r.provider_key, type: r.tx_type,
-    amount: paiseToRupees(Number(r.amount_paise)),
-    balanceBefore: r.balance_before_paise === null ? null : paiseToRupees(Number(r.balance_before_paise)),
-    balanceAfter: r.balance_after_paise === null ? null : paiseToRupees(Number(r.balance_after_paise)),
-    gameId: r.game_id, gameName: r.game_name, createdAt: r.created_at,
-  }));
-}
 
 /**
  * The operator's transaction ledger view: one page and its total, from ONE
@@ -643,13 +535,6 @@ export async function deleteCategory(slug) {
     : { ok: false, reason: 'NOT_FOUND' };
 }
 
-export async function setGameStatus(slug, status) {
-  const { rows } = await pgQuery(
-    'UPDATE games SET status = $2, updated_at = now() WHERE slug = $1 RETURNING *',
-    [String(slug), String(status)], 'game_set_status',
-  );
-  return toGame(rows[0]);
-}
 
 export async function deleteGame(slug) {
   const { rowCount } = await pgQuery('DELETE FROM games WHERE slug = $1', [String(slug)], 'game_delete');

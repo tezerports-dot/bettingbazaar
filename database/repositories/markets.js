@@ -25,21 +25,6 @@
 import { pgQuery, withTransaction } from '../client.js';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
 
-/**
- * The states a cycle moves through, in order.
- *
- * OPEN takes bets · MERGED folds in the phantom pools · CLOSED stops betting ·
- * RESULT_DECLARED names the winner · COMPLETED settles. PAUSED and CANCELLED
- * are admin interventions rather than steps.
- *
- * This is the ENGINE's vocabulary, not a tidier one: a state the engine uses
- * and the table refuses is a betting round that stops mid-cycle.
- */
-export const CYCLE_STATUS = Object.freeze({
-  OPEN: 'OPEN', MERGED: 'MERGED', CLOSED: 'CLOSED',
-  RESULT_DECLARED: 'RESULT_DECLARED', COMPLETED: 'COMPLETED',
-  PAUSED: 'PAUSED', CANCELLED: 'CANCELLED',
-});
 
 /** The states in which a cycle is still taking or holding live bets. */
 export const LIVE_STATUSES = Object.freeze(['OPEN', 'MERGED', 'CLOSED', 'RESULT_DECLARED']);
@@ -187,16 +172,6 @@ export async function getAcceptingCycle(cycleId) {
   return toCycle(rows[0]);
 }
 
-/** The cycle currently taking bets for a type, if there is one. */
-export async function getOpenCycle(cycleType) {
-  const { rows } = await pgQuery(
-    `SELECT ${COLUMNS} FROM cycles
-      WHERE cycle_type = $1 AND status = 'OPEN' AND end_time > now()
-      ORDER BY start_time DESC LIMIT 1`,
-    [String(cycleType)], 'cycle_get_open',
-  );
-  return toCycle(rows[0]);
-}
 
 /**
  * Every cycle still running, across all types — the public "what can I bet on"
@@ -280,21 +255,6 @@ export async function getPools(cycleId) {
   };
 }
 
-/** Recent cycles for a type, newest first — the results page. */
-export async function listCycles({ cycleType = null, status = null, limit = 50, before = null } = {}) {
-  const where = []; const params = [];
-  if (cycleType) { params.push(String(cycleType)); where.push(`cycle_type = $${params.length}`); }
-  if (status) { params.push(String(status)); where.push(`status = $${params.length}`); }
-  if (before) { params.push(before); where.push(`start_time < $${params.length}`); }
-  const size = Math.min(Math.max(Number(limit) || 50, 1), 500);
-  const { rows } = await pgQuery(
-    `SELECT ${COLUMNS} FROM cycles
-      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-      ORDER BY start_time DESC LIMIT ${size}`,
-    params, 'cycle_list',
-  );
-  return rows.map(toCycle);
-}
 
 /**
  * Cycles with their real pools, in ONE statement.

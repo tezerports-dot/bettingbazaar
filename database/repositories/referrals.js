@@ -60,12 +60,6 @@ export async function recordEarning({
   return rows[0] ? { ok: true, earning: toEarning(rows[0]) } : { ok: true, idempotent: true };
 }
 
-export async function getEarning(earningId) {
-  const { rows } = await pgQuery(
-    'SELECT * FROM referral_earnings WHERE earning_id = $1', [String(earningId)], 'referral_get',
-  );
-  return toEarning(rows[0]);
-}
 
 export async function listEarnings({ earnerId = null, status = null, limit = 100 } = {}) {
   const where = []; const params = [];
@@ -373,11 +367,3 @@ export async function countClicks(code) {
   return rows[0].n;
 }
 
-/** Reclaim space. Expiry is decided by the read; this only frees pages. */
-export async function sweepExpiredClicks() {
-  const { rowCount } = await pgQuery(
-    "DELETE FROM referral_clicks WHERE expires_at < now() - interval '1 day'", [],
-    'referral_click_sweep',
-  );
-  return rowCount;
-}

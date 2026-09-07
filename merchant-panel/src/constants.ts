@@ -121,10 +121,6 @@ export const ROUTES = {
   PROFILE: '/profile',
 };
 
-export const ORDER_TYPE_LABELS = {
-  DEPOSIT: 'Deposit',
-  WITHDRAWAL: 'Withdrawal',
-};
 
 export const ERROR_MESSAGES = {
   NETWORK_ERROR: 'Network error. Please check your connection.',

@@ -95,14 +95,6 @@ export async function getGrant(grantId) {
   return rowToGrant(rows[0]);
 }
 
-/** Every grant for a user, newest first. */
-export async function getUserGrants(userId, { limit = 100 } = {}) {
-  const { rows } = await pgQuery(
-    `SELECT * FROM bonus_grants WHERE user_id = $1 ORDER BY granted_at DESC LIMIT $2`,
-    [String(userId), limit], 'bonus_grant_list',
-  );
-  return rows.map(rowToGrant);
-}
 
 /** Lock the user's wallet, then the grant. Wallet first, as everywhere else. */
 async function withGrantLock(userId, grantId, fn) {

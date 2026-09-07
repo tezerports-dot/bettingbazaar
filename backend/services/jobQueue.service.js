@@ -129,8 +129,6 @@ export async function enqueue(name, data = {}, opts = {}) {
   return null;
 }
 
-/** Register a processor for one-off jobs (recurring jobs register via registerRecurring). */
-export function registerProcessor(name, fn) { processors.set(name, fn); }
 
 /** Graceful shutdown — server.js calls this on SIGTERM/SIGINT. */
 export async function closeJobQueue() {

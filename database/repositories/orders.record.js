@@ -334,15 +334,6 @@ export async function getOrderRecord(orderId) {
   return toOrder(rows[0]);
 }
 
-/** Several orders in one round trip. */
-export async function getOrderRecords(orderIds = []) {
-  const ids = [...new Set(orderIds.filter(Boolean).map(String))];
-  if (!ids.length) return [];
-  const { rows } = await pgQuery(
-    'SELECT * FROM order_states WHERE order_id = ANY($1::text[])', [ids], 'order_record_many',
-  );
-  return rows.map(toOrder);
-}
 
 /**
  * Search orders.
@@ -960,16 +951,6 @@ export async function merchantVisibleOrders({
   };
 }
 
-/** What a merchant is currently working. */
-export async function merchantOpenOrders(merchantId) {
-  const { rows } = await pgQuery(
-    `SELECT * FROM order_states
-      WHERE merchant_id = $1 AND state IN ('ASSIGNED', 'PROCESSING', 'PAID', 'DISPUTED')
-      ORDER BY created_at ASC`,
-    [String(merchantId)], 'order_merchant_open',
-  );
-  return rows.map(toOrder);
-}
 
 /**
  * How many funding orders a player has created in a window.

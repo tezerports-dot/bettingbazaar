@@ -42,7 +42,6 @@
  * still open. Each bet's transition and its money commit in ONE transaction, so
  * a settled bet with no ledger row is structurally unrepresentable.
  */
-import { CacheService } from '../../services/cache.service.js';
 import { db } from '#db';
 // Risk Platform: payout arithmetic authority — winners are paid gross 2x minus
 // the admin-editable winnings platform fee, in integer paise.
@@ -330,8 +329,6 @@ class GameEngine {
                 cycleId: cycle.cycleId, stillPending: totals.stillPending,
             });
         }
-
-        await CacheService.del('financial_stats');
 
         console.log(`[Engine] ✅ Cycle ${cycle.cycleId} settled`);
         console.log(`   Winners: ${totals.winners} users across ${totals.wonBets} bets`);

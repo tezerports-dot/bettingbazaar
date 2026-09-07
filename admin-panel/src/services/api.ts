@@ -1007,17 +1007,6 @@ export const utr = {
   },
 };
 
-// ─── PHANTOM AGENTS ────────────────────────────────────────────────────────
-export const phantomAgents = {
-  getAll: async () => {
-    const res = await api.get<any>('/api/admin/phantom-agents');
-    return res.data;
-  },
-  setAccess: async (userId: string, accessLevel: 'NONE' | '30_MIN' | 'FULL_DAY' | 'BOTH') => {
-    const res = await api.post(`/api/admin/users/${userId}/phantom-access`, { accessLevel });
-    return res.data;
-  },
-};
 
 // --- ERROR REPORTS --------------------------------------------------------
 
@@ -1187,7 +1176,6 @@ export default {
   system,
   disputes,
   utr,
-  phantomAgents,
   errorReports,
   appAssets,
   orderActions,

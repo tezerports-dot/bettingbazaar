@@ -193,34 +193,6 @@ export async function bettingSeries({ from, to }) {
   }));
 }
 
-/**
- * The players who staked the most in a window — the leaderboard's source.
- *
- * Ranked on `bets`, which is where a stake actually is. A stored per-user total
- * would be a second copy of this number waiting to disagree with it.
- */
-export async function topPlayers({ from = null, to = null, limit = 20 } = {}) {
-  const where = [];
-  const params = [];
-  if (from) { params.push(from); where.push(`placed_at >= $${params.length}`); }
-  if (to) { params.push(to); where.push(`placed_at <= $${params.length}`); }
-  const { rows } = await pgQuery(
-    `SELECT user_id,
-            COUNT(*)::int AS bets,
-            COALESCE(SUM(stake_paise), 0)  AS staked,
-            COALESCE(SUM(payout_paise), 0) AS won
-       FROM bets ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-      GROUP BY user_id
-      ORDER BY staked DESC
-      LIMIT ${Math.min(Math.max(Number(limit) || 20, 1), 200)}`,
-    params, 'stats_top_players',
-  );
-  return rows.map((r) => ({
-    userId: r.user_id, bets: r.bets,
-    staked: rupees(r.staked), won: rupees(r.won),
-    net: rupees(Number(r.won) - Number(r.staked)),
-  }));
-}
 
 /**
  * The leaderboard, computed from settled bets.
@@ -699,32 +671,6 @@ export async function merchantPerformanceHistory(merchantId, { days = 30, timezo
   }));
 }
 
-/** Per-merchant throughput, derived from the orders they actually settled. */
-export async function merchantThroughput({ from = null, to = null, limit = 50 } = {}) {
-  const where = ["state = 'COMPLETED'", 'merchant_id IS NOT NULL'];
-  const params = [];
-  if (from) { params.push(from); where.push(`completed_at >= $${params.length}`); }
-  if (to) { params.push(to); where.push(`completed_at <= $${params.length}`); }
-  const { rows } = await pgQuery(
-    `SELECT merchant_id,
-            COUNT(*)::int AS orders,
-            COUNT(*) FILTER (WHERE order_type = 'DEPOSIT')::int    AS deposits,
-            COUNT(*) FILTER (WHERE order_type = 'WITHDRAWAL')::int AS withdrawals,
-            COALESCE(SUM(token_amount_paise), 0) AS volume,
-            AVG(merchant_response_minutes)       AS avg_response
-       FROM order_states WHERE ${where.join(' AND ')}
-      GROUP BY merchant_id
-      ORDER BY volume DESC
-      LIMIT ${Math.min(Math.max(Number(limit) || 50, 1), 200)}`,
-    params, 'stats_merchant_throughput',
-  );
-  return rows.map((r) => ({
-    merchantId: r.merchant_id, orders: r.orders,
-    deposits: r.deposits, withdrawals: r.withdrawals,
-    volume: rupees(r.volume),
-    avgResponseMinutes: r.avg_response === null ? null : Number(r.avg_response),
-  }));
-}
 
 /**
  * One merchant's earnings — today, over a range, and split by direction.
@@ -877,22 +823,6 @@ export async function merchantQueueCounts(merchantId) {
   return rows[0];
 }
 
-/** How many rows each table holds — the operator's "is anything there?" view. */
-export async function tableCounts(tables = []) {
-  const out = {};
-  for (const table of tables) {
-    // The name comes from a caller-supplied list, so it is validated against
-    // the catalogue rather than interpolated on trust.
-    const { rows: exists } = await pgQuery(
-      `SELECT 1 FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_name = $1`, [table], 'stats_table_check',
-    );
-    if (!exists.length) { out[table] = null; continue; }
-    const { rows } = await pgQuery(`SELECT COUNT(*)::int AS n FROM "${table}"`, [], 'stats_table_count');
-    out[table] = int(rows[0].n);
-  }
-  return out;
-}
 
 // ── The admin analytics dashboards ──────────────────────────────────────────
 

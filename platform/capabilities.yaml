@@ -230,23 +230,43 @@ capabilities:
     name: Redis Cache
     bucket: A
     owner: app
-    implementation_status: full
-    activation_status: active
-    evidence: [backend/services/cache.service.js]
+    # ABSENT as of 2026-09-07, and it was never anything else.
+    # This claimed FULL and ACTIVE on cache.service.js. That module built a
+    # Redis client inside `initCache`, and NOTHING ever called initCache — so
+    # `client` was permanently null and every CacheService operation silently
+    # used a per-process in-memory Map instead. The Map was never written to
+    # either: the whole 284-line service had ONE call site, a
+    # `CacheService.del('financial_stats')` in the settlement engine, deleting a
+    # key nothing anywhere sets.
+    #
+    # A capability whose evidence is a module that cannot have had an effect is
+    # not a capability. The module is deleted; this is the honest status.
+    # Redis itself is live and load-bearing elsewhere (CAP-23 rate limits,
+    # CAP-24 pub/sub, the job queue) — what is absent is an application cache.
+    implementation_status: absent
+    activation_status: infra-gated
+    docs: [docs/governance/04-GOVERNANCE.md]
   - id: CAP-22
     name: Distributed Locks
     bucket: A
     owner: app
-    # PARTIAL as of 2026-09-01, and this is a real gap, not bookkeeping.
-    # startup/cronLock.js elects a leader using a TTL document in the store
-    # being removed — despite Redis backing every other lock in the platform.
-    # Until it is rewritten on PostgreSQL, scheduled jobs are guarded only by
-    # their own idempotency, which for settlement means duplicated work on
-    # every instance every tick. Its concurrency test went with the integration
-    # tier and is restored in tests/postgres/ when the lock moves.
-    implementation_status: partial
+    # FULL as of 2026-09-07. The note this replaces described a lock that no
+    # longer exists — it said the leader was elected through a TTL document in
+    # the removed store, and that the concurrency test would be restored "when
+    # the lock moves". The lock moved (repositories/operations.js, a single
+    # INSERT … ON CONFLICT … WHERE, lease renewed by heartbeat while the job
+    # runs) and the test was never written, so the thing standing between
+    # settlement and running once per instance per tick was uncovered.
+    #
+    # It is covered now, and the case that matters is the one a naive test
+    # misses: a MUTEX satisfies "never simultaneously" while three instances
+    # take a released lock in turn and run the job three times. `holdLease`
+    # is what makes it an election, and the suite counts RUNS across a tick
+    # rather than looking for overlap.
+    implementation_status: full
     activation_status: active
-    evidence: [backend/startup/cronLock.js]
+    evidence: [backend/startup/cronLock.js, database/repositories/operations.js]
+    verification: { test: database/tests/cronLeaderLockPg.test.js }
   - id: CAP-23
     name: Redis Sessions
     bucket: decision
@@ -282,9 +302,14 @@ capabilities:
     name: Cache Strategy (TTL/Invalidation)
     bucket: A
     owner: app
-    implementation_status: full
-    activation_status: active
-    evidence: [backend/services/cache.service.js]
+    # ABSENT — same evidence, same finding as CAP-21. There is no TTL or
+    # invalidation strategy to describe: the only invalidation call in the
+    # codebase deleted a key nothing wrote, through a client never connected.
+    # A strategy is a set of decisions about what is cached and when it is
+    # dropped; none of those decisions exist yet.
+    implementation_status: absent
+    activation_status: infra-gated
+    docs: [docs/governance/04-GOVERNANCE.md]
   - id: CAP-27
     name: Redis High Availability
     bucket: B

@@ -35,19 +35,6 @@ import { db } from '#db';
  */
 const INSTANCE_ID = `${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
 
-/**
- * Take the lock for `name` if it is free, expired, or already ours.
- *
- * "Already ours" is deliberate: an instance re-acquiring its own lock extends
- * it rather than being refused, so a job whose previous run released late does
- * not lock itself out.
- */
-export async function acquire(name, ttlMs) {
-  const { acquired } = await db.operations.acquireLock(name, INSTANCE_ID, {
-    ttlSeconds: Math.max(Math.ceil(ttlMs / 1000), 1),
-  });
-  return acquired;
-}
 
 /** Free the lock, if and only if this instance still holds it. */
 export async function release(name) {
@@ -91,4 +78,4 @@ export function listLocks() {
   return db.operations.listLocks();
 }
 
-export const _instanceId = INSTANCE_ID; // exported for tests/log attribution
+ // exported for tests/log attribution

@@ -149,7 +149,8 @@ compute, or default this value independently.
   than looking for it. Re-count with:
   `grep -ro "D4AF37" user-panel/src admin-panel/src merchant-panel/src | wc -l`.
   The merchant panel is already at zero (rebuilt on design tokens, 2026-07-27).
-- Any route path string must originate from the route-constants module.
+- Any route path string must originate from the route-constants module **where the
+  panel has one** — see §8 for which do.
 - Any permission key, status enum, or event name must originate from a shared module.
 
 ---
@@ -207,11 +208,21 @@ compute, or default this value independently.
 
 ## 8. Route Ownership Rules
 
-- Each frontend has exactly one route-constants module:
-  - User panel: `user-panel/src/constants.ts` → add `ROUTES` export as needed
-  - Admin panel: `admin-panel/src/utils/constants.ts` → `ADMIN_ROUTES` object (L-02)
-  - Merchant panel: `merchant-panel/src/constants.ts` → `ROUTES` object
-- All `<Route>` tables, nav menus, and route guards import path strings from it.
+- **Merchant panel: `merchant-panel/src/constants.ts` → `ROUTES`.** Followed:
+  `Layout.tsx` builds its nav from it and the `<Route>` table uses the same
+  object. This is the shape the rule describes.
+- **Admin panel and user panel do not do this, and this section used to say
+  they did.** `admin-panel/src/utils/constants.ts` held an `ADMIN_ROUTES` object
+  that NOTHING imported — every `<Route>` and every nav entry wrote its path as
+  a literal — and `user-panel/src/constants.ts` never had a `ROUTES` export at
+  all. The admin file has been deleted rather than left as a module claiming an
+  ownership it did not have; a constants module nobody imports is not one owner,
+  it is a second place for a path to be wrong.
+- Adopting route constants in those two panels is open work, not a rule they are
+  currently breaking in silence. Until then, the honest statement is the one
+  above: one panel of three derives its paths, two write literals.
+- Where a route-constants module DOES exist, all `<Route>` tables, nav menus and
+  route guards import path strings from it.
 
 ---
 
@@ -459,7 +470,7 @@ requires no governance changes:
 
 **What each panel owns independently (safe to split):**
 - Its own `package.json`, `vite.config.ts`, `tailwind.config.js`
-- Its own route constants (`ADMIN_ROUTES`, `ROUTES`)
+- Its own route constants where it has them (`ROUTES` in the merchant panel; see §8)
 - Its own auth token storage key (`admin-auth`, `auth_token`, `merchantToken`)
 - Its own `VITE_APP_VERSION` (from its own `package.json`)
 

@@ -403,45 +403,7 @@ export const getWeeklyEarnings = async (): Promise<{ weekly: Array<{ date: strin
   return { weekly: data.weekly || [] };
 };
 
-// =======================================================================
-// RED FLAG (FIX M5-c)
-// =======================================================================
 
-export const redFlagOrder = async (orderId: string, reason: string): Promise<any> => {
-  const data = await request<any>(ENDPOINTS.ORDERS_EXTRA.RED_FLAG(orderId), {
-    method: 'POST',
-    body: JSON.stringify({ reason }),
-  });
-  return data.order || data;
-};
-
-// getRates removed: token conversion is fixed 1:1 (Phase 006 flattening,
-// 2026-07-08) — there is no buy/sell spread to fetch or display.
-//
-// Bulk-payout clients removed with the 2026-07-27 redesign: the panel is four
-// screens (Dashboard, Orders, History, Profile) and withdrawals are handled
-// per-order, so nothing consumed them. The backend endpoints remain, gated by
-// the MERCHANT_BULK_PAYOUTS feature flag.
-
-// =======================================================================
-// UTILITIES
-// =======================================================================
-
-export const formatCurrency = (amount: number, currency = 'Rs.'): string => {
-  if (typeof amount !== 'number') {
-    amount = parseFloat(String(amount)) || 0;
-  }
-  return `${currency}${amount.toLocaleString('en-IN', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  })}`;
-};
-
-export const formatDate = (dateString: string | number): string => {
-  if (!dateString) return 'N/A';
-  const date = new Date(dateString);
-  return date.toLocaleString('en-IN');
-};
 
 export const formatDateShort = (dateString: string | number): string => {
   if (!dateString) return 'N/A';
@@ -455,22 +417,6 @@ export const formatTime = (dateString: string | number): string => {
   return date.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
 };
 
-export const getTimeAgo = (dateString: string | number): string => {
-  if (!dateString) return 'N/A';
-  const date = new Date(dateString);
-  const now = new Date();
-  const diff = now.getTime() - date.getTime();
-  
-  const minutes = Math.floor(diff / 60000);
-  const hours = Math.floor(diff / 3600000);
-  const days = Math.floor(diff / 86400000);
-  
-  if (minutes < 1) return 'Just now';
-  if (minutes < 60) return `${minutes}m ago`;
-  if (hours < 24) return `${hours}h ago`;
-  if (days < 7) return `${days}d ago`;
-  return formatDateShort(dateString);
-};
 
 // =======================================================================
 // EXPORT ALL API FUNCTIONS
@@ -510,16 +456,9 @@ export const api = {
   updateProfile,
 
   // Red Flag
-  redFlagOrder,
-
-  
   // Utilities
-  formatCurrency,
-  formatDate,
   formatDateShort,
   formatTime,
-  getTimeAgo,
-  
   // Direct request function for custom calls
   request,
 };

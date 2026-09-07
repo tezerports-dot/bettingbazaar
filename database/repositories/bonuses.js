@@ -84,17 +84,6 @@ export async function grant({
   return { ...result, applied: result.ok };
 }
 
-/**
- * Take a grant back. The grant ROW survives, marked — "was this user ever given
- * a signup bonus?" is what fraud review asks, and deleting the row destroys the
- * answer. The clawback may drive the balance negative, because the money may
- * already be spent and refusing to record a reversal that already happened is
- * worse than recording an uncomfortable number.
- */
-export async function clawBack({ grantId, userId, actor = null, reason = null }) {
-  const result = await clawBackBonus({ grantId, userId, actor, reason });
-  return { ...result, applied: result.ok };
-}
 
 /** A grant in rupees, which is what the routes serialise. */
 export async function read(grantId) {

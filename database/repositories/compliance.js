@@ -63,20 +63,7 @@ export async function findByPanHash(panHash) {
   return toRegistration(rows[0]);
 }
 
-export async function findByUserId(userId) {
-  const { rows } = await pgQuery(
-    'SELECT pan_hash, pan_last4, user_id, verified_at FROM pan_registry WHERE user_id = $1',
-    [String(userId)], 'pan_find_user',
-  );
-  return toRegistration(rows[0]);
-}
 
-/** Is this PAN already spoken for, and by someone else? */
-export async function isPanTaken(panHash, { exceptUserId = null } = {}) {
-  const existing = await findByPanHash(panHash);
-  if (!existing) return false;
-  return exceptUserId ? existing.userId !== String(exceptUserId) : true;
-}
 
 /**
  * Release a registration.
@@ -93,7 +80,3 @@ export async function releasePan(panHash, userId) {
   return rows.length > 0;
 }
 
-export async function panCount() {
-  const { rows } = await pgQuery('SELECT COUNT(*)::int AS n FROM pan_registry', [], 'pan_count');
-  return rows[0].n;
-}

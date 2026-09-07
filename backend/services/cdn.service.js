@@ -449,28 +449,6 @@ export async function generateBrandingUploadUrl(fileName, contentType, fileSize,
 // HEALTH CHECK
 // ═══════════════════════════════════════════════════════════════════════
 
-/**
- * Test S3 connection
- */
-export async function testS3Connection() {
-  try {
-    // Try to generate a test presigned URL
-    const testKey = `test/${Date.now()}.txt`;
-    const command = new PutObjectCommand({
-      Bucket: BUCKET_NAME,
-      Key: testKey,
-      ContentType: 'text/plain',
-    });
-    
-    await getSignedUrl(s3Client, command, { expiresIn: 60 });
-    
-    console.log('✅ S3 connection test successful');
-    return { success: true, message: 'S3 connection working' };
-  } catch (error) {
-    console.error('❌ S3 connection test failed:', error);
-    return { success: false, message: error.message };
-  }
-}
 
 // ═══════════════════════════════════════════════════════════════════════
 // EXPORTS
@@ -497,5 +475,4 @@ export default {
   generateBrandingUploadUrl,
   mimeRulesForCategory,
   matchesMagicBytes,
-  testS3Connection,
 };

@@ -529,24 +529,6 @@ export const BETTING_ALLOWED = Object.freeze({
   },
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 9. CYCLE RESET
-//    After a cycle ends (timer hits 00:00:000) the next cycle starts
-//    automatically. The server creates the new cycle and emits 'new_cycle'.
-//    The client's tick() resets when nowMs >= endTime.
-//    New cycle timer starts from DURATION_MS (30:00 or 24:00:00).
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const CYCLE_RESET = Object.freeze({
-  /**
-   * After this delay the new cycle is expected to be live on the server.
-   * The client will retry refreshCycles() every RETRY_INTERVAL_MS
-   * until it receives a valid new cycle ID.
-   */
-  GRACE_MS: 1000,           // 1 second — allow server to commit new cycle
-  RETRY_INTERVAL_MS: 2000,  // retry every 2 seconds if server hasn't responded
-  MAX_RETRIES: 5,
-});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 10. QUICK REFERENCE — complete timeline in plain English

@@ -68,14 +68,6 @@ const SOCKET_URL: string =
   GLOBAL_CONFIG.SOCKET_URL ||
   (isLocal ? 'http://localhost:8080' : window.location.origin);       // same-origin default
 
-// The merchant panel may live on a different host than the user panel. If so,
-// set VITE_MERCHANT_PANEL_URL at build time; otherwise it falls back to the
-// same-domain /merchant path.
-const _merchantPanelUrl: string | undefined = (import.meta as any).env?.VITE_MERCHANT_PANEL_URL;
-export const MERCHANT_PANEL_ORIGIN: string =
-  (_merchantPanelUrl ? _merchantPanelUrl.replace(/\/+$/, '') : null) ||
-  window.location.origin; // fallback: same-domain bundled deployment
-
 // SSE URL -- public broadcast stream (all users, anonymous or logged-in)
 const SSE_URL: string =
   (_viteApiUrl ? _viteApiUrl.replace(/\/$/, '') + '/api/sse/events' : null) ||

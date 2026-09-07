@@ -57,13 +57,6 @@ export async function listAnnouncements({ limit = 100 } = {}) {
   return rows.map(toAnnouncement);
 }
 
-export async function setAnnouncementActive(announcementId, isActive) {
-  const { rows } = await pgQuery(
-    'UPDATE announcements SET is_active = $2 WHERE announcement_id = $1 RETURNING *',
-    [String(announcementId), Boolean(isActive)], 'announcement_set_active',
-  );
-  return toAnnouncement(rows[0]);
-}
 
 /** The fields an operator may edit, and the body key each is written from. */
 const ANNOUNCEMENT_UPDATABLE = Object.freeze({
@@ -271,20 +264,6 @@ export async function listFaqs({ category = null, publishedOnly = true } = {}) {
   return rows.map(toFaq);
 }
 
-/**
- * Count a view.
- *
- * The arithmetic is in the statement. A read-modify-write loses one of two
- * concurrent views — harmless individually, and wrong by a growing margin on
- * the article everybody reads, which is the one an editor is judging.
- */
-export async function recordFaqView(faqId) {
-  const { rows } = await pgQuery(
-    'UPDATE faqs SET views = views + 1 WHERE faq_id = $1 RETURNING views',
-    [String(faqId)], 'faq_view',
-  );
-  return rows[0] ? Number(rows[0].views) : 0;
-}
 
 /**
  * Put the starter FAQ in place, once.

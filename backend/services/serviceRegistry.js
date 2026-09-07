@@ -25,11 +25,4 @@ export function registerService(name, service) {
   return service;
 }
 
-export function getService(name) {
-  const s = services.get(name);
-  if (!s) throw new Error(`Service '${name}' not registered. Available: [${[...services.keys()].join(', ')}]`);
-  return s;
-}
 
-export function hasService(name) { return services.has(name); }
-export function listServices()   { return [...services.keys()]; }
