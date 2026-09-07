@@ -112,6 +112,17 @@ export function toOrder(r) {
     bulkPayoutDate: r.bulk_payout_date, bulkPaidAt: r.bulk_paid_at,
     bulkPayoutBatch: r.bulk_payout_batch,
 
+    // The tamper-evidence tag, READ-ONLY. It is written once by `openOrder`
+    // with the row and never updated, and `SETTABLE` below deliberately does
+    // not name it, so no caller can rewrite it.
+    //
+    // This mapper omitted it while `orders.core.js`'s did, which meant
+    // `orderAccessGuard` — reading the full record so handlers get every field
+    // they render — saw `undefined` and skipped the verification entirely. The
+    // guard was mounted, the check was there, and it silently never ran. Its
+    // test is what found this.
+    orderHmac: r.order_hmac ?? null,
+
     createdAt: r.created_at, updatedAt: r.updated_at,
   };
 }

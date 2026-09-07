@@ -22,6 +22,9 @@ import { creditDeposit, creditReserve } from '../wallet/walletAuthority.service.
 import { moveDepositMoney } from './depositCredit.js';
 import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
+// The one owner of order access: it verifies the tamper tag AND decides who
+// may act on the order, so a route cannot be added without both.
+import { orderAccessGuard } from '../../middleware/order-crypto-access.js';
 import { emitWalletUpdate, emitAdminUpdate, emitOrderUpdate } from '../notification/realtimeEmitters.js';
 
 const router = express.Router();
@@ -68,7 +71,7 @@ router.post('/withdrawal/create', authenticate, requireApprovedKyc, requireChann
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code, cutoffPassed: err.cutoffPassed, balance: err.balance }); }
 });
 
-router.post('/order/:orderId/mark-paid', authenticate, async (req, res) => {
+router.post('/order/:orderId/mark-paid', authenticate, orderAccessGuard, async (req, res) => {
   try {
     // The UTR alone. A screenshot proved nothing — it is trivially forged and no
     // approval read it, while the merchant matches the UTR against their own
@@ -103,19 +106,19 @@ router.post('/order/:orderId/mark-paid', authenticate, async (req, res) => {
  * start a transaction and carried on WITHOUT one, so the atomicity it appeared
  * to provide was conditional on nobody looking.
  */
-router.post('/deposit/:orderId/confirm', paymentActorAuth, async (req, res) => {
+router.post('/deposit/:orderId/confirm', paymentActorAuth, orderAccessGuard, async (req, res) => {
   const isMerchantActor = Boolean(req.merchantId);
   const isAdminActor = Boolean(req.user?.isAdmin);
   if (!isMerchantActor && !isAdminActor) {
     return res.status(403).json({ success: false, message: 'Only merchants or admins can confirm deposits' });
   }
   try {
-    const order = await db.orders.getOrderRecord(req.params.orderId);
-    if (!order || order.type !== 'DEPOSIT') {
+    // The guard already refused anyone who is not this order's player, its
+    // assigned merchant, or an admin — and it verified the tamper tag. What is
+    // left is this route's own rule: it confirms DEPOSITS.
+    const order = req.p2pOrder;
+    if (order.type !== 'DEPOSIT') {
       return res.status(404).json({ success: false, message: 'Order not found' });
-    }
-    if (isMerchantActor && String(order.merchantId) !== String(req.merchantId)) {
-      return res.status(403).json({ success: false, message: 'This order is not assigned to you' });
     }
     if (!['PAID', 'PROCESSING'].includes(order.status)) {
       // A read, not the gate — the transition below settles the race. This
@@ -200,28 +203,24 @@ router.get('/orders', authenticate, async (req, res) => {
   }
 });
 
-/**
- * One order, and the ownership check that goes with it.
+/*
+ * `ownedOrder` lived here and is now `orderAccessGuard`, mounted as middleware
+ * on every `:orderId` route below.
  *
- * Three handlers below repeated the same `$or` over an order id and a
- * conditionally-valid ObjectId, then compared `order.userId` after the fetch.
- * An order id is the id now — there is no second key to match on — and the
- * ownership test lives here so a handler cannot be added without one.
+ * The two were doing the same job in two places. The guard also verifies the
+ * order's tamper tag, which nothing did: `order_hmac` was written on every
+ * order at creation, ORDER_HMAC_SECRET was a required boot variable, and no
+ * request path ever read the tag back. The signature was kept and never
+ * checked.
  *
- * Returns null when the order does not exist OR the caller may not see it: a
- * distinguishable 404-vs-403 tells someone probing ids which ones are real.
+ * Handlers below read `req.p2pOrder`, which the guard sets once it has decided.
+ * A route added without the guard has no order to read, so it fails loudly
+ * rather than silently skipping the check.
  */
-async function ownedOrder(req) {
-  const order = await db.orders.getOrderRecord(req.params.orderId);
-  if (!order) return null;
-  if (String(order.userId) !== String(req.user.userId) && !req.user.isAdmin) return null;
-  return order;
-}
 
-router.get('/order/:orderId', authenticate, async (req, res) => {
+router.get('/order/:orderId', authenticate, orderAccessGuard, async (req, res) => {
   try {
-    const order = await ownedOrder(req);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    const order = req.p2pOrder;
     res.json({ success: true, order });
   } catch (err) {
     console.error('GET /payment/order/:orderId error:', err);
@@ -249,10 +248,9 @@ router.post('/order/cancel', authenticate, async (req, res) => {
 
 // ─── GET /api/payment/order/:orderId/status — lightweight poll (Section 2B) ──
 // Returns only the fields the frontend needs to poll during active payment flow.
-router.get('/order/:orderId/status', authenticate, async (req, res) => {
+router.get('/order/:orderId/status', authenticate, orderAccessGuard, async (req, res) => {
   try {
-    const order = await ownedOrder(req);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    const order = req.p2pOrder;
 
     // The proof screenshot expires. The fallback is 48 hours from creation for
     // an order written before the column existed — an absent expiry must not
@@ -277,13 +275,12 @@ router.get('/order/:orderId/status', authenticate, async (req, res) => {
 
 // ─── POST /api/payment/order/:orderId/dispute — user raises dispute (Section 2B) ─
 // User can dispute DEPOSIT order that is PAID but merchant isn't confirming.
-router.post('/order/:orderId/dispute', authenticate, async (req, res) => {
+router.post('/order/:orderId/dispute', authenticate, orderAccessGuard, async (req, res) => {
   try {
     const { reason } = req.body;
     if (!reason?.trim()) return res.status(400).json({ success: false, message: 'reason is required' });
 
-    const order = await ownedOrder(req);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    const order = req.p2pOrder;
     if (order.status !== 'PAID')
       return res.status(400).json({ success: false, message: 'Can only dispute PAID orders' });
 
@@ -321,12 +318,11 @@ router.post('/order/:orderId/dispute', authenticate, async (req, res) => {
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
 
-router.post('/order/:orderId/status', authenticate, async (req, res) => {
+router.post('/order/:orderId/status', authenticate, orderAccessGuard, async (req, res) => {
   try {
     const { status, reason = 'User requested dispute' } = req.body;
     if (status !== 'DISPUTED') return res.status(400).json({ success: false, message: 'Only DISPUTED transition is supported here' });
-    const order = await ownedOrder(req);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    const order = req.p2pOrder;
     const moved = await disputeOrder(order.orderId, {
       expectFrom: 'PAID',
       set: {

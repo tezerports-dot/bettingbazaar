@@ -95,23 +95,42 @@ export async function orderAccessGuard(req, res, next) {
     const orderId = req.params.orderId || req.body?.orderId;
     if (!orderId) return res.status(400).json({ success: false, message: 'orderId required' });
 
-    const order = await db.orders.getOrder(orderId);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    // ONE refusal for every reason. A caller cannot tell "no such order" from
+    // "not yours" from "that tag does not verify", because order ids travel in
+    // URLs and a distinguishable answer tells someone probing which ids are
+    // real. This is the contract `ownedOrder` had before this guard replaced
+    // it, and it is the reason this returns 404 rather than the 403 it used to.
+    const refuse = () => res.status(404).json({ success: false, message: 'Order not found' });
 
+    // The FULL record, not `getOrder`. `getOrder` maps twelve columns and omits
+    // status, tokenAmount, the deposit/reserve split, the UTR and the merchant
+    // snapshot — everything the handlers downstream actually read. Handing them
+    // that shape as `req.p2pOrder` would leave every field they render
+    // undefined, with no error anywhere: the exact "a route rewritten without
+    // its service is a bug with a green test" failure.
+    const order = await db.orders.getOrderRecord(orderId);
+    if (!order) return refuse();
+
+    // An order with NO tag is allowed through — see the note above. A tag that
+    // is PRESENT and wrong is the tamper signal, and it is an operational
+    // alarm, not an ordinary refusal: the row did not come from this system.
     if (order.orderHmac && !verifyOrderHmac(order.orderId, order.orderHmac)) {
-      console.error(`[orderAccessGuard] HMAC mismatch orderId=${order.orderId}`);
-      return res.status(403).json({ success: false, message: 'Access denied' });
+      console.error(`[orderAccessGuard] HMAC MISMATCH orderId=${order.orderId} — this row was not written by this system`);
+      return refuse();
     }
 
+    // A merchant arrives through `merchantAuth`, which sets `req.merchantId`
+    // and does NOT set `req.user`. This read `req.user?.isMerchant`, a field no
+    // middleware on this path populates, so the guard could never recognise a
+    // merchant — mounting it as written would have refused every merchant
+    // confirm on the deposit path.
     const uid = req.user?.userId ? String(req.user.userId) : null;
     const isBuyer = uid !== null && String(order.userId) === uid;
-    const isMerchant = req.user?.isMerchant === true
+    const isMerchant = req.merchantId != null
       && order.merchantId != null && String(order.merchantId) === String(req.merchantId);
     const isAdmin = req.user?.isAdmin === true || req.user?.isSubAdmin === true;
 
-    if (!isBuyer && !isMerchant && !isAdmin) {
-      return res.status(403).json({ success: false, message: 'Access denied' });
-    }
+    if (!isBuyer && !isMerchant && !isAdmin) return refuse();
 
     req.p2pOrder = order;
     req.orderRole = isAdmin ? 'admin' : (isMerchant ? 'merchant' : 'buyer');

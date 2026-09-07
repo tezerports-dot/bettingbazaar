@@ -27,9 +27,9 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 const calls = vi.hoisted(() => ({ debit: [], deposit: [], reserve: [], merchantCredit: [] }));
 const order = vi.hoisted(() => ({ value: null }));
 
-// The ORDER is supplied, because these tests are about the arithmetic that
-// pairs a merchant debit with a user credit — not about where the order was
-// read from. The wallet writers are observed rather than executed for the same
+// The ORDER is supplied on the request, because these tests are about the
+// arithmetic that pairs a merchant debit with a user credit — not about where
+// the order was read from. The wallet writers are observed rather than executed for the same
 // reason: what is asserted is the AMOUNT each one is asked for.
 //
 // The movements themselves are proven against a real database in
@@ -130,7 +130,17 @@ describe('POST /deposit/:orderId/confirm — tokens moved, not minted', () => {
     order.value = o;
     const handler = handlerFor(paymentRouter, 'post', '/deposit/:orderId/confirm');
     const res = fakeRes();
-    await handler({ params: { orderId: 'o1' }, body: {}, user: { _id: 'u1' }, merchantId: 'm1', headers: {}, cookies: {} }, res);
+    // `p2pOrder` is how the handler receives the order now: `orderAccessGuard`
+    // resolves it, verifies its tamper tag and decides who may act on it before
+    // the handler runs. Passing it here is the handler's real contract, not a
+    // convenience — a handler reached without the guard has no order at all,
+    // which is the point of moving the check to middleware. The guard's own
+    // behaviour is covered against a real database in
+    // backend/tests/routes/orderAccessGuardRoutes.test.js.
+    await handler({
+      params: { orderId: 'o1' }, body: {}, user: { _id: 'u1' }, merchantId: 'm1',
+      headers: {}, cookies: {}, p2pOrder: o,
+    }, res);
     return res;
   };
 

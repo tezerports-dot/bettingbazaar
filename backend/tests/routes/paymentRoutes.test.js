@@ -116,12 +116,27 @@ describePg('payment routes', () => {
     // The UTR is the whole claim now. It is what makes the payment checkable —
     // the merchant matches it against their own bank statement — and it is the
     // only part of the submission the platform can verify.
+    //
+    // This needs a REAL order the player owns. `orderAccessGuard` runs before
+    // the handler, so an id nobody owns is refused as 404 before the body is
+    // ever looked at — which is the right order: a caller who may not see the
+    // order gets no feedback about what its body should have contained.
     const player = await actor({});
+    const merchant = await merchantActor({ tokensRupees: 10_000 });
+    const orderId = `mpv-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    await createOrderRecord({
+      orderId, userId: player.userId, type: 'DEPOSIT',
+      tokenAmountRupees: 500, fiatAmountRupees: 500,
+      state: 'ASSIGNED', merchantId: merchant.merchantId,
+    });
+
     for (const body of [{}, { utrNumber: '   ' }, { utrNumber: null }]) {
-      const res = await as(app, player).post('/order/anything/mark-paid').send(body);
+      const res = await as(app, player).post(`/order/${orderId}/mark-paid`).send(body);
       expect(res.status, `accepted ${JSON.stringify(body)}`).toBe(400);
       expect(res.body.message).toMatch(/utrNumber/i);
     }
+    // …and nothing about the order moved.
+    expect((await getOrderRecord(orderId)).status).toBe('ASSIGNED');
   });
 
   it('takes the UTR alone — no screenshot is asked for or required', async () => {
@@ -221,10 +236,16 @@ describePg('payment routes', () => {
 
   // ── Who may confirm a deposit ─────────────────────────────────────────────
   it('refuses a confirm from a plain player', async () => {
+    // 404, not 403: `orderAccessGuard` gives one answer for "no such order",
+    // "not yours" and "that tag does not verify", because order ids travel in
+    // URLs and a distinguishable reply tells someone probing which ids are
+    // real. The status is the weaker half of this test — what matters is that
+    // the order did not advance.
     const { orderId } = await depositOrder();
     const nobody = await actor({});
     const res = await as(app, nobody).post(`/deposit/${orderId}/confirm`).send({});
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
+    expect((await getOrderRecord(orderId)).status).not.toBe('COMPLETED');
   });
 
   it('refuses a confirm from a merchant the order is not assigned to', async () => {
@@ -233,8 +254,12 @@ describePg('payment routes', () => {
     const { orderId } = await depositOrder();
     const stranger = await merchantActor({ tokensRupees: 10_000 });
     const res = await as(app, stranger).post(`/deposit/${orderId}/confirm`).send({});
-    expect(res.status).toBe(403);
-    expect(res.body.message).toMatch(/not assigned to you/i);
+    expect(res.status).toBe(404);
+    // The message no longer names the reason — see the note above — so this
+    // asserts the thing that actually matters instead: the stranger's float is
+    // untouched and the order did not complete.
+    expect(Number(await getMerchantTokenBalance(stranger.merchantId))).toBe(10_000);
+    expect((await getOrderRecord(orderId)).status).not.toBe('COMPLETED');
   });
 
   it('refuses a merchant whose account is not approved', async () => {
