@@ -1,5 +1,6 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
+import { createHash } from 'node:crypto';
 import { db } from '#db';
 // F-3 (2026-07-10): counters shared across instances via Redis; graceful
 // per-instance fallback when Redis is absent/unreachable.
@@ -132,6 +133,54 @@ export const merchantAuthLimiter = rateLimit({
 // different: six digits is 10^6, so the same allowance that is generous for a
 // password is dangerous for an OTP. Keyed by account where known, so one
 // attacker cannot exhaust a shared-IP office's whole budget.
+/**
+ * The identity a per-actor limiter is supposed to count against.
+ *
+ * ── Every one of these limiters was keyed on `req.user?.id` ─────────────────
+ * `authenticate` sets `req.user` to what the users repository returns, and that
+ * object has `userId`. It has never had `id`. So the expression was ALWAYS
+ * undefined and every one of these limiters silently degraded to its fallback —
+ * the client IP — while its own comment said otherwise. `ipBetLimiter` reads
+ * "Track per user, not per IP (users may share IPs)" directly above the line
+ * that tracks per IP.
+ *
+ * Two consequences, in opposite directions:
+ *
+ *   Shared IPs are throttled together. This platform's players are on Indian
+ *   mobile carriers behind CGNAT, where thousands of subscribers leave through
+ *   one address. One heavy user exhausted the bucket for all of them.
+ *
+ *   Per-IP is not a limit at all for anyone willing to change IP. A mobile
+ *   reconnect is a new address, so `withdrawalLimiter`'s 5-per-hour and
+ *   `twoFactorLimiter`'s 5-failures-per-15-minutes could both be reset at will.
+ *   The second is the account-takeover guard: neither 2FA login route carries a
+ *   mobile in the body — both take `{ challengeToken, code }` — so an attacker
+ *   who already had the password could brute-force a six-digit code by cycling
+ *   addresses, which is precisely the scenario the handler below logs as
+ *   "possible account takeover in progress".
+ *
+ * The order is deliberate. A session is the strongest claim; the challenge
+ * token is next, because one token is one login attempt for one account and
+ * cannot be re-minted without passing the password limiter again; the IP is
+ * last, and only for a caller who has identified themselves in no other way.
+ */
+export function actorKey(req) {
+  if (req.user?.userId)   return `u:${req.user.userId}`;
+  if (req.merchantId)     return `m:${req.merchantId}`;
+  // Hashed: a rate-limit key becomes a Redis key name and appears in logs, and
+  // a challenge token is a bearer credential for the rest of its short life.
+  if (req.body?.challengeToken) {
+    return `c:${createHash('sha256').update(String(req.body.challengeToken)).digest('hex').slice(0, 32)}`;
+  }
+  if (req.body?.mobile)   return `p:${String(req.body.mobile)}`;
+  return ipKeyGenerator(req.ip);
+}
+
+/** The account a security audit row should name, or null when unidentified. */
+export function actorAccount(req) {
+  return req.user?.userId ?? req.merchantId ?? req.body?.mobile ?? null;
+}
+
 export const twoFactorLimiter = rateLimit({
     store: createRateLimitStore('rl:2fa:'),
     ...RATE_LIMIT_TIERS.twoFactor, // 5 FAILED / 15 min
@@ -143,7 +192,7 @@ export const twoFactorLimiter = rateLimit({
     standardHeaders: true,
     legacyHeaders: false,
     skipSuccessfulRequests: true,
-    keyGenerator: (req) => req.user?.id || req.body?.mobile || ipKeyGenerator(req.ip),
+    keyGenerator: actorKey,
     // Audited at the loudest level of any limiter here. Tripping THIS one means
     // the password was already accepted and only the second factor is being
     // guessed — i.e. a credential is already compromised and a takeover is in
@@ -151,7 +200,7 @@ export const twoFactorLimiter = rateLimit({
     // password, and it should never be inferred from a 429 count alone.
     handler: (req, res) => {
         console.error('🚨 SECURITY ALERT: 2FA code rate limit exceeded — possible account takeover in progress', {
-            ip: req.ip, userId: req.user?.id, path: req.path, timestamp: new Date().toISOString(),
+            ip: req.ip, account: actorAccount(req), path: req.path, timestamp: new Date().toISOString(),
         });
         db.audit.record({
             adminId: 'SYSTEM_SECURITY',
@@ -161,7 +210,7 @@ export const twoFactorLimiter = rateLimit({
             // column rather than a substring hunt through prose.
             details: {
                 message: `Repeated invalid 2FA codes from ${req.ip} — password already accepted`,
-                account: req.user?.id || req.body?.mobile || null,
+                account: actorAccount(req),
             },
             ip: req.ip,
         });
@@ -182,8 +231,9 @@ export const ipBetLimiter = rateLimit({
     },
     standardHeaders: true,
     legacyHeaders: false,
-    // Track per user, not per IP (users may share IPs)
-    keyGenerator: (req) => req.user?.id || ipKeyGenerator(req.ip)
+    // Track per user, not per IP (users may share IPs). This comment was
+    // already here, above a line that tracked per IP — see `actorKey`.
+    keyGenerator: actorKey
 });
 
 
@@ -204,7 +254,9 @@ export const withdrawalLimiter = rateLimit({
     },
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req) => req.user?.id || ipKeyGenerator(req.ip)
+    // Per user. Keyed on the IP, a withdrawal cap is reset by a mobile
+    // reconnect — and this one guards money leaving the platform.
+    keyGenerator: actorKey
 });
 
 // ==================== GENERAL API RATE LIMITER ====================

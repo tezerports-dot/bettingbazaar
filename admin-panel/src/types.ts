@@ -47,7 +47,21 @@ export interface Admin {
 }
 
 export interface User {
-  _id: string;
+  /**
+   * The account id, exactly as the server sends it.
+   *
+   * This said `_id` — the document-store key — and the server has never sent
+   * one: `GET /api/admin/users` returns rows mapped by the users repository,
+   * and that mapper emits `userId` and nothing else. So every user-scoped call
+   * from this panel built `/api/admin/users/undefined/…`, which is a 404 the
+   * component catches and renders as its empty state. Block, unblock, delete,
+   * balance adjust, roles and phantom access were all reached that way.
+   *
+   * TypeScript could not catch it, because the interface was the thing that was
+   * wrong. Renaming the field here is what found every call site — the compiler
+   * lists them, so none can be missed the way a search would miss one.
+   */
+  userId: string;
   username: string;
   mobile: string;
 

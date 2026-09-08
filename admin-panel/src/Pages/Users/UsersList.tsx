@@ -34,7 +34,7 @@ export const UsersList: React.FC = () => {
     if (!phantomUser) return;
     setIsSavingPhantom(true);
     try {
-      await api.post(`/api/admin/users/${phantomUser._id}/phantom-access`, { accessLevel: phantomLevel });
+      await api.post(`/api/admin/users/${phantomUser.userId}/phantom-access`, { accessLevel: phantomLevel });
       toast.success(`Phantom access set to ${phantomLevel}`);
       setPhantomUser(null);
       loadUsers();
@@ -75,7 +75,7 @@ export const UsersList: React.FC = () => {
   const openUserDetails = async (user: User, tab: ModalTab = 'profile') => {
     setSelectedUser(user);
     setActiveTab(tab);
-    if (tab === 'history') loadUserTx(user._id);
+    if (tab === 'history') loadUserTx(user.userId);
   };
 
   const loadUserTx = async (userId: string) => {
@@ -106,7 +106,7 @@ export const UsersList: React.FC = () => {
       const finalAmt = balanceType === 'deduct' ? -amt : amt;
       // FIX 10: Map UI values ('DEPOSIT'/'WINNINGS') to backend field names
       const walletType = balanceWallet === 'WINNINGS' ? 'winningsBalance' : 'depositBalance';
-      await api.users.adjustBalance(balanceTarget._id, finalAmt, balanceReason, walletType);
+      await api.users.adjustBalance(balanceTarget.userId, finalAmt, balanceReason, walletType);
       toast.success(`Balance ${balanceType === 'add' ? 'added' : 'deducted'}`);
       setShowBalanceModal(false);
       loadUsers();
@@ -173,7 +173,7 @@ export const UsersList: React.FC = () => {
         <Modal isOpen={!!selectedUser} onClose={() => setSelectedUser(null)} title="User Details" size="lg">
           <div className="flex space-x-1 mb-6 bg-dark-800 rounded-lg p-1">
             {(['profile', 'bank', 'history'] as ModalTab[]).map((tab) => (
-              <button key={tab} onClick={() => { setActiveTab(tab); if (tab === 'history') loadUserTx(selectedUser._id); }}
+              <button key={tab} onClick={() => { setActiveTab(tab); if (tab === 'history') loadUserTx(selectedUser.userId); }}
                 className={`flex-1 py-2 px-3 rounded-md text-sm font-medium transition-colors ${activeTab === tab ? 'bg-dark-600 text-white' : 'text-gray-400 hover:text-white'}`}>
                 {tab === 'bank' ? 'Bank Details' : tab === 'history' ? 'Tx History' : 'Profile'}
               </button>
@@ -324,7 +324,7 @@ export const UsersList: React.FC = () => {
 
       {confirmAction && (
         <ConfirmDialog isOpen={!!confirmAction} onClose={() => setConfirmAction(null)}
-          onConfirm={() => { confirmAction.type === 'block' ? handleBlockUser(confirmAction.user._id) : handleUnblockUser(confirmAction.user._id); }}
+          onConfirm={() => { confirmAction.type === 'block' ? handleBlockUser(confirmAction.user.userId) : handleUnblockUser(confirmAction.user.userId); }}
           title={confirmAction.type === 'block' ? 'Block User' : 'Unblock User'}
           message={`Are you sure you want to ${confirmAction.type} ${confirmAction.user.username}?`}
           type={confirmAction.type === 'block' ? 'danger' : 'warning'}

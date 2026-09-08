@@ -116,7 +116,7 @@ export const SubAdminsList: React.FC = () => {
   const handleAssignPhantomAccess = async () => {
     if (!selectedUser) return;
     try {
-      await api.subAdmins.assignPhantomAccess(selectedUser._id, phantomAccess);
+      await api.subAdmins.assignPhantomAccess(selectedUser.userId, phantomAccess);
       toast.success('Phantom access updated');
       setShowPhantomModal(false);
       loadSubAdmins();
@@ -136,7 +136,7 @@ export const SubAdminsList: React.FC = () => {
     if (!selectedUser) return;
     setIsSavingPermissions(true);
     try {
-      await api.subAdmins.updatePermissions(selectedUser._id, editPermissions);
+      await api.subAdmins.updatePermissions(selectedUser.userId, editPermissions);
       toast.success('Permissions updated');
       setShowPermissionsModal(false);
       loadSubAdmins();
@@ -495,7 +495,7 @@ export const SubAdminsList: React.FC = () => {
         <ConfirmDialog
           isOpen={!!confirmDelete}
           onClose={() => setConfirmDelete(null)}
-          onConfirm={() => { handleDelete(confirmDelete._id); setConfirmDelete(null); }}
+          onConfirm={() => { handleDelete(confirmDelete.userId); setConfirmDelete(null); }}
           title="Remove Sub-Admin"
           message={`Remove sub-admin access for ${confirmDelete.username}? Their user account will remain intact.`}
           type="danger"

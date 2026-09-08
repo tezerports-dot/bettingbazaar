@@ -486,13 +486,24 @@ router.post('/users/:userId/phantom-access', authenticate, isAdmin, async (req, 
       return res.status(404).json({ success: false, message: 'User not found' });
     }
     
-    user.phantomAccess = accessLevel;
-    await user.save();
-    
+    // ── This assigned the field and called `user.save()` ────────────────────
+    // `getUser` returns a mapped row, not a document; `.save` is not a function
+    // on it, so this threw a TypeError on EVERY call and the catch returned a
+    // 500 having written nothing. Phantom access has never once been granted or
+    // revoked through this route.
+    const updated = await db.users.updateUser(userId, { phantom_access: accessLevel });
+
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, performedByRole: 'admin',
+      action: 'PHANTOM_ACCESS_SET', category: 'USER',
+      targetType: 'User', targetId: String(userId),
+      details: { accessLevel },
+    });
+
     res.json({
       success: true,
       message: `Phantom access updated to ${accessLevel}`,
-      user
+      user: updated,
     });
   } catch (error) {
     console.error('Assign phantom access error:', error);

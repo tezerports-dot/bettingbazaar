@@ -314,19 +314,40 @@ router.post('/dispute-orders/:orderId/escalate', authenticate, hasPermission('ca
     const order = await db.orders.getOrderRecord(req.params.orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     
-    order.disputeEscalated = true;
-    order.disputeEscalatedAt = new Date();
-    order.disputeEscalationNotes = notes || 'Escalated to senior admin';
-    await order.save();
+    // ── This assigned three fields to a plain object and called `.save()` ───
+    // `getOrderRecord` returns a mapped row, not a document — `.save` is not a
+    // function on it, so this threw a TypeError on EVERY call and the catch
+    // below returned a 500 having written nothing. The Dispute Manager's
+    // escalate button has never once escalated a dispute.
+    //
+    // No state transition: an escalation is a flag on a DISPUTED order, not a
+    // move to a new state, so `setOrderFields` is the whole write and it is one
+    // statement — the three fields cannot land apart.
+    const escalated = await db.orders.setOrderFields(order.orderId, {
+      disputeEscalated: true,
+      disputeEscalatedAt: new Date(),
+      disputeEscalationNotes: notes?.trim() || 'Escalated to senior admin',
+    });
 
     await postSystemMessage(
-      order._id,
+      order.orderId,
       `🔺 Dispute ESCALATED to senior admin.\nNotes: ${notes || 'No additional notes'}`,
       { senderId: req.user.userId, senderType: 'ADMIN' },
     );
 
-    res.json({ success: true, message: 'Dispute escalated successfully' });
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId,
+      performedByRole: req.user.isAdmin ? 'admin' : 'subadmin',
+      action: 'DISPUTE_ESCALATED', category: 'PAYMENT',
+      targetType: 'PaymentOrder', targetId: String(order.orderId),
+      details: { notes: notes?.trim() || null },
+    });
+
+    res.json({ success: true, message: 'Dispute escalated successfully', order: escalated });
   } catch (err) {
+    // The catch was silent — no console.error — so a route that threw on every
+    // call left nothing in the log either.
+    console.error('POST /dispute-orders/:orderId/escalate error:', err);
     res.status(500).json({ success: false, message: 'Failed to escalate dispute' });
   }
 });

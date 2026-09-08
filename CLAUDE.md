@@ -249,6 +249,42 @@ Two rules follow, both now mechanical:
    because it reports the guard as present. When a test names a path, check that
    something *imports* that path.
 
+## A type that lies is worse than no type
+
+`admin-panel/src/types.ts` declared `User._id`. The server has never sent one:
+the users repository and the KYC queue query both emit `userId`. TypeScript
+could not catch it, because **the interface was the thing that was wrong** —
+every `u._id` typechecked and was `undefined` at runtime.
+
+What that produced, none of it looking like an error:
+
+- Every user-scoped call from the admin panel built
+  `/api/admin/users/undefined/…`. Block, unblock, delete, balance adjust, roles
+  and phantom access all 404'd into a caught error and an empty state.
+- On the KYC screen, `setSelectedId(u._id)` stored `undefined`, so
+  `find(u => u._id === selectedId)` matched the **first** row every time —
+  a reviewer clicking the fifth player read the first player's record — and
+  `active = selected?._id === u._id` rendered **every** row highlighted.
+  Approving grants full withdrawal access.
+
+The fix that found every call site was renaming the field in the interface and
+letting `tsc` list them. A search would have missed one, and a missed one is a
+silent 404. **When a panel type names an id, check it against what the mapper
+actually emits** — `toOrder` and the merchants mapper alias `_id` deliberately;
+`toUser` does not.
+
+Two related failures worth the same suspicion:
+
+- `req.user?.id` in three rate limiters. `authenticate` sets `req.user` from the
+  users repository, which returns `userId`. So every limiter silently fell
+  through to its IP fallback — including the withdrawal cap and the 2FA
+  brute-force guard, whose comment described the account-takeover it was no
+  longer preventing. Per-IP throttles CGNAT'd players together and limits nobody
+  willing to reconnect.
+- `.save()` on a repository row. It is a TypeError, the route's `catch` turns it
+  into a 500, and nothing is written. `check:settable` refuses `.save`,
+  `.populate`, `.toObject` and `.lean` outside a `typeof … === 'function'` guard.
+
 ## One owner per value, mechanically
 
 `04-GOVERNANCE.md` §1 has always said derive, do not duplicate. Say it here in

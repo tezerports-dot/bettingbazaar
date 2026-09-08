@@ -88,12 +88,43 @@ function topLevelKeys(src, open) {
   return [...new Set([...flat.matchAll(/(?:^|[,{])\s*([A-Za-z_][A-Za-z0-9_]*)\s*:/g)].map((m) => m[1]))];
 }
 
+/**
+ * ── Second check: document-store methods on a PostgreSQL row ────────────────
+ *
+ * A repository returns a mapped plain object. It has no `.save()`, no
+ * `.populate()`, no `.toObject()`, no `.lean()` — calling one is a TypeError
+ * that a route's `catch` turns into a 500, and the handler writes nothing.
+ *
+ * `POST /dispute-orders/:orderId/escalate` assigned three fields to the object
+ * and called `await order.save()`. It threw on every call, its catch had no
+ * `console.error`, and the admin panel's escalate button reported "Failed to
+ * escalate" — so a dispute could never be escalated and nothing anywhere said
+ * why. `check:settable`'s first half could not see it: there was no `set`
+ * literal, just three assignments and a method that does not exist.
+ *
+ * The `typeof x.toObject === 'function'` guard is allowed — that is code
+ * defending itself against exactly this, not committing it.
+ */
+const GHOST_METHODS = /\.(save|populate|toObject|lean)\s*\(/g;
+const GUARDED = /typeof\s+[\w?.]+\.(save|populate|toObject|lean)\s*===\s*['"]function['"]/;
+
 const settable = settableKeys();
 const findings = [];
+const ghosts = [];
 
 for (const file of walk(join(ROOT, 'backend'))) {
   const raw = readFileSync(file, 'utf8');
   const src = stripComments(raw);
+
+  const lines = src.split('\n');
+  lines.forEach((line, i) => {
+    GHOST_METHODS.lastIndex = 0;
+    const hit = GHOST_METHODS.exec(line);
+    // A guard may sit on the line above the call it protects.
+    if (!hit || GUARDED.test(line) || GUARDED.test(lines[i - 1] ?? '')) return;
+    ghosts.push({ file: relative(ROOT, file), line: i + 1, method: hit[1], src: line.trim().slice(0, 100) });
+  });
+
   for (const m of src.matchAll(/(?:^|[^A-Za-z_$.])set\s*:\s*\{/g)) {
     const open = src.indexOf('{', m.index);
     const unknown = topLevelKeys(src, open).filter((k) => !settable.has(k));
@@ -106,9 +137,21 @@ for (const file of walk(join(ROOT, 'backend'))) {
   }
 }
 
-console.log('\nOrder lifecycle — every `set` names a column the writer accepts\n');
-console.log(`  settable fields declared : ${settable.size}`);
-console.log(`  set literals refused     : ${findings.length}\n`);
+console.log('\nOrder lifecycle — the write contract\n');
+console.log(`  settable fields declared    : ${settable.size}`);
+console.log(`  set literals refused        : ${findings.length}`);
+console.log(`  document-store method calls : ${ghosts.length}\n`);
+
+if (ghosts.length) {
+  for (const g of ghosts) {
+    console.log(`  ✗ ${g.file}:${g.line}`);
+    console.log(`      .${g.method}() does not exist on a repository row — this throws.`);
+    console.log(`      ${g.src}\n`);
+  }
+  console.log('A repository returns a mapped plain object. Write through the');
+  console.log('repository (setOrderFields, updateUser, …), not through a method');
+  console.log('the object does not have.\n');
+}
 
 if (findings.length) {
   for (const f of findings) {
@@ -119,7 +162,9 @@ if (findings.length) {
   console.log('Add the column to SETTABLE in database/repositories/orders.record.js,');
   console.log('or use the name that is already there. Do not delete the field silently —');
   console.log('the caller wanted it recorded.\n');
-  process.exit(1);
 }
 
-console.log('Every set literal names only fields setOrderFields accepts.\n');
+if (findings.length || ghosts.length) process.exit(1);
+
+console.log('Every set literal names a real column, and nothing calls a method');
+console.log('a PostgreSQL row does not have.\n');

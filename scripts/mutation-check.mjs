@@ -366,6 +366,26 @@ const MUTATIONS = [
                 updatedAt:       new Date(),
             },`,
   },
+
+  // ── A per-user limiter that counts per IP is not a per-user limiter ───────
+  // `req.user.id` does not exist — the repository returns `userId` — so all
+  // three of these fell through to the client IP. On CGNAT that throttles
+  // strangers together; for anyone willing to change address it is no limit at
+  // all, and one of the three guards withdrawals.
+  {
+    id: 'M75', file: 'backend/middleware/security.js', config: UNIT,
+    test: 'backend/tests/unit/rateLimitKeys.test.js',
+    why: 'the limiter key reads a field req.user has never had, so it counts per IP again',
+    from: `  if (req.user?.userId)   return \`u:\${req.user.userId}\`;`,
+    to: `  if (req.user?.id)   return \`u:\${req.user.id}\`;`,
+  },
+  {
+    id: 'M76', file: 'backend/middleware/security.js', config: UNIT,
+    test: 'backend/tests/unit/rateLimitKeys.test.js',
+    why: 'a pre-session 2FA attempt is keyed on the caller again, so cycling IPs buys guesses',
+    from: `  if (req.body?.challengeToken) {`,
+    to: `  if (false && req.body?.challengeToken) {`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that
