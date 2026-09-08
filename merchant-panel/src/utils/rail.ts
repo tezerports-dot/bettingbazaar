@@ -177,6 +177,6 @@ export function truncateMiddle(value: string, head = 10, tail = 6): string {
 export function counterpartyOf(order: PaymentOrder): { name: string; identified: boolean } {
   const holder = order.userBankDetails?.accountHolderName?.trim();
   if (holder) return { name: holder, identified: true };
-  const reference = String(order.shortId || order.orderId || order._id || '');
+  const reference = String(order.orderId || order._id || '');
   return { name: reference ? `Order ${reference}` : 'Order', identified: false };
 }

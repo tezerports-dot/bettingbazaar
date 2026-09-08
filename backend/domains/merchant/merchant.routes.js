@@ -53,6 +53,7 @@ import {
 /** Is Postgres the source of truth for the merchant side of a settlement? */
 import { buildBulkPayoutExportRows } from './bulkPayoutExport.js';
 import { MERCHANT_CURRENCY, isTrc20Address, merchantTypeOf } from './merchantCurrency.js';
+import { toMerchantOrderView, toMerchantOrderViews } from './merchantOrderView.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 
 const router     = express.Router();
@@ -68,23 +69,6 @@ async function requireBulkPayoutsEnabled(req, res, next) {
 }
 
 
-function sanitizeMerchantOrder(order) {
-    const plain = typeof order?.toObject === 'function' ? order.toObject() : { ...(order || {}) };
-    delete plain.userPhone;
-    delete plain.merchantSnapshot;
-    if (plain.type === 'DEPOSIT') {
-        // A deposit is money coming IN to the merchant — the user's payout
-        // destinations (bank, UPI, TRC-20 wallet) are not needed and are not sent.
-        delete plain.userBankDetails;
-        delete plain.upiId;
-        delete plain.userUsdtAddress;
-    }
-    return plain;
-}
-
-function sanitizeMerchantOrders(orders) {
-    return orders.map((order) => sanitizeMerchantOrder(order));
-}
 
 
 const formatMerchant = (merchant, user = null) => {
@@ -703,7 +687,7 @@ router.get('/orders', merchantAuth, async (req, res) => {
             offset: parsedSkip,
         });
 
-        res.json({ success: true, orders: sanitizeMerchantOrders(orders), pagination: { total, limit: parsedLimit, skip: parsedSkip } });
+        res.json({ success: true, orders: toMerchantOrderViews(orders), pagination: { total, limit: parsedLimit, skip: parsedSkip } });
     } catch (err) {
         console.error('GET /merchant/orders error:', err);
         res.status(500).json({ success: false, message: 'Failed to fetch orders.' });
@@ -875,7 +859,7 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         });
         emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'PROCESSING', server_ts: Date.now() });
 
-        res.json({ success: true, order: sanitizeMerchantOrder(order) });
+        res.json({ success: true, order: toMerchantOrderView(order) });
     } catch (err) {
         console.error('POST /merchant/accept/:id error:', err);
         res.status(500).json({ success: false, message: 'Failed to accept order.' });
@@ -963,7 +947,7 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             // A previous delivery already confirmed this order, and the money
             // moved with it. Re-running the wallet calls would be harmless (they
             // are keyed) but not re-running them is clearer about what happened.
-            return res.json({ success: true, message: 'Order already confirmed', order: sanitizeMerchantOrder(moved.order ?? order) });
+            return res.json({ success: true, message: 'Order already confirmed', order: toMerchantOrderView(moved.order ?? order) });
         }
         Object.assign(order, moved.order);
 
@@ -1164,7 +1148,7 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'COMPLETED', server_ts: Date.now() });
         }
 
-        res.json({ success: true, order: sanitizeMerchantOrder(order) });
+        res.json({ success: true, order: toMerchantOrderView(order) });
     } catch (err) {
         console.error('POST /merchant/confirm/:id error:', err);
         res.status(500).json({ success: false, message: 'Failed to confirm payment.' });
@@ -1239,7 +1223,7 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
                 expiresAt:        order.expiresAt,
                 server_ts:        Date.now(),
             });
-            res.json({ success: true, message: 'Order rejected and re-assigned to another merchant.', order: sanitizeMerchantOrder(order) });
+            res.json({ success: true, message: 'Order rejected and re-assigned to another merchant.', order: toMerchantOrderView(order) });
         } else {
             // rejectedReason was written with the requeue, so there is nothing
             // left to save — the order is already committed in PENDING_QUEUE.
@@ -1251,7 +1235,7 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
                 server_ts: Date.now(),
             });
             emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'PENDING_QUEUE', server_ts: Date.now() });
-            res.json({ success: true, message: 'Order rejected. Searching for next available merchant.', order: sanitizeMerchantOrder(order) });
+            res.json({ success: true, message: 'Order rejected. Searching for next available merchant.', order: toMerchantOrderView(order) });
         }
 
         await postSystemMessage(
@@ -1324,7 +1308,7 @@ router.post('/order/:id/dispute', merchantAuth, async (req, res) => {
             server_ts: Date.now(),
         });
 
-        res.json({ success: true, message: 'Dispute raised. Admin will review.', order: sanitizeMerchantOrder(order) });
+        res.json({ success: true, message: 'Dispute raised. Admin will review.', order: toMerchantOrderView(order) });
     } catch (err) {
         console.error('POST /merchant/order/:id/dispute error:', err);
         res.status(500).json({ success: false, message: 'Failed to raise dispute.' });
@@ -1406,7 +1390,7 @@ router.post('/orders/:id/red-flag', merchantAuth, async (req, res) => {
             });
         }
 
-        res.json({ success: true, message: 'Order has been red-flagged and escalated to admin.', order: sanitizeMerchantOrder(order) });
+        res.json({ success: true, message: 'Order has been red-flagged and escalated to admin.', order: toMerchantOrderView(order) });
     } catch (err) {
         console.error('POST /merchant/orders/:id/red-flag error:', err);
         res.status(500).json({ success: false, message: 'Failed to red-flag order.' });
@@ -1443,7 +1427,7 @@ router.get('/bulk-payouts', merchantAuth, requireBulkPayoutsEnabled, async (req,
             // `targetDate.toISOString()` and `targetDate` did not exist — the
             // handler threw a ReferenceError after doing all its work.
             date:    payoutDate,
-            orders: sanitizeMerchantOrders(orders),
+            orders: toMerchantOrderViews(orders),
             summary: {
                 count:       orders.length,
                 totalFiat,
@@ -1799,7 +1783,7 @@ router.post('/orders/:id/approve', merchantAuth, async (req, res) => {
             message: 'Order approved. Tokens credited to user.',
             creditedDeposit:  depositCredit,
             creditedReserve:  reserveCredit,
-            order: sanitizeMerchantOrder(order),
+            order: toMerchantOrderView(order),
         });
     } catch (error) {
         await abortOrEnd(session);

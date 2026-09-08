@@ -54,7 +54,7 @@ const OrderManagement: React.FC = () => {
       if (statusFilter === 'ASSIGNED' && !(order.status === OrderStatus.ASSIGNED || order.status === OrderStatus.PENDING_QUEUE)) return false;
       if (statusFilter !== 'ALL' && statusFilter !== 'ASSIGNED' && order.status !== statusFilter) return false;
       if (query) {
-        const haystack = [order.orderId, order.shortId, order._id, order.user?.username, order.userPhone]
+        const haystack = [order.orderId, order._id]
           .filter(Boolean).join(' ').toLowerCase();
         if (!haystack.includes(query)) return false;
       }

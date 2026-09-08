@@ -80,7 +80,6 @@ export interface PaymentOrder {
   id: string;
   _id: string; // always present on orders from the backend (the public id)
   orderId: string;
-  shortId: string;
   type: 'DEPOSIT' | 'WITHDRAWAL';
 
   // Settlement rail this order runs on. Mirrors PaymentOrder.currency
@@ -98,30 +97,15 @@ export interface PaymentOrder {
   
   // User information (REAL)
   userId: string | User;
-  user?: User;
-  userPhone?: string;
+  // The ONLY thing that identifies a player to a merchant, and only on a
+  // WITHDRAWAL: the account the payout goes to and the name on it. The phone
+  // number and the player's UPI ID are deliberately absent — see
+  // backend/domains/merchant/merchantOrderView.js, which is the authority for
+  // this shape and will not send them.
   userBankDetails?: BankDetails;
-  upiId?: string; // user UPI ID stored on WITHDRAWAL orders
-  // TRC-20 payout address on USDT WITHDRAWAL orders — the crypto counterpart
-  // of userBankDetails (backend: PaymentOrder.userUsdtAddress).
-  userUsdtAddress?: string;
   
   // Merchant information
   merchantId?: string;
-  merchantSnapshot?: {
-    merchantId?: string;
-    merchantName?: string;
-    merchantType?: MerchantRail;
-    usdtAddress?: string;
-    upiId?: string;
-    qrCodeUrl?: string;
-    bankName?: string;
-    accountNo?: string;
-    ifsc?: string;
-    accountHolder?: string;
-    snapshotAt?: string;
-    expiresAt?: string;
-  };
   
   // Status and escrow (REAL atomic transaction tracking)
   status: OrderStatus;
@@ -132,15 +116,12 @@ export interface PaymentOrder {
   utrNumber?: string;
   proofScreenshot?: string;
   transactionProof?: string;
-  requiresVideoKYC?: boolean;
   
-  // Queue and assignment (REAL queue manager data)
-  assignedBy?: string;
+  // Queue and assignment
   assignedAt?: Date | string | number;
   
   // Dispute handling (REAL)
   disputeReason?: string;
-  mediatorId?: string;
   resolutionNotes?: string;
   
   // Timing (REAL timestamps)
@@ -154,7 +135,7 @@ export interface PaymentOrder {
   chatHistory?: ChatMessage[];
   
   // Other
-  rejectionReason?: string;
+  rejectedReason?: string;
   bbTokenAmount?: number; // alias for tokenAmount
 }
 

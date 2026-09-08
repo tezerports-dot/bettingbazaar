@@ -47,10 +47,6 @@ export function paymentDestination(
   }
 
   // Money going out — the user's payout destination, carried on the order.
-  if (rail === 'USDT') {
-    const address = order.userUsdtAddress || '';
-    return address ? { label: copy.payoutDestinationLabel, value: address, sub: copy.networkNote } : null;
-  }
   const bank = order.userBankDetails;
   if (bank?.accountNumber) {
     return {
@@ -59,7 +55,7 @@ export function paymentDestination(
       sub: [bank.bankName, bank.ifscCode].filter(Boolean).join(' · '),
     };
   }
-  return order.upiId ? { label: 'Send to user UPI', value: order.upiId } : null;
+  return null;
 }
 
 const OPEN_STATUSES: string[] = [OrderStatus.PENDING_QUEUE, OrderStatus.ASSIGNED, OrderStatus.PROCESSING];
@@ -87,7 +83,7 @@ export const OrderCard: React.FC<{
 
   const destination = OPEN_STATUSES.includes(order.status) ? paymentDestination(order, merchant, rail) : null;
   const token = tokenColumn(order, rail);
-  const reference = String(order.orderId || order.shortId || order._id || '');
+  const reference = String(order.orderId || order._id || '');
   const counterparty = counterpartyOf(order);
 
   return (
@@ -246,7 +242,7 @@ export const OrderCard: React.FC<{
         )}
         {order.status === OrderStatus.REJECTED && (
           <Banner tone="danger" title="Rejected" style={{ marginBottom: 13 }}>
-            {order.rejectionReason || order.disputeReason || 'This order was rejected.'}
+            {order.rejectedReason || order.disputeReason || 'This order was rejected.'}
           </Banner>
         )}
 

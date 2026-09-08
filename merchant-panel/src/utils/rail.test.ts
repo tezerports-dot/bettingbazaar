@@ -21,7 +21,7 @@ import {
 import type { MerchantProfile, PaymentOrder } from '../types';
 
 const order = (o: Partial<PaymentOrder> = {}): PaymentOrder => ({
-  orderId: 'ORD-1', shortId: 'A1B2', currency: 'INR', tokenAmount: 0,
+  orderId: 'ORD-1', currency: 'INR', tokenAmount: 0,
   ...o,
 } as PaymentOrder);
 
@@ -133,11 +133,11 @@ describe('counterpartyOf — a privacy boundary, not a label', () => {
     // The backend strips the user's identity from everything except an INR
     // withdrawal. Rendering a placeholder name would imply the panel knows who
     // this is — it does not, by design.
-    expect(counterpartyOf(order({ shortId: 'Z9Y8' }))).toEqual({ name: 'Order Z9Y8', identified: false });
+    expect(counterpartyOf(order({ orderId: 'Z9Y8' }))).toEqual({ name: 'Order Z9Y8', identified: false });
   });
 
   it('never invents a name from an empty holder field', () => {
-    const wd = order({ shortId: 'K1', userBankDetails: { accountHolderName: '   ' } as any });
+    const wd = order({ orderId: 'K1', userBankDetails: { accountHolderName: '   ' } as any });
     expect(counterpartyOf(wd)).toEqual({ name: 'Order K1', identified: false });
   });
 });

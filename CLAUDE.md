@@ -332,6 +332,46 @@ the thing being claimed.
 
 ---
 
+## A denylist protecting a person fails open
+
+`sanitizeMerchantOrder` deleted `userPhone` and `merchantSnapshot`, and deleted
+the player's payout destinations only on the DEPOSIT branch. So on **every
+withdrawal** the merchant received `userBankDetails.upiId`, copied straight from
+the player's profile — and the merchant panel had a render waiting for it
+(`OrderCard`'s "Send to user UPI"), while its order search matched on
+`order.userPhone`, letting a merchant look a player up by phone number.
+
+Three separate checks were green throughout. None of them was looking.
+
+**A merchant may see the bank account a withdrawal pays and the name on it.
+Nothing else identifies the player to them** — not the phone number in whole or
+in part, not the UPI ID (which resolves to both), not a CDM receipt after it is
+submitted. **A player never sees the merchant's personal details** — only the
+payment link.
+
+Three rules follow, all mechanical via `check:merchant-privacy`:
+
+1. **The projection is an allowlist, and it lives in one file.**
+   `backend/domains/merchant/merchantOrderView.js` is the only shape a merchant
+   receives. A denylist admits the next column added to `order_states` by
+   default and the mistake is always "too much"; an allowlist fails closed, and
+   its symptom is a blank field somebody notices.
+2. **Assert the key set, not the field.** A test that checks `userPhone` is
+   absent is the denylist again, written as a test. The suite asserts the
+   response's keys are a **subset** of the declared allowlist, so a new leak
+   fails without anybody adding a line.
+3. **A field the panel's type names is a field somebody will render.** The gate
+   reads the forbidden list from the server module and fails if
+   `merchant-panel/src/types.ts` declares any of them.
+
+The same audit found two fields the panel read that no responder has ever sent:
+`shortId` (declared non-optional) and `rejectionReason` — the server calls it
+`rejectedReason`, so **every rejection rendered its generic fallback and the
+merchant never saw the reason**. Same class as `User._id`; same fix — rename in
+the interface and let `tsc` list the call sites.
+
+---
+
 ## Commands
 
 | Command | What it proves |
@@ -347,4 +387,5 @@ the thing being claimed.
 | `npm run check:orphans` | Every identifier used is declared, imported or a parameter. |
 | `npm run check:balance-reads` | Trap 7, mechanically: a number that GATES a transfer is read from the rows the write will lock. |
 | `npm run check:coherence` | Every column the repositories name exists in the schema. |
+| `npm run check:merchant-privacy` | A merchant is told the payout account and the name on it — never the player's phone or UPI ID. |
 | `npm run verify:capabilities` | Every claimed capability has its evidence on disk. |

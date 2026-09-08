@@ -494,6 +494,34 @@ const MUTATIONS = [
     to: `            count:    undefined,
             held:     holdFor > 0,`,
   },
+
+  // ── A merchant never learns who the player is ───────────────────────────
+  // The projection was a denylist that stripped the player's payout details
+  // only on a DEPOSIT, so every WITHDRAWAL carried their UPI ID, and the
+  // panel had a render waiting for it.
+  {
+    id: 'M89', file: 'backend/domains/merchant/merchantOrderView.js', config: PG,
+    test: 'backend/tests/routes/merchantOrderPrivacyRoutes.test.js',
+    why: 'the bank object reaches the merchant unfiltered, carrying the player UPI ID again',
+    from: `    const bank = bankDetailsFor(plain);`,
+    to: `    const bank = plain.userBankDetails;`,
+  },
+  {
+    id: 'M90', file: 'backend/domains/merchant/merchantOrderView.js', config: PG,
+    test: 'backend/tests/routes/merchantOrderPrivacyRoutes.test.js',
+    why: 'the allowlist admits the player phone number, which the panel then made searchable',
+    from: `  'createdAt', 'updatedAt',
+]);`,
+    to: `  'createdAt', 'updatedAt', 'userPhone',
+]);`,
+  },
+  {
+    id: 'M91', file: 'backend/domains/merchant/merchantOrderView.js', config: PG,
+    test: 'backend/tests/routes/merchantOrderPrivacyRoutes.test.js',
+    why: 'a deposit merchant is handed the account the player withdraws to, which is no part of their job',
+    from: `  if (type === 'WITHDRAWAL') {`,
+    to: `  if (type) {`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

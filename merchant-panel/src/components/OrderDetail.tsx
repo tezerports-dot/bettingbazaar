@@ -60,7 +60,6 @@ export const OrderDetail: React.FC<{
       if (holder) paymentRows.push({ label: 'Account holder', value: holder });
     }
   } else if (rail === 'USDT') {
-    if (order.userUsdtAddress) paymentRows.push({ label: 'User wallet', value: order.userUsdtAddress });
     paymentRows.push({ label: 'Network', value: 'TRC-20' });
   } else {
     const bank = order.userBankDetails;
@@ -68,7 +67,6 @@ export const OrderDetail: React.FC<{
     if (bank?.accountNumber) paymentRows.push({ label: 'Account no.', value: bank.accountNumber });
     if (bank?.ifscCode) paymentRows.push({ label: 'IFSC', value: bank.ifscCode });
     if (bank?.bankName) paymentRows.push({ label: 'Bank', value: bank.bankName });
-    if (order.upiId) paymentRows.push({ label: 'UPI ID', value: order.upiId });
   }
 
   const paySectionLabel = isDeposit
@@ -226,7 +224,7 @@ export const OrderDetail: React.FC<{
       )}
       {order.status === OrderStatus.REJECTED && (
         <Banner tone="danger" title="Rejected">
-          {order.rejectionReason || 'This order was rejected.'}
+          {order.rejectedReason || 'This order was rejected.'}
         </Banner>
       )}
     </Panel>

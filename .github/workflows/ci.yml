@@ -268,6 +268,13 @@ jobs:
       # panel, and every check here was green while it did.
       - name: Every order `set` names a real column
         run: npm run check:settable
+      # A merchant may see the bank account a withdrawal pays and the name on
+      # it. Nothing else identifies the player to them. The projection this
+      # replaced was a denylist that stripped the player's payout details only
+      # on a DEPOSIT, so every WITHDRAWAL carried their UPI ID — and the panel
+      # rendered it, and let a merchant search players by phone number.
+      - name: A merchant is told no player identity
+        run: npm run check:merchant-privacy
       # Items 5+58: architecture validation — circular imports and governance
       # boundary violations (domain core importing routes, wallet importing
       # products) fail the build instead of waiting for human review.

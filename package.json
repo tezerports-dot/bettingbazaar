@@ -34,7 +34,8 @@
     "check:settable": "node scripts/verify-settable-fields.mjs",
     "check:ui-coverage": "node scripts/verify-ui-coverage.mjs",
     "check:db-boundary": "node scripts/verify-db-boundary.mjs",
-    "check:orphans": "node scripts/detect-orphan-refs.mjs"
+    "check:orphans": "node scripts/detect-orphan-refs.mjs",
+    "check:merchant-privacy": "node scripts/verify-merchant-privacy.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",
