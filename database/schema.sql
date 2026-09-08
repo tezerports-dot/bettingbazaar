@@ -2809,3 +2809,141 @@ CREATE UNIQUE INDEX IF NOT EXISTS merchant_bonus_policies_one_active
   ON merchant_bonus_policies (status) WHERE status = 'ACTIVE';
 CREATE INDEX IF NOT EXISTS merchant_bonus_policies_history_idx
   ON merchant_bonus_policies (version DESC);
+
+-- ── The settlement rail in force, and the timers that go with it ─────────────
+--
+-- The platform runs ONE of two P2P rails at a time, and an admin moves between
+-- them from the panel:
+--
+--   P2P_UPI   the player pays a merchant UPI and submits a UTR; the merchant
+--             pays a withdrawal into the player's bank. Amounts are a range.
+--   CASH_ATM  the player draws cash at an ATM using a merchant-supplied link;
+--             the merchant deposits cash at a CDM. Amounts are denominations.
+--
+-- ── Why this is a versioned row and not a feature flag ───────────────────────
+-- featureFlags.service.js resolves from an env var and an in-process Map. It
+-- does not survive a restart, it names nobody, and it cannot answer "which rail
+-- was live when this order was created" — which is the question every dispute
+-- about an in-flight order reduces to. A switch that decides where a player's
+-- money goes is not a process-local boolean.
+--
+-- ── Why it is not payment_gateway_configs.active_mode ────────────────────────
+-- That column is P2P / GATEWAY / BOTH: merchant settlement versus a third-party
+-- gateway. BOTH of the modes here are P2P. They are orthogonal axes, and one
+-- column holding two meanings is how the system-config payload came apart.
+--
+-- Whole-document versioning, mirroring deposit_policies and
+-- merchant_bonus_policies: each row IS a version, exactly one ACTIVE at a time
+-- enforced by the index rather than by the order two writers happen to run in,
+-- and a switch back is a NEW version rather than a mutation. History is
+-- therefore append-only and a reviewer can always answer "what was in force at
+-- time T".
+CREATE TABLE IF NOT EXISTS payment_mode_policies (
+  id            BIGSERIAL PRIMARY KEY,
+  version       BIGINT NOT NULL UNIQUE,
+  status        TEXT NOT NULL DEFAULT 'ACTIVE',
+
+  active_mode   TEXT NOT NULL DEFAULT 'P2P_UPI',
+
+  -- ── Timers, in SECONDS, admin-editable per version ────────────────────────
+  -- Stored as integers rather than minutes: the UTR grace period is measured in
+  -- seconds and a minutes column cannot express it without a second unit
+  -- somewhere, which is how two of these drift apart.
+  --
+  -- How long an unassigned order waits for a merchant before it fails.
+  assignment_wait_seconds   INTEGER NOT NULL DEFAULT 1500,
+  -- How long an assigned merchant has to act.
+  processing_window_seconds INTEGER NOT NULL DEFAULT 900,
+  -- How long the player has to submit the UTR. A player who clicks Paid with
+  -- less than this left is given the full window from the click — the grace is
+  -- applied by the writer, but the number it grants comes from here.
+  utr_submit_seconds        INTEGER NOT NULL DEFAULT 60,
+  -- How long a merchant assertion is frozen before settlement, so a player has
+  -- a window to dispute. Silence completes the order.
+  dispute_window_seconds    INTEGER NOT NULL DEFAULT 1800,
+
+  -- ── CASH_ATM only ─────────────────────────────────────────────────────────
+  -- A scanned ATM link is short-lived, and a link with almost no time left is
+  -- worse than no link: the player is assigned one they cannot reach the
+  -- machine for. So a link is only assignable while it has at least
+  -- `link_min_remaining_seconds` remaining.
+  link_expiry_seconds        INTEGER NOT NULL DEFAULT 120,
+  link_min_remaining_seconds INTEGER NOT NULL DEFAULT 60,
+
+  justification TEXT NOT NULL,
+  changed_by    TEXT,
+  changed_by_name TEXT NOT NULL DEFAULT '',
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  superseded_at TIMESTAMPTZ,
+
+  CONSTRAINT payment_mode_policies_status_known
+    CHECK (status IN ('ACTIVE', 'SUPERSEDED')),
+  CONSTRAINT payment_mode_policies_mode_known
+    CHECK (active_mode IN ('P2P_UPI', 'CASH_ATM')),
+  -- A zero timer is not "no limit", it is "expire immediately", and every one
+  -- of these gates something a human has to physically do.
+  CONSTRAINT payment_mode_policies_timers_positive CHECK (
+    assignment_wait_seconds   > 0
+    AND processing_window_seconds > 0
+    AND utr_submit_seconds        > 0
+    AND dispute_window_seconds    > 0
+    AND link_expiry_seconds       > 0
+    AND link_min_remaining_seconds > 0),
+  -- A link that is never assignable is a link the merchant supplied for
+  -- nothing: if the minimum remaining equals the whole life of the link, only a
+  -- claim in the same instant it was created could ever take it.
+  CONSTRAINT payment_mode_policies_link_window_usable
+    CHECK (link_min_remaining_seconds < link_expiry_seconds),
+  CONSTRAINT payment_mode_policies_justified
+    CHECK (length(btrim(justification)) > 0)
+);
+-- One ACTIVE row is the INDEX's rule, not the writer's.
+CREATE UNIQUE INDEX IF NOT EXISTS payment_mode_policies_one_active
+  ON payment_mode_policies (status) WHERE status = 'ACTIVE';
+CREATE INDEX IF NOT EXISTS payment_mode_policies_history_idx
+  ON payment_mode_policies (version DESC);
+
+-- There must ALWAYS be an active policy. A reader that has to cope with "no
+-- policy" needs a fallback, and a fallback is a second owner of every number
+-- above — which is how the two system-config payloads diverged. Seeded to the
+-- rail that is already live, so installing this changes no behaviour.
+INSERT INTO payment_mode_policies (version, status, active_mode, justification, changed_by_name)
+SELECT 1, 'ACTIVE', 'P2P_UPI', 'Initial policy: the UPI rail already in production.', 'system'
+ WHERE NOT EXISTS (SELECT 1 FROM payment_mode_policies);
+
+-- ── The rail an order was born on ────────────────────────────────────────────
+-- Snapshotted at creation and immutable thereafter.
+--
+-- An admin flipping the switch while orders are in flight must not change the
+-- rules those orders are running under: their timers, their assignment path,
+-- and what the merchant owes. An order finishes on the rail it started on; the
+-- switch decides only what the NEXT order looks like. The consequence is that
+-- both rails are live at once until the last pre-flip order settles, so every
+-- worker and every screen branches on THIS column — never on the current
+-- policy.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS payment_mode TEXT NOT NULL DEFAULT 'P2P_UPI';
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS payment_mode_version BIGINT;
+DO $$ BEGIN
+  ALTER TABLE order_states ADD CONSTRAINT order_states_payment_mode_known
+    CHECK (payment_mode IN ('P2P_UPI', 'CASH_ATM'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- Immutability is a property of the row, not a convention a writer is trusted
+-- to honour. `setOrderFields` is an allowlist and does not name these, but the
+-- allowlist is one edit away from naming them and nothing would fail.
+CREATE OR REPLACE FUNCTION bb_forbid_order_mode_change() RETURNS trigger AS $$
+BEGIN
+  IF NEW.payment_mode IS DISTINCT FROM OLD.payment_mode THEN
+    RAISE EXCEPTION 'order % was created on the % rail and cannot be moved to %',
+      OLD.order_id, OLD.payment_mode, NEW.payment_mode;
+  END IF;
+  IF OLD.payment_mode_version IS NOT NULL
+     AND NEW.payment_mode_version IS DISTINCT FROM OLD.payment_mode_version THEN
+    RAISE EXCEPTION 'order % is governed by payment mode version % and cannot be re-pointed',
+      OLD.order_id, OLD.payment_mode_version;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER order_states_mode_immutable
+  BEFORE UPDATE ON order_states FOR EACH ROW EXECUTE FUNCTION bb_forbid_order_mode_change();

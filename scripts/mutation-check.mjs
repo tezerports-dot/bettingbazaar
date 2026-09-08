@@ -522,6 +522,31 @@ const MUTATIONS = [
     from: `  if (type === 'WITHDRAWAL') {`,
     to: `  if (type) {`,
   },
+
+  // ── An order finishes on the rail it was born on ────────────────────────
+  // The platform runs one of two P2P rails and an admin switches between them.
+  // The orders already in flight must not move with it.
+  {
+    id: 'M92', file: 'database/repositories/orders.core.js', config: PG,
+    test: 'backend/tests/routes/paymentModeSwitchPg.test.js',
+    why: 'the lifecycle insert stops stamping the rail, so half the orders silently take the column default',
+    from: `  const stamp = await stampForNewOrder(paymentMode);`,
+    to: `  const stamp = { mode: 'P2P_UPI', version: null };`,
+  },
+  {
+    id: 'M93', file: 'database/repositories/paymentModePolicy.js', config: PG,
+    test: 'backend/tests/routes/paymentModeSwitchPg.test.js',
+    why: 'a rail switch silently resets every timer an admin tuned back to the column defaults',
+    from: `        timers[field] !== undefined ? timers[field] : (previous ? Number(previous[column]) : null)`,
+    to: `        timers[field] !== undefined ? timers[field] : null`,
+  },
+  {
+    id: 'M94', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/paymentModeImmutabilityPg.test.js',
+    why: 'the database stops refusing a rail change, so a future SETTABLE edit could move an in-flight order',
+    from: `  IF NEW.payment_mode IS DISTINCT FROM OLD.payment_mode THEN`,
+    to: `  IF FALSE THEN`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

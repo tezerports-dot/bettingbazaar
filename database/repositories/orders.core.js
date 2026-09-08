@@ -42,6 +42,7 @@
 import { getPool, pgQuery, connectGuarded } from '../client.js';
 import { EVENT_TYPES } from '../../backend/domains/revenue/chartOfAccounts.js';
 import { deriveOrderHmac } from '../../backend/middleware/order-crypto-access.js';
+import { stampForNewOrder } from './paymentModePolicy.js';
 
 export const ORDER_STATES = Object.freeze({
   PENDING_QUEUE: 'PENDING_QUEUE',
@@ -210,6 +211,10 @@ function rowToOrder(row) {
     // created before the column existed; a guard that refused those would lock
     // their owners out of their own money.
     orderHmac:  row.order_hmac ?? null,
+    // The rail this order was born on, not the one live now. Both run side by
+    // side after a switch, until the last pre-flip order settles.
+    paymentMode: row.payment_mode,
+    paymentModeVersion: row.payment_mode_version === null ? null : Number(row.payment_mode_version),
     createdAt:  row.created_at,
     updatedAt:  row.updated_at,
   };
@@ -270,6 +275,10 @@ async function withOrderLock(orderId, fn) {
 export async function openOrder({
   orderId, userId, merchantId = null, type, tokenAmountPaise, fiatAmountPaise = 0,
   state = ORDER_STATES.PENDING_QUEUE,
+  // The rail to stamp, for tests building an order on a rail other than the
+  // live policy's. Not settable afterwards — order_states_mode_immutable
+  // refuses a change, so this is the only moment it can be decided.
+  paymentMode = null,
 }) {
   if (!orderId) throw new Error('openOrder requires an orderId');
   // An order may be opened at a state OTHER than the start of the lifecycle.
@@ -292,15 +301,22 @@ export async function openOrder({
   // Signing it afterwards would leave a window in which an order exists
   // unsigned, and an unsigned order is indistinguishable from one whose tag was
   // stripped — which is the only thing the tag is for.
+  // The rail is stamped WITH the row, for the same reason the tag is: an order
+  // that exists without one is an order no worker can route, and the column
+  // DEFAULT would make that state indistinguishable from a correct P2P_UPI
+  // order on a platform that had switched to CASH_ATM.
+  const stamp = await stampForNewOrder(paymentMode);
+
   const { rows } = await pgQuery(
     `INSERT INTO order_states
        (order_id, user_id, merchant_id, order_type, state, token_amount_paise,
-        fiat_amount_paise, order_hmac)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+        fiat_amount_paise, order_hmac, payment_mode, payment_mode_version)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
      ON CONFLICT (order_id) DO NOTHING
      RETURNING *`,
     [String(orderId), String(userId), merchantId ? String(merchantId) : null,
-     type, state, tokenAmountPaise, fiatAmountPaise, deriveOrderHmac(orderId)],
+     type, state, tokenAmountPaise, fiatAmountPaise, deriveOrderHmac(orderId),
+     stamp.mode, stamp.version],
     'order_open',
   );
 

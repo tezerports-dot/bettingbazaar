@@ -26,6 +26,7 @@
  */
 import { pgQuery } from '../client.js';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
+import { stampForNewOrder } from './paymentModePolicy.js';
 
 const num = (v) => Number(v ?? 0);
 const rupees = (v) => paiseToRupees(num(v));
@@ -124,6 +125,12 @@ export function toOrder(r) {
     // test is what found this.
     orderHmac: r.order_hmac ?? null,
 
+    // The rail this order was BORN on — not the rail that is live now. Every
+    // worker and every screen branches on this: after a switch both rails run
+    // side by side until the last pre-flip order settles.
+    paymentMode: r.payment_mode,
+    paymentModeVersion: r.payment_mode_version === null ? null : Number(r.payment_mode_version),
+
     createdAt: r.created_at, updatedAt: r.updated_at,
   };
 }
@@ -218,7 +225,12 @@ const SETTABLE = Object.freeze({
  */
 export async function createOrderRecord({
   orderId, userId, type, tokenAmountRupees, fiatAmountRupees = 0,
-  state = 'PENDING_QUEUE', ...detail
+  state = 'PENDING_QUEUE',
+  // The rail to stamp on this order, for tests that need to build one on a
+  // rail other than the live policy's. Deliberately NOT part of `detail`: it
+  // is not a SETTABLE field, because nothing may update it afterwards.
+  paymentMode = null,
+  ...detail
 }) {
   if (!orderId) throw new Error('createOrderRecord requires an orderId');
   if (!userId) throw new Error('createOrderRecord requires a userId');
@@ -230,8 +242,19 @@ export async function createOrderRecord({
     throw new TypeError(`createOrderRecord: tokenAmount must be positive, got ${tokenAmountRupees}`);
   }
 
-  const columns = ['order_id', 'user_id', 'order_type', 'state', 'token_amount_paise', 'fiat_amount_paise'];
-  const params = [String(orderId), String(userId), type, state, tokenPaise, rupeesToPaise(fiatAmountRupees)];
+  // ── The rail this order is born on, snapshotted here and nowhere else ─────
+  // Read HERE rather than taken from the caller. A parameter every caller must
+  // remember is a parameter one caller forgets, and the failure is silent: the
+  // column has a DEFAULT, so a forgotten snapshot produces a P2P_UPI order on
+  // a CASH_ATM platform that looks exactly like a correct one.
+  //
+  // The row is immutable afterwards (order_states_mode_immutable), so an admin
+  // switching rails mid-flight cannot change what this order is running under.
+  const stamp = await stampForNewOrder(paymentMode);
+  const columns = ['order_id', 'user_id', 'order_type', 'state', 'token_amount_paise', 'fiat_amount_paise',
+    'payment_mode', 'payment_mode_version'];
+  const params = [String(orderId), String(userId), type, state, tokenPaise, rupeesToPaise(fiatAmountRupees),
+    stamp.mode, stamp.version];
 
   // The same allowlist `setOrderFields` uses, so a field this create accepts is
   // one an update accepts and vice versa — and an unknown one is refused here
