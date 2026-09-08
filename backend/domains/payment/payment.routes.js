@@ -3,7 +3,7 @@
  * Moved from backend/routes/payment.routes.js on 2026-07-01 (BBEPS Phase 004 migration). */
 import express   from 'express';
 import { db }    from '#db';
-import { authenticate, requireApprovedKyc } from '../identity/auth.middleware.js';
+import { authenticate, requireApprovedKyc, requireLinkedKyc } from '../identity/auth.middleware.js';
 import { tryVerifyJwt } from '../identity/jwt.util.js';
 import { merchantAuth } from '../../middleware/merchantAuth.js';
 import { withdrawalLimiter } from '../../middleware/security.js';
@@ -57,13 +57,25 @@ function sanitizeOrderForMerchant(order) {
   return plain;
 }
 
-router.post('/deposit/create', authenticate, requireApprovedKyc, requireChannelMembership({ action: 'add funds' }), async (req, res) => {
+// Money IN needs only LINKED identity, not an approved one (owner decision
+// 2026-09-08). Verification runs in batches and can take a day; holding a
+// player at the door for it loses the player without protecting anyone, and the
+// deposit lands in their own wallet either way.
+//
+// `requireApprovedKyc` stays on the withdrawal below. That is the whole of the
+// stricter rule and it is where it belongs: money leaving is the irreversible
+// direction.
+router.post('/deposit/create', authenticate, requireLinkedKyc, requireChannelMembership({ action: 'add funds' }), async (req, res) => {
   try {
     const result = await requestDeposit({ userId: req.user.userId, tokenAmount: Number(req.body.tokenAmount) });
     res.json({ success: true, message: 'Deposit request created. Waiting for merchant assignment.', ...result });
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code }); }
 });
 
+// APPROVED, not merely linked. Every withdrawal here draws from the WINNINGS
+// balance — `debitWinningsForWithdrawal` is the only debit path — so "approved
+// KYC to withdraw winnings" and "approved KYC to withdraw" are the same rule on
+// this platform, and this line is it.
 router.post('/withdrawal/create', authenticate, requireApprovedKyc, requireChannelMembership({ action: 'withdraw' }), withdrawalLimiter, createSubnetLimiter('withdrawal'), globalSurgeBreaker('withdrawal'), async (req, res) => {
   try {
     const result = await requestWithdrawal({ userId: req.user.userId, tokenAmount: Number(req.body.tokenAmount) });

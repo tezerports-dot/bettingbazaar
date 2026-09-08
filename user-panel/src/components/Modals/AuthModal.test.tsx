@@ -13,6 +13,17 @@
  * only on the day it mattered. So what is asserted here is that the link is
  * built from the response, and that a referral code survives into it: the
  * referrer earned that signup and the code is the only thing that credits them.
+ *
+ * ── And, since 2026-09-08, the form ─────────────────────────────────────────
+ * A returning player signs in HERE — mobile, then the six digits the bot DMs —
+ * without opening Telegram at all. The bot link stays for first-time signup,
+ * which cannot move: the contact share is what proves the number, and a bot
+ * cannot message somebody who has never started a chat with it.
+ *
+ * The assertions below are mostly about what the screen does NOT say. The
+ * server answers a registered number, an unregistered one and a blocked one
+ * identically, and a screen that helpfully distinguishes them hands back the
+ * account-enumeration the endpoint was written to refuse.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
@@ -23,6 +34,11 @@ vi.mock('../../services/referralCapture', () => ({
   storedReferralCode: () => storedRef,
 }));
 vi.mock('../../services/apiUrl', () => ({ apiUrl: (p: string) => `http://test${p}` }));
+
+const auth = vi.hoisted(() => ({ request: vi.fn(), signIn: vi.fn() }));
+vi.mock('../../services/GameContext', () => ({
+  useGame: () => ({ requestLoginCode: auth.request, signInWithCode: auth.signIn }),
+}));
 
 const { default: AuthModal } = await import('./AuthModal');
 
@@ -40,6 +56,8 @@ const botLink = () =>
 describe('AuthModal', () => {
   beforeEach(() => {
     storedRef = null;
+    auth.request.mockReset().mockResolvedValue(undefined);
+    auth.signIn.mockReset().mockResolvedValue(undefined);
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => CONFIG }));
   });
 
@@ -105,14 +123,126 @@ describe('AuthModal', () => {
     expect(await screen.findByText(/Could not reach the server/i)).toBeInTheDocument();
   });
 
-  it('offers no password form — there is nothing to type', async () => {
-    // Signup and login both happen inside the bot. A form here would be a
-    // second way in, with none of the phone or Aadhaar proof behind it.
+  it('offers no password field — the code is the only thing typed', async () => {
+    // There is a form now, but nothing on it is a password. A password here
+    // would be a second way in with none of the phone or Aadhaar proof behind
+    // it, and nothing on the server would accept one.
     const { container } = render(<AuthModal />);
     await waitFor(() => expect(botLink()).toBeTruthy());
-    expect(container.querySelector('form')).toBeNull();
     expect(container.querySelector('input[type="password"]')).toBeNull();
-    expect(container.querySelector('input')).toBeNull();
+  });
+
+  describe('signing in with a code', () => {
+    const typeMobile = async (n: string) => {
+      await userEvent.type(screen.getByLabelText(/mobile number/i), n);
+    };
+
+    it('asks for the code only once a full number is typed', async () => {
+      render(<AuthModal />);
+      const send = screen.getByRole('button', { name: /send code/i });
+      expect(send).toBeDisabled();
+
+      await typeMobile('98765432');   // eight digits
+      expect(send).toBeDisabled();
+      await typeMobile('10');         // ten
+      expect(send).toBeEnabled();
+    });
+
+    it('sends the number, then asks for the six digits', async () => {
+      render(<AuthModal />);
+      await typeMobile('9876543210');
+      await userEvent.click(screen.getByRole('button', { name: /send code/i }));
+
+      await waitFor(() => expect(auth.request).toHaveBeenCalledWith('9876543210'));
+      expect(await screen.findByLabelText(/code from telegram/i)).toBeInTheDocument();
+    });
+
+    it('promises nothing about whether the number is registered', async () => {
+      // The server answers registered, unregistered and blocked identically.
+      // A screen that says "we sent it" is a way to test whether a given person
+      // gambles here, whatever the server does.
+      render(<AuthModal />);
+      await typeMobile('9876543210');
+      await userEvent.click(screen.getByRole('button', { name: /send code/i }));
+
+      const notice = await screen.findByRole('status');
+      expect(notice).toHaveTextContent(/if that number is registered/i);
+      expect(notice).not.toHaveTextContent(/we have sent you|account found|welcome back/i);
+    });
+
+    it('signs in with the code and closes', async () => {
+      const onClose = vi.fn();
+      render(<AuthModal onClose={onClose} />);
+      await typeMobile('9876543210');
+      await userEvent.click(screen.getByRole('button', { name: /send code/i }));
+
+      await userEvent.type(await screen.findByLabelText(/code from telegram/i), '123456');
+      await userEvent.click(screen.getByRole('button', { name: /^sign in$/i }));
+
+      await waitFor(() => expect(auth.signIn).toHaveBeenCalledWith('9876543210', '123456'));
+      await waitFor(() => expect(onClose).toHaveBeenCalled());
+    });
+
+    it('will not submit fewer than six digits', async () => {
+      render(<AuthModal />);
+      await typeMobile('9876543210');
+      await userEvent.click(screen.getByRole('button', { name: /send code/i }));
+
+      await userEvent.type(await screen.findByLabelText(/code from telegram/i), '12345');
+      expect(screen.getByRole('button', { name: /^sign in$/i })).toBeDisabled();
+      expect(auth.signIn).not.toHaveBeenCalled();
+    });
+
+    it('reports a bad code and clears the box', async () => {
+      auth.signIn.mockRejectedValue(new Error('That code is not valid. Request a new one and try again.'));
+      render(<AuthModal />);
+      await typeMobile('9876543210');
+      await userEvent.click(screen.getByRole('button', { name: /send code/i }));
+
+      const box = await screen.findByLabelText(/code from telegram/i);
+      await userEvent.type(box, '000000');
+      await userEvent.click(screen.getByRole('button', { name: /^sign in$/i }));
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/not valid/i);
+      await waitFor(() => expect(box).toHaveValue(''));
+    });
+
+    it('counts down instead of blaming the code when the server paces it', async () => {
+      // A pace refusal is not a wrong code. Saying "that code is not valid"
+      // sends the player to request another one — which the pace also refuses —
+      // and now the screen looks broken rather than throttled.
+      auth.signIn.mockRejectedValue({
+        status: 429,
+        data: { code: 'LOGIN_PACED', retryAfter: 9, retryAt: new Date(Date.now() + 9000).toISOString() },
+      });
+      render(<AuthModal />);
+      await typeMobile('9876543210');
+      await userEvent.click(screen.getByRole('button', { name: /send code/i }));
+
+      await userEvent.type(await screen.findByLabelText(/code from telegram/i), '000000');
+      await userEvent.click(screen.getByRole('button', { name: /^sign in$/i }));
+
+      expect(await screen.findByRole('button', { name: /try again in \d+s/i })).toBeDisabled();
+      expect(screen.queryByRole('alert')).toBeNull();
+    });
+
+    it('lets the player go back and correct the number', async () => {
+      render(<AuthModal />);
+      await typeMobile('9876543210');
+      await userEvent.click(screen.getByRole('button', { name: /send code/i }));
+      await screen.findByLabelText(/code from telegram/i);
+
+      await userEvent.click(screen.getByRole('button', { name: /change number/i }));
+      expect(screen.getByLabelText(/mobile number/i)).toBeInTheDocument();
+    });
+
+    it('still offers the bot, for somebody who has never signed up', async () => {
+      // The form is for returning players. A first-timer has no linked Telegram
+      // account for a code to be sent to, so the bot path cannot go away.
+      render(<AuthModal />);
+      await waitFor(() => expect(botLink()).toBeTruthy());
+      expect(screen.getByText(/first time here/i)).toBeInTheDocument();
+    });
   });
 
   it('shows a close control only when it can be closed', async () => {

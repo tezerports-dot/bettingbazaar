@@ -64,7 +64,12 @@ vi.mock('../../domains/payment/orderLifecycle.service.js', () => ({
 
 vi.mock('../../domains/identity/auth.middleware.js', () => ({
   authenticate: (req, res, next) => next(),
+  // BOTH gates. Money in needs only linked identity; money out needs an
+  // approved one (owner decision 2026-09-08). A mock missing either does not
+  // fail an assertion — the module fails to load at all, which is how this
+  // caught the new export the moment it existed.
   requireApprovedKyc: (req, res, next) => next(),
+  requireLinkedKyc: (req, res, next) => next(),
 }));
 vi.mock('../../domains/identity/jwt.util.js', () => ({ tryVerifyJwt: () => null }));
 vi.mock('../../middleware/merchantAuth.js', () => ({ merchantAuth: (req, res, next) => next() }));

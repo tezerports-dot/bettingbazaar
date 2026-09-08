@@ -16,6 +16,21 @@ export interface Backend {
   exchangeTelegramToken(token: string): Promise<{
     success: boolean; token?: string; user?: User; message?: string }>;
 
+  /**
+   * Ask the bot to DM a sign-in code. Signing UP still happens in the bot once
+   * — the contact share is what proves the number — but every login after that
+   * is on-site (owner decision 2026-09-08).
+   *
+   * Always resolves the same way whether or not the number is registered: a
+   * login form that says "no such account" is a way to test whether a given
+   * person gambles here.
+   */
+  requestLoginCode(mobile: string): Promise<{ success: boolean; message?: string }>;
+
+  /** Trade the code for a session. */
+  verifyLoginCode(mobile: string, code: string): Promise<{
+    success: boolean; token?: string; user?: User; message?: string }>;
+
   // --- CORE SERVICES ---
   getServerTime(): Promise<{ unixtime: number }>;
   

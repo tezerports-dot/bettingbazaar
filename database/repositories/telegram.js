@@ -884,6 +884,115 @@ export async function consumeLoginToken({ tokenHash, telegramUserId = null }) {
   return rows[0] ? { userId: rows[0].user_id, telegramUserId: rows[0].telegram_user_id } : null;
 }
 
+/**
+ * The live identity behind a phone number — "who do we DM this code to?".
+ *
+ * `contact_active` is not optional, for the same reason it is not optional in
+ * `getIdentityByUserId`: account recovery keeps the displaced row as history,
+ * and messaging the identity that just LOST the account is the failure recovery
+ * exists to prevent. Here it would be worse than a wrong recipient — it would
+ * be sending a sign-in code for someone's account to the person they took it
+ * back from.
+ *
+ * Returns null for an unknown number, and the caller must answer the request
+ * identically either way: a login form that responds differently to a
+ * registered number is a way to test whether somebody plays here.
+ */
+export async function getActiveIdentityByPhone(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (!digits) return null;
+  const { rows } = await pgQuery(
+    // Compared on digits at BOTH ends. The column is documented as normalised,
+    // but a number that arrived with a +91 or a space would silently match
+    // nothing, and the symptom is "the code never came" with no error anywhere.
+    `SELECT ${IDENTITY_COLUMNS} FROM telegram_identities
+      WHERE regexp_replace(phone, '\\D', '', 'g') = $1 AND contact_active
+      LIMIT 1`,
+    [digits], 'tg_identity_by_phone',
+  );
+  return toIdentity(rows[0]);
+}
+
+/**
+ * Issue a sign-in code, replacing whatever was outstanding for that number.
+ *
+ * ── One live code per mobile, and the request is idempotent by construction ──
+ * `ON CONFLICT DO UPDATE` rather than an insert beside the old row: a player
+ * who taps "send code" twice must not end up with two valid codes, and the
+ * second tap must invalidate the first rather than racing it. It also resets
+ * `attempts`, because the new code has not been guessed at yet.
+ *
+ * Keyed on the MOBILE hash, not the user id, so the request path never has to
+ * know whether the number belongs to anyone — see `getActiveIdentityByPhone`.
+ */
+export async function issueLoginCode({ mobileHash, codeHash, userId, telegramUserId, ttlSeconds = 300 }) {
+  const { rows } = await pgQuery(
+    `INSERT INTO telegram_login_codes
+       (mobile_hash, code_hash, user_id, telegram_user_id, expires_at)
+     VALUES ($1, $2, $3, $4, now() + ($5 || ' seconds')::interval)
+     ON CONFLICT (mobile_hash) DO UPDATE
+       SET code_hash = EXCLUDED.code_hash,
+           user_id = EXCLUDED.user_id,
+           telegram_user_id = EXCLUDED.telegram_user_id,
+           attempts = 0,
+           consumed_at = NULL,
+           created_at = now(),
+           expires_at = EXCLUDED.expires_at
+     RETURNING expires_at`,
+    [String(mobileHash), String(codeHash), String(userId), String(telegramUserId), String(ttlSeconds)],
+    'tg_code_issue',
+  );
+  return { expiresAt: rows[0].expires_at };
+}
+
+/**
+ * Redeem a sign-in code, exactly once.
+ *
+ * ── Why this is one statement ───────────────────────────────────────────────
+ * Read-then-consume is two statements, and two requests carrying the same code
+ * fit between them — which for a sign-in credential means two sessions. The
+ * `consumed_at IS NULL` in the WHERE clause is what makes exactly one of N
+ * racing redemptions win, and expiry is checked HERE rather than left to the
+ * sweep: a row the sweep has not reclaimed is still expired.
+ *
+ * ── A wrong guess costs an attempt, and five burn the code ──────────────────
+ * The second statement runs only when the first matched nothing, so it counts
+ * WRONG guesses and not redemptions. Six digits is 10^6, which unbounded is
+ * guessable; five attempts makes it 1-in-200000, and the row is consumed at the
+ * cap rather than left alive until it expires.
+ *
+ * @returns {{userId, telegramUserId}|null} — null for wrong, unknown, expired,
+ *   already used, or out of attempts, deliberately indistinguishable so the
+ *   endpoint cannot be used to learn which of those it was.
+ */
+export async function consumeLoginCode({ mobileHash, codeHash, maxAttempts = 5 }) {
+  const { rows } = await pgQuery(
+    `UPDATE telegram_login_codes
+        SET consumed_at = now()
+      WHERE mobile_hash = $1
+        AND code_hash = $2
+        AND consumed_at IS NULL
+        AND expires_at > now()
+        AND attempts < $3
+      RETURNING user_id, telegram_user_id`,
+    [String(mobileHash), String(codeHash), Number(maxAttempts)],
+    'tg_code_consume',
+  );
+  if (rows[0]) return { userId: rows[0].user_id, telegramUserId: rows[0].telegram_user_id };
+
+  // Wrong code (or nothing live). Charge the attempt against the row that IS
+  // live, and consume it outright at the cap so a burnt code cannot be guessed
+  // at for the rest of its lifetime.
+  await pgQuery(
+    `UPDATE telegram_login_codes
+        SET attempts = attempts + 1,
+            consumed_at = CASE WHEN attempts + 1 >= $2 THEN now() ELSE consumed_at END
+      WHERE mobile_hash = $1 AND consumed_at IS NULL AND expires_at > now()`,
+    [String(mobileHash), Number(maxAttempts)], 'tg_code_attempt',
+  );
+  return null;
+}
+
 // ── Retention ────────────────────────────────────────────────────────────────
 
 /**
@@ -903,7 +1012,9 @@ export async function sweepExpired() {
     `DELETE FROM telegram_pending_links WHERE expires_at <= now()`, [], 'tg_sweep_pending');
   const tokens = await pgQuery(
     `DELETE FROM telegram_login_tokens WHERE expires_at <= now()`, [], 'tg_sweep_tokens');
-  return { pendingLinks: pending.rowCount ?? 0, loginTokens: tokens.rowCount ?? 0 };
+  const codes = await pgQuery(
+    `DELETE FROM telegram_login_codes WHERE expires_at <= now()`, [], 'tg_sweep_codes');
+  return { pendingLinks: pending.rowCount ?? 0, loginTokens: tokens.rowCount ?? 0, loginCodes: codes.rowCount ?? 0 };
 }
 
 /** Run `fn` in a transaction — for the two swaps that must be all-or-nothing. */

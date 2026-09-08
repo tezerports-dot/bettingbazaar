@@ -213,6 +213,52 @@ const KYC_REFUSAL = {
     + 'support — this usually means a mismatch we can sort out for you.',
 };
 
+/**
+ * The WEAKER gate: KYC details have been given, not necessarily cleared.
+ *
+ * ── Why two gates and not one ───────────────────────────────────────────────
+ * Owner decision 2026-09-08: an approved Aadhaar is required to take money OUT
+ * and nothing else. Depositing, buying tokens and placing a bet need only that
+ * the player has actually linked their identity — the verification runs in
+ * batches and can take a day, and holding a funded player at the door for it
+ * loses the player without protecting anybody.
+ *
+ * Withdrawal keeps `requireApprovedKyc`, and that is the whole of the stricter
+ * rule: every withdrawal on this platform draws from the WINNINGS balance —
+ * `debitWinningsForWithdrawal` is the only debit path — so "approved KYC to
+ * withdraw winnings" and "approved KYC to withdraw" are the same sentence here.
+ *
+ * ── REJECTED is refused, and that is deliberate ─────────────────────────────
+ * PENDING_APPROVAL passes: the details are linked and a verifier has simply not
+ * reached them. REJECTED does not: the details they linked came back as not
+ * matching the issuing authority, so there is nothing linked in any meaningful
+ * sense, and letting money in against an identity that failed its check is the
+ * one direction that cannot be undone later.
+ */
+export async function requireLinkedKyc(req, res, next) {
+  try {
+    const cfg = await getSystemConfig();
+    if (cfg?.kycRequired === false) return next();
+
+    const status = req.user?.kycStatus || 'PENDING_SUBMISSION';
+    if (status === 'APPROVED' || status === 'PENDING_APPROVAL') return next();
+
+    return res.status(403).json({
+      success: false,
+      message: KYC_REFUSAL[status] || KYC_REFUSAL.PENDING_SUBMISSION,
+      // A DIFFERENT code from the approved gate. A panel that cannot tell the
+      // two apart shows "your Aadhaar is being verified" to someone who never
+      // submitted one, and the button it offers leads nowhere.
+      code: 'KYC_NOT_LINKED',
+      kycStatus: status,
+      actionable: true,
+    });
+  } catch (error) {
+    console.error('KYC link check error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to verify KYC settings.' });
+  }
+}
+
 export async function requireApprovedKyc(req, res, next) {
   try {
     const cfg = await getSystemConfig();

@@ -30,6 +30,14 @@ import {
 } from './telegramOnboarding.service.js';
 import { issueLoginToken } from './telegramLogin.service.js';
 import { sendTemplate } from './telegramTemplates.service.js';
+// One request per 10 seconds per actor — the pace that keeps the code-request
+// endpoint from being used to flood somebody's Telegram.
+import { createLoginPaceLimiter } from '../../middleware/security.js';
+// Two buckets, because both steps key on the same mobile. One shared bucket
+// would make the code request refuse the code it just sent: type it within ten
+// seconds and the pace answers instead of the handler.
+const otpRequestPace = createLoginPaceLimiter('otp-request');
+const otpVerifyPace  = createLoginPaceLimiter('otp-verify');
 
 const router = express.Router();
 
@@ -544,6 +552,81 @@ router.get('/membership', authenticate, async (req, res) => {
   } catch (err) {
     console.error('[telegram] membership check failed:', err.message);
     if (!res.headersSent) res.status(503).json({ success: false, message: 'Could not check your membership right now.' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Signing in without leaving the site
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * POST /api/telegram/otp/request — "send me a code".
+ *
+ * ── The response says nothing about the number ──────────────────────────────
+ * Registered, unregistered, blocked, malformed, or a Telegram outage: all of
+ * them return the same 200 and the same sentence. A login form that answers
+ * differently for a real account is a way to test whether a given person
+ * gambles here, and that is not a question this platform answers to anyone who
+ * can type a phone number.
+ *
+ * The service logs which case it actually was, so an operator debugging "the
+ * code never arrived" is not left guessing either.
+ *
+ * Paced at one request per 10 seconds in its OWN bucket, which is what
+ * stops this being used to flood a player's Telegram with codes they did not
+ * ask for. The pace keys on the actor, and for an anonymous caller that is the
+ * IP — the mobile in the body cannot be trusted to identify who is asking.
+ */
+router.post('/otp/request', otpRequestPace, async (req, res) => {
+  try {
+    const { requestLoginCode } = await import('./telegramOtp.service.js');
+    await requestLoginCode(req.body?.mobile);
+  } catch (err) {
+    // Swallowed on purpose, AFTER logging. A 500 here is itself a signal — it
+    // would separate "we tried and something broke" from "there was nothing to
+    // do", which is exactly the distinction the identical response exists to
+    // hide.
+    console.error('[telegram] otp request failed:', err.message);
+  }
+  res.json({
+    success: true,
+    message: 'If that number is registered, we have sent a sign-in code to your Telegram.',
+  });
+});
+
+/**
+ * POST /api/telegram/otp/verify — the code, traded for a session.
+ *
+ * Issues exactly the session the link path and the staff password path issue:
+ * `issueSession` is imported, never reimplemented, so three ways in cannot
+ * drift into granting three different sets of claims.
+ */
+router.post('/otp/verify', otpVerifyPace, async (req, res) => {
+  try {
+    const { verifyLoginCode } = await import('./telegramOtp.service.js');
+    const claim = await verifyLoginCode(req.body?.mobile, req.body?.code);
+    if (!claim) {
+      // One message for wrong, expired, already used, and out of attempts. A
+      // caller who can tell "expired" from "wrong" can map which codes were
+      // ever live.
+      return res.status(401).json({
+        success: false,
+        message: 'That code is not valid. Request a new one and try again.',
+      });
+    }
+
+    const user = await db.users.getUser(claim.userId);
+    if (!user) return res.status(401).json({ success: false, message: 'Account not found' });
+    // Re-read from the row rather than trusted from the code: the five minutes
+    // between request and verify are long enough for an admin to act.
+    if (user.isBlocked || user.status === 'BLOCKED') {
+      return res.status(403).json({ success: false, message: 'Account blocked. Contact support.' });
+    }
+
+    const { issueSession } = await import('../../routes.js');
+    return issueSession(user, res);
+  } catch (err) {
+    console.error('[telegram] otp verify failed:', err.message);
+    return res.status(500).json({ success: false, message: 'Sign-in failed. Please try again.' });
   }
 });
 

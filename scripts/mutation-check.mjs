@@ -399,9 +399,9 @@ const MUTATIONS = [
     id: 'M78', file: 'backend/middleware/security.js', config: UNIT,
     test: 'backend/tests/unit/loginPacing.test.js',
     why: 'the pace skips successful attempts, so a first guess is unpaced again',
-    from: `    // Every attempt, not only the failures — see above.
-    skipSuccessfulRequests: false,`,
-    to: `    skipSuccessfulRequests: true,`,
+    from: `        // Every attempt, not only the failures — see above.
+        skipSuccessfulRequests: false,`,
+    to: `        skipSuccessfulRequests: true,`,
   },
   {
     id: 'M79', file: 'backend/middleware/security.js', config: UNIT,
@@ -409,6 +409,43 @@ const MUTATIONS = [
     why: 'the refusal drops the absolute instant, so a countdown drifts by the response time',
     from: `            retryAt: resetAt.toISOString(),`,
     to: '',
+  },
+
+  // ── The sign-in code is single-use, capped, and bound to one number ───────
+  {
+    id: 'M80', file: 'database/repositories/telegram.js', config: PG,
+    test: 'database/tests/telegramLoginCodePg.test.js',
+    why: 'a sign-in code can be redeemed twice, so one code is two sessions',
+    from: `        AND code_hash = $2
+        AND consumed_at IS NULL
+        AND expires_at > now()`,
+    to: `        AND code_hash = $2
+        AND expires_at > now()`,
+  },
+  {
+    id: 'M81', file: 'database/repositories/telegram.js', config: PG,
+    test: 'database/tests/telegramLoginCodePg.test.js',
+    why: 'wrong guesses stop being counted, so six digits are guessable again',
+    from: `        SET attempts = attempts + 1,`,
+    to: `        SET attempts = attempts + 0,`,
+  },
+  {
+    id: 'M82', file: 'database/repositories/telegram.js', config: PG,
+    test: 'database/tests/telegramLoginCodePg.test.js',
+    why: 'a retired identity answers again, so a code goes to whoever lost the account',
+    from: ` = $1 AND contact_active`,
+    to: ` = $1`,
+  },
+  // ── The request endpoint must not reveal whether a number is registered ──
+  {
+    id: 'M83', file: 'backend/domains/telegram/telegram.routes.js', config: PG,
+    test: 'backend/tests/routes/telegramOtpLoginRoutes.test.js',
+    why: 'the code request answers differently for an unknown number, so the form becomes an oracle',
+    from: `    const { requestLoginCode } = await import('./telegramOtp.service.js');
+    await requestLoginCode(req.body?.mobile);`,
+    to: `    const { requestLoginCode } = await import('./telegramOtp.service.js');
+    const r = await requestLoginCode(req.body?.mobile);
+    if (!r.sent) return res.status(404).json({ success: false, message: 'No such number' });`,
   },
 ];
 

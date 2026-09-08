@@ -317,6 +317,40 @@ export class RealBackend implements Backend {
     return res;
   }
 
+  /**
+   * "Send me a code." The response is deliberately uninformative — see the
+   * interface — so there is nothing to branch on here beyond the transport.
+   */
+  async requestLoginCode(mobile: string) {
+    return this.request<{ success: boolean; message?: string }>(
+      '/telegram/otp/request', { method: 'POST', body: JSON.stringify({ mobile }) });
+  }
+
+  /**
+   * The code, traded for a session.
+   *
+   * The token handling is IDENTICAL to `exchangeTelegramToken` on purpose: both
+   * paths end in the same session, and a second way of seating a player that
+   * forgot to re-auth the socket would leave them signed in with a live feed
+   * still authenticated as nobody.
+   */
+  async verifyLoginCode(mobile: string, code: string) {
+    const res = await this.request<{ success: boolean; token?: string; user?: User; message?: string }>(
+      '/telegram/otp/verify', { method: 'POST', body: JSON.stringify({ mobile, code }) });
+
+    if (res.success && res.token) {
+      setToken(res.token);
+      if (!this.socket) {
+        this._connectWebSocket(res.token);
+      } else {
+        (this.socket as any).auth = { token: res.token };
+        this.socket.disconnect();
+        this.socket.connect();
+      }
+    }
+    return res;
+  }
+
   // -- AI ANALYSIS ----------------------------------------------------------
   // BUG-U14 FIX: route now exists at /v1/content/ai-analysis
   async getAIAnalysis() {

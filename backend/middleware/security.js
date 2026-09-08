@@ -204,15 +204,25 @@ export function actorAccount(req) {
  * regardless of how long the response spent in flight or how far the client's
  * clock has drifted from ours).
  */
-export const loginPaceLimiter = rateLimit({
-    store: createRateLimitStore('rl:pace:'),
-    ...RATE_LIMIT_TIERS.loginPace,
-    standardHeaders: true,
-    legacyHeaders: false,
-    // Every attempt, not only the failures — see above.
-    skipSuccessfulRequests: false,
-    keyGenerator: actorKey,
-    handler: (req, res) => {
+export function createLoginPaceLimiter(bucket = 'default') {
+    return rateLimit({
+        // ── One bucket per STEP, not one for the whole sign-in ──────────────────
+        // A shared bucket makes the second step of a two-step sign-in collide with
+        // the first: request a code, type it eight seconds later, and the pace
+        // refuses the code the player just received. That is not a throttle, it is
+        // a login that cannot be completed by anyone who types quickly.
+        //
+        // Separate prefixes keep each step paced at one per 10 seconds on its own
+        // terms, which is what "one attempt per 10 seconds" actually means — a
+        // guesser is still capped at six code attempts a minute.
+        store: createRateLimitStore(`rl:pace:${bucket}:`),
+        ...RATE_LIMIT_TIERS.loginPace,
+        standardHeaders: true,
+        legacyHeaders: false,
+        // Every attempt, not only the failures — see above.
+        skipSuccessfulRequests: false,
+        keyGenerator: actorKey,
+        handler: (req, res) => {
         // `resetTime` is what the store knows; the fallback is the full window,
         // which over-states the wait rather than inviting an early retry.
         const resetAt = req.rateLimit?.resetTime instanceof Date
@@ -226,8 +236,16 @@ export const loginPaceLimiter = rateLimit({
             retryAfter: seconds,
             retryAt: resetAt.toISOString(),
         });
-    },
-});
+        },
+    });
+}
+
+/**
+ * The password / second-factor bucket. Named export because it is mounted by
+ * name in four places and a factory call at each mount would be four chances to
+ * pass a different bucket and split a limit nobody meant to split.
+ */
+export const loginPaceLimiter = createLoginPaceLimiter('credential');
 
 export const twoFactorLimiter = rateLimit({
     store: createRateLimitStore('rl:2fa:'),
