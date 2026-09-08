@@ -14,7 +14,7 @@ import { hashPassword, verifyPassword } from '../identity/password.util.js';
 import { merchantAuth } from '../../middleware/merchantAuth.js';
 import { issueChallenge, verifyChallenge, CHALLENGE_AUDIENCE } from '../identity/twoFactorChallenge.js';
 import { verifySecondFactor, SECOND_FACTOR_RESULT } from '../identity/verifySecondFactor.js';
-import { twoFactorLimiter } from '../../middleware/security.js';
+import { twoFactorLimiter, loginPaceLimiter } from '../../middleware/security.js';
 import {
   generateSecret, buildOtpauthUri, encryptSecret, decryptSecret,
   verifyToken, generateBackupCodes, hashBackupCode,
@@ -301,7 +301,7 @@ function issueMerchantSession(merchant, res, extra = {}) {
  * leg proved a password up to five minutes ago, and an admin may have
  * suspended the account since.
  */
-router.post('/auth/login/2fa', twoFactorLimiter, async (req, res) => {
+router.post('/auth/login/2fa', loginPaceLimiter, twoFactorLimiter, async (req, res) => {
     try {
         const { challengeToken, code } = req.body;
         if (!challengeToken || !code)

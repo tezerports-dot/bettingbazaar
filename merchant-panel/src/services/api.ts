@@ -100,7 +100,16 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
     }
     
     if (!response.ok) {
-      throw new Error(data.message || `Request failed with status ${response.status}`);
+      // The status and the body travel WITH the error. This threw a bare
+      // `Error(message)`, so everything the server said beyond one sentence was
+      // discarded at the boundary — a caller could not tell a 429 from a 400,
+      // and structured fields like `retryAfter` / `retryAt` were unreachable no
+      // matter how carefully the server sent them.
+      const err = new Error(data?.message || `Request failed with status ${response.status}`) as
+        Error & { status?: number; data?: unknown };
+      err.status = response.status;
+      err.data = data;
+      throw err;
     }
     
     return data as T;

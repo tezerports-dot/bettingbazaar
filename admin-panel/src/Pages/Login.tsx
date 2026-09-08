@@ -6,6 +6,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router';
 import { ArrowRight } from 'lucide-react';
 import { useAuthStore } from '../services/auth';
+import { useRetryCountdown } from '../hooks/useRetryCountdown';
 import { LogoMark, getBrand } from '../components/Logo';
 import toast from 'react-hot-toast';
 
@@ -26,6 +27,10 @@ export const Login: React.FC = () => {
   const navigate = useNavigate();
   const { login, submitTwoFactor, cancelTwoFactor, pendingChallenge } = useAuthStore();
   const brand = getBrand();
+  // Sign-in is paced at one attempt per 10 seconds. Without a visible timer a
+  // 429 reads as a broken form, and the natural response — retry immediately —
+  // extends the window it is trying to escape.
+  const { secondsLeft, blocked, startFrom } = useRetryCountdown();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -37,7 +42,12 @@ export const Login: React.FC = () => {
       if (useAuthStore.getState().pendingChallenge) { setIsLoading(false); return; }
       routeAfterLogin();
     } catch (error: any) {
-      toast.error(error.response?.data?.message || 'Login failed. Check your credentials.');
+      // A pace refusal is not a credential failure and must not be reported as
+      // one — "check your credentials" sends an admin to reset a password that
+      // was never wrong.
+      if (!startFrom(error)) {
+        toast.error(error.response?.data?.message || 'Login failed. Check your credentials.');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -76,8 +86,13 @@ export const Login: React.FC = () => {
       setOtp('');
       routeAfterLogin();
     } catch (error: any) {
-      toast.error(error?.message || 'Invalid authentication code');
-      setOtp('');
+      // Same distinction on the second factor, and the code is KEPT on a pace
+      // refusal: it was never submitted, and a 30-second TOTP retyped after a
+      // 10-second wait is usually still the right one.
+      if (!startFrom(error)) {
+        toast.error(error?.message || 'Invalid authentication code');
+        setOtp('');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -121,11 +136,11 @@ export const Login: React.FC = () => {
             />
             <button
               type="submit"
-              disabled={isLoading || otp.trim().length < 6}
+              disabled={isLoading || blocked || otp.trim().length < 6}
               className="btn btn-primary"
-              style={{ width: '100%', height: 42, marginTop: 14, opacity: isLoading || otp.trim().length < 6 ? 0.6 : 1 }}
+              style={{ width: '100%', height: 42, marginTop: 14, opacity: isLoading || blocked || otp.trim().length < 6 ? 0.6 : 1 }}
             >
-              {isLoading ? 'Verifying…' : 'Verify and sign in'}
+              {blocked ? `Try again in ${secondsLeft}s` : isLoading ? 'Verifying…' : 'Verify and sign in'}
             </button>
             <button
               type="button"
@@ -195,14 +210,16 @@ export const Login: React.FC = () => {
 
             <button
               type="submit"
-              disabled={isLoading}
+              disabled={isLoading || blocked}
               style={{
                 width: '100%', height: 44, borderRadius: 10, background: 'var(--gold)', color: 'var(--gold-on)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontSize: 14, fontWeight: 800,
-                cursor: isLoading ? 'not-allowed' : 'pointer', opacity: isLoading ? 0.6 : 1, border: 'none',
+                cursor: isLoading || blocked ? 'not-allowed' : 'pointer', opacity: isLoading || blocked ? 0.6 : 1, border: 'none',
               }}
             >
-              {isLoading ? 'Signing in…' : 'Sign in'} {!isLoading && <ArrowRight size={16} />}
+              {blocked
+                ? `Try again in ${secondsLeft}s`
+                : <>{isLoading ? 'Signing in…' : 'Sign in'} {!isLoading && <ArrowRight size={16} />}</>}
             </button>
           </form>
         </div>

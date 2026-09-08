@@ -386,6 +386,30 @@ const MUTATIONS = [
     from: `  if (req.body?.challengeToken) {`,
     to: `  if (false && req.body?.challengeToken) {`,
   },
+
+  // ── Sign-in is paced, and the refusal says how long ──────────────────────
+  {
+    id: 'M77', file: 'backend/server.js', config: UNIT,
+    test: 'backend/tests/unit/loginPacing.test.js',
+    why: 'the admin password path stops being paced',
+    from: `app.post('/api/admin/login', loginPaceLimiter, adminAuthLimiter,`,
+    to: `app.post('/api/admin/login', adminAuthLimiter,`,
+  },
+  {
+    id: 'M78', file: 'backend/middleware/security.js', config: UNIT,
+    test: 'backend/tests/unit/loginPacing.test.js',
+    why: 'the pace skips successful attempts, so a first guess is unpaced again',
+    from: `    // Every attempt, not only the failures — see above.
+    skipSuccessfulRequests: false,`,
+    to: `    skipSuccessfulRequests: true,`,
+  },
+  {
+    id: 'M79', file: 'backend/middleware/security.js', config: UNIT,
+    test: 'backend/tests/unit/loginPacing.test.js',
+    why: 'the refusal drops the absolute instant, so a countdown drifts by the response time',
+    from: `            retryAt: resetAt.toISOString(),`,
+    to: '',
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

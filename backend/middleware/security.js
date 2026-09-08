@@ -181,6 +181,54 @@ export function actorAccount(req) {
   return req.user?.userId ?? req.merchantId ?? req.body?.mobile ?? null;
 }
 
+/**
+ * One credential submission per 10 seconds (owner directive 2026-09-08).
+ *
+ * ── Why this exists next to the failure budgets, not instead of them ────────
+ * `adminAuthLimiter`, `merchantAuthLimiter` and `twoFactorLimiter` all set
+ * `skipSuccessfulRequests`, so they count FAILURES and act as a lockout. This
+ * one counts EVERY attempt and acts as a pace. An attacker is only ever
+ * failing, so the budgets see them — but between two failures they may submit
+ * as fast as the network allows, and it is the RATE that decides whether an
+ * automated guess is worth attempting at all.
+ *
+ * A six-digit TOTP is a 10^6 space. Paced at one per 10 seconds a full sweep
+ * takes over three months, against codes that expire in thirty seconds.
+ *
+ * ── The response has to be answerable ───────────────────────────────────────
+ * A 429 that says "too many requests" and nothing else leaves a person to
+ * guess when to try again, and guessing means retrying immediately — which
+ * extends the window and makes the screen look broken rather than throttled.
+ * So this sends both `retryAfter` (whole seconds, for a human sentence) and
+ * `retryAt` (an absolute ISO instant, for a countdown that stays correct
+ * regardless of how long the response spent in flight or how far the client's
+ * clock has drifted from ours).
+ */
+export const loginPaceLimiter = rateLimit({
+    store: createRateLimitStore('rl:pace:'),
+    ...RATE_LIMIT_TIERS.loginPace,
+    standardHeaders: true,
+    legacyHeaders: false,
+    // Every attempt, not only the failures — see above.
+    skipSuccessfulRequests: false,
+    keyGenerator: actorKey,
+    handler: (req, res) => {
+        // `resetTime` is what the store knows; the fallback is the full window,
+        // which over-states the wait rather than inviting an early retry.
+        const resetAt = req.rateLimit?.resetTime instanceof Date
+            ? req.rateLimit.resetTime
+            : new Date(Date.now() + RATE_LIMIT_TIERS.loginPace.windowMs);
+        const seconds = Math.max(1, Math.ceil((resetAt.getTime() - Date.now()) / 1000));
+        res.status(429).json({
+            success: false,
+            code: 'LOGIN_PACED',
+            message: `Too many attempts. Try again in ${seconds} second${seconds === 1 ? '' : 's'}.`,
+            retryAfter: seconds,
+            retryAt: resetAt.toISOString(),
+        });
+    },
+});
+
 export const twoFactorLimiter = rateLimit({
     store: createRateLimitStore('rl:2fa:'),
     ...RATE_LIMIT_TIERS.twoFactor, // 5 FAILED / 15 min
