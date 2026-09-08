@@ -16,8 +16,9 @@ import { PAYMENT_STATE_LABELS, PAYMENT_STATE_COLOR, isActive, type PaymentOrderS
 // M-05: WalletTransactionDTO normalizer — GOVERNANCE §4: this module must have consumers.
 import { normalizeTransaction } from '../services/walletTransactionDTO';
 import ScreenShell, { card, capLabel } from '../redesign/Screen';
-// A withdrawal too large for one cash denomination is paid in parts.
-import SplitWithdrawalLegs from '../components/SplitWithdrawalLegs';
+// A cash withdrawal too large for one denomination becomes several separate
+// withdrawals. This shows a player which ones came from the same request.
+import WithdrawalBatchParts from '../components/WithdrawalBatchParts';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 interface Balances { depositBalance: number; winningsBalance: number; lockedBalance: number; reserveBalance: number; }
@@ -52,11 +53,10 @@ interface PaymentOrder {
   // supposed to be showing.
   paymentMode?: 'P2P_UPI' | 'CASH_ATM';
   cashLinkId?: string | null;
-  // A withdrawal too large for one cash denomination is paid in parts. This is
-  // the CONTAINER; the parts are fetched on expand. Sent by the orders list,
-  // and absent (falsy) on every ordinary order — so the expander only appears
-  // where there is something to expand.
-  isSplitParent?: boolean;
+  // The label grouping the separate withdrawals that came from one request.
+  // Null on an ordinary withdrawal, so the expander only appears where there is
+  // something to expand. It is a LABEL: nothing here decides anything by it.
+  withdrawalBatchRef?: string | null;
   userBankDetails?: { accountNumber?: string; ifscCode?: string; bankName?: string; accountHolderName?: string; };
   upiId?: string;
 }
@@ -697,8 +697,8 @@ const WalletPage: React.FC = () => {
                   <span style={{ fontSize: 9, color: 'var(--text3)' }}>Order {order.orderId || order._id}</span>
                   <span style={{ display: 'flex', gap: 8 }}>
                     {/* Only where there is something to expand. An expander on
-                        every withdrawal would promise parts that do not exist. */}
-                    {order.isSplitParent && (
+                        every withdrawal would promise siblings that do not exist. */}
+                    {order.withdrawalBatchRef && (
                       <button
                         onClick={() => setExpandedOrderId(expandedOrderId === (order.orderId || order._id) ? null : (order.orderId || order._id))}
                         style={{ fontSize: 10, fontWeight: 800, color: 'var(--gold-ink)', background: 'none', border: '1px solid color-mix(in srgb,var(--gold-ink) 40%,transparent)', borderRadius: 999, padding: '4px 11px', cursor: 'pointer' }}
@@ -709,8 +709,8 @@ const WalletPage: React.FC = () => {
                     {canCancel && <button onClick={() => cancelOrder(order.orderId || order._id)} style={{ fontSize: 10, fontWeight: 800, color: 'var(--red)', background: 'none', border: '1px solid color-mix(in srgb,var(--red) 40%,transparent)', borderRadius: 999, padding: '4px 11px', cursor: 'pointer' }}>Cancel</button>}
                   </span>
                 </div>
-                {order.isSplitParent && expandedOrderId === (order.orderId || order._id) && (
-                  <SplitWithdrawalLegs
+                {order.withdrawalBatchRef && expandedOrderId === (order.orderId || order._id) && (
+                  <WithdrawalBatchParts
                     orderId={order.orderId || order._id}
                     onChanged={() => { void loadOrders(); void loadMeta(); }}
                   />

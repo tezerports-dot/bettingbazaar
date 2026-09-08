@@ -1061,18 +1061,18 @@ export const disputes = {
   },
 
   /**
-   * Withdrawal legs no merchant has taken.
+   * Withdrawals no merchant has taken.
    *
-   * A leg that cannot find one WAITS rather than failing — the paid legs of
-   * the same withdrawal stay paid, because a completed CDM deposit cannot be
-   * clawed back. The price is an unbounded token lock, which is why this queue
-   * exists: an order with no deadline and no owner is one nobody is answerable
-   * for.
+   * One that cannot find a merchant WAITS rather than failing — on the cash
+   * rail a large payout is several separate withdrawals, and the ones already
+   * paid cannot be clawed back. The price is an unbounded token lock, which is
+   * why this queue exists: an order with no deadline and no owner is one nobody
+   * is answerable for.
    *
-   * `olderThanMinutes` accepts 0 — "every leg waiting right now".
+   * `olderThanMinutes` accepts 0 — "everything waiting right now".
    */
-  stalledLegs: async (olderThanMinutes: number) => {
-    const res = await api.get<any>('/api/admin/orders/stalled-legs', { params: { olderThanMinutes } });
+  stalledWithdrawals: async (olderThanMinutes: number) => {
+    const res = await api.get<any>('/api/admin/orders/stalled-withdrawals', { params: { olderThanMinutes } });
     return res.data;
   },
 };

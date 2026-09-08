@@ -124,3 +124,53 @@ export function splitWithdrawal(totalPaise) {
   if (left !== 0) return null;
   return legs.length ? legs : null;
 }
+
+/**
+ * Spread a payout fee across the parts of a split withdrawal.
+ *
+ * ── Why this exists at all ─────────────────────────────────────────────────
+ * What reaches a cash machine must be a DENOMINATION, so the split is computed
+ * on the fiat figure — the cash — and each part's fiat is fixed by the ladder.
+ * The fee is the difference between that and the tokens the player gives up, so
+ * it has to land somewhere, and "somewhere" cannot be a part's fiat without
+ * making it an amount no machine dispenses.
+ *
+ * So it lands on the TOKEN side, part by part: each part debits its own share
+ * of the player's balance and pays out its own denomination in cash.
+ *
+ * The first version of the split refused to run at all while a payout fee was
+ * set, because a parent container held one lock for the whole withdrawal and
+ * the fee was the part no leg accounted for. Flat siblings do not have that
+ * problem — each is an ordinary withdrawal with its own lock — so the refusal
+ * is gone and this is what replaces it.
+ *
+ * ── Integer paise, and the remainder goes somewhere explicit ───────────────
+ * A proportional share does not divide evenly, and money is integer paise. The
+ * shares are floored and the leftover paise are added to the FIRST part, which
+ * is the largest under a largest-first split. That is a decision rather than a
+ * rounding accident: the alternative is a fractional paise that has to vanish,
+ * and a fee that quietly loses paise is a player charged an amount no row adds
+ * up to.
+ *
+ * The identity this guarantees, and which its test asserts directly:
+ *   sum(part.fiatPaise)  === sum(partsPaise)              (the cash is intact)
+ *   sum(part.tokenPaise) === sum(partsPaise) + feePaise   (the fee is charged once)
+ *
+ * @param {number[]} partsPaise the denominations, largest first
+ * @param {number} feePaise the whole fee, in paise
+ */
+export function shareFeeAcrossParts(partsPaise, feePaise) {
+  const fee = Math.max(Math.trunc(Number(feePaise) || 0), 0);
+  const cash = partsPaise.reduce((sum, p) => sum + Number(p), 0);
+  if (!partsPaise.length || cash <= 0) return null;
+
+  const parts = partsPaise.map((paise) => ({
+    fiatPaise: Number(paise),
+    tokenPaise: Number(paise) + Math.floor((fee * Number(paise)) / cash),
+  }));
+
+  // Whatever the flooring left over. Added, never dropped.
+  const assigned = parts.reduce((sum, p) => sum + p.tokenPaise, 0) - cash;
+  parts[0].tokenPaise += fee - assigned;
+  return parts;
+}

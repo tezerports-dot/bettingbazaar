@@ -251,79 +251,100 @@ so an admin editing the price cannot rewrite what a settled order charged.
 
 ### Withdrawal batch splitting
 
-A withdrawal larger than one denomination splits into child orders under one
-parent. The player's stake is locked **once, at the parent** — not once per
-child.
+A withdrawal larger than one denomination is created as **several separate
+withdrawals** — not one order with child legs.
 
 Split rule, largest first: ₹100,000 → 40,000 + 40,000 + 10,000 + 10,000. Do not
 go below 5,000 unless the remainder is itself under 5,000.
 
-**The player sees one order that expands to its children.** The parent is the
-withdrawal they asked for; expanding shows each leg and its state. Every list,
-filter and export has to decide whether it counts parents or children, and the
-answer is parents unless it is the dispute queue.
+#### Why flat siblings and not a parent with legs
 
-Assignment is partial-batch, partial-queue: legs that can be assigned now are,
-the rest queue. An assigned leg has 15 minutes to process.
+The first implementation built a container: one parent row holding the escrow,
+several child rows doing the work. It was correct, it passed, and it was the
+wrong shape — for two reasons that only become visible once it exists.
 
-**A leg that cannot find a merchant stays queued rather than failing.** The
-paid legs stay paid — a completed CDM deposit cannot be clawed back — and the
-outstanding leg waits for capacity.
+**Every query had to choose.** Parent or legs? The answer differed for the
+player's history, the open sell pool, the pending-withdrawal total, the user
+stats, the dispute queue and the user-delete guard. Six places, each a silent
+double-count or a silent omission if answered wrong — and one of them was a
+money guard, where counting parents only would have let a player be deleted with
+four legs live in the merchant queue. A relation every reader must reason about
+is a tax on every future query, forever.
 
-The cost of that is an unbounded token lock, so two things are required rather
-than optional: a leg queued past the assignment window appears in an **admin
-stalled-legs queue** (`GET /api/admin/orders/stalled-legs`, the Stalled Parts
-screen), so somebody is accountable for it; and the **player may cancel it
-themselves** (`GET /api/payment/order/:id/legs` expands the withdrawal, and
-`POST /api/payment/order/cancel` with the LEG's id takes it back). An order with
-no deadline and no owner is an order nobody is answerable for.
+**A crash mid-creation left something incoherent.** A parent holding an escrow
+with only some of its legs written is a withdrawal that does not add up, and no
+row looks wrong.
 
-#### Two constraints the implementation makes explicit
+Flat siblings have neither problem. Each part is an **ordinary withdrawal**: its
+own escrow lock, its own assignment, its own timer, its own cancel, its own
+dispute, its own release. Nothing downstream branches on whether an order came
+from a split, because nothing can tell. And a crash after two of four leaves
+exactly two valid withdrawals — money conserved, nothing dangling, nothing to
+unwind.
 
-Both are refusals rather than surprises, and both are the operator's to resolve.
+#### The money, part by part
 
-**A split cannot coexist with a payout fee.** The escrow lock is on TOKENS; the
-legs are made of FIAT; the fee is the gap between them. Every leg releases
-exactly its own amount when it completes and refunds exactly its own amount when
-it is cancelled, so the legs add up to the parent's lock precisely — and a fee
-would be the part no leg accounts for, left locked forever with no leg to
-release it. `createWithdrawalOrder` therefore refuses to split while
-`payoutFeePercent` is non-zero (`SPLIT_FEE_UNSUPPORTED`).
+Each part debits its **own** amount against its **own** order id, under the
+wallet's row lock, exactly as a single withdrawal does. There is no pooled lock
+to reconcile and no compensating refund to get wrong.
 
-The alternatives were each worse: releasing the remainder at the parent means a
-second money path that only ever runs on split withdrawals — the least-exercised
-code holding the most surprising movement — and charging the fee per leg stops
-the legs being denominations, which is the one thing a cash machine cannot
-accommodate.
+That is also why nothing pre-checks the total: a pre-check is precisely what was
+removed for racing the debit and double-counting escrow. If the wallet refuses
+part three, parts one and two are complete withdrawals the player has, part
+three's money never left winnings, and the response says so (`partial`).
+Reversing the earlier parts would be a compensating action over money the player
+is entitled to.
+
+**The payout fee rides on the token side.** What reaches a machine must be a
+denomination, so the split is computed on the cash figure and each part's fiat
+is fixed by the ladder; the fee is spread across the parts' token amounts
+(`shareFeeAcrossParts`), floored per part with the indivisible remainder added
+to the largest. Two identities hold to the paise, and are asserted directly:
+
+    sum(part.fiat)   = the cash the player receives
+    sum(part.tokens) = the cash + the fee, charged exactly once
+
+The container version could not do this — one lock for the whole withdrawal had
+no leg to account for the fee — and refused to split at all while a fee was set.
+That refusal is gone.
+
+#### What ties the siblings together is a LABEL
+
+`withdrawal_batch_ref` groups the orders that came from one request, so a player
+is told "part 2 of 4" rather than finding four unexplained withdrawals at the
+same second, and support can pull the set (`GET /api/payment/order/:id/batch`,
+owner-scoped and re-checked per row — a batch ref is not a capability).
+
+**Nothing branches on it.** No state is derived from it, no money reads it, no
+assignment consults it. The moment something does, it has become the parent
+relation again wearing a different name.
+
+#### Waiting, and who is accountable for it
+
+Assignment is partial-batch, partial-queue: parts that can be assigned now are,
+the rest queue. A part that cannot find a merchant **stays queued rather than
+failing** — the parts already paid stay paid, because a completed CDM deposit
+cannot be clawed back.
+
+The cost is a token lock with no deadline, so two things are required rather
+than optional: a payout past the assignment window appears in the admin
+**Stalled Payouts** queue (`GET /api/admin/orders/stalled-withdrawals`), and the
+**player may cancel it themselves** through the ordinary cancel, because a part
+is an ordinary withdrawal. An order with no deadline and no owner is an order
+nobody is answerable for.
+
+That queue is deliberately **not** split-specific: a stranded sibling is just a
+queued withdrawal, so asking the general question covers it and every other
+stuck payout with one query.
+
+#### One constraint the operator has to know
 
 **`maxWithdrawal` has to be raised for the split to mean anything.** It defaults
 to ₹50,000 and the largest denomination is ₹40,000, so on a default
-configuration the only split that exists is two legs and the ₹100,000 example
+configuration the only split that exists is two parts, and the ₹100,000 example
 above is refused before it reaches the splitter — by a limit that has nothing to
 do with denominations. A platform running the cash rail raises this cap or the
 feature is decoration.
-
-#### The parent is a container, and moves no money
-
-`splitWithdrawal.service.js` derives the parent's state from its legs:
-PROCESSING once any leg is being worked on, COMPLETED when every leg is terminal
-and at least one was paid, CANCELLED only when nothing was paid at all. It walks
-the ordinary states rather than jumping — widening `ALLOWED_FROM[COMPLETED]` to
-accept `PENDING_QUEUE` would let any queued order in the system skip to
-completed.
-
-A partly-paid withdrawal counts as COMPLETED, never cancelled: the player has
-money a cancelled leg does not take back.
-
-**Every list has to choose parents or legs.** `findOrders` defaults to parents
-and takes `includeLegs: true` for the queues that work the units. A
-merchant-scoped query sees legs automatically, because a parent is never
-assigned. The exceptions that matter:
-
-- the **dispute queue** is legs — a dispute is about the row a merchant held;
-- the **user-delete guard** is legs (`includeLegs: true`) — it is a money guard,
-  and a parent sitting at PROCESSING while four legs are live in the merchant
-  queue would otherwise let the player be deleted out from under them.
 
 ## 6. Timers, expiry and retry
 

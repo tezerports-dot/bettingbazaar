@@ -183,11 +183,15 @@ const MUTATIONS = [
     test: 'backend/tests/unit/moneyDecisionsReadTheWallet.test.js',
     why: 'withdrawal admission decided from a record field again — money leaves on this path',
     // The three pre-checks that used to stand here are gone: they raced each
-    // other and double-counted the escrow. Admission IS the locked debit now,
-    // so the mutation is to put a record-field gate back in FRONT of it.
-    from: `  let debitResult;`,
+    // other and double-counted the escrow. Admission IS the locked debit now —
+    // run once per part, since a cash payout too large for one denomination
+    // becomes several ordinary withdrawals — so the mutation is to put a
+    // record-field gate back in FRONT of the loop.
+    from: `  const created = [];
+  let debitResult = null;`,
     to: `  if (user.winningsBalance < tokenAmount) throw Object.assign(new Error('Insufficient winnings'), { status: 400 });
-  let debitResult;`,
+  const created = [];
+  let debitResult = null;`,
   },
   {
     id: 'M54', file: 'backend/domains/merchant/merchantScoring.service.js', config: UNIT,
@@ -750,40 +754,54 @@ const MUTATIONS = [
     to: ``,
   },
 
-  // ── A withdrawal that splits into legs ──────────────────────────────────
+  // ── A cash withdrawal that becomes several withdrawals ──────────────────
   {
     id: 'M117', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
     test: 'backend/tests/routes/splitWithdrawalPg.test.js',
     why: 'a cash withdrawal is created for an amount no set of denominations can make, so no merchant can ever pay it at a machine and the tokens lock behind an order nobody can serve',
-    from: `    legsPaise = splitWithdrawal(fiatPaise);
-    if (!legsPaise) {`,
-    to: `    legsPaise = splitWithdrawal(fiatPaise) ?? [fiatPaise, fiatPaise];
+    from: `    const cashParts = splitWithdrawal(fiatPaise);
+    if (!cashParts) {`,
+    to: `    const cashParts = splitWithdrawal(fiatPaise) ?? [fiatPaise];
     if (false) {`,
   },
   {
-    id: 'M118', file: 'database/repositories/orders.record.js', config: PG,
+    id: 'M118', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
     test: 'backend/tests/routes/splitWithdrawalPg.test.js',
-    why: 'the legs stop having to add up to the payout, so a split that loses money pays the player LESS than they asked for while every row looks healthy',
-    from: `  if (legTotal !== fiatPaise) {`,
-    to: `  if (false) {`,
+    why: 'every part debits the WHOLE withdrawal instead of its own share, so a four-part payout locks four times what the player asked to withdraw',
+    from: `      debited = await debitWinningsForWithdrawal(String(user.userId), partTokens, partOrderId);`,
+    to: `      debited = await debitWinningsForWithdrawal(String(user.userId), tokenAmount, partOrderId);`,
   },
   {
-    id: 'M119', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    id: 'M119', file: 'backend/domains/merchant/denominations.js', config: PG,
     test: 'backend/tests/routes/splitWithdrawalPg.test.js',
-    why: 'a cancelled leg refunds nothing — the leg carries no escrow of its own, so the ordinary branch never fires and the player\'s tokens stay locked forever with no leg left to release them',
-    from: `  if (!cancelled.idempotent && order.parentOrderId) {
-    await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
-  }`,
+    why: 'the payout fee lands on the CASH side, so a part becomes an amount no machine dispenses and no merchant can pay it',
+    from: `  const parts = partsPaise.map((paise) => ({
+    fiatPaise: Number(paise),
+    tokenPaise: Number(paise) + Math.floor((fee * Number(paise)) / cash),
+  }));`,
+    to: `  const parts = partsPaise.map((paise) => ({
+    fiatPaise: Number(paise) - Math.floor((fee * Number(paise)) / cash),
+    tokenPaise: Number(paise),
+  }));`,
+  },
+  {
+    id: 'M120', file: 'backend/domains/merchant/denominations.js', config: PG,
+    test: 'backend/tests/routes/splitWithdrawalPg.test.js',
+    why: 'the paise the fee share could not divide evenly are dropped, so the player is charged an amount no row adds up to',
+    from: `  const assigned = parts.reduce((sum, p) => sum + p.tokenPaise, 0) - cash;
+  parts[0].tokenPaise += fee - assigned;`,
     to: ``,
   },
   {
-    id: 'M120', file: 'database/repositories/orders.record.js', config: PG,
+    id: 'M121', file: 'database/repositories/orders.record.js', config: PG,
     test: 'backend/tests/routes/splitWithdrawalPg.test.js',
-    why: 'the player is told they have committed the whole withdrawal TWICE — the parent and every leg are in flight at once, and counting rows counts both',
-    from: `        AND parent_order_id IS NULL\`,
-    [String(userId)], 'order_pending_withdrawal_total',`,
-    to: `\`,
-    [String(userId)], 'order_pending_withdrawal_total',`,
+    why: 'the stalled queue stops seeing withdrawals nobody has taken, so a player\'s tokens sit locked with no deadline and nobody accountable for them',
+    from: `      WHERE order_type = 'WITHDRAWAL'
+        AND state = 'PENDING_QUEUE'
+        AND created_at < now() - make_interval(mins => $1)`,
+    to: `      WHERE order_type = 'WITHDRAWAL'
+        AND state = 'COMPLETED'
+        AND created_at < now() - make_interval(mins => $1)`,
   },
 ];
 

@@ -84,42 +84,49 @@ router.get('/orders/cdm-receipts/missing', authenticate, hasPermission('canResol
 });
 
 /**
- * GET /api/admin/orders/stalled-legs — withdrawal legs nobody has taken.
+ * GET /api/admin/orders/stalled-withdrawals — payouts nobody has taken.
  *
- * A leg that cannot find a merchant WAITS rather than failing. That is the
- * right call — the paid legs of the same withdrawal stay paid, because a
- * completed CDM deposit cannot be clawed back, and the outstanding leg waits
- * for capacity rather than being reversed.
+ * A withdrawal that cannot find a merchant WAITS rather than failing. On the
+ * cash rail that is the only safe answer: a large payout is several separate
+ * withdrawals, and the ones already paid cannot be clawed back, so failing the
+ * outstanding one would mean unwinding a payout that has partly happened.
  *
- * The price of it is an unbounded token lock, which is exactly why this queue
+ * The price is a token lock with no deadline, which is exactly why this queue
  * exists. An order with no deadline and no owner is an order nobody is
- * answerable for; a leg past the assignment window appears here so somebody is.
- * The player can also take those tokens back themselves — the two together are
- * what make "wait indefinitely" a decision instead of a leak.
+ * answerable for; a payout past the assignment window appears here so somebody
+ * is. The player can also cancel it themselves and take the tokens back — the
+ * two together are what make waiting a decision instead of a leak.
  *
- * `olderThanMinutes` accepts 0, which is how an admin asks "every leg waiting
+ * Deliberately NOT split-specific. A part of a split withdrawal is an ORDINARY
+ * queued withdrawal, so the general question — which payouts have nobody
+ * working them — covers it and every other stuck payout with one query.
+ *
+ * `olderThanMinutes` accepts 0, which is how an admin asks "everything waiting
  * right now" during an incident. `??`, never `||`, for exactly that reason.
  */
-router.get('/orders/stalled-legs', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
+router.get('/orders/stalled-withdrawals', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
   try {
     const asked = parseInt(req.query.olderThanMinutes, 10);
     const olderThanMinutes = Number.isFinite(asked) && asked >= 0 ? asked : 25;
-    const legs = await db.orders.stalledLegs({ olderThanMinutes });
+    const orders = await db.orders.stalledWithdrawals({ olderThanMinutes });
     res.json({
       success: true,
       olderThanMinutes,
-      legs: legs.map((leg) => ({
-        orderId:       leg.orderId,
-        parentOrderId: leg.parentOrderId,
-        legIndex:      leg.legIndex,
-        userId:        leg.userId,
-        amount:        leg.fiatAmount,
-        createdAt:     leg.createdAt,
+      orders: orders.map((o) => ({
+        orderId:    o.orderId,
+        userId:     o.userId,
+        amount:     o.fiatAmount,
+        tokenAmount: o.tokenAmount,
+        createdAt:  o.createdAt,
+        // The label grouping the siblings of one request, when there was one.
+        // It tells an admin that a player asked for a large payout rather than
+        // several small ones — useful context, and nothing more than context.
+        batchRef:   o.withdrawalBatchRef ?? null,
       })),
     });
   } catch (error) {
-    console.error('List stalled withdrawal legs error:', error);
-    res.status(500).json({ success: false, message: 'Failed to list stalled withdrawal legs' });
+    console.error('List stalled withdrawals error:', error);
+    res.status(500).json({ success: false, message: 'Failed to list stalled withdrawals' });
   }
 });
 

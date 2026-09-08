@@ -259,43 +259,54 @@ router.get('/order/:orderId', authenticate, orderAccessGuard, async (req, res) =
 });
 
 /**
- * GET /api/payment/order/:orderId/legs — the parts of one withdrawal.
+ * GET /api/payment/order/:orderId/batch — the other parts of one request.
  *
- * A withdrawal too large for one denomination is paid by several merchants at
- * several machines, because that is what an ATM dispenses. The player asked for
- * ONE withdrawal and keeps seeing one: this is the expansion behind it.
+ * A cash withdrawal too large for one denomination becomes several ORDINARY
+ * withdrawals, because that is what an ATM dispenses. They are not a parent and
+ * its legs — each is a complete withdrawal with its own merchant, its own
+ * escrow and its own state — but the player made ONE request, so they need to
+ * be told which orders came out of it. Otherwise four unexplained withdrawals
+ * appear at the same second and nothing says why.
  *
- * Behind `orderAccessGuard` like every other `:orderId` route, so it is the
- * owner asking. It returns an empty list for an ordinary order rather than a
- * 404 — "this withdrawal has no parts" is a true answer, and a screen that has
- * to distinguish "not split" from "not found" will get it wrong.
+ * That is all this is: a label lookup for display. Nothing derives state from
+ * `withdrawal_batch_ref`, no money reads it, no assignment consults it. If
+ * something ever branches on it, it has become the parent relation again
+ * wearing a different name.
  *
- * The merchant is not named on any leg. A player sees where their money is up
- * to, never who is paying it — the same rule the merchant side obeys in
- * reverse.
+ * Behind `orderAccessGuard`, so it is the owner asking, and it returns the
+ * siblings that belong to THIS caller — a batch ref is not a capability.
+ * An ordinary withdrawal answers with an empty list rather than a 404: "this
+ * was not split" is a true answer, and a screen forced to tell that apart from
+ * "not found" will get it wrong.
  */
-router.get('/order/:orderId/legs', authenticate, orderAccessGuard, async (req, res) => {
+router.get('/order/:orderId/batch', authenticate, orderAccessGuard, async (req, res) => {
   try {
     const order = req.p2pOrder;
-    const legs = order?.isSplitParent ? await db.orders.getOrderLegs(order.orderId) : [];
+    const siblings = order?.withdrawalBatchRef
+      ? await db.orders.withdrawalBatch(order.withdrawalBatchRef)
+      : [];
     res.json({
       success: true,
-      isSplitParent: order?.isSplitParent === true,
-      legs: legs.map((leg) => ({
-        orderId:   leg.orderId,
-        legIndex:  leg.legIndex,
-        amount:    leg.fiatAmount,
-        status:    leg.status,
-        expiresAt: leg.expiresAt,
-        // What the player can do about this one. A leg still waiting for a
-        // merchant can be taken back; one already being worked on cannot, and
-        // one that is paid is money they have.
-        cancellable: leg.status === 'PENDING_QUEUE',
-      })),
+      batchRef: order?.withdrawalBatchRef ?? null,
+      orders: siblings
+        // Ownership re-checked per row. The guard proved this caller owns the
+        // order they named; it did not prove they own everything sharing a
+        // label with it, and a label is not an authorisation.
+        .filter((o) => String(o.userId) === String(req.user.userId))
+        .map((o, index) => ({
+          orderId:   o.orderId,
+          partIndex: index + 1,
+          amount:    o.fiatAmount,
+          status:    o.status,
+          expiresAt: o.expiresAt,
+          // Whether the player can take this one back. Same rule as any other
+          // withdrawal, because it IS any other withdrawal.
+          cancellable: o.status === 'PENDING_QUEUE',
+        })),
     });
   } catch (err) {
-    console.error('GET /payment/order/:orderId/legs error:', err);
-    res.status(500).json({ success: false, message: 'Failed to fetch the parts of this withdrawal' });
+    console.error('GET /payment/order/:orderId/batch error:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch the other parts of this withdrawal' });
   }
 });
 

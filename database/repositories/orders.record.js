@@ -24,7 +24,7 @@
  * `deposit_policy_snapshot` is the same idea for the split: an admin editing
  * the policy must not change what a settled order says it allocated.
  */
-import { pgQuery, withTransaction } from '../client.js';
+import { pgQuery } from '../client.js';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
 import { stampForNewOrder } from './paymentModePolicy.js';
 
@@ -135,17 +135,17 @@ export function toOrder(r) {
     // OWNER alone, because it is a claim on notes about to leave a machine.
     cashLinkId: r.cash_link_id ?? null,
 
-    // ── The split relation ────────────────────────────────────────────────
-    // A withdrawal larger than one denomination becomes a PARENT holding
-    // several LEGS, because an ATM dispenses denominations and not amounts.
-    // The player asked for one withdrawal and keeps seeing one.
+    // The siblings of one withdrawal request, as a LABEL.
     //
-    // `isSplitParent` is a column rather than "does anything point at me",
-    // because a row-level CHECK cannot ask about other rows and the rule it
-    // buys is a money rule: a parent is never handed to a merchant.
-    parentOrderId: r.parent_order_id ?? null,
-    legIndex: r.leg_index === null || r.leg_index === undefined ? null : Number(r.leg_index),
-    isSplitParent: r.is_split_parent === true,
+    // A payout too large for one cash denomination becomes several ORDINARY
+    // withdrawals — not a parent and its legs. This groups the ones that came
+    // from a single request so a player is told "part 2 of 4" instead of
+    // finding four unexplained orders, and so support can pull the set.
+    //
+    // Nothing branches on it. No state is derived from it, no money reads it,
+    // no assignment consults it. The moment something does, it has become the
+    // parent relation again wearing a different name.
+    withdrawalBatchRef: r.withdrawal_batch_ref ?? null,
 
     // ── The CDM receipt is NOT mapped here, on purpose ────────────────────
     // `cdm_transaction_id`, `cdm_receipt_url` and `cdm_receipt_at` are absent
@@ -238,6 +238,10 @@ const SETTABLE = Object.freeze({
   bulkPayoutDate: 'bulk_payout_date', bulkPaidAt: 'bulk_paid_at',
   bulkPayoutBatch: 'bulk_payout_batch',
 
+  // The label grouping the siblings of one split withdrawal. Settable because
+  // it is written with the row like any other detail; it decides nothing.
+  withdrawalBatchRef: 'withdrawal_batch_ref',
+
   // The CDM receipt. WRITABLE here and deliberately absent from `toOrder`
   // below: a merchant submits it, and only an admin or a disputes manager may
   // ever read it back. See `getCdmReceipt`.
@@ -325,168 +329,51 @@ export async function createOrderRecord({
 }
 
 /**
- * A withdrawal and its legs, written together.
+ * Withdrawals still waiting for a merchant — the admin's stalled queue.
  *
- * ── Why one transaction and not a loop of creates ──────────────────────────
- * A split that half-succeeds is a withdrawal whose legs do not add up to it.
- * The player is then owed an amount no row records, the parent's escrow holds
- * tokens no leg will ever pay out, and nothing about either row looks wrong.
- * So the parent and every leg are one statement's worth of work: all of them
- * exist, or none does.
+ * ── Not split-specific, on purpose ─────────────────────────────────────────
+ * A payout too large for one cash denomination becomes several ORDINARY
+ * withdrawals, so a sibling nobody has taken is just a queued withdrawal. The
+ * question worth asking is therefore the general one — which payouts have
+ * nobody working them? — and asking it generally covers the split siblings and
+ * every other stuck payout with one query instead of two.
  *
- * ── What a leg is, and what it is not ─────────────────────────────────────
- * A leg is a UNIT OF WORK: one merchant, one machine, one denomination. It is
- * not a claim on the player's balance. The escrow debit ran ONCE against the
- * parent for the whole amount — locking per leg would take the money as many
- * times as there are legs, and the `tx_id` gate would refuse all but the first
- * (or, if a caller varied the key, would not).
- *
- * A leg therefore carries no escrow at all, which `order_states_leg_holds_no_
- * escrow` refuses to let a future writer change.
- *
- * ── Both amounts on a leg are the CASH it moves ───────────────────────────
- * The token/fiat distinction exists because a payout fee is deducted, and the
- * fee is taken once, at the parent. What reaches a machine is the FIAT amount,
- * so that is what gets split, and a leg's token and fiat figures are the same
- * number: the denomination it is responsible for. The legs sum to the parent's
- * fiat, never to its tokens, and that difference IS the fee.
- *
- * @param legsPaise the split, largest first, from `splitWithdrawal`. It must
- *   already sum to `fiatAmountRupees` — this asserts it rather than trusting
- *   it, because a caller that silently short-pays is the worst outcome here.
+ * A player's tokens are locked behind every row here. A withdrawal that finds
+ * no merchant WAITS rather than failing, which is right on the cash rail (the
+ * siblings already paid cannot be clawed back), and the price of it is a lock
+ * with no deadline. An order with no deadline and no owner is one nobody is
+ * answerable for; this queue is the owner. The player can also cancel and take
+ * the tokens back — the two together are what make waiting a decision rather
+ * than a leak.
  */
-export async function createSplitWithdrawal({
-  parentOrderId, userId, tokenAmountRupees, fiatAmountRupees,
-  legsPaise, legIdFor, paymentMode = null, ...detail
-}) {
-  if (!parentOrderId) throw new Error('createSplitWithdrawal requires a parentOrderId');
-  if (!userId) throw new Error('createSplitWithdrawal requires a userId');
-  if (typeof legIdFor !== 'function') {
-    throw new TypeError('createSplitWithdrawal requires legIdFor(index) to name each leg');
-  }
-  if (!Array.isArray(legsPaise) || legsPaise.length < 2) {
-    throw new Error('createSplitWithdrawal: a split has at least two legs — use createOrderRecord for one');
-  }
-
-  const fiatPaise = rupeesToPaise(fiatAmountRupees);
-  const legTotal = legsPaise.reduce((sum, p) => sum + Number(p), 0);
-  // The check `splitWithdrawal` already makes, made again at the writer. The
-  // failure it catches — legs that do not add up — pays the player less than
-  // they asked for while every row looks healthy, and the two callers are far
-  // enough apart that "the other one checked" is not a property of the code.
-  if (legTotal !== fiatPaise) {
-    throw new Error(
-      `createSplitWithdrawal: legs total ${legTotal} paise but the payout is ${fiatPaise}`,
-    );
-  }
-
-  // Read ONCE, outside the loop: every leg of one withdrawal is on one rail.
-  // Reading per leg would let an admin switching rails mid-insert produce a
-  // parent whose legs disagree about how they are settled.
-  const stamp = await stampForNewOrder(paymentMode);
-
-  // The leg inherits what a merchant needs to pay it and nothing else. Escrow
-  // is deliberately absent — see above — and so is the payout fee, which was
-  // taken at the parent.
-  const { escrowLocked, escrowStatus, escrowAmount, payoutFee, ...legDetail } = detail;
-
-  return withTransaction(async (client) => {
-    const insert = async (columns, params) => {
-      const { rows } = await client.query(
-        `INSERT INTO order_states (${columns.join(', ')})
-         VALUES (${params.map((_, i) => `$${i + 1}`).join(', ')})
-         ON CONFLICT (order_id) DO NOTHING
-         RETURNING *`,
-        params,
-      );
-      return rows[0] ?? null;
-    };
-
-    const buildDetail = (source, columns, params) => {
-      const unknown = Object.entries(source)
-        .filter(([k, v]) => v !== undefined && !SETTABLE[k]).map(([k]) => k);
-      if (unknown.length) {
-        throw new Error(`createSplitWithdrawal: refusing to write unknown field(s): ${unknown.join(', ')}`);
-      }
-      for (const [key, value] of Object.entries(source)) {
-        if (value === undefined) continue;
-        const spec = SETTABLE[key];
-        const [column, transform] = Array.isArray(spec) ? spec : [spec, null];
-        columns.push(column);
-        params.push(transform && value !== null ? transform(value) : value);
-      }
-    };
-
-    const parentColumns = ['order_id', 'user_id', 'order_type', 'state',
-      'token_amount_paise', 'fiat_amount_paise', 'payment_mode', 'payment_mode_version',
-      'is_split_parent'];
-    const parentParams = [String(parentOrderId), String(userId), 'WITHDRAWAL', 'PENDING_QUEUE',
-      rupeesToPaise(tokenAmountRupees), fiatPaise, stamp.mode, stamp.version, true];
-    buildDetail(detail, parentColumns, parentParams);
-    const parentRow = await insert(parentColumns, parentParams);
-    // `ON CONFLICT DO NOTHING` makes the create retry-safe, and a resubmitted
-    // one must not append a second set of legs to a withdrawal that already
-    // has them.
-    if (!parentRow) {
-      const existing = await client.query('SELECT * FROM order_states WHERE order_id = $1', [String(parentOrderId)]);
-      return { parent: existing.rows[0] ? toOrder(existing.rows[0]) : null, legs: [] };
-    }
-
-    const legs = [];
-    for (const [i, paise] of legsPaise.entries()) {
-      const legColumns = ['order_id', 'user_id', 'order_type', 'state',
-        'token_amount_paise', 'fiat_amount_paise', 'payment_mode', 'payment_mode_version',
-        'parent_order_id', 'leg_index'];
-      const legParams = [String(legIdFor(i + 1)), String(userId), 'WITHDRAWAL', 'PENDING_QUEUE',
-        Number(paise), Number(paise), stamp.mode, stamp.version,
-        String(parentOrderId), i + 1];
-      buildDetail(legDetail, legColumns, legParams);
-      const row = await insert(legColumns, legParams);
-      if (!row) throw new Error(`createSplitWithdrawal: leg ${i + 1} collided with an existing order id`);
-      legs.push(toOrder(row));
-    }
-
-    return { parent: toOrder(parentRow), legs };
-  });
-}
-
-/**
- * Every leg of one withdrawal, in the order they were split.
- *
- * The player sees one order that expands to this. `leg_index` is what orders
- * them — a 40,000 + 40,000 split has two identical legs, so ordering by amount
- * would put "leg 2 of 4" somewhere different on every read.
- */
-export async function getOrderLegs(parentOrderId) {
+export async function stalledWithdrawals({ olderThanMinutes = 25, limit = 200 } = {}) {
   const { rows } = await pgQuery(
-    `SELECT * FROM order_states WHERE parent_order_id = $1 ORDER BY leg_index ASC`,
-    [String(parentOrderId)], 'order_legs',
+    `SELECT * FROM order_states
+      WHERE order_type = 'WITHDRAWAL'
+        AND state = 'PENDING_QUEUE'
+        AND created_at < now() - make_interval(mins => $1)
+      ORDER BY created_at ASC
+      LIMIT ${Math.min(Math.max(Number(limit) || 200, 1), 1000)}`,
+    [Math.max(Number(olderThanMinutes) || 0, 0)], 'orders_stalled_withdrawals',
   );
   return rows.map(toOrder);
 }
 
 /**
- * Legs still waiting for a merchant — the admin's stalled queue.
+ * The siblings of one split withdrawal.
  *
- * A leg that cannot find one WAITS rather than failing: the paid legs stay
- * paid, because a completed CDM deposit cannot be clawed back, and the
- * outstanding leg waits for capacity.
- *
- * The cost of that is an unbounded token lock, which is exactly why this exists.
- * An order with no deadline and no owner is an order nobody is answerable for,
- * so a leg past the assignment window surfaces here and somebody is accountable
- * for it. The player can also cancel it themselves — the two together are what
- * make "wait indefinitely" a decision rather than a leak.
+ * A support and display read. `withdrawal_batch_ref` is a LABEL — nothing
+ * derives state from it and nothing about the money path consults it — so this
+ * exists to answer "which orders came from that one request", and for no other
+ * purpose.
  */
-export async function stalledLegs({ olderThanMinutes = 25, limit = 200 } = {}) {
+export async function withdrawalBatch(batchRef) {
+  if (!batchRef) return [];
   const { rows } = await pgQuery(
     `SELECT * FROM order_states
-      WHERE parent_order_id IS NOT NULL
-        AND state = 'PENDING_QUEUE'
-        AND created_at < now() - make_interval(mins => $1)
-      ORDER BY created_at ASC
-      LIMIT ${Math.min(Math.max(Number(limit) || 200, 1), 1000)}`,
-    [Math.max(Number(olderThanMinutes) || 0, 0)], 'orders_stalled_legs',
+      WHERE withdrawal_batch_ref = $1
+      ORDER BY token_amount_paise DESC, order_id ASC`,
+    [String(batchRef)], 'orders_withdrawal_batch',
   );
   return rows.map(toOrder);
 }
@@ -652,12 +539,7 @@ export async function pendingWithdrawalTotal(userId) {
     `SELECT COALESCE(SUM(token_amount_paise), 0) AS total
        FROM order_states
       WHERE user_id = $1 AND order_type = 'WITHDRAWAL'
-        AND state IN ('PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID')
-        -- Parents, not legs. A split withdrawal has both in flight at once, so
-        -- counting rows would tell the player they have committed the amount
-        -- TWICE. The parent is where the escrow actually sits, which is what
-        -- "committed" means.
-        AND parent_order_id IS NULL`,
+        AND state IN ('PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID')`,
     [String(userId)], 'order_pending_withdrawal_total',
   );
   return rupees(rows[0].total);
@@ -718,20 +600,6 @@ export async function findOrders({
   userId = null, merchantId = null, state = null, states = null,
   orderType = null, currency = null, since = null, until = null,
   redFlagged = null, requiresReview = null, disputedOnly = false,
-  // ── Parents or legs? ─────────────────────────────────────────────────────
-  // A withdrawal too large for one cash denomination is one order to the player
-  // and several units of work behind it, so every list has to choose. The
-  // default is PARENTS: the player's history shows the withdrawal they asked
-  // for, and the legs are what expanding it reveals.
-  //
-  // `includeLegs: true` is for the queues that work the units — the dispute
-  // queue is about one leg, because that is the row a merchant held and a
-  // player complained about.
-  //
-  // `merchantId` narrows to legs on its own: a parent is never assigned, so a
-  // merchant-scoped query cannot see one. Left explicit anyway, because relying
-  // on that is relying on a rule expressed somewhere else.
-  includeLegs = false,
   limit = 50, cursor = null, offset = 0,
 } = {}) {
   const where = []; const params = [];
@@ -752,7 +620,6 @@ export async function findOrders({
     where.push(requiresReview ? 'requires_review' : 'NOT requires_review');
   }
   if (disputedOnly) where.push("state = 'DISPUTED'");
-  if (!includeLegs && !merchantId) where.push('parent_order_id IS NULL');
   if (cursor?.createdAt && cursor?.orderId) {
     params.push(cursor.createdAt, String(cursor.orderId));
     where.push(`(created_at, order_id) < ($${params.length - 1}, $${params.length})`);
@@ -1303,14 +1170,7 @@ export async function merchantVisibleOrders({
       WHERE (
               merchant_id = $1
               OR (merchant_id IS NULL AND order_type = 'WITHDRAWAL'
-                  AND state = 'PENDING_QUEUE' AND currency = $2
-                  -- A split parent is a CONTAINER, and this branch is the open
-                  -- sell pool: without this clause a merchant would be offered
-                  -- a ₹100,000 withdrawal that no machine dispenses, while its
-                  -- four legs sat unserved behind it. The database refuses to
-                  -- let one be assigned (order_states_parent_unassigned); this
-                  -- keeps it from being shown in the first place.
-                  AND is_split_parent = FALSE)
+                  AND state = 'PENDING_QUEUE' AND currency = $2)
             )
         ${filters.length ? `AND ${filters.join(' AND ')}` : ''}
       ORDER BY created_at DESC, order_id DESC

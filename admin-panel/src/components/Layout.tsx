@@ -77,7 +77,7 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/payment-control', icon: Zap,      label: 'Payment System', title: 'Payment System',sub: 'Gateways, limits & platform payment controls', adminOnly: true },
     { path: '/disputes',        icon: Scale,    label: 'Disputes',       title: 'Disputes',      sub: 'Payment order disputes & resolution', permission: 'canResolveDisputes' },
     { path: '/disputes/cdm-receipts', icon: Banknote, label: 'CDM Slips', title: 'CDM Slips', sub: 'Cash payouts settled without evidence, and the only read of a slip', permission: 'canResolveDisputes' },
-    { path: '/disputes/stalled-legs', icon: Hourglass, label: 'Stalled Parts', title: 'Stalled Withdrawal Parts', sub: 'Split-withdrawal parts no merchant has taken', permission: 'canResolveDisputes' },
+    { path: '/disputes/stalled-withdrawals', icon: Hourglass, label: 'Stalled Payouts', title: 'Stalled Withdrawals', sub: 'Payouts no merchant has taken, and the tokens locked behind them', permission: 'canResolveDisputes' },
   ] },
   { key: 'policy', label: 'Business Policy', items: [
     { path: '/business-policy/deposit', icon: Landmark, label: 'Deposit Policy', title: 'Deposit Policy', sub: 'Versioned deposit / reserve allocation policy', adminOnly: true },

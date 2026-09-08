@@ -134,11 +134,7 @@ export async function userActivity(userId) {
               COUNT(*) FILTER (WHERE state IN ('ASSIGNED','PROCESSING','PAID'))::int AS open,
               COALESCE(SUM(token_amount_paise) FILTER (WHERE state = 'COMPLETED' AND order_type = 'DEPOSIT'), 0) AS deposited,
               COALESCE(SUM(token_amount_paise) FILTER (WHERE state = 'COMPLETED' AND order_type = 'WITHDRAWAL'), 0) AS withdrawn
-         -- Parents, not legs. A withdrawal too large for one denomination is
-         -- one order to the player and several units of work behind it;
-         -- counting both would report their order count and their withdrawn
-         -- total as several times what they actually did.
-         FROM order_states WHERE user_id = $1 AND parent_order_id IS NULL`, [uid], 'stats_user_orders'),
+         FROM order_states WHERE user_id = $1`, [uid], 'stats_user_orders'),
     pgQuery(
       'SELECT COUNT(*)::int AS n FROM wallet_ledger WHERE user_id = $1', [uid], 'stats_user_ledger'),
   ]);

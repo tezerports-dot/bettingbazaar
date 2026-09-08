@@ -1,14 +1,17 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
- * Withdrawal legs no merchant has taken.
+ * Withdrawals no merchant has taken.
  *
- * ── Why a leg can wait forever, and why that needs a screen ────────────────
- * A withdrawal too large for one cash denomination is paid in parts, because an
- * ATM dispenses denominations and not amounts. A part that cannot find a
- * merchant WAITS rather than failing — and that is the right call: the parts
- * already paid stay paid, since a completed CDM deposit cannot be clawed back,
- * so failing the outstanding one would mean unwinding a withdrawal that has
- * partly happened.
+ * ── Why a payout can wait forever, and why that needs a screen ─────────────
+ * A withdrawal that cannot find a merchant WAITS rather than failing. On the
+ * cash rail that is the only safe answer: a payout too large for one
+ * denomination is created as SEVERAL separate withdrawals, and the ones already
+ * paid cannot be clawed back, so failing the outstanding one would mean
+ * unwinding a payout that has partly happened.
+ *
+ * Deliberately not split-specific. One of those siblings is an ordinary queued
+ * withdrawal, so the general question — which payouts have nobody working them
+ * — covers it and every other stuck payout in one list.
  *
  * The price is a token lock with no deadline on it. An order with no deadline
  * and no owner is an order nobody is answerable for, which is exactly the shape
@@ -33,13 +36,14 @@ import { EmptyState } from '../../components/EmptyState';
 import { LoadingSpinner } from '../../components/LoadingSpinner';
 import { formatters } from '../../utils/formatters';
 
-interface StalledLeg {
+interface StalledWithdrawal {
   orderId: string;
-  parentOrderId: string;
-  legIndex: number;
   userId: string;
   amount: number;
+  tokenAmount: number;
   createdAt: string;
+  /** The label grouping siblings of one request, when there was one. Context. */
+  batchRef: string | null;
 }
 
 /**
@@ -68,18 +72,18 @@ const waitedFor = (ts: string) => {
   return `${Math.floor(hours / 24)}d ${hours % 24}h`;
 };
 
-export const StalledLegs: React.FC = () => {
-  const [legs, setLegs] = useState<StalledLeg[]>([]);
+export const StalledWithdrawals: React.FC = () => {
+  const [legs, setLegs] = useState<StalledWithdrawal[]>([]);
   const [olderThan, setOlderThan] = useState(25);
   const [isLoading, setIsLoading] = useState(true);
 
   const load = useCallback(async () => {
     setIsLoading(true);
     try {
-      const res = await api.disputes.stalledLegs(olderThan);
-      setLegs(res?.legs || []);
+      const res = await api.disputes.stalledWithdrawals(olderThan);
+      setLegs(res?.orders || []);
     } catch {
-      toast.error('Failed to load stalled withdrawal legs');
+      toast.error('Failed to load stalled withdrawals');
     } finally {
       setIsLoading(false);
     }
@@ -102,7 +106,7 @@ export const StalledLegs: React.FC = () => {
         <div className="flex items-center justify-between flex-wrap gap-3 mb-1">
           <div className="flex items-center gap-2">
             <Hourglass size={17} className="text-yellow-500" />
-            <h2 className="text-base font-semibold">Withdrawal parts waiting for a merchant</h2>
+            <h2 className="text-base font-semibold">Withdrawals waiting for a merchant</h2>
           </div>
           <div className="flex items-center gap-2">
             <select
@@ -119,10 +123,11 @@ export const StalledLegs: React.FC = () => {
           </div>
         </div>
         <p className="text-xs text-gray-400 mb-3">
-          A part that cannot find a merchant waits rather than failing — the parts
-          already paid cannot be clawed back. Each one here is a player's tokens
+          A payout that cannot find a merchant waits rather than failing — on the
+          cash rail a large one is several separate withdrawals, and the ones
+          already paid cannot be clawed back. Each row here is a player&apos;s tokens
           locked with no deadline on them. What clears it is merchant capacity at
-          that denomination; the player can also cancel their own waiting part.
+          that denomination; the player can also cancel and take the tokens back.
         </p>
 
         {legs.length > 0 && (
@@ -146,17 +151,17 @@ export const StalledLegs: React.FC = () => {
           <EmptyState
             icon={Clock}
             title="Nothing is waiting"
-            description="Every part of every split withdrawal has a merchant in this window."
+            description="Every queued withdrawal has a merchant working it in this window."
           />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-xs text-gray-400 border-b border-dark-600">
-                  <th className="py-2 pr-3 font-medium">Part</th>
                   <th className="py-2 pr-3 font-medium">Withdrawal</th>
                   <th className="py-2 pr-3 font-medium">Player</th>
                   <th className="py-2 pr-3 font-medium">Amount</th>
+                  <th className="py-2 pr-3 font-medium">Part of</th>
                   <th className="py-2 pr-3 font-medium">Waiting</th>
                   <th className="py-2 font-medium">Since</th>
                 </tr>
@@ -164,10 +169,13 @@ export const StalledLegs: React.FC = () => {
               <tbody>
                 {legs.map((leg) => (
                   <tr key={leg.orderId} className="border-b border-dark-700 last:border-0">
-                    <td className="py-2 pr-3 font-mono text-xs">#{leg.legIndex}</td>
-                    <td className="py-2 pr-3 font-mono text-xs">{leg.parentOrderId}</td>
+                    <td className="py-2 pr-3 font-mono text-xs">{leg.orderId}</td>
                     <td className="py-2 pr-3 font-mono text-xs">{leg.userId}</td>
                     <td className="py-2 pr-3">{formatters.currency(leg.amount)}</td>
+                    {/* Context only: it says this player asked for a large
+                        payout rather than several small ones. Nothing here or
+                        anywhere else decides anything by it. */}
+                    <td className="py-2 pr-3 font-mono text-xs text-gray-500">{leg.batchRef ?? '—'}</td>
                     <td className="py-2 pr-3 text-yellow-400 text-xs">{waitedFor(leg.createdAt)}</td>
                     <td className="py-2 text-xs text-gray-400">{when(leg.createdAt)}</td>
                   </tr>
@@ -181,4 +189,4 @@ export const StalledLegs: React.FC = () => {
   );
 };
 
-export default StalledLegs;
+export default StalledWithdrawals;

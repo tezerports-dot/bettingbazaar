@@ -1,30 +1,36 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /**
- * A withdrawal too large for one denomination, and the money it locks.
+ * A cash withdrawal too large for one denomination, and the money it locks.
  *
- * ── What is actually at risk here ──────────────────────────────────────────
- * An ATM dispenses denominations, not amounts, so a ₹100,000 cash payout is
- * four merchants at four machines. The player asked for one withdrawal.
+ * ── The shape, and why it is this shape ────────────────────────────────────
+ * An ATM dispenses denominations, not amounts, so ₹100,000 is four merchants at
+ * four machines. Those are FOUR ORDINARY WITHDRAWALS — not a parent holding
+ * legs. Each has its own escrow lock, its own assignment, its own cancel, its
+ * own dispute and its own release, and nothing downstream branches on whether
+ * it came from a split.
  *
- * Every failure this suite exists to catch is a MONEY failure, and none of them
- * looks like an error at the time:
+ * The first version built a container. It worked, and it was the wrong shape:
+ * every query in the system then had to decide whether it counted containers or
+ * the work inside them — six of them did, one was a money guard — and a crash
+ * partway through creation left a container holding an escrow with only some of
+ * its legs written.
  *
- *   • legs that do not add up to the parent — the player is short-paid by a
- *     function that returned successfully;
- *   • escrow taken per leg — the player's balance debited several times over
- *     for one withdrawal;
- *   • a cancelled leg that refunds nothing — the database refuses to let a leg
- *     carry escrow, so the ordinary refund branch does not fire on one, and the
- *     tokens stay locked with no leg left to release them;
- *   • a parent offered to a merchant — an amount no machine can dispense, while
- *     its legs sit unserved behind it.
+ * ── What these assertions are actually protecting ──────────────────────────
+ * Every failure here is a MONEY failure and none of them looks like an error:
+ *
+ *   • parts that do not add up to what the player asked for — short-paid,
+ *     successfully, with every row looking healthy;
+ *   • the escrow taken more or less than once in total;
+ *   • a fee that lands on the cash side, making a part an amount no machine
+ *     dispenses;
+ *   • a cancelled part that refunds nothing.
  *
  * So the assertions are about the WALLET and the row set, not about responses.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg } from '#db/client.js';
 import {
-  getOrderRecord, getOrderLegs, stalledLegs, pendingWithdrawalTotal, createSplitWithdrawal,
+  getOrderRecord, withdrawalBatch, stalledWithdrawals, pendingWithdrawalTotal,
 } from '#db/repositories/orders.record.js';
 import { getBalances } from '#db/repositories/wallets.js';
 import { updateUser } from '#db/repositories/users.js';
@@ -33,13 +39,12 @@ import {
 } from '#db/repositories/paymentModePolicy.js';
 import { getSystemConfig, applySystemConfig } from '#db/repositories/config.js';
 import { createWithdrawalOrder, cancelOrder } from '../../domains/payment/paymentProcessing.service.js';
-import { parentStateFor } from '../../domains/payment/splitWithdrawal.service.js';
-import { ORDER_STATES } from '#db/repositories/orders.core.js';
+import { shareFeeAcrossParts } from '../../domains/merchant/denominations.js';
 import { actor } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
-describePg('a withdrawal that splits into legs', () => {
+describePg('a cash withdrawal that becomes several withdrawals', () => {
   let restore = null;
   let restoreMaxWithdrawal = null;
 
@@ -50,10 +55,9 @@ describePg('a withdrawal that splits into legs', () => {
    */
   const withdrawer = async (winningsRupees) => {
     const player = await actor({});
-    // Through the repository, not a raw UPDATE. `check:db-boundary` refuses SQL
-    // outside `database/` and it is right to: a test that writes its fixture
-    // with hand-written SQL is a test that keeps passing after the column it
-    // names is renamed.
+    // Through the repository, not raw SQL — `check:db-boundary` refuses SQL
+    // outside `database/`, and a fixture written in hand-rolled SQL keeps
+    // passing after the column it names is renamed.
     await updateUser(player.userId, {
       kycStatus: 'APPROVED',
       bankDetails: {
@@ -61,9 +65,6 @@ describePg('a withdrawal that splits into legs', () => {
         bankName: 'HDFC Bank', accountHolderName: 'Test Player',
       },
     });
-    // Through the sanctioned writer, not an UPDATE: `creditWinnings` writes the
-    // ledger entry alongside the balance, so the wallet this suite then asserts
-    // on is one the platform's own money path produced.
     const { creditWinnings } = await import('../../domains/wallet/walletAuthority.service.js');
     await creditWinnings(
       player.userId, winningsRupees, 'split withdrawal suite seed', 'Test',
@@ -81,16 +82,12 @@ describePg('a withdrawal that splits into legs', () => {
     });
 
     // ── The cap and the ladder have to agree ─────────────────────────────
-    // `maxWithdrawal` defaults to ₹50,000, and the largest cash denomination
-    // is ₹40,000. So on the default configuration the ONLY splits that exist
-    // are two legs, and the design's own example — ₹100,000 as
-    // 40,000 + 40,000 + 10,000 + 10,000 — is refused before it reaches the
-    // splitter, by a limit that has nothing to do with denominations.
-    //
-    // That is a real operator constraint rather than a test inconvenience: a
-    // platform running the cash rail has to raise this cap or the split is
-    // decoration. The suite sets it and puts it back, so it tests the rule
-    // rather than the default.
+    // `maxWithdrawal` defaults to ₹50,000 and the largest cash denomination is
+    // ₹40,000, so on the default configuration the only split that exists is
+    // two parts — and ₹100,000 is refused before it reaches the splitter, by a
+    // limit that has nothing to do with denominations. A real operator
+    // constraint, not a test inconvenience: a platform running the cash rail
+    // raises this cap or the split is decoration.
     const cfg = await getSystemConfig({ fresh: true });
     restoreMaxWithdrawal = cfg?.maxWithdrawal ?? null;
     await applySystemConfig({ maxWithdrawal: 200_000 });
@@ -110,42 +107,43 @@ describePg('a withdrawal that splits into legs', () => {
     await closePg();
   });
 
-  it('splits into legs that add up to the payout, largest first', async () => {
+  it('creates one withdrawal per denomination, adding up to the payout', async () => {
     const player = await withdrawer(200_000);
-    const { order } = await createWithdrawalOrder(player.userId, 100_000);
+    const result = await createWithdrawalOrder(player.userId, 100_000);
 
-    expect(order.isSplitParent).toBe(true);
-    const legs = await getOrderLegs(order.orderId);
-    expect(legs.map((l) => l.fiatAmount)).toEqual([40_000, 40_000, 10_000, 10_000]);
+    expect(result.orders.map((o) => o.amount)).toEqual([40_000, 40_000, 10_000, 10_000]);
+    // A split that loses paise pays the player LESS than they asked for,
+    // successfully, and nothing about the rows looks wrong.
+    expect(result.orders.reduce((sum, o) => sum + o.amount, 0)).toBe(100_000);
 
-    // The assertion that matters: a split that loses paise pays the player less
-    // than they asked for, successfully, and nothing about the rows looks wrong.
-    expect(legs.reduce((sum, l) => sum + l.fiatAmount, 0)).toBe(100_000);
-    expect(legs.map((l) => l.legIndex)).toEqual([1, 2, 3, 4]);
+    // Each is a real, independent withdrawal — not a leg of anything.
+    for (const part of result.orders) {
+      const row = await getOrderRecord(part.orderId);
+      expect(row.type).toBe('WITHDRAWAL');
+      expect(row.escrowLocked).toBe(true);
+      expect(row.withdrawalBatchRef).toBe(result.order.withdrawalBatchRef);
+    }
   });
 
-  it('locks the money ONCE, at the parent, whatever the legs do', async () => {
+  it('locks exactly the withdrawal once in total, spread across the parts', async () => {
     const player = await withdrawer(200_000);
     const before = await getBalances(player.userId);
-    const { order } = await createWithdrawalOrder(player.userId, 100_000);
-
+    await createWithdrawalOrder(player.userId, 100_000);
     const after = await getBalances(player.userId);
-    // Exactly one withdrawal's worth moved from winnings into locked — not one
-    // per leg, which is what a per-leg debit would have produced.
+
+    // Four locks that sum to one withdrawal. Not four withdrawals' worth, which
+    // is what a per-part debit of the whole amount would have produced, and not
+    // one part's worth, which is what a single debit for the first would.
     expect(Number(before.winningsBalance) - Number(after.winningsBalance)).toBe(100_000);
     expect(Number(after.lockedBalance) - Number(before.lockedBalance)).toBe(100_000);
-
-    // And the database refuses to let a leg claim any of it.
-    const legs = await getOrderLegs(order.orderId);
-    for (const leg of legs) expect(leg.escrowLocked).not.toBe(true);
   });
 
-  it('counts the withdrawal once, not once per leg', async () => {
+  it('counts the withdrawal once — there is nothing to double-count', async () => {
     const player = await withdrawer(200_000);
     await createWithdrawalOrder(player.userId, 100_000);
-
-    // Both the parent and four legs are in flight at this moment. Counting rows
-    // would tell the player they have committed ₹200,000 to withdrawals.
+    // Four rows, four amounts, one total. The container version had a parent
+    // AND its legs in flight simultaneously, so this read ₹200,000 until every
+    // list learned to filter.
     expect(await pendingWithdrawalTotal(player.userId)).toBe(100_000);
   });
 
@@ -157,137 +155,104 @@ describePg('a withdrawal that splits into legs', () => {
       code: 'NOT_A_CASH_AMOUNT',
     });
 
-    // Nothing moved. Discovering this after the debit would mean unwinding a
-    // lock that has already committed.
+    // Nothing moved. Discovering this after a debit means unwinding a lock that
+    // has already committed.
     const after = await getBalances(player.userId);
     expect(Number(after.winningsBalance)).toBe(Number(before.winningsBalance));
     expect(Number(after.lockedBalance)).toBe(Number(before.lockedBalance));
   });
 
-  it('refuses legs that do not add up, at the writer', async () => {
-    // `splitWithdrawal` already guarantees this for the one caller that exists
-    // today, which is exactly why the writer's own check needs its own test: a
-    // guard nothing exercises is a guard nobody notices deleting, and the next
-    // caller of an exported repository function does not inherit the first
-    // one's care.
-    //
-    // What it protects against is the worst outcome this whole feature has —
-    // paying the player LESS than they asked for, successfully, with every row
-    // looking healthy.
+  it('creates a single ordinary withdrawal for one denomination, with no batch label', async () => {
     const player = await withdrawer(200_000);
-    await expect(createSplitWithdrawal({
-      parentOrderId: `sw-short-${Date.now()}`,
-      userId: player.userId,
-      tokenAmountRupees: 100_000,
-      fiatAmountRupees: 100_000,
-      legsPaise: [4_000_000, 4_000_000],   // ₹80,000 of a ₹100,000 payout
-      legIdFor: (i) => `sw-short-${Date.now()}_L${i}`,
-    })).rejects.toThrow(/legs total .* but the payout is/);
+    const result = await createWithdrawalOrder(player.userId, 10_000);
+    expect(result.orders).toHaveLength(1);
+    // No label: there are no siblings to group, so a screen must not offer an
+    // expander promising some.
+    expect(result.order.withdrawalBatchRef).toBeNull();
+    expect(await withdrawalBatch(null)).toEqual([]);
   });
 
-  it('does not wrap a single denomination in a parent', async () => {
+  it('gives the money back when a waiting part is cancelled, and leaves the others alone', async () => {
     const player = await withdrawer(200_000);
-    const { order } = await createWithdrawalOrder(player.userId, 10_000);
-    expect(order.isSplitParent).toBe(false);
-    expect(await getOrderLegs(order.orderId)).toEqual([]);
-  });
+    const result = await createWithdrawalOrder(player.userId, 100_000);
 
-  it('gives the money back when a waiting leg is cancelled', async () => {
-    const player = await withdrawer(200_000);
-    const { order } = await createWithdrawalOrder(player.userId, 100_000);
-    const legs = await getOrderLegs(order.orderId);
-    const waiting = legs.find((l) => l.status === 'PENDING_QUEUE');
+    const rows = await withdrawalBatch(result.order.withdrawalBatchRef);
+    const waiting = rows.find((o) => o.status === 'PENDING_QUEUE');
     expect(waiting).toBeTruthy();
 
     const before = await getBalances(player.userId);
     await cancelOrder(player.userId, false, waiting.orderId);
     const after = await getBalances(player.userId);
 
-    // A leg carries NO escrow — the database refuses to let it — so the
-    // ordinary `escrowLocked` refund branch does not fire on one. Without the
-    // leg branch this cancels cleanly and returns nothing, and the tokens stay
-    // locked forever with no leg left to release them.
-    const moved = waiting.fiatAmount;
-    expect(Number(after.lockedBalance)).toBe(Number(before.lockedBalance) - moved);
-    expect(Number(after.winningsBalance)).toBe(Number(before.winningsBalance) + moved);
+    // The ORDINARY refund path — the part carries its own escrow, so nothing
+    // about this is special-cased. The container version needed a second refund
+    // branch because a leg was forbidden from holding escrow at all.
+    expect(Number(after.lockedBalance)).toBe(Number(before.lockedBalance) - waiting.tokenAmount);
+    expect(Number(after.winningsBalance)).toBe(Number(before.winningsBalance) + waiting.tokenAmount);
+
+    // And only that one moved.
+    const stillThere = await withdrawalBatch(result.order.withdrawalBatchRef);
+    expect(stillThere.filter((o) => o.status === 'CANCELLED')).toHaveLength(1);
   });
 
-  it('cancels every waiting leg when the player cancels the withdrawal', async () => {
+  it('groups the siblings under one label, and nothing else', async () => {
     const player = await withdrawer(200_000);
-    const { order } = await createWithdrawalOrder(player.userId, 100_000);
+    const result = await createWithdrawalOrder(player.userId, 100_000);
+    const rows = await withdrawalBatch(result.order.withdrawalBatchRef);
 
-    await cancelOrder(player.userId, false, order.orderId);
-
-    const legs = await getOrderLegs(order.orderId);
-    // Whatever was still waiting is now cancelled. A leg already with a
-    // merchant is not — cancelling a parent means "stop what has not happened
-    // yet", never "undo cash a merchant already deposited".
-    for (const leg of legs) {
-      if (leg.status !== 'CANCELLED') expect(leg.status).not.toBe('PENDING_QUEUE');
-    }
-
-    // Every penny is back, because every leg either refunded its own amount or
-    // is still in flight holding it.
-    const parent = await getOrderRecord(order.orderId);
-    expect(parent.isSplitParent).toBe(true);
+    expect(rows).toHaveLength(4);
+    expect(new Set(rows.map((o) => o.userId))).toEqual(new Set([String(player.userId)]));
+    // The label groups; it does not decide. Every row is a full withdrawal in
+    // its own right, which is exactly what makes it safe to be a label.
+    for (const row of rows) expect(row.escrowLocked).toBe(true);
   });
 
-  it('lists a leg nobody has taken, so somebody is accountable for the lock', async () => {
-    // Built through the WRITER, not through `createWithdrawalOrder`.
-    //
-    // The creation path tries to assign each leg immediately, and whether it
-    // succeeds depends on whether an approved cash merchant with capacity
-    // happens to exist — which other suites in this shared database create and
-    // leave behind. Going through it made this test assert "no merchant was
-    // available", which is a fact about the other suites rather than about the
-    // queue, and it passed alone and failed in the full run.
+  it('lists a withdrawal nobody has taken, so somebody is accountable for the lock', async () => {
     const player = await withdrawer(200_000);
-    const parentId = `sw-stall-${Date.now().toString(36)}`;
-    const { legs } = await createSplitWithdrawal({
-      parentOrderId: parentId,
-      userId: player.userId,
-      tokenAmountRupees: 100_000,
-      fiatAmountRupees: 100_000,
-      legsPaise: [4_000_000, 4_000_000, 1_000_000, 1_000_000],
-      legIdFor: (i) => `${parentId}_L${i}`,
-    });
-    expect(legs).toHaveLength(4);
+    const result = await createWithdrawalOrder(player.userId, 100_000);
+    const rows = await withdrawalBatch(result.order.withdrawalBatchRef);
+    const waiting = rows.filter((o) => o.status === 'PENDING_QUEUE').map((o) => o.orderId);
 
-    // Zero minutes — "every leg waiting right now", which is the question an
-    // incident asks and the one a falsy default silently answers differently.
-    const stalled = await stalledLegs({ olderThanMinutes: 0, limit: 1000 });
-    const ids = stalled.map((l) => l.orderId);
-    for (const leg of legs) expect(ids).toContain(leg.orderId);
-
-    // And the parent is NOT in it. It is a container: it was never going to be
-    // handed to a merchant, so it is not waiting for one.
-    expect(ids).not.toContain(parentId);
+    // Zero minutes — "everything waiting right now", the question an incident
+    // asks and the one a falsy default silently answers differently.
+    const stalled = await stalledWithdrawals({ olderThanMinutes: 0, limit: 1000 });
+    const ids = stalled.map((o) => o.orderId);
+    for (const id of waiting) expect(ids).toContain(id);
   });
 
-  describe('the parent state, derived from its legs', () => {
-    const leg = (status) => ({ status });
+  describe('the payout fee rides on the token side', () => {
+    // The container version REFUSED to split at all while a payout fee was set,
+    // because one pooled lock had no leg to account for the fee. Flat siblings
+    // do not have that problem, so the refusal is gone — and this is the
+    // arithmetic that replaced it.
+    const parts = [4_000_000, 4_000_000, 1_000_000, 1_000_000]; // ₹100,000
 
-    it('stays put while every leg is still queued', () => {
-      expect(parentStateFor([leg('PENDING_QUEUE'), leg('PENDING_QUEUE')])).toBeNull();
+    it('leaves every part a denomination, whatever the fee', () => {
+      for (const fee of [0, 1, 100, 12_345, 999_999]) {
+        const shared = shareFeeAcrossParts(parts, fee);
+        // The CASH is untouched — a part whose fiat is not a denomination is a
+        // part no cash machine can pay.
+        expect(shared.map((p) => p.fiatPaise)).toEqual(parts);
+      }
     });
 
-    it('is PROCESSING as soon as one leg is being worked on', () => {
-      expect(parentStateFor([leg('ASSIGNED'), leg('PENDING_QUEUE')])).toBe(ORDER_STATES.PROCESSING);
+    it('charges the fee exactly once across the parts, to the paise', () => {
+      for (const fee of [0, 1, 100, 12_345, 999_999]) {
+        const shared = shareFeeAcrossParts(parts, fee);
+        const tokens = shared.reduce((sum, p) => sum + p.tokenPaise, 0);
+        const cash   = shared.reduce((sum, p) => sum + p.fiatPaise, 0);
+        // Money is integer paise. A share that floors and drops the remainder
+        // charges the player an amount no row adds up to.
+        expect(tokens - cash).toBe(fee);
+      }
     });
 
-    it('completes only when every leg is finished', () => {
-      expect(parentStateFor([leg('COMPLETED'), leg('PAID')])).toBe(ORDER_STATES.PROCESSING);
-      expect(parentStateFor([leg('COMPLETED'), leg('COMPLETED')])).toBe(ORDER_STATES.COMPLETED);
-    });
-
-    it('counts a partly-paid withdrawal as COMPLETED, not cancelled', () => {
-      // The player has money a cancelled leg does not take back. Calling the
-      // whole withdrawal cancelled would tell them nothing happened.
-      expect(parentStateFor([leg('COMPLETED'), leg('CANCELLED')])).toBe(ORDER_STATES.COMPLETED);
-    });
-
-    it('is CANCELLED only when nothing was paid at all', () => {
-      expect(parentStateFor([leg('CANCELLED'), leg('CANCELLED')])).toBe(ORDER_STATES.CANCELLED);
+    it('puts the indivisible remainder on the largest part, not nowhere', () => {
+      // 7 paise across four parts does not divide. It has to land somewhere,
+      // and "somewhere" being a rounding accident is how paise vanish.
+      const shared = shareFeeAcrossParts(parts, 7);
+      expect(shared.reduce((sum, p) => sum + p.tokenPaise, 0) - 10_000_000).toBe(7);
+      expect(shared[0].tokenPaise).toBeGreaterThan(shared[0].fiatPaise);
     });
   });
 });
