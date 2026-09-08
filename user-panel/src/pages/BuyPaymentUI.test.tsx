@@ -49,6 +49,75 @@ const payLink = () => screen.getByRole('link', { name: /Pay .* in your UPI app/i
 
 beforeEach(() => { post.mockReset(); post.mockResolvedValue({ success: true }); });
 
+describe('the minute to fetch the UTR', () => {
+  /**
+   * The order's own timer IS the UTR deadline. A player who starts entering the
+   * reference with seconds left would watch the order expire while they go and
+   * read it off their bank app — cancelling a payment they have ALREADY MADE.
+   *
+   * Touching the field is the "I am entering it now" moment, so it is what
+   * claims the window.
+   */
+  const utrField = () => screen.getByPlaceholderText('Enter after paying');
+
+  it('claims the window when the player starts entering the reference', async () => {
+    post.mockResolvedValue({
+      success: true,
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+    });
+    renderUI();
+    fireEvent.focus(utrField());
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/api/payment/order/ORD-77/utr-grace', {}));
+  });
+
+  it('tells the screen above, so the countdown stops running to the old deadline', async () => {
+    const extended = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    post.mockResolvedValue({ success: true, expiresAt: extended });
+    const onExpiryExtended = vi.fn();
+    render(<BuyPaymentUI order={ORDER} onPaid={vi.fn()} onExpire={vi.fn()} onExpiryExtended={onExpiryExtended} />);
+
+    fireEvent.focus(screen.getByPlaceholderText('Enter after paying'));
+    // Without this the countdown keeps running to the OLD deadline and expires
+    // an order the server has just extended — on screen only, which is worse
+    // than not extending at all: the player abandons a live payment.
+    await waitFor(() => expect(onExpiryExtended).toHaveBeenCalledWith(extended));
+    expect(screen.getByText('Extra time added to submit your UTR.')).toBeTruthy();
+  });
+
+  it('asks once, however many times the field is touched', async () => {
+    post.mockResolvedValue({ success: true, expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString() });
+    renderUI();
+    const field = utrField();
+    fireEvent.focus(field);
+    fireEvent.blur(field);
+    fireEvent.focus(field);
+    fireEvent.focus(field);
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+  });
+
+  it('says nothing when the deadline did not actually move', async () => {
+    // An order with plenty of time left gets no extension — the deadline only
+    // moves outward — and announcing "extra time added" when nothing changed
+    // would be a lie the player might act on.
+    post.mockResolvedValue({ success: true, expiresAt: ORDER.expiresAt });
+    renderUI();
+    fireEvent.focus(utrField());
+    await waitFor(() => expect(post).toHaveBeenCalled());
+    expect(screen.queryByText('Extra time added to submit your UTR.')).toBeNull();
+  });
+
+  it('stays silent when the claim fails — nothing was lost', async () => {
+    // The player has exactly the deadline they already had, and an error at the
+    // moment they are trying to type a reference is alarming noise.
+    post.mockRejectedValue(new Error('Network down'));
+    renderUI();
+    fireEvent.focus(utrField());
+    await waitFor(() => expect(post).toHaveBeenCalled());
+    expect(screen.queryByText(/Network down/)).toBeNull();
+    expect(screen.queryByText('Extra time added to submit your UTR.')).toBeNull();
+  });
+});
+
 describe('the buy-token payment step', () => {
   it('builds a upi:// link with every field the payment needs', async () => {
     renderUI();

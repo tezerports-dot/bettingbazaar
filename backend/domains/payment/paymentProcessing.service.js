@@ -718,6 +718,71 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
 // optional key parameter here would be a parameter nothing on the platform can
 // now supply.
 // ═════════════════════════════════════════════════════════════════════════════
+/**
+ * The player taps "I have paid" and claims their minute to find the UTR.
+ *
+ * ── What this is protecting ───────────────────────────────────────────────
+ * The order's own timer IS the UTR deadline. A player who taps with fifteen
+ * seconds left is not going to find a twelve-character bank reference in
+ * fifteen seconds, and the order expiring under them cancels a payment they
+ * have ALREADY MADE — the worst outcome this flow has, because the money is
+ * gone and the order is not.
+ *
+ * ── The window is the admin's, and this is what makes it real ─────────────
+ * `utrSubmitSeconds` has been in `payment_mode_policies` and on the admin
+ * screen, labelled "how long the player has to submit the UTR after clicking
+ * Paid", since the policy was built — and nothing read it. A value an operator
+ * can edit is only configuration if something consults it; until this, it was a
+ * number that decided nothing.
+ *
+ * Read from the ORDER's rail, not the live one. An order held across a rail
+ * switch keeps the process it was created under, so it keeps that rail's
+ * window too.
+ *
+ * ── Once ──────────────────────────────────────────────────────────────────
+ * The repository decides that in the UPDATE's WHERE clause. Refusing a second
+ * claim is not tidiness: without it a player taps every fifty seconds and holds
+ * a merchant's capacity open indefinitely.
+ */
+export async function claimUtrGrace(userId, orderId) {
+  const order = await db.orders.getOrderRecord(orderId);
+  if (!order) throw Object.assign(new Error('Order not found'), { status: 404 });
+  if (String(order.userId) !== String(userId))
+    throw Object.assign(new Error('Access denied'), { status: 403 });
+  if (order.type !== 'DEPOSIT')
+    throw Object.assign(new Error('Only a buy order takes a UTR'), { status: 400 });
+
+  const policy = order.paymentModeVersion
+    ? await getPaymentModePolicyVersion(order.paymentModeVersion)
+    : await getActivePaymentModePolicy();
+  const graceSeconds = policy?.utrSubmitSeconds ?? 60;
+
+  const extended = await db.orders.claimUtrGrace(order.orderId, userId, graceSeconds);
+  if (!extended) {
+    // Two different refusals, said differently, because the player can act on
+    // one and not the other. Already claimed: the deadline on screen is the
+    // real one. Wrong state: the order moved on, and re-tapping will not help.
+    if (order.utrGraceAt) {
+      throw Object.assign(
+        new Error('You have already been given extra time for this order.'),
+        { status: 409, code: 'GRACE_ALREADY_TAKEN', expiresAt: order.expiresAt },
+      );
+    }
+    throw Object.assign(
+      new Error(`This order is ${order.status} and no longer waiting for a payment reference.`),
+      { status: 409, code: 'NOT_AWAITING_UTR' },
+    );
+  }
+
+  // The merchant's screen shows this deadline too, and it just moved.
+  if (extended.merchantId) {
+    emitMerchantUpdate(String(extended.merchantId), 'order_updated', {
+      orderId: extended.orderId, expiresAt: extended.expiresAt, server_ts: Date.now(),
+    });
+  }
+  return extended;
+}
+
 export async function markOrderPaid(userId, orderId, utrNumber) {
   const order = await db.orders.getOrderRecord(orderId);
   if (!order) throw Object.assign(new Error('Order not found'), { status: 404 });

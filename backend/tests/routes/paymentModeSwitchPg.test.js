@@ -330,6 +330,47 @@ describePg('the settlement rail, and the orders it must not disturb', () => {
     expect(windowSeconds).toBeLessThan(660);
   });
 
+  it('refuses a timer passed at the top level instead of publishing it as a no-op', async () => {
+    // The timers live in a nested `timers` object, so the natural mistake is
+    // `publishPolicyVersion({ utrSubmitSeconds: 300, justification })`. That
+    // used to return ok:true and publish a version carrying the OLD value: a
+    // write reported as successful that did not happen — the same shape
+    // `setOrderFields` refuses, and the one an operator would meet as "I set
+    // the window, it said saved, nothing changed".
+    const before = await getActivePolicy();
+    const result = await publishPolicyVersion({
+      activeMode: before.activeMode,
+      utrSubmitSeconds: 300,
+      justification: 'A timer in the wrong place.',
+      changedByName: 'test',
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('UNKNOWN_FIELD');
+    // And nothing was published — a refusal that still supersedes the active
+    // row would be worse than the silent discard it replaced.
+    const after = await getActivePolicy();
+    expect(after.version).toBe(before.version);
+    expect(after.utrSubmitSeconds).toBe(before.utrSubmitSeconds);
+
+    // In the right place it takes effect, so this is a shape check and not a
+    // refusal to accept the value at all.
+    const good = await publishPolicyVersion({
+      activeMode: before.activeMode,
+      timers: { utrSubmitSeconds: 300 },
+      justification: 'A timer in the right place.',
+      changedByName: 'test',
+    });
+    expect(good.ok).toBe(true);
+    expect((await getActivePolicy()).utrSubmitSeconds).toBe(300);
+
+    await publishPolicyVersion({
+      activeMode: before.activeMode,
+      timers: { utrSubmitSeconds: before.utrSubmitSeconds },
+      justification: 'Restoring the window this test found.',
+      changedByName: 'test',
+    });
+  });
+
   it('stamps a FORCED rail, and refuses one it does not recognise', async () => {
     // This asserted the old contract — a policy OBJECT — and passed, while the
     // only real caller (`createOrderRecord`, whose parameter is documented as

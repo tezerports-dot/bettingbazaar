@@ -3215,3 +3215,29 @@ CREATE INDEX IF NOT EXISTS order_states_withdrawal_batch_idx
 CREATE INDEX IF NOT EXISTS order_states_stalled_withdrawals_idx
   ON order_states (created_at)
   WHERE order_type = 'WITHDRAWAL' AND state = 'PENDING_QUEUE';
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- ⏱️  THE UTR GRACE — a minute to fetch the reference, taken once
+--
+-- The order's own timer IS the UTR deadline. A player who taps "I have paid"
+-- with fifteen seconds left is not going to find a twelve-character bank
+-- reference in fifteen seconds, and the order expiring under them cancels a
+-- payment they have already made — the worst outcome this flow has, because the
+-- money is gone and the order is not.
+--
+-- So tapping it claims `utr_submit_seconds` from that moment (admin-editable,
+-- default 60). The number was already in `payment_mode_policies` and already on
+-- the admin screen, described as "how long the player has to submit the UTR
+-- after clicking Paid" — and nothing read it. A value an operator can edit is
+-- only configuration if something consults it.
+--
+-- ── Why the timestamp is a column and not a counter ───────────────────────
+-- The grace is claimable ONCE. Without that it is an unbounded extension: a
+-- player taps the button every fifty seconds and holds a merchant's capacity
+-- open indefinitely, which is a denial of service against the merchant queue
+-- wearing the shape of a courtesy.
+--
+-- Recording WHEN it was taken rather than THAT it was taken makes the rule a
+-- property of the row — a second claim finds a non-null column and is refused —
+-- and leaves a dispute able to see how long the player actually had.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS utr_grace_at TIMESTAMPTZ;

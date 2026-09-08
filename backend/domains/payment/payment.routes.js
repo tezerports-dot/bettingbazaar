@@ -11,7 +11,7 @@ import { withdrawalLimiter } from '../../middleware/security.js';
 import { requireChannelMembership } from '../../middleware/requireChannelMembership.js';
 // Item 12: per-subnet backstop against IP rotation on withdrawal creation.
 import { createSubnetLimiter, globalSurgeBreaker } from '../../middleware/ipDefense.js';
-import { markOrderPaid, cancelOrder } from './paymentProcessing.service.js';
+import { markOrderPaid, cancelOrder, claimUtrGrace } from './paymentProcessing.service.js';
 // The order state machine — every status change is a guarded transition.
 import { completeOrder, disputeOrder } from './orderLifecycle.service.js';
 // Phase 009: money movement enters ONLY via the Funding Platform authority.
@@ -81,6 +81,34 @@ router.post('/withdrawal/create', authenticate, requireApprovedKyc, requireChann
     const result = await requestWithdrawal({ userId: req.user.userId, tokenAmount: Number(req.body.tokenAmount) });
     res.json({ success: true, message: 'Withdrawal request created. Waiting for merchant assignment.', ...result });
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code, cutoffPassed: err.cutoffPassed, balance: err.balance }); }
+});
+
+/**
+ * POST /api/payment/order/:orderId/utr-grace — "I have paid, give me a minute".
+ *
+ * The order's timer IS the UTR deadline, so a player who taps this with seconds
+ * left would otherwise watch the order expire while they go and find a
+ * twelve-character bank reference — cancelling a payment they have already
+ * made. This claims `utrSubmitSeconds` from now (admin-editable, default 60),
+ * and only ever moves the deadline outward.
+ *
+ * Claimable ONCE, decided in the UPDATE's WHERE clause. Repeatable, it is not a
+ * courtesy but an unbounded extension, and the merchant's capacity is what it
+ * spends.
+ */
+router.post('/order/:orderId/utr-grace', authenticate, orderAccessGuard, async (req, res) => {
+  try {
+    const order = await claimUtrGrace(req.user.userId, req.params.orderId);
+    res.json({ success: true, expiresAt: order.expiresAt, graceTakenAt: order.utrGraceAt });
+  } catch (err) {
+    res.status(err.status || 500).json({
+      success: false, message: err.message, code: err.code,
+      // On a second claim the player is told the deadline they actually have,
+      // so the screen can correct itself rather than showing a countdown that
+      // disagrees with the server.
+      ...(err.expiresAt ? { expiresAt: err.expiresAt } : {}),
+    });
+  }
 });
 
 router.post('/order/:orderId/mark-paid', authenticate, orderAccessGuard, async (req, res) => {

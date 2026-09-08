@@ -805,6 +805,39 @@ const MUTATIONS = [
         AND state = 'COMPLETED'
         AND created_at < now() - make_interval(mins => $1)`,
   },
+
+  // ── The minute to fetch the UTR ─────────────────────────────────────────
+  {
+    id: 'M122', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/utrGracePg.test.js',
+    why: 'the grace becomes repeatable, so a player taps every fifty seconds and holds a merchant\'s capacity open indefinitely — a denial of service against the queue wearing the shape of a courtesy',
+    from: `        AND utr_grace_at IS NULL
+        AND state IN ('ASSIGNED', 'PROCESSING')`,
+    to: `        AND state IN ('ASSIGNED', 'PROCESSING')`,
+  },
+  {
+    id: 'M123', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/utrGracePg.test.js',
+    why: 'the grace SHORTENS a deadline that was further out, so an order with ten minutes left is cut to one at the moment the player starts typing',
+    from: `            expires_at   = GREATEST(COALESCE(expires_at, now()), now() + make_interval(secs => $3)),`,
+    to: `            expires_at   = now() + make_interval(secs => $3),`,
+  },
+  {
+    id: 'M124', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/utrGracePg.test.js',
+    why: 'the window stops coming from the policy, so the number an admin edits on the settlement screen decides nothing again',
+    from: `  const graceSeconds = policy?.utrSubmitSeconds ?? 60;`,
+    to: `  const graceSeconds = 60;`,
+  },
+  {
+    id: 'M125', file: 'database/repositories/paymentModePolicy.js', config: PG,
+    test: 'backend/tests/routes/paymentModeSwitchPg.test.js',
+    why: 'a timer passed at the top level is silently discarded and the publish reports success — an operator sets a window, is told it worked, and the old value stays live',
+    from: `  const stray = Object.keys(unknown);
+  if (stray.length) {`,
+    to: `  const stray = [];
+  if (stray.length) {`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

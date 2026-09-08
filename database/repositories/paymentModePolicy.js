@@ -187,7 +187,28 @@ export async function getPolicyVersion(version) {
 export async function publishPolicyVersion({
   activeMode, timers = {}, justification = '',
   changedBy = null, changedByName = '',
+  ...unknown
 } = {}) {
+  // ── An unrecognised key is REFUSED, not dropped ─────────────────────────
+  // The timers live in a nested `timers` object, so the natural mistake is to
+  // pass one at the top level — `publishPolicyVersion({ utrSubmitSeconds: 300,
+  // justification })`. That used to return ok:true and publish a version with
+  // the old value: a write reported as successful that did not happen, which is
+  // the exact shape `setOrderFields` refuses and the document model's silent
+  // discard of an undeclared path.
+  //
+  // It cost a debugging round the first time somebody wrote it, and the next
+  // person to write it would be an admin route silently failing to change a
+  // window an operator had just set.
+  const stray = Object.keys(unknown);
+  if (stray.length) {
+    return {
+      ok: false,
+      reason: 'UNKNOWN_FIELD',
+      message: `Not a field on a policy version: ${stray.join(', ')}.`
+        + ` Timers go in \`timers\`: ${Object.keys(POLICY_TIMERS).join(', ')}.`,
+    };
+  }
   if (activeMode !== undefined && !KNOWN_MODES.includes(activeMode)) {
     return {
       ok: false,

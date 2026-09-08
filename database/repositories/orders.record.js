@@ -147,6 +147,11 @@ export function toOrder(r) {
     // parent relation again wearing a different name.
     withdrawalBatchRef: r.withdrawal_batch_ref ?? null,
 
+    // When the player claimed their minute to fetch the UTR. Null until they
+    // do, and non-null forever after: the grace is claimable once, and the row
+    // is what says so.
+    utrGraceAt: r.utr_grace_at ?? null,
+
     // ── The CDM receipt is NOT mapped here, on purpose ────────────────────
     // `cdm_transaction_id`, `cdm_receipt_url` and `cdm_receipt_at` are absent
     // from this object and must stay absent. Every projection on this platform
@@ -326,6 +331,48 @@ export async function createOrderRecord({
     params, 'order_create_record',
   );
   return rows[0] ? toOrder(rows[0]) : getOrderRecord(orderId);
+}
+
+/**
+ * Claim the player's minute to fetch the UTR — once, and in one statement.
+ *
+ * ── Why this is a single UPDATE and not read-then-write ────────────────────
+ * The decision and the write are the same statement, so two taps arriving
+ * together cannot both pass a check and both extend. The `utr_grace_at IS NULL`
+ * clause is the whole guard: the first UPDATE matches a row and stamps it, the
+ * second matches nothing and returns null. That is the same shape every
+ * transition in this codebase uses, for the same reason — a check followed by a
+ * write is two requests both passing the check.
+ *
+ * Without the once-only rule this is not a courtesy, it is an unbounded
+ * extension: tap every fifty seconds and a merchant's capacity is held open
+ * forever.
+ *
+ * ── GREATEST, so a player with time left is not cut short ─────────────────
+ * The rule is "a full minute FROM THE TAP", which for an order with ten minutes
+ * left would otherwise be a shortening. The deadline only ever moves outward.
+ *
+ * The state list is the one the player can act from. An order already PAID has
+ * its reference; one CANCELLED or expired has nothing left to extend.
+ *
+ * @returns the updated order, or null when the grace was already taken or the
+ *   order is not in a state that can use it. The caller distinguishes the two.
+ */
+export async function claimUtrGrace(orderId, userId, graceSeconds) {
+  const seconds = Math.max(Math.trunc(Number(graceSeconds) || 0), 1);
+  const { rows } = await pgQuery(
+    `UPDATE order_states
+        SET utr_grace_at = now(),
+            expires_at   = GREATEST(COALESCE(expires_at, now()), now() + make_interval(secs => $3)),
+            updated_at   = now()
+      WHERE order_id = $1
+        AND user_id  = $2
+        AND utr_grace_at IS NULL
+        AND state IN ('ASSIGNED', 'PROCESSING')
+      RETURNING *`,
+    [String(orderId), String(userId), seconds], 'order_claim_utr_grace',
+  );
+  return rows[0] ? toOrder(rows[0]) : null;
 }
 
 /**

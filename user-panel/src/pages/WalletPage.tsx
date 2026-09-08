@@ -114,10 +114,17 @@ function CountdownTimer({ expiresAt, onExpire }: { expiresAt?: string; onExpire?
  * platform's sight, and it had no coverage while it collected a screenshot no
  * decision read and rendered a QR through a third-party service.
  */
-export function BuyPaymentUI({ order, onPaid, onExpire, cashLink = null }: {
+export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended, cashLink = null }: {
   order: PaymentOrder;
   onPaid: () => void;
   onExpire: () => void;
+  /**
+   * The server granted the player extra time to submit their UTR, and the
+   * deadline moved. The screen above owns the order, so it is the one that has
+   * to hear about it — a countdown still running on the old deadline would
+   * expire the order on screen while the server considers it live.
+   */
+  onExpiryExtended?: (expiresAt: string) => void;
   /**
    * The ATM link serving this order, on the CASH_ATM rail.
    *
@@ -186,6 +193,32 @@ export function BuyPaymentUI({ order, onPaid, onExpire, cashLink = null }: {
       onPaid();
     } catch (err: any) { setError(err?.message || 'Failed to submit. Try again.'); }
     finally { setSubmitting(false); }
+  };
+
+  /**
+   * Ask for the minute, once.
+   *
+   * `asked` is a local guard against re-firing on every focus, not the rule —
+   * the rule is the server's, decided in one statement, because a client-side
+   * flag is not something a merchant's held capacity should depend on.
+   *
+   * A failure is SILENT on purpose. The player has not lost anything they had:
+   * the deadline is whatever it already was, the countdown on screen is still
+   * driven by the order, and an error toast here would be alarming noise at the
+   * exact moment they are trying to type a reference.
+   */
+  const askedForGrace = useRef(false);
+  const [graceNote, setGraceNote] = useState('');
+  const claimGrace = async () => {
+    if (askedForGrace.current) return;
+    askedForGrace.current = true;
+    try {
+      const res: any = await apiClient.post(`/api/payment/order/${order.orderId}/utr-grace`, {});
+      if (res?.expiresAt && new Date(res.expiresAt).getTime() > new Date(order.expiresAt || 0).getTime()) {
+        setGraceNote('Extra time added to submit your UTR.');
+        onExpiryExtended?.(res.expiresAt);
+      }
+    } catch { /* the deadline is unchanged; the countdown already shows it */ }
   };
 
   const handleDispute = async () => {
@@ -291,8 +324,26 @@ export function BuyPaymentUI({ order, onPaid, onExpire, cashLink = null }: {
 
       <div>
         <label style={{ display: 'block', fontSize: 10, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text3)', marginBottom: 6 }}>UTR / UPI Ref No. <span style={{ color: 'var(--text3)', fontWeight: 600, textTransform: 'none', letterSpacing: 0 }}>(min 12 chars)</span></label>
-        <input value={utr} onChange={e => setUtr(e.target.value)} placeholder="Enter after paying" className="font-grotesk" style={{ ...inputBox, height: 44, fontSize: 13 }} />
+        <input
+          value={utr}
+          onChange={e => setUtr(e.target.value)}
+          /* ── Claiming the minute to fetch the reference ──────────────────
+             The order's own timer IS the UTR deadline, so a player who starts
+             entering the reference with seconds left would watch the order
+             expire while they go and read it off their bank app — cancelling a
+             payment they have already made.
+
+             Touching this field is the "I am entering it now" moment, so it is
+             what claims the window. Safe to fire on every focus: the server
+             grants it ONCE and only ever moves the deadline outward, so a
+             re-focus is a refusal that changes nothing. */
+          onFocus={() => { void claimGrace(); }}
+          placeholder="Enter after paying"
+          className="font-grotesk"
+          style={{ ...inputBox, height: 44, fontSize: 13 }}
+        />
         {utr.length > 0 && utr.length < 12 && <span style={{ fontSize: 10, color: 'var(--red)', fontWeight: 700 }}>{12 - utr.length} more characters needed</span>}
+        {graceNote && <span style={{ fontSize: 10.5, color: 'var(--green)', fontWeight: 700 }}>{graceNote}</span>}
       </div>
 
       {error && <p style={{ color: 'var(--red)', fontSize: 11, textAlign: 'center' }}>{error}</p>}
@@ -612,7 +663,16 @@ const WalletPage: React.FC = () => {
               ) : activeBuyOrder ? (
                 <>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}><span style={{ fontSize: 13, fontWeight: 800, color: 'var(--text)' }}>Complete payment</span><button onClick={resetBuy} style={{ fontSize: 11, color: 'var(--text3)', background: 'none', border: 'none', cursor: 'pointer' }}>✕ Cancel</button></div>
-                  <BuyPaymentUI order={activeBuyOrder} cashLink={buyCashLink} onPaid={() => setActiveBuyOrder(prev => prev ? { ...prev, status: 'PAID' } : prev)} onExpire={() => { resetBuy(); loadOrders(); }} />
+                  <BuyPaymentUI
+                    order={activeBuyOrder}
+                    cashLink={buyCashLink}
+                    onPaid={() => setActiveBuyOrder(prev => prev ? { ...prev, status: 'PAID' } : prev)}
+                    onExpire={() => { resetBuy(); loadOrders(); }}
+                    /* The countdown reads `order.expiresAt`. Without this the
+                       screen would keep counting down to the OLD deadline and
+                       expire an order the server has just extended. */
+                    onExpiryExtended={(expiresAt) => setActiveBuyOrder(prev => prev ? { ...prev, expiresAt } : prev)}
+                  />
                 </>
               ) : null
             ) : (
