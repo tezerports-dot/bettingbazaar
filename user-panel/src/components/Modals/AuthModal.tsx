@@ -229,6 +229,21 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
                 {sendPace.blocked ? `Resend in ${sendPace.secondsLeft}s` : 'Resend code'}
               </button>
             </div>
+
+            {/* A code that never arrives was a dead end: the screen said one had
+                been sent and offered nothing else. The reason is almost always
+                that the Telegram account they signed up with is gone — which is
+                what recovery is for, and it needs this same mobile plus the
+                Aadhaar behind it. */}
+            {cfg?.recoveryBotUsername && (
+              <p style={{ margin: '4px 0 0', textAlign: 'center', fontSize: 11, color: 'var(--text3)', lineHeight: 1.6 }}>
+                Code never arrives? You may have lost the Telegram account you signed up with.{' '}
+                <a href={`https://t.me/${cfg.recoveryBotUsername}`} target="_blank" rel="noopener noreferrer"
+                  style={{ color: 'var(--gold-ink)' }}>
+                  Recover your account
+                </a>
+              </p>
+            )}
           </form>
         ))}
 

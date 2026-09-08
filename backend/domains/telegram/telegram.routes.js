@@ -185,10 +185,33 @@ async function handleMessage(message, cfg) {
       // An existing player pressing /start is asking to log in.
       return sendLoginLink({ chatId, telegramUserId, userId: begun.userId, cfg });
     }
+    // ── Two doors on /start, not one ────────────────────────────────────
+    // An unknown Telegram account was shown the signup welcome and nothing
+    // else. Somebody who LOST their Telegram account and made a new one is
+    // exactly an unknown account to us — so the only reply they got was "send
+    // your Aadhaar", which starts a signup that will be refused as
+    // `already_registered` because that Aadhaar is already on their old
+    // account. The way out existed the whole time, on the recovery bot, and
+    // nothing in this conversation mentioned it.
+    //
+    // The buttons ride in `extra`, not in the template body: an operator
+    // editing the welcome copy from the admin panel must not be able to delete
+    // the route back into an account.
+    const recoveryBot = cfg.recoveryBotUsername || '';
     return sendTemplate({
       chatId,
       key: 'welcome',
       vars: { firstName: from.first_name || '', botUsername: cfg.botUsername || '' },
+      extra: recoveryBot
+        ? {
+          reply_markup: {
+            inline_keyboard: [[{
+              text: '🔑 I already have an account — recover it',
+              url: `https://t.me/${recoveryBot}`,
+            }]],
+          },
+        }
+        : undefined,
     });
   }
 
@@ -214,9 +237,28 @@ async function handleMessage(message, cfg) {
     const result = await submitAadhaar({ telegramUserId, aadhaar: text });
     if (!result.ok) {
       if (result.reason === 'already_registered') {
+        // THE moment somebody who lost their Telegram account lands here: they
+        // made a new one, pressed /start, and sent the Aadhaar that is already
+        // on their old account. Naming the recovery bot without linking it left
+        // them to search for it — so the link is a button, and the reply says
+        // what recovery actually needs.
+        const recoveryBot = cfg.recoveryBotUsername || '';
         return sendMessage(chatId,
           'This Aadhaar is already registered on Betting Bazaar. '
-          + 'Each Aadhaar can hold one account. If you have lost access, use our recovery bot.');
+          + 'Each Aadhaar can hold one account.\n\n'
+          + 'If this is YOUR account and you have lost the Telegram account you signed up '
+          + 'with, you can recover it — you will need this same Aadhaar and the mobile '
+          + 'number it is linked to.',
+          recoveryBot
+            ? {
+              reply_markup: {
+                inline_keyboard: [[{
+                  text: '🔑 Recover my account',
+                  url: `https://t.me/${recoveryBot}`,
+                }]],
+              },
+            }
+            : undefined);
       }
       return sendMessage(chatId, 'We could not accept that Aadhaar number. Please check it and try again.');
     }

@@ -459,6 +459,13 @@ const MUTATIONS = [
     from: `(u.mobile, '`,
     to: `(i.phone, '`,
   },
+  {
+    id: 'M85', file: 'database/repositories/telegram.js', config: PG,
+    test: 'database/tests/telegramLoginCodePg.test.js',
+    why: 'the linked identity may carry a number that is not the KYC one and still receive the code',
+    from: `        AND regexp_replace(i.phone`,
+    to: `        AND $1 = $1 OR regexp_replace(i.phone`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

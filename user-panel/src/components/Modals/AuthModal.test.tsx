@@ -271,6 +271,20 @@ describe('AuthModal', () => {
       expect(await screen.findByLabelText(/mobile number/i)).toBeInTheDocument();
     });
 
+    it('offers recovery when the code never arrives', async () => {
+      // Without this the code step was a dead end: the screen said a code had
+      // been sent and offered nothing else. The usual reason is that the
+      // Telegram account they signed up with is gone, and recovery is the only
+      // route back — it needs this same mobile plus the Aadhaar behind it.
+      render(<AuthModal />);
+      await userEvent.type(await screen.findByLabelText(/mobile number/i), '9876543210');
+      await userEvent.click(screen.getByRole('button', { name: /send code/i }));
+      await screen.findByLabelText(/code from telegram/i);
+
+      const link = await screen.findByRole('link', { name: /recover your account/i });
+      expect(link).toHaveAttribute('href', 'https://t.me/bazaar_recovery_bot');
+    });
+
     it('takes ten digits and fixes the country code at +91', async () => {
       // Every player is Indian, so +91 is shown rather than typed. A country
       // code in the box is the one way this field produces a number the lookup

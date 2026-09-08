@@ -160,46 +160,56 @@ describePg('telegram sign-in codes', () => {
   });
 
   /**
-   * ── The number typed is the KYC number, never Telegram's ────────────────
+   * ── The number typed is the KYC number, and so is the one we send to ─────
    *
-   * Owner rule 2026-09-08, and it closes a real hole rather than restating a
-   * preference.
-   *
-   * `users.mobile` is captured at signup from the shared contact, is immutable,
+   * `users.mobile` is captured from the shared contact at signup, is immutable,
    * and is the number the Aadhaar is verified against.
-   * `telegram_identities.phone` is whatever number the currently linked
-   * Telegram account carries — and `relinkIdentity` OVERWRITES it during an
-   * account recovery without touching `users.mobile`.
+   * `telegram_identities.phone` is the number on the Telegram account that is
+   * currently linked.
    *
-   * So after a recovery onto a Telegram account with a different number, a
-   * lookup keyed on the identity's phone would accept a number that was never
-   * KYC'd, against an account whose verified identity says something else.
+   * Both must be the KYC number, and both are checked. Today they cannot
+   * disagree — signup stamps them from one contact share, and `attemptRecovery`
+   * only ever re-links with the number that just matched `getUserByMobile` —
+   * so the second check is the invariant made ENFORCED rather than assumed. A
+   * future writer that links an identity carrying some other number gets a
+   * refused sign-in instead of a code delivered to a Telegram account the
+   * platform has no verified claim about.
    */
-  describe('after an account recovery onto a different number', () => {
-    const recovered = async () => {
+  describe('recovery onto a different Telegram account', () => {
+    it('keeps working, and sends to the NEW Telegram account', async () => {
+      // What recovery actually produces: a different Telegram ACCOUNT holding
+      // the SAME KYC number. Identification and delivery are different
+      // questions — the mobile identifies the account, the active identity is
+      // where the person reads messages now.
       const who = await linked();
       const newTelegramUserId = `tgr-${Date.now().toString(36)}-${(seq += 1)}`;
-      const newPhone = `9${String(base + 500_000 + seq).padStart(9, '0')}`;
       const res = await relinkIdentity({
-        telegramUserId: newTelegramUserId, userId: who.userId, phone: newPhone,
+        telegramUserId: newTelegramUserId, userId: who.userId, phone: who.mobile,
       });
       expect(res.ok, 'relink failed').toBe(true);
-      return { ...who, newTelegramUserId, newPhone };
-    };
 
-    it('refuses the new Telegram number — it was never KYC verified', async () => {
-      const who = await recovered();
-      expect(await getLoginTargetByMobile(who.newPhone)).toBeNull();
-    });
-
-    it('still accepts the KYC number, and sends to the NEW Telegram account', async () => {
-      // Identification and delivery are different questions. The mobile
-      // identifies the account; the active identity is where the person
-      // actually reads messages now.
-      const who = await recovered();
       const target = await getLoginTargetByMobile(who.mobile);
       expect(target?.userId).toBe(who.userId);
-      expect(target?.telegramUserId).toBe(who.newTelegramUserId);
+      expect(target?.telegramUserId).toBe(newTelegramUserId);
+    });
+
+    it('refuses an identity carrying a number that is not the KYC one', async () => {
+      // No production path writes this — `attemptRecovery` matches the shared
+      // contact against `users.mobile` before it re-links, so the two cannot
+      // come apart. Asserted anyway: the guard is what keeps that true when
+      // somebody adds a second way to link an identity.
+      const who = await linked();
+      const strayTelegramUserId = `tgs-${Date.now().toString(36)}-${(seq += 1)}`;
+      const strayPhone = `9${String(base + 500_000 + seq).padStart(9, '0')}`;
+      const res = await relinkIdentity({
+        telegramUserId: strayTelegramUserId, userId: who.userId, phone: strayPhone,
+      });
+      expect(res.ok).toBe(true);
+
+      // Neither number gets in: not the stray one (it is not the KYC number),
+      // and not the KYC one (the only live identity no longer carries it).
+      expect(await getLoginTargetByMobile(strayPhone)).toBeNull();
+      expect(await getLoginTargetByMobile(who.mobile)).toBeNull();
     });
   });
 

@@ -924,6 +924,16 @@ export async function getLoginTargetByMobile(mobile) {
          ON i.user_id = u.user_id AND i.contact_active
       WHERE regexp_replace(u.mobile, '\\D', '', 'g') = $1
         AND u.status <> 'DELETED'
+        -- The identity's own number must STILL be the KYC number.
+        --
+        -- Today it always is: signup stamps both from the same shared contact,
+        -- and attemptRecovery only ever re-links with the number that just
+        -- matched getUserByMobile. So this clause changes no current
+        -- behaviour — it makes the invariant ENFORCED rather than assumed, and
+        -- a future writer that links an identity carrying some other number
+        -- gets a refused sign-in instead of a code delivered to a Telegram
+        -- account the platform has no verified claim about.
+        AND regexp_replace(i.phone, '\\D', '', 'g') = $1
       LIMIT 1`,
     [digits], 'tg_login_target_by_mobile',
   );
