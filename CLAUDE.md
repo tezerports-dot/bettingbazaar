@@ -170,6 +170,19 @@ pay again.
     create your own rows, and assert the delta.
 
 
+11. **A gate that reads printed prose will eventually read it wrong.** The
+    mutation harness decided KILLED vs SURVIVED by regexing vitest's summary
+    line out of stdout. That line is prose: its wording depends on the reporter,
+    ANSI colour codes sit between the words the pattern needs adjacent, and
+    which stream it lands on depends on whether the runner looks like a
+    terminal. M49 measured 22 tests on every local run and came back NOT
+    MEASURED in CI, on a check that had been green for weeks.
+
+    A machine-readable result exists (`--reporter=json --outputFile`); read
+    that. And a non-zero exit is not by itself evidence a mutation was killed —
+    a mutant that makes a module unparseable also exits non-zero, which is the
+    mirror image of crediting a suite that never ran.
+
 ---
 
 ## Working rules

@@ -10,7 +10,9 @@
  *   node scripts/mutation-check.mjs            all mutations
  *   node scripts/mutation-check.mjs unit       only the ones whose test is a unit test
  */
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 
 const UNIT = 'vitest.config.ts';
@@ -841,6 +843,39 @@ const selected = MUTATIONS.filter((m) => !only
   || (only === 'pg' && m.config === PG)
   || m.id === only);
 
+/**
+ * What the run actually measured, from vitest's own JSON.
+ *
+ * Three outcomes, and the distinction between the last two is the point:
+ *
+ *   KILLED       tests ran and at least one failed — the suite noticed.
+ *   SURVIVED     tests ran, all passed — a hole.
+ *   NOT-MEASURED nothing ran. Neither evidence of a hole nor of coverage.
+ *
+ * A non-zero exit is NOT enough to call a mutation killed. A mutant that makes
+ * the module unparseable, or a filter that matches no file, also exits non-zero
+ * — and counting those as killed is the exact mirror of the bug the
+ * NOT-MEASURED check exists to prevent: a mutation credited to a suite that
+ * never ran a line of it.
+ */
+function verdictFrom(reportPath, exit) {
+  let report;
+  try {
+    report = JSON.parse(readFileSync(reportPath, 'utf8'));
+  } catch {
+    // No report at all: vitest died before it could write one. That is not a
+    // measurement either way, whatever the exit code was.
+    return 'NOT-MEASURED';
+  }
+  const ran = Number(report.numTotalTests ?? 0) - Number(report.numPendingTests ?? 0);
+  if (ran <= 0) return 'NOT-MEASURED';
+  if (Number(report.numFailedTests ?? 0) > 0) return 'KILLED';
+  // Tests ran and none failed. On a non-zero exit that means the failure was
+  // outside the tests — an unhandled rejection, a teardown throw — which the
+  // suite did notice, so it counts.
+  return exit === 'exit-0' ? 'SURVIVED' : 'KILLED';
+}
+
 const results = [];
 
 for (const m of selected) {
@@ -852,17 +887,32 @@ for (const m of selected) {
   }
   writeFileSync(m.file, original.replace(m.from, m.to));
   let outcome;
+  const report = join(tmpdir(), `mutation-${m.id}.json`);
+  try { rmSync(report, { force: true }); } catch { /* first run */ }
   try {
-    const out = execSync(`npx vitest run --config ${m.config} ${m.test}`,
-      { stdio: 'pipe', env: process.env }).toString();
-    // Exit 0 is only evidence of survival if tests actually RAN. A file whose
-    // every test skipped also exits 0, and calling that SURVIVED reports a hole
-    // in a suite nobody measured.
-    outcome = /Tests\s+\d+\s+passed/.test(out) ? 'SURVIVED' : 'NOT-MEASURED';
+    // ── The verdict is read from DATA, never from printed prose ────────────
+    //
+    // This decided by regexing vitest's summary line out of stdout. That line
+    // is prose: its wording depends on the reporter, its colour codes sit
+    // between the words the pattern needs adjacent, and which stream it lands
+    // on depends on whether the runner looks like a terminal.
+    //
+    // It cost a CI round trip. M49 measured 22 tests on every local run and
+    // came back NOT MEASURED in CI, on a check that had been green for weeks —
+    // the tests ran, the summary simply did not read the way the pattern
+    // expected there. A money suite reported as unmeasured when it measured is
+    // the same class of wrong as one reported as passing when it did not run.
+    //
+    // `--reporter=json` writes a file with counts in it. Both streams are still
+    // piped so nothing depends on which one vitest chooses.
+    execSync(`npx vitest run --config ${m.config} ${m.test} --reporter=json --outputFile=${report}`,
+      { stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
+    outcome = verdictFrom(report, 'exit-0');
   } catch {
-    outcome = 'KILLED';
+    outcome = verdictFrom(report, 'exit-nonzero');
   } finally {
     writeFileSync(m.file, original);
+    try { rmSync(report, { force: true }); } catch { /* nothing to clean */ }
   }
   results.push({ ...m, outcome });
   const mark = { KILLED: '✅', SURVIVED: '❌', 'NOT-MEASURED': '❓' }[outcome];
