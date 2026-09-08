@@ -36,6 +36,7 @@ const MERCHANT_ROUTES = [
   join(ROOT, 'backend/domains/merchant/merchant.routes.js'),
 ];
 const PANEL_TYPES   = join(ROOT, 'merchant-panel/src/types.ts');
+const ORDER_MAPPER  = join(ROOT, 'database/repositories/orders.record.js');
 
 /**
  * Responder lines that legitimately send an `order`/`orders` key without the
@@ -105,6 +106,36 @@ if (forbidden) {
     for (const f of forbidden) {
       if (new RegExp(`^\\s*${f}\\??\\s*:`, 'm').test(iface[1])) {
         fail(rel(PANEL_TYPES), `PaymentOrder declares '${f}', which a merchant must never receive`);
+      }
+    }
+  }
+}
+
+// 4. The CDM receipt must never enter the order mapper.
+//
+// A merchant deposits cash at a CDM into a player's bank account and submits
+// the slip: account number, branch, timestamp, bank reference. Neither the
+// player nor the merchant who uploaded it may read it back — only an admin or
+// a disputes manager.
+//
+// That is enforced by ABSENCE. Every projection on this platform is built from
+// `toOrder`, so a column it does not name cannot reach any of them. Three added
+// lines there would hand the slip to both parties and nothing would fail — no
+// test, no type, no gate — because every existing check asks whether the right
+// things are present, not whether the wrong thing has appeared.
+const CDM_COLUMNS = ['cdm_transaction_id', 'cdm_receipt_url', 'cdm_receipt_at'];
+{
+  const src = readFileSync(ORDER_MAPPER, 'utf8');
+  const mapper = src.match(/export function toOrder\(r\) \{([\s\S]*?)\n\}/);
+  if (!mapper) {
+    fail(rel(ORDER_MAPPER), 'could not find the toOrder mapper');
+  } else {
+    // Comments explaining the absence are expected and must not trip this, so
+    // only actual field reads count.
+    const body = mapper[1].replace(/^\s*\/\/.*$/gm, '');
+    for (const column of CDM_COLUMNS) {
+      if (new RegExp(`r\\.${column}\\b`).test(body)) {
+        fail(rel(ORDER_MAPPER), `toOrder reads '${column}' — the CDM receipt is admin-only and every projection is built from this mapper`);
       }
     }
   }

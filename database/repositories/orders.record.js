@@ -135,6 +135,19 @@ export function toOrder(r) {
     // OWNER alone, because it is a claim on notes about to leave a machine.
     cashLinkId: r.cash_link_id ?? null,
 
+    // ── The CDM receipt is NOT mapped here, on purpose ────────────────────
+    // `cdm_transaction_id`, `cdm_receipt_url` and `cdm_receipt_at` are absent
+    // from this object and must stay absent. Every projection on this platform
+    // — the merchant view, the player's order read, the admin panel — is built
+    // from this mapper, so a field it does not name cannot reach any of them.
+    // That is what makes the receipt write-only BY CONSTRUCTION rather than by
+    // each reader remembering to strip it, which is the shape that fails open.
+    //
+    // `getCdmReceipt` is the one way to read it, and the admin route gated on
+    // canResolveDisputes is its only caller. Adding these three lines here
+    // would hand a CDM slip — account number, branch, timestamp — to the
+    // merchant who uploaded it and to the player, and nothing would fail.
+
     createdAt: r.created_at, updatedAt: r.updated_at,
   };
 }
@@ -212,6 +225,13 @@ const SETTABLE = Object.freeze({
   paidAt: 'paid_at', completedAt: 'completed_at', expiresAt: 'expires_at',
   bulkPayoutDate: 'bulk_payout_date', bulkPaidAt: 'bulk_paid_at',
   bulkPayoutBatch: 'bulk_payout_batch',
+
+  // The CDM receipt. WRITABLE here and deliberately absent from `toOrder`
+  // below: a merchant submits it, and only an admin or a disputes manager may
+  // ever read it back. See `getCdmReceipt`.
+  cdmTransactionId: 'cdm_transaction_id',
+  cdmReceiptUrl: 'cdm_receipt_url',
+  cdmReceiptAt: 'cdm_receipt_at',
 });
 
 /**
@@ -331,6 +351,65 @@ export async function findCompletedOrdersMissingEvents({ limit = 200 } = {}) {
  * CANCELLED, FAILED, REJECTED and COMPLETED are finished and must not block a
  * new purchase — a player whose order failed has to be able to try again.
  */
+/**
+ * The CDM receipt for one order — the ONLY way to read it.
+ *
+ * Separate from `getOrderRecord` because the answer must not travel with the
+ * order. `toOrder` does not map these columns, so no existing projection can
+ * carry them; this query is the deliberate exception, and its only caller is
+ * the admin route gated on `canResolveDisputes`.
+ *
+ * Returns null when nothing has been submitted, which is a real and expected
+ * state: the merchant's confirm completes the order and the receipt is chased
+ * afterwards, so an order can legitimately be settled with none yet.
+ */
+export async function getCdmReceipt(orderId) {
+  const { rows } = await pgQuery(
+    `SELECT order_id, merchant_id, cdm_transaction_id, cdm_receipt_url, cdm_receipt_at
+       FROM order_states WHERE order_id = $1`,
+    [String(orderId)], 'order_cdm_receipt',
+  );
+  const r = rows[0];
+  if (!r || !r.cdm_receipt_url) return null;
+  return {
+    orderId: r.order_id,
+    merchantId: r.merchant_id,
+    transactionId: r.cdm_transaction_id,
+    receiptUrl: r.cdm_receipt_url,
+    submittedAt: r.cdm_receipt_at,
+  };
+}
+
+/**
+ * Settled cash withdrawals whose receipt never arrived.
+ *
+ * The merchant's confirm completes the order and the receipt is chased after —
+ * so a missing one does not block the player, and nothing would otherwise
+ * notice it was never sent. This is what makes that pattern visible: a merchant
+ * appearing here repeatedly is asserting payments they are not evidencing.
+ */
+export async function withdrawalsMissingCdmReceipt({ olderThanMinutes = 60, limit = 200 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT order_id, merchant_id, user_id, token_amount_paise, completed_at
+       FROM order_states
+      WHERE order_type = 'WITHDRAWAL'
+        AND payment_mode = 'CASH_ATM'
+        AND cdm_receipt_url IS NULL
+        AND completed_at IS NOT NULL
+        AND completed_at < now() - make_interval(mins => $1)
+      ORDER BY completed_at ASC
+      LIMIT ${Math.min(Math.max(Number(limit) || 200, 1), 1000)}`,
+    [Math.max(Number(olderThanMinutes) || 0, 0)], 'orders_missing_cdm_receipt',
+  );
+  return rows.map((r) => ({
+    orderId: r.order_id,
+    merchantId: r.merchant_id,
+    userId: r.user_id,
+    tokenAmount: rupees(r.token_amount_paise),
+    completedAt: r.completed_at,
+  }));
+}
+
 export async function countOpenDeposits(userId, { currency = 'INR' } = {}) {
   const { rows } = await pgQuery(
     `SELECT COUNT(*)::int AS n

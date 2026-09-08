@@ -668,6 +668,33 @@ const MUTATIONS = [
     from: `    buyDenominations:    BUY_DENOMINATIONS_PAISE.map((p) => p / 100),`,
     to: `    buyDenominations:    [100, 200, 300],`,
   },
+
+  // ── The CDM receipt is admin-only ───────────────────────────────────────
+  {
+    id: 'M110', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/cdmReceiptRoutes.test.js',
+    why: 'a merchant can attach a CDM receipt to another merchant\'s payout, putting their evidence on somebody else\'s order',
+    from: `        const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
+        if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
+        if (order.type !== 'WITHDRAWAL') {`,
+    to: `        const order = await db.orders.getOrderRecord(req.params.id);
+        if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
+        if (order.type !== 'WITHDRAWAL') {`,
+  },
+  {
+    id: 'M111', file: 'backend/domains/disputes/disputeResolution.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/cdmReceiptRoutes.test.js',
+    why: 'the missing-receipt queue ignores a request for zero minutes and answers a different question during an incident',
+    from: `    const olderThanMinutes = Number.isFinite(asked) && asked >= 0 ? asked : 60;`,
+    to: `    const olderThanMinutes = asked || 60;`,
+  },
+  {
+    id: 'M112', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/cdmReceiptRoutes.test.js',
+    why: 'a receipt is reported for an order that has none, so an unevidenced payout reads as evidenced',
+    from: `  if (!r || !r.cdm_receipt_url) return null;`,
+    to: `  if (!r) return null;`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

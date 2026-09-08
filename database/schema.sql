@@ -3107,3 +3107,44 @@ CREATE INDEX IF NOT EXISTS cash_link_merchant_idx
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS cash_link_id TEXT;
 CREATE INDEX IF NOT EXISTS order_states_cash_link_idx
   ON order_states (cash_link_id) WHERE cash_link_id IS NOT NULL;
+
+-- ── The CDM receipt: written by a merchant, read only by an admin ───────────
+--
+-- On the cash rail a SELL is settled by the merchant depositing cash at a Cash
+-- Deposit Machine into the player's bank account. They then submit the bank
+-- transaction id and a photograph of the receipt.
+--
+-- ── Write-only, and why that is a storage decision not a UI one ─────────────
+-- Neither the player nor the merchant who uploaded it may read it back — only
+-- an admin or a disputes manager. A CDM slip carries an account number, a
+-- branch, a timestamp and a transaction reference; it is the strongest evidence
+-- in a dispute and the least appropriate thing to hand back to either party.
+--
+-- The enforcement is that `toOrder` NEVER MAPS THESE COLUMNS. Every projection
+-- on this platform is built from that mapper, so a field it does not name
+-- cannot reach a merchant, a player, or a panel — by construction rather than
+-- by each reader remembering to strip it. `getCdmReceipt` is a separate query,
+-- and the admin route is its only caller.
+--
+-- That is deliberately the opposite shape to a denylist. A denylist admits the
+-- next column by default and fails open; this admits nothing and fails closed.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS cdm_transaction_id TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS cdm_receipt_url TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS cdm_receipt_at TIMESTAMPTZ;
+DO $$ BEGIN
+  -- A receipt image with no transaction id cannot be matched against a bank
+  -- statement, and a transaction id with no image is an assertion with no
+  -- evidence. They arrive together or not at all — the same rule the merchant
+  -- reject path already obeys with its proof.
+  ALTER TABLE order_states ADD CONSTRAINT order_states_cdm_receipt_complete
+    CHECK ((cdm_transaction_id IS NULL) = (cdm_receipt_url IS NULL));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE order_states ADD CONSTRAINT order_states_cdm_receipt_timed
+    CHECK (cdm_receipt_url IS NULL OR cdm_receipt_at IS NOT NULL);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+-- The admin queue of settled cash withdrawals still missing their receipt.
+-- A partial index, because that is the only question ever asked of it.
+CREATE INDEX IF NOT EXISTS order_states_cdm_receipt_missing_idx
+  ON order_states (merchant_id, completed_at)
+  WHERE order_type = 'WITHDRAWAL' AND payment_mode = 'CASH_ATM' AND cdm_receipt_url IS NULL;

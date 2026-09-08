@@ -56,6 +56,7 @@ import { MERCHANT_CURRENCY, isTrc20Address, merchantTypeOf } from './merchantCur
 import { toMerchantOrderView, toMerchantOrderViews } from './merchantOrderView.js';
 import { getActivePolicy as getPaymentModePolicy, modeCopy, publicTimers } from '../configuration/paymentMode.service.js';
 import { supplyCashLink, suppliersWithHeadroom } from './cashLink.service.js';
+import { PAYMENT_MODES } from '#db/repositories/paymentModePolicy.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 
 const router     = express.Router();
@@ -467,6 +468,106 @@ router.get('/payment-mode', merchantAuth, async (req, res) => {
  * implementations of "can this merchant serve one" would put a different
  * answer on the screen than in the notification.
  */
+/**
+ * POST /api/merchant/orders/:id/cdm-receipt — the evidence for a cash payout.
+ *
+ * On the cash rail a SELL is settled by depositing cash at a CDM into the
+ * player's bank account. The merchant's confirm already completed the order —
+ * the player is not held up waiting for paperwork — and this is the evidence
+ * that follows.
+ *
+ * ── Write-only, and this route is the write half ───────────────────────────
+ * Once submitted, NEITHER the merchant who uploaded it nor the player can read
+ * it back. Only an admin or a disputes manager can, through
+ * `GET /api/admin/orders/:orderId/cdm-receipt`.
+ *
+ * That is enforced in the data layer, not here: `toOrder` does not map these
+ * columns, so no projection built on it can carry them. This handler writes
+ * them and never reads them back in its own response.
+ *
+ * The consequence for the merchant is real and worth stating: they cannot check
+ * what they uploaded afterwards. So the proof is verified against THIS merchant
+ * and THIS order before it is stored, and the response confirms exactly what
+ * was accepted — that confirmation is the only look they get.
+ */
+router.post('/orders/:id/cdm-receipt', merchantAuth, async (req, res) => {
+    try {
+        const { transactionId, receiptFileKey, receiptCdnUrl } = req.body || {};
+
+        if (!transactionId || String(transactionId).trim().length < 6) {
+            return res.status(400).json({
+                success: false, reason: 'TRANSACTION_ID_REQUIRED',
+                message: 'Enter the bank transaction id from the CDM slip — it is what a dispute is matched against.',
+            });
+        }
+        if (!receiptFileKey) {
+            return res.status(400).json({
+                success: false, reason: 'RECEIPT_REQUIRED',
+                message: 'A photo of the CDM receipt is required. A transaction id with no image is an assertion with no evidence.',
+            });
+        }
+
+        const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
+        if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
+        if (order.type !== 'WITHDRAWAL') {
+            return res.status(400).json({
+                success: false, reason: 'NOT_A_WITHDRAWAL',
+                message: 'A CDM receipt belongs to a payout, not a purchase.',
+            });
+        }
+        if (order.paymentMode !== PAYMENT_MODES.CASH_ATM) {
+            return res.status(400).json({
+                success: false, reason: 'WRONG_RAIL',
+                message: 'This order was created on the UPI rail and is not settled at a CDM.',
+            });
+        }
+
+        // Bound to THIS merchant and THIS order — without it a merchant could
+        // name a key they never uploaded, or one staged against a different
+        // order, and the stored evidence would point at somebody else's.
+        let verified;
+        try {
+            verified = await cdnService.verifyUploadedObject({
+                fileKey: String(receiptFileKey).trim(),
+                cdnUrl: receiptCdnUrl || undefined,
+                expectedUserId: String(req.merchantId),
+                expectedOrderId: order.orderId,
+                expectedCategory: 'cdm-receipt',
+            });
+        } catch (e) {
+            return res.status(400).json({ success: false, message: `Receipt could not be verified: ${e.message}` });
+        }
+
+        const submittedAt = new Date();
+        await db.orders.setOrderFields(order.orderId, {
+            cdmTransactionId: String(transactionId).trim(),
+            cdmReceiptUrl: verified.cdnUrl,
+            cdmReceiptAt: submittedAt,
+        });
+
+        await db.audit.recordDetailed({
+            performedBy: req.merchantId, performedByRole: 'merchant',
+            action: 'CDM_RECEIPT_SUBMITTED', category: 'MERCHANT',
+            targetType: 'PaymentOrder', targetId: order.orderId,
+            // The URL is NOT recorded here. An audit row is read by more people
+            // than the receipt is, and putting it in one would be a second way
+            // to reach the thing this route exists to keep narrow.
+            details: { transactionId: String(transactionId).trim(), submittedAt },
+        });
+
+        res.json({
+            success: true,
+            // The only look the merchant gets. Echoed deliberately, because
+            // they cannot open it again to check what they sent.
+            submitted: { transactionId: String(transactionId).trim(), submittedAt },
+            message: 'Receipt recorded. It is visible only to an admin or a disputes manager from now on.',
+        });
+    } catch (err) {
+        console.error('POST /merchant/orders/:id/cdm-receipt error:', err);
+        res.status(500).json({ success: false, message: 'Failed to record the CDM receipt.' });
+    }
+});
+
 router.get('/cash-links/current', merchantAuth, async (req, res) => {
     try {
         const denominationPaise = req.merchant?.cashDenominationPaise ?? null;

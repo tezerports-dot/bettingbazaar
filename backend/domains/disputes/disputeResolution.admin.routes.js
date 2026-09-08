@@ -13,6 +13,76 @@ import { listMessages, postMessage, postSystemMessage } from '#db/repositories/c
 const router = express.Router();
 
 
+/**
+ * GET /api/admin/orders/:orderId/cdm-receipt — the only way to read one.
+ *
+ * A CDM slip carries an account number, a branch, a timestamp and a bank
+ * transaction reference. It is the strongest evidence in a cash-payout dispute
+ * and the least appropriate thing to hand back to either party — so neither the
+ * player nor the merchant who uploaded it can see it again.
+ *
+ * The narrowness is enforced in the data layer, not by this handler being
+ * careful: `toOrder` does not map these columns, so no projection built on it
+ * can carry them. `getCdmReceipt` is a separate query and this is its only
+ * caller.
+ *
+ * Gated on `canResolveDisputes`, which is the disputes-manager permission the
+ * rest of this file already uses — an admin holds it, and so does the person
+ * whose job is deciding these.
+ *
+ * Every read is AUDITED. A record nobody may see is one whose access has to be
+ * accountable; without this row, "who looked at this player's bank slip" has
+ * no answer.
+ */
+router.get('/orders/:orderId/cdm-receipt', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
+  try {
+    const receipt = await db.orders.getCdmReceipt(req.params.orderId);
+    if (!receipt) {
+      // A real and expected state, not an error: the merchant's confirm
+      // completes the order and the receipt is chased afterwards, so a settled
+      // order can legitimately have none yet.
+      return res.json({ success: true, receipt: null, message: 'No CDM receipt has been submitted for this order.' });
+    }
+
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, performedByName: req.user.username,
+      performedByRole: 'admin', action: 'CDM_RECEIPT_VIEWED', category: 'FINANCIAL',
+      targetType: 'PaymentOrder', targetId: String(req.params.orderId),
+      details: { merchantId: receipt.merchantId, submittedAt: receipt.submittedAt },
+    });
+
+    res.json({ success: true, receipt });
+  } catch (error) {
+    console.error('Get CDM receipt error:', error);
+    res.status(500).json({ success: false, message: 'Failed to read the CDM receipt' });
+  }
+});
+
+/**
+ * GET /api/admin/orders/cdm-receipts/missing — payouts settled without evidence.
+ *
+ * The merchant's confirm completes the order and the receipt follows, so a
+ * receipt that never arrives blocks nobody and nothing would otherwise notice.
+ * This is what makes the pattern visible: a merchant appearing here repeatedly
+ * is asserting payments they are not evidencing.
+ */
+router.get('/orders/cdm-receipts/missing', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
+  try {
+    // `??`, never `||`. ZERO is meaningful here — it is how an admin asks
+    // "everything missing a receipt right now", which is exactly what they
+    // want during an incident — and `||` treats it as absent and substitutes
+    // the default, silently answering a different question. The same
+    // falsy-zero trap the concurrency caps and the hold window both had.
+    const asked = parseInt(req.query.olderThanMinutes, 10);
+    const olderThanMinutes = Number.isFinite(asked) && asked >= 0 ? asked : 60;
+    const orders = await db.orders.withdrawalsMissingCdmReceipt({ olderThanMinutes });
+    res.json({ success: true, olderThanMinutes, orders });
+  } catch (error) {
+    console.error('List missing CDM receipts error:', error);
+    res.status(500).json({ success: false, message: 'Failed to list payouts missing a receipt' });
+  }
+});
+
 router.get('/dispute-orders', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
   try {
     const { status = 'DISPUTED', page = 1, limit = 50 } = req.query;
