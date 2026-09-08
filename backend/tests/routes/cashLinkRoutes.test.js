@@ -34,7 +34,20 @@ describePg('a merchant supplying an ATM cash link', () => {
   let restore = null;
   const oid = () => `clr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}-${seq += 1}`;
 
-  const DENOMINATION = 500_000; // ₹5,000
+  // ── ₹40,000, and the reason it is not ₹5,000 ──────────────────────────
+  // These tests are about SUPPLY mechanics — the denomination the server picks,
+  // the lifetime it sets, who may cancel a link — and every one of them needs
+  // the link it supplied to still be there when it looks.
+  //
+  // Supplying now hands the link straight to any buy order waiting at that
+  // denomination, which is the whole point of the matcher. In a shared test
+  // database there is nearly always one, so at ₹5,000 these links were being
+  // claimed out from under their own assertions.
+  //
+  // ₹40,000 is a WITHDRAWAL tier: the INR buy ceiling is ₹10,000, so no buy
+  // order can ever exist at it and no matcher can ever take one of these links.
+  // That is a property of the denomination ladder, not a quiet hour.
+  const DENOMINATION = 4_000_000; // ₹40,000 — withdrawal-only, so never claimed
 
   const cashMerchant = async ({ tokensRupees = 50_000, denominationPaise = DENOMINATION } = {}) => {
     const m = await merchantActor({ tokensRupees });

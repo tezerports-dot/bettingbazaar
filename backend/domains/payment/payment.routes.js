@@ -11,7 +11,7 @@ import { withdrawalLimiter } from '../../middleware/security.js';
 import { requireChannelMembership } from '../../middleware/requireChannelMembership.js';
 // Item 12: per-subnet backstop against IP rotation on withdrawal creation.
 import { createSubnetLimiter, globalSurgeBreaker } from '../../middleware/ipDefense.js';
-import { markOrderPaid, cancelOrder, claimUtrGrace } from './paymentProcessing.service.js';
+import { markOrderPaid, cancelOrder, claimUtrGrace, retryOrder } from './paymentProcessing.service.js';
 // The order state machine — every status change is a guarded transition.
 import { completeOrder, disputeOrder } from './orderLifecycle.service.js';
 // Phase 009: money movement enters ONLY via the Funding Platform authority.
@@ -81,6 +81,41 @@ router.post('/withdrawal/create', authenticate, requireApprovedKyc, requireChann
     const result = await requestWithdrawal({ userId: req.user.userId, tokenAmount: Number(req.body.tokenAmount) });
     res.json({ success: true, message: 'Withdrawal request created. Waiting for merchant assignment.', ...result });
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code, cutoffPassed: err.cutoffPassed, balance: err.balance }); }
+});
+
+/**
+ * POST /api/payment/order/:orderId/retry — try again, at the front of the queue.
+ *
+ * An order that never found a merchant owes nothing: no assignment means no
+ * transaction happened and nobody is liable. The player still wants their
+ * tokens though, and sending them to the back of the queue that just failed
+ * them is how somebody waits twice and gets nothing twice — so the new order
+ * outranks a first attempt.
+ *
+ * A NEW order, not a revival: CANCELLED is terminal, and reviving it would mean
+ * letting any cancelled order in the system come back to life.
+ *
+ * It runs the ordinary creation path, so every guard a first attempt passes a
+ * retry passes too — including, on a sell, the escrow debit under the wallet's
+ * row lock. The database refuses a second retry of the same order.
+ */
+router.post('/order/:orderId/retry', authenticate, orderAccessGuard, async (req, res) => {
+  try {
+    const result = await retryOrder(req.user.userId, req.params.orderId);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    // A duplicate retry is refused by a unique index, which surfaces as a
+    // driver error rather than one of ours. Said plainly, because the player's
+    // second tap is an ordinary thing to do and the answer is "you already did".
+    const duplicate = err?.code === '23505';
+    res.status(duplicate ? 409 : (err.status || 500)).json({
+      success: false,
+      code: duplicate ? 'ALREADY_RETRIED' : err.code,
+      message: duplicate
+        ? 'You have already retried this order — look for the newer one in your list.'
+        : err.message,
+    });
+  }
 });
 
 /**

@@ -152,6 +152,15 @@ export function toOrder(r) {
     // is what says so.
     utrGraceAt: r.utr_grace_at ?? null,
 
+    // Where this order sits in the queue for a merchant. Higher goes first; a
+    // retry carries 1, a first attempt 0. The tie is age, so within a rank it
+    // stays first-come-first-served.
+    assignmentPriority: Number(r.assignment_priority ?? 0),
+    // The expired order this one is a second attempt at. A label — nothing
+    // joins on it — and a partial UNIQUE, so one expired order yields one
+    // retry and never two live orders for one intent.
+    retryOfOrderId: r.retry_of_order_id ?? null,
+
     // ── The CDM receipt is NOT mapped here, on purpose ────────────────────
     // `cdm_transaction_id`, `cdm_receipt_url` and `cdm_receipt_at` are absent
     // from this object and must stay absent. Every projection on this platform
@@ -247,6 +256,16 @@ const SETTABLE = Object.freeze({
   // it is written with the row like any other detail; it decides nothing.
   withdrawalBatchRef: 'withdrawal_batch_ref',
 
+  // The ATM link serving this order. Settable so the claim path can stamp it;
+  // the link itself lives in `cash_link_queue`.
+  cashLinkId: 'cash_link_id',
+
+  // The queue rank and what it is a retry of. Written with the row at creation;
+  // neither is meant to change afterwards, but they go through the same
+  // allowlist as everything else so a typo is refused rather than dropped.
+  assignmentPriority: 'assignment_priority',
+  retryOfOrderId: 'retry_of_order_id',
+
   // The CDM receipt. WRITABLE here and deliberately absent from `toOrder`
   // below: a merchant submits it, and only an admin or a disputes manager may
   // ever read it back. See `getCdmReceipt`.
@@ -331,6 +350,39 @@ export async function createOrderRecord({
     params, 'order_create_record',
   );
   return rows[0] ? toOrder(rows[0]) : getOrderRecord(orderId);
+}
+
+/**
+ * Buy orders still waiting for a cash link, best claim first.
+ *
+ * ── Why this query has to exist at all ────────────────────────────────────
+ * The link claim ran exactly once per order, at creation. An order created when
+ * no merchant had a link at its denomination therefore never got one: nothing
+ * looked again when the link it had been waiting for was supplied a minute
+ * later. The player watched a live order sit at PENDING_QUEUE until it expired,
+ * while a merchant stood at a machine with a link nobody took.
+ *
+ * This is the queue the matcher walks. Ordering is the rule the design states:
+ * a retry outranks a first-time order, because sending somebody who already
+ * waited and got nothing to the back of the same queue is how they wait twice
+ * and get nothing twice. Age breaks the tie, so within a rank it stays
+ * first-come-first-served.
+ *
+ * `cash_link_id IS NULL` is what makes it a WAITING list rather than a list of
+ * orders — an order that already holds a link is not looking for one.
+ */
+export async function ordersAwaitingCashLink({ limit = 100 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT * FROM order_states
+      WHERE order_type = 'DEPOSIT'
+        AND state = 'PENDING_QUEUE'
+        AND payment_mode = 'CASH_ATM'
+        AND cash_link_id IS NULL
+      ORDER BY assignment_priority DESC, created_at ASC
+      LIMIT ${Math.min(Math.max(Number(limit) || 100, 1), 500)}`,
+    [], 'orders_awaiting_cash_link',
+  );
+  return rows.map(toOrder);
 }
 
 /**

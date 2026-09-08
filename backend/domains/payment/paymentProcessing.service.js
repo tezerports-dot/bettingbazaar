@@ -177,6 +177,57 @@ async function tryClaimCashLink(order) {
   return true;
 }
 
+/**
+ * Hand waiting orders the links that have appeared since they were created.
+ *
+ * ── The gap this closes ───────────────────────────────────────────────────
+ * The claim ran exactly ONCE per order, at creation. An order created at a
+ * moment when no merchant held a link at its denomination therefore never got
+ * one — nothing looked again when the link it had been waiting for was supplied
+ * a minute later. The player watched a live order sit at PENDING_QUEUE until it
+ * expired while a merchant stood at a machine with a link nobody took. Both
+ * sides waiting for each other, and every check in this repository green.
+ *
+ * ── It lives HERE, not in the link service ────────────────────────────────
+ * Because it must go through `tryClaimCashLink`, which is the COMPLETE
+ * operation: claim the link, assign its owner as the order's merchant, and take
+ * the machine's deadline as the order's. Calling the raw claim instead stamps a
+ * link id onto an order that still has no merchant and is still PENDING_QUEUE —
+ * a half-assignment, which is worse than no assignment because the player sees
+ * a link and nobody is serving them.
+ *
+ * ── Order matters, and it is the design's order ───────────────────────────
+ * Best claim first: a retry outranks a first attempt, because sending somebody
+ * who already waited and got nothing to the back of the same queue is how they
+ * wait twice and get nothing twice. Age breaks the tie.
+ *
+ * Safe to run from anywhere and from several places at once — the claim takes
+ * the link `FOR UPDATE … SKIP LOCKED` with a unique index behind it, so two
+ * matchers hand each link to exactly one order and the loser finds nothing.
+ * A failure on one order does not stop the rest: the next one is a different
+ * player, and one bad row must not hold up everybody behind it.
+ */
+export async function matchWaitingOrdersToLinks({ limit = 100 } = {}) {
+  const rail = await getActivePaymentModePolicy();
+  if (rail?.activeMode !== PAYMENT_MODES.CASH_ATM) return { matched: 0, considered: 0 };
+
+  const waiting = await db.orders.ordersAwaitingCashLink({ limit });
+  let matched = 0;
+  for (const order of waiting) {
+    try {
+      if (await tryClaimCashLink(order)) {
+        matched += 1;
+        emitAdminUpdate('queue_order_update', {
+          orderId: order.orderId, status: 'ASSIGNED', server_ts: Date.now(),
+        });
+      }
+    } catch (error) {
+      console.error(`[cashLink] could not match order ${order.orderId}:`, error.message);
+    }
+  }
+  return { matched, considered: waiting.length };
+}
+
 // ─── Attempt to assign order to best merchant; returns true if assigned ────────
 async function tryAssignMerchant(order) {
   // ── On the cash rail, a BUY is assigned by taking a link, not by ranking ──
@@ -342,7 +393,13 @@ function startPendingRetryLoop(orderId) {
 // ═════════════════════════════════════════════════════════════════════════════
 // createDepositOrder
 // ═════════════════════════════════════════════════════════════════════════════
-export async function createDepositOrder(userId, tokenAmount) {
+/**
+ * @param attempt `{ priority, retryOf }` when this is a second attempt at an
+ *   order that never found a merchant. Both are written with the row and
+ *   decide nothing else: the retry is an ORDINARY order, and the only thing
+ *   that treats it differently is the queue ordering.
+ */
+export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
   const cfg        = await getSystemConfig();
   const minDeposit = cfg?.minDeposit || 100;
   const maxDeposit = cfg?.maxDeposit || 50000;
@@ -397,6 +454,11 @@ export async function createDepositOrder(userId, tokenAmount) {
     type:              'DEPOSIT',
     tokenAmountRupees: tokenAmount,
     fiatAmountRupees:  fiatAmount,
+    // A second attempt goes to the front of the queue. Nothing else about it
+    // differs — the guards above are the same guards, because this is the same
+    // function.
+    assignmentPriority: attempt.priority ?? 0,
+    retryOfOrderId:     attempt.retryOf ?? null,
     // Stamped again at assignment, where the merchant's rail is known: a
     // USDT merchant settles at the admin's merchant-to-user rate, not the peg.
     rateUsed:          INR_TOKEN_RATE,
@@ -436,7 +498,13 @@ export async function createDepositOrder(userId, tokenAmount) {
 // ═════════════════════════════════════════════════════════════════════════════
 // createWithdrawalOrder
 // ═════════════════════════════════════════════════════════════════════════════
-export async function createWithdrawalOrder(userId, tokenAmount) {
+/**
+ * @param attempt `{ priority, retryOf }` — see `createDepositOrder`. On a split
+ *   the label goes on the FIRST part only, because a partial unique index
+ *   allows one retry per expired order and every part is a separate withdrawal.
+ *   The priority goes on all of them: they are all second attempts.
+ */
+export async function createWithdrawalOrder(userId, tokenAmount, attempt = {}) {
   const cfg         = await getSystemConfig();
   const minWithdraw = cfg?.minWithdrawal || 500;
   const maxWithdraw = cfg?.maxWithdrawal || 50000;
@@ -607,6 +675,12 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
       escrowStatus:      'LOCKED',
       escrowAmount:      partTokens,
       withdrawalBatchRef: batchRef,
+      // Every part of a retried withdrawal is a second attempt, so all of them
+      // carry the rank. The retry LABEL goes on the first part only: the
+      // partial unique index allows one retry per expired order, and each part
+      // is a separate withdrawal that would otherwise collide on it.
+      assignmentPriority: attempt.priority ?? 0,
+      retryOfOrderId:     index === 0 ? (attempt.retryOf ?? null) : null,
       // A merchant verifies a payout against these. `userKycSnapshot` was removed
       // 2026-08-25: it was stripped from every response before it reached anyone,
       // and its `aadhaar` field was never a real path on the model.
@@ -718,6 +792,57 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
 // optional key parameter here would be a parameter nothing on the platform can
 // now supply.
 // ═════════════════════════════════════════════════════════════════════════════
+/**
+ * Try again, at the front of the queue.
+ *
+ * ── What a retry is, and what it is not ───────────────────────────────────
+ * An order that never found a merchant owes nothing — no assignment means no
+ * transaction happened and nobody is liable. But the player still wants their
+ * tokens, and sending them to the back of the queue that just failed them is
+ * how somebody waits twice and gets nothing twice. So the new order carries
+ * priority, and the matcher walks the queue best-claim-first.
+ *
+ * It is a NEW order, not a revival. CANCELLED is terminal — reviving it would
+ * mean widening `ALLOWED_FROM` to let any cancelled order in the system come
+ * back to life, which is a hole opened platform-wide to describe one button.
+ *
+ * ── It goes through the ordinary creation path, deliberately ──────────────
+ * KYC, the amount limits, the denomination rule, the one-open-buy rule, the
+ * escrow debit under the wallet's row lock: every guard a first attempt passes,
+ * a retry passes too, because it is the SAME function. A bespoke retry path is
+ * a second creation path, and the second one is where a guard goes missing —
+ * which on a withdrawal means locking money without the checks that decide
+ * whether it may be locked.
+ *
+ * The database refuses a second retry of the same order (a partial UNIQUE on
+ * `retry_of_order_id`). Two live orders for one intent is two merchants
+ * assigned on a buy, and on a SELL it is the player's tokens locked twice.
+ */
+export async function retryOrder(userId, orderId) {
+  const original = await db.orders.getOrderRecord(orderId);
+  if (!original) throw Object.assign(new Error('Order not found'), { status: 404 });
+  if (String(original.userId) !== String(userId))
+    throw Object.assign(new Error('Access denied'), { status: 403 });
+
+  // Only an order that ended with nothing having happened. A COMPLETED order
+  // has been paid, a PAID one is being worked, and a DISPUTED one is somebody
+  // else's decision — "try again" is not the right offer for any of them.
+  const retryable = ['CANCELLED', 'FAILED', 'REJECTED'].includes(original.status);
+  if (!retryable) {
+    throw Object.assign(
+      new Error(`This order is ${original.status}. Only an order that ended without being served can be retried.`),
+      { status: 409, code: 'NOT_RETRYABLE' },
+    );
+  }
+
+  const attempt = { priority: 1, retryOf: original.orderId };
+  const result = original.type === 'DEPOSIT'
+    ? await createDepositOrder(userId, original.tokenAmount, attempt)
+    : await createWithdrawalOrder(userId, original.tokenAmount, attempt);
+
+  return result;
+}
+
 /**
  * The player taps "I have paid" and claims their minute to find the UTR.
  *

@@ -353,6 +353,55 @@ feature is decoration.
   submit the UTR.
 - **Expiry is retryable.** An expired order shows a retry button. A **retried
   order outranks a first-time order** in assignment.
+
+  A retry is a NEW order, never a revival: CANCELLED is terminal, and reviving
+  it would mean letting any cancelled order in the system come back to life. It
+  runs the ordinary creation path, so every guard a first attempt passes it
+  passes too — KYC, the limits, the denomination rule, the one-open-buy rule,
+  and on a sell the escrow debit under the wallet's row lock. A partial UNIQUE
+  on `retry_of_order_id` allows one retry per expired order: two live orders for
+  one intent is two merchants on a buy, and on a sell the player's tokens locked
+  twice.
+
+  `assignment_priority` is the rank — higher first, age breaking the tie, so
+  within a rank it stays first-come-first-served.
+
+### A supplied link goes to whoever is already waiting
+
+The link claim used to run exactly ONCE per order, at creation. An order created
+when no merchant held a link at its denomination therefore **never got one** —
+nothing looked again when the link it was waiting for was supplied a minute
+later. The player watched a live order sit at PENDING_QUEUE until it expired
+while a merchant stood at a machine with a link nobody took. Both sides waiting
+for each other.
+
+`matchWaitingOrdersToLinks` walks the waiting queue best-claim-first. It lives
+with the ASSIGNMENT rather than with the link supply, because it must go through
+the complete operation — claim the link, make its owner the order's merchant,
+take the machine's deadline as the order's. The raw claim alone stamps a link id
+onto an order that still has no merchant: a half-assignment, and worse than none
+because the player sees a link and nobody is serving them.
+
+It runs on supply (the latency) and on a 15-second sweep (the guarantee).
+
+### One order at a time, on the link path too
+
+`cash_link_one_live_per_merchant` stops a merchant holding two UNCLAIMED links.
+It stops nothing once one is claimed — the row becomes CLAIMED, the partial
+index no longer matches, and they may supply again while serving. And the
+cash-link claim never goes through `selectBestMerchant`, so the concurrency cap
+every other assignment obeys **was never consulted on this rail at all**:
+supply → claimed → supply → claimed gave one merchant unbounded concurrent
+orders.
+
+Supply now refuses a merchant who is already working one (`ALREADY_SERVING`),
+counting from the order rows through the same function the scorer uses.
+
+> **Operator note.** `max_concurrent_orders` seeds to **3** on both rails. On the
+> cash rail the answer is **1** — the notes a merchant is holding are the same
+> notes, so two orders promise them twice. It is admin-editable per policy
+> version and must be set to 1 when switching to the cash rail; the default does
+> not match the rule.
 - **An order that never got a merchant owes nothing.** No assignment means no
   transaction happened; nobody is liable.
 - **Silence after payment completes the order.** If the merchant asserted paid

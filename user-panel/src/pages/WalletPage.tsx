@@ -507,6 +507,33 @@ const WalletPage: React.FC = () => {
     catch (e: any) { alert(e?.message || 'Failed to cancel'); }
   };
 
+  /**
+   * Try an order that nobody served, again.
+   *
+   * The new order goes to the FRONT of the queue. Everything else about it is
+   * ordinary — the server runs the same creation path, so the same KYC, limit,
+   * denomination and escrow rules apply as to a first attempt.
+   *
+   * The order id is remembered locally so the button disappears immediately
+   * rather than waiting for a reload. That is presentation only: the server
+   * allows one retry per order and is what actually enforces it.
+   */
+  const [retrying, setRetrying] = useState<string | null>(null);
+  const [retriedAway, setRetriedAway] = useState<string[]>([]);
+  const retryOrder = async (orderId: string) => {
+    setRetrying(orderId);
+    try {
+      await apiClient.post(`/api/payment/order/${orderId}/retry`, {});
+      setRetriedAway(prev => [...prev, orderId]);
+      await loadOrders();
+      await loadMeta();
+    } catch (e: any) {
+      alert(e?.message || 'Could not try that order again');
+    } finally {
+      setRetrying(null);
+    }
+  };
+
   const resetBuy = () => { setBuyStep('amount'); setBuyTokens(''); setActiveBuyOrder(null); setBuyError(''); setBuyCashLink(null); };
   const handleBuySubmit = async () => {
     const amt = parseInt(buyTokens);
@@ -740,6 +767,17 @@ const WalletPage: React.FC = () => {
             <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text3)' }}><div style={{ fontSize: 30, marginBottom: 6 }}>📋</div>No payment orders yet</div>
           ) : paymentOrders.map(order => {
             const canCancel = order.status === 'PENDING_QUEUE';
+            // An order that ended without ever being served can be tried again,
+            // at the FRONT of the queue. Nothing happened on it — no assignment
+            // means no transaction and nobody is liable — but the player still
+            // wants their tokens, and going to the back of the queue that just
+            // failed them is how somebody waits twice and gets nothing twice.
+            //
+            // `retriedAway` hides the button once they have used it: the server
+            // allows one retry per order and a button that 409s is worse than
+            // no button.
+            const canRetry = ['CANCELLED', 'FAILED', 'REJECTED'].includes(order.status)
+              && !retriedAway.includes(order.orderId || order._id);
             return (
               <div key={order._id} style={{ ...card, padding: 14 }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
@@ -767,6 +805,15 @@ const WalletPage: React.FC = () => {
                       </button>
                     )}
                     {canCancel && <button onClick={() => cancelOrder(order.orderId || order._id)} style={{ fontSize: 10, fontWeight: 800, color: 'var(--red)', background: 'none', border: '1px solid color-mix(in srgb,var(--red) 40%,transparent)', borderRadius: 999, padding: '4px 11px', cursor: 'pointer' }}>Cancel</button>}
+                    {canRetry && (
+                      <button
+                        onClick={() => retryOrder(order.orderId || order._id)}
+                        disabled={retrying === (order.orderId || order._id)}
+                        style={{ fontSize: 10, fontWeight: 800, color: 'var(--gold-ink)', background: 'none', border: '1px solid color-mix(in srgb,var(--gold-ink) 45%,transparent)', borderRadius: 999, padding: '4px 11px', cursor: 'pointer' }}
+                      >
+                        {retrying === (order.orderId || order._id) ? 'Retrying…' : 'Try again'}
+                      </button>
+                    )}
                   </span>
                 </div>
                 {order.withdrawalBatchRef && expandedOrderId === (order.orderId || order._id) && (

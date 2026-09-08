@@ -838,6 +838,51 @@ const MUTATIONS = [
     to: `  const stray = [];
   if (stray.length) {`,
   },
+
+  // ── Retry, and the link that arrives late ───────────────────────────────
+  {
+    id: 'M126', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/retryAndMatchPg.test.js',
+    why: 'a supplied link is never handed to an order already waiting, so a player watches a live order expire while a merchant stands at a machine with a link nobody takes',
+    from: `  const waiting = await db.orders.ordersAwaitingCashLink({ limit });`,
+    to: `  const waiting = [];`,
+  },
+  {
+    id: 'M127', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/retryAndMatchPg.test.js',
+    why: 'the queue stops ranking retries first, so a player who already waited and got nothing goes to the back of the queue that failed them',
+    from: `      ORDER BY assignment_priority DESC, created_at ASC`,
+    to: `      ORDER BY created_at ASC`,
+  },
+  {
+    id: 'M128', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/retryAndMatchPg.test.js',
+    why: 'an order that already holds a link stays in the waiting queue, so it is handed a second one and the first is stranded until it expires',
+    from: `        AND cash_link_id IS NULL
+      ORDER BY assignment_priority DESC`,
+    to: `      ORDER BY assignment_priority DESC`,
+  },
+  {
+    id: 'M129', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/retryAndMatchPg.test.js',
+    why: 'an order that is still live can be retried, so a player gets a second order for money already in flight — two merchants on a buy, and on a sell their tokens locked twice',
+    from: `  const retryable = ['CANCELLED', 'FAILED', 'REJECTED'].includes(original.status);`,
+    to: `  const retryable = true;`,
+  },
+  {
+    id: 'M130', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/retryAndMatchPg.test.js',
+    why: 'a retry is created at ordinary rank, so the whole point of retrying — going before the first-time orders — silently does not happen',
+    from: `  const attempt = { priority: 1, retryOf: original.orderId };`,
+    to: `  const attempt = { priority: 0, retryOf: original.orderId };`,
+  },
+  {
+    id: 'M131', file: 'backend/domains/merchant/cashLink.service.js', config: PG,
+    test: 'backend/tests/routes/retryAndMatchPg.test.js',
+    why: 'a merchant supplies a new link while already working an order, so supply-claim-supply gives one merchant unbounded concurrent orders on a rail whose cap is ONE — the cash-link claim never goes through the scorer, so nothing else checks it',
+    from: `  if (open >= cap) {`,
+    to: `  if (false) {`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

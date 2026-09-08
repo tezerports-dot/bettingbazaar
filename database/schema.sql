@@ -3241,3 +3241,52 @@ CREATE INDEX IF NOT EXISTS order_states_stalled_withdrawals_idx
 -- property of the row — a second claim finds a non-null column and is refused —
 -- and leaves a dispute able to see how long the player actually had.
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS utr_grace_at TIMESTAMPTZ;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 🔁 RETRY, AND THE PRIORITY IT CARRIES
+--
+-- An order that never found a merchant owes nothing: no assignment means no
+-- transaction happened and nobody is liable. But the player still wants their
+-- tokens, and sending them to the back of the same queue that already failed
+-- them is how somebody waits twice and gets nothing twice.
+--
+-- So a retry outranks a first-time order. `assignment_priority` is that rank —
+-- higher first, and the tie is broken by age, so within a rank it stays
+-- first-come-first-served.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS assignment_priority INTEGER NOT NULL DEFAULT 0;
+DO $$ BEGIN
+  -- A negative rank is not "lower priority", it is a queue somebody can bury an
+  -- order in. There is no caller that wants one.
+  ALTER TABLE order_states ADD CONSTRAINT order_states_priority_not_negative
+    CHECK (assignment_priority >= 0);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- Which expired order this one is a second attempt at.
+--
+-- ── The UNIQUE is the rule, not a comment about it ────────────────────────
+-- Retrying the same expired order twice creates two live orders for one
+-- intent. On a buy that is two merchants assigned and one of them wasted; on a
+-- SELL it is the player's tokens locked TWICE, because each withdrawal takes
+-- its own escrow. A partial unique index makes the second attempt impossible
+-- rather than merely discouraged — the same reasoning as the unique `tx_id`
+-- gate: the database refuses it, so no caller has to remember.
+--
+-- Beyond that it is a label. Nothing joins on it, no state is derived from it,
+-- and the retry is an ORDINARY order in every other respect — the lesson the
+-- withdrawal split paid for.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS retry_of_order_id TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS order_states_one_retry_per_order_idx
+  ON order_states (retry_of_order_id)
+  WHERE retry_of_order_id IS NOT NULL;
+
+-- Buy orders waiting for a cash link, best claim first.
+--
+-- This is the queue the matcher walks. Without it an order that found no link
+-- when it was created never got one: the claim ran once, at creation, and
+-- nothing looked again when a merchant supplied the link it had been waiting
+-- for. The player watched a live order sit at PENDING_QUEUE until it expired
+-- while merchants stood at machines with links nobody took.
+CREATE INDEX IF NOT EXISTS order_states_awaiting_link_idx
+  ON order_states (assignment_priority DESC, created_at ASC)
+  WHERE order_type = 'DEPOSIT' AND state = 'PENDING_QUEUE'
+    AND payment_mode = 'CASH_ATM' AND cash_link_id IS NULL;

@@ -72,6 +72,31 @@ export function registerCronJobs(rebuildLeaderboard) {
   // (120 by default), so a sweep a minute late would leave a dead link
   // claimable for half its own lifetime — and the player handed it cannot
   // reach the machine.
+  // ── Waiting buy orders, and the links that appeared after them ─────────
+  //
+  // `claimLinkFor` runs at order creation. An order created when no merchant
+  // held a link at its denomination therefore never got one — nothing looked
+  // again when the link it was waiting for was supplied a minute later. Both
+  // sides waiting for each other.
+  //
+  // `supplyCashLink` matches immediately, which is the fast path. This is the
+  // guarantee: a notification can be missed and a request can die between the
+  // supply and the match, but the sweep always runs. Frequent, because a link
+  // lives about two minutes and a match arriving late is a player who cannot
+  // reach the machine in time.
+  registerRecurring('cash-link-match', 15 * 1000, async () => {
+    try {
+      const { matchWaitingOrdersToLinks } = await import('../domains/payment/paymentProcessing.service.js');
+      const { matched } = await matchWaitingOrdersToLinks();
+      if (matched > 0) console.log(`🔗 Matched ${matched} waiting order(s) to cash links`);
+    } catch (e) {
+      sendAlert('cash-link-matcher-failed',
+        'ATM cash-link matcher failed — buy orders may sit waiting while links go unused', { error: e.message })
+        .catch(() => {});
+      console.error('cash-link matcher error:', e.message);
+    }
+  });
+
   registerRecurring('cash-link-expiry', 20 * 1000, async () => {
     try {
       const { sweepExpiredLinks } = await import('../domains/merchant/cashLink.service.js');

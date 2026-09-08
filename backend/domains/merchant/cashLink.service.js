@@ -111,6 +111,36 @@ export async function supplyCashLink({ merchantId, merchant, paymentLink }) {
     };
   }
 
+  // ── One order at a time, and the LINK path has to obey it too ──────────
+  //
+  // `cash_link_one_live_per_merchant` stops a merchant holding two UNCLAIMED
+  // links. It does nothing once one is claimed: the claim sets the row to
+  // CLAIMED, the partial index stops matching, and they may supply again —
+  // while already serving an order.
+  //
+  // That is not a small gap. The concurrency cap every other assignment obeys
+  // lives in `selectBestMerchant`, and the cash-link claim does not go through
+  // it: a link's owner BECOMES the order's merchant directly. So supply →
+  // claimed → supply → claimed gives one merchant unbounded concurrent orders,
+  // and on this rail the cap is ONE, because the notes they are holding are the
+  // same notes and two orders would promise them twice.
+  //
+  // The count is DERIVED from the order rows by the same function the scorer
+  // uses — never a stored counter, which a crash between increment and
+  // decrement throttles a merchant with permanently.
+  const cap = merchant?.maxConcurrentOrders ?? policy.maxConcurrentOrders ?? 1;
+  const counts = await db.merchants.getActiveOrderCounts([merchantId]);
+  const open = counts.get(String(merchantId))?.total ?? 0;
+  if (open >= cap) {
+    return {
+      ok: false,
+      reason: 'ALREADY_SERVING',
+      message: open === 1
+        ? 'You are already working an order. Finish it before going to another machine.'
+        : `You are already working ${open} orders, which is the limit for this rail.`,
+    };
+  }
+
   // The expiry comes from the policy, and it is computed HERE rather than sent
   // by the merchant: a client-supplied lifetime is a client that can keep a
   // link alive as long as it likes.

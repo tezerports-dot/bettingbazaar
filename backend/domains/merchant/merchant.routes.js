@@ -21,7 +21,11 @@ import {
 } from '../identity/totp.service.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
 import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
-import { tryAssignMerchant, buildMerchantSnapshot, updateMerchantStatsOnComplete } from '../payment/paymentProcessing.service.js';
+import {
+    tryAssignMerchant, buildMerchantSnapshot, updateMerchantStatsOnComplete,
+    // A supplied link is handed straight to whoever is waiting for it.
+    matchWaitingOrdersToLinks,
+} from '../payment/paymentProcessing.service.js';
 // The order state machine. Every status change is a guarded transition, and
 // where money moves the transition runs FIRST and gates it.
 import {
@@ -658,11 +662,35 @@ router.post('/cash-links', merchantAuth, async (req, res) => {
             paymentLink,
         });
         if (!result.ok) {
-            // LINK_ALREADY_LIVE is not the caller's mistake — they have one
-            // waiting — so it is a 409 the panel can render as state.
-            const status = result.reason === 'LINK_ALREADY_LIVE' ? 409 : 400;
+            // Neither of these is the caller's mistake — they have a link
+            // waiting, or they are already working an order — so both are a 409
+            // the panel can render as state rather than as an error.
+            const status = ['LINK_ALREADY_LIVE', 'ALREADY_SERVING'].includes(result.reason) ? 409 : 400;
             return res.status(status).json({ success: false, reason: result.reason, message: result.message });
         }
+
+        // ── Hand it straight to somebody who is waiting ────────────────────
+        // A link lives about two minutes, so the difference between matching
+        // now and matching on the next sweep is a real slice of the window the
+        // player has to reach the machine. The cron is still the guarantee —
+        // this is the latency.
+        //
+        // AWAITED, not fired and forgotten. The merchant's next question is
+        // "may I supply another?", and the answer depends on whether this link
+        // has just been taken — so leaving the match in flight makes their own
+        // next request race it. Deterministic beats marginally faster on a path
+        // where the alternative is a merchant told two different things about
+        // the same state.
+        //
+        // Still not fatal: the link IS supplied whatever happens here, and
+        // telling a merchant their supply failed when it did not would send
+        // them away from a machine they are standing at.
+        try {
+            await matchWaitingOrdersToLinks();
+        } catch (e) {
+            console.error('[cash-links] supply-time match failed:', e.message);
+        }
+
         res.json({
             success: true,
             link: {
