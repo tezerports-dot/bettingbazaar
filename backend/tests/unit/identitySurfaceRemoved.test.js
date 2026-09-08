@@ -130,12 +130,46 @@ describe('no KYC document can be uploaded, because none is collected', () => {
 
   it('keeps the upload paths the platform genuinely uses', () => {
     // The inverse assertion, and it matters: "remove the upload routes" is a
-    // reasonable-sounding instruction that would break P2P payment proofs,
-    // dispute chat attachments and admin branding. Those are live features.
+    // reasonable-sounding instruction that would break dispute chat attachments
+    // and admin branding. Those are live features.
+    //
+    // `generatePaymentProofUploadUrl` was on this list and is deliberately not
+    // any more — see the case below. It left by a product decision, not by the
+    // accident this guard exists to catch.
     const cdn = readFileSync(join(repo, 'backend/services/cdn.service.js'), 'utf8');
-    for (const kept of ['generateChatUploadUrl', 'generatePaymentProofUploadUrl', 'generateBrandingUploadUrl']) {
+    for (const kept of ['generateChatUploadUrl', 'generateBrandingUploadUrl']) {
       expect(cdn, `${kept} is a live feature and must not be removed`).toContain(`export async function ${kept}`);
     }
+  });
+
+  it('collects no payment screenshot, and offers no route that would', () => {
+    // The deposit flow submits a UTR and nothing else. A screenshot proved
+    // nothing — trivially forged, read by no approval — while the merchant
+    // matches the UTR against their own bank statement, which is the only part
+    // of the submission the platform can verify. Collecting an identifying
+    // image that no decision reads is data a platform should not hold.
+    //
+    // Asserted as an absence because that is how it would come back: someone
+    // re-adds a presign helper "for proofs" and the collection returns with it.
+    const cdn = readFileSync(join(repo, 'backend/services/cdn.service.js'), 'utf8');
+    expect(cdn).not.toContain('export async function generatePaymentProofUploadUrl');
+
+    const uploads = readFileSync(join(repo, 'backend/routes/upload.routes.js'), 'utf8');
+    expect(uploads).not.toMatch(/router\.\w+\(\s*['"`][^'"`]*payment-proof/);
+
+    // And mark-paid takes the reference alone.
+    const svc = readFileSync(join(repo, 'backend/domains/payment/paymentProcessing.service.js'), 'utf8');
+    expect(svc).toContain('export async function markOrderPaid(userId, orderId, utrNumber)');
+  });
+
+  it('still serves a proof an order already carries', () => {
+    // The column and the retention job stay: only the collection of NEW images
+    // is gone. Dropping the column would orphan images the retention job is the
+    // only thing that expires.
+    const cron = readFileSync(join(repo, 'backend/startup/cronJobs.js'), 'utf8');
+    expect(cron).toContain('payment-proof-retention');
+    const cdn = readFileSync(join(repo, 'backend/services/cdn.service.js'), 'utf8');
+    expect(cdn).toContain('export async function verifyUploadedObject');
   });
 });
 

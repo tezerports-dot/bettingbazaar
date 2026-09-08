@@ -317,7 +317,9 @@ async function getRiskRules() {
     blockOppositeSideBetting: cfg?.riskRules?.blockOppositeSideBetting ?? false,
     // schema default: 0 = off
     maxFundingOrdersPerHour: cfg?.riskRules?.maxFundingOrdersPerHour ?? 0,
-    // schema default: 3 — auto-block after N payment warnings (0 = never)
+    // schema default: 3 — mark a flagged player for review at N payment
+    // warnings (0 = never). This used to auto-block on a merchant rejection;
+    // the block is an admin decision now and this is the review threshold.
     maxWarnings: cfg?.riskRules?.maxWarnings ?? 3,
     // schema default: 0 = no fee
     payoutFeePercent: cfg?.payoutFeePercent ?? 0,

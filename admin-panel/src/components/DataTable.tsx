@@ -17,7 +17,26 @@ interface DataTableProps<T> {
   isLoading?: boolean;
 }
 
-export function DataTable<T extends { _id: string }>({
+/**
+ * The row key, from whichever id the entity actually carries.
+ *
+ * The constraint was `T extends { _id: string }`, which forced every entity to
+ * declare `_id` whether the server sent one or not — and the users repository
+ * does not: it emits `userId`. So `User` declared an `_id` that was always
+ * `undefined`, every row got `key={undefined}`, and React fell back to index
+ * order. That was the least of it: the same wrong field was then used to
+ * identify rows in URLs and in selection state.
+ *
+ * Orders and merchants DO send `_id` (their mappers alias it deliberately), so
+ * both spellings are accepted and the first present one wins.
+ */
+function rowKey(item: unknown, index: number): string {
+  const r = item as Record<string, unknown>;
+  const id = r?.userId ?? r?._id ?? r?.id;
+  return typeof id === 'string' || typeof id === 'number' ? String(id) : `row-${index}`;
+}
+
+export function DataTable<T extends object>({
   data,
   columns,
   currentPage,
@@ -53,8 +72,8 @@ export function DataTable<T extends { _id: string }>({
             </tr>
           </thead>
           <tbody>
-            {data.map((item) => (
-              <tr key={item._id} className="hover:bg-hover transition-colors">
+            {data.map((item, i) => (
+              <tr key={rowKey(item, i)} className="hover:bg-hover transition-colors">
                 {columns.map((column) => (
                   <td key={column.key}>
                     {column.render ? column.render(item) : (item as any)[column.key]}

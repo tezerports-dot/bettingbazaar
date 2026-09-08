@@ -95,31 +95,7 @@ export async function moderationFeed({ limit = 60, includeDeleted = false } = {}
   return rows.map(toMessage);
 }
 
-/** The moderation queue. */
-export async function listPendingChatMessages({ limit = 100 } = {}) {
-  const { rows } = await pgQuery(
-    `SELECT * FROM public_chat_messages WHERE status = 'PENDING' AND NOT is_deleted
-      ORDER BY created_at ASC LIMIT $1`,
-    [Math.min(Math.max(Number(limit) || 100, 1), 500)], 'chat_pending',
-  );
-  return rows.map(toMessage);
-}
 
-export async function moderateChatMessage(id, { approve, moderatorId, reason = null }) {
-  const { rows } = await pgQuery(
-    `UPDATE public_chat_messages SET
-       status = $2, approved_by = $3, approved_at = now(),
-       reject_reason = $4
-      WHERE id = $1 AND status = 'PENDING'
-      RETURNING *`,
-    [Number(id), approve ? 'APPROVED' : 'REJECTED', String(moderatorId),
-      // The CHECK requires a reason on a rejection: a moderation decision the
-      // author cannot be told the reason for is one they cannot appeal.
-      approve ? null : (reason || 'Rejected by moderator')],
-    'chat_moderate',
-  );
-  return rows[0] ? { ok: true, message: toMessage(rows[0]) } : { ok: false, reason: 'NOT_PENDING' };
-}
 
 /** Soft delete. The row survives, marked — see the module header. */
 export async function deleteChatMessage(id, moderatorId) {
@@ -131,13 +107,6 @@ export async function deleteChatMessage(id, moderatorId) {
   return rows[0] ? { ok: true } : { ok: false, reason: 'NOT_FOUND_OR_ALREADY_DELETED' };
 }
 
-export async function reportChatMessage(id) {
-  const { rows } = await pgQuery(
-    'UPDATE public_chat_messages SET report_count = report_count + 1 WHERE id = $1 RETURNING report_count',
-    [Number(id)], 'chat_report',
-  );
-  return rows[0] ? rows[0].report_count : 0;
-}
 
 // ── Chat bans ───────────────────────────────────────────────────────────────
 
@@ -163,14 +132,6 @@ export async function banFromChat(userId, { bannedBy = null, reason = '', banUnt
   };
 }
 
-/** Is this player banned right now? Expiry decided by the read. */
-export async function isChatBanned(userId) {
-  const { rows } = await pgQuery(
-    `SELECT 1 FROM chat_bans WHERE user_id = $1 AND (ban_until IS NULL OR ban_until > now())`,
-    [String(userId)], 'chat_is_banned',
-  );
-  return rows.length > 0;
-}
 
 export async function unbanFromChat(userId) {
   const { rowCount } = await pgQuery(
@@ -252,16 +213,6 @@ export async function setTicketStatus(ticketId, status) {
   return toTicket(rows[0]);
 }
 
-/** The player's rating of the resolution. 1–5, enforced by the row. */
-export async function rateTicket(ticketId, userId, { rating, note = null }) {
-  const { rows } = await pgQuery(
-    `UPDATE support_tickets SET rating = $3, rating_note = $4
-      WHERE ticket_id = $1 AND user_id = $2 AND status IN ('RESOLVED', 'CLOSED')
-      RETURNING *`,
-    [String(ticketId), String(userId), Number(rating), note], 'ticket_rate',
-  );
-  return rows[0] ? { ok: true, ticket: toTicket(rows[0]) } : { ok: false, reason: 'NOT_RATEABLE' };
-}
 
 export async function listTickets({ userId = null, status = null, assignedTo = null, limit = 100 } = {}) {
   const where = []; const params = [];
@@ -376,19 +327,6 @@ export async function agentReply({ ticketId, agentId, content }) {
   return { ok: true, message: toSupportMessage(r.message), ticket: toTicket(r.ticket) };
 }
 
-/** The agent queue: open work, most urgent and oldest first. */
-export async function listTicketQueue({ limit = 100 } = {}) {
-  const { rows } = await pgQuery(
-    `SELECT * FROM support_tickets
-      WHERE status IN ('OPEN', 'ASSIGNED', 'WAITING_USER')
-      ORDER BY CASE priority
-        WHEN 'URGENT' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'NORMAL' THEN 2 ELSE 3 END,
-        created_at ASC
-      LIMIT $1`,
-    [Math.min(Math.max(Number(limit) || 100, 1), 500)], 'ticket_queue',
-  );
-  return rows.map(toTicket);
-}
 
 // ── Support messages ────────────────────────────────────────────────────────
 

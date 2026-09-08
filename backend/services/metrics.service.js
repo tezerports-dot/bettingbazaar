@@ -48,22 +48,6 @@ export const ledgerReconcileErrors = new client.Counter({
   registers: [registry],
 });
 
-// A balance moved but its audit rows did not land.
-//
-// This should now be unreachable: every balance mutation writes its movement
-// and its ledger rows in ONE transaction, so either both land or neither does.
-// The counter stays precisely because that is a claim rather than a guarantee a
-// reader can see — if it ever increments, the invariant the whole money design
-// rests on has been broken somewhere, and the ledger no longer explains the
-// balances.
-//
-// Alert on it: `increase(bb_unaudited_money_movements_total[15m]) > 0`.
-export const unauditedMoneyMovements = new client.Counter({
-  name: 'bb_unaudited_money_movements_total',
-  help: 'Balance movements whose ledger rows failed to write (money moved unaudited)',
-  labelNames: ['path'],
-  registers: [registry],
-});
 
 export const alertsSent = new client.Counter({
   name: 'bb_alerts_sent_total',
@@ -173,22 +157,6 @@ export const pgQueryDuration = new client.Histogram({
 let realtimeStatsProvider = null;
 /** server.js registers a getter returning {connectedSockets, trackedCycles, snapshotsPublished, betsCoalesced}. */
 export function setRealtimeStatsProvider(fn) { realtimeStatsProvider = typeof fn === 'function' ? fn : null; }
-export const realtimeStats = new client.Gauge({
-  name: 'bb_realtime_stats',
-  help: 'Realtime delivery gauges (connected_sockets|tracked_cycles|snapshots_published|bets_coalesced)',
-  labelNames: ['metric'],
-  registers: [registry],
-  collect() {
-    try {
-      const s = realtimeStatsProvider ? realtimeStatsProvider() : null;
-      if (!s) return;
-      if (typeof s.connectedSockets === 'number')   this.set({ metric: 'connected_sockets' },   s.connectedSockets);
-      if (typeof s.trackedCycles === 'number')      this.set({ metric: 'tracked_cycles' },      s.trackedCycles);
-      if (typeof s.snapshotsPublished === 'number') this.set({ metric: 'snapshots_published' }, s.snapshotsPublished);
-      if (typeof s.betsCoalesced === 'number')      this.set({ metric: 'bets_coalesced' },      s.betsCoalesced);
-    } catch { /* unavailable — emit nothing */ }
-  },
-});
 
 /** GET /metrics handler. */
 export async function metricsHandler(req, res) {

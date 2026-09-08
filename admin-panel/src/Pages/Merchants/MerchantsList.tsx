@@ -38,7 +38,12 @@ export const MerchantsList: React.FC = () => {
   // M-01 fix: initial values are 0; openDetails() populates from merchant.limits schema.
   // GOVERNANCE §5: UI fallbacks must equal Merchant schema defaults (minOrder:500, maxOrder:50000).
   // Merchant.limits.minDeposit default=500, maxDeposit default=50000 per merchant.model.js.
-  const [limitsForm, setLimitsForm]   = useState({ minOrder: 500, maxOrder: 50000, dailyCap: 0, maxConcurrentOrders: 3 });
+  const [limitsForm, setLimitsForm]   = useState({ minOrder: 500, maxOrder: 50000, maxConcurrentOrders: 3 });
+  // The wallet top-up amount is NOT a limit. It lived on `limitsForm` as
+  // `dailyCap`, so it was posted to the limits endpoint — which ignores it —
+  // and read like a cap the platform enforces. It is neither: it is how many
+  // tokens the admin is about to hand this merchant.
+  const [topUpAmount, setTopUpAmount] = useState(0);
   // Phase B (2026-07-10): admin token-deduction control (strict, audited)
   const [deductForm, setDeductForm]   = useState({ amount: 0, reason: '' });
   const [panelUrl, setPanelUrl]       = useState('');
@@ -131,7 +136,7 @@ export const MerchantsList: React.FC = () => {
           minOrder: mData.minOrder ?? mData.merchantLimits?.minOrder ?? 500,
           maxOrder: mData.maxOrder ?? mData.merchantLimits?.maxOrder ?? 50000,
           maxConcurrentOrders: mData.maxConcurrentOrders ?? 3, // schema default: 3
-          dailyCap: 0,  // this field is the wallet top-up amount — always start at 0 for safety
+          // (the top-up amount lives in its own state — see topUpAmount)
         });
         if (tab === 'history') loadMerchantOrders(merchantId);
       }
@@ -181,7 +186,10 @@ export const MerchantsList: React.FC = () => {
       // Save order amount limits
       await api.merchants.updateLimits(selectedMerchant._id, limitsForm);
       // Save maxConcurrentOrders via scoring endpoint (Section 8 / admin route)
-      await api.put(`/api/admin/queue/merchants/${selectedMerchant._id}/scoring`, {
+      // No /queue segment. With it this 404'd, and because it shares a try with
+      // updateLimits above, the admin saw "Failed to save limits" on a save that
+      // had already stored the limits — only the concurrency cap was lost.
+      await api.put(`/api/admin/merchants/${selectedMerchant._id}/scoring`, {
         maxConcurrentOrders: limitsForm.maxConcurrentOrders,
       });
       toast.success('Limits updated');
@@ -478,20 +486,20 @@ export const MerchantsList: React.FC = () => {
                   <label className="label">Amount to Add (Rs. tokens)</label>
                   <input
                     type="number" min="1"
-                    value={limitsForm.dailyCap || ''}
-                    onChange={(e) => setLimitsForm(f => ({ ...f, dailyCap: Number(e.target.value) || 0 }))}
+                    value={topUpAmount || ''}
+                    onChange={(e) => setTopUpAmount(Number(e.target.value) || 0)}
                     placeholder="e.g. 10000"
                     className="input"
                   />
                 </div>
                 <button
-                  disabled={isSavingLimits || !limitsForm.dailyCap}
+                  disabled={isSavingLimits || !topUpAmount}
                   onClick={async () => {
                     setIsSavingLimits(true);
                     try {
-                      await (api.merchants as any).fundWallet(selectedMerchant._id, limitsForm.dailyCap);
-                      toast.success(`Wallet topped up by Rs.${limitsForm.dailyCap}`);
-                      setLimitsForm(f => ({ ...f, dailyCap: 0 }));
+                      await (api.merchants as any).fundWallet(selectedMerchant._id, topUpAmount);
+                      toast.success(`Wallet topped up by Rs.${topUpAmount}`);
+                      setTopUpAmount(0);
                       loadMerchants();
                     } catch { toast.error('Failed to top up wallet'); }
                     finally { setIsSavingLimits(false); }

@@ -14,7 +14,7 @@ import { hashPassword, verifyPassword } from '../identity/password.util.js';
 import { merchantAuth } from '../../middleware/merchantAuth.js';
 import { issueChallenge, verifyChallenge, CHALLENGE_AUDIENCE } from '../identity/twoFactorChallenge.js';
 import { verifySecondFactor, SECOND_FACTOR_RESULT } from '../identity/verifySecondFactor.js';
-import { twoFactorLimiter } from '../../middleware/security.js';
+import { twoFactorLimiter, loginPaceLimiter } from '../../middleware/security.js';
 import {
   generateSecret, buildOtpauthUri, encryptSecret, decryptSecret,
   verifyToken, generateBackupCodes, hashBackupCode,
@@ -36,10 +36,13 @@ import { depositCreditSplit } from '../payment/depositCredit.js';
 import { debitMerchantTokens, creditMerchantTokens } from './merchantWallet.service.js';
 import { getMerchantTokenBalance } from '#db/repositories/merchantWallets.js';
 import { publish as publishDomainEvent, EVENTS as DOMAIN_EVENTS } from '../../services/eventBus.service.js';
-import { getRiskRules } from '../risk/riskValidation.service.js';
 // Order chat. Every write here named a model registered nowhere, so the thread
 // echoed over the socket and never survived a reload.
-import { listMessages, postMessage, postSystemMessage } from '#db/repositories/chat.js';
+// Only the order's own timeline now — the record a dispute is decided from.
+// listMessages/postMessage went with the merchant order chat above.
+import { postSystemMessage } from '#db/repositories/chat.js';
+import cdnService from '../../services/cdn.service.js';
+import { adminToMerchantUsdtRate } from '../configuration/tokenRates.js';
 import { FLAGS, isEnabled } from '../../services/featureFlags.service.js';
 import { rupeesToPaise } from '../../shared/money.js';
 import { MONEY_PATHS } from '#db/moneyPaths.js';
@@ -298,7 +301,7 @@ function issueMerchantSession(merchant, res, extra = {}) {
  * leg proved a password up to five minutes ago, and an admin may have
  * suspended the account since.
  */
-router.post('/auth/login/2fa', twoFactorLimiter, async (req, res) => {
+router.post('/auth/login/2fa', loginPaceLimiter, twoFactorLimiter, async (req, res) => {
     try {
         const { challengeToken, code } = req.body;
         if (!challengeToken || !code)
@@ -584,45 +587,26 @@ router.put('/preferences', merchantAuth, async (req, res) => {
         res.status(500).json({ success: false, message: 'Failed to update preferences.' });
     }
 });
-
-
-// PUT /api/merchant/limits — merchant sets their own Merchant.limits (min/maxDeposit, min/maxWithdraw)
-// SEPARATE from User.merchantLimits (admin queue cap) and SystemConfig (platform limits)
-router.put('/limits', merchantAuth, async (req, res) => {
-    try {
-        const { minDeposit, maxDeposit, minWithdraw, maxWithdraw } = req.body;
-        const update = {};
-        if (minDeposit  !== undefined) update['limits.minDeposit']  = Number(minDeposit);
-        if (maxDeposit  !== undefined) update['limits.maxDeposit']  = Number(maxDeposit);
-        if (minWithdraw !== undefined) update['limits.minWithdraw'] = Number(minWithdraw);
-        if (maxWithdraw !== undefined) update['limits.maxWithdraw'] = Number(maxWithdraw);
-        if (!Object.keys(update).length)
-            return res.status(400).json({ success: false, message: 'No valid limit fields provided.' });
-
-        // Rupees in, integer paise stored — the limits are compared against
-        // order amounts, and an order amount is paise. The row also refuses a
-        // range that excludes every amount (min above max), which the document
-        // schema did not check at all.
-        let merchant;
-        try {
-            merchant = await db.merchants.updateMerchant(req.merchantId, update);
-        } catch (e) {
-            if (e.code === '23514') {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Those limits exclude every amount — the minimum cannot be above the maximum.',
-                });
-            }
-            throw e;
-        }
-        res.json({ success: true, merchant: formatMerchant(merchant, req.user) });
-    } catch (err) {
-        console.error('PUT /merchant/limits error:', err);
-        res.status(500).json({ success: false, message: 'Failed to update limits.' });
-    }
-});
-
-// ─── MERCHANT → ADMIN TOKEN PURCHASE ORDERS ─────────────────────────────────
+/*
+ * REMOVED — PUT /api/merchant/limits.
+ *
+ * A merchant does not set their own caps. Limits follow from what the merchant
+ * has put up — their security deposit, or the tokens they bought from the
+ * platform to trade with — so the admin sets them:
+ * PUT /api/admin/merchants/:merchantId/limits.
+ *
+ * It was also writing the wrong fields. This route set
+ * `limits.minDeposit`/`maxDeposit`/`minWithdraw`/`maxWithdraw`, and NOTHING
+ * reads those for any decision. Merchant assignment filters on `minOrder` and
+ * `maxOrder` (merchant.assignment.routes.js), which only the admin route
+ * writes. So a merchant could set their limits, be told it saved, and be
+ * offered exactly the same orders as before.
+ *
+ * The four columns are left in place rather than dropped: separate deposit and
+ * withdrawal ranges are plausibly wanted once merchants have account varieties
+ * (cash over the counter, UPI P2P, bank transfer with bulk payouts), and that
+ * is a schema decision to take with that work, not a side effect of this one.
+ */
 router.get('/admin-token-orders', merchantAuth, async (req, res) => {
     try {
         const orders = await db.paymentConfig.listTokenOrders({ merchantId: req.merchantId, limit: 30 });
@@ -647,8 +631,10 @@ router.post('/admin-token-orders', merchantAuth, async (req, res) => {
         if (!Number.isFinite(tokenAmount) || tokenAmount <= 0) {
             return res.status(400).json({ success: false, message: 'Token amount must be greater than zero.' });
         }
-        const configuredUsdtRate = cfg?.usdtPricing?.merchantAdminBuyInr;
-        const usdtRate = configuredUsdtRate === undefined ? 1 : configuredUsdtRate; // schema default: SystemConfig.usdtPricing.merchantAdminBuyInr = 1
+        // Through the one owner — see domains/configuration/tokenRates.js. The
+        // `=== undefined ? 1` fallback here was a second statement of the
+        // default, in a different form from the schema's.
+        const usdtRate = adminToMerchantUsdtRate(cfg);
         if (!Number.isFinite(usdtRate) || usdtRate < 0.01) {
             return res.status(500).json({ success: false, message: 'Admin USDT buy rate is misconfigured.' });
         }
@@ -1297,13 +1283,26 @@ router.post('/order/:id/dispute', merchantAuth, async (req, res) => {
         // working on has nothing to dispute yet. This route accepted ASSIGNED
         // and Postgres would have refused it — the disagreement no
         // reconciliation can tell apart from real drift.
+        // ── `updatedAt` is not a settable column ────────────────────────────
+        // `setOrderFields` refuses it — the UPDATE maintains `updated_at`
+        // itself — and it runs AFTER the transition has committed. So this
+        // route moved the order to DISPUTED, threw, and returned a 500: the
+        // merchant was told the dispute failed while the order sat DISPUTED
+        // with no reason, no raiser and no timestamp. Retrying did the same
+        // thing, so the order could never acquire the reason it needed. The
+        // merchant panel's dispute button calls this.
+        //
+        // `expectFrom` is left as the caller's stated intent, but note it is
+        // VALIDATED and not ENFORCED (orderLifecycle.service.js): ALLOWED_FROM
+        // admits DISPUTED from PROCESSING, PAID and COMPLETED, and that is what
+        // actually governs. A merchant disputing a PAID order — the ordinary
+        // case — is admitted, as it should be.
         const disputed = await disputeOrder(order._id, {
-            expectFrom: 'PROCESSING',
+            expectFrom: ['PROCESSING', 'PAID', 'COMPLETED'],
             set: {
                 disputeReason:   reason.trim(),
                 disputeRaisedAt: new Date(),
                 disputeRaisedBy: 'merchant',
-                updatedAt:       new Date(),
             },
         });
         if (!disputed.ok) {
@@ -1331,89 +1330,21 @@ router.post('/order/:id/dispute', merchantAuth, async (req, res) => {
         res.status(500).json({ success: false, message: 'Failed to raise dispute.' });
     }
 });
-
-
-
+// ─── ORDER CHAT — REMOVED ────────────────────────────────────────────────────
 //
-
-
+// `GET|POST /api/merchant/chat/:id` are gone, with the four upload presigns
+// that fed them (see routes/upload.routes.js).
 //
-
-router.get('/chat/:id', merchantAuth, async (req, res) => {
-    try {
-        // ONE lookup, with ownership in the WHERE clause.
-        //
-        // This used to search by document id OR order id OR both, then compare
-        // the merchant afterwards — a fetch-then-compare, which has already
-        // loaded the row (including the player's bank details) before deciding
-        // whether the caller was allowed to see it. There is one id now, and
-        // the ownership is part of the query.
-        const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
-        if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
-
-        const messages = await listMessages(order._id, { limit: 200 });
-
-        res.json({
-            success: true,
-            // The thread is stored against the order's id; the panel labels each
-            // message with the human-facing orderId, which is a different string.
-            messages: messages.map(m => ({ ...m, orderId: order.orderId })),
-        });
-    } catch (err) {
-        console.error('GET /merchant/chat/:id error:', err);
-        res.status(500).json({ success: false, message: 'Failed to fetch chat.' });
-    }
-});
-
-router.post('/chat/:id', merchantAuth, async (req, res) => {
-    try {
-        const { text, attachmentUrl } = req.body;
-        if (!text || !text.trim()) {
-            return res.status(400).json({ success: false, message: 'Message text is required.' });
-        }
-
-        // ONE lookup, with ownership in the WHERE clause.
-        //
-        // This used to search by document id OR order id OR both, then compare
-        // the merchant afterwards — a fetch-then-compare, which has already
-        // loaded the row (including the player's bank details) before deciding
-        // whether the caller was allowed to see it. There is one id now, and
-        // the ownership is part of the query.
-        const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
-        if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
-
-        const chat = await postMessage({
-            orderId:       order.orderId,
-            senderId:      req.userId,
-            senderType:    'MERCHANT',
-            message:       text.trim(),
-            attachmentUrl: attachmentUrl || null,
-            isSystem:      false,
-        });
-
-
-        // The stored message, relabelled with the human-facing orderId — the
-        // panel joins on that, not on the order document's id.
-        const chatPayload = { ...chat, orderId: order.orderId };
-
-        
-        try {
-            const io = global.io;
-            if (io) {
-                const oid = order.orderId || order.orderId;
-                io.to(`order_${oid}`).emit(`chat_${oid}`, chatPayload);
-                if (order.userId) {
-                    io.to(`user-${order.userId}`).emit('new_chat_message', chatPayload);
-                }
-            }
-        } catch (_) {}
-
-        res.json({ success: true, message: chatPayload });
-    } catch (err) {
-        console.error('POST /merchant/chat/:id error:', err);
-        res.status(500).json({ success: false, message: 'Failed to send message.' });
-    }
-});
+// There is no merchant-to-user order chat, by design. A player submits a UTR
+// as proof of payment; the merchant matches it against their own bank
+// statement and confirms or rejects. The two never negotiate — a private
+// channel between the party holding the money and the party owed it is where
+// an off-platform settlement gets agreed.
+//
+// The only conversation is the DISPUTE chat, between the player and an admin
+// or sub-admin. `postSystemMessage` below stays: it writes the order's own
+// timeline, which is the record that dispute is decided from.
+//
 
 // ─── RED FLAG (FIX B5-b) ─────────────────────────────────────────────────────
 //
@@ -1826,7 +1757,26 @@ router.post('/orders/:id/approve', merchantAuth, async (req, res) => {
 router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
     try {
         const { id }   = req.params;
-        const { reason } = req.body;
+        const { reason, proofFileKey, proofCdnUrl } = req.body;
+
+        // ── The accusation carries its evidence ──────────────────────────────
+        // Rejecting a PAID order says the player's money never arrived. It
+        // warns and flags their account and puts them in front of an admin, so
+        // neither half is optional: `reason` used to fall back to "Rejected by
+        // merchant", which told the player, support and the admin console
+        // nothing about why they had been flagged.
+        if (!reason || reason.trim().length < 10) {
+            return res.status(400).json({
+                success: false,
+                message: 'A rejection reason of at least 10 characters is required — it is what the player is shown.',
+            });
+        }
+        if (!proofFileKey?.trim()) {
+            return res.status(400).json({
+                success: false,
+                message: 'Proof is required: upload a screenshot or photo showing the payment did not arrive.',
+            });
+        }
 
         const order = await db.orders.getOrderRecord(id);
         if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
@@ -1835,20 +1785,41 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
             return res.status(403).json({ success: false, message: 'This order is not assigned to you' });
         }
 
+        // Bound to THIS merchant and THIS order. Without the check a merchant
+        // could name a key they never uploaded, or one staged against a
+        // different order, and the stored proof would point at somebody else's
+        // evidence.
+        let verifiedProof;
+        try {
+            verifiedProof = await cdnService.verifyUploadedObject({
+                fileKey: proofFileKey.trim(),
+                cdnUrl: proofCdnUrl || undefined,
+                expectedUserId: String(req.merchantId),
+                expectedOrderId: order.orderId,
+                expectedCategory: 'merchant-reject-proof',
+            });
+        } catch (e) {
+            return res.status(400).json({ success: false, message: `Proof could not be verified: ${e.message}` });
+        }
+
         // ── Transition order to CANCELLED (with rejection metadata) ───────────
-        // The guard is the transition. Everything after this point — the user's
-        // warning count, the payment flag, the auto-block — is a consequence of
-        // the rejection, and a merchant retrying a failed request used to run
-        // all of it a second time and increment the warning count again.
+        // The guard is the transition. Everything after this point — the
+        // user's warning count and the payment flag — is a consequence of the
+        // rejection, and a merchant retrying a failed request used to run all
+        // of it a second time and increment the warning count again.
         const rejected = await cancelOrderState(order.orderId, {
             expectFrom: ['PAID', 'PROCESSING'],
             set: {
                 rejectedBy:     req.merchantId,
                 rejectedAt:     new Date(),
-                rejectedReason: reason || 'Rejected by merchant',
+                rejectedReason: reason.trim(),
+                rejectionProofUrl: verifiedProof.cdnUrl,
                 cancelReason:   'MERCHANT_REJECTED',
                 cancelledAt:    new Date(),
-                updatedAt:      new Date(),
+                // `updatedAt` was here and `setOrderFields` refuses it — the
+                // column is maintained by the write itself, not by callers — so
+                // this route threw on EVERY call and 500'd. No screen called it,
+                // so nothing noticed that the endpoint had never once worked.
             },
         });
         if (!rejected.ok || rejected.idempotent) {
@@ -1859,23 +1830,42 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
         }
         Object.assign(order, rejected.order);
 
-        // ── Warning engine + payment-complaint flag (Section 13.2; owner
-        //    directive 2026-07-14) ──────────────────────────────────────────────
-        // A merchant rejecting a PAID/PROCESSING order IS "the merchant complains
-        // the payment failed / wasn't received". Beyond the hidden warningCount,
-        // set an EXPLICIT paymentFlagged marker so support/admin can see and filter
-        // the user immediately. Auto-block threshold stays admin-owned
-        // (SystemConfig.riskRules.maxWarnings; 0 = never). Both mutations are one
-        // atomic $inc/$set so a flag can never be lost between two writes.
-        // The auto-block threshold stays admin-owned (riskRules.maxWarnings;
-        // 0 = never). The increment, the flag AND the block are ONE statement:
-        // it was two, and a failure between them left a player one warning past
-        // the limit and not blocked, with nothing to re-check it — the count
-        // only moves again when a new warning arrives.
-        const { maxWarnings } = await getRiskRules();
-        const flagReason = (reason && reason.trim()) || 'Merchant reported payment not received / failed';
+        // ── Warning and flag — but NOT a block ───────────────────────────────
+        // A merchant rejecting a PAID order IS "the merchant says the payment
+        // never arrived". It raises the player's warning count and sets the
+        // explicit `paymentFlagged` marker, so support and the admin console can
+        // see and filter that player immediately.
+        //
+        // It does NOT block them, and that is deliberate (owner decision
+        // 2026-09-07). `maxWarnings` is passed as 0 — "never block from here" —
+        // so no code path reachable by a merchant can close a player's
+        // account.
+        //
+        // Why: a rejection is one merchant's unreviewed word. The same merchant
+        // looking at the same missing payment can instead raise a DISPUTE, which
+        // an admin rules on and which touches the player's account not at all.
+        // Nothing steered that choice, and the harsher of the two was the easier
+        // to reach — it closes the order immediately instead of waiting on an
+        // admin. At the default threshold of three, two honest mistakes and one
+        // bad actor locked a player out of their own balance: `is_blocked`
+        // refuses them at `authenticate`, so they could not see their wallet,
+        // their orders, or the notice explaining why.
+        //
+        // The block is now an admin decision about a FLAGGED player, taken with
+        // the reason and the proof image in front of them. The threshold itself
+        // is untouched and still governs every other path that warns.
+        //
+        // The increment and the flag remain ONE statement: they were two, and a
+        // failure between them left a player warned with no flag for anyone to
+        // act on.
+        const flagReason = reason.trim();
         const flagged = await db.users.flagPaymentWarning(order.userId, {
-            reason: flagReason, maxWarnings,
+            reason: flagReason,
+            // 0 = never block from here. Deliberately NOT the risk rules'
+            // `maxWarnings`: that setting now decides when a flagged player is
+            // marked for review on GET /api/admin/users/flagged, which is the
+            // only place a block is decided.
+            maxWarnings: 0,
         });
 
         const updatedUser  = flagged?.user ?? null;

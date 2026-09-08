@@ -20,11 +20,6 @@ export const ACTIVE_STATES: PaymentOrderState[] = [
   'PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID', 'DISPUTED',
 ];
 
-/** States where the order is terminal (UI stops polling) */
-export const TERMINAL_STATES: PaymentOrderState[] = [
-  'COMPLETED', 'REJECTED', 'FAILED', 'CANCELLED',
-];
-
 /** Human-readable labels for display */
 export const PAYMENT_STATE_LABELS: Record<PaymentOrderState, string> = {
   PENDING_QUEUE: 'Waiting for Merchant',
@@ -52,16 +47,7 @@ export const PAYMENT_STATE_COLOR: Record<PaymentOrderState, 'yellow' | 'blue' | 
 };
 
 export function isActive(state: PaymentOrderState):   boolean { return ACTIVE_STATES.includes(state); }
-export function isTerminal(state: PaymentOrderState): boolean { return TERMINAL_STATES.includes(state); }
 
-/** Show UTR + screenshot evidence panel */
-export function evidencePanelVisible(state: PaymentOrderState): boolean {
-  return ['ASSIGNED', 'PROCESSING'].includes(state);
-}
 
-/** Show merchant snapshot payment details */
-export function paymentDetailsPanelVisible(state: PaymentOrderState): boolean {
-  return ['ASSIGNED', 'PROCESSING', 'PAID'].includes(state);
-}
 
 

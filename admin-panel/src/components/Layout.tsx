@@ -12,8 +12,7 @@ import {
   TrendingUp, ShieldCheck, HelpCircle, Image as ImageIcon,
   MessageCircle, Shield, History, Scale, Upload, Search, Sun, Moon, Bell,
   Zap, Gift, SlidersHorizontal, Trophy, Star, Gamepad2, Bot, FileSpreadsheet, Share2,
-  type LucideIcon,
-} from 'lucide-react';
+  type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag} from 'lucide-react';
 import { useAuthStore } from '../services/auth';
 import { usePermissions } from '../hooks/usePermission';
 import { useThemeStore } from '../services/theme';
@@ -54,10 +53,12 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/live-cycles',   icon: Activity,        label: 'Live Cycles',    title: 'Live Cycles',        sub: 'Active Delhi vs Bombay betting cycles & phantom book control', permission: 'canViewAnalytics' },
     { path: '/cycle-history', icon: History,         label: 'Cycle History',  title: 'Cycle History',      sub: 'Settled cycles, results and house profit', permission: 'canViewAnalytics' },
     { path: '/profit-loss',   icon: TrendingUp,      label: 'Profit & Loss',  title: 'Profit & Loss',      sub: 'Gross & net gaming revenue over time', permission: 'canViewAnalytics' },
+    { path: '/token-flow',    icon: ArrowLeftRight,  label: 'Token Flow',     title: 'Token Flow',         sub: 'Player purchases, player sells and merchant funding — never summed', permission: 'canViewAnalytics' },
   ] },
   { key: 'people', label: 'Users & Merchants', items: [
     { path: '/users',               icon: Users,            label: 'Users',          title: 'Users',              sub: 'Player accounts, balances, status & KYC', permission: 'canManageUsers' },
     { path: '/users/balance-adjust',icon: SlidersHorizontal,label: 'Balance Adjust', title: 'Balance Adjustment', sub: 'Manual credit / debit with mandatory audit note', permission: 'canManageUsers' },
+    { path: '/users/flagged',       icon: Flag,             label: 'Flagged Players',title: 'Flagged Players',    sub: "A merchant disputed their payment — reason, proof, and the block decision", permission: 'canManageUsers' },
     { path: '/merchants',           icon: Store,            label: 'Merchants',      title: 'Merchants',          sub: 'P2P payment merchants, limits & availability', permission: 'canManageMerchants' },
     { path: '/kyc',                 icon: UserCheck,        label: 'KYC Queue',      title: 'KYC Queue',          sub: 'Accounts awaiting an Aadhaar verdict', permission: 'canVerifyKYC', badge: 'kyc' },
   ] },
@@ -92,6 +93,7 @@ const NAV_GROUPS: MenuGroup[] = [
   { key: 'promos', label: 'Promotions', items: [
     { path: '/winners-manager',          icon: Trophy,        label: 'Winners Manager', title: 'Winners Manager', sub: 'Real & phantom winner surfacing', permission: 'canManageContent' },
     { path: '/chat-management',          icon: MessageCircle, label: 'Chat & Support',  title: 'Chat & Support',  sub: 'Public chat moderation & support console', permission: 'canModerateChatPublic' },
+    { path: '/support-assistant',        icon: BookOpenCheck, label: 'Support Assistant', title: 'Support Assistant', sub: 'Knowledge base the assistant answers players from', adminOnly: true },
     { path: '/promotions/announcements', icon: Bell,          label: 'Announcements',   title: 'Announcements',   sub: 'Platform-wide notices & popups', permission: 'canManageContent' },
     { path: '/promotions/gift-codes',    icon: Gift,          label: 'Gift Codes',      title: 'Gift Codes',      sub: 'Promo & gift code campaigns', permission: 'canManageContent' },
   ] },

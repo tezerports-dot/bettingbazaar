@@ -95,13 +95,12 @@ describePg('payment routes', () => {
     }
   });
 
-  it('serves the rate card without a token — it is public', async () => {
-    const res = await request(app).get('/rates');
-    expect(res.status).toBe(200);
-    // Fixed 1:1 internal conversion, no spread. A rate that drifted from 1
-    // would mean tokens and rupees stopped being the same unit.
-    expect(res.body.rates).toEqual({ buyRate: 1, sellRate: 1, merchantProfitPerToken: 0 });
-  });
+  // The rate-card case moved rather than being deleted. GET /rates returned the
+  // 1:1 conversion as literals — a third declaration of it, and the one place
+  // an edit would silently not take effect — so the route is gone. The
+  // invariant it protected is not: "a rate that drifted from 1 would mean
+  // tokens and rupees stopped being the same unit" is now asserted against the
+  // owner of that value, in unit/systemConfigPayload.test.js.
 
   it('refuses deposits and withdrawals to an unverified player', async () => {
     // KYC gates the money routes and nothing else. A player who cannot deposit
@@ -113,30 +112,140 @@ describePg('payment routes', () => {
   });
 
   // ── mark-paid validation ──────────────────────────────────────────────────
-  it('refuses a payment claim with no reference and no proof', async () => {
-    // The UTR is what makes a claim checkable and the screenshot is what makes
-    // it disputable. A claim with neither is a merchant's word against a
-    // player's.
+  it('refuses a payment claim with no reference', async () => {
+    // The UTR is the whole claim now. It is what makes the payment checkable —
+    // the merchant matches it against their own bank statement — and it is the
+    // only part of the submission the platform can verify.
+    //
+    // This needs a REAL order the player owns. `orderAccessGuard` runs before
+    // the handler, so an id nobody owns is refused as 404 before the body is
+    // ever looked at — which is the right order: a caller who may not see the
+    // order gets no feedback about what its body should have contained.
     const player = await actor({});
-    const bad = [
-      [{ proofFileKey: 'k' }, /utrNumber/i],
-      [{ utrNumber: '   ', proofFileKey: 'k' }, /utrNumber/i],
-      [{ utrNumber: 'UTR1' }, /proofFileKey/i],
-      [{ utrNumber: 'UTR1', proofFileKey: '  ' }, /proofFileKey/i],
-    ];
-    for (const [body, message] of bad) {
-      const res = await as(app, player).post('/order/anything/mark-paid').send(body);
+    const merchant = await merchantActor({ tokensRupees: 10_000 });
+    const orderId = `mpv-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    await createOrderRecord({
+      orderId, userId: player.userId, type: 'DEPOSIT',
+      tokenAmountRupees: 500, fiatAmountRupees: 500,
+      state: 'ASSIGNED', merchantId: merchant.merchantId,
+    });
+
+    for (const body of [{}, { utrNumber: '   ' }, { utrNumber: null }]) {
+      const res = await as(app, player).post(`/order/${orderId}/mark-paid`).send(body);
       expect(res.status, `accepted ${JSON.stringify(body)}`).toBe(400);
-      expect(res.body.message).toMatch(message);
+      expect(res.body.message).toMatch(/utrNumber/i);
     }
+    // …and nothing about the order moved.
+    expect((await getOrderRecord(orderId)).status).toBe('ASSIGNED');
+  });
+
+  it('takes the UTR alone — no screenshot is asked for or required', async () => {
+    // The screenshot proved nothing: trivially forged, read by no approval.
+    // This is the assertion that the flow actually COMPLETES without one, which
+    // a validation test cannot show — the route used to 400 on the missing
+    // proofFileKey before it ever reached the order.
+    const player = await actor({});
+    const merchant = await merchantActor({ tokensRupees: 10_000 });
+    const orderId = `mp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    await createOrderRecord({
+      orderId, userId: player.userId, type: 'DEPOSIT',
+      tokenAmountRupees: 500, fiatAmountRupees: 500,
+      state: 'ASSIGNED', merchantId: merchant.merchantId,
+    });
+
+    // Unique per run: `utr_registry` is permanent, so a fixed reference passes
+    // once and 409s on every later run against the same database.
+    const utrNumber = `UTR${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    const res = await as(app, player).post(`/order/${orderId}/mark-paid`).send({ utrNumber });
+
+    expect(res.status).toBe(200);
+    const stored = await getOrderRecord(orderId);
+    expect(stored.status).toBe('PAID');
+    // Normalised and stored, so the merchant has something to match on.
+    expect(stored.utrNumber).toBe(utrNumber);
+    // And nothing invented an image.
+    expect(stored.proofScreenshot ?? null).toBeNull();
+  });
+
+  it('normalises the reference a player pastes', async () => {
+    // A UTR copied out of a bank app arrives lowercase and with spaces in it.
+    // Storing it verbatim means the merchant's search does not find it and the
+    // duplicate gate does not either — the SAME reference typed two ways would
+    // claim two orders. Normalising is what makes the registry's uniqueness
+    // mean anything.
+    const player = await actor({});
+    const merchant = await merchantActor({ tokensRupees: 10_000 });
+    const orderId = `mpn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    await createOrderRecord({
+      orderId, userId: player.userId, type: 'DEPOSIT',
+      tokenAmountRupees: 500, fiatAmountRupees: 500,
+      state: 'ASSIGNED', merchantId: merchant.merchantId,
+    });
+
+    const core = `utrn${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const res = await as(app, player).post(`/order/${orderId}/mark-paid`)
+      .send({ utrNumber: ` ${core.slice(0, 6)} ${core.slice(6)} ` });
+
+    expect(res.status).toBe(200);
+    expect((await getOrderRecord(orderId)).utrNumber).toBe(core.toUpperCase());
+  });
+
+  it('measures the length after normalising, not before', async () => {
+    // Seven characters padded past twelve with spaces is not a twelve-character
+    // reference. Checking the raw string would admit it. The length gate runs
+    // after the order is loaded, so this needs a real one.
+    const player = await actor({});
+    const merchant = await merchantActor({ tokensRupees: 10_000 });
+    const orderId = `mpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    await createOrderRecord({
+      orderId, userId: player.userId, type: 'DEPOSIT',
+      tokenAmountRupees: 500, fiatAmountRupees: 500,
+      state: 'ASSIGNED', merchantId: merchant.merchantId,
+    });
+
+    const res = await as(app, player).post(`/order/${orderId}/mark-paid`)
+      .send({ utrNumber: 'A B C D E F G' });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/12 characters/i);
+    expect((await getOrderRecord(orderId)).status).toBe('ASSIGNED');
+  });
+
+  it('still refuses a UTR already spent on another order', async () => {
+    // Dropping the screenshot must not weaken the one gate that mattered: the
+    // reference is claimed in a single statement, so it cannot pay twice.
+    const player = await actor({});
+    const merchant = await merchantActor({ tokensRupees: 10_000 });
+    const utrNumber = `UTRDUP${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    const mk = async (suffix) => {
+      const orderId = `mpd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}-${suffix}`;
+      await createOrderRecord({
+        orderId, userId: player.userId, type: 'DEPOSIT',
+        tokenAmountRupees: 500, fiatAmountRupees: 500,
+        state: 'ASSIGNED', merchantId: merchant.merchantId,
+      });
+      return orderId;
+    };
+    const first = await mk('a');
+    const second = await mk('b');
+
+    expect((await as(app, player).post(`/order/${first}/mark-paid`).send({ utrNumber })).status).toBe(200);
+    const dup = await as(app, player).post(`/order/${second}/mark-paid`).send({ utrNumber });
+    expect(dup.status).toBe(409);
+    expect((await getOrderRecord(second)).status).not.toBe('PAID');
   });
 
   // ── Who may confirm a deposit ─────────────────────────────────────────────
   it('refuses a confirm from a plain player', async () => {
+    // 404, not 403: `orderAccessGuard` gives one answer for "no such order",
+    // "not yours" and "that tag does not verify", because order ids travel in
+    // URLs and a distinguishable reply tells someone probing which ids are
+    // real. The status is the weaker half of this test — what matters is that
+    // the order did not advance.
     const { orderId } = await depositOrder();
     const nobody = await actor({});
     const res = await as(app, nobody).post(`/deposit/${orderId}/confirm`).send({});
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
+    expect((await getOrderRecord(orderId)).status).not.toBe('COMPLETED');
   });
 
   it('refuses a confirm from a merchant the order is not assigned to', async () => {
@@ -145,8 +254,12 @@ describePg('payment routes', () => {
     const { orderId } = await depositOrder();
     const stranger = await merchantActor({ tokensRupees: 10_000 });
     const res = await as(app, stranger).post(`/deposit/${orderId}/confirm`).send({});
-    expect(res.status).toBe(403);
-    expect(res.body.message).toMatch(/not assigned to you/i);
+    expect(res.status).toBe(404);
+    // The message no longer names the reason — see the note above — so this
+    // asserts the thing that actually matters instead: the stranger's float is
+    // untouched and the order did not complete.
+    expect(Number(await getMerchantTokenBalance(stranger.merchantId))).toBe(10_000);
+    expect((await getOrderRecord(orderId)).status).not.toBe('COMPLETED');
   });
 
   it('refuses a merchant whose account is not approved', async () => {

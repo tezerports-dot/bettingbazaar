@@ -18,4 +18,3 @@ export {
 
 // Deprecated compatibility export. Do not use for signing or verification.
 export const JWT_SECRET = process.env.PASETO_SECRET_KEY || process.env.JWT_SECRET;
-export const ENFORCE_CLAIMS = true;

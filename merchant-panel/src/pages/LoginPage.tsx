@@ -8,6 +8,7 @@ import { Navigate } from 'react-router';
 import { Lock, Smartphone, Mail, User as UserIcon, ShieldCheck, CheckCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../services/AuthContext';
+import { useRetryCountdown } from '../hooks/useRetryCountdown';
 import { api } from '../services/api';
 import { APP_CONFIG, ROUTES } from '../constants';
 import { Button, Field, Logo, Spinner, inputStyle } from '../components/ui';
@@ -25,6 +26,11 @@ const LoginPage: React.FC = () => {
   const [signingIn, setSigningIn] = useState(false);
   const [otp, setOtp] = useState('');
 
+  // Sign-in is paced at one attempt per 10 seconds. Without a visible timer a
+  // 429 reads as a broken form, and the natural response — retry immediately —
+  // extends the window it is trying to escape.
+  const { secondsLeft, blocked, startFrom } = useRetryCountdown();
+
   const [form, setForm] = useState({ username: '', mobile: '', email: '', password: '', confirmPassword: '' });
   const [applying, setApplying] = useState(false);
   const [applied, setApplied] = useState(false);
@@ -36,8 +42,11 @@ const LoginPage: React.FC = () => {
     setSigningIn(true);
     try {
       await login({ mobile, password });
-    } catch {
-      // AuthContext surfaces the message; keep the operator on the form.
+    } catch (err) {
+      // AuthContext surfaces the message; keep the operator on the form. A
+      // pace refusal also starts the countdown, so the button says how long
+      // rather than just refusing again.
+      startFrom(err);
     } finally {
       setSigningIn(false);
     }
@@ -49,10 +58,12 @@ const LoginPage: React.FC = () => {
     try {
       await submitTwoFactor(otp.trim());
       setOtp('');
-    } catch {
+    } catch (err) {
       // AuthContext toasts the reason. Clear the field so a stale wrong code
-      // is not resubmitted by a second Enter press.
-      setOtp('');
+      // is not resubmitted by a second Enter press — but KEEP it on a pace
+      // refusal: it was never submitted, and a 30-second TOTP retyped after a
+      // 10-second wait is usually still the right one.
+      if (!startFrom(err)) setOtp('');
     } finally {
       setSigningIn(false);
     }
@@ -147,12 +158,12 @@ const LoginPage: React.FC = () => {
                     fontSize: 20, letterSpacing: '0.3em', fontFamily: 'monospace', outline: 'none',
                   }}
                 />
-                <button type="submit" disabled={signingIn || otp.trim().length < 6} style={{
+                <button type="submit" disabled={signingIn || blocked || otp.trim().length < 6} style={{
                   width: '100%', height: 44, borderRadius: 10, border: 'none', cursor: 'pointer',
                   background: 'var(--accent)', color: 'var(--accent-ink)', fontWeight: 700, fontSize: 14,
-                  opacity: signingIn || otp.trim().length < 6 ? 0.6 : 1,
+                  opacity: signingIn || blocked || otp.trim().length < 6 ? 0.6 : 1,
                 }}>
-                  {signingIn ? 'Verifying…' : 'Verify and sign in'}
+                  {blocked ? `Try again in ${secondsLeft}s` : signingIn ? 'Verifying…' : 'Verify and sign in'}
                 </button>
                 <button type="button" onClick={() => { cancelTwoFactor(); setOtp(''); }} style={{
                   background: 'transparent', border: 'none', color: 'var(--muted)', fontSize: 12, cursor: 'pointer',
@@ -193,8 +204,8 @@ const LoginPage: React.FC = () => {
                     />
                   </div>
                 </Field>
-                <Button type="submit" full busy={signingIn} disabled={!mobile || !password} style={{ padding: 13, fontSize: 14, borderRadius: 12 }}>
-                  {signingIn ? 'Signing in…' : 'Sign in securely'}
+                <Button type="submit" full busy={signingIn} disabled={!mobile || !password || blocked} style={{ padding: 13, fontSize: 14, borderRadius: 12 }}>
+                  {blocked ? `Try again in ${secondsLeft}s` : signingIn ? 'Signing in…' : 'Sign in securely'}
                 </Button>
                 <p style={{ margin: 0, textAlign: 'center', fontSize: 12.5, color: 'var(--muted)' }}>
                   Trouble signing in? Contact your operations admin.

@@ -37,9 +37,6 @@ function siteKey(): string {
   return String((import.meta as any).env?.VITE_TURNSTILE_SITE_KEY || '').trim();
 }
 
-export function captchaEnabled(): boolean {
-  return !!siteKey();
-}
 
 let scriptPromise: Promise<void> | null = null;
 

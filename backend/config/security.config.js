@@ -67,6 +67,24 @@ export const RATE_LIMIT_TIERS = {
   // Merchant login — 4 failures / hour. Same tier as admin: a merchant account
   // settles real INR and USDT, so it is not a player-grade credential.
   merchantAuth: { windowMs: 60 * 60 * 1000, max: 4 },
+  // ── PACING, not lockout (owner directive 2026-09-08) ─────────────────────
+  // One credential submission per 10 seconds, per actor. This is a DIFFERENT
+  // control from the failure budgets below and sits alongside them, because the
+  // two answer different questions:
+  //
+  //   the budgets ask "has this account been guessed at too many times today?"
+  //   and lock it; they count FAILURES only, so a correct password resets
+  //   nothing and a legitimate user is never locked out for signing in a lot.
+  //
+  //   this one asks "how fast are attempts arriving?" and simply spaces them.
+  //   It counts EVERY attempt, success included — that is the point of a pace —
+  //   and it is what makes an automated guesser slow rather than merely capped.
+  //
+  // A six-digit TOTP is a 10^6 space. At one attempt per 10 seconds a full
+  // sweep takes over three months, and each code is only valid for 30 seconds
+  // anyway, so the pace alone makes the guess uneconomic before the budget is
+  // even consulted.
+  loginPace:  { windowMs: 10 * 1000, max: 1 },
   // Second-factor submission, once the password is already correct. Separate
   // and tighter than the password tier: at this point an attacker is guessing
   // a 6-digit code, where 10 tries is 1-in-100,000 rather than 1-in-a-million.

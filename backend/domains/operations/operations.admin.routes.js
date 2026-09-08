@@ -103,7 +103,7 @@ router.get('/operations/config-catalog', authenticate, isAdminOrSubAdmin, async 
     { value: 'Bet limits (per cycle type)', owner: 'Business Policy — SystemConfig.betLimits', edit: 'PUT /api/admin/system/config' },
     { value: 'Deposit/withdrawal min/max', owner: 'Business Policy — SystemConfig', edit: 'PUT /api/admin/system/config' },
     { value: 'Payout fee %', owner: 'Business Policy — SystemConfig.payoutFeePercent (enforced by Risk, recorded by R&S)', edit: 'PUT /api/admin/system/config' },
-    { value: 'Risk rules (multiples-of-10, opposite-side block, velocity/hour, auto-block warnings)', owner: 'Business Policy — SystemConfig.riskRules incl. maxWarnings (enforced by Risk; auto-block in merchant reject)', edit: 'PUT /api/admin/system/config' },
+    { value: 'Risk rules (multiples-of-10, opposite-side block, velocity/hour, auto-block warnings)', owner: 'Business Policy — SystemConfig.riskRules incl. maxWarnings (enforced by Risk; review threshold on GET /api/admin/users/flagged)', edit: 'PUT /api/admin/system/config' },
     // Phase A (2026-07-10): the two core betting money rules, now configurable.
     { value: 'Bet funding split — reserve % of each stake', owner: 'Business Policy — SystemConfig.betReservePercent (arithmetic in Risk computeBetFundingPlan)', edit: 'PUT /api/admin/system/config' },
     { value: 'Winnings platform fee % (settlement)', owner: 'Business Policy — SystemConfig.winningsFeePercent (arithmetic in Risk computeWinningsPayout, paid by gameEngine)', edit: 'PUT /api/admin/system/config' },

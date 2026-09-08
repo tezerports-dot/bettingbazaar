@@ -48,7 +48,9 @@ function memoryAllow(k, { now, windowMs, max }) {
 export function behavioralLimiter({ windowMs = 60_000, max = 30, action = 'action', keyPrefix = 'behavior' } = {}) {
   return async (req, res, next) => {
     const now = Date.now();
-    const sessionId = keyPart(req.user?._id || req.userId || req.merchant?._id || req.merchantId);
+    // `userId` / `merchantId` are the identifiers these requests actually
+    // carry; the `_id` reads they replaced were never populated.
+    const sessionId = keyPart(req.user?.userId || req.userId || req.merchant?.merchantId || req.merchantId);
     const deviceToken = keyPart(req.get('X-Device-Token') || req.get('X-Device-Fingerprint') || req.cookies?.device_token);
     const behavior = keyPart(req.get('X-Behavior-Cluster') || req.get('X-Device-Cluster'));
     const keys = [

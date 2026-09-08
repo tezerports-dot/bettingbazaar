@@ -34,11 +34,27 @@ export const CycleHistory: React.FC = () => {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [selectedCycle, setSelectedCycle] = useState<Cycle | null>(null);
+  /**
+   * Phantom exposure per recent cycle.
+   *
+   * Phantom bets always lose and are not platform revenue, so what matters is
+   * how much of each side's visible pool was not real money. The endpoint has
+   * grouped this by cycle all along with nothing calling it, which meant the
+   * only place phantom scale appeared was one cycle at a time in the detail
+   * modal — never as a series an operator could scan.
+   */
+  const [phantom, setPhantom] = useState<any[]>([]);
 
   const { page, limit, setPage } = usePagination();
   const debouncedSearch = useDebounce(search);
 
   useEffect(() => { loadCycles(); }, [page, debouncedSearch, typeFilter, startDate, endDate]);
+
+  useEffect(() => {
+    api.get<any>('/api/admin/analytics/phantom-stats')
+      .then((r) => { if (r.data?.success) setPhantom(r.data.stats || []); })
+      .catch(() => { /* the panel simply does not render */ });
+  }, []);
 
   const loadCycles = async () => {
     setIsLoading(true);
@@ -150,8 +166,38 @@ export const CycleHistory: React.FC = () => {
   const totalNetRevenue = cycles.reduce((sum, c) => sum + getNetRevenue(c), 0);
   const totalPaidOut    = cycles.reduce((sum, c) => sum + (c.totalPaidOut || 0), 0);
 
+  const phantomPanel = phantom.length > 0 && (
+    <div className="card">
+      <p className="text-sm font-semibold text-gray-300">Phantom exposure — most recent cycles</p>
+      <p className="text-xs text-gray-500 mt-0.5 mb-3">
+        Phantom bets always lose and are never platform revenue. This is how much of each
+        side's visible pool was not real money.
+      </p>
+      <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+        {phantom.map((p: any) => (
+          <div key={p.cycleId} className="flex items-center justify-between gap-4 bg-dark-800 rounded-lg px-4 py-2.5 text-sm">
+            <div className="min-w-0">
+              <p className="font-mono text-xs text-gray-300 truncate">{p.cycleId}</p>
+              <p className="text-[11px] text-gray-500">
+                {p.cycleType}{p.winner ? ` · won ${p.winner}` : ' · undeclared'}
+                {p.startTime ? ` · ${formatters.datetime(p.startTime)}` : ''}
+              </p>
+            </div>
+            <div className="text-right shrink-0">
+              <p className="font-semibold text-gray-200">{formatters.currency(p.totalPhantomAmount)}</p>
+              <p className="text-[11px] text-gray-500">
+                {p.totalPhantomBets} bets · D {formatters.currency(p.delhiPhantom)} / B {formatters.currency(p.bombayPhantom)}
+              </p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
   return (
     <div className="om-fade space-y-6">
+      {phantomPanel}
       <Kpis items={[
         { label: 'Total Cycles', value: total },
         ...CYCLE_TYPES.map((t) => ({

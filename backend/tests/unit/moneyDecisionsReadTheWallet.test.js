@@ -81,10 +81,20 @@ const SITES = [
     forbidden: [/\(merchant\.tokenBalance \|\| 0\) < order\.tokenAmount/],
   },
   {
+    // ── This entry pointed at a file NOTHING IMPORTED ────────────────────────
+    // `services/admin.service.js` was a 380-line parallel implementation of
+    // block/unblock/delete/sub-admin CRUD that no route, service or script ever
+    // called. It held this guard, so this assertion passed on every run — while
+    // the LIVE `DELETE /api/admin/users/:userId` had no guard at all and would
+    // soft-delete a player with a withdrawal still in escrow.
+    //
+    // The dead file is gone and the entry points at the route that actually
+    // serves the delete. Asserting a money guard against unreachable code is
+    // worse than having no assertion: it reports the guard as present.
     name: 'account delete guard',
-    file: 'services/admin.service.js',
+    file: 'routes/admin/users.admin.routes.js',
     gates: [/if \(lockedBalance > 0\)/],
-    source: /const \{ lockedBalance \} = await getBalances\(/,
+    source: /const \{ lockedBalance \} = await getBalancesPaise\(/,
     forbidden: [/if \(user\.lockedBalance > 0\)/],
   },
   {

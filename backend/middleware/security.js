@@ -1,5 +1,6 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
+import { createHash } from 'node:crypto';
 import { db } from '#db';
 // F-3 (2026-07-10): counters shared across instances via Redis; graceful
 // per-instance fallback when Redis is absent/unreachable.
@@ -132,6 +133,120 @@ export const merchantAuthLimiter = rateLimit({
 // different: six digits is 10^6, so the same allowance that is generous for a
 // password is dangerous for an OTP. Keyed by account where known, so one
 // attacker cannot exhaust a shared-IP office's whole budget.
+/**
+ * The identity a per-actor limiter is supposed to count against.
+ *
+ * ── Every one of these limiters was keyed on `req.user?.id` ─────────────────
+ * `authenticate` sets `req.user` to what the users repository returns, and that
+ * object has `userId`. It has never had `id`. So the expression was ALWAYS
+ * undefined and every one of these limiters silently degraded to its fallback —
+ * the client IP — while its own comment said otherwise. `ipBetLimiter` reads
+ * "Track per user, not per IP (users may share IPs)" directly above the line
+ * that tracks per IP.
+ *
+ * Two consequences, in opposite directions:
+ *
+ *   Shared IPs are throttled together. This platform's players are on Indian
+ *   mobile carriers behind CGNAT, where thousands of subscribers leave through
+ *   one address. One heavy user exhausted the bucket for all of them.
+ *
+ *   Per-IP is not a limit at all for anyone willing to change IP. A mobile
+ *   reconnect is a new address, so `withdrawalLimiter`'s 5-per-hour and
+ *   `twoFactorLimiter`'s 5-failures-per-15-minutes could both be reset at will.
+ *   The second is the account-takeover guard: neither 2FA login route carries a
+ *   mobile in the body — both take `{ challengeToken, code }` — so an attacker
+ *   who already had the password could brute-force a six-digit code by cycling
+ *   addresses, which is precisely the scenario the handler below logs as
+ *   "possible account takeover in progress".
+ *
+ * The order is deliberate. A session is the strongest claim; the challenge
+ * token is next, because one token is one login attempt for one account and
+ * cannot be re-minted without passing the password limiter again; the IP is
+ * last, and only for a caller who has identified themselves in no other way.
+ */
+export function actorKey(req) {
+  if (req.user?.userId)   return `u:${req.user.userId}`;
+  if (req.merchantId)     return `m:${req.merchantId}`;
+  // Hashed: a rate-limit key becomes a Redis key name and appears in logs, and
+  // a challenge token is a bearer credential for the rest of its short life.
+  if (req.body?.challengeToken) {
+    return `c:${createHash('sha256').update(String(req.body.challengeToken)).digest('hex').slice(0, 32)}`;
+  }
+  if (req.body?.mobile)   return `p:${String(req.body.mobile)}`;
+  return ipKeyGenerator(req.ip);
+}
+
+/** The account a security audit row should name, or null when unidentified. */
+export function actorAccount(req) {
+  return req.user?.userId ?? req.merchantId ?? req.body?.mobile ?? null;
+}
+
+/**
+ * One credential submission per 10 seconds (owner directive 2026-09-08).
+ *
+ * ── Why this exists next to the failure budgets, not instead of them ────────
+ * `adminAuthLimiter`, `merchantAuthLimiter` and `twoFactorLimiter` all set
+ * `skipSuccessfulRequests`, so they count FAILURES and act as a lockout. This
+ * one counts EVERY attempt and acts as a pace. An attacker is only ever
+ * failing, so the budgets see them — but between two failures they may submit
+ * as fast as the network allows, and it is the RATE that decides whether an
+ * automated guess is worth attempting at all.
+ *
+ * A six-digit TOTP is a 10^6 space. Paced at one per 10 seconds a full sweep
+ * takes over three months, against codes that expire in thirty seconds.
+ *
+ * ── The response has to be answerable ───────────────────────────────────────
+ * A 429 that says "too many requests" and nothing else leaves a person to
+ * guess when to try again, and guessing means retrying immediately — which
+ * extends the window and makes the screen look broken rather than throttled.
+ * So this sends both `retryAfter` (whole seconds, for a human sentence) and
+ * `retryAt` (an absolute ISO instant, for a countdown that stays correct
+ * regardless of how long the response spent in flight or how far the client's
+ * clock has drifted from ours).
+ */
+export function createLoginPaceLimiter(bucket = 'default') {
+    return rateLimit({
+        // ── One bucket per STEP, not one for the whole sign-in ──────────────────
+        // A shared bucket makes the second step of a two-step sign-in collide with
+        // the first: request a code, type it eight seconds later, and the pace
+        // refuses the code the player just received. That is not a throttle, it is
+        // a login that cannot be completed by anyone who types quickly.
+        //
+        // Separate prefixes keep each step paced at one per 10 seconds on its own
+        // terms, which is what "one attempt per 10 seconds" actually means — a
+        // guesser is still capped at six code attempts a minute.
+        store: createRateLimitStore(`rl:pace:${bucket}:`),
+        ...RATE_LIMIT_TIERS.loginPace,
+        standardHeaders: true,
+        legacyHeaders: false,
+        // Every attempt, not only the failures — see above.
+        skipSuccessfulRequests: false,
+        keyGenerator: actorKey,
+        handler: (req, res) => {
+        // `resetTime` is what the store knows; the fallback is the full window,
+        // which over-states the wait rather than inviting an early retry.
+        const resetAt = req.rateLimit?.resetTime instanceof Date
+            ? req.rateLimit.resetTime
+            : new Date(Date.now() + RATE_LIMIT_TIERS.loginPace.windowMs);
+        const seconds = Math.max(1, Math.ceil((resetAt.getTime() - Date.now()) / 1000));
+        res.status(429).json({
+            success: false,
+            code: 'LOGIN_PACED',
+            message: `Too many attempts. Try again in ${seconds} second${seconds === 1 ? '' : 's'}.`,
+            retryAfter: seconds,
+            retryAt: resetAt.toISOString(),
+        });
+        },
+    });
+}
+
+/**
+ * The password / second-factor bucket. Named export because it is mounted by
+ * name in four places and a factory call at each mount would be four chances to
+ * pass a different bucket and split a limit nobody meant to split.
+ */
+export const loginPaceLimiter = createLoginPaceLimiter('credential');
+
 export const twoFactorLimiter = rateLimit({
     store: createRateLimitStore('rl:2fa:'),
     ...RATE_LIMIT_TIERS.twoFactor, // 5 FAILED / 15 min
@@ -143,7 +258,7 @@ export const twoFactorLimiter = rateLimit({
     standardHeaders: true,
     legacyHeaders: false,
     skipSuccessfulRequests: true,
-    keyGenerator: (req) => req.user?.id || req.body?.mobile || ipKeyGenerator(req.ip),
+    keyGenerator: actorKey,
     // Audited at the loudest level of any limiter here. Tripping THIS one means
     // the password was already accepted and only the second factor is being
     // guessed — i.e. a credential is already compromised and a takeover is in
@@ -151,7 +266,7 @@ export const twoFactorLimiter = rateLimit({
     // password, and it should never be inferred from a 429 count alone.
     handler: (req, res) => {
         console.error('🚨 SECURITY ALERT: 2FA code rate limit exceeded — possible account takeover in progress', {
-            ip: req.ip, userId: req.user?.id, path: req.path, timestamp: new Date().toISOString(),
+            ip: req.ip, account: actorAccount(req), path: req.path, timestamp: new Date().toISOString(),
         });
         db.audit.record({
             adminId: 'SYSTEM_SECURITY',
@@ -161,7 +276,7 @@ export const twoFactorLimiter = rateLimit({
             // column rather than a substring hunt through prose.
             details: {
                 message: `Repeated invalid 2FA codes from ${req.ip} — password already accepted`,
-                account: req.user?.id || req.body?.mobile || null,
+                account: actorAccount(req),
             },
             ip: req.ip,
         });
@@ -182,19 +297,11 @@ export const ipBetLimiter = rateLimit({
     },
     standardHeaders: true,
     legacyHeaders: false,
-    // Track per user, not per IP (users may share IPs)
-    keyGenerator: (req) => req.user?.id || ipKeyGenerator(req.ip)
+    // Track per user, not per IP (users may share IPs). This comment was
+    // already here, above a line that tracked per IP — see `actorKey`.
+    keyGenerator: actorKey
 });
 
-// This inexpensive IP-only guard deliberately runs before authentication on bet placement.
-export const unauthenticatedBetIpLimiter = rateLimit({
-    store: createRateLimitStore('rl:bet-unauth-ip:'),
-    ...RATE_LIMIT_TIERS.bet,
-    message: { success: false, message: 'Too many bet requests. Please wait a moment.' },
-    standardHeaders: true,
-    legacyHeaders: false,
-    keyGenerator: (req) => ipKeyGenerator(req.ip)
-});
 
 export const betLimiter = [ipBetLimiter, betBehaviorLimiter];
 
@@ -213,7 +320,9 @@ export const withdrawalLimiter = rateLimit({
     },
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req) => req.user?.id || ipKeyGenerator(req.ip)
+    // Per user. Keyed on the IP, a withdrawal cap is reset by a mobile
+    // reconnect — and this one guards money leaving the platform.
+    keyGenerator: actorKey
 });
 
 // ==================== GENERAL API RATE LIMITER ====================

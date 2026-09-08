@@ -28,23 +28,20 @@ const router = express.Router();
  * Never 404s and never errors on a fresh install — a platform with no row
  * configured is P2P-only, which is what a fresh install genuinely is.
  */
-router.get('/config', async (req, res) => {
-  try {
-    const cfg = await db.paymentConfig.getGatewayConfig();
-    res.json({
-      success: true,
-      config: {
-        activeMode: cfg.activeMode,
-        gatewayProvider: cfg.gatewayProvider,
-        gatewayEnabled: cfg.gatewayEnabled,
-        p2pEnabled: cfg.p2pEnabled,
-      },
-    });
-  } catch (err) {
-    console.error('GET /payment/config error:', err);
-    res.status(500).json({ success: false, message: 'Could not load payment configuration.' });
-  }
-});
+/*
+ * REMOVED — GET /api/payment/config.
+ *
+ * A public, narrowed projection of the gateway settings, for a client that
+ * wanted to know whether P2P or a gateway was live. No client ever did: none of
+ * the three panels reads activeMode, gatewayEnabled or p2pEnabled from anywhere,
+ * because the deposit flow decides server-side and hands the client whatever it
+ * needs. Admins read and write the real thing through /api/payment/admin/config.
+ *
+ * Deleted rather than left as a second read of settings that already have an
+ * owner. If a player-facing screen ever needs to branch on the mode, a
+ * projection is a few lines — carrying an unused one meanwhile is how it drifts
+ * from the settings it claims to describe.
+ */
 
 // Admin: the full settings, with credential PRESENCE but no credentials.
 router.get('/admin/config', authenticate, isAdminOrSubAdmin, async (req, res) => {

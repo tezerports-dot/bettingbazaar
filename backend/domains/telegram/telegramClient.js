@@ -231,21 +231,6 @@ export async function deleteWebhook(token) {
   return callApi(token, 'deleteWebhook', { drop_pending_updates: true });
 }
 
-/**
- * Send from a NAMED role rather than from the sign-in bot.
- *
- * Announcements go out through a broadcast bot so that a send storm cannot
- * exhaust the sign-in bot's rate limit. The Bot API limits per bot, so sharing
- * one bot between "welcome, here is your login link" and "here is today's
- * promotion to 10,000 people" means the promotion delays the logins.
- */
-export async function sendAs(role, chatId, text, extra = {}) {
-  const bot = await liveBot(role);
-  if (!bot?.token) return { ok: false, error: `no_live_${role}_bot` };
-  return callApi(bot.token, 'sendMessage', {
-    chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true, ...extra,
-  });
-}
 
 /** Confirm a token works and belongs to the username an admin typed. */
 export async function verifyBotToken(token) {

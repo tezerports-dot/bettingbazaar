@@ -151,76 +151,26 @@ export async function userActivity(userId) {
   };
 }
 
-/**
- * Money movement per day, by kind.
+/*
+ * financialSeries / bettingSeries were REMOVED 2026-09-08.
  *
- * `date_trunc` in the query rather than grouping in the application: pulling
- * every row back to bucket it in JavaScript is the same work done further from
- * the data, and it fails on the day the table is large enough to matter.
- */
-export async function financialSeries({ from, to }) {
-  const { rows } = await pgQuery(
-    `SELECT date_trunc('day', created_at)::date AS day,
-            tx_type,
-            COUNT(*)::int AS count,
-            COALESCE(SUM(ABS(amount_paise)), 0) AS total
-       FROM wallet_ledger
-      WHERE created_at >= $1 AND created_at <= $2
-      GROUP BY 1, 2
-      ORDER BY 1 ASC`,
-    [from, to], 'stats_financial_series',
-  );
-  return rows.map((r) => ({
-    date: r.day, type: r.tx_type, count: r.count, totalAmount: rupees(r.total),
-  }));
-}
-
-/** Staked and paid out per day — the betting half of the same picture. */
-export async function bettingSeries({ from, to }) {
-  const { rows } = await pgQuery(
-    `SELECT date_trunc('day', placed_at)::date AS day,
-            COUNT(*)::int AS bets,
-            COALESCE(SUM(stake_paise), 0)  AS staked,
-            COALESCE(SUM(payout_paise), 0) AS paid_out
-       FROM bets
-      WHERE placed_at >= $1 AND placed_at <= $2
-      GROUP BY 1 ORDER BY 1 ASC`,
-    [from, to], 'stats_betting_series',
-  );
-  return rows.map((r) => ({
-    date: r.day, bets: r.bets,
-    staked: rupees(r.staked), paidOut: rupees(r.paid_out),
-  }));
-}
-
-/**
- * The players who staked the most in a window — the leaderboard's source.
+ * Both were written for `services/admin.service.js.getFinancialData()`, a
+ * method on a class no route ever imported, so neither ever answered a request.
+ * They surfaced as dead the moment that file was deleted.
  *
- * Ranked on `bets`, which is where a stake actually is. A stored per-user total
- * would be a second copy of this number waiting to disagree with it.
+ * They are not being rewired, for two different reasons:
+ *
+ *   financialSeries summed `wallet_ledger` per day. `reporting.service.js`
+ *   already answers that question from the DOUBLE-ENTRY ledger, which is the
+ *   regulatory-grade source. Two daily financial series computed from two
+ *   different tables is a second owner for one value, and §1 is explicit that
+ *   the two drift and drift silently.
+ *
+ *   bettingSeries had no route, no screen and no caller at all. Building one
+ *   is work nobody asked for; the query is in git history if it is ever wanted.
  */
-export async function topPlayers({ from = null, to = null, limit = 20 } = {}) {
-  const where = [];
-  const params = [];
-  if (from) { params.push(from); where.push(`placed_at >= $${params.length}`); }
-  if (to) { params.push(to); where.push(`placed_at <= $${params.length}`); }
-  const { rows } = await pgQuery(
-    `SELECT user_id,
-            COUNT(*)::int AS bets,
-            COALESCE(SUM(stake_paise), 0)  AS staked,
-            COALESCE(SUM(payout_paise), 0) AS won
-       FROM bets ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-      GROUP BY user_id
-      ORDER BY staked DESC
-      LIMIT ${Math.min(Math.max(Number(limit) || 20, 1), 200)}`,
-    params, 'stats_top_players',
-  );
-  return rows.map((r) => ({
-    userId: r.user_id, bets: r.bets,
-    staked: rupees(r.staked), won: rupees(r.won),
-    net: rupees(Number(r.won) - Number(r.staked)),
-  }));
-}
+
+
 
 /**
  * The leaderboard, computed from settled bets.
@@ -699,32 +649,6 @@ export async function merchantPerformanceHistory(merchantId, { days = 30, timezo
   }));
 }
 
-/** Per-merchant throughput, derived from the orders they actually settled. */
-export async function merchantThroughput({ from = null, to = null, limit = 50 } = {}) {
-  const where = ["state = 'COMPLETED'", 'merchant_id IS NOT NULL'];
-  const params = [];
-  if (from) { params.push(from); where.push(`completed_at >= $${params.length}`); }
-  if (to) { params.push(to); where.push(`completed_at <= $${params.length}`); }
-  const { rows } = await pgQuery(
-    `SELECT merchant_id,
-            COUNT(*)::int AS orders,
-            COUNT(*) FILTER (WHERE order_type = 'DEPOSIT')::int    AS deposits,
-            COUNT(*) FILTER (WHERE order_type = 'WITHDRAWAL')::int AS withdrawals,
-            COALESCE(SUM(token_amount_paise), 0) AS volume,
-            AVG(merchant_response_minutes)       AS avg_response
-       FROM order_states WHERE ${where.join(' AND ')}
-      GROUP BY merchant_id
-      ORDER BY volume DESC
-      LIMIT ${Math.min(Math.max(Number(limit) || 50, 1), 200)}`,
-    params, 'stats_merchant_throughput',
-  );
-  return rows.map((r) => ({
-    merchantId: r.merchant_id, orders: r.orders,
-    deposits: r.deposits, withdrawals: r.withdrawals,
-    volume: rupees(r.volume),
-    avgResponseMinutes: r.avg_response === null ? null : Number(r.avg_response),
-  }));
-}
 
 /**
  * One merchant's earnings — today, over a range, and split by direction.
@@ -877,22 +801,6 @@ export async function merchantQueueCounts(merchantId) {
   return rows[0];
 }
 
-/** How many rows each table holds — the operator's "is anything there?" view. */
-export async function tableCounts(tables = []) {
-  const out = {};
-  for (const table of tables) {
-    // The name comes from a caller-supplied list, so it is validated against
-    // the catalogue rather than interpolated on trust.
-    const { rows: exists } = await pgQuery(
-      `SELECT 1 FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_name = $1`, [table], 'stats_table_check',
-    );
-    if (!exists.length) { out[table] = null; continue; }
-    const { rows } = await pgQuery(`SELECT COUNT(*)::int AS n FROM "${table}"`, [], 'stats_table_count');
-    out[table] = int(rows[0].n);
-  }
-  return out;
-}
 
 // ── The admin analytics dashboards ──────────────────────────────────────────
 

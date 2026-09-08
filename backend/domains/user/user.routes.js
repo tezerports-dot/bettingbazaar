@@ -53,6 +53,8 @@ import { buildPublicKycData } from './kycPublicData.js';
 import { publicCycleView } from '../markets/cyclePublicView.js';
 import { fetchCycleHistory } from '../markets/cycleHistory.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
+import { systemConfigPayload } from '../configuration/systemConfigPayload.js';
+import { INR_TOKEN_RATE } from '../configuration/tokenRates.js';
 
 const router = express.Router();
 
@@ -478,35 +480,11 @@ router.get('/user/:userId/transactions', authenticate, async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/v1/system/config', async (req, res) => {
   try {
-    const config = await getSystemConfig();
-
-    res.json({
-      success: true,
-      config: {
-        // Bet limits — stored in betLimits subdoc, NOT config.value
-        minBet:           config?.betLimits?.thirtyMin?.min || 10,
-        maxBet:           config?.betLimits?.thirtyMin?.max || 100000,
-        maxFullDayBet:    config?.betLimits?.fullDay?.max   || 500000,
-        // Deposit/withdrawal limits — top-level fields on SystemConfig
-        minDeposit:       config?.minDeposit       || 100,
-        maxDeposit:       config?.maxDeposit       || 50000,
-        minWithdrawal:    config?.minWithdrawal    || 500  /* schema default — was incorrectly 100 (GOVERNANCE.md M-5) */,
-        maxWithdrawal:    config?.maxWithdrawal    || 50000,
-        // Fixed 1:1 conversion (Phase 006 flattening, 2026-07-08)
-        tokenBuyRate:     1,
-        tokenSellRate:    1,
-        // Admin-owned (Business Config Audit 2026-07-11) — was hardcoded 2.
-        payoutMultiplier: config?.payoutMultiplier ?? 2,
-        maintenanceMode:  config?.maintenanceMode  || false,
-        maintenanceMessage: config?.maintenanceMessage || '',
-        // Footer navigation (2026-07-13) — schema default: the historical five tabs
-        footerPages:      config?.footerPages?.length ? config.footerPages : ['home', 'results', 'winners', 'promo', 'profile'],
-        minVersion:       config?.minVersion       || '1.0.0',
-        latestVersion:    config?.latestVersion    || '1.0.0',
-        kycRequired:      config?.kycRequired      !== false,
-        registrationEnabled: config?.registrationEnabled !== false,
-      }
-    });
+    // One owner for this payload — see domains/configuration/systemConfigPayload.js.
+    // The literal that used to sit here was a copy of the socket's, written with
+    // `||` where that one used `??`, so an operator who set a limit to 0 ("no
+    // minimum") was served the default over HTTP and the real 0 over the socket.
+    res.json({ success: true, config: systemConfigPayload(await getSystemConfig()) });
   } catch (error) {
     console.error('System config error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch config' });
@@ -755,9 +733,9 @@ router.get('/v1/tokens/rate', async (req, res) => {
     const config = await getSystemConfig();
     res.json({
       success:        true,
-      buyRate:        1,
-      sellRate:       1,
-      ratesConfigured: true, // rates are no longer configurable — always 1:1
+      buyRate:        INR_TOKEN_RATE,
+      sellRate:       INR_TOKEN_RATE,
+      ratesConfigured: true, // the INR peg is not configurable — see tokenRates.js
       minExchange:    config?.minWithdrawal ?? 500  /* schema default — was incorrectly 100 (GOVERNANCE.md M-5) */,
       maxExchange:    config?.maxWithdrawal ?? 50000,
       currency:       'INR',
@@ -778,15 +756,93 @@ router.get('/v1/token/rates', async (req, res) => {
     const config = await getSystemConfig();
     res.json({
       success:  true,
-      rates: { buyRate: 1, sellRate: 1, updatedAt: null },
+      rates: { buyRate: INR_TOKEN_RATE, sellRate: INR_TOKEN_RATE, updatedAt: null },
       minExchange: config?.minWithdrawal ?? 500  /* schema default — was incorrectly 100 (GOVERNANCE.md M-5) */,
       maxExchange: config?.maxWithdrawal ?? 50000,
       // Flat fields for back-compat
-      buyRate:  1,
-      sellRate: 1,
+      buyRate:  INR_TOKEN_RATE,
+      sellRate: INR_TOKEN_RATE,
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ── Notification inbox ──────────────────────────────────────────────────────
+/**
+ * The read side of a table the platform was already writing to.
+ *
+ * `notify()` persists a row on real events — an admin blocking or unblocking an
+ * account is the live one — and the IN_APP channel's comment described it as
+ * going to "the existing bell-icon inbox all three panels already read". No
+ * panel read it. There was no route to read it THROUGH. So a player was blocked,
+ * the system carefully recorded the explanation meant for them, and they could
+ * never see it: they simply found themselves locked out.
+ *
+ * Ownership is in the WHERE clause of every one of these, not in a check
+ * afterwards — `listNotifications`, `unreadCount` and `markRead` all take the
+ * user id and scope by it, so a caller cannot read or acknowledge somebody
+ * else's notification even by id.
+ */
+router.get('/user/notifications', authenticate, async (req, res) => {
+  try {
+    const unreadOnly = String(req.query.unreadOnly || '') === 'true';
+    // The repository clamps this to 1..200; parsing here keeps a bad query
+    // string from reaching it as NaN.
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+    const [notifications, unread] = await Promise.all([
+      db.engagement.listNotifications(String(req.user.userId), { unreadOnly, limit }),
+      db.engagement.unreadCount(String(req.user.userId)),
+    ]);
+    res.json({ success: true, notifications, unreadCount: unread });
+  } catch (err) {
+    console.error('GET /user/notifications error:', err);
+    res.status(500).json({ success: false, message: 'Failed to load notifications' });
+  }
+});
+
+/**
+ * Just the badge number.
+ *
+ * Separate from the list because a bell icon polls this and rendering the inbox
+ * is the rarer act — asking for fifty rows to show one integer is the kind of
+ * read that looks free until there are players.
+ */
+router.get('/user/notifications/unread-count', authenticate, async (req, res) => {
+  try {
+    res.json({ success: true, unreadCount: await db.engagement.unreadCount(String(req.user.userId)) });
+  } catch (err) {
+    console.error('GET /user/notifications/unread-count error:', err);
+    res.status(500).json({ success: false, message: 'Failed to load unread count' });
+  }
+});
+
+/**
+ * Acknowledge. `ids` marks those; omitting it marks everything unread.
+ *
+ * Returns how many rows actually changed, so a caller can tell "marked four"
+ * from "those were already read" — and so an id belonging to somebody else
+ * reports 0 rather than succeeding silently.
+ */
+router.post('/user/notifications/read', authenticate, async (req, res) => {
+  try {
+    const raw = req.body?.ids;
+    if (raw !== undefined && !Array.isArray(raw)) {
+      return res.status(400).json({ success: false, message: 'ids must be an array when provided' });
+    }
+    const ids = Array.isArray(raw)
+      ? raw.map(Number).filter((n) => Number.isInteger(n) && n > 0)
+      : null;
+    // An array that contained nothing usable marks nothing, and needs no guard
+    // here to do it: `markRead` takes the ids branch for ANY array — `[]`
+    // included — so the statement becomes `id = ANY('{}')` and matches no row.
+    // Only a null `ids` means "everything unread". An early return for the
+    // empty case would be a second place stating the same rule.
+    const marked = await db.engagement.markRead(String(req.user.userId), { ids });
+    res.json({ success: true, marked });
+  } catch (err) {
+    console.error('POST /user/notifications/read error:', err);
+    res.status(500).json({ success: false, message: 'Failed to mark notifications read' });
   }
 });
 

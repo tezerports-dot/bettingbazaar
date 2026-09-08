@@ -297,21 +297,6 @@ export async function recordBonus({ bonusId = null, userId, bonusType, amountRup
     : { ok: true, idempotent: true };
 }
 
-export async function listBonuses({ userId = null, bonusType = null, limit = 100 } = {}) {
-  const where = []; const params = [];
-  if (userId) { params.push(String(userId)); where.push(`user_id = $${params.length}`); }
-  if (bonusType) { params.push(String(bonusType)); where.push(`bonus_type = $${params.length}`); }
-  const { rows } = await pgQuery(
-    `SELECT * FROM bonus_records ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-      ORDER BY created_at DESC LIMIT ${Math.min(Math.max(Number(limit) || 100, 1), 500)}`,
-    params, 'bonus_list',
-  );
-  return rows.map((r) => ({
-    id: Number(r.id), bonusId: r.bonus_id, userId: r.user_id,
-    type: r.bonus_type, amount: paiseToRupees(Number(r.amount_paise)),
-    description: r.description, refId: r.ref_id, createdAt: r.created_at,
-  }));
-}
 
 /**
  * One page of a player's bonus history, with its total from the same query.
@@ -375,19 +360,6 @@ export async function notify({
   return toNotification(rows[0]);
 }
 
-/** Send one notification to many players in a single round trip. */
-export async function notifyMany(userIds, spec) {
-  const ids = [...new Set((userIds || []).filter(Boolean).map(String))];
-  if (!ids.length) return 0;
-  const { rowCount } = await pgQuery(
-    `INSERT INTO notifications (user_id, kind, title, message, action_url, action_label, expires_at)
-     SELECT uid, $2, $3, $4, $5, $6, $7 FROM unnest($1::text[]) AS uid`,
-    [ids, String(spec.kind || 'INFO'), String(spec.title), String(spec.message || ''),
-      spec.actionUrl ?? null, spec.actionLabel ?? null, spec.expiresAt ?? null],
-    'notification_broadcast',
-  );
-  return rowCount;
-}
 
 /** A player's inbox. Expired notifications are filtered by the READ. */
 export async function listNotifications(userId, { unreadOnly = false, limit = 50 } = {}) {

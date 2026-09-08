@@ -24,7 +24,7 @@ import {
   listIdentitiesForUser,
   setChannelStatus, deactivateContact,
   getPendingLink, getPendingAadhaar, upsertPendingLink, deletePendingLink,
-  issueLoginToken, consumeLoginToken, sweepExpired,
+  issueLoginToken, consumeLoginToken, sweepExpired, issueLoginCode,
 } from '../repositories/telegram.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -423,11 +423,26 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
       await pgQuery(`UPDATE telegram_login_tokens SET expires_at = now() - interval '1 s'
                       WHERE token_hash = 'dead'`);
 
-      expect(await sweepExpired()).toEqual({ pendingLinks: 1, loginTokens: 1 });
+      // Sign-in codes are swept on the same pass and counted separately. The
+      // exact-shape assertion is deliberate: a new expiring table added without
+      // a count here would be reclaimed silently, and "how much did we delete"
+      // would quietly stop describing the sweep.
+      await issueLoginCode({
+        mobileHash: 'live-code', codeHash: 'x', userId: 'u-1',
+        telegramUserId: 't-1', ttlSeconds: 300,
+      });
+      await issueLoginCode({
+        mobileHash: 'dead-code', codeHash: 'y', userId: 'u-1',
+        telegramUserId: 't-1', ttlSeconds: 300,
+      });
+      await pgQuery(`UPDATE telegram_login_codes SET expires_at = now() - interval '1 s'
+                      WHERE mobile_hash = 'dead-code'`);
+
+      expect(await sweepExpired()).toEqual({ pendingLinks: 1, loginTokens: 1, loginCodes: 1 });
       expect(await getPendingLink('t-live')).not.toBeNull();
       // Reconstructed per pass: a second pass finds nothing, rather than
       // reporting a total it accumulated.
-      expect(await sweepExpired()).toEqual({ pendingLinks: 0, loginTokens: 0 });
+      expect(await sweepExpired()).toEqual({ pendingLinks: 0, loginTokens: 0, loginCodes: 0 });
     });
   });
 });

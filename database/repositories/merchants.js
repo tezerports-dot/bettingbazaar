@@ -607,6 +607,17 @@ const NESTED_TO_COLUMN = Object.freeze({
   'limits.maxDeposit': 'max_deposit_paise',
   'limits.minWithdraw': 'min_withdraw_paise',
   'limits.maxWithdraw': 'max_withdraw_paise',
+  // The order range, under the name every OTHER part of the system uses for
+  // it. `toMerchant` returns `minOrder`/`maxOrder`, merchant assignment filters
+  // candidates on `minOrder`/`maxOrder`, and the admin route sends
+  // `minOrder`/`maxOrder` — but the write path derived its names from the
+  // column list, so it accepted only `minOrderPaise`. Every call to
+  // PUT /api/admin/merchants/:merchantId/limits therefore threw "refusing to
+  // write unknown or protected column(s)" and 500'd, and the panel showed
+  // "Failed to save limits" on a save that had never been possible. A field
+  // must be writable under the name it is readable under.
+  minOrder: 'min_order_paise',
+  maxOrder: 'max_order_paise',
 });
 
 /** Columns holding money, so a caller passing rupees gets paise stored. */

@@ -251,3 +251,33 @@ describe('ShareModal — chrome', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('ShareModal — the iOS link', () => {
+  /**
+   * iosUrl has been editable in System Settings → App Distribution the whole
+   * time with nothing reading it: an operator could fill it in and no screen
+   * anywhere changed. The button is conditional because /api/download/ios
+   * answers 404 with "Use Safari → Add to Home Screen" when unset, so an
+   * unconditional one would offer a download that does not exist.
+   */
+  it('is hidden when no iosUrl is configured', async () => {
+    await show();
+    expect(screen.queryByText('iOS')).toBeNull();
+  });
+
+  it('appears and resolves against the API origin once configured', async () => {
+    config = { ...config, iosUrl: 'https://apps.apple.com/app/id1' } as SystemConfigData;
+    await show();
+    expect(screen.getByText('iOS')).toBeInTheDocument();
+    const buttons = screen.getAllByRole('button', { name: /Download/i });
+    await userEvent.click(buttons[buttons.length - 1]);
+    expect(open).toHaveBeenCalledWith(`${API_ORIGIN}/api/download/ios`, '_blank');
+  });
+
+  it('still offers Android when only Android is configured', async () => {
+    // The two are independent; adding iOS must not gate the APK behind it.
+    await show();
+    await userEvent.click(screen.getByRole('button', { name: /Download/i }));
+    expect(open).toHaveBeenCalledWith(`${API_ORIGIN}/api/download/android`, '_blank');
+  });
+});

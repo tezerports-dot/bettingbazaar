@@ -33,6 +33,8 @@
  */
 import crypto from 'crypto';
 import { db } from '#db';
+// One owner for what a token is worth: the INR peg, and the two USDT legs.
+import { INR_TOKEN_RATE, rateForMerchant } from '../configuration/tokenRates.js';
 import { debitWinningsForWithdrawal, refundWithdrawal, getBalances } from '../wallet/walletAuthority.service.js';
 import { selectBestMerchant } from '../merchant/merchantScoring.service.js';
 import { merchantTypeOf } from '../merchant/merchantCurrency.js';
@@ -46,7 +48,6 @@ import {
   cancelOrder as cancelOrderState,
 } from './orderLifecycle.service.js';
 import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
-import cdnService from '../../services/cdn.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 
 // ─── Shared admin SSE payload ─────────────────────────────────────────────────
@@ -117,6 +118,23 @@ async function tryAssignMerchant(order) {
   const merchant = await selectBestMerchant(order.type, order.tokenAmount, order.currency);
   if (!merchant) return false;
 
+  // What this merchant settles at. An INR merchant is the peg; a USDT merchant
+  // is the admin's merchant-to-user rate, which is why the rate is stamped HERE
+  // and not at creation — the rail is not known until a merchant is chosen.
+  //
+  // No fallback. The USDT rate defaults to 0 and 0 is not a rate: pricing with
+  // it divides by zero, and substituting 1 would sell tokens at the INR peg to
+  // a merchant settling in USDT. If the admin has not set one, the order stays
+  // in the queue rather than being priced wrong.
+  const rateUsed = rateForMerchant(merchant, await getSystemConfig());
+  if (rateUsed === null) {
+    console.error(
+      `[assignment] ${order.orderId}: merchant ${merchant.merchantId} settles in USDT and `
+      + 'usdtPricing.userMerchantBuyInr is not set — leaving the order queued rather than pricing it at the INR peg',
+    );
+    return false;
+  }
+
   const expiresAt = new Date(Date.now() + await getOrderExpiryMs()); // admin-configurable window
   const snapshot  = buildMerchantSnapshot(merchant, expiresAt);
 
@@ -131,6 +149,7 @@ async function tryAssignMerchant(order) {
       assignedAt:       new Date(),
       expiresAt,
       merchantSnapshot: snapshot,
+      rateUsed,
     },
   });
   if (!moved.ok || moved.idempotent) return false;
@@ -139,6 +158,7 @@ async function tryAssignMerchant(order) {
   // emitters below describe the row that exists rather than a hoped-for one.
   Object.assign(order, {
     merchantId: merchant.merchantId,
+    rateUsed,
     status: 'ASSIGNED',
     assignedAt: moved.order.assignedAt,
     expiresAt,
@@ -256,7 +276,9 @@ export async function createDepositOrder(userId, tokenAmount) {
   // Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08): 1 BB
   // token = ₹1, no buy/sell spread. Merchant earnings come from the
   // cycle-completion Merchant Performance Bonus, never from a rate spread.
-  const fiatAmount = tokenAmount;
+  // The INR peg: one token, one rupee. Named rather than a bare 1 so the
+  // rule is legible and has one owner.
+  const fiatAmount = tokenAmount * INR_TOKEN_RATE;
 
   // ── The split, computed HERE ────────────────────────────────────────────
   // This was a pre-save hook on the order model: invisible, and a second
@@ -276,7 +298,9 @@ export async function createDepositOrder(userId, tokenAmount) {
     type:              'DEPOSIT',
     tokenAmountRupees: tokenAmount,
     fiatAmountRupees:  fiatAmount,
-    rateUsed:          1,
+    // Stamped again at assignment, where the merchant's rail is known: a
+    // USDT merchant settles at the admin's merchant-to-user rate, not the peg.
+    rateUsed:          INR_TOKEN_RATE,
     merchantProfit:    0,
     depositAllocation: split.depositAllocation,
     reserveAllocation: split.reserveAllocation,
@@ -389,7 +413,7 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
     tokenAmountRupees: tokenAmount,
     fiatAmountRupees:  fiatAmount,
     payoutFee,
-    rateUsed:          1,
+    rateUsed:          INR_TOKEN_RATE,
     escrowLocked:      true,
     escrowStatus:      'LOCKED',
     escrowAmount:      tokenAmount,
@@ -444,9 +468,30 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// markOrderPaid  — user submits UTR + screenshot (DEPOSIT only)
+// markOrderPaid  — user submits the UTR (DEPOSIT only)
+//
+// ── The screenshot is gone, deliberately ─────────────────────────────────────
+// A screenshot proved nothing. It is trivially forged, nobody's approval
+// depended on it, and the merchant confirms against their own bank statement —
+// the UTR is what they match on, and it is the only piece of this submission
+// the platform can actually verify.
+//
+// It was not free, either. It is a user-supplied image, uploaded to durable
+// storage, retained, and carrying whatever else happened to be on the player's
+// screen. Collecting an identifying artefact that no decision reads is exactly
+// the data a platform should not hold.
+//
+// What did the real work is still here and unchanged: `markUTRAsUsed` claims
+// the reference in ONE statement, so the same UTR cannot be spent on two
+// orders, and the state transition is the gate for the response.
+//
+// The `proofScreenshot` COLUMN stays: orders that already carry an image still
+// display it and the retention job still expires it. Only the collection of new
+// ones is gone, and with it the presign route that produced the keys — so an
+// optional key parameter here would be a parameter nothing on the platform can
+// now supply.
 // ═════════════════════════════════════════════════════════════════════════════
-export async function markOrderPaid(userId, orderId, utrNumber, proofFileKey, proofCdnUrl = null) {
+export async function markOrderPaid(userId, orderId, utrNumber) {
   const order = await db.orders.getOrderRecord(orderId);
   if (!order) throw Object.assign(new Error('Order not found'), { status: 404 });
 
@@ -461,13 +506,6 @@ export async function markOrderPaid(userId, orderId, utrNumber, proofFileKey, pr
   if (normalizedUTR.length < 12)
     throw Object.assign(new Error('UTR must be at least 12 characters'), { status: 400 });
 
-  const verifiedProof = await cdnService.verifyUploadedObject({
-    fileKey: proofFileKey.trim(),
-    cdnUrl: proofCdnUrl || undefined,
-    expectedUserId: userId.toString(),
-    expectedOrderId: order.orderId,
-    expectedCategory: 'payment-proof',
-  });
 
   // The claim decides in ONE statement. It used to be a check followed by an
   // insert, so two submissions of the same reference arriving together both
@@ -496,7 +534,6 @@ export async function markOrderPaid(userId, orderId, utrNumber, proofFileKey, pr
     expectFrom: ['ASSIGNED', 'PROCESSING'],
     set: {
       utrNumber:       normalizedUTR,
-      proofScreenshot: verifiedProof.cdnUrl,
       paidAt:          new Date(),
     },
   });
@@ -511,7 +548,6 @@ export async function markOrderPaid(userId, orderId, utrNumber, proofFileKey, pr
   const paidOrder = paid.order ?? order;
   order.status          = 'PAID';
   order.utrNumber       = normalizedUTR;
-  order.proofScreenshot = verifiedProof.cdnUrl;
   order.paidAt          = paidOrder.paidAt;
 
   if (order.merchantId) {
@@ -520,7 +556,9 @@ export async function markOrderPaid(userId, orderId, utrNumber, proofFileKey, pr
       _id:             order.orderId,
       status:          'PAID',
       utrNumber:       normalizedUTR,
-      proofScreenshot: order.proofScreenshot,
+      // Whatever the order already carries, which is nothing for a new one —
+      // the merchant matches on the UTR, not on an image.
+      proofScreenshot: order.proofScreenshot ?? null,
       fiatAmount:      order.fiatAmount,
       tokenAmount:     order.tokenAmount,
       paidAt:          order.paidAt,

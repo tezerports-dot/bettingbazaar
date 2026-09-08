@@ -182,6 +182,21 @@ export const users = {
     return res.data;
   },
 
+  // The review queue a merchant rejection feeds. `/users/flagged` is declared
+  // ABOVE `/users/:userId` on the server — reordered, this path resolves to a
+  // player id of "flagged" and 404s into an empty screen.
+  getFlagged: async (limit = 100) => {
+    const res = await api.get<any>('/api/admin/users/flagged', { params: { limit } });
+    return res.data;
+  },
+
+  // "Reviewed, no action." Separate from unblock, which needs a blocked player
+  // — and under the current rule a flagged player is not blocked.
+  clearFlag: async (userId: string, resetWarnings = false, note?: string) => {
+    const res = await api.post(`/api/admin/users/${userId}/clear-flag`, { resetWarnings, note });
+    return res.data;
+  },
+
   unblockUser: async (userId: string) => {
     const res = await api.put(`/api/admin/users/${userId}/unblock`);
     return res.data;
@@ -290,9 +305,13 @@ export const merchants = {
   },
 
   getOrders: async (merchantId: string) => {
-    const res = await api.get<any>(`/api/admin/merchants/${merchantId}/orders`);
-    if (res.data?.success && res.data?.orders) {
-      return { success: true, data: res.data.orders };
+    // /transactions, not /orders — the latter has never been served, so the
+    // merchant detail drawer's Orders tab caught the 404 and rendered "No
+    // orders found" for every merchant, however busy. The handler returns
+    // `transactions`, carrying exactly the fields that tab renders.
+    const res = await api.get<any>(`/api/admin/merchants/${merchantId}/transactions`);
+    if (res.data?.success && res.data?.transactions) {
+      return { success: true, data: res.data.transactions };
     }
     return res.data;
   },
@@ -725,6 +744,23 @@ export const subAdmins = {
     return res.data;
   },
 
+  /**
+   * Queue-manager authority.
+   *
+   * A queue manager assigns payment orders to merchants, which decides where a
+   * player's money is routed. Both endpoints existed and nothing called them,
+   * so the grant could only be made by writing the row by hand.
+   */
+  listQueueManagers: async () => {
+    const res = await api.get<any>('/api/admin/queue-managers');
+    return res.data;
+  },
+
+  setQueueManager: async (userId: string, enable: boolean) => {
+    const res = await api.post(`/api/admin/users/${userId}/queue-manager`, { enable });
+    return res.data;
+  },
+
   delete: async (subAdminId: string) => {
     const res = await api.delete(`/api/admin/sub-admins/${subAdminId}`);
     return res.data;
@@ -949,19 +985,19 @@ export const system = {
 // ─── DISPUTES ──────────────────────────────────────────────────────────────
 export const disputes = {
   getAll: async (status?: string) => {
-    const res = await api.get<any>('/api/admin/disputes', { params: { status } });
+    const res = await api.get<any>('/api/admin/dispute-orders', { params: { status } });
     return res.data;
   },
   getOne: async (id: string) => {
-    const res = await api.get<any>(`/api/admin/disputes/${id}`);
+    const res = await api.get<any>(`/api/admin/dispute-orders/${id}`);
     return res.data;
   },
   resolve: async (id: string, data: { decision: string; resolution: string; refundAmount?: number; penaltyAmount?: number }) => {
-    const res = await api.post(`/api/admin/disputes/${id}/resolve`, data);
+    const res = await api.post(`/api/admin/dispute-orders/${id}/resolve`, data);
     return res.data;
   },
   escalate: async (id: string, notes: string) => {
-    const res = await api.post(`/api/admin/disputes/${id}/escalate`, { notes });
+    const res = await api.post(`/api/admin/dispute-orders/${id}/escalate`, { notes });
     return res.data;
   },
 };
@@ -986,17 +1022,6 @@ export const utr = {
   },
 };
 
-// ─── PHANTOM AGENTS ────────────────────────────────────────────────────────
-export const phantomAgents = {
-  getAll: async () => {
-    const res = await api.get<any>('/api/admin/phantom-agents');
-    return res.data;
-  },
-  setAccess: async (userId: string, accessLevel: 'NONE' | '30_MIN' | 'FULL_DAY' | 'BOTH') => {
-    const res = await api.post(`/api/admin/users/${userId}/phantom-access`, { accessLevel });
-    return res.data;
-  },
-};
 
 // --- ERROR REPORTS --------------------------------------------------------
 
@@ -1166,7 +1191,6 @@ export default {
   system,
   disputes,
   utr,
-  phantomAgents,
   errorReports,
   appAssets,
   orderActions,

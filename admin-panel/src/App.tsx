@@ -6,12 +6,15 @@ import { Layout } from './components/Layout';
 import { Login } from './Pages/Login';
 import { Dashboard } from './Pages/Dashboard';
 import { UsersList } from './Pages/Users/UsersList';
+import { FlaggedPlayers } from './Pages/Users/FlaggedPlayers';
 import { MerchantsList } from './Pages/Merchants/MerchantsList';
 import { LiveCycles } from './Pages/Cycles/LiveCycles';
 import { CycleHistory } from './Pages/Cycles/CycleHistory';
 import { DepositPolicy } from './Pages/BusinessPolicy/DepositPolicy';
 import { TransactionsList } from './Pages/Finance/TransactionsList';
 import { ProfitLoss } from './Pages/Finance/ProfitLoss';
+import { TokenFlow } from './Pages/Finance/TokenFlow';
+import { SupportAssistant } from './Pages/Support/SupportAssistant';
 import { QueueDashboard } from './Pages/QueueManager/QueueDashboard';
 import { KYCQueue } from './Pages/KYC/KYCQueue';
 import { KycBulk } from './Pages/KYC/KycBulk';
@@ -195,6 +198,14 @@ const App: React.FC = () => {
           </PermRoute>
         } />
 
+        {/* Flagged players — the review queue a merchant rejection feeds.
+            The rejection warns and flags; the block is decided here. */}
+        <Route path="/users/flagged" element={
+          <PermRoute permission="canManageUsers">
+            <Layout><FlaggedPlayers /></Layout>
+          </PermRoute>
+        } />
+
         {/* Merchants — canManageMerchants */}
         <Route path="/merchants" element={
           <PermRoute permission="canManageMerchants">
@@ -279,6 +290,14 @@ const App: React.FC = () => {
           <PermRoute permission="canViewAnalytics">
             <Layout><OperationsOverview /></Layout>
           </PermRoute>
+        } />
+        <Route path="/token-flow" element={
+          <PermRoute permission="canViewAnalytics">
+            <Layout><TokenFlow /></Layout>
+          </PermRoute>
+        } />
+        <Route path="/support-assistant" element={
+          <AdminOnly><Layout><SupportAssistant /></Layout></AdminOnly>
         } />
         <Route path="/reports" element={
           <PermRoute permission="canViewAnalytics">

@@ -7,7 +7,11 @@
 
 import { express, authenticate, hasPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
-import { creditDeposit, creditWinnings } from '../wallet/walletAuthority.service.js';
+import { creditDeposit, creditReserve, creditWinnings } from '../wallet/walletAuthority.service.js';
+// The one owner of a confirmed deposit's money movement. The merchant confirm
+// route calls the same function; that is what keeps the two from disagreeing.
+import { moveDepositMoney } from './depositCredit.js';
+import { releaseUTR } from '../../middleware/utrValidation.js';
 // The order state machine. Every status change goes through here so an illegal
 // move is refused by the database rather than by whichever check ran first.
 import { completeOrder, cancelOrder } from './orderLifecycle.service.js';
@@ -46,32 +50,58 @@ router.post('/payment-orders/:orderId/action', authenticate, hasPermission('canR
       return res.status(400).json({ success: false, message: `Order already ${order.status}` });
     }
 
-    // The TRANSITION IS THE GATE, and it runs before the money.
+    // ── APPROVE on a deposit: money BEFORE status ───────────────────────────
+    // The merchant must be debited for what the player is credited, or an
+    // approval mints tokens. This route used to credit `tokenAmount` in one
+    // lump, never debit the merchant and never release the UTR, so the books
+    // did not close and nothing said so. It now moves the money through the
+    // same function the merchant confirm route uses.
     //
-    // This used to credit first and set the status afterwards, guarded only by
-    // the `order.status` read above — a stale value by the time `save()` ran.
-    // Two admins double-clicking APPROVE both passed that read; only
-    // creditDeposit's own idempotency key stopped the second credit, which
-    // means the protection lived in a different domain from the decision.
+    // The order is deliberate: refusing (a merchant who cannot cover it) is the
+    // ordinary case and must refuse before the order advances. Every movement
+    // is keyed on the order id, so a crash between the money and the transition
+    // leaves a retryable PAID order rather than a COMPLETED one that paid
+    // nobody.
+    let deposited = null;
+    if (action === 'APPROVE' && order.type === 'DEPOSIT') {
+      deposited = await moveDepositMoney(order, {
+        debitMerchantTokens, creditDeposit, creditReserve, releaseUTR,
+      });
+      if (!deposited.ok) {
+        return res.status(400).json({ success: false, message: 'Merchant insufficient token balance' });
+      }
+    }
+
+    // ── The TRANSITION IS THE GATE for the RESPONSE ─────────────────────────
+    // Two admins double-clicking both replay keyed no-op movements above, and
+    // exactly one matches a row here and is told the action succeeded.
     //
-    // Now the guarded update decides. Exactly one caller matches a row, and
-    // only that caller goes on to move money.
+    // `adminNote` is not a settable field — `setOrderFields` refuses it, and it
+    // threw on EVERY call, so this route 500'd on every approve, reject and
+    // cancel an admin has ever clicked. The reason belongs in `cancelReason`,
+    // which the allowlist does carry.
     let moved;
     if (action === 'APPROVE') {
       moved = await completeOrder(order._id, {
-        set: { completedAt: new Date(), adminNote: reason || 'Force-approved by admin' },
+        set: { completedAt: new Date(), approvedBy: req.user.userId, approvedAt: new Date() },
       });
     } else {
       moved = await cancelOrder(order._id, {
         set: {
           cancelledAt: new Date(),
-          cancelReason: reason || 'Rejected by admin',
-          adminNote: reason || 'Rejected by admin',
+          cancelReason: reason || `${action === 'REJECT' ? 'Rejected' : 'Cancelled'} by admin`,
+          rejectedBy: req.user.userId,
         },
       });
     }
 
     if (!moved.ok) {
+      if (deposited?.ok) {
+        // The money moved and the order would not advance. A repair case, not a
+        // rollback: the movements are keyed, so the next approve replays them as
+        // no-ops. Loud rather than silent.
+        console.error(`[admin-action] ${order.orderId} money moved but transition refused:`, moved.reason);
+      }
       // An illegal move is a 409, not a 500: the request was understood and
       // refused because the order is not in a state this action is valid from.
       return res.status(409).json({
@@ -81,15 +111,25 @@ router.post('/payment-orders/:orderId/action', authenticate, hasPermission('canR
       });
     }
 
-    // `idempotent` means a previous delivery already made this move. The money
-    // side is idempotent on its own key, so re-running it is harmless — but not
-    // re-running it is clearer about what actually happened.
-    if (!moved.idempotent) {
-      if (action === 'APPROVE' && order.type === 'DEPOSIT') {
-        await creditDeposit(order.userId, order.tokenAmount, `Admin-approved deposit: ${order.orderId}`);
-      } else if (action !== 'APPROVE' && order.type === 'WITHDRAWAL') {
-        await creditWinnings(order.userId, order.tokenAmount, `Cancelled withdrawal refund: ${order.orderId}`);
-      }
+    // ── Returning a rejected withdrawal ─────────────────────────────────────
+    // The player's winnings were debited when the withdrawal was admitted, so
+    // cancelling without refunding is money taken and not returned.
+    //
+    // `creditWinnings` requires a deterministic txId as its SIXTH argument and
+    // throws without one; this passed three, so the throw landed AFTER the
+    // cancel had committed — the order read CANCELLED and the player never got
+    // their money back. The key is derived from the order, so a replayed
+    // delivery refunds exactly once.
+    //
+    // `idempotent` means a previous delivery already made this move, and the
+    // refund with it. Re-running would be a no-op on the same key; not running
+    // it is clearer about what actually happened.
+    if (!moved.idempotent && action !== 'APPROVE' && order.type === 'WITHDRAWAL') {
+      await creditWinnings(
+        order.userId, order.tokenAmount,
+        `Cancelled withdrawal refund: ${order.orderId}`,
+        'PaymentOrder', order.orderId, `wd_refund_${order.orderId}`,
+      );
     }
 
     const settled = moved.order ?? order;
@@ -128,14 +168,29 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
     // `order.status !== 'DISPUTED'` read above; two admins resolving one dispute
     // in opposite directions ran BOTH, because the per-call idempotency keys
     // protect a call against itself and not against its opposite.
+    // ── `resolutionNotes` and `updatedAt` are not columns ───────────────────
+    // Both were refused by `setOrderFields`, which runs AFTER the transition
+    // has committed — so this route marked the order COMPLETED or CANCELLED,
+    // threw before a single rupee moved, recorded no decision, and returned a
+    // 500. The player's disputed deposit was closed and never credited, and the
+    // order left the DISPUTED queue, so nothing was left to show it had gone
+    // wrong. The admin panel's Payment Control Centre calls this on every
+    // release and refund; it has never once worked.
+    //
+    // The identical bug was found and fixed in
+    // disputeResolution.admin.routes.js. This file is the copy that did not get
+    // the fix — which is why `check:settable` now refuses the whole class.
+    //
+    // The verdict goes in `dispute_decision` and the admin's words in
+    // `dispute_resolution`, matching the sibling route exactly: one vocabulary,
+    // so a dispute reads the same however it was resolved.
     const resolved = await (resolution === 'release' ? completeOrder : cancelOrder)(order._id, {
       expectFrom: 'DISPUTED',
       set: {
         disputeResolvedAt: now,
         disputeResolvedBy: req.user.userId,
-        disputeResolution: resolution === 'release' ? 'released' : 'refunded',
-        resolutionNotes:   reason.trim(),
-        updatedAt:         now,
+        disputeDecision:   resolution === 'release' ? 'RELEASE_TO_USER' : 'CANCEL_ORDER',
+        disputeResolution: reason.trim(),
         ...(resolution === 'release'
           ? { completedAt: now }
           : { cancelReason: 'DISPUTE_REFUNDED', cancelledAt: now }),

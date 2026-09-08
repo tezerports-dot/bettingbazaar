@@ -6,7 +6,14 @@ import { db } from '#db';
 import { CYCLE_TYPE_VALUES } from '../../domains/markets/cycleTypes.js';
 import { adminAdjustment } from '../../domains/wallet/walletAuthority.service.js';
 import { getUser } from '#db/repositories/users.js';
+// The wallet rows themselves — a delete is a decision, and a decision reads
+// what a movement would lock, never a stored copy of a balance.
+import { getBalancesPaise } from '#db/repositories/wallets.core.js';
 import { randomBytes } from 'node:crypto';
+// `maxWarnings` — one owner. The setting that used to auto-block on a merchant
+// rejection now marks a flagged player for review; it is READ here, never
+// re-declared, so editing it in System Settings changes this screen.
+import { getRiskRules } from '../../domains/risk/riskValidation.service.js';
 
 const router = express.Router();
 
@@ -128,6 +135,88 @@ router.get('/users', authenticate, isAdminOrSubAdmin, async (req, res) => {
   }
 });
 
+/**
+ * GET /api/admin/users/flagged — the review queue.
+ *
+ * ── This route MUST stay above `/users/:userId` ─────────────────────────────
+ * Express matches in declaration order, so `/users/:userId` declared first
+ * swallows this path with `userId === 'flagged'` — a 404 for a player that does
+ * not exist, on a screen whose empty state is indistinguishable from "nobody is
+ * flagged". There is a test that fails if the two are reordered, because the
+ * symptom is silent.
+ *
+ * ── What it answers ─────────────────────────────────────────────────────────
+ * A merchant rejecting a paid order warns and flags a player but does NOT block
+ * them (owner decision 2026-09-07). This is where that decision gets made, so
+ * it carries what the decision needs: the merchant's stated reason, the proof
+ * image they uploaded, the order, and the player's warning history.
+ *
+ * `overWarningThreshold` is the admin's own `maxWarnings` applied here — that
+ * setting used to auto-block and now marks a player for review instead. It is
+ * read from the risk rules, not duplicated, so the number an operator edits in
+ * System Settings is the number this screen sorts by.
+ */
+router.get('/users/flagged', authenticate, isAdminOrSubAdmin, async (req, res) => {
+  try {
+    const [players, rules] = await Promise.all([
+      db.users.listFlaggedPlayers({ limit: Math.min(Number(req.query.limit) || 100, 200) }),
+      getRiskRules(),
+    ]);
+    const threshold = Number(rules.maxWarnings) || 0;
+    res.json({
+      success: true,
+      // The threshold goes out with the rows so the screen can say WHY a player
+      // is marked for review, rather than showing a colour it cannot explain.
+      warningThreshold: threshold,
+      players: players.map((p) => ({
+        ...p,
+        overWarningThreshold: threshold > 0 && Number(p.warningCount || 0) >= threshold,
+      })),
+    });
+  } catch (error) {
+    console.error('Get flagged users error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch flagged players' });
+  }
+});
+
+/**
+ * POST /api/admin/users/:userId/clear-flag — "reviewed, no action".
+ *
+ * The only way to clear a payment flag was `PUT /users/:userId/unblock` with
+ * `resetWarnings`, which needs the player to be blocked. Under the rule that a
+ * rejection does not block, that is every flagged player — so dismissing a
+ * merchant's complaint required blocking the player first, which is the exact
+ * thing the rule exists to prevent.
+ *
+ * `resetWarnings` stays the admin's separate choice: clearing one wrong
+ * complaint should not erase the record of every earlier one.
+ */
+router.post('/users/:userId/clear-flag', authenticate, isAdmin, async (req, res) => {
+  try {
+    const { resetWarnings = false, note } = req.body || {};
+    const user = await db.users.clearPaymentFlag(req.params.userId, {
+      resetWarnings: Boolean(resetWarnings),
+    });
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, performedByRole: 'admin',
+      action: 'USER_PAYMENT_FLAG_CLEARED', category: 'USER',
+      targetType: 'User', targetId: String(user.userId),
+      details: { resetWarnings: Boolean(resetWarnings), note: note ?? null },
+    });
+
+    res.json({
+      success: true,
+      message: `Flag cleared${resetWarnings ? ' and warnings reset' : ''}`,
+      user,
+    });
+  } catch (error) {
+    console.error('Clear payment flag error:', error);
+    res.status(500).json({ success: false, message: 'Failed to clear flag' });
+  }
+});
+
 // Get single user
 router.get('/users/:userId', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
@@ -215,11 +304,11 @@ router.put('/users/:userId/block', authenticate, isAdmin, async (req, res) => {
     });
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    // `status` is what the login path reads, and `is_blocked` is what the
-    // request guards read. The old handler set both on a document; here the
-    // second write is explicit so it cannot be forgotten, and both land before
-    // the response says the account is blocked.
-    await db.users.updateUser(user.userId, { status: 'BLOCKED' });
+    // `status` and `is_blocked` are set by `setBlocked` in ONE statement. They
+    // used to be two writes from here, and they are read by different halves of
+    // the platform — sign-in reads `status`, request guards read `is_blocked` —
+    // so a failure between them produced an account the two halves disagreed
+    // about, with nothing on any screen saying so.
 
     await db.audit.recordDetailed({
       performedBy: req.user.userId, performedByRole: 'admin',
@@ -240,19 +329,24 @@ router.put('/users/:userId/unblock', authenticate, isAdmin, async (req, res) => 
   try {
     const { resetWarnings = false } = req.body;
 
+    // `status` comes back to ACTIVE inside `setBlocked` now. It used to be a
+    // second `updateUser` from here, and the pair could come apart.
     const user = await db.users.setBlocked(req.params.userId, { blocked: false });
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
     // Resetting warnings is the admin saying "this user is cleared", so the
     // explicit payment-complaint flag goes with it (owner directive 2026-07-14).
-    const patch = { status: 'ACTIVE' };
-    if (resetWarnings) {
-      patch.warningCount = 0;
-      patch.paymentFlagged = false;
-      patch.paymentFlagReason = null;
-      patch.paymentFlaggedAt = null;
-    }
-    const cleared = await db.users.updateUser(user.userId, patch);
+    //
+    // ── This path was a 500, and it was a 500 AFTER the unblock committed ────
+    // It set `paymentFlagReason = null` through `updateUser`, and the column is
+    // `NOT NULL DEFAULT ''`. Every unblock-with-reset raised 23502: the admin
+    // saw a failure, the account had already been unblocked by the statement
+    // above, and `status` had not moved — so the player could not sign in, the
+    // request guards would have admitted them, and retrying produced the same
+    // 500 forever. `clearPaymentFlag` is one statement that writes `''`.
+    const cleared = resetWarnings
+      ? await db.users.clearPaymentFlag(user.userId, { resetWarnings: true })
+      : user;
 
     // The audit repository already swallows its own failures — an audit write
     // that throws logs and returns null rather than taking down the operation
@@ -290,6 +384,43 @@ router.put('/users/:userId/unblock', authenticate, isAdmin, async (req, res) => 
  */
 router.delete('/users/:userId', authenticate, isAdmin, async (req, res) => {
   try {
+    // ── Money in flight refuses the delete ──────────────────────────────────
+    // These two guards existed ONLY in `services/admin.service.js`, which
+    // nothing imports — and `moneyDecisionsReadTheWallet.test.js` asserted the
+    // locked-balance one AGAINST THAT DEAD FILE, so the suite reported the
+    // guard as present while the live route had none.
+    //
+    // Without them: a player with a PAID deposit awaiting merchant confirmation,
+    // or a withdrawal sitting in escrow, is marked DELETED while the order stays
+    // live in the merchant queue. The merchant completes it and the money has no
+    // owner who can sign in to see it. Nothing anywhere reports a problem —
+    // `softDeleteUser` only writes status/deleted_at/deleted_by, and it succeeds.
+    //
+    // The order check comes first because it is the cheaper read and the more
+    // common refusal.
+    const open = await db.orders.findOrders({
+      userId: req.params.userId,
+      states: ['ASSIGNED', 'PROCESSING', 'PAID', 'DISPUTED'],
+      limit: 1,
+    });
+    if (open.total > 0) {
+      return res.status(409).json({
+        success: false,
+        message: `Cannot delete: ${open.total} order(s) still open. Resolve or cancel them first.`,
+      });
+    }
+
+    // Read from the WALLET, not from a stored copy on the account row (Trap 7).
+    // This is a decision read: it refuses an irreversible action, so it must see
+    // the same rows a movement would lock.
+    const { lockedBalance } = await getBalancesPaise(String(req.params.userId));
+    if (lockedBalance > 0) {
+      return res.status(409).json({
+        success: false,
+        message: `Cannot delete: ₹${(lockedBalance / 100).toLocaleString('en-IN')} is locked in escrow or an open bet.`,
+      });
+    }
+
     const user = await db.users.softDeleteUser(req.params.userId, { actor: req.user.userId });
     if (!user) {
       // Null covers both "no such account" and "already deleted": either way
@@ -355,13 +486,24 @@ router.post('/users/:userId/phantom-access', authenticate, isAdmin, async (req, 
       return res.status(404).json({ success: false, message: 'User not found' });
     }
     
-    user.phantomAccess = accessLevel;
-    await user.save();
-    
+    // ── This assigned the field and called `user.save()` ────────────────────
+    // `getUser` returns a mapped row, not a document; `.save` is not a function
+    // on it, so this threw a TypeError on EVERY call and the catch returned a
+    // 500 having written nothing. Phantom access has never once been granted or
+    // revoked through this route.
+    const updated = await db.users.updateUser(userId, { phantom_access: accessLevel });
+
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, performedByRole: 'admin',
+      action: 'PHANTOM_ACCESS_SET', category: 'USER',
+      targetType: 'User', targetId: String(userId),
+      details: { accessLevel },
+    });
+
     res.json({
       success: true,
       message: `Phantom access updated to ${accessLevel}`,
-      user
+      user: updated,
     });
   } catch (error) {
     console.error('Assign phantom access error:', error);

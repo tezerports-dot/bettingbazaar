@@ -70,6 +70,13 @@ const ShareModal: React.FC<ShareModalProps> = ({ onClose }) => {
   // the API origin — byte-identical to the relative path on a same-origin web
   // deploy, and the real host in the shell.
   const androidUrl = apiUrl('/api/download/android');
+  // The iOS counterpart, shown only when an admin has actually set iosUrl.
+  // /api/download/ios 302s to it and otherwise answers 404 with "Use Safari →
+  // Add to Home Screen", so an unconditional button would offer a download that
+  // does not exist. The setting has been editable in System Settings → App
+  // Distribution all along with nothing reading it: an operator could fill it
+  // in and no screen anywhere would change.
+  const iosUrl = config?.iosUrl ? apiUrl('/api/download/ios') : '';
   // H-06 fix: read logo from branding (GOVERNANCE §3: logos must originate from Branding).
   // Falls back to /app-assets/logo.png only when branding.logo is empty.
   const branding   = (() => { try { return JSON.parse(localStorage.getItem('app_branding') || '{}'); } catch { return {}; } })();
@@ -129,6 +136,25 @@ const ShareModal: React.FC<ShareModalProps> = ({ onClose }) => {
                     <span>⬇️</span> Download
                 </button>
             </div>
+
+            {/* OPTION 3: iOS — only when configured. */}
+            {iosUrl && (
+              <div className="bg-[#121826] p-4 rounded-xl border border-slate-700 flex items-center justify-between group hover:border-blue-500/50 transition-colors">
+                <div className="text-left">
+                    <div className="text-white font-bold text-sm flex items-center gap-2">
+                        <span>Download App</span>
+                        <span className="bg-blue-900/30 text-blue-400 text-[9px] px-1.5 rounded border border-blue-500/30">iOS</span>
+                    </div>
+                    <div className="text-[10px] text-slate-500">For iPhone and iPad</div>
+                </div>
+                <button
+                    onClick={() => handleDownload(iosUrl)}
+                    className="bg-slate-700 hover:bg-slate-600 text-white font-bold px-4 py-2 rounded-lg text-xs border border-slate-600 transition-transform active:scale-95 flex items-center gap-2"
+                >
+                    <span>⬇️</span> Download
+                </button>
+              </div>
+            )}
          </div>
 
          <div className="pt-4 border-t border-slate-700">

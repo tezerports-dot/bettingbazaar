@@ -38,8 +38,13 @@ export const ENDPOINTS = {
     ACCEPT: (id: string) => `/api/merchant/accept/${id}`,
     CONFIRM: (id: string) => `/api/merchant/confirm/${id}`,
     REJECT: (id: string) => `/api/merchant/reject/${id}`,
-    CHAT: (id: string) => `/api/merchant/chat/${id}`,
-    GET_CHAT: (id: string) => `/api/merchant/chat/${id}`,
+    // A DIFFERENT action from REJECT above. That one declines an order before
+    // the player has paid and returns it to the queue. This one is for an order
+    // the player says they HAVE paid, where the money never arrived: it cancels
+    // the order, warns the player and can auto-block them — so it requires a
+    // reason and a proof image.
+    REJECT_PAID: (id: string) => `/api/merchant/orders/${id}/reject`,
+    REJECT_PROOF_UPLOAD_URL: (id: string) => `/api/merchant/order-reject-proof/${id}/upload-url`,
   },
   EARNINGS: {
     GET:    '/api/merchant/earnings',
@@ -121,10 +126,6 @@ export const ROUTES = {
   PROFILE: '/profile',
 };
 
-export const ORDER_TYPE_LABELS = {
-  DEPOSIT: 'Deposit',
-  WITHDRAWAL: 'Withdrawal',
-};
 
 export const ERROR_MESSAGES = {
   NETWORK_ERROR: 'Network error. Please check your connection.',

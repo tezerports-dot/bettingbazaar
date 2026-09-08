@@ -66,7 +66,7 @@ export const KYCQueue: React.FC = () => {
 
   useEffect(() => {
     loadPendingKYC();
-    const handleKycUpdate = (data: any) => setPendingKYC((prev) => prev.filter((u) => u._id !== data.userId));
+    const handleKycUpdate = (data: any) => setPendingKYC((prev) => prev.filter((u) => u.userId !== data.userId));
     sseService.on('kyc_update', handleKycUpdate);
     return () => sseService.off('kyc_update', handleKycUpdate);
   }, []);
@@ -87,7 +87,7 @@ export const KYCQueue: React.FC = () => {
     try {
       await api.kyc.approve(userId);
       toast.success('KYC approved successfully');
-      setPendingKYC((prev) => prev.filter((u) => u._id !== userId));
+      setPendingKYC((prev) => prev.filter((u) => u.userId !== userId));
     } catch (e: any) {
       toast.error(e.response?.data?.message || 'Failed to approve KYC');
     }
@@ -98,7 +98,7 @@ export const KYCQueue: React.FC = () => {
     try {
       await api.kyc.reject(userId, reason);
       toast.success('KYC rejected');
-      setPendingKYC((prev) => prev.filter((u) => u._id !== userId));
+      setPendingKYC((prev) => prev.filter((u) => u.userId !== userId));
       setRejectUser(null);
       setRejectReason('');
     } catch (e: any) {
@@ -107,7 +107,7 @@ export const KYCQueue: React.FC = () => {
   };
 
   const selected = useMemo(
-    () => pendingKYC.find((u) => u._id === selectedId) || pendingKYC[0] || null,
+    () => pendingKYC.find((u) => u.userId === selectedId) || pendingKYC[0] || null,
     [pendingKYC, selectedId]
   );
 
@@ -153,11 +153,11 @@ export const KYCQueue: React.FC = () => {
           {/* Queue list */}
           <div className="card" style={{ padding: 10 }}>
             <div style={{ fontSize: 10.5, fontWeight: 800, color: 'var(--muted)', letterSpacing: '.08em', textTransform: 'uppercase', padding: '9px 9px 7px' }}>Verification Queue · {pendingKYC.length}</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <div data-testid="kyc-queue-list" style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
               {pendingKYC.map((u, i) => {
-                const active = selected?._id === u._id;
+                const active = selected?.userId === u.userId;
                 return (
-                  <div key={u._id} onClick={() => setSelectedId(u._id)} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '11px 12px', borderRadius: 11, cursor: 'pointer', border: `1px solid ${active ? 'var(--gold)' : 'transparent'}`, background: active ? 'var(--active)' : 'transparent' }}>
+                  <div key={u.userId} onClick={() => setSelectedId(u.userId)} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '11px 12px', borderRadius: 11, cursor: 'pointer', border: `1px solid ${active ? 'var(--gold)' : 'transparent'}`, background: active ? 'var(--active)' : 'transparent' }}>
                     <div style={{ width: 34, height: 34, borderRadius: 9, flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 12, color: '#fff', background: AV[i % 5] }}>{initials(u.username)}</div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{u.username}</div>
@@ -221,7 +221,7 @@ export const KYCQueue: React.FC = () => {
         <ConfirmDialog
           isOpen={!!confirmApprove}
           onClose={() => setConfirmApprove(null)}
-          onConfirm={() => handleApprove(confirmApprove._id)}
+          onConfirm={() => handleApprove(confirmApprove.userId)}
           title="Approve KYC?"
           message={`Approve ${confirmApprove.username}'s identity verification. The player gains full withdrawal access. Recorded in Audit Logs.`}
           type="success"
@@ -239,7 +239,7 @@ export const KYCQueue: React.FC = () => {
             </div>
             <div className="flex space-x-3">
               <button onClick={() => { setRejectUser(null); setRejectReason(''); }} className="flex-1 btn-secondary">Cancel</button>
-              <button onClick={() => handleReject(rejectUser._id, rejectReason)} className="flex-1 btn-danger">Reject KYC</button>
+              <button onClick={() => handleReject(rejectUser.userId, rejectReason)} className="flex-1 btn-danger">Reject KYC</button>
             </div>
           </div>
         </Modal>

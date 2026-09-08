@@ -69,6 +69,10 @@ interface GameContextType {
    * player's identity is established inside Telegram before this is reached.
    */
   completeTelegramLogin: (token: string) => Promise<void>;
+  /** Ask the bot to DM a sign-in code. Says nothing about the number. */
+  requestLoginCode: (mobile: string) => Promise<void>;
+  /** Sign in with a code the bot DMed. Seats the player like a link does. */
+  signInWithCode: (mobile: string, code: string) => Promise<void>;
   logout: () => void;
   cycleType: CycleType;
   setCycleType: (type: CycleType) => void;
@@ -899,6 +903,35 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     setUser(u);
   };
 
+  /**
+   * Ask the bot to DM a sign-in code.
+   *
+   * Resolves the same way whether or not the number is registered — the server
+   * answers identically and there is deliberately nothing here to branch on. It
+   * throws only when the request could not be made at all.
+   */
+  const requestLoginCode = async (mobile: string): Promise<void> => {
+    await backend.requestLoginCode(mobile);
+  };
+
+  /**
+   * Sign in with a code the bot sent, seating the player exactly as a link
+   * would.
+   *
+   * Shares `computeWalletBalance` and `setUser` with `completeTelegramLogin`
+   * rather than repeating them: two ways in that seat a player differently is
+   * how one of them ends up showing an empty wallet.
+   */
+  const signInWithCode = async (mobile: string, code: string): Promise<void> => {
+    const res = await backend.verifyLoginCode(mobile, code);
+    if (!res.success || !res.user) {
+      throw new Error(res.message || 'That code is not valid. Request a new one and try again.');
+    }
+    const u = { ...res.user } as User;
+    u.walletBalance = computeWalletBalance(u);
+    setUser(u);
+  };
+
   const logout = () => {
     setUser(null);
     setUserBets([]);
@@ -983,7 +1016,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
 
   return (
     <GameContext.Provider value={{
-      user, isAuthenticated: !!user, isOnline, completeTelegramLogin, logout,
+      user, isAuthenticated: !!user, isOnline, completeTelegramLogin, requestLoginCode, signInWithCode, logout,
       cycleType, setCycleType, cycles, currentCycle: cycles[cycleType],
       pastCycles, loadCycleHistory, gameState: cycles[cycleType].status, serverTimeOffset,
       placeBet, placePhantomBet, userBets, history, triggerAdminAction, formatTime,

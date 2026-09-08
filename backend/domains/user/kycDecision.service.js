@@ -40,12 +40,6 @@ import { KYC_STATES, KYC_ALLOWED_FROM } from '#db/repositories/kyc.core.js';
 
 export { KYC_STATES };
 
-export const KYC_OUTCOME = Object.freeze({
-  APPLIED:            'applied',
-  ILLEGAL_TRANSITION: 'illegal_transition',
-  ALREADY_THERE:      'already_there',
-  NOT_FOUND:          'not_found',
-});
 
 
 /**

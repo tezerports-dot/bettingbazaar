@@ -241,6 +241,33 @@ jobs:
       # directory name.
       - name: Data-layer boundary
         run: npm run check:db-boundary
+      # A panel calling a path the API does not serve 404s, gets caught by the
+      # component, and renders an empty state — indistinguishable from "no
+      # data". Five were live at once (dispute queue, dispute resolve, merchant
+      # limits, promo upload, merchant order history); three shared one cause, a
+      # `/queue` prefix the handlers had moved out from under. No route test
+      # catches this: the handler works, nobody calls it correctly.
+      - name: Panels and API agree on what exists
+        run: npm run check:ui-coverage
+      # check:ui-coverage sees routes; it cannot see one layer deeper. A
+      # repository function with no service, no route and no screen is invisible
+      # to it — and 73 such exports were found by hand in one sweep. Two
+      # mattered: cache.service.js built its Redis client inside an initCache
+      # nobody called, so every cache op silently used a per-process Map, and
+      # securityMonitor recorded every refused request into the audit trail
+      # while being mounted nowhere. Neither failed a test; nothing was looking.
+      - name: No export nothing calls
+        run: npm run check:dead-code
+      # The order lifecycle moves the STATE first and writes the accompanying
+      # fields second, so an order is never found in a state without the facts
+      # that justify it. The cost is that a bad field name throws AFTER the
+      # transition has committed: the order moves, the handler 500s, and
+      # whatever it meant to do next — including moving money — never runs.
+      # Three handlers shipped with one. The worst marked a disputed deposit
+      # COMPLETED and never credited the player, from a button in the admin
+      # panel, and every check here was green while it did.
+      - name: Every order `set` names a real column
+        run: npm run check:settable
       # Items 5+58: architecture validation — circular imports and governance
       # boundary violations (domain core importing routes, wallet importing
       # products) fail the build instead of waiting for human review.

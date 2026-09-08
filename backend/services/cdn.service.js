@@ -435,23 +435,6 @@ export async function generateChatUploadUrl(fileName, contentType, fileSize, use
  * holding one.
  */
 
-/**
- * Generate presigned URL for payment proof
- */
-export async function generatePaymentProofUploadUrl(fileName, contentType, fileSize, userId, orderId) {
-  return generatePresignedUploadUrl({
-    fileName,
-    contentType,
-    fileSize,
-    category: 'payment-proof',
-    userId,
-    orderId,
-  });
-}
-
-/**
- * Generate presigned URL for admin branding image
- */
 export async function generateBrandingUploadUrl(fileName, contentType, fileSize, userId, brandingCategory) {
   return generatePresignedUploadUrl({
     fileName,
@@ -466,28 +449,6 @@ export async function generateBrandingUploadUrl(fileName, contentType, fileSize,
 // HEALTH CHECK
 // ═══════════════════════════════════════════════════════════════════════
 
-/**
- * Test S3 connection
- */
-export async function testS3Connection() {
-  try {
-    // Try to generate a test presigned URL
-    const testKey = `test/${Date.now()}.txt`;
-    const command = new PutObjectCommand({
-      Bucket: BUCKET_NAME,
-      Key: testKey,
-      ContentType: 'text/plain',
-    });
-    
-    await getSignedUrl(s3Client, command, { expiresIn: 60 });
-    
-    console.log('✅ S3 connection test successful');
-    return { success: true, message: 'S3 connection working' };
-  } catch (error) {
-    console.error('❌ S3 connection test failed:', error);
-    return { success: false, message: error.message };
-  }
-}
 
 // ═══════════════════════════════════════════════════════════════════════
 // EXPORTS
@@ -511,9 +472,7 @@ export default {
   deleteFile,
   verifyUploadedObject,
   generateChatUploadUrl,
-  generatePaymentProofUploadUrl,
   generateBrandingUploadUrl,
   mimeRulesForCategory,
   matchesMagicBytes,
-  testS3Connection,
 };

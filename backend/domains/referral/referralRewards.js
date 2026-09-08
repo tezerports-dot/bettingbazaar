@@ -11,5 +11,3 @@
 /** ₹25, in paise. Integer, because money is integer paise everywhere. */
 export const REFERRAL_REWARD_PAISE = 2500;
 
-/** Levels paid, in the order they settle within one signup. */
-export const REFERRAL_LEVELS = Object.freeze([1, 2]);

@@ -3,7 +3,7 @@
  * Moved from backend/routes/payment.routes.js on 2026-07-01 (BBEPS Phase 004 migration). */
 import express   from 'express';
 import { db }    from '#db';
-import { authenticate, requireApprovedKyc } from '../identity/auth.middleware.js';
+import { authenticate, requireApprovedKyc, requireLinkedKyc } from '../identity/auth.middleware.js';
 import { tryVerifyJwt } from '../identity/jwt.util.js';
 import { merchantAuth } from '../../middleware/merchantAuth.js';
 import { withdrawalLimiter } from '../../middleware/security.js';
@@ -19,9 +19,12 @@ import { requestDeposit, requestWithdrawal } from '../funding/fundingAuthority.s
 import { creditDeposit, creditReserve } from '../wallet/walletAuthority.service.js';
 // One rule for how a confirmed deposit splits across the user's two pockets,
 // and for what the merchant is debited against it.
-import { depositCreditSplit } from './depositCredit.js';
+import { moveDepositMoney } from './depositCredit.js';
 import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
+// The one owner of order access: it verifies the tamper tag AND decides who
+// may act on the order, so a route cannot be added without both.
+import { orderAccessGuard } from '../../middleware/order-crypto-access.js';
 import { emitWalletUpdate, emitAdminUpdate, emitOrderUpdate } from '../notification/realtimeEmitters.js';
 
 const router = express.Router();
@@ -54,13 +57,25 @@ function sanitizeOrderForMerchant(order) {
   return plain;
 }
 
-router.post('/deposit/create', authenticate, requireApprovedKyc, requireChannelMembership({ action: 'add funds' }), async (req, res) => {
+// Money IN needs only LINKED identity, not an approved one (owner decision
+// 2026-09-08). Verification runs in batches and can take a day; holding a
+// player at the door for it loses the player without protecting anyone, and the
+// deposit lands in their own wallet either way.
+//
+// `requireApprovedKyc` stays on the withdrawal below. That is the whole of the
+// stricter rule and it is where it belongs: money leaving is the irreversible
+// direction.
+router.post('/deposit/create', authenticate, requireLinkedKyc, requireChannelMembership({ action: 'add funds' }), async (req, res) => {
   try {
     const result = await requestDeposit({ userId: req.user.userId, tokenAmount: Number(req.body.tokenAmount) });
     res.json({ success: true, message: 'Deposit request created. Waiting for merchant assignment.', ...result });
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code }); }
 });
 
+// APPROVED, not merely linked. Every withdrawal here draws from the WINNINGS
+// balance — `debitWinningsForWithdrawal` is the only debit path — so "approved
+// KYC to withdraw winnings" and "approved KYC to withdraw" are the same rule on
+// this platform, and this line is it.
 router.post('/withdrawal/create', authenticate, requireApprovedKyc, requireChannelMembership({ action: 'withdraw' }), withdrawalLimiter, createSubnetLimiter('withdrawal'), globalSurgeBreaker('withdrawal'), async (req, res) => {
   try {
     const result = await requestWithdrawal({ userId: req.user.userId, tokenAmount: Number(req.body.tokenAmount) });
@@ -68,12 +83,15 @@ router.post('/withdrawal/create', authenticate, requireApprovedKyc, requireChann
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code, cutoffPassed: err.cutoffPassed, balance: err.balance }); }
 });
 
-router.post('/order/:orderId/mark-paid', authenticate, async (req, res) => {
+router.post('/order/:orderId/mark-paid', authenticate, orderAccessGuard, async (req, res) => {
   try {
-    const { utrNumber, proofFileKey, proofCdnUrl } = req.body;
+    // The UTR alone. A screenshot proved nothing — it is trivially forged and no
+    // approval read it, while the merchant matches the UTR against their own
+    // bank statement, which is the only part of this submission the platform
+    // can verify.
+    const { utrNumber } = req.body;
     if (!utrNumber?.trim()) return res.status(400).json({ success: false, message: 'utrNumber is required' });
-    if (!proofFileKey?.trim()) return res.status(400).json({ success: false, message: 'proofFileKey is required. Upload a payment screenshot file first.' });
-    const order = await markOrderPaid(req.user.userId, req.params.orderId, utrNumber, proofFileKey, proofCdnUrl);
+    const order = await markOrderPaid(req.user.userId, req.params.orderId, utrNumber);
     res.json({ success: true, message: 'Payment marked. Awaiting merchant review.', order });
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code, originalOrderId: err.originalOrderId }); }
 });
@@ -100,19 +118,19 @@ router.post('/order/:orderId/mark-paid', authenticate, async (req, res) => {
  * start a transaction and carried on WITHOUT one, so the atomicity it appeared
  * to provide was conditional on nobody looking.
  */
-router.post('/deposit/:orderId/confirm', paymentActorAuth, async (req, res) => {
+router.post('/deposit/:orderId/confirm', paymentActorAuth, orderAccessGuard, async (req, res) => {
   const isMerchantActor = Boolean(req.merchantId);
   const isAdminActor = Boolean(req.user?.isAdmin);
   if (!isMerchantActor && !isAdminActor) {
     return res.status(403).json({ success: false, message: 'Only merchants or admins can confirm deposits' });
   }
   try {
-    const order = await db.orders.getOrderRecord(req.params.orderId);
-    if (!order || order.type !== 'DEPOSIT') {
+    // The guard already refused anyone who is not this order's player, its
+    // assigned merchant, or an admin — and it verified the tamper tag. What is
+    // left is this route's own rule: it confirms DEPOSITS.
+    const order = req.p2pOrder;
+    if (order.type !== 'DEPOSIT') {
       return res.status(404).json({ success: false, message: 'Order not found' });
-    }
-    if (isMerchantActor && String(order.merchantId) !== String(req.merchantId)) {
-      return res.status(403).json({ success: false, message: 'This order is not assigned to you' });
     }
     if (!['PAID', 'PROCESSING'].includes(order.status)) {
       // A read, not the gate — the transition below settles the race. This
@@ -127,34 +145,15 @@ router.post('/deposit/:orderId/confirm', paymentActorAuth, async (req, res) => {
       return res.status(409).json({ success: false, message: `Cannot confirm in ${order.status} status` });
     }
 
-    // The player's pockets are split; the merchant's side is not. This route
-    // once debited `depositAllocation || tokenAmount` and credited
-    // `depositAllocation + reserveAllocation`, so every deposit with a reserve
-    // share credited more than it debited. `depositCredit.js` holds the one
-    // rule and why it is one rule.
-    const { depositCredit, reserveCredit, total } = depositCreditSplit(order);
-
-    // ── The merchant's side, first ──────────────────────────────────────────
-    // Refusing here is the ordinary case (a merchant confirming more than they
-    // hold) and it must refuse BEFORE anything else moves. Keyed so a retry
-    // debits once.
-    const { merchant: debited } = await debitMerchantTokens({
-      merchantId: order.merchantId, amount: total,
-      reason: `Deposit ${order.orderId} confirmed — tokens dispensed to user`,
-      refModel: 'PaymentOrder', refId: order.orderId,
-      txId: `mw_dep_deduct_${order.orderId}`,
+    // The player's pockets are split; the merchant's side is not. `depositCredit.js`
+    // owns both the split and the movement — the admin queue override calls the
+    // same function, which is the only reason the two can no longer disagree.
+    const moved = await moveDepositMoney(order, {
+      debitMerchantTokens, creditDeposit, creditReserve, releaseUTR,
     });
-    if (!debited) {
+    if (!moved.ok) {
       return res.status(400).json({ success: false, message: 'Merchant insufficient token balance' });
     }
-
-    // ── The player's side ───────────────────────────────────────────────────
-    // Both keyed on the order, so a retry after a partial failure credits once.
-    // `reserveBalance` goes through the wallet authority like everything else;
-    // it was once a raw increment with no ledger trail behind it.
-    if (depositCredit > 0) await creditDeposit(order.userId, depositCredit, order.orderId);
-    if (reserveCredit > 0) await creditReserve(order.userId, reserveCredit, order.orderId);
-    await releaseUTR(order.orderId);
 
     // ── The gate, and the record that the money moved ───────────────────────
     // `completeOrder` posts the DEPOSIT_COMPLETED accounting event in the SAME
@@ -216,28 +215,24 @@ router.get('/orders', authenticate, async (req, res) => {
   }
 });
 
-/**
- * One order, and the ownership check that goes with it.
+/*
+ * `ownedOrder` lived here and is now `orderAccessGuard`, mounted as middleware
+ * on every `:orderId` route below.
  *
- * Three handlers below repeated the same `$or` over an order id and a
- * conditionally-valid ObjectId, then compared `order.userId` after the fetch.
- * An order id is the id now — there is no second key to match on — and the
- * ownership test lives here so a handler cannot be added without one.
+ * The two were doing the same job in two places. The guard also verifies the
+ * order's tamper tag, which nothing did: `order_hmac` was written on every
+ * order at creation, ORDER_HMAC_SECRET was a required boot variable, and no
+ * request path ever read the tag back. The signature was kept and never
+ * checked.
  *
- * Returns null when the order does not exist OR the caller may not see it: a
- * distinguishable 404-vs-403 tells someone probing ids which ones are real.
+ * Handlers below read `req.p2pOrder`, which the guard sets once it has decided.
+ * A route added without the guard has no order to read, so it fails loudly
+ * rather than silently skipping the check.
  */
-async function ownedOrder(req) {
-  const order = await db.orders.getOrderRecord(req.params.orderId);
-  if (!order) return null;
-  if (String(order.userId) !== String(req.user.userId) && !req.user.isAdmin) return null;
-  return order;
-}
 
-router.get('/order/:orderId', authenticate, async (req, res) => {
+router.get('/order/:orderId', authenticate, orderAccessGuard, async (req, res) => {
   try {
-    const order = await ownedOrder(req);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    const order = req.p2pOrder;
     res.json({ success: true, order });
   } catch (err) {
     console.error('GET /payment/order/:orderId error:', err);
@@ -245,11 +240,16 @@ router.get('/order/:orderId', authenticate, async (req, res) => {
   }
 });
 
-// Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08) — no
-// buy/sell spread. Response shape kept for client compatibility.
-router.get('/rates', async (req, res) => {
-  res.json({ success: true, rates: { buyRate: 1, sellRate: 1, merchantProfitPerToken: 0 } });
-});
+/*
+ * REMOVED — GET /api/payment/rates.
+ *
+ * It returned { buyRate: 1, sellRate: 1, merchantProfitPerToken: 0 } as
+ * literals: no database read, nothing an operator could change. That made it a
+ * THIRD declaration of the 1:1 conversion, beside the config spec's and the
+ * system-config payload's tokenBuyRate/tokenSellRate — and the one place where
+ * editing the rate would silently have no effect. Its comment said the shape
+ * was "kept for client compatibility"; no client was reading it. §1.
+ */
 
 router.post('/order/cancel', authenticate, async (req, res) => {
   try {
@@ -260,10 +260,9 @@ router.post('/order/cancel', authenticate, async (req, res) => {
 
 // ─── GET /api/payment/order/:orderId/status — lightweight poll (Section 2B) ──
 // Returns only the fields the frontend needs to poll during active payment flow.
-router.get('/order/:orderId/status', authenticate, async (req, res) => {
+router.get('/order/:orderId/status', authenticate, orderAccessGuard, async (req, res) => {
   try {
-    const order = await ownedOrder(req);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    const order = req.p2pOrder;
 
     // The proof screenshot expires. The fallback is 48 hours from creation for
     // an order written before the column existed — an absent expiry must not
@@ -288,13 +287,12 @@ router.get('/order/:orderId/status', authenticate, async (req, res) => {
 
 // ─── POST /api/payment/order/:orderId/dispute — user raises dispute (Section 2B) ─
 // User can dispute DEPOSIT order that is PAID but merchant isn't confirming.
-router.post('/order/:orderId/dispute', authenticate, async (req, res) => {
+router.post('/order/:orderId/dispute', authenticate, orderAccessGuard, async (req, res) => {
   try {
     const { reason } = req.body;
     if (!reason?.trim()) return res.status(400).json({ success: false, message: 'reason is required' });
 
-    const order = await ownedOrder(req);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    const order = req.p2pOrder;
     if (order.status !== 'PAID')
       return res.status(400).json({ success: false, message: 'Can only dispute PAID orders' });
 
@@ -332,12 +330,11 @@ router.post('/order/:orderId/dispute', authenticate, async (req, res) => {
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
 
-router.post('/order/:orderId/status', authenticate, async (req, res) => {
+router.post('/order/:orderId/status', authenticate, orderAccessGuard, async (req, res) => {
   try {
     const { status, reason = 'User requested dispute' } = req.body;
     if (status !== 'DISPUTED') return res.status(400).json({ success: false, message: 'Only DISPUTED transition is supported here' });
-    const order = await ownedOrder(req);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    const order = req.p2pOrder;
     const moved = await disputeOrder(order.orderId, {
       expectFrom: 'PAID',
       set: {

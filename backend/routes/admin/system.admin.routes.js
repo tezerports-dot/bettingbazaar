@@ -1,6 +1,7 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** system.admin.routes.js — System config, token rates, withdrawal requests, error logs */
 import { express, authenticate, isAdmin, isAdminOrSubAdmin } from './_adminShared.js';
+import { INR_TOKEN_RATE } from '../../domains/configuration/tokenRates.js';
 import { setConfigField } from '../../domains/configuration/configVersioning.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { db } from '#db';
@@ -97,8 +98,11 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
         minWithdrawal:         config.minWithdrawal         || 500,
         maxWithdrawal:         config.maxWithdrawal         || 50000,
         maxWinningsWithdrawal: config.maxWinningsWithdrawal || 500000,
-        tokenBuyRate:          1, // fixed 1:1 conversion (Phase 006 flattening, 2026-07-08)
-        tokenSellRate:         1, // fixed 1:1 conversion
+        // The INR peg, from its one owner. It was a literal here and in the
+        // response below, a third and fourth declaration of a rule that already
+        // had two.
+        tokenBuyRate:          INR_TOKEN_RATE,
+        tokenSellRate:         INR_TOKEN_RATE,
         // Risk Platform rules (Phase 010) — schema defaults cited inline
         payoutFeePercent:      config.payoutFeePercent ?? 0,  // schema default: 0
         usdtPricing: {
@@ -263,7 +267,7 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     // ── Business Config Audit fields ──────────────────────────────────────────
     if (riskRules?.maxWarnings !== undefined &&
         (!Number.isInteger(riskRules.maxWarnings) || riskRules.maxWarnings < 0)) {
-      return res.status(400).json({ success: false, message: 'riskRules.maxWarnings must be a non-negative integer (0 = never auto-block).' });
+      return res.status(400).json({ success: false, message: 'riskRules.maxWarnings must be a non-negative integer (0 = never mark for review).' });
     }
     if (payoutMultiplier !== undefined &&
         (!Number.isInteger(payoutMultiplier) || payoutMultiplier < 1 || payoutMultiplier > 10)) {
@@ -351,7 +355,9 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     if (riskRules?.blockOppositeSideBetting !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.blockOppositeSideBetting', !!riskRules.blockOppositeSideBetting]);
     if (riskRules?.maxFundingOrdersPerHour  !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.maxFundingOrdersPerHour', riskRules.maxFundingOrdersPerHour]);
     // Business Config Audit (2026-07-11) — formerly-hardcoded values, now admin-owned
-    // Auto-block threshold — consumed by merchant.routes.js reject handler
+    // Review threshold — consumed by users.admin.routes GET /users/flagged to
+    // mark a flagged player for review. It does NOT block: a merchant rejection
+    // passes 0 deliberately, so nothing a merchant can reach closes an account.
     if (riskRules?.maxWarnings !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.maxWarnings', riskRules.maxWarnings]);
     // Payout multiplier — consumed by markets/gameEngine.js via riskValidation.computeWinningsPayout
     if (payoutMultiplier   !== undefined) fieldWrites.push(['SystemConfig', 'payoutMultiplier', payoutMultiplier]);
@@ -407,8 +413,8 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
           const normalized = raw.filter(k => FOOTER_PAGE_KEYS.includes(k));
           return normalized.length >= 2 ? normalized : ['home', 'results', 'winners', 'promo', 'profile'];
         })(),
-        tokenBuyRate:    1, // fixed 1:1 conversion (Phase 006 flattening, 2026-07-08)
-        tokenSellRate:   1, // fixed 1:1 conversion
+        tokenBuyRate:    INR_TOKEN_RATE,
+        tokenSellRate:   INR_TOKEN_RATE,
         webUrl:        updatedConfig.webUrl        || '',
         androidUrl:    updatedConfig.androidUrl    || '',
         iosUrl:        updatedConfig.iosUrl        || '',
@@ -433,44 +439,25 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
  * Frontend admin panel calls: POST /api/admin/manage-cycle
  * ════════════════════════════════════════════════════════════════════════════
  */
-// AUDIT: /download/android and /download/ios were REMOVED from here.
-// They exist in server.js at GET /api/download/android and /api/download/ios.
-// Having them in both places was duplicate code with two different mount paths
-// (/api/admin/download/... vs /api/download/...) — server.js versions are canonical.
-
-// ─── DOWNLOAD LINK ADMIN ROUTES ──────────────────────────────────────────────
-router.get('/download/android', authenticate, isAdminOrSubAdmin, async (req, res) => {
-  try {
-    const config = await getSystemConfig();
-    if (config?.androidUrl) return res.redirect(302, config.androidUrl);
-    res.status(404).json({ success: false, message: 'Android APK URL not set. Add it in System Settings → App Distribution.' });
-  } catch (e) {
-    res.status(500).json({ success: false, message: 'Failed to fetch download link.' });
-  }
-});
-
-router.get('/download/ios', authenticate, isAdminOrSubAdmin, async (req, res) => {
-  try {
-    const config = await getSystemConfig();
-    if (config?.iosUrl) return res.redirect(302, config.iosUrl);
-    res.status(404).json({ success: false, message: 'iOS URL not set. Add it in System Settings → App Distribution.' });
-  } catch (e) {
-    res.status(500).json({ success: false, message: 'Failed to fetch download link.' });
-  }
-});
-
-router.get('/download/links', authenticate, isAdminOrSubAdmin, async (req, res) => {
-  try {
-    const config = await getSystemConfig();
-    res.json({
-      success: true,
-      androidUrl: config?.androidUrl || '',
-      iosUrl:     config?.iosUrl     || '',
-    });
-  } catch (e) {
-    res.status(500).json({ success: false, message: 'Failed to fetch download links.' });
-  }
-});
+/*
+ * REMOVED — the three /api/admin/download/* routes.
+ *
+ * The AUDIT note that used to sit here said /download/android and
+ * /download/ios "were REMOVED from here ... server.js versions are canonical".
+ * They had not been. The note described an intention; the routes were still
+ * mounted, and a comment claiming a deletion that did not happen is worse than
+ * no comment, because the next reader trusts it.
+ *
+ * server.js serves GET /api/download/android and /api/download/ios, PUBLIC and
+ * unauthenticated, which is the only way they can work: a browser following a
+ * download link carries no admin token, so the authenticated copies here would
+ * have 401'd every real click.
+ *
+ * /download/links was a third read of androidUrl and iosUrl. SystemSettings
+ * already loads both from the system-config endpoint and edits them under App
+ * Distribution, so this returned a stale second opinion about two fields that
+ * already had an owner. §1 — one owner per value.
+ */
 
 // ── Withdrawal approvals live in the P2P order flow, not here ───────────────
 // GET/POST /withdrawal-requests{,/:id/approve,/:id/reject} were removed on

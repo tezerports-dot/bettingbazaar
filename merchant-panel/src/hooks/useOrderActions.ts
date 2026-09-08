@@ -13,6 +13,13 @@
 //              order the user has not evidenced is refused before the request.
 //              WITHDRAWAL (PROCESSING → COMPLETED) — no reference required.
 //   dispute  POST /order/:id/dispute {reason} → DISPUTED
+//   payment-not-received
+//            POST /orders/:id/reject {reason, proofFileKey, proofCdnUrl}
+//              PAID|PROCESSING → CANCELLED. Different from `reject` above,
+//              which declines an order before payment. This one accuses the
+//              player of not paying: it warns their account and can auto-block
+//              them, so the route REQUIRES a reason of 10+ characters and a
+//              verified proof image, and refuses without either.
 import { useCallback, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api } from '../services/api';
@@ -29,6 +36,8 @@ const orderRef = (order: PaymentOrder): string => String(order._id || order.id |
 export function useOrderActions(rail: MerchantRail, onChanged: () => Promise<void> | void) {
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const [closeDetail, setCloseDetail] = useState(false);
+  const [rejectTarget, setRejectTarget] = useState<PaymentOrder | null>(null);
+  const [rejectBusy, setRejectBusy] = useState(false);
   const copy = railCopy(rail);
 
   const run = useCallback(
@@ -49,6 +58,8 @@ export function useOrderActions(rail: MerchantRail, onChanged: () => Promise<voi
     onAccept: (order) => {
       void run(() => api.acceptOrder(orderRef(order)), 'Order accepted — now processing');
     },
+
+    onPaymentNotReceived: (order) => setRejectTarget(order),
 
     onReject: (order) => setConfirmRequest({
       title: 'Reject this order?',
@@ -105,10 +116,39 @@ export function useOrderActions(rail: MerchantRail, onChanged: () => Promise<voi
     onOpen: () => undefined,
   }), [copy.proofLabel, rail, run]);
 
+  /**
+   * Send the rejection.
+   *
+   * The dialog stays OPEN on failure, with what the merchant typed and the file
+   * they picked still in it: the backend refuses a short reason or an
+   * unverifiable proof, and closing the dialog would make them start again
+   * without saying which half was wrong.
+   */
+  const submitPaymentNotReceived = useCallback(async (reason: string, proof: File) => {
+    if (!rejectTarget) return;
+    setRejectBusy(true);
+    try {
+      await api.rejectPaidOrder(orderRef(rejectTarget), reason, proof);
+      toast.success('Order rejected — the player has been warned');
+      setRejectTarget(null);
+      setCloseDetail(true);
+      await onChanged();
+    } catch (error: any) {
+      toast.error(error?.message || 'That did not go through — try again');
+    } finally {
+      setRejectBusy(false);
+    }
+  }, [onChanged, rejectTarget]);
+
   return {
     actions,
     confirmRequest,
     dismissConfirm: () => setConfirmRequest(null),
+    /** The order awaiting a "payment never arrived" rejection, if any. */
+    rejectTarget,
+    rejectBusy,
+    dismissReject: () => setRejectTarget(null),
+    submitPaymentNotReceived,
     /** True once an action succeeded, so the screen can close its drawer. */
     shouldCloseDetail: closeDetail,
     acknowledgeCloseDetail: () => setCloseDetail(false),

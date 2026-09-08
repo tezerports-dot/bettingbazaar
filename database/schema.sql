@@ -1063,6 +1063,32 @@ CREATE TABLE IF NOT EXISTS telegram_login_tokens (
 CREATE INDEX IF NOT EXISTS telegram_login_tokens_user_idx ON telegram_login_tokens (user_id);
 CREATE INDEX IF NOT EXISTS telegram_login_tokens_expiry_idx ON telegram_login_tokens (expires_at);
 
+-- ── Sign-in codes, delivered over Telegram ───────────────────────────────────
+-- A returning player types their mobile on the site and the bot DMs them a six
+-- digit code. No redirect, no app switch — the trip to Telegram happens once,
+-- at signup, when the contact share is what proves the number.
+--
+-- One live code per MOBILE, not per user: the request path must answer
+-- identically whether or not the number is registered, so it cannot key on a
+-- user_id it may not have. The mobile is stored hashed for the same reason the
+-- code is — this table would otherwise be a list of every player's phone number
+-- sitting beside a credential.
+--
+-- `attempts` is what makes six digits safe. Ten thousand guesses against a
+-- 10^6 space is a 1-in-100 chance; five is 1-in-200000, and the row burns
+-- itself at the cap rather than waiting for the clock.
+CREATE TABLE IF NOT EXISTS telegram_login_codes (
+  mobile_hash  TEXT PRIMARY KEY,
+  code_hash    TEXT NOT NULL,
+  user_id      TEXT NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,
+  telegram_user_id TEXT NOT NULL,
+  attempts     INT NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  consumed_at  TIMESTAMPTZ,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at   TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS telegram_login_codes_expiry_idx ON telegram_login_codes (expires_at);
+
 -- ── Revoked tokens ───────────────────────────────────────────────────────────
 -- Checked on every authenticated request, so it is a primary-key lookup and
 -- nothing else. Same expiry posture as above: the READ decides, the sweep only
@@ -2540,6 +2566,11 @@ ALTER TABLE order_states ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS review_action TEXT;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS review_notes TEXT;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS rejected_reason TEXT;
+-- The merchant's evidence for rejecting a PAID order — a bank statement
+-- screenshot or a photo showing the credit never arrived. Rejecting a PAID
+-- order accuses the player of not paying, adds a warning to their account and
+-- can auto-block them, so the accusation carries its proof.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS rejection_proof_url TEXT;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_reason TEXT;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_raised_at TIMESTAMPTZ;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_raised_by TEXT;

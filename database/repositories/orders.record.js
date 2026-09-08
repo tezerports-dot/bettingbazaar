@@ -106,11 +106,23 @@ export function toOrder(r) {
 
     approvedBy: r.approved_by, approvedAt: r.approved_at,
     rejectedBy: r.rejected_by, rejectedAt: r.rejected_at,
+    rejectionProofUrl: r.rejection_proof_url,
     cancelReason: r.cancel_reason, cancelledAt: r.cancelled_at,
     warningIssued: r.warning_issued,
     paidAt: r.paid_at, completedAt: r.completed_at, expiresAt: r.expires_at,
     bulkPayoutDate: r.bulk_payout_date, bulkPaidAt: r.bulk_paid_at,
     bulkPayoutBatch: r.bulk_payout_batch,
+
+    // The tamper-evidence tag, READ-ONLY. It is written once by `openOrder`
+    // with the row and never updated, and `SETTABLE` below deliberately does
+    // not name it, so no caller can rewrite it.
+    //
+    // This mapper omitted it while `orders.core.js`'s did, which meant
+    // `orderAccessGuard` — reading the full record so handlers get every field
+    // they render — saw `undefined` and skipped the verification entirely. The
+    // guard was mounted, the check was there, and it silently never ran. Its
+    // test is what found this.
+    orderHmac: r.order_hmac ?? null,
 
     createdAt: r.created_at, updatedAt: r.updated_at,
   };
@@ -182,7 +194,8 @@ const SETTABLE = Object.freeze({
   merchantSnapshot: ['merchant_snapshot', JSON.stringify],
 
   approvedBy: 'approved_by', approvedAt: 'approved_at',
-  rejectedBy: 'rejected_by', rejectedAt: 'rejected_at',
+  rejectedBy: 'rejected_by',
+  rejectionProofUrl: 'rejection_proof_url', rejectedAt: 'rejected_at',
   cancelReason: 'cancel_reason', cancelledAt: 'cancelled_at',
   warningIssued: 'warning_issued',
   paidAt: 'paid_at', completedAt: 'completed_at', expiresAt: 'expires_at',
@@ -334,15 +347,6 @@ export async function getOrderRecord(orderId) {
   return toOrder(rows[0]);
 }
 
-/** Several orders in one round trip. */
-export async function getOrderRecords(orderIds = []) {
-  const ids = [...new Set(orderIds.filter(Boolean).map(String))];
-  if (!ids.length) return [];
-  const { rows } = await pgQuery(
-    'SELECT * FROM order_states WHERE order_id = ANY($1::text[])', [ids], 'order_record_many',
-  );
-  return rows.map(toOrder);
-}
 
 /**
  * Search orders.
@@ -960,16 +964,6 @@ export async function merchantVisibleOrders({
   };
 }
 
-/** What a merchant is currently working. */
-export async function merchantOpenOrders(merchantId) {
-  const { rows } = await pgQuery(
-    `SELECT * FROM order_states
-      WHERE merchant_id = $1 AND state IN ('ASSIGNED', 'PROCESSING', 'PAID', 'DISPUTED')
-      ORDER BY created_at ASC`,
-    [String(merchantId)], 'order_merchant_open',
-  );
-  return rows.map(toOrder);
-}
 
 /**
  * How many funding orders a player has created in a window.

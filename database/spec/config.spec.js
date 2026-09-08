@@ -133,7 +133,7 @@ export const SYSTEM_CONFIG_SPEC = group({
     enforceMultiplesOf10:     b(true),
     blockOppositeSideBetting: b(false),
     maxFundingOrdersPerHour:  n(0, 0),       // 0 = off
-    maxWarnings:              n(3, 0),       // 0 = never auto-block
+    maxWarnings:              n(3, 0),       // 0 = never mark for review
   }),
 
   // ── The four that feed money arithmetic ───────────────────────────────────

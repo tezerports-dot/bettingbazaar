@@ -113,13 +113,24 @@ export async function search({
   if (since) add('created_at >= $?', since);
   if (until) add('created_at <= $?', until);
   if (cursor?.createdAt && cursor?.id !== undefined) {
-    params.push(cursor.createdAt, Number(cursor.id));
-    where.push(`(created_at, id) < ($${params.length - 1}, $${params.length})`);
+    // The cursor timestamp travels as TEXT and is cast back here, never as a
+    // JavaScript Date. `created_at` is TIMESTAMPTZ — microseconds — and a Date
+    // holds milliseconds, so a Date round trip truncates. Two entries written in
+    // the same millisecond (routine: this table takes a row per admin action)
+    // then compare as EQUAL on the first element of the tuple, the `<` is false
+    // for the one that follows, and the next page begins after it. The entry is
+    // not shown late; it is never shown. In the one place where a missing row is
+    // the point.
+    params.push(String(cursor.createdAt), Number(cursor.id));
+    where.push(`(created_at, id) < ($${params.length - 1}::timestamptz, $${params.length})`);
   }
 
   const size = Math.min(Math.max(Number(limit) || 100, 1), 500);
+  // created_at is selected a second time AS TEXT: that is the value the cursor
+  // carries, so the full microsecond precision survives the trip to the client
+  // and back. The mapped row keeps the Date, which is what a caller renders.
   const { rows } = await pgQuery(
-    `SELECT * FROM ${table}
+    `SELECT *, created_at::text AS cursor_created_at FROM ${table}
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
       ORDER BY created_at DESC, id DESC
       LIMIT ${size + 1}`,
@@ -131,7 +142,9 @@ export async function search({
   const last = page[page.length - 1];
   return {
     entries: page.map(detailed ? toDetailed : toEntry),
-    nextCursor: hasMore && last ? { createdAt: last.created_at, id: Number(last.id) } : null,
+    nextCursor: hasMore && last
+      ? { createdAt: last.cursor_created_at, id: Number(last.id) }
+      : null,
   };
 }
 

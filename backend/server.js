@@ -98,7 +98,7 @@ import { errorHandler }   from './middleware/errorHandler.js';
 import { requestContext } from './middleware/requestContext.js'; // X-6: correlation ids
 import { tlsFingerprintDefense, startTlsFingerprintDefenseConfigRefresh } from './middleware/tlsFingerprintDefense.js';
 import { rejectAmbiguousFraming } from './middleware/headerNormalization.js';
-import { authLimiter, adminAuthLimiter, merchantAuthLimiter, betLimiter, twoFactorLimiter } from './middleware/security.js';
+import { authLimiter, adminAuthLimiter, merchantAuthLimiter, betLimiter, twoFactorLimiter, loginPaceLimiter, securityMonitor } from './middleware/security.js';
 // Item 12 (2026-07-13): IP-rotation defense — per-subnet backstop + optional
 // global surge breaker on sensitive endpoints, on top of the per-IP limiters.
 import { createSubnetLimiter, globalSurgeBreaker, startIpDefenseConfigRefresh } from './middleware/ipDefense.js';
@@ -236,6 +236,13 @@ app.use(cookieParser());
 app.use(requestContext); // X-6: correlation id (before the logger, so it's logged)
 app.use(tlsFingerprintDefense); // JA3/TLS fingerprint policy from admin-managed SystemConfig
 app.use(requestLogger);
+// Every 401 and 403 into the audit trail, with the attempted mobile on the
+// admin and login paths. It was written, exported and mounted NOWHERE, so a
+// burst of failed admin logins left no durable record anywhere — the one
+// signal a credential-stuffing attempt against a money platform produces.
+// Mounted after requestContext so each row carries the correlation id, and it
+// calls the original res.json through, so it observes rather than intercepts.
+app.use(securityMonitor);
 app.use(httpMetrics);    // item 33: Prometheus HTTP duration/count (bounded route labels)
 // Item 9: bound in-flight work at the edge — 503 the excess so overload can't
 // starve the event loop mid-transaction. Mounted BEFORE routers so rejection is
@@ -441,7 +448,11 @@ app.use('/api/2fa', twoFactorRoutes);
 app.use('/api', winnersRoutes);
 app.use('/api/app', appBootstrapRoutes);
 
-app.post('/api/admin/login', adminAuthLimiter, createSubnetLimiter('adminAuth'), requireCaptcha('admin-login'), (req, res, next) => {
+// `loginPaceLimiter` runs FIRST, deliberately. A paced request never reaches
+// the credential check, so it is not a failed attempt and must not consume the
+// failure budget behind it — otherwise a burst of throttled retries would lock
+// out the account it was protecting.
+app.post('/api/admin/login', loginPaceLimiter, adminAuthLimiter, createSubnetLimiter('adminAuth'), requireCaptcha('admin-login'), (req, res, next) => {
   req.body = { ...req.body, loginType: req.body.loginType || 'admin' };
   next();
 }, loginHandler);
@@ -450,7 +461,7 @@ app.post('/api/admin/login', adminAuthLimiter, createSubnetLimiter('adminAuth'),
 // challenge token from the line above and has nowhere to redeem it. Rate
 // limited on the OTP tier, not the admin-password tier: six digits is a 10^6
 // space, so it warrants its own tighter budget.
-app.post('/api/admin/login/2fa', twoFactorLimiter, loginTwoFactorHandler);
+app.post('/api/admin/login/2fa', loginPaceLimiter, twoFactorLimiter, loginTwoFactorHandler);
 
 app.use('/api/admin', adminRoutes);   // ← now routes/admin/index.js (13 sub-routers)
 
@@ -503,7 +514,7 @@ app.use('/api',           userRoutes);
 // budget, and four of those in an hour would lock them out of signing in
 // entirely. A limiter that bans people for using the product correctly is a
 // worse outage than the brute-force it prevents.
-app.use('/api/merchant/auth/login', merchantAuthLimiter, requireCaptcha('merchant-login'));
+app.use('/api/merchant/auth/login', loginPaceLimiter, merchantAuthLimiter, requireCaptcha('merchant-login'));
 app.use('/api/merchant',  merchantRoutes);
 app.use('/api/payment', paymentRoutes);
 app.use('/api/support',   supportRoutes); // CAP-71: RAG support assistant (dormant until keys set)

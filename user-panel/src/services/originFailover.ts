@@ -222,15 +222,3 @@ export async function reportOriginUnreachable(origin: string): Promise<string | 
   return resolveWorkingOrigin();
 }
 
-/**
- * Kick off a background check at startup so a user whose primary origin is
- * blocked lands on a working one before their first real request, rather than
- * after it times out. Fire-and-forget by design: nothing waits on it, and the
- * app is fully usable if it never completes.
- */
-export function primeOrigin(): void {
-  if (!failoverAvailable()) return;
-  const remembered = readRemembered();
-  if (remembered) { active = remembered.origin; return; }
-  void resolveWorkingOrigin();
-}

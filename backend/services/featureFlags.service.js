@@ -108,11 +108,3 @@ export function hydrateFromConfig(config) {
   }
 }
 
-/** Snapshot of all current flag values (for admin / health endpoint). */
-export async function getAllFlags(tenant = null) {
-  const result = {};
-  for (const flag of Object.values(FLAGS)) {
-    result[flag] = await isEnabled(flag, tenant);
-  }
-  return result;
-}

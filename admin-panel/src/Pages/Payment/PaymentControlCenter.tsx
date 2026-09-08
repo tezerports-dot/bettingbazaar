@@ -14,8 +14,11 @@ const DisputeResolutionPanel: React.FC = () => {
   const load = async () => {
     setLoading(true);
     try {
-      const r = await api.get('/api/admin/queue/orders?status=DISPUTED&limit=50');
-      setDisputed(r.data?.orders || r.data?.data || []);
+      // /api/admin/dispute-orders, not /api/admin/queue/orders — the latter has
+      // never existed, so this panel showed an empty dispute queue and swallowed
+      // the 404 into "Failed to load". The response key is `disputes`.
+      const r = await api.get('/api/admin/dispute-orders?status=DISPUTED&limit=50');
+      setDisputed(r.data?.disputes || []);
     } catch { toast.error('Failed to load disputed orders'); }
     finally { setLoading(false); }
   };
@@ -29,7 +32,8 @@ const DisputeResolutionPanel: React.FC = () => {
     if (!reason?.trim()) return;
     setResolving(orderId);
     try {
-      await api.post(`/api/admin/queue/payment-orders/${orderId}/resolve`, {
+      // No /queue segment: the handler is mounted at /api/admin/payment-orders.
+      await api.post(`/api/admin/payment-orders/${orderId}/resolve`, {
         resolution, reason: reason.trim(),
       });
       toast.success(`Dispute ${resolution === 'release' ? 'released' : 'refunded'} successfully`);

@@ -58,7 +58,3 @@ export function initRealtimeBridge(io, sseManager) {
   }
 }
 
-export async function closeRealtimeBridge() {
-  await Promise.allSettled(clients.map((c) => c.quit()));
-  clients = [];
-}

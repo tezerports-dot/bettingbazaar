@@ -17,6 +17,8 @@ import { Banner, Button, CopyRow, StatusPill, cardStyle, copyText } from './ui';
 export interface OrderActions {
   onAccept: (order: PaymentOrder) => void;
   onReject: (order: PaymentOrder) => void;
+  /** The player claims they paid and the money never arrived — see the dialog. */
+  onPaymentNotReceived: (order: PaymentOrder) => void;
   /** Deposit: confirm the user's payment arrived and release tokens. */
   onRelease: (order: PaymentOrder) => void;
   /** Withdrawal: record that the payout has been sent. */
@@ -262,10 +264,26 @@ export const OrderCard: React.FC<{
             <Button tone="ok" onClick={() => actions.onRelease(order)} style={{ flex: 1 }}>
               <ShieldCheck size={16} /> Confirm &amp; release
             </Button>
-            <Button variant="outline" tone="dispute" title="Payment not received" onClick={() => actions.onDispute(order)}>
+            <Button variant="outline" tone="dispute" title="Send to an admin to decide" onClick={() => actions.onDispute(order)}>
               Dispute
             </Button>
           </div>
+        )}
+        {canRelease && (
+          /* Distinct from Dispute above, and heavier: a dispute goes to an admin
+             to decide, while this cancels the order and warns the player
+             directly. Given its own row so the two are not mistaken for each
+             other at a glance. */
+          <button
+            onClick={() => actions.onPaymentNotReceived(order)}
+            style={{
+              width: '100%', marginTop: 8, padding: 9, borderRadius: 10, cursor: 'pointer',
+              background: 'none', border: '1px solid var(--line, rgba(255,255,255,.15))',
+              color: 'var(--danger, #EF4444)', fontSize: 12, fontWeight: 700,
+            }}
+          >
+            Payment never arrived — reject
+          </button>
         )}
         {canPayout && (
           <div style={{ display: 'flex', gap: 9 }}>

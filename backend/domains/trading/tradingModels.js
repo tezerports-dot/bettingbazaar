@@ -18,14 +18,6 @@ export function oppositeSide(side) {
   return side === 'DELHI' ? 'BOMBAY' : 'DELHI';
 }
 
-// ── Position (bet) lifecycle ──────────────────────────────────────────────────
-// Mirrors domains/markets/bet.model.js `status` enum — that schema is the
-// storage authority; this is the shared cross-product vocabulary.
-export const POSITION_STATUS = Object.freeze({
-  PENDING: 'PENDING',
-  WON:     'WON',
-  LOST:    'LOST',
-});
 
 // ── Market-instance settlement lifecycle ──────────────────────────────────────
 // Mirrors domains/markets/cycle.model.js `isSettled` enum.

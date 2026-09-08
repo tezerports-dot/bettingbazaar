@@ -44,11 +44,17 @@ const MUTATIONS = [
   },
   // ── A deposit moves tokens; it must not create or destroy them ────────────
   {
-    id: 'M22', file: 'backend/domains/payment/payment.routes.js', config: UNIT,
+    // Retargeted 2026-09-07: this movement lived inline in payment.routes.js and
+    // now lives in depositCredit.js's `moveDepositMoney`, which BOTH routes that
+    // complete a deposit call — the merchant confirm and the admin queue
+    // override. The mutation therefore covers two call sites where it used to
+    // cover one. It was the admin override disagreeing with this arithmetic
+    // that minted tokens, so aiming it at the shared owner is the point.
+    id: 'M22', file: 'backend/domains/payment/depositCredit.js', config: UNIT,
     test: 'backend/tests/unit/depositCreditConservation.test.js',
     why: 'the merchant is debited the DEPOSIT SHARE while the user is credited the whole amount',
-    from: `      merchantId: order.merchantId, amount: total,`,
-    to: `      merchantId: order.merchantId, amount: depositCredit,`,
+    from: `    merchantId: order.merchantId, amount: total,`,
+    to: `    merchantId: order.merchantId, amount: depositCredit,`,
   },
   {
     id: 'M23', file: 'backend/domains/payment/depositCredit.js', config: UNIT,
@@ -269,6 +275,196 @@ const MUTATIONS = [
     to: `  } catch (e) {
     throw e;
   }`,
+  },
+
+  // ── A merchant cannot close a player's account ────────────────────────────
+  // The owner's decision of 2026-09-07, as a mutation. Restoring the risk
+  // rules' threshold here is the whole of the old behaviour: a merchant's third
+  // unreviewed rejection locks a player out of their own balance.
+  {
+    id: 'M67', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/merchantRejectPaidRoutes.test.js',
+    why: 'a merchant rejection auto-blocks the player again at the risk threshold',
+    from: `            maxWarnings: 0,
+        });`,
+    to: `            maxWarnings: 3,
+        });`,
+  },
+  // ── The review queue is reachable ─────────────────────────────────────────
+  // `/users/flagged` below `/users/:userId` resolves to a player whose id is
+  // the string "flagged": a 404 the screen renders as its empty state, which is
+  // indistinguishable from "nobody is flagged".
+  {
+    id: 'M68', file: 'backend/routes/admin/users.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/flaggedPlayersRoutes.test.js',
+    why: 'the flagged queue is no longer reachable at /users/flagged',
+    // NOT a rename of the path to another `/users/:something` — the handler
+    // ignores `req.params`, so it would answer just the same and the mutation
+    // survives (it did). Taking the path away is what declaring this route
+    // BELOW `/users/:userId` actually does: the request falls through to the
+    // single-user handler, which 404s on a player called "flagged".
+    from: `router.get('/users/flagged', authenticate, isAdminOrSubAdmin, async (req, res) => {`,
+    to: `router.get('/users/flagged-unreachable', authenticate, isAdminOrSubAdmin, async (req, res) => {`,
+  },
+  // ── status and is_blocked cannot come apart ───────────────────────────────
+  {
+    id: 'M69', file: 'database/repositories/users.js', config: PG,
+    test: 'backend/tests/routes/adminUsersRoutes.test.js',
+    why: 'status stops moving with is_blocked, so sign-in and the guards disagree',
+    from: `            status = CASE
+              WHEN $2 AND status = 'ACTIVE'  THEN 'BLOCKED'
+              WHEN NOT $2 AND status = 'BLOCKED' THEN 'ACTIVE'
+              ELSE status END,`,
+    to: '',
+  },
+  // ── The NOT NULL column that 500'd an unblock after it had committed ──────
+  {
+    id: 'M70', file: 'database/repositories/users.js', config: PG,
+    test: 'backend/tests/routes/adminUsersRoutes.test.js',
+    why: "clearing a flag writes NULL into a NOT NULL column and raises 23502 again",
+    from: `       payment_flag_reason = '',`,
+    to: `       payment_flag_reason = NULL,`,
+  },
+
+  // ── A delete must not strand money ────────────────────────────────────────
+  // Both guards lived only in a file nothing imported, while a test asserted
+  // one of them against that file and passed. They are on the live route now;
+  // these are what keep them there.
+  {
+    id: 'M71', file: 'backend/routes/admin/users.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/adminUsersRoutes.test.js',
+    why: 'a player with a PAID order still open can be deleted again',
+    from: `    if (open.total > 0) {`,
+    to: `    if (false && open.total > 0) {`,
+  },
+  {
+    id: 'M72', file: 'backend/routes/admin/users.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/adminUsersRoutes.test.js',
+    why: 'a player with money locked in escrow can be deleted again',
+    from: `    if (lockedBalance > 0) {`,
+    to: `    if (false && lockedBalance > 0) {`,
+  },
+  // ── The dispute resolution that closed an order and paid nobody ───────────
+  // `check:settable` refuses this statically, but a static gate cannot see
+  // whether the money moved. This proves the suite does.
+  {
+    id: 'M73', file: 'backend/domains/payment/paymentOrder.routes.js', config: PG,
+    test: 'backend/tests/routes/disputeResolvePathsRoutes.test.js',
+    why: 'resolving a dispute marks the order COMPLETED and credits nobody again',
+    from: `        disputeDecision:   resolution === 'release' ? 'RELEASE_TO_USER' : 'CANCEL_ORDER',
+        disputeResolution: reason.trim(),`,
+    to: `        disputeResolution: resolution === 'release' ? 'released' : 'refunded',
+        resolutionNotes:   reason.trim(),`,
+  },
+  {
+    id: 'M74', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/disputeResolvePathsRoutes.test.js',
+    why: 'a merchant dispute lands DISPUTED with no reason again',
+    from: `                disputeRaisedBy: 'merchant',
+            },`,
+    to: `                disputeRaisedBy: 'merchant',
+                updatedAt:       new Date(),
+            },`,
+  },
+
+  // ── A per-user limiter that counts per IP is not a per-user limiter ───────
+  // `req.user.id` does not exist — the repository returns `userId` — so all
+  // three of these fell through to the client IP. On CGNAT that throttles
+  // strangers together; for anyone willing to change address it is no limit at
+  // all, and one of the three guards withdrawals.
+  {
+    id: 'M75', file: 'backend/middleware/security.js', config: UNIT,
+    test: 'backend/tests/unit/rateLimitKeys.test.js',
+    why: 'the limiter key reads a field req.user has never had, so it counts per IP again',
+    from: `  if (req.user?.userId)   return \`u:\${req.user.userId}\`;`,
+    to: `  if (req.user?.id)   return \`u:\${req.user.id}\`;`,
+  },
+  {
+    id: 'M76', file: 'backend/middleware/security.js', config: UNIT,
+    test: 'backend/tests/unit/rateLimitKeys.test.js',
+    why: 'a pre-session 2FA attempt is keyed on the caller again, so cycling IPs buys guesses',
+    from: `  if (req.body?.challengeToken) {`,
+    to: `  if (false && req.body?.challengeToken) {`,
+  },
+
+  // ── Sign-in is paced, and the refusal says how long ──────────────────────
+  {
+    id: 'M77', file: 'backend/server.js', config: UNIT,
+    test: 'backend/tests/unit/loginPacing.test.js',
+    why: 'the admin password path stops being paced',
+    from: `app.post('/api/admin/login', loginPaceLimiter, adminAuthLimiter,`,
+    to: `app.post('/api/admin/login', adminAuthLimiter,`,
+  },
+  {
+    id: 'M78', file: 'backend/middleware/security.js', config: UNIT,
+    test: 'backend/tests/unit/loginPacing.test.js',
+    why: 'the pace skips successful attempts, so a first guess is unpaced again',
+    from: `        // Every attempt, not only the failures — see above.
+        skipSuccessfulRequests: false,`,
+    to: `        skipSuccessfulRequests: true,`,
+  },
+  {
+    id: 'M79', file: 'backend/middleware/security.js', config: UNIT,
+    test: 'backend/tests/unit/loginPacing.test.js',
+    why: 'the refusal drops the absolute instant, so a countdown drifts by the response time',
+    from: `            retryAt: resetAt.toISOString(),`,
+    to: '',
+  },
+
+  // ── The sign-in code is single-use, capped, and bound to one number ───────
+  {
+    id: 'M80', file: 'database/repositories/telegram.js', config: PG,
+    test: 'database/tests/telegramLoginCodePg.test.js',
+    why: 'a sign-in code can be redeemed twice, so one code is two sessions',
+    from: `        AND code_hash = $2
+        AND consumed_at IS NULL
+        AND expires_at > now()`,
+    to: `        AND code_hash = $2
+        AND expires_at > now()`,
+  },
+  {
+    id: 'M81', file: 'database/repositories/telegram.js', config: PG,
+    test: 'database/tests/telegramLoginCodePg.test.js',
+    why: 'wrong guesses stop being counted, so six digits are guessable again',
+    from: `        SET attempts = attempts + 1,`,
+    to: `        SET attempts = attempts + 0,`,
+  },
+  {
+    id: 'M82', file: 'database/repositories/telegram.js', config: PG,
+    test: 'database/tests/telegramLoginCodePg.test.js',
+    why: 'a retired identity answers again, so a code goes to whoever lost the account',
+    from: ` ON i.user_id = u.user_id AND i.contact_active`,
+    to: ` ON i.user_id = u.user_id`,
+  },
+  // ── The request endpoint must not reveal whether a number is registered ──
+  {
+    id: 'M83', file: 'backend/domains/telegram/telegram.routes.js', config: PG,
+    test: 'backend/tests/routes/telegramOtpLoginRoutes.test.js',
+    why: 'the code request answers differently for an unknown number, so the form becomes an oracle',
+    from: `    const { requestLoginCode } = await import('./telegramOtp.service.js');
+    await requestLoginCode(req.body?.mobile);`,
+    to: `    const { requestLoginCode } = await import('./telegramOtp.service.js');
+    const r = await requestLoginCode(req.body?.mobile);
+    if (!r.sent) return res.status(404).json({ success: false, message: 'No such number' });`,
+  },
+  // ── The number typed is the KYC number, never Telegram's own ─────────────
+  // `relinkIdentity` rewrites `telegram_identities.phone` during an account
+  // recovery and never touches the immutable `users.mobile`. Matching on the
+  // identity's phone would let somebody sign in with a number that was never
+  // verified against their Aadhaar.
+  {
+    id: 'M84', file: 'database/repositories/telegram.js', config: PG,
+    test: 'database/tests/telegramLoginCodePg.test.js',
+    why: 'sign-in matches the Telegram number again, not the KYC-linked mobile',
+    from: `(u.mobile, '`,
+    to: `(i.phone, '`,
+  },
+  {
+    id: 'M85', file: 'database/repositories/telegram.js', config: PG,
+    test: 'database/tests/telegramLoginCodePg.test.js',
+    why: 'the linked identity may carry a number that is not the KYC one and still receive the code',
+    from: `        AND regexp_replace(i.phone`,
+    to: `        AND $1 = $1 OR regexp_replace(i.phone`,
   },
 ];
 

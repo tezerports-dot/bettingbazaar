@@ -97,15 +97,6 @@ export async function listTokenOrders({ merchantId = null, status = null, limit 
   return rows.map(toOrder);
 }
 
-/** The review queue, oldest first. */
-export async function listPendingTokenOrders({ limit = 100 } = {}) {
-  const { rows } = await pgQuery(
-    `SELECT * FROM merchant_admin_token_orders WHERE status = 'PENDING'
-      ORDER BY requested_at ASC LIMIT $1`,
-    [Math.min(Math.max(Number(limit) || 100, 1), 500)], 'token_order_queue',
-  );
-  return rows.map(toOrder);
-}
 
 // ── Gateway configuration ───────────────────────────────────────────────────
 

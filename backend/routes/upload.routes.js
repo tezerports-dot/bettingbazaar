@@ -7,7 +7,6 @@ import cdnService from '../services/cdn.service.js';
 import { authenticate, isAdmin } from '../domains/identity/auth.middleware.js';
 import { merchantAuth } from '../middleware/merchantAuth.js';
 // Order chat. An attachment that is not recorded is an upload nobody can find.
-import { postMessage } from '#db/repositories/chat.js';
 
 const router = express.Router();
 
@@ -48,8 +47,19 @@ function hasValidUploadInput(fileName, contentType, fileSize) {
 
 // by the merchant panel and does a participant check).
 // ═══════════════════════════════════════════════════════════════════════
-
-router.post('/user/chat/:orderId/upload-url', authenticate, async (req, res) => {
+// 🧾 MERCHANT ORDER-REJECTION PROOF
+//
+// A merchant rejecting a PAID order is saying the player's money never
+// arrived. That warns and flags the player's account and puts them in an
+// admin's review queue, so the accusation carries evidence: a bank statement
+// screenshot or a photo showing no such credit. The admin decides from this
+// image, so an unverifiable one is a decision made blind.
+//
+// The order must be the merchant's own and must be in a state where the claim
+// makes sense. Issuing a URL for somebody else's order would let a merchant
+// stage proof against an order they have nothing to do with.
+// ═══════════════════════════════════════════════════════════════════════
+router.post('/merchant/order-reject-proof/:orderId/upload-url', merchantAuth, async (req, res) => {
   try {
     const { orderId } = req.params;
     const { fileName, contentType, fileSize } = req.body;
@@ -57,217 +67,74 @@ router.post('/user/chat/:orderId/upload-url', authenticate, async (req, res) => 
     if (!hasValidUploadInput(fileName, contentType, fileSize)) {
       return res.status(400).json({ success: false, message: 'fileName, contentType and fileSize are required' });
     }
-
-    const CHAT_ALLOWED = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
-    const cleanMime = contentType.toLowerCase().split(';')[0].trim();
-    if (!CHAT_ALLOWED.includes(cleanMime)) {
-      return res.status(400).json({ success: false, message: 'Only JPEG, PNG, WebP, and GIF images are allowed' });
-    }
-
-    const chatMimeRule = cdnService.mimeRulesForCategory('chat')[cleanMime];
-    if (fileSize > chatMimeRule.maxSize) {
-      return res.status(400).json({ success: false, message: `Max file size is ${chatMimeRule.maxSize / (1024 * 1024)} MB` });
-    }
-
-    const order = await playerOrder(orderId, req.user.userId);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-
-    const result = await cdnService.generateChatUploadUrl(
-      fileName, contentType, fileSize,
-      req.user.userId.toString(), orderId
-    );
-    res.json({ success: true, ...result });
-  } catch (err) {
-    console.error('User chat upload-url error:', err);
-    res.status(500).json({ success: false, message: err.message || 'Failed to generate upload URL' });
-  }
-});
-
-router.post('/user/chat/:orderId/confirm-upload', authenticate, async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    const { fileKey, cdnUrl, message } = req.body;
-
-    if (!fileKey || !cdnUrl) {
-      return res.status(400).json({ success: false, message: 'fileKey and cdnUrl are required' });
-    }
-
-    const order = await playerOrder(orderId, req.user.userId);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-
-    const verified = await cdnService.verifyUploadedObject({
-      fileKey, cdnUrl, expectedUserId: req.user.userId.toString(), expectedOrderId: orderId, expectedCategory: 'chat'
-    });
-
-    const chatMsg = await postMessage({
-      orderId:       order.orderId,
-      senderId:      req.user.userId,
-      senderType:    'USER',
-      message:       message || '📎 Attachment',
-      attachmentUrl: verified.cdnUrl,
-      attachmentKey: verified.fileKey,
-      isSystem:      false,
-    });
-
-    global.io?.to(`order-${order._id}`).emit('newMessage', chatMsg);
-
-    res.json({ success: true, message: chatMsg });
-  } catch (err) {
-    console.error('User chat confirm-upload error:', err);
-    res.status(500).json({ success: false, message: err.message || 'Failed to save message' });
-  }
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-
-
-// Validates that the requesting merchant owns the order.
-// ═══════════════════════════════════════════════════════════════════════
-
-router.post('/merchant/chat/:orderId/upload-url', merchantAuth, async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    const { fileName, contentType, fileSize } = req.body;
-
-    if (!hasValidUploadInput(fileName, contentType, fileSize)) {
-      return res.status(400).json({ success: false, message: 'fileName, contentType and fileSize are required' });
-    }
-
-    const CHAT_ALLOWED = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
-    const cleanMime = contentType.toLowerCase().split(';')[0].trim();
-    if (!CHAT_ALLOWED.includes(cleanMime)) {
-      return res.status(400).json({ success: false, message: 'Only JPEG, PNG, WebP, and GIF images are allowed' });
-    }
-
-    const chatMimeRule = cdnService.mimeRulesForCategory('chat')[cleanMime];
-    if (fileSize > chatMimeRule.maxSize) {
-      return res.status(400).json({ success: false, message: `Max file size is ${chatMimeRule.maxSize / (1024 * 1024)} MB` });
-    }
-
-    const order = await merchantOrder(orderId, req.merchantId);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-
-    const result = await cdnService.generateChatUploadUrl(
-      fileName, contentType, fileSize,
-      String(req.merchantId), orderId
-    );
-    res.json({ success: true, ...result });
-  } catch (err) {
-    console.error('Merchant chat upload-url error:', err);
-    res.status(500).json({ success: false, message: err.message || 'Failed to generate upload URL' });
-  }
-});
-
-router.post('/merchant/chat/:orderId/confirm-upload', merchantAuth, async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    const { fileKey, cdnUrl, message } = req.body;
-
-    if (!fileKey || !cdnUrl) {
-      return res.status(400).json({ success: false, message: 'fileKey and cdnUrl are required' });
-    }
-
-    const order = await merchantOrder(orderId, req.merchantId);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-
-    const verified = await cdnService.verifyUploadedObject({
-      fileKey, cdnUrl, expectedUserId: String(req.merchantId), expectedOrderId: orderId, expectedCategory: 'chat'
-    });
-
-    const chatMsg = await postMessage({
-      orderId:       order.orderId,
-      senderId:      String(req.merchantId),
-      senderType:    'MERCHANT',
-      message:       message || '📎 Attachment',
-      attachmentUrl: verified.cdnUrl,
-      attachmentKey: verified.fileKey,
-      isSystem:      false,
-    });
-
-    global.io?.to(`order-${order._id}`).emit('newMessage', chatMsg);
-
-    res.json({ success: true, message: chatMsg });
-  } catch (err) {
-    console.error('Merchant chat confirm-upload error:', err);
-    res.status(500).json({ success: false, message: err.message || 'Failed to save message' });
-  }
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-// 📸 PAYMENT PROOF — USER
-// User uploads a payment screenshot as a file (not a pasted URL).
-// A presigned upload returns fileKey + cdnUrl; later routes must verify the
-// object exists before storing the CDN URL. Users cannot submit arbitrary URLs.
-// ═══════════════════════════════════════════════════════════════════════
-
-router.post('/user/payment-proof/:orderId/upload-url', authenticate, async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    const { fileName, contentType, fileSize } = req.body;
-
-    if (!hasValidUploadInput(fileName, contentType, fileSize)) {
-      return res.status(400).json({ success: false, message: 'fileName, contentType, and fileSize are required' });
-    }
-
-    // Images only — strict exact MIME match (normalise before compare)
-    const PROOF_ALLOWED = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
-    const cleanProofMime = contentType.toLowerCase().split(';')[0].trim();
-    if (!PROOF_ALLOWED.includes(cleanProofMime)) {
-      return res.status(400).json({ success: false, message: 'Only JPEG, PNG, WebP, and GIF image files are supported' });
-    }
-
     if (fileSize > 10 * 1024 * 1024) {
       return res.status(400).json({ success: false, message: 'Maximum file size is 10 MB' });
     }
 
-    const order = await playerOrder(orderId, req.user.userId);
+    // Ownership in the WHERE clause — `getMerchantOrder` matches the order id
+    // AND the merchant id, so an order that is not theirs is simply not found.
+    const order = await db.orders.getMerchantOrder(orderId, req.merchantId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (!['ASSIGNED', 'PROCESSING'].includes(order.status)) {
-      return res.status(400).json({ success: false, message: `Cannot upload proof for order in status ${order.status}` });
+    if (!['PAID', 'PROCESSING'].includes(order.status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Proof applies to a paid order. This one is ${order.status}.`,
+      });
     }
 
-    const uploadData = await cdnService.generatePaymentProofUploadUrl(
+    // Images only — the category falls through to the image allowlist, and the
+    // extension blocklist independently refuses SVG and HTML, which served from
+    // the panels' own origin would be stored XSS.
+    const uploadData = await cdnService.generatePresignedUploadUrl({
       fileName, contentType, fileSize,
-      req.user.userId.toString(), orderId
-    );
+      category: 'merchant-reject-proof',
+      userId: String(req.merchantId),
+      orderId,
+    });
     res.json({ success: true, ...uploadData });
   } catch (error) {
-    console.error('❌ Payment proof upload URL error:', error);
-    res.status(500).json({ success: false, message: error.message || 'Failed to generate upload URL' });
+    console.error('❌ Merchant reject-proof upload URL error:', error);
+    res.status(error.status || 500).json({ success: false, message: error.message || 'Failed to generate upload URL' });
   }
 });
 
-/**
- * POST /api/user/payment-proof/:orderId/confirm-upload
- * Save the uploaded CDN URL onto the PaymentOrder as proofScreenshot.
- * The object is verified before the CDN URL is stored.
- */
-router.post('/user/payment-proof/:orderId/confirm-upload', authenticate, async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    const { fileKey, cdnUrl } = req.body;
-    if (!fileKey || !cdnUrl) {
-      return res.status(400).json({ success: false, message: 'fileKey and cdnUrl are required' });
-    }
+// ═══════════════════════════════════════════════════════════════════════
+// 💬 ORDER CHAT ATTACHMENTS — REMOVED
+//
+// `/user/chat/:orderId/{upload-url,confirm-upload}` and the merchant pair are
+// gone, with the `GET|POST /api/merchant/chat/:id` routes they fed.
+//
+// There is no merchant-to-user order chat, by design. A player submits a UTR
+// as proof that they paid; the merchant matches it against their own bank
+// statement and confirms or rejects. The two never negotiate, which is the
+// point: a private channel between the party holding the money and the party
+// owed it is where an off-platform settlement gets agreed.
+//
+// The one conversation that exists is the DISPUTE chat, and it is between the
+// player and an admin or sub-admin — see
+// domains/disputes/disputeResolution.admin.routes.js. That still uses
+// `chat.js`, which is why the repository stays: `postSystemMessage` also writes
+// the order's own timeline, which is the record a dispute is decided from.
+//
+// The merchant QR presign below is NOT part of this. It uploads a merchant's
+// own UPI QR image for their profile, and has nothing to do with order chat.
+// ═══════════════════════════════════════════════════════════════════════
 
-    const order = await playerOrder(orderId, req.user.userId);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+// ═══════════════════════════════════════════════════════════════════════
+// 📸 PAYMENT PROOF — REMOVED
+//
+// `/user/payment-proof/:orderId/{upload-url,confirm-upload}` are gone. The
+// deposit flow no longer collects a payment screenshot: it proved nothing (it
+// is trivially forged and no approval read it), while the merchant matches the
+// UTR against their own bank statement, which is the only part of the
+// submission the platform can verify. Collecting an identifying image that no
+// decision reads is data a platform should not hold.
+//
+// `proofScreenshot` remains on the order and `cdn.service.js` still knows the
+// `payment-proof` category, so an image already stored is still served and the
+// retention job still expires it. Only the collection of new ones is gone.
+// ═══════════════════════════════════════════════════════════════════════
 
-    const verified = await cdnService.verifyUploadedObject({
-      fileKey, cdnUrl, expectedUserId: req.user.userId.toString(), expectedOrderId: orderId, expectedCategory: 'payment-proof'
-    });
-
-    // `setOrderFields` refuses an unknown column rather than dropping it. The
-    // document model discarded a write to an undeclared path and reported
-    // success — a proof screenshot that never saved and a player told it had.
-    await db.orders.setOrderFields(order.orderId, { proofScreenshot: verified.cdnUrl });
-
-    res.json({ success: true, message: 'Payment proof saved', proofScreenshot: verified.cdnUrl });
-  } catch (error) {
-    console.error('❌ Payment proof confirm-upload error:', error);
-    res.status(500).json({ success: false, message: error.message || 'Failed to confirm upload' });
-  }
-});
 // ═══════════════════════════════════════════════════════════════════════
 // 🪪 KYC DOCUMENTS — REMOVED 2026-08-25
 //

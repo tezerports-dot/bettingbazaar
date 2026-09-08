@@ -68,14 +68,6 @@ const SOCKET_URL: string =
   GLOBAL_CONFIG.SOCKET_URL ||
   (isLocal ? 'http://localhost:8080' : window.location.origin);       // same-origin default
 
-// The merchant panel may live on a different host than the user panel. If so,
-// set VITE_MERCHANT_PANEL_URL at build time; otherwise it falls back to the
-// same-domain /merchant path.
-const _merchantPanelUrl: string | undefined = (import.meta as any).env?.VITE_MERCHANT_PANEL_URL;
-export const MERCHANT_PANEL_ORIGIN: string =
-  (_merchantPanelUrl ? _merchantPanelUrl.replace(/\/+$/, '') : null) ||
-  window.location.origin; // fallback: same-domain bundled deployment
-
 // SSE URL -- public broadcast stream (all users, anonymous or logged-in)
 const SSE_URL: string =
   (_viteApiUrl ? _viteApiUrl.replace(/\/$/, '') + '/api/sse/events' : null) ||
@@ -314,6 +306,40 @@ export class RealBackend implements Backend {
 
     if (res.success && res.token) {
       setToken(res.token); // single call site — populates in-memory cache + localStorage
+      if (!this.socket) {
+        this._connectWebSocket(res.token);
+      } else {
+        (this.socket as any).auth = { token: res.token };
+        this.socket.disconnect();
+        this.socket.connect();
+      }
+    }
+    return res;
+  }
+
+  /**
+   * "Send me a code." The response is deliberately uninformative — see the
+   * interface — so there is nothing to branch on here beyond the transport.
+   */
+  async requestLoginCode(mobile: string) {
+    return this.request<{ success: boolean; message?: string }>(
+      '/telegram/otp/request', { method: 'POST', body: JSON.stringify({ mobile }) });
+  }
+
+  /**
+   * The code, traded for a session.
+   *
+   * The token handling is IDENTICAL to `exchangeTelegramToken` on purpose: both
+   * paths end in the same session, and a second way of seating a player that
+   * forgot to re-auth the socket would leave them signed in with a live feed
+   * still authenticated as nobody.
+   */
+  async verifyLoginCode(mobile: string, code: string) {
+    const res = await this.request<{ success: boolean; token?: string; user?: User; message?: string }>(
+      '/telegram/otp/verify', { method: 'POST', body: JSON.stringify({ mobile, code }) });
+
+    if (res.success && res.token) {
+      setToken(res.token);
       if (!this.socket) {
         this._connectWebSocket(res.token);
       } else {

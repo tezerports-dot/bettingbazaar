@@ -45,7 +45,15 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
       style={{ background: 'var(--overlay)', backdropFilter: 'blur(3px)' }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="om-pop w-full max-w-md" style={{ background: 'var(--surface)', border: '1px solid var(--border-2)', borderRadius: 16, boxShadow: 'var(--sh3)' }}>
+      {/* `role="dialog"` so assistive tech announces this as a dialog rather
+          than as more page content — and so a query can be scoped to it. A
+          confirm button and the button that opened it otherwise match the same
+          accessible name. */}
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className="om-pop w-full max-w-md" style={{ background: 'var(--surface)', border: '1px solid var(--border-2)', borderRadius: 16, boxShadow: 'var(--sh3)' }}>
         <div className="p-6 text-center">
           <div className="flex justify-center mb-4">{icons[type]}</div>
           <h3 className="text-xl font-bold mb-2">{title}</h3>

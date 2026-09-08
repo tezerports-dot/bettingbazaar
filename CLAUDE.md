@@ -169,6 +169,169 @@ pay again.
 
 ---
 
+## Shipped means reachable
+
+A backend that works and a panel that calls it are two different facts, and this
+repository has repeatedly had one without the other. Every check here passed
+while five admin buttons hit paths the server has never served: the request
+404'd, the component caught it, and the screen rendered its empty state —
+indistinguishable from "no data". Nobody saw a stack trace. Nobody saw a red
+test. The dispute queue was permanently empty, release and refund did nothing,
+merchant scoring silently failed while reporting that the *limits* had failed,
+and every merchant's order history read "No orders found" however busy they were.
+
+A route test proves a handler works. It can never prove anything calls it.
+
+1. **A panel call that resolves to no route is a live defect**, not a loose end.
+   `npm run check:ui-coverage` fails the build on one. Three of the five above
+   shared a single cause — handlers moved out from under a `/queue` prefix and
+   the panel was never updated — so this is drift, and drift recurs.
+2. **A backend feature with no UI is not shipped.** It is built, tested, merged
+   and unreachable. `check:ui-coverage --unused` lists these; the list is
+   triage, not failure, because webhooks and SSE belong on it. Anything else on
+   it is either work someone forgot to finish or code to delete.
+3. **Do not describe a screen as working without following its calls to a
+   route.** Reading the handler is not enough. Reading the component is not
+   enough. The two must be checked against each other.
+
+## A write that follows a commit must not be able to fail
+
+The order lifecycle moves the STATE first and writes the accompanying fields
+SECOND, deliberately: an order must never be found in a new state without the
+facts that justify it. The price of that ordering is that anything wrong in the
+second write happens **after the first has already committed** — the order
+moves, the handler's `catch` returns a 500, and everything it meant to do next,
+including moving money, never runs.
+
+`setOrderFields` throws on a field name it does not know. That has shipped
+**three times, in three files**, and every check in this repository was green
+each time:
+
+- `resolvedAt` / `resolvedBy` in `disputeResolution.admin.routes.js` — every
+  admin dispute resolution failed.
+- `updatedAt` in the merchant reject handler — 500 on every call, and no screen
+  called it, so nothing noticed.
+- `resolutionNotes` + `updatedAt` in `paymentOrder.routes.js` — the admin
+  panel's release button marked a **disputed deposit COMPLETED and never
+  credited the player**, then told the admin it had failed. The order left the
+  DISPUTED queue, so nothing remained to show it had gone wrong.
+
+`npm run check:settable` refuses the whole class at build time. It reads
+`SETTABLE` from the one file that defines it and checks every `set: { … }`
+literal in `backend/`. It cannot see whether the values are right or whether the
+money moved — those need a test through the real database.
+
+The same shape exists outside the lifecycle: a column that is `NOT NULL` refuses
+an explicit `null`, and `updateUser` passes values straight through. That is how
+`unblock?resetWarnings=true` 500'd *after* the unblock committed, leaving
+`is_blocked` false with `status` still `BLOCKED` — an account sign-in refused
+and the request guards admitted. **Before writing `null`, check the column.**
+
+## Code nothing imports is not code
+
+`check:dead-code` scans exported names. A default export is named at the import
+site, so a module whose only export is a `default` was exempt from every check
+in it. `backend/services/admin.service.js` was exactly that: 380 lines
+duplicating live block/unblock/delete/sub-admin routes, holding two writes of
+`null` into a `NOT NULL` column — and holding a locked-balance guard the LIVE
+delete route did not have, while `moneyDecisionsReadTheWallet.test.js` asserted
+that guard **against the dead file** and passed. The live route would
+soft-delete a player with a withdrawal still in escrow.
+
+Two rules follow, both now mechanical:
+
+1. **A module nothing imports is dead**, whatever it exports.
+   `check:dead-code` reports orphan modules and fails on them. Deliberate
+   exceptions go in `ORPHAN_ALLOW` **with a stated reason** — adding a line
+   there is a decision, not a silencer.
+2. **A test that reads a file's source is not a consumer of it.** Asserting a
+   money guard against unreachable code is worse than having no assertion,
+   because it reports the guard as present. When a test names a path, check that
+   something *imports* that path.
+
+## A type that lies is worse than no type
+
+`admin-panel/src/types.ts` declared `User._id`. The server has never sent one:
+the users repository and the KYC queue query both emit `userId`. TypeScript
+could not catch it, because **the interface was the thing that was wrong** —
+every `u._id` typechecked and was `undefined` at runtime.
+
+What that produced, none of it looking like an error:
+
+- Every user-scoped call from the admin panel built
+  `/api/admin/users/undefined/…`. Block, unblock, delete, balance adjust, roles
+  and phantom access all 404'd into a caught error and an empty state.
+- On the KYC screen, `setSelectedId(u._id)` stored `undefined`, so
+  `find(u => u._id === selectedId)` matched the **first** row every time —
+  a reviewer clicking the fifth player read the first player's record — and
+  `active = selected?._id === u._id` rendered **every** row highlighted.
+  Approving grants full withdrawal access.
+
+The fix that found every call site was renaming the field in the interface and
+letting `tsc` list them. A search would have missed one, and a missed one is a
+silent 404. **When a panel type names an id, check it against what the mapper
+actually emits** — `toOrder` and the merchants mapper alias `_id` deliberately;
+`toUser` does not.
+
+Two related failures worth the same suspicion:
+
+- `req.user?.id` in three rate limiters. `authenticate` sets `req.user` from the
+  users repository, which returns `userId`. So every limiter silently fell
+  through to its IP fallback — including the withdrawal cap and the 2FA
+  brute-force guard, whose comment described the account-takeover it was no
+  longer preventing. Per-IP throttles CGNAT'd players together and limits nobody
+  willing to reconnect.
+- `.save()` on a repository row. It is a TypeError, the route's `catch` turns it
+  into a 500, and nothing is written. `check:settable` refuses `.save`,
+  `.populate`, `.toObject` and `.lean` outside a `typeof … === 'function'` guard.
+
+## One owner per value, mechanically
+
+`04-GOVERNANCE.md` §1 has always said derive, do not duplicate. Say it here in
+the form it keeps being violated: **the same payload assembled in two places
+drifts, and it drifts silently.**
+
+The system-config payload was built twice — once in `socketHandlers.js`, once in
+`GET /api/v1/system/config` — with independently written fallbacks. They had
+already diverged: the socket carried `webUrl`/`androidUrl`/`iosUrl`, the HTTP
+route carried `kycRequired`/`registrationEnabled`, and a client got a different
+answer about the platform depending on which one it happened to ask.
+
+A value an operator can edit is only config if **every** consumer reads the same
+owner. Two builders with matching defaults are not one owner; they are one bug
+waiting for the next field.
+
+## No path that only works on one machine
+
+`verify-ui-coverage.mjs` shipped with `const ROOT = '/home/user/bettingbazaar'`
+— the author's own checkout, baked in. It passed locally and could not run
+anywhere else; CI died at the first `readFileSync`. Derive a root from
+`import.meta.url`, read a location from configuration, and never write an
+absolute path that assumes a particular machine. Running a script from the repo
+root is not evidence it runs — run it from somewhere else.
+
+## Do not call it perfect
+
+`Do not claim readiness` above governs the money path. This governs everything
+else, and it is the rule most often broken here.
+
+**"Clean", "complete", "perfect", "nothing missing" and "production-ready" are
+claims about evidence, not impressions.** Every one of them requires naming the
+gate that was run and the number it printed. A green CI run is not that claim:
+CI was green on every commit while all five dead buttons were live, because
+nothing was looking for them.
+
+When asked whether something is finished, answer with what was checked and what
+was **not**. An honest "I verified the handlers; I never checked that a button
+calls them" is worth more than a confident summary, and this session is the
+proof: that exact unasked question was hiding five defects, a duplicated config
+payload, and 71 endpoints no screen reaches.
+
+Absence of a failing check is not evidence of correctness when no check covers
+the thing being claimed.
+
+---
+
 ## Commands
 
 | Command | What it proves |
@@ -177,4 +340,11 @@ pay again.
 | `npm run test:unit` | Money arithmetic, risk validation, cycle types, SSE, winners. |
 | `npm run test:pg` | Money-path behaviour against a real PostgreSQL. |
 | `npm run check:deps` | No circular imports, no governance boundary violations. |
+| `npm run check:ui-coverage` | Every panel call reaches a real route. `--unused` lists endpoints no screen calls. |
+| `npm run check:dead-code` | No export is referenced by nothing, and no module is imported by nothing. `--all` lists test-only and over-exported ones. |
+| `npm run check:settable` | Every order-lifecycle `set` names a column the writer accepts — the write that runs after the state has already committed. |
+| `npm run check:db-boundary` | No SQL, driver or relative reach past `#db`. |
+| `npm run check:orphans` | Every identifier used is declared, imported or a parameter. |
+| `npm run check:balance-reads` | Trap 7, mechanically: a number that GATES a transfer is read from the rows the write will lock. |
+| `npm run check:coherence` | Every column the repositories name exists in the schema. |
 | `npm run verify:capabilities` | Every claimed capability has its evidence on disk. |

@@ -41,6 +41,32 @@ const GENERIC_FIELDS = [
 ];
 
 export const GameProviders: React.FC = () => {
+  // ── Game transactions ─────────────────────────────────────────────────────
+  // Every credit and debit a provider made against a player's wallet. The
+  // endpoint has always paged and filtered them and nothing called it, so a
+  // dispute about a casino round had no record an operator could pull up.
+  const [txs, setTxs] = useState<any[]>([]);
+  const [txTotal, setTxTotal] = useState(0);
+  const [txFilter, setTxFilter] = useState({ providerKey: '', userId: '', txType: '' });
+  const [txLoading, setTxLoading] = useState(false);
+  const [showTxs, setShowTxs] = useState(false);
+
+  const loadTxs = async () => {
+    setTxLoading(true);
+    try {
+      const r = await api.get<any>('/api/game/admin/game-transactions', {
+        params: {
+          providerKey: txFilter.providerKey || undefined,
+          userId: txFilter.userId || undefined,
+          txType: txFilter.txType || undefined,
+          limit: 50,
+        },
+      });
+      if (r.data?.success) { setTxs(r.data.transactions || []); setTxTotal(r.data.total || 0); }
+    } catch { toast.error('Could not load game transactions'); }
+    finally { setTxLoading(false); }
+  };
+
   const [providers, setProviders] = useState<any[]>([]);
   const [expanded, setExpanded]   = useState<string | null>(null);
   const [edits, setEdits]         = useState<Record<string, any>>({});
@@ -239,6 +265,75 @@ export const GameProviders: React.FC = () => {
           </div>
         );
       })}
+
+      {/* ── Provider transactions ──────────────────────────────────────────
+          Collapsed by default: this is the record you open when a player
+          disputes a round, not something to read on every visit. */}
+      <div className="card">
+        <button
+          onClick={() => { const next = !showTxs; setShowTxs(next); if (next && txs.length === 0) loadTxs(); }}
+          className="flex items-center justify-between w-full text-left"
+        >
+          <span className="font-semibold flex items-center gap-2">
+            <Activity size={16} className="text-blue-400" />
+            Provider transactions{txTotal ? ` (${txTotal})` : ''}
+          </span>
+          {showTxs ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+        </button>
+
+        {showTxs && (
+          <div className="mt-4 space-y-3">
+            <div className="flex flex-wrap gap-2">
+              <input value={txFilter.providerKey} onChange={e => setTxFilter(f => ({ ...f, providerKey: e.target.value }))}
+                className="input text-sm" placeholder="Provider key" />
+              <input value={txFilter.userId} onChange={e => setTxFilter(f => ({ ...f, userId: e.target.value }))}
+                className="input text-sm" placeholder="Player id" />
+              <select value={txFilter.txType} onChange={e => setTxFilter(f => ({ ...f, txType: e.target.value }))} className="input text-sm">
+                <option value="">All types</option>
+                <option value="BET">Bet</option>
+                <option value="WIN">Win</option>
+                <option value="REFUND">Refund</option>
+              </select>
+              <button onClick={loadTxs} disabled={txLoading} className="btn-secondary text-sm disabled:opacity-50">
+                {txLoading ? 'Loading…' : 'Search'}
+              </button>
+            </div>
+
+            {txs.length === 0 && !txLoading ? (
+              <p className="text-sm text-gray-500 py-6 text-center">No transactions for this filter.</p>
+            ) : (
+              <div className="space-y-1.5 max-h-96 overflow-y-auto pr-1">
+                {txs.map((t: any) => (
+                  <div key={t.id} className="flex items-center justify-between gap-4 bg-dark-800 rounded-lg px-4 py-2.5 text-sm">
+                    <div className="min-w-0">
+                      <p className="text-gray-200">
+                        <span className="font-medium">{t.type}</span>
+                        <span className="text-gray-500"> · {t.providerKey}</span>
+                        {t.gameName && <span className="text-gray-500"> · {t.gameName}</span>}
+                      </p>
+                      <p className="text-xs text-gray-500 truncate">
+                        {t.username || t.userId}{t.roundId ? ` · round ${t.roundId}` : ''}
+                      </p>
+                      {/* The idempotency key the movement was written under —
+                          what ties this row to the wallet ledger entry. */}
+                      <p className="text-[10px] text-gray-600 font-mono truncate">{t.txId}</p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className={`font-semibold ${t.type === 'WIN' ? 'text-green-400' : 'text-gray-200'}`}>
+                        ₹{(t.amount ?? 0).toLocaleString('en-IN')}
+                      </p>
+                      {t.balanceAfter !== null && (
+                        <p className="text-[10px] text-gray-500">bal → ₹{(t.balanceAfter ?? 0).toLocaleString('en-IN')}</p>
+                      )}
+                      <p className="text-[10px] text-gray-500">{new Date(t.createdAt).toLocaleString('en-IN')}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 };

@@ -100,7 +100,16 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
     }
     
     if (!response.ok) {
-      throw new Error(data.message || `Request failed with status ${response.status}`);
+      // The status and the body travel WITH the error. This threw a bare
+      // `Error(message)`, so everything the server said beyond one sentence was
+      // discarded at the boundary — a caller could not tell a 429 from a 400,
+      // and structured fields like `retryAfter` / `retryAt` were unreachable no
+      // matter how carefully the server sent them.
+      const err = new Error(data?.message || `Request failed with status ${response.status}`) as
+        Error & { status?: number; data?: unknown };
+      err.status = response.status;
+      err.data = data;
+      throw err;
     }
     
     return data as T;
@@ -245,6 +254,46 @@ export const confirmPayment = async (orderId: string, proof?: string, utrNumber?
   const data = await request<any>(ENDPOINTS.ORDERS.CONFIRM(orderId), {
     method: 'POST',
     body: JSON.stringify({ proof, utrNumber }),  // correct field names
+  });
+  return data.order || data;
+};
+
+/**
+ * Reject an order the player says they paid, because the money never arrived.
+ *
+ * Different from `rejectOrder` above, which declines an order BEFORE payment
+ * and returns it to the queue. This one cancels the order, adds a warning to
+ * the player's account and can auto-block them — so the backend requires a
+ * reason of at least ten characters and a proof image, and refuses without
+ * either.
+ *
+ * Three steps, in this order: ask for a presigned URL (which also checks the
+ * order is this merchant's and is actually awaiting confirmation), PUT the
+ * file, then send the reference. The proof is verified server-side against
+ * THIS merchant and THIS order before it is stored, so a key from somewhere
+ * else is refused.
+ */
+export const rejectPaidOrder = async (
+  orderId: string, reason: string, proof: File,
+): Promise<PaymentOrder> => {
+  const presigned = await request<any>(ENDPOINTS.ORDERS.REJECT_PROOF_UPLOAD_URL(orderId), {
+    method: 'POST',
+    body: JSON.stringify({ fileName: proof.name, contentType: proof.type, fileSize: proof.size }),
+  });
+  if (!presigned?.uploadUrl || !presigned?.fileKey) {
+    throw new Error('Could not prepare the proof upload');
+  }
+
+  const put = await fetch(presigned.uploadUrl, {
+    method: 'PUT', body: proof, headers: { 'Content-Type': proof.type },
+  });
+  if (!put.ok) throw new Error('The proof image failed to upload');
+
+  const data = await request<any>(ENDPOINTS.ORDERS.REJECT_PAID(orderId), {
+    method: 'POST',
+    body: JSON.stringify({
+      reason, proofFileKey: presigned.fileKey, proofCdnUrl: presigned.cdnUrl,
+    }),
   });
   return data.order || data;
 };
@@ -403,51 +452,8 @@ export const getWeeklyEarnings = async (): Promise<{ weekly: Array<{ date: strin
   return { weekly: data.weekly || [] };
 };
 
-// =======================================================================
-// RED FLAG (FIX M5-c)
-// =======================================================================
 
-export const redFlagOrder = async (orderId: string, reason: string): Promise<any> => {
-  const data = await request<any>(ENDPOINTS.ORDERS_EXTRA.RED_FLAG(orderId), {
-    method: 'POST',
-    body: JSON.stringify({ reason }),
-  });
-  return data.order || data;
-};
 
-// getRates removed: token conversion is fixed 1:1 (Phase 006 flattening,
-// 2026-07-08) — there is no buy/sell spread to fetch or display.
-//
-// Bulk-payout clients removed with the 2026-07-27 redesign: the panel is four
-// screens (Dashboard, Orders, History, Profile) and withdrawals are handled
-// per-order, so nothing consumed them. The backend endpoints remain, gated by
-// the MERCHANT_BULK_PAYOUTS feature flag.
-
-// =======================================================================
-// UTILITIES
-// =======================================================================
-
-export const formatCurrency = (amount: number, currency = 'Rs.'): string => {
-  if (typeof amount !== 'number') {
-    amount = parseFloat(String(amount)) || 0;
-  }
-  return `${currency}${amount.toLocaleString('en-IN', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  })}`;
-};
-
-export const formatDate = (dateString: string | number): string => {
-  if (!dateString) return 'N/A';
-  const date = new Date(dateString);
-  return date.toLocaleString('en-IN');
-};
-
-export const formatDateShort = (dateString: string | number): string => {
-  if (!dateString) return 'N/A';
-  const date = new Date(dateString);
-  return date.toLocaleDateString('en-IN');
-};
 
 export const formatTime = (dateString: string | number): string => {
   if (!dateString) return 'N/A';
@@ -455,22 +461,6 @@ export const formatTime = (dateString: string | number): string => {
   return date.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
 };
 
-export const getTimeAgo = (dateString: string | number): string => {
-  if (!dateString) return 'N/A';
-  const date = new Date(dateString);
-  const now = new Date();
-  const diff = now.getTime() - date.getTime();
-  
-  const minutes = Math.floor(diff / 60000);
-  const hours = Math.floor(diff / 3600000);
-  const days = Math.floor(diff / 86400000);
-  
-  if (minutes < 1) return 'Just now';
-  if (minutes < 60) return `${minutes}m ago`;
-  if (hours < 24) return `${hours}h ago`;
-  if (days < 7) return `${days}d ago`;
-  return formatDateShort(dateString);
-};
 
 // =======================================================================
 // EXPORT ALL API FUNCTIONS
@@ -494,6 +484,7 @@ export const api = {
   acceptOrder,
   confirmPayment,
   rejectOrder,
+  rejectPaidOrder,
   
   
   // Dispute
@@ -510,16 +501,8 @@ export const api = {
   updateProfile,
 
   // Red Flag
-  redFlagOrder,
-
-  
   // Utilities
-  formatCurrency,
-  formatDate,
-  formatDateShort,
   formatTime,
-  getTimeAgo,
-  
   // Direct request function for custom calls
   request,
 };
