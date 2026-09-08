@@ -2961,3 +2961,60 @@ END;
 $$ LANGUAGE plpgsql;
 CREATE OR REPLACE TRIGGER order_states_mode_immutable
   BEFORE UPDATE ON order_states FOR EACH ROW EXECUTE FUNCTION bb_forbid_order_mode_change();
+
+-- ── The cash rail: one merchant, one denomination ───────────────────────────
+--
+-- On CASH_ATM a buy is served by a merchant standing at an ATM: they initiate a
+-- UPI cash withdrawal, the machine produces a payment link for a fixed amount,
+-- the player pays it and the merchant collects the dispensed cash. The amounts
+-- are therefore what an ATM DISPENSES — a range is not expressible at a cash
+-- machine, which is why `min_order_paise`/`max_order_paise` cannot govern this
+-- rail and this column exists instead.
+--
+-- A COLUMN and not a child table, deliberately. A merchant is approved for
+-- exactly ONE denomination and works only that; making it a column means
+-- "cannot hold two" is a property of the row rather than a rule some writer is
+-- trusted to keep. NULL means not approved for the cash rail at all.
+--
+-- The five values are duplicated from backend/domains/merchant/denominations.js
+-- because a CHECK has to spell them out in SQL. Two copies of a value drift, so
+-- merchantDenominationsPg.test.js asserts the database accepts exactly that
+-- module's set and refuses everything else.
+--
+-- ₹40,000 (4000000 paise) is a WITHDRAWAL tier. No buy is ever that large — the
+-- INR buy ceiling is ₹10,000 — so it can only appear as a leg of a split
+-- withdrawal. That is true by construction rather than by a rule here: the
+-- denominations a player may choose exclude it, so a 40,000 deposit cannot be
+-- created and no query has to filter one out.
+ALTER TABLE merchants ADD COLUMN IF NOT EXISTS cash_denomination_paise BIGINT;
+DO $$ BEGIN
+  ALTER TABLE merchants ADD CONSTRAINT merchants_cash_denomination_known
+    CHECK (cash_denomination_paise IS NULL
+           OR cash_denomination_paise IN (50000, 100000, 500000, 1000000, 4000000));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+-- The assignment query filters candidates by this on the cash rail, and the
+-- broadcast shows a merchant only their own denomination's queue depth.
+CREATE INDEX IF NOT EXISTS merchants_cash_denomination_idx
+  ON merchants (cash_denomination_paise, status) WHERE cash_denomination_paise IS NOT NULL;
+
+-- ── How many orders a merchant may hold at once, per rail ───────────────────
+--
+-- On the cash rail the answer is ONE, in either direction, because the cash a
+-- merchant is holding is the same cash: they take a buy, collect the notes,
+-- and only then have something to settle a sell with. Holding two orders at
+-- once would mean promising the same notes twice.
+--
+-- That is not true of the UPI rail, where a merchant is moving bank balance and
+-- can genuinely run several at once. So this belongs to the POLICY, per rail,
+-- rather than being one platform-wide number — and it defaults to 3, which is
+-- what `assignmentCandidates` already used, so installing it changes nothing
+-- until an admin switches rails.
+--
+-- `merchants.max_concurrent_orders` still overrides it per merchant; this is
+-- the platform default that column falls back to.
+ALTER TABLE payment_mode_policies
+  ADD COLUMN IF NOT EXISTS max_concurrent_orders INTEGER NOT NULL DEFAULT 3;
+DO $$ BEGIN
+  ALTER TABLE payment_mode_policies ADD CONSTRAINT payment_mode_policies_concurrency_positive
+    CHECK (max_concurrent_orders BETWEEN 1 AND 10);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;

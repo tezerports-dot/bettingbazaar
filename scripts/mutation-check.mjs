@@ -571,6 +571,31 @@ const MUTATIONS = [
     from: `  const policy = (order?.paymentModeVersion != null`,
     to: `  const policy = (false`,
   },
+
+  // ── One merchant, one denomination ──────────────────────────────────────
+  // On the cash rail a merchant stands at an ATM that dispenses one amount.
+  // Offering them another is offering an order they physically cannot serve.
+  {
+    id: 'M98', file: 'backend/domains/merchant/merchantScoring.service.js', config: PG,
+    test: 'backend/tests/routes/merchantDenominationsPg.test.js',
+    why: 'the selector stops asking for a denomination, so a cash order reaches a merchant at the wrong machine',
+    from: `  const cashDenominationPaise = paymentMode === PAYMENT_MODES.CASH_ATM`,
+    to: `  const cashDenominationPaise = false && paymentMode === PAYMENT_MODES.CASH_ATM`,
+  },
+  {
+    id: 'M99', file: 'backend/domains/merchant/merchant.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/merchantDenominationsPg.test.js',
+    why: 'a merchant denomination can be changed while they hold an order, altering the amount they were assigned under',
+    from: `      const open = counts.get(String(merchantId))?.total ?? 0;`,
+    to: `      const open = 0;`,
+  },
+  {
+    id: 'M100', file: 'backend/domains/merchant/denominations.js', config: PG,
+    test: 'backend/tests/routes/merchantDenominationsPg.test.js',
+    why: 'a split that cannot be completed returns its partial legs anyway, paying the player LESS than they asked for while reporting success',
+    from: `  if (left !== 0) return null;`,
+    to: `  if (false) return null;`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

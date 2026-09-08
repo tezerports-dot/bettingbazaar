@@ -31,6 +31,11 @@ import { MERCHANT_CURRENCY } from './merchantCurrency.js';
 import { getAvailablePaiseFor } from '#db/repositories/merchantWallets.core.js';
 import { rupeesToPaise } from '../../shared/money.js';
 import { getSystemConfig } from '#db/repositories/config.js';
+import {
+  PAYMENT_MODES,
+  getActivePolicy as getActivePaymentModePolicy,
+  getPolicyVersion as getPaymentModePolicyVersion,
+} from '#db/repositories/paymentModePolicy.js';
 
 function scoreMerchant(merchant) {
   const successScore = (merchant.successRate ?? 1.0) * 40;
@@ -59,6 +64,24 @@ async function getFundingLimits() {
 }
 
 /**
+ * How many orders a merchant may hold at once, from the rail this order is on.
+ *
+ * Read from the ORDER's policy version, not the active one, for the same reason
+ * the order window is: an order assigned after a switch is still running the
+ * process it was created under, and holding its merchant to a different
+ * concurrency rule would change what that merchant was promised.
+ *
+ * On the cash rail the answer is ONE in either direction — the notes a merchant
+ * is holding are the same notes, so two open orders promise them twice.
+ */
+async function totalOrderLimitFor(paymentModeVersion) {
+  const policy = (paymentModeVersion != null
+    ? await getPaymentModePolicyVersion(paymentModeVersion)
+    : null) ?? await getActivePaymentModePolicy();
+  return policy.maxConcurrentOrders;
+}
+
+/**
  * selectBestMerchant — find and return the highest-priority eligible merchant.
  *
  * DEPOSIT (user buys tokens): merchants must hold enough tokens; the largest
@@ -74,8 +97,22 @@ async function getFundingLimits() {
  * buy-minus-sell value are replenished first; if none are free, the order stays
  * in the open sell pool instead of burning retry attempts.
  */
-export async function selectBestMerchant(orderType, tokenAmount, currency = MERCHANT_CURRENCY.INR) {
+export async function selectBestMerchant(orderType, tokenAmount, currency = MERCHANT_CURRENCY.INR, {
+  // The rail this ORDER was created on, and the policy version that governs
+  // it. Both come off the order row, never from the live policy: an order
+  // assigned after a switch keeps the rules it was born under.
+  paymentMode = null,
+  paymentModeVersion = null,
+} = {}) {
   const defaults = await getFundingLimits();
+  const totalLimit = await totalOrderLimitFor(paymentModeVersion);
+
+  // On the cash rail an order is served at a fixed amount and a merchant is
+  // approved for exactly ONE, so the order's own amount IS the denomination to
+  // match. On the UPI rail amounts are a range and this plays no part.
+  const cashDenominationPaise = paymentMode === PAYMENT_MODES.CASH_ATM
+    ? rupeesToPaise(tokenAmount)
+    : null;
 
   // Eligibility the ROW can decide — approved, active, online, accepting this
   // direction, and under both concurrency caps — in one query, with the active
@@ -85,6 +122,8 @@ export async function selectBestMerchant(orderType, tokenAmount, currency = MERC
     direction: orderType === 'WITHDRAWAL' ? 'WITHDRAWAL' : 'DEPOSIT',
     defaultDepositLimit: defaults.maxDepositOrders,
     defaultWithdrawalLimit: defaults.maxWithdrawalOrders,
+    defaultTotalLimit: totalLimit,
+    cashDenominationPaise,
   });
   if (!candidates.length) return null;
 

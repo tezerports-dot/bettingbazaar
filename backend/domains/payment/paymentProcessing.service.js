@@ -135,7 +135,13 @@ async function tryAssignMerchant(order) {
   // merchant and an INR order only an INR merchant. The argument was once
   // omitted and every order fell back to the 'INR' default, which would have
   // routed a USDT order to an INR merchant (2026-07-27).
-  const merchant = await selectBestMerchant(order.type, order.tokenAmount, order.currency);
+  // The order's OWN rail, not the one live now: on CASH_ATM the amount is a
+  // denomination a merchant must be approved for, and the concurrency cap is
+  // the one that rail promised them.
+  const merchant = await selectBestMerchant(order.type, order.tokenAmount, order.currency, {
+    paymentMode: order.paymentMode,
+    paymentModeVersion: order.paymentModeVersion,
+  });
   if (!merchant) return false;
 
   // What this merchant settles at. An INR merchant is the peg; a USDT merchant

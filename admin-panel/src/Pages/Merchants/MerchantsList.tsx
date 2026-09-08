@@ -38,7 +38,9 @@ export const MerchantsList: React.FC = () => {
   // M-01 fix: initial values are 0; openDetails() populates from merchant.limits schema.
   // GOVERNANCE §5: UI fallbacks must equal Merchant schema defaults (minOrder:500, maxOrder:50000).
   // Merchant.limits.minDeposit default=500, maxDeposit default=50000 per merchant.model.js.
-  const [limitsForm, setLimitsForm]   = useState({ minOrder: 500, maxOrder: 50000, maxConcurrentOrders: 3 });
+  const [limitsForm, setLimitsForm]   = useState<{ minOrder: number; maxOrder: number; maxConcurrentOrders: number; cashDenomination: number | null }>(
+    { minOrder: 500, maxOrder: 50000, maxConcurrentOrders: 3, cashDenomination: null },
+  );
   // The wallet top-up amount is NOT a limit. It lived on `limitsForm` as
   // `dailyCap`, so it was posted to the limits endpoint — which ignores it —
   // and read like a cap the platform enforces. It is neither: it is how many
@@ -135,6 +137,8 @@ export const MerchantsList: React.FC = () => {
           // M-01 fix: use Merchant.limits from schema defaults (500 / 50000) — GOVERNANCE §5
           minOrder: mData.minOrder ?? mData.merchantLimits?.minOrder ?? 500,
           maxOrder: mData.maxOrder ?? mData.merchantLimits?.maxOrder ?? 50000,
+          // null is a real state: not approved for the cash rail at all.
+          cashDenomination: mData.cashDenomination ?? null,
           maxConcurrentOrders: mData.maxConcurrentOrders ?? 3, // schema default: 3
           // (the top-up amount lives in its own state — see topUpAmount)
         });
@@ -575,6 +579,34 @@ export const MerchantsList: React.FC = () => {
                 <div>
                   <label htmlFor="max-order" className="label">Max Order Amount (Rs.)</label>
                   <input id="max-order" name="maxOrder" type="number" min="0" value={limitsForm.maxOrder} onChange={(e) => setLimitsForm(f => ({ ...f, maxOrder: Number(e.target.value) || 0 }))} className="input" />
+                </div>
+                {/* The cash rail deals in fixed amounts because a merchant is
+                    standing at an ATM: the machine dispenses one of these and
+                    nothing between them. A merchant is approved for exactly
+                    ONE, which is why this is a single select and not a set of
+                    checkboxes. ₹40,000 is a withdrawal leg only — no buy is
+                    ever that large. */}
+                <div>
+                  <label htmlFor="cash-denomination" className="label">ATM cash denomination</label>
+                  <select
+                    id="cash-denomination" name="cashDenomination" className="input"
+                    value={limitsForm.cashDenomination ?? ''}
+                    onChange={(e) => setLimitsForm(f => ({
+                      ...f, cashDenomination: e.target.value === '' ? null : Number(e.target.value),
+                    }))}
+                  >
+                    <option value="">Not approved for the cash rail</option>
+                    <option value="500">₹500</option>
+                    <option value="1000">₹1,000</option>
+                    <option value="5000">₹5,000</option>
+                    <option value="10000">₹10,000</option>
+                    <option value="40000">₹40,000 &mdash; withdrawal legs only</option>
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">
+                    This merchant will be offered this amount and no other while the
+                    ATM cash rail is live. It cannot be changed while they are holding
+                    an order.
+                  </p>
                 </div>
                 <div>
                   <label htmlFor="max-concurrent" className="label">Max Concurrent Orders (1–10)</label>

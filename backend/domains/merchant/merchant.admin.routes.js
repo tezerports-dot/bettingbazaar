@@ -9,6 +9,8 @@ import { creditMerchantTokens, debitMerchantTokens } from './merchantWallet.serv
 import { MERCHANT_CURRENCY, MERCHANT_CURRENCIES, merchantTypeOf } from './merchantCurrency.js';
 import * as issuance from '#db/repositories/adminIssuance.js';
 import { requireIdempotencyKey } from '../../middleware/idempotencyKey.js';
+import { CASH_DENOMINATIONS_PAISE, isCashDenomination } from './denominations.js';
+import { rupeesToPaise } from '../../shared/money.js';
 
 const router = express.Router();
 
@@ -214,7 +216,7 @@ router.put('/merchants/:merchantId/activate', authenticate, isAdmin, async (req,
 router.put('/merchants/:merchantId/limits', authenticate, isAdmin, async (req, res) => {
   try {
     const { merchantId } = req.params;
-    const { minOrder, maxOrder, perTransactionLimit, minTransaction } = req.body;
+    const { minOrder, maxOrder, perTransactionLimit, minTransaction, cashDenomination } = req.body;
 
     // The panel sends either spelling. Both mean the same range.
     const patch = {};
@@ -222,8 +224,48 @@ router.put('/merchants/:merchantId/limits', authenticate, isAdmin, async (req, r
     const nextMin = minOrder ?? minTransaction;
     if (nextMin !== undefined) patch.minOrder = Number(nextMin);
     if (nextMax !== undefined) patch.maxOrder = Number(nextMax);
+
+    // ── The cash rail's amount: ONE denomination, or none ────────────────────
+    // The range above governs the UPI rail. On the cash rail a merchant stands
+    // at an ATM and the machine dispenses a fixed amount, so their capability
+    // is a single figure — and it is exactly one, which is why this is a
+    // column rather than a list. `null` withdraws cash-rail approval entirely.
+    if (cashDenomination !== undefined) {
+      if (cashDenomination === null) {
+        patch.cashDenominationPaise = null;
+      } else {
+        const paise = rupeesToPaise(cashDenomination);
+        if (!isCashDenomination(paise)) {
+          return res.status(400).json({
+            success: false,
+            message: `Not a cash denomination: ₹${cashDenomination}. An ATM dispenses ${
+              CASH_DENOMINATIONS_PAISE.map((v) => `₹${v / 100}`).join(', ')} and nothing else.`,
+          });
+        }
+        patch.cashDenominationPaise = paise;
+      }
+    }
+
     if (!Object.keys(patch).length) {
       return res.status(400).json({ success: false, message: 'No limit fields provided.' });
+    }
+
+    // Changing what a merchant serves while they are holding an order changes
+    // the amount they were assigned under. The same shape as the delete guard:
+    // refuse, name the orders, and let the admin wait or reassign.
+    if (patch.cashDenominationPaise !== undefined) {
+      // `getActiveOrderCounts` is already the one owner of this number, derived
+      // from `order_states` rather than accumulated — a second counter here
+      // would be a second answer waiting to disagree.
+      const counts = await db.merchants.getActiveOrderCounts([merchantId]);
+      const open = counts.get(String(merchantId))?.total ?? 0;
+      if (open > 0) {
+        return res.status(409).json({
+          success: false,
+          reason: 'MERCHANT_HAS_OPEN_ORDERS',
+          message: `This merchant is holding ${open} open order(s). Changing the denomination now would change the amount they were assigned under — wait for them to finish, or reassign first.`,
+        });
+      }
     }
 
     let merchant;
@@ -240,7 +282,11 @@ router.put('/merchants/:merchantId/limits', authenticate, isAdmin, async (req, r
     }
     if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
 
-    const limits = { minOrder: merchant.minOrder, maxOrder: merchant.maxOrder };
+    const limits = {
+      minOrder: merchant.minOrder,
+      maxOrder: merchant.maxOrder,
+      cashDenomination: merchant.cashDenomination,
+    };
 
     await db.audit.recordDetailed({
       performedBy: req.user.userId, action: 'MERCHANT_LIMITS_UPDATED', category: 'MERCHANT',

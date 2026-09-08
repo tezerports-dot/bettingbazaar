@@ -55,6 +55,13 @@ export const POLICY_TIMERS = Object.freeze({
   disputeWindowSeconds:    'dispute_window_seconds',
   linkExpirySeconds:       'link_expiry_seconds',
   linkMinRemainingSeconds: 'link_min_remaining_seconds',
+  // How many orders a merchant may hold at once on THIS rail. One on the cash
+  // rail, in either direction, because the notes a merchant is holding are the
+  // same notes — two open orders would promise them twice. Not true of the UPI
+  // rail, where a merchant moves bank balance and can genuinely run several,
+  // which is why it belongs to the policy rather than being one platform-wide
+  // number. `merchants.max_concurrent_orders` still overrides it per merchant.
+  maxConcurrentOrders:     'max_concurrent_orders',
 });
 
 const toPolicy = (r) => (r ? {
@@ -71,6 +78,7 @@ const toPolicy = (r) => (r ? {
   disputeWindowSeconds:    Number(r.dispute_window_seconds),
   linkExpirySeconds:       Number(r.link_expiry_seconds),
   linkMinRemainingSeconds: Number(r.link_min_remaining_seconds),
+  maxConcurrentOrders:     Number(r.max_concurrent_orders),
   justification: r.justification,
   changedBy: r.changed_by,
   changedByName: r.changed_by_name,
@@ -234,6 +242,13 @@ export async function publishPolicyVersion({
         ok: false,
         reason: 'LINK_WINDOW_UNUSABLE',
         message: 'linkMinRemainingSeconds must be less than linkExpirySeconds, or no link is ever assignable.',
+      };
+    }
+    if (err.constraint === 'payment_mode_policies_concurrency_positive') {
+      return {
+        ok: false,
+        reason: 'CONCURRENCY_OUT_OF_RANGE',
+        message: 'maxConcurrentOrders must be between 1 and 10. One is the cash rail\'s answer; zero would stop assigning to anybody.',
       };
     }
     if (err.constraint === 'payment_mode_policies_timers_positive') {

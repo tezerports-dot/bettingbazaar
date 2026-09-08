@@ -49,7 +49,7 @@ const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email
   bank_account_holder_name, bank_upi_id, bank_name, bank_account_no, bank_ifsc,
   usdt_wallet_address, qr_code_url,
   min_deposit_paise, max_deposit_paise, min_withdraw_paise, max_withdraw_paise,
-  min_order_paise, max_order_paise,
+  min_order_paise, max_order_paise, cash_denomination_paise,
   total_processed_volume_paise, earnings_paise, total_deposit_amount_paise,
   total_withdrawal_amount_paise, total_deposits_processed, total_withdrawals_processed,
   rating, last_online_toggle, panel_url,
@@ -145,6 +145,14 @@ function toMerchant(row) {
     },
     minOrder: rupees(row.min_order_paise),
     maxOrder: rupees(row.max_order_paise),
+    // The ONE denomination this merchant is approved for on the cash rail, or
+    // null when they are not approved for it. Exposed in paise as well as
+    // rupees because the queue matches on the exact integer — a rupee float
+    // cannot be compared for equality, and this is an equality match.
+    cashDenominationPaise: row.cash_denomination_paise === null
+      ? null : Number(row.cash_denomination_paise),
+    cashDenomination: row.cash_denomination_paise === null
+      ? null : rupees(row.cash_denomination_paise),
 
     totalProcessedVolume: rupees(row.total_processed_volume_paise),
     earnings: rupees(row.earnings_paise),
@@ -345,6 +353,16 @@ export async function assignmentCandidates({
   currency = 'INR', direction = 'DEPOSIT',
   defaultDepositLimit = 1, defaultWithdrawalLimit = 1, defaultTotalLimit = 3,
   imbalanceDays = 30,
+  // On the CASH_ATM rail an order is served at a fixed amount, and a merchant
+  // is approved for exactly ONE. Passing it here rather than filtering after
+  // the query is the same reason the concurrency caps are applied here: a
+  // merchant who cannot serve this amount is not a candidate at all, rather
+  // than a candidate the caller is trusted to drop.
+  //
+  // NULL means the UPI rail, where amounts are a range and this column plays
+  // no part — so the clause is absent rather than matching NULL, which would
+  // exclude every merchant.
+  cashDenominationPaise = null,
 } = {}) {
   const withdrawal = direction === 'WITHDRAWAL';
   const acceptsColumn = withdrawal ? 'accepts_withdrawals' : 'accepts_deposits';
@@ -362,6 +380,15 @@ export async function assignmentCandidates({
   // silently re-opening the tap. The same falsy-zero trap the withdrawal hold
   // window and the settlement lease both had.
   const typeLimit = nonNegative(withdrawal ? defaultWithdrawalLimit : defaultDepositLimit, 1);
+
+  // Normalised once: a denomination that is not a whole positive number of
+  // paise cannot match any row, and binding it would silently return nobody
+  // rather than saying the caller passed something wrong.
+  const denomination = cashDenominationPaise === null || cashDenominationPaise === undefined
+    ? null : Number(cashDenominationPaise);
+  if (denomination !== null && (!Number.isInteger(denomination) || denomination <= 0)) {
+    throw new TypeError(`assignmentCandidates: cashDenominationPaise must be a positive integer of paise, got ${cashDenominationPaise}`);
+  }
 
   const { rows } = await pgQuery(
     `WITH active AS (
@@ -399,8 +426,11 @@ export async function assignmentCandidates({
         -- their limit is not a candidate at all, rather than a candidate the
         -- caller is trusted to filter out afterwards.
         AND COALESCE(a.total, 0) < COALESCE(m.max_concurrent_orders, $3)
-        AND COALESCE(a.${typeColumn}, 0) < COALESCE(m.${capColumn}, $4)`,
-    [String(currency), since, nonNegative(defaultTotalLimit, 3), typeLimit],
+        AND COALESCE(a.${typeColumn}, 0) < COALESCE(m.${capColumn}, $4)
+        ${denomination === null ? '' : 'AND m.cash_denomination_paise = $5'}`,
+    denomination === null
+      ? [String(currency), since, nonNegative(defaultTotalLimit, 3), typeLimit]
+      : [String(currency), since, nonNegative(defaultTotalLimit, 3), typeLimit, denomination],
     'merchant_assignment_candidates',
   );
 
@@ -576,7 +606,7 @@ const UPDATABLE = new Set([
   'bank_account_holder_name', 'bank_upi_id', 'bank_name', 'bank_account_no', 'bank_ifsc',
   'usdt_wallet_address', 'qr_code_url',
   'min_deposit_paise', 'max_deposit_paise', 'min_withdraw_paise', 'max_withdraw_paise',
-  'min_order_paise', 'max_order_paise',
+  'min_order_paise', 'max_order_paise', 'cash_denomination_paise',
   'rating', 'last_online_toggle', 'panel_url',
   'merchant_approval_status', 'merchant_approved_by', 'merchant_approved_at',
   'merchant_rejection_reason',
