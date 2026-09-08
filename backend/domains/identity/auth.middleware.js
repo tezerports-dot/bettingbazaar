@@ -228,12 +228,18 @@ const KYC_REFUSAL = {
  * `debitWinningsForWithdrawal` is the only debit path — so "approved KYC to
  * withdraw winnings" and "approved KYC to withdraw" are the same sentence here.
  *
- * ── REJECTED is refused, and that is deliberate ─────────────────────────────
+ * ── REJECTED is refused, and that is the owner's decision ───────────────────
  * PENDING_APPROVAL passes: the details are linked and a verifier has simply not
- * reached them. REJECTED does not: the details they linked came back as not
- * matching the issuing authority, so there is nothing linked in any meaningful
- * sense, and letting money in against an identity that failed its check is the
- * one direction that cannot be undone later.
+ * reached them, which is a queue the player cannot do anything about.
+ *
+ * REJECTED does not pass, and stays refused while they re-submit (owner
+ * confirmed 2026-09-08). An Aadhaar that came back not matching the issuing
+ * authority means the details given were wrong, and somebody giving wrong
+ * identity details on a money platform is a bot or a scammer often enough that
+ * the benefit of the doubt is the wrong default. Getting it wrong in this
+ * direction costs an honest player a delay; getting it wrong in the other
+ * direction lets funds move against an identity that failed its check, and that
+ * cannot be undone afterwards.
  */
 export async function requireLinkedKyc(req, res, next) {
   try {

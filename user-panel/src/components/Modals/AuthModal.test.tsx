@@ -53,6 +53,19 @@ const CONFIG = {
 const botLink = () =>
   Array.from(document.querySelectorAll('a')).find((a) => a.href.includes('t.me/bazaar_signin_bot'));
 
+/**
+ * Render on the SIGN UP door, where the bot link lives.
+ *
+ * It used to be a footnote under the sign-in form, shown to everybody. It is
+ * its own tab now: as a footnote it asked every returning player to read a
+ * paragraph to learn they were already in the right place, and every new one to
+ * read a form they could not use.
+ */
+const renderSignup = (props = {}) => {
+  const r = render(<AuthModal initialMode="register" {...props} />);
+  return r;
+};
+
 describe('AuthModal', () => {
   beforeEach(() => {
     storedRef = null;
@@ -62,7 +75,7 @@ describe('AuthModal', () => {
   });
 
   it('builds the bot link from the FETCHED username, not a constant', async () => {
-    render(<AuthModal />);
+    renderSignup();
     await waitFor(() => expect(botLink()).toBeTruthy());
     expect(botLink()!.href).toBe('https://t.me/bazaar_signin_bot');
   });
@@ -73,7 +86,7 @@ describe('AuthModal', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       json: async () => ({ ...CONFIG, botUsername: 'bazaar_standby_bot' }),
     }));
-    render(<AuthModal />);
+    renderSignup();
     await waitFor(() => {
       const link = Array.from(document.querySelectorAll('a')).find((a) => a.href.includes('t.me/'));
       expect(link!.href).toContain('bazaar_standby_bot');
@@ -84,20 +97,20 @@ describe('AuthModal', () => {
     // The referrer earned this signup, and the code is the only thing that
     // credits them. Dropping it loses a payout silently.
     storedRef = 'REF123';
-    render(<AuthModal />);
+    renderSignup();
     await waitFor(() => expect(botLink()).toBeTruthy());
     expect(botLink()!.href).toBe('https://t.me/bazaar_signin_bot?start=REF123');
   });
 
   it('URL-encodes a referral code rather than pasting it raw', async () => {
     storedRef = 'a b&c';
-    render(<AuthModal />);
+    renderSignup();
     await waitFor(() => expect(botLink()).toBeTruthy());
     expect(botLink()!.href).toContain('start=a%20b%26c');
   });
 
   it('opens the bot in a new tab, safely', async () => {
-    render(<AuthModal />);
+    renderSignup();
     await waitFor(() => expect(botLink()).toBeTruthy());
     // `noopener` matters on a target=_blank link: without it the opened page
     // can navigate this one through window.opener.
@@ -128,7 +141,7 @@ describe('AuthModal', () => {
     // would be a second way in with none of the phone or Aadhaar proof behind
     // it, and nothing on the server would accept one.
     const { container } = render(<AuthModal />);
-    await waitFor(() => expect(botLink()).toBeTruthy());
+    await screen.findByLabelText(/mobile number/i);
     expect(container.querySelector('input[type="password"]')).toBeNull();
   });
 
@@ -236,12 +249,38 @@ describe('AuthModal', () => {
       expect(screen.getByLabelText(/mobile number/i)).toBeInTheDocument();
     });
 
-    it('still offers the bot, for somebody who has never signed up', async () => {
+    it('offers a Sign up door, and it is the bot', async () => {
       // The form is for returning players. A first-timer has no linked Telegram
-      // account for a code to be sent to, so the bot path cannot go away.
+      // account for a code to be sent to, so the bot path cannot go away — it
+      // is the other tab.
       render(<AuthModal />);
+      // Not on the login door.
+      await screen.findByLabelText(/mobile number/i);
+      expect(botLink()).toBeUndefined();
+
+      await userEvent.click(screen.getByRole('tab', { name: /sign up/i }));
       await waitFor(() => expect(botLink()).toBeTruthy());
-      expect(screen.getByText(/first time here/i)).toBeInTheDocument();
+      // And the form is gone, so there is nothing to fill in that cannot work.
+      expect(screen.queryByLabelText(/mobile number/i)).toBeNull();
+    });
+
+    it('comes back to the login door from sign up', async () => {
+      render(<AuthModal />);
+      await userEvent.click(screen.getByRole('tab', { name: /sign up/i }));
+      await userEvent.click(screen.getByRole('button', { name: /log in instead/i }));
+      expect(await screen.findByLabelText(/mobile number/i)).toBeInTheDocument();
+    });
+
+    it('takes ten digits and fixes the country code at +91', async () => {
+      // Every player is Indian, so +91 is shown rather than typed. A country
+      // code in the box is the one way this field produces a number the lookup
+      // will not match — and that failure is silent: the screen says a code was
+      // sent and none was.
+      render(<AuthModal />);
+      const box = await screen.findByLabelText(/mobile number/i);
+      await userEvent.type(box, '+919876543210');
+      expect(box).toHaveValue('9198765432');   // digits only, capped at ten
+      expect(screen.getByText('+91')).toBeInTheDocument();
     });
   });
 

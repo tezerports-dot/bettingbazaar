@@ -26,6 +26,11 @@
  *   - FIVE ATTEMPTS, counted in the same statement. Unbounded, 10^6 falls to a
  *     script; at five it is 1-in-200000 and the row burns itself at the cap.
  *   - MINUTES, checked by the READ so a late sweep can never revive one.
+ *   - MATCHED ON THE KYC NUMBER. The mobile typed is compared to `users.mobile`
+ *     — the number captured at signup, immutable, and the one the Aadhaar is
+ *     against. NOT to the linked Telegram account's own number, which account
+ *     recovery rewrites. Delivery goes to the active identity; identification
+ *     does not.
  *   - PACED. `loginPaceLimiter` allows one request per 10 seconds per actor,
  *     which is what stops the request endpoint being used to spam a player's
  *     Telegram with codes they did not ask for.
@@ -97,13 +102,17 @@ export async function requestLoginCode(mobile) {
   // not worth a database round trip.
   if (!digits || digits.length < 6 || digits.length > 15) return { sent: false, reason: 'malformed' };
 
-  const identity = await db.telegram.getActiveIdentityByPhone(digits);
-  if (!identity) return { sent: false, reason: 'unlinked' };
+  // Matched on the KYC-linked `users.mobile`, NOT on the number the linked
+  // Telegram account happens to carry (owner rule 2026-09-08). After an account
+  // recovery those diverge, and keying on the Telegram number would let someone
+  // sign in with a number that was never verified against their identity.
+  const target = await db.telegram.getLoginTargetByMobile(digits);
+  if (!target) return { sent: false, reason: 'unlinked' };
 
   // A blocked account is refused HERE, before a code is minted or sent. Letting
   // it through to the verify step would tell a blocked player their credentials
   // still work, and would send them a code that can never be redeemed.
-  const user = await db.users.getUser(identity.userId);
+  const user = await db.users.getUser(target.userId);
   if (!user || user.isBlocked || user.status === 'BLOCKED' || user.status === 'DELETED') {
     return { sent: false, reason: 'not_eligible' };
   }
@@ -112,13 +121,13 @@ export async function requestLoginCode(mobile) {
   const { expiresAt } = await db.telegram.issueLoginCode({
     mobileHash: tag('mobile', digits),
     codeHash: tag('code', `${digits}:${code}`),
-    userId: identity.userId,
-    telegramUserId: identity.telegramUserId,
+    userId: target.userId,
+    telegramUserId: target.telegramUserId,
     ttlSeconds: Math.max(1, Math.round(TTL_MS / 1000)),
   });
 
   const minutes = Math.max(1, Math.round(TTL_MS / 60000));
-  const res = await sendMessage(identity.telegramUserId,
+  const res = await sendMessage(target.telegramUserId,
     `<b>${code}</b> is your sign-in code.\n\n`
     + `It expires in ${minutes} minute${minutes === 1 ? '' : 's'} and can be used once.\n\n`
     + 'If you did not ask to sign in, ignore this message — nobody can use the '

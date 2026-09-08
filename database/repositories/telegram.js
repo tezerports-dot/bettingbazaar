@@ -885,32 +885,49 @@ export async function consumeLoginToken({ tokenHash, telegramUserId = null }) {
 }
 
 /**
- * The live identity behind a phone number — "who do we DM this code to?".
+ * Where a sign-in code goes for a given mobile — matched on the KYC number.
  *
- * `contact_active` is not optional, for the same reason it is not optional in
- * `getIdentityByUserId`: account recovery keeps the displaced row as history,
- * and messaging the identity that just LOST the account is the failure recovery
- * exists to prevent. Here it would be worse than a wrong recipient — it would
- * be sending a sign-in code for someone's account to the person they took it
- * back from.
+ * ── The number typed is matched against the ACCOUNT, not against Telegram ───
+ * Owner rule 2026-09-08, and it closes a real hole. `users.mobile` is the
+ * number captured at signup and it is immutable — it is the account's identity
+ * and the number the KYC is against. `telegram_identities.phone` is whatever
+ * number the currently linked Telegram account carries, and `relinkIdentity`
+ * overwrites it during an ACCOUNT RECOVERY without touching `users.mobile`.
  *
- * Returns null for an unknown number, and the caller must answer the request
- * identically either way: a login form that responds differently to a
- * registered number is a way to test whether somebody plays here.
+ * So the two diverge the moment somebody recovers their account onto a Telegram
+ * account with a different number — and a lookup keyed on the identity's phone
+ * would then let them sign in by typing a number that was never KYC'd, against
+ * an account whose verified identity says something else. Matching on
+ * `users.mobile` is what makes "you sign in with the number you gave us" true.
+ *
+ * DELIVERY still goes to the active identity, because that is the Telegram
+ * account the person actually holds. `contact_active` is not optional: recovery
+ * keeps the displaced row as history, and messaging the identity that just LOST
+ * the account would send a sign-in code to the person it was taken back from.
+ *
+ * The JOIN is inner on purpose. An account with no live identity has nowhere to
+ * receive a code, and the caller must treat that exactly like an unknown
+ * number — see the route: every case answers identically.
+ *
+ * @returns {{userId, telegramUserId}|null}
  */
-export async function getActiveIdentityByPhone(phone) {
-  const digits = String(phone || '').replace(/\D/g, '');
+export async function getLoginTargetByMobile(mobile) {
+  const digits = String(mobile || '').replace(/\D/g, '');
   if (!digits) return null;
   const { rows } = await pgQuery(
-    // Compared on digits at BOTH ends. The column is documented as normalised,
-    // but a number that arrived with a +91 or a space would silently match
-    // nothing, and the symptom is "the code never came" with no error anywhere.
-    `SELECT ${IDENTITY_COLUMNS} FROM telegram_identities
-      WHERE regexp_replace(phone, '\\D', '', 'g') = $1 AND contact_active
+    // Digits at both ends. The column is normalised at write time, but a legacy
+    // row stored with a country code would silently match nothing, and the
+    // symptom is "the code never came" with no error anywhere.
+    `SELECT u.user_id, i.telegram_user_id
+       FROM users u
+       JOIN telegram_identities i
+         ON i.user_id = u.user_id AND i.contact_active
+      WHERE regexp_replace(u.mobile, '\\D', '', 'g') = $1
+        AND u.status <> 'DELETED'
       LIMIT 1`,
-    [digits], 'tg_identity_by_phone',
+    [digits], 'tg_login_target_by_mobile',
   );
-  return toIdentity(rows[0]);
+  return rows[0] ? { userId: rows[0].user_id, telegramUserId: rows[0].telegram_user_id } : null;
 }
 
 /**

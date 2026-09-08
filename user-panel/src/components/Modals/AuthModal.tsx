@@ -32,7 +32,7 @@ import { useRetryCountdown } from '../../hooks/useRetryCountdown';
 
 interface AuthModalProps {
   onClose?: () => void;
-  /** Retained for call-site compatibility; both modes open the same bot. */
+  /** Which door opens first. Signing up goes to the bot; signing in is a form. */
   initialMode?: 'login' | 'register';
 }
 
@@ -54,12 +54,17 @@ function resolveLogo(): string {
 const FIELD = { width: '100%', height: 48, borderRadius: 12, border: '1px solid var(--line2)', background: 'var(--surface2)', color: 'var(--text)', padding: '0 14px', fontSize: 15, outline: 'none', boxSizing: 'border-box' as const };
 const GOLD = { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9, width: '100%', height: 50, borderRadius: 13, border: 'none', fontWeight: 800, fontSize: 14, letterSpacing: '.04em', color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', boxShadow: '0 8px 22px -8px var(--glow)' };
 
-const AuthModal: React.FC<AuthModalProps> = ({ onClose }) => {
+const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
   const [cfg, setCfg] = useState<BotConfig | null>(null);
   const [error, setError] = useState('');
   const [logoFailed, setLogoFailed] = useState(false);
 
   const { requestLoginCode, signInWithCode } = useGame();
+  // Two doors, named for what they do. "First time here?" as a footnote under a
+  // form asked every returning player to read a paragraph to find out they were
+  // in the right place, and asked every new one to read the whole form before
+  // discovering they could not use it.
+  const [mode, setMode] = useState<'login' | 'signup'>(initialMode === 'register' ? 'signup' : 'login');
   const [step, setStep] = useState<'mobile' | 'code'>('mobile');
   const [mobile, setMobile] = useState('');
   const [code, setCode] = useState('');
@@ -72,9 +77,11 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose }) => {
   const sendPace = useRetryCountdown();
   const verifyPace = useRetryCountdown();
 
-  // Ten digits: what `normalisePhone` reduces every Indian number to, so the
-  // form and the lookup agree about what a complete number is.
-  const mobileReady = mobile.replace(/\D/g, '').length === 10;
+  // Ten digits, and only ten. Every player is Indian, so +91 is fixed and shown
+  // rather than typed: a country code in the box is the one way this field can
+  // produce a number the lookup will not match, and the failure is silent — the
+  // screen says a code was sent and none was.
+  const mobileReady = mobile.length === 10;
 
   const sendCode = async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -138,11 +145,29 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose }) => {
             : <span className="font-grotesk" style={{ color: 'var(--gold-ink)', fontWeight: 700, fontSize: 20, letterSpacing: '.14em' }}>BETTING BAZAAR</span>}
         </div>
 
-        <p style={{ margin: '0 0 6px', textAlign: 'center', fontSize: 11, fontWeight: 800, letterSpacing: '.2em', textTransform: 'uppercase', color: 'var(--gold-ink)' }}>
-          Sign in
-        </p>
+        <div role="tablist" aria-label="Sign in or sign up" style={{ display: 'flex', gap: 6, padding: 4, marginBottom: 16, background: 'var(--surface2)', border: '1px solid var(--line2)', borderRadius: 12 }}>
+          {(['login', 'signup'] as const).map((m) => (
+            <button
+              key={m} role="tab" type="button"
+              aria-selected={mode === m}
+              onClick={() => { setMode(m); setError(''); setNotice(''); }}
+              style={{
+                flex: 1, height: 38, borderRadius: 9, border: 'none', cursor: 'pointer',
+                fontSize: 12.5, fontWeight: 800, letterSpacing: '.06em',
+                background: mode === m ? 'var(--surface)' : 'transparent',
+                color: mode === m ? 'var(--gold-ink)' : 'var(--text3)',
+                boxShadow: mode === m ? 'var(--shadow)' : 'none',
+              }}
+            >
+              {m === 'login' ? 'Log in' : 'Sign up'}
+            </button>
+          ))}
+        </div>
+
         <p style={{ margin: '0 0 18px', textAlign: 'center', fontSize: 12, color: 'var(--text3)', lineHeight: 1.6 }}>
-          No password. We send a six-digit code to your Telegram — type it here.
+          {mode === 'login'
+            ? 'No password. We send a six-digit code to your Telegram — type it here.'
+            : 'Signing up happens in our Telegram bot: it verifies your number and takes your Aadhaar. One minute, once.'}
         </p>
 
         {error && (
@@ -156,18 +181,23 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose }) => {
           </div>
         )}
 
-        {step === 'mobile' ? (
+        {mode === 'login' && (step === 'mobile' ? (
           <form onSubmit={sendCode} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <label htmlFor="bb-mobile" style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--text3)' }}>
               Mobile number
             </label>
+            <div style={{ display: 'flex' }}>
+              <span aria-hidden="true" style={{ display: 'grid', placeItems: 'center', height: 48, padding: '0 12px', borderRadius: '12px 0 0 12px', border: '1px solid var(--line2)', background: 'var(--surface2)', color: 'var(--text3)', fontSize: 15, flex: '0 0 auto' }}>
+                +91
+              </span>
             <input
               id="bb-mobile" name="mobile" value={mobile}
-              onChange={(e) => setMobile(e.target.value.replace(/[^0-9+ ]/g, '').slice(0, 16))}
-              inputMode="tel" autoComplete="tel" autoFocus
+              onChange={(e) => setMobile(e.target.value.replace(/\D/g, '').slice(0, 10))}
+              inputMode="numeric" autoComplete="tel-national" autoFocus
               placeholder="98765 43210"
-              style={FIELD}
+              style={{ ...FIELD, borderTopLeftRadius: 0, borderBottomLeftRadius: 0, borderLeft: 'none' }}
             />
+            </div>
             <button type="submit" disabled={!mobileReady || busy || sendPace.blocked}
               style={{ ...GOLD, cursor: (!mobileReady || busy || sendPace.blocked) ? 'not-allowed' : 'pointer', opacity: (!mobileReady || busy || sendPace.blocked) ? 0.55 : 1 }}>
               {sendPace.blocked ? `Try again in ${sendPace.secondsLeft}s` : busy ? 'Sending…' : 'Send code'}
@@ -200,38 +230,59 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose }) => {
               </button>
             </div>
           </form>
-        )}
+        ))}
 
-        {/* ── First time here ────────────────────────────────────────────────
+        {/* ── Signing up ─────────────────────────────────────────────────────
             Still the bot, and it has to be: the contact share is what proves
-            the number, and a bot cannot message somebody who has never started
-            a chat with it. Demoted below the form because it is now the
-            minority path — every returning player signs in above. */}
-        <div style={{ marginTop: 22, paddingTop: 18, borderTop: '1px solid var(--line2)' }}>
-          <p style={{ margin: '0 0 10px', textAlign: 'center', fontSize: 11.5, color: 'var(--text3)', lineHeight: 1.6 }}>
-            <strong style={{ color: 'var(--text2)' }}>First time here?</strong>{' '}
-            Sign up in our Telegram bot — it takes a minute, and you will not need
-            it again.
-          </p>
+            the number, which is what the Aadhaar is then verified against, and
+            a bot cannot message somebody who has never started a chat with it.
 
-          {!cfg && !error && (
-            <div aria-busy="true" style={{ height: 46, borderRadius: 12, background: 'var(--surface2)', border: '1px solid var(--line2)', display: 'grid', placeItems: 'center', fontSize: 12, color: 'var(--text3)' }}>
-              Loading…
-            </div>
-          )}
+            Its own tab rather than a footnote under the form. As a footnote it
+            asked every returning player to read a paragraph to learn they were
+            already in the right place, and every new one to read a form they
+            could not use. */}
+        {mode === 'signup' && (
+          <div>
+            <ol style={{ margin: '0 0 16px', padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 9 }}>
+              {[
+                'Open the bot and tap Start',
+                'Send your 12-digit Aadhaar number',
+                'Tap “Share my contact” to confirm your mobile',
+                'Join our official channel',
+              ].map((stepText, i) => (
+                <li key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: 12, color: 'var(--text2)', lineHeight: 1.5 }}>
+                  <span className="font-grotesk" style={{ flex: '0 0 auto', width: 20, height: 20, borderRadius: 6, background: 'var(--surface2)', border: '1px solid var(--line2)', color: 'var(--gold-ink)', fontSize: 10, fontWeight: 800, display: 'grid', placeItems: 'center' }}>{i + 1}</span>
+                  <span>{stepText}</span>
+                </li>
+              ))}
+            </ol>
 
-          {cfg && (
-            <a
-              href={botUrl} target="_blank" rel="noopener noreferrer"
-              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9, width: '100%', height: 46, borderRadius: 12, textDecoration: 'none', fontWeight: 700, fontSize: 13, color: 'var(--text)', background: 'var(--surface2)', border: '1px solid var(--line2)' }}
-            >
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                <path d="M21.9 4.3 18.6 20a1.2 1.2 0 0 1-1.9.7l-4.6-3.4-2.2 2.2a.7.7 0 0 1-1.2-.4l-.5-4.1 8.6-7.8c.3-.3-.1-.5-.5-.2L5.7 13.5 1.9 12.3c-.9-.3-.9-1.5.1-1.9l18.4-7.1c.8-.3 1.6.3 1.5 1z" />
-              </svg>
-              Sign up with @{cfg.botUsername}
-            </a>
-          )}
-        </div>
+            {!cfg && !error && (
+              <div aria-busy="true" style={{ height: 50, borderRadius: 13, background: 'var(--surface2)', border: '1px solid var(--line2)', display: 'grid', placeItems: 'center', fontSize: 12, color: 'var(--text3)' }}>
+                Loading…
+              </div>
+            )}
+
+            {cfg && (
+              <a
+                href={botUrl} target="_blank" rel="noopener noreferrer"
+                style={{ ...GOLD, textDecoration: 'none' }}
+              >
+                <svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path d="M21.9 4.3 18.6 20a1.2 1.2 0 0 1-1.9.7l-4.6-3.4-2.2 2.2a.7.7 0 0 1-1.2-.4l-.5-4.1 8.6-7.8c.3-.3-.1-.5-.5-.2L5.7 13.5 1.9 12.3c-.9-.3-.9-1.5.1-1.9l18.4-7.1c.8-.3 1.6.3 1.5 1z" />
+                </svg>
+                Sign up with @{cfg.botUsername}
+              </a>
+            )}
+
+            <p style={{ margin: '12px 0 0', textAlign: 'center', fontSize: 11.5, color: 'var(--text3)', lineHeight: 1.6 }}>
+              Already signed up? <button type="button" onClick={() => { setMode('login'); setError(''); setNotice(''); }}
+                style={{ background: 'transparent', border: 'none', padding: 0, color: 'var(--gold-ink)', fontSize: 11.5, cursor: 'pointer', textDecoration: 'underline' }}>
+                Log in instead
+              </button>
+            </p>
+          </div>
+        )}
 
         {ref && (
           <p style={{ margin: '12px 0 0', textAlign: 'center', fontSize: 11, color: 'var(--gold-ink)' }}>

@@ -17,9 +17,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import crypto from 'node:crypto';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
-import { createUser, newUserId } from '#db/repositories/users.js';
+import { createUser, newUserId, softDeleteUser } from '#db/repositories/users.js';
 import {
-  createIdentity, issueLoginCode, consumeLoginCode, getActiveIdentityByPhone,
+  createIdentity, relinkIdentity, issueLoginCode, consumeLoginCode, getLoginTargetByMobile,
 } from '#db/repositories/telegram.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -140,9 +140,9 @@ describePg('telegram sign-in codes', () => {
     expect(await consume(a, '123456')).toMatchObject({ userId: a.userId });
   });
 
-  it('finds the identity behind a number, and only while it is active', async () => {
+  it('finds where to send, and only while an identity is active', async () => {
     const who = await linked();
-    expect((await getActiveIdentityByPhone(who.mobile))?.userId).toBe(who.userId);
+    expect((await getLoginTargetByMobile(who.mobile))?.userId).toBe(who.userId);
     // Account recovery keeps the displaced row as history. Messaging the
     // identity that just LOST the account would send a sign-in code for
     // somebody's account to the person they took it back from.
@@ -150,12 +150,65 @@ describePg('telegram sign-in codes', () => {
       `UPDATE telegram_identities SET contact_active = FALSE WHERE telegram_user_id = $1`,
       [who.telegramUserId],
     );
-    expect(await getActiveIdentityByPhone(who.mobile)).toBeNull();
+    expect(await getLoginTargetByMobile(who.mobile)).toBeNull();
   });
 
   it('returns null for a number nobody has linked', async () => {
-    expect(await getActiveIdentityByPhone('9111111111')).toBeNull();
-    expect(await getActiveIdentityByPhone('')).toBeNull();
-    expect(await getActiveIdentityByPhone(null)).toBeNull();
+    expect(await getLoginTargetByMobile('9111111111')).toBeNull();
+    expect(await getLoginTargetByMobile('')).toBeNull();
+    expect(await getLoginTargetByMobile(null)).toBeNull();
+  });
+
+  /**
+   * ── The number typed is the KYC number, never Telegram's ────────────────
+   *
+   * Owner rule 2026-09-08, and it closes a real hole rather than restating a
+   * preference.
+   *
+   * `users.mobile` is captured at signup from the shared contact, is immutable,
+   * and is the number the Aadhaar is verified against.
+   * `telegram_identities.phone` is whatever number the currently linked
+   * Telegram account carries — and `relinkIdentity` OVERWRITES it during an
+   * account recovery without touching `users.mobile`.
+   *
+   * So after a recovery onto a Telegram account with a different number, a
+   * lookup keyed on the identity's phone would accept a number that was never
+   * KYC'd, against an account whose verified identity says something else.
+   */
+  describe('after an account recovery onto a different number', () => {
+    const recovered = async () => {
+      const who = await linked();
+      const newTelegramUserId = `tgr-${Date.now().toString(36)}-${(seq += 1)}`;
+      const newPhone = `9${String(base + 500_000 + seq).padStart(9, '0')}`;
+      const res = await relinkIdentity({
+        telegramUserId: newTelegramUserId, userId: who.userId, phone: newPhone,
+      });
+      expect(res.ok, 'relink failed').toBe(true);
+      return { ...who, newTelegramUserId, newPhone };
+    };
+
+    it('refuses the new Telegram number — it was never KYC verified', async () => {
+      const who = await recovered();
+      expect(await getLoginTargetByMobile(who.newPhone)).toBeNull();
+    });
+
+    it('still accepts the KYC number, and sends to the NEW Telegram account', async () => {
+      // Identification and delivery are different questions. The mobile
+      // identifies the account; the active identity is where the person
+      // actually reads messages now.
+      const who = await recovered();
+      const target = await getLoginTargetByMobile(who.mobile);
+      expect(target?.userId).toBe(who.userId);
+      expect(target?.telegramUserId).toBe(who.newTelegramUserId);
+    });
+  });
+
+  it('will not send to a deleted account', async () => {
+    // Through `softDeleteUser`, not a raw UPDATE: `users_deleted_has_actor`
+    // refuses a DELETED row with no actor, so the raw version was writing a
+    // state the platform cannot actually produce.
+    const who = await linked();
+    await softDeleteUser(who.userId, { actor: 'admin-1' });
+    expect(await getLoginTargetByMobile(who.mobile)).toBeNull();
   });
 });

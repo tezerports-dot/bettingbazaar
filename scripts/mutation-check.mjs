@@ -433,8 +433,8 @@ const MUTATIONS = [
     id: 'M82', file: 'database/repositories/telegram.js', config: PG,
     test: 'database/tests/telegramLoginCodePg.test.js',
     why: 'a retired identity answers again, so a code goes to whoever lost the account',
-    from: ` = $1 AND contact_active`,
-    to: ` = $1`,
+    from: ` ON i.user_id = u.user_id AND i.contact_active`,
+    to: ` ON i.user_id = u.user_id`,
   },
   // ── The request endpoint must not reveal whether a number is registered ──
   {
@@ -446,6 +446,18 @@ const MUTATIONS = [
     to: `    const { requestLoginCode } = await import('./telegramOtp.service.js');
     const r = await requestLoginCode(req.body?.mobile);
     if (!r.sent) return res.status(404).json({ success: false, message: 'No such number' });`,
+  },
+  // ── The number typed is the KYC number, never Telegram's own ─────────────
+  // `relinkIdentity` rewrites `telegram_identities.phone` during an account
+  // recovery and never touches the immutable `users.mobile`. Matching on the
+  // identity's phone would let somebody sign in with a number that was never
+  // verified against their Aadhaar.
+  {
+    id: 'M84', file: 'database/repositories/telegram.js', config: PG,
+    test: 'database/tests/telegramLoginCodePg.test.js',
+    why: 'sign-in matches the Telegram number again, not the KYC-linked mobile',
+    from: `(u.mobile, '`,
+    to: `(i.phone, '`,
   },
 ];
 
