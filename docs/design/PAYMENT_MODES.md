@@ -272,9 +272,58 @@ outstanding leg waits for capacity.
 
 The cost of that is an unbounded token lock, so two things are required rather
 than optional: a leg queued past the assignment window appears in an **admin
-stalled-legs queue**, so somebody is accountable for it; and the **player may
-cancel it themselves** and take those tokens back. An order with no deadline
-and no owner is an order nobody is answerable for.
+stalled-legs queue** (`GET /api/admin/orders/stalled-legs`, the Stalled Parts
+screen), so somebody is accountable for it; and the **player may cancel it
+themselves** (`GET /api/payment/order/:id/legs` expands the withdrawal, and
+`POST /api/payment/order/cancel` with the LEG's id takes it back). An order with
+no deadline and no owner is an order nobody is answerable for.
+
+#### Two constraints the implementation makes explicit
+
+Both are refusals rather than surprises, and both are the operator's to resolve.
+
+**A split cannot coexist with a payout fee.** The escrow lock is on TOKENS; the
+legs are made of FIAT; the fee is the gap between them. Every leg releases
+exactly its own amount when it completes and refunds exactly its own amount when
+it is cancelled, so the legs add up to the parent's lock precisely — and a fee
+would be the part no leg accounts for, left locked forever with no leg to
+release it. `createWithdrawalOrder` therefore refuses to split while
+`payoutFeePercent` is non-zero (`SPLIT_FEE_UNSUPPORTED`).
+
+The alternatives were each worse: releasing the remainder at the parent means a
+second money path that only ever runs on split withdrawals — the least-exercised
+code holding the most surprising movement — and charging the fee per leg stops
+the legs being denominations, which is the one thing a cash machine cannot
+accommodate.
+
+**`maxWithdrawal` has to be raised for the split to mean anything.** It defaults
+to ₹50,000 and the largest denomination is ₹40,000, so on a default
+configuration the only split that exists is two legs and the ₹100,000 example
+above is refused before it reaches the splitter — by a limit that has nothing to
+do with denominations. A platform running the cash rail raises this cap or the
+feature is decoration.
+
+#### The parent is a container, and moves no money
+
+`splitWithdrawal.service.js` derives the parent's state from its legs:
+PROCESSING once any leg is being worked on, COMPLETED when every leg is terminal
+and at least one was paid, CANCELLED only when nothing was paid at all. It walks
+the ordinary states rather than jumping — widening `ALLOWED_FROM[COMPLETED]` to
+accept `PENDING_QUEUE` would let any queued order in the system skip to
+completed.
+
+A partly-paid withdrawal counts as COMPLETED, never cancelled: the player has
+money a cancelled leg does not take back.
+
+**Every list has to choose parents or legs.** `findOrders` defaults to parents
+and takes `includeLegs: true` for the queues that work the units. A
+merchant-scoped query sees legs automatically, because a parent is never
+assigned. The exceptions that matter:
+
+- the **dispute queue** is legs — a dispute is about the row a merchant held;
+- the **user-delete guard** is legs (`includeLegs: true`) — it is a money guard,
+  and a parent sitting at PROCESSING while four legs are live in the merchant
+  queue would otherwise let the player be deleted out from under them.
 
 ## 6. Timers, expiry and retry
 

@@ -3148,3 +3148,88 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 CREATE INDEX IF NOT EXISTS order_states_cdm_receipt_missing_idx
   ON order_states (merchant_id, completed_at)
   WHERE order_type = 'WITHDRAWAL' AND payment_mode = 'CASH_ATM' AND cdm_receipt_url IS NULL;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 🧩 WITHDRAWAL BATCH SPLITTING — one order the player asked for, several legs
+--
+-- An ATM dispenses denominations, not amounts. A ₹100,000 payout on the cash
+-- rail is therefore not one job: it is 40,000 + 40,000 + 10,000 + 10,000, four
+-- merchants standing at four machines. The player asked for one withdrawal and
+-- must keep seeing one.
+--
+-- ── The parent is a container, not a payout ────────────────────────────────
+-- `parent_order_id` points a LEG at the withdrawal it is part of. A parent has
+-- none; a leg always has one. Two rules follow, both enforced here rather than
+-- trusted to writers:
+--
+--   • a leg may not itself have legs (one level, so a tree can never form and
+--     "the amount of this withdrawal" is never a recursive question), and
+--   • a parent is never assigned to a merchant — there is nothing to hand
+--     them. Only legs reach the queue.
+--
+-- ── The money locks ONCE, at the parent ────────────────────────────────────
+-- `debitWinningsForWithdrawal` runs against the parent's id, for the full
+-- amount, exactly as an unsplit withdrawal does. A leg carries NO escrow: it is
+-- a unit of work, not a claim on the player's balance. Locking per leg would
+-- take the money four times and the `tx_id` gate would refuse three of them —
+-- or worse, wouldn't.
+--
+-- That is why `escrow_locked` and the leg relation are checked against each
+-- other below. A leg that carries escrow is a double-lock waiting to be found
+-- by an accountant rather than by a test.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS parent_order_id TEXT;
+-- The leg's position in the split, 1-based. Ordering by amount is not enough:
+-- a 40,000 + 40,000 split has two identical legs, and "leg 2 of 4" is what a
+-- player reads and an admin refers to.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS leg_index INT;
+DO $$ BEGIN
+  ALTER TABLE order_states ADD CONSTRAINT order_states_leg_has_index
+    CHECK ((parent_order_id IS NULL) = (leg_index IS NULL));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE order_states ADD CONSTRAINT order_states_leg_index_positive
+    CHECK (leg_index IS NULL OR leg_index >= 1);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  -- A leg is not where the money is held. The parent locked the whole amount
+  -- once; a leg that also claims escrow is the same tokens counted twice.
+  ALTER TABLE order_states ADD CONSTRAINT order_states_leg_holds_no_escrow
+    CHECK (parent_order_id IS NULL OR escrow_locked IS NOT TRUE);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+-- "Is this a container?" as a property of the ROW.
+--
+-- It cannot be derived in a CHECK: "does anything point at me" is a question
+-- about other rows, and a row-level constraint cannot ask one. Without the
+-- column the two rules below are conventions a writer is trusted to keep, and
+-- the first of them is a money rule — so this follows the same reasoning as
+-- `merchants.cash_denomination_paise`, where a column made "cannot hold two" a
+-- property of the row instead of a rule somebody remembers.
+--
+-- It is written in the SAME transaction as the legs, and a test asserts the two
+-- never disagree.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS is_split_parent BOOLEAN NOT NULL DEFAULT FALSE;
+DO $$ BEGIN
+  -- A parent is a container. Handing one to a merchant would hand them an
+  -- amount no machine dispenses, while the legs stayed unserved.
+  ALTER TABLE order_states ADD CONSTRAINT order_states_parent_unassigned
+    CHECK (is_split_parent IS NOT TRUE OR merchant_id IS NULL);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  -- One level, always. A leg that is itself a parent makes "the amount of this
+  -- withdrawal" a recursive question, and every total on every screen would
+  -- have to know how deep to go.
+  ALTER TABLE order_states ADD CONSTRAINT order_states_split_is_one_level
+    CHECK (NOT (is_split_parent AND parent_order_id IS NOT NULL));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+-- Every leg of one withdrawal, in order. The only question asked of this side
+-- of the relation, so a plain index on the parent covers it.
+CREATE INDEX IF NOT EXISTS order_states_legs_idx
+  ON order_states (parent_order_id, leg_index)
+  WHERE parent_order_id IS NOT NULL;
+-- The admin's stalled-leg queue: legs still waiting for a merchant. A leg that
+-- cannot find one WAITS rather than failing — the paid legs stay paid, because
+-- a completed CDM deposit cannot be clawed back — and the cost of that is an
+-- unbounded token lock, so somebody has to be accountable for it.
+CREATE INDEX IF NOT EXISTS order_states_stalled_legs_idx
+  ON order_states (created_at)
+  WHERE parent_order_id IS NOT NULL AND state = 'PENDING_QUEUE';

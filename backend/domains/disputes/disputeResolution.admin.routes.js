@@ -83,6 +83,46 @@ router.get('/orders/cdm-receipts/missing', authenticate, hasPermission('canResol
   }
 });
 
+/**
+ * GET /api/admin/orders/stalled-legs — withdrawal legs nobody has taken.
+ *
+ * A leg that cannot find a merchant WAITS rather than failing. That is the
+ * right call — the paid legs of the same withdrawal stay paid, because a
+ * completed CDM deposit cannot be clawed back, and the outstanding leg waits
+ * for capacity rather than being reversed.
+ *
+ * The price of it is an unbounded token lock, which is exactly why this queue
+ * exists. An order with no deadline and no owner is an order nobody is
+ * answerable for; a leg past the assignment window appears here so somebody is.
+ * The player can also take those tokens back themselves — the two together are
+ * what make "wait indefinitely" a decision instead of a leak.
+ *
+ * `olderThanMinutes` accepts 0, which is how an admin asks "every leg waiting
+ * right now" during an incident. `??`, never `||`, for exactly that reason.
+ */
+router.get('/orders/stalled-legs', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
+  try {
+    const asked = parseInt(req.query.olderThanMinutes, 10);
+    const olderThanMinutes = Number.isFinite(asked) && asked >= 0 ? asked : 25;
+    const legs = await db.orders.stalledLegs({ olderThanMinutes });
+    res.json({
+      success: true,
+      olderThanMinutes,
+      legs: legs.map((leg) => ({
+        orderId:       leg.orderId,
+        parentOrderId: leg.parentOrderId,
+        legIndex:      leg.legIndex,
+        userId:        leg.userId,
+        amount:        leg.fiatAmount,
+        createdAt:     leg.createdAt,
+      })),
+    });
+  } catch (error) {
+    console.error('List stalled withdrawal legs error:', error);
+    res.status(500).json({ success: false, message: 'Failed to list stalled withdrawal legs' });
+  }
+});
+
 router.get('/dispute-orders', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
   try {
     const { status = 'DISPUTED', page = 1, limit = 50 } = req.query;

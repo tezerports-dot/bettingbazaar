@@ -31,6 +31,9 @@ import {
 // Withdrawal settlement hold — confirm asserts payment, the worker settles it
 // once the dispute window passes. See withdrawalHold.service.js.
 import { holdMinutes } from '../payment/withdrawalHold.service.js';
+// A leg finishing may finish the whole withdrawal. The parent's state is
+// derived from its legs and nowhere else.
+import { advanceParentFor } from '../payment/splitWithdrawal.service.js';
 // One rule for how a confirmed deposit splits across the user's two pockets.
 import { depositCreditSplit } from '../payment/depositCredit.js';
 import { debitMerchantTokens, creditMerchantTokens } from './merchantWallet.service.js';
@@ -1337,6 +1340,13 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         // Funding event (Phase 009): lets the ledger reconciler pick this
         // completion up within seconds. Non-blocking — never affects the flow.
         try { publishDomainEvent(DOMAIN_EVENTS.PAYMENT_ORDER_COMPLETED, { orderId: order._id, type: order.type }); } catch (_) {}
+
+        // If this order was a LEG of a split withdrawal, bring its parent into
+        // line. A no-op for every ordinary order — a leg is the only thing with
+        // a parent — and it moves no money: the leg's own release already
+        // happened above, and the parent is a container. See
+        // domains/payment/splitWithdrawal.service.js.
+        await advanceParentFor(order);
 
         // Update merchant scoring stats. The direction and amount travel with
         // it: they feed the merchant's processed volume and their per-rail

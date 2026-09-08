@@ -16,6 +16,8 @@ import { PAYMENT_STATE_LABELS, PAYMENT_STATE_COLOR, isActive, type PaymentOrderS
 // M-05: WalletTransactionDTO normalizer — GOVERNANCE §4: this module must have consumers.
 import { normalizeTransaction } from '../services/walletTransactionDTO';
 import ScreenShell, { card, capLabel } from '../redesign/Screen';
+// A withdrawal too large for one cash denomination is paid in parts.
+import SplitWithdrawalLegs from '../components/SplitWithdrawalLegs';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 interface Balances { depositBalance: number; winningsBalance: number; lockedBalance: number; reserveBalance: number; }
@@ -50,6 +52,11 @@ interface PaymentOrder {
   // supposed to be showing.
   paymentMode?: 'P2P_UPI' | 'CASH_ATM';
   cashLinkId?: string | null;
+  // A withdrawal too large for one cash denomination is paid in parts. This is
+  // the CONTAINER; the parts are fetched on expand. Sent by the orders list,
+  // and absent (falsy) on every ordinary order — so the expander only appears
+  // where there is something to expand.
+  isSplitParent?: boolean;
   userBankDetails?: { accountNumber?: string; ifscCode?: string; bankName?: string; accountHolderName?: string; };
   upiId?: string;
 }
@@ -305,6 +312,9 @@ const WalletPage: React.FC = () => {
   const [userProfile, setUserProfile]   = useState<UserProfile | null>(null);
   const [ledger, setLedger]             = useState<LedgerEntry[]>([]);
   const [paymentOrders, setPaymentOrders] = useState<PaymentOrder[]>([]);
+  // Which split withdrawal, if any, has its parts open. One at a time — a
+  // player is looking at one withdrawal, and every list open at once is noise.
+  const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
   const [tab, setTab]                   = useState<TabKey>('exchange');
   const [side, setSide]                 = useState<'buy' | 'sell'>('buy');
   const [loading, setLoading]           = useState(true);
@@ -685,8 +695,26 @@ const WalletPage: React.FC = () => {
                 {order.expiresAt && ['ASSIGNED', 'PROCESSING'].includes(order.status) && <div style={{ marginBottom: 8 }}><CountdownTimer expiresAt={order.expiresAt} /></div>}
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderTop: '1px solid var(--line)', paddingTop: 9 }}>
                   <span style={{ fontSize: 9, color: 'var(--text3)' }}>Order {order.orderId || order._id}</span>
-                  {canCancel && <button onClick={() => cancelOrder(order.orderId || order._id)} style={{ fontSize: 10, fontWeight: 800, color: 'var(--red)', background: 'none', border: '1px solid color-mix(in srgb,var(--red) 40%,transparent)', borderRadius: 999, padding: '4px 11px', cursor: 'pointer' }}>Cancel</button>}
+                  <span style={{ display: 'flex', gap: 8 }}>
+                    {/* Only where there is something to expand. An expander on
+                        every withdrawal would promise parts that do not exist. */}
+                    {order.isSplitParent && (
+                      <button
+                        onClick={() => setExpandedOrderId(expandedOrderId === (order.orderId || order._id) ? null : (order.orderId || order._id))}
+                        style={{ fontSize: 10, fontWeight: 800, color: 'var(--gold-ink)', background: 'none', border: '1px solid color-mix(in srgb,var(--gold-ink) 40%,transparent)', borderRadius: 999, padding: '4px 11px', cursor: 'pointer' }}
+                      >
+                        {expandedOrderId === (order.orderId || order._id) ? 'Hide parts' : 'Show parts'}
+                      </button>
+                    )}
+                    {canCancel && <button onClick={() => cancelOrder(order.orderId || order._id)} style={{ fontSize: 10, fontWeight: 800, color: 'var(--red)', background: 'none', border: '1px solid color-mix(in srgb,var(--red) 40%,transparent)', borderRadius: 999, padding: '4px 11px', cursor: 'pointer' }}>Cancel</button>}
+                  </span>
                 </div>
+                {order.isSplitParent && expandedOrderId === (order.orderId || order._id) && (
+                  <SplitWithdrawalLegs
+                    orderId={order.orderId || order._id}
+                    onChanged={() => { void loadOrders(); void loadMeta(); }}
+                  />
+                )}
               </div>
             );
           })}

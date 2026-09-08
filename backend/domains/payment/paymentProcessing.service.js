@@ -55,6 +55,16 @@ import {
   getActivePolicy as getActivePaymentModePolicy,
   getPolicyVersion as getPaymentModePolicyVersion,
 } from '#db/repositories/paymentModePolicy.js';
+// The denomination ladder and the split rule. One owner — the same module the
+// risk gate validates buys against and `systemConfigPayload` builds the picker
+// from, so the amounts a screen offers, the amounts the gate accepts and the
+// amounts a withdrawal splits into cannot disagree.
+import {
+  WITHDRAWAL_DENOMINATIONS_PAISE, splitWithdrawal,
+} from '../merchant/denominations.js';
+// The parent's state is derived from its legs, in one place.
+import { advanceParentFor } from './splitWithdrawal.service.js';
+import { rupeesToPaise, paiseToRupees } from '../../shared/money.js';
 
 // ─── Shared admin SSE payload ─────────────────────────────────────────────────
 function adminOrderPayload(order, user) {
@@ -460,6 +470,72 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
 
   const orderId = `WD_${crypto.randomBytes(12).toString('hex')}`;
 
+  // ── SPLIT, decided BEFORE any money moves ───────────────────────────────
+  //
+  // An ATM dispenses denominations, not amounts, so on the cash rail a payout
+  // larger than ₹40,000 is not one job — it is several merchants at several
+  // machines. The player asked for one withdrawal and keeps seeing one; the
+  // legs are how it gets done.
+  //
+  // What gets split is the FIAT figure, because that is the cash that reaches a
+  // machine. The payout fee was already taken, once, above.
+  //
+  // This runs before `debitWinningsForWithdrawal` deliberately. An amount no
+  // set of denominations can make is one no merchant can pay at a machine, and
+  // discovering that AFTER the debit means unwinding a lock that has already
+  // committed — the same reasoning that put the debit before the order row.
+  const rail = await getActivePaymentModePolicy();
+  const fiatPaise = rupeesToPaise(fiatAmount);
+  let legsPaise = null;
+  if (rail?.activeMode === PAYMENT_MODES.CASH_ATM) {
+    legsPaise = splitWithdrawal(fiatPaise);
+    if (!legsPaise) {
+      // Named amounts, not "invalid amount". The player cannot guess which
+      // figures a cash machine can make, and the fee means the payable figure
+      // is not the one they typed.
+      const tiers = WITHDRAWAL_DENOMINATIONS_PAISE.map((p) => `₹${paiseToRupees(p).toLocaleString('en-IN')}`);
+      throw Object.assign(
+        new Error(
+          `Cash withdrawals are paid at an ATM, so the payout must be made up of ${tiers.join(', ')}`
+          + `. ₹${fiatAmount.toLocaleString('en-IN')} cannot be.`,
+        ),
+        { status: 400, code: 'NOT_A_CASH_AMOUNT' },
+      );
+    }
+    // One leg is not a split. It is an ordinary withdrawal that happens to be
+    // exactly one denomination, and giving it a parent would put a container
+    // round a single order for nothing.
+    if (legsPaise.length < 2) legsPaise = null;
+
+    // ── A split requires a zero payout fee, and this refuses rather than
+    //    silently stranding the difference ──────────────────────────────────
+    //
+    // The lock is on TOKENS; the legs are made of FIAT; the fee is the gap
+    // between them. Every leg releases exactly its own amount when it
+    // completes, so a fee would leave that much locked forever with no leg
+    // left to release it and no row saying why the player's balance is short.
+    //
+    // The alternatives were each worse. Releasing the remainder at the parent
+    // needs a second money path that only ever runs on split withdrawals — the
+    // least-exercised code in the system holding the most surprising movement.
+    // Charging the fee per leg makes the legs stop being denominations, which
+    // is the one thing a cash machine cannot accommodate.
+    //
+    // So this is an operator constraint, said out loud: a payout fee and cash
+    // withdrawals above one denomination cannot both be on. `payoutFeePercent`
+    // defaults to 0, which is why this is a refusal at the boundary rather
+    // than a migration.
+    if (legsPaise && payoutFee > 0) {
+      throw Object.assign(
+        new Error(
+          'Cash withdrawals above one denomination cannot be paid while a payout fee is set. '
+          + 'Ask support — this is a platform setting, not a problem with your account.',
+        ),
+        { status: 400, code: 'SPLIT_FEE_UNSUPPORTED' },
+      );
+    }
+  }
+
   // ── ADMISSION ───────────────────────────────────────────────────────────
   // The escrow debit IS the gate, and it is the whole gate: winnings → locked
   // under `SELECT … FOR UPDATE` on the wallet row, in one transaction with its
@@ -497,7 +573,7 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
     throw err;
   }
 
-  const order = await db.orders.createOrderRecord({
+  const orderFields = {
     orderId,
     userId:            user.userId,
     type:              'WITHDRAWAL',
@@ -519,20 +595,63 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
       upiId:             user.bankDetails?.upiId || '',
     },
     userPhone: user.mobile,
-  });
+  };
+
+  // ── One row, or a parent and its legs ────────────────────────────────────
+  // The escrow above locked the WHOLE amount once, against `orderId`. That is
+  // the parent's id either way, so the lock is identical whether this splits or
+  // not — a leg carries no escrow at all, and the database refuses one that
+  // does. Locking per leg would take the player's money as many times as there
+  // are legs.
+  let order;
+  let legs = [];
+  if (legsPaise) {
+    // `orderId` and `type` are the split writer's own business: the parent's id
+    // is `parentOrderId`, each leg gets its own from `legIdFor`, and every row
+    // it writes is a WITHDRAWAL by construction. Passing them through would be
+    // two names for one value, and the writer refuses a field it does not own
+    // rather than quietly dropping it.
+    const { orderId: _parentId, type: _type, ...splitFields } = orderFields;
+    const split = await db.orders.createSplitWithdrawal({
+      ...splitFields,
+      parentOrderId: orderId,
+      legsPaise,
+      // Derived from the parent, so a leg id says which withdrawal it belongs
+      // to without a lookup — an admin reading `WD_ab12…_L3` in a log knows
+      // both which payout and which leg without asking the database.
+      legIdFor: (index) => `${orderId}_L${index}`,
+    });
+    order = split.parent;
+    legs = split.legs;
+  } else {
+    order = await db.orders.createOrderRecord(orderFields);
+  }
 
   emitAdminUpdate('new_order', adminOrderPayload(order, user));
   await emitWalletUpdate(user.userId);
 
-  if (await tryAssignMerchant(order)) {
-    emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'ASSIGNED', server_ts: Date.now() });
-  } else {
-    // Sell orders become an open merchant pool item immediately. They do not
-    // consume the deposit retry loop because any eligible merchant may accept
-    // them later as their sell capacity opens up.
-    emitAdminUpdate('queue_order_update', {
-      orderId: order.orderId, status: 'PENDING_QUEUE', pool: 'SELL_OPEN_POOL', server_ts: Date.now(),
-    });
+  // ── Partial batch, partial queue ─────────────────────────────────────────
+  // Legs that can be assigned now are; the rest wait. A leg that cannot find a
+  // merchant STAYS QUEUED rather than failing — the paid legs stay paid,
+  // because a completed CDM deposit cannot be clawed back, and the outstanding
+  // leg waits for capacity.
+  //
+  // The parent is never offered to anybody. It is a container, and the database
+  // refuses to let one be assigned.
+  const assignable = legs.length ? legs : [order];
+  let assignedCount = 0;
+  for (const leg of assignable) {
+    if (await tryAssignMerchant(leg)) {
+      assignedCount += 1;
+      emitAdminUpdate('queue_order_update', { orderId: leg.orderId, status: 'ASSIGNED', server_ts: Date.now() });
+    } else {
+      // Sell orders become an open merchant pool item immediately. They do not
+      // consume the deposit retry loop because any eligible merchant may accept
+      // them later as their sell capacity opens up.
+      emitAdminUpdate('queue_order_update', {
+        orderId: leg.orderId, status: 'PENDING_QUEUE', pool: 'SELL_OPEN_POOL', server_ts: Date.now(),
+      });
+    }
   }
 
   return {
@@ -546,6 +665,16 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
       merchantSnapshot: order.merchantSnapshot,
       expiresAt:        order.expiresAt,
       userBankDetails:  order.userBankDetails,
+      // Present only when this withdrawal actually split. The player sees one
+      // order that EXPANDS to these; a screen that always rendered a legs list
+      // would put an expander on every ordinary withdrawal.
+      isSplitParent:    order.isSplitParent === true,
+      legs: legs.map((leg) => ({
+        orderId:   leg.orderId,
+        legIndex:  leg.legIndex,
+        amount:    leg.fiatAmount,
+        status:    leg.status,
+      })),
     },
     // From the movement that actually happened, not from a record read before
     // it. `debitResult.balances` is what the wallet holds now.
@@ -554,7 +683,10 @@ export async function createWithdrawalOrder(userId, tokenAmount) {
       winnings: debitResult.balances?.winningsBalance ?? 0,
       total:    (debitResult.balances?.depositBalance ?? 0) + (debitResult.balances?.winningsBalance ?? 0),
     },
-    note: `You will receive ₹${fiatAmount.toLocaleString()} from merchant`,
+    note: legs.length
+      ? `₹${fiatAmount.toLocaleString('en-IN')} is paid in ${legs.length} parts`
+        + ` — ${assignedCount} already with a merchant. Each part is paid separately.`
+      : `You will receive ₹${fiatAmount.toLocaleString()} from merchant`,
   };
 }
 
@@ -701,6 +833,27 @@ export async function cancelOrder(actorId, isAdmin, orderId) {
   if (String(order.userId) !== String(actorId) && !isAdmin)
     throw Object.assign(new Error('Access denied'), { status: 403 });
 
+  // ── A split withdrawal cancels leg by leg ────────────────────────────────
+  //
+  // Cancelling the PARENT means "stop what has not happened yet". It does not
+  // and cannot mean "undo the withdrawal": a leg already settled is cash a
+  // merchant deposited at a machine, and a completed CDM deposit cannot be
+  // clawed back. So this cancels every leg still waiting and leaves the rest
+  // alone; the parent's own state then follows from what its legs became.
+  if (order.isSplitParent) {
+    const legs = await db.orders.getOrderLegs(order.orderId);
+    const queued = legs.filter((leg) => leg.status === 'PENDING_QUEUE');
+    if (!queued.length) {
+      throw Object.assign(
+        new Error('Every part of this withdrawal is already with a merchant or paid.'),
+        { status: 409, code: 'NO_CANCELLABLE_LEGS' },
+      );
+    }
+    for (const leg of queued) await cancelOrder(actorId, isAdmin, leg.orderId);
+    await advanceParentFor(queued[0]);
+    return db.orders.getOrderRecord(order.orderId);
+  }
+
   // ORDER INVERTED, deliberately. This refunded the escrow FIRST and set the
   // status afterwards, guarded only by a stale status read. A user
   // double-tapping cancel put two refunds in flight, and only
@@ -726,7 +879,29 @@ export async function cancelOrder(actorId, isAdmin, orderId) {
   if (!cancelled.idempotent && order.type === 'WITHDRAWAL' && order.escrowLocked) {
     await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
   }
+
+  // ── A LEG carries no escrow of its own, and must still give the money back ─
+  //
+  // The condition above is `order.escrowLocked`, and the database REFUSES to
+  // let a leg carry escrow: the lock was taken once, at the parent, for the
+  // whole amount. So without this branch a cancelled leg would cancel cleanly
+  // and refund nothing — the player's tokens would stay locked forever with no
+  // leg left to release them and no row saying why their balance is short.
+  //
+  // The refund is for the LEG's amount, keyed on the LEG's id. `lockedBalance`
+  // is one pooled number, so returning part of it is an ordinary movement; and
+  // because every leg either releases its own amount or refunds it, the legs
+  // add up to exactly what the parent locked. That identity is what
+  // `createWithdrawalOrder` protects by refusing to split while a payout fee is
+  // set — the fee would be the part no leg accounts for.
+  if (!cancelled.idempotent && order.parentOrderId) {
+    await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
+  }
+
   await emitWalletUpdate(order.userId);
+  // A cancelled leg may be the last one. Harmless on anything else — only a leg
+  // has a parent.
+  await advanceParentFor(order);
   return cancelled.order ?? order;
 }
 

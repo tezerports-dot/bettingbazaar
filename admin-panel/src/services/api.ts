@@ -1059,6 +1059,22 @@ export const disputes = {
     const res = await api.get<any>('/api/admin/orders/cdm-receipts/missing', { params: { olderThanMinutes } });
     return res.data;
   },
+
+  /**
+   * Withdrawal legs no merchant has taken.
+   *
+   * A leg that cannot find one WAITS rather than failing — the paid legs of
+   * the same withdrawal stay paid, because a completed CDM deposit cannot be
+   * clawed back. The price is an unbounded token lock, which is why this queue
+   * exists: an order with no deadline and no owner is one nobody is answerable
+   * for.
+   *
+   * `olderThanMinutes` accepts 0 — "every leg waiting right now".
+   */
+  stalledLegs: async (olderThanMinutes: number) => {
+    const res = await api.get<any>('/api/admin/orders/stalled-legs', { params: { olderThanMinutes } });
+    return res.data;
+  },
 };
 
 // ─── UTR MONITOR ───────────────────────────────────────────────────────────

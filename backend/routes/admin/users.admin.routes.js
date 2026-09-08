@@ -401,6 +401,17 @@ router.delete('/users/:userId', authenticate, isAdmin, async (req, res) => {
     const open = await db.orders.findOrders({
       userId: req.params.userId,
       states: ['ASSIGNED', 'PROCESSING', 'PAID', 'DISPUTED'],
+      // LEGS COUNT. `findOrders` defaults to parents — that is right for a
+      // history list, where a split withdrawal is one order the player asked
+      // for — and it is wrong here, because this is a money guard.
+      //
+      // A split parent sits at PENDING_QUEUE or PROCESSING while its legs are
+      // the rows a merchant is actually working. Counting parents only would
+      // let a player be deleted with four legs live in the merchant queue and
+      // their tokens locked behind them: the merchant completes each one and
+      // the money has no owner who can sign in to see it. Exactly the failure
+      // the comment above describes, arriving by a different door.
+      includeLegs: true,
       limit: 1,
     });
     if (open.total > 0) {

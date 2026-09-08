@@ -749,6 +749,42 @@ const MUTATIONS = [
     from: `  'paymentMode',`,
     to: ``,
   },
+
+  // ── A withdrawal that splits into legs ──────────────────────────────────
+  {
+    id: 'M117', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/splitWithdrawalPg.test.js',
+    why: 'a cash withdrawal is created for an amount no set of denominations can make, so no merchant can ever pay it at a machine and the tokens lock behind an order nobody can serve',
+    from: `    legsPaise = splitWithdrawal(fiatPaise);
+    if (!legsPaise) {`,
+    to: `    legsPaise = splitWithdrawal(fiatPaise) ?? [fiatPaise, fiatPaise];
+    if (false) {`,
+  },
+  {
+    id: 'M118', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/splitWithdrawalPg.test.js',
+    why: 'the legs stop having to add up to the payout, so a split that loses money pays the player LESS than they asked for while every row looks healthy',
+    from: `  if (legTotal !== fiatPaise) {`,
+    to: `  if (false) {`,
+  },
+  {
+    id: 'M119', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/splitWithdrawalPg.test.js',
+    why: 'a cancelled leg refunds nothing — the leg carries no escrow of its own, so the ordinary branch never fires and the player\'s tokens stay locked forever with no leg left to release them',
+    from: `  if (!cancelled.idempotent && order.parentOrderId) {
+    await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
+  }`,
+    to: ``,
+  },
+  {
+    id: 'M120', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/splitWithdrawalPg.test.js',
+    why: 'the player is told they have committed the whole withdrawal TWICE — the parent and every leg are in flight at once, and counting rows counts both',
+    from: `        AND parent_order_id IS NULL\`,
+    [String(userId)], 'order_pending_withdrawal_total',`,
+    to: `\`,
+    [String(userId)], 'order_pending_withdrawal_total',`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

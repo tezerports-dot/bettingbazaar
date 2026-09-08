@@ -258,6 +258,47 @@ router.get('/order/:orderId', authenticate, orderAccessGuard, async (req, res) =
   }
 });
 
+/**
+ * GET /api/payment/order/:orderId/legs — the parts of one withdrawal.
+ *
+ * A withdrawal too large for one denomination is paid by several merchants at
+ * several machines, because that is what an ATM dispenses. The player asked for
+ * ONE withdrawal and keeps seeing one: this is the expansion behind it.
+ *
+ * Behind `orderAccessGuard` like every other `:orderId` route, so it is the
+ * owner asking. It returns an empty list for an ordinary order rather than a
+ * 404 — "this withdrawal has no parts" is a true answer, and a screen that has
+ * to distinguish "not split" from "not found" will get it wrong.
+ *
+ * The merchant is not named on any leg. A player sees where their money is up
+ * to, never who is paying it — the same rule the merchant side obeys in
+ * reverse.
+ */
+router.get('/order/:orderId/legs', authenticate, orderAccessGuard, async (req, res) => {
+  try {
+    const order = req.p2pOrder;
+    const legs = order?.isSplitParent ? await db.orders.getOrderLegs(order.orderId) : [];
+    res.json({
+      success: true,
+      isSplitParent: order?.isSplitParent === true,
+      legs: legs.map((leg) => ({
+        orderId:   leg.orderId,
+        legIndex:  leg.legIndex,
+        amount:    leg.fiatAmount,
+        status:    leg.status,
+        expiresAt: leg.expiresAt,
+        // What the player can do about this one. A leg still waiting for a
+        // merchant can be taken back; one already being worked on cannot, and
+        // one that is paid is money they have.
+        cancellable: leg.status === 'PENDING_QUEUE',
+      })),
+    });
+  } catch (err) {
+    console.error('GET /payment/order/:orderId/legs error:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch the parts of this withdrawal' });
+  }
+});
+
 /*
  * REMOVED — GET /api/payment/rates.
  *

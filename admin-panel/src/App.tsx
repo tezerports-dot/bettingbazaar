@@ -32,6 +32,7 @@ import { AuditLogs } from './Pages/Settings/AuditLogs';
 import ErrorLogs from './Pages/Settings/ErrorLogs';
 import { DisputeManager } from './Pages/Disputes/DisputeManager';
 import { CdmReceiptQueue } from './Pages/Disputes/CdmReceiptQueue';
+import { StalledLegs } from './Pages/Disputes/StalledLegs';
 import { AppAssetsPage } from './Pages/AppAssets/AppAssetsPage';
 // UTR REMOVED: import { UTRManager } from './Pages/Finance/UTRManager';
 // ── NEW FEATURE PAGES ──────────────────────────────────────────────────────
@@ -347,6 +348,13 @@ const App: React.FC = () => {
         <Route path="/disputes/cdm-receipts" element={
           <PermRoute permission="canResolveDisputes">
             <Layout><CdmReceiptQueue /></Layout>
+          </PermRoute>
+        } />
+        {/* Same gate again: a stalled leg is a player's tokens locked with no
+            deadline, which is the kind of thing the disputes desk answers for. */}
+        <Route path="/disputes/stalled-legs" element={
+          <PermRoute permission="canResolveDisputes">
+            <Layout><StalledLegs /></Layout>
           </PermRoute>
         } />
         {/* UTR REMOVED: route /utr-monitor stripped per product decision */}
