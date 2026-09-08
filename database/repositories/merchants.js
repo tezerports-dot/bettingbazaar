@@ -349,6 +349,60 @@ export async function listAssignableMerchants({
  * and the caller reads it there — a balance predicate in this query would be
  * the same defect as the stored `tokenBalance` filter it replaced.
  */
+/**
+ * Merchants who could supply a link at ONE denomination, with the tokens they
+ * have coming back to them shortly.
+ *
+ * This is who the broadcast reaches. It is a DISPLAY decision, not a transfer
+ * gate — nothing moves money on the strength of it — so it is a batched read
+ * rather than a locked one. What it must not do is send a merchant to an ATM
+ * for work they cannot take: they would drive there, supply a link, and be
+ * refused, and an expired link earns them nothing.
+ *
+ * `soonPaise` is tokens currently HELD on withdrawals they have already paid,
+ * whose hold expires within the lookahead. Those become spendable without the
+ * merchant doing anything, so a merchant who is briefly short is still worth
+ * telling — they will be able to serve by the time they reach the machine.
+ *
+ * The AVAILABLE balance is deliberately NOT read here. `getAvailablePaiseFor`
+ * owns that number; a second reader of the same column is a second answer
+ * waiting to disagree with it.
+ */
+export async function cashSuppliersFor(denominationPaise, { lookaheadSeconds = 120 } = {}) {
+  const denomination = Number(denominationPaise);
+  if (!Number.isInteger(denomination) || denomination <= 0) {
+    throw new TypeError(`cashSuppliersFor: denominationPaise must be a positive integer of paise, got ${denominationPaise}`);
+  }
+  const lookahead = Math.max(Number(lookaheadSeconds) || 0, 0);
+
+  const { rows } = await pgQuery(
+    `WITH releasing AS (
+       SELECT merchant_id,
+              COALESCE(SUM(token_amount_paise), 0) AS soon
+         FROM order_states
+        WHERE merchant_id IS NOT NULL
+          AND merchant_credit_status = 'HELD'
+          AND merchant_credit_hold_until IS NOT NULL
+          AND merchant_credit_hold_until <= now() + make_interval(secs => $2)
+        GROUP BY merchant_id
+     )
+     SELECT m.merchant_id, COALESCE(r.soon, 0) AS soon
+       FROM merchants m
+       LEFT JOIN releasing r ON r.merchant_id = m.merchant_id
+      WHERE m.status = 'ACTIVE'
+        AND m.merchant_approval_status = 'APPROVED'
+        AND m.is_online
+        AND m.accepts_deposits
+        AND m.cash_denomination_paise = $1`,
+    [denomination, lookahead], 'cash_suppliers_for_denomination',
+  );
+  return rows.map((r) => ({
+    merchantId: r.merchant_id,
+    // BIGINT arrives as a string. Uncast, adding it to a number concatenates.
+    soonPaise: Number(r.soon),
+  }));
+}
+
 export async function assignmentCandidates({
   currency = 'INR', direction = 'DEPOSIT',
   defaultDepositLimit = 1, defaultWithdrawalLimit = 1, defaultTotalLimit = 3,

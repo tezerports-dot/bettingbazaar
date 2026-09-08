@@ -103,9 +103,14 @@ describePg('the ATM cash-link queue', () => {
   });
 
   it('gives two simultaneous orders two DIFFERENT links, never the same one', async () => {
-    // The assertion this whole design turns on. Run concurrently, because
-    // FOR UPDATE SKIP LOCKED is the mechanism and reading the SQL proves
-    // nothing about how it behaves under contention.
+    // The assertion this whole design turns on, run concurrently because
+    // reading the SQL proves nothing about behaviour under contention.
+    //
+    // Note what it does and does not pin down: it proves the row LOCK, since
+    // without `FOR UPDATE` two claimants read and write the same link. It does
+    // NOT distinguish `SKIP LOCKED`, because PostgreSQL re-qualifies a blocked
+    // row and moves to the next one, so the outcome is identical either way.
+    // SKIP LOCKED is here for contention, not correctness.
     const denomination = 100_000;
     const links = [];
     for (let i = 0; i < 4; i += 1) {
@@ -283,6 +288,32 @@ describePg('the ATM cash-link queue', () => {
     expect(rows[0].status).toBe('LIVE');
     expect(rows[0].claimed_by_order).toBeNull();
 
+    // ── And the other direction, which is the dangerous one ────────────────
+    // A LARGER link must not serve a smaller order either. A merchant standing
+    // at a machine dispensing ₹40,000 cannot hand over ₹5,000: the notes come
+    // out in one amount. A relation like ">= the order" would look reasonable
+    // and quietly promise a player four times what they paid for.
+    const big = await supplyLink({
+      linkId: uid('lnk'), merchantId: merchant(), denominationPaise: 4_000_000,
+      paymentLink: 'upi://pay?am=40000', expiresAt: inMinutes(1),
+    });
+    expect(big.ok).toBe(true);
+
+    const small = await claimLinkForOrder({
+      orderId: await orderAt(500_000), denominationPaise: 500_000, minRemainingSeconds: 30,
+    });
+    if (small.ok) {
+      expect(small.link.denominationPaise).toBe(500_000);
+      expect(small.link.linkId).not.toBe(big.link.linkId);
+    } else {
+      expect(small.reason).toBe('NO_LINK_AVAILABLE');
+    }
+    const { rows: bigRow } = await pgQuery(
+      'SELECT status FROM cash_link_queue WHERE link_id = $1', [big.link.linkId],
+    );
+    expect(bigRow[0].status).toBe('LIVE');
+    await cancelLink(big.link.linkId, big.link.merchantId);
+
     // Leave the queue as it was found — a live link this case does not need is
     // supply the next file would have to reason about.
     await cancelLink(mine.link.linkId, mine.link.merchantId);
@@ -311,6 +342,56 @@ describePg('the ATM cash-link queue', () => {
       paymentLink: 'upi://pay?am=500', expiresAt: inMinutes(2),
     });
     expect(fresh.ok).toBe(true);
+  });
+
+  it('claims from the merchant whose last trip was wasted, first', async () => {
+    const denomination = 4_000_000;
+    const wasted = merchant();
+    const fresh = merchant();
+
+    // The wasted merchant drove out and nobody took it.
+    const dead = await supplyLink({
+      linkId: uid('lnk'), merchantId: wasted, denominationPaise: denomination,
+      paymentLink: 'upi://pay?am=40000', expiresAt: new Date(Date.now() + 400),
+    });
+    expect(dead.ok).toBe(true);
+    await new Promise((r) => setTimeout(r, 800));
+    await expireDueLinks();
+
+    // Both now supply. The fresh merchant's link expires SOONER, so without
+    // the priority the oldest-first rule would take theirs.
+    const freshLink = await supplyLink({
+      linkId: uid('lnk'), merchantId: fresh, denominationPaise: denomination,
+      paymentLink: 'upi://pay?am=40000', expiresAt: inMinutes(2),
+    });
+    const wastedLink = await supplyLink({
+      linkId: uid('lnk'), merchantId: wasted, denominationPaise: denomination,
+      paymentLink: 'upi://pay?am=40000', expiresAt: inMinutes(9),
+    });
+    expect(freshLink.ok && wastedLink.ok).toBe(true);
+
+    const first = await claimLinkForOrder({
+      orderId: await orderAt(denomination), denominationPaise: denomination, minRemainingSeconds: 30,
+    });
+    expect(first.ok).toBe(true);
+    expect(first.link.linkId).toBe(wastedLink.link.linkId);
+
+    // ── And the credit is CONSUMED, not permanent ────────────────────────
+    // The claim above is now their most recent, so the expired link is no
+    // longer newer than it. A merchant who was once unlucky must not outrank
+    // everybody forever.
+    const secondWasted = await supplyLink({
+      linkId: uid('lnk'), merchantId: wasted, denominationPaise: denomination,
+      paymentLink: 'upi://pay?am=40000', expiresAt: inMinutes(9),
+    });
+    expect(secondWasted.ok).toBe(true);
+
+    const second = await claimLinkForOrder({
+      orderId: await orderAt(denomination), denominationPaise: denomination, minRemainingSeconds: 30,
+    });
+    expect(second.ok).toBe(true);
+    // Back to oldest-first: the fresh merchant's link expires sooner.
+    expect(second.link.linkId).toBe(freshLink.link.linkId);
   });
 
   it('counts only orders that have no link yet, at that denomination', async () => {

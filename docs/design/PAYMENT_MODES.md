@@ -148,10 +148,18 @@ another until it is claimed or expires — they are standing at one machine doin
 one withdrawal. Enforced by a partial unique index, so it is a property of the
 table rather than a rule a writer keeps.
 
-**An expired link owes nobody anything.** No money moved: the ATM transaction
-simply times out. No compensation, no priority, no record beyond the expired
-row. The broadcast is what keeps a merchant from wasting the trip, so the
-broadcast has to be accurate — that is the load-bearing part of this choice.
+**An expired link owes no money, but buys priority once.** Nothing moved — the
+ATM transaction simply times out — so there is no compensation. But the merchant
+still drove there, so their NEXT link is claimed ahead of others at the same
+denomination.
+
+The credit is derived and BOOLEAN: "you have an expired link newer than your
+last claimed one". A tally would need a decay rule and a cap to stop a merchant
+farming priority by supplying links at dead hours; a boolean gives ten wasted
+links exactly the priority of one, and a single successful claim consumes it.
+
+The broadcast still has to be accurate — priority softens a wasted trip, it does
+not pay for one.
 
 ### 4.3 The sell side, and the receipt
 
@@ -175,11 +183,16 @@ stake stays locked and the merchant's tokens do not exist yet, so until
 settlement runs **no value has moved**. The click advances the order; it does
 not release money.
 
-So the rule this rail adds is: **a hold whose receipt never arrived must not
-settle.** It goes to the dispute queue instead. Without that, "complete on the
-click" is exactly the loss `withdrawalHold.service.js` was written to close — a
-merchant asserting payment they never made — and setting `disputeWindowSeconds`
-to its minimum would be enough to realise it.
+**A missing receipt does NOT auto-dispute.** The hold settles normally when its
+window passes; the absence only flags the merchant. A dispute happens when — and
+only when — the player raises one inside the window.
+
+The consequence, stated plainly because it is a real exposure: a merchant who
+clicks paid, never deposits, and never uploads a receipt is settled by default
+if the player does not notice inside `disputeWindowSeconds`. The dispute window
+is therefore the only thing standing between that merchant and the money, and
+shortening it shortens exactly that protection. The flag is what makes the
+pattern visible after the fact rather than what prevents it.
 
 ### 4.4 Denominations are a set, not a range
 

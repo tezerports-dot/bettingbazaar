@@ -37,6 +37,7 @@ import { db } from '#db';
 import { INR_TOKEN_RATE, rateForMerchant } from '../configuration/tokenRates.js';
 import { debitWinningsForWithdrawal, refundWithdrawal, getBalances } from '../wallet/walletAuthority.service.js';
 import { selectBestMerchant } from '../merchant/merchantScoring.service.js';
+import { claimLinkFor } from '../merchant/cashLink.service.js';
 import { merchantTypeOf } from '../merchant/merchantCurrency.js';
 // Risk Platform (Phase 010): the single validation authority for funding orders.
 import { assessFundingOrder, getRiskRules, computePayoutFeeMinor } from '../risk/riskValidation.service.js';
@@ -50,6 +51,7 @@ import {
 import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import {
+  PAYMENT_MODES,
   getActivePolicy as getActivePaymentModePolicy,
   getPolicyVersion as getPaymentModePolicyVersion,
 } from '#db/repositories/paymentModePolicy.js';
@@ -128,8 +130,61 @@ async function getOrderExpiryMs(order = null) {
   return policy.processingWindowSeconds * 1000;
 }
 
+/**
+ * Assign a cash-rail BUY by claiming a link from the queue.
+ *
+ * The claim and the order's own stamp commit together inside the repository,
+ * so an order never ends up holding a link the queue does not agree it has.
+ * What is left here is the ASSIGNMENT: the link's supplier becomes the
+ * merchant, and the order moves to ASSIGNED with the same lifecycle call the
+ * UPI rail uses — the state machine stays the one owner of a state change.
+ *
+ * The expiry is the link's, not the rail's processing window. The player has
+ * until the ATM transaction times out and not a second longer, so a window
+ * from the policy would promise time the machine will not give them.
+ */
+async function tryClaimCashLink(order) {
+  const claim = await claimLinkFor(order);
+  if (!claim.ok) return false;
+
+  const moved = await assignOrderState(order.orderId, {
+    set: {
+      merchantId: claim.link.merchantId,
+      assignedAt: new Date(),
+      // The machine's deadline, not ours.
+      expiresAt: claim.link.expiresAt,
+    },
+  });
+  if (!moved.ok || moved.idempotent) return false;
+
+  // Keep the caller's in-memory copy consistent with the row that now exists,
+  // so the emitters below describe reality rather than a hoped-for state.
+  Object.assign(order, {
+    merchantId: claim.link.merchantId,
+    status: 'ASSIGNED',
+    assignedAt: moved.order.assignedAt,
+    expiresAt: claim.link.expiresAt,
+    cashLinkId: claim.link.linkId,
+  });
+  return true;
+}
+
 // ─── Attempt to assign order to best merchant; returns true if assigned ────────
 async function tryAssignMerchant(order) {
+  // ── On the cash rail, a BUY is assigned by taking a link, not by ranking ──
+  //
+  // The merchant is already standing at the machine. Their link is the supply,
+  // and whoever supplied the one this order takes IS the merchant serving it —
+  // so there is nothing to score. Ranking candidates here would pick a merchant
+  // who has no link, and the player would be assigned somebody who is not at an
+  // ATM.
+  //
+  // Withdrawals on this rail still go through the scorer below: the merchant
+  // deposits at a CDM, which is not a link and has no queue.
+  if (order.paymentMode === PAYMENT_MODES.CASH_ATM && order.type === 'DEPOSIT') {
+    return tryClaimCashLink(order);
+  }
+
   // Pass the order's rail: `selectBestMerchant` matches it against the
   // merchant's accepted currencies, so a USDT order can only reach a USDT
   // merchant and an INR order only an INR merchant. The argument was once

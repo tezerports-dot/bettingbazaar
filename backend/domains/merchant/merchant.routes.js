@@ -55,6 +55,7 @@ import { buildBulkPayoutExportRows } from './bulkPayoutExport.js';
 import { MERCHANT_CURRENCY, isTrc20Address, merchantTypeOf } from './merchantCurrency.js';
 import { toMerchantOrderView, toMerchantOrderViews } from './merchantOrderView.js';
 import { getActivePolicy as getPaymentModePolicy, modeCopy, publicTimers } from '../configuration/paymentMode.service.js';
+import { supplyCashLink, suppliersWithHeadroom } from './cashLink.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 
 const router     = express.Router();
@@ -451,6 +452,115 @@ router.get('/payment-mode', merchantAuth, async (req, res) => {
     } catch (err) {
         console.error('GET /merchant/payment-mode error:', err);
         res.status(500).json({ success: false, message: 'Failed to read the settlement rail.' });
+    }
+});
+
+/**
+ * GET /api/merchant/cash-links/current — what this merchant is holding, and
+ * whether it is worth going to a machine.
+ *
+ * Read on the cash-rail screen. The "waiting" figure is the merchant's OWN
+ * denomination and nothing else: a ₹500 merchant seeing the ₹10,000 backlog
+ * learns nothing and is tempted by an order they cannot take.
+ *
+ * `worthGoing` is computed by the SAME function the broadcast uses. Two
+ * implementations of "can this merchant serve one" would put a different
+ * answer on the screen than in the notification.
+ */
+router.get('/cash-links/current', merchantAuth, async (req, res) => {
+    try {
+        const denominationPaise = req.merchant?.cashDenominationPaise ?? null;
+        if (denominationPaise === null) {
+            return res.json({
+                success: true, approved: false, denomination: null,
+                live: null, waiting: 0, worthGoing: false,
+                message: 'You are not approved for the ATM cash rail.',
+            });
+        }
+
+        const [live, waiting, suppliers] = await Promise.all([
+            db.cashLinks.getLiveLinkFor(req.merchantId),
+            db.cashLinks.countOrdersAwaitingLink(denominationPaise),
+            suppliersWithHeadroom(denominationPaise),
+        ]);
+
+        res.json({
+            success: true,
+            approved: true,
+            denomination: denominationPaise / 100,
+            denominationPaise,
+            // Their own link only. Another merchant's link is another
+            // merchant's business, and it is a claim on their notes.
+            live: live && {
+                linkId: live.linkId,
+                paymentLink: live.paymentLink,
+                expiresAt: live.expiresAt,
+            },
+            waiting,
+            worthGoing: waiting > 0 && suppliers.includes(String(req.merchantId)),
+        });
+    } catch (err) {
+        console.error('GET /merchant/cash-links/current error:', err);
+        res.status(500).json({ success: false, message: 'Failed to read the cash link queue.' });
+    }
+});
+
+/**
+ * POST /api/merchant/cash-links — supply the link the ATM just produced.
+ *
+ * The merchant sends only the link. The amount comes from their approval and
+ * the lifetime from the policy: a client that supplies its own denomination
+ * can claim to be serving ₹10,000 orders from a ₹500 machine, and a client
+ * that supplies its own expiry can keep a link alive as long as it likes.
+ */
+router.post('/cash-links', merchantAuth, async (req, res) => {
+    try {
+        const { paymentLink } = req.body || {};
+        const result = await supplyCashLink({
+            merchantId: req.merchantId,
+            merchant: req.merchant,
+            paymentLink,
+        });
+        if (!result.ok) {
+            // LINK_ALREADY_LIVE is not the caller's mistake — they have one
+            // waiting — so it is a 409 the panel can render as state.
+            const status = result.reason === 'LINK_ALREADY_LIVE' ? 409 : 400;
+            return res.status(status).json({ success: false, reason: result.reason, message: result.message });
+        }
+        res.json({
+            success: true,
+            link: {
+                linkId: result.link.linkId,
+                paymentLink: result.link.paymentLink,
+                expiresAt: result.link.expiresAt,
+            },
+        });
+    } catch (err) {
+        console.error('POST /merchant/cash-links error:', err);
+        res.status(500).json({ success: false, message: 'Failed to supply the cash link.' });
+    }
+});
+
+/**
+ * DELETE /api/merchant/cash-links/:linkId — withdraw a link they can no longer
+ * honour, so it is not handed to a player who would find nothing.
+ *
+ * Scoped to the caller. A merchant cancelling another merchant's link would be
+ * removing supply that is not theirs.
+ */
+router.delete('/cash-links/:linkId', merchantAuth, async (req, res) => {
+    try {
+        const cancelled = await db.cashLinks.cancelLink(req.params.linkId, req.merchantId);
+        if (!cancelled) {
+            return res.status(404).json({
+                success: false,
+                message: 'No live link of yours with that id — it may have been taken or expired already.',
+            });
+        }
+        res.json({ success: true, linkId: cancelled.linkId });
+    } catch (err) {
+        console.error('DELETE /merchant/cash-links/:linkId error:', err);
+        res.status(500).json({ success: false, message: 'Failed to cancel the cash link.' });
     }
 });
 

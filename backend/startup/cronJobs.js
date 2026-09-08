@@ -59,6 +59,32 @@ export function registerCronJobs(rebuildLeaderboard) {
     }
   });
 
+  // ── ATM cash-link expiry sweeper — runs every 20 seconds ───────────────────
+  // Retires links whose time has run out and re-broadcasts demand at the
+  // denominations that lost supply.
+  //
+  // A SWEPT state rather than a timer, for the same reason the withdrawal hold
+  // is one: expiry has to survive a restart and outlive any single request.
+  // Idempotent and leader-locked, so several instances retire each link once.
+  //
+  // 20s against a link measured in a couple of minutes, and deliberately
+  // tighter than the 60s workers above: a link lives for `linkExpirySeconds`
+  // (120 by default), so a sweep a minute late would leave a dead link
+  // claimable for half its own lifetime — and the player handed it cannot
+  // reach the machine.
+  registerRecurring('cash-link-expiry', 20 * 1000, async () => {
+    try {
+      const { sweepExpiredLinks } = await import('../domains/merchant/cashLink.service.js');
+      const { expired } = await sweepExpiredLinks();
+      if (expired > 0) console.log(`[cash-link] Retired ${expired} expired ATM link(s)`);
+    } catch (e) {
+      console.error('[cash-link] cron error:', e.message);
+      sendAlert('cash-link-sweeper-failed',
+        'ATM cash-link sweeper failed — expired links may still be offered to players', { error: e.message })
+        .catch(() => {});
+    }
+  });
+
   // ── Scheduled policy apply worker — runs every 60 seconds ──────────────────
   // Activates deposit-policy versions whose effectiveAt has passed. It processes
   // every due item independently and returns a per-item result; a single item's

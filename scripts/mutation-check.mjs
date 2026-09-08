@@ -602,17 +602,16 @@ const MUTATIONS = [
   {
     id: 'M101', file: 'database/repositories/cashLinks.js', config: PG,
     test: 'database/tests/cashLinkQueuePg.test.js',
-    why: 'the claim stops skipping locked rows, so concurrent orders contend for one link instead of taking different ones',
-    from: `          LIMIT 1
-          FOR UPDATE SKIP LOCKED`,
-    to: `          LIMIT 1`,
+    why: 'the claim matches any denomination at or above the order, so a merchant at a 40,000 machine is handed a 5,000 order',
+    from: `            AND l.denomination_paise = $1`,
+    to: `            AND l.denomination_paise >= $1`,
   },
   {
     id: 'M102', file: 'database/repositories/cashLinks.js', config: PG,
     test: 'database/tests/cashLinkQueuePg.test.js',
     why: 'a link with seconds left is handed to a player who cannot reach the machine but now believes they have been served',
-    from: `            AND expires_at > now() + make_interval(secs => $2)`,
-    to: `            AND expires_at > now() + make_interval(secs => $2 * 0)`,
+    from: `            AND l.expires_at > now() + make_interval(secs => $2)`,
+    to: `            AND l.expires_at > now() + make_interval(secs => $2 * 0)`,
   },
   {
     id: 'M103', file: 'database/repositories/cashLinks.js', config: PG,
@@ -620,6 +619,15 @@ const MUTATIONS = [
     why: 'a claim whose order stamp wrote nothing still reports success, marking a link taken by an order that does not know it',
     from: `      if (rowCount !== 1) {`,
     to: `      if (false) {`,
+  },
+  {
+    id: 'M104', file: 'database/repositories/cashLinks.js', config: PG,
+    test: 'database/tests/cashLinkQueuePg.test.js',
+    why: 'a merchant whose last trip was wasted loses their priority, so the same merchant can be sent out for nothing repeatedly',
+    from: `            )) DESC,
+            l.expires_at ASC`,
+    to: `            )) ASC,
+            l.expires_at ASC`,
   },
 ];
 

@@ -13,18 +13,38 @@
  * nobody else is taking", and that is a locking problem rather than a scoring
  * one. `merchantScoring` is not involved on this rail at all.
  *
- * ── Why the claim looks the way it does ────────────────────────────────────
- * `FOR UPDATE SKIP LOCKED` is the whole point: two orders claiming at the same
- * instant must take DIFFERENT rows, not queue behind each other and not both
- * take the same one. A `SELECT` then `UPDATE` would let both read the same
- * live link and both write it — which sends two players to collect one pile of
- * notes. The unique index on `claimed_by_order` is the backstop if that ever
- * slips past.
+ * ── What each part of the claim actually buys ──────────────────────────────
+ * `FOR UPDATE` is the correctness half: without it a plain SELECT then UPDATE
+ * lets two claimants read the same live link and both write it, sending two
+ * players to collect one pile of notes.
+ *
+ * `SKIP LOCKED` is the CONTENTION half, and the distinction is worth stating
+ * because it is easy to overclaim. Under plain `FOR UPDATE` PostgreSQL blocks
+ * the second claimant, re-qualifies the row when the lock lifts, finds it no
+ * longer LIVE and moves on to the next — so the OUTCOME is the same and a
+ * mutation removing SKIP LOCKED cannot be killed by asserting on results. What
+ * it changes is that claimants queue behind each other instead of fanning out,
+ * which at a busy denomination is the difference between a claim taking
+ * microseconds and taking as long as the transaction ahead of it.
+ *
+ * The unique index on `claimed_by_order` is the backstop under either.
  *
  * The "enough time left" floor is applied INSIDE the same statement, not by the
  * caller afterwards. A link with thirty seconds on it is worse than no link: a
  * player cannot reach the machine, and having been handed one they now believe
  * they have been served.
+ *
+ * ── A wasted trip buys priority, once ──────────────────────────────────────
+ * An expired link earns no money — nothing moved, the ATM transaction simply
+ * timed out — but the merchant still drove there. So their NEXT link is claimed
+ * ahead of others at the same denomination.
+ *
+ * The credit is DERIVED and BOOLEAN: "you have an expired link newer than your
+ * last claimed one". That shape is deliberate. A tally would need a decay rule
+ * and a cap to stop a merchant farming priority by supplying links at dead
+ * hours; a boolean gives ten wasted links exactly the priority of one, and a
+ * single successful claim consumes it. Nothing is accumulated, so nothing can
+ * be left stale by a crash.
  */
 import { pgQuery, withTransaction } from '../client.js';
 
@@ -120,16 +140,39 @@ export async function claimLinkForOrder({
   try {
     return await withTransaction(async (client) => {
       const { rows: found } = await client.query(
-        `SELECT link_id FROM cash_link_queue
-          WHERE status = 'LIVE'
-            AND denomination_paise = $1
+        `SELECT l.link_id FROM cash_link_queue l
+          WHERE l.status = 'LIVE'
+            AND l.denomination_paise = $1
             -- The floor, applied HERE rather than by the caller. A link with
             -- seconds left is worse than none: the player cannot reach the
             -- machine, but now believes they have been served.
-            AND expires_at > now() + make_interval(secs => $2)
-          ORDER BY expires_at ASC
+            AND l.expires_at > now() + make_interval(secs => $2)
+          ORDER BY
+            -- A merchant whose LAST trip was wasted goes first.
+            --
+            -- Derived from the rows, never accumulated: a counter of wasted
+            -- trips would be incremented in one place and decremented in
+            -- another, and a crash between them would throttle or favour a
+            -- merchant permanently with nothing able to correct it.
+            --
+            -- It is also self-consuming, which is what makes it un-farmable
+            -- without a decay rule or a cap. The credit is "you have an
+            -- expired link newer than your last claimed one" — a boolean, not
+            -- a tally. Supplying ten links at a dead hour earns exactly the
+            -- same priority as one, and the moment a link of theirs IS
+            -- claimed, the credit is gone.
+            (EXISTS (
+               SELECT 1 FROM cash_link_queue e
+                WHERE e.merchant_id = l.merchant_id
+                  AND e.status = 'EXPIRED'
+                  AND e.created_at > COALESCE((
+                        SELECT MAX(c.created_at) FROM cash_link_queue c
+                         WHERE c.merchant_id = l.merchant_id AND c.status = 'CLAIMED'
+                      ), '-infinity'::timestamptz)
+            )) DESC,
+            l.expires_at ASC
           LIMIT 1
-          FOR UPDATE SKIP LOCKED`,
+          FOR UPDATE OF l SKIP LOCKED`,
         [Number(denominationPaise), remaining],
       );
       if (!found.length) return { ok: false, reason: 'NO_LINK_AVAILABLE' };
