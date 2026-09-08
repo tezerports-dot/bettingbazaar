@@ -159,7 +159,10 @@ export const SYSTEM_CONFIG_SPEC = group({
   // MUST divide 60 evenly so blocks tile the hour cleanly. The type label
   // '30_MIN' is a fixed identifier and does NOT rename when this changes.
   cycleDurationMinutes: n(30, 10, 60),
-  orderExpiryMinutes:   n(15, 1, 1440),
+  // orderExpiryMinutes moved to payment_mode_policies.processing_window_seconds
+  // (2026-09-08): the two settlement rails have different timelines and one
+  // global number cannot express that. The seeded policy carries the value
+  // an admin had already set — see schema.sql.
   retentionMonths:      n(6, 1, 120),
 
   cyclePhases: group({

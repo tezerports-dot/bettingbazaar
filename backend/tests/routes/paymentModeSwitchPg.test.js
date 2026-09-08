@@ -26,10 +26,15 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
 import {
   PAYMENT_MODES, getActivePolicy, getActivePaymentMode, publishPolicyVersion,
-  getPolicyHistory, stampForNewOrder,
+  getPolicyHistory, getPolicyVersion, stampForNewOrder,
 } from '#db/repositories/paymentModePolicy.js';
 import { createOrderRecord, getOrderRecord, setOrderFields } from '#db/repositories/orders.record.js';
 import { openOrder, getOrder } from '#db/repositories/orders.core.js';
+import {
+  createMerchant, updateMerchant, newMerchantId, generateMerchantPublicRef,
+} from '#db/repositories/merchants.js';
+import { creditMerchantTokens } from '../../domains/merchant/merchantWallet.service.js';
+import { tryAssignMerchant } from '../../domains/payment/paymentProcessing.service.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -236,6 +241,93 @@ describePg('the settlement rail, and the orders it must not disturb', () => {
       "SELECT COUNT(*)::int AS n FROM payment_mode_policies WHERE status = 'ACTIVE'",
     );
     expect(rows[0].n).toBe(1);
+  });
+
+  it('holds an order to the window of the rail it was created on, not the rail live now', async () => {
+    // The single most important consequence of the snapshot. If an admin
+    // switches while an order is in flight and the window follows the SWITCH,
+    // the player is given a deadline for a workflow they were never shown.
+    await publishPolicyVersion({
+      activeMode: PAYMENT_MODES.P2P_UPI,
+      timers: { processingWindowSeconds: 600 },
+      justification: 'Ten minutes on the UPI rail.', changedByName: 'Ops Lead',
+    });
+    const born = await getActivePolicy();
+
+    const orderId = oid();
+    await createOrderRecord({
+      orderId, userId: 'pm-user-4', type: 'DEPOSIT',
+      tokenAmountRupees: 500, fiatAmountRupees: 500,
+    });
+
+    // The admin switches AND retunes the window while the order is open.
+    await publishPolicyVersion({
+      activeMode: PAYMENT_MODES.CASH_ATM,
+      timers: { processingWindowSeconds: 60 },
+      justification: 'One minute on the ATM rail.', changedByName: 'Ops Lead',
+    });
+
+    const order = await getOrderRecord(orderId);
+    expect(order.paymentModeVersion).toBe(born.version);
+
+    // The window this order is held to is the one it was created under. Read
+    // through the same repository the assignment path reads.
+    const held = await getPolicyVersion(order.paymentModeVersion);
+    expect(held.processingWindowSeconds).toBe(600);
+    expect((await getActivePolicy()).processingWindowSeconds).toBe(60);
+  });
+
+  it('sets the real expiry from the order\'s own rail, through tryAssignMerchant itself', async () => {
+    // The assertion above reads the policy the order points at. That proves the
+    // DATA is right and says nothing about whether the assignment path reads
+    // it — a guard asserted against code nothing calls is worse than none,
+    // because it reports the guard as present. So this drives the real
+    // function and reads the expiry it actually wrote.
+    await publishPolicyVersion({
+      activeMode: PAYMENT_MODES.P2P_UPI,
+      timers: { processingWindowSeconds: 600 },
+      justification: 'Ten minutes on the UPI rail.', changedByName: 'Ops Lead',
+    });
+
+    const orderId = oid();
+    await createOrderRecord({
+      orderId, userId: 'pm-user-5', type: 'DEPOSIT',
+      tokenAmountRupees: 100, fiatAmountRupees: 100,
+    });
+
+    // A merchant able to take it: approved, online, on the INR rail, funded.
+    const merchantId = newMerchantId();
+    await createMerchant({
+      merchantId, name: 'Assignable Merchant',
+      publicRef: generateMerchantPublicRef(), status: 'ACTIVE',
+    });
+    await updateMerchant(merchantId, { merchantApprovalStatus: 'APPROVED', isOnline: true });
+    await creditMerchantTokens({
+      merchantId, amount: 5000, reason: 'assignment test float',
+      refModel: 'Test', refId: merchantId, txId: `pm_float_${merchantId}`,
+    });
+
+    // The admin switches AND shortens the window while the order is queued.
+    await publishPolicyVersion({
+      activeMode: PAYMENT_MODES.CASH_ATM,
+      timers: { processingWindowSeconds: 60 },
+      justification: 'One minute on the ATM rail.', changedByName: 'Ops Lead',
+    });
+
+    const order = await getOrderRecord(orderId);
+    const assignedAtMs = Date.now();
+    const assigned = await tryAssignMerchant(order);
+    expect(assigned).toBe(true);
+
+    const written = await getOrderRecord(orderId);
+    const windowSeconds = (new Date(written.expiresAt).getTime() - assignedAtMs) / 1000;
+
+    // 600, from the rail it was created on — NOT 60, from the rail live now.
+    // The bounds are wide enough for the call's own elapsed time (the clock is
+    // read before it) and far too narrow to admit the 60 the live rail would
+    // have given.
+    expect(windowSeconds).toBeGreaterThan(500);
+    expect(windowSeconds).toBeLessThan(660);
   });
 
   it('answers the stamp from an explicitly supplied policy, for tests that need the other rail', async () => {

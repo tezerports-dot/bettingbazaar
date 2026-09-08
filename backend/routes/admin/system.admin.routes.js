@@ -125,7 +125,6 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
         retentionMonths:       config.retentionMonths ?? 6, // schema default: 6
         // Business Config Audit (2026-07-11) — formerly-hardcoded business values
         payoutMultiplier:      config.payoutMultiplier ?? 2,   // schema default: 2 (2x)
-        orderExpiryMinutes:    config.orderExpiryMinutes ?? 15, // schema default: 15
         cyclePhases: {
           thirtyMin: {
             mergeBeforeEndSec:     config.cyclePhases?.thirtyMin?.mergeBeforeEndSec     ?? 180,
@@ -193,7 +192,7 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
       webUrl, androidUrl, iosUrl, minVersion, latestVersion,
       payoutFeePercent, usdtPricing, merchantOrderLimits, riskRules, betReservePercent, winningsFeePercent,
       cycleDurationMinutes, retentionMonths,
-      payoutMultiplier, orderExpiryMinutes, cyclePhases,
+      payoutMultiplier, cyclePhases,
       footerPages, alertWebhookUrl, tlsFingerprintDefense,
     } = req.body;
 
@@ -272,10 +271,6 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     if (payoutMultiplier !== undefined &&
         (!Number.isInteger(payoutMultiplier) || payoutMultiplier < 1 || payoutMultiplier > 10)) {
       return res.status(400).json({ success: false, message: 'payoutMultiplier must be an integer between 1 and 10.' });
-    }
-    if (orderExpiryMinutes !== undefined &&
-        (!Number.isInteger(orderExpiryMinutes) || orderExpiryMinutes < 1 || orderExpiryMinutes > 1440)) {
-      return res.status(400).json({ success: false, message: 'orderExpiryMinutes must be an integer between 1 and 1440.' });
     }
     if (cyclePhases?.thirtyMin !== undefined) {
       const err = validateCyclePhaseSet('thirtyMin', cyclePhases.thirtyMin, 600);
@@ -361,8 +356,10 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     if (riskRules?.maxWarnings !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.maxWarnings', riskRules.maxWarnings]);
     // Payout multiplier — consumed by markets/gameEngine.js via riskValidation.computeWinningsPayout
     if (payoutMultiplier   !== undefined) fieldWrites.push(['SystemConfig', 'payoutMultiplier', payoutMultiplier]);
-    // Payment order window — consumed by payment/paymentProcessing.tryAssignMerchant
-    if (orderExpiryMinutes !== undefined) fieldWrites.push(['SystemConfig', 'orderExpiryMinutes', orderExpiryMinutes]);
+    // The payment order window is NOT here. It moved to
+    // payment_mode_policies.processing_window_seconds, because the two
+    // settlement rails have different timelines by design and one global number
+    // cannot express that. Edited at POST /api/admin/payment-mode.
     // Cycle phase offsets — consumed (cached) by markets/cycleGenerator.getCyclePhases.
     // Written per-type as a whole validated subdocument.
     if (cyclePhases?.thirtyMin !== undefined) fieldWrites.push(['SystemConfig', 'cyclePhases.thirtyMin', {

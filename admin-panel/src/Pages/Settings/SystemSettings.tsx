@@ -1,5 +1,6 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router';
 import { Save, Power, AlertTriangle } from 'lucide-react';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import api from '../../services/api';
@@ -34,7 +35,6 @@ export const SystemSettings: React.FC = () => {
     cycleDurationMinutes: 30,  // schema default: 30 (Phase X X-5)
     // Business Config Audit (2026-07-11) — formerly-hardcoded business values
     payoutMultiplier: 2,       // schema default: 2 (2x)
-    orderExpiryMinutes: 15,    // schema default: 15
     cyclePhases: {
       thirtyMin: { mergeBeforeEndSec: 180, equalizerBeforeEndSec: 120, closeBeforeEndSec: 30, celebrateBeforeEndSec: 10 },
       fullDay:   { mergeBeforeEndSec: 300, equalizerBeforeEndSec: 120, closeBeforeEndSec: 30, celebrateBeforeEndSec: 10 },
@@ -97,7 +97,6 @@ export const SystemSettings: React.FC = () => {
           },
           cycleDurationMinutes: response.data.cycleDurationMinutes ?? 30, // schema default: 30
           payoutMultiplier:   response.data.payoutMultiplier   ?? 2,  // schema default: 2
-          orderExpiryMinutes: response.data.orderExpiryMinutes ?? 15, // schema default: 15
           cyclePhases: {
             thirtyMin: {
               mergeBeforeEndSec:     response.data.cyclePhases?.thirtyMin?.mergeBeforeEndSec     ?? 180,
@@ -599,17 +598,17 @@ export const SystemSettings: React.FC = () => {
               </p>
             </div>
 
+            {/* The payment order window lives on the settlement rail now: the
+                two rails have different timelines by design and one global
+                number could not express that. Pointing at its new home rather
+                than deleting the field silently — an operator who came here to
+                change it needs to be told where it went. */}
             <div>
-              <label className="label">Payment Order Expiry (minutes)</label>
-              <input
-                type="number" min={1} max={1440} step={1}
-                value={formData.orderExpiryMinutes}
-                onChange={(e) => setFormData({ ...formData, orderExpiryMinutes: Math.max(1, Math.min(1440, Math.floor(Number(e.target.value) || 1))) })}
-                className="input"
-              />
+              <label className="label">Payment Order Expiry</label>
               <p className="text-xs text-gray-500 mt-1">
-                How long a user has to pay the assigned merchant before the order auto-expires
-                and any locked balance is refunded. Applies to new assignments only. 1–1440 min.
+                Moved to <Link to="/business-policy/settlement-rail" className="underline">Settlement Rail</Link>,
+                where it is set per rail: paying a merchant&rsquo;s UPI and drawing cash at an ATM
+                do not take the same time. Your existing value was carried over.
               </p>
             </div>
           </div>

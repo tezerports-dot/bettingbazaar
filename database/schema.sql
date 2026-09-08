@@ -2907,8 +2907,22 @@ CREATE INDEX IF NOT EXISTS payment_mode_policies_history_idx
 -- policy" needs a fallback, and a fallback is a second owner of every number
 -- above — which is how the two system-config payloads diverged. Seeded to the
 -- rail that is already live, so installing this changes no behaviour.
-INSERT INTO payment_mode_policies (version, status, active_mode, justification, changed_by_name)
-SELECT 1, 'ACTIVE', 'P2P_UPI', 'Initial policy: the UPI rail already in production.', 'system'
+--
+-- The processing window CARRIES FORWARD from `SystemConfig.orderExpiryMinutes`,
+-- which owned this number before the policy did. An operator who tuned it must
+-- not have it silently reset to a default by the table that takes over.
+-- The scalar subquery yields NULL when no config row exists or the key is
+-- absent, and COALESCE supplies the schema default in that case.
+INSERT INTO payment_mode_policies
+  (version, status, active_mode, processing_window_seconds, justification, changed_by_name)
+SELECT 1, 'ACTIVE', 'P2P_UPI',
+       COALESCE((SELECT (c.settings->>'orderExpiryMinutes')::int * 60
+                   FROM config_documents c
+                  WHERE c.scope = 'system' AND c.doc_key = 'main'
+                    AND c.settings->>'orderExpiryMinutes' ~ '^[0-9]+$'
+                    AND (c.settings->>'orderExpiryMinutes')::int BETWEEN 1 AND 1440), 900),
+       'Initial policy: the UPI rail already in production, carrying forward the order expiry an admin had already set.',
+       'system'
  WHERE NOT EXISTS (SELECT 1 FROM payment_mode_policies);
 
 -- ── The rail an order was born on ────────────────────────────────────────────

@@ -49,6 +49,10 @@ import {
 } from './orderLifecycle.service.js';
 import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import { getSystemConfig } from '#db/repositories/config.js';
+import {
+  getActivePolicy as getActivePaymentModePolicy,
+  getPolicyVersion as getPaymentModePolicyVersion,
+} from '#db/repositories/paymentModePolicy.js';
 
 // ─── Shared admin SSE payload ─────────────────────────────────────────────────
 function adminOrderPayload(order, user) {
@@ -94,18 +98,34 @@ function buildMerchantSnapshot(merchant, expiresAt) {
   };
 }
 
-// ─── Payment order window (Business Config Audit, 2026-07-11) ─────────────────
-// Minutes a user has to pay the assigned merchant before the order auto-expires
-// and refunds. Owned by SystemConfig.orderExpiryMinutes (was hardcoded 15).
-// Falls back to 15 min if unset/invalid, so behavior is unchanged until an admin
-// edits it. Returns milliseconds for direct Date arithmetic.
-async function getOrderExpiryMs() {
-  try {
-    const cfg = await getSystemConfig();
-    const m = cfg?.orderExpiryMinutes;
-    if (Number.isFinite(m) && m >= 1 && m <= 1440) return m * 60 * 1000;
-  } catch { /* fall through to default */ }
-  return 15 * 60 * 1000;
+// ─── Payment order window ─────────────────────────────────────────────────────
+//
+// How long a user has to pay the assigned merchant before the order expires and
+// refunds. Owned by `payment_mode_policies.processing_window_seconds`.
+//
+// ── Why it moved off SystemConfig.orderExpiryMinutes ─────────────────────────
+// The two settlement rails have DIFFERENT timelines by design: paying a
+// merchant's UPI and drawing cash at an ATM are not the same act and do not
+// take the same time. One global number cannot express that, so the window
+// belongs to the policy that also names the rail. The existing value was
+// carried forward into the seeded policy (see schema.sql) so nothing an admin
+// tuned was discarded, and `orderExpiryMinutes` is gone — two owners for one
+// number is how they drift.
+//
+// ── Why it reads the ORDER's version, not the active one ─────────────────────
+// This runs at ASSIGNMENT, on an order whose rail was stamped at creation. If
+// an admin switched the rail in between, the order is still running the process
+// it was created under and must be held to that rail's window — otherwise a
+// player is given a deadline for a workflow they were never shown.
+//
+// There is no hardcoded fallback. The column is NOT NULL with a CHECK that it
+// is positive, and the schema seeds a version 1, so a policy always exists; a
+// literal here would be a second owner waiting to disagree with the first.
+async function getOrderExpiryMs(order = null) {
+  const policy = (order?.paymentModeVersion != null
+    ? await getPaymentModePolicyVersion(order.paymentModeVersion)
+    : null) ?? await getActivePaymentModePolicy();
+  return policy.processingWindowSeconds * 1000;
 }
 
 // ─── Attempt to assign order to best merchant; returns true if assigned ────────
@@ -135,7 +155,8 @@ async function tryAssignMerchant(order) {
     return false;
   }
 
-  const expiresAt = new Date(Date.now() + await getOrderExpiryMs()); // admin-configurable window
+  // The window of the rail THIS order was created on, not the rail live now.
+  const expiresAt = new Date(Date.now() + await getOrderExpiryMs(order));
   const snapshot  = buildMerchantSnapshot(merchant, expiresAt);
 
   // The transition is the gate. Two assignment passes racing the same queued

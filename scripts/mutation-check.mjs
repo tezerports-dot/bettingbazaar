@@ -564,6 +564,13 @@ const MUTATIONS = [
     from: `  if (railChanged) {`,
     to: `  if (true) {`,
   },
+  {
+    id: 'M97', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/paymentModeSwitchPg.test.js',
+    why: 'the order window follows the rail live NOW, so a mid-flight switch re-deadlines an order under a workflow the player was never shown',
+    from: `  const policy = (order?.paymentModeVersion != null`,
+    to: `  const policy = (false`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

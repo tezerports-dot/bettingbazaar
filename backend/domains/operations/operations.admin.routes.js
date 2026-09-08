@@ -111,7 +111,7 @@ router.get('/operations/config-catalog', authenticate, isAdminOrSubAdmin, async 
     // knob (was hardcoded 2x in gameEngine); the winnings fee % remains separate.
     { value: 'Payout multiplier (winning bet pays stake × N, before fee)', owner: 'Business Policy — SystemConfig.payoutMultiplier (arithmetic in Risk computeWinningsPayout, paid by gameEngine)', edit: 'PUT /api/admin/system/config' },
     // Business Config Audit (2026-07-11): payment order window, was hardcoded 15m.
-    { value: 'Payment order expiry (minutes to pay assigned merchant)', owner: 'Business Policy — SystemConfig.orderExpiryMinutes (read by payment/paymentProcessing)', edit: 'PUT /api/admin/system/config' },
+    { value: 'Payment order expiry (time to pay the assigned merchant)', owner: 'Business Policy — payment_mode_policies.processing_window_seconds, per settlement rail (read by payment/paymentProcessing)', edit: 'POST /api/admin/payment-mode' },
     // Business Config Audit (2026-07-11): cycle phase timings, were hardcoded.
     { value: 'Cycle phase timings (merge/equalizer/close/celebrate offsets, per type)', owner: 'Business Policy — SystemConfig.cyclePhases (read cached by markets/cycleGenerator)', edit: 'PUT /api/admin/system/config' },
     // Phase X X-5: short-block cycle duration, previously hardcoded.
