@@ -629,6 +629,38 @@ const MUTATIONS = [
     to: `            )) ASC,
             l.expires_at ASC`,
   },
+
+  // ── What a player may buy, enforced on the server ───────────────────────
+  // The player app ships as an APK containing the whole JS bundle, so every
+  // one of these is reachable by a hand-made request.
+  {
+    id: 'M105', file: 'backend/domains/risk/riskValidation.service.js', config: PG,
+    test: 'backend/tests/routes/buyLimitsPg.test.js',
+    why: 'the INR ceiling stops applying, so a hand-made request buys any amount and the USDT rail is bypassed entirely',
+    from: `  if (paise > MAX_INR_BUY_PAISE) {`,
+    to: `  if (false) {`,
+  },
+  {
+    id: 'M106', file: 'backend/domains/risk/riskValidation.service.js', config: PG,
+    test: 'backend/tests/routes/buyLimitsPg.test.js',
+    why: 'any amount is accepted on the cash rail, creating orders no ATM can dispense and no merchant can serve',
+    from: `  if (paymentMode === PAYMENT_MODES.CASH_ATM && !isBuyDenomination(paise)) {`,
+    to: `  if (false) {`,
+  },
+  {
+    id: 'M107', file: 'backend/domains/risk/riskValidation.service.js', config: PG,
+    test: 'backend/tests/routes/buyLimitsPg.test.js',
+    why: 'a player opens unlimited simultaneous buys and can occupy several merchants at once during a shortage',
+    from: `  if (open > 0) {`,
+    to: `  if (false) {`,
+  },
+  {
+    id: 'M108', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/buyLimitsPg.test.js',
+    why: 'the buy path stops telling the gate which rail it is on, so the denomination rule silently never fires',
+    from: `    paymentMode: railNow.activeMode,`,
+    to: `    paymentMode: null,`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

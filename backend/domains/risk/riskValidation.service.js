@@ -27,6 +27,12 @@ import { db } from '#db';
 // Shared trading vocabulary (Phase 011) — canonical sides, no local strings.
 import { oppositeSide } from '../trading/tradingModels.js';
 import { getSystemConfig } from '#db/repositories/config.js';
+import { PAYMENT_MODES } from '#db/repositories/paymentModePolicy.js';
+import { MERCHANT_CURRENCY } from '../merchant/merchantCurrency.js';
+import {
+  BUY_DENOMINATIONS_PAISE, MAX_INR_BUY_PAISE, isBuyDenomination,
+} from '../merchant/denominations.js';
+import { rupeesToPaise } from '../../shared/money.js';
 
 function reject(message, code = 'RISK_VALIDATION') {
   return Object.assign(new Error(message), { status: 400, code });
@@ -338,11 +344,80 @@ export { getRiskRules };
  * assessFundingOrder — full Risk gate for a deposit/withdrawal intent.
  * Called by paymentProcessing (behind the Funding Platform facade).
  */
-export async function assessFundingOrder({ userId, tokenAmount, type, min, max }) {
+/**
+ * What a player is allowed to buy, enforced on the SERVER.
+ *
+ * ── Why this is not a UI concern ───────────────────────────────────────────
+ * The player app ships as an Android build (`user-panel/capacitor.config.ts`),
+ * and a Capacitor APK contains the whole JavaScript bundle. Anyone who unzips
+ * it has the full API surface and can send whatever body they like. A rule that
+ * lives only in a picker component is not a rule — it is a suggestion the
+ * client is free to decline.
+ *
+ * Before this existed, `createDepositOrder` accepted any amount that passed
+ * min/max and multiples-of-ten, so a hand-made request could buy ₹7,777 on a
+ * rail where the only amounts an ATM dispenses are 500, 1,000, 5,000 and
+ * 10,000 — and no merchant could ever have served it.
+ *
+ * ── The three rules, and why each is here ──────────────────────────────────
+ *
+ * 1. **₹10,000 is the ceiling on any INR buy**, on either rail. Above it the
+ *    player buys with USDT. Derived from the denomination list rather than
+ *    written as its own number, so the ceiling and the largest buy denomination
+ *    cannot drift apart.
+ *
+ * 2. **On the cash rail the amount must BE a denomination.** Not "within a
+ *    range" — a cash machine dispenses one of a fixed set, so an amount between
+ *    them is unservable by construction.
+ *
+ * 3. **One open INR buy at a time.** The ceiling is about what a machine
+ *    dispenses, not about limiting the player, so they may place another as
+ *    soon as this one finishes — but two at once would let one player occupy
+ *    several merchants' entire capacity during a shortage.
+ */
+async function assertBuyIsLegal({ userId, tokenAmount, paymentMode, currency }) {
+  // USDT deposits are priced and validated on their own path — the minimum
+  // there is a token count, not a rupee amount — so these rules do not apply.
+  if (currency !== MERCHANT_CURRENCY.INR) return;
+
+  const paise = rupeesToPaise(tokenAmount);
+
+  if (paise > MAX_INR_BUY_PAISE) {
+    throw Object.assign(
+      new Error(`A single purchase is capped at ₹${MAX_INR_BUY_PAISE / 100}. Buy with USDT for more than that.`),
+      { status: 400, code: 'INR_BUY_CEILING' },
+    );
+  }
+
+  if (paymentMode === PAYMENT_MODES.CASH_ATM && !isBuyDenomination(paise)) {
+    throw Object.assign(
+      new Error(`Choose one of ₹${BUY_DENOMINATIONS_PAISE.map((p) => p / 100).join(', ₹')} — a cash machine does not dispense other amounts.`),
+      { status: 400, code: 'NOT_A_DENOMINATION' },
+    );
+  }
+
+  const open = await db.orders.countOpenDeposits(userId, { currency });
+  if (open > 0) {
+    throw Object.assign(
+      new Error('You already have a purchase in progress. Finish or cancel it before starting another.'),
+      { status: 409, code: 'BUY_ALREADY_OPEN' },
+    );
+  }
+}
+
+export async function assessFundingOrder({
+  userId, tokenAmount, type, min, max,
+  // The rail this order will be created on, and what it settles in. Both
+  // decide what amounts are legal, so both are gated HERE rather than in the
+  // handler: this is the single validation authority, and a rule enforced in a
+  // route is a rule the next route forgets.
+  paymentMode = null, currency = 'INR',
+}) {
   const rules = await getRiskRules();
 
   if (type === 'DEPOSIT') {
     validateTokenPurchase({ amount: tokenAmount, min, max, enforceMultiples: rules.enforceMultiplesOf10 });
+    await assertBuyIsLegal({ userId, tokenAmount, paymentMode, currency });
   } else {
     validateTokenSale({ amount: tokenAmount, min, max, enforceMultiples: rules.enforceMultiplesOf10 });
   }

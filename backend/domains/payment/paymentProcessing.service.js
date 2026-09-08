@@ -341,7 +341,16 @@ export async function createDepositOrder(userId, tokenAmount) {
 
   // Risk Platform gate (Phase 010): positive/numeric/multiples-of-10,
   // min/max, velocity — the single validation authority.
-  await assessFundingOrder({ userId, tokenAmount, type: 'DEPOSIT', min: minDeposit, max: maxDeposit });
+  // The rail this order is ABOUT to be created on. `createOrderRecord` stamps
+  // the same active policy a moment later, so the amount is judged against the
+  // rail the order will actually run on. Omitting it here would leave the
+  // denomination rule silently never firing — the failure mode this whole
+  // guard exists to prevent, one layer up.
+  const railNow = await getActivePaymentModePolicy();
+  await assessFundingOrder({
+    userId, tokenAmount, type: 'DEPOSIT', min: minDeposit, max: maxDeposit,
+    paymentMode: railNow.activeMode,
+  });
 
   const user = await db.users.getUser(userId);
   if (!user) throw Object.assign(new Error('User not found'), { status: 404 });

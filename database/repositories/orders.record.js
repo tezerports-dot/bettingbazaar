@@ -316,6 +316,30 @@ export async function findCompletedOrdersMissingEvents({ limit = 200 } = {}) {
   return rows.map(toOrder);
 }
 
+/**
+ * Deposits this player already has in flight, on one currency.
+ *
+ * A COUNT of rows, not an accumulator: the number is reconstructed from the
+ * orders themselves every time it is asked for, so a crash mid-flow cannot
+ * leave a player permanently unable to buy with a counter nothing can correct.
+ *
+ * The states are the ones where the player still owes or is owed something.
+ * CANCELLED, FAILED, REJECTED and COMPLETED are finished and must not block a
+ * new purchase — a player whose order failed has to be able to try again.
+ */
+export async function countOpenDeposits(userId, { currency = 'INR' } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT COUNT(*)::int AS n
+       FROM order_states
+      WHERE user_id = $1
+        AND order_type = 'DEPOSIT'
+        AND currency = $2
+        AND state IN ('PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID')`,
+    [String(userId), String(currency)], 'order_open_deposits_for_user',
+  );
+  return rows[0]?.n ?? 0;
+}
+
 export async function pendingWithdrawalTotal(userId) {
   const { rows } = await pgQuery(
     `SELECT COALESCE(SUM(token_amount_paise), 0) AS total
