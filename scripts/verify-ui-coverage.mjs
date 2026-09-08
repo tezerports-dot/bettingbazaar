@@ -103,6 +103,38 @@ for (const [panel, dir] of Object.entries(PANELS)) {
     }
   }
 }
+// ── The same check for panels that do NOT write the path at the call site ───
+//
+// The scan above matches `api.post('/api/...')` — the path as the first
+// argument of the HTTP verb. The merchant panel does not write a single call
+// that way: every path lives in `constants.ts` as `ENDPOINTS.X.Y`, and the call
+// is `request(ENDPOINTS.X.Y(id), { method: 'POST' })`. So the whole panel was
+// exempt from the fatal half of this gate, and a path that 404s sat there while
+// the check reported zero dead buttons.
+//
+// It was found by the INFORMATIONAL `--unused` half, which greps the panel
+// sources as text — the route showed up as "no UI calls this" because the
+// constant named `/api/upload/merchant/…` while `upload.routes.js` is mounted
+// at `/api`. That is the wrong way round: the triage list caught a live 404 the
+// build-failing check did not.
+//
+// So: any string in a panel that LOOKS like an API path must resolve to a route.
+// The method is unknown in this form, so it matches on path alone — a path no
+// route serves at all is a dead button whatever verb it is called with.
+for (const [panel, dir] of Object.entries(PANELS)) {
+  for (const f of walk(join(ROOT,dir), /\.(ts|tsx|js|jsx)$/)) {
+    // Comments mention endpoints constantly — and a mention is not a call.
+    const src = readFileSync(f,'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    for (const m of src.matchAll(/['"`](\/api\/[^'"`\s]*)['"`]/g)) {
+      const probe = clean(m[1].split('?')[0]).replace(/\$\{[^}]*\}/g,'X');
+      if (routes.some(r => r.re.test(probe))) continue;
+      dead.push({ panel, file: relative(ROOT,f), method: 'ANY', path: probe });
+    }
+  }
+}
+
 const seen = new Set(), uniq = [];
 for (const d of dead) { const k = `${d.panel} ${d.method} ${d.path}`; if (!seen.has(k)) { seen.add(k); uniq.push(d); } }
 

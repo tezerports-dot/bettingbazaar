@@ -102,6 +102,31 @@ describePg('what a merchant is told about a player', () => {
     expect(unexpected).toEqual([]);
   });
 
+  it('tells the merchant which rail the order was BORN on', async () => {
+    // The allowlist is a SUBSET assertion, which is the right shape for a
+    // leak — but it passes just as happily when a field the panel needs goes
+    // missing. This is the other half: the merchant panel branches its whole
+    // workflow on this value, and an admin can switch rails at any moment, so
+    // an order held across a switch has to keep saying what it always said.
+    // Without it the panel falls back to the LIVE rail and asks for a UTR on a
+    // payout that is settled at a machine.
+    const merchant = await merchantActor({});
+    const player = await actor({});
+    const orderId = oid();
+    await createOrderRecord({
+      orderId, userId: player.userId, type: 'WITHDRAWAL',
+      tokenAmountRupees: 1000, fiatAmountRupees: 1000,
+      state: 'PROCESSING', merchantId: merchant.merchantId,
+      paymentMode: 'CASH_ATM',
+    });
+
+    const res = await as(app, merchant).get('/orders?type=WITHDRAWAL');
+    expect(res.status).toBe(200);
+    const order = res.body.orders.find((o) => o.orderId === orderId);
+    expect(order).toBeTruthy();
+    expect(order.paymentMode).toBe('CASH_ATM');
+  });
+
   it('names none of the forbidden fields, on either direction', async () => {
     const merchant = await merchantActor({});
     const player = await actor({});

@@ -426,7 +426,14 @@ export interface ConfirmRequest {
   tone: ButtonTone;
   /** When set, the operator must type a reason before confirming. */
   reasonLabel?: string;
-  onConfirm: (reason: string) => Promise<void> | void;
+  /**
+   * `Promise<unknown>` rather than `Promise<void>`: the dialog only awaits it
+   * and closes, but its callers report whether the action worked so they can
+   * chain on it. Narrowing this to void forces those callers to discard the
+   * answer, and the useful chains are exactly the ones that must not run after
+   * a failure.
+   */
+  onConfirm: (reason: string) => Promise<unknown> | void;
 }
 
 export const ConfirmDialog: React.FC<{ request: ConfirmRequest | null; onClose: () => void }> = ({ request, onClose }) => {

@@ -99,6 +99,54 @@ router.post('/merchant/order-reject-proof/:orderId/upload-url', merchantAuth, as
 });
 
 // ═══════════════════════════════════════════════════════════════════════
+// 🏧 CDM RECEIPT — the evidence for a cash payout
+//
+// Staged against THIS merchant and THIS order, same as the reject proof above:
+// ownership is in the WHERE clause, so an order that is not theirs is simply
+// not found and they cannot stage evidence against one.
+//
+// The stored receipt is write-only afterwards — not even the merchant who
+// uploaded it can read it back, only an admin or a disputes manager. That is
+// why the panel must let them REPLACE the file freely before submitting: this
+// upload step is the last point at which they can check what they are sending.
+// ═══════════════════════════════════════════════════════════════════════
+router.post('/merchant/cdm-receipt/:orderId/upload-url', merchantAuth, async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { fileName, contentType, fileSize } = req.body;
+
+    if (!hasValidUploadInput(fileName, contentType, fileSize)) {
+      return res.status(400).json({ success: false, message: 'fileName, contentType and fileSize are required' });
+    }
+    if (fileSize > 10 * 1024 * 1024) {
+      return res.status(400).json({ success: false, message: 'Maximum file size is 10 MB' });
+    }
+
+    const order = await db.orders.getMerchantOrder(orderId, req.merchantId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (order.type !== 'WITHDRAWAL') {
+      return res.status(400).json({
+        success: false,
+        message: 'A CDM receipt belongs to a payout, not a purchase.',
+      });
+    }
+
+    // Images only — the category falls through to the image allowlist, and the
+    // extension blocklist independently refuses SVG and HTML.
+    const uploadData = await cdnService.generatePresignedUploadUrl({
+      fileName, contentType, fileSize,
+      category: 'cdm-receipt',
+      userId: String(req.merchantId),
+      orderId,
+    });
+    res.json({ success: true, ...uploadData });
+  } catch (error) {
+    console.error('❌ CDM receipt upload URL error:', error);
+    res.status(error.status || 500).json({ success: false, message: error.message || 'Failed to generate upload URL' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════
 // 💬 ORDER CHAT ATTACHMENTS — REMOVED
 //
 // `/user/chat/:orderId/{upload-url,confirm-upload}` and the merchant pair are

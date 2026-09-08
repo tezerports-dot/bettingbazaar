@@ -33,22 +33,44 @@ const MIN_UTR_LENGTH = 12;
 
 const orderRef = (order: PaymentOrder): string => String(order._id || order.id || order.orderId);
 
-export function useOrderActions(rail: MerchantRail, onChanged: () => Promise<void> | void) {
+/**
+ * @param onCashPayoutSettled called after a CASH_ATM withdrawal completes, so
+ *   the screen can ask for the CDM slip while the merchant is still at the
+ *   machine holding it. Branching on the ORDER's rail, never the live policy:
+ *   an admin can switch at any moment and both rails then run side by side
+ *   until the last pre-flip order settles, so an order held across a switch
+ *   still settles the way it was created.
+ */
+export function useOrderActions(
+  rail: MerchantRail,
+  onChanged: () => Promise<void> | void,
+  onCashPayoutSettled?: (order: PaymentOrder) => void,
+) {
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const [closeDetail, setCloseDetail] = useState(false);
   const [rejectTarget, setRejectTarget] = useState<PaymentOrder | null>(null);
   const [rejectBusy, setRejectBusy] = useState(false);
   const copy = railCopy(rail);
 
+  /**
+   * Run one action and say whether it WORKED.
+   *
+   * The boolean is not decoration. This helper swallows the error into a toast,
+   * so a caller that chains anything after it — the CDM slip prompt below —
+   * would otherwise run identically whether the payout completed or threw, and
+   * the merchant would be asked to evidence a payout that never happened.
+   */
   const run = useCallback(
-    async (work: () => Promise<unknown>, success: string) => {
+    async (work: () => Promise<unknown>, success: string): Promise<boolean> => {
       try {
         await work();
         toast.success(success);
         setCloseDetail(true);
         await onChanged();
+        return true;
       } catch (error: any) {
         toast.error(error?.message || 'That did not go through — try again');
+        return false;
       }
     },
     [onChanged]
@@ -92,16 +114,30 @@ export function useOrderActions(rail: MerchantRail, onChanged: () => Promise<voi
       });
     },
 
-    onPayout: (order) => setConfirmRequest({
-      title: 'Mark payout as sent?',
-      body: 'Confirm you have transferred the amount to the user. The order completes automatically.',
-      confirmLabel: "I've sent the money",
-      tone: 'ok',
-      onConfirm: () => run(
-        () => api.confirmPayment(orderRef(order), undefined, order.utrNumber),
-        'Payout confirmed — order completed'
-      ),
-    }),
+    onPayout: (order) => {
+      const atMachine = order.paymentMode === 'CASH_ATM';
+      setConfirmRequest({
+        title: 'Mark payout as sent?',
+        body: atMachine
+          ? 'Confirm the cash is in the player\u2019s account. The order completes immediately and you will be asked for the CDM slip next \u2014 keep it to hand.'
+          : 'Confirm you have transferred the amount to the user. The order completes automatically.',
+        confirmLabel: "I've sent the money",
+        tone: 'ok',
+        onConfirm: async () => {
+          const settled = await run(
+            () => api.confirmPayment(orderRef(order), undefined, order.utrNumber),
+            'Payout confirmed — order completed'
+          );
+          // AFTER the confirm, and only if it SUCCEEDED. The receipt is chased
+          // and does not gate the payout — a player is not held up waiting for
+          // paperwork, and a merchant who dismisses this still finds the order
+          // in the list of slips they owe. But the submit route checks the rail
+          // and the order type, not the state, so a slip offered against a
+          // payout that threw would be stored against an unsettled order.
+          if (settled && atMachine) onCashPayoutSettled?.(order);
+        },
+      });
+    },
 
     onDispute: (order) => setConfirmRequest({
       title: 'Raise a dispute?',
@@ -114,7 +150,7 @@ export function useOrderActions(rail: MerchantRail, onChanged: () => Promise<voi
 
     // Replaced by the screen that owns the detail drawer.
     onOpen: () => undefined,
-  }), [copy.proofLabel, rail, run]);
+  }), [copy.proofLabel, onCashPayoutSettled, rail, run]);
 
   /**
    * Send the rejection.

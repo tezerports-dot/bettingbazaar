@@ -330,8 +330,35 @@ describePg('the settlement rail, and the orders it must not disturb', () => {
     expect(windowSeconds).toBeLessThan(660);
   });
 
-  it('answers the stamp from an explicitly supplied policy, for tests that need the other rail', async () => {
-    const stamp = await stampForNewOrder({ activeMode: PAYMENT_MODES.CASH_ATM, version: 99 });
-    expect(stamp).toEqual({ mode: PAYMENT_MODES.CASH_ATM, version: 99 });
+  it('stamps a FORCED rail, and refuses one it does not recognise', async () => {
+    // This asserted the old contract — a policy OBJECT — and passed, while the
+    // only real caller (`createOrderRecord`, whose parameter is documented as
+    // "the rail to stamp") passed the mode STRING. `'CASH_ATM'?.activeMode` is
+    // undefined, so the argument was accepted, ignored, and the order came back
+    // on the live rail with nothing raised. A test proving a contract nobody
+    // used, over a call site silently doing the opposite.
+    const live = await getActivePolicy();
+    const other = live.activeMode === PAYMENT_MODES.CASH_ATM
+      ? PAYMENT_MODES.P2P_UPI : PAYMENT_MODES.CASH_ATM;
+
+    const forced = await stampForNewOrder(other);
+    expect(forced.mode).toBe(other);
+    // No published policy said this order should be on that rail, so it names
+    // none. A version pointing at a policy that says the OTHER rail is a lie in
+    // the audit trail, and this row is what a dispute months later reads.
+    expect(forced.version).toBeNull();
+
+    // Forcing the rail that IS live keeps the policy version, because one
+    // genuinely governs it.
+    const same = await stampForNewOrder(live.activeMode);
+    expect(same).toEqual({ mode: live.activeMode, version: live.version });
+
+    // Unforced is the live rail, which is what every production caller gets.
+    expect(await stampForNewOrder()).toEqual({ mode: live.activeMode, version: live.version });
+
+    // And a rail that does not exist THROWS rather than quietly becoming the
+    // default — the whole point of the fix.
+    await expect(stampForNewOrder('ATM_CASH')).rejects.toThrow(/unknown payment mode/i);
+    await expect(stampForNewOrder({ activeMode: PAYMENT_MODES.CASH_ATM })).rejects.toThrow(/unknown payment mode/i);
   });
 });

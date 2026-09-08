@@ -65,6 +65,14 @@ export const MERCHANT_ORDER_FIELDS = Object.freeze([
   'disputeEscalated', 'disputeResolvedAt',
   'disputeDecision', 'disputeResolution', 'refundedAmount',
 
+  // The rail this order was BORN on — not the rail that is live now. The two
+  // rails ask different things of a merchant (a UTR against their own UPI, or
+  // cash at a machine and a CDM slip), and after an admin switches, both run
+  // side by side until the last pre-flip order settles. A panel that branched
+  // on the LIVE rail would put yesterday's workflow on today's order, so the
+  // order carries its own answer.
+  'paymentMode',
+
   // Workflow timestamps.
   'assignedAt', 'processingAt', 'merchantPanelUrl', 'merchantResponseMinutes',
   'approvedAt', 'rejectedAt', 'cancelledAt',

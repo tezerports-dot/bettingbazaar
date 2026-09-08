@@ -114,15 +114,37 @@ export async function getActivePaymentMode() {
  * writers each reading the policy their own way is how the same value comes to
  * be derived twice and drift; this is the one place that answers it.
  *
- * A caller may pass a policy to stamp instead — tests build orders on a rail
- * other than the live one — but nobody has to remember to, because the default
- * is a read.
+ * A caller may FORCE the rail — tests build orders on a rail other than the
+ * live one — but nobody has to remember to, because the default is a read.
+ *
+ * ── Take a mode, not a policy ──────────────────────────────────────────────
+ * This took a policy OBJECT and read `.activeMode` off it. `createOrderRecord`
+ * documents its own parameter as "the rail to stamp", so every caller passed
+ * the STRING — and `'CASH_ATM'?.activeMode` is `undefined`, which fell through
+ * to the P2P default. The argument was accepted, ignored, and the order came
+ * back on the wrong rail with nothing raised: a cash-rail suite that forced the
+ * rail this way was in fact testing the UPI rail.
+ *
+ * So it takes the mode itself, and REFUSES one it does not recognise. A rail
+ * that silently becomes a different rail is a merchant asked for a UTR on a
+ * payout settled at a machine.
+ *
+ * A forced rail carries `version: null` unless it matches the live policy —
+ * because no published policy said this order should be on it, and a version
+ * that points at a policy naming the other rail is a lie in the audit trail.
  */
-export async function stampForNewOrder(policy = null) {
-  const active = policy ?? await getActivePolicy();
+export async function stampForNewOrder(forcedMode = null) {
+  const active = await getActivePolicy();
+  const live = active?.activeMode ?? PAYMENT_MODES.P2P_UPI;
+  if (forcedMode === null || forcedMode === undefined) {
+    return { mode: live, version: active?.version ?? null };
+  }
+  if (!KNOWN_MODES.includes(forcedMode)) {
+    throw new Error(`stampForNewOrder: unknown payment mode '${forcedMode}'`);
+  }
   return {
-    mode: active?.activeMode ?? PAYMENT_MODES.P2P_UPI,
-    version: active?.version ?? null,
+    mode: forcedMode,
+    version: forcedMode === live ? (active?.version ?? null) : null,
   };
 }
 

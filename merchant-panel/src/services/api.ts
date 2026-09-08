@@ -8,6 +8,7 @@ import {
   PaymentModeView,
   CashLinkState,
   CashLink,
+  OutstandingCdmReceipt,
 } from '../types';
 import { ENDPOINTS, ERROR_MESSAGES } from '../constants';
 
@@ -355,6 +356,62 @@ export const rejectPaidOrder = async (
     }),
   });
   return data.order || data;
+};
+
+/**
+ * Submit the CDM receipt for a cash payout.
+ *
+ * ── Read this before changing anything here ────────────────────────────────
+ * Once submitted the merchant CANNOT SEE IT AGAIN. Only an admin or a disputes
+ * manager can. So the upload step is the last point at which they can check
+ * what they are sending, and the caller must let them replace the file freely
+ * up to the moment they press submit.
+ *
+ * Three steps, in this order, mirroring the reject proof: ask for a presigned
+ * URL (which also checks the order is this merchant's and is a payout), PUT the
+ * file, then send the reference. The receipt is verified server-side against
+ * THIS merchant and THIS order before it is stored, so a key staged elsewhere
+ * is refused.
+ *
+ * Returns what the server accepted — the transaction id and the time — because
+ * that confirmation is the only look the merchant gets.
+ */
+export const submitCdmReceipt = async (
+  orderId: string, transactionId: string, receipt: File,
+): Promise<{ transactionId: string; submittedAt: string }> => {
+  const presigned = await request<any>(ENDPOINTS.CDM_RECEIPT.UPLOAD_URL(orderId), {
+    method: 'POST',
+    body: JSON.stringify({ fileName: receipt.name, contentType: receipt.type, fileSize: receipt.size }),
+  });
+  if (!presigned?.uploadUrl || !presigned?.fileKey) {
+    throw new Error('Could not prepare the receipt upload');
+  }
+
+  const put = await fetch(presigned.uploadUrl, {
+    method: 'PUT', body: receipt, headers: { 'Content-Type': receipt.type },
+  });
+  if (!put.ok) throw new Error('The receipt image failed to upload');
+
+  const data = await request<any>(ENDPOINTS.CDM_RECEIPT.SUBMIT(orderId), {
+    method: 'POST',
+    body: JSON.stringify({
+      transactionId, receiptFileKey: presigned.fileKey, receiptCdnUrl: presigned.cdnUrl,
+    }),
+  });
+  return data.submitted;
+};
+
+/**
+ * The payouts this merchant still owes a slip for.
+ *
+ * An empty list is the normal state and means nothing is outstanding. It does
+ * NOT mean "no receipts exist" — a submitted one is invisible to the merchant
+ * who submitted it, so a row leaving this list is the only confirmation they
+ * ever get that theirs landed.
+ */
+export const getOutstandingCdmReceipts = async (): Promise<OutstandingCdmReceipt[]> => {
+  const data = await request<any>(ENDPOINTS.CDM_RECEIPT.OUTSTANDING);
+  return data.outstanding || [];
 };
 
 export const rejectOrder = async (orderId: string, reason: string): Promise<PaymentOrder> => {

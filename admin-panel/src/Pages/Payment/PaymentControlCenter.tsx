@@ -288,19 +288,22 @@ export const PaymentControlCenter: React.FC = () => {
           ))}
         </div>
 
+        {/* This offered a COPYABLE callback URL — `/api/payment/gateway-webhook`
+            — and no route has ever served it. An operator pasting it into their
+            gateway's dashboard would get a 404 on every callback, silently, and
+            the note below ("requires backend webhook handler") reads as a
+            caveat rather than as "this URL does not exist".
+
+            A URL nothing serves is worse than no URL: it is configured once and
+            then trusted. So the address is not shown until there is something
+            at it — the handler for the chosen provider is what issues it. */}
         <div>
-          <label className="text-xs text-gray-400 mb-1 block">
-            Webhook / Callback URL
-            <span className="text-gray-600 ml-2">(paste this in your gateway dashboard)</span>
-          </label>
-          <div className="flex gap-2">
-            <input
-              readOnly
-              value={`${typeof window !== 'undefined' ? window.location.origin : ''}/api/payment/gateway-webhook`}
-              className="flex-1 bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm text-gray-400 font-mono"
-            />
-            <button onClick={() => { navigator.clipboard.writeText(window.location.origin + '/api/payment/gateway-webhook'); toast.success('Copied!'); }}
-              className="btn-secondary text-xs">Copy</button>
+          <label className="text-xs text-gray-400 mb-1 block">Webhook / Callback URL</label>
+          <div className="bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm text-gray-500">
+            No callback endpoint is served yet. This platform settles peer-to-peer;
+            a gateway callback URL is issued by the webhook handler for the chosen
+            provider, and none is built. Do not paste an address into a gateway
+            dashboard until one appears here.
           </div>
         </div>
 

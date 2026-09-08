@@ -253,6 +253,12 @@ export async function createOrderRecord({
   // The rail to stamp on this order, for tests that need to build one on a
   // rail other than the live policy's. Deliberately NOT part of `detail`: it
   // is not a SETTABLE field, because nothing may update it afterwards.
+  //
+  // A MODE string ('CASH_ATM'), not a policy object. It used to be handed to a
+  // `stampForNewOrder` that read `.activeMode` off it, so every value passed
+  // here was silently discarded and the order opened on the live rail instead —
+  // a cash-rail fixture that was in fact a UPI order. `stampForNewOrder` now
+  // takes the mode and throws on one it does not know.
   paymentMode = null,
   ...detail
 }) {
@@ -406,6 +412,45 @@ export async function withdrawalsMissingCdmReceipt({ olderThanMinutes = 60, limi
     merchantId: r.merchant_id,
     userId: r.user_id,
     tokenAmount: rupees(r.token_amount_paise),
+    completedAt: r.completed_at,
+  }));
+}
+
+/**
+ * The receipts THIS merchant still owes.
+ *
+ * The admin query above answers "who is not evidencing their payouts". This
+ * answers the merchant's own half of it: which of my completed cash payouts
+ * still needs a slip. Without it the receipt can only ever be submitted in the
+ * seconds after the confirm — a merchant whose upload failed, or who did not
+ * have the slip in hand yet, has no way back to the order, and the admin queue
+ * fills with items nobody can clear.
+ *
+ * Deliberately NOT built on `toOrder`: three columns, chosen here, and the
+ * player is not one of them. There is no `user_id` in this result because a
+ * list of "things you owe paperwork for" is not an occasion to re-identify the
+ * people involved.
+ *
+ * `cdm_receipt_url` is read only as IS NULL. The merchant learns whether they
+ * still owe a receipt, never what a submitted one contains — the slip stays
+ * unreadable to them the moment it is stored.
+ */
+export async function merchantWithdrawalsMissingCdmReceipt(merchantId, { limit = 50 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT order_id, fiat_amount_paise, completed_at
+       FROM order_states
+      WHERE merchant_id = $1
+        AND order_type = 'WITHDRAWAL'
+        AND payment_mode = 'CASH_ATM'
+        AND cdm_receipt_url IS NULL
+        AND completed_at IS NOT NULL
+      ORDER BY completed_at ASC
+      LIMIT ${Math.min(Math.max(Number(limit) || 50, 1), 200)}`,
+    [String(merchantId)], 'merchant_orders_missing_cdm_receipt',
+  );
+  return rows.map((r) => ({
+    orderId: r.order_id,
+    fiatAmount: rupees(r.fiat_amount_paise),
     completedAt: r.completed_at,
   }));
 }

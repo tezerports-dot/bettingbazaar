@@ -218,6 +218,66 @@ describePg('the CDM receipt', () => {
     expect(res.body.receipt).toBeNull();
   });
 
+  it('tells a merchant which of their own payouts still needs a slip', async () => {
+    cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: good.receiptFileKey });
+    const merchant = await merchantActor({});
+    const player = await actor({});
+
+    const owed = await payout(merchant, player);
+    const evidenced = await payout(merchant, player);
+    await as(merchantApp, merchant).post(`/orders/${evidenced}/cdm-receipt`).send(good);
+
+    // The confirm COMPLETES the order and the slip is chased afterwards, so
+    // the moment to submit passes — a failed upload or an app closed at the
+    // machine otherwise leaves the payout gone from every screen the merchant
+    // has, and the admin queue fills with items only they can clear.
+    const res = await as(merchantApp, merchant).get('/cdm-receipts/outstanding');
+    expect(res.status).toBe(200);
+    const ids = res.body.outstanding.map((o) => o.orderId);
+    expect(ids).toContain(owed);
+    // One they HAVE evidenced leaves the list. That disappearance is the only
+    // other confirmation they ever get, because they cannot read it back.
+    expect(ids).not.toContain(evidenced);
+  });
+
+  it('never re-identifies the player through the list of slips owed', async () => {
+    const merchant = await merchantActor({});
+    const player = await actor({});
+    const owed = await payout(merchant, player);
+
+    const res = await as(merchantApp, merchant).get('/cdm-receipts/outstanding');
+    expect(res.status).toBe(200);
+    const row = res.body.outstanding.find((o) => o.orderId === owed);
+    // Three facts: which payout, how much cash, when it completed. A list of
+    // paperwork owed is not an occasion to hand back the player's identity, and
+    // the safest identity is the one never read.
+    expect(Object.keys(row).sort()).toEqual(['completedAt', 'fiatAmount', 'orderId']);
+    expect(JSON.stringify(res.body)).not.toContain(String(player.userId));
+  });
+
+  it('shows a merchant only their OWN outstanding slips', async () => {
+    const owner = await merchantActor({});
+    const other = await merchantActor({});
+    const player = await actor({});
+    const orderId = await payout(owner, player);
+
+    const res = await as(merchantApp, other).get('/cdm-receipts/outstanding');
+    expect(res.status).toBe(200);
+    expect(res.body.outstanding.map((o) => o.orderId)).not.toContain(orderId);
+  });
+
+  it('does not chase a slip for a payout that has not completed', async () => {
+    const merchant = await merchantActor({});
+    const player = await actor({});
+    // PROCESSING — the merchant has not said the cash is in the account yet, so
+    // there is no deposit to have a slip for.
+    const open = await payout(merchant, player, 'PROCESSING');
+
+    const res = await as(merchantApp, merchant).get('/cdm-receipts/outstanding');
+    expect(res.status).toBe(200);
+    expect(res.body.outstanding.map((o) => o.orderId)).not.toContain(open);
+  });
+
   it('lists payouts that were settled and never evidenced', async () => {
     const merchant = await merchantActor({});
     const player = await actor({});

@@ -194,6 +194,30 @@ is therefore the only thing standing between that merchant and the money, and
 shortening it shortens exactly that protection. The flag is what makes the
 pattern visible after the fact rather than what prevents it.
 
+**Both sides of "chased afterwards" are screens.** Completing the order and then
+asking for paperwork means the moment to submit passes — an upload that failed,
+an app closed at the machine, a slip not yet in hand — and the order is then
+gone from every screen the merchant has. So there are two queues, and they are
+the same fact from opposite ends:
+
+| Who | Where | What it answers |
+|---|---|---|
+| Merchant | `GET /api/merchant/cdm-receipts/outstanding`, shown above their order queue | "Which of my payouts still needs a slip?" |
+| Admin / disputes manager | `GET /api/admin/orders/cdm-receipts/missing`, the CDM Slips screen | "Who is not evidencing their payouts?" |
+
+Without the merchant half the admin queue fills with items only the merchant can
+clear and the merchant cannot reach. The merchant list carries three facts —
+order id, cash amount, completion time — and deliberately not the player: a list
+of paperwork owed is not an occasion to re-identify anybody. It reads
+`cdm_receipt_url` only as `IS NULL`, so a merchant learns THAT they still owe a
+slip and never what a submitted one says.
+
+**Reading a slip is a click, never a page load.** Every read is written to the
+audit log, so fetching one because a dispute screen opened would record a view
+for every order anybody glanced at, and "who looked at this player's bank slip"
+would stop having an answer. The dispute modal offers a button; the CDM Slips
+screen takes an order id.
+
 ### 4.4 Denominations are a set, not a range
 
 `min_order_paise` / `max_order_paise` cannot express "500 and 10,000 but not

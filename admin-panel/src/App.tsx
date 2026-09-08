@@ -31,6 +31,7 @@ import { SystemSettings } from './Pages/Settings/SystemSettings';
 import { AuditLogs } from './Pages/Settings/AuditLogs';
 import ErrorLogs from './Pages/Settings/ErrorLogs';
 import { DisputeManager } from './Pages/Disputes/DisputeManager';
+import { CdmReceiptQueue } from './Pages/Disputes/CdmReceiptQueue';
 import { AppAssetsPage } from './Pages/AppAssets/AppAssetsPage';
 // UTR REMOVED: import { UTRManager } from './Pages/Finance/UTRManager';
 // ── NEW FEATURE PAGES ──────────────────────────────────────────────────────
@@ -338,6 +339,14 @@ const App: React.FC = () => {
         <Route path="/disputes" element={
           <PermRoute permission="canResolveDisputes">
             <Layout><DisputeManager /></Layout>
+          </PermRoute>
+        } />
+        {/* Gated on the SAME permission as the dispute queue, because it is the
+            same job: the slip is the evidence a cash-payout dispute is decided
+            from, and reading one is audited either way. */}
+        <Route path="/disputes/cdm-receipts" element={
+          <PermRoute permission="canResolveDisputes">
+            <Layout><CdmReceiptQueue /></Layout>
           </PermRoute>
         } />
         {/* UTR REMOVED: route /utr-monitor stripped per product decision */}

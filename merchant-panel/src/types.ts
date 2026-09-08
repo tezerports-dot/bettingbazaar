@@ -127,6 +127,25 @@ export interface CashLinkState {
   worthGoing: boolean;
 }
 
+/**
+ * A completed cash payout whose CDM slip has not been submitted.
+ *
+ * The confirm completes the order and the receipt is chased afterwards, so the
+ * moment to submit passes — an upload that failed or an app closed at the
+ * machine leaves the order gone from every screen. This is the way back to it.
+ *
+ * Deliberately not a `PaymentOrder`: three facts, and the player is not among
+ * them. It is also NOT a way to read a submitted receipt — a row appearing here
+ * means one is still owed, and a row that disappears is all the merchant ever
+ * learns about the one they sent.
+ */
+export interface OutstandingCdmReceipt {
+  orderId: string;
+  /** The cash the merchant deposited, in RUPEES. */
+  fiatAmount: number;
+  completedAt: string;
+}
+
 export interface PaymentOrder {
   id: string;
   _id: string; // always present on orders from the backend (the public id)
@@ -138,6 +157,16 @@ export interface PaymentOrder {
   // schema default 'INR'). A merchant only ever receives orders on their own
   // rail — see utils/rail.ts.
   currency?: MerchantRail;
+
+  // The settlement PROCESS this order was born under, stamped at creation and
+  // never rewritten. Not the same question as `currency`: that is what the
+  // money is denominated in, this is how it moves.
+  //
+  // Branch on THIS, never on the live policy. An admin can switch rails at any
+  // moment and both then run side by side until the last pre-flip order
+  // settles, so an order held across a switch keeps asking for what it always
+  // asked for. Sent by backend/domains/merchant/merchantOrderView.js.
+  paymentMode?: PaymentMode;
   
   // Token and pricing (REAL from backend)
   tokenAmount: number;

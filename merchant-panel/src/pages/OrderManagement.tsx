@@ -4,11 +4,13 @@
 // four status tiles that double as filters, a search + type filter row, then the
 // order cards, with the detail drawer/sheet over them.
 import React, { useEffect, useMemo, useState } from 'react';
-import { RefreshCw, Search } from 'lucide-react';
+import { FileWarning, RefreshCw, Search } from 'lucide-react';
 import { useAuth } from '../services/AuthContext';
 import { useOrders } from '../hooks/useOrders';
 import { useOrderActions } from '../hooks/useOrderActions';
 import PaymentNotReceivedDialog from '../components/PaymentNotReceivedDialog';
+import CdmReceiptDialog from '../components/CdmReceiptDialog';
+import { useCdmReceipt } from '../hooks/useCdmReceipt';
 import { useNow } from '../hooks/useCountdown';
 import { useViewport } from '../hooks/useViewport';
 import { railOf } from '../utils/rail';
@@ -36,9 +38,17 @@ const OrderManagement: React.FC = () => {
   const [search, setSearch] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
+  const cdm = useCdmReceipt();
+
   const { actions, confirmRequest, dismissConfirm, shouldCloseDetail, acknowledgeCloseDetail,
           rejectTarget, rejectBusy, dismissReject, submitPaymentNotReceived } =
-    useOrderActions(rail, reload);
+    useOrderActions(rail, reload, (order) => cdm.open(orderKey(order), order.fiatAmount ?? order.amount ?? null));
+
+  // What is owed is read on LOAD, not only after a payout. The receipt is
+  // chased after the order completes, so the ones that matter most are the ones
+  // from a session that ended before the slip was sent — an upload that failed,
+  // an app closed at the machine — and those exist before this screen opens.
+  useEffect(() => { void cdm.reloadOutstanding(); }, [cdm.reloadOutstanding]);
 
   useEffect(() => {
     if (shouldCloseDetail) {
@@ -79,6 +89,55 @@ const OrderManagement: React.FC = () => {
 
   return (
     <div style={{ maxWidth: 1120, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: isMobile ? 14 : 16 }}>
+      {cdm.outstanding.length > 0 && (
+        <div
+          role="status"
+          style={{
+            padding: isMobile ? '12px 14px' : '14px 16px', borderRadius: 14,
+            border: '1.5px solid var(--warn)', background: 'var(--warn-bg)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13.5, fontWeight: 800, color: 'var(--warn)' }}>
+            <FileWarning size={17} aria-hidden />
+            {cdm.outstanding.length === 1
+              ? 'One cash payout still needs its CDM slip'
+              : `${cdm.outstanding.length} cash payouts still need their CDM slips`}
+          </div>
+          <p style={{ margin: '5px 0 0', fontSize: 12, color: 'var(--muted)', lineHeight: 1.5 }}>
+            These are already paid and closed — the player is not waiting. The slip
+            is what a dispute is decided from, so send it while you still have it.
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginTop: 11 }}>
+            {cdm.outstanding.map((owed) => (
+              <div
+                key={owed.orderId}
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  gap: 10, padding: '9px 12px', borderRadius: 11, background: 'var(--surface)',
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div className="bb-mono" style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {owed.orderId}
+                  </div>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--muted)' }}>
+                    ₹{owed.fiatAmount.toLocaleString('en-IN')} · paid{' '}
+                    {new Date(owed.completedAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                  </div>
+                </div>
+                <Button
+                  tone="ok"
+                  onClick={() => cdm.open(owed.orderId, owed.fiatAmount)}
+                  style={{ padding: '8px 13px', fontSize: 12, flexShrink: 0 }}
+                >
+                  Submit receipt
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(4, 1fr)', gap: isMobile ? 10 : 12 }}>
         {tiles.map((tile) => {
           const active = statusFilter === tile.key;
@@ -187,6 +246,15 @@ const OrderManagement: React.FC = () => {
         busy={rejectBusy}
         onCancel={dismissReject}
         onSubmit={submitPaymentNotReceived}
+      />
+      <CdmReceiptDialog
+        open={cdm.target !== null}
+        orderRef={cdm.target?.orderId ?? ''}
+        amount={cdm.target?.amount ?? null}
+        busy={cdm.busy}
+        submitted={cdm.submitted}
+        onCancel={cdm.dismiss}
+        onSubmit={cdm.submit}
       />
     </div>
   );

@@ -695,6 +695,60 @@ const MUTATIONS = [
     from: `  if (!r || !r.cdm_receipt_url) return null;`,
     to: `  if (!r) return null;`,
   },
+  {
+    id: 'M113', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/cdmReceiptRoutes.test.js',
+    why: 'every merchant is shown every other merchant\'s outstanding payouts — order ids, amounts and settlement times for business they have nothing to do with',
+    from: `      WHERE merchant_id = $1
+        AND order_type = 'WITHDRAWAL'
+        AND payment_mode = 'CASH_ATM'
+        AND cdm_receipt_url IS NULL`,
+    to: `      WHERE ($1 IS NOT NULL)
+        AND order_type = 'WITHDRAWAL'
+        AND payment_mode = 'CASH_ATM'
+        AND cdm_receipt_url IS NULL`,
+  },
+  {
+    id: 'M114', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/cdmReceiptRoutes.test.js',
+    why: 'a payout the merchant HAS evidenced never leaves their outstanding list, so the one confirmation they get that a slip landed never comes and they submit it again',
+    from: `      WHERE merchant_id = $1
+        AND order_type = 'WITHDRAWAL'
+        AND payment_mode = 'CASH_ATM'
+        AND cdm_receipt_url IS NULL
+        AND completed_at IS NOT NULL
+      ORDER BY completed_at ASC`,
+    to: `      WHERE merchant_id = $1
+        AND order_type = 'WITHDRAWAL'
+        AND payment_mode = 'CASH_ATM'
+        AND completed_at IS NOT NULL
+      ORDER BY completed_at ASC`,
+  },
+  {
+    id: 'M115', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/cdmReceiptRoutes.test.js',
+    why: 'the outstanding list re-identifies the player it was built to keep out of it, handing the merchant a user id alongside every payout',
+    from: `  return rows.map((r) => ({
+    orderId: r.order_id,
+    fiatAmount: rupees(r.fiat_amount_paise),
+    completedAt: r.completed_at,
+  }));
+}`,
+    to: `  return rows.map((r) => ({
+    orderId: r.order_id,
+    fiatAmount: rupees(r.fiat_amount_paise),
+    completedAt: r.completed_at,
+    userId: r.order_id,
+  }));
+}`,
+  },
+  {
+    id: 'M116', file: 'backend/domains/merchant/merchantOrderView.js', config: PG,
+    test: 'backend/tests/routes/merchantOrderPrivacyRoutes.test.js',
+    why: 'the merchant panel stops being told which rail an order was born on, so an order held across a rail switch is worked with the wrong process — a UTR asked for on a payout settled at a machine',
+    from: `  'paymentMode',`,
+    to: ``,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

@@ -568,6 +568,41 @@ router.post('/orders/:id/cdm-receipt', merchantAuth, async (req, res) => {
     }
 });
 
+/**
+ * GET /api/merchant/cdm-receipts/outstanding — the slips this merchant owes.
+ *
+ * The confirm completes the order and the receipt is chased afterwards, which
+ * is the right order for the PLAYER — they are not held up waiting for
+ * paperwork. The cost is that the moment to submit passes: an upload that
+ * failed, an app closed at the machine, a slip not yet in hand, and the order
+ * is gone from every screen the merchant has.
+ *
+ * This is the way back to it. `GET /api/admin/orders/cdm-receipts/missing`
+ * asks the same question from the other side — who is not evidencing their
+ * payouts — so without this route that admin queue fills with items the only
+ * person who can clear them cannot reach.
+ *
+ * ── Why this does not go through `toMerchantOrderView` ─────────────────────
+ * It is not an order. It is three columns — which payout, how much cash, when
+ * it completed — chosen in the query itself, and the player is deliberately
+ * not among them. Passing an order shape through here would mean assembling
+ * one first, and the safest identity is the one never read.
+ *
+ * `cdm_receipt_url` is read only as IS NULL. A merchant learns THAT they still
+ * owe a receipt; they never learn what a submitted one says. The slip becomes
+ * unreadable to its own uploader the moment it is stored, and that is the
+ * whole point of the feature.
+ */
+router.get('/cdm-receipts/outstanding', merchantAuth, async (req, res) => {
+    try {
+        const outstanding = await db.orders.merchantWithdrawalsMissingCdmReceipt(req.merchantId);
+        res.json({ success: true, outstanding });
+    } catch (err) {
+        console.error('GET /merchant/cdm-receipts/outstanding error:', err);
+        res.status(500).json({ success: false, message: 'Failed to list the receipts you still owe.' });
+    }
+});
+
 router.get('/cash-links/current', merchantAuth, async (req, res) => {
     try {
         const denominationPaise = req.merchant?.cashDenominationPaise ?? null;

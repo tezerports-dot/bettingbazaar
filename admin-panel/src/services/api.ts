@@ -1026,6 +1026,39 @@ export const disputes = {
     const res = await api.post(`/api/admin/dispute-orders/${id}/escalate`, { notes });
     return res.data;
   },
+
+  /**
+   * The CDM slip for one cash payout — the only read of one that exists.
+   *
+   * Neither the player nor the merchant who uploaded it can see it again; the
+   * order mapper does not carry the columns, so no other projection can either.
+   * `canResolveDisputes` gates it, and EVERY call is written to the audit log:
+   * a record nobody may see is one whose access has to be accountable.
+   *
+   * So this must only ever be called from a deliberate click. Fetching it when
+   * a screen opens would record a slip view for every dispute anybody glanced
+   * at, and "who looked at this player's bank slip" would stop meaning
+   * anything.
+   *
+   * `receipt: null` is a real and expected answer, not an error: the merchant's
+   * confirm completes the order and the slip is chased afterwards.
+   */
+  getCdmReceipt: async (orderId: string) => {
+    const res = await api.get<any>(`/api/admin/orders/${orderId}/cdm-receipt`);
+    return res.data;
+  },
+
+  /**
+   * Cash payouts settled without a slip.
+   *
+   * `olderThanMinutes` accepts 0 — "everything missing one right now", which is
+   * what an incident needs — so it is passed through explicitly rather than
+   * left to a falsy default.
+   */
+  missingCdmReceipts: async (olderThanMinutes: number) => {
+    const res = await api.get<any>('/api/admin/orders/cdm-receipts/missing', { params: { olderThanMinutes } });
+    return res.data;
+  },
 };
 
 // ─── UTR MONITOR ───────────────────────────────────────────────────────────
