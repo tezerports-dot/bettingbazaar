@@ -5,6 +5,7 @@ import {
   AuthResponse,
   Earnings,
   Stats,
+  PaymentModeView,
 } from '../types';
 import { ENDPOINTS, ERROR_MESSAGES } from '../constants';
 
@@ -206,6 +207,25 @@ export const logout = (): void => {
 export const getMerchantProfile = async (): Promise<MerchantProfile> => {
   const data = await request<any>(ENDPOINTS.AUTH.PROFILE);
   return data.merchant || data;
+};
+
+/**
+ * Which settlement rail this merchant is on, and the windows they are held to.
+ *
+ * Read on panel load. The rail can change under a merchant mid-shift, and the
+ * notification and the SSE push are both best-effort — a merchant with no
+ * linked player account has no inbox, and a dropped socket misses the
+ * broadcast. This read is the one that is always correct.
+ */
+export const getPaymentMode = async (): Promise<PaymentModeView> => {
+  const data = await request<any>(ENDPOINTS.AUTH.PAYMENT_MODE);
+  return {
+    activeMode: data.activeMode ?? null,
+    version: data.version ?? null,
+    label: data.label ?? '',
+    merchantMessage: data.merchantMessage ?? '',
+    timers: data.timers ?? null,
+  };
 };
 
 // =======================================================================

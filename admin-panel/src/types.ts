@@ -184,6 +184,39 @@ export interface Bet {
 // backend/domains/configuration/depositPolicy.model.js for the source of truth.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── Settlement rail ──────────────────────────────────────────────────────────
+// The platform runs ONE of two P2P rails at a time and an admin switches
+// between them. Backend authority: database/repositories/paymentModePolicy.js
+// (payment_mode_policies), whose CHECK is what makes these the only two.
+export type PaymentMode = 'P2P_UPI' | 'CASH_ATM';
+
+export interface PaymentModeTimers {
+  assignmentWaitSeconds: number;
+  processingWindowSeconds: number;
+  utrSubmitSeconds: number;
+  disputeWindowSeconds: number;
+  linkExpirySeconds: number;
+  linkMinRemainingSeconds: number;
+}
+
+export interface PaymentModePolicy extends PaymentModeTimers {
+  _id: string;
+  version: number;
+  status: 'ACTIVE' | 'SUPERSEDED';
+  activeMode: PaymentMode;
+  justification: string;
+  changedBy: string | null;
+  changedByName: string;
+  createdAt: string;
+  supersededAt: string | null;
+}
+
+export interface PaymentModeOption {
+  mode: PaymentMode;
+  label: string;
+  merchantMessage: string;
+}
+
 export type DepositPolicyCurrency = 'INR' | 'USDT';
 
 export interface DepositPolicyReserveUsageRules {

@@ -170,7 +170,25 @@ export function emitMerchantUpdate(merchantId, event, data) {
   }
 }
 
+/**
+ * emitAllMerchantsUpdate — one event to EVERY connected merchant panel.
+ *
+ * Distinct from `emitMerchantUpdate`, which addresses one merchant by id.
+ * Passing a wildcard to that one reaches nobody: it looks the literal string up
+ * as a merchant id, finds no client set, and returns silently.
+ */
+export function emitAllMerchantsUpdate(event, data) {
+  try {
+    if (global.sseManager) {
+      global.sseManager.broadcastToMerchants(event, data);
+    }
+  } catch (err) {
+    console.warn('[realtimeEmitters] emitAllMerchantsUpdate error:', err.message);
+  }
+}
+
 // ─── ADMIN UPDATE ─────────────────────────────────────────────────────────────
+
 /**
  * emitAdminUpdate — Broadcast event to all connected admins via SSE.
  *

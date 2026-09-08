@@ -56,8 +56,15 @@ class SSEService {
       // GOVERNANCE §11, but no backend file emits that name — it was a dead
       // subscription (verified 2026-07-27). `merchant_score_update` is the one
       // the backend actually sends after a completed order.
+      // An event NOT in this list is never delivered: `addEventListener` is
+      // registered per name, so a subscriber for an unlisted event is a dead
+      // subscription that never fires and never errors — which is exactly the
+      // `merchant_stats` defect recorded above.
       const merchantEvents = [
         'merchant_orders_snapshot', 'new_order', 'order_update', 'merchant_score_update',
+        // Broadcast to every merchant when an admin switches the settlement
+        // rail, so a merchant mid-shift is not left on the old workflow.
+        'payment_mode_changed',
       ];
       for (const ev of merchantEvents) {
         this.merchantSse.addEventListener(ev, (e: MessageEvent) => {

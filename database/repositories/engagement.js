@@ -361,6 +361,38 @@ export async function notify({
 }
 
 
+/**
+ * One notification to every merchant that can receive one.
+ *
+ * A single INSERT … SELECT rather than a loop of `notify` calls: the recipient
+ * list is DERIVED from the merchants table in the same statement that writes
+ * the rows, so it cannot go stale between reading who to tell and telling them,
+ * and a fan-out to every merchant is one round trip rather than N.
+ *
+ * `user_id` is nullable on `merchants` — a merchant operated by nobody's player
+ * account has no inbox to write to. Those are skipped here rather than failing
+ * the batch, which is why the merchant panel ALSO reads the live rail on load:
+ * a notification is a record that something changed, never the only way a
+ * merchant can find out what rail they are on.
+ */
+export async function notifyMerchants({
+  kind = 'INFO', title, message = '', actionUrl = null, actionLabel = null,
+  relatedId = null, relatedType = null, statuses = ['ACTIVE'],
+}) {
+  if (!title) throw new Error('notifyMerchants requires a title');
+  const { rows } = await pgQuery(
+    `INSERT INTO notifications
+       (user_id, kind, title, message, action_url, action_label, related_id, related_type)
+     SELECT m.user_id, $1, $2, $3, $4, $5, $6, $7
+       FROM merchants m
+      WHERE m.user_id IS NOT NULL AND m.status = ANY($8)
+     RETURNING user_id`,
+    [String(kind), String(title), String(message), actionUrl, actionLabel,
+      relatedId, relatedType, statuses], 'notification_merchant_fanout',
+  );
+  return rows.map((r) => r.user_id);
+}
+
 /** A player's inbox. Expired notifications are filtered by the READ. */
 export async function listNotifications(userId, { unreadOnly = false, limit = 50 } = {}) {
   const { rows } = await pgQuery(

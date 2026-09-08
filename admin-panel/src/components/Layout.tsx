@@ -12,7 +12,7 @@ import {
   TrendingUp, ShieldCheck, HelpCircle, Image as ImageIcon,
   MessageCircle, Shield, History, Scale, Upload, Search, Sun, Moon, Bell,
   Zap, Gift, SlidersHorizontal, Trophy, Star, Gamepad2, Bot, FileSpreadsheet, Share2,
-  type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag} from 'lucide-react';
+  type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag, ToggleLeft} from 'lucide-react';
 import { useAuthStore } from '../services/auth';
 import { usePermissions } from '../hooks/usePermission';
 import { useThemeStore } from '../services/theme';
@@ -79,6 +79,7 @@ const NAV_GROUPS: MenuGroup[] = [
   ] },
   { key: 'policy', label: 'Business Policy', items: [
     { path: '/business-policy/deposit', icon: Landmark, label: 'Deposit Policy', title: 'Deposit Policy', sub: 'Versioned deposit / reserve allocation policy', adminOnly: true },
+    { path: '/business-policy/settlement-rail', icon: ToggleLeft, label: 'Settlement Rail', title: 'Settlement Rail', sub: 'Switch between UPI and ATM cash settlement', adminOnly: true },
   ] },
   { key: 'enterprise', label: 'Enterprise Platforms', items: [
     { path: '/revenue',           icon: Landmark, label: 'Revenue & Ledger',  title: 'Revenue & Ledger',    sub: 'Enterprise revenue ledger & settlements', permission: 'canViewAnalytics' },

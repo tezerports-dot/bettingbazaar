@@ -406,6 +406,32 @@ export const depositPolicy = {
   },
 };
 
+// --- SETTLEMENT RAIL ----------------------------------------------------------
+// One button moves the whole platform between the UPI rail and the ATM cash
+// rail. Orders already in flight keep the rail they were created on — that is
+// enforced by the database, not by this client.
+
+export const paymentMode = {
+  getCurrent: async () => {
+    const res = await api.get<any>('/api/admin/payment-mode');
+    return res.data;
+  },
+
+  getHistory: async (limit = 50) => {
+    const res = await api.get<any>(`/api/admin/payment-mode/history?limit=${limit}`);
+    return res.data;
+  },
+
+  update: async (fields: {
+    activeMode?: string;
+    timers?: Record<string, number>;
+    justification: string;
+  }) => {
+    const res = await api.post('/api/admin/payment-mode', fields);
+    return res.data;
+  },
+};
+
 // --- QUEUE MANAGER ------------------------------------------------------------
 
 export const queueManager = {

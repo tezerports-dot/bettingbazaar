@@ -76,6 +76,31 @@ export interface ChatMessage {
   createdAt?: number | string;
 }
 
+// ── The settlement rail ──────────────────────────────────────────────────────
+// The platform runs one of two P2P rails and an admin switches between them.
+// Backend authority: database/repositories/paymentModePolicy.js, whose CHECK is
+// what makes these the only two. Orders already held keep the rail they were
+// created on — see order_states.payment_mode, which the database refuses to
+// change.
+export type PaymentMode = 'P2P_UPI' | 'CASH_ATM';
+
+export interface PaymentModeTimers {
+  assignmentWaitSeconds: number;
+  processingWindowSeconds: number;
+  utrSubmitSeconds: number;
+  disputeWindowSeconds: number;
+  linkExpirySeconds: number;
+  linkMinRemainingSeconds: number;
+}
+
+export interface PaymentModeView {
+  activeMode: PaymentMode | null;
+  version: number | null;
+  label: string;
+  merchantMessage: string;
+  timers: PaymentModeTimers | null;
+}
+
 export interface PaymentOrder {
   id: string;
   _id: string; // always present on orders from the backend (the public id)

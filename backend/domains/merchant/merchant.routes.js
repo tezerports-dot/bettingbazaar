@@ -54,6 +54,7 @@ import {
 import { buildBulkPayoutExportRows } from './bulkPayoutExport.js';
 import { MERCHANT_CURRENCY, isTrc20Address, merchantTypeOf } from './merchantCurrency.js';
 import { toMerchantOrderView, toMerchantOrderViews } from './merchantOrderView.js';
+import { getActivePolicy as getPaymentModePolicy, modeCopy, publicTimers } from '../configuration/paymentMode.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 
 const router     = express.Router();
@@ -425,6 +426,33 @@ router.post('/2fa/activate', merchantAuth, twoFactorLimiter, async (req, res) =>
 // recovery code; if those are gone too, an admin re-enrols them out of band.
 
 // ─── PROFILE ─────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/merchant/payment-mode — which settlement rail this merchant is on.
+ *
+ * Read on panel load, and it is this — not the notification and not the socket
+ * push — that actually guarantees a merchant knows their workflow. A merchant
+ * with no linked player account has no inbox, and a merchant whose socket
+ * dropped missed the broadcast; both still load the panel.
+ *
+ * Carries the timers the merchant is held to, and NOT the policy's authorship:
+ * who switched the rail and why is an admin surface.
+ */
+router.get('/payment-mode', merchantAuth, async (req, res) => {
+    try {
+        const policy = await getPaymentModePolicy();
+        res.json({
+            success: true,
+            activeMode: policy?.activeMode ?? null,
+            version: policy?.version ?? null,
+            ...modeCopy(policy?.activeMode),
+            timers: publicTimers(policy),
+        });
+    } catch (err) {
+        console.error('GET /merchant/payment-mode error:', err);
+        res.status(500).json({ success: false, message: 'Failed to read the settlement rail.' });
+    }
+});
 
 router.get('/profile', merchantAuth, async (req, res) => {
     try {

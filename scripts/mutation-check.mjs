@@ -547,6 +547,23 @@ const MUTATIONS = [
     from: `  IF NEW.payment_mode IS DISTINCT FROM OLD.payment_mode THEN`,
     to: `  IF FALSE THEN`,
   },
+  {
+    id: 'M95', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/paymentModeRoutes.test.js',
+    why: 'the merchant payload is built by spreading the policy row, leaking who switched the rail and why',
+    from: `            ...modeCopy(policy?.activeMode),
+            timers: publicTimers(policy),`,
+    to: `            ...policy,
+            ...modeCopy(policy?.activeMode),
+            timers: publicTimers(policy),`,
+  },
+  {
+    id: 'M96', file: 'backend/domains/configuration/paymentMode.service.js', config: PG,
+    test: 'backend/tests/routes/paymentModeRoutes.test.js',
+    why: 'every merchant is interrupted by a timer edit that changes nothing they do',
+    from: `  if (railChanged) {`,
+    to: `  if (true) {`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

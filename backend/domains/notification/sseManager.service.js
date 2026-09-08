@@ -83,6 +83,7 @@ class SSEManager {
             case 'sendToUser':       return this._localSendToUser(...args);
             case 'sendToMerchant':   return this._localSendToMerchant(...args);
             case 'broadcastToAdmins':return this._localBroadcastToAdmins(...args);
+            case 'broadcastToMerchants': return this._localBroadcastToMerchants(...args);
         }
     }
 
@@ -237,6 +238,32 @@ class SSEManager {
             this._writeOrDrop(res, payload, () => dead.push(res));
         }
         for (const res of dead) set.delete(res);
+    }
+
+    /**
+     * Broadcast to EVERY connected merchant.
+     *
+     * `sendToMerchant('*', …)` does not do this and never did: it looks up the
+     * literal key '*' in `merchantClients`, finds no set, and returns — reaching
+     * nobody, with no error and no log. A platform-wide announcement (the
+     * settlement rail changing under a merchant mid-shift) needs a real fan-out,
+     * so it gets one rather than a wildcard that reads like one.
+     */
+    broadcastToMerchants(event, data) {
+        this._localBroadcastToMerchants(event, data);
+        this._publish('broadcastToMerchants', [event, data]);
+    }
+
+    _localBroadcastToMerchants(event, data) {
+        const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+        for (const [key, set] of this.merchantClients) {
+            const dead = [];
+            for (const res of set) {
+                this._writeOrDrop(res, payload, () => dead.push(res));
+            }
+            for (const res of dead) set.delete(res);
+            if (set.size === 0) this.merchantClients.delete(key);
+        }
     }
 
     // ── ADMIN PRIVATE CHANNEL ─────────────────────────────────────────────────

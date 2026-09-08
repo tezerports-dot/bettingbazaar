@@ -32,6 +32,9 @@ export const ENDPOINTS = {
     PROFILE: '/api/merchant/profile',
     STATUS: '/api/merchant/online-status',
     PREFERENCES: '/api/merchant/preferences',
+    // The settlement rail this merchant is on. Read on load: a notification
+    // can be missed and a socket can drop, but the panel always loads.
+    PAYMENT_MODE: '/api/merchant/payment-mode',
   },
   ORDERS: {
     LIST: '/api/merchant/orders',

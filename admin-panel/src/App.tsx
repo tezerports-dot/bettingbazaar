@@ -11,6 +11,7 @@ import { MerchantsList } from './Pages/Merchants/MerchantsList';
 import { LiveCycles } from './Pages/Cycles/LiveCycles';
 import { CycleHistory } from './Pages/Cycles/CycleHistory';
 import { DepositPolicy } from './Pages/BusinessPolicy/DepositPolicy';
+import { SettlementRail } from './Pages/BusinessPolicy/SettlementRail';
 import { TransactionsList } from './Pages/Finance/TransactionsList';
 import { ProfitLoss } from './Pages/Finance/ProfitLoss';
 import { TokenFlow } from './Pages/Finance/TokenFlow';
@@ -315,6 +316,11 @@ const App: React.FC = () => {
         {/* Business Policy Platform (BBEPS Phase 006) — first sibling: DepositPolicy */}
         <Route path="/business-policy/deposit" element={
           <AdminOnly><Layout><DepositPolicy /></Layout></AdminOnly>
+        } />
+        {/* The settlement rail: one switch moves the whole platform between the
+            UPI rail and the ATM cash rail. Orders in flight keep their own. */}
+        <Route path="/business-policy/settlement-rail" element={
+          <AdminOnly><Layout><SettlementRail /></Layout></AdminOnly>
         } />
         <Route path="/sub-admins" element={
           <AdminOnly><Layout><SubAdminsList /></Layout></AdminOnly>
