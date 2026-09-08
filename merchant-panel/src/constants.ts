@@ -36,6 +36,10 @@ export const ENDPOINTS = {
     // can be missed and a socket can drop, but the panel always loads.
     PAYMENT_MODE: '/api/merchant/payment-mode',
   },
+  CASH_LINKS: {
+    CURRENT: '/api/merchant/cash-links/current',
+    SUPPLY: '/api/merchant/cash-links',
+  },
   ORDERS: {
     LIST: '/api/merchant/orders',
     ACCEPT: (id: string) => `/api/merchant/accept/${id}`,
@@ -125,6 +129,11 @@ export const ROUTES = {
   LOGIN: '/',
   DASHBOARD: '/dashboard',
   ORDERS: '/orders',
+  // The ATM cash rail. Only reachable while the platform is on that rail and
+  // this merchant is approved for a denomination — the screen says which of
+  // those is missing rather than rendering an empty queue, because an empty
+  // queue and "you are not approved" look identical otherwise.
+  CASH_LINKS: '/cash-links',
   HISTORY: '/history',
   PROFILE: '/profile',
 };

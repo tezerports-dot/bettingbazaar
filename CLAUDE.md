@@ -155,6 +155,21 @@ pay again.
    before the suites run. A service container has no `command:` key — use
    `ALTER SYSTEM` + `pg_reload_conf()` in a step.
 
+10. **A mutation run leaves its rows behind.** `mutation-check.mjs` reverts the
+    source file; it does not revert the database. So a mutant that disables a
+    guard creates exactly the rows that guard exists to prevent, and they stay
+    there. A ₹7,770 cash-rail order — an amount no ATM dispenses and the
+    denomination gate refuses — sat in `order_states` because the mutant
+    disabling that gate had run once.
+
+    The consequence is a rule, not a curiosity: **never assert a global
+    invariant over a shared table.** A test that walks everything a query
+    returns and asserts each row is well-formed is asserting something about
+    every other process that has ever touched that database, including the
+    mutation harness deliberately creating malformed data. Take a baseline,
+    create your own rows, and assert the delta.
+
+
 ---
 
 ## Working rules

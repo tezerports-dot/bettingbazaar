@@ -101,6 +101,32 @@ export interface PaymentModeView {
   timers: PaymentModeTimers | null;
 }
 
+// ── The ATM cash rail ────────────────────────────────────────────────────────
+// A merchant stands at a machine, initiates a UPI cash withdrawal, and supplies
+// the payment link it produces. A player pays that link, the ATM dispenses, and
+// the merchant collects the notes.
+export interface CashLink {
+  linkId: string;
+  paymentLink: string;
+  expiresAt: string;
+}
+
+export interface CashLinkState {
+  approved: boolean;
+  /** In RUPEES, and exactly one — a merchant serves a single denomination. */
+  denomination: number | null;
+  live: CashLink | null;
+  /** Orders waiting at THIS merchant's denomination, and no other. */
+  waiting: number;
+  /**
+   * The SERVER's answer to "is a trip worth making". Never derived on the
+   * client from `waiting`: a merchant without the tokens to serve the order
+   * cannot take it however close the machine is, and an expired link earns
+   * them nothing.
+   */
+  worthGoing: boolean;
+}
+
 export interface PaymentOrder {
   id: string;
   _id: string; // always present on orders from the backend (the public id)

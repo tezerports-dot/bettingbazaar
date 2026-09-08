@@ -6,6 +6,8 @@ import {
   Earnings,
   Stats,
   PaymentModeView,
+  CashLinkState,
+  CashLink,
 } from '../types';
 import { ENDPOINTS, ERROR_MESSAGES } from '../constants';
 
@@ -226,6 +228,43 @@ export const getPaymentMode = async (): Promise<PaymentModeView> => {
     merchantMessage: data.merchantMessage ?? '',
     timers: data.timers ?? null,
   };
+};
+
+/**
+ * The ATM cash rail: what this merchant is holding, and whether a trip is
+ * worth making.
+ *
+ * `worthGoing` is computed by the SERVER using the same function that decides
+ * who the demand broadcast reaches. Deciding it here from `waiting > 0` would
+ * put a different answer on the screen than in the notification, and an
+ * expired link earns a merchant nothing — so a wrong "yes" costs them a
+ * journey.
+ */
+export const getCashLinkState = async (): Promise<CashLinkState> => {
+  const data = await request<any>(ENDPOINTS.CASH_LINKS.CURRENT);
+  return {
+    approved: Boolean(data.approved),
+    denomination: data.denomination ?? null,
+    live: data.live ?? null,
+    waiting: data.waiting ?? 0,
+    worthGoing: Boolean(data.worthGoing),
+  };
+};
+
+/** Supply the link the ATM just produced. Amount and lifetime are the server's. */
+export const supplyCashLink = async (paymentLink: string): Promise<CashLink> => {
+  const data = await request<any>(ENDPOINTS.CASH_LINKS.SUPPLY, {
+    method: 'POST',
+    body: JSON.stringify({ paymentLink }),
+  });
+  return data.link;
+};
+
+/** Withdraw a link this merchant can no longer honour. */
+export const cancelCashLink = async (linkId: string): Promise<void> => {
+  await request<any>(`${ENDPOINTS.CASH_LINKS.SUPPLY}/${encodeURIComponent(linkId)}`, {
+    method: 'DELETE',
+  });
 };
 
 // =======================================================================

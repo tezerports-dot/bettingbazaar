@@ -420,11 +420,39 @@ describePg('the ATM cash-link queue', () => {
   });
 
   it('reports demand and supply per denomination for an admin overview', async () => {
-    const demand = await demandByDenomination();
-    const supply = await supplyByDenomination();
-    for (const row of [...demand, ...supply]) {
-      expect([50_000, 100_000, 500_000, 1_000_000, 4_000_000]).toContain(row.denominationPaise);
-    }
+    // ── Asserted on rows THIS test made, not on the whole table ────────────
+    // The first version walked everything the query returned and asserted each
+    // amount was a known denomination. It failed on 777000 — ₹7,770, from the
+    // B6 suite's "refuses an amount between the denominations" case.
+    //
+    // That order exists because the MUTATION HARNESS reverts the source file
+    // but not the database: when the mutant disabling the denomination check
+    // ran, the order was created successfully before the assertion caught it.
+    // So the table permanently contains rows that a passing platform would
+    // never produce, and any test asserting a global invariant over it is
+    // asserting something about other processes rather than about this query.
+    const denomination = 1_000_000;
+    const beforeDemand = (await demandByDenomination())
+      .find((r) => r.denominationPaise === denomination)?.waiting ?? 0;
+    const beforeSupply = (await supplyByDenomination())
+      .find((r) => r.denominationPaise === denomination)?.live ?? 0;
+
+    await orderAt(denomination);
+    const supplied = await supplyLink({
+      linkId: uid('lnk'), merchantId: merchant(), denominationPaise: denomination,
+      paymentLink: 'upi://pay?am=10000', expiresAt: inMinutes(5),
+    });
+    expect(supplied.ok).toBe(true);
+
+    const demand = await demandByDenomination().then((rows) =>
+      rows.find((r) => r.denominationPaise === denomination));
+    const supply = await supplyByDenomination().then((rows) =>
+      rows.find((r) => r.denominationPaise === denomination));
+
+    expect(demand.waiting).toBe(beforeDemand + 1);
+    expect(supply.live).toBe(beforeSupply + 1);
+
+    await cancelLink(supplied.link.linkId, supplied.link.merchantId);
   });
 
   it('refuses an empty link and one that expires in the past', async () => {
