@@ -344,4 +344,7 @@ the thing being claimed.
 | `npm run check:dead-code` | No export is referenced by nothing, and no module is imported by nothing. `--all` lists test-only and over-exported ones. |
 | `npm run check:settable` | Every order-lifecycle `set` names a column the writer accepts — the write that runs after the state has already committed. |
 | `npm run check:db-boundary` | No SQL, driver or relative reach past `#db`. |
+| `npm run check:orphans` | Every identifier used is declared, imported or a parameter. |
+| `npm run check:balance-reads` | Trap 7, mechanically: a number that GATES a transfer is read from the rows the write will lock. |
+| `npm run check:coherence` | Every column the repositories name exists in the schema. |
 | `npm run verify:capabilities` | Every claimed capability has its evidence on disk. |
