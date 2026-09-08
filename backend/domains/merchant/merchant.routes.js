@@ -1503,29 +1503,88 @@ router.post('/bulk-payouts/mark-paid', merchantAuth, requireBulkPayoutsEnabled, 
         const paidAt  = new Date();
         const batchId = batchRef || `BATCH_${Date.now()}`;
 
-        // The eligibility is in the WHERE clause of ONE statement: this
-        // merchant's withdrawals, in a state a payout may close. An order that
-        // moved between the read and the write matches nothing rather than
-        // being closed from a state it has already left.
-        const result = await db.orders.bulkCompleteWithdrawals({
-            orderIds, merchantId: req.merchantId, batchId, paidAt,
-        });
+        // ── A bulk payout is N CONFIRMS, not a different operation ───────────
+        //
+        // This was one raw UPDATE straight to COMPLETED, and every guarantee a
+        // single confirm provides was missing from it:
+        //
+        //   the withdrawal HOLD was skipped, so the player's stake was consumed
+        //   and the merchant's tokens released the instant the merchant said
+        //   so — which is exactly the loss `withdrawalHold.service.js` exists to
+        //   close, since confirm is an assertion and not evidence;
+        //
+        //   no `order_transitions` row was written, so a batch of payouts left
+        //   no trace in the append-only history a dispute is decided from;
+        //
+        //   the escrow flags were never touched, so the settlement worker would
+        //   never pick these orders up — the player's money stayed locked and
+        //   the merchant's tokens were never credited. The orders read COMPLETED
+        //   with the value still frozen on both sides, and nothing was looking.
+        //
+        // So each order goes through the same two calls the single confirm
+        // makes. Not one transaction across the batch, deliberately: these are
+        // independent payouts and one bad order must not roll back nine good
+        // ones. Partial success is a real outcome and the response already
+        // reports it.
+        const holdFor = await holdMinutes();
+        const completed = [];
+        const skipped = [];
+
+        for (const rawId of [...new Set(orderIds.filter(Boolean).map(String))]) {
+            // Scoped to THIS merchant by the query, not by a filter afterwards.
+            const order = await db.orders.getMerchantOrder(rawId, req.merchantId);
+            if (!order || order.type !== 'WITHDRAWAL') { skipped.push(rawId); continue; }
+
+            const carried = {
+                bulkPaidAt: paidAt,
+                bulkPayoutBatch: batchId,
+            };
+
+            // The same branch the single confirm takes, for the same reason:
+            // under a hold a withdrawal only reaches PAID (asserted, not
+            // settled) and the worker completes it once the window passes.
+            const moved = holdFor > 0
+                ? await markOrderPaidState(order.orderId, {
+                    expectFrom: ['PROCESSING', 'ASSIGNED'],
+                    set: {
+                        ...carried,
+                        merchantCreditStatus:    'HELD',
+                        merchantCreditHoldUntil: new Date(paidAt.getTime() + holdFor * 60 * 1000),
+                        escrowLocked:            true,
+                    },
+                })
+                : await completeOrder(order.orderId, {
+                    expectFrom: 'PROCESSING',
+                    set: {
+                        ...carried, completedAt: paidAt,
+                        merchantCreditStatus: 'RELEASED', escrowLocked: false,
+                    },
+                });
+
+            if (moved.ok && !moved.idempotent) completed.push(order.orderId);
+            else skipped.push(rawId);
+        }
 
         // Notify admins
         if (global.sseManager) {
             global.sseManager.broadcastToAdmins('bulk_payout_completed', {
                 merchantId: req.merchantId,
                 batchId,
-                count:      result.completed,
+                count:      completed.length,
                 paidAt,
             });
         }
 
         res.json({
             success:  true,
-            message:  `${result.completed} orders marked as paid.`,
+            // `count` read `result.modifiedCount`, a field the repository never
+            // returned — so every batch reported `undefined` orders paid.
+            message:  `${completed.length} order(s) marked as paid.`,
             batchId,
-            count:    result.modifiedCount,
+            count:    completed.length,
+            held:     holdFor > 0,
+            orderIds: completed,
+            skipped,
         });
     } catch (err) {
         console.error('POST /merchant/bulk-payouts/mark-paid error:', err);

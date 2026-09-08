@@ -466,6 +466,34 @@ const MUTATIONS = [
     from: `        AND regexp_replace(i.phone`,
     to: `        AND $1 = $1 OR regexp_replace(i.phone`,
   },
+
+  // ── A bulk payout is N confirms, and must behave like N confirms ─────────
+  // It was one raw UPDATE to COMPLETED: no hold, no transition row, no escrow
+  // flags. The orders read COMPLETED with the player's stake still locked and
+  // the merchant's tokens never credited.
+  {
+    id: 'M86', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/merchantBulkPayoutRoutes.test.js',
+    why: 'a bulk payout skips the withdrawal hold and completes on the merchant\'s word alone',
+    from: `            const moved = holdFor > 0`,
+    to: `            const moved = false`,
+  },
+  {
+    id: 'M87', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/merchantBulkPayoutRoutes.test.js',
+    why: 'the batch is no longer scoped to the merchant, so anyone\'s order can be swept in',
+    from: `            const order = await db.orders.getMerchantOrder(rawId, req.merchantId);`,
+    to: `            const order = await db.orders.getOrderRecord(rawId);`,
+  },
+  {
+    id: 'M88', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/merchantBulkPayoutRoutes.test.js',
+    why: 'the count is read from a field nothing returns, so a batch reports undefined again',
+    from: `            count:    completed.length,
+            held:     holdFor > 0,`,
+    to: `            count:    undefined,
+            held:     holdFor > 0,`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

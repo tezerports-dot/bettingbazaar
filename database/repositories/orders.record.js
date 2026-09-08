@@ -851,43 +851,21 @@ export async function bulkPayoutBatch({ merchantId, payoutDate }) {
   return rows.map(toOrder);
 }
 
-/**
- * Close a batch of a merchant's withdrawals as paid.
+/*
+ * bulkCompleteWithdrawals was REMOVED 2026-09-08.
  *
- * ONE STATEMENT, with the eligibility in the WHERE clause: this merchant's
- * withdrawals, in a state a payout may legitimately close. An order that moved
- * between the caller's read and this write matches nothing rather than being
- * closed from a state it has already left — which is what an `updateMany` over
- * ids alone would do.
+ * It was one raw UPDATE straight to `state = 'COMPLETED'`, and it bypassed
+ * every guarantee the single confirm provides: no `order_transitions` row, no
+ * escrow flags, and no withdrawal HOLD — so the settlement worker never picked
+ * the orders up. They read COMPLETED while the player's stake stayed locked and
+ * the merchant's tokens were never credited, with nothing looking for the gap.
  *
- * Returns which ids were closed, so the caller can tell the merchant that three
- * of their five went through rather than reporting a count they cannot act on.
+ * A bulk payout is N confirms, not a different operation, so the route now
+ * loops through the same lifecycle calls `POST /merchant/confirm/:id` makes.
+ * The state machine is the one owner of a state change; a second writer that
+ * sets `state` directly is how the two came apart in the first place.
  */
-export async function bulkCompleteWithdrawals({ orderIds, merchantId, batchId, paidAt = null }) {
-  const ids = [...new Set((orderIds || []).filter(Boolean).map(String))];
-  if (!ids.length) return { completed: 0, orderIds: [], skipped: [] };
 
-  const { rows } = await pgQuery(
-    `UPDATE order_states SET
-       state = 'COMPLETED',
-       completed_at = COALESCE($4::timestamptz, now()),
-       bulk_paid_at = COALESCE($4::timestamptz, now()),
-       bulk_payout_batch = $3,
-       updated_at = now()
-     WHERE order_id = ANY($1::text[])
-       AND merchant_id = $2
-       AND order_type = 'WITHDRAWAL'
-       AND state IN ('PAID', 'ASSIGNED', 'PROCESSING')
-     RETURNING order_id`,
-    [ids, String(merchantId), String(batchId), paidAt], 'order_bulk_complete',
-  );
-  const closed = rows.map((r) => r.order_id);
-  return {
-    completed: closed.length,
-    orderIds: closed,
-    skipped: ids.filter((id) => !closed.includes(id)),
-  };
-}
 
 /**
  * Orders that ran out of time.
