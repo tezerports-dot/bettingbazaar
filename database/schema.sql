@@ -3018,3 +3018,92 @@ DO $$ BEGIN
   ALTER TABLE payment_mode_policies ADD CONSTRAINT payment_mode_policies_concurrency_positive
     CHECK (max_concurrent_orders BETWEEN 1 AND 10);
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE ATM CASH-LINK QUEUE — supply arriving before demand
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Every other assignment on this platform is demand-pull: an order arrives,
+-- `merchantScoring` ranks candidates, the best one wins. This inverts it.
+--
+-- A merchant stands at an ATM, initiates a UPI cash withdrawal, and the machine
+-- produces a payment link for a fixed amount. That link is SUPPLY, and it
+-- exists before any order has asked for it. A buy order of the same
+-- denomination then claims it, the player pays it, the machine dispenses, and
+-- the merchant collects the notes.
+--
+-- Nothing in this codebase modelled supply before now, which is why this is a
+-- table of its own rather than a column on an order.
+--
+-- ── The rules that live in the table rather than in a writer ───────────────
+--
+-- 1. ONE LIVE LINK PER MERCHANT. They are standing at one machine doing one
+--    withdrawal; a second live link would be a promise they cannot keep. The
+--    partial unique index below is what makes that true, not a check some
+--    handler performs.
+--
+-- 2. ONE ORDER PER LINK. Two orders taking the same link would send two players
+--    to collect the same notes. The claim uses FOR UPDATE SKIP LOCKED so
+--    concurrent claimants take different rows, and the unique index refuses the
+--    overlap if one ever slips past.
+--
+-- 3. A CLAIMED LINK NAMES ITS ORDER. A row that says claimed with no order is a
+--    link nobody can trace, and a row naming an order without being claimed is
+--    a link that will be handed out twice.
+--
+-- ── An expired link owes nobody anything ───────────────────────────────────
+-- No money moved: the ATM transaction simply times out. There is no
+-- compensation and no priority — the broadcast is what keeps a merchant from
+-- wasting the trip, which makes the broadcast's accuracy load-bearing.
+CREATE TABLE IF NOT EXISTS cash_link_queue (
+  link_id            TEXT PRIMARY KEY,
+  merchant_id        TEXT NOT NULL,
+  -- Copied from the merchant at supply time rather than joined at claim time.
+  -- An admin changing a merchant's approval must not silently re-price a link
+  -- already sitting in the queue — the same reason an order snapshots its rail.
+  denomination_paise BIGINT NOT NULL,
+  -- What the player is sent. Never shown to another merchant.
+  payment_link       TEXT NOT NULL,
+
+  status             TEXT NOT NULL DEFAULT 'LIVE',
+  claimed_by_order   TEXT,
+  claimed_at         TIMESTAMPTZ,
+
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at         TIMESTAMPTZ NOT NULL,
+
+  CONSTRAINT cash_link_status_known
+    CHECK (status IN ('LIVE', 'CLAIMED', 'EXPIRED', 'CANCELLED')),
+  -- The same five amounts an ATM dispenses. Duplicated from denominations.js
+  -- because a CHECK must spell them out; the coherence test proves they agree.
+  CONSTRAINT cash_link_denomination_known
+    CHECK (denomination_paise IN (50000, 100000, 500000, 1000000, 4000000)),
+  -- Claimed and named-an-order are the same fact, so they move together.
+  CONSTRAINT cash_link_claim_names_order
+    CHECK ((status = 'CLAIMED') = (claimed_by_order IS NOT NULL)),
+  CONSTRAINT cash_link_claim_has_time
+    CHECK (claimed_by_order IS NULL OR claimed_at IS NOT NULL),
+  -- A link that expires before it exists is a link nobody can use.
+  CONSTRAINT cash_link_expiry_after_creation CHECK (expires_at > created_at),
+  CONSTRAINT cash_link_has_link CHECK (length(btrim(payment_link)) > 0)
+);
+
+-- Rule 1, as a property of the table.
+CREATE UNIQUE INDEX IF NOT EXISTS cash_link_one_live_per_merchant
+  ON cash_link_queue (merchant_id) WHERE status = 'LIVE';
+-- Rule 2, as a property of the table.
+CREATE UNIQUE INDEX IF NOT EXISTS cash_link_one_per_order
+  ON cash_link_queue (claimed_by_order) WHERE claimed_by_order IS NOT NULL;
+-- The claim path: a live link of this denomination with enough time left.
+CREATE INDEX IF NOT EXISTS cash_link_claimable_idx
+  ON cash_link_queue (denomination_paise, expires_at) WHERE status = 'LIVE';
+-- The sweeper, and a merchant's own view of what they supplied.
+CREATE INDEX IF NOT EXISTS cash_link_merchant_idx
+  ON cash_link_queue (merchant_id, created_at DESC);
+
+-- The link an order is being served by. Written when the claim commits, and
+-- never rewritten: a second link on one order would mean the player was sent
+-- two places to collect the same money.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS cash_link_id TEXT;
+CREATE INDEX IF NOT EXISTS order_states_cash_link_idx
+  ON order_states (cash_link_id) WHERE cash_link_id IS NOT NULL;

@@ -141,7 +141,21 @@ orders with no link yet are shown, because a link is claimed the instant it
 exists, and only merchants with headroom now (or within two minutes) are told,
 because a merchant whose tokens are in escrow cannot serve one anyway.
 
+### 4.2b Rules the queue runs under
+
+**One live link per merchant.** A merchant supplies one link and cannot supply
+another until it is claimed or expires — they are standing at one machine doing
+one withdrawal. Enforced by a partial unique index, so it is a property of the
+table rather than a rule a writer keeps.
+
+**An expired link owes nobody anything.** No money moved: the ATM transaction
+simply times out. No compensation, no priority, no record beyond the expired
+row. The broadcast is what keeps a merchant from wasting the trip, so the
+broadcast has to be accurate — that is the load-bearing part of this choice.
+
 ### 4.3 The sell side, and the receipt
+
+
 
 The merchant deposits cash at a CDM into the player's bank account and submits
 the bank transaction id and a photo of the receipt.
@@ -151,6 +165,21 @@ merchant who uploaded it can read it back — only an admin or a disputes
 manager. So the upload screen must confirm clearly at the moment of submission,
 and re-upload before submit must be allowed, because a mis-upload cannot be
 checked afterwards by the person who made it.
+
+**The merchant's click completes the order; the receipt is chased afterwards.**
+A missing receipt flags the merchant rather than blocking the player.
+
+That is only safe because of the hold that already exists. `withdrawalHold`
+freezes BOTH sides for `disputeWindowSeconds` on every confirm: the player's
+stake stays locked and the merchant's tokens do not exist yet, so until
+settlement runs **no value has moved**. The click advances the order; it does
+not release money.
+
+So the rule this rail adds is: **a hold whose receipt never arrived must not
+settle.** It goes to the dispute queue instead. Without that, "complete on the
+click" is exactly the loss `withdrawalHold.service.js` was written to close — a
+merchant asserting payment they never made — and setting `disputeWindowSeconds`
+to its minimum would be enough to realise it.
 
 ### 4.4 Denominations are a set, not a range
 
@@ -198,8 +227,17 @@ filter and export has to decide whether it counts parents or children, and the
 answer is parents unless it is the dispute queue.
 
 Assignment is partial-batch, partial-queue: legs that can be assigned now are,
-the rest queue. Legs unassigned at 25 minutes fail, and an assigned leg has 15
-minutes to process. A failed leg is retryable.
+the rest queue. An assigned leg has 15 minutes to process.
+
+**A leg that cannot find a merchant stays queued rather than failing.** The
+paid legs stay paid — a completed CDM deposit cannot be clawed back — and the
+outstanding leg waits for capacity.
+
+The cost of that is an unbounded token lock, so two things are required rather
+than optional: a leg queued past the assignment window appears in an **admin
+stalled-legs queue**, so somebody is accountable for it; and the **player may
+cancel it themselves** and take those tokens back. An order with no deadline
+and no owner is an order nobody is answerable for.
 
 ## 6. Timers, expiry and retry
 

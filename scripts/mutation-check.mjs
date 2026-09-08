@@ -596,6 +596,31 @@ const MUTATIONS = [
     from: `  if (left !== 0) return null;`,
     to: `  if (false) return null;`,
   },
+
+  // ── The ATM cash-link queue ─────────────────────────────────────────────
+  // A link is a claim on physical notes about to leave a machine.
+  {
+    id: 'M101', file: 'database/repositories/cashLinks.js', config: PG,
+    test: 'database/tests/cashLinkQueuePg.test.js',
+    why: 'the claim stops skipping locked rows, so concurrent orders contend for one link instead of taking different ones',
+    from: `          LIMIT 1
+          FOR UPDATE SKIP LOCKED`,
+    to: `          LIMIT 1`,
+  },
+  {
+    id: 'M102', file: 'database/repositories/cashLinks.js', config: PG,
+    test: 'database/tests/cashLinkQueuePg.test.js',
+    why: 'a link with seconds left is handed to a player who cannot reach the machine but now believes they have been served',
+    from: `            AND expires_at > now() + make_interval(secs => $2)`,
+    to: `            AND expires_at > now() + make_interval(secs => $2 * 0)`,
+  },
+  {
+    id: 'M103', file: 'database/repositories/cashLinks.js', config: PG,
+    test: 'database/tests/cashLinkQueuePg.test.js',
+    why: 'a claim whose order stamp wrote nothing still reports success, marking a link taken by an order that does not know it',
+    from: `      if (rowCount !== 1) {`,
+    to: `      if (false) {`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that
