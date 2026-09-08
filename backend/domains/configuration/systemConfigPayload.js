@@ -40,9 +40,31 @@ const DEFAULT_FOOTER_PAGES = Object.freeze(['home', 'results', 'winners', 'promo
  */
 // The INR peg comes from the one place that owns it.
 import { INR_TOKEN_RATE } from './tokenRates.js';
+// The legal buy amounts come from the module the risk gate validates against,
+// never from a list written out again here. Two lists drift, and the drift is
+// silent until a player is refused an amount the screen offered them.
+import {
+  BUY_DENOMINATIONS_PAISE, MAX_INR_BUY_PAISE,
+} from '../merchant/denominations.js';
 
-export function systemConfigPayload(cfg) {
+export function systemConfigPayload(cfg, rail = null) {
   return {
+    // ── The settlement rail, and the amounts it allows ────────────────────
+    // The player app must not decide either of these. It ships as an APK
+    // containing the whole bundle, so a picker built from a client-side list
+    // is a list an attacker can edit — and a list that drifts from the server's
+    // is a player being offered an amount the gate will refuse.
+    //
+    // So the SERVER says what rail is live and which amounts are legal, from
+    // the same module `assessFundingOrder` validates against. The picker
+    // renders what it is told; it does not know the numbers.
+    //
+    // `null` when the rail cannot be read, which a client must render as "not
+    // available" rather than falling back to a guess.
+    paymentMode:         rail?.activeMode ?? null,
+    buyDenominations:    BUY_DENOMINATIONS_PAISE.map((p) => p / 100),
+    maxInrBuy:           MAX_INR_BUY_PAISE / 100,
+
     // Bet limits live in the betLimits subdoc, not on config.value.
     minBet:              cfg?.betLimits?.thirtyMin?.min ?? 10,
     maxBet:              cfg?.betLimits?.thirtyMin?.max ?? 100000,

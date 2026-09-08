@@ -55,6 +55,7 @@ import { fetchCycleHistory } from '../markets/cycleHistory.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { systemConfigPayload } from '../configuration/systemConfigPayload.js';
 import { INR_TOKEN_RATE } from '../configuration/tokenRates.js';
+import { getActivePolicy as getActivePaymentModePolicy } from '#db/repositories/paymentModePolicy.js';
 
 const router = express.Router();
 
@@ -484,7 +485,7 @@ router.get('/v1/system/config', async (req, res) => {
     // The literal that used to sit here was a copy of the socket's, written with
     // `||` where that one used `??`, so an operator who set a limit to 0 ("no
     // minimum") was served the default over HTTP and the real 0 over the socket.
-    res.json({ success: true, config: systemConfigPayload(await getSystemConfig()) });
+    res.json({ success: true, config: systemConfigPayload(await getSystemConfig(), await getActivePaymentModePolicy()) });
   } catch (error) {
     console.error('System config error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch config' });

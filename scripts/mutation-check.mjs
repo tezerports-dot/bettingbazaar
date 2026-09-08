@@ -661,6 +661,13 @@ const MUTATIONS = [
     from: `    paymentMode: railNow.activeMode,`,
     to: `    paymentMode: null,`,
   },
+  {
+    id: 'M109', file: 'backend/domains/configuration/systemConfigPayload.js', config: UNIT,
+    test: 'backend/tests/unit/systemConfigPayload.test.js',
+    why: 'the client is told a different set of legal buy amounts than the gate enforces, so the picker offers what the server refuses',
+    from: `    buyDenominations:    BUY_DENOMINATIONS_PAISE.map((p) => p / 100),`,
+    to: `    buyDenominations:    [100, 200, 300],`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

@@ -130,6 +130,10 @@ export function toOrder(r) {
     // side by side until the last pre-flip order settles.
     paymentMode: r.payment_mode,
     paymentModeVersion: r.payment_mode_version === null ? null : Number(r.payment_mode_version),
+    // The ATM link serving this order, on the cash rail. The id only — the
+    // link itself lives in `cash_link_queue` and is resolved for the ORDER'S
+    // OWNER alone, because it is a claim on notes about to leave a machine.
+    cashLinkId: r.cash_link_id ?? null,
 
     createdAt: r.created_at, updatedAt: r.updated_at,
   };

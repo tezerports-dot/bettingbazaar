@@ -45,6 +45,11 @@ interface PaymentOrder {
   tokenAmount: number; fiatAmount: number; rateUsed: number; createdAt: string;
   expiresAt?: string; paidAt?: string; merchantSnapshot?: MerchantSnapshot;
   utrNumber?: string; proofScreenshot?: string;
+  // The rail this order was created on. Snapshotted server-side and immutable,
+  // so an admin switching rails mid-flight cannot change what this screen is
+  // supposed to be showing.
+  paymentMode?: 'P2P_UPI' | 'CASH_ATM';
+  cashLinkId?: string | null;
   userBankDetails?: { accountNumber?: string; ifscCode?: string; bankName?: string; accountHolderName?: string; };
   upiId?: string;
 }
@@ -102,8 +107,23 @@ function CountdownTimer({ expiresAt, onExpire }: { expiresAt?: string; onExpire?
  * platform's sight, and it had no coverage while it collected a screenshot no
  * decision read and rendered a QR through a third-party service.
  */
-export function BuyPaymentUI({ order, onPaid, onExpire }: { order: PaymentOrder; onPaid: () => void; onExpire: () => void; }) {
+export function BuyPaymentUI({ order, onPaid, onExpire, cashLink = null }: {
+  order: PaymentOrder;
+  onPaid: () => void;
+  onExpire: () => void;
+  /**
+   * The ATM link serving this order, on the CASH_ATM rail.
+   *
+   * Resolved by the server for the order's OWNER only. `null` means either
+   * that this is the UPI rail, or that no merchant has supplied a link yet —
+   * two states the screen must render differently, because "we are finding you
+   * a machine" and "here is where to go" are not the same message and a player
+   * shown the wrong one either waits forever or walks out for nothing.
+   */
+  cashLink?: { paymentLink: string; expiresAt: string } | null;
+}) {
   const snap = order.merchantSnapshot;
+  const onCashRail = order.paymentMode === 'CASH_ATM';
   const [utr, setUtr] = useState('');
   const [copied, setCopied] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -130,9 +150,16 @@ export function BuyPaymentUI({ order, onPaid, onExpire }: { order: PaymentOrder;
    * actually are: tapping it opens their UPI app directly, which scanning a QR
    * on the same screen cannot do.
    */
-  const intentString = snap?.upiId
-    ? `upi://pay?pa=${encodeURIComponent(snap.upiId)}&pn=${encodeURIComponent(snap.merchantName || 'Merchant')}&am=${Number(order.fiatAmount).toFixed(2)}&cu=INR&tn=${encodeURIComponent(`BettingBazaar-${order.orderId}`)}`
-    : '';
+  //
+  // On the CASH_ATM rail none of this applies: the link is not built from a
+  // merchant's UPI id, it is the one the ATM produced and the merchant
+  // supplied. It is used verbatim — constructing anything from it would change
+  // what the machine agreed to dispense.
+  const intentString = onCashRail
+    ? (cashLink?.paymentLink ?? '')
+    : (snap?.upiId
+        ? `upi://pay?pa=${encodeURIComponent(snap.upiId)}&pn=${encodeURIComponent(snap.merchantName || 'Merchant')}&am=${Number(order.fiatAmount).toFixed(2)}&cu=INR&tn=${encodeURIComponent(`BettingBazaar-${order.orderId}`)}`
+        : '');
 
   useEffect(() => {
     if (order.status === 'PAID' && order.paidAt) {
@@ -161,6 +188,33 @@ export function BuyPaymentUI({ order, onPaid, onExpire }: { order: PaymentOrder;
       alert('Dispute raised. Admin will review shortly.');
     } catch (err: any) { setError(err?.message || 'Failed to raise dispute'); }
   };
+
+  // ── Waiting for a machine ────────────────────────────────────────────────
+  // On the cash rail an order exists before any merchant has supplied a link.
+  // Rendering the payment screen with an empty link would show a player a
+  // "pay now" button that does nothing — the empty-state-as-success failure
+  // this codebase has shipped before. Say what is actually happening.
+  if (onCashRail && !cashLink && order.status !== 'PAID') {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ textAlign: 'center', padding: '12px 8px' }}>
+          <div style={{ fontSize: 40, marginBottom: 8 }}>🏧</div>
+          <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 17, color: 'var(--text)' }}>
+            Finding you a machine
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text3)', lineHeight: 1.5, margin: '6px 0 0' }}>
+            A merchant is going to an ATM to set up your {fmtINR(order.fiatAmount)} withdrawal.
+            You will get a link to pay the moment one is ready.
+          </div>
+          {order.expiresAt && (
+            <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 8 }}>
+              <CountdownTimer expiresAt={order.expiresAt} onExpire={onExpire} />
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   if (order.status === 'PAID') {
     return (
@@ -199,9 +253,19 @@ export function BuyPaymentUI({ order, onPaid, onExpire }: { order: PaymentOrder;
           <p style={{ fontSize: 11, color: 'var(--text3)', textAlign: 'center', margin: 0, lineHeight: 1.5 }}>
             Opens with the amount already filled in. Come back with the UTR.
           </p>
-          {/* The UPI id stays visible and copyable: a player whose handset has
-              no UPI app registered for the link still needs to be able to pay,
-              and support asks for this when a payment goes missing. */}
+          {/* The UPI id stays visible and copyable ON THE UPI RAIL: a player
+              whose handset has no UPI app registered for the link still needs
+              to be able to pay, and support asks for this when a payment goes
+              missing.
+
+              On the CASH_ATM rail it must not appear at all. There the player
+              is paying a MACHINE, and the merchant is a person whose identity
+              they have no business learning — the same rule the merchant side
+              obeys in reverse. A test caught this row still rendering under a
+              correct ATM link, which is exactly the shape of leak that gets
+              missed: the important part was right, and the leak was underneath
+              it. */}
+          {!onCashRail && snap?.upiId && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--surface2)', border: '1px solid var(--line)', borderRadius: 11, padding: '11px 13px', width: '100%' }}>
             <span style={{ flex: 1, minWidth: 0 }}>
               <span style={{ display: 'block', fontSize: 9, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text3)' }}>Merchant UPI · {snap.merchantName}</span>
@@ -212,6 +276,7 @@ export function BuyPaymentUI({ order, onPaid, onExpire }: { order: PaymentOrder;
               {copied ? 'Copied' : 'Copy'}
             </button>
           </div>
+          )}
         </div>
       ) : (
         <div style={{ background: 'var(--surface2)', border: '1px solid var(--line)', borderRadius: 12, padding: 14, textAlign: 'center', fontSize: 12, color: 'var(--text3)' }}>⏳ Waiting for merchant details…</div>
@@ -248,6 +313,17 @@ const WalletPage: React.FC = () => {
 
   const [buyStep, setBuyStep]           = useState<BuyStep>('amount');
   const [buyTokens, setBuyTokens]       = useState('');
+  // What the SERVER says is buyable. Never a list written here: the app ships
+  // as an APK containing this bundle, so a client-side list is one an attacker
+  // can edit — and one that drifts from the gate is a player offered an amount
+  // that will be refused.
+  // The ATM link for the buy order in flight, if one has been claimed. Fetched
+  // from the order's own read rather than the status poll, because the link is
+  // resolved for the owner and the poll is a lightweight status shape.
+  const [buyCashLink, setBuyCashLink]   = useState<{ paymentLink: string; expiresAt: string } | null>(null);
+  const [rail, setRail]                 = useState<{
+    paymentMode: string | null; buyDenominations: number[]; maxInrBuy: number | null;
+  }>({ paymentMode: null, buyDenominations: [], maxInrBuy: null });
   const [activeBuyOrder, setActiveBuyOrder] = useState<PaymentOrder | null>(null);
   const [buyLoading, setBuyLoading]     = useState(false);
   const [buyError, setBuyError]         = useState('');
@@ -273,6 +349,17 @@ const WalletPage: React.FC = () => {
       // computed by the same rule the bet route enforces. Taking the numbers
       // and the ceiling from one response also means they cannot disagree with
       // each other on screen.
+      // The settlement rail and the amounts it allows, from the one payload
+      // that owns them (domains/configuration/systemConfigPayload.js).
+      const sys: any = await apiClient.get('/api/v1/system/config');
+      if (sys?.config) {
+        setRail({
+          paymentMode: sys.config.paymentMode ?? null,
+          buyDenominations: sys.config.buyDenominations ?? [],
+          maxInrBuy: sys.config.maxInrBuy ?? null,
+        });
+      }
+
       const lim: any = await apiClient.get('/api/user/bet-limits');
       if (lim?.success) {
         setBalances({
@@ -330,6 +417,18 @@ const WalletPage: React.FC = () => {
           setActiveBuyOrder(prev => prev ? { ...prev, ...res } : prev);
           if (res.status === 'COMPLETED') { resetBuy(); loadMeta(); loadOrders(); }
           if (res.status === 'CANCELLED' || res.status === 'FAILED') { resetBuy(); loadOrders(); }
+
+          // On the cash rail an order waits with no link until a merchant
+          // reaches a machine, so the link arrives LATER than the order. The
+          // status poll is a lightweight shape and does not carry it; the
+          // order's own read resolves it for the owner. Asked for only while
+          // the link is still missing, so a served player is not re-reading it
+          // every three seconds.
+          if (activeBuyOrder.paymentMode === 'CASH_ATM' && !buyCashLink
+              && res.status !== 'COMPLETED' && res.status !== 'CANCELLED' && res.status !== 'FAILED') {
+            const full: any = await apiClient.get(`/api/payment/order/${activeOrderId}`);
+            if (full?.cashLink) setBuyCashLink(full.cashLink);
+          }
         }
         if (activeSellOrder) {
           setActiveSellOrder(prev => prev ? { ...prev, ...res } : prev);
@@ -347,7 +446,7 @@ const WalletPage: React.FC = () => {
     catch (e: any) { alert(e?.message || 'Failed to cancel'); }
   };
 
-  const resetBuy = () => { setBuyStep('amount'); setBuyTokens(''); setActiveBuyOrder(null); setBuyError(''); };
+  const resetBuy = () => { setBuyStep('amount'); setBuyTokens(''); setActiveBuyOrder(null); setBuyError(''); setBuyCashLink(null); };
   const handleBuySubmit = async () => {
     const amt = parseInt(buyTokens);
     if (!amt || amt < 1) { setBuyError('Enter a valid token amount'); return; }
@@ -454,10 +553,48 @@ const WalletPage: React.FC = () => {
                     <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>UPI (INR)</span><span style={{ fontSize: 9, color: 'var(--text3)' }}>Instant · scan & pay a verified merchant</span></span>
                   </div>
                   <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--text2)', marginBottom: 9 }}>Tokens to buy</div>
-                  <div style={{ position: 'relative', marginBottom: 6 }}>
-                    <input value={buyTokens} onChange={e => setBuyTokens(e.target.value.replace(/[^0-9]/g, ''))} inputMode="numeric" placeholder="e.g. 500" className="font-grotesk" style={{ ...inputBox, padding: '0 44px 0 15px' }} />
-                    <span style={{ position: 'absolute', right: 15, top: '50%', transform: 'translateY(-50%)', color: 'var(--gold-ink)', fontWeight: 800, fontSize: 13 }}>T</span>
-                  </div>
+                  {/* On the ATM cash rail the amount is not typed. A cash
+                      machine dispenses one of a fixed set, so anything between
+                      them is an order no merchant could serve — and the server
+                      refuses it. Offering a free field here would let a player
+                      type an amount, wait, and be rejected for a reason the
+                      screen never showed them.
+
+                      The tiles are rendered from the SERVER's list. If it is
+                      empty the field falls back to typing, because an empty
+                      picker offers nothing at all. */}
+                  {rail.paymentMode === 'CASH_ATM' && rail.buyDenominations.length > 0 ? (
+                    <div role="radiogroup" aria-label="Amount to buy" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8, marginBottom: 8 }}>
+                      {rail.buyDenominations.map((amount) => {
+                        const on = buyTokens === String(amount);
+                        return (
+                          <button
+                            key={amount} type="button" role="radio" aria-checked={on}
+                            onClick={() => setBuyTokens(String(amount))}
+                            className="font-grotesk"
+                            style={{
+                              padding: '14px 10px', borderRadius: 12, cursor: 'pointer', fontWeight: 800, fontSize: 15,
+                              border: on ? '2px solid var(--gold)' : '1px solid var(--line)',
+                              background: on ? 'var(--gold-soft, rgba(212,175,55,.12))' : 'transparent',
+                              color: on ? 'var(--gold-ink)' : 'var(--text)',
+                            }}
+                          >
+                            ₹{amount.toLocaleString()}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div style={{ position: 'relative', marginBottom: 6 }}>
+                      <input value={buyTokens} onChange={e => setBuyTokens(e.target.value.replace(/[^0-9]/g, ''))} inputMode="numeric" placeholder="e.g. 500" className="font-grotesk" style={{ ...inputBox, padding: '0 44px 0 15px' }} />
+                      <span style={{ position: 'absolute', right: 15, top: '50%', transform: 'translateY(-50%)', color: 'var(--gold-ink)', fontWeight: 800, fontSize: 13 }}>T</span>
+                    </div>
+                  )}
+                  {rail.maxInrBuy !== null && rail.paymentMode !== 'CASH_ATM' && (
+                    <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 6 }}>
+                      Up to ₹{rail.maxInrBuy.toLocaleString()} in one purchase. Buy with USDT for more.
+                    </div>
+                  )}
                   <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 14 }}>You pay <b style={{ color: 'var(--gold-ink)' }}>{fmtINR(parseInt(buyTokens) || 0)}</b> · 1 token = ₹1</div>
                   {buyError && <p style={{ color: 'var(--red)', fontSize: 11, marginBottom: 10 }}>{buyError}</p>}
                   <button onClick={handleBuySubmit} disabled={!buyTokens || buyLoading} style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 15, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', boxShadow: '0 8px 22px -8px var(--glow)', opacity: (!buyTokens || buyLoading) ? .5 : 1 }}>{buyLoading ? '⏳ Creating order…' : 'Continue to payment'}</button>
@@ -465,7 +602,7 @@ const WalletPage: React.FC = () => {
               ) : activeBuyOrder ? (
                 <>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}><span style={{ fontSize: 13, fontWeight: 800, color: 'var(--text)' }}>Complete payment</span><button onClick={resetBuy} style={{ fontSize: 11, color: 'var(--text3)', background: 'none', border: 'none', cursor: 'pointer' }}>✕ Cancel</button></div>
-                  <BuyPaymentUI order={activeBuyOrder} onPaid={() => setActiveBuyOrder(prev => prev ? { ...prev, status: 'PAID' } : prev)} onExpire={() => { resetBuy(); loadOrders(); }} />
+                  <BuyPaymentUI order={activeBuyOrder} cashLink={buyCashLink} onPaid={() => setActiveBuyOrder(prev => prev ? { ...prev, status: 'PAID' } : prev)} onExpire={() => { resetBuy(); loadOrders(); }} />
                 </>
               ) : null
             ) : (

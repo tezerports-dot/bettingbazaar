@@ -143,3 +143,56 @@ describe('the buy-token payment step', () => {
     expect(screen.getByRole('button', { name: /I've Paid/ })).toBeEnabled();
   });
 });
+
+describe('the ATM cash rail', () => {
+  /**
+   * ── Two states that must not look alike ──────────────────────────────────
+   * On this rail an order exists BEFORE any merchant has reached a machine, so
+   * there is a real period with no link. Rendering the payment screen with an
+   * empty link would show a "pay now" affordance that does nothing — the
+   * empty-state-as-success failure this codebase has shipped repeatedly, where
+   * a request fails, a component catches it, and the screen looks like "no
+   * data".
+   *
+   * And when a link DOES arrive it must be used verbatim. It is what the ATM
+   * agreed to dispense; building anything from it would change the amount the
+   * machine is holding.
+   */
+  const CASH_ORDER: any = {
+    orderId: 'ORD-CASH-1',
+    status: 'ASSIGNED',
+    fiatAmount: 5000,
+    tokenAmount: 5000,
+    paymentMode: 'CASH_ATM',
+    expiresAt: new Date(Date.now() + 90_000).toISOString(),
+    // Deliberately present: on the cash rail this must be IGNORED. Falling
+    // back to a merchant UPI intent would send the player to pay a person
+    // instead of the machine that is holding their cash.
+    merchantSnapshot: { upiId: 'merchant@bank', merchantName: 'Someone' },
+  };
+
+  it('says a machine is being found, rather than showing a dead pay screen', () => {
+    render(<BuyPaymentUI order={CASH_ORDER} cashLink={null} onPaid={() => {}} onExpire={() => {}} />);
+    expect(screen.getByText(/Finding you a machine/i)).toBeInTheDocument();
+    // No UTR field yet: there is nothing to have paid.
+    expect(screen.queryByPlaceholderText(/UTR/i)).not.toBeInTheDocument();
+  });
+
+  it('uses the ATM link verbatim, and never the merchant UPI intent', () => {
+    const atmLink = 'upi://pay?pa=atm-issuer&am=5000.00&tn=ATM-REF-99';
+    render(
+      <BuyPaymentUI
+        order={CASH_ORDER}
+        cashLink={{ paymentLink: atmLink, expiresAt: CASH_ORDER.expiresAt }}
+        onPaid={() => {}}
+        onExpire={() => {}}
+      />,
+    );
+    const link = screen.getAllByRole('link').find((a) => a.getAttribute('href') === atmLink);
+    expect(link).toBeTruthy();
+    // The merchant's own UPI id must appear nowhere: the player pays the
+    // machine, and never learns who the merchant is.
+    expect(document.body.innerHTML).not.toContain('merchant@bank');
+  });
+});
+

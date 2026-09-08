@@ -8,6 +8,7 @@ import { cycleSnapshotPublisher } from '../domains/markets/cycleSnapshotPublishe
 import { fetchCycleHistory } from '../domains/markets/cycleHistory.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { systemConfigPayload, systemConfigFallback } from '../domains/configuration/systemConfigPayload.js';
+import { getActivePolicy as getActivePaymentModePolicy } from '#db/repositories/paymentModePolicy.js';
 
 // Public cycle-room id guard: the room name is client-supplied, so bound it to
 // the shape a real cycleId has (no auth needed — pool totals are public — but a
@@ -31,7 +32,7 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
         // had already drifted — this one carried webUrl/androidUrl/iosUrl, that
         // one carried kycRequired/registrationEnabled, so what a client learned
         // about the platform depended on the transport it asked over.
-        const configData = systemConfigPayload(await getSystemConfig());
+        const configData = systemConfigPayload(await getSystemConfig(), await getActivePaymentModePolicy());
         global.cachedSystemConfig = configData;
         socket.emit('system_config', configData);
       } catch (e) {
