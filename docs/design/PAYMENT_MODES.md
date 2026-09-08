@@ -84,52 +84,104 @@ not use denominations.
 
 ## 4. Mode B — `CASH_ATM` (new)
 
-### 4.1 Buy (player receives cash from an ATM)
+### 4.0 Which way the cash actually moves
 
-The direction is inverted from mode A. In mode A an order arrives and the
-system picks a merchant. Here the **supply arrives first**:
+This is the crux of the rail and it is easy to derive backwards, so it is
+written down. **Cash ends up in the merchant's hands on a BUY and leaves them on
+a SELL.**
 
-1. A merchant scans an ATM cash-withdrawal QR. The panel turns it into a link.
-2. The link enters a queue with an expiry (`link_expiry_seconds`).
-3. An order of that denomination claims the link. First matching order wins.
-4. A link with less than `link_min_remaining_seconds` left is not assignable.
+**BUY** — the merchant is standing at an ATM. They initiate a UPI cash
+withdrawal; the ATM shows a QR, which yields a payment link for a fixed
+denomination. That link goes into the queue. A player with a matching buy order
+is handed it, pays it from their own UPI app, the ATM dispenses, and **the
+merchant collects the cash**. The player has paid and receives tokens.
+
+This is why the denominations are 500 / 1,000 / 5,000 / 10,000: they are ATM
+dispense amounts, not a pricing decision.
+
+**SELL** — the merchant now holds cash. They deposit it at a CDM **into the
+player's bank account**, then submit the bank transaction id and a photo of the
+CDM receipt. The player is paid to their bank, as on every rail.
+
+So one merchant cycles naturally: take a buy, hold the cash, serve a sell with
+it. That is also why a merchant holds **one order at a time in either
+direction** rather than one per direction — the cash they are holding is the
+same cash.
+
+### 4.1 One merchant, one denomination
+
+A merchant is approved for exactly ONE denomination and works only that. A
+₹500 merchant places only ₹500 links, receives only ₹500 orders, and sees only
+the ₹500 queue depth. There is no second approval.
+
+The same denomination serves both directions. ₹40,000 is a fifth tier that only
+ever receives withdrawal legs, because no buy order is that large.
+
+### 4.2 The buy queue
+
+The supply arrives before the demand, which inverts the assignment direction
+used everywhere else on this platform:
+
+1. A merchant scans the ATM QR and supplies the resulting link.
+2. The link enters the queue with an expiry (`link_expiry_seconds`).
+3. A buy order of that denomination claims it. First matching order wins.
+4. A link with less than `link_min_remaining_seconds` left is not assignable —
+   a player cannot reach the machine in time.
 
 Claiming uses `FOR UPDATE SKIP LOCKED` so two orders cannot take one link.
 
-**Broadcast, not polling.** Merchants who are eligible to supply are shown, live,
-how many orders are waiting for a link at each denomination — so they know when
-supplying is worth it. The broadcast shows only:
+**The amount is DECLARED by the merchant**, from their own approved
+denomination — there is only one, so there is nothing to choose. No ATM QR
+format is parsed. A merchant who attaches a link for the wrong amount is caught
+by the player's dispute and the existing warning path.
 
-- orders that have **no link yet** (a link is auto-assigned the instant it
-  exists, so an order with a link is never advertised), and
-- to merchants whose tokens are **not** in escrow lock — that is, merchants with
-  headroom now, or headroom arriving within the next two minutes.
+**Broadcast, not polling.** A merchant sees, live, how many orders at **their
+own denomination** are waiting for a link — never other denominations. Only
+orders with no link yet are shown, because a link is claimed the instant it
+exists, and only merchants with headroom now (or within two minutes) are told,
+because a merchant whose tokens are in escrow cannot serve one anyway.
 
-### 4.2 Sell (merchant deposits cash at a CDM)
+### 4.3 The sell side, and the receipt
 
-The merchant deposits cash at a CDM and submits **a transaction ID and a photo
-of the CDM receipt**.
+The merchant deposits cash at a CDM into the player's bank account and submits
+the bank transaction id and a photo of the receipt.
 
-That receipt is **admin-only**. It is never returned to the player and never
-returned to the merchant after submission — only an admin or a disputes manager
-can read it. This is a storage and projection rule, enforced at the reader.
+**The receipt is write-only.** Once submitted, neither the player nor the
+merchant who uploaded it can read it back — only an admin or a disputes
+manager. So the upload screen must confirm clearly at the moment of submission,
+and re-upload before submit must be allowed, because a mis-upload cannot be
+checked afterwards by the person who made it.
 
-### 4.3 Denominations
+### 4.4 Denominations are a set, not a range
 
-Mode B merchants serve a **set**, not a range: 500 / 1,000 / 5,000 / 10,000,
-plus 40,000 for withdrawals only. `min_order_paise` / `max_order_paise` cannot
-express "500 and 10,000 but not 1,000", so mode B uses a
-`merchant_denominations` child table. The range columns keep governing mode A.
-
----
+`min_order_paise` / `max_order_paise` cannot express "500 and 10,000 but not
+1,000", and in any case a Mode B merchant serves exactly one figure. Mode B uses
+a dedicated column on the merchant; the range columns keep governing Mode A.
 
 ## 5. Amount rules (both modes)
 
-- **Buy, INR: capped at ₹10,000 per transaction.** Above that the player buys
-  with USDT instead.
-- **USDT is deposit-only.** There is no USDT withdrawal on either rail.
-- **Every withdrawal pays out to a bank account**, whatever the mode.
-- **₹40,000 is a withdrawal denomination only.** It never appears on a buy.
+**A player never types an INR amount.** Buy orders are chosen from the
+denomination list — 500 / 1,000 / 5,000 / 10,000 — and nothing else is
+accepted. The cap is therefore structural rather than a validation rule.
+
+- **USDT is the only free-value input**, and it is deposit-only. The minimum is
+  500 tokens, the same floor as the smallest INR denomination.
+- **Every withdrawal pays out to a bank account**, on both rails. There is no
+  USDT withdrawal.
+- **₹40,000 is a withdrawal tier only.** It never appears on a buy.
+- A player may place further buys **one at a time** — no aggregate cap, because
+  the ceiling is about what an ATM dispenses, not about limiting the player.
+  Velocity and AML thresholds carry that load, not this rule.
+
+### The USDT price is admin-set, not a live feed
+
+The admin sets a price per token and edits it at most once or twice a day, so it
+is effectively fixed. The player enters how many **tokens** they want (minimum
+500); the system converts at the current admin price, generates the BTCPay
+payment link **and its QR**, and BTCPay watches the chain.
+
+The rate is snapshotted onto the order at creation, like `rateUsed` already is,
+so an admin editing the price cannot rewrite what a settled order charged.
 
 ### Withdrawal batch splitting
 
@@ -137,16 +189,17 @@ A withdrawal larger than one denomination splits into child orders under one
 parent. The player's stake is locked **once, at the parent** — not once per
 child.
 
-Split rule, largest first:
-- Prefer the largest denominations. ₹100,000 → 40,000 + 40,000 + 10,000 + 10,000.
-- Do not go below 5,000 unless the remainder itself is under 5,000.
+Split rule, largest first: ₹100,000 → 40,000 + 40,000 + 10,000 + 10,000. Do not
+go below 5,000 unless the remainder is itself under 5,000.
 
-Assignment is partial-batch, partial-queue: children that can be assigned now
-are assigned now; the rest queue. The parent still has the full completion
-window. Children unassigned at `assignment_wait_seconds` go `FAILED`, and the
-player may retry.
+**The player sees one order that expands to its children.** The parent is the
+withdrawal they asked for; expanding shows each leg and its state. Every list,
+filter and export has to decide whether it counts parents or children, and the
+answer is parents unless it is the dispute queue.
 
----
+Assignment is partial-batch, partial-queue: legs that can be assigned now are,
+the rest queue. Legs unassigned at 25 minutes fail, and an assigned leg has 15
+minutes to process. A failed leg is retryable.
 
 ## 6. Timers, expiry and retry
 
