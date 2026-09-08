@@ -258,6 +258,16 @@ jobs:
       # while being mounted nowhere. Neither failed a test; nothing was looking.
       - name: No export nothing calls
         run: npm run check:dead-code
+      # The order lifecycle moves the STATE first and writes the accompanying
+      # fields second, so an order is never found in a state without the facts
+      # that justify it. The cost is that a bad field name throws AFTER the
+      # transition has committed: the order moves, the handler 500s, and
+      # whatever it meant to do next — including moving money — never runs.
+      # Three handlers shipped with one. The worst marked a disputed deposit
+      # COMPLETED and never credited the player, from a button in the admin
+      # panel, and every check here was green while it did.
+      - name: Every order `set` names a real column
+        run: npm run check:settable
       # Items 5+58: architecture validation — circular imports and governance
       # boundary violations (domain core importing routes, wallet importing
       # products) fail the build instead of waiting for human review.

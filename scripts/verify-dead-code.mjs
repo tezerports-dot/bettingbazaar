@@ -36,7 +36,7 @@
  * inventing a failure.
  */
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Derived from this file's own location. An absolute path baked in here once
@@ -99,6 +99,96 @@ for (const [f, src] of all) {
   }
 }
 
+/**
+ * ── A MODULE nothing imports ────────────────────────────────────────────────
+ *
+ * The export scan above cannot see this. `default` is on ALLOW because a
+ * default export is named at the import site, not at the definition — which
+ * means a module whose ONLY export is a default is exempt from every check in
+ * this file.
+ *
+ * `backend/services/admin.service.js` was exactly that: `export default new
+ * AdminService()`, 380 lines of block/unblock/delete/sub-admin CRUD that no
+ * route, service or script ever imported. It duplicated live routes, held two
+ * writes of NULL into a NOT NULL column, and carried a money guard the LIVE
+ * delete route did not have — while `moneyDecisionsReadTheWallet.test.js`
+ * asserted that guard against it and passed. Every check in this repository was
+ * green the whole time.
+ *
+ * So: a module under the application tree that nothing imports by path is dead,
+ * whatever it exports. A test naming the path is NOT an import — reading a
+ * file's source text to assert on it is precisely how the file above stayed
+ * alive through a dead-code sweep.
+ */
+const ENTRY = [
+  /^backend\/server\.js$/,           // the process entry point
+  /^backend\/cron\//,                // scheduled jobs, started by the runner
+  /\/index\.(m?js|ts|tsx)$/,          // barrels, imported by directory
+  /^(admin|user|merchant)-panel\/src\//, // bundler-resolved: JSX, lazy(), assets
+  /\.d\.ts$/,
+];
+
+/**
+ * Orphans that are DELIBERATE, each with the reason it is not a defect.
+ *
+ * An allowlist rather than a heuristic, because the difference between "an
+ * extension point nobody has built against yet" and "a duplicate of a live
+ * route that somebody forgot to delete" is a judgement, not a pattern — and the
+ * whole point of this check is to force that judgement at the moment the orphan
+ * appears, instead of letting it sit for months while tests assert against it.
+ *
+ * Adding a line here is a decision. Make it explicitly.
+ */
+const ORPHAN_ALLOW = [
+  // Abstract base classes for integrations that do not exist yet. No
+  // implementation extends them (StorageProvider, which two do extend, is
+  // correctly NOT here — it is imported). They are the declared shape a future
+  // provider must satisfy, and `tools/validate-migration.sh` checks they exist.
+  [/^backend\/providers\/(casino|payment|sportsbook)\/\w+\.interface\.js$/,
+   'declared extension point; no implementation built yet'],
+];
+
+const importedPaths = new Set();
+for (const [f, src] of all) {
+  for (const m of src.matchAll(/(?:from|import)\s*\(?\s*['"`]([^'"`]+)['"`]/g)) {
+    const spec = m[1];
+    if (!spec.startsWith('.') && !spec.startsWith('#')) continue;
+    // Resolve a relative specifier against the importing file's directory; a
+    // `#db/...` subpath maps to database/. Extensionless and /index forms both
+    // count, so a barrel import marks the barrel.
+    const base = spec.startsWith('#db')
+      ? spec.replace(/^#db\/?/, 'database/').replace(/^database$/, 'database/index.js')
+      : join(dirname(f), spec);
+    for (const cand of [base, `${base}.js`, `${base}.ts`, `${base}.tsx`,
+                        `${base}/index.js`, `${base}/index.ts`]) {
+      importedPaths.add(cand.replace(/\\/g, '/'));
+    }
+  }
+}
+
+// A file can also be reached WITHOUT an import: a worker thread is loaded by
+// path (`path.join(__dirname, 'cpuWorker.js')`, `new Worker(...)`), and calling
+// that dead would be wrong — it runs on every CSV export. Any quoted string
+// naming the file counts, which is deliberately generous: this check exists to
+// catch a module NOTHING reaches, not to police how it is reached.
+const pathLoaded = new Set();
+for (const [f, src] of all) {
+  for (const m of src.matchAll(/['"`]([\w.-]+\.(?:m?js|ts))['"`]/g)) {
+    for (const [g] of all) {
+      if (g !== f && g.endsWith(`/${m[1]}`)) pathLoaded.add(g);
+    }
+  }
+}
+
+const orphanModules = all
+  .map(([f]) => f)
+  .filter((f) => !isTest(f)
+    && !ENTRY.some((re) => re.test(f))
+    && !ALLOW_FILES.some((re) => re.test(f))
+    && !ORPHAN_ALLOW.some(([re]) => re.test(f))
+    && !importedPaths.has(f)
+    && !pathLoaded.has(f));
+
 const group = (rows) => {
   const by = {};
   for (const r of rows) (by[r.file] ??= []).push(r.name);
@@ -111,6 +201,7 @@ const print = (title, rows) => {
 
 console.log(`exports scanned            : ${dead.length + testOnly.length + over.length + files.length}`);
 console.log(`DEAD (referenced nowhere)  : ${dead.length}`);
+console.log(`orphan modules (no import) : ${orphanModules.length}`);
 console.log(`test-only (informational)  : ${testOnly.length}`);
 console.log(`over-exported (info)       : ${over.length}`);
 
@@ -119,9 +210,24 @@ if (process.argv.includes('--all')) {
   print('OVER-EXPORTED — used only inside its own file', over);
 }
 
+// Both failures are REPORTED before either exits. `process.exit(1)` here meant
+// a run that had dead exports never printed its orphan modules, so fixing the
+// first was the only way to discover the second — one round trip per finding.
 if (dead.length) {
   print('DEAD — referenced nowhere, not even a test', dead);
   console.error('\n✗ Delete these, or wire them up. Code nothing calls cannot be right.');
-  process.exit(1);
+  process.exitCode = 1;
 }
-console.log('\n✅ Every export is referenced by something.');
+if (orphanModules.length) {
+  console.log(`\nORPHAN MODULES — nothing imports the file: ${orphanModules.length}`);
+  for (const f of orphanModules) console.log(`   ${f}`);
+  console.log('\nA module nothing imports cannot run. Delete it, or import it from');
+  console.log('wherever it was meant to be used. A test that READS its source is not');
+  console.log('an import — that is how a 380-line duplicate survived a dead-code sweep');
+  console.log('while a money guard it held was asserted against it and passed.');
+  process.exitCode = 1;
+}
+
+if (!dead.length && !orphanModules.length) {
+  console.log('\n✅ Every export is referenced by something, and every module is imported.');
+}

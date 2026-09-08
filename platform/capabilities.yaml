@@ -377,7 +377,13 @@ capabilities:
     owner: app
     implementation_status: full
     activation_status: active
-    evidence: [backend/services/admin.service.js]
+    # Was `backend/services/admin.service.js` — a file no route imported, so the
+    # evidence for "audit logging works" was a method nothing could call. The
+    # writer and the screen that reads it are the evidence now.
+    evidence:
+      - database/repositories/audit.js
+      - backend/routes/admin/audit.admin.routes.js
+      - admin-panel/src/Pages/Settings/AuditLogs.tsx
 
   # ── F. Networking & Edge ───────────────────────────────────────────────────
   - id: CAP-36

@@ -6,6 +6,9 @@ import { db } from '#db';
 import { CYCLE_TYPE_VALUES } from '../../domains/markets/cycleTypes.js';
 import { adminAdjustment } from '../../domains/wallet/walletAuthority.service.js';
 import { getUser } from '#db/repositories/users.js';
+// The wallet rows themselves — a delete is a decision, and a decision reads
+// what a movement would lock, never a stored copy of a balance.
+import { getBalancesPaise } from '#db/repositories/wallets.core.js';
 import { randomBytes } from 'node:crypto';
 // `maxWarnings` — one owner. The setting that used to auto-block on a merchant
 // rejection now marks a flagged player for review; it is READ here, never
@@ -381,6 +384,43 @@ router.put('/users/:userId/unblock', authenticate, isAdmin, async (req, res) => 
  */
 router.delete('/users/:userId', authenticate, isAdmin, async (req, res) => {
   try {
+    // ── Money in flight refuses the delete ──────────────────────────────────
+    // These two guards existed ONLY in `services/admin.service.js`, which
+    // nothing imports — and `moneyDecisionsReadTheWallet.test.js` asserted the
+    // locked-balance one AGAINST THAT DEAD FILE, so the suite reported the
+    // guard as present while the live route had none.
+    //
+    // Without them: a player with a PAID deposit awaiting merchant confirmation,
+    // or a withdrawal sitting in escrow, is marked DELETED while the order stays
+    // live in the merchant queue. The merchant completes it and the money has no
+    // owner who can sign in to see it. Nothing anywhere reports a problem —
+    // `softDeleteUser` only writes status/deleted_at/deleted_by, and it succeeds.
+    //
+    // The order check comes first because it is the cheaper read and the more
+    // common refusal.
+    const open = await db.orders.findOrders({
+      userId: req.params.userId,
+      states: ['ASSIGNED', 'PROCESSING', 'PAID', 'DISPUTED'],
+      limit: 1,
+    });
+    if (open.total > 0) {
+      return res.status(409).json({
+        success: false,
+        message: `Cannot delete: ${open.total} order(s) still open. Resolve or cancel them first.`,
+      });
+    }
+
+    // Read from the WALLET, not from a stored copy on the account row (Trap 7).
+    // This is a decision read: it refuses an irreversible action, so it must see
+    // the same rows a movement would lock.
+    const { lockedBalance } = await getBalancesPaise(String(req.params.userId));
+    if (lockedBalance > 0) {
+      return res.status(409).json({
+        success: false,
+        message: `Cannot delete: ₹${(lockedBalance / 100).toLocaleString('en-IN')} is locked in escrow or an open bet.`,
+      });
+    }
+
     const user = await db.users.softDeleteUser(req.params.userId, { actor: req.user.userId });
     if (!user) {
       // Null covers both "no such account" and "already deleted": either way

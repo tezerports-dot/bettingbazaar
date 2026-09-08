@@ -325,6 +325,47 @@ const MUTATIONS = [
     from: `       payment_flag_reason = '',`,
     to: `       payment_flag_reason = NULL,`,
   },
+
+  // ── A delete must not strand money ────────────────────────────────────────
+  // Both guards lived only in a file nothing imported, while a test asserted
+  // one of them against that file and passed. They are on the live route now;
+  // these are what keep them there.
+  {
+    id: 'M71', file: 'backend/routes/admin/users.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/adminUsersRoutes.test.js',
+    why: 'a player with a PAID order still open can be deleted again',
+    from: `    if (open.total > 0) {`,
+    to: `    if (false && open.total > 0) {`,
+  },
+  {
+    id: 'M72', file: 'backend/routes/admin/users.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/adminUsersRoutes.test.js',
+    why: 'a player with money locked in escrow can be deleted again',
+    from: `    if (lockedBalance > 0) {`,
+    to: `    if (false && lockedBalance > 0) {`,
+  },
+  // ── The dispute resolution that closed an order and paid nobody ───────────
+  // `check:settable` refuses this statically, but a static gate cannot see
+  // whether the money moved. This proves the suite does.
+  {
+    id: 'M73', file: 'backend/domains/payment/paymentOrder.routes.js', config: PG,
+    test: 'backend/tests/routes/disputeResolvePathsRoutes.test.js',
+    why: 'resolving a dispute marks the order COMPLETED and credits nobody again',
+    from: `        disputeDecision:   resolution === 'release' ? 'RELEASE_TO_USER' : 'CANCEL_ORDER',
+        disputeResolution: reason.trim(),`,
+    to: `        disputeResolution: resolution === 'release' ? 'released' : 'refunded',
+        resolutionNotes:   reason.trim(),`,
+  },
+  {
+    id: 'M74', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/disputeResolvePathsRoutes.test.js',
+    why: 'a merchant dispute lands DISPUTED with no reason again',
+    from: `                disputeRaisedBy: 'merchant',
+            },`,
+    to: `                disputeRaisedBy: 'merchant',
+                updatedAt:       new Date(),
+            },`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

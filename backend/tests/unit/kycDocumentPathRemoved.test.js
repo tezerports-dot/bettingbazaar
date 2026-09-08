@@ -99,13 +99,19 @@ describe('identity data is not on the users table', () => {
 });
 
 describe('there is one KYC decision path', () => {
-  it('admin.service.js no longer carries its own approve/reject/queue', () => {
-    // A third implementation, with no callers, doing read-modify-write on a
-    // stale read and logging raw Aadhaar numbers to an append-only audit store.
-    const svc = read('../../services/admin.service.js');
-    expect(svc).not.toMatch(/async approveKYC/);
-    expect(svc).not.toMatch(/async rejectKYC/);
-    expect(svc).not.toMatch(/async getKYCQueue/);
+  it('the third implementation is gone entirely, not just its KYC half', () => {
+    // `services/admin.service.js` carried a third KYC decision path — with no
+    // callers, doing read-modify-write on a stale read and logging raw Aadhaar
+    // numbers to an append-only audit store. Those three methods were removed
+    // and this asserted their absence.
+    //
+    // The rest of the file was never reachable either: 380 lines of
+    // block/unblock/delete/sub-admin CRUD that no route imported, holding a
+    // money guard the live delete route did not have and two writes of NULL
+    // into a NOT NULL column. Asserting on a file nothing calls is how it
+    // survived a dead-code sweep, so the assertion is now that the file does
+    // not exist.
+    expect(existsSync(new URL('../../services/admin.service.js', import.meta.url))).toBe(false);
   });
 
   it('the admin routes still decide through the state machine', () => {

@@ -194,6 +194,61 @@ A route test proves a handler works. It can never prove anything calls it.
    route.** Reading the handler is not enough. Reading the component is not
    enough. The two must be checked against each other.
 
+## A write that follows a commit must not be able to fail
+
+The order lifecycle moves the STATE first and writes the accompanying fields
+SECOND, deliberately: an order must never be found in a new state without the
+facts that justify it. The price of that ordering is that anything wrong in the
+second write happens **after the first has already committed** — the order
+moves, the handler's `catch` returns a 500, and everything it meant to do next,
+including moving money, never runs.
+
+`setOrderFields` throws on a field name it does not know. That has shipped
+**three times, in three files**, and every check in this repository was green
+each time:
+
+- `resolvedAt` / `resolvedBy` in `disputeResolution.admin.routes.js` — every
+  admin dispute resolution failed.
+- `updatedAt` in the merchant reject handler — 500 on every call, and no screen
+  called it, so nothing noticed.
+- `resolutionNotes` + `updatedAt` in `paymentOrder.routes.js` — the admin
+  panel's release button marked a **disputed deposit COMPLETED and never
+  credited the player**, then told the admin it had failed. The order left the
+  DISPUTED queue, so nothing remained to show it had gone wrong.
+
+`npm run check:settable` refuses the whole class at build time. It reads
+`SETTABLE` from the one file that defines it and checks every `set: { … }`
+literal in `backend/`. It cannot see whether the values are right or whether the
+money moved — those need a test through the real database.
+
+The same shape exists outside the lifecycle: a column that is `NOT NULL` refuses
+an explicit `null`, and `updateUser` passes values straight through. That is how
+`unblock?resetWarnings=true` 500'd *after* the unblock committed, leaving
+`is_blocked` false with `status` still `BLOCKED` — an account sign-in refused
+and the request guards admitted. **Before writing `null`, check the column.**
+
+## Code nothing imports is not code
+
+`check:dead-code` scans exported names. A default export is named at the import
+site, so a module whose only export is a `default` was exempt from every check
+in it. `backend/services/admin.service.js` was exactly that: 380 lines
+duplicating live block/unblock/delete/sub-admin routes, holding two writes of
+`null` into a `NOT NULL` column — and holding a locked-balance guard the LIVE
+delete route did not have, while `moneyDecisionsReadTheWallet.test.js` asserted
+that guard **against the dead file** and passed. The live route would
+soft-delete a player with a withdrawal still in escrow.
+
+Two rules follow, both now mechanical:
+
+1. **A module nothing imports is dead**, whatever it exports.
+   `check:dead-code` reports orphan modules and fails on them. Deliberate
+   exceptions go in `ORPHAN_ALLOW` **with a stated reason** — adding a line
+   there is a decision, not a silencer.
+2. **A test that reads a file's source is not a consumer of it.** Asserting a
+   money guard against unreachable code is worse than having no assertion,
+   because it reports the guard as present. When a test names a path, check that
+   something *imports* that path.
+
 ## One owner per value, mechanically
 
 `04-GOVERNANCE.md` §1 has always said derive, do not duplicate. Say it here in
@@ -250,6 +305,7 @@ the thing being claimed.
 | `npm run test:pg` | Money-path behaviour against a real PostgreSQL. |
 | `npm run check:deps` | No circular imports, no governance boundary violations. |
 | `npm run check:ui-coverage` | Every panel call reaches a real route. `--unused` lists endpoints no screen calls. |
-| `npm run check:dead-code` | No export is referenced by nothing. `--all` lists test-only and over-exported ones. |
+| `npm run check:dead-code` | No export is referenced by nothing, and no module is imported by nothing. `--all` lists test-only and over-exported ones. |
+| `npm run check:settable` | Every order-lifecycle `set` names a column the writer accepts — the write that runs after the state has already committed. |
 | `npm run check:db-boundary` | No SQL, driver or relative reach past `#db`. |
 | `npm run verify:capabilities` | Every claimed capability has its evidence on disk. |

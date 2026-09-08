@@ -1283,13 +1283,26 @@ router.post('/order/:id/dispute', merchantAuth, async (req, res) => {
         // working on has nothing to dispute yet. This route accepted ASSIGNED
         // and Postgres would have refused it — the disagreement no
         // reconciliation can tell apart from real drift.
+        // ── `updatedAt` is not a settable column ────────────────────────────
+        // `setOrderFields` refuses it — the UPDATE maintains `updated_at`
+        // itself — and it runs AFTER the transition has committed. So this
+        // route moved the order to DISPUTED, threw, and returned a 500: the
+        // merchant was told the dispute failed while the order sat DISPUTED
+        // with no reason, no raiser and no timestamp. Retrying did the same
+        // thing, so the order could never acquire the reason it needed. The
+        // merchant panel's dispute button calls this.
+        //
+        // `expectFrom` is left as the caller's stated intent, but note it is
+        // VALIDATED and not ENFORCED (orderLifecycle.service.js): ALLOWED_FROM
+        // admits DISPUTED from PROCESSING, PAID and COMPLETED, and that is what
+        // actually governs. A merchant disputing a PAID order — the ordinary
+        // case — is admitted, as it should be.
         const disputed = await disputeOrder(order._id, {
-            expectFrom: 'PROCESSING',
+            expectFrom: ['PROCESSING', 'PAID', 'COMPLETED'],
             set: {
                 disputeReason:   reason.trim(),
                 disputeRaisedAt: new Date(),
                 disputeRaisedBy: 'merchant',
-                updatedAt:       new Date(),
             },
         });
         if (!disputed.ok) {

@@ -17,6 +17,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg } from '#db/client.js';
 import { getBalancesPaise, applyMovementPaise } from '#db/repositories/wallets.core.js';
+import { createOrderRecord } from '#db/repositories/orders.record.js';
 import { getUser, flagPaymentWarning, softDeleteUser } from '#db/repositories/users.js';
 import { mountRouter, actor, as, request } from './_harness.js';
 
@@ -213,6 +214,67 @@ describePg('admin user routes', () => {
     expect(after.paymentFlaggedAt).toBeNull();
     // The response reports the reset count, not a stale pre-reset read.
     expect(Number(res.body.warningCount)).toBe(0);
+  });
+
+  /**
+   * ── A delete must not strand money ────────────────────────────────────────
+   *
+   * `DELETE /users/:userId` had NO guards. Both of these existed only in
+   * `services/admin.service.js`, which nothing imported, and
+   * `moneyDecisionsReadTheWallet.test.js` asserted the locked-balance one
+   * against that dead file — so the suite reported the guard as present while
+   * the live route would soft-delete a player mid-transaction.
+   *
+   * `softDeleteUser` writes status/deleted_at/deleted_by and succeeds, so
+   * nothing anywhere reported a problem: the order stayed live in the merchant
+   * queue and the money ended up with an owner who could no longer sign in.
+   */
+  it('refuses to delete a player with an open order', async () => {
+    plain = await subject();
+    const orderId = `del-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    await createOrderRecord({
+      orderId, userId: plain.userId, type: 'DEPOSIT',
+      tokenAmountRupees: 500, fiatAmountRupees: 500, state: 'PAID',
+    });
+
+    const res = await as(app, admin).delete(`/users/${plain.userId}`);
+
+    expect(res.status).toBe(409);
+    expect(res.body.message).toMatch(/open/i);
+    expect((await getUser(plain.userId)).status).not.toBe('DELETED');
+  });
+
+  it('refuses to delete a player with money locked in escrow', async () => {
+    plain = await subject();
+    await applyMovementPaise({
+      userId: plain.userId,
+      legs: [{ field: 'depositBalance', deltaPaise: 1000_00 }],
+      ledger: [{ txId: `dseed_${plain.userId}`, field: 'depositBalance', amountPaise: 1000_00, type: 'CREDIT' }],
+    });
+    // Deposit → locked, the shape an in-flight withdrawal leaves behind.
+    await applyMovementPaise({
+      userId: plain.userId,
+      legs: [
+        { field: 'depositBalance', deltaPaise: -600_00 },
+        { field: 'lockedBalance',  deltaPaise:  600_00 },
+      ],
+      ledger: [{ txId: `dlock_${plain.userId}`, field: 'lockedBalance', amountPaise: 600_00, type: 'LOCK' }],
+    });
+
+    const res = await as(app, admin).delete(`/users/${plain.userId}`);
+
+    expect(res.status).toBe(409);
+    expect(res.body.message).toMatch(/locked/i);
+    expect((await getUser(plain.userId)).status).not.toBe('DELETED');
+  });
+
+  it('deletes a player with no open orders and nothing locked', async () => {
+    // The guards must refuse the dangerous case without blocking the ordinary
+    // one — a delete nobody can perform is its own defect.
+    plain = await subject();
+    const res = await as(app, admin).delete(`/users/${plain.userId}`);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect((await getUser(plain.userId)).status).toBe('DELETED');
   });
 
   it('does not resurrect a deleted account by unblocking it', async () => {

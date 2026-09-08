@@ -168,14 +168,29 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
     // `order.status !== 'DISPUTED'` read above; two admins resolving one dispute
     // in opposite directions ran BOTH, because the per-call idempotency keys
     // protect a call against itself and not against its opposite.
+    // ── `resolutionNotes` and `updatedAt` are not columns ───────────────────
+    // Both were refused by `setOrderFields`, which runs AFTER the transition
+    // has committed — so this route marked the order COMPLETED or CANCELLED,
+    // threw before a single rupee moved, recorded no decision, and returned a
+    // 500. The player's disputed deposit was closed and never credited, and the
+    // order left the DISPUTED queue, so nothing was left to show it had gone
+    // wrong. The admin panel's Payment Control Centre calls this on every
+    // release and refund; it has never once worked.
+    //
+    // The identical bug was found and fixed in
+    // disputeResolution.admin.routes.js. This file is the copy that did not get
+    // the fix — which is why `check:settable` now refuses the whole class.
+    //
+    // The verdict goes in `dispute_decision` and the admin's words in
+    // `dispute_resolution`, matching the sibling route exactly: one vocabulary,
+    // so a dispute reads the same however it was resolved.
     const resolved = await (resolution === 'release' ? completeOrder : cancelOrder)(order._id, {
       expectFrom: 'DISPUTED',
       set: {
         disputeResolvedAt: now,
         disputeResolvedBy: req.user.userId,
-        disputeResolution: resolution === 'release' ? 'released' : 'refunded',
-        resolutionNotes:   reason.trim(),
-        updatedAt:         now,
+        disputeDecision:   resolution === 'release' ? 'RELEASE_TO_USER' : 'CANCEL_ORDER',
+        disputeResolution: reason.trim(),
         ...(resolution === 'release'
           ? { completedAt: now }
           : { cancelReason: 'DISPUTE_REFUNDED', cancelledAt: now }),

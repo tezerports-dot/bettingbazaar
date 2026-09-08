@@ -151,47 +151,25 @@ export async function userActivity(userId) {
   };
 }
 
-/**
- * Money movement per day, by kind.
+/*
+ * financialSeries / bettingSeries were REMOVED 2026-09-08.
  *
- * `date_trunc` in the query rather than grouping in the application: pulling
- * every row back to bucket it in JavaScript is the same work done further from
- * the data, and it fails on the day the table is large enough to matter.
+ * Both were written for `services/admin.service.js.getFinancialData()`, a
+ * method on a class no route ever imported, so neither ever answered a request.
+ * They surfaced as dead the moment that file was deleted.
+ *
+ * They are not being rewired, for two different reasons:
+ *
+ *   financialSeries summed `wallet_ledger` per day. `reporting.service.js`
+ *   already answers that question from the DOUBLE-ENTRY ledger, which is the
+ *   regulatory-grade source. Two daily financial series computed from two
+ *   different tables is a second owner for one value, and §1 is explicit that
+ *   the two drift and drift silently.
+ *
+ *   bettingSeries had no route, no screen and no caller at all. Building one
+ *   is work nobody asked for; the query is in git history if it is ever wanted.
  */
-export async function financialSeries({ from, to }) {
-  const { rows } = await pgQuery(
-    `SELECT date_trunc('day', created_at)::date AS day,
-            tx_type,
-            COUNT(*)::int AS count,
-            COALESCE(SUM(ABS(amount_paise)), 0) AS total
-       FROM wallet_ledger
-      WHERE created_at >= $1 AND created_at <= $2
-      GROUP BY 1, 2
-      ORDER BY 1 ASC`,
-    [from, to], 'stats_financial_series',
-  );
-  return rows.map((r) => ({
-    date: r.day, type: r.tx_type, count: r.count, totalAmount: rupees(r.total),
-  }));
-}
 
-/** Staked and paid out per day — the betting half of the same picture. */
-export async function bettingSeries({ from, to }) {
-  const { rows } = await pgQuery(
-    `SELECT date_trunc('day', placed_at)::date AS day,
-            COUNT(*)::int AS bets,
-            COALESCE(SUM(stake_paise), 0)  AS staked,
-            COALESCE(SUM(payout_paise), 0) AS paid_out
-       FROM bets
-      WHERE placed_at >= $1 AND placed_at <= $2
-      GROUP BY 1 ORDER BY 1 ASC`,
-    [from, to], 'stats_betting_series',
-  );
-  return rows.map((r) => ({
-    date: r.day, bets: r.bets,
-    staked: rupees(r.staked), paidOut: rupees(r.paid_out),
-  }));
-}
 
 
 /**
