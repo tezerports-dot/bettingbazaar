@@ -43,6 +43,7 @@ export const SystemSettings: React.FC = () => {
       enforceMultiplesOf10: true,      // schema default: true
       blockOppositeSideBetting: false, // schema default: false
       maxFundingOrdersPerHour: 0,      // schema default: 0 (off)
+      maxDepositOrdersPerMinute: 1,    // schema default: 1 (0 = off)
       maxWarnings: 3,                  // schema default: 3 (0 = never mark for review)
     },
     // Footer navigation (2026-07-13) — schema default: the historical five tabs
@@ -115,6 +116,7 @@ export const SystemSettings: React.FC = () => {
             enforceMultiplesOf10:     response.data.riskRules?.enforceMultiplesOf10     ?? true,
             blockOppositeSideBetting: response.data.riskRules?.blockOppositeSideBetting ?? false,
             maxFundingOrdersPerHour:  response.data.riskRules?.maxFundingOrdersPerHour  ?? 0,
+            maxDepositOrdersPerMinute: response.data.riskRules?.maxDepositOrdersPerMinute ?? 1,
             maxWarnings:              response.data.riskRules?.maxWarnings              ?? 3,
           },
           footerPages: response.data.footerPages?.length ? response.data.footerPages : ['home', 'results', 'winners', 'promo', 'profile'],
@@ -578,6 +580,21 @@ export const SystemSettings: React.FC = () => {
               <p className="text-xs text-gray-500 mt-1">
                 Maximum deposit/withdrawal requests a single user may create per hour.
                 0 = unlimited (off). Cancelled orders count — churn is velocity too.
+              </p>
+            </div>
+
+            <div>
+              <label className="label">Purchase Pace (new buys per minute per user)</label>
+              <input
+                type="number" min={0} max={60} step={1}
+                value={formData.riskRules.maxDepositOrdersPerMinute}
+                onChange={(e) => setFormData({ ...formData, riskRules: { ...formData.riskRules, maxDepositOrdersPerMinute: Math.min(60, Math.max(0, Math.floor(Number(e.target.value) || 0))) } })}
+                className="input"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                How often one player may START a purchase. A player holds one open buy at a
+                time anyway, so a second attempt inside the same minute is a retry storm or a
+                script, not somebody buying twice. 0 = off. Takes effect immediately — no redeploy.
               </p>
             </div>
 

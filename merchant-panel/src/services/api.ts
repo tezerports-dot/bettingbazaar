@@ -436,17 +436,12 @@ export const raiseDispute = async (orderId: string, reason?: string): Promise<Pa
   return data.order || data;
 };
 
-// =======================================================================
-// ORDER APPROVE / REJECT (Migration Patch Section 16.1 / 11.1 / 11.2)
-// =======================================================================
-
-/** approveOrder — POST /api/merchant/orders/:id/approve. Triggers 90/10 token allocation. */
-export const approveOrder = async (orderId: string): Promise<any> => {
-  const data = await request<any>(`/api/merchant/orders/${orderId}/approve`, { method: 'POST' });
-  return data;
-};
-
-// =======================================================================
+// `approveOrder` was here, posting to `/api/merchant/orders/:id/approve`. That
+// route was a second path completing a PAID deposit and has been deleted:
+// `confirmOrder` (POST /confirm/:id) is the one writer, and it is what every
+// screen already called. Nothing rendered this helper — but an exported caller
+// still looks like a caller to the ui-coverage scanner, which is why the dead
+// route read as reachable for as long as this line existed.
 
 
 // Merchants review proofScreenshot (inline image) + utrNumber on order card.

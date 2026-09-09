@@ -12,6 +12,9 @@ import { betBehaviorLimiter } from './behavioralRateLimit.js';
 // The IP deny-list. Was a model registered nowhere; every call threw into a
 // silent fail-open catch, so nothing was ever blocked. Now a real table.
 import { isIpBlocked, blockIp, unblockIp } from '#db/repositories/security.js';
+// The deposit pace is a business number an operator sets, so the limiter reads
+// it at request time rather than baking it into a tier constant.
+import { getSystemConfig } from '#db/repositories/config.js';
 
 // ==================== AUTHENTICATION RATE LIMITERS ====================
 
@@ -377,6 +380,63 @@ export const cdmReceiptLimiter = railLimiter(
     'rl:cdm:', RATE_LIMIT_TIERS.cdmReceipt,
     'Too many receipt submissions. Please wait before trying again.',
 );
+
+/**
+ * Creating a deposit order — ADMIN-EDITABLE, unlike every limiter above it.
+ *
+ * ── Why this one is configurable and the others are not ────────────────────
+ * The tiers above are security budgets: how many wrong passwords, how many
+ * retries. This is a BUSINESS pace — how often a player may start a purchase —
+ * and a business number belongs to the operator, not to a constant in a
+ * security file (`CLAUDE.md` §4). It reads `riskRules.maxDepositOrdersPerMinute`
+ * on every request, so a change takes effect without a redeploy.
+ *
+ * ── Why it was needed ──────────────────────────────────────────────────────
+ * `/deposit/create` was the only money-creation route with NO limit at all:
+ * `/withdrawal/create` carries one plus a subnet limiter and a surge breaker,
+ * and `/usdt/deposit/create` carries one. The one-open-buy rule bounded the
+ * damage to repeated 409s, and the hourly velocity rule defaults to OFF, so
+ * nothing paced the attempt itself.
+ *
+ * Default 1/minute: a player may hold one open buy at a time anyway, so a
+ * second create inside the same minute is a retry storm or a script, never
+ * somebody buying twice.
+ *
+ * `0` disables it, matching `maxFundingOrdersPerHour`'s convention. Express
+ * rate-limit treats a limit of 0 as "block everything", which is the opposite
+ * of what an operator typing 0 means here — so `skip` short-circuits first and
+ * the limiter never sees that case.
+ *
+ * Keyed on the ACTOR for the reason every money route is: a per-IP throttle
+ * puts every player behind one carrier-grade NAT in the same bucket and stops
+ * nobody willing to reconnect.
+ */
+async function depositPacePerMinute() {
+    try {
+        const cfg = await getSystemConfig();
+        const value = Number(cfg?.riskRules?.maxDepositOrdersPerMinute);
+        // schema default: 1 (database/spec/config.spec.js riskRules)
+        return Number.isFinite(value) && value >= 0 ? value : 1;
+    } catch {
+        // A config read that fails must not open the gate. The schema default is
+        // the safe answer, not "unlimited".
+        return 1;
+    }
+}
+
+export const depositCreateLimiter = rateLimit({
+    store: createRateLimitStore('rl:depcreate:'),
+    windowMs: 60 * 1000,
+    limit: depositPacePerMinute,
+    skip: async () => (await depositPacePerMinute()) === 0,
+    message: {
+        success: false,
+        message: 'You are starting purchases too quickly. Please wait a moment and try again.',
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: actorKey,
+});
 
 // ==================== GENERAL API RATE LIMITER ====================
 

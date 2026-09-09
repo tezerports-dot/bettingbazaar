@@ -2095,160 +2095,21 @@ router.get('/stats', merchantAuth, async (req, res) => {
     }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// POST /api/merchant/orders/:id/approve
-// Merchant approves a PAID deposit order. Runs token allocation (90/10 split).
-// Spec Section 11.1 / 4.2 / Finding 4 (atomic) / Finding 5 (inventory guard)
-// ─────────────────────────────────────────────────────────────────────────────
-router.post('/orders/:id/approve', merchantAuth, async (req, res) => {
-    const session = await safeSession();
-    try {
-        // WalletLedger no longer needed here — the wallet authority writes its
-        // own ledger entries now (Phase X X-3, 2026-07-10).
-        const { id }      = req.params;
-
-        // ── The order of operations, and why it changed ──────────────────
-        //
-        // This used to COMPLETE the order, then debit the merchant, and — when
-        // the merchant could not fund it — walk the order backwards from
-        // COMPLETED to PAID. Its own comment called that "compensation, not a
-        // transition — deliberately outside the state machine", which is an
-        // accurate description of a write nothing guards.
-        //
-        // The constraint is the merchant's inventory, so the inventory is
-        // checked FIRST. That is the order the /confirm path on this same route
-        // already used: debit the merchant under a hard guard, and only once it
-        // succeeds does anything else happen. A failure now leaves the order
-        // exactly where it was, with nothing to undo.
-        const pending = await db.orders.getMerchantOrder(id, req.merchantId);
-        if (!pending) return res.status(404).json({ success: false, message: 'Order not found, or not assigned to you' });
-        if (pending.status !== 'PAID') {
-            return res.status(400).json({ success: false, message: `Cannot approve order in ${pending.status} status` });
-        }
-
-        // Step 1: the merchant's tokens. Idempotent on a canonical txId, so a
-        // retried approval debits once — and hard-guarded, so an under-funded
-        // merchant is refused rather than overdrawn.
-        const { merchant: updatedMerchant } = await debitMerchantTokens({
-            merchantId: req.merchantId, amount: pending.tokenAmount,
-            reason: `Deposit ${pending.orderId} approved — tokens dispensed to user`,
-            refModel: 'PaymentOrder', refId: pending.orderId,
-            txId: `mw_dep_deduct_${pending.orderId}`, session,
-        });
-        if (!updatedMerchant) {
-            await abortOrEnd(session);
-            return res.status(400).json({
-                success: false,
-                message: 'Merchant has insufficient token inventory to approve this order',
-            });
-        }
-
-        // Step 2: the transition, guarded on PAID. Two approvals racing both
-        // reach here; only one moves the order, and the other's debit was
-        // idempotent, so nothing is double-spent either way.
-        const approved = await completeOrder(id, {
-            expectFrom: 'PAID',
-            set: { approvedBy: req.merchantId, approvedAt: new Date() },
-            session,
-        });
-        if (!approved.ok || approved.idempotent) {
-            await abortOrEnd(session);
-            if (approved.reason === 'not_found') return res.status(404).json({ success: false, message: 'Order not found' });
-            if (approved.idempotent) return res.status(409).json({ success: false, message: 'Order already approved' });
-            return res.status(400).json({ success: false, message: `Cannot approve order in ${approved.status} status` });
-        }
-        const order = approved.order;
-
-        // ── Token allocation (Section 4) ────────────────────────────────────────
-        // Uses the split already locked in at order creation
-        // (paymentOrder.model.js pre-save hook), driven by the active
-        // DepositPolicy — NOT recomputed here. This route previously had its
-        // own independent hardcoded 90/10, a second write path to the same
-        // value the model's pre-save hook already computes; removed per
-        // CLAUDE.md §2 ("No second write path to a value with a
-        // designated single-writer service"). depositAllocation already
-        // includes the floor() remainder (Spec 4.4: remainder goes to
-        // deposit, never reserve — see the pre-save hook).
-        //
-        // Read through the shared rule rather than off the order directly: an
-        // order with no recorded split (one predating the fields, or a type the
-        // pre-save hook never ran for) reads 0/0 here, and crediting 0 while the
-        // merchant is debited the full tokenAmount BURNS tokens as surely as the
-        // other direction creates them. depositCredit.js falls back to the whole
-        // amount into `depositBalance`, which is where it went before the split
-        // existed.
-        const { depositCredit, reserveCredit } = depositCreditSplit(order);
-
-        // ── User balance credit — via the wallet authority (Phase X fix X-3,
-        // 2026-07-10). This route previously credited via a raw $inc + a
-        // hand-written WalletLedger, bypassing walletAuthority (§7) and — more
-        // importantly — with NO idempotency key: the ONLY double-credit defense
-        // was the PAID->COMPLETED status guard, which a concurrent retry could
-        // pass twice. creditDeposit/creditReserve are idempotent on canonical
-        // keys — so this is now mutually idempotent with the /confirm path, and
-        // an order credits at most once in total — and each runs in its own
-        // transaction. Closes Known Open Item #6.
-        if (depositCredit > 0) await creditDeposit(order.userId, depositCredit, order.orderId, session);
-        if (reserveCredit > 0) await creditReserve(order.userId, reserveCredit, order.orderId, session);
-
-        // ── Balances come from the WALLET, never from the account row ────────
-        //
-        // This read was `db.users.getUser(...)`, and `toUser` maps no balance
-        // columns — they live in `wallets`, behind the row lock every movement
-        // takes. So all three came back `undefined`, `|| 0` turned each into a
-        // zero, and the player who had just been credited was pushed
-        // `depositBalance: 0` on the event announcing their own deposit.
-        //
-        // `emitWalletUpdate`'s own comment already warns about exactly this,
-        // and it fixed the branch that reads for itself — but this call passed
-        // the account object as `balanceOverride`, which takes the other branch
-        // and defeats the fix. The /confirm path on this same router calls it
-        // with no override, which is why it was never wrong.
-        const balances = await db.wallets.getBalances(String(order.userId));
-
-        // No separate transaction row. `creditDeposit` and `creditReserve`
-        // each write their own append-only ledger entry inside the movement, so
-        // a second hand-written record here would be a duplicate that can
-        // disagree with the one the money actually made — and it is the ledger
-        // that reconciliation is computed from.
-
-        // ── Mark UTR as RELEASED ───────────────────────────────────────────────
-        await releaseUTR(order.orderId);
-
-        await commitOrEnd(session);
-
-        // Funding event (Phase 009): nudges the ledger reconciler immediately.
-        try { publishDomainEvent(DOMAIN_EVENTS.PAYMENT_ORDER_COMPLETED, { orderId: order._id, type: order.type }); } catch (_) {}
-
-        // ── SSE: notify user of new balances (Finding 3) ──────────────────────
-        emitOrderUpdate(order.userId.toString(), 'order_completed', {
-            orderId:        order.orderId,
-            _id:            order._id,
-            status:         'COMPLETED',
-            depositBalance:  balances?.depositBalance  || 0,
-            winningsBalance: balances?.winningsBalance || 0,
-            reserveBalance:  balances?.reserveBalance  || 0,
-            server_ts:       Date.now(),
-        });
-        // No override: the emitter reads the wallet itself, which is the branch
-        // that has been correct all along.
-        await emitWalletUpdate(order.userId);
-        emitAdminUpdate('order_completed', { orderId: order._id, server_ts: Date.now() });
-
-        res.json({
-            success: true,
-            message: 'Order approved. Tokens credited to user.',
-            creditedDeposit:  depositCredit,
-            creditedReserve:  reserveCredit,
-            order: toMerchantOrderView(order),
-        });
-    } catch (error) {
-        await abortOrEnd(session);
-        console.error('POST /merchant/orders/:id/approve error:', error);
-        res.status(500).json({ success: false, message: 'Failed to approve order' });
-    }
-});
-
+// `POST /api/merchant/orders/:id/approve` was here: a SECOND path that
+// completed a PAID deposit, dispensed the merchant's tokens and credited the
+// player. `/confirm/:id` above already does all of that, and does it better —
+// it writes the settlement inline, requires and claims the UTR the player
+// submitted, reads the deposit policy, and takes the withdrawal hold.
+//
+// Two writers of one outcome is a §5 violation whatever their guards, and
+// these had already diverged. Nothing in the merchant panel called it: only an
+// exported `approveOrder` helper nothing rendered, which is why the
+// ui-coverage gate saw the route as reached — an exported caller is a caller
+// to a scanner, and is not a button.
+//
+// Deleting it also removed the last user of the no-op `safeSession` /
+// `commitOrEnd` / `abortOrEnd` stubs, so code that read as a transaction and
+// was not is gone rather than made honest.
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/merchant/orders/:id/reject
 // Merchant rejects a PAID/PROCESSING order.
@@ -2406,23 +2267,6 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
     }
 });
 
-/**
- * The session helpers, now no-ops.
- *
- * `safeSession` opened a document-store transaction and, on a standalone
- * server, logged a warning and returned null — so the "atomic" approve path
- * ran NON-atomically in exactly the deployment most likely to be a single
- * node, and the code above it could not tell the difference.
- *
- * Every money movement on this route is its own PostgreSQL transaction with a
- * deterministic idempotency key, which is what makes a retry safe without an
- * enclosing session. There is nothing left to open, commit or abort. The names
- * survive because a dozen call sites thread `session` through, and passing a
- * no-op is clearer than a sweep that deletes an argument from each of them.
- */
-const safeSession = async () => null;
-const commitOrEnd = async () => {};
-const abortOrEnd  = async () => {};
-const withSession = () => ({});
+
 
 export default router;

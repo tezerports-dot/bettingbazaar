@@ -98,14 +98,27 @@ is `CLAUDE.md` §25.
 
 ## 3. What is left
 
+### 3.0 Closed 2026-09-09 — the four findings from the penetration pass
+
+Four of the five items recorded here on `ab6bf69` are fixed. Kept as a record of
+what was decided, because each was an owner decision rather than a bug:
+
+| Item | What was done |
+|---|---|
+| **Deposits refused while KYC is `PENDING_APPROVAL`** | The service check now matches the middleware. Money IN needs a *linked* identity; money OUT needs an *approved* one. The two predicates live in one side-effect-free module, `backend/domains/identity/kycGates.js` (`isKycLinked` / `isKycApproved` / `kycRefusalFor`), imported by both `auth.middleware.js` and `paymentProcessing.service.js` so the gate and the service can no longer disagree. Refusals now carry a code (`KYC_NOT_LINKED` / `KYC_NOT_APPROVED`) and say which of the three states the player is in. |
+| **Two live paths completed a PAID deposit** | One writer kept. `/api/merchant/orders/:id/approve` was **deleted** (~155 lines) along with the merchant panel's `approveOrder` export; `/api/merchant/confirm/:id` is the sole path, because it is the one that writes settlement inline and claims the UTR. |
+| **Dead transaction scaffolding in the approve path** | Removed with the path above — `safeSession`/`commitOrEnd`/`abortOrEnd`/`withSession` were only reachable from it. The surviving `/confirm` path is a sequence of individually idempotent steps on canonical keys, which is the correct shape here: a real transaction cannot span the wallet write, the merchant debit and the ledger post anyway, and idempotent steps make a crash resumable rather than atomic-looking. |
+| **`/deposit/create` had no rate limiter** | `depositCreateLimiter` added, admin-editable: `SystemConfig.riskRules.maxDepositOrdersPerMinute` (schema default **1**, range 0–60, 0 = off), surfaced on the admin System Settings page as "Purchase Pace". A config read failure falls back to 1 rather than opening the gate. Covered by a route test asserting the second create in a minute returns **429**, not the one-open-buy 409. |
+
+Also closed while proving the above: `users.getUser()` no longer being a balance
+source is now a regression test (`database/tests/walletPg.test.js`), and the
+merchant approve path's balance read was moved to `wallets.getBalances()` before
+the path itself was deleted.
+
 ### 3.1 Code — small, and each item is verifiable
 
 | Item | Why it is open |
 |---|---|
-| **Deposits are refused while KYC is PENDING_APPROVAL** | `requireLinkedKyc` deliberately admits `PENDING_APPROVAL` (dated owner decision, with reasoning: the details are linked and a verifier simply has not reached them). `createDepositOrder` then refuses anything but `APPROVED`, with a generic message and no error code. So a newly-onboarded player passes the gate designed to let them through and is refused by the service. It fails CLOSED, so nothing unsafe happens — but no player can fund an account until a verifier reaches them. **Needs an owner decision**: either the service check relaxes to match the middleware, or the middleware and both route comments are wrong and should say so. Not changed unilaterally, because it loosens an identity gate on the money-in path. |
-| **Two live paths complete a PAID deposit** | `/api/merchant/confirm/:id` and `/api/merchant/orders/:id/approve` both credit the player and dispense tokens, and the merchant panel calls BOTH. They are mutually idempotent on canonical keys, so this is not a double-credit — but it is two writers of one outcome (`CLAUDE.md` §5), they have already diverged (only `/confirm` writes settlement inline and handles the UTR), and the second carries a comment describing a pre-save hook on an ODM model that no longer exists. Pick one owner. |
-| **Dead transaction scaffolding in the approve path** | `safeSession`/`commitOrEnd`/`abortOrEnd` are no-op stubs (`async () => null`, `async () => {}`), so `await commitOrEnd(session)` commits nothing and `abortOrEnd` rolls nothing back. The steps are individually idempotent so a crash is recoverable, but the code reads as atomic and is not — the exact "dead logic that looks like a safeguard" hazard in `CLAUDE.md` §22. |
-| **`/api/payment/deposit/create` has no rate limiter** | Its two siblings do: `/withdrawal/create` carries a limiter, a subnet limiter and a surge breaker; `/usdt/deposit/create` carries one. The one-open-buy rule bounds the damage to repeated 409s, and the velocity limit `maxFundingOrdersPerHour` defaults to **0 (off)**, so the only cost is unbounded authenticated request volume. Low severity, but the asymmetry looks like an oversight rather than a decision. |
 | **10 endpoints built with no UI** | By `CLAUDE.md` §28, a backend feature with no UI is not shipped. Merchant **bulk payouts** (5 endpoints), merchant **token orders** (4: merchant creates, admin approves/rejects), **phantom agents** (1). Verified absent from all three panels. Each is either a screen to finish or code to delete — an owner decision, not a technical one. |
 | **No mutation run covers B8** | The commission engine's new guards are test-covered but not mutation-proven. The harness owns the files it names while running (`CLAUDE.md` trap 12). |
 | **Route constants in two panels** | The admin and user panels write route paths as literals (`CLAUDE.md` §8). Open work, not a rule being broken silently. |

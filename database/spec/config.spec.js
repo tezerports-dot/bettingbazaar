@@ -133,6 +133,11 @@ export const SYSTEM_CONFIG_SPEC = group({
     enforceMultiplesOf10:     b(true),
     blockOppositeSideBetting: b(false),
     maxFundingOrdersPerHour:  n(0, 0),       // 0 = off
+    // Order CREATION pacing, per player, per minute. 1 by default: a player
+    // holds one open buy at a time anyway, so a second attempt inside the same
+    // minute is a retry storm or a script, never a person buying twice.
+    // 0 = off. Enforced by `depositCreateLimiter` on the create route.
+    maxDepositOrdersPerMinute: n(1, 0, 60),
     maxWarnings:              n(3, 0),       // 0 = never mark for review
   }),
 

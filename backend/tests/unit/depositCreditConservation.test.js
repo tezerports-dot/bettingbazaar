@@ -85,6 +85,11 @@ vi.mock('../../middleware/security.js', () => ({
   orderRetryLimiter: passThrough,
   utrGraceLimiter: passThrough,
   usdtDepositLimiter: passThrough,
+  // Paces new purchases per minute, admin-editable. Passed through here for the
+  // same reason as its siblings: this suite is about the money arithmetic, and a
+  // real limiter would make the second call in a test 429 instead of exercising
+  // the path under test.
+  depositCreateLimiter: passThrough,
 }));
 vi.mock('../../middleware/ipDefense.js', () => ({
   createSubnetLimiter: () => (req, res, next) => next(),

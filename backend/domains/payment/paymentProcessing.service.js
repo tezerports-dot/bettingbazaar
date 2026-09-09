@@ -72,6 +72,10 @@ import {
   splitWithdrawal, shareFeeAcrossParts,
 } from '../merchant/denominations.js';
 import { rupeesToPaise, paiseToRupees } from '../../shared/money.js';
+// The KYC gate for money IN, and the sentences that explain a refusal. Imported
+// rather than restated: the route in front of this used one rule and this file
+// used a stricter one, and the stricter copy silently won.
+import { isKycLinked, isKycApproved, kycRefusalFor } from '../identity/kycGates.js';
 // The per-order payment link has one owner, and it is not the client.
 import { upiPaymentLink } from './paymentLink.js';
 // The only shape of an order a player receives.
@@ -581,8 +585,24 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
       { status: 403, code: 'USER_BLOCKED' },
     );
   }
-  if (user.kycStatus !== 'APPROVED') {
-    throw Object.assign(new Error('Please complete KYC verification to purchase tokens'), { status: 403 });
+  // ── Money IN needs identity LINKED, not approved ────────────────────────
+  //
+  // Owner decision: an Aadhaar submitted and waiting on a verifier is enough to
+  // fund an account. Verification runs in batches and the player can do nothing
+  // to hurry it, so holding deposits behind it loses the player without
+  // protecting anyone — the protection that matters is on the way OUT, where
+  // `requestWithdrawal` still demands APPROVED.
+  //
+  // This read `!== 'APPROVED'`, which contradicted `requireLinkedKyc` on the
+  // route in front of it: every PENDING_APPROVAL player passed the gate built
+  // to admit them and was refused here, with a message that named neither their
+  // status nor what to do. Same predicate as the middleware now, so the two cannot
+  // drift apart again.
+  if (!isKycLinked(user.kycStatus)) {
+    throw Object.assign(
+      new Error(kycRefusalFor(user.kycStatus)),
+      { status: 403, code: 'KYC_NOT_LINKED', kycStatus: user.kycStatus },
+    );
   }
 
   // ── What the player actually pays, and in what ──────────────────────────
@@ -712,8 +732,15 @@ export async function createWithdrawalOrder(userId, tokenAmount, attempt = {}) {
       { status: 403, code: 'USER_BLOCKED' },
     );
   }
-  if (user.kycStatus !== 'APPROVED') {
-    throw Object.assign(new Error('Please complete KYC verification before withdrawing'), { status: 403 });
+  // Money OUT is the stricter rule, and deliberately not the one above: a
+  // deposit needs identity LINKED, a withdrawal needs it APPROVED. Same owner
+  // for both predicates so the asymmetry is stated once rather than inferred
+  // from two string comparisons that could drift apart.
+  if (!isKycApproved(user.kycStatus)) {
+    throw Object.assign(
+      new Error('Your Aadhaar must be verified before you can withdraw.'),
+      { status: 403, code: 'KYC_NOT_APPROVED', kycStatus: user.kycStatus },
+    );
   }
   if (!user.bankDetails?.accountNumber || !user.bankDetails?.ifscCode) {
     throw Object.assign(new Error('Please add your bank account details before withdrawing'), { status: 400 });

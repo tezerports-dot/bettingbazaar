@@ -145,6 +145,7 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
           enforceMultiplesOf10:     config.riskRules?.enforceMultiplesOf10     ?? true,  // schema default: true
           blockOppositeSideBetting: config.riskRules?.blockOppositeSideBetting ?? false, // schema default: false
           maxFundingOrdersPerHour:  config.riskRules?.maxFundingOrdersPerHour  ?? 0,     // schema default: 0
+          maxDepositOrdersPerMinute: config.riskRules?.maxDepositOrdersPerMinute ?? 1,   // schema default: 1 (0 = off)
           maxWarnings:              config.riskRules?.maxWarnings              ?? 3,     // schema default: 3 (0 = never)
         },
         tlsFingerprintDefense: {
@@ -282,6 +283,13 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
         (!Number.isInteger(riskRules.maxFundingOrdersPerHour) || riskRules.maxFundingOrdersPerHour < 0)) {
       return res.status(400).json({ success: false, message: 'riskRules.maxFundingOrdersPerHour must be a non-negative integer.' });
     }
+    // 0 disables it; 60 is one per second, past which the window stops meaning
+    // anything. Bounds match the spec so the route refuses before the write does.
+    if (riskRules?.maxDepositOrdersPerMinute !== undefined &&
+        (!Number.isInteger(riskRules.maxDepositOrdersPerMinute)
+         || riskRules.maxDepositOrdersPerMinute < 0 || riskRules.maxDepositOrdersPerMinute > 60)) {
+      return res.status(400).json({ success: false, message: 'riskRules.maxDepositOrdersPerMinute must be a whole number between 0 and 60 (0 = off).' });
+    }
     // ── Business Config Audit fields ──────────────────────────────────────────
     if (riskRules?.maxWarnings !== undefined &&
         (!Number.isInteger(riskRules.maxWarnings) || riskRules.maxWarnings < 0)) {
@@ -368,6 +376,7 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     if (riskRules?.enforceMultiplesOf10     !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.enforceMultiplesOf10', !!riskRules.enforceMultiplesOf10]);
     if (riskRules?.blockOppositeSideBetting !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.blockOppositeSideBetting', !!riskRules.blockOppositeSideBetting]);
     if (riskRules?.maxFundingOrdersPerHour  !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.maxFundingOrdersPerHour', riskRules.maxFundingOrdersPerHour]);
+    if (riskRules?.maxDepositOrdersPerMinute !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.maxDepositOrdersPerMinute', riskRules.maxDepositOrdersPerMinute]);
     // Business Config Audit (2026-07-11) — formerly-hardcoded values, now admin-owned
     // Review threshold — consumed by users.admin.routes GET /users/flagged to
     // mark a flagged player for review. It does NOT block: a merchant rejection

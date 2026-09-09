@@ -22,6 +22,9 @@
  */
 
 import { db } from '#db';
+// The KYC vocabulary has one owner, and it is not this file — the payment
+// service needs the same rule without booting the token layer to get it.
+import { isKycLinked, isKycApproved, kycRefusalFor } from './kycGates.js';
 import { isTokenRevoked as pgIsTokenRevoked } from '#db/repositories/identity.js';
 import { getUser } from '#db/repositories/users.js';
 import { setContextUser } from '../../middleware/requestContext.js'; // X-6
@@ -201,17 +204,7 @@ const authenticate = async (req, res, next) => {
  * So each status says what is actually true and what, if anything, the player
  * can do about it. `code` stays stable for the client; only the sentence moves.
  */
-const KYC_REFUSAL = {
-  // Signed up through the bot: the Aadhaar is captured and queued. Nothing to do.
-  PENDING_APPROVAL: 'Your Aadhaar is being verified. This is done in batches and needs nothing '
-    + 'from you — you will be able to play as soon as it clears.',
-  // No Aadhaar was ever captured. This is the only status a player can act on,
-  // and the action is to finish signing up in the bot.
-  PENDING_SUBMISSION: 'Finish signing up in our Telegram bot — we still need your Aadhaar number '
-    + 'before you can play.',
-  REJECTED: 'Your Aadhaar could not be verified against the issuing authority. Please contact '
-    + 'support — this usually means a mismatch we can sort out for you.',
-};
+
 
 /**
  * The WEAKER gate: KYC details have been given, not necessarily cleared.
@@ -247,11 +240,11 @@ export async function requireLinkedKyc(req, res, next) {
     if (cfg?.kycRequired === false) return next();
 
     const status = req.user?.kycStatus || 'PENDING_SUBMISSION';
-    if (status === 'APPROVED' || status === 'PENDING_APPROVAL') return next();
+    if (isKycLinked(status)) return next();
 
     return res.status(403).json({
       success: false,
-      message: KYC_REFUSAL[status] || KYC_REFUSAL.PENDING_SUBMISSION,
+      message: kycRefusalFor(status),
       // A DIFFERENT code from the approved gate. A panel that cannot tell the
       // two apart shows "your Aadhaar is being verified" to someone who never
       // submitted one, and the button it offers leads nowhere.
@@ -268,12 +261,12 @@ export async function requireLinkedKyc(req, res, next) {
 export async function requireApprovedKyc(req, res, next) {
   try {
     const cfg = await getSystemConfig();
-    if (cfg?.kycRequired === false || req.user?.kycStatus === 'APPROVED') return next();
+    if (cfg?.kycRequired === false || isKycApproved(req.user?.kycStatus)) return next();
 
     const status = req.user?.kycStatus || 'PENDING_SUBMISSION';
     return res.status(403).json({
       success: false,
-      message: KYC_REFUSAL[status] || KYC_REFUSAL.PENDING_SUBMISSION,
+      message: kycRefusalFor(status),
       code: 'KYC_REQUIRED',
       kycStatus: status,
       // Whether the player can do anything at all. The panel uses this to

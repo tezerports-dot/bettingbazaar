@@ -15,6 +15,10 @@ import {
   // order's own deadline. Neither is a login route, so no auth tier covered
   // them, and the global backstop is 1000 requests per 15 minutes.
   orderRetryLimiter, utrGraceLimiter,
+  // The INR deposit create was the last money-creation route with no limit at
+  // all, while both its siblings carried one. Admin-editable, because how often
+  // a player may start a purchase is a business pace, not a security budget.
+  depositCreateLimiter,
 } from '../../middleware/security.js';
 // Wallet operations are for channel members — same gate as betting.
 import { requireChannelMembership } from '../../middleware/requireChannelMembership.js';
@@ -84,7 +88,7 @@ function forPlayer(order) {
 // `requireApprovedKyc` stays on the withdrawal below. That is the whole of the
 // stricter rule and it is where it belongs: money leaving is the irreversible
 // direction.
-router.post('/deposit/create', authenticate, requireLinkedKyc, requireChannelMembership({ action: 'add funds' }), async (req, res) => {
+router.post('/deposit/create', authenticate, requireLinkedKyc, requireChannelMembership({ action: 'add funds' }), depositCreateLimiter, async (req, res) => {
   try {
     const result = await requestDeposit({ userId: req.user.userId, tokenAmount: Number(req.body.tokenAmount) });
     res.json({ success: true, message: 'Deposit request created. Waiting for merchant assignment.', ...result });
