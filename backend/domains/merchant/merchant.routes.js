@@ -2190,7 +2190,21 @@ router.post('/orders/:id/approve', merchantAuth, async (req, res) => {
         // transaction. Closes Known Open Item #6.
         if (depositCredit > 0) await creditDeposit(order.userId, depositCredit, order.orderId, session);
         if (reserveCredit > 0) await creditReserve(order.userId, reserveCredit, order.orderId, session);
-        const updatedUser = await db.users.getUser(order.userId);
+
+        // ── Balances come from the WALLET, never from the account row ────────
+        //
+        // This read was `db.users.getUser(...)`, and `toUser` maps no balance
+        // columns — they live in `wallets`, behind the row lock every movement
+        // takes. So all three came back `undefined`, `|| 0` turned each into a
+        // zero, and the player who had just been credited was pushed
+        // `depositBalance: 0` on the event announcing their own deposit.
+        //
+        // `emitWalletUpdate`'s own comment already warns about exactly this,
+        // and it fixed the branch that reads for itself — but this call passed
+        // the account object as `balanceOverride`, which takes the other branch
+        // and defeats the fix. The /confirm path on this same router calls it
+        // with no override, which is why it was never wrong.
+        const balances = await db.wallets.getBalances(String(order.userId));
 
         // No separate transaction row. `creditDeposit` and `creditReserve`
         // each write their own append-only ledger entry inside the movement, so
@@ -2211,12 +2225,14 @@ router.post('/orders/:id/approve', merchantAuth, async (req, res) => {
             orderId:        order.orderId,
             _id:            order._id,
             status:         'COMPLETED',
-            depositBalance:  updatedUser.depositBalance  || 0,
-            winningsBalance: updatedUser.winningsBalance || 0,
-            reserveBalance:  updatedUser.reserveBalance  || 0,
+            depositBalance:  balances?.depositBalance  || 0,
+            winningsBalance: balances?.winningsBalance || 0,
+            reserveBalance:  balances?.reserveBalance  || 0,
             server_ts:       Date.now(),
         });
-        await emitWalletUpdate(order.userId, updatedUser);
+        // No override: the emitter reads the wallet itself, which is the branch
+        // that has been correct all along.
+        await emitWalletUpdate(order.userId);
         emitAdminUpdate('order_completed', { orderId: order._id, server_ts: Date.now() });
 
         res.json({

@@ -12,6 +12,7 @@ import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import {
   getBalancesPaise, getBalancesRupees, applyDeltaPaise, applyDeltaRupees, transferPaise,
 } from '../repositories/wallets.core.js';
+import * as users from '../repositories/users.js';
 
 const hasPg = pgConfigured();
 const describePg = hasPg ? describe : describe.skip;
@@ -243,6 +244,43 @@ describePg('Postgres-authoritative wallet', () => {
       await expect(
         pgQuery(`UPDATE wallet_ledger SET amount_paise = 999999 WHERE tx_id = 'immutable'`),
       ).rejects.toThrow(/append-only/);
+    });
+  });
+
+  /**
+   * Balances live in ONE place, and the account row is not it.
+   *
+   * `/api/merchant/orders/:id/approve` read them off `db.users.getUser(...)`,
+   * whose mapper carries no balance columns, so all three came back undefined,
+   * `|| 0` turned each into a zero, and the player who had just been credited
+   * was pushed `depositBalance: 0` on the event announcing their own deposit.
+   *
+   * This pins the shape rather than that one call site: if a balance column is
+   * ever denormalised onto `users`, it becomes a second writer of a number the
+   * wallet row owns, and this fails loudly instead of a payload going quietly
+   * wrong.
+   */
+  describe('one owner for a balance', () => {
+    it('does not expose balances on the account row', async () => {
+      await applyDeltaPaise({ userId: USER, field: 'depositBalance', deltaPaise: 50_000, txId: 'owner-1' });
+
+      // The account row must EXIST for this to mean anything — a null would
+      // pass every `toBeUndefined()` below while proving nothing.
+      // Own the row rather than assuming the table is empty: this database is
+      // shared with every other suite and with the mutation harness (trap 10).
+      await pgQuery('DELETE FROM users WHERE user_id = $1 OR mobile = $2', [USER, '9995550001']);
+      await pgQuery(
+        `INSERT INTO users (user_id, username, mobile, kyc_status)
+         VALUES ($1, 'walletowner', '9995550001', 'APPROVED')`, [USER],
+      );
+      const account = await users.getUser(USER);
+      expect(account).toBeTruthy();
+      for (const field of ['depositBalance', 'winningsBalance', 'reserveBalance', 'lockedBalance']) {
+        expect(account[field]).toBeUndefined();
+      }
+
+      // The wallet is where the money is, and it says so.
+      expect((await getBalancesPaise(USER)).depositBalance).toBe(50_000);
     });
   });
 });
