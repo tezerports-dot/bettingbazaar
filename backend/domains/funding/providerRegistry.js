@@ -17,6 +17,8 @@
 //   }
 
 import { createDepositOrder, createWithdrawalOrder } from '../payment/paymentProcessing.service.js';
+import { createUsdtDeposit } from './usdtDeposit.service.js';
+import { btcpayConfigured } from '../../config/btcpay.config.js';
 
 // ── MANUAL_P2P_INR — the live provider ───────────────────────────────────────
 // The existing merchant-fulfilled INR flow (queue assignment, UPI/bank, UTR
@@ -33,22 +35,37 @@ const manualP2PInr = {
   createWithdrawal: ({ userId, tokenAmount }) => createWithdrawalOrder(userId, tokenAmount),
 };
 
-// ── USDT_TRC20 — declared, inactive ──────────────────────────────────────────
-// Deposit-only USDT (TRC20) per the 2026-07 direction; config fields exist
-// on the platform already. Activating requires the USDT Treasury build
-// (address management, chain confirmation watching, INR-peg conversion at
-// the fixed 1:1 token rate) — tracked in docs/governance/04-GOVERNANCE.md. Until then the
-// adapter exists so the registry, not scattered route code, is where USDT
-// lands.
-const usdtTrc20 = {
-  code: 'USDT_TRC20',
-  label: 'USDT (TRC20)',
+// ── USDT — live when BTCPay is configured ────────────────────────────────────
+//
+// Deposit-only, per the 2026-07 direction: a player buys tokens with USDT and
+// never sells back into it. `capabilities.withdrawal` is false and the method
+// throws, so the "deposit-only" rule is a property of the adapter rather than
+// something every caller has to remember.
+//
+// `active` is DERIVED from whether the credentials exist, not written as a
+// literal. Editing a boolean to switch a rail on is how a deployment ends up
+// with an active adapter and no server to talk to: a player opens an invoice
+// that no BTCPay ever heard of, pays nothing, and waits. Configured or absent
+// is a fact about the environment, so it is read from the environment.
+//
+// The chain and token are BTCPay's business. The store decides which payment
+// methods can settle an invoice; this platform asks for an amount in
+// `BTCPAY_INVOICE_CURRENCY` and is told whether it was paid. Naming a chain
+// here would be a second declaration of something only the store can enforce.
+const usdt = {
+  code: 'USDT',
+  label: 'USDT (BTCPay Server)',
   currency: 'USDT',
   kind: 'CRYPTO',
-  active: false,
+  get active() { return btcpayConfigured(); },
   capabilities: { deposit: true, withdrawal: false },
-  createDeposit:    () => { throw Object.assign(new Error('USDT deposits are not live yet.'), { status: 503 }); },
-  createWithdrawal: () => { throw Object.assign(new Error('USDT withdrawals are not supported.'), { status: 400 }); },
+  createDeposit:    ({ userId, tokenAmount }) => createUsdtDeposit(userId, tokenAmount),
+  createWithdrawal: () => {
+    throw Object.assign(
+      new Error('USDT withdrawals are not supported. Withdraw in INR.'),
+      { status: 400, code: 'USDT_WITHDRAWAL_UNSUPPORTED' },
+    );
+  },
 };
 
 // ── PAYMENT_GATEWAY — declared, inactive ─────────────────────────────────────
@@ -68,7 +85,7 @@ const paymentGateway = {
 
 const PROVIDERS = Object.freeze({
   [manualP2PInr.code]: manualP2PInr,
-  [usdtTrc20.code]: usdtTrc20,
+  [usdt.code]: usdt,
   [paymentGateway.code]: paymentGateway,
 });
 

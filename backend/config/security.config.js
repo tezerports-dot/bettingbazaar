@@ -99,6 +99,32 @@ export const RATE_LIMIT_TIERS = {
   // independently of any balance. Tight, and keyed on IP: keying on a field
   // from the request body (the mobile number) let a caller reset their own
   // budget at will, which is no limit at all.
+  // ── The payment rails' own routes ────────────────────────────────────────
+  // Each of these was added with the feature and shipped WITHOUT a limit. They
+  // are not login endpoints, so the auth tiers never covered them, and the
+  // global /api/* backstop is 1000 per 15 minutes — which is no limit at all
+  // for a route that calls an external API or writes to a queue.
+  //
+  // Creating a USDT invoice makes an outbound request to BTCPay and HOLDS A
+  // PRICE at the rate live at that moment. Unlimited creation is both a way to
+  // exhaust somebody else's server on our behalf and a way to accumulate
+  // options on the exchange rate. The one-open-invoice rule is the real guard;
+  // this bounds the attempts that reach it.
+  usdtDeposit: { windowMs: 60 * 60 * 1000, max: 5 },
+  // A retry creates a NEW order, and on a sell it locks tokens in escrow. The
+  // database refuses a second retry of the same order, so this bounds the rate
+  // across DIFFERENT orders.
+  orderRetry:  { windowMs: 60 * 60 * 1000, max: 10 },
+  // The grace claim extends an order's own deadline. It is once per order by
+  // construction (`utr_grace_at IS NULL`), so this bounds how fast a caller can
+  // sweep across orders looking for one that has not claimed it.
+  utrGrace:    { windowMs: 60 * 60 * 1000, max: 30 },
+  // A merchant supplying cash links. One LIVE link per merchant is enforced by
+  // a unique index; this stops a loop churning supply and demand broadcasts.
+  cashLinkSupply: { windowMs: 60 * 60 * 1000, max: 60 },
+  // A CDM receipt carries an uploaded image reference and is read only by an
+  // admin. One per order, so this bounds the sweep.
+  cdmReceipt:  { windowMs: 60 * 60 * 1000, max: 30 },
   // General API tier used by security.js's apiLimiter
   api:        { windowMs: 1 * 60 * 1000,  max: 100 },
 };

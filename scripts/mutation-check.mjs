@@ -967,6 +967,87 @@ const MUTATIONS = [
     from: `  if (!payee || !Number.isFinite(amount) || amount <= 0) return null;`,
     to: `  if (false) return null;`,
   },
+  // ── B7: USDT deposits, and the webhook that mints ─────────────────────────
+  {
+    id: 'M143', file: 'backend/domains/funding/btcpaySignature.js', config: UNIT,
+    test: 'backend/tests/unit/btcpaySignature.test.js',
+    why: 'a MISSING signature short-circuits to "no mismatch" and anyone who can reach the webhook can mint tokens into any wallet — the exact inline check this pattern replaced',
+    from: `  const provided = String(headers['btcpay-sig'] || '');
+  if (!provided) {
+    return { ok: false, status: 401, message: 'Missing signature' };
+  }`,
+    to: `  const provided = String(headers['btcpay-sig'] || '');
+  if (!provided) {
+    return { ok: true };
+  }`,
+  },
+  {
+    id: 'M144', file: 'backend/domains/funding/btcpaySignature.js', config: UNIT,
+    test: 'backend/tests/unit/btcpaySignature.test.js',
+    why: 'an unconfigured secret is TRUSTED rather than refused — unverifiable and authentic are not the same thing, and this one opens the mint on every deployment that has not set it',
+    from: `  if (!secret) {
+    return { ok: false, status: 503, message: 'USDT webhook not configured' };
+  }`,
+    to: `  if (!secret) {
+    return { ok: true };
+  }`,
+  },
+  {
+    id: 'M145', file: 'backend/domains/funding/usdtDeposit.service.js', config: PG,
+    test: 'backend/tests/routes/usdtDepositPg.test.js',
+    why: 'the settle credits without winning the transition first, so every redelivery of one signed body credits the player again — and a captured body can be replayed forever',
+    from: `  if (!moved.ok) {
+    // \`already_there\` and \`duplicate\` are the redelivery cases and are a
+    // success: the money moved on the delivery that won.
+    const settled = ['already_there', 'duplicate'].includes(moved.reason);
+    return { ok: settled, reason: moved.reason, alreadySettled: settled };
+  }`,
+    to: `  if (!moved.ok && moved.reason === 'not_found') {
+    return { ok: false, reason: moved.reason };
+  }`,
+  },
+  {
+    id: 'M146', file: 'backend/domains/funding/usdtDeposit.service.js', config: PG,
+    test: 'backend/tests/routes/usdtDepositPg.test.js',
+    why: 'a purchase the INR rail serves is admitted onto the USDT rail, so the ceiling and the floor no longer meet and a player can route round the merchant network',
+    from: `  if (paise < MIN_USDT_BUY_PAISE) {`,
+    to: `  if (false) {`,
+  },
+  {
+    id: 'M147', file: 'backend/domains/funding/usdtDeposit.service.js', config: PG,
+    test: 'backend/tests/routes/usdtDepositPg.test.js',
+    why: 'a failed BTCPay create leaves the row AWAITING_PAYMENT, and the one-open-invoice rule then locks the player out of the rail permanently',
+    from: `    await db.usdtDeposits.transition(depositId, 'INVALID', {`,
+    to: `    await Promise.resolve().then(() => null) || db.usdtDeposits.transition(depositId, 'NEVER', {`,
+  },
+  {
+    id: 'M148', file: 'backend/domains/funding/usdtDeposit.service.js', config: PG,
+    test: 'backend/tests/routes/usdtDepositPg.test.js',
+    why: 'the rate falls back to 1 when the admin has never set one, selling tokens at the INR peg for a currency that is not pegged to it',
+    from: `  if (rate === null) {`,
+    to: `  if (false) {`,
+  },
+  {
+    id: 'M149', file: 'backend/domains/funding/webhookRawBody.js', config: PG,
+    test: 'backend/tests/routes/usdtDepositPg.test.js',
+    why: 'the webhook path stops asking for raw bytes, so the JSON parser reaches it first and every real callback is refused — a player pays and nobody is ever credited',
+    from: `export const RAW_BODY_PATHS = Object.freeze(['/api/payment/usdt/webhook']);`,
+    to: `export const RAW_BODY_PATHS = Object.freeze([]);`,
+  },
+  {
+    id: 'M150', file: 'database/repositories/usdtDeposits.js', config: PG,
+    test: 'backend/tests/routes/usdtDepositPg.test.js',
+    why: 'the transition stops checking which state it is moving FROM, so an expired or already-settled invoice can be settled again',
+    from: `    if (!allowed.includes(from)) return { ok: false, reason: 'illegal_transition', state: from };`,
+    to: `    if (false) return { ok: false, reason: 'illegal_transition', state: from };`,
+  },
+  {
+    id: 'M151', file: 'backend/domains/funding/usdtDeposit.routes.js', config: PG,
+    test: 'backend/tests/routes/usdtDepositPg.test.js',
+    why: 'the deposit read stops checking who owns it, so a deposit id — which appears in logs and in a checkout URL — becomes a capability to read what any player bought',
+    from: `    if (!deposit || String(deposit.userId) !== String(req.user.userId)) {`,
+    to: `    if (!deposit) {`,
+  },
   {
     id: 'M142', file: 'backend/domains/merchant/merchantOrderView.js', config: PG,
     test: 'backend/tests/routes/merchantOrderPrivacyRoutes.test.js',

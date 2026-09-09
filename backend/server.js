@@ -62,6 +62,12 @@ import referralRedirect   from './routes/referralRedirect.routes.js';
 import userRoutes         from './domains/user/user.routes.js';
 import merchantRoutes     from './domains/merchant/merchant.routes.js';
 import paymentRoutes      from './domains/payment/payment.routes.js';
+// The USDT rail. Mounted under the SAME prefix as the INR one, because which
+// rail serves an amount is the server's decision and not a URL the client picks.
+import usdtDepositRoutes  from './domains/funding/usdtDeposit.routes.js';
+// Which paths must be handed the raw bytes. One owner, read here and by the
+// webhook's own test app.
+import { usesRawBody } from './domains/funding/webhookRawBody.js';
 import supportRoutes      from './domains/support/support.routes.js'; // CAP-71: RAG support assistant
 import uploadRoutes       from './routes/upload.routes.js';
 import paymentCfgRoutes   from './routes/payment-config.routes.js';
@@ -198,7 +204,25 @@ const JSON_LIMIT = process.env.JSON_BODY_LIMIT || '1mb';
 const _tightJson = express.json({ limit: JSON_LIMIT });
 const _assetJson = express.json({ limit: process.env.ASSET_JSON_LIMIT || '8mb' });
 const _ASSET_UPLOAD_PATHS = new Set(['/api/admin/app-assets/upload']);
-app.use((req, res, next) => (_ASSET_UPLOAD_PATHS.has(req.path) ? _assetJson : _tightJson)(req, res, next));
+// ── The one route that needs the BYTES, not the parse ───────────────────────
+// BTCPay signs the request body it sent. Verifying a re-serialisation of the
+// parsed object instead makes a legitimate callback depend on our JSON writer
+// matching theirs — key order, unicode escaping, number formatting — which is
+// the known limitation `domains/casino/webhookSignature.js` still carries and
+// records in its own header. This route mints tokens, so it gets the bytes.
+//
+// Scoped to the ONE path, and small: a raw parser everywhere would keep a
+// second copy of every request body in memory. The signature check is the
+// first thing the handler does, so an unsigned body is refused before anything
+// looks at its contents.
+// `usesRawBody` has ONE owner (domains/funding/webhookRawBody.js) and the
+// webhook's own suite builds its test app from the same function, so a test
+// that passes is asserting the parser this server actually uses.
+const _rawWebhook = express.raw({ type: '*/*', limit: '256kb' });
+app.use((req, res, next) => {
+  if (usesRawBody(req.path)) return _rawWebhook(req, res, next);
+  return (_ASSET_UPLOAD_PATHS.has(req.path) ? _assetJson : _tightJson)(req, res, next);
+});
 // NO urlencoded body parser — deliberately. This is CSRF defence, not cleanup.
 //
 // Auth cookies are issued with `sameSite: 'none'` in production (routes.js),
@@ -517,6 +541,7 @@ app.use('/api',           userRoutes);
 app.use('/api/merchant/auth/login', loginPaceLimiter, merchantAuthLimiter, requireCaptcha('merchant-login'));
 app.use('/api/merchant',  merchantRoutes);
 app.use('/api/payment', paymentRoutes);
+app.use('/api/payment', usdtDepositRoutes);
 app.use('/api/support',   supportRoutes); // CAP-71: RAG support assistant (dormant until keys set)
 app.use('/api',           uploadRoutes);
 app.use('/api/giftcode',  giftCodeRoutes);

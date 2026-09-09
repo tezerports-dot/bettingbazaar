@@ -19,6 +19,7 @@ import disputesRoutes   from '../../domains/disputes/disputeResolution.admin.rou
 import utrRoutes        from './utr.admin.routes.js';
 import merchantAssignmentRoutes from '../../domains/merchant/merchant.assignment.routes.js';
 import paymentOrderRoutes       from '../../domains/payment/paymentOrder.routes.js';
+import usdtDepositAdminRoutes   from '../../domains/funding/usdtDeposit.admin.routes.js';
 import cyclesRoutes     from './cycles.admin.routes.js';
 import systemRoutes     from './system.admin.routes.js';
 import auditRoutes      from './audit.admin.routes.js';
@@ -53,6 +54,7 @@ router.use('/', disputesRoutes);
 router.use('/', utrRoutes);
 router.use('/', merchantAssignmentRoutes);
 router.use('/', paymentOrderRoutes);
+router.use('/', usdtDepositAdminRoutes);
 router.use('/', cyclesRoutes);
 router.use('/', systemRoutes);
 router.use('/', auditRoutes);

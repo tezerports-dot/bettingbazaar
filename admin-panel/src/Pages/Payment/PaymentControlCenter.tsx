@@ -3,6 +3,9 @@ import React, { useEffect, useState } from 'react';
 import { Save, RefreshCw, TestTube, Zap, Server, CheckCircle, AlertCircle, AlertTriangle, Shield } from 'lucide-react';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
+// The USDT rail's operator surface. It carries the one failure nothing
+// automatic can fix: a player who paid and was credited nothing.
+import UsdtDepositsPanel from './UsdtDepositsPanel';
 
 // ── DisputeResolutionPanel (Section 5A) ───────────────────────────────────────
 // Pulls all DISPUTED orders, shows UTR / proof / parties, allows release or refund.
@@ -331,6 +334,9 @@ export const PaymentControlCenter: React.FC = () => {
 
       {/* Dispute Resolution Panel (Section 5A) */}
       <DisputeResolutionPanel />
+
+      {/* Purchases above the INR ceiling, paid to the platform in USDT. */}
+      <UsdtDepositsPanel />
     </div>
   );
 };

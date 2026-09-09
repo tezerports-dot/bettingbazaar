@@ -14,7 +14,13 @@ import { hashPassword, verifyPassword } from '../identity/password.util.js';
 import { merchantAuth } from '../../middleware/merchantAuth.js';
 import { issueChallenge, verifyChallenge, CHALLENGE_AUDIENCE } from '../identity/twoFactorChallenge.js';
 import { verifySecondFactor, SECOND_FACTOR_RESULT } from '../identity/verifySecondFactor.js';
-import { twoFactorLimiter, loginPaceLimiter } from '../../middleware/security.js';
+import {
+  twoFactorLimiter, loginPaceLimiter,
+  // Supplying a cash link and submitting a CDM slip both shipped with no limit.
+  // Neither is a login route, so no auth tier covered them; both write to a
+  // queue an admin and other merchants read.
+  cashLinkSupplyLimiter, cdmReceiptLimiter,
+} from '../../middleware/security.js';
 import {
   generateSecret, buildOtpauthUri, encryptSecret, decryptSecret,
   verifyToken, generateBackupCodes, hashBackupCode,
@@ -497,7 +503,7 @@ router.get('/payment-mode', merchantAuth, async (req, res) => {
  * and THIS order before it is stored, and the response confirms exactly what
  * was accepted — that confirmation is the only look they get.
  */
-router.post('/orders/:id/cdm-receipt', merchantAuth, async (req, res) => {
+router.post('/orders/:id/cdm-receipt', merchantAuth, cdmReceiptLimiter, async (req, res) => {
     try {
         const { transactionId, receiptFileKey, receiptCdnUrl } = req.body || {};
 
@@ -656,7 +662,7 @@ router.get('/cash-links/current', merchantAuth, async (req, res) => {
  * can claim to be serving ₹10,000 orders from a ₹500 machine, and a client
  * that supplies its own expiry can keep a link alive as long as it likes.
  */
-router.post('/cash-links', merchantAuth, async (req, res) => {
+router.post('/cash-links', merchantAuth, cashLinkSupplyLimiter, async (req, res) => {
     try {
         const { paymentLink } = req.body || {};
         const result = await supplyCashLink({

@@ -3291,3 +3291,109 @@ CREATE INDEX IF NOT EXISTS order_states_awaiting_link_idx
   WHERE order_type = 'DEPOSIT' AND state = 'PENDING_QUEUE'
     AND payment_mode = 'CASH_ATM' AND cash_link_id IS NULL;
 
+
+-- ── USDT deposits, paid directly to the platform (BTCPay Server) ────────────
+--
+-- The ₹10,000 INR buy ceiling exists because that is the largest amount a cash
+-- machine dispenses and the largest a merchant is approved to serve. Above it a
+-- player buys with USDT, and there is no merchant in that transaction at all:
+-- the player pays the PLATFORM's BTCPay Server, and the tokens are minted.
+--
+-- ── Why this is its own table and not an `order_states` row ────────────────
+-- An order is a contract between a player and a MERCHANT. Every column on that
+-- table is about that relationship — assignment, the merchant snapshot, the
+-- UTR, the escrow, the dispute between the two parties — and none of it is true
+-- here. Putting a merchant-less deposit in that table would mean a state
+-- machine where half the states are unreachable and every consumer of
+-- `order_states` has to learn to skip these rows. The two lifecycles are
+-- different, so they are different tables.
+--
+-- ── The amount is decided HERE, and never read from the callback ───────────
+-- BTCPay tells this platform that an invoice settled. It does not decide how
+-- many tokens that is worth: `token_paise` is written when the invoice is
+-- CREATED, from the rate that was live at that moment, and the credit reads
+-- this row. A webhook body is attacker-adjacent input; the amount in it must
+-- never be the number that mints tokens.
+CREATE TABLE IF NOT EXISTS usdt_deposits (
+  deposit_id        TEXT PRIMARY KEY,
+  user_id           TEXT NOT NULL,
+  -- BTCPay's own invoice id, once the invoice exists. NULL for the moment
+  -- between writing this row and the API answering — a row with no invoice is
+  -- a deposit that never started, not one that was paid and lost.
+  invoice_id        TEXT,
+
+  -- What the player receives, in paise. Integer, like every other money column.
+  token_paise       BIGINT NOT NULL,
+  -- How it splits across their two pockets, decided by the deposit policy at
+  -- creation, exactly as an INR deposit's split is.
+  deposit_allocation_paise BIGINT NOT NULL DEFAULT 0,
+  reserve_allocation_paise BIGINT NOT NULL DEFAULT 0,
+
+  -- What they pay, and the price that decided it. NUMERIC, not BIGINT: USDT has
+  -- six decimals and is not this platform's unit of account. Nothing is
+  -- computed FROM these — they are what the player was quoted and what BTCPay
+  -- was asked for.
+  usdt_amount       NUMERIC(18, 6) NOT NULL,
+  usdt_rate_inr     NUMERIC(18, 6) NOT NULL,
+
+  state             TEXT NOT NULL DEFAULT 'AWAITING_PAYMENT',
+  checkout_link     TEXT,
+  expires_at        TIMESTAMPTZ,
+  settled_at        TIMESTAMPTZ,
+  credited_at       TIMESTAMPTZ,
+  failure_reason    TEXT,
+
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  CONSTRAINT usdt_deposits_state_known CHECK (
+    state IN ('AWAITING_PAYMENT', 'PROCESSING', 'SETTLED', 'EXPIRED', 'INVALID')),
+  CONSTRAINT usdt_deposits_amount_positive CHECK (token_paise > 0),
+  CONSTRAINT usdt_deposits_usdt_positive CHECK (usdt_amount > 0),
+  CONSTRAINT usdt_deposits_rate_positive CHECK (usdt_rate_inr > 0),
+  -- The split accounts for the whole amount. A partial split is not a split to
+  -- fall back from, it is a corrupt row — the same rule `depositCreditSplit`
+  -- applies to an INR deposit, here as a constraint so it cannot be written.
+  CONSTRAINT usdt_deposits_split_is_whole CHECK (
+    deposit_allocation_paise >= 0 AND reserve_allocation_paise >= 0
+    AND deposit_allocation_paise + reserve_allocation_paise = token_paise),
+  -- SETTLED is the state that mints tokens, and it must name the moment.
+  CONSTRAINT usdt_deposits_settled_has_time CHECK (
+    state <> 'SETTLED' OR settled_at IS NOT NULL)
+);
+
+-- One deposit per BTCPay invoice. A webhook naming an invoice resolves to
+-- exactly one row or to none — never to two.
+CREATE UNIQUE INDEX IF NOT EXISTS usdt_deposits_invoice_unique
+  ON usdt_deposits (invoice_id) WHERE invoice_id IS NOT NULL;
+-- A player's own list, newest first.
+CREATE INDEX IF NOT EXISTS usdt_deposits_user_idx
+  ON usdt_deposits (user_id, created_at DESC);
+-- The sweeper: invoices whose window has passed and that nobody paid.
+CREATE INDEX IF NOT EXISTS usdt_deposits_awaiting_idx
+  ON usdt_deposits (expires_at) WHERE state IN ('AWAITING_PAYMENT', 'PROCESSING');
+
+-- Every transition, append-only, with the BTCPay delivery that caused it.
+--
+-- `tx_id` UNIQUE is the idempotency gate, exactly as it is for an order: a
+-- redelivered webhook collides inside the transaction and the whole thing
+-- unwinds rather than advancing the deposit a second time. `delivery_id` is
+-- BTCPay's own id for that delivery, so an auditor can walk from a credited
+-- player back to the exact callback that credited them.
+CREATE TABLE IF NOT EXISTS usdt_deposit_transitions (
+  id          BIGSERIAL PRIMARY KEY,
+  tx_id       TEXT NOT NULL UNIQUE,
+  deposit_id  TEXT NOT NULL REFERENCES usdt_deposits (deposit_id),
+  from_state  TEXT,
+  to_state    TEXT NOT NULL,
+  actor       TEXT,
+  reason      TEXT,
+  delivery_id TEXT,
+  ledger_key  TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT usdt_deposit_transitions_moves CHECK (from_state IS NULL OR from_state <> to_state)
+);
+CREATE INDEX IF NOT EXISTS usdt_deposit_transitions_deposit_idx
+  ON usdt_deposit_transitions (deposit_id, id);
+CREATE OR REPLACE TRIGGER usdt_deposit_transitions_append_only
+  BEFORE UPDATE OR DELETE ON usdt_deposit_transitions FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();

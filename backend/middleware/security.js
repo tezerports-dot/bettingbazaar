@@ -325,6 +325,59 @@ export const withdrawalLimiter = rateLimit({
     keyGenerator: actorKey
 });
 
+// ==================== PAYMENT RAIL RATE LIMITERS ====================
+//
+// Every one of these routes shipped with NO limit. They are not login
+// endpoints, so the auth tiers never covered them, and the global /api/*
+// backstop is 1000 requests per 15 minutes — which for a route that calls an
+// external API, locks escrow, or writes to a merchant queue is not a limit.
+//
+// All keyed on the ACTOR, not the IP. A per-IP throttle on a money route puts
+// every player behind one carrier-grade NAT in the same bucket and stops
+// nobody willing to reconnect — the same reasoning as the withdrawal cap above.
+
+/** Named so each limiter's message can say what it is limiting. */
+function railLimiter(prefix, tier, message) {
+    return rateLimit({
+        store: createRateLimitStore(prefix),
+        ...tier,
+        message: { success: false, message },
+        standardHeaders: true,
+        legacyHeaders: false,
+        keyGenerator: actorKey,
+    });
+}
+
+/** Creating a USDT invoice: an outbound call to BTCPay, and a held price. */
+export const usdtDepositLimiter = railLimiter(
+    'rl:usdtdep:', RATE_LIMIT_TIERS.usdtDeposit,
+    'Too many USDT purchase attempts. Please wait before trying again.',
+);
+
+/** Retrying an order: a new order, and on a sell a new escrow lock. */
+export const orderRetryLimiter = railLimiter(
+    'rl:retry:', RATE_LIMIT_TIERS.orderRetry,
+    'Too many retries. Please wait before trying again.',
+);
+
+/** Claiming the minute to fetch a UTR. */
+export const utrGraceLimiter = railLimiter(
+    'rl:utrgrace:', RATE_LIMIT_TIERS.utrGrace,
+    'Too many requests. Please wait a moment.',
+);
+
+/** A merchant supplying a cash link from an ATM. */
+export const cashLinkSupplyLimiter = railLimiter(
+    'rl:cashlink:', RATE_LIMIT_TIERS.cashLinkSupply,
+    'Too many links supplied. Please wait before supplying another.',
+);
+
+/** Submitting a CDM deposit slip. */
+export const cdmReceiptLimiter = railLimiter(
+    'rl:cdm:', RATE_LIMIT_TIERS.cdmReceipt,
+    'Too many receipt submissions. Please wait before trying again.',
+);
+
 // ==================== GENERAL API RATE LIMITER ====================
 
 // General API rate limiter for all other endpoints

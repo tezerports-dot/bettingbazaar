@@ -6,7 +6,14 @@ import { db }    from '#db';
 import { authenticate, requireApprovedKyc, requireLinkedKyc } from '../identity/auth.middleware.js';
 import { tryVerifyJwt } from '../identity/jwt.util.js';
 import { merchantAuth } from '../../middleware/merchantAuth.js';
-import { withdrawalLimiter } from '../../middleware/security.js';
+import {
+  withdrawalLimiter,
+  // Both of these routes shipped with no limit at all. A retry creates a NEW
+  // order and, on a sell, locks tokens in escrow; the grace claim extends an
+  // order's own deadline. Neither is a login route, so no auth tier covered
+  // them, and the global backstop is 1000 requests per 15 minutes.
+  orderRetryLimiter, utrGraceLimiter,
+} from '../../middleware/security.js';
 // Wallet operations are for channel members — same gate as betting.
 import { requireChannelMembership } from '../../middleware/requireChannelMembership.js';
 // Item 12: per-subnet backstop against IP rotation on withdrawal creation.
@@ -107,7 +114,7 @@ router.post('/withdrawal/create', authenticate, requireApprovedKyc, requireChann
  * retry passes too — including, on a sell, the escrow debit under the wallet's
  * row lock. The database refuses a second retry of the same order.
  */
-router.post('/order/:orderId/retry', authenticate, orderAccessGuard, async (req, res) => {
+router.post('/order/:orderId/retry', authenticate, orderRetryLimiter, orderAccessGuard, async (req, res) => {
   try {
     const result = await retryOrder(req.user.userId, req.params.orderId);
     res.json({ success: true, ...result });
@@ -139,7 +146,7 @@ router.post('/order/:orderId/retry', authenticate, orderAccessGuard, async (req,
  * courtesy but an unbounded extension, and the merchant's capacity is what it
  * spends.
  */
-router.post('/order/:orderId/utr-grace', authenticate, orderAccessGuard, async (req, res) => {
+router.post('/order/:orderId/utr-grace', authenticate, utrGraceLimiter, orderAccessGuard, async (req, res) => {
   try {
     const order = await claimUtrGrace(req.user.userId, req.params.orderId);
     res.json({ success: true, expiresAt: order.expiresAt, graceTakenAt: order.utrGraceAt });

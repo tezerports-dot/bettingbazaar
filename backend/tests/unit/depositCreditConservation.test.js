@@ -73,7 +73,18 @@ vi.mock('../../domains/identity/auth.middleware.js', () => ({
 }));
 vi.mock('../../domains/identity/jwt.util.js', () => ({ tryVerifyJwt: () => null }));
 vi.mock('../../middleware/merchantAuth.js', () => ({ merchantAuth: (req, res, next) => next() }));
-vi.mock('../../middleware/security.js', () => ({ withdrawalLimiter: (req, res, next) => next() }));
+// A pass-through for every limiter this router mounts. Listed rather than
+// spread from the real module, because importing it pulls in the rate-limit
+// store and a Redis client that this unit suite deliberately does not have.
+// A limiter added to a route without a line here fails loudly at import —
+// which is the right failure: a missing mock is visible, a silently unmocked
+// limiter would rate-limit the test suite.
+const passThrough = (req, res, next) => next();
+vi.mock('../../middleware/security.js', () => ({
+  withdrawalLimiter: passThrough,
+  orderRetryLimiter: passThrough,
+  utrGraceLimiter: passThrough,
+}));
 vi.mock('../../middleware/ipDefense.js', () => ({
   createSubnetLimiter: () => (req, res, next) => next(),
   globalSurgeBreaker: () => (req, res, next) => next(),

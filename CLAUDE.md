@@ -451,6 +451,63 @@ now a failure rather than a silence.
 
 ---
 
+## A webhook that mints
+
+The USDT rail has no merchant. Above the ₹10,000 INR ceiling a player pays the
+platform's BTCPay Server directly and the tokens are **minted** — `TOKEN_SUPPLY
+→ USER_FLOAT`, under the same supply cap as any other mint. So
+`POST /api/payment/usdt/webhook` is a route with **no session** that creates
+money, and everything about it follows from that.
+
+1. **The HMAC is the whole of the authentication, and it is over the RAW
+   BYTES.** `domains/casino/webhookSignature.js` digests
+   `JSON.stringify(body)` — a re-serialisation — and its own header records
+   that as a known limitation. It is not repeated: `usesRawBody` (one owner,
+   `domains/funding/webhookRawBody.js`) is read by both `server.js` and the
+   webhook's own suite, because a JSON parser reaching that route first makes
+   the digest `[object Object]` and refuses **every legitimate callback** while
+   a route test mounting its own raw parser stays green.
+2. **A missing signature is a REJECT and an unconfigured secret is a REJECT.**
+   Unverifiable and authentic are not the same thing.
+3. **A valid signature does not mean a fresh request.** Anyone who captures one
+   signed body can replay it forever, and BTCPay retries on its own. Freshness
+   is not the HMAC's job: the guarded transition and the UNIQUE `tx_id` on
+   `usdt_deposits` are what stop a second credit, with the wallet's own
+   `dep_complete_<id>` gate underneath.
+4. **The callback names an invoice. It never names an AMOUNT.** `token_paise`
+   is written when the invoice is created, from the rate live at that moment,
+   and the credit reads the ROW. Trap 7 applied to an external system: the
+   number that gates a transfer is read from the rows the write will lock.
+5. **Settled and credited are different facts**, and `credited_at` is what
+   separates them. The gap is the crash window — a player who paid and whose
+   wallet has not moved — and it is a row an operator can find
+   (`GET /api/admin/usdt-deposits/uncredited`) rather than a silence they
+   cannot. Reconciliation READS BTCPay; it does not credit, because a second
+   money path beside the webhook is how `moveDepositMoney` came to exist.
+
+### Two gates that were measuring the author, not the code
+
+Both were found by adding one router, and both had the same shape: **a gate
+holding its own copy of something the code already states.**
+
+- `check:ui-coverage` mapped router file → mount prefix in a hand-written
+  table. A new router mounted and served was reported as eight DEAD BUTTONS,
+  because the table had never heard of it. The prefixes are derived from
+  `server.js`'s own `import` and `app.use` now — which immediately found five
+  routes the table had been missing in the other direction.
+- `check:settable` compared every `set: { … }` in the backend against the
+  ORDER lifecycle's `SETTABLE`. The day a second lifecycle arrived it reported
+  that one's perfectly valid `set` as a field the order writer would refuse: a
+  false failure, which is how a gate loses the reader's trust and gets
+  silenced. A `set` is now checked against **the writer it is handed to**
+  (aliases and ternary callees resolved), and a `set` handed to a writer the
+  gate does not know is reported as unattributed rather than passed.
+
+**A gate whose failure mode is "the author forgot to update me" reports the
+author.** Derive what it checks from the thing it is checking.
+
+---
+
 ## Commands
 
 | Command | What it proves |
