@@ -1,13 +1,57 @@
-# CLAUDE.md — BettingBazaar
+# CLAUDE.md — the single rules file for BettingBazaar
 
-**This file outranks every other document in this repository, including
-`docs/governance/04-GOVERNANCE.md` and the BBEPS specification it cites.** Where
-any document disagrees with this file, this file wins and the other document is
-wrong and must be corrected.
+**This is the only file in this repository that states rules.** Every source file
+cites it, every other document is subordinate to it, and where anything
+disagrees with this file, this file wins and the other thing is wrong and must
+be corrected.
+
+It was merged from the former root `CLAUDE.md` and the former
+`docs/governance/04-GOVERNANCE.md` on 2026-09-09. Those were two rule files with overlapping authority, which is the
+same defect they both warn about: one owner per value. The governance file's
+reference material and history were not deleted — they moved to the documents
+listed below, which hold **data and history, never rules**.
+
+| What you want | Where it is |
+|---|---|
+| Any rule at all | this file |
+| What has been built, and what is left | `docs/PROJECT_STATUS.md` |
+| Every realtime event name | `docs/reference/REALTIME_EVENTS.md` |
+| Why a decision was made, dated | `docs/reference/DECISION_LOG.md` |
+| Architecture, portability, capabilities | `docs/reference/ARCHITECTURE.md` |
+| SLOs, runbooks, on-call | `docs/reference/SRE_AND_OPERATIONS.md` |
+| Branding field → consumer table | `docs/reference/BRANDING.md` |
+| Machine-checked capability registry | `platform/capabilities.yaml` (`npm run verify:capabilities`) |
 
 ---
 
-## The rule
+## 0. Before you edit anything
+
+1. Read this file to the end. It is the contract.
+2. Identify which section governs your change.
+3. Confirm the change violates no rule here.
+4. If it introduces a new authority for a value, add it to §2.
+5. If it removes a file, confirm nothing imports it (`npm run check:dead-code`).
+6. If it adds a realtime event, check `docs/reference/REALTIME_EVENTS.md` for a
+   typo variant of the name you are about to add, and add yours there.
+7. If it touches branding, read §13 first.
+8. If it touches the wallet, read §9 first.
+9. If it adds a cycle type, board or game, follow §18 without being asked.
+
+**For AI sessions specifically.** You cannot assume your context holds the
+current state of this codebase. Verify target text exists before generating a
+patch, with the exact string rather than a paraphrase. If you cannot verify,
+say so and ask.
+
+**Your session is ephemeral; this repository is not.** Any plan, queue or
+research that gates implementation work is committed in the session that
+produces it. This rule exists because it has already been broken twice: a
+prior session's implementation list was lost with its container, and then a
+later session's finished feature work was lost the same way, having never been
+committed. Only commits survive. See §17.4.
+
+---
+
+## 1. The rule
 
 **PostgreSQL is the only datastore. There is no second store.**
 
@@ -37,66 +81,386 @@ not been migrated yet — migrate it, do not accommodate it.
   whole codebase — not one call site at a time, waiting for CI to say what is
   next.
 
----
-
-## Exit criteria
-
-The migration is complete when, and only when, all of the following hold. These
-are counted mechanically by `npm run check:no-mongo`; the numbers in parentheses
-are the baseline measured before removal began.
-
-1. Zero `mongoose.model()` call sites (currently 520 outside tests).
-2. Zero files importing `mongoose` or `models/index.js` (currently 100).
-3. `mongoose` and `mongodb-memory-server` out of `package.json`; `MONGODB_URI`
-   out of every script and env file.
-4. The integration test tier gone.
-5. Zero MongoDB references in code comments (currently ~600 lines).
-6. Zero MongoDB references in `docs/` and governance (currently 24 files).
-7. No money decision read from one store and executed in another.
-8. `BalanceAdjustment`, `BlockedIP` and `ChatMessage` are referenced through
-   `mongoose.model()` in five files and DEFINED NOWHERE — every call throws
-   `MissingSchemaError` today, so the admin retention route, the IP-block check
-   in `middleware/security.js`, and three chat endpoints are dead. Build them in
-   PostgreSQL or delete the routes. `BlockedIP` is a real security control that
-   is currently absent — flag that to the owner rather than silently dropping
-   it.
-
 ### The gate
 
 ```
 npm run check:no-mongo
 ```
 
-Non-zero exit with a per-file report while any count is above zero. Run it after
-every removal pass; **the numbers must only go down.** It runs in CI and is the
-definition of done.
-
-It also prints progress as a percentage of the references that existed before
-removal began — per check and overall — from baselines measured with the same
-script at commit `6e66b52`.
+Non-zero exit with a per-file report while any count is above zero. It runs in
+CI and is the definition of done for the migration. It also prints progress as a
+percentage of the references that existed before removal began.
 
 **That printed figure is the only progress number to quote.** An estimate made
 from memory carries its own denominator, and two estimates taken a day apart are
-not comparable: reporting 65% and then 62% looked like regress while every
-single count was in fact still falling. If somebody asks how far along the
-migration is, run the gate and read the number off it.
+not comparable: reporting 65% and then 62% looked like regress while every count
+was in fact still falling. If somebody asks how far along the migration is, run
+the gate and read the number off it.
 
 `scripts/verify-no-mongo.mjs` is the only file permitted to name the forbidden
 strings, because it is the thing that forbids them. It excludes itself by path.
 Nothing else is exempt — not a comment, not a variable name, not a doc.
 
----
-
-## Do not claim readiness
-
-Until `check:no-mongo` reports zero on every count and the suites run green
-against PostgreSQL alone, this platform is not ready to take money. No
-individual green check says otherwise. Do not describe the platform as ready,
-migrated, or production-capable before then.
+**Status as of 2026-09-09: all eight counts are zero.** The migration is
+mechanically complete. That is not a claim that the platform is ready — see §28.
 
 ---
 
-## What is being kept
+## 2. One owner per value
+
+Each value below has exactly one owner. Nothing else may store, compute or
+default it independently. **This table is the anti-drift mechanism**: a value
+with no listed owner gets a second implementation, and a value listed with the
+wrong owner gets working code deleted by the next reader.
+
+> Owners are **PostgreSQL tables reached through `database/repositories/`**, or
+> exported constants. The ODM model files this table used to name
+> (`*.model.js`) no longer exist.
+
+| Value | Owner |
+|---|---|
+| Token buy/sell rates | **Removed 2026-07-08** — conversion is fixed 1:1 (1 token = ₹1) and not configurable. Public rate endpoints return a constant for client compatibility. Do not reintroduce configurable rates. |
+| Deposit/reserve split, reserve usage rules | `deposit_policies` via `domains/configuration/depositPolicy.service.js` — whole-document versioned, one ACTIVE per currency. |
+| Bet min/max per cycle type | `SystemConfig.betLimits` (`config_documents`) |
+| Cycle phase offset defaults | `DEFAULT_CYCLE_PHASES` in `database/spec/config.spec.js`, re-exported by `domains/markets/cycleTypes.js`. It **is** the schema default. Runtime authority stays `SystemConfig.cyclePhases`. Three copies had already drifted once — the admin phase timeline drew a betting-close boundary 30 seconds off what the engine acted on. |
+| Resolved-cycle history feed | `domains/markets/cycleHistory.service.js` — the one query behind every cycle-history read. Window is **per type**, `limit` rows each; capped at 1,440 for one type and 200 when several are requested together (three deep windows is ~864 KB against socket.io's 1 MB default). Rows project through `publicCycleView`. |
+| Analytics window depth | `ANALYTICS_WINDOW` in `user-panel/src/constants.ts`. A **target**, not a display cap; the server ceiling is enforced independently in `cycleHistory.service.js`. |
+| Deposit/withdrawal limits, platform-wide | `SystemConfig` |
+| Per-merchant order min/max | `merchants.min_order` / `max_order` |
+| Merchant settlement rail | `merchants.accepted_currencies` — **exactly one** entry, `INR` or `USDT`. Vocabulary in `domains/merchant/merchantCurrency.js` (`MERCHANT_CURRENCIES`, `merchantTypeOf`, `isUsdtAddress`). Do not re-declare the rail strings or a second address pattern. |
+| Which rail an order settles on | `order_states.currency`, matched against the merchant's rail at assignment and at accept. |
+| Which CHAIN a USDT order settles on | `order_states.usdt_chain`, frozen by trigger. A merchant holds one address **per chain** (`usdt_address_trc20`, `usdt_address_bep20`). See §25. |
+| The USDT quote | `order_states.rate_used` + `fiat_amount_paise`, written WITH the order and frozen by trigger. Assignment may not re-price. See §25. |
+| USDT buy pricing | `SystemConfig.usdtPricing` — admin-set, bounded at both ends. There is no USDT sell rail. |
+| The settlement rail in force | `payment_mode_policies` — one ACTIVE version, append-only, justified. **Not** a feature flag (`featureFlags.service.js` is an env var and an in-process Map: it does not survive a restart and cannot say which rail was live when an order was created). **Not** `payment_gateway_configs.active_mode`, which is P2P vs a third-party gateway — both rails here are P2P. |
+| The rail an ORDER runs under | `order_states.payment_mode`, stamped at creation by `stampForNewOrder` and **immutable by trigger**. Every worker and screen branches on the order's own value, never the current policy. |
+| Merchant earnings | `merchant_commission_policies` + `merchant_commission_rates` (one row per variety), read by `domains/merchant/merchantCommission.service.js`, which owns no numbers. Platform-funded from `MERCHANT_BONUS_POOL`, never deducted from users. Do not reintroduce `commissionRate`, a buy/sell spread, or a deposit-triggered commission. See §26. |
+| Merchant token balance mutations | `domains/merchant/merchantWallet.service.js` exclusively — idempotent `tx_id`. |
+| Wallet balance mutations (player) | `domains/wallet/walletAuthority.service.js` exclusively, **including a bet's stake lock**. A route may not move a balance. |
+| Wallet balance READS | `walletAuthority.getBalances()`, reading the `wallets` row. No second copy of a balance exists or may be introduced. **Every read is classified display or decision** — see §9. |
+| Money in/out of the ecosystem | `domains/funding/fundingAuthority.service.js`; rails are adapters in `providerRegistry.js`. Never owns accounting. |
+| Settlement ledger / accounting events | `accounting_events`, written ONLY via `domains/revenue/revenueSettlement.service.js`. Append-only double-entry, integer paise, unique idempotency keys, balances always derived from postings and never stored. |
+| External payment references (UTR, chain tx hash, CDM slip) | `utr_registry` via `claimPaymentReference()`. One reference, one order, for good. See §27. |
+| Order lifecycle state | `order_states.state` — `PENDING_QUEUE, ASSIGNED, PROCESSING, PAID, COMPLETED, DISPUTED, CANCELLED, FAILED, REJECTED`, enforced by CHECK. |
+| Which fields the lifecycle may write | `SETTABLE` in the order writer. See §21. |
+| Dispute resolution | `order_states` embedded dispute fields. There is no separate dispute table. |
+| Cash denominations and USDT sizes | `domains/merchant/denominations.js`. The SQL CHECKs duplicate the lists by necessity; `merchantDenominationsPg.test.js` asserts the database agrees. Not admin-editable. |
+| Referral reward, budget, member cap | `REFERRAL_REWARD_PAISE` in `domains/referral/referralRewards.js` (flat ₹25) and `referral_programmes`. A flat one-off per verified signup, two tiers, from a bounded pool — never a share of anyone's losses and never attached to settlement. |
+| Referral earnings ledger and payout order | `domains/referral/referral.service.js` exclusively. Append-only, unique on `(sourceUserId, level)`; eligibility evaluated at payout. Pays strictly in joining-number order through `creditWinnings`. |
+| Player contact details | **There are none beyond the mobile.** No player email exists; the bot never asks for one. `SupportLinks.email` and `merchants.email` are different things and stay. |
+| Aadhaar mutability | An APPROVED Aadhaar is immutable. A REJECTED one may be replaced through the bot up to `MAX_KYC_SUBMISSIONS`. A FAILED submission's row is DELETED, because `aadhaar_hash` is unique and a typo would otherwise park a stranger's Aadhaar in that index and lock its owner out forever. `users.mobile` is never mutable. |
+| Identity documents | **None are collected, stored or accepted.** KYC is a 12-digit Aadhaar number held as an HMAC plus AES-256-GCM ciphertext. Do not add an upload path for one. |
+| Upload categories that DO exist | `services/cdn.service.js` — P2P chat attachments, payment proofs, admin branding assets, CDM receipts. Nothing else. "No KYC documents, so remove the upload routes" would break deposits and disputes. |
+| The live bot and official channel | `telegram_configs` (the active generation, owning the channel) plus the bot registry, composed by `activeConfig()` in `domains/telegram/telegramClient.js`. **The registry wins over a generation's embedded credentials.** A bot swap does NOT bump the generation; only a channel change does. The 30s cache in `activeConfig` is the only permitted cache. |
+| What the bot says | `TelegramTemplate` rows via `telegramTemplates.service.js`, with `DEFAULT_TEMPLATES` as fallback. A blank row means the shipped default, never silence. Do not hardcode a player-facing sentence in a route. |
+| Notifications, all channels | `domains/communication/communication.service.js` `notify()`. Never write a notification row directly. |
+| Transaction/bet validation and operational rules | `domains/risk/riskValidation.service.js` — the only place this logic lives. Configurable numbers stay in `SystemConfig`. |
+| Cycle timing | `domains/markets/cycleGenerator.service.js` computes; `GAME_CORE.ts` mirrors for display math only. |
+| Cycle-type vocabulary | `domains/markets/cycleTypes.js` — names only, never numbers. Throws on an unknown type rather than defaulting, because the ternaries it replaced failed silently. |
+| Game catalogue | `games` + `game_categories`. No hardcoded game arrays anywhere. |
+| Trading vocabulary | `domains/trading/tradingModels.js` |
+| Sub-admin permission keys | `users.sub_admin_permissions`; frontends import from `utils/permissions.ts`. |
+| Chat rules | Chat config document via `/api/chat/config` |
+| Branding | The `Branding` document — see §13 |
+| Social/support links | `SupportLinks` — **not** Branding |
+| Auth tokens | One storage key per app (`auth_token` / `merchantToken` / `admin-auth`) |
+| Realtime event names | `docs/reference/REALTIME_EVENTS.md` — see §12 |
+| App version | `package.json`, read via `VITE_APP_VERSION`. Never a literal in a component. |
+
+---
+
+## 3. Forbidden patterns
+
+- **No frontend hardcoded business value that has a backend config equivalent.**
+  A `??` fallback must equal the schema default, never an independent number.
+- **No admin-editable field without a real consumer.** If a value can be changed
+  through an admin API or UI but nothing reads it to alter behaviour, that is a
+  violation. Any new admin setting ships with its consumer in the same change.
+- **No shadow table duplicating another's responsibility.**
+- **No frontend enum or constant mirror with zero consumers.**
+- **No second write path to a value with a designated single writer.**
+- **No realtime event emitted under more than one name for the same change.**
+- **No private realtime channel without a verified backend registration route.**
+- **No version literal in any component source file.**
+
+---
+
+## 4. No hardcoded business values
+
+- Any number representing a business rule originates from a database-backed
+  config document. A `??` fallback is a loading placeholder only, permitted when
+  its value equals the schema default and a comment cites that default.
+- **Any colour, font, logo path or app name shown to a user originates from
+  `Branding`**, injected as a CSS variable (`--brand-primary`,
+  `--brand-secondary`, `--brand-accent`) or via `localStorage.app_branding`.
+  Never a hex literal in a component. This is still being remediated; re-count
+  with `grep -ro "D4AF37" user-panel/src admin-panel/src merchant-panel/src | wc -l`.
+  The merchant panel is already at zero.
+- Any permission key, status enum or event name originates from a shared module.
+
+---
+
+## 5. No duplicates
+
+- Before adding a constant, enum or config field, search for the existing one
+  and extend it.
+- Before adding an admin-editable setting, confirm a consumer reads it in the
+  same change.
+- Before adding a realtime event, grep the registry for typo variants.
+- A frontend mirror of a backend enum requires a comment citing the exact
+  backend file and field, plus an entry in §2.
+
+**Say it in the form it keeps being violated: the same payload assembled in two
+places drifts, and it drifts silently.** The system-config payload was built
+twice — once in `socketHandlers.js`, once in the HTTP route — with independently
+written fallbacks, and they had already diverged: the socket carried
+`webUrl`/`androidUrl`/`iosUrl`, the route carried
+`kycRequired`/`registrationEnabled`, and a client got a different answer about
+the platform depending on which one it asked. A value an operator can edit is
+only config if **every** consumer reads the same owner. Two builders with
+matching defaults are not one owner; they are one bug waiting for the next field.
+
+---
+
+## 6. Configuration ownership
+
+- `SystemConfig` owns platform-wide operational limits.
+- `merchants.min_order` / `max_order` own per-merchant caps — not hardcoded
+  defaults; each merchant has their own.
+- Every config field exposed by an admin route has its default in exactly one
+  place: the column `DEFAULT` in `database/schema.sql`, or the single exported
+  constant the repository applies when a JSONB key is absent. Every server-side
+  fallback matches it. **Citation required** — write `// schema default: 500`
+  next to every `??`. If you do not know the default, look it up first.
+- Config cached client-side documents its staleness window in a comment at the
+  cache definition.
+
+---
+
+## 7. Workflow ownership
+
+- A workflow has exactly one state field per logical question.
+- Cron jobs are verified to run against the table the real workflow populates.
+
+---
+
+## 8. Route ownership
+
+- **Merchant panel** derives paths from `merchant-panel/src/constants.ts`
+  `ROUTES`; its nav and `<Route>` table use the same object.
+- **Admin and user panels do not**, and this section used to claim they did. The
+  admin panel's `ADMIN_ROUTES` was imported by nothing — every route wrote its
+  path as a literal — so the file was deleted rather than left as a module
+  claiming ownership it did not have. A constants module nobody imports is not
+  one owner; it is a second place for a path to be wrong.
+- Adopting route constants in those two panels is open work, not a rule they are
+  breaking in silence.
+
+---
+
+## 9. Balance ownership
+
+- All balance reads and writes go through `walletAuthority.service.js`.
+- No handler performs a raw increment or read-then-write on a balance.
+- Settlement computes amounts and calls the wallet authority.
+- **Settlement pays no commission.** The engine credits winners and nothing else.
+- The referral programme does not touch settlement: a flat amount per verified
+  signup from a bounded pool, on an admin-triggered disbursal, through
+  `creditWinnings`. No bet result is ever a payment trigger.
+- **Classify every balance read as display or decision.** A display read may be
+  stale; a decision read may not. Money decisions read from the wrong place were
+  found in three: bet-placement affordability, withdrawal admission, and
+  merchant assignment. `npm run check:balance-reads` enforces it mechanically —
+  a number that GATES a transfer is read from the rows the write will lock.
+
+---
+
+## 10. Admin ownership
+
+- Every field on an admin settings page wires to a real consumer in the same
+  change.
+- The admin panel applies its own branding.
+- Admin dashboard statistics read from the table the workflow actually writes.
+
+---
+
+## 11. Allowed exceptions
+
+- A genuine UI-only value (chip denominations, a display countdown) may be a
+  frontend constant provided it is never used for server-side validation and a
+  comment says so, citing this section.
+- A temporary duplication during an in-progress migration is allowed for the
+  shortest practical window and removed by the change that completes it.
+- Display-only timing mirrors are allowed when the real gating is server-side.
+
+---
+
+## 12. Realtime events
+
+**One name per logical change, unique across all three transports** — socket.io
+(public browser clients), SSE (private authenticated streams), and the emitter
+(`domains/notification/realtimeEmitters.js`). Never reuse a name on a different
+transport for a different meaning.
+
+The registry is `docs/reference/REALTIME_EVENTS.md`. **Any new event is added
+there in the same change that introduces it.** A registry that is wrong is worse
+than none, because §5 tells you to grep it before adding an event: it once
+listed three names the backend never emits — the merchant panel was subscribed
+to one of them, receiving nothing — while omitting about twenty that are.
+
+Two dead-delivery traps found here, both silent:
+
+- `emitMerchantUpdate('*', …)` reaches **nobody** — it looks the literal `'*'`
+  up as a merchant id and returns, no error and no log. Use `broadcastToMerchants`.
+- The panel SSE client registers listeners from a hardcoded name list, so a
+  subscriber for an unlisted event never fires and never errors.
+
+---
+
+## 13. Branding
+
+The `Branding` row is the single source. `sendBranding()` in `socketHandlers.js`
+is the **sole constructor** of the branding socket payload and must never emit a
+hardcoded filename or colour. Saving branding re-emits the full document so
+every panel updates live.
+
+Each panel, on the branding event: store to `localStorage.app_branding`, apply
+the CSS variables, set `document.title` from its own panel-name field.
+
+Normalise both sides when building a logo URL — strip the trailing slash from
+the CDN base and the leading slash from the path — or you get a double slash.
+
+Every branding field must have a real consumer (§3). The field → consumer table
+is `docs/reference/BRANDING.md`.
+
+---
+
+## 14. Dead artifact policy
+
+**No committed artifact may describe a pending fix that is not applied.**
+
+1. Patch files are applied and deleted before merge; a pending patch lives in a
+   branch, not the repo root.
+2. Fix scripts that apply code changes are applied and deleted. One-off scripts
+   are not repository assets.
+3. A migration script is deleted once applied everywhere, or carries
+   `// STATUS: PENDING`. There is no in-between.
+4. A TODO citing a specific fix is resolved in the change that introduces the
+   fix. Permanent TODOs are not allowed in production code.
+
+---
+
+## 15. Monorepo structure and split readiness
+
+Three frontends and one backend. All shared configuration originates from the
+backend API or socket — never from source files copied between panels.
+
+- No panel imports a TypeScript file from another panel's `src/`.
+- No panel imports from `backend/`.
+- Shared types, if ever needed, live in their own package — not in a panel's `src/`.
+- Each panel owns its `package.json`, build config, route constants where it has
+  them, auth storage key and version.
+- **No frontend package in the root `package.json`.** The root is what the
+  backend image installs; a React stack there ships to the API server and
+  inherits every advisory filed against it.
+
+---
+
+## 16. Every source file cites this file
+
+Every source file carries, within its first 10 lines:
+
+```
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
+```
+
+The requirement applies to a pre-existing file on its first edit. An AI that
+opens a file without the header adds it before making other changes.
+
+This exists because sessions frequently receive a single file as context without
+the surrounding codebase. The header is the safety net that prevents drift when
+this file is not in the prompt.
+
+---
+
+## 17. Runtime currency, reproducibility, and durable artifacts
+
+1. **Runtime currency.** Production runs supported LTS runtimes and supported
+   major versions of security-load-bearing dependencies. An EOL runtime or
+   framework in production is a blocker, not a backlog item. CI pins and proves
+   the same versions production runs.
+2. **Reproducible deploys.** Production installs from the committed lockfile
+   (`npm ci`). A pipeline that resolves semver ranges at build time is invalid —
+   production must run exactly what CI tested.
+3. **Audit cadence.** The architecture comparison is re-run quarterly, or on any
+   major-version EOL affecting the stack.
+4. **Research artifacts are committed.** Any research, plan or numbered queue
+   that gates implementation work is committed in the same session that produces
+   it. Conversation context and session containers are ephemeral; the repository
+   is the only durable medium. **This has now been broken twice** — once losing a
+   prior session's implementation list, once losing a finished feature's code
+   that was never committed before the container was reclaimed. The plan lives in
+   `docs/PROJECT_STATUS.md`; keep it current in the same change that moves it.
+
+---
+
+## 18. Adding a cycle type, board or game
+
+**A new board inherits the money system. It does not re-implement any part of
+it, and no instruction to that effect is needed on the request.**
+
+### 18.1 Inherited automatically — never given a per-type case
+
+Bet funding split · reserve funding · winnings fee · payout multiplier ·
+settlement, payout, idempotency and crash resume · the wallet ledger · realtime
+snapshots, rooms and live pools · bet rate limiting · cache and rate-limit
+counters · cron, retention and reconciliation.
+
+**The rule that follows:** if adding a type requires editing one of those, you
+have found a type-specific branch that should not exist. **Fix the branch; do
+not add a case to it.** Adding the case is how a ternary came to announce every
+unknown board's winner under the wrong name.
+
+### 18.2 Declared per type — the complete list
+
+1. One `META` entry in `domains/markets/cycleTypes.js`.
+2. `DEFAULT_CYCLE_PHASES.<phasesKey>` — one declaration, read by the schema
+   default and both consumers.
+3. `SystemConfig.betLimits.<limitsKey>` — declare them even when they equal
+   another board's, so retuning one cannot silently retune the other.
+4. The phantom-access enum, so an agent can be scoped without being granted all.
+5. Frontend: the cycle-type enum, chip values and phase map, each a §5 mirror
+   needing its citing comment.
+6. `cycleTypes.test.js` — covered by the existing per-type loops.
+7. A lifecycle test **if the new board's phases are a different order of
+   magnitude**. Everything else runs at 30-minute timings where the 1-second
+   status tick has minutes of slack; that proves the settlement machinery and
+   proves nothing about a board whose phases are seconds apart.
+
+### 18.3 Invariants
+
+- Phase ordering: `merge > equalizer > close > celebrate >= 0`, and
+  `merge < duration`. A set failing this is discarded at read time and the board
+  silently runs on defaults.
+- **Phases must fit the block.** The ordering invariant compares phases only
+  with each other, never with the duration — a merge offset larger than the
+  block fires before the cycle starts and nothing objects.
+- The celebration lock and next-cycle timer derive from the type's own celebrate
+  offset. A 10-second lock on a 60-second block eats a sixth of the next cycle.
+- Status ticks are 1s, so a close→declare window under ~2s can be missed. The
+  phase logic tolerates it by letting a still-OPEN cycle complete directly. Do
+  not "fix" that tolerance.
+- Unknown types fail loudly. Callers on a broadcast path skip the row rather
+  than defaulting — one unrecognised cycle must not take a screen down.
+
+### 18.4 Operational gate
+
+Cycle frequency multiplies settlement runs, rows and realtime traffic linearly.
+Re-run the load test before enabling a new high-frequency board.
+
+---
+
+## 19. What is kept: the financial core
 
 The financial core in PostgreSQL is good and stays exactly as it is:
 
@@ -107,16 +471,12 @@ The financial core in PostgreSQL is good and stays exactly as it is:
 - `*_transitions` audit tables.
 - `CHECK` constraints that make an impossible row impossible.
 
-Only the migration scaffolding around that core is being removed. If a change
-would weaken any of the six properties above, it is wrong regardless of what
-else it achieves.
+If a change would weaken any of those six, it is wrong regardless of what else
+it achieves.
 
 ---
 
-## Traps — already found and paid for. Do not rediscover them.
-
-Each of these cost a CI round trip. They are recorded so the next reader does not
-pay again.
+## 20. Traps — already found and paid for. Do not rediscover them.
 
 1. **`computeWinningsPayout()` has no `payout` key.** It returns
    `{gross, fee, net, …}`. Writing `p?.payout ?? 0` silently pays **zero** while
@@ -139,427 +499,309 @@ pay again.
 6. **Reconstruct counters from rows; never accumulate them in memory.** An
    accumulator counts passes, not rows, and a crash mid-pass loses the count
    permanently while the money stays correct.
-7. **Classify every balance read as display or decision.** Money decisions read
-   from the wrong store were found in three places: bet-placement affordability,
-   withdrawal admission (`paymentProcessing.service.js`), and merchant
-   assignment (`merchantScoring.service.js`, which filtered candidates by a
-   document-store `tokenBalance`). A display read may be stale; a decision read
-   may not.
+7. **Classify every balance read as display or decision.** See §9.
 8. **`createWithdrawalOrder` and `selectBestMerchant` decide where a player's
    money goes and had zero tests.** They stay covered.
 9. **CI log noise buries the failure.** PostgreSQL logs every refused `ERROR`
    with its full statement, and the concurrency suites provoke those on purpose.
-   The runner dumps the whole container log at teardown, pushing vitest output
-   and failure annotations out of the retrievable window. Set
-   `log_min_error_statement=panic` and `log_min_messages=fatal` at runtime
+   Set `log_min_error_statement=panic` and `log_min_messages=fatal` at runtime
    before the suites run. A service container has no `command:` key — use
    `ALTER SYSTEM` + `pg_reload_conf()` in a step.
-
 10. **A mutation run leaves its rows behind.** `mutation-check.mjs` reverts the
-    source file; it does not revert the database. So a mutant that disables a
-    guard creates exactly the rows that guard exists to prevent, and they stay
-    there. A ₹7,770 cash-rail order — an amount no ATM dispenses and the
-    denomination gate refuses — sat in `order_states` because the mutant
-    disabling that gate had run once.
+    source file; it does not revert the database. A mutant that disables a guard
+    creates exactly the rows that guard exists to prevent, and they stay there.
+    A ₹7,770 cash-rail order — an amount no ATM dispenses — sat in `order_states`
+    because the mutant disabling that gate had run once.
 
-    The consequence is a rule, not a curiosity: **never assert a global
-    invariant over a shared table.** A test that walks everything a query
-    returns and asserts each row is well-formed is asserting something about
-    every other process that has ever touched that database, including the
-    mutation harness deliberately creating malformed data. Take a baseline,
-    create your own rows, and assert the delta.
-
-
+    The consequence is a rule: **never assert a global invariant over a shared
+    table.** A test that walks everything a query returns and asserts each row is
+    well-formed is asserting something about every other process that has ever
+    touched that database, including the mutation harness deliberately creating
+    malformed data. Take a baseline, create your own rows, assert the delta.
 11. **A gate that reads printed prose will eventually read it wrong.** The
-    mutation harness decided KILLED vs SURVIVED by regexing vitest's summary
-    line out of stdout. That line is prose: its wording depends on the reporter,
-    ANSI colour codes sit between the words the pattern needs adjacent, and
-    which stream it lands on depends on whether the runner looks like a
-    terminal. M49 measured 22 tests on every local run and came back NOT
-    MEASURED in CI, on a check that had been green for weeks.
+    mutation harness decided KILLED vs SURVIVED by regexing vitest's summary line
+    out of stdout. That line is prose: its wording depends on the reporter, ANSI
+    colour codes sit between the words the pattern needs adjacent, and which
+    stream it lands on depends on whether the runner looks like a terminal. M49
+    measured 22 tests on every local run and came back NOT MEASURED in CI, on a
+    check green for weeks.
 
-    A machine-readable result exists (`--reporter=json --outputFile`); read
-    that. And a non-zero exit is not by itself evidence a mutation was killed —
-    a mutant that makes a module unparseable also exits non-zero, which is the
-    mirror image of crediting a suite that never ran.
-
+    A machine-readable result exists (`--reporter=json --outputFile`); read that.
+    And a non-zero exit is not by itself evidence a mutation was killed — a
+    mutant that makes a module unparseable also exits non-zero.
 12. **The mutation harness OWNS every file it names while it runs.** It reads a
     source file, writes a mutant over it, runs a suite, and writes back the copy
-    it took at the start. An edit made to that file in between is inside the
-    window and is **silently reverted** — no conflict, no error, the file simply
-    reads as it did before. It happened to a one-line fix in
-    `paymentProcessing.service.js` that had been made, verified and moved on
-    from; it was gone twenty minutes later and only a re-read found it.
+    it took at the start. An edit made in between is **silently reverted** — no
+    conflict, no error. It happened to a one-line fix that had been made,
+    verified and moved on from; it was gone twenty minutes later.
 
-    So: **never edit a file while a mutation run is in flight**, and treat a
-    background run as holding a lock on all 39 files it names. If you must edit,
-    stop the run first. After any run, re-check the edits you made near it — a
-    `grep` for the comment you added is enough, and is cheaper than finding out
-    from a suite.
-
+    **Never edit a file while a mutation run is in flight.** After any run,
+    re-check the edits you made near it.
 13. **A mutation anchor that matches twice mutates the WRONG PLACE.**
     `String.replace(string, …)` changes the first occurrence only, so
-    `AND consumed_at IS NULL` — three times in one repository — mutated the
-    login TOKEN while the entry described the login CODE. It reported KILLED,
-    and the guard it claimed to cover had no test at all: widening the anchor to
-    name one site turned that KILLED into a SURVIVED, which is what a real hole
-    looks like. The harness now refuses an ambiguous anchor
-    (`ANCHOR-AMBIGUOUS`), for the same reason it refuses a missing one.
-
+    `AND consumed_at IS NULL` — three times in one repository — mutated the login
+    TOKEN while the entry described the login CODE. It reported KILLED, and the
+    guard it claimed to cover had no test at all. The harness now refuses an
+    ambiguous anchor.
 14. **`CREATE OR REPLACE` twice in one schema file is ONE definition, the last.**
-    `bb_forbid_order_mode_change()` was written three times — once for the rail,
-    once for the USDT chain, once for the frozen quote — each restating the
+    `bb_forbid_order_mode_change()` was written three times, each restating the
     earlier branches, so every version read correctly at its own position.
-    Editing the first two changed nothing, and the mutation aimed at the first
-    was reported as SURVIVED because the third put it back. `check:coherence`
-    now fails on a schema object defined more than once.
-
+    Editing the first two changed nothing. `check:coherence` now fails on a
+    schema object defined more than once.
 15. **`fiat_amount_paise` is in the ORDER's currency. The ledger is not.**
     On a USDT order it holds USDT — 500, for 50,000 tokens. Posting it as rupees
     still SUMS TO ZERO, because the difference falls into the residual: every
-    USDT deposit credited PLATFORM_REVENUE ₹49,500 the platform never earned and
-    debited EXTERNAL_FIAT ₹500 for value of ₹50,000. Balanced, silent, wrong.
-    The ledger posts the INR-equivalent (`tokenAmount` at the peg); the figure
+    USDT deposit credited PLATFORM_REVENUE ₹49,500 the platform never earned. The
+    ledger posts the INR-equivalent (`token_amount_paise` at the peg); the figure
     the player actually sent stays in `metadata.fiatAmount` beside `rateUsed`.
     Anything that RENDERS the amount goes through `formatOrderFiat(order)` —
     "₹500" for a payment of 500 USDT is the same lie in the line a human reads.
 
+    **The same trap has a second mouth: any AGGREGATE over that column.** The
+    merchant commission engine summed `fiat_amount_paise` across currencies to
+    get matched volume, so a 50,000-token USDT deposit counted as ₹500 of work
+    instead of ₹50,000 — a hundredfold understatement in a figure a percentage is
+    paid on. Aggregate `token_amount_paise`.
 16. **A merchant-scoped read is a permission. Do not widen it to fetch more.**
     The CDM receipt handler read `getMerchantOrder(id, req.merchantId)` — which
     404s on somebody else's order — and a later edit swapped it for
     `getOrderRecord(id)` to get at a field. Nothing else changed, no check went
-    red at the time, and **any merchant could attach their slip to any payout**,
-    claiming another merchant's cash deposit and the evidence a dispute is
-    decided on. When a handler needs more of a row, widen the SCOPED reader —
-    never reach past it.
+    red, and **any merchant could attach their slip to any payout**. When a
+    handler needs more of a row, widen the SCOPED reader — never reach past it.
+17. **A silent no-op after a committed ledger write strands money.**
+    `creditMerchantTokens` returns `{merchant: null}` for an id with no merchant
+    row — it does not throw. The commission engine wrote its ledger event first,
+    so the pool was debited, the platform recorded the merchant as owed, the
+    wallet credit did nothing, and the high-water mark (derived from that very
+    event) advanced past the volume: owed, undelivered, never retried, and
+    reported as issued. `order_states.merchant_id` has no foreign key to
+    `merchants`, so this was reachable. **Check that the recipient can receive
+    before writing the record that says they did.**
 
 ---
 
-## Working rules
-
-- **Read the whole path before changing part of it** — endpoint, service, store
-  access and fixtures together. A route rewritten without its service is a bug
-  with a green test.
-- **Do not accommodate; remove.**
-- **Derive, do not duplicate.** One owner per value (`04-GOVERNANCE.md` §1
-  still governs this).
-- **Money is integer paise, everywhere, in `BIGINT`.**
-
----
-
-## Shipped means reachable
-
-A backend that works and a panel that calls it are two different facts, and this
-repository has repeatedly had one without the other. Every check here passed
-while five admin buttons hit paths the server has never served: the request
-404'd, the component caught it, and the screen rendered its empty state —
-indistinguishable from "no data". Nobody saw a stack trace. Nobody saw a red
-test. The dispute queue was permanently empty, release and refund did nothing,
-merchant scoring silently failed while reporting that the *limits* had failed,
-and every merchant's order history read "No orders found" however busy they were.
-
-A route test proves a handler works. It can never prove anything calls it.
-
-1. **A panel call that resolves to no route is a live defect**, not a loose end.
-   `npm run check:ui-coverage` fails the build on one. Three of the five above
-   shared a single cause — handlers moved out from under a `/queue` prefix and
-   the panel was never updated — so this is drift, and drift recurs.
-2. **A backend feature with no UI is not shipped.** It is built, tested, merged
-   and unreachable. `check:ui-coverage --unused` lists these; the list is
-   triage, not failure, because webhooks and SSE belong on it. Anything else on
-   it is either work someone forgot to finish or code to delete.
-3. **Do not describe a screen as working without following its calls to a
-   route.** Reading the handler is not enough. Reading the component is not
-   enough. The two must be checked against each other.
-
-## A write that follows a commit must not be able to fail
+## 21. A write that follows a commit must not be able to fail
 
 The order lifecycle moves the STATE first and writes the accompanying fields
 SECOND, deliberately: an order must never be found in a new state without the
-facts that justify it. The price of that ordering is that anything wrong in the
-second write happens **after the first has already committed** — the order
-moves, the handler's `catch` returns a 500, and everything it meant to do next,
-including moving money, never runs.
+facts that justify it. The price is that anything wrong in the second write
+happens **after the first has committed** — the order moves, the handler's
+`catch` returns a 500, and everything it meant to do next, including moving
+money, never runs.
 
 `setOrderFields` throws on a field name it does not know. That has shipped
-**three times, in three files**, and every check in this repository was green
-each time:
+**three times, in three files**, with every check green each time:
 
-- `resolvedAt` / `resolvedBy` in `disputeResolution.admin.routes.js` — every
-  admin dispute resolution failed.
+- `resolvedAt`/`resolvedBy` — every admin dispute resolution failed.
 - `updatedAt` in the merchant reject handler — 500 on every call, and no screen
   called it, so nothing noticed.
-- `resolutionNotes` + `updatedAt` in `paymentOrder.routes.js` — the admin
-  panel's release button marked a **disputed deposit COMPLETED and never
-  credited the player**, then told the admin it had failed. The order left the
-  DISPUTED queue, so nothing remained to show it had gone wrong.
+- `resolutionNotes`+`updatedAt` — the release button marked a **disputed deposit
+  COMPLETED and never credited the player**, then told the admin it had failed.
+  The order left the DISPUTED queue, so nothing remained to show it had gone wrong.
 
-`npm run check:settable` refuses the whole class at build time. It reads
-`SETTABLE` from the one file that defines it and checks every `set: { … }`
-literal in `backend/`. It cannot see whether the values are right or whether the
-money moved — those need a test through the real database.
+`npm run check:settable` refuses the whole class at build time. It cannot see
+whether the values are right or whether the money moved — those need a test
+through the real database.
 
-The same shape exists outside the lifecycle: a column that is `NOT NULL` refuses
-an explicit `null`, and `updateUser` passes values straight through. That is how
+The same shape exists outside the lifecycle: a `NOT NULL` column refuses an
+explicit `null`, and `updateUser` passes values straight through. That is how
 `unblock?resetWarnings=true` 500'd *after* the unblock committed, leaving
-`is_blocked` false with `status` still `BLOCKED` — an account sign-in refused
-and the request guards admitted. **Before writing `null`, check the column.**
+`is_blocked` false with `status` still `BLOCKED`. **Before writing `null`, check
+the column.**
 
-## Code nothing imports is not code
+---
+
+## 22. Code nothing imports is not code
 
 `check:dead-code` scans exported names. A default export is named at the import
-site, so a module whose only export is a `default` was exempt from every check
-in it. `backend/services/admin.service.js` was exactly that: 380 lines
-duplicating live block/unblock/delete/sub-admin routes, holding two writes of
-`null` into a `NOT NULL` column — and holding a locked-balance guard the LIVE
-delete route did not have, while `moneyDecisionsReadTheWallet.test.js` asserted
-that guard **against the dead file** and passed. The live route would
-soft-delete a player with a withdrawal still in escrow.
+site, so a module whose only export is a `default` was exempt from every check.
+`admin.service.js` was exactly that: 380 lines duplicating live routes, holding
+two writes of `null` into a `NOT NULL` column — and holding a locked-balance
+guard the LIVE delete route did not have, while a test asserted that guard
+**against the dead file** and passed. The live route would soft-delete a player
+with a withdrawal still in escrow.
 
-Two rules follow, both now mechanical:
-
-1. **A module nothing imports is dead**, whatever it exports.
-   `check:dead-code` reports orphan modules and fails on them. Deliberate
-   exceptions go in `ORPHAN_ALLOW` **with a stated reason** — adding a line
-   there is a decision, not a silencer.
+1. **A module nothing imports is dead**, whatever it exports. Deliberate
+   exceptions go in `ORPHAN_ALLOW` **with a stated reason** — adding a line there
+   is a decision, not a silencer.
 2. **A test that reads a file's source is not a consumer of it.** Asserting a
-   money guard against unreachable code is worse than having no assertion,
-   because it reports the guard as present. When a test names a path, check that
-   something *imports* that path.
+   money guard against unreachable code is worse than no assertion, because it
+   reports the guard as present. When a test names a path, check that something
+   *imports* that path.
 
-## A type that lies is worse than no type
+---
 
-`admin-panel/src/types.ts` declared `User._id`. The server has never sent one:
-the users repository and the KYC queue query both emit `userId`. TypeScript
-could not catch it, because **the interface was the thing that was wrong** —
-every `u._id` typechecked and was `undefined` at runtime.
+## 23. A type that lies is worse than no type
 
-What that produced, none of it looking like an error:
+`admin-panel/src/types.ts` declared `User._id`. The server has never sent one —
+the repository and the KYC queue both emit `userId`. TypeScript could not catch
+it, because **the interface was the thing that was wrong**: every `u._id`
+typechecked and was `undefined` at runtime.
 
-- Every user-scoped call from the admin panel built
-  `/api/admin/users/undefined/…`. Block, unblock, delete, balance adjust, roles
-  and phantom access all 404'd into a caught error and an empty state.
-- On the KYC screen, `setSelectedId(u._id)` stored `undefined`, so
-  `find(u => u._id === selectedId)` matched the **first** row every time —
-  a reviewer clicking the fifth player read the first player's record — and
-  `active = selected?._id === u._id` rendered **every** row highlighted.
-  Approving grants full withdrawal access.
+- Every user-scoped call built `/api/admin/users/undefined/…`, 404'd into a
+  caught error and an empty state.
+- On the KYC screen, `find(u => u._id === selectedId)` matched the **first** row
+  every time — a reviewer clicking the fifth player read the first player's
+  record — and every row rendered highlighted. Approving grants withdrawal access.
 
 The fix that found every call site was renaming the field in the interface and
 letting `tsc` list them. A search would have missed one, and a missed one is a
 silent 404. **When a panel type names an id, check it against what the mapper
-actually emits** — `toOrder` and the merchants mapper alias `_id` deliberately;
-`toUser` does not.
+actually emits.**
 
-Two related failures worth the same suspicion:
+Two relatives, same suspicion:
 
 - `req.user?.id` in three rate limiters. `authenticate` sets `req.user` from the
-  users repository, which returns `userId`. So every limiter silently fell
-  through to its IP fallback — including the withdrawal cap and the 2FA
-  brute-force guard, whose comment described the account-takeover it was no
-  longer preventing. Per-IP throttles CGNAT'd players together and limits nobody
-  willing to reconnect.
-- `.save()` on a repository row. It is a TypeError, the route's `catch` turns it
-  into a 500, and nothing is written. `check:settable` refuses `.save`,
-  `.populate`, `.toObject` and `.lean` outside a `typeof … === 'function'` guard.
-
-## One owner per value, mechanically
-
-`04-GOVERNANCE.md` §1 has always said derive, do not duplicate. Say it here in
-the form it keeps being violated: **the same payload assembled in two places
-drifts, and it drifts silently.**
-
-The system-config payload was built twice — once in `socketHandlers.js`, once in
-`GET /api/v1/system/config` — with independently written fallbacks. They had
-already diverged: the socket carried `webUrl`/`androidUrl`/`iosUrl`, the HTTP
-route carried `kycRequired`/`registrationEnabled`, and a client got a different
-answer about the platform depending on which one it happened to ask.
-
-A value an operator can edit is only config if **every** consumer reads the same
-owner. Two builders with matching defaults are not one owner; they are one bug
-waiting for the next field.
-
-## No path that only works on one machine
-
-`verify-ui-coverage.mjs` shipped with `const ROOT = '/home/user/bettingbazaar'`
-— the author's own checkout, baked in. It passed locally and could not run
-anywhere else; CI died at the first `readFileSync`. Derive a root from
-`import.meta.url`, read a location from configuration, and never write an
-absolute path that assumes a particular machine. Running a script from the repo
-root is not evidence it runs — run it from somewhere else.
-
-## Do not call it perfect
-
-`Do not claim readiness` above governs the money path. This governs everything
-else, and it is the rule most often broken here.
-
-**"Clean", "complete", "perfect", "nothing missing" and "production-ready" are
-claims about evidence, not impressions.** Every one of them requires naming the
-gate that was run and the number it printed. A green CI run is not that claim:
-CI was green on every commit while all five dead buttons were live, because
-nothing was looking for them.
-
-When asked whether something is finished, answer with what was checked and what
-was **not**. An honest "I verified the handlers; I never checked that a button
-calls them" is worth more than a confident summary, and this session is the
-proof: that exact unasked question was hiding five defects, a duplicated config
-payload, and 71 endpoints no screen reaches.
-
-Absence of a failing check is not evidence of correctness when no check covers
-the thing being claimed.
+  repository, which returns `userId`. Every limiter silently fell through to its
+  IP fallback — including the withdrawal cap and the 2FA brute-force guard, whose
+  comment described the account takeover it was no longer preventing.
+- `.save()` on a repository row is a TypeError the route's `catch` turns into a
+  500, writing nothing. `check:settable` refuses `.save`, `.populate`,
+  `.toObject` and `.lean` outside a `typeof … === 'function'` guard.
 
 ---
 
-## A denylist protecting a person fails open
-
-`sanitizeMerchantOrder` deleted `userPhone` and `merchantSnapshot`, and deleted
-the player's payout destinations only on the DEPOSIT branch. So on **every
-withdrawal** the merchant received `userBankDetails.upiId`, copied straight from
-the player's profile — and the merchant panel had a render waiting for it
-(`OrderCard`'s "Send to user UPI"), while its order search matched on
-`order.userPhone`, letting a merchant look a player up by phone number.
-
-Three separate checks were green throughout. None of them was looking.
+## 24. Privacy points BOTH ways
 
 **A merchant may see the bank account a withdrawal pays and the name on it.
-Nothing else identifies the player to them** — not the phone number in whole or
-in part, not the UPI ID (which resolves to both), not a CDM receipt after it is
-submitted. **A player never sees the merchant's personal details** — only the
-payment link.
-
-Three rules follow, all mechanical via `check:merchant-privacy`:
-
-1. **The projection is an allowlist, and it lives in one file.**
-   `backend/domains/merchant/merchantOrderView.js` is the only shape a merchant
-   receives. A denylist admits the next column added to `order_states` by
-   default and the mistake is always "too much"; an allowlist fails closed, and
-   its symptom is a blank field somebody notices.
-2. **Assert the key set, not the field.** A test that checks `userPhone` is
-   absent is the denylist again, written as a test. The suite asserts the
-   response's keys are a **subset** of the declared allowlist, so a new leak
-   fails without anybody adding a line.
-3. **A field the panel's type names is a field somebody will render.** The gate
-   reads the forbidden list from the server module and fails if
-   `merchant-panel/src/types.ts` declares any of them.
-
-The same audit found two fields the panel read that no responder has ever sent:
-`shortId` (declared non-optional) and `rejectionReason` — the server calls it
-`rejectedReason`, so **every rejection rendered its generic fallback and the
-merchant never saw the reason**. Same class as `User._id`; same fix — rename in
-the interface and let `tsc` list the call sites.
-
----
-
-## The same rule points BOTH ways
-
-`sanitizeMerchantOrder` was one half. The other half had nothing at all: every
-player-facing response carried `merchantSnapshot` **whole** — the merchant's UPI
-handle, their QR image, their bank account number, IFSC and the name on it, and
-their USDT settlement address — on order creation, on the order fetch, on the
-dispute response, on the assignment socket push, and every few seconds on the
-status poll. The player's screen rendered the handle in a copy-to-clipboard row.
-None of the bank fields is needed to pay a UPI handle. A player could read, copy
-and keep a merchant's account number from a single deposit.
-
+Nothing else identifies the player** — not the phone number in whole or in part,
+not the UPI ID (which resolves to both), not a CDM receipt after submission.
 **A player sees where to pay and nothing about who they are paying** — a payment
-link, an opaque `Merchant #<ref>`, a deadline. `backend/domains/payment/
-playerOrderView.js` is that shape, an allowlist for the same reason the merchant
-one is, and `npm run check:player-privacy` enforces it.
+link, an opaque `Merchant #<ref>`, a deadline.
 
-Three things this cost, all of them findings a route-file scan could not make:
+`sanitizeMerchantOrder` was a denylist: it deleted the player's payout
+destinations only on the DEPOSIT branch, so on **every withdrawal** the merchant
+received the player's UPI ID, and the panel had a render waiting for it while its
+order search matched on the player's phone number. The other half had nothing at
+all: every player-facing response carried `merchantSnapshot` whole — the
+merchant's UPI handle, QR, bank account number, IFSC, account-holder name and
+USDT address — on creation, fetch, dispute, assignment push and every status
+poll. A player could copy and keep a merchant's account number from one deposit.
 
-1. **A gate that reads one file protects one file.** `check:merchant-privacy`
-   scanned `merchant.routes.js` and was green for as long as it existed, while
-   `paymentProcessing.service.js` spread the WHOLE order — `...order` — onto the
-   merchant's stream at assignment, and `sse.routes.js` pushed `page.orders`
-   RAW in `merchant_orders_snapshot`, to every merchant, on every connect. Both
-   carried the player's phone number, their bank details, the treasury split and
-   the risk verdicts on them. **A channel is a responder wherever it is
-   written**: both gates now read the whole backend for pushes, not a list of
-   route files.
-2. **A spread defeats a key scan.** `{ ...order, server_ts: Date.now() }` names
-   one permitted key and carries thirty forbidden ones. Both gates read spreads
-   separately; on a player response a spread is permitted only from a producer
-   whose returned `order` the gate has itself verified, and the chain to it —
-   `res.json({ ...result })` ← `requestDeposit` ← `adapter.createDeposit` ←
-   `createDepositOrder` — is stated in the gate rather than assumed.
-3. **The link has one owner and the client is not it.** The panel used to build
-   the `upi://pay` intent from `merchantSnapshot.upiId`, which is WHY it had to
-   be given the handle. Building it on the server (`paymentLink.js`) is what
-   makes the rule structural: there is nothing left in the payload to build one
-   from. Note honestly what this does not do — a `upi://pay` intent carries the
-   payee, so the payer's own banking app will show it. The platform stops
-   publishing the merchant's identity; it cannot hide a payee from a payer.
+1. **Each projection is an allowlist in one file** —
+   `domains/merchant/merchantOrderView.js` and `domains/payment/playerOrderView.js`.
+   A denylist admits the next column added to `order_states` by default and the
+   mistake is always "too much"; an allowlist fails closed and its symptom is a
+   blank field somebody notices.
+2. **Assert the key set, not the field.** A test checking one field is absent is
+   the denylist written as a test. The suites assert the response's keys are a
+   **subset** of the allowlist, so a new leak fails without anybody adding a line.
+3. **A field the panel's type names is a field somebody will render.** The gates
+   read the forbidden list from the server module and fail if a panel type
+   declares any of them.
+4. **A channel is a responder wherever it is written.** A gate reading one route
+   file was green while `paymentProcessing.service.js` spread the WHOLE order onto
+   the merchant's stream at assignment and `sse.routes.js` pushed `page.orders`
+   RAW to every merchant on connect. Both gates now read the whole backend.
+5. **A spread defeats a key scan.** `{ ...order, server_ts: … }` names one
+   permitted key and carries thirty forbidden ones. A spread is permitted only
+   from a producer whose returned object the gate has itself verified, and the
+   chain to it is stated in the gate rather than assumed.
+6. **Blank comments before scanning.** An apostrophe in `// the player's shape`
+   is an opening quote to a bracket counter: it swallowed the rest of a return
+   literal, and the producer check reported no `order` key in a function that
+   plainly returns one — a check measuring zero things, reading exactly like a
+   pass. A producer that yields nothing to check is now a failure, not a silence.
 
-And a fourth, which is trap 11 in a new costume: **an apostrophe in a comment is
-an opening quote to a bracket counter.** `// one owner of the player's shape`
-swallowed the rest of a return literal, and the producer check reported no
-`order` key in a function that plainly returns one — a check measuring zero
-things, reading exactly like a pass. Every scan blanks comments first
-(`scripts/lib/privacyLists.mjs`), and a producer that yields nothing to check is
-now a failure rather than a silence.
+Note honestly what this does not do: a `upi://pay` intent carries the payee, so
+the payer's own banking app will show it. The platform stops publishing the
+merchant's identity; it cannot hide a payee from a payer.
+
+`npm run check:merchant-privacy` · `npm run check:player-privacy`
 
 ---
 
-## USDT is one token on several chains
+## 25. USDT is one token on several chains
 
 A player buys with USDT from a **USDT merchant**, by sending tokens to that
-merchant's wallet and submitting the transaction ID. There is no payment
+merchant's wallet and submitting the transaction id. There is no payment
 processor and no webhook. The counterparty is a person, and the rail is the
 ordinary order lifecycle with a different currency on it.
 
 **A USDT buy is denominated in PLATFORM TOKENS, not rupees**, at exactly
 **50,000, 100,000 or 500,000 tokens**. What the player *sends* is DERIVED from
-the admin's rate at creation: at 1 USDT = 100 tokens those are 500, 1,000 and
-5,000 USDT. There is no second denomination list in USDT — the rate is
-admin-editable, so a stored USDT amount would be a second owner that drifts the
-moment it changes.
+the admin's rate at creation. There is no second denomination list in USDT — the
+rate is admin-editable, so a stored USDT amount would be a second owner that
+drifts the moment it changes.
 
 **The quote is the contract.** It is computed and written WITH the order, and
-the assignment path — minutes later — is forbidden from remaking it: `rateUsed`
-and `fiat_amount_paise` are frozen by trigger on the row. Assignment used to
-re-read the rate, so an admin edit in between silently re-priced a purchase the
-player had already agreed to. A purchase that cannot be priced (no rate set) is
-**refused by name** (`USDT_RATE_UNSET`); there is no fallback, because 0 gives
-Infinity USDT and 1 would sell 50,000 tokens for 50,000 USDT.
+the assignment path — minutes later — is forbidden from remaking it: `rate_used`
+and `fiat_amount_paise` are frozen by trigger. Assignment used to re-read the
+rate, so an admin edit in between silently re-priced a purchase the player had
+already agreed to. A purchase that cannot be priced is **refused by name**
+(`USDT_RATE_UNSET`); there is no fallback, because 0 gives Infinity USDT and 1
+would sell 50,000 tokens for 50,000 USDT. The rate is bounded at both ends —
+a misplaced decimal could otherwise price the whole rail.
 
 **The chains are not interchangeable.** USDT sent to a Tron address from a BNB
 Smart Chain wallet is gone — no support desk recovers it, and it is the only
-unrecoverable mistake this platform can make. Everything about the rail follows
-from that:
+unrecoverable mistake this platform can make. Everything follows from that:
 
 1. **A merchant holds an address PER CHAIN** (`usdt_address_trc20`,
    `usdt_address_bep20`), not one "USDT address". A single column made Tron the
    only usable chain and made *which chain is this?* unanswerable.
 2. **The player picks the network first**, before an order exists, because it
-   decides which merchants can serve it. Asking afterwards would mean
-   reassigning an order already placed.
+   decides which merchants can serve it.
 3. **The address and its network always travel together** — in the snapshot, in
    `payTo`, on the screen. An address on its own is the mistake.
 4. **Only the chain the order named.** The merchant's other address is not part
    of that order and is not sent.
-5. **The chain is frozen on the row** (trigger, not just an allowlist), because
-   the snapshot carries the address for that chain alone.
+5. **The chain is frozen on the row** by trigger, because the snapshot carries
+   the address for that chain alone.
 6. **A merchant with no address on the order's chain is not a candidate.** That
-   guard is in the assignment query and not a row constraint: a row cannot see
-   which chain an order asked for, and a "must hold an address" CHECK refuses
-   the middle step of ordinary onboarding — the merchant exists, an admin puts
-   them on the rail, and only then do they enter an address.
+   guard is in the assignment query, not a row constraint: a row cannot see which
+   chain an order asked for, and a "must hold an address" CHECK would refuse the
+   middle step of ordinary onboarding.
 
 **₹10,000 and ₹40,000 are the ATM's ceilings, not the platform's.** ₹10,000 is
 the largest a cash machine dispenses in one go, so it bounds a CASH_ATM buy;
 ₹40,000 is the largest denomination it deals in at all, so it bounds one payout
 LEG (a larger withdrawal is split, never refused). Neither applies on the UPI
-rail, where a purchase is bounded by the configured min/max deposit like any
-other, and neither applies to USDT, whose sizes are the three token counts
-above. `MAX_CASH_BUY_PAISE` was once `MAX_INR_BUY_PAISE` and was enforced on
-every INR buy on both rails — a machine's limit applied where there is no
-machine.
+rail, and neither applies to USDT. `MAX_CASH_BUY_PAISE` was once
+`MAX_INR_BUY_PAISE` and was enforced on every INR buy on both rails — a
+machine's limit applied where there is no machine.
 
 A refusal on either rail **names that rail's own choices**: a player told only
 "invalid amount" tries again and again.
 
-## One payment, one claim
+---
+
+## 26. Merchant commission is paid per variety of work
+
+A merchant is paid on **matched buy→sell volume** — `min(deposits, withdrawals)`
+— paid **once**, above a high-water mark, from the platform-funded pool. Never
+from a user balance, never from a rate spread, never triggered by a deposit.
+
+What varies is the RATE, per **variety**: `(currency, payment_mode,
+denomination)`. A ₹500 run to a cash machine and a 500,000-token USDT transfer
+are not the same job and one number could not say so. Within a variety, each
+LEG has its own percentage and the engine ADDS them, because a matched rupee came
+in through a deposit and went out through a withdrawal.
+
+1. **Match within a variety, never across.** Otherwise a cash run pairs with a
+   UPI payout and one rate pays for two different jobs.
+2. **One high-water mark per (merchant, variety).** One mark per merchant lets a
+   payment for cash work advance the mark on UPI work, and the volume underneath
+   is never paid — money withheld silently, with a ledger that reads complete.
+3. **An unpriced variety earns nothing and is REPORTED as unpriced.** No default
+   and no nearest-match: a variety nobody priced is a decision nobody made, and a
+   row priced 0/0 reads as priced and pays nothing, which is the shape most
+   easily mistaken for a working rate. Absence is how a variety goes unpriced.
+4. **The mark is read from the idempotency key**, not from metadata. The engine
+   this replaced read `$metadata.cumulativeMatchedMinor`; there is no metadata
+   column, so every mark came back undefined and defaulted to 0 — enabling it
+   would have paid every merchant their whole history again, on every run. The
+   key exists, is UNIQUE, and is what makes the payment idempotent, so the mark
+   and the idempotency cannot disagree.
+5. **The key separator is `~`, not `_`.** A merchant id can contain an
+   underscore, so a pattern has to guess where the id ends.
+6. **Never partial-issue.** Paying what the pool holds while recording the full
+   high-water mark under-pays permanently. Skip until the pool is funded.
+7. **Check the merchant exists before posting.** See trap 17.
+
+---
+
+## 27. One payment, one claim
 
 A UTR is a bank's reference for one real transfer. A transaction hash is a
 blockchain's reference for one real transfer. A CDM slip carries the machine's
@@ -568,54 +810,105 @@ one registry** — `utr_registry`, where a reference belongs to exactly one orde
 for good.
 
 Only the player's UTR was ever claimed. Two other paths wrote a reference into a
-column and claimed nothing:
+column and claimed nothing: `cdm_transaction_id` (a merchant's proof they paid a
+withdrawal in cash — the same slip could be presented twice) and `usdt_tx_hash`
+on a merchant's token purchase (one payment funding two purchases of the
+platform's own inventory). Both were green under every check, because no check
+looked at the *shape* of the problem — a column holding somebody else's
+reference — only at handlers.
 
-- **`cdm_transaction_id`** — a merchant's proof they paid out a withdrawal in
-  cash. The same slip could be presented for a second payout.
-- **`usdt_tx_hash`** on a merchant's token purchase — one payment could fund two
-  purchases of the platform's own inventory.
-
-Both were green under every check, because no check looked at the *shape* of the
-problem — a column holding somebody else's reference — only at handlers.
-
-`claimPaymentReference()` is now the one owner, it **throws** rather than
-returning a flag a caller can ignore, and `check:payment-references` fails the
-build on a handler that takes a reference from `req.body` without claiming it —
-matched **per field**, because a first draft only asked whether the file
-contained a claim anywhere and a file with two claims stayed green after one was
-deleted.
-
-Two details worth keeping:
+`claimPaymentReference()` is the one owner, it **throws** rather than returning a
+flag a caller can ignore, and `check:payment-references` fails the build on a
+handler taking a reference from `req.body` without claiming it — matched **per
+field**, because a first draft only asked whether the file contained a claim
+anywhere, and a file with two claims stayed green after one was deleted.
 
 - **A hex hash in two cases is ONE transaction.** References are uppercased
   before they are claimed and the hash patterns are case-insensitive, so `0xAB…`
-  and `0xab…` collide on the primary key as they must. Matching them
-  case-sensitively would let one payment be claimed twice.
+  and `0xab…` collide on the primary key as they must.
 - **The refusal speaks the submitter's vocabulary.** "This UTR was already used"
-  shown to somebody holding a Tron hash reads as another system's error, and
-  they submit it again.
+  shown to somebody holding a Tron hash reads as another system's error, and they
+  submit it again.
 
-## Two gates that were measuring the author, not the code
+---
 
-Both were found by adding one router, and both had the same shape: **a gate
-holding its own copy of something the code already states.**
+## 28. Shipped means reachable, and gates measure the code
 
-- `check:ui-coverage` mapped router file → mount prefix in a hand-written
-  table. A new router mounted and served was reported as eight DEAD BUTTONS,
-  because the table had never heard of it. The prefixes are derived from
-  `server.js`'s own `import` and `app.use` now — which immediately found five
-  routes the table had been missing in the other direction.
-- `check:settable` compared every `set: { … }` in the backend against the
-  ORDER lifecycle's `SETTABLE`, assuming there is only ever one writer. A
-  second lifecycle briefly existed and the gate reported its perfectly valid
-  `set` as a field the order writer would refuse: a false failure, which is how
-  a gate loses the reader's trust and gets silenced. A `set` is now checked
-  against **the writer it is handed to** (aliases and ternary callees
-  resolved), and a `set` handed to a writer the gate does not know is reported
-  as unattributed rather than passed.
+### Shipped means reachable
 
-**A gate whose failure mode is "the author forgot to update me" reports the
-author.** Derive what it checks from the thing it is checking.
+A backend that works and a panel that calls it are two different facts. Every
+check passed while five admin buttons hit paths the server has never served: the
+request 404'd, the component caught it, and the screen rendered its empty state —
+indistinguishable from "no data". The dispute queue was permanently empty,
+release and refund did nothing, and every merchant's order history read "No
+orders found" however busy they were.
+
+A route test proves a handler works. It can never prove anything calls it.
+
+1. **A panel call that resolves to no route is a live defect.**
+   `npm run check:ui-coverage` fails the build on one.
+2. **A backend feature with no UI is not shipped.** It is built, tested, merged
+   and unreachable. `check:ui-coverage --unused` lists these; the list is triage,
+   not failure, because webhooks and SSE belong on it. Anything else on it is
+   either work someone forgot to finish or code to delete.
+3. **Do not describe a screen as working without following its calls to a
+   route.** Reading the handler is not enough; reading the component is not
+   enough. The two must be checked against each other.
+
+### A gate whose failure mode is "the author forgot to update me" reports the author
+
+- `check:ui-coverage` mapped router file → mount prefix in a hand-written table.
+  A new router mounted and served was reported as eight DEAD BUTTONS. The
+  prefixes are derived from `server.js`'s own imports now — which immediately
+  found five routes the table had been missing in the other direction.
+- `check:settable` compared every `set: { … }` against the ORDER lifecycle's
+  `SETTABLE`, assuming one writer. A second lifecycle briefly existed and the
+  gate reported its perfectly valid `set` as a field the order writer would
+  refuse: a false failure, which is how a gate loses trust and gets silenced. A
+  `set` is now checked against **the writer it is handed to**.
+
+**Derive what a gate checks from the thing it is checking.**
+
+### No path that only works on one machine
+
+`verify-ui-coverage.mjs` shipped with an absolute path to the author's own
+checkout. It passed locally and could not run anywhere else; CI died at the first
+read. Derive a root from `import.meta.url`. Running a script from the repo root
+is not evidence it runs — run it from somewhere else.
+
+---
+
+## 29. Do not claim readiness, and do not call it perfect
+
+Until `check:no-mongo` reports zero on every count **and** the suites run green
+against PostgreSQL alone, this platform is not ready to take money. No individual
+green check says otherwise.
+
+**"Clean", "complete", "perfect", "nothing missing" and "production-ready" are
+claims about evidence, not impressions.** Every one requires naming the gate that
+was run and the number it printed. A green CI run is not that claim: CI was green
+on every commit while all five dead buttons were live, because nothing was
+looking for them.
+
+When asked whether something is finished, answer with what was checked and what
+was **not**. An honest "I verified the handlers; I never checked that a button
+calls them" is worth more than a confident summary — that exact unasked question
+was hiding five defects, a duplicated config payload, and 71 endpoints no screen
+reaches.
+
+**Absence of a failing check is not evidence of correctness when no check covers
+the thing being claimed.**
+
+---
+
+## 30. Working rules
+
+- **Read the whole path before changing part of it** — endpoint, service, store
+  access and fixtures together. A route rewritten without its service is a bug
+  with a green test.
+- **Do not accommodate; remove.**
+- **Derive, do not duplicate.** One owner per value (§2).
+- **Money is integer paise, everywhere, in `BIGINT`.**
 
 ---
 
@@ -626,15 +919,15 @@ author.** Derive what it checks from the thing it is checking.
 | `npm run check:no-mongo` | The single-store rule holds. **The definition of done.** |
 | `npm run test:unit` | Money arithmetic, risk validation, cycle types, SSE, winners. |
 | `npm run test:pg` | Money-path behaviour against a real PostgreSQL. |
-| `npm run check:deps` | No circular imports, no governance boundary violations. |
+| `npm run check:deps` | No circular imports, no boundary violations. |
 | `npm run check:ui-coverage` | Every panel call reaches a real route. `--unused` lists endpoints no screen calls. |
-| `npm run check:dead-code` | No export is referenced by nothing, and no module is imported by nothing. `--all` lists test-only and over-exported ones. |
-| `npm run check:settable` | Every order-lifecycle `set` names a column the writer accepts — the write that runs after the state has already committed. |
+| `npm run check:dead-code` | No export is referenced by nothing, and no module is imported by nothing. |
+| `npm run check:settable` | Every order-lifecycle `set` names a column the writer accepts. |
 | `npm run check:db-boundary` | No SQL, driver or relative reach past `#db`. |
 | `npm run check:orphans` | Every identifier used is declared, imported or a parameter. |
-| `npm run check:balance-reads` | Trap 7, mechanically: a number that GATES a transfer is read from the rows the write will lock. |
-| `npm run check:coherence` | Every column the repositories name exists in the schema, and no schema object is defined twice (only the last definition survives). |
-| `npm run check:merchant-privacy` | A merchant is told the payout account and the name on it — never the player's phone or UPI ID. |
-| `npm run check:player-privacy` | A player is told where to pay — never the merchant's UPI handle, QR, bank account or the name on it. |
-| `npm run check:payment-references` | Every external payment reference — UTR, chain transaction hash, CDM slip id — is claimed once, through one registry. |
+| `npm run check:balance-reads` | A number that GATES a transfer is read from the rows the write will lock. |
+| `npm run check:coherence` | Every column the repositories name exists, and no schema object is defined twice. |
+| `npm run check:merchant-privacy` | A merchant is told the payout account — never the player's phone or UPI ID. |
+| `npm run check:player-privacy` | A player is told where to pay — never the merchant's handle, QR or bank account. |
+| `npm run check:payment-references` | Every external payment reference is claimed once, through one registry. |
 | `npm run verify:capabilities` | Every claimed capability has its evidence on disk. |

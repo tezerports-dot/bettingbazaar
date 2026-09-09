@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { Save, Power, AlertTriangle } from 'lucide-react';
@@ -183,7 +183,7 @@ export const SystemSettings: React.FC = () => {
       {/* Account security — THIS admin's own second factor, not a
           platform-wide setting. It sits first because an operator who has not
           enrolled is the single most valuable unprotected credential on the
-          platform (LAUNCH_READINESS §F). */}
+          platform (docs/PROJECT_STATUS.md §3.3). */}
       <TwoFactorSetup />
 
       {/* Maintenance Mode Warning */}

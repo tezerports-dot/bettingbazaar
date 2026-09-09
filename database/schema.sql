@@ -1,4 +1,4 @@
--- GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+-- GOVERNANCE: Read CLAUDE.md before editing this file.
 -- THE SCHEMA. Requires PostgreSQL >= 14 (CREATE OR REPLACE TRIGGER).
 --
 -- Every piece of state this platform holds is here: money, identity,
@@ -1104,7 +1104,7 @@ CREATE INDEX IF NOT EXISTS token_blacklist_expiry_idx ON token_blacklist (expire
 -- ── KYC verification ─────────────────────────────────────────────────────────
 --
 -- No identity DOCUMENTS are collected, stored or accepted anywhere: KYC is a
--- 12-digit number, held as an HMAC plus a ciphertext. See 04-GOVERNANCE.md §1.
+-- 12-digit number, held as an HMAC plus a ciphertext. See CLAUDE.md §1.
 CREATE TABLE IF NOT EXISTS kyc_verifications (
   user_id          TEXT PRIMARY KEY REFERENCES users (user_id) ON DELETE CASCADE,
   -- UNIQUE: the no-duplicate-accounts rule, enforced by the database. Two

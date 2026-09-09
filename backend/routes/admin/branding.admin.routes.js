@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /** branding.admin.routes.js — Branding config, CDN images, app assets */
 import { express, authenticate, isAdmin, isAdminOrSubAdmin } from './_adminShared.js';
 import { db } from '#db';

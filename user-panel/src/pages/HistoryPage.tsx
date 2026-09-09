@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * HistoryPage.tsx — 2026 "Bazaar" redesign. Global cycle history (winners &
  * pools) with a cycle-type toggle. Fetches 100 of the selected type from the

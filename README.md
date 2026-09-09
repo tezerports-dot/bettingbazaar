@@ -47,7 +47,7 @@ stack; the repository root holds **backend dependencies only** (GOVERNANCE §14)
 Do not add frontend packages to the root — the backend image installs it.
 
 ## 🏢 Enterprise & Launch Readiness
-Centralized governance now lives in `docs/governance/README.md`. Start there before launch review or contractor handoff. The current architecture is intentionally a modular monolith with documented seams for a future monolith + microservices transition; see `docs/governance/04-GOVERNANCE.md` §18 for the migration plan and §19 for the capability matrix / remaining launch/hardening work.
+Centralized governance now lives in `docs/governance/README.md`. Start there before launch review or contractor handoff. The current architecture is intentionally a modular monolith with documented seams for a future monolith + microservices transition; see `CLAUDE.md` §18 for the migration plan and §19 for the capability matrix / remaining launch/hardening work.
 
 ## 🛡️ Security
 
@@ -78,7 +78,7 @@ Implemented and verifiable in the codebase:
   tier — see `docs/governance/RATE_LIMITS.md`.
 
 **Not implemented — do not assume these exist** (see
-`docs/governance/LAUNCH_READINESS.md` §F):
+`docs/PROJECT_STATUS.md` §F):
 
 * **No CAPTCHA / bot-mitigation challenge** on any form. Rate limiting is the only
   automated-abuse control today.

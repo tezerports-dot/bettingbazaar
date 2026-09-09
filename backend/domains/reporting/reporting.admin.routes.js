@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * reporting.admin.routes.js — Reporting Platform admin surface (BBEPS
  * Phase 012, Enterprise Services tier). All read-only; ?format=csv on the

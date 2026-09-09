@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * POST /api/game/wallet/:providerKey is an UNAUTHENTICATED route that reaches
  * creditWinnings() and refundOrder() — the HMAC is its entire access control.

@@ -1,4 +1,4 @@
-# GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+# GOVERNANCE: Read CLAUDE.md before editing this file.
 # ══════════════════════════════════════════════════════════════════════════════
 # PLATFORM CAPABILITY REGISTRY — machine-readable source of truth
 # ══════════════════════════════════════════════════════════════════════════════
@@ -26,15 +26,15 @@ capabilities:
     implementation_status: full
     activation_status: active
     evidence: [backend/domains, backend/shared, backend/config, backend/providers]
-    docs: [docs/governance/04-GOVERNANCE.md]
+    docs: [CLAUDE.md]
   - id: CAP-02
     name: Governance Framework
     bucket: A
     owner: app
     implementation_status: full
     activation_status: active
-    evidence: ['docs/governance/04-GOVERNANCE.md', docs/governance/04-GOVERNANCE.md]
-    docs: ['docs/governance/04-GOVERNANCE.md']
+    evidence: ['CLAUDE.md', CLAUDE.md]
+    docs: ['CLAUDE.md']
   - id: CAP-03
     name: Domain-Driven Module Boundaries
     bucket: A
@@ -79,7 +79,7 @@ capabilities:
     activation_status: active
     dependencies: [CAP-09, CAP-13]
     evidence: [database/schema.sql, database/client.js]
-    docs: [CLAUDE.md, docs/governance/04-GOVERNANCE.md]
+    docs: [CLAUDE.md, CLAUDE.md]
   - id: CAP-08
     name: Append-Only Ledger
     bucket: A
@@ -106,7 +106,7 @@ capabilities:
     implementation_status: full
     activation_status: active
     evidence: [backend/domains/wallet/walletAuthority.service.js, database/repositories/wallets.core.js, database/client.js]
-    docs: [docs/governance/04-GOVERNANCE.md, CLAUDE.md]
+    docs: [CLAUDE.md, CLAUDE.md]
   - id: CAP-11
     name: CDC Migration
     bucket: decision
@@ -121,7 +121,7 @@ capabilities:
     # unprovisioned. Revisit if reconcile reports drift the settling window
     # does not explain.
     decision_outcome: keep-dual-write
-    docs: [docs/governance/04-GOVERNANCE.md]
+    docs: [CLAUDE.md]
   - id: CAP-12
     name: Dual-Write Migration
     bucket: decision
@@ -161,7 +161,7 @@ capabilities:
     # stores; both are gone. Data recovery is now PITR — see CAP-15.
     implementation_status: full
     activation_status: active
-    docs: [docs/governance/04-GOVERNANCE.md, DEPLOYMENT.md]
+    docs: [CLAUDE.md, DEPLOYMENT.md]
     evidence: [deploy/k8s, ecosystem.config.cjs]
 
   # ── C. PostgreSQL Platform ─────────────────────────────────────────────────
@@ -208,7 +208,7 @@ capabilities:
     # be claiming a readiness that has no code behind it.
     implementation_status: absent
     activation_status: infra-gated
-    docs: [docs/governance/04-GOVERNANCE.md]
+    docs: [CLAUDE.md]
   - id: CAP-19
     name: Backup Verification
     bucket: B
@@ -245,7 +245,7 @@ capabilities:
     # CAP-24 pub/sub, the job queue) — what is absent is an application cache.
     implementation_status: absent
     activation_status: infra-gated
-    docs: [docs/governance/04-GOVERNANCE.md]
+    docs: [CLAUDE.md]
   - id: CAP-22
     name: Distributed Locks
     bucket: A
@@ -282,7 +282,7 @@ capabilities:
     # while HA is unprovisioned. REVISIT IF a regulator requires instant session
     # termination — and do CAP-27 first when revisiting.
     decision_outcome: stateless-tokens
-    docs: [docs/governance/04-GOVERNANCE.md]
+    docs: [CLAUDE.md]
   - id: CAP-24
     name: Queue Coordination
     bucket: A
@@ -309,7 +309,7 @@ capabilities:
     # dropped; none of those decisions exist yet.
     implementation_status: absent
     activation_status: infra-gated
-    docs: [docs/governance/04-GOVERNANCE.md]
+    docs: [CLAUDE.md]
   - id: CAP-27
     name: Redis High Availability
     bucket: B
@@ -428,7 +428,7 @@ capabilities:
     owner: edge-platform
     implementation_status: decision
     activation_status: 'n/a'
-    docs: [docs/governance/04-GOVERNANCE.md]
+    docs: [CLAUDE.md]
   - id: CAP-42
     name: Load Balancing
     bucket: C
@@ -466,7 +466,7 @@ capabilities:
     implementation_status: architecture-ready
     activation_status: infra-gated
     evidence: [backend/middleware/requestContext.js]
-    docs: [docs/governance/04-GOVERNANCE.md]
+    docs: [CLAUDE.md]
   - id: CAP-47
     name: Correlation IDs
     bucket: A
@@ -526,8 +526,8 @@ capabilities:
     owner: app
     implementation_status: full
     activation_status: active
-    docs: [docs/governance/DISASTER_RECOVERY.md, docs/governance/04-GOVERNANCE.md]
-    evidence: [docs/governance/DISASTER_RECOVERY.md, docs/governance/04-GOVERNANCE.md]
+    docs: [docs/governance/DISASTER_RECOVERY.md, CLAUDE.md]
+    evidence: [docs/governance/DISASTER_RECOVERY.md, CLAUDE.md]
   - id: CAP-55
     name: Cloud-Agnostic Provider Layer
     bucket: A
@@ -589,15 +589,15 @@ capabilities:
     implementation_status: absent
     activation_status: infra-gated
     dependencies: [CAP-61]
-    docs: [docs/governance/04-GOVERNANCE.md]
+    docs: [CLAUDE.md]
   - id: CAP-63
     name: SRE Runbooks / SLOs / Error Budgets
     bucket: A
     owner: app
     implementation_status: full
     activation_status: active
-    docs: [docs/governance/04-GOVERNANCE.md]
-    evidence: [docs/governance/04-GOVERNANCE.md]
+    docs: [CLAUDE.md]
+    evidence: [CLAUDE.md]
   - id: CAP-64
     name: Connection-Pool Monitoring
     bucket: A
@@ -621,7 +621,7 @@ capabilities:
     implementation_status: absent
     activation_status: infra-gated
     dependencies: [CAP-18]
-    docs: [docs/governance/04-GOVERNANCE.md]
+    docs: [CLAUDE.md]
   - id: CAP-67
     name: Backup Restore Testing
     bucket: B
@@ -645,7 +645,7 @@ capabilities:
     implementation_status: absent
     activation_status: infra-gated
     dependencies: [CAP-50]
-    docs: [docs/governance/04-GOVERNANCE.md]
+    docs: [CLAUDE.md]
   - id: CAP-70
     name: Policy-as-Code (OPA/Kyverno)
     bucket: C
@@ -653,10 +653,10 @@ capabilities:
     implementation_status: absent
     activation_status: infra-gated
     dependencies: [CAP-50]
-    docs: [docs/governance/04-GOVERNANCE.md]
+    docs: [CLAUDE.md]
 
   # ── H. Hybrid architecture (modular monolith → microservices, 1M DAU) ───────
-  # Seams built now, dormant until an env var flips them (docs/governance/04-GOVERNANCE.md).
+  # Seams built now, dormant until an env var flips them (CLAUDE.md).
   - id: CAP-71
     name: RAG Support Assistant
     bucket: B
@@ -673,7 +673,7 @@ capabilities:
       - backend/domains/support/support.admin.routes.js
       - backend/domains/support/knowledge
     verification: { test: backend/tests/unit/rag.test.js }
-    docs: [docs/governance/04-GOVERNANCE.md, backend/domains/support/README.md]
+    docs: [CLAUDE.md, backend/domains/support/README.md]
   - id: CAP-72
     name: Hybrid Service Topology + Consistent Hashing
     bucket: B
@@ -682,7 +682,7 @@ capabilities:
     activation_status: dormant
     evidence: [backend/gateway/serviceTopology.js, backend/gateway/consistentHash.js]
     verification: { test: backend/tests/unit/consistentHash.test.js }
-    docs: [docs/governance/04-GOVERNANCE.md]
+    docs: [CLAUDE.md]
   - id: CAP-73
     name: Inter-Service Authentication
     bucket: B
@@ -692,7 +692,7 @@ capabilities:
     dependencies: [CAP-72]
     evidence: [backend/gateway/serviceAuth.js]
     verification: { test: backend/tests/unit/serviceAuth.test.js }
-    docs: [docs/governance/04-GOVERNANCE.md]
+    docs: [CLAUDE.md]
   - id: CAP-74
     name: Event Backbone (Kafka-ready)
     bucket: B
@@ -704,4 +704,4 @@ capabilities:
       - backend/services/backbone/kafkaDriver.js
       - backend/services/eventBus.service.js
     verification: { test: backend/tests/unit/eventBackbone.test.js }
-    docs: [docs/governance/04-GOVERNANCE.md]
+    docs: [CLAUDE.md]

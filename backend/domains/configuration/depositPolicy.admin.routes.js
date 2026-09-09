@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * depositPolicy.admin.routes.js — admin-facing Deposit Policy management.
  * Domain: Configuration / Business Policy Platform (BBEPS Phase 006).
@@ -130,7 +130,7 @@ router.put('/deposit-policy/:currency', authenticate, isAdmin, async (req, res) 
       success: true,
     });
 
-    // BBEPS-registered real-time event — see docs/governance/04-GOVERNANCE.md §11.
+    // BBEPS-registered real-time event — see CLAUDE.md §11.
     if (global.io) global.io.emit('deposit_policy_updated', { currency, policy: doc });
     if (global.sseManager) global.sseManager.broadcast('deposit_policy_updated', { currency, policy: doc });
 

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 // ═══════════════════════════════════════════════════════════════════════════
 // 🎯 COMPLETE TYPE DEFINITIONS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -122,7 +122,7 @@ export interface User {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Mirrors CYCLE_TYPE_VALUES in backend/domains/markets/cycleTypes.js, which is
-// the authority for this vocabulary (04-GOVERNANCE.md §1, §4 citation).
+// the authority for this vocabulary (CLAUDE.md §1, §4 citation).
 export type CycleType = '1_MIN' | '30_MIN' | 'FULL_DAY';
 export type CycleStatus =
   | 'OPEN'

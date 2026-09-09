@@ -16,5 +16,5 @@ Core-platform consumption:
 - **Business Policy**: provider enablement/credentials are admin-configured
   documents, not hardcoded (`FLAGS.LIVE_CASINO` gates future expansion).
 - **Revenue & Settlement**: casino GGR accounting integration is queued
-  (docs/governance/04-GOVERNANCE.md) — GameTransaction records are the source records the
+  (CLAUDE.md) — GameTransaction records are the source records the
   R&S reconciler pattern will derive from, same as PaymentOrders/Cycles.

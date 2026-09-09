@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /** cycles.admin.routes.js — Cycle phases, history, equalization, manage-cycle */
 import { express, authenticate, isAdmin, isAdminOrSubAdmin } from './_adminShared.js';
 import { db } from '#db';

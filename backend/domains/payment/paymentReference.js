@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+// GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
  * paymentReference.js — what counts as proof that a payment was made, and what
  * to call it when talking to the person who made it.

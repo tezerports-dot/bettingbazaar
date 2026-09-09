@@ -1,7 +1,7 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 
 
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import express      from 'express';
 import http         from 'http';
 import https        from 'https';
@@ -102,7 +102,7 @@ import { authLimiter, adminAuthLimiter, merchantAuthLimiter, betLimiter, twoFact
 // Item 12 (2026-07-13): IP-rotation defense — per-subnet backstop + optional
 // global surge breaker on sensitive endpoints, on top of the per-IP limiters.
 import { createSubnetLimiter, globalSurgeBreaker, startIpDefenseConfigRefresh } from './middleware/ipDefense.js';
-// Bot-mitigation challenge on credential endpoints (LAUNCH_READINESS §F).
+// Bot-mitigation challenge on credential endpoints (docs/PROJECT_STATUS.md §3.3).
 // Pass-through until TURNSTILE_SECRET_KEY is set, like every other integration.
 import { requireCaptcha } from './middleware/captcha.js';
 import GameEngine         from './domains/markets/gameEngine.js';
@@ -440,7 +440,7 @@ startIpDefenseConfigRefresh();
 app.use('/api/v1/auth', authLimiter, createSubnetLimiter('auth'), globalSurgeBreaker('auth'), authRoutes);
 // Player signup and login are NOT here — they run through the Telegram bot
 // webhooks and the one-time-link exchange, mounted at /api/telegram below.
-// 2FA enrolment and management (LAUNCH_READINESS §F). Mandatory for admin and
+// 2FA enrolment and management (docs/PROJECT_STATUS.md §3.3). Mandatory for admin and
 // sub-admin roles; players do not have passwords and so have no second factor
 // to enrol. Enforcement at login lives in the auth handler, this router only
 // manages enrolment.
@@ -457,7 +457,7 @@ app.post('/api/admin/login', loginPaceLimiter, adminAuthLimiter, createSubnetLim
   next();
 }, loginHandler);
 // Second leg of the admin login. 2FA is MANDATORY for admins and sub-admins
-// (LAUNCH_READINESS §F), so without this route an enrolled admin gets a
+// (docs/PROJECT_STATUS.md §3.3), so without this route an enrolled admin gets a
 // challenge token from the line above and has nowhere to redeem it. Rate
 // limited on the OTP tier, not the admin-password tier: six digits is a 10^6
 // space, so it warrants its own tighter budget.

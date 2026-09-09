@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+// GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
  * tools/health-watch.mjs — DNS-failover trigger monitor (plan item 30). 2026-07-13.
  *

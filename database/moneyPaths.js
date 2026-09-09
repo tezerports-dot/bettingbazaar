@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+// GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
  * A single store means there is nothing to route between. `MONEY_PATHS` named
  * the eleven money domains a per-call resolver chose a store for; the resolver

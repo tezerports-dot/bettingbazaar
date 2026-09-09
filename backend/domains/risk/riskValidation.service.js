@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 // Domain: Risk Platform (BBEPS Phase 010).
 //
 // THE SINGLE AUTHORITY for operational rules and transaction validation
@@ -20,7 +20,7 @@
 //   - opposite-side betting restriction (config-gated)
 //   - funding-order velocity limit (config-gated)
 // Declared Risk Platform capabilities NOT yet implemented (no fake
-// placeholders — see docs/governance/04-GOVERNANCE.md): AML screening, fraud-signal
+// placeholders — see CLAUDE.md): AML screening, fraud-signal
 // scoring, device risk, behaviour analysis, responsible-gaming limits.
 
 import { db } from '#db';
@@ -135,7 +135,7 @@ export function computePayoutFeeMinor(tokenAmount, payoutFeePercent) {
  *   - Percent is owned by SystemConfig.betReservePercent (Business Policy);
  *     this function is only the arithmetic rule.
  *
- * Precision (decided 2026-07-10, see docs/governance/04-GOVERNANCE.md): PAISE.
+ * Precision (decided 2026-07-10, see CLAUDE.md): PAISE.
  * All arithmetic is integer paise with the percent in integer basis points,
  * so the three parts ALWAYS conserve the exact stake (reserve is floored,
  * remainder to main — same discipline as computeReserveSplit). Wallet

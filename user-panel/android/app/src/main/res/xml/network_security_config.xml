@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+  GOVERNANCE: Read CLAUDE.md before editing this file.
 
   Enforced by the OS, not by app code: even a compromised or mis-built bundle
   cannot send this app's traffic in the clear. Capacitor serves the bundled UI

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /** system.admin.routes.js — System config, token rates, withdrawal requests, error logs */
 import { express, authenticate, isAdmin, isAdminOrSubAdmin } from './_adminShared.js';
 import {
@@ -47,7 +47,7 @@ const FOOTER_PAGE_KEYS = [
 ];
 
 // Token rates removed 2026-07-08: conversion is fixed 1:1 (Phase 006
-// flattening — see docs/governance/04-GOVERNANCE.md). The GET/PUT /token-rates
+// flattening — see CLAUDE.md). The GET/PUT /token-rates
 // endpoints and rate validation that lived here are gone; rates are no
 // longer admin-editable.
 

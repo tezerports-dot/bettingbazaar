@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+// GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
  * The pure half of the merchant commission engine: what one variety earns on
  * newly matched volume, which variety a key names, and which rate a variety

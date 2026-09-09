@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 // Domain: Configuration / Business Policy Platform.
 //
 // Sole writer of merchant commission policy versions. Runtime consumer
@@ -168,7 +168,7 @@ function unwrap(result) {
 
 /**
  * createCommissionPolicyVersion — the write path. Immediate-apply only in v1
- * (no scheduling/approval-gating — see docs/governance/04-GOVERNANCE.md).
+ * (no scheduling/approval-gating — see CLAUDE.md).
  */
 export async function createCommissionPolicyVersion(fields, actor, { justification } = {}) {
   if (!justification || !justification.trim()) {

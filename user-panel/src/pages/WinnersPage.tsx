@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * WinnersPage.tsx — 2026 "Bazaar" redesign. Hall of Champions podium + runners-up,
  * wired to GET /api/v1/winners (real bets + admin-curated), with a today/week toggle.

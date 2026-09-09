@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 // Unit tests for the merchant settlement-rail vocabulary: a merchant is INR-only
 // or USDT-only, and a USDT merchant's payout address must be a real TRC-20 one.
 import { describe, it, expect } from 'vitest';

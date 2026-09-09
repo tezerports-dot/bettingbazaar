@@ -230,8 +230,10 @@ a dedicated column on the merchant; the range columns keep governing Mode A.
 denomination list — 500 / 1,000 / 5,000 / 10,000 — and nothing else is
 accepted. The cap is therefore structural rather than a validation rule.
 
-- **USDT is the only free-value input**, and it is deposit-only. The minimum is
-  500 tokens, the same floor as the smallest INR denomination.
+- **USDT is denominated too, and is deposit-only.** A USDT buy is exactly
+  50,000, 100,000 or 500,000 platform tokens (see §7). It was originally
+  specified as a free-value input with a 500-token floor; that is no longer the
+  case.
 - **Every withdrawal pays out to a bank account**, on both rails. There is no
   USDT withdrawal.
 - **₹40,000 is a withdrawal tier only.** It never appears on a buy.
@@ -242,12 +244,20 @@ accepted. The cap is therefore structural rather than a validation rule.
 ### The USDT price is admin-set, not a live feed
 
 The admin sets a price per token and edits it at most once or twice a day, so it
-is effectively fixed. The player enters how many **tokens** they want (minimum
-500); the system converts at the current admin price, generates the BTCPay
-payment link **and its QR**, and BTCPay watches the chain.
+is effectively fixed. The player **chooses one of the three token
+denominations** (§7) and the system converts at the current admin price to show
+what they must send.
 
-The rate is snapshotted onto the order at creation, like `rateUsed` already is,
-so an admin editing the price cannot rewrite what a settled order charged.
+The rate is snapshotted onto the order at creation and **frozen by a trigger**,
+so an admin editing the price cannot rewrite what an agreed order charged — not
+even on the assignment path minutes later, which used to re-read it. A purchase
+that cannot be priced is refused by name (`USDT_RATE_UNSET`); there is no
+fallback. The rate is bounded at both ends, because a misplaced decimal would
+otherwise price the whole rail.
+
+*(This paragraph originally described the player typing a free token amount with
+a 500-token minimum and BTCPay generating the payment link and QR. Both are
+superseded — see §7.)*
 
 ### Withdrawal batch splitting
 
@@ -410,19 +420,38 @@ counting from the order rows through the same function the scorer uses.
 
 ---
 
-## 7. USDT deposits via BTCPay Server
+## 7. USDT is a MERCHANT rail, on two chains
 
-BTCPay Server is the USDT rail. It issues a per-invoice address and watches the
-chain itself, which removes the two problems the earlier design could not solve:
-address derivation, and telling two players apart who send the same amount to
-the same address.
+> **Superseded 2026-09-09.** This section described BTCPay Server as the USDT
+> rail (shipped as B7, commit `5ba3f2c`). That was replaced by a merchant-served
+> rail in `53d637c` and `59e6bdb`. The binding description is `CLAUDE.md` §25;
+> what follows is the summary.
 
-Consequences:
-- No HD wallet or chain watcher is built here.
-- The merchant `usdt_wallet_address` column and its TRC20-only CHECK are not on
-  this path. **Do not widen that CHECK for BEP20** — BTCPay holds the addresses.
-- The BTCPay webhook is the confirmation, and it must be signature-verified and
-  idempotent on the invoice id.
+A player buys with USDT from a **USDT merchant**, by sending tokens to that
+merchant's wallet and submitting the transaction id. There is no payment
+processor, no invoice and no webhook — the counterparty is a person, and the rail
+is the ordinary order lifecycle with a different currency on it.
+
+- **Denominated in PLATFORM TOKENS** — exactly 50,000, 100,000 or 500,000. What
+  the player *sends* is derived from the admin's rate at creation, so there is no
+  second denomination list to drift when the rate changes.
+- **The quote is the contract.** `rate_used` and `fiat_amount_paise` are written
+  with the order and frozen by trigger; assignment may not re-price. A purchase
+  that cannot be priced is refused by name (`USDT_RATE_UNSET`) — there is no
+  fallback, because 0 gives Infinity USDT and 1 would sell 50,000 tokens for
+  50,000 USDT.
+- **A merchant holds one address PER CHAIN** (`usdt_address_trc20`,
+  `usdt_address_bep20`). The single `usdt_wallet_address` column and its
+  TRC20-only CHECK are gone: one column made Tron the only usable chain and made
+  *which chain is this?* unanswerable. USDT sent to a Tron address from a BNB
+  Smart Chain wallet is gone, and it is the only unrecoverable mistake this
+  platform can make.
+- **The player picks the network first**, before an order exists, because it
+  decides which merchants can serve it. The chain is frozen on the row, the
+  address and its network always travel together, and only the chain the order
+  named is ever sent.
+- **The transaction hash is claimed once**, through the same registry as a UTR
+  and a CDM slip (`CLAUDE.md` §27).
 
 ---
 
@@ -438,13 +467,16 @@ the account holder's full name. Nothing else.
 
 **A player never sees** the merchant's personal details — only the payment link.
 
-### This must be an allowlist
+### This must be an allowlist — done, in both directions
 
-`sanitizeMerchantOrder` is currently a **denylist** (`delete plain.userPhone`),
-and it strips `userBankDetails` only when the order is a DEPOSIT. On a
-WITHDRAWAL the merchant therefore receives `userBankDetails.upiId`, which the
-rule above forbids.
+**Built.** `sanitizeMerchantOrder` was a denylist that stripped the player's
+payout details only on the DEPOSIT branch, so on every WITHDRAWAL the merchant
+received the player's UPI ID. The other half had nothing at all: every
+player-facing response carried the merchant's snapshot whole — UPI handle, QR,
+bank account, IFSC, account-holder name and USDT address.
 
-A denylist fails open: the next PII column added to `order_states` is exposed by
-default and no test fails. The projection becomes an **allowlist**, and a gate
-refuses a merchant-facing order response that does not go through it.
+Both projections are now allowlists in one file each
+(`domains/merchant/merchantOrderView.js`, `domains/payment/playerOrderView.js`),
+enforced by `npm run check:merchant-privacy` and `npm run check:player-privacy`.
+The rules, and the four traps the gates had to be widened for, are `CLAUDE.md`
+§24.

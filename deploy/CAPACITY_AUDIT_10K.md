@@ -1,6 +1,6 @@
 # Production capacity audit — 10,000 DAU, from the code
 
-<!-- GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. -->
+<!-- GOVERNANCE: Read CLAUDE.md before editing this file. -->
 
 Grounded in the actual repository, not generic DAU→server ratios. Every load-bearing
 claim cites `file:line`. Anything the code cannot answer is marked
