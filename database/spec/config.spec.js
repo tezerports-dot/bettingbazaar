@@ -272,15 +272,12 @@ export const DEPOSIT_POLICY_SPEC = group({
   note: s(''),
 });
 
-/** Merchant bonus policy — the spread a merchant earns per completed order. */
-export const MERCHANT_BONUS_POLICY_SPEC = group({
-  enabled: b(false),
-  depositBonusPercent:    n(0, 0, 100),
-  withdrawalBonusPercent: n(0, 0, 100),
-  minOrderForBonus: n(0, 0),
-  maxBonusPerOrder: n(0, 0),
-  note: s(''),
-});
+// A `merchantBonusPolicy` scope used to sit here, declaring a per-order spread
+// (depositBonusPercent / withdrawalBonusPercent / maxBonusPerOrder). Nothing
+// ever read it, and what a merchant earns is owned by
+// `merchant_commission_policies` — a versioned, justified, append-only table.
+// A second set of earnings fields an admin could reach was a second owner
+// waiting to disagree with the first, so it is gone rather than left dormant.
 
 /** Chat room configuration — the public room's rules. */
 export const CHAT_ROOM_CONFIG_SPEC = group({
@@ -307,7 +304,6 @@ export const SCOPES = Object.freeze({
   branding:             BRANDING_SPEC,
   supportLinks:         SUPPORT_LINKS_SPEC,
   depositPolicy:        DEPOSIT_POLICY_SPEC,
-  merchantBonusPolicy:  MERCHANT_BONUS_POLICY_SPEC,
   chatRoomConfig:       CHAT_ROOM_CONFIG_SPEC,
   checkInConfig:        CHECKIN_CONFIG_SPEC,
 });

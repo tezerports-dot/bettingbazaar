@@ -170,26 +170,27 @@ export function registerCronJobs(rebuildLeaderboard) {
     }
   });
 
-  // ── Merchant Performance Bonus engine — runs every 10 minutes ───────────────
-  // Merchant Platform (BBEPS Phase 008). No-ops unless an admin has enabled
-  // an ACTIVE MerchantBonusPolicy with a non-zero percentage (Business Policy
-  // Platform). Issuance is idempotent (deterministic keys) and pool-capped —
-  // re-running is always safe. Per-merchant failures logged, never thrown.
-  registerRecurring('bonus-engine', 10 * 60 * 1000, async () => {
+  // ── Merchant commission engine — runs every 10 minutes ─────────────────────
+  // Merchant Platform (BBEPS Phase 008). No-ops unless an admin has enabled an
+  // ACTIVE merchant commission policy with at least one variety priced (Business
+  // Policy Platform). Issuance is idempotent (deterministic keys) and
+  // pool-capped — re-running is always safe. Per-variety failures logged, never
+  // thrown.
+  registerRecurring('commission-engine', 10 * 60 * 1000, async () => {
     try {
-      const { runBonusEngine } = await import('../domains/merchant/merchantBonus.service.js');
-      const outcome = await runBonusEngine();
+      const { runCommissionEngine } = await import('../domains/merchant/merchantCommission.service.js');
+      const outcome = await runCommissionEngine();
       if (!outcome.ran) return;
       for (const r of outcome.results) {
-        if (r.error) console.error(`[bonus-engine] merchant ${r.merchantId} failed:`, r.error);
-        else if (!r.issued && r.reason) console.warn(`[bonus-engine] merchant ${r.merchantId} skipped: ${r.reason}`);
+        if (r.error) console.error(`[commission-engine] merchant ${r.merchantId} (${r.variety}) failed:`, r.error);
+        else if (!r.issued && r.reason) console.warn(`[commission-engine] merchant ${r.merchantId} (${r.variety}) skipped: ${r.reason}`);
       }
       const issued = outcome.results.filter(r => r.issued);
       if (issued.length > 0) {
-        console.log(`[bonus-engine] Issued ${issued.length} Merchant Performance Bonus(es):`,
-          issued.map(r => `${r.merchantId}: ₹${r.bonusRupees}`).join(', '));
+        console.log(`[commission-engine] Issued ${issued.length} merchant commission(s):`,
+          issued.map(r => `${r.merchantId} ${r.variety}: ₹${r.commissionRupees}`).join(', '));
       }
-    } catch (e) { console.error('[bonus-engine] cron error:', e.message); }
+    } catch (e) { console.error('[commission-engine] cron error:', e.message); }
   });
 
   // ── Data retention worker — runs daily (Phase X X-7) ────────────────────────

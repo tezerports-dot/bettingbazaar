@@ -2803,6 +2803,130 @@ CREATE UNIQUE INDEX IF NOT EXISTS merchant_bonus_policies_one_active
 CREATE INDEX IF NOT EXISTS merchant_bonus_policies_history_idx
   ON merchant_bonus_policies (version DESC);
 
+-- ── Merchant commission: the same basis, priced per VARIETY of work ─────────
+--
+-- Supersedes `merchant_bonus_policies` above, which paid ONE percentage for
+-- every kind of work a merchant does. The table above is left defined because
+-- this file is re-applied to deployed databases and nothing here renames or
+-- drops; no code reads it any more.
+--
+-- What changed is the RATE, not the basis. A merchant is still paid on matched
+-- buy->sell volume, still from the platform-funded pool, still once per unit of
+-- volume. But a 500 rupee cash run to an ATM and a 500,000-token USDT transfer
+-- are not the same job, and one number could not say so.
+--
+-- A VARIETY is (currency, payment_mode, denomination):
+--
+--   INR  / P2P_UPI  / NULL      a UPI transfer, any amount in the configured range
+--   INR  / CASH_ATM / 50000     a 500 rupee run to a cash machine
+--   USDT / P2P_UPI  / 5000000   a 50,000-token transfer (500 USDT at 100/USDT)
+--
+-- The denomination is NULL exactly where the rail is a RANGE rather than a
+-- ladder, which is the UPI rail alone. Its unit is the minor unit of whatever
+-- that variety is denominated in -- rupee paise on the cash rail, token paise on
+-- USDT -- and the currency column is what disambiguates them, which is why it is
+-- part of the key rather than a fact about the row.
+CREATE TABLE IF NOT EXISTS merchant_commission_policies (
+  id            BIGSERIAL PRIMARY KEY,
+  version       BIGINT NOT NULL UNIQUE,
+  status        TEXT NOT NULL DEFAULT 'ACTIVE',
+
+  -- Master switch. The engine does nothing while false, which is the shipped
+  -- default: installing the policy changes no live behaviour until an admin
+  -- turns it on AND prices at least one variety.
+  enabled       BOOLEAN NOT NULL DEFAULT FALSE,
+  -- Minimum NEWLY matched volume, in RUPEES, before an issuance triggers.
+  -- Rupees rather than paise because it is a threshold an admin types; it is
+  -- converted to minor units at the one place the engine compares it.
+  min_matched_volume NUMERIC(14,2) NOT NULL DEFAULT 100,
+
+  is_rollback   BOOLEAN NOT NULL DEFAULT FALSE,
+  rollback_of_version BIGINT,
+
+  justification TEXT NOT NULL,
+  changed_by    TEXT,
+  changed_by_name TEXT NOT NULL DEFAULT '',
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  superseded_at TIMESTAMPTZ,
+
+  CONSTRAINT merchant_commission_policies_status_known
+    CHECK (status IN ('ACTIVE', 'SUPERSEDED')),
+  CONSTRAINT merchant_commission_policies_volume_range
+    CHECK (min_matched_volume >= 0),
+  CONSTRAINT merchant_commission_policies_justified
+    CHECK (length(btrim(justification)) > 0)
+);
+-- One ACTIVE version is the INDEX's rule, not the writer's -- same reason as the
+-- policy above it: a writer that inserts before superseding leaves a window in
+-- which two are ACTIVE and the engine picks whichever sorted first.
+CREATE UNIQUE INDEX IF NOT EXISTS merchant_commission_policies_one_active
+  ON merchant_commission_policies (status) WHERE status = 'ACTIVE';
+CREATE INDEX IF NOT EXISTS merchant_commission_policies_history_idx
+  ON merchant_commission_policies (version DESC);
+
+-- One row per variety per policy version. A version's rates are written with it
+-- and never edited: changing a rate means a new version, so what a merchant was
+-- paid under can always be read back.
+CREATE TABLE IF NOT EXISTS merchant_commission_rates (
+  id             BIGSERIAL PRIMARY KEY,
+  policy_version BIGINT NOT NULL
+    REFERENCES merchant_commission_policies (version) ON DELETE CASCADE,
+
+  currency       TEXT NOT NULL,
+  payment_mode   TEXT NOT NULL,
+  -- NULL means "this rail is a range, not a ladder". See the header above.
+  denomination_paise BIGINT,
+
+  -- The two legs of the SAME matched volume: a matched rupee came IN through a
+  -- deposit and went OUT through a withdrawal, and both are work. The engine
+  -- adds them. Two columns rather than one so an operator can price a rail that
+  -- is harder to serve in one direction than the other -- which is the ordinary
+  -- case on the cash rail, where a payout means standing at a machine.
+  buy_percent    NUMERIC(6,3) NOT NULL DEFAULT 0,
+  sell_percent   NUMERIC(6,3) NOT NULL DEFAULT 0,
+
+  CONSTRAINT merchant_commission_rates_currency_known
+    CHECK (currency IN ('INR', 'USDT')),
+  CONSTRAINT merchant_commission_rates_mode_known
+    CHECK (payment_mode IN ('P2P_UPI', 'CASH_ATM')),
+  CONSTRAINT merchant_commission_rates_percent_range
+    CHECK (buy_percent >= 0 AND buy_percent <= 100
+       AND sell_percent >= 0 AND sell_percent <= 100),
+  -- A row at 0/0 is a variety that reads as PRICED and pays nothing, which is
+  -- the shape most easily mistaken for a working rate. An unpriced variety is
+  -- the ABSENCE of a row, and the engine reports it as such.
+  CONSTRAINT merchant_commission_rates_pays_something
+    CHECK (buy_percent > 0 OR sell_percent > 0),
+  -- Which denominations exist is a property of the rail, so a row naming one
+  -- the rail does not deal in cannot be written. The five cash values are the
+  -- ATM ladder and the three USDT values are the token sizes -- both duplicated
+  -- from backend/domains/merchant/denominations.js, as the cash_link_queue and
+  -- merchants constraints already duplicate them, and asserted against that
+  -- module by merchantDenominationsPg.test.js so the copies cannot drift.
+  CONSTRAINT merchant_commission_rates_denomination_matches_rail
+    CHECK (
+      CASE
+        WHEN currency = 'USDT'          THEN denomination_paise IN (5000000, 10000000, 50000000)
+        WHEN payment_mode = 'CASH_ATM'  THEN denomination_paise IN (50000, 100000, 500000, 1000000, 4000000)
+        ELSE denomination_paise IS NULL
+      END
+    )
+);
+-- Two rates for one variety is "which one pays?", so it is refused by the
+-- database rather than by whichever writer remembers to check.
+--
+-- TWO partial indexes and not one four-column UNIQUE, because in SQL two NULLs
+-- are DISTINCT: a plain UNIQUE would happily admit a second INR/P2P_UPI/NULL
+-- row, which is the one variety whose denomination is always NULL. `NULLS NOT
+-- DISTINCT` would also do it, and is left alone here because a partial index
+-- states the intent in a form every version reads the same way.
+CREATE UNIQUE INDEX IF NOT EXISTS merchant_commission_rates_variety_idx
+  ON merchant_commission_rates (policy_version, currency, payment_mode, denomination_paise)
+  WHERE denomination_paise IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS merchant_commission_rates_variety_range_idx
+  ON merchant_commission_rates (policy_version, currency, payment_mode)
+  WHERE denomination_paise IS NULL;
+
 -- ── The settlement rail in force, and the timers that go with it ─────────────
 --
 -- The platform runs ONE of two P2P rails at a time, and an admin moves between

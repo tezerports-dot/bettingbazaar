@@ -270,22 +270,62 @@ export async function accountBalancePaise(code) {
  * the payment idempotent — so the mark and the idempotency cannot disagree,
  * which a separate metadata field could.
  */
-export async function bonusHighWaterMarks() {
+export async function commissionHighWaterMarks() {
   const { rows } = await pgQuery(
     `SELECT ref_id AS merchant_id,
-            MAX(NULLIF(regexp_replace(idempotency_key, '^acct_bonusissue_.*_', ''), '')::BIGINT) AS mark
+            split_part(idempotency_key, '~', 2) AS variety,
+            MAX(NULLIF(split_part(idempotency_key, '~', 3), '')::BIGINT) AS mark
        FROM accounting_events
       WHERE event_type = 'MERCHANT_BONUS_ISSUED'
-        AND idempotency_key ~ '^acct_bonusissue_.+_[0-9]+$'
-      GROUP BY ref_id`,
-    [], 'ledger_bonus_high_water',
+        AND idempotency_key LIKE 'acct\\_commission\\_%~%~%'
+      GROUP BY ref_id, split_part(idempotency_key, '~', 2)`,
+    [], 'ledger_commission_high_water',
   );
   const marks = {};
-  // MAX, not "the most recent": a bonus issued out of order — a replay, a
-  // repair — must never LOWER the mark, because lowering it re-pays the
-  // difference on the very next pass.
-  for (const r of rows) marks[r.merchant_id] = Number(r.mark) || 0;
+  // MAX, not "the most recent": an issuance out of order — a replay, a repair —
+  // must never LOWER the mark, because lowering it re-pays the difference on the
+  // very next pass.
+  //
+  // Keyed per MERCHANT AND VARIETY. One mark per merchant would let a payment
+  // for a merchant's cash work advance the mark on their UPI work, and the UPI
+  // volume underneath it would then never be paid at all — money withheld
+  // silently, with a ledger that reads as complete.
+  //
+  // `split_part` rather than a regexp, and `~` rather than `_` as the
+  // separator: a merchant id can itself contain an underscore, so a pattern
+  // has to guess where the id ends. Splitting on a character the id cannot
+  // contain removes the guess.
+  for (const r of rows) {
+    marks[r.merchant_id] = marks[r.merchant_id] || {};
+    marks[r.merchant_id][r.variety] = Number(r.mark) || 0;
+  }
   return marks;
+}
+
+/**
+ * Merchants carrying an issuance from the RETIRED flat-rate bonus engine.
+ *
+ * That engine paid on total matched volume with no variety in the key, so its
+ * marks cannot be split across the varieties this one pays per. A merchant
+ * holding one would be treated as having been paid nothing, and their entire
+ * history would be re-paid on the first pass — which is the exact failure the
+ * high-water mark exists to prevent, arriving through the door left open by
+ * replacing it.
+ *
+ * The retired engine shipped disabled and its mark always read zero, so this
+ * should return nothing. "Should" is doing real work in that sentence: the cost
+ * of being wrong is paying every merchant their whole history again, so the
+ * engine asks rather than assumes, and refuses the merchants it finds.
+ */
+export async function legacyBonusIssuedMerchants() {
+  const { rows } = await pgQuery(
+    `SELECT DISTINCT ref_id AS merchant_id
+       FROM accounting_events
+      WHERE event_type = 'MERCHANT_BONUS_ISSUED'
+        AND idempotency_key LIKE 'acct\\_bonusissue\\_%'`,
+    [], 'ledger_legacy_bonus_merchants',
+  );
+  return rows.map((r) => r.merchant_id);
 }
 
 export async function accountActivity({ from = null, to = null } = {}) {

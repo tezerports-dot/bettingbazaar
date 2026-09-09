@@ -1352,34 +1352,75 @@ export async function countRecentOrders(userId, { withinMinutes = 60 } = {}) {
 }
 
 /**
- * Per-merchant matched volume: the smaller of what they took in and what they
- * paid out, which is what a completed buy→sell cycle actually is.
+ * Matched volume per merchant AND VARIETY: the smaller of what they took in and
+ * what they paid out within one kind of work, which is what a completed
+ * buy→sell cycle actually is.
  *
- * The bonus engine pays on this figure, so it is computed in one statement over
- * completed orders rather than assembled from two aggregates and a loop that
- * defaulted the side it did not find.
+ * The commission engine pays on this figure, so it is computed in one statement
+ * over completed orders rather than assembled from two aggregates and a loop
+ * that defaulted the side it did not find.
+ *
+ * ── Matched WITHIN a variety, never across ─────────────────────────────────
+ * Grouping only by merchant would pair a ₹500 cash run to an ATM with a UPI
+ * payout and pay one rate for two different jobs. The pairing is what the rate
+ * is applied to, so it has to happen inside the variety the rate prices.
+ *
+ * ── token_amount_paise, and why NOT fiat_amount_paise ──────────────────────
+ * `fiat_amount_paise` is "what the payer sends, in the ORDER's currency". On a
+ * USDT order that is USDT — 500, for 50,000 tokens — so summing it across
+ * currencies adds USDT to rupees. The previous version of this query did
+ * exactly that: a 50,000-token USDT deposit contributed ₹500 of "matched
+ * volume" instead of ₹50,000, understating that merchant's work by a hundred
+ * times, in a figure a percentage is then paid on. It is the same mistake as
+ * posting `fiat_amount_paise` to the ledger as rupees, and it was silent for
+ * the same reason: the number is plausible and nothing sums it against
+ * anything.
+ *
+ * `token_amount_paise` is the platform's own unit of account — tokens at the
+ * peg, so INR-equivalent on BOTH rails — which is what a rupee-denominated
+ * commission drawn from a rupee-denominated pool has to be a percentage of.
+ *
+ * ── The denomination is derived, not stored ────────────────────────────────
+ * A cash order IS a denomination: `fiat_amount_paise` on the CASH_ATM rail is
+ * one of the five amounts a machine deals in, by construction. A USDT order's
+ * size is its token count. The UPI rail is a range and has no denomination,
+ * which is the NULL. Deriving it here rather than adding a column keeps one
+ * owner for the value — the order's own amount.
  */
-export async function merchantMatchedVolumes() {
+export async function merchantMatchedVolumesByVariety() {
   const { rows } = await pgQuery(
     `SELECT merchant_id,
-            COALESCE(SUM(fiat_amount_paise) FILTER (WHERE order_type = 'DEPOSIT'), 0)    AS deposit_paise,
-            COALESCE(SUM(fiat_amount_paise) FILTER (WHERE order_type = 'WITHDRAWAL'), 0) AS withdrawal_paise
+            currency,
+            payment_mode,
+            CASE
+              WHEN currency = 'USDT'         THEN token_amount_paise
+              WHEN payment_mode = 'CASH_ATM' THEN fiat_amount_paise
+              ELSE NULL
+            END AS denomination_paise,
+            COALESCE(SUM(token_amount_paise) FILTER (WHERE order_type = 'DEPOSIT'), 0)    AS deposit_paise,
+            COALESCE(SUM(token_amount_paise) FILTER (WHERE order_type = 'WITHDRAWAL'), 0) AS withdrawal_paise
        FROM order_states
       WHERE state = 'COMPLETED' AND merchant_id IS NOT NULL
         AND order_type IN ('DEPOSIT', 'WITHDRAWAL')
-      GROUP BY merchant_id`,
-    [], 'order_merchant_matched_volumes',
+      GROUP BY merchant_id, currency, payment_mode, 4`,
+    [], 'order_merchant_matched_volumes_by_variety',
   );
-  const out = {};
-  for (const r of rows) {
+  return rows.map((r) => {
+    // BIGINT arrives from node-postgres as a STRING. Uncast, '900' >= 1000 is
+    // true and every comparison downstream is wrong, so it is cast once, here,
+    // where the row is read.
     const depositMinor = Number(r.deposit_paise);
     const withdrawalMinor = Number(r.withdrawal_paise);
-    out[r.merchant_id] = {
-      depositMinor, withdrawalMinor,
+    return {
+      merchantId: r.merchant_id,
+      currency: r.currency,
+      paymentMode: r.payment_mode,
+      denominationPaise: r.denomination_paise === null ? null : Number(r.denomination_paise),
+      depositMinor,
+      withdrawalMinor,
       matchedMinor: Math.min(depositMinor, withdrawalMinor),
     };
-  }
-  return out;
+  });
 }
 
 /** Counts for the admin dashboard, in one pass. */

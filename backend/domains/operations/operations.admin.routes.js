@@ -18,7 +18,7 @@ import { ACCOUNTS, toRupees } from '../revenue/chartOfAccounts.js';
 import { listProviders } from '../funding/providerRegistry.js';
 import { getRiskRules } from '../risk/riskValidation.service.js';
 import { getActivePolicy } from '../configuration/depositPolicy.service.js';
-import { getActiveBonusPolicy } from '../configuration/merchantBonusPolicy.service.js';
+import { getActiveCommissionPolicy } from '../configuration/merchantCommissionPolicy.service.js';
 import { getMerchantLeaderboard } from '../merchant/merchantAnalytics.service.js';
 import { listChannels } from '../communication/communication.service.js';
 import { FLAGS, isEnabled } from '../../services/featureFlags.service.js';
@@ -28,12 +28,12 @@ const router = express.Router();
 // GET /api/admin/operations/overview — the enterprise dashboard payload.
 router.get('/operations/overview', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
-    const [trial, distributableMinor, depositPolicy, bonusPolicy, riskRules,
+    const [trial, distributableMinor, depositPolicy, commissionPolicy, riskRules,
            topMerchants, pendingOrders, openDisputes] = await Promise.all([
       getTrialBalance(),
       getDistributableRevenueMinor(),
       getActivePolicy('INR'),
-      getActiveBonusPolicy(),
+      getActiveCommissionPolicy(),
       getRiskRules(),
       getMerchantLeaderboard({ days: 7, limit: 5 }),
       db.orders.orderCounts(),
@@ -72,8 +72,11 @@ router.get('/operations/overview', authenticate, isAdminOrSubAdmin, async (req, 
           depositPolicy: depositPolicy
             ? { version: depositPolicy.version, deposit: depositPolicy.depositAllocationPercent, reserve: depositPolicy.reserveAllocationPercent }
             : null,
-          merchantBonusPolicy: bonusPolicy
-            ? { version: bonusPolicy.version, enabled: bonusPolicy.enabled, bonusPercent: bonusPolicy.bonusPercent }
+          merchantCommissionPolicy: commissionPolicy
+            ? { version: commissionPolicy.version, enabled: commissionPolicy.enabled,
+                // How many varieties are priced, not a single rate: there is no
+                // one percentage to show once the rate depends on the work.
+                pricedVarieties: commissionPolicy.rates.length }
             : null,
         },
         // ── Merchant operations (Merchant Platform) ───────────────────────

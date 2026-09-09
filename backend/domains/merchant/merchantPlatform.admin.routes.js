@@ -9,7 +9,7 @@
 import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
 import { getMerchantLeaderboard, getMerchantFundingStats, getMerchantPerformanceHistory } from './merchantAnalytics.service.js';
 import { getMerchantWalletLedger } from './merchantWallet.service.js';
-import { runBonusEngine } from './merchantBonus.service.js';
+import { runCommissionEngine } from './merchantCommission.service.js';
 
 const router = express.Router();
 
@@ -64,15 +64,15 @@ router.get('/merchant-platform/:merchantId/wallet-ledger', authenticate, isAdmin
   }
 });
 
-// POST /api/admin/merchant-platform/bonus-engine/run — on-demand pass of the
-// bonus engine (same code the 10-min cron runs; idempotent, pool-capped).
-router.post('/merchant-platform/bonus-engine/run', authenticate, isAdmin, async (req, res) => {
+// POST /api/admin/merchant-platform/commission-engine/run — on-demand pass of
+// the commission engine (same code the 10-min cron runs; idempotent, pool-capped).
+router.post('/merchant-platform/commission-engine/run', authenticate, isAdmin, async (req, res) => {
   try {
-    const outcome = await runBonusEngine();
+    const outcome = await runCommissionEngine();
     res.json({ success: true, ...outcome });
   } catch (error) {
-    console.error('Bonus engine run error:', error);
-    res.status(500).json({ success: false, message: 'Failed to run bonus engine' });
+    console.error('Commission engine run error:', error);
+    res.status(500).json({ success: false, message: 'Failed to run commission engine' });
   }
 });
 

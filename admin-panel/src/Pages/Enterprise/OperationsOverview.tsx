@@ -137,8 +137,10 @@ export const OperationsOverview: React.FC = () => {
             <KV k="Deposit policy" v={overview.policies.depositPolicy
               ? `v${overview.policies.depositPolicy.version} — ${overview.policies.depositPolicy.deposit}/${overview.policies.depositPolicy.reserve}`
               : 'not configured (90/10 fallback)'} />
-            <KV k="Merchant bonus policy" v={overview.policies.merchantBonusPolicy
-              ? `v${overview.policies.merchantBonusPolicy.version} — ${overview.policies.merchantBonusPolicy.enabled ? `ON @ ${overview.policies.merchantBonusPolicy.bonusPercent}%` : 'disabled'}`
+            <KV k="Merchant commission policy" v={overview.policies.merchantCommissionPolicy
+              ? `v${overview.policies.merchantCommissionPolicy.version} — ${overview.policies.merchantCommissionPolicy.enabled
+                  ? `ON, ${overview.policies.merchantCommissionPolicy.pricedVarieties} variety(ies) priced`
+                  : 'disabled'}`
               : 'not configured'} />
           </Section>
 
