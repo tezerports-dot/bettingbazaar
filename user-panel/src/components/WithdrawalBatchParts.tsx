@@ -69,7 +69,7 @@ export const WithdrawalBatchParts: React.FC<{
   const load = useCallback(async () => {
     try {
       const res: any = await apiClient.get(`/api/payment/order/${orderId}/batch`);
-      setParts(Array.isArray(res?.orders) ? res.orders : []);
+      setParts(Array.isArray(res?.parts) ? res.parts : []);
       setError('');
     } catch (e: any) {
       // The other withdrawals still exist; only this read failed. Say so rather

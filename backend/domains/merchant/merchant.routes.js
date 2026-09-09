@@ -35,6 +35,9 @@ import {
 // Withdrawal settlement hold — confirm asserts payment, the worker settles it
 // once the dispute window passes. See withdrawalHold.service.js.
 import { holdMinutes } from '../payment/withdrawalHold.service.js';
+// A push to the PLAYER's socket goes through the player projection, like every
+// other thing a player receives.
+import { toPlayerOrderView } from '../payment/playerOrderView.js';
 // One rule for how a confirmed deposit splits across the user's two pockets.
 import { depositCreditSplit } from '../payment/depositCredit.js';
 import { debitMerchantTokens, creditMerchantTokens } from './merchantWallet.service.js';
@@ -1082,7 +1085,11 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
                 assignedAt:       order.assignedAt || now,
                 processingAt:     now,
                 expiresAt,
-                merchantSnapshot: buildMerchantSnapshot(merchant, expiresAt),
+                // The ORDER is passed so the snapshot carries a per-order
+                // payment link. Without it the link is null and the player's
+                // screen has nothing to render — the panel no longer builds one
+                // from the merchant's handle, because it is no longer given it.
+                merchantSnapshot: buildMerchantSnapshot(merchant, expiresAt, order),
                 ...(responseMinutes === null ? {} : { merchantResponseMinutes: responseMinutes }),
             },
         });
@@ -1150,12 +1157,15 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
             );
         }
 
-        // Notify user of PROCESSING status with updated snapshot and timer
+        // Notify user of PROCESSING status with the payment link and the timer.
+        // This pushed the whole `merchantSnapshot` — the merchant's handle, their
+        // QR and their bank account — to the PLAYER's socket. `payTo` is the one
+        // shape a player receives: a link, an opaque reference, a deadline.
         emitOrderUpdate(order.userId.toString(), 'order_update', {
             orderId:          order.orderId,
             _id:              order._id,
             status:           'PROCESSING',
-            merchantSnapshot: order.merchantSnapshot,
+            payTo:            toPlayerOrderView(order).payTo ?? null,
             expiresAt:        order.expiresAt,
             server_ts:        Date.now(),
         });
@@ -1431,9 +1441,14 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         // accurate status. The settlement worker emits order_completed when it
         // actually settles.
         if (order.merchantCreditStatus === 'HELD') {
+            // In the PLAYER's terms. This carried `merchantCreditStatus: 'HELD'`
+            // — the merchant's credit standing with the platform, which is not
+            // this player's business and tells them nothing their own order
+            // does not. What they need is that it is holding and when it
+            // settles, so that is what goes.
             emitOrderUpdate(order.userId.toString(), 'order_update', {
                 orderId: order.orderId, _id: order._id, status: order.status,
-                merchantCreditStatus: 'HELD',
+                escrowStatus: 'HELD',
                 settlesAt: order.merchantCreditHoldUntil,
                 server_ts: Date.now(),
             });
@@ -1521,7 +1536,7 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
                 orderId:          order.orderId,
                 _id:              order._id,
                 status:           order.status,
-                merchantSnapshot: order.merchantSnapshot,
+                payTo:            toPlayerOrderView(order).payTo ?? null,
                 expiresAt:        order.expiresAt,
                 server_ts:        Date.now(),
             });

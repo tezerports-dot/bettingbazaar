@@ -39,14 +39,20 @@ interface BetLimits {
   total: number;
 }
 interface LedgerEntry { _id: string; type: string; field: string; amount: number; balanceBefore: number; balanceAfter: number; reason: string; createdAt: string; }
-interface MerchantSnapshot {
-  merchantId?: string; merchantName?: string; upiId?: string; qrCodeUrl?: string;
-  bankName?: string; accountNo?: string; ifsc?: string; accountHolder?: string; snapshotAt?: string; expiresAt?: string;
-}
 interface PaymentOrder {
   _id: string; orderId: string; type: 'DEPOSIT' | 'WITHDRAWAL'; status: string;
   tokenAmount: number; fiatAmount: number; rateUsed: number; createdAt: string;
-  expiresAt?: string; paidAt?: string; merchantSnapshot?: MerchantSnapshot;
+  expiresAt?: string; paidAt?: string;
+  /**
+   * Where to pay, and nothing about who is being paid.
+   *
+   * This was `merchantSnapshot`, which carried the merchant's UPI handle, their
+   * QR, and their bank account number, IFSC and account-holder name. A field the
+   * panel's type names is a field somebody will render — and this one was
+   * rendered, with a Copy button. The server sends `payTo` now:
+   * backend/domains/payment/playerOrderView.js is the only shape a player gets.
+   */
+  payTo?: { paymentLink?: string; merchantRef?: string; expiresAt?: string } | null;
   utrNumber?: string; proofScreenshot?: string;
   // The rail this order was created on. Snapshotted server-side and immutable,
   // so an admin switching rails mid-flight cannot change what this screen is
@@ -136,44 +142,45 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended, cashLi
    */
   cashLink?: { paymentLink: string; expiresAt: string } | null;
 }) {
-  const snap = order.merchantSnapshot;
+  // Where to pay, and nothing about who is being paid. `payTo` carries a
+  // per-order payment link, an opaque reference and the deadline — see
+  // backend/domains/payment/playerOrderView.js.
+  const payTo = order.payTo;
   const onCashRail = order.paymentMode === 'CASH_ATM';
   const [utr, setUtr] = useState('');
-  const [copied, setCopied] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [disputeVisible, setDisputeVisible] = useState(false);
   const [disputeReason, setDisputeReason] = useState('');
 
   /**
-   * The pre-filled UPI payment link.
+   * The link this player pays. Handed over by the server, never assembled here.
    *
-   * Every field the payment needs is in it — payee, name, exact amount, and the
-   * order id as the note — so the player's UPI app opens with nothing left to
-   * type. A mistyped amount is the single most common cause of a deposit the
-   * merchant cannot match, and this removes the opportunity to make one.
+   * ── Why this stopped being built on the client ────────────────────────────
+   * It used to be constructed from `merchantSnapshot.upiId` and
+   * `merchantSnapshot.merchantName`, which meant the panel had to be GIVEN the
+   * merchant's UPI handle — and the response that carried it also carried their
+   * QR, their bank account number, their IFSC and the name on the account. A
+   * player could read and keep all of it from one deposit, and the row below
+   * used to put the handle on screen with a Copy button.
    *
-   * `am` is fixed to two decimals: UPI apps reject an amount with more, and a
-   * float like 100.10000000000001 is exactly what `fiatAmount` arithmetic
-   * produces.
+   * Now the server builds the intent (backend/domains/payment/paymentLink.js)
+   * and sends only the link, so the panel has nothing to build it from. That is
+   * what makes "a player never sees the merchant's details" true rather than a
+   * thing the screen politely refrains from rendering.
    *
-   * This replaced a QR code that was rendered by fetching
-   * api.qrserver.com — a THIRD PARTY, handed the merchant's UPI id, the
-   * merchant's name, the exact amount and the order id on every single deposit.
-   * A link needs no such request, and works on the handset where these players
-   * actually are: tapping it opens their UPI app directly, which scanning a QR
-   * on the same screen cannot do.
+   * The amount formatting moved with it, which is the other half: `am` must be
+   * two decimals or a UPI app rejects it, and `fiatAmount` arithmetic produces
+   * floats like 100.10000000000001. That belongs on the side an attacker
+   * holding the handset cannot edit.
+   *
+   * On the CASH_ATM rail this is the link the ATM produced and the merchant
+   * supplied, used verbatim — constructing anything from it would change what
+   * the machine agreed to dispense.
    */
-  //
-  // On the CASH_ATM rail none of this applies: the link is not built from a
-  // merchant's UPI id, it is the one the ATM produced and the merchant
-  // supplied. It is used verbatim — constructing anything from it would change
-  // what the machine agreed to dispense.
   const intentString = onCashRail
     ? (cashLink?.paymentLink ?? '')
-    : (snap?.upiId
-        ? `upi://pay?pa=${encodeURIComponent(snap.upiId)}&pn=${encodeURIComponent(snap.merchantName || 'Merchant')}&am=${Number(order.fiatAmount).toFixed(2)}&cu=INR&tn=${encodeURIComponent(`BettingBazaar-${order.orderId}`)}`
-        : '');
+    : (payTo?.paymentLink ?? '');
 
   useEffect(() => {
     if (order.status === 'PAID' && order.paidAt) {
@@ -285,7 +292,7 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended, cashLi
         <div style={{ fontSize: 10, color: 'var(--text3)' }}>to receive {fmtT(order.tokenAmount)} · <CountdownTimer expiresAt={order.expiresAt} onExpire={onExpire} /></div>
       </div>
 
-      {snap?.upiId && intentString ? (
+      {intentString ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <a href={intentString} style={{ width: '100%', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', color: '#1a1200', fontWeight: 800, padding: '15px 12px', borderRadius: 13, fontSize: 15, textAlign: 'center', display: 'block', textDecoration: 'none' }}>
             Pay {fmtINR(order.fiatAmount)} in your UPI app
@@ -293,30 +300,24 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended, cashLi
           <p style={{ fontSize: 11, color: 'var(--text3)', textAlign: 'center', margin: 0, lineHeight: 1.5 }}>
             Opens with the amount already filled in. Come back with the UTR.
           </p>
-          {/* The UPI id stays visible and copyable ON THE UPI RAIL: a player
-              whose handset has no UPI app registered for the link still needs
-              to be able to pay, and support asks for this when a payment goes
-              missing.
+          {/* ── The merchant's UPI row is GONE, and this is why ────────────
+              It rendered `Merchant UPI · <name>` with the handle underneath and
+              a Copy button. The comment that used to be here argued it was
+              needed on the UPI rail as a fallback and for support — and it is
+              the exact thing the privacy rule forbids in the other direction: a
+              player is not to learn who they are paying.
 
-              On the CASH_ATM rail it must not appear at all. There the player
-              is paying a MACHINE, and the merchant is a person whose identity
-              they have no business learning — the same rule the merchant side
-              obeys in reverse. A test caught this row still rendering under a
-              correct ATM link, which is exactly the shape of leak that gets
-              missed: the important part was right, and the leak was underneath
-              it. */}
-          {!onCashRail && snap?.upiId && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--surface2)', border: '1px solid var(--line)', borderRadius: 11, padding: '11px 13px', width: '100%' }}>
-            <span style={{ flex: 1, minWidth: 0 }}>
-              <span style={{ display: 'block', fontSize: 9, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text3)' }}>Merchant UPI · {snap.merchantName}</span>
-              <span className="font-grotesk" style={{ display: 'block', fontSize: 12, fontWeight: 700, color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{snap.upiId}</span>
-            </span>
-            <button onClick={() => { navigator.clipboard?.writeText(snap.upiId || ''); setCopied(true); setTimeout(() => setCopied(false), 1600); }}
-              style={{ flex: 'none', padding: '7px 11px', borderRadius: 9, border: '1px solid var(--line2)', background: 'var(--surface3)', color: 'var(--text2)', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
-              {copied ? 'Copied' : 'Copy'}
-            </button>
-          </div>
-          )}
+              The response it read from carried more than the handle. It carried
+              the merchant's QR, their bank account number, their IFSC and the
+              name on the account, on every deposit, and the player could read
+              and keep all of it. That is now stripped server-side by
+              `playerOrderView.js`, so there is nothing left here to render even
+              if somebody added the markup back.
+
+              What honestly remains: tapping the link opens the player's own UPI
+              app, which shows them the payee it is about to pay. That is the UPI
+              protocol, not this screen — and it is a very different thing from
+              handing them an account number to keep. */}
         </div>
       ) : (
         <div style={{ background: 'var(--surface2)', border: '1px solid var(--line)', borderRadius: 12, padding: 14, textAlign: 'center', fontSize: 12, color: 'var(--text3)' }}>⏳ Waiting for merchant details…</div>

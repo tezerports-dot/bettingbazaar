@@ -63,6 +63,13 @@ import {
   WITHDRAWAL_DENOMINATIONS_PAISE, splitWithdrawal, shareFeeAcrossParts,
 } from '../merchant/denominations.js';
 import { rupeesToPaise, paiseToRupees } from '../../shared/money.js';
+// The per-order payment link has one owner, and it is not the client.
+import { upiPaymentLink } from './paymentLink.js';
+// The only shape of an order a player receives.
+import { toPlayerOrderView } from './playerOrderView.js';
+// The mirror of it, pointing the other way: the one shape a MERCHANT receives.
+// This service pushes to both parties, so it needs both projections.
+import { toMerchantOrderView } from '../merchant/merchantOrderView.js';
 
 // ─── Shared admin SSE payload ─────────────────────────────────────────────────
 function adminOrderPayload(order, user) {
@@ -84,19 +91,63 @@ function adminOrderPayload(order, user) {
 }
 
 // ─── Build merchantSnapshot from a merchant row ───────────────────────────────
-function merchantDisplayRef(merchant) {
+/**
+ * How a merchant is named to anybody who is not them.
+ *
+ * A persisted, NON-IDENTIFYING reference. Exported because the admin assignment
+ * routes had their own copy of this and of the snapshot builder — one owner.
+ */
+export function merchantDisplayRef(merchant) {
   return `Merchant #${merchant.publicRef}`;
 }
 
-function buildMerchantSnapshot(merchant, expiresAt) {
+/**
+ * What was true about the merchant at the moment of assignment.
+ *
+ * ── Two audiences, and only one of them gets the credentials ──────────────
+ * This row is what a dispute is decided from months later, so it keeps the
+ * merchant's details: which handle was quoted, which account, at what time.
+ * The admin and the disputes desk read the row.
+ *
+ * The PLAYER does not. `playerOrderView.js` is the only shape that reaches them
+ * and it passes on three things from here — the payment link, an opaque
+ * reference, and the deadline. Before that projection existed this whole object
+ * was sent as-is, so every deposit handed the player the merchant's UPI handle,
+ * their QR, and their bank account number, IFSC and account-holder name. The
+ * screen rendered the handle in a copy-to-clipboard row.
+ *
+ * ── The link is built HERE, once ──────────────────────────────────────────
+ * The panel used to assemble the UPI intent out of these fields, which is why it
+ * had to be given them. Building it server-side is what makes the projection
+ * above achievable rather than aspirational, and it puts the amount formatting
+ * on the side that cannot be edited by whoever is holding the phone.
+ */
+function buildMerchantSnapshot(merchant, expiresAt, order = null) {
+  const upiId = merchant.bankDetails?.upiId || '';
+  const merchantRef = merchantDisplayRef(merchant);
   return {
+    // ── For the player, through `toPlayerOrderView` ─────────────────────
+    merchantRef,
+    // Null on the USDT rail and when the merchant has no handle on file, which
+    // a screen must render as "waiting for details" rather than as a button
+    // that does nothing.
+    paymentLink: order
+      ? upiPaymentLink({
+          payeeUpiId: upiId,
+          payeeName: merchantRef,
+          amountRupees: order.fiatAmount ?? order.amount,
+          orderId: order.orderId,
+        })
+      : null,
+
+    // ── For the admin and the disputes desk, from the row ───────────────
     merchantId:    merchant.merchantId,
-    merchantName:  merchantDisplayRef(merchant),
+    merchantName:  merchantRef,
     // A merchant settles on exactly one rail, so exactly one credential set is
     // populated: UPI/bank for an INR merchant, the TRC-20 address for a USDT
-    // merchant. The user panel renders whichever is present.
+    // merchant.
     merchantType:  merchantTypeOf(merchant),
-    upiId:         merchant.bankDetails?.upiId             || '',
+    upiId,
     qrCodeUrl:     merchant.qrCodeUrl                      || '',
     bankName:      merchant.bankDetails?.bankName          || '',
     accountNo:     merchant.bankDetails?.accountNo         || '',
@@ -304,7 +355,7 @@ async function tryAssignMerchant(order) {
 
   // The window of the rail THIS order was created on, not the rail live now.
   const expiresAt = new Date(Date.now() + await getOrderExpiryMs(order));
-  const snapshot  = buildMerchantSnapshot(merchant, expiresAt);
+  const snapshot  = buildMerchantSnapshot(merchant, expiresAt, order);
 
   // The transition is the gate. Two assignment passes racing the same queued
   // order — the synchronous attempt at creation and the retry loop, which do
@@ -340,8 +391,15 @@ async function tryAssignMerchant(order) {
   // not have.
 
   // Notify merchant via SSE (GOVERNANCE §11: new_order)
+  //
+  // Through the projection. This spread the WHOLE order — `...order` — to the
+  // merchant's stream at the moment of assignment: the player's phone number,
+  // their UPI id, their bank details on a deposit, the platform's treasury
+  // split and the risk verdicts on the player, all of it. `check:merchant-
+  // privacy` was green throughout because it only read `merchant.routes.js`,
+  // and this line is in a service.
   emitMerchantUpdate(String(merchant.merchantId), 'new_order', {
-    ...order,
+    ...toMerchantOrderView(order),
     server_ts: Date.now(),
   });
 
@@ -349,7 +407,10 @@ async function tryAssignMerchant(order) {
   emitOrderUpdate(String(order.userId), 'order_assigned', {
     orderId:          order.orderId,
     _id:              order.orderId,
-    merchantSnapshot: order.merchantSnapshot,
+    // `payTo`, not the snapshot. This pushed the whole thing — the merchant's
+    // handle, their QR and their bank account — to the player's socket the
+    // instant an order was assigned.
+    payTo:            toPlayerOrderView(order).payTo ?? null,
     expiresAt:        order.expiresAt,
     status:           'ASSIGNED',
     server_ts:        Date.now(),
@@ -504,19 +565,14 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
     startPendingRetryLoop(order.orderId);
   }
 
+  // THROUGH the projection, not a literal that happens to agree with it.
+  //
+  // This was a hand-written list of eight fields — a second owner of "what a
+  // player sees", which is how the two drift. It already carried two the
+  // projection would have to decide about, and a field added to the order for
+  // one screen would have had to be added here too, by somebody remembering.
   return {
-    order: {
-      _id:               order.orderId,
-      orderId:           order.orderId,
-      tokenAmount:       order.tokenAmount,
-      fiatAmount:        order.fiatAmount,
-      depositAllocation: order.depositAllocation,
-      reserveAllocation: order.reserveAllocation,
-      rateUsed:          order.rateUsed,
-      status:            order.status,
-      merchantSnapshot:  order.merchantSnapshot,
-      expiresAt:         order.expiresAt,
-    },
+    order: toPlayerOrderView(order),
     // Built from the STORED figures, so the message and the order agree.
     note: `You will pay ₹${fiatAmount.toLocaleString()} to receive ${tokenAmount} BB tokens (${order.depositAllocation} betting + ${order.reserveAllocation} reserve)`,
   };
@@ -745,25 +801,18 @@ export async function createWithdrawalOrder(userId, tokenAmount, attempt = {}) {
   const paidOut = created.reduce((sum, o) => sum + Number(o.fiatAmount || 0), 0);
 
   return {
-    order: {
-      _id:              order.orderId,
-      orderId:          order.orderId,
-      tokenAmount:      order.tokenAmount,
-      fiatAmount:       order.fiatAmount,
-      rateUsed:         order.rateUsed,
-      status:           order.status,
-      merchantSnapshot: order.merchantSnapshot,
-      expiresAt:        order.expiresAt,
-      userBankDetails:  order.userBankDetails,
-      // The label that groups the siblings of this request, and null on an
-      // ordinary withdrawal. A screen shows "part 1 of 4" from it; nothing
-      // decides anything by it.
-      withdrawalBatchRef: order.withdrawalBatchRef ?? null,
-    },
-    // Every withdrawal this request actually created. One entry on an ordinary
-    // withdrawal — the shape does not change, so a caller never has to ask
-    // whether this was a split.
-    orders: created.map((o) => ({
+    // Through the projection, for the reason the deposit above is: one owner of
+    // the player's shape. It carries `userBankDetails` (their own account, which
+    // the sell screen renders masked) and `withdrawalBatchRef` (the label that
+    // groups the siblings of this request — a screen says "part 1 of 4" from it;
+    // nothing decides anything by it).
+    order: toPlayerOrderView(order),
+    // Every withdrawal this request actually created, as PARTS — deliberately
+    // not `orders`, and deliberately not order-shaped. Four fields a progress
+    // list needs, so nothing here has to be projected or kept in step with the
+    // player's view. One entry on an ordinary withdrawal: the shape does not
+    // change, so a caller never has to ask whether this was a split.
+    parts: created.map((o) => ({
       orderId:   o.orderId,
       partIndex: o.partIndex,
       amount:    o.fiatAmount,

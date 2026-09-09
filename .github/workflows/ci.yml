@@ -275,6 +275,12 @@ jobs:
       # rendered it, and let a merchant search players by phone number.
       - name: A merchant is told no player identity
         run: npm run check:merchant-privacy
+      # The same rule pointing the other way. Every player-facing response
+      # carried `merchantSnapshot` whole — the merchant's UPI handle, their QR
+      # and their bank account number, IFSC and account-holder name — and the
+      # player's screen rendered the handle in a copy-to-clipboard row.
+      - name: A player is told no merchant identity
+        run: npm run check:player-privacy
       # Items 5+58: architecture validation — circular imports and governance
       # boundary violations (domain core importing routes, wallet importing
       # products) fail the build instead of waiting for human review.

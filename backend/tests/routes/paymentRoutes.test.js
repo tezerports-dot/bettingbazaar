@@ -531,11 +531,15 @@ describePg('payment routes', () => {
 
   // ── The polling endpoint ──────────────────────────────────────────────────
   it('serves only the fields the payment screen polls for', async () => {
+    // `payTo`, not `merchantSnapshot`. This is the response that fires most
+    // often — every few seconds while a player is on the payment screen — and
+    // it used to carry the snapshot WHOLE: the merchant's UPI handle, their QR
+    // image, their bank account number, IFSC and the name on it.
     const { orderId, who } = await depositOrder({ extra: { userPhone: '9998887777' } });
     const res = await as(app, who).get(`/order/${orderId}/status`);
     expect(res.status).toBe(200);
     expect(Object.keys(res.body).sort()).toEqual(
-      ['expiresAt', 'merchantSnapshot', 'proofScreenshot', 'status', 'success', 'utrNumber'],
+      ['expiresAt', 'payTo', 'proofScreenshot', 'status', 'success', 'utrNumber'],
     );
   });
 

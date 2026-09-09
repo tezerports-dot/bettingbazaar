@@ -253,16 +253,24 @@ export type PaymentOrderStatus =
   | 'FAILED'
   | 'REJECTED';
 
-export interface MerchantSnapshot {
-  merchantId:    string;
-  merchantName:  string;
-  upiId:         string;
-  bankName:      string;
-  accountNo:     string;
-  ifsc:          string;
-  accountHolder: string;
-  snapshotAt:    string;
-  expiresAt:     string;
+/**
+ * Where to pay, and nothing about who is being paid.
+ *
+ * This was `MerchantSnapshot`, and it declared the merchant's `upiId`,
+ * `bankName`, `accountNo`, `ifsc` and `accountHolder`. A field the panel's type
+ * names is a field somebody will render — and these were rendered, with a Copy
+ * button on the handle.
+ *
+ * The server sends this instead: a per-order payment link, an opaque reference
+ * that names nobody, and the deadline. See
+ * backend/domains/payment/playerOrderView.js, which is the only shape of an
+ * order a player receives.
+ */
+export interface PayTo {
+  paymentLink?: string;
+  /** `Merchant #<publicRef>` — a label for support, identifying no one. */
+  merchantRef?: string;
+  expiresAt?: string;
 }
 
 export interface PaymentOrder {
@@ -270,27 +278,30 @@ export interface PaymentOrder {
   _id:                string;
   orderId:            string;
   userId:             string;
-  merchantId:         string | null;
   type:               'DEPOSIT' | 'WITHDRAWAL';
   tokenAmount:        number;
   fiatAmount:         number;
   rateUsed:           number;
-  merchantProfit:     number;
-  depositAllocation:  number;   // share of tokenAmount → depositBalance (DepositPolicy, admin-configurable)
-  reserveAllocation:  number;   // share of tokenAmount → reserveBalance (DepositPolicy, admin-configurable)
-  platformFeeRate:    number;   // 3% deducted on bet settlement
   status:             PaymentOrderStatus;
   escrowStatus:       'NONE' | 'LOCKED' | 'RELEASED' | 'REFUNDED';
   utrNumber?:         string;
   proofScreenshot?:   string;
-  requiresVideoKYC:   boolean;
-  merchantSnapshot?:  MerchantSnapshot;
-  utrWarning?:        string;
-  requiresReview:     boolean;
-  warningIssued:      boolean;
-  redFlagged:         boolean;
-  bulkPayoutDate?:    string;
-  bulkPayoutBatch?:   string;
+  // ── What this interface stopped declaring, and why ────────────────────────
+  // `merchantId`, `merchantSnapshot`, `merchantProfit`, `depositAllocation`,
+  // `reserveAllocation`, `platformFeeRate`, `requiresVideoKYC`,
+  // `requiresReview`, `warningIssued`, `redFlagged`, `bulkPayoutDate` and
+  // `bulkPayoutBatch`.
+  //
+  // None of them is sent to a player, and several must never be: the merchant's
+  // identity and credentials, the platform's own treasury split and fee, and the
+  // risk verdicts on the player themselves — a player told they are red-flagged
+  // is a player told to change behaviour before an investigation finishes.
+  //
+  // They were declared here anyway, which is the `User._id` failure exactly: the
+  // interface was the thing that was wrong, so every read typechecked and was
+  // `undefined` at runtime. `playerOrderView.js` is the authority for this shape
+  // and refuses all of them.
+  payTo?:             PayTo | null;
   expiresAt?:         string;
   createdAt:          number | string;
   paidAt?:            string;

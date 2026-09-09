@@ -45,7 +45,7 @@ beforeEach(() => {
 
 describe('WithdrawalBatchParts', () => {
   it('shows every part with its own amount and where it has got to', async () => {
-    client.get.mockResolvedValue({ success: true, batchRef: 'WB_x', orders: parts });
+    client.get.mockResolvedValue({ success: true, batchRef: 'WB_x', parts });
     render(<WithdrawalBatchParts orderId="WD_a" />);
 
     await waitFor(() => expect(screen.getByText(/Part 1 · ₹40,000/)).toBeTruthy());
@@ -57,7 +57,7 @@ describe('WithdrawalBatchParts', () => {
   });
 
   it('offers Cancel on exactly the parts the SERVER said are cancellable', async () => {
-    client.get.mockResolvedValue({ success: true, batchRef: 'WB_x', orders: parts });
+    client.get.mockResolvedValue({ success: true, batchRef: 'WB_x', parts });
     render(<WithdrawalBatchParts orderId="WD_a" />);
 
     await waitFor(() => expect(screen.getByText(/Part 1/)).toBeTruthy());
@@ -72,7 +72,7 @@ describe('WithdrawalBatchParts', () => {
     // render a button that 409s.
     client.get.mockResolvedValue({
       success: true, batchRef: 'WB_y',
-      orders: [{ orderId: 'WD_only', partIndex: 1, amount: 5000, status: 'PENDING_QUEUE', cancellable: false }],
+      parts: [{ orderId: 'WD_only', partIndex: 1, amount: 5000, status: 'PENDING_QUEUE', cancellable: false }],
     });
     render(<WithdrawalBatchParts orderId="WD_b" />);
 
@@ -81,7 +81,7 @@ describe('WithdrawalBatchParts', () => {
   });
 
   it('cancels ONE withdrawal, by its own id', async () => {
-    client.get.mockResolvedValue({ success: true, batchRef: 'WB_x', orders: parts });
+    client.get.mockResolvedValue({ success: true, batchRef: 'WB_x', parts });
     client.post.mockResolvedValue({ success: true });
     const onChanged = vi.fn();
     render(<WithdrawalBatchParts orderId="WD_a" onChanged={onChanged} />);
@@ -109,7 +109,7 @@ describe('WithdrawalBatchParts', () => {
   });
 
   it('renders nothing at all for an ordinary withdrawal', async () => {
-    client.get.mockResolvedValue({ success: true, batchRef: null, orders: [] });
+    client.get.mockResolvedValue({ success: true, batchRef: null, parts: [] });
     const { container } = render(<WithdrawalBatchParts orderId="WD_plain" />);
     await waitFor(() => expect(container.textContent).not.toContain('Loading'));
     expect(container.textContent).toBe('');

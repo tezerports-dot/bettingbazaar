@@ -933,6 +933,50 @@ const MUTATIONS = [
                         secs => COALESCE(p.assignment_wait_seconds, $2)))`,
     to: `                  )`,
   },
+
+  // ── A1: a player sees where to pay, not who they are paying ───────────────
+  {
+    id: 'M138', file: 'backend/domains/payment/playerOrderView.js', config: PG,
+    test: 'backend/tests/routes/playerOrderPrivacyRoutes.test.js',
+    why: 'the projection passes the merchant snapshot through whole, so every player receives the merchant UPI handle, QR, bank account, IFSC and account-holder name',
+    from: `  const counterparty = counterpartyFor(plain);
+  if (counterparty) view.payTo = counterparty;`,
+    to: `  if (plain.merchantSnapshot) view.merchantSnapshot = plain.merchantSnapshot;`,
+  },
+  {
+    id: 'M139', file: 'backend/domains/payment/playerOrderView.js', config: PG,
+    test: 'backend/tests/routes/playerOrderPrivacyRoutes.test.js',
+    why: 'payTo carries the whole snapshot rather than the three fields it may — the leak in its subtlest form, a projection that projects nothing',
+    from: `  if (snapshot.paymentLink) view.paymentLink = snapshot.paymentLink;
+  if (snapshot.merchantRef) view.merchantRef = snapshot.merchantRef;
+  if (snapshot.expiresAt) view.expiresAt = snapshot.expiresAt;
+  return Object.keys(view).length ? view : undefined;`,
+    to: `  return { ...snapshot };`,
+  },
+  {
+    id: 'M140', file: 'backend/domains/payment/payment.routes.js', config: PG,
+    test: 'backend/tests/routes/playerOrderPrivacyRoutes.test.js',
+    why: 'the status poll — the response that fires most often, every few seconds while a player waits — stops projecting and pushes the merchant credentials again',
+    from: `      payTo:           view.payTo ?? null,`,
+    to: `      payTo:           order.merchantSnapshot,`,
+  },
+  {
+    id: 'M141', file: 'backend/domains/payment/paymentLink.js', config: UNIT,
+    test: 'backend/tests/unit/paymentLink.test.js',
+    why: 'an empty payee builds `upi://pay?pa=` and the screen renders a live button to a payment that goes nowhere recoverable',
+    from: `  if (!payee || !Number.isFinite(amount) || amount <= 0) return null;`,
+    to: `  if (false) return null;`,
+  },
+  {
+    id: 'M142', file: 'backend/domains/merchant/merchantOrderView.js', config: PG,
+    test: 'backend/tests/routes/merchantOrderPrivacyRoutes.test.js',
+    why: 'the merchant projection returns the order untouched, so the player phone number and UPI id ride along on every merchant response',
+    from: `  const view = {};
+  for (const key of MERCHANT_ORDER_FIELDS) {
+    if (plain[key] !== undefined) view[key] = plain[key];
+  }`,
+    to: `  const view = { ...plain };`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

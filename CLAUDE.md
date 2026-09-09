@@ -400,6 +400,57 @@ the interface and let `tsc` list the call sites.
 
 ---
 
+## The same rule points BOTH ways
+
+`sanitizeMerchantOrder` was one half. The other half had nothing at all: every
+player-facing response carried `merchantSnapshot` **whole** — the merchant's UPI
+handle, their QR image, their bank account number, IFSC and the name on it, and
+their USDT settlement address — on order creation, on the order fetch, on the
+dispute response, on the assignment socket push, and every few seconds on the
+status poll. The player's screen rendered the handle in a copy-to-clipboard row.
+None of the bank fields is needed to pay a UPI handle. A player could read, copy
+and keep a merchant's account number from a single deposit.
+
+**A player sees where to pay and nothing about who they are paying** — a payment
+link, an opaque `Merchant #<ref>`, a deadline. `backend/domains/payment/
+playerOrderView.js` is that shape, an allowlist for the same reason the merchant
+one is, and `npm run check:player-privacy` enforces it.
+
+Three things this cost, all of them findings a route-file scan could not make:
+
+1. **A gate that reads one file protects one file.** `check:merchant-privacy`
+   scanned `merchant.routes.js` and was green for as long as it existed, while
+   `paymentProcessing.service.js` spread the WHOLE order — `...order` — onto the
+   merchant's stream at assignment, and `sse.routes.js` pushed `page.orders`
+   RAW in `merchant_orders_snapshot`, to every merchant, on every connect. Both
+   carried the player's phone number, their bank details, the treasury split and
+   the risk verdicts on them. **A channel is a responder wherever it is
+   written**: both gates now read the whole backend for pushes, not a list of
+   route files.
+2. **A spread defeats a key scan.** `{ ...order, server_ts: Date.now() }` names
+   one permitted key and carries thirty forbidden ones. Both gates read spreads
+   separately; on a player response a spread is permitted only from a producer
+   whose returned `order` the gate has itself verified, and the chain to it —
+   `res.json({ ...result })` ← `requestDeposit` ← `adapter.createDeposit` ←
+   `createDepositOrder` — is stated in the gate rather than assumed.
+3. **The link has one owner and the client is not it.** The panel used to build
+   the `upi://pay` intent from `merchantSnapshot.upiId`, which is WHY it had to
+   be given the handle. Building it on the server (`paymentLink.js`) is what
+   makes the rule structural: there is nothing left in the payload to build one
+   from. Note honestly what this does not do — a `upi://pay` intent carries the
+   payee, so the payer's own banking app will show it. The platform stops
+   publishing the merchant's identity; it cannot hide a payee from a payer.
+
+And a fourth, which is trap 11 in a new costume: **an apostrophe in a comment is
+an opening quote to a bracket counter.** `// one owner of the player's shape`
+swallowed the rest of a return literal, and the producer check reported no
+`order` key in a function that plainly returns one — a check measuring zero
+things, reading exactly like a pass. Every scan blanks comments first
+(`scripts/lib/privacyLists.mjs`), and a producer that yields nothing to check is
+now a failure rather than a silence.
+
+---
+
 ## Commands
 
 | Command | What it proves |
@@ -416,4 +467,5 @@ the interface and let `tsc` list the call sites.
 | `npm run check:balance-reads` | Trap 7, mechanically: a number that GATES a transfer is read from the rows the write will lock. |
 | `npm run check:coherence` | Every column the repositories name exists in the schema. |
 | `npm run check:merchant-privacy` | A merchant is told the payout account and the name on it — never the player's phone or UPI ID. |
+| `npm run check:player-privacy` | A player is told where to pay — never the merchant's UPI handle, QR, bank account or the name on it. |
 | `npm run verify:capabilities` | Every claimed capability has its evidence on disk. |

@@ -12,6 +12,12 @@ import { requireChannelMembership } from '../../middleware/requireChannelMembers
 // Item 12: per-subnet backstop against IP rotation on withdrawal creation.
 import { createSubnetLimiter, globalSurgeBreaker } from '../../middleware/ipDefense.js';
 import { markOrderPaid, cancelOrder, claimUtrGrace, retryOrder } from './paymentProcessing.service.js';
+// The only shape of an order a player receives. A player sees where to pay and
+// nothing about who they are paying.
+import { toPlayerOrderView, toPlayerOrderViews } from './playerOrderView.js';
+// The mirror of it. `deposit/:orderId/confirm` answers a merchant or an admin,
+// so this file needs both projections.
+import { toMerchantOrderView } from '../merchant/merchantOrderView.js';
 // The order state machine — every status change is a guarded transition.
 import { completeOrder, disputeOrder } from './orderLifecycle.service.js';
 // Phase 009: money movement enters ONLY via the Funding Platform authority.
@@ -41,21 +47,23 @@ function paymentActorAuth(req, res, next) {
 }
 
 /**
- * What a merchant may see of an order.
- *
- * The player's phone number, bank details and UPI id are on the order because a
- * merchant needs them to PAY a withdrawal — they have no business in a deposit
- * response, where the money flows the other way. Stripped by construction
- * rather than by remembering not to send them.
+ * The ONE shape a player receives. See `playerOrderView.js` for what was being
+ * sent before it existed — the merchant's UPI handle, their QR, and their bank
+ * account number, IFSC and account-holder name, on every deposit.
  */
-function sanitizeOrderForMerchant(order) {
-  const plain = { ...(order || {}) };
-  delete plain.userPhone;
-  delete plain.merchantSnapshot;
-  delete plain.userBankDetails;
-  delete plain.upiId;
-  return plain;
+function forPlayer(order) {
+  return toPlayerOrderView(order);
 }
+
+/*
+ * ── The last denylist on this route, removed ────────────────────────────────
+ * A `sanitize...ForMerchant` helper stood here and `delete`d four field names
+ * from a copy of the order. That is the shape of the leak `merchantOrderView.js`
+ * was built to end: a denylist admits the next column added to `order_states`
+ * by default, and the mistake is always "too much". `deposit/:orderId/confirm`
+ * answers a merchant, so it answers through `toMerchantOrderView` like every
+ * other merchant-facing responder on the platform.
+ */
 
 // Money IN needs only LINKED identity, not an approved one (owner decision
 // 2026-09-08). Verification runs in batches and can take a day; holding a
@@ -155,7 +163,7 @@ router.post('/order/:orderId/mark-paid', authenticate, orderAccessGuard, async (
     const { utrNumber } = req.body;
     if (!utrNumber?.trim()) return res.status(400).json({ success: false, message: 'utrNumber is required' });
     const order = await markOrderPaid(req.user.userId, req.params.orderId, utrNumber);
-    res.json({ success: true, message: 'Payment marked. Awaiting merchant review.', order });
+    res.json({ success: true, message: 'Payment marked. Awaiting merchant review.', order: forPlayer(order) });
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code, originalOrderId: err.originalOrderId }); }
 });
 
@@ -202,7 +210,7 @@ router.post('/deposit/:orderId/confirm', paymentActorAuth, orderAccessGuard, asy
       if (order.status === 'COMPLETED') {
         return res.json({
           success: true, message: 'Deposit already completed',
-          order: isMerchantActor ? sanitizeOrderForMerchant(order) : order,
+          order: isMerchantActor ? toMerchantOrderView(order) : order,
         });
       }
       return res.status(409).json({ success: false, message: `Cannot confirm in ${order.status} status` });
@@ -248,7 +256,7 @@ router.post('/deposit/:orderId/confirm', paymentActorAuth, orderAccessGuard, asy
     res.json({
       success: true,
       message: confirmed.idempotent ? 'Deposit already completed' : 'Deposit completed',
-      order: isMerchantActor ? sanitizeOrderForMerchant(settled) : settled,
+      order: isMerchantActor ? toMerchantOrderView(settled) : settled,
     });
   } catch (err) {
     console.error('POST /deposit/:orderId/confirm error:', err);
@@ -271,7 +279,11 @@ router.get('/orders', authenticate, async (req, res) => {
       limit: parsedLimit,
       offset: parsedSkip,
     });
-    res.json({ success: true, orders, pagination: { total, limit: parsedLimit, skip: parsedSkip } });
+    res.json({
+      success: true,
+      orders: toPlayerOrderViews(orders),
+      pagination: { total, limit: parsedLimit, skip: parsedSkip },
+    });
   } catch (err) {
     console.error('GET /payment/orders error:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch orders' });
@@ -314,7 +326,7 @@ router.get('/order/:orderId', authenticate, orderAccessGuard, async (req, res) =
       if (link) cashLink = { paymentLink: link.paymentLink, expiresAt: link.expiresAt };
     }
 
-    res.json({ success: true, order, cashLink });
+    res.json({ success: true, order: forPlayer(order), cashLink });
   } catch (err) {
     console.error('GET /payment/order/:orderId error:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch order' });
@@ -351,7 +363,10 @@ router.get('/order/:orderId/batch', authenticate, orderAccessGuard, async (req, 
     res.json({
       success: true,
       batchRef: order?.withdrawalBatchRef ?? null,
-      orders: siblings
+      // PARTS, not `orders`: a deliberately narrow display list — id, position,
+      // amount, state — and not order-shaped, so nothing here has to be kept in
+      // step with the player's order projection.
+      parts: siblings
         // Ownership re-checked per row. The guard proved this caller owns the
         // order they named; it did not prove they own everything sharing a
         // label with it, and a label is not an authorisation.
@@ -404,13 +419,19 @@ router.get('/order/:orderId/status', authenticate, orderAccessGuard, async (req,
       || new Date(new Date(order.createdAt).getTime() + 48 * 60 * 60 * 1000);
     const proofVisible = new Date(proofExpiresAt).getTime() > Date.now();
 
+    // The poll used to send `merchantSnapshot` WHOLE — the merchant's handle,
+    // their QR and their bank account, every few seconds, on the one response
+    // that fires most often. Through the projection like everything else: `payTo`
+    // is the payment link and an opaque reference, and nothing about who the
+    // merchant is.
+    const view = forPlayer(order);
     res.json({
       success: true,
-      status:           order.status,
-      expiresAt:        order.expiresAt,
-      merchantSnapshot: order.merchantSnapshot,
-      utrNumber:        order.utrNumber,
-      proofScreenshot:  proofVisible ? order.proofScreenshot : null,
+      status:          view.status,
+      expiresAt:       view.expiresAt,
+      payTo:           view.payTo ?? null,
+      utrNumber:       view.utrNumber,
+      proofScreenshot: proofVisible ? order.proofScreenshot : null,
     });
   } catch (err) {
     console.error('GET /payment/order/:orderId/status error:', err);
@@ -459,7 +480,11 @@ router.post('/order/:orderId/dispute', authenticate, orderAccessGuard, async (re
       server_ts: Date.now(),
     });
 
-    res.json({ success: true, message: 'Dispute raised. Admin will review shortly.', order: disputed.order ?? order });
+    res.json({
+      success: true,
+      message: 'Dispute raised. Admin will review shortly.',
+      order: forPlayer(disputed.order ?? order),
+    });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
 
@@ -480,7 +505,7 @@ router.post('/order/:orderId/status', authenticate, orderAccessGuard, async (req
       return res.status(409).json({ success: false, message: `Cannot transition ${moved.status ?? 'unknown'} → ${status}` });
     }
     emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: moved.status });
-    res.json({ success: true, order: moved.order ?? order });
+    res.json({ success: true, order: forPlayer(moved.order ?? order) });
   } catch (err) { res.status(500).json({ success: false, message: 'Failed to update status' }); }
 });
 

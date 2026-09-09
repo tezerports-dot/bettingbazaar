@@ -26,6 +26,11 @@ import { db } from '#db';
 // The order state machine — the expected state is in the update's filter, so
 // two admins assigning the same order produce one winner, not a silent overwrite.
 import { assignOrder, reassignOrder } from '../payment/orderLifecycle.service.js';
+// The ONE builder of a merchant snapshot, and the ONE way a merchant is named
+// to a player. Both used to be duplicated in this file.
+import { buildMerchantSnapshot, merchantDisplayRef } from '../payment/paymentProcessing.service.js';
+// The one shape a player receives — a payment link and an opaque reference.
+import { toPlayerOrderView } from '../payment/playerOrderView.js';
 import { emitAdminUpdate, emitMerchantUpdate, emitOrderUpdate } from '../notification/realtimeEmitters.js';
 // Inventory eligibility is a MONEY read, so it reads the wallet.
 import { getMerchantTokenBalance } from '#db/repositories/merchantWallets.js';
@@ -35,29 +40,15 @@ import { getSystemConfig } from '#db/repositories/config.js';
 
 const router = express.Router();
 
-// ─── Helper: build merchantSnapshot from a merchant row ──────────────────────
-// PRIVACY FIX 2026-07-05: merchantName was `name || username`, which in this
-// data is literally the merchant's own mobile number — every user assigned an
-// order could see the merchant's real phone number. Replaced with a persisted,
-// non-identifying public reference.
-function merchantDisplayRef(merchant) {
-  return `Merchant #${merchant.publicRef}`;
-}
-
-function buildSnapshot(merchant, expiresAt) {
-  return {
-    merchantId:    merchant.merchantId,
-    merchantName:  merchantDisplayRef(merchant),
-    upiId:         merchant.bankDetails?.upiId              || '',
-    bankName:      merchant.bankDetails?.bankName           || '',
-    accountNo:     merchant.bankDetails?.accountNo          || '',
-    ifsc:          merchant.bankDetails?.ifsc               || '',
-    accountHolder: merchant.bankDetails?.accountHolderName  || '',
-    usdtAddress:   merchant.usdtWalletAddress               || '',
-    snapshotAt:    new Date(),
-    expiresAt,
-  };
-}
+/*
+ * ── The snapshot builder lived here TWICE ───────────────────────────────────
+ * A second `buildSnapshot` and a second `merchantDisplayRef` stood in this file
+ * beside the pair in `paymentProcessing.service.js`, and they had already
+ * drifted: this copy never wrote `qrCodeUrl` or `merchantType`, so an order
+ * assigned by an admin carried a different snapshot from the same order
+ * assigned automatically. §1 — one owner per value. Both now come from the
+ * service that assigns orders on its own.
+ */
 
 /**
  * The manual-assignment pool guard, in one place.
@@ -116,13 +107,17 @@ function announceAssignment(order, merchant, expiresAt) {
     expiresAt,
     server_ts:   Date.now(),
   });
+  // `payTo`, not the snapshot. This pushed the whole thing to the PLAYER's
+  // socket — the merchant's UPI handle, their QR image, their bank account
+  // number, IFSC and the name on it. A player reads a payment link and an
+  // opaque reference; who they are paying is not theirs to have.
   emitOrderUpdate(String(order.userId), 'order_assigned', {
-    orderId:          order.orderId,
-    _id:              order.orderId,
-    status:           'ASSIGNED',
-    merchantSnapshot: order.merchantSnapshot,  // user reads payment details from snapshot
+    orderId:   order.orderId,
+    _id:       order.orderId,
+    status:    'ASSIGNED',
+    payTo:     toPlayerOrderView(order).payTo ?? null,
     expiresAt,
-    server_ts:        Date.now(),
+    server_ts: Date.now(),
   });
   emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'ASSIGNED' });
 }
@@ -188,7 +183,7 @@ router.post('/payment-orders/:id/reassign', authenticate, isAdminOrSubAdminOrQue
     const moved = await reassignOrder(order.orderId, {
       set: {
         merchantId:       merchant.merchantId,
-        merchantSnapshot: buildSnapshot(merchant, expiresAt),   // overwrite old snapshot
+        merchantSnapshot: buildMerchantSnapshot(merchant, expiresAt, order),   // overwrite old snapshot
         assignedAt:       new Date(),
         assignedBy:       req.user.userId,
         expiresAt,
@@ -509,7 +504,7 @@ router.post('/queue/assign/:orderId', authenticate, isAdminOrSubAdminOrQueueMana
     const assigned = await assignOrder(order.orderId, {
       set: {
         merchantId:       merchant.merchantId,
-        merchantSnapshot: buildSnapshot(merchant, expiresAt),
+        merchantSnapshot: buildMerchantSnapshot(merchant, expiresAt, order),
         assignedAt:       new Date(),
         assignedBy:       req.user.userId,
         expiresAt,

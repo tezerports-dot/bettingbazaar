@@ -39,7 +39,15 @@ const ORDER: any = {
   fiatAmount: 1500.5,
   tokenAmount: 1500.5,
   expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-  merchantSnapshot: { merchantId: 'M1', merchantName: 'Ravi Traders', upiId: 'ravi@okhdfc' },
+  // Where to pay, and nothing about who is being paid. The link is built by the
+  // SERVER now (backend/domains/payment/paymentLink.js) — the panel is not given
+  // the merchant's handle to build one from, which is what makes the privacy
+  // rule structural rather than a thing this screen politely omits.
+  payTo: {
+    paymentLink: 'upi://pay?pa=ravi%40okhdfc&pn=Merchant+%237731&am=1500.50&cu=INR'
+      + '&tn=BettingBazaar-ORD-77&tr=ORD-77',
+    merchantRef: 'Merchant #7731',
+  },
 };
 
 const renderUI = (order: any = ORDER) =>
@@ -119,16 +127,16 @@ describe('the minute to fetch the UTR', () => {
 });
 
 describe('the buy-token payment step', () => {
-  it('builds a upi:// link with every field the payment needs', async () => {
+  it('renders the link the SERVER sent, verbatim', async () => {
+    // It used to assemble the intent here out of the merchant's handle and name,
+    // which meant the panel had to be given them — and the response that carried
+    // them also carried the merchant's QR, bank account, IFSC and account-holder
+    // name. Building it server-side is what removed the need for any of that.
+    //
+    // Verbatim matters: re-encoding a link the server built is a second chance
+    // to change an amount or drop a reference.
     renderUI();
-    const href = payLink().href;
-    const url = new URL(href.replace('upi://', 'https://'));
-
-    expect(href.startsWith('upi://pay?')).toBe(true);
-    expect(url.searchParams.get('pa')).toBe('ravi@okhdfc');       // payee
-    expect(url.searchParams.get('pn')).toBe('Ravi Traders');      // payee name
-    expect(url.searchParams.get('cu')).toBe('INR');
-    expect(url.searchParams.get('tn')).toBe('BettingBazaar-ORD-77'); // the note the merchant matches
+    expect(payLink().href).toBe(ORDER.payTo.paymentLink);
   });
 
   it('fixes the amount to two decimals', () => {
@@ -180,23 +188,28 @@ describe('the buy-token payment step', () => {
     expect(button).toBeEnabled();
   });
 
-  it('keeps the merchant UPI id visible and copyable', async () => {
-    // A handset with no UPI app registered for the link still has to be able to
-    // pay, and support asks for this when a payment goes missing.
-    const writeText = vi.fn();
-    Object.assign(navigator, { clipboard: { writeText } });
+  it('shows the player nothing about who they are paying', async () => {
+    // This test used to assert the OPPOSITE — that the merchant's handle stayed
+    // visible with a Copy button, arguing it was a fallback for a handset with no
+    // UPI app and something support asks for. It is the exact thing the privacy
+    // rule forbids in the other direction, and the response it read from also
+    // carried the merchant's bank account number, IFSC and account-holder name.
+    //
+    // The link still opens the player's own UPI app, which will show them the
+    // payee it is about to pay. That is the protocol. Handing them an account
+    // number to keep is not.
     renderUI();
-
-    expect(screen.getByText('ravi@okhdfc')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
-    expect(writeText).toHaveBeenCalledWith('ravi@okhdfc');
-    expect(await screen.findByText('Copied')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Copy' })).toBeNull();
+    expect(screen.queryByText('ravi@okhdfc')).toBeNull();
+    expect(screen.queryByText(/Merchant UPI/)).toBeNull();
   });
 
   it('offers no link at all until a merchant is assigned', () => {
     // A `upi://pay?pa=undefined` link takes a player to a payment they cannot
-    // make, and the money would go nowhere recoverable.
-    renderUI({ ...ORDER, merchantSnapshot: null });
+    // make, and the money would go nowhere recoverable. The server sends no
+    // `payTo` at all until a merchant is assigned, so that absence — not a
+    // merchant record the panel no longer receives — is what this renders from.
+    renderUI({ ...ORDER, payTo: null });
     expect(screen.queryByRole('link', { name: /UPI app/i })).toBeNull();
     expect(screen.getByText(/Waiting for merchant details/)).toBeInTheDocument();
   });

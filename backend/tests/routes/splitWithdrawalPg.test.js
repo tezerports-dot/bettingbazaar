@@ -111,13 +111,13 @@ describePg('a cash withdrawal that becomes several withdrawals', () => {
     const player = await withdrawer(200_000);
     const result = await createWithdrawalOrder(player.userId, 100_000);
 
-    expect(result.orders.map((o) => o.amount)).toEqual([40_000, 40_000, 10_000, 10_000]);
+    expect(result.parts.map((o) => o.amount)).toEqual([40_000, 40_000, 10_000, 10_000]);
     // A split that loses paise pays the player LESS than they asked for,
     // successfully, and nothing about the rows looks wrong.
-    expect(result.orders.reduce((sum, o) => sum + o.amount, 0)).toBe(100_000);
+    expect(result.parts.reduce((sum, o) => sum + o.amount, 0)).toBe(100_000);
 
     // Each is a real, independent withdrawal — not a leg of anything.
-    for (const part of result.orders) {
+    for (const part of result.parts) {
       const row = await getOrderRecord(part.orderId);
       expect(row.type).toBe('WITHDRAWAL');
       expect(row.escrowLocked).toBe(true);
@@ -165,7 +165,7 @@ describePg('a cash withdrawal that becomes several withdrawals', () => {
   it('creates a single ordinary withdrawal for one denomination, with no batch label', async () => {
     const player = await withdrawer(200_000);
     const result = await createWithdrawalOrder(player.userId, 10_000);
-    expect(result.orders).toHaveLength(1);
+    expect(result.parts).toHaveLength(1);
     // No label: there are no siblings to group, so a screen must not offer an
     // expander promising some.
     expect(result.order.withdrawalBatchRef).toBeNull();
