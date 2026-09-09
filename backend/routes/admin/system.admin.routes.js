@@ -1,7 +1,9 @@
 // GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
 /** system.admin.routes.js — System config, token rates, withdrawal requests, error logs */
 import { express, authenticate, isAdmin, isAdminOrSubAdmin } from './_adminShared.js';
-import { INR_TOKEN_RATE } from '../../domains/configuration/tokenRates.js';
+import {
+  INR_TOKEN_RATE, isSaneUsdtRate, USDT_RATE_MIN_INR, USDT_RATE_MAX_INR,
+} from '../../domains/configuration/tokenRates.js';
 import { setConfigField } from '../../domains/configuration/configVersioning.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { db } from '#db';
@@ -228,6 +230,23 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
       if ((userMerchantBuy !== undefined && (typeof userMerchantBuy !== 'number' || !Number.isFinite(userMerchantBuy) || userMerchantBuy < 0)) ||
           (merchantAdminBuy !== undefined && (typeof merchantAdminBuy !== 'number' || !Number.isFinite(merchantAdminBuy) || merchantAdminBuy <= 0))) {
         return res.status(400).json({ success: false, message: 'USDT buy rates must be non-negative; merchant/admin buy rate must be greater than zero.' });
+      }
+      // ── A misplaced decimal here is a rail somebody drains ────────────────
+      // `userMerchantBuyInr` prices EVERY USDT purchase, and the sizes are
+      // large: 10,000 typed for 100 sells 500,000 tokens for 50 USDT, and the
+      // first player to notice does not stop at one. 0 stays legal — it is the
+      // schema default and the way to say "not set", which the rail refuses
+      // outright rather than guessing at.
+      //
+      // The band comes from `tokenRates.js`, the one owner of what a USDT rate
+      // means. A second copy of those numbers here would be a bound that
+      // disagrees with the one the pricing path enforces.
+      if (userMerchantBuy !== undefined && userMerchantBuy !== 0 && !isSaneUsdtRate(userMerchantBuy)) {
+        return res.status(400).json({
+          success: false,
+          message: `A USDT rate must be between ₹${USDT_RATE_MIN_INR} and ₹${USDT_RATE_MAX_INR} per USDT, or 0 to leave it unset. `
+            + `Got ₹${userMerchantBuy} — check for a misplaced decimal.`,
+        });
       }
     }
     if (merchantOrderLimits !== undefined) {

@@ -32,6 +32,23 @@
  * every call — no error, no failing test unless one happens to exercise that
  * exact field, and a 2FA recovery flow that silently has no codes.
  *
+ * ── And the schema's own second owners ─────────────────────────────────────
+ * `CREATE OR REPLACE FUNCTION f()` written twice in one file is not two rules —
+ * it is one rule, the last one, and everything the earlier copies say is text.
+ * `bb_forbid_order_mode_change()` was written THREE times: once for the rail,
+ * once for the USDT chain, once for the frozen quote. Each later copy restated
+ * the earlier branches, so it looked correct at every point in the file, and
+ * editing the first block changed nothing at all. The mutation that deletes the
+ * rail check from block one was reported as SURVIVED for exactly that reason —
+ * the third block put it straight back.
+ *
+ * Same shape for a trigger: `CREATE OR REPLACE TRIGGER t ON tbl` twice is one
+ * trigger, whichever body ran last.
+ *
+ * This is derive-don't-duplicate applied to SQL, and it is mechanical: the
+ * names are read out of the schema itself, so nothing here holds its own copy
+ * of what the schema defines.
+ *
  *   node scripts/verify-migration-coherence.mjs           summary
  *   node scripts/verify-migration-coherence.mjs --list    every finding
  */
@@ -120,11 +137,55 @@ for (const file of REPOS) {
   }
 }
 
+/**
+ * Objects the schema defines more than once.
+ *
+ * Only the LAST definition exists once the file has been applied, so every
+ * earlier one is a comment that reads like code. Counted by NAME, from the
+ * schema's own text — a duplicate is a name that appears in two `CREATE OR
+ * REPLACE` statements of the same kind.
+ *
+ * `CREATE TABLE IF NOT EXISTS` and `ALTER TABLE … ADD COLUMN IF NOT EXISTS` are
+ * deliberately not in scope: those are idempotent by design and repeat all over
+ * this file on purpose.
+ */
+function redefinitions() {
+  const found = new Map();
+  const patterns = [
+    ['function', /CREATE\s+OR\s+REPLACE\s+FUNCTION\s+([a-z_][a-z0-9_]*)\s*\(/gi],
+    ['trigger',  /CREATE\s+OR\s+REPLACE\s+TRIGGER\s+([a-z_][a-z0-9_]*)\s/gi],
+    ['view',     /CREATE\s+OR\s+REPLACE\s+VIEW\s+([a-z_][a-z0-9_]*)\s/gi],
+  ];
+  for (const [kind, re] of patterns) {
+    for (const m of SCHEMA.matchAll(re)) {
+      const key = `${kind} ${m[1]}`;
+      const line = SCHEMA.slice(0, m.index).split('\n').length;
+      found.set(key, [...(found.get(key) ?? []), line]);
+    }
+  }
+  return [...found.entries()]
+    .filter(([, lines]) => lines.length > 1)
+    .map(([name, lines]) => ({ name, lines }));
+}
+
+const dupes = redefinitions();
+
 const list = process.argv.includes('--list');
 console.log('\nMigration coherence — does every column the code names exist?\n');
 console.log(`  ${REPOS.length} repositories scanned`);
 console.log(`  ${COLUMNS.size} column names declared by the schema`);
-console.log(`  ${gaps.length} GAP    (a name read off a row with no column behind it)\n`);
+console.log(`  ${gaps.length} GAP    (a name read off a row with no column behind it)`);
+console.log(`  ${dupes.length} DOUBLE (a schema object defined more than once)\n`);
+
+if (dupes.length) {
+  console.log('DOUBLE — the schema defines this object more than once:');
+  for (const d of dupes) console.log(`  ${d.name}  at lines ${d.lines.join(', ')}`);
+  console.log('');
+  console.log('Only the LAST definition survives. Every earlier one is text that reads');
+  console.log('like code: edit it and nothing changes, and a check aimed at it measures');
+  console.log('nothing. Collapse them into one definition.\n');
+  process.exit(1);
+}
 
 if (gaps.length) {
   console.log('GAP — the code reads a name the schema does not declare:');

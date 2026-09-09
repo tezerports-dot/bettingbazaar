@@ -30,7 +30,7 @@ import { getSystemConfig } from '#db/repositories/config.js';
 import { PAYMENT_MODES } from '#db/repositories/paymentModePolicy.js';
 import { MERCHANT_CURRENCY } from '../merchant/merchantCurrency.js';
 import {
-  BUY_DENOMINATIONS_PAISE, MAX_INR_BUY_PAISE, isBuyDenomination,
+  BUY_DENOMINATIONS_PAISE, MAX_CASH_BUY_PAISE, isBuyDenomination,
   USDT_BUY_DENOMINATIONS_PAISE, isUsdtBuyDenomination,
 } from '../merchant/denominations.js';
 import { rupeesToPaise } from '../../shared/money.js';
@@ -362,15 +362,16 @@ export { getRiskRules };
  *
  * ── The three rules, and why each is here ──────────────────────────────────
  *
- * 1. **₹10,000 is the ceiling on any INR buy**, on either INR rail. Derived
- *    from the denomination list rather than written as its own number, so the
- *    ceiling and the largest buy denomination cannot drift apart.
+ * 1. **₹10,000 is the ceiling on a CASH buy**, and only on the cash rail. It is
+ *    the largest amount an ATM dispenses, derived from the denomination list
+ *    rather than written as its own number so the two cannot drift apart. It
+ *    used to apply to every INR buy including the UPI rail, where there is no
+ *    machine and nothing to dispense.
  *
- *    Above it a player buys with USDT — at one of exactly TWO amounts, ₹50,000
- *    or ₹100,000, for the reason the cash amounts are fixed: a merchant sending
- *    tokens from their own wallet knows what they are being asked for before
- *    they accept. Nothing serves the gap between the rails, and the refusal
- *    names both lists rather than saying "invalid".
+ *    The USDT rail is separate and not a consequence of that ceiling: it serves
+ *    three fixed TOKEN counts — 50,000, 100,000 and 500,000 — for the reason
+ *    the cash amounts are fixed. A merchant sending tokens from their own
+ *    wallet knows what they are being asked for before they accept.
  *
  * 2. **On the cash rail the amount must BE a denomination.** Not "within a
  *    range" — a cash machine dispenses one of a fixed set, so an amount between
@@ -384,18 +385,20 @@ export { getRiskRules };
 async function assertBuyIsLegal({ userId, tokenAmount, paymentMode, currency }) {
   const paise = rupeesToPaise(tokenAmount);
 
-  // ── The USDT rail has its own two rules ─────────────────────────────────
-  // Its amounts are FIXED and its concurrency rule is the same one, applied per
-  // currency: a player may hold one open buy on each rail, because the two are
-  // served by different merchants out of different inventory.
+  // ── The USDT rail: three fixed sizes, in TOKENS ─────────────────────────
+  // What a player receives is one of three token counts; what they SEND is
+  // derived from the admin's rate at creation. The concurrency rule is the same
+  // one applied per currency — a player may hold one open buy on each rail,
+  // because the two are served by different merchants out of different
+  // inventory.
   if (currency === MERCHANT_CURRENCY.USDT) {
     if (!isUsdtBuyDenomination(paise)) {
       throw Object.assign(
-        // Both rails' choices, named. A player who asks for ₹30,000 is on
-        // neither list, and "invalid amount" would have them guess.
+        // The sizes, in the unit the player is buying. Saying "₹50,000" here
+        // would describe a rupee amount nobody pays on this rail.
         new Error(
-          `A USDT purchase is ₹${USDT_BUY_DENOMINATIONS_PAISE.map((p) => (p / 100).toLocaleString('en-IN')).join(' or ₹')}.`
-          + ` For less, buy with UPI or cash up to ₹${(MAX_INR_BUY_PAISE / 100).toLocaleString('en-IN')}.`,
+          'A USDT purchase is '
+          + `${USDT_BUY_DENOMINATIONS_PAISE.map((p) => (p / 100).toLocaleString('en-IN')).join(', ')} tokens.`,
         ),
         { status: 400, code: 'NOT_A_USDT_DENOMINATION' },
       );
@@ -410,11 +413,18 @@ async function assertBuyIsLegal({ userId, tokenAmount, paymentMode, currency }) 
     return;
   }
 
-
-  if (paise > MAX_INR_BUY_PAISE) {
+  // ── The CASH rail's ceiling, on the cash rail only ──────────────────────
+  // ₹10,000 is the largest amount a machine dispenses, so it is the largest a
+  // merchant standing at one can serve. It is not a limit on buying: this
+  // refused ₹12,000 on the UPI rail too, where there is no machine and nothing
+  // to dispense — a rule enforced somewhere it does not apply.
+  //
+  // On the UPI rail a purchase is bounded by the configured min/max deposit,
+  // like any other.
+  if (paymentMode === PAYMENT_MODES.CASH_ATM && paise > MAX_CASH_BUY_PAISE) {
     throw Object.assign(
-      new Error(`A single purchase is capped at ₹${MAX_INR_BUY_PAISE / 100}. Buy with USDT for more than that.`),
-      { status: 400, code: 'INR_BUY_CEILING' },
+      new Error(`A cash purchase is capped at ₹${(MAX_CASH_BUY_PAISE / 100).toLocaleString('en-IN')} — a machine does not dispense more in one go.`),
+      { status: 400, code: 'CASH_BUY_CEILING' },
     );
   }
 

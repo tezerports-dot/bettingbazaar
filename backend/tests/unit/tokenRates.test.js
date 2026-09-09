@@ -42,6 +42,11 @@ import {
   adminToMerchantUsdtRate,
   merchantToUserUsdtRate,
   rateForMerchant,
+  tokensPerUsdt,
+  usdtForTokens,
+  isSaneUsdtRate,
+  USDT_RATE_MIN_INR,
+  USDT_RATE_MAX_INR,
 } from '../../domains/configuration/tokenRates.js';
 
 const inrMerchant  = { acceptedCurrencies: ['INR'] };
@@ -94,6 +99,10 @@ describe('an unset merchant-to-user rate is refused, not guessed', () => {
     ['no config at all',        null],
     ['a negative rate',         { usdtPricing: { userMerchantBuyInr: -5 } }],
     ['a non-number',            { usdtPricing: { userMerchantBuyInr: 'ninety' } }],
+    // Not a price at all. Reading one of these would sell 500,000 tokens for
+    // 50 USDT, or charge a player a hundred times over.
+    ['a rate below the band',   { usdtPricing: { userMerchantBuyInr: 1 } }],
+    ['a rate above the band',   { usdtPricing: { userMerchantBuyInr: 10_000 } }],
   ]) {
     it(`returns null for ${label}`, () => {
       expect(merchantToUserUsdtRate(config)).toBeNull();
@@ -107,6 +116,55 @@ describe('an unset merchant-to-user rate is refused, not guessed', () => {
     // at one rupee each to a merchant settling in USDT, and eats the spread on
     // every order with nothing reporting it.
     expect(rateForMerchant(usdtMerchant, { usdtPricing: { userMerchantBuyInr: 0 } })).not.toBe(1);
+  });
+});
+
+describe('the rate that prices every USDT purchase is bounded', () => {
+  /**
+   * ── Why a rate needs a bound ─────────────────────────────────────────────
+   * One number prices the whole rail, and the sizes are large. 10,000 typed
+   * for 100 sells 500,000 tokens for 50 USDT, and the first player to notice
+   * does not stop at one order. This is a SANITY band — an order of magnitude
+   * either side of any real USDT price — not a market view.
+   */
+  it('accepts a real rate and refuses a misplaced decimal', () => {
+    expect(isSaneUsdtRate(100)).toBe(true);
+    expect(isSaneUsdtRate(83.5)).toBe(true);
+    expect(isSaneUsdtRate(USDT_RATE_MIN_INR)).toBe(true);
+    expect(isSaneUsdtRate(USDT_RATE_MAX_INR)).toBe(true);
+
+    expect(isSaneUsdtRate(1)).toBe(false);
+    expect(isSaneUsdtRate(10_000)).toBe(false);
+    expect(isSaneUsdtRate(0)).toBe(false);
+    expect(isSaneUsdtRate(Infinity)).toBe(false);
+    expect(isSaneUsdtRate('100')).toBe(true); // a numeric string is a number here
+  });
+
+  it('fails CLOSED on a stored rate outside the band', () => {
+    // The admin route refuses to store one, but a value can reach the row
+    // another way — a direct UPDATE, a restore from an old backup. Refusing to
+    // PRICE with it is what makes the bound structural rather than a form
+    // validation somebody can route around.
+    const absurd = { usdtPricing: { userMerchantBuyInr: 10_000 } };
+    expect(merchantToUserUsdtRate(absurd)).toBeNull();
+    expect(tokensPerUsdt(absurd)).toBeNull();
+    expect(usdtForTokens(500_000, absurd)).toBeNull();
+  });
+
+  it('prices the three sizes exactly as the owner specified', () => {
+    // 1 USDT = 100 tokens: 50,000 → 500, 100,000 → 1,000, 500,000 → 5,000.
+    const cfg = { usdtPricing: { userMerchantBuyInr: 100 } };
+    expect(tokensPerUsdt(cfg)).toBe(100);
+    expect(usdtForTokens(50_000, cfg)).toBe(500);
+    expect(usdtForTokens(100_000, cfg)).toBe(1_000);
+    expect(usdtForTokens(500_000, cfg)).toBe(5_000);
+  });
+
+  it('rounds the USDT figure UP, never against the platform', () => {
+    // 50,000 / 33 = 1515.1515…, and a rate that does not divide evenly is the
+    // normal case. Rounding down would hand over the difference on every order.
+    const cfg = { usdtPricing: { userMerchantBuyInr: 33 } };
+    expect(usdtForTokens(50_000, cfg)).toBe(1515.16);
   });
 });
 

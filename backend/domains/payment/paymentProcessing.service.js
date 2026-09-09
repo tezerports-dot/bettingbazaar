@@ -34,7 +34,9 @@
 import crypto from 'crypto';
 import { db } from '#db';
 // One owner for what a token is worth: the INR peg, and the two USDT legs.
-import { INR_TOKEN_RATE, rateForMerchant } from '../configuration/tokenRates.js';
+import {
+  INR_TOKEN_RATE, rateForMerchant, tokensPerUsdt, usdtForTokens,
+} from '../configuration/tokenRates.js';
 import { debitWinningsForWithdrawal, refundWithdrawal, getBalances } from '../wallet/walletAuthority.service.js';
 import { selectBestMerchant } from '../merchant/merchantScoring.service.js';
 import { claimLinkFor } from '../merchant/cashLink.service.js';
@@ -363,15 +365,17 @@ async function tryAssignMerchant(order) {
   });
   if (!merchant) return false;
 
-  // What this merchant settles at. An INR merchant is the peg; a USDT merchant
-  // is the admin's merchant-to-user rate, which is why the rate is stamped HERE
-  // and not at creation — the rail is not known until a merchant is chosen.
+  // ── The quote is NOT re-made here ───────────────────────────────────────
+  // A USDT order was priced at creation, from the rate live at that moment, and
+  // the player was shown the USDT figure before they agreed to anything. This
+  // used to read the rate again and overwrite `rateUsed` with whatever it was
+  // when a merchant happened to accept — minutes later, and an admin edit in
+  // between silently re-priced a purchase already agreed to.
   //
-  // No fallback. The USDT rate defaults to 0 and 0 is not a rate: pricing with
-  // it divides by zero, and substituting 1 would sell tokens at the INR peg to
-  // a merchant settling in USDT. If the admin has not set one, the order stays
-  // in the queue rather than being priced wrong.
-  const rateUsed = rateForMerchant(merchant, await getSystemConfig());
+  // So the order's OWN rate is what stands. It is read back rather than
+  // recomputed, and only an order that somehow has none falls through to the
+  // merchant's rail rate.
+  const rateUsed = order.rateUsed ?? rateForMerchant(merchant, await getSystemConfig());
   if (rateUsed === null) {
     console.error(
       `[assignment] ${order.orderId}: merchant ${merchant.merchantId} settles in USDT and `
@@ -581,12 +585,43 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
     throw Object.assign(new Error('Please complete KYC verification to purchase tokens'), { status: 403 });
   }
 
-  // Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08): 1 BB
-  // token = ₹1, no buy/sell spread. Merchant earnings come from the
-  // cycle-completion Merchant Performance Bonus, never from a rate spread.
-  // The INR peg: one token, one rupee. Named rather than a bare 1 so the
-  // rule is legible and has one owner.
-  const fiatAmount = tokenAmount * INR_TOKEN_RATE;
+  // ── What the player actually pays, and in what ──────────────────────────
+  //
+  // On the INR rails: the peg. 1 BB token = ₹1, no buy/sell spread (Phase 006
+  // flattening, 2026-07-08) — merchant earnings come from the cycle-completion
+  // Merchant Performance Bonus, never from a rate spread. Named rather than a
+  // bare 1 so the rule is legible and has one owner.
+  //
+  // On the USDT rail: a USDT amount, derived from the admin's rate. The
+  // denomination is what the player RECEIVES (50,000 / 100,000 / 500,000
+  // tokens); this is what they SEND.
+  //
+  // ── And it is fixed HERE, at creation, not at assignment ────────────────
+  // The rate is admin-editable. `rateUsed` was stamped when a merchant was
+  // chosen, which is minutes later — so a player was quoted one USDT amount on
+  // the screen and the order recorded whatever the rate happened to be when
+  // somebody accepted it. An admin editing the rate in between silently
+  // re-priced a purchase already agreed to.
+  //
+  // The quote is the contract. It is written with the order, and the
+  // assignment path is forbidden from touching it.
+  let fiatAmount = tokenAmount * INR_TOKEN_RATE;
+  let rateUsed = INR_TOKEN_RATE;
+  if (currency === MERCHANT_CURRENCY.USDT) {
+    const quoted = usdtForTokens(tokenAmount, cfg);
+    const rate = tokensPerUsdt(cfg);
+    // NO FALLBACK. The schema default is 0 and 0 is not a rate: dividing by it
+    // gives Infinity USDT, and substituting 1 would sell 50,000 tokens for
+    // 50,000 USDT. A caller that cannot price a purchase must refuse it.
+    if (quoted === null || rate === null) {
+      throw Object.assign(
+        new Error('USDT pricing has not been set. Contact support.'),
+        { status: 503, code: 'USDT_RATE_UNSET' },
+      );
+    }
+    fiatAmount = quoted;
+    rateUsed = rate;
+  }
 
   // ── The split, computed HERE ────────────────────────────────────────────
   // This was a pre-save hook on the order model: invisible, and a second
@@ -611,9 +646,9 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
     // function.
     assignmentPriority: attempt.priority ?? 0,
     retryOfOrderId:     attempt.retryOf ?? null,
-    // Stamped again at assignment, where the merchant's rail is known: a
-    // USDT merchant settles at the admin's merchant-to-user rate, not the peg.
-    rateUsed:          INR_TOKEN_RATE,
+    // The peg on an INR buy; tokens-per-USDT on a USDT one. Written HERE and
+    // not re-stamped at assignment — see the quote above.
+    rateUsed,
     // The rail this buy runs on, and — on USDT — the chain the player chose.
     // Both are frozen: the chain by a trigger, because the merchant snapshot
     // carries the address for this chain alone.
@@ -642,8 +677,14 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
   // one screen would have had to be added here too, by somebody remembering.
   return {
     order: toPlayerOrderView(order),
-    // Built from the STORED figures, so the message and the order agree.
-    note: `You will pay ₹${fiatAmount.toLocaleString()} to receive ${tokenAmount} BB tokens (${order.depositAllocation} betting + ${order.reserveAllocation} reserve)`,
+    // Built from the STORED figures, so the message and the order agree — and
+    // in the CURRENCY the player actually sends. Saying "₹500" to somebody
+    // about to transfer 500 USDT names the wrong thing entirely.
+    note: currency === MERCHANT_CURRENCY.USDT
+      ? `You will send ${fiatAmount.toLocaleString('en-IN')} USDT to receive `
+        + `${tokenAmount.toLocaleString('en-IN')} BB tokens `
+        + `(${order.depositAllocation} betting + ${order.reserveAllocation} reserve)`
+      : `You will pay ₹${fiatAmount.toLocaleString()} to receive ${tokenAmount} BB tokens (${order.depositAllocation} betting + ${order.reserveAllocation} reserve)`,
   };
 }
 
@@ -1079,9 +1120,17 @@ export async function markOrderPaid(userId, orderId, utrNumber) {
   // refusal names which rule stopped it, in the submitter's own vocabulary, and
   // carries the order that holds the reference so support has an answer without
   // a second lookup.
+  //
+  // `amountRupees` is a RUPEE figure, in a `BIGINT` paise column. On a USDT
+  // order `fiatAmount` is USDT, so passing it here would record 500 USDT as
+  // ₹500 — a number that reads perfectly and is wrong by two orders of
+  // magnitude to whoever investigates a duplicate. Nothing decides on this
+  // column, and the order it names carries both the amount and the currency,
+  // so the honest value is NONE. A field that lies is worse than no field.
   const { reference: normalizedUTR } = await claimPaymentReference({
     reference: utrNumber, orderId: order.orderId, userId: order.userId,
-    amountRupees: order.fiatAmount, spec,
+    amountRupees: order.currency === MERCHANT_CURRENCY.USDT ? null : order.fiatAmount,
+    spec,
   });
 
   // The UTR was consumed above and is not returnable, so the transition being

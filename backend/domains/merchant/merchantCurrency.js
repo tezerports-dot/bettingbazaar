@@ -143,3 +143,24 @@ export function isUsdtMerchant(merchant) {
 export function isInrMerchant(merchant) {
   return merchantTypeOf(merchant) === MERCHANT_CURRENCY.INR;
 }
+
+/**
+ * What the payer sends, written in the currency they send it in.
+ *
+ * ── Why this is a function and not a template at each call site ────────────
+ * `fiat_amount_paise` is "what the payer sends, in the ORDER's currency". Every
+ * screen and message that renders it therefore has to ask which currency, and
+ * the ones that forgot all made the SAME mistake in the same direction: "₹500"
+ * shown for a payment of 500 USDT. The merchant's order card asked; the
+ * player's confirmation message did not, and the accounting description did
+ * not.
+ *
+ * One formatter, so a place that renders the amount cannot render it without
+ * answering the question. `en-IN` grouping, matching every other money figure
+ * on this platform.
+ */
+export function formatOrderFiat(order) {
+  const amount = Number(order?.fiatAmount ?? 0);
+  const shown = Number.isFinite(amount) ? amount.toLocaleString('en-IN') : String(order?.fiatAmount ?? '');
+  return order?.currency === MERCHANT_CURRENCY.USDT ? `${shown} USDT` : `₹${shown}`;
+}

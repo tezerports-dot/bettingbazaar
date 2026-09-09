@@ -40,12 +40,13 @@ const DEFAULT_FOOTER_PAGES = Object.freeze(['home', 'results', 'winners', 'promo
  */
 // The INR peg comes from the one place that owns it.
 import { USDT_CHAINS, USDT_CHAIN_SPEC } from '../merchant/merchantCurrency.js';
+import { tokensPerUsdt } from './tokenRates.js';
 import { INR_TOKEN_RATE } from './tokenRates.js';
 // The legal buy amounts come from the module the risk gate validates against,
 // never from a list written out again here. Two lists drift, and the drift is
 // silent until a player is refused an amount the screen offered them.
 import {
-  BUY_DENOMINATIONS_PAISE, MAX_INR_BUY_PAISE, USDT_BUY_DENOMINATIONS_PAISE,
+  BUY_DENOMINATIONS_PAISE, MAX_CASH_BUY_PAISE, USDT_BUY_DENOMINATIONS_PAISE,
 } from '../merchant/denominations.js';
 
 export function systemConfigPayload(cfg, rail = null) {
@@ -64,11 +65,18 @@ export function systemConfigPayload(cfg, rail = null) {
     // available" rather than falling back to a guess.
     paymentMode:         rail?.activeMode ?? null,
     buyDenominations:    BUY_DENOMINATIONS_PAISE.map((p) => p / 100),
-    maxInrBuy:           MAX_INR_BUY_PAISE / 100,
-    // The USDT rail's two amounts, and the chains it is served on. From the
-    // SERVER, because both are money rules: a panel with its own copy of either
-    // would offer an amount the gate refuses, or a network no merchant holds.
+    // The CASH rail's ceiling, and only the cash rail's. It was published as
+    // `maxInrBuy` and the panel hid the buy button above it on EVERY rail.
+    maxCashBuy:          MAX_CASH_BUY_PAISE / 100,
+    // The USDT rail's three sizes — in TOKENS, which is what a player buys —
+    // and the rate that turns each into the USDT they send. From the SERVER,
+    // because all of it is money rules: a panel with its own copy would offer a
+    // size the gate refuses or quote a price the order will not honour.
+    //
+    // `usdtTokensPerUnit` is null when the admin has not set a rate. The panel
+    // must then offer nothing rather than showing sizes it cannot price.
     usdtBuyDenominations: USDT_BUY_DENOMINATIONS_PAISE.map((p) => p / 100),
+    usdtTokensPerUnit:    tokensPerUsdt(cfg),
     usdtChains:           USDT_CHAINS.map((chain) => ({
       chain, label: USDT_CHAIN_SPEC[chain].label,
     })),

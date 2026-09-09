@@ -51,6 +51,33 @@ describe('deposit postings', () => {
     expect(sum(p)).toBe(0);
     expect(leg(p, 'USER_FUNDS')).toBe(-10000);
   });
+
+  it('a USDT deposit posts the INR-EQUIVALENT, not the USDT figure', () => {
+    // `fiatAmount` on a USDT order is USDT — 500, for 50,000 tokens. Posting
+    // it as rupees still SUMS TO ZERO, because the difference falls into the
+    // residual: the platform booked ₹49,500 of revenue it never earned and
+    // debited EXTERNAL_FIAT ₹500 for value of ₹50,000. Balanced, silent, and
+    // wrong on every USDT order — which is why this asserts the legs and not
+    // just the sum.
+    const p = buildDepositPostings({
+      currency: 'USDT', fiatAmount: 500, rateUsed: 100,
+      tokenAmount: 50_000, depositAllocation: 45_000, reserveAllocation: 5_000,
+    });
+    expect(sum(p)).toBe(0);
+    expect(leg(p, 'EXTERNAL_FIAT')).toBe(5_000_000);
+    expect(leg(p, 'USER_FUNDS')).toBe(-4_500_000);
+    expect(leg(p, 'PLATFORM_RESERVE')).toBe(-500_000);
+    // Nothing was earned on the conversion. A revenue leg here is the bug.
+    expect(leg(p, 'PLATFORM_REVENUE')).toBeUndefined();
+  });
+
+  it('leaves an INR deposit posting exactly as it did', () => {
+    // The currency branch must not reach an order that has no currency field —
+    // every order written before the USDT rail existed is one of those.
+    const p = buildDepositPostings({ currency: 'INR', fiatAmount: 110, tokenAmount: 100, depositAllocation: 90, reserveAllocation: 10 });
+    expect(leg(p, 'EXTERNAL_FIAT')).toBe(11000);
+    expect(leg(p, 'PLATFORM_REVENUE')).toBe(-1000);
+  });
 });
 
 describe('withdrawal postings (incl. Phase-010 payout fee)', () => {

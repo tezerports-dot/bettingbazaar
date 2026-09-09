@@ -27,7 +27,7 @@ import { cancelOrder } from '#db/repositories/orders.core.js';
 import {
   PAYMENT_MODES, getActivePolicy, publishPolicyVersion,
 } from '#db/repositories/paymentModePolicy.js';
-import { BUY_DENOMINATIONS_PAISE, MAX_INR_BUY_PAISE } from '../../domains/merchant/denominations.js';
+import { BUY_DENOMINATIONS_PAISE, MAX_CASH_BUY_PAISE } from '../../domains/merchant/denominations.js';
 import { actor } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -94,7 +94,7 @@ describePg('what a player is allowed to buy', () => {
       // a check that merely asked "is this a denomination" would let it
       // through. No buy is ever that large.
       const player = await freshPlayer();
-      await expect(buy(player.userId, 40_000)).rejects.toMatchObject({ code: 'INR_BUY_CEILING' });
+      await expect(buy(player.userId, 40_000)).rejects.toMatchObject({ code: 'CASH_BUY_CEILING' });
     });
   });
 
@@ -114,10 +114,14 @@ describePg('what a player is allowed to buy', () => {
       expect(order).toBeTruthy();
     });
 
-    it('still enforces the INR ceiling, which is a platform rule', async () => {
+    it('does NOT apply the cash ceiling on the UPI rail', async () => {
+      // ₹10,000 is what a MACHINE dispenses. On the UPI rail there is no
+      // machine and nothing to dispense, and this used to refuse ₹12,000 there
+      // — a rule enforced somewhere it does not apply. The bound on this rail
+      // is the configured max deposit, like any other purchase.
       const player = await freshPlayer();
-      await expect(buy(player.userId, MAX_INR_BUY_PAISE / 100 + 10))
-        .rejects.toMatchObject({ code: 'INR_BUY_CEILING' });
+      const order = await buy(player.userId, MAX_CASH_BUY_PAISE / 100 + 2_000);
+      expect(order).toBeTruthy();
     });
   });
 

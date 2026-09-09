@@ -3,10 +3,11 @@
  * Buying tokens with USDT, from a merchant.
  *
  * ── What this rail is ──────────────────────────────────────────────────────
- * ₹10,000 is the ceiling on any INR buy — the largest a cash machine dispenses
- * and the largest a merchant is approved to serve. Above it a player buys with
- * USDT: exactly ₹50,000 or ₹100,000, from a USDT merchant, by sending tokens to
- * that merchant's wallet and submitting the transaction ID.
+ * A USDT buy is denominated in what the player RECEIVES — 50,000, 100,000 or
+ * 500,000 platform tokens — from a USDT merchant, by sending tokens to that
+ * merchant's wallet and submitting the transaction ID. What they SEND is
+ * derived from the admin's rate: at 100 tokens per USDT, 500, 1,000 or 5,000
+ * USDT.
  *
  * There is no payment processor. The counterparty is a person.
  *
@@ -46,7 +47,18 @@ export interface UsdtPayTo {
 export interface UsdtOrder {
   orderId: string;
   status: string;
+  /** Platform tokens the player receives. */
   tokenAmount: number;
+  /**
+   * What the player SENDS, in the order's own currency — so on a USDT order,
+   * USDT. The same field the INR rails carry rupees in, read according to
+   * `currency`, because one value with one name cannot drift from itself.
+   *
+   * It is the order's OWN quote, fixed at creation from the rate live at that
+   * moment. Never recomputed here: the rate is admin-editable, and a screen
+   * that re-derived it would show a price the order does not hold.
+   */
+  fiatAmount?: number | null;
   usdtChain?: string;
   payTo?: UsdtPayTo | null;
 }
@@ -61,18 +73,33 @@ const TX_SHAPE: Record<string, { pattern: RegExp; hint: string }> = {
   BEP20: { pattern: /^0x[0-9a-fA-F]{64}$/i, hint: '“0x” followed by 64 hexadecimal characters' },
 };
 
-const fmtINR = (n: number) => `₹${Number(n || 0).toLocaleString('en-IN')}`;
+const fmtTokens = (n: number) => `${Number(n || 0).toLocaleString('en-IN')} tokens`;
+
+/**
+ * What a player sends for a given size.
+ *
+ * Rounded UP to two decimals, matching the server's `usdtForTokens` — the
+ * server's figure is the one the order records, and a panel that rounded down
+ * would quote less than the order asks for.
+ */
+const usdtFor = (tokens: number, rate: number | null) =>
+  (rate && rate > 0 ? Math.ceil((tokens / rate) * 100) / 100 : null);
 
 export const UsdtBuyPanel: React.FC<{
-  /** The two amounts, from the server. */
+  /** The three sizes, in PLATFORM TOKENS, from the server. */
   denominations: number[];
+  /**
+   * How many tokens one USDT buys, from the server. Null until an admin sets a
+   * rate — and then nothing here can be priced, so nothing is offered.
+   */
+  tokensPerUsdt: number | null;
   /** The networks, from the server. */
   chains: UsdtChainOption[];
   /** An order already in flight, if the player has one. */
   order?: UsdtOrder | null;
   /** Called after an order is created or paid, so the screen above refreshes. */
   onChanged?: () => void;
-}> = ({ denominations, chains, order = null, onChanged }) => {
+}> = ({ denominations, tokensPerUsdt, chains, order = null, onChanged }) => {
   const [amount, setAmount] = useState<number | null>(null);
   const [chain, setChain] = useState<string | null>(null);
   const [txId, setTxId] = useState('');
@@ -171,6 +198,18 @@ export const UsdtBuyPanel: React.FC<{
           {payTo.usdtAddress}
         </div>
 
+        {/* What leaves their wallet, first — it is the number they type into
+            it — and what arrives here, second. The SEND figure is the order's
+            own quote, fixed when it was created; recomputing it from a rate
+            read now would show a price the order will not honour. */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: 'var(--text2)', marginBottom: 4 }}>
+          <span>You send</span>
+          <b style={{ color: 'var(--gold-ink)' }}>
+            {order.fiatAmount === undefined || order.fiatAmount === null
+              ? '—'
+              : `${Number(order.fiatAmount).toLocaleString('en-IN')} USDT`}
+          </b>
+        </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--text2)', marginBottom: 12 }}>
           <span>You receive</span>
           <b style={{ color: 'var(--text)' }}>{Number(order.tokenAmount).toLocaleString('en-IN')} tokens</b>
@@ -220,34 +259,59 @@ export const UsdtBuyPanel: React.FC<{
   }
 
   // ── No order yet: pick an amount and a network ──────────────────────────
+  //
+  // With no rate there is no price, and offering sizes that cannot be priced is
+  // how a player picks one and is refused. Say so instead.
+  if (!tokensPerUsdt || tokensPerUsdt <= 0) {
+    return (
+      <div style={box}>
+        <div style={{ fontWeight: 800, fontSize: 13, color: 'var(--text)', marginBottom: 6 }}>USDT is not available right now</div>
+        <div style={{ fontSize: 11, color: 'var(--text3)' }}>
+          No USDT price has been set. Please try again later or contact support.
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={box}>
       <div style={{ fontWeight: 800, fontSize: 13, color: 'var(--text)', marginBottom: 4 }}>Buy with USDT</div>
       <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 12 }}>
-        Above the UPI limit, purchases are paid in USDT to a merchant.
+        Buy platform tokens by sending USDT to a merchant. 1 USDT = {tokensPerUsdt.toLocaleString('en-IN')} tokens.
       </div>
 
       <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--text2)', marginBottom: 8 }}>
-        Amount
+        Tokens to buy
       </div>
-      {/* The two amounts, from the SERVER. A free field here would let a player
-          type ₹30,000 and be refused after waiting. */}
-      <div role="radiogroup" aria-label="Amount to buy" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8, marginBottom: 14 }}>
-        {denominations.map((value) => (
-          <button
-            key={value} type="button" role="radio" aria-checked={amount === value}
-            onClick={() => setAmount(value)}
-            className="font-grotesk"
-            style={{
-              padding: '14px 10px', borderRadius: 12, cursor: 'pointer', fontWeight: 800, fontSize: 15,
-              border: amount === value ? '2px solid var(--gold)' : '1px solid var(--line)',
-              background: amount === value ? 'var(--gold-soft, rgba(212,175,55,.12))' : 'transparent',
-              color: amount === value ? 'var(--gold-ink)' : 'var(--text)',
-            }}
-          >
-            {fmtINR(value)}
-          </button>
-        ))}
+      {/* The three sizes, from the SERVER. A free field here would let a player
+          type a size no merchant serves and be refused after waiting. */}
+      <div role="radiogroup" aria-label="Amount to buy" style={{ display: 'grid', gap: 8, marginBottom: 14 }}>
+        {denominations.map((value) => {
+          const cost = usdtFor(value, tokensPerUsdt);
+          return (
+            <button
+              key={value} type="button" role="radio" aria-checked={amount === value}
+              onClick={() => setAmount(value)}
+              className="font-grotesk"
+              style={{
+                display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
+                padding: '14px 14px', borderRadius: 12, cursor: 'pointer', fontWeight: 800, fontSize: 15,
+                border: amount === value ? '2px solid var(--gold)' : '1px solid var(--line)',
+                background: amount === value ? 'var(--gold-soft, rgba(212,175,55,.12))' : 'transparent',
+                color: amount === value ? 'var(--gold-ink)' : 'var(--text)',
+              }}
+            >
+              {/* What they RECEIVE, and what they SEND. Both, together: the
+                  denomination is a token count and the price is derived from
+                  the admin's rate, so showing one without the other leaves a
+                  player guessing at the number that leaves their wallet. */}
+              <span>{fmtTokens(value)}</span>
+              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text2)' }}>
+                {cost === null ? '—' : `${cost.toLocaleString('en-IN')} USDT`}
+              </span>
+            </button>
+          );
+        })}
       </div>
 
       <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--text2)', marginBottom: 8 }}>

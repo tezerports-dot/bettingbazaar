@@ -24,7 +24,7 @@ import { creditMerchantTokens } from '../../domains/merchant/merchantWallet.serv
 import { selectBestMerchant } from '../../domains/merchant/merchantScoring.service.js';
 import { PAYMENT_MODES } from '#db/repositories/paymentModePolicy.js';
 import {
-  CASH_DENOMINATIONS_PAISE, BUY_DENOMINATIONS_PAISE, MAX_INR_BUY_PAISE,
+  CASH_DENOMINATIONS_PAISE, BUY_DENOMINATIONS_PAISE, MAX_CASH_BUY_PAISE, MAX_CASH_SELL_PAISE,
   splitWithdrawal, isCashDenomination, isBuyDenomination, SPLIT_FLOOR_PAISE,
 } from '../../domains/merchant/denominations.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
@@ -72,7 +72,10 @@ describePg('the denomination a merchant is approved for', () => {
     expect(BUY_DENOMINATIONS_PAISE).toEqual([50_000, 100_000, 500_000, 1_000_000]);
     expect(isBuyDenomination(4_000_000)).toBe(false);
     // The ceiling is derived from the list rather than being a second number.
-    expect(Math.max(...BUY_DENOMINATIONS_PAISE)).toBe(MAX_INR_BUY_PAISE);
+    expect(Math.max(...BUY_DENOMINATIONS_PAISE)).toBe(MAX_CASH_BUY_PAISE);
+    // And the payout ceiling is the largest tier of all — a leg, never a
+    // request: a withdrawal above it is SPLIT rather than refused.
+    expect(Math.max(...CASH_DENOMINATIONS_PAISE)).toBe(MAX_CASH_SELL_PAISE);
   });
 
   it('splits a withdrawal largest-first and never below the floor unless the remainder forces it', () => {

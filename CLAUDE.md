@@ -183,6 +183,56 @@ pay again.
     a mutant that makes a module unparseable also exits non-zero, which is the
     mirror image of crediting a suite that never ran.
 
+12. **The mutation harness OWNS every file it names while it runs.** It reads a
+    source file, writes a mutant over it, runs a suite, and writes back the copy
+    it took at the start. An edit made to that file in between is inside the
+    window and is **silently reverted** — no conflict, no error, the file simply
+    reads as it did before. It happened to a one-line fix in
+    `paymentProcessing.service.js` that had been made, verified and moved on
+    from; it was gone twenty minutes later and only a re-read found it.
+
+    So: **never edit a file while a mutation run is in flight**, and treat a
+    background run as holding a lock on all 39 files it names. If you must edit,
+    stop the run first. After any run, re-check the edits you made near it — a
+    `grep` for the comment you added is enough, and is cheaper than finding out
+    from a suite.
+
+13. **A mutation anchor that matches twice mutates the WRONG PLACE.**
+    `String.replace(string, …)` changes the first occurrence only, so
+    `AND consumed_at IS NULL` — three times in one repository — mutated the
+    login TOKEN while the entry described the login CODE. It reported KILLED,
+    and the guard it claimed to cover had no test at all: widening the anchor to
+    name one site turned that KILLED into a SURVIVED, which is what a real hole
+    looks like. The harness now refuses an ambiguous anchor
+    (`ANCHOR-AMBIGUOUS`), for the same reason it refuses a missing one.
+
+14. **`CREATE OR REPLACE` twice in one schema file is ONE definition, the last.**
+    `bb_forbid_order_mode_change()` was written three times — once for the rail,
+    once for the USDT chain, once for the frozen quote — each restating the
+    earlier branches, so every version read correctly at its own position.
+    Editing the first two changed nothing, and the mutation aimed at the first
+    was reported as SURVIVED because the third put it back. `check:coherence`
+    now fails on a schema object defined more than once.
+
+15. **`fiat_amount_paise` is in the ORDER's currency. The ledger is not.**
+    On a USDT order it holds USDT — 500, for 50,000 tokens. Posting it as rupees
+    still SUMS TO ZERO, because the difference falls into the residual: every
+    USDT deposit credited PLATFORM_REVENUE ₹49,500 the platform never earned and
+    debited EXTERNAL_FIAT ₹500 for value of ₹50,000. Balanced, silent, wrong.
+    The ledger posts the INR-equivalent (`tokenAmount` at the peg); the figure
+    the player actually sent stays in `metadata.fiatAmount` beside `rateUsed`.
+    Anything that RENDERS the amount goes through `formatOrderFiat(order)` —
+    "₹500" for a payment of 500 USDT is the same lie in the line a human reads.
+
+16. **A merchant-scoped read is a permission. Do not widen it to fetch more.**
+    The CDM receipt handler read `getMerchantOrder(id, req.merchantId)` — which
+    404s on somebody else's order — and a later edit swapped it for
+    `getOrderRecord(id)` to get at a field. Nothing else changed, no check went
+    red at the time, and **any merchant could attach their slip to any payout**,
+    claiming another merchant's cash deposit and the evidence a dispute is
+    decided on. When a handler needs more of a row, widen the SCOPED reader —
+    never reach past it.
+
 ---
 
 ## Working rules
@@ -453,11 +503,25 @@ now a failure rather than a silence.
 
 ## USDT is one token on several chains
 
-Above the ₹10,000 INR ceiling a player buys with USDT — at exactly **₹50,000 or
-₹100,000**, from a **USDT merchant**, by sending tokens to that merchant's
-wallet and submitting the transaction ID. There is no payment processor and no
-webhook. The counterparty is a person, and the rail is the ordinary order
-lifecycle with a different currency on it.
+A player buys with USDT from a **USDT merchant**, by sending tokens to that
+merchant's wallet and submitting the transaction ID. There is no payment
+processor and no webhook. The counterparty is a person, and the rail is the
+ordinary order lifecycle with a different currency on it.
+
+**A USDT buy is denominated in PLATFORM TOKENS, not rupees**, at exactly
+**50,000, 100,000 or 500,000 tokens**. What the player *sends* is DERIVED from
+the admin's rate at creation: at 1 USDT = 100 tokens those are 500, 1,000 and
+5,000 USDT. There is no second denomination list in USDT — the rate is
+admin-editable, so a stored USDT amount would be a second owner that drifts the
+moment it changes.
+
+**The quote is the contract.** It is computed and written WITH the order, and
+the assignment path — minutes later — is forbidden from remaking it: `rateUsed`
+and `fiat_amount_paise` are frozen by trigger on the row. Assignment used to
+re-read the rate, so an admin edit in between silently re-priced a purchase the
+player had already agreed to. A purchase that cannot be priced (no rate set) is
+**refused by name** (`USDT_RATE_UNSET`); there is no fallback, because 0 gives
+Infinity USDT and 1 would sell 50,000 tokens for 50,000 USDT.
 
 **The chains are not interchangeable.** USDT sent to a Tron address from a BNB
 Smart Chain wallet is gone — no support desk recovers it, and it is the only
@@ -482,8 +546,17 @@ from that:
    the middle step of ordinary onboarding — the merchant exists, an admin puts
    them on the rail, and only then do they enter an address.
 
-There is a **gap between the rails** — nothing serves ₹10,001–₹49,999 — and it
-is deliberate. The refusal names both rails' choices, because a player told only
+**₹10,000 and ₹40,000 are the ATM's ceilings, not the platform's.** ₹10,000 is
+the largest a cash machine dispenses in one go, so it bounds a CASH_ATM buy;
+₹40,000 is the largest denomination it deals in at all, so it bounds one payout
+LEG (a larger withdrawal is split, never refused). Neither applies on the UPI
+rail, where a purchase is bounded by the configured min/max deposit like any
+other, and neither applies to USDT, whose sizes are the three token counts
+above. `MAX_CASH_BUY_PAISE` was once `MAX_INR_BUY_PAISE` and was enforced on
+every INR buy on both rails — a machine's limit applied where there is no
+machine.
+
+A refusal on either rail **names that rail's own choices**: a player told only
 "invalid amount" tries again and again.
 
 ## One payment, one claim
@@ -560,7 +633,7 @@ author.** Derive what it checks from the thing it is checking.
 | `npm run check:db-boundary` | No SQL, driver or relative reach past `#db`. |
 | `npm run check:orphans` | Every identifier used is declared, imported or a parameter. |
 | `npm run check:balance-reads` | Trap 7, mechanically: a number that GATES a transfer is read from the rows the write will lock. |
-| `npm run check:coherence` | Every column the repositories name exists in the schema. |
+| `npm run check:coherence` | Every column the repositories name exists in the schema, and no schema object is defined twice (only the last definition survives). |
 | `npm run check:merchant-privacy` | A merchant is told the payout account and the name on it — never the player's phone or UPI ID. |
 | `npm run check:player-privacy` | A player is told where to pay — never the merchant's UPI handle, QR, bank account or the name on it. |
 | `npm run check:payment-references` | Every external payment reference — UTR, chain transaction hash, CDM slip id — is claimed once, through one registry. |

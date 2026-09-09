@@ -24,7 +24,7 @@ import {
   listIdentitiesForUser,
   setChannelStatus, deactivateContact,
   getPendingLink, getPendingAadhaar, upsertPendingLink, deletePendingLink,
-  issueLoginToken, consumeLoginToken, sweepExpired, issueLoginCode,
+  issueLoginToken, consumeLoginToken, sweepExpired, issueLoginCode, consumeLoginCode,
 } from '../repositories/telegram.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -408,6 +408,75 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
       expect(await consumeLoginToken({ tokenHash: 'never-existed' })).toBeNull();
       expect(await consumeLoginToken({ tokenHash: 'used' })).toBeNull();
       expect(await consumeLoginToken({ tokenHash: 'gone' })).toBeNull();
+    });
+  });
+
+  describe('login codes — six digits, and one use', () => {
+    /**
+     * ── Why these exist separately from the token tests ─────────────────────
+     * The code path had the same guards written in its SQL and NOTHING
+     * asserting any of them. A mutation that deleted `AND consumed_at IS NULL`
+     * from the code statement SURVIVED while the identical mutation on the
+     * token statement was killed — the guard was there, and unproven.
+     *
+     * A code is weaker than a token by construction: six digits is 10^6, and
+     * it arrives in a message a player may forward or read aloud. So the
+     * one-use rule matters MORE here, not less.
+     */
+    beforeEach(async () => {
+      await createUser({ userId: 'u-1', username: 'a', mobile: '9990000001' });
+    });
+
+    const code = (over = {}) => ({
+      mobileHash: 'mh-1', codeHash: 'ch-1', userId: 'u-1',
+      telegramUserId: 't-1', ttlSeconds: 300, ...over,
+    });
+
+    it('is consumed exactly once', async () => {
+      await issueLoginCode(code());
+      expect(await consumeLoginCode({ mobileHash: 'mh-1', codeHash: 'ch-1' }))
+        .toMatchObject({ userId: 'u-1' });
+      // The same six digits, read off a forwarded message, must not mint a
+      // second session on an account already signed in.
+      expect(await consumeLoginCode({ mobileHash: 'mh-1', codeHash: 'ch-1' })).toBeNull();
+    });
+
+    it('lets exactly one of 20 racing redemptions win', async () => {
+      await issueLoginCode(code());
+      const results = await Promise.all(Array.from({ length: 20 },
+        () => consumeLoginCode({ mobileHash: 'mh-1', codeHash: 'ch-1' })));
+      // One atomic UPDATE, for the reason the token path is one: check-then-
+      // consume leaves a gap wide enough for a second session.
+      expect(results.filter(Boolean)).toHaveLength(1);
+    });
+
+    it('refuses an EXPIRED code before any sweep has run', async () => {
+      await issueLoginCode(code({ ttlSeconds: 1 }));
+      await pgQuery(`UPDATE telegram_login_codes SET expires_at = now() - interval '1 second'
+                      WHERE mobile_hash = 'mh-1'`);
+      expect(await consumeLoginCode({ mobileHash: 'mh-1', codeHash: 'ch-1' })).toBeNull();
+    });
+
+    it('burns the code at the attempt cap rather than leaving it guessable', async () => {
+      // Six digits unbounded is guessable. Five attempts makes it 1-in-200,000
+      // — but only if the row is actually consumed at the cap, rather than
+      // left alive until it expires.
+      await issueLoginCode(code());
+      for (let i = 0; i < 5; i += 1) {
+        expect(await consumeLoginCode({ mobileHash: 'mh-1', codeHash: 'wrong' })).toBeNull();
+      }
+      // The RIGHT code no longer works either. That is the point.
+      expect(await consumeLoginCode({ mobileHash: 'mh-1', codeHash: 'ch-1' })).toBeNull();
+    });
+
+    it('answers unknown, wrong, used and expired identically', async () => {
+      // Otherwise the endpoint tells an attacker which of their guesses was a
+      // live code for a real account.
+      await issueLoginCode(code());
+      await consumeLoginCode({ mobileHash: 'mh-1', codeHash: 'ch-1' });
+      expect(await consumeLoginCode({ mobileHash: 'mh-unknown', codeHash: 'ch-1' })).toBeNull();
+      expect(await consumeLoginCode({ mobileHash: 'mh-1', codeHash: 'ch-1' })).toBeNull();
+      expect(await consumeLoginCode({ mobileHash: 'mh-1', codeHash: 'nope' })).toBeNull();
     });
   });
 

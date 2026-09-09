@@ -72,7 +72,7 @@ import {
 /** Is Postgres the source of truth for the merchant side of a settlement? */
 import { buildBulkPayoutExportRows } from './bulkPayoutExport.js';
 import {
-  MERCHANT_CURRENCY, merchantTypeOf,
+  MERCHANT_CURRENCY, merchantTypeOf, formatOrderFiat,
   USDT_CHAINS, USDT_CHAIN_SPEC, isUsdtAddress, usdtAddressFor, usdtChainsHeldBy,
 } from './merchantCurrency.js';
 import { toMerchantOrderView, toMerchantOrderViews } from './merchantOrderView.js';
@@ -533,6 +533,12 @@ router.post('/orders/:id/cdm-receipt', merchantAuth, cdmReceiptLimiter, async (r
             });
         }
 
+        // SCOPED to the merchant making the request. An unscoped read here let
+        // ANY merchant attach their slip to ANY payout — claiming somebody
+        // else's cash deposit and, with it, the evidence a dispute is decided
+        // on. It was scoped when this handler was written and lost in a later
+        // edit; the suite caught it, which is why the assertion is a 404 on
+        // another merchant's order rather than a happy-path check.
         const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
         if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
         if (order.type !== 'WITHDRAWAL') {
@@ -1238,7 +1244,7 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
 
         // Both rails describe the same two steps; only the destination differs.
         const isUsdtOrder = merchantRail === MERCHANT_CURRENCY.USDT;
-        const payAmount   = isUsdtOrder ? `${order.fiatAmount} USDT` : `₹${order.fiatAmount}`;
+        const payAmount   = formatOrderFiat(order);
 
         if (isDeposit) {
             const payTo = isUsdtOrder
@@ -1518,7 +1524,10 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
                 await sendSystemMessage(oid,
                     `✅ Payment Confirmed by Merchant\n` +
                     `📋 Token Purchase: ${order.tokenAmount} BB Tokens credited to your Deposit Balance\n` +
-                    `💰 ₹${order.fiatAmount} received. Order COMPLETE.\n` +
+                    // NOT `₹${order.fiatAmount}`: on a USDT purchase that is a
+                    // USDT figure, and this line told the player their 500 USDT
+                    // was ₹500.
+                    `💰 ${formatOrderFiat(order)} received. Order COMPLETE.\n` +
                     `Your tokens are now available for betting!`,
                     io
                 );

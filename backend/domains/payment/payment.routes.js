@@ -26,8 +26,6 @@ import { markOrderPaid, cancelOrder, claimUtrGrace, retryOrder } from './payment
 import { toPlayerOrderView, toPlayerOrderViews } from './playerOrderView.js';
 // The ONE system-config payload. The USDT rail's amounts and networks are money
 // rules, so the panel is told them rather than holding its own copy.
-import { systemConfigPayload } from '../configuration/systemConfigPayload.js';
-import { getSystemConfig } from '#db/repositories/config.js';
 // The mirror of it. `deposit/:orderId/confirm` answers a merchant or an admin,
 // so this file needs both projections.
 import { toMerchantOrderView } from '../merchant/merchantOrderView.js';
@@ -131,20 +129,14 @@ router.post('/usdt/deposit/create',
     }
   });
 
-/**
- * GET /api/payment/usdt/rail — the two amounts and the networks.
- *
- * From the SERVER, because both are money rules: a panel with its own copy
- * would offer an amount the gate refuses, or a network no merchant holds.
- */
-router.get('/usdt/rail', authenticate, async (req, res) => {
-  const cfg = systemConfigPayload(await getSystemConfig());
-  res.json({
-    success: true,
-    denominations: cfg.usdtBuyDenominations,
-    chains: cfg.usdtChains,
-  });
-});
+// There is no `GET /usdt/rail`. It existed, it served the sizes and the chains,
+// and NOTHING called it: the player screen reads them from the system-config
+// payload, which is where every other client-visible rule lives.
+//
+// It was also a partial second copy — it carried the sizes but not the RATE, so
+// a client that had used it could show a token count and no price at all. Two
+// builders of one payload is exactly how the config object drifted the first
+// time; the answer then was one owner, and it is the answer here.
 
 // APPROVED, not merely linked. Every withdrawal here draws from the WINNINGS
 // balance — `debitWinningsForWithdrawal` is the only debit path — so "approved

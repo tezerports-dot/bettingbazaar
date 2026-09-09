@@ -137,8 +137,23 @@ const MUTATIONS = [
     id: 'M47', file: 'database/repositories/telegram.js', config: PG,
     test: 'database/tests/telegramPg.test.js',
     why: 'a forwarded login link can be redeemed twice, minting two sessions',
-    from: `        AND consumed_at IS NULL\n`,
-    to: '',
+    // Widened to name the login-TOKEN statement. `AND consumed_at IS NULL`
+    // alone appears three times in this file — the token, the code, and the
+    // attempt charge — so it mutated whichever came first and the verdict said
+    // nothing about which guard was covered.
+    from: `      WHERE token_hash = $1
+        AND consumed_at IS NULL\n`,
+    to: `      WHERE token_hash = $1\n`,
+  },
+  {
+    id: 'M156', file: 'database/repositories/telegram.js', config: PG,
+    test: 'database/tests/telegramPg.test.js',
+    why: 'a login CODE can be redeemed twice — the same six digits, read off a forwarded message, mints a second session on an account that is already signed in',
+    from: `      WHERE mobile_hash = $1
+        AND code_hash = $2
+        AND consumed_at IS NULL\n`,
+    to: `      WHERE mobile_hash = $1
+        AND code_hash = $2\n`,
   },
   {
     id: 'M48', file: 'database/repositories/telegram.js', config: PG,
@@ -642,8 +657,8 @@ const MUTATIONS = [
   {
     id: 'M105', file: 'backend/domains/risk/riskValidation.service.js', config: PG,
     test: 'backend/tests/routes/buyLimitsPg.test.js',
-    why: 'the INR ceiling stops applying, so a hand-made request buys any amount and the USDT rail is bypassed entirely',
-    from: `  if (paise > MAX_INR_BUY_PAISE) {`,
+    why: 'the ATM ceiling stops applying, so a hand-made request buys ₹40,000 on the cash rail — a sum no machine dispenses in one go and no cash merchant can serve',
+    from: `  if (paymentMode === PAYMENT_MODES.CASH_ATM && paise > MAX_CASH_BUY_PAISE) {`,
     to: `  if (false) {`,
   },
   {
@@ -946,12 +961,17 @@ const MUTATIONS = [
   {
     id: 'M139', file: 'backend/domains/payment/playerOrderView.js', config: PG,
     test: 'backend/tests/routes/playerOrderPrivacyRoutes.test.js',
-    why: 'payTo carries the whole snapshot rather than the three fields it may — the leak in its subtlest form, a projection that projects nothing',
-    from: `  if (snapshot.paymentLink) view.paymentLink = snapshot.paymentLink;
-  if (snapshot.merchantRef) view.merchantRef = snapshot.merchantRef;
-  if (snapshot.expiresAt) view.expiresAt = snapshot.expiresAt;
-  return Object.keys(view).length ? view : undefined;`,
-    to: `  return { ...snapshot };`,
+    why: 'payTo carries the whole snapshot rather than the fields it may — the leak in its subtlest form, a projection that projects nothing',
+    // Anchored on the FIRST line of the projection plus the guard clause above
+    // it, not on the whole body: the body grew a USDT branch and this entry
+    // silently stopped applying — it was reported as ANCHOR MISSING for the
+    // first time only after the harness started failing on that.
+    from: `  const view = {};
+  // Built at assignment by \`buildMerchantSnapshot\`, from the merchant's own`,
+    to: `  return { ...snapshot };
+  // eslint-disable-next-line no-unreachable
+  const view = {};
+  // Built at assignment by \`buildMerchantSnapshot\`, from the merchant's own`,
   },
   {
     id: 'M140', file: 'backend/domains/payment/payment.routes.js', config: PG,
@@ -999,7 +1019,7 @@ const MUTATIONS = [
   {
     id: 'M146', file: 'backend/domains/risk/riskValidation.service.js', config: PG,
     test: 'backend/tests/routes/usdtMerchantRailPg.test.js',
-    why: 'any amount is accepted on the USDT rail, so the two fixed denominations stop being fixed and a merchant is asked for a sum they never agreed to serve',
+    why: 'any size is accepted on the USDT rail, so the three fixed token denominations stop being fixed and a merchant is asked for a sum they never agreed to serve',
     from: `    if (!isUsdtBuyDenomination(paise)) {`,
     to: `    if (false) {`,
   },
@@ -1042,6 +1062,38 @@ const MUTATIONS = [
     why: 'a merchant may accept a USDT order on a chain they hold no address for, so the player is shown nothing to send to — or worse, the other chain’s address',
     from: `            if (!usdtAddressFor(merchant, chain)) {`,
     to: `            if (false) {`,
+  },
+  {
+    id: 'M152', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/usdtMerchantRailPg.test.js',
+    why: 'a USDT purchase with no rate set is priced at the INR peg instead of refused, so 50,000 tokens are sold for 50,000 USDT and a player might take it',
+    from: `    if (quoted === null || rate === null) {`,
+    to: `    if (false) {`,
+  },
+  {
+    id: 'M153', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/usdtMerchantRailPg.test.js',
+    why: 'the USDT figure stops coming from the rate, so the player is asked to send one USDT per token — the quote and the tokens become the same number',
+    from: `    fiatAmount = quoted;`,
+    to: `    fiatAmount = tokenAmount;`,
+  },
+  {
+    id: 'M154', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/usdtMerchantRailPg.test.js',
+    why: 'assignment re-reads the rate minutes after the player agreed to a price, so an admin edit in between re-prices a purchase already made — and, with the row frozen, leaves the order unassignable instead',
+    from: `  const rateUsed = order.rateUsed ?? rateForMerchant(merchant, await getSystemConfig());`,
+    to: `  const rateUsed = rateForMerchant(merchant, await getSystemConfig());`,
+  },
+  {
+    id: 'M155', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/cdmReceiptRoutes.test.js',
+    why: 'the CDM receipt handler reads the order unscoped, so ANY merchant can attach their slip to ANY payout — claiming somebody else’s cash deposit and the evidence a dispute is decided on',
+    from: `        const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
+        if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
+        if (order.type !== 'WITHDRAWAL') {`,
+    to: `        const order = await db.orders.getOrderRecord(req.params.id);
+        if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
+        if (order.type !== 'WITHDRAWAL') {`,
   },
   {
     id: 'M142', file: 'backend/domains/merchant/merchantOrderView.js', config: PG,
@@ -1133,6 +1185,18 @@ for (const m of selected) {
     console.log(`❓ ${m.id}  anchor not found in ${m.file} — mutation could not be applied`);
     continue;
   }
+  // ── An anchor that matches twice mutates the wrong place ────────────────
+  // `String.replace(string, …)` changes the FIRST occurrence only. So an
+  // anchor like `getMerchantOrder(req.params.id, req.merchantId)` — which
+  // appears five times in one router — silently mutates whichever call site
+  // comes first, and the verdict then describes a defect somewhere other than
+  // the one the entry names. A KILLED for the wrong reason is worse than a
+  // SURVIVED, because nobody looks at it again.
+  if (original.indexOf(m.from) !== original.lastIndexOf(m.from)) {
+    results.push({ ...m, outcome: 'ANCHOR-AMBIGUOUS' });
+    console.log(`❓ ${m.id}  anchor appears more than once in ${m.file} — widen it so it names ONE site`);
+    continue;
+  }
   writeFileSync(m.file, original.replace(m.from, m.to));
   let outcome;
   const report = join(tmpdir(), `mutation-${m.id}.json`);
@@ -1170,6 +1234,7 @@ for (const m of selected) {
 const survived = results.filter((r) => r.outcome === 'SURVIVED');
 const unmeasured = results.filter((r) => r.outcome === 'NOT-MEASURED');
 const unapplied = results.filter((r) => r.outcome === 'ANCHOR-MISSING');
+const ambiguous = results.filter((r) => r.outcome === 'ANCHOR-AMBIGUOUS');
 console.log(`\n${results.filter((r) => r.outcome === 'KILLED').length}/${results.length} mutations killed.`);
 if (unmeasured.length) {
   console.log('NOT MEASURED (the suite ran no tests — do not read these as passes):');
@@ -1188,4 +1253,10 @@ if (unapplied.length) {
   console.log('ANCHOR MISSING (the mutation never ran — retarget or delete it):');
   for (const s of unapplied) console.log(`  ${s.id} ${s.file} — ${s.why}`);
 }
-if (survived.length || unmeasured.length || unapplied.length) process.exit(1);
+// An anchor matching twice does not fail to run — it runs somewhere ELSE, and
+// reports a verdict about a site the entry never named.
+if (ambiguous.length) {
+  console.log('ANCHOR AMBIGUOUS (it names more than one site — widen it):');
+  for (const s of ambiguous) console.log(`  ${s.id} ${s.file} — ${s.why}`);
+}
+if (survived.length || unmeasured.length || unapplied.length || ambiguous.length) process.exit(1);

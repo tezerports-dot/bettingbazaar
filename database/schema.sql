@@ -2938,6 +2938,20 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 -- Immutability is a property of the row, not a convention a writer is trusted
 -- to honour. `setOrderFields` is an allowlist and does not name these, but the
 -- allowlist is one edit away from naming them and nothing would fail.
+--
+-- ── EVERYTHING frozen on an order is frozen HERE ───────────────────────────
+-- This function was written three times in this file — once for the rail, once
+-- for the USDT chain, once for the quote — each a CREATE OR REPLACE of the same
+-- name. Only the LAST one exists after the schema is applied, so the first two
+-- were text: editing them changed nothing, and the mutation that deletes the
+-- rail check from the first block was reported as surviving because the third
+-- block silently put it back.
+--
+-- One name, one definition. A new frozen fact is a branch added here, beside
+-- the others, where a reader can see all of them at once. The columns the
+-- later branches name (`usdt_chain`, `rate_used`) are added further down this
+-- file; that is fine — a plpgsql body is resolved when it RUNS, not when it is
+-- created, and the schema is applied end to end before any row is updated.
 CREATE OR REPLACE FUNCTION bb_forbid_order_mode_change() RETURNS trigger AS $$
 BEGIN
   IF NEW.payment_mode IS DISTINCT FROM OLD.payment_mode THEN
@@ -2948,6 +2962,18 @@ BEGIN
      AND NEW.payment_mode_version IS DISTINCT FROM OLD.payment_mode_version THEN
     RAISE EXCEPTION 'order % is governed by payment mode version % and cannot be re-pointed',
       OLD.order_id, OLD.payment_mode_version;
+  END IF;
+  IF OLD.usdt_chain IS NOT NULL AND NEW.usdt_chain IS DISTINCT FROM OLD.usdt_chain THEN
+    RAISE EXCEPTION 'order % is being paid on % and cannot be moved to another chain',
+      OLD.order_id, OLD.usdt_chain;
+  END IF;
+  IF OLD.rate_used IS NOT NULL AND NEW.rate_used IS DISTINCT FROM OLD.rate_used THEN
+    RAISE EXCEPTION 'order % was quoted at rate % and cannot be re-priced',
+      OLD.order_id, OLD.rate_used;
+  END IF;
+  IF OLD.fiat_amount_paise <> 0 AND NEW.fiat_amount_paise IS DISTINCT FROM OLD.fiat_amount_paise THEN
+    RAISE EXCEPTION 'order % was quoted at % and cannot be re-quoted',
+      OLD.order_id, OLD.fiat_amount_paise;
   END IF;
   RETURN NEW;
 END;
@@ -3391,24 +3417,25 @@ CREATE INDEX IF NOT EXISTS merchants_usdt_bep20_live_idx
 -- did not choose and may not be able to reach. USDT sent on the wrong network
 -- is gone.
 --
--- Written into the same function so there is ONE trigger deciding what is
--- frozen on an order, rather than two that could disagree about the order they
--- fire in.
-CREATE OR REPLACE FUNCTION bb_forbid_order_mode_change() RETURNS trigger AS $$
-BEGIN
-  IF NEW.payment_mode IS DISTINCT FROM OLD.payment_mode THEN
-    RAISE EXCEPTION 'order % was created on the % rail and cannot be moved to %',
-      OLD.order_id, OLD.payment_mode, NEW.payment_mode;
-  END IF;
-  IF OLD.payment_mode_version IS NOT NULL
-     AND NEW.payment_mode_version IS DISTINCT FROM OLD.payment_mode_version THEN
-    RAISE EXCEPTION 'order % is governed by payment mode version % and cannot be re-pointed',
-      OLD.order_id, OLD.payment_mode_version;
-  END IF;
-  IF OLD.usdt_chain IS NOT NULL AND NEW.usdt_chain IS DISTINCT FROM OLD.usdt_chain THEN
-    RAISE EXCEPTION 'order % is being paid on % and cannot be moved to another chain',
-      OLD.order_id, OLD.usdt_chain;
-  END IF;
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+-- The check itself lives in `bb_forbid_order_mode_change()` above, with every
+-- other fact frozen on an order. Redefining the function here would replace
+-- that one rather than add to it — which is precisely what this file used to
+-- do, three times over.
+
+-- ── A quote already given cannot be re-made ────────────────────────────────
+--
+-- `rate_used` and `fiat_amount_paise` are what the player was SHOWN before they
+-- agreed to anything. On the USDT rail that is a token count and the USDT they
+-- must send, derived from an admin-editable rate at creation.
+--
+-- The rate was read again when a merchant was assigned — minutes later — and
+-- written over the top, so an admin editing it in between silently re-priced a
+-- purchase already agreed to. The player had been told 500 USDT and the order
+-- then said something else, with nothing recording that it had moved.
+--
+-- Setting a NULL rate is still allowed: an order created before this column
+-- existed has none, and assignment is what gives it one. What is refused is
+-- CHANGING a rate that is already there.
+--
+-- The checks themselves are in `bb_forbid_order_mode_change()` above, with the
+-- rail and the chain.

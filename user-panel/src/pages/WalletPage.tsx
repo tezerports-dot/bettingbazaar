@@ -387,15 +387,17 @@ const WalletPage: React.FC = () => {
   // resolved for the owner and the poll is a lightweight status shape.
   const [buyCashLink, setBuyCashLink]   = useState<{ paymentLink: string; expiresAt: string } | null>(null);
   const [rail, setRail]                 = useState<{
-    paymentMode: string | null; buyDenominations: number[]; maxInrBuy: number | null;
+    paymentMode: string | null; buyDenominations: number[]; maxCashBuy: number | null;
     // The USDT rail's two amounts and the networks it is served on. From the
     // server, for the same reason the INR denominations are: both are money
     // rules, and a panel holding its own copy offers what the gate refuses.
     usdtBuyDenominations: number[];
+    /** How many tokens one USDT buys. Null until an admin sets a rate. */
+    usdtTokensPerUnit: number | null;
     usdtChains: { chain: string; label: string }[];
   }>({
-    paymentMode: null, buyDenominations: [], maxInrBuy: null,
-    usdtBuyDenominations: [], usdtChains: [],
+    paymentMode: null, buyDenominations: [], maxCashBuy: null,
+    usdtBuyDenominations: [], usdtTokensPerUnit: null, usdtChains: [],
   });
   const [activeBuyOrder, setActiveBuyOrder] = useState<PaymentOrder | null>(null);
   const [buyLoading, setBuyLoading]     = useState(false);
@@ -429,8 +431,9 @@ const WalletPage: React.FC = () => {
         setRail({
           paymentMode: sys.config.paymentMode ?? null,
           buyDenominations: sys.config.buyDenominations ?? [],
-          maxInrBuy: sys.config.maxInrBuy ?? null,
+          maxCashBuy: sys.config.maxCashBuy ?? null,
           usdtBuyDenominations: sys.config.usdtBuyDenominations ?? [],
+          usdtTokensPerUnit: sys.config.usdtTokensPerUnit ?? null,
           usdtChains: sys.config.usdtChains ?? [],
         });
       }
@@ -583,18 +586,18 @@ const WalletPage: React.FC = () => {
   // screen exists to stop repeating.
   const total = r2(balances.depositBalance + balances.winningsBalance + balances.reserveBalance);
 
-  // Which rail serves this amount. The threshold is the SERVER's `maxInrBuy`,
-  // never a number written here: `assertBuyIsLegal` refuses an INR buy above it
-  // whatever the panel thinks, so a local constant would only ever produce a
-  // screen that offers a flow the server rejects.
+  // The CASH rail's ceiling, and only the cash rail's. ₹10,000 is the largest
+  // amount an ATM dispenses, so it bounds what a merchant standing at one can
+  // serve — it is not a limit on buying, and on the UPI rail nothing prevents a
+  // larger purchase.
   //
-  // Until the config has loaded `maxInrBuy` is null, and this stays false — the
-  // INR button is what shows. That is the right default: it is the flow that
-  // works for almost every purchase, and the server refuses the rest with a
-  // sentence naming USDT.
-  const aboveInrCeiling = rail.maxInrBuy !== null
-    && rail.paymentMode !== 'CASH_ATM'
-    && (parseInt(buyTokens) || 0) > rail.maxInrBuy;
+  // This was `aboveInrCeiling` and hid the buy button on EVERY rail above
+  // ₹10,000, refusing on the UPI rail something the server allows. The
+  // threshold still comes from the SERVER: a number written here would be a
+  // second owner of a money rule.
+  const aboveCashCeiling = rail.maxCashBuy !== null
+    && rail.paymentMode === 'CASH_ATM'
+    && (parseInt(buyTokens) || 0) > rail.maxCashBuy;
 
   // The USDT purchase in flight, if there is one. Found by CURRENCY on the
   // orders already loaded rather than by a second request: one list, one truth
@@ -713,16 +716,16 @@ const WalletPage: React.FC = () => {
                       <span style={{ position: 'absolute', right: 15, top: '50%', transform: 'translateY(-50%)', color: 'var(--gold-ink)', fontWeight: 800, fontSize: 13 }}>T</span>
                     </div>
                   )}
-                  {rail.maxInrBuy !== null && rail.paymentMode !== 'CASH_ATM' && (
+                  {rail.maxCashBuy !== null && rail.paymentMode === 'CASH_ATM' && (
                     <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 6 }}>
-                      Up to ₹{rail.maxInrBuy.toLocaleString()} in one purchase. Buy with USDT for more.
+                      Up to ₹{rail.maxCashBuy.toLocaleString('en-IN')} in one purchase — a machine does not dispense more in one go.
                     </div>
                   )}
                   <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 14 }}>You pay <b style={{ color: 'var(--gold-ink)' }}>{fmtINR(parseInt(buyTokens) || 0)}</b> · 1 token = ₹1</div>
                   {buyError && <p style={{ color: 'var(--red)', fontSize: 11, marginBottom: 10 }}>{buyError}</p>}
                   {/* Above the INR ceiling there is no merchant who could serve
                       the order, so the button that leads to one is not offered.
-                      The threshold comes from the SERVER (`maxInrBuy`); a
+                      The threshold comes from the SERVER (`maxCashBuy`); a
                       number written here would be a second owner of a money
                       rule, and the day they disagreed a player would be shown a
                       merchant flow the server refuses.
@@ -730,13 +733,13 @@ const WalletPage: React.FC = () => {
                       The panel does not decide the price or the floor — the
                       USDT panel asks for both. All this decides is which of the
                       two affordances to render. */}
-                  {aboveInrCeiling ? (
-                    // Not offered, because the server refuses it. Pointing at
-                    // the block below is the whole answer — a disabled button
-                    // with no explanation is how a player retries and retries.
+                  {aboveCashCeiling ? (
+                    // Not offered, because the server refuses it. Naming the
+                    // reason is the whole answer — a disabled button with no
+                    // explanation is how a player retries and retries.
                     <div style={{ fontSize: 11.5, color: 'var(--text3)', padding: '12px 0' }}>
-                      That is above the UPI limit. Buy with USDT below — it serves{' '}
-                      {rail.usdtBuyDenominations.map((v) => `₹${v.toLocaleString('en-IN')}`).join(' and ')}.
+                      A cash machine dispenses at most ₹{(rail.maxCashBuy ?? 0).toLocaleString('en-IN')} in one go.
+                      Choose a smaller amount, or buy with USDT below.
                     </div>
                   ) : (
                     <button onClick={handleBuySubmit} disabled={!buyTokens || buyLoading} style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 15, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', boxShadow: '0 8px 22px -8px var(--glow)', opacity: (!buyTokens || buyLoading) ? .5 : 1 }}>{buyLoading ? '⏳ Creating order…' : 'Continue to payment'}</button>
@@ -751,6 +754,7 @@ const WalletPage: React.FC = () => {
                     <div style={{ marginTop: 18, paddingTop: 16, borderTop: '1px solid var(--line)' }}>
                       <UsdtBuyPanel
                         denominations={rail.usdtBuyDenominations}
+                        tokensPerUsdt={rail.usdtTokensPerUnit}
                         chains={rail.usdtChains}
                         order={activeUsdtOrder as any}
                         onChanged={() => { loadMeta(); loadOrders(); }}

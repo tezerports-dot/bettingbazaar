@@ -33,6 +33,8 @@ import {
   accountBalanceOnPostgres, getLedgerOnPostgres,
 } from '#db/repositories/ledger.js';
 import { ACCOUNTS, ACCOUNT_CODES, EVENT_TYPES, toMinor } from './chartOfAccounts.js';
+import { INR_TOKEN_RATE } from '../configuration/tokenRates.js';
+import { formatOrderFiat } from '../merchant/merchantCurrency.js';
 import { db } from '#db';
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -60,13 +62,41 @@ export function validatePostings(postings) {
 }
 
 /**
+ * What entered the platform, in the LEDGER's currency.
+ *
+ * ── The ledger speaks one currency, and an order may not ───────────────────
+ * `fiat_amount_paise` is "what the payer sends, in the ORDER's currency". On
+ * an INR order that is rupees and can be posted directly. On a USDT order it
+ * is USDT: 500, for a purchase of 50,000 tokens.
+ *
+ * Posting that 500 as rupees does not fail any check. The postings still sum
+ * to zero, because the difference lands in the residual — so a USDT deposit
+ * used to credit PLATFORM_REVENUE ₹49,500 the platform never earned and debit
+ * EXTERNAL_FIAT ₹500 for value of ₹50,000. Balanced, silent, and wrong on
+ * every USDT order.
+ *
+ * The honest figure is the INR-equivalent of what arrived, and the platform
+ * already has it: the token amount, at the peg. That is precisely what the
+ * merchant is debited and what the player is credited, so the residual is 0
+ * for the same reason it is 0 on an INR order — nothing was earned on the
+ * conversion, and the USDT never touched the platform's own accounts. The
+ * amount the player actually sent stays in `metadata.fiatAmount` alongside
+ * `rateUsed`, which is where a currency-denominated figure belongs.
+ */
+function ledgerFiatMinor(order) {
+  return order?.currency === 'USDT'
+    ? toMinor(Number(order.tokenAmount || 0) * INR_TOKEN_RATE)
+    : toMinor(order?.fiatAmount || 0);
+}
+
+/**
  * Postings for a completed DEPOSIT order.
  * fiat in (debit EXTERNAL_FIAT); user liability + reserve up (credits); any
  * residual — e.g. the historical buy-rate spread on pre-1:1 orders — is
  * platform revenue. At today's fixed 1:1 the residual is always 0.
  */
 export function buildDepositPostings(order) {
-  const fiatMinor = toMinor(order.fiatAmount || 0);
+  const fiatMinor = ledgerFiatMinor(order);
   let depMinor    = toMinor(order.depositAllocation || 0);
   const resMinor  = toMinor(order.reserveAllocation || 0);
   // Orders that predate the DepositPolicy allocation fields carry 0/0 —
@@ -94,7 +124,11 @@ export function buildDepositPostings(order) {
  */
 export function buildWithdrawalPostings(order) {
   const tokenMinor = toMinor(order.tokenAmount || 0);
-  const fiatMinor  = toMinor(order.fiatAmount || 0);
+  // Same rule as the deposit leg: a figure in the order's currency is not a
+  // figure this ledger can post. No withdrawal is denominated in USDT today —
+  // the rail is buy-only — and this makes that stay true rather than silently
+  // booking a spread if one ever is.
+  const fiatMinor  = ledgerFiatMinor(order);
   const feeMinor   = toMinor(order.payoutFee || 0);
   const residual   = tokenMinor - fiatMinor; // 0 at 1:1 with no fee
   const spreadMinor = residual - feeMinor;   // historical spread portion
@@ -389,7 +423,11 @@ export async function reconcileCompletedOrders(limit = 200) {
         refModel: 'PaymentOrder',
         refId: String(order._id),
         occurredAt: order.completedAt || order.updatedAt || order.createdAt,
-        description: `${order.type} ${order.orderId} completed — ${order.tokenAmount} tokens / ₹${order.fiatAmount}`,
+        // Named in the order's OWN currency: "₹500" for a payment of 500 USDT
+        // is the same lie as posting it, in the line a human reads first.
+        // Through the one formatter, so this cannot drift from what the
+        // merchant's card and the player's message say.
+        description: `${order.type} ${order.orderId} completed — ${order.tokenAmount} tokens / ${formatOrderFiat(order)}`,
         metadata: {
           orderId: order.orderId,
           tokenAmount: order.tokenAmount,
