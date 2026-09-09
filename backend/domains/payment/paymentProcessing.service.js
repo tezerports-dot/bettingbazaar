@@ -151,7 +151,17 @@ async function getOrderExpiryMs(order = null) {
  * until the ATM transaction times out and not a second longer, so a window
  * from the policy would promise time the machine will not give them.
  */
-async function tryClaimCashLink(order) {
+/**
+ * Claim a link for a buy order and assign its owner as the merchant.
+ *
+ * EXPORTED for the suite that covers its rollback. The failure it has to survive
+ * is a transition refused AFTER the claim has committed — the order moved under
+ * it — and that cannot be staged from outside without being able to hand this
+ * function an order whose row has already moved on. A test that tried to time it
+ * would be asserting about scheduling instead of about the rollback, and what is
+ * at stake is a consumed link no merchant can be sent with.
+ */
+export async function tryClaimCashLink(order) {
   const claim = await claimLinkFor(order);
   if (!claim.ok) return false;
 
@@ -163,7 +173,24 @@ async function tryClaimCashLink(order) {
       expiresAt: claim.link.expiresAt,
     },
   });
-  if (!moved.ok || moved.idempotent) return false;
+  if (!moved.ok || moved.idempotent) {
+    // ── Give the link back ────────────────────────────────────────────────
+    // The claim committed BEFORE this transition was attempted, so a refusal
+    // here leaves the link consumed and the order still PENDING_QUEUE holding a
+    // link id. Nothing about either row looks wrong: the link is out of the
+    // queue so no merchant can be sent with it, and the order shows a payment
+    // link nobody is working. Two people waiting on a link doing nothing for
+    // either of them, until it expires.
+    //
+    // The release is guarded on this order's own claim, so it can never take a
+    // link away from an order that IS being served, and it is not fatal: the
+    // caller's answer is still "not assigned" whether or not the tidy-up
+    // worked, and failing the request would turn a recoverable state into an
+    // error the player sees.
+    await db.cashLinks.releaseClaim({ linkId: claim.link.linkId, orderId: order.orderId })
+      .catch((e) => console.error(`[cashLink] could not release ${claim.link.linkId}:`, e.message));
+    return false;
+  }
 
   // Keep the caller's in-memory copy consistent with the row that now exists,
   // so the emitters below describe reality rather than a hoped-for state.
@@ -1070,7 +1097,16 @@ export async function expireOrders() {
   // The due set comes from the DATABASE's clock, not the app server's. Three
   // instances with drifting clocks expiring the same orders is how an order
   // gets refunded a minute before its own deadline.
-  const expired = await db.orders.findExpiredOrders({ limit: 500 });
+  // The assignment window comes from the live policy as the FALLBACK; each
+  // order's own rail governs it where the order carries a policy version. An
+  // order nobody ever took is expired by that window — creation sets no
+  // deadline, assignment does, so without it such an order waits forever and a
+  // withdrawal's escrow is locked with nothing scheduled to release it.
+  const rail = await getActivePaymentModePolicy();
+  const expired = await db.orders.findExpiredOrders({
+    limit: 500,
+    assignmentWaitSeconds: rail?.assignmentWaitSeconds ?? 1500,
+  });
   if (expired.length === 0) return 0;
 
   let count = 0;

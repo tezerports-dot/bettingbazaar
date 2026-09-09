@@ -883,6 +883,56 @@ const MUTATIONS = [
     from: `  if (open >= cap) {`,
     to: `  if (false) {`,
   },
+  {
+    id: 'M132', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/retryAndMatchPg.test.js',
+    why: 'a claim whose order will not move is left standing, so the link is consumed and the order holds a link id while still queued — the link out of the queue so no merchant can be sent with it, the order showing a payment link nobody is working',
+    from: `    await db.cashLinks.releaseClaim({ linkId: claim.link.linkId, orderId: order.orderId })`,
+    to: `    await Promise.resolve({ ok: true })`,
+  },
+  {
+    id: 'M133', file: 'database/repositories/cashLinks.js', config: PG,
+    test: 'backend/tests/routes/retryAndMatchPg.test.js',
+    why: 'a release can pull a link out from under an order that IS being served — a player mid-payment loses the link they were sent to pay',
+    from: `        WHERE link_id = $1 AND claimed_by_order = $2 AND status = 'CLAIMED'`,
+    to: `        WHERE link_id = $1 AND status = 'CLAIMED'`,
+  },
+  {
+    id: 'M134', file: 'database/repositories/cashLinks.js', config: PG,
+    test: 'backend/tests/routes/retryAndMatchPg.test.js',
+    why: 'the released link is put back without clearing the order, so the order looks served by a link that has gone to somebody else',
+    from: `    await client.query(
+      \`UPDATE order_states SET cash_link_id = NULL, updated_at = now()
+        WHERE order_id = $1 AND cash_link_id = $2\`,
+      [String(orderId), String(linkId)],
+    );`,
+    to: ``,
+  },
+  {
+    id: 'M135', file: 'database/repositories/paymentModePolicy.js', config: PG,
+    test: 'backend/tests/routes/retryAndMatchPg.test.js',
+    why: 'the cash rail takes its concurrency from the policy column again, which defaults to 3 and is carried across a rail switch — so a merchant at a machine is promised out three times over the same notes',
+    from: `  if (policy?.activeMode === PAYMENT_MODES.CASH_ATM) return 1;`,
+    to: ``,
+  },
+  {
+    id: 'M136', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/assignmentWindowPg.test.js',
+    why: 'an order no merchant ever took is never expired — creation sets no deadline, so it waits forever and a withdrawal\'s escrow locks a player\'s money with nothing scheduled to release it',
+    from: `              OR (o.expires_at IS NULL
+                  AND o.state = 'PENDING_QUEUE'
+                  AND o.created_at < now() - make_interval(
+                        secs => COALESCE(p.assignment_wait_seconds, $2)))`,
+    to: ``,
+  },
+  {
+    id: 'M137', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/assignmentWindowPg.test.js',
+    why: 'an order is swept the moment it is created, so a buy a merchant was about to take is cancelled out from under both of them',
+    from: `                  AND o.created_at < now() - make_interval(
+                        secs => COALESCE(p.assignment_wait_seconds, $2)))`,
+    to: `                  )`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

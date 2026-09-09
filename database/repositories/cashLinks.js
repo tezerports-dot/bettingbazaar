@@ -238,6 +238,55 @@ export async function expireDueLinks() {
   }));
 }
 
+/**
+ * Undo a claim whose order never actually moved.
+ *
+ * ── The state this exists to prevent ──────────────────────────────────────
+ * The claim happens FIRST and the order's transition SECOND. If that transition
+ * is refused — the order moved under it, expired, was cancelled — the claim had
+ * already committed: the link is consumed and the order is left holding a link
+ * id while still PENDING_QUEUE.
+ *
+ * Nothing about either row looks wrong. The link reads CLAIMED by an order that
+ * is not being served, so it is out of the queue and no merchant can be sent
+ * with it; the order shows a payment link nobody is working. Two people waiting
+ * on a link that is doing nothing for either of them, until it expires.
+ *
+ * ── The two writes are one statement's worth of work ──────────────────────
+ * Releasing the link without clearing the order's `cash_link_id` leaves the
+ * order looking served by a link that has gone back to somebody else, so both
+ * happen in one transaction or neither does.
+ *
+ * ── Back to LIVE only if there is still time on it ────────────────────────
+ * A link resurrected past its own deadline is a merchant sent to a machine for
+ * a window that has closed. If the time has gone, it retires as EXPIRED, which
+ * is what it would have become anyway.
+ *
+ * Guarded on `claimed_by_order = $2`, so a release can only ever undo THIS
+ * order's claim — never take a link away from an order that is being served.
+ */
+export async function releaseClaim({ linkId, orderId }) {
+  return withTransaction(async (client) => {
+    const { rows } = await client.query(
+      `UPDATE cash_link_queue
+          SET status = CASE WHEN expires_at > now() THEN 'LIVE' ELSE 'EXPIRED' END,
+              claimed_by_order = NULL,
+              claimed_at = NULL
+        WHERE link_id = $1 AND claimed_by_order = $2 AND status = 'CLAIMED'
+        RETURNING *`,
+      [String(linkId), String(orderId)],
+    );
+    if (!rows.length) return { ok: false, reason: 'NOT_CLAIMED_BY_THIS_ORDER' };
+
+    await client.query(
+      `UPDATE order_states SET cash_link_id = NULL, updated_at = now()
+        WHERE order_id = $1 AND cash_link_id = $2`,
+      [String(orderId), String(linkId)],
+    );
+    return { ok: true, link: toLink(rows[0]) };
+  });
+}
+
 /** A merchant withdrawing a link they can no longer honour. */
 export async function cancelLink(linkId, merchantId) {
   const { rows } = await pgQuery(

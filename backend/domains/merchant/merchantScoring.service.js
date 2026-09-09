@@ -35,9 +35,10 @@ import {
   PAYMENT_MODES,
   getActivePolicy as getActivePaymentModePolicy,
   getPolicyVersion as getPaymentModePolicyVersion,
+  concurrencyCapFor,
 } from '#db/repositories/paymentModePolicy.js';
 
-function scoreMerchant(merchant) {
+function scoreMerchant(merchant, maxOrders) {
   const successScore = (merchant.successRate ?? 1.0) * 40;
   const responseScore = Math.max(0, 25 - ((merchant.avgResponseMinutes ?? 2) * 2)); // schema default: 2
   const disputeScore = Math.max(0, 20 - ((merchant.disputeRate ?? 0) * 100));
@@ -50,7 +51,9 @@ function scoreMerchant(merchant) {
   // to be read off the merchant record, where no such field exists — so this
   // term was a constant 5 for everybody and the load component of the ranking
   // did nothing at all.
-  const maxOrders = merchant.maxConcurrentOrders ?? 3;
+  // Passed in, from the same `concurrencyCapFor` the admission gate used. The
+  // load term dividing by a DIFFERENT capacity than the gate admits by would
+  // rank merchants against a limit they are not actually held to.
   const loadScore = Math.max(0, 5 - ((merchant.activeOrderCount ?? 0) / Math.max(maxOrders, 1)) * 5);
   return successScore + responseScore + disputeScore + onlineConsistency + loadScore;
 }
@@ -78,7 +81,12 @@ async function totalOrderLimitFor(paymentModeVersion) {
   const policy = (paymentModeVersion != null
     ? await getPaymentModePolicyVersion(paymentModeVersion)
     : null) ?? await getActivePaymentModePolicy();
-  return policy.maxConcurrentOrders;
+  // Through the one owner. This returned `policy.maxConcurrentOrders` directly
+  // while the comment above it described the cash rail's rule — the notes are
+  // the same notes, so the answer there is ONE. The column defaults to 3 and is
+  // carried across a rail switch on purpose, so the comment was true and the
+  // value was not.
+  return concurrencyCapFor(policy);
 }
 
 /**
@@ -146,7 +154,7 @@ export async function selectBestMerchant(orderType, tokenAmount, currency = MERC
       // Ranked on the SAME number the filter used, so the merchant chosen is
       // the one that actually holds the most.
       if (paiseOf(b) !== paiseOf(a)) return paiseOf(b) - paiseOf(a);
-      const scoreDiff = scoreMerchant(b) - scoreMerchant(a);
+      const scoreDiff = scoreMerchant(b, totalLimit) - scoreMerchant(a, totalLimit);
       if (scoreDiff !== 0) return scoreDiff;
       return a.activeDepositOrderCount - b.activeDepositOrderCount;
     });
@@ -157,7 +165,7 @@ export async function selectBestMerchant(orderType, tokenAmount, currency = MERC
       if (b.thirtyDayBuySellDelta !== a.thirtyDayBuySellDelta) {
         return b.thirtyDayBuySellDelta - a.thirtyDayBuySellDelta;
       }
-      const scoreDiff = scoreMerchant(b) - scoreMerchant(a);
+      const scoreDiff = scoreMerchant(b, totalLimit) - scoreMerchant(a, totalLimit);
       if (scoreDiff !== 0) return scoreDiff;
       return a.activeWithdrawalOrderCount - b.activeWithdrawalOrderCount;
     });

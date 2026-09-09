@@ -3290,3 +3290,4 @@ CREATE INDEX IF NOT EXISTS order_states_awaiting_link_idx
   ON order_states (assignment_priority DESC, created_at ASC)
   WHERE order_type = 'DEPOSIT' AND state = 'PENDING_QUEUE'
     AND payment_mode = 'CASH_ATM' AND cash_link_id IS NULL;
+

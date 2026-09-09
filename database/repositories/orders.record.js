@@ -1229,13 +1229,45 @@ export async function bulkPayoutBatch({ merchantId, payoutDate }) {
  * a no-op lock in the query would suggest the coordination lives here, and the
  * next reader would trust it.
  */
-export async function findExpiredOrders({ limit = 100 } = {}) {
+export async function findExpiredOrders({ limit = 100, assignmentWaitSeconds = 1500 } = {}) {
+  // ── Two due sets, one query ───────────────────────────────────────────────
+  //
+  // 1. Past its own deadline. `expires_at` is set at ASSIGNMENT, from the rail
+  //    the order was created on, so this covers the processing window.
+  //
+  // 2. Never assigned, and out of time waiting. Creation does NOT set
+  //    `expires_at` — assignment does — so an order no merchant ever took had no
+  //    deadline at all, and the `expires_at IS NOT NULL` this query used to open
+  //    with skipped it forever.
+  //
+  //    `expireOrders` says in its own comment that PENDING_QUEUE was added to
+  //    the state list precisely so an unassigned WITHDRAWAL releases its escrow
+  //    rather than locking a player's money with nothing scheduled to free it.
+  //    That fix was made in one clause and cancelled by another in the same
+  //    query: the state list admitted the order, the deadline test threw it back
+  //    out. Every check here was green.
+  //
+  //    The window is the ORDER's own rail's, from the policy version stamped on
+  //    it, falling back to the caller's figure for a row written before versions
+  //    existed. An order held across a rail switch keeps the process it was
+  //    created under, deadlines included.
   const { rows } = await pgQuery(
-    `SELECT * FROM order_states
-      WHERE expires_at IS NOT NULL AND expires_at <= now()
-        AND state IN ('PENDING_QUEUE', 'ASSIGNED', 'PROCESSING')
-      ORDER BY expires_at ASC LIMIT $1`,
-    [Math.min(Math.max(Number(limit) || 100, 1), 500)], 'order_find_expired',
+    `SELECT o.* FROM order_states o
+       LEFT JOIN payment_mode_policies p ON p.version = o.payment_mode_version
+      WHERE o.state IN ('PENDING_QUEUE', 'ASSIGNED', 'PROCESSING')
+        AND (
+              (o.expires_at IS NOT NULL AND o.expires_at <= now())
+              OR (o.expires_at IS NULL
+                  AND o.state = 'PENDING_QUEUE'
+                  AND o.created_at < now() - make_interval(
+                        secs => COALESCE(p.assignment_wait_seconds, $2)))
+            )
+      ORDER BY COALESCE(o.expires_at, o.created_at) ASC LIMIT $1`,
+    [
+      Math.min(Math.max(Number(limit) || 100, 1), 500),
+      Math.max(Number(assignmentWaitSeconds) || 1500, 1),
+    ],
+    'order_find_expired',
   );
   return rows.map(toOrder);
 }

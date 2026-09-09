@@ -28,7 +28,9 @@
  */
 import { randomBytes } from 'node:crypto';
 import { db } from '#db';
-import { PAYMENT_MODES, getActivePolicy } from '#db/repositories/paymentModePolicy.js';
+import {
+  PAYMENT_MODES, getActivePolicy, concurrencyCapFor,
+} from '#db/repositories/paymentModePolicy.js';
 import { getAvailablePaiseFor } from '#db/repositories/merchantWallets.core.js';
 import { emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 
@@ -128,7 +130,9 @@ export async function supplyCashLink({ merchantId, merchant, paymentLink }) {
   // The count is DERIVED from the order rows by the same function the scorer
   // uses — never a stored counter, which a crash between increment and
   // decrement throttles a merchant with permanently.
-  const cap = merchant?.maxConcurrentOrders ?? policy.maxConcurrentOrders ?? 1;
+  // From the one owner. On this rail it is 1 by derivation, not by configuration
+  // — an admin cannot grant a merchant a second pair of hands.
+  const cap = concurrencyCapFor(policy, merchant);
   const counts = await db.merchants.getActiveOrderCounts([merchantId]);
   const open = counts.get(String(merchantId))?.total ?? 0;
   if (open >= cap) {

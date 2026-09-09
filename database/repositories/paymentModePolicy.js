@@ -106,6 +106,37 @@ export async function getActivePaymentMode() {
 }
 
 /**
+ * How many orders one merchant may hold at once — the ONE answer.
+ *
+ * ── Why the cash rail is not configurable here ────────────────────────────
+ * `max_concurrent_orders` is a policy column defaulting to 3, and it is carried
+ * forward across a rail switch on purpose: a switch that silently resets an
+ * admin's tuned numbers is its own bug, and the mutation harness has an entry
+ * for it.
+ *
+ * The consequence was that switching to CASH_ATM kept 3 while the rule this
+ * platform runs on is ONE — a merchant at a machine is holding notes, and two
+ * orders would promise the same notes twice. The column's comment said 1 and its
+ * value said 3, and nothing reconciled them.
+ *
+ * That is not a preference an operator should be able to get wrong, because it
+ * is not a preference: it follows from the cash being physical. So on the cash
+ * rail the answer is 1, derived, and the policy column governs the UPI rail
+ * where a merchant is moving bank balance and can genuinely run several.
+ *
+ * The per-merchant override is honoured on the UPI rail and NOT on the cash one,
+ * for the same reason: an admin cannot grant a merchant a second pair of hands.
+ *
+ * Every consumer reads this — the scorer that ranks candidates and the cash-link
+ * supply guard. Two places deciding a merchant's capacity would drift, and the
+ * direction of the drift is a merchant promised out twice.
+ */
+export function concurrencyCapFor(policy, merchant = null) {
+  if (policy?.activeMode === PAYMENT_MODES.CASH_ATM) return 1;
+  return merchant?.maxConcurrentOrders ?? policy?.maxConcurrentOrders ?? 3;
+}
+
+/**
  * The rail stamp a NEW order carries.
  *
  * `order_states` has two insert paths — `openOrder` (the lifecycle module,

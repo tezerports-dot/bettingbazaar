@@ -18,20 +18,23 @@
  * first-time order, because that is the whole rule.
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
-import { pgConfigured, applySchema, closePg } from '#db/client.js';
+import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
 import {
   createOrderRecord, getOrderRecord, ordersAwaitingCashLink, setOrderFields,
 } from '#db/repositories/orders.record.js';
 import { updateMerchant } from '#db/repositories/merchants.js';
 import {
-  PAYMENT_MODES, getActivePolicy, publishPolicyVersion,
+  PAYMENT_MODES, getActivePolicy, publishPolicyVersion, concurrencyCapFor,
 } from '#db/repositories/paymentModePolicy.js';
+import { getLiveLinkFor, releaseClaim } from '#db/repositories/cashLinks.js';
 import { supplyCashLink } from '../../domains/merchant/cashLink.service.js';
 // The matcher lives with the ASSIGNMENT, not with the link supply: it has to go
 // through the complete operation — claim the link, make its owner the order's
 // merchant, take the machine's deadline — and calling the raw claim instead
 // leaves a half-assigned order showing a link nobody is serving.
-import { retryOrder, matchWaitingOrdersToLinks } from '../../domains/payment/paymentProcessing.service.js';
+import {
+  retryOrder, matchWaitingOrdersToLinks, tryClaimCashLink,
+} from '../../domains/payment/paymentProcessing.service.js';
 import { cancelOrder as cancelState } from '../../domains/payment/orderLifecycle.service.js';
 import { actor, merchantActor } from './_harness.js';
 
@@ -114,16 +117,9 @@ describePg('a retry, and the link that arrives late', () => {
     restore = await getActivePolicy();
     await publishPolicyVersion({
       activeMode: PAYMENT_MODES.CASH_ATM,
-      // ── Set explicitly, because the DEFAULT does not match the rule ──────
-      // `max_concurrent_orders` seeds to 3 for both rails. On the cash rail the
-      // answer is ONE — the notes a merchant is holding are the same notes, so
-      // two orders would promise them twice — and the column's own comment says
-      // so while its default says otherwise.
-      //
-      // It is admin-editable per policy version, so a real cash-rail operator
-      // sets it, and this suite configures what it is testing rather than
-      // relying on a default that is wrong for this rail.
-      timers: { maxConcurrentOrders: 1 },
+      // Nothing to configure. On the cash rail the cap is 1 by DERIVATION —
+      // `concurrencyCapFor` — because it follows from the cash being physical
+      // rather than from a setting an operator can get wrong.
       justification: 'Retry and match suite.', changedByName: 'test setup',
     });
   }, 60_000);
@@ -144,7 +140,6 @@ describePg('a retry, and the link that arrives late', () => {
     if (restore) {
       await publishPolicyVersion({
         activeMode: restore.activeMode,
-        timers: { maxConcurrentOrders: restore.maxConcurrentOrders },
         justification: 'Restoring the rail this suite found in force.',
         changedByName: 'test teardown',
       });
@@ -346,6 +341,132 @@ describePg('a retry, and the link that arrives late', () => {
       paymentLink: 'upi://pay?pa=atm@bank&am=5000',
     });
     expect(allowed.ok).toBe(true);
+  });
+
+  describe('the concurrency cap has one owner', () => {
+    it('is ONE on the cash rail whatever the policy or the merchant says', () => {
+      // Not configurable, because it is not a preference: a merchant at a
+      // machine is holding notes, and two orders promise the same notes twice.
+      // The policy column defaults to 3 and is carried across a rail switch on
+      // purpose, so before this the cash rail ran under a rule nobody agreed to
+      // while two comments claimed otherwise.
+      expect(concurrencyCapFor({ activeMode: PAYMENT_MODES.CASH_ATM, maxConcurrentOrders: 3 })).toBe(1);
+      // An admin cannot grant a merchant a second pair of hands.
+      expect(concurrencyCapFor(
+        { activeMode: PAYMENT_MODES.CASH_ATM, maxConcurrentOrders: 3 },
+        { maxConcurrentOrders: 9 },
+      )).toBe(1);
+    });
+
+    it('is the policy\'s number on the UPI rail, and the merchant may override it', () => {
+      // There a merchant is moving bank balance and can genuinely run several,
+      // so the admin's number governs and a per-merchant override is real.
+      expect(concurrencyCapFor({ activeMode: PAYMENT_MODES.P2P_UPI, maxConcurrentOrders: 3 })).toBe(3);
+      expect(concurrencyCapFor(
+        { activeMode: PAYMENT_MODES.P2P_UPI, maxConcurrentOrders: 3 },
+        { maxConcurrentOrders: 5 },
+      )).toBe(5);
+    });
+  });
+
+  it('gives the link back when the order it was claimed for will not move', async () => {
+    // ── The state this prevents ─────────────────────────────────────────
+    // The claim commits BEFORE the order's transition is attempted. A refused
+    // transition used to leave the link consumed and the order still
+    // PENDING_QUEUE holding a link id: the link out of the queue so no merchant
+    // can be sent with it, the order showing a payment link nobody is working.
+    // Two people waiting on a link doing nothing for either of them.
+    //
+    // The release is exercised DIRECTLY here; the test below stages the real
+    // race and holds the WIRING.
+    const player = await actor({});
+    const merchant = await cashMerchant();
+    const orderId = await waitingBuy(player, { priority: await rankAboveQueue() });
+
+    await supplyCashLink({
+      merchantId: merchant.merchantId,
+      merchant: { cashDenominationPaise: DENOM_PAISE },
+      paymentLink: 'upi://pay?pa=atm@bank&am=5000',
+    });
+    await matchWaitingOrdersToLinks();
+
+    const served = await getOrderRecord(orderId);
+    expect(served.cashLinkId).toBeTruthy();
+
+    const released = await releaseClaim({ linkId: served.cashLinkId, orderId });
+    expect(released.ok).toBe(true);
+    expect(released.link.linkId).toBe(served.cashLinkId);
+
+    // Read back through the link's OWN merchant, not the one this test supplied.
+    // The queue is shared, so the link this order was given may well be
+    // somebody else's — and asserting about "my merchant's live link" would be
+    // asserting that nothing else was waiting.
+    const live = await getLiveLinkFor(released.link.merchantId);
+    expect(live?.linkId).toBe(served.cashLinkId);
+
+    // Back in the queue with time still on it, AND the order no longer claims to
+    // be served by it — both, or the order looks served by a link that has gone
+    // to somebody else.
+    expect((await getOrderRecord(orderId)).cashLinkId).toBeNull();
+  });
+
+  it('rolls the claim back when the order has already moved on', async () => {
+    // ── The race, staged rather than timed ────────────────────────────────
+    // The claim commits, then the transition is attempted. If the order moved
+    // in between, that transition is refused and the claim is left standing:
+    // the link consumed and out of the queue so no merchant can be sent with
+    // it, the order holding a link id nobody is working.
+    //
+    // `claimLinkForOrder` does not look at the order's STATE — its guard is
+    // `cash_link_id IS NULL` — so handing `tryClaimCashLink` an order object
+    // whose row is already CANCELLED reproduces exactly that sequence, with no
+    // timing involved: the claim succeeds and the transition cannot.
+    const player = await actor({});
+    const merchant = await cashMerchant();
+    const orderId = await waitingBuy(player, { priority: await rankAboveQueue() });
+    await supplyCashLink({
+      merchantId: merchant.merchantId,
+      merchant: { cashDenominationPaise: DENOM_PAISE },
+      paymentLink: 'upi://pay?pa=atm@bank&am=5000',
+    });
+
+    // The row moves on; the object in hand still looks queued, which is what
+    // the real race leaves the caller holding.
+    const stale = await getOrderRecord(orderId);
+    await cancelState(orderId, { set: { cancelReason: 'TEST_RACE', cancelledAt: new Date() } });
+
+    const assigned = await tryClaimCashLink(stale);
+    expect(assigned).toBe(false);
+
+    // Nothing stranded: the order carries no link, and whichever link was taken
+    // is back in its owner's hands rather than held by a cancelled order.
+    expect((await getOrderRecord(orderId)).cashLinkId).toBeNull();
+    const stranded = await pgQuery(
+      "SELECT link_id FROM cash_link_queue WHERE claimed_by_order = $1",
+      [orderId],
+    );
+    expect(stranded.rows).toHaveLength(0);
+  });
+
+  it('will not let a release take a link from an order that IS being served', async () => {
+    const player = await actor({});
+    const merchant = await cashMerchant();
+    const orderId = await waitingBuy(player, { priority: await rankAboveQueue() });
+    await supplyCashLink({
+      merchantId: merchant.merchantId,
+      merchant: { cashDenominationPaise: DENOM_PAISE },
+      paymentLink: 'upi://pay?pa=atm@bank&am=5000',
+    });
+    await matchWaitingOrdersToLinks();
+    const served = await getOrderRecord(orderId);
+    expect(served.cashLinkId).toBeTruthy();
+
+    // Somebody else's order id. The guard is `claimed_by_order = $2`, so a
+    // release can only ever undo the claim it names — otherwise a stray call
+    // could pull a link out from under a player mid-payment.
+    const stolen = await releaseClaim({ linkId: served.cashLinkId, orderId: 'not-this-order' });
+    expect(stolen.ok).toBe(false);
+    expect((await getOrderRecord(orderId)).cashLinkId).toBe(served.cashLinkId);
   });
 
   describe('retrying an order nobody served', () => {
