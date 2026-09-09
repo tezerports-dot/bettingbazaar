@@ -115,18 +115,50 @@ source is now a regression test (`database/tests/walletPg.test.js`), and the
 merchant approve path's balance read was moved to `wallets.getBalances()` before
 the path itself was deleted.
 
+### 3.0.1 Closed 2026-09-09 — token orders and phantom agents have screens
+
+The fifth recorded item was ten endpoints served with no UI. Seven of them now
+have one; the three bulk-payout endpoints are still open and are listed in §3.1.
+
+| Built | What it is |
+|---|---|
+| `merchant-panel/src/pages/TokenSupply.tsx` | Where a merchant buys the float they trade with. Price an amount, send that exact USDT, file the request with the transaction ID. Nav entry **Token supply**. Calls `GET`/`POST /api/merchant/admin-token-orders` and the new quote route. |
+| `admin-panel/src/Pages/Merchants/MerchantTokenOrders.tsx` | The treasury queue: approve (mints supply and credits the merchant's wallet) or reject with a reason. `AdminOnly`, matching the `isAdmin` the routes enforce. Nav entry **Token Purchases**. |
+| `admin-panel/src/Pages/Users/PhantomAgents.tsx` | Who can place cosmetic bets and on which boards, with revoke. The grant already had a screen (a button on the Users list); reading it back had none, and an access grant nobody can enumerate is one nobody revokes. Nav entry **Phantom Agents**. |
+
+Two backend changes came out of building them, both defects the screens made
+visible rather than scope creep:
+
+- **`GET /api/merchant/admin-token-orders/quote`** (new). The merchant has to
+  send the USDT *before* the request exists, so the panel needs the figure in
+  advance — a second reader of the price. The rate, the rounding to whole tens
+  of USDT and the accepted band are now one function, `quoteAdminTokenPurchase`,
+  that both the quote route and the create route call (§5). A refusal comes back
+  as `200 { ok: false, message }`, because a merchant still choosing an amount
+  needs the bound, not an error.
+- **The transaction hash is now REQUIRED at creation.** It was optional, and
+  `merchant_token_orders_approved_has_hash` refuses to approve a purchase with a
+  `usdt_amount` and no transaction on it — which is every merchant-created
+  purchase. The approve path mints and credits *before* it writes the status, so
+  a hashless request meant: the merchant is paid, the CHECK rejects the status
+  write, the handler 500s, and the order sits PENDING with the tokens delivered.
+  `merchant_token_orders_one_per_day` then locked the merchant out of filing a
+  corrected one. Covered by `backend/tests/routes/merchantTokenSupplyRoutes.test.js`
+  (11 tests, real database), which also asserts the quote a merchant is shown is
+  the quote that gets written.
+
 ### 3.1 Code — small, and each item is verifiable
 
 | Item | Why it is open |
 |---|---|
-| **10 endpoints built with no UI** | By `CLAUDE.md` §28, a backend feature with no UI is not shipped. Merchant **bulk payouts** (5 endpoints), merchant **token orders** (4: merchant creates, admin approves/rejects), **phantom agents** (1). Verified absent from all three panels. Each is either a screen to finish or code to delete — an owner decision, not a technical one. |
+| **3 endpoints built with no UI** | By `CLAUDE.md` §28, a backend feature with no UI is not shipped. What is left is merchant **bulk payouts** — `GET /api/merchant/bulk-payouts`, `/bulk-payouts/export`, `POST /bulk-payouts/mark-paid`. Verified absent from all three panels. Either a screen to finish or code to delete — an owner decision, not a technical one. Token orders and phantom agents were the other seven and now have screens (§3.0). |
 | **No mutation run covers B8** | The commission engine's new guards are test-covered but not mutation-proven. The harness owns the files it names while running (`CLAUDE.md` trap 12). |
 | **Route constants in two panels** | The admin and user panels write route paths as literals (`CLAUDE.md` §8). Open work, not a rule being broken silently. |
 | **Brand colour literals** | `#D4AF37` still appears in panel sources instead of `var(--brand-primary)` (`CLAUDE.md` §4). Merchant panel is already at zero. Re-count before quoting a number. |
 
-`npm run check:ui-coverage --unused` lists 30 endpoints with no UI; 20 of them
-legitimately have none (health, metrics, webhooks, SSE, assetlinks). The 10 above
-are the real ones.
+`npm run check:ui-coverage -- --unused` lists 24 endpoints with no UI; 21 of them
+legitimately have none (health, metrics, webhooks, SSE, assetlinks, the versioned
+`/api/v1` aliases). The 3 above are the real ones.
 
 ### 3.2 Operator settings the cash rail needs
 

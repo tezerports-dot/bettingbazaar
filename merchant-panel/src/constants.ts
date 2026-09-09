@@ -77,6 +77,15 @@ export const ENDPOINTS = {
   ORDERS_EXTRA: {
     RED_FLAG: (id: string) => `/api/merchant/orders/${id}/red-flag`,
   },
+  // Buying platform tokens from the platform, in USDT. QUOTE prices an amount
+  // before the request exists — the transaction id is required at creation, so
+  // the merchant has to send the USDT first and needs the figure in advance.
+  // The server owns the arithmetic; the panel never recomputes it (§5).
+  TOKEN_SUPPLY: {
+    LIST:   '/api/merchant/admin-token-orders',
+    QUOTE:  '/api/merchant/admin-token-orders/quote',
+    CREATE: '/api/merchant/admin-token-orders',
+  },
 };
 
 export const APP_CONFIG = {
@@ -148,6 +157,9 @@ export const ROUTES = {
   // queue and "you are not approved" look identical otherwise.
   CASH_LINKS: '/cash-links',
   HISTORY: '/history',
+  // Where a merchant buys the float they trade with. One request per day, and
+  // an admin decides it.
+  TOKEN_SUPPLY: '/token-supply',
   PROFILE: '/profile',
 };
 

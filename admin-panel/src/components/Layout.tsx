@@ -12,7 +12,8 @@ import {
   TrendingUp, ShieldCheck, HelpCircle, Image as ImageIcon,
   MessageCircle, Shield, History, Scale, Upload, Search, Sun, Moon, Bell,
   Zap, Gift, SlidersHorizontal, Trophy, Star, Gamepad2, Bot, FileSpreadsheet, Share2,
-  type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag, ToggleLeft, Banknote, Hourglass} from 'lucide-react';
+  type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag, ToggleLeft, Banknote, Hourglass,
+  Coins, Ghost} from 'lucide-react';
 import { useAuthStore } from '../services/auth';
 import { usePermissions } from '../hooks/usePermission';
 import { useThemeStore } from '../services/theme';
@@ -61,6 +62,8 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/users/flagged',       icon: Flag,             label: 'Flagged Players',title: 'Flagged Players',    sub: "A merchant disputed their payment — reason, proof, and the block decision", permission: 'canManageUsers' },
     { path: '/merchants',           icon: Store,            label: 'Merchants',      title: 'Merchants',          sub: 'P2P payment merchants, limits & availability', permission: 'canManageMerchants' },
     { path: '/kyc',                 icon: UserCheck,        label: 'KYC Queue',      title: 'KYC Queue',          sub: 'Accounts awaiting an Aadhaar verdict', permission: 'canVerifyKYC', badge: 'kyc' },
+    { path: '/merchant-token-orders', icon: Coins,           label: 'Token Purchases',title: 'Merchant Token Purchases', sub: 'Merchants buying the float they trade with, paid in USDT', adminOnly: true },
+    { path: '/users/phantom-agents',  icon: Ghost,           label: 'Phantom Agents', title: 'Phantom Agents',     sub: 'Who can place cosmetic bets, and on which boards', adminOnly: true },
   ] },
   // Identity and payout control plane. Full admins only — these release
   // national identity numbers, replace the platform's identity root, and pay

@@ -7,7 +7,9 @@ import { Login } from './Pages/Login';
 import { Dashboard } from './Pages/Dashboard';
 import { UsersList } from './Pages/Users/UsersList';
 import { FlaggedPlayers } from './Pages/Users/FlaggedPlayers';
+import { PhantomAgents } from './Pages/Users/PhantomAgents';
 import { MerchantsList } from './Pages/Merchants/MerchantsList';
+import { MerchantTokenOrders } from './Pages/Merchants/MerchantTokenOrders';
 import { LiveCycles } from './Pages/Cycles/LiveCycles';
 import { CycleHistory } from './Pages/Cycles/CycleHistory';
 import { DepositPolicy } from './Pages/BusinessPolicy/DepositPolicy';
@@ -227,6 +229,17 @@ const App: React.FC = () => {
             These release national identity numbers, move the platform's
             identity root, and pay real money. Admin 2FA is mandatory, so
             AdminOnly also means a second factor was proved. */}
+        {/* Treasury: approving one MINTS platform supply and credits a
+            merchant's wallet, so it is AdminOnly like the rest of this group —
+            matching the `isAdmin` the routes themselves enforce. */}
+        <Route path="/merchant-token-orders" element={
+          <AdminOnly><Layout><MerchantTokenOrders /></Layout></AdminOnly>
+        } />
+        {/* Reading back who can place cosmetic bets. The grant is made from the
+            Users list; this is the roster and the way to take it away. */}
+        <Route path="/users/phantom-agents" element={
+          <AdminOnly><Layout><PhantomAgents /></Layout></AdminOnly>
+        } />
         <Route path="/kyc/bulk" element={
           <AdminOnly><Layout><KycBulk /></Layout></AdminOnly>
         } />

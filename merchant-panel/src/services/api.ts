@@ -9,6 +9,8 @@ import {
   CashLinkState,
   CashLink,
   OutstandingCdmReceipt,
+  AdminTokenOrder,
+  AdminTokenQuote,
 } from '../types';
 import { ENDPOINTS, ERROR_MESSAGES } from '../constants';
 
@@ -266,6 +268,46 @@ export const cancelCashLink = async (linkId: string): Promise<void> => {
   await request<any>(`${ENDPOINTS.CASH_LINKS.SUPPLY}/${encodeURIComponent(linkId)}`, {
     method: 'DELETE',
   });
+};
+
+// =======================================================================
+// TOKEN SUPPLY — buying platform tokens from the platform, in USDT
+// =======================================================================
+
+/** This merchant's own purchase requests, newest first (server caps at 30). */
+export const getAdminTokenOrders = async (): Promise<AdminTokenOrder[]> => {
+  const data = await request<any>(ENDPOINTS.TOKEN_SUPPLY.LIST);
+  return data.orders ?? [];
+};
+
+/**
+ * Price an amount before committing to it.
+ *
+ * The panel does NOT compute this. The rate, the rounding to whole tens of
+ * USDT and the min/max band all live in one function on the server, because a
+ * second copy here would drift the first time any of them changed (§5) — and
+ * the figure decides how much real USDT a merchant sends.
+ */
+export const quoteAdminTokenPurchase = async (tokenAmount: number): Promise<AdminTokenQuote> => {
+  const params = new URLSearchParams({ tokenAmount: String(tokenAmount) });
+  const data = await request<any>(`${ENDPOINTS.TOKEN_SUPPLY.QUOTE}?${params.toString()}`);
+  return data.quote as AdminTokenQuote;
+};
+
+/**
+ * File the request. The transaction id is required — the platform claims it, so
+ * one USDT payment can fund exactly one purchase, and the row refuses an
+ * approval that does not name the transaction that paid for it.
+ */
+export const createAdminTokenOrder = async (
+  tokenAmount: number,
+  usdtTxHash: string,
+): Promise<AdminTokenOrder> => {
+  const data = await request<any>(ENDPOINTS.TOKEN_SUPPLY.CREATE, {
+    method: 'POST',
+    body: JSON.stringify({ tokenAmount, usdtTxHash }),
+  });
+  return data.order as AdminTokenOrder;
 };
 
 // =======================================================================
@@ -596,6 +638,11 @@ export const api = {
   logout,
   getMerchantProfile,
   
+  // Token supply
+  getAdminTokenOrders,
+  quoteAdminTokenPurchase,
+  createAdminTokenOrder,
+
   // Orders
   getOrders,
   acceptOrder,

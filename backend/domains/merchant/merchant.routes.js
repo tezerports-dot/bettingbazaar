@@ -980,6 +980,71 @@ router.put('/preferences', merchantAuth, async (req, res) => {
  * (cash over the counter, UPI P2P, bank transfer with bulk payouts), and that
  * is a schema decision to take with that work, not a side effect of this one.
  */
+/**
+ * What a merchant must send, in USDT, for `tokenAmount` platform tokens.
+ *
+ * ── Why this is a function and not two copies ──────────────────────────────
+ * The merchant has to send the USDT BEFORE the request exists: the row refuses
+ * an APPROVED purchase with no transaction hash on it
+ * (`merchant_token_orders_approved_has_hash`), and the one-per-day unique index
+ * means a request filed without a hash cannot be replaced with one that has it.
+ * So the panel needs the figure in advance, which means a second reader of the
+ * same arithmetic — and CLAUDE.md §5 is explicit about what happens to a value
+ * assembled in two places. One function, two callers.
+ *
+ * Returns `{ ok: false, message }` rather than throwing, because both callers
+ * answer a refusal the same way: tell the merchant, in the vocabulary of the
+ * rail they are on (§25).
+ */
+function quoteAdminTokenPurchase(cfg, tokenAmount) {
+    if (!Number.isFinite(tokenAmount) || tokenAmount <= 0) {
+        return { ok: false, status: 400, message: 'Token amount must be greater than zero.' };
+    }
+    // Through the one owner — see domains/configuration/tokenRates.js. The
+    // `=== undefined ? 1` fallback this replaced was a second statement of the
+    // default, in a different form from the schema's.
+    const usdtRate = adminToMerchantUsdtRate(cfg);
+    if (!Number.isFinite(usdtRate) || usdtRate < 0.01) {
+        return { ok: false, status: 500, message: 'Admin USDT buy rate is misconfigured.' };
+    }
+    // Merchants pay USDT in whole multiples of 10. If the configured INR/USDT
+    // rate produces a fractional/non-multiple quote, round UP so the platform
+    // never undercharges the merchant for admin tokens.
+    const exactUsdtCents = Math.ceil((tokenAmount / usdtRate) * 100 - 1e-9);
+    const usdtAmount = Math.ceil(exactUsdtCents / 1000) * 10;
+    const minPurchaseUsdt = cfg?.merchantOrderLimits?.minAdminTokenPurchaseUsdt ?? 100;
+    const maxPurchaseUsdt = cfg?.merchantOrderLimits?.maxAdminTokenPurchaseUsdt ?? 0;
+    if (!Number.isFinite(usdtAmount) || usdtAmount < minPurchaseUsdt || (maxPurchaseUsdt > 0 && usdtAmount > maxPurchaseUsdt)) {
+        const maxText = maxPurchaseUsdt > 0 ? ` and at most ${maxPurchaseUsdt} USDT` : '';
+        return {
+            ok: false, status: 400,
+            message: `Admin token purchase must be at least ${minPurchaseUsdt} USDT${maxText}.`,
+            usdtRate, usdtAmount, minPurchaseUsdt, maxPurchaseUsdt,
+        };
+    }
+    return { ok: true, usdtRate, usdtAmount, minPurchaseUsdt, maxPurchaseUsdt };
+}
+
+/**
+ * The quote, before the request exists. Read-only and writes nothing.
+ *
+ * A refusal comes back as 200 with `ok: false` and the reason, because this is
+ * a merchant typing into a field: the bounds are what they need to see while
+ * they are still choosing an amount, and an error status would have the panel
+ * render a failure where the answer is "not that amount".
+ */
+router.get('/admin-token-orders/quote', merchantAuth, async (req, res) => {
+    try {
+        const cfg = await getSystemConfig();
+        const tokenAmount = Number(req.query.tokenAmount);
+        const quote = quoteAdminTokenPurchase(cfg, tokenAmount);
+        res.json({ success: true, tokenAmount, quote });
+    } catch (err) {
+        console.error('GET /merchant/admin-token-orders/quote error:', err);
+        res.status(500).json({ success: false, message: 'Failed to price an admin token purchase.' });
+    }
+});
+
 router.get('/admin-token-orders', merchantAuth, async (req, res) => {
     try {
         const orders = await db.paymentConfig.listTokenOrders({ merchantId: req.merchantId, limit: 30 });
@@ -1001,27 +1066,13 @@ router.post('/admin-token-orders', merchantAuth, async (req, res) => {
         if (!merchant || merchant.status !== 'ACTIVE' || merchant.merchantApprovalStatus !== 'APPROVED') {
             return res.status(403).json({ success: false, message: 'Only approved active merchants can buy admin tokens.' });
         }
-        if (!Number.isFinite(tokenAmount) || tokenAmount <= 0) {
-            return res.status(400).json({ success: false, message: 'Token amount must be greater than zero.' });
-        }
-        // Through the one owner — see domains/configuration/tokenRates.js. The
-        // `=== undefined ? 1` fallback here was a second statement of the
-        // default, in a different form from the schema's.
-        const usdtRate = adminToMerchantUsdtRate(cfg);
-        if (!Number.isFinite(usdtRate) || usdtRate < 0.01) {
-            return res.status(500).json({ success: false, message: 'Admin USDT buy rate is misconfigured.' });
-        }
-        // Merchants pay USDT in whole multiples of 10. If the configured INR/USDT
-        // rate produces a fractional/non-multiple quote, round UP so the platform
-        // never undercharges the merchant for admin tokens.
-        const exactUsdtCents = Math.ceil((tokenAmount / usdtRate) * 100 - 1e-9);
-        const usdtAmount = Math.ceil(exactUsdtCents / 1000) * 10;
-        const minPurchaseUsdt = cfg?.merchantOrderLimits?.minAdminTokenPurchaseUsdt ?? 100;
-        const maxPurchaseUsdt = cfg?.merchantOrderLimits?.maxAdminTokenPurchaseUsdt ?? 0;
-        if (!Number.isFinite(usdtAmount) || usdtAmount < minPurchaseUsdt || (maxPurchaseUsdt > 0 && usdtAmount > maxPurchaseUsdt)) {
-            const maxText = maxPurchaseUsdt > 0 ? ` and at most ${maxPurchaseUsdt} USDT` : '';
-            return res.status(400).json({ success: false, message: `Admin token purchase must be at least ${minPurchaseUsdt} USDT${maxText}.` });
-        }
+        // The same quote the panel previewed through /admin-token-orders/quote,
+        // from the same function. It is recomputed here rather than accepted
+        // from the request: a price a caller supplies is a price a caller can
+        // choose.
+        const quote = quoteAdminTokenPurchase(cfg, tokenAmount);
+        if (!quote.ok) return res.status(quote.status).json({ success: false, message: quote.message });
+        const { usdtRate, usdtAmount } = quote;
         // ONE REQUEST PER DAY, decided by a unique index rather than by a
         // lookup for today's request followed by an insert. That check-then-act
         // shape is a rate limit that stops nobody who clicks twice: both
@@ -1031,20 +1082,39 @@ router.post('/admin-token-orders', merchantAuth, async (req, res) => {
         // the transaction hash. Recorded, and never claimed — so one payment
         // could fund two token purchases, which is the same defect as a reused
         // UTR pointed at the platform's own inventory.
+        //
+        // ── The hash is REQUIRED, and the row is why ─────────────────────
+        // `merchant_token_orders_approved_has_hash` refuses an APPROVED
+        // purchase that has a `usdt_amount` and no transaction on it, and every
+        // purchase created here has one. So a request filed without a hash can
+        // never be approved — and the approve path mints and credits BEFORE it
+        // writes the status, so what actually happened was: the merchant is
+        // paid, the CHECK rejects the status write, the handler 500s, and the
+        // order sits PENDING with the tokens already delivered. The one-per-day
+        // index then locks the merchant out of filing a corrected one.
+        //
+        // Accepting it optionally was the defect. A merchant sends the USDT
+        // first (the panel prices it through /admin-token-orders/quote) and
+        // names the transaction here, which is also the only thing that makes
+        // the payment claimable: one payment, one purchase (§27).
         const tokenOrderId = `MAT_${randomBytes(12).toString('hex')}`;
-        if (usdtTxHash) {
-            try {
-                await claimPaymentReference({
-                    reference: usdtTxHash, orderId: tokenOrderId,
-                    userId: req.merchantId, amountRupees: tokenAmount,
-                    spec: MERCHANT_TOKEN_REFERENCE_SPEC,
-                });
-            } catch (e) {
-                return res.status(e.status || 400).json({
-                    success: false, code: e.code || 'INVALID_REFERENCE',
-                    message: e.message, originalOrderId: e.originalOrderId ?? null,
-                });
-            }
+        if (!usdtTxHash) {
+            return res.status(400).json({
+                success: false, code: 'REFERENCE_REQUIRED',
+                message: MERCHANT_TOKEN_REFERENCE_SPEC.hint,
+            });
+        }
+        try {
+            await claimPaymentReference({
+                reference: usdtTxHash, orderId: tokenOrderId,
+                userId: req.merchantId, amountRupees: tokenAmount,
+                spec: MERCHANT_TOKEN_REFERENCE_SPEC,
+            });
+        } catch (e) {
+            return res.status(e.status || 400).json({
+                success: false, code: e.code || 'INVALID_REFERENCE',
+                message: e.message, originalOrderId: e.originalOrderId ?? null,
+            });
         }
 
         const created = await db.paymentConfig.createTokenOrder({
@@ -1053,7 +1123,7 @@ router.post('/admin-token-orders', merchantAuth, async (req, res) => {
             tokenAmountRupees: tokenAmount,
             usdtRate,
             usdtAmount,
-            usdtTxHash: usdtTxHash || null,
+            usdtTxHash,
         }).catch((e) => {
             if (e.code === '23505') return { ok: false, reason: 'ALREADY_REQUESTED_TODAY' };
             throw e;

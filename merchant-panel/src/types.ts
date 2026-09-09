@@ -427,3 +427,41 @@ export interface Settlement {
   status: 'PENDING' | 'PROCESSING' | 'COMPLETED';
   createdAt: string | number;
 }
+
+/**
+ * A request to buy platform tokens from the platform, paid in USDT.
+ *
+ * Mirrors `toOrder` in database/repositories/paymentConfig.js — the mapper that
+ * emits it — per CLAUDE.md §5. `tokenAmount` is in whole tokens (the row holds
+ * paise); `usdtAmount` is the USDT the merchant sent, at `usdtRate` INR/USDT
+ * frozen when the request was filed.
+ */
+export interface AdminTokenOrder {
+  orderId: string;
+  merchantId: string;
+  tokenAmount: number;
+  usdtRate: number | null;
+  usdtAmount: number | null;
+  usdtTxHash: string | null;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED';
+  requestedAt: string;
+  reviewedAt: string | null;
+  reviewedBy: string | null;
+  reviewNote: string | null;
+}
+
+/**
+ * What the server says an amount costs, read before the request exists.
+ *
+ * A refusal arrives as `ok: false` with the reason and (when the amount merely
+ * fell outside the band) the bounds, so the screen can show the merchant what
+ * would be accepted while they are still typing.
+ */
+export interface AdminTokenQuote {
+  ok: boolean;
+  message?: string;
+  usdtRate?: number;
+  usdtAmount?: number;
+  minPurchaseUsdt?: number;
+  maxPurchaseUsdt?: number;
+}

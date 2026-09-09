@@ -317,6 +317,37 @@ export const merchants = {
   },
 };
 
+// --- MERCHANT TOKEN PURCHASES ------------------------------------------------
+//
+// A merchant buys the float they trade with from the platform, paying in USDT.
+// Approving one MINTS supply and credits their wallet, so this is treasury:
+// the routes are full-admin (isAdmin), never a sub-admin permission.
+export const merchantTokenOrders = {
+  /** `status` filters server-side; omit for every request, newest first. */
+  list: async (status?: string) => {
+    const res = await api.get<any>('/api/admin/merchant-token-orders', {
+      params: status && status !== 'ALL' ? { status } : undefined,
+    });
+    return res.data;
+  },
+
+  /**
+   * Mint, credit, then record the decision — in that order, server-side, all
+   * keyed on the order. Approving twice is the same act twice: the second call
+   * returns 404 rather than crediting again.
+   */
+  approve: async (orderId: string, note?: string) => {
+    const res = await api.post(`/api/admin/merchant-token-orders/${orderId}/approve`, { note });
+    return res.data;
+  },
+
+  /** The reason is required by the row — a merchant cannot fix what they cannot read. */
+  reject: async (orderId: string, reason: string) => {
+    const res = await api.post(`/api/admin/merchant-token-orders/${orderId}/reject`, { reason });
+    return res.data;
+  },
+};
+
 // --- CYCLES ------------------------------------------------------------------
 
 export const cycles = {
@@ -792,6 +823,18 @@ export const subAdmins = {
     return res.data;
   },
 
+  /**
+   * Every account that currently holds phantom access, in one read.
+   *
+   * The grant beside it had a caller and this had none, so the roster could
+   * only be reconstructed by paging the whole user list — which means nobody
+   * did, and a grant nobody enumerates is a grant nobody revokes.
+   */
+  listPhantomAgents: async () => {
+    const res = await api.get<any>('/api/admin/phantom-agents');
+    return res.data;
+  },
+
   assignPhantomAccess: async (
     userId: string,
     // Mirrors the User.phantomAccess enum. 'BOTH' predates the 1-minute block
@@ -1249,6 +1292,7 @@ export default {
   analytics,
   users,
   merchants,
+  merchantTokenOrders,
   cycles,
   depositPolicy,
   queueManager,
