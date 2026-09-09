@@ -130,7 +130,7 @@ describePg('the merchant record', () => {
 
   // ── The rail ──────────────────────────────────────────────────────────────
   it('derives merchantType in the DATABASE, so it cannot drift from the rail', async () => {
-    await make({ currency: 'USDT', usdtWalletAddress: trc20() });
+    await make({ currency: 'USDT', usdtAddressTrc20: trc20() });
     expect((await getMerchant(ID)).merchantType).toBe('USDT');
 
     // Changing the array moves the scalar with it — there is no second write.
@@ -155,7 +155,11 @@ describePg('the merchant record', () => {
       merchantId: `${ID}-noaddr`, name: 'Pending address', currency: 'USDT',
     });
     expect(m.merchantType).toBe('USDT');
-    expect(m.usdtWalletAddress ?? null).toBeNull();
+    // Neither chain. The assignment query is what excludes them from orders —
+    // a row-level "must hold an address" check could not see WHICH chain an
+    // order asked for, and would refuse the middle step of ordinary onboarding.
+    expect(m.usdtAddressTrc20 ?? null).toBeNull();
+    expect(m.usdtAddressBep20 ?? null).toBeNull();
   });
 
   it('refuses a merchant on two rails, or on none', async () => {
@@ -170,19 +174,45 @@ describePg('the merchant record', () => {
     )).rejects.toThrow(/merchants_one_rail/);
   });
 
-  it('refuses a malformed TRC-20 address — USDT sent to one is unrecoverable', async () => {
-    // An ERC-20 address, a truncated paste, and a lowercase 't' are all
-    // rejected. Base58 is case-sensitive, so this is not a cosmetic check.
+  it('refuses a malformed address on EITHER chain — USDT sent to one is unrecoverable', async () => {
+    // An address from the wrong chain, a truncated paste, and a lowercase 't'
+    // are all rejected. Base58 is case-sensitive, so that last one is not a
+    // cosmetic check.
     const valid = trc20();
-    for (const [i, bad] of ['0x1234', valid.slice(0, -1), valid.replace(/^T/, 't')].entries()) {
+    const bep20 = `0x${'a'.repeat(40)}`;
+    for (const [i, bad] of ['0x1234', bep20, valid.slice(0, -1), valid.replace(/^T/, 't')].entries()) {
       await expect(createMerchant({
-        merchantId: `${ID}-bad${i}`, name: 'Bad', currency: 'USDT', usdtWalletAddress: bad,
-      })).rejects.toThrow(/merchants_usdt_address_format/);
+        merchantId: `${ID}-badt${i}`, name: 'Bad', currency: 'USDT', usdtAddressTrc20: bad,
+      })).rejects.toThrow(/merchants_usdt_trc20_format/);
     }
+    for (const [i, bad] of ['0x1234', valid, `${bep20}ff`, bep20.slice(2)].entries()) {
+      await expect(createMerchant({
+        merchantId: `${ID}-badb${i}`, name: 'Bad', currency: 'USDT', usdtAddressBep20: bad,
+      })).rejects.toThrow(/merchants_usdt_bep20_format/);
+    }
+
     const good = await createMerchant({
-      merchantId: `${ID}-ok`, name: 'Good', currency: 'USDT', usdtWalletAddress: valid,
+      merchantId: `${ID}-ok`, name: 'Good', currency: 'USDT',
+      usdtAddressTrc20: valid, usdtAddressBep20: bep20,
     });
-    expect(good.usdtWalletAddress).toBe(valid);
+    expect(good.usdtAddressTrc20).toBe(valid);
+    expect(good.usdtAddressBep20).toBe(bep20);
+  });
+
+  it('refuses two merchants sharing one wallet address, on either chain', async () => {
+    // An address is an IDENTITY, for the same reason a UPI id is: money routed
+    // to either arrives at one, and no record afterwards says which was meant.
+    const tron = trc20();
+    const bnb = `0x${'c'.repeat(39)}1`;
+    await createMerchant({ merchantId: `${ID}-first`, name: 'First', currency: 'USDT',
+      usdtAddressTrc20: tron, usdtAddressBep20: bnb });
+
+    await expect(createMerchant({
+      merchantId: `${ID}-dupt`, name: 'Dup', currency: 'USDT', usdtAddressTrc20: tron,
+    })).rejects.toThrow(/merchants_usdt_trc20_unique/);
+    await expect(createMerchant({
+      merchantId: `${ID}-dupb`, name: 'Dup', currency: 'USDT', usdtAddressBep20: bnb,
+    })).rejects.toThrow(/merchants_usdt_bep20_unique/);
   });
 
   // ── Payment credentials are an identity ───────────────────────────────────
@@ -247,7 +277,7 @@ describePg('the merchant record', () => {
     const ok       = await mk('ok', {});
     const offline  = await mk('off', { after: { is_online: false } });
     const noDep    = await mk('nodep', { after: { accepts_deposits: false } });
-    const usdt     = await mk('usdt', { currency: 'USDT', usdtWalletAddress: trc20() });
+    const usdt     = await mk('usdt', { currency: 'USDT', usdtAddressTrc20: trc20() });
     const pending  = `${ID}-pending`;
     await createMerchant({ merchantId: pending, ...base });   // never approved
 

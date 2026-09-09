@@ -17,8 +17,6 @@
 //   }
 
 import { createDepositOrder, createWithdrawalOrder } from '../payment/paymentProcessing.service.js';
-import { createUsdtDeposit } from './usdtDeposit.service.js';
-import { btcpayConfigured } from '../../config/btcpay.config.js';
 
 // ── MANUAL_P2P_INR — the live provider ───────────────────────────────────────
 // The existing merchant-fulfilled INR flow (queue assignment, UPI/bank, UTR
@@ -35,31 +33,31 @@ const manualP2PInr = {
   createWithdrawal: ({ userId, tokenAmount }) => createWithdrawalOrder(userId, tokenAmount),
 };
 
-// ── USDT — live when BTCPay is configured ────────────────────────────────────
+// ── USDT — merchant-served, deposit only ────────────────────────────────────
+//
+// There is no payment processor in this rail and no webhook. A USDT buy is an
+// ORDINARY order assigned to a USDT merchant, exactly as an INR buy is assigned
+// to an INR merchant: the player is shown that merchant's wallet address on the
+// chain they chose, sends the USDT, and submits the transaction hash. The same
+// assignment, the same timers, the same dispute machinery.
+//
+// So this adapter delegates to `createDepositOrder` like the INR one. The
+// difference is the CURRENCY on the order, which is what routes it to a USDT
+// merchant and what makes the denomination and chain rules apply.
 //
 // Deposit-only, per the 2026-07 direction: a player buys tokens with USDT and
-// never sells back into it. `capabilities.withdrawal` is false and the method
-// throws, so the "deposit-only" rule is a property of the adapter rather than
-// something every caller has to remember.
-//
-// `active` is DERIVED from whether the credentials exist, not written as a
-// literal. Editing a boolean to switch a rail on is how a deployment ends up
-// with an active adapter and no server to talk to: a player opens an invoice
-// that no BTCPay ever heard of, pays nothing, and waits. Configured or absent
-// is a fact about the environment, so it is read from the environment.
-//
-// The chain and token are BTCPay's business. The store decides which payment
-// methods can settle an invoice; this platform asks for an amount in
-// `BTCPAY_INVOICE_CURRENCY` and is told whether it was paid. Naming a chain
-// here would be a second declaration of something only the store can enforce.
+// never sells back into it. `capabilities.withdrawal` is false AND the method
+// throws, so the rule is a property of the adapter rather than something every
+// caller has to remember.
 const usdt = {
   code: 'USDT',
-  label: 'USDT (BTCPay Server)',
+  label: 'USDT (merchant)',
   currency: 'USDT',
-  kind: 'CRYPTO',
-  get active() { return btcpayConfigured(); },
+  kind: 'P2P',
+  active: true,
   capabilities: { deposit: true, withdrawal: false },
-  createDeposit:    ({ userId, tokenAmount }) => createUsdtDeposit(userId, tokenAmount),
+  createDeposit:    ({ userId, tokenAmount, usdtChain }) =>
+    createDepositOrder(userId, tokenAmount, { currency: 'USDT', usdtChain }),
   createWithdrawal: () => {
     throw Object.assign(
       new Error('USDT withdrawals are not supported. Withdraw in INR.'),

@@ -42,15 +42,18 @@ const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 /**
  * The writers, and where each declares what it will accept.
  *
- * There used to be ONE — the order lifecycle — and the gate compared every
- * `set: { … }` in the backend against its list. The day a second lifecycle
- * arrived (`usdt_deposits`, which has no merchant and so is not an order) that
- * assumption made the gate report its perfectly valid `set` as a field the
- * ORDER writer would refuse: a false failure, which is the way a gate loses the
- * reader's trust and gets silenced.
+ * This compared every `set: { … }` in the backend against the ORDER lifecycle's
+ * list, on the assumption that there is only ever one writer. A second
+ * lifecycle briefly existed and the gate reported its perfectly valid `set` as
+ * a field the ORDER writer would refuse — a FALSE failure, which is the way a
+ * gate loses the reader's trust and gets silenced.
  *
- * So a `set` is checked against the writer it is actually handed to. Each entry
- * names the functions that take one and the module that declares their columns.
+ * That lifecycle is gone (USDT is served by merchants now, so it is an ordinary
+ * order), and the list below is one entry again. The structure stays: a `set`
+ * is checked against the writer it is actually handed to, and one handed to a
+ * writer this gate does not know is REPORTED rather than passed. Restoring the
+ * single-writer assumption would just re-arm the same false failure for whoever
+ * adds the next lifecycle.
  */
 const WRITERS = [
   {
@@ -65,13 +68,6 @@ const WRITERS = [
     callsFrom: join(ROOT, 'backend/domains/payment/orderLifecycle.service.js'),
     calls: ['setOrderFields'],
     remedy: 'Add the column to SETTABLE in database/repositories/orders.record.js',
-  },
-  {
-    label: 'the USDT deposit lifecycle',
-    file: join(ROOT, 'database/repositories/usdtDeposits.js'),
-    declaration: 'export const USDT_DEPOSIT_SETTABLE = Object.freeze({',
-    calls: ['transition'],
-    remedy: 'Add the column to USDT_DEPOSIT_SETTABLE in database/repositories/usdtDeposits.js',
   },
 ];
 

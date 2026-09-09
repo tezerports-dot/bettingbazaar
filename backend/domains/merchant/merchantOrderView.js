@@ -73,6 +73,12 @@ export const MERCHANT_ORDER_FIELDS = Object.freeze([
   // order carries its own answer.
   'paymentMode',
 
+  // On a USDT order, the chain the PLAYER chose. The merchant has to watch the
+  // right network: a payment on BNB Smart Chain never appears in a Tron
+  // explorer, and a merchant looking at the wrong one sees nothing and assumes
+  // they were not paid.
+  'usdtChain',
+
   // Workflow timestamps.
   'assignedAt', 'processingAt', 'merchantPanelUrl', 'merchantResponseMinutes',
   'approvedAt', 'rejectedAt', 'cancelledAt',

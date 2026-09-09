@@ -52,6 +52,29 @@ export const BUY_DENOMINATIONS_PAISE = Object.freeze(
   CASH_DENOMINATIONS_PAISE.filter((p) => p <= MAX_INR_BUY_PAISE),
 );
 
+/**
+ * The two amounts a USDT buy may be, in paise: ₹50,000 and ₹100,000.
+ *
+ * ── Fixed, for the reason the cash amounts are fixed ───────────────────────
+ * A USDT buy is served by a person sending tokens from their own wallet and
+ * being reimbursed. Two sizes means a merchant knows what they are being asked
+ * for before they accept, and the queue at each size is legible — the same
+ * reason a cash merchant is approved for one denomination. A free range would
+ * make every order a negotiation.
+ *
+ * ── The gap between the rails is deliberate ───────────────────────────────
+ * INR serves up to ₹10,000. USDT serves exactly ₹50,000 or ₹100,000. Nothing
+ * serves ₹10,001–₹49,999, and the refusal SAYS SO by naming both rails'
+ * choices — a player told only "invalid amount" would try again and again.
+ */
+export const USDT_BUY_DENOMINATIONS_PAISE = Object.freeze([
+  5_000_000,   // ₹50,000
+  10_000_000,  // ₹100,000
+]);
+
+export const isUsdtBuyDenomination = (paise) =>
+  USDT_BUY_DENOMINATIONS_PAISE.includes(Number(paise));
+
 /** What a withdrawal may be split into — every tier, largest first. */
 export const WITHDRAWAL_DENOMINATIONS_PAISE = Object.freeze(
   [...CASH_DENOMINATIONS_PAISE].sort((a, b) => b - a),

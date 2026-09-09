@@ -281,6 +281,12 @@ jobs:
       # player's screen rendered the handle in a copy-to-clipboard row.
       - name: A player is told no merchant identity
         run: npm run check:player-privacy
+      # One payment cannot be claimed twice. A UTR, a chain transaction hash and
+      # a CDM slip's bank id are the same fact — this payment happened, once —
+      # so they share one registry and every path claims through one owner.
+      # Two of the three used to write the reference and claim nothing.
+      - name: One payment, one claim
+        run: npm run check:payment-references
       # Items 5+58: architecture validation — circular imports and governance
       # boundary violations (domain core importing routes, wallet importing
       # products) fail the build instead of waiting for human review.

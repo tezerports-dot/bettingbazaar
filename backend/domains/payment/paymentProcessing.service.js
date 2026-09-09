@@ -38,10 +38,16 @@ import { INR_TOKEN_RATE, rateForMerchant } from '../configuration/tokenRates.js'
 import { debitWinningsForWithdrawal, refundWithdrawal, getBalances } from '../wallet/walletAuthority.service.js';
 import { selectBestMerchant } from '../merchant/merchantScoring.service.js';
 import { claimLinkFor } from '../merchant/cashLink.service.js';
-import { merchantTypeOf } from '../merchant/merchantCurrency.js';
+import {
+  MERCHANT_CURRENCY, merchantTypeOf, usdtAddressFor,
+  USDT_CHAIN_SPEC, USDT_CHAINS, isUsdtChain,
+} from '../merchant/merchantCurrency.js';
 // Risk Platform (Phase 010): the single validation authority for funding orders.
 import { assessFundingOrder, getRiskRules, computePayoutFeeMinor } from '../risk/riskValidation.service.js';
-import { markUTRAsUsed } from '../../middleware/utrValidation.js';
+// What a valid payment reference looks like on this order, what to call it, and
+// the ONE place any of them is claimed. A UTR, a chain transaction hash and a
+// CDM slip's bank id are the same fact — this payment happened, once.
+import { referenceSpecFor, claimPaymentReference } from './paymentReference.js';
 // The order state machine. Every status change goes through here so an illegal
 // move is refused by the database rather than by whichever check ran first.
 import {
@@ -60,7 +66,8 @@ import {
 // from, so the amounts a screen offers, the amounts the gate accepts and the
 // amounts a withdrawal splits into cannot disagree.
 import {
-  WITHDRAWAL_DENOMINATIONS_PAISE, splitWithdrawal, shareFeeAcrossParts,
+  WITHDRAWAL_DENOMINATIONS_PAISE, USDT_BUY_DENOMINATIONS_PAISE,
+  splitWithdrawal, shareFeeAcrossParts,
 } from '../merchant/denominations.js';
 import { rupeesToPaise, paiseToRupees } from '../../shared/money.js';
 // The per-order payment link has one owner, and it is not the client.
@@ -140,12 +147,26 @@ function buildMerchantSnapshot(merchant, expiresAt, order = null) {
         })
       : null,
 
+    // ── For the player, on the USDT rail ───────────────────────────────
+    // Where to send, and on WHICH network. Both, always together: an address
+    // without its chain is how somebody sends BEP-20 tokens to a Tron address
+    // and loses them, and this is the one field on the platform where a
+    // mistake is unrecoverable.
+    //
+    // ONLY the chain this order asked for. The merchant's address on the other
+    // chain is not part of this order and is not sent — the same allowlist
+    // reasoning as everything else the player receives.
+    usdtChain:     order?.usdtChain ?? null,
+    usdtPayTo:     order?.usdtChain ? usdtAddressFor(merchant, order.usdtChain) : null,
+    usdtChainLabel: order?.usdtChain ? (USDT_CHAIN_SPEC[order.usdtChain]?.label ?? null) : null,
+
     // ── For the admin and the disputes desk, from the row ───────────────
     merchantId:    merchant.merchantId,
     merchantName:  merchantRef,
     // A merchant settles on exactly one rail, so exactly one credential set is
-    // populated: UPI/bank for an INR merchant, the TRC-20 address for a USDT
-    // merchant.
+    // populated: UPI/bank for an INR merchant, the wallet addresses for a USDT
+    // one. Both chains are recorded here because a dispute months later is
+    // decided from what was true at assignment.
     merchantType:  merchantTypeOf(merchant),
     upiId,
     qrCodeUrl:     merchant.qrCodeUrl                      || '',
@@ -153,7 +174,8 @@ function buildMerchantSnapshot(merchant, expiresAt, order = null) {
     accountNo:     merchant.bankDetails?.accountNo         || '',
     ifsc:          merchant.bankDetails?.ifsc              || '',
     accountHolder: merchant.bankDetails?.accountHolderName || '',
-    usdtAddress:   merchant.usdtWalletAddress              || '',
+    usdtAddressTrc20: merchant.usdtAddressTrc20 || '',
+    usdtAddressBep20: merchant.usdtAddressBep20 || '',
     snapshotAt:    new Date(),
     expiresAt,
   };
@@ -333,6 +355,11 @@ async function tryAssignMerchant(order) {
   const merchant = await selectBestMerchant(order.type, order.tokenAmount, order.currency, {
     paymentMode: order.paymentMode,
     paymentModeVersion: order.paymentModeVersion,
+    // On USDT, the chain the player chose. A merchant holding only a TRC-20
+    // address cannot receive a BEP-20 payment, so they are not a candidate at
+    // all — the alternative is assigning an order the merchant must refuse,
+    // with the player already waiting.
+    usdtChain: order.usdtChain ?? null,
   });
   if (!merchant) return false;
 
@@ -489,8 +516,24 @@ function startPendingRetryLoop(orderId) {
  */
 export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
   const cfg        = await getSystemConfig();
-  const minDeposit = cfg?.minDeposit || 100;
-  const maxDeposit = cfg?.maxDeposit || 50000;
+
+  // ── Which rail is this buy on, and on which chain ───────────────────────
+  // INR unless the caller says USDT. The provider registry is what says so —
+  // the player's request reaches this through `requestDeposit({ provider })`,
+  // so which rail serves an amount stays a decision the SERVER makes.
+  const currency = attempt.currency === MERCHANT_CURRENCY.USDT
+    ? MERCHANT_CURRENCY.USDT : MERCHANT_CURRENCY.INR;
+  const usdtChain = currency === MERCHANT_CURRENCY.USDT ? attempt.usdtChain ?? null : null;
+  if (currency === MERCHANT_CURRENCY.USDT && !isUsdtChain(usdtChain)) {
+    // Named, and refused BEFORE anything is written. A USDT order with no chain
+    // matches no merchant, so it would sit in the queue until it expired while
+    // the screen said "waiting for a merchant" — and the player would never
+    // learn that the request was malformed.
+    throw Object.assign(
+      new Error(`Choose the network you will send USDT on: ${USDT_CHAINS.join(' or ')}.`),
+      { status: 400, code: 'USDT_CHAIN_REQUIRED' },
+    );
+  }
 
   // Risk Platform gate (Phase 010): positive/numeric/multiples-of-10,
   // min/max, velocity — the single validation authority.
@@ -499,10 +542,31 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
   // rail the order will actually run on. Omitting it here would leave the
   // denomination rule silently never firing — the failure mode this whole
   // guard exists to prevent, one layer up.
+  // ── The min and max, from the rail this buy is actually on ─────────────
+  // `minDeposit`/`maxDeposit` are the INR rail's, and the INR rail's maximum is
+  // ₹50,000 by default — BELOW the larger USDT denomination. Judging a USDT buy
+  // against them refused every ₹100,000 purchase with "Maximum purchase is
+  // 50000 BB tokens", a sentence about a limit that does not govern that rail.
+  //
+  // On USDT the DENOMINATIONS are the limit: there are exactly two amounts and
+  // `assertBuyIsLegal` refuses everything else, so the bounds are derived from
+  // that list rather than being a second, looser statement of it.
+  const usdtBounds = {
+    min: Math.min(...USDT_BUY_DENOMINATIONS_PAISE) / 100,
+    max: Math.max(...USDT_BUY_DENOMINATIONS_PAISE) / 100,
+  };
+  const minDeposit = currency === MERCHANT_CURRENCY.USDT ? usdtBounds.min : (cfg?.minDeposit || 100);
+  const maxDeposit = currency === MERCHANT_CURRENCY.USDT ? usdtBounds.max : (cfg?.maxDeposit || 50000);
+
   const railNow = await getActivePaymentModePolicy();
   await assessFundingOrder({
     userId, tokenAmount, type: 'DEPOSIT', min: minDeposit, max: maxDeposit,
     paymentMode: railNow.activeMode,
+    // The CURRENCY decides which rules apply: the USDT rail has two fixed
+    // amounts and no cash denominations, the INR rail has its ceiling. Omitting
+    // it here would judge a USDT buy against the INR rules and refuse every one
+    // for being over the ceiling.
+    currency,
   });
 
   const user = await db.users.getUser(userId);
@@ -550,6 +614,11 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
     // Stamped again at assignment, where the merchant's rail is known: a
     // USDT merchant settles at the admin's merchant-to-user rate, not the peg.
     rateUsed:          INR_TOKEN_RATE,
+    // The rail this buy runs on, and — on USDT — the chain the player chose.
+    // Both are frozen: the chain by a trigger, because the merchant snapshot
+    // carries the address for this chain alone.
+    currency,
+    usdtChain,
     merchantProfit:    0,
     depositAllocation: split.depositAllocation,
     reserveAllocation: split.reserveAllocation,
@@ -858,7 +927,7 @@ export async function createWithdrawalOrder(userId, tokenAmount, attempt = {}) {
 // screen. Collecting an identifying artefact that no decision reads is exactly
 // the data a platform should not hold.
 //
-// What did the real work is still here and unchanged: `markUTRAsUsed` claims
+// What did the real work is still here and unchanged: the registry claims
 // the reference in ONE statement, so the same UTR cannot be spent on two
 // orders, and the state transition is the gate for the response.
 //
@@ -995,30 +1064,25 @@ export async function markOrderPaid(userId, orderId, utrNumber) {
   if (order.type !== 'DEPOSIT')
     throw Object.assign(new Error('Only DEPOSIT orders can be marked paid by user'), { status: 400 });
 
-  const normalizedUTR = utrNumber.toUpperCase().replace(/\s+/g, '');
-  if (normalizedUTR.length < 12)
-    throw Object.assign(new Error('UTR must be at least 12 characters'), { status: 400 });
+  // What a valid reference looks like on THIS order, and what to call it.
+  // Derived from the order's own currency and chain, never from what the
+  // submitter says it is: a caller that could name its own format could submit
+  // anything. On a USDT order this is the chain's transaction hash; on an INR
+  // order it is a bank UTR.
+  const spec = referenceSpecFor(order);
 
 
-  // The claim decides in ONE statement. It used to be a check followed by an
-  // insert, so two submissions of the same reference arriving together both
-  // passed the check and one then died on the index — a 500 to a player who
-  // had done nothing wrong. The refusal now names which rule stopped it and
-  // carries the order that holds the reference, so support has an answer
-  // without a second lookup.
-  const claimed = await markUTRAsUsed(normalizedUTR, order.orderId, order.userId, order.fiatAmount);
-  if (!claimed.ok) {
-    throw Object.assign(
-      new Error(claimed.reason === 'FRAUD_FLAGGED'
-        ? 'This payment reference is under review. Contact support.'
-        : 'This UTR was already used. Contact support.'),
-      {
-        status: 409,
-        code: claimed.reason,
-        originalOrderId: claimed.entry?.orderId ?? null,
-      },
-    );
-  }
+  // The claim decides in ONE statement, through the one owner every money path
+  // uses. It used to be a check followed by an insert, so two submissions of
+  // the same reference arriving together both passed the check and one then
+  // died on the index — a 500 to a player who had done nothing wrong. The
+  // refusal names which rule stopped it, in the submitter's own vocabulary, and
+  // carries the order that holds the reference so support has an answer without
+  // a second lookup.
+  const { reference: normalizedUTR } = await claimPaymentReference({
+    reference: utrNumber, orderId: order.orderId, userId: order.userId,
+    amountRupees: order.fiatAmount, spec,
+  });
 
   // The UTR was consumed above and is not returnable, so the transition being
   // refused here means the order moved under us between the status read and

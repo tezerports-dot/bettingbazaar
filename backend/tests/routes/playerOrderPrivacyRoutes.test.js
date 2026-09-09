@@ -50,7 +50,11 @@ describePg('what a player is told about a merchant', () => {
   const MERCHANT_ACC  = '50100123456789';
   const MERCHANT_IFSC = 'HDFC0000123';
   const MERCHANT_NAME = 'Ravi Kumar';
-  const MERCHANT_USDT = 'TQ5NMqJjW8sT1u9dCUnMcGbmVpFmvbwrsi';
+  // BOTH chains. A merchant may hold an address on each, and a player is
+  // entitled to the one THEIR order named and nothing else — so the fixture
+  // carries both and the assertions below refuse both as stored columns.
+  const MERCHANT_USDT_TRC20 = 'TQ5NMqJjW8sT1u9dCUnMcGbmVpFmvbwrsi';
+  const MERCHANT_USDT_BEP20 = '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0';
   const MERCHANT_QR   = 'https://cdn.example/qr/ravi.png';
 
   const SNAPSHOT = {
@@ -65,7 +69,8 @@ describePg('what a player is told about a merchant', () => {
     accountNo: MERCHANT_ACC,
     ifsc: MERCHANT_IFSC,
     accountHolder: MERCHANT_NAME,
-    usdtAddress: MERCHANT_USDT,
+    usdtAddressTrc20: MERCHANT_USDT_TRC20,
+    usdtAddressBep20: MERCHANT_USDT_BEP20,
     snapshotAt: new Date().toISOString(),
     expiresAt: new Date(Date.now() + 900_000).toISOString(),
   };
@@ -87,7 +92,10 @@ describePg('what a player is told about a merchant', () => {
   };
 
   /** Every credential that must never appear, in any form, anywhere. */
-  const CREDENTIALS = [MERCHANT_UPI, MERCHANT_ACC, MERCHANT_IFSC, MERCHANT_NAME, MERCHANT_USDT, MERCHANT_QR];
+  const CREDENTIALS = [
+    MERCHANT_UPI, MERCHANT_ACC, MERCHANT_IFSC, MERCHANT_NAME,
+    MERCHANT_USDT_TRC20, MERCHANT_USDT_BEP20, MERCHANT_QR,
+  ];
 
   const carriesNoCredential = (payload) => {
     const body = JSON.stringify(payload);
@@ -135,6 +143,40 @@ describePg('what a player is told about a merchant', () => {
     carriesNoCredential(res.body.order);
   });
 
+  it('gives a USDT player the address for THEIR chain, and no other', async () => {
+    // The sharpest case on this platform. A merchant may hold an address on
+    // both networks; the player chose one. Handing them the other — or both —
+    // is how tokens are sent to an address that does not exist on the chain
+    // they used, and no support desk recovers that.
+    const player = await actor({});
+    const orderId = oid();
+    await createOrderRecord({
+      orderId, userId: player.userId, type: 'DEPOSIT',
+      tokenAmountRupees: 50_000, fiatAmountRupees: 50_000,
+      state: 'ASSIGNED', currency: 'USDT', usdtChain: 'BEP20',
+    });
+    await setOrderFields(orderId, {
+      merchantSnapshot: {
+        ...SNAPSHOT,
+        // What assignment writes: the chain this order named, and the address
+        // for it. The stored credentials for BOTH chains are on the row too.
+        usdtChain: 'BEP20',
+        usdtPayTo: MERCHANT_USDT_BEP20,
+        usdtChainLabel: 'BNB Smart Chain (BEP-20)',
+      },
+    });
+
+    const res = await as(app, player).get(`/order/${orderId}`);
+    expect(res.status).toBe(200);
+
+    // They CAN pay: the address and the network it belongs to, together.
+    expect(res.body.order.payTo.usdtAddress).toBe(MERCHANT_USDT_BEP20);
+    expect(res.body.order.payTo.usdtChain).toBe('BEP20');
+    // And the other chain's address is nowhere in the response.
+    expect(JSON.stringify(res.body)).not.toContain(MERCHANT_USDT_TRC20);
+    withinTheAllowlist(res.body.order);
+  });
+
   it('keeps the snapshot ON THE ROW for the disputes desk', async () => {
     // The projection is not deletion. A dispute months later is decided from
     // what was true at assignment, so the row keeps every credential and the
@@ -146,7 +188,8 @@ describePg('what a player is told about a merchant', () => {
     const row = await getOrderRecord(orderId);
     expect(row.merchantSnapshot.upiId).toBe(MERCHANT_UPI);
     expect(row.merchantSnapshot.accountNo).toBe(MERCHANT_ACC);
-    expect(row.merchantSnapshot.usdtAddress).toBe(MERCHANT_USDT);
+    expect(row.merchantSnapshot.usdtAddressTrc20).toBe(MERCHANT_USDT_TRC20);
+    expect(row.merchantSnapshot.usdtAddressBep20).toBe(MERCHANT_USDT_BEP20);
   });
 
   it('carries nothing forbidden on the poll that fires every few seconds', async () => {

@@ -350,7 +350,7 @@ router.put('/merchants/:merchantId/capabilities', authenticate, isAdmin, async (
           patch.bankIfsc = null; patch.bankAccountHolderName = null;
           patch.qrCodeUrl = null;
         } else {
-          patch.usdtWalletAddress = null;
+          patch.usdtAddressTrc20 = null; patch.usdtAddressBep20 = null;
         }
       }
       patch.acceptedCurrencies = rails;

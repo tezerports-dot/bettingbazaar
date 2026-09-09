@@ -167,6 +167,10 @@ export interface PaymentOrder {
   // settles, so an order held across a switch keeps asking for what it always
   // asked for. Sent by backend/domains/merchant/merchantOrderView.js.
   paymentMode?: PaymentMode;
+  // On a USDT order, the chain the PLAYER chose to send on. The merchant has to
+  // watch the right network — a payment on BNB Smart Chain never appears in a
+  // Tron explorer — and it decides which of their addresses is shown.
+  usdtChain?: 'TRC20' | 'BEP20';
   
   // Token and pricing (REAL from backend)
   tokenAmount: number;
@@ -231,12 +235,18 @@ export interface MerchantProfile {
   role?: string;
 
   // ── Settlement rail (exclusive) ──────────────────────────────────────────
-  // 'INR' (UPI + bank) or 'USDT' (TRC-20) — never both. Backend authority is
+  // 'INR' (UPI + bank) or 'USDT' — never both. Backend authority is
   // Merchant.acceptedCurrencies, which holds exactly one entry;
   // GET /api/merchant/profile surfaces both the array and this scalar.
   merchantType?: MerchantRail;
   acceptedCurrencies?: MerchantRail[];
-  usdtWalletAddress?: string;
+  // One address PER CHAIN. They are separate networks — USDT sent to a Tron
+  // address from a BEP-20 wallet is gone — so a merchant holds an address for
+  // each chain they will be paid on, and receives orders only on those.
+  usdtAddressTrc20?: string;
+  usdtAddressBep20?: string;
+  /** Which chains this merchant can actually be paid on. Derived by the server. */
+  usdtChains?: ('TRC20' | 'BEP20')[];
   
   // Preferences (REAL from backend)
   acceptsDeposits?: boolean;

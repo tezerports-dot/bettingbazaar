@@ -7,7 +7,7 @@
 import React from 'react';
 import { ArrowDownLeft, ArrowUpRight, Check, ShieldCheck } from 'lucide-react';
 import { OrderStatus, type MerchantProfile, type PaymentOrder } from '../types';
-import { counterpartyOf, formatMoney, railCopy, railOf, tokenColumn } from '../utils/rail';
+import { counterpartyOf, formatMoney, railCopy, railOf, receivingAddressFor, tokenColumn } from '../utils/rail';
 import { formatCountdown, secondsLeft, URGENT_SECONDS } from '../hooks/useCountdown';
 import { Banner, Button, CopyInline, Panel, StatusPill } from './ui';
 import type { OrderActions } from './OrderCard';
@@ -51,8 +51,12 @@ export const OrderDetail: React.FC<{
   const paymentRows: Array<{ label: string; value: string }> = [];
   if (isDeposit) {
     if (rail === 'USDT') {
-      if (merchant?.usdtWalletAddress) paymentRows.push({ label: 'Your USDT address', value: merchant.usdtWalletAddress });
-      paymentRows.push({ label: 'Network', value: 'TRC-20' });
+      // The network comes from the ORDER, not from a constant. The player chose
+      // it, and a merchant watching the wrong explorer sees no payment and
+      // concludes they were not paid.
+      const receiving = receivingAddressFor(merchant, order.usdtChain);
+      if (receiving) paymentRows.push({ label: 'Your USDT address', value: receiving.address });
+      paymentRows.push({ label: 'Network', value: receiving?.label ?? 'Not set for this network' });
     } else {
       const upi = merchant?.settlementDetails?.upiId || merchant?.bankDetails?.upiId;
       if (upi) paymentRows.push({ label: 'Your UPI ID', value: upi });

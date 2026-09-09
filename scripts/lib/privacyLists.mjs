@@ -176,7 +176,10 @@ export function topLevelKeys(text) {
     if (depth === 1 && c === ',') { atKeyPosition = true; continue; }
     if (depth !== 1 || !atKeyPosition) continue;
     if (/\s/.test(c)) continue;
-    const m = text.slice(i).match(/^([A-Za-z_$][A-Za-z0-9_$]*)\s*:/);
+    // `key: value` and the SHORTHAND `key` — `{ spec }` names `spec` just as
+    // `{ spec: spec }` does, and a scan that saw only the first form reported a
+    // payload as missing a key it plainly carries.
+    const m = text.slice(i).match(/^([A-Za-z_$][A-Za-z0-9_$]*)\s*([:,}]|$)/);
     if (m) keys.push(m[1]);
     // A shorthand key (`{ order }`) or a spread — both are named by whatever
     // follows, and neither starts a new key position until the next comma.

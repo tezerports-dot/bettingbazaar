@@ -967,86 +967,81 @@ const MUTATIONS = [
     from: `  if (!payee || !Number.isFinite(amount) || amount <= 0) return null;`,
     to: `  if (false) return null;`,
   },
-  // ── B7: USDT deposits, and the webhook that mints ─────────────────────────
+  // ── B7: the USDT merchant rail, and one payment claimed once ─────────────
   {
-    id: 'M143', file: 'backend/domains/funding/btcpaySignature.js', config: UNIT,
-    test: 'backend/tests/unit/btcpaySignature.test.js',
-    why: 'a MISSING signature short-circuits to "no mismatch" and anyone who can reach the webhook can mint tokens into any wallet — the exact inline check this pattern replaced',
-    from: `  const provided = String(headers['btcpay-sig'] || '');
-  if (!provided) {
-    return { ok: false, status: 401, message: 'Missing signature' };
-  }`,
-    to: `  const provided = String(headers['btcpay-sig'] || '');
-  if (!provided) {
-    return { ok: true };
-  }`,
+    id: 'M143', file: 'database/repositories/merchants.js', config: PG,
+    test: 'backend/tests/routes/usdtMerchantRailPg.test.js',
+    why: 'the chain filter goes, so a USDT order is offered to a merchant with no address on that network — the player sends to a chain the address does not exist on and the tokens are gone',
+    // The anchor is the CLAUSE inside the interpolation, not the interpolation
+    // itself: `${…}` inside a mutation's own template literal is evaluated by
+    // this file rather than matched, so an anchor containing one never matches
+    // and the mutation reports NOT MEASURED — a hole in the suite that reads
+    // like a hole in the code.
+    from: `AND m.` + `$` + `{chainColumn} IS NOT NULL`,
+    to: `AND TRUE`,
   },
   {
-    id: 'M144', file: 'backend/domains/funding/btcpaySignature.js', config: UNIT,
-    test: 'backend/tests/unit/btcpaySignature.test.js',
-    why: 'an unconfigured secret is TRUSTED rather than refused — unverifiable and authentic are not the same thing, and this one opens the mint on every deployment that has not set it',
-    from: `  if (!secret) {
-    return { ok: false, status: 503, message: 'USDT webhook not configured' };
-  }`,
-    to: `  if (!secret) {
-    return { ok: true };
-  }`,
+    id: 'M144', file: 'database/repositories/merchants.js', config: PG,
+    test: 'backend/tests/routes/usdtMerchantRailPg.test.js',
+    why: 'an unknown chain matches nobody SILENTLY instead of throwing, which reads on a screen as "no merchant is available" and has a player wait through a malformed request',
+    from: `    if (!chainColumn) {
+      throw new TypeError(\`assignmentCandidates: unknown usdtChain '\${usdtChain}'\`);
+    }`,
+    to: `    if (!chainColumn) { chainColumn = null; }`,
   },
   {
-    id: 'M145', file: 'backend/domains/funding/usdtDeposit.service.js', config: PG,
-    test: 'backend/tests/routes/usdtDepositPg.test.js',
-    why: 'the settle credits without winning the transition first, so every redelivery of one signed body credits the player again — and a captured body can be replayed forever',
-    from: `  if (!moved.ok) {
-    // \`already_there\` and \`duplicate\` are the redelivery cases and are a
-    // success: the money moved on the delivery that won.
-    const settled = ['already_there', 'duplicate'].includes(moved.reason);
-    return { ok: settled, reason: moved.reason, alreadySettled: settled };
-  }`,
-    to: `  if (!moved.ok && moved.reason === 'not_found') {
-    return { ok: false, reason: moved.reason };
-  }`,
-  },
-  {
-    id: 'M146', file: 'backend/domains/funding/usdtDeposit.service.js', config: PG,
-    test: 'backend/tests/routes/usdtDepositPg.test.js',
-    why: 'a purchase the INR rail serves is admitted onto the USDT rail, so the ceiling and the floor no longer meet and a player can route round the merchant network',
-    from: `  if (paise < MIN_USDT_BUY_PAISE) {`,
+    id: 'M145', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/usdtMerchantRailPg.test.js',
+    why: 'a USDT buy with no chain is admitted, so it matches no merchant and sits in the queue until it expires while the screen says "waiting for a merchant"',
+    from: `  if (currency === MERCHANT_CURRENCY.USDT && !isUsdtChain(usdtChain)) {`,
     to: `  if (false) {`,
   },
   {
-    id: 'M147', file: 'backend/domains/funding/usdtDeposit.service.js', config: PG,
-    test: 'backend/tests/routes/usdtDepositPg.test.js',
-    why: 'a failed BTCPay create leaves the row AWAITING_PAYMENT, and the one-open-invoice rule then locks the player out of the rail permanently',
-    from: `    await db.usdtDeposits.transition(depositId, 'INVALID', {`,
-    to: `    await Promise.resolve().then(() => null) || db.usdtDeposits.transition(depositId, 'NEVER', {`,
+    id: 'M146', file: 'backend/domains/risk/riskValidation.service.js', config: PG,
+    test: 'backend/tests/routes/usdtMerchantRailPg.test.js',
+    why: 'any amount is accepted on the USDT rail, so the two fixed denominations stop being fixed and a merchant is asked for a sum they never agreed to serve',
+    from: `    if (!isUsdtBuyDenomination(paise)) {`,
+    to: `    if (false) {`,
   },
   {
-    id: 'M148', file: 'backend/domains/funding/usdtDeposit.service.js', config: PG,
-    test: 'backend/tests/routes/usdtDepositPg.test.js',
-    why: 'the rate falls back to 1 when the admin has never set one, selling tokens at the INR peg for a currency that is not pegged to it',
-    from: `  if (rate === null) {`,
+    id: 'M147', file: 'backend/domains/payment/paymentReference.js', config: PG,
+    test: 'backend/tests/routes/usdtMerchantRailPg.test.js',
+    why: 'the registry refusal is swallowed, so one real payment can be claimed on two orders — the defect this whole registry exists to prevent',
+    from: `  if (!claimed.ok) {`,
     to: `  if (false) {`,
   },
   {
-    id: 'M149', file: 'backend/domains/funding/webhookRawBody.js', config: PG,
-    test: 'backend/tests/routes/usdtDepositPg.test.js',
-    why: 'the webhook path stops asking for raw bytes, so the JSON parser reaches it first and every real callback is refused — a player pays and nobody is ever credited',
-    from: `export const RAW_BODY_PATHS = Object.freeze(['/api/payment/usdt/webhook']);`,
-    to: `export const RAW_BODY_PATHS = Object.freeze([]);`,
+    id: 'M148', file: 'backend/domains/payment/paymentReference.js', config: PG,
+    test: 'backend/tests/routes/usdtMerchantRailPg.test.js',
+    why: 'a transaction id of any shape is accepted, so a bank UTR or a hash from the wrong chain is taken as proof of a payment nobody can find',
+    from: `  if (!normalized || !spec.valid(normalized)) {`,
+    to: `  if (!normalized) {`,
   },
   {
-    id: 'M150', file: 'database/repositories/usdtDeposits.js', config: PG,
-    test: 'backend/tests/routes/usdtDepositPg.test.js',
-    why: 'the transition stops checking which state it is moving FROM, so an expired or already-settled invoice can be settled again',
-    from: `    if (!allowed.includes(from)) return { ok: false, reason: 'illegal_transition', state: from };`,
-    to: `    if (false) return { ok: false, reason: 'illegal_transition', state: from };`,
+    id: 'M149', file: 'backend/domains/payment/playerOrderView.js', config: PG,
+    test: 'backend/tests/routes/playerOrderPrivacyRoutes.test.js',
+    why: 'the player is handed the merchant’s address for BOTH chains instead of the one their own order named, so half of them send on a network that address does not exist on',
+    from: `  if (snapshot.usdtPayTo && snapshot.usdtChain) {
+    view.usdtAddress = snapshot.usdtPayTo;`,
+    to: `  if (snapshot.usdtAddressTrc20 || snapshot.usdtAddressBep20) {
+    view.usdtAddress = snapshot.usdtAddressTrc20 || snapshot.usdtAddressBep20;
+    view.usdtAddressBep20 = snapshot.usdtAddressBep20;`,
   },
   {
-    id: 'M151', file: 'backend/domains/funding/usdtDeposit.routes.js', config: PG,
-    test: 'backend/tests/routes/usdtDepositPg.test.js',
-    why: 'the deposit read stops checking who owns it, so a deposit id — which appears in logs and in a checkout URL — becomes a capability to read what any player bought',
-    from: `    if (!deposit || String(deposit.userId) !== String(req.user.userId)) {`,
-    to: `    if (!deposit) {`,
+    id: 'M150', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/cdmReceiptRoutes.test.js',
+    why: 'the CDM slip’s bank reference is recorded and never claimed, so one cash deposit can be presented as proof of two payouts',
+    from: `            await claimPaymentReference({
+                reference: transactionId,`,
+    to: `            await Promise.resolve({
+                reference: transactionId,`,
+  },
+  {
+    id: 'M151', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/merchantPanelRoutes.test.js',
+    why: 'a merchant may accept a USDT order on a chain they hold no address for, so the player is shown nothing to send to — or worse, the other chain’s address',
+    from: `            if (!usdtAddressFor(merchant, chain)) {`,
+    to: `            if (false) {`,
   },
   {
     id: 'M142', file: 'backend/domains/merchant/merchantOrderView.js', config: PG,

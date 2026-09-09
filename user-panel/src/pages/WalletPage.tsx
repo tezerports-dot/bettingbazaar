@@ -19,8 +19,8 @@ import ScreenShell, { card, capLabel } from '../redesign/Screen';
 // A cash withdrawal too large for one denomination becomes several separate
 // withdrawals. This shows a player which ones came from the same request.
 import WithdrawalBatchParts from '../components/WithdrawalBatchParts';
-// Above the INR ceiling there is no merchant who could serve the order, so the
-// purchase is paid to the platform in USDT instead.
+// The USDT rail: two fixed amounts, served by a merchant, on the network the
+// player chooses.
 import UsdtBuyPanel from '../components/UsdtBuyPanel';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -388,7 +388,15 @@ const WalletPage: React.FC = () => {
   const [buyCashLink, setBuyCashLink]   = useState<{ paymentLink: string; expiresAt: string } | null>(null);
   const [rail, setRail]                 = useState<{
     paymentMode: string | null; buyDenominations: number[]; maxInrBuy: number | null;
-  }>({ paymentMode: null, buyDenominations: [], maxInrBuy: null });
+    // The USDT rail's two amounts and the networks it is served on. From the
+    // server, for the same reason the INR denominations are: both are money
+    // rules, and a panel holding its own copy offers what the gate refuses.
+    usdtBuyDenominations: number[];
+    usdtChains: { chain: string; label: string }[];
+  }>({
+    paymentMode: null, buyDenominations: [], maxInrBuy: null,
+    usdtBuyDenominations: [], usdtChains: [],
+  });
   const [activeBuyOrder, setActiveBuyOrder] = useState<PaymentOrder | null>(null);
   const [buyLoading, setBuyLoading]     = useState(false);
   const [buyError, setBuyError]         = useState('');
@@ -422,6 +430,8 @@ const WalletPage: React.FC = () => {
           paymentMode: sys.config.paymentMode ?? null,
           buyDenominations: sys.config.buyDenominations ?? [],
           maxInrBuy: sys.config.maxInrBuy ?? null,
+          usdtBuyDenominations: sys.config.usdtBuyDenominations ?? [],
+          usdtChains: sys.config.usdtChains ?? [],
         });
       }
 
@@ -585,6 +595,14 @@ const WalletPage: React.FC = () => {
   const aboveInrCeiling = rail.maxInrBuy !== null
     && rail.paymentMode !== 'CASH_ATM'
     && (parseInt(buyTokens) || 0) > rail.maxInrBuy;
+
+  // The USDT purchase in flight, if there is one. Found by CURRENCY on the
+  // orders already loaded rather than by a second request: one list, one truth
+  // about what this player has open.
+  const activeUsdtOrder = paymentOrders.find(
+    (o: any) => o.currency === 'USDT' && o.type === 'DEPOSIT'
+      && ['PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID'].includes(o.status),
+  ) ?? null;
   const maxStake = limits?.maxStake ?? 0;
   const reserveLocked = limits?.reserveLocked ?? 0;
 
@@ -713,13 +731,31 @@ const WalletPage: React.FC = () => {
                       USDT panel asks for both. All this decides is which of the
                       two affordances to render. */}
                   {aboveInrCeiling ? (
-                    <UsdtBuyPanel
-                      tokenAmount={parseInt(buyTokens) || 0}
-                      onSettled={() => { loadMeta(); loadOrders(); }}
-                      onCancel={() => setBuyTokens('')}
-                    />
+                    // Not offered, because the server refuses it. Pointing at
+                    // the block below is the whole answer — a disabled button
+                    // with no explanation is how a player retries and retries.
+                    <div style={{ fontSize: 11.5, color: 'var(--text3)', padding: '12px 0' }}>
+                      That is above the UPI limit. Buy with USDT below — it serves{' '}
+                      {rail.usdtBuyDenominations.map((v) => `₹${v.toLocaleString('en-IN')}`).join(' and ')}.
+                    </div>
                   ) : (
                     <button onClick={handleBuySubmit} disabled={!buyTokens || buyLoading} style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 15, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', boxShadow: '0 8px 22px -8px var(--glow)', opacity: (!buyTokens || buyLoading) ? .5 : 1 }}>{buyLoading ? '⏳ Creating order…' : 'Continue to payment'}</button>
+                  )}
+
+                  {/* The USDT rail, as its own block rather than a mode this
+                      screen switches into. The two rails serve DIFFERENT
+                      amounts — nothing serves the gap between them — so
+                      presenting them side by side is what makes that visible
+                      instead of a player discovering it through refusals. */}
+                  {rail.usdtBuyDenominations.length > 0 && (
+                    <div style={{ marginTop: 18, paddingTop: 16, borderTop: '1px solid var(--line)' }}>
+                      <UsdtBuyPanel
+                        denominations={rail.usdtBuyDenominations}
+                        chains={rail.usdtChains}
+                        order={activeUsdtOrder as any}
+                        onChanged={() => { loadMeta(); loadOrders(); }}
+                      />
+                    </div>
                   )}
                 </>
               ) : activeBuyOrder ? (

@@ -17,7 +17,10 @@ import { api } from '../services/api';
 import { useViewport } from '../hooks/useViewport';
 import TwoFactorEnrol from '../components/TwoFactorEnrol';
 import { SUCCESS_MESSAGES } from '../constants';
-import { formatMoney, formatWallet, isTrc20Address, railCopy, railOf } from '../utils/rail';
+import {
+  formatMoney, formatWallet, railCopy, railOf,
+  USDT_CHAINS, USDT_CHAIN_INFO, isUsdtAddress, type UsdtChain,
+} from '../utils/rail';
 import {
   Banner, Button, Card, CardTitle, Field, Toggle, Verified, cardStyle, copyText, inputStyle,
 } from '../components/ui';
@@ -42,7 +45,8 @@ const ProfileSettings: React.FC = () => {
     bankName: '',
     accountNo: '',
     ifsc: '',
-    usdtWalletAddress: '',
+    usdtAddressTrc20: '',
+    usdtAddressBep20: '',
   });
 
   const [prefs, setPrefs] = useState({ acceptsDeposits: true, acceptsWithdrawals: true });
@@ -58,7 +62,8 @@ const ProfileSettings: React.FC = () => {
       bankName: merchant.bankDetails?.bankName ?? merchant.settlementDetails?.bankName ?? '',
       accountNo: merchant.bankDetails?.accountNo ?? merchant.settlementDetails?.accountNumber ?? '',
       ifsc: merchant.bankDetails?.ifsc ?? merchant.settlementDetails?.ifsc ?? '',
-      usdtWalletAddress: merchant.usdtWalletAddress ?? '',
+      usdtAddressTrc20: merchant.usdtAddressTrc20 ?? '',
+      usdtAddressBep20: merchant.usdtAddressBep20 ?? '',
     });
     setPrefs({
       acceptsDeposits: merchant.acceptsDeposits ?? merchant.orderPreferences?.acceptDeposits ?? true,
@@ -66,19 +71,40 @@ const ProfileSettings: React.FC = () => {
     });
   }, [merchant]);
 
-  const addressError = useMemo(() => {
-    if (!isUsdt || !editingPayment) return undefined;
-    const value = form.usdtWalletAddress.trim();
-    if (!value) return undefined;
-    return isTrc20Address(value)
-      ? undefined
-      : 'That is not a TRC-20 address — it must be 34 characters starting with "T".';
-  }, [isUsdt, editingPayment, form.usdtWalletAddress]);
+  /**
+   * One error per chain, and a separate one for holding none.
+   *
+   * A blank field CLEARS that chain — a merchant who stops serving a network
+   * needs a way to say so. What is refused is clearing the last one: with no
+   * address, no order can be assigned, and a merchant who quietly stopped
+   * receiving work would have no way to find out why.
+   */
+  const addressErrors = useMemo(() => {
+    if (!isUsdt || !editingPayment) return {} as Partial<Record<UsdtChain, string>>;
+    const out: Partial<Record<UsdtChain, string>> = {};
+    for (const chain of USDT_CHAINS) {
+      const value = form[USDT_CHAIN_INFO[chain].field].trim();
+      if (!value) continue;
+      if (!isUsdtAddress(chain, value)) {
+        out[chain] = `That is not a ${USDT_CHAIN_INFO[chain].label} address — ${USDT_CHAIN_INFO[chain].hint}.`;
+      }
+    }
+    return out;
+  }, [isUsdt, editingPayment, form.usdtAddressTrc20, form.usdtAddressBep20]);
+
+  const holdsNoAddress = isUsdt
+    && !form.usdtAddressTrc20.trim() && !form.usdtAddressBep20.trim();
 
   const savePayment = async () => {
-    if (isUsdt && !isTrc20Address(form.usdtWalletAddress)) {
-      toast.error('Enter a valid TRC-20 (Tron) wallet address before saving.');
-      return;
+    if (isUsdt) {
+      if (Object.keys(addressErrors).length) {
+        toast.error('Fix the wallet address before saving. USDT sent to a wrong address cannot be recovered.');
+        return;
+      }
+      if (holdsNoAddress) {
+        toast.error('Keep at least one wallet address — with none, no order can be assigned to you.');
+        return;
+      }
     }
     setSavingPayment(true);
     try {
@@ -86,7 +112,13 @@ const ProfileSettings: React.FC = () => {
       // the other rail's fields outright.
       await api.updateProfile(
         isUsdt
-          ? { usdtWalletAddress: form.usdtWalletAddress.trim() }
+          ? {
+              // Both chains, every time: an empty string CLEARS that chain, and
+              // sending only the one being edited would leave the panel unable
+              // to remove an address at all.
+              usdtAddressTrc20: form.usdtAddressTrc20.trim(),
+              usdtAddressBep20: form.usdtAddressBep20.trim(),
+            }
           : {
               upiId: form.upiId.trim(),
               qrCodeUrl: form.qrCodeUrl.trim(),
@@ -200,7 +232,7 @@ const ProfileSettings: React.FC = () => {
               color: isUsdt ? 'var(--dep)' : 'var(--brand)',
               background: isUsdt ? 'var(--dep-bg)' : 'var(--brand-bg)',
             }}>
-              {isUsdt ? 'USDT · TRC-20' : 'INR · UPI & bank'}
+              {isUsdt ? 'USDT · TRC-20 / BEP-20' : 'INR · UPI & bank'}
             </span>
           </div>
           {!editingPayment && (
@@ -214,42 +246,52 @@ const ProfileSettings: React.FC = () => {
         </div>
         <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)', marginBottom: 15 }}>
           {isUsdt
-            ? 'Users send USDT deposits to this address · payouts are sent from here'
+            ? 'Players send USDT to the address for the network they chose'
             : 'Users pay here for deposits · you receive settlements here'}
         </div>
 
         {!editingPayment && (isUsdt ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
-            <div style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
-              padding: '13px 15px', background: 'var(--dep-bg)', borderRadius: 13,
-            }}>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--dep)' }}>USDT wallet · TRC-20</div>
-                <div className="bb-mono" style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {merchant?.usdtWalletAddress || 'Not set'}
+            {/* One row per chain. A merchant may hold either, both, or neither
+                — and which they hold decides which orders reach them, so it is
+                shown as two separate facts rather than one "wallet address". */}
+            {USDT_CHAINS.map((chain) => {
+              const info = USDT_CHAIN_INFO[chain];
+              const address = merchant?.[info.field] || '';
+              return (
+                <div key={chain} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+                  padding: '13px 15px', background: 'var(--dep-bg)', borderRadius: 13,
+                }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--dep)' }}>{info.label}</div>
+                    <div className="bb-mono" style={{ fontSize: 14, fontWeight: 700, color: address ? 'var(--text)' : 'var(--muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {address || 'Not set — no orders on this network'}
+                    </div>
+                  </div>
+                  {address && (
+                    <button
+                      onClick={() => copyText(address, `${info.label} address`)}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 700, color: 'var(--dep)',
+                        background: 'var(--surface)', border: 0, padding: '8px 12px', borderRadius: 9, cursor: 'pointer', flexShrink: 0,
+                      }}
+                    >
+                      <Copy size={13} /> Copy
+                    </button>
+                  )}
                 </div>
-              </div>
-              {merchant?.usdtWalletAddress && (
-                <button
-                  onClick={() => copyText(merchant.usdtWalletAddress || '', 'USDT address')}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 700, color: 'var(--dep)',
-                    background: 'var(--surface)', border: 0, padding: '8px 12px', borderRadius: 9, cursor: 'pointer', flexShrink: 0,
-                  }}
-                >
-                  <Copy size={13} /> Copy
-                </button>
-              )}
-            </div>
-            {!merchant?.usdtWalletAddress ? (
-              <Banner tone="warn" title="Add your wallet address">
-                You cannot take USDT orders until a TRC-20 address is saved.
+              );
+            })}
+            {!merchant?.usdtAddressTrc20 && !merchant?.usdtAddressBep20 ? (
+              <Banner tone="warn" title="Add a wallet address">
+                You cannot take USDT orders until at least one address is saved.
               </Banner>
             ) : (
               <Banner tone="warn">
-                Only <strong style={{ color: 'var(--text)' }}>TRC-20 (Tron)</strong> USDT is supported. Users send deposits
-                here and submit the transaction ID for you to verify.
+                You are offered orders <strong style={{ color: 'var(--text)' }}>only on the networks you hold an
+                address for</strong>. The player chooses the network, sends USDT to that address, and submits the
+                transaction ID for you to verify.
               </Banner>
             )}
           </div>
@@ -301,25 +343,43 @@ const ProfileSettings: React.FC = () => {
 
         {editingPayment && (isUsdt ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
-            <Field
-              label="USDT wallet address (TRC-20)"
-              error={addressError}
-              hint="USDT sent to a wrong or non-TRC-20 address cannot be recovered. Check it character by character."
-            >
-              <input
-                value={form.usdtWalletAddress}
-                onChange={(e) => setForm((f) => ({ ...f, usdtWalletAddress: e.target.value }))}
-                placeholder="T… TRC-20 address"
-                spellCheck={false}
-                autoCapitalize="none"
-                autoCorrect="off"
-                className="bb-mono"
-                style={inputStyle}
-              />
-            </Field>
+            {/* One field per chain, each independently clearable. A blank field
+                means "I do not serve this network"; clearing BOTH is refused,
+                because a merchant with no address silently receives nothing. */}
+            {USDT_CHAINS.map((chain) => {
+              const info = USDT_CHAIN_INFO[chain];
+              return (
+                <Field
+                  key={chain}
+                  label={`${info.label} address`}
+                  error={addressErrors[chain]}
+                  hint={`${info.hint}. Leave blank if you do not accept USDT on this network. USDT sent to a wrong address cannot be recovered — check it character by character.`}
+                >
+                  <input
+                    value={form[info.field]}
+                    onChange={(e) => setForm((f) => ({ ...f, [info.field]: e.target.value }))}
+                    placeholder={info.hint}
+                    spellCheck={false}
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    className="bb-mono"
+                    style={inputStyle}
+                  />
+                </Field>
+              );
+            })}
+            {holdsNoAddress && (
+              <Banner tone="warn" title="Keep at least one address">
+                With no address on either network, no order can be assigned to you.
+              </Banner>
+            )}
             <div style={{ display: 'flex', gap: 10 }}>
-              <Button onClick={savePayment} busy={savingPayment} disabled={!!addressError}>
-                <Save size={15} /> Save USDT address
+              <Button
+                onClick={savePayment}
+                busy={savingPayment}
+                disabled={Object.keys(addressErrors).length > 0 || holdsNoAddress}
+              >
+                <Save size={15} /> Save wallet addresses
               </Button>
               <Button variant="outline" tone="neutral" onClick={() => setEditingPayment(false)} style={{ borderColor: 'var(--border)', color: 'var(--text)' }}>
                 Cancel
@@ -461,7 +521,7 @@ const ProfileSettings: React.FC = () => {
             <div style={{ background: 'var(--surface-2)', borderRadius: 13, padding: '13px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-2)' }}>Settlement rail</span>
               <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text)' }}>
-                {isUsdt ? 'USDT · TRC-20' : 'INR · UPI & bank'}
+                {isUsdt ? 'USDT · TRC-20 / BEP-20' : 'INR · UPI & bank'}
               </span>
             </div>
             <Button variant="outline" tone="danger" full onClick={logout} style={{ marginTop: 2 }}>

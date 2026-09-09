@@ -16,7 +16,7 @@ import { describe, it, expect } from 'vitest';
 import {
   RAIL, railOf, railOfOrder, isUsdt, railCopy,
   formatMoney, formatMoneyCompact, formatWallet, tokenColumn,
-  isTrc20Address, truncateMiddle, counterpartyOf,
+  isUsdtAddress, receivingAddressFor, truncateMiddle, counterpartyOf,
 } from './rail';
 import type { MerchantProfile, PaymentOrder } from '../types';
 
@@ -96,20 +96,60 @@ describe('tokenColumn — the second figure beside the amount', () => {
   });
 });
 
-describe('isTrc20Address — gates the USDT payout destination', () => {
-  it('accepts a well-formed TRC-20 address', () => {
-    // T + 33 base58 chars. Same rule the backend enforces; mirrored only for
-    // immediate feedback.
-    expect(isTrc20Address('TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE')).toBe(true);
-    expect(isTrc20Address('  TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE  ')).toBe(true); // trimmed
+describe('isUsdtAddress — gates where a player is told to send', () => {
+  const TRON = 'TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE';
+  const BNB  = '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0';
+
+  it('accepts a well-formed address on its own chain', () => {
+    // Same rules the backend enforces; mirrored only for immediate feedback.
+    expect(isUsdtAddress('TRC20', TRON)).toBe(true);
+    expect(isUsdtAddress('TRC20', `  ${TRON}  `)).toBe(true); // trimmed
+    expect(isUsdtAddress('BEP20', BNB)).toBe(true);
+    // EIP-55 mixed case is a checksum, not part of the address — refusing a
+    // lower-case one would reject the form most wallets copy.
+    expect(isUsdtAddress('BEP20', BNB.toLowerCase())).toBe(true);
+  });
+
+  it('REFUSES the other chain’s address — the mistake that loses the money', () => {
+    expect(isUsdtAddress('TRC20', BNB)).toBe(false);
+    expect(isUsdtAddress('BEP20', TRON)).toBe(false);
   });
 
   it('rejects a malformed one', () => {
-    expect(isTrc20Address('')).toBe(false);
-    expect(isTrc20Address('0xabc123')).toBe(false);                 // ETH-style
-    expect(isTrc20Address('TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLS')).toBe(false); // one short
-    expect(isTrc20Address('BQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE')).toBe(false); // wrong prefix
-    expect(isTrc20Address('TOn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE0')).toBe(false); // contains 0/O ambiguous + too long
+    expect(isUsdtAddress('TRC20', '')).toBe(false);
+    expect(isUsdtAddress('TRC20', TRON.slice(0, -1))).toBe(false);          // one short
+    expect(isUsdtAddress('TRC20', `B${TRON.slice(1)}`)).toBe(false);        // wrong prefix
+    expect(isUsdtAddress('TRC20', `TO${TRON.slice(2)}`)).toBe(false);       // base58-ambiguous O
+    expect(isUsdtAddress('BEP20', BNB.slice(2))).toBe(false);               // no 0x
+    expect(isUsdtAddress('BEP20', `${BNB}ff`)).toBe(false);                 // too long
+  });
+});
+
+describe('receivingAddressFor — which of the merchant’s addresses this order uses', () => {
+  const merchant = {
+    usdtAddressTrc20: 'TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE',
+    usdtAddressBep20: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0',
+  };
+
+  it('picks the address for the ORDER’s chain, not "the USDT address"', () => {
+    // A merchant may hold both. Showing the wrong one tells a player to send on
+    // a network where that address does not exist, and the tokens are gone.
+    expect(receivingAddressFor(merchant, 'TRC20')?.address).toBe(merchant.usdtAddressTrc20);
+    expect(receivingAddressFor(merchant, 'BEP20')?.address).toBe(merchant.usdtAddressBep20);
+  });
+
+  it('names the NETWORK alongside it, always', () => {
+    expect(receivingAddressFor(merchant, 'TRC20')?.label).toMatch(/Tron/);
+    expect(receivingAddressFor(merchant, 'BEP20')?.label).toMatch(/BNB/);
+  });
+
+  it('returns nothing when the merchant holds no address on that chain', () => {
+    // Rendering a blank as a destination is how somebody sends to an empty
+    // string. Absent means absent.
+    expect(receivingAddressFor({ usdtAddressTrc20: merchant.usdtAddressTrc20 }, 'BEP20')).toBeNull();
+    expect(receivingAddressFor(merchant, null)).toBeNull();
+    expect(receivingAddressFor(merchant, 'SOLANA')).toBeNull();
+    expect(receivingAddressFor(null, 'TRC20')).toBeNull();
   });
 });
 

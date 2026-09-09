@@ -1405,11 +1405,6 @@ CREATE TABLE IF NOT EXISTS merchants (
   CONSTRAINT merchants_one_rail CHECK (
     cardinality(accepted_currencies) = 1
     AND accepted_currencies[1] IN ('INR', 'USDT')),
-  -- 34 base58 characters beginning with T. Base58 excludes 0, O, I and l so
-  -- visually similar characters cannot be confused.
-  CONSTRAINT merchants_usdt_address_format CHECK (
-    usdt_wallet_address IS NULL
-    OR usdt_wallet_address ~ '^T[1-9A-HJ-NP-Za-km-z]{33}$'),
   -- A suspended merchant without a reason is a suspension nobody can appeal.
   CONSTRAINT merchants_suspension_has_reason CHECK (
     status <> 'SUSPENDED' OR (suspension_reason IS NOT NULL AND suspension_reason <> '')),
@@ -1437,8 +1432,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS merchants_upi_unique
 CREATE UNIQUE INDEX IF NOT EXISTS merchants_bank_account_unique
   ON merchants (bank_account_no, bank_ifsc)
   WHERE bank_account_no IS NOT NULL AND bank_account_no <> '';
-CREATE UNIQUE INDEX IF NOT EXISTS merchants_usdt_unique
-  ON merchants (usdt_wallet_address) WHERE usdt_wallet_address IS NOT NULL;
 -- Login identifiers. A second merchant on the same mobile is a login that
 -- resolves to two accounts.
 CREATE UNIQUE INDEX IF NOT EXISTS merchants_mobile_unique
@@ -3291,109 +3284,131 @@ CREATE INDEX IF NOT EXISTS order_states_awaiting_link_idx
   WHERE order_type = 'DEPOSIT' AND state = 'PENDING_QUEUE'
     AND payment_mode = 'CASH_ATM' AND cash_link_id IS NULL;
 
-
--- ── USDT deposits, paid directly to the platform (BTCPay Server) ────────────
+-- ── A USDT merchant holds an address PER CHAIN ──────────────────────────────
 --
--- The ₹10,000 INR buy ceiling exists because that is the largest amount a cash
--- machine dispenses and the largest a merchant is approved to serve. Above it a
--- player buys with USDT, and there is no merchant in that transaction at all:
--- the player pays the PLATFORM's BTCPay Server, and the tokens are minted.
+-- USDT is one token on several blockchains, and they are not interchangeable:
+-- USDT sent to a TRC-20 address from a BEP-20 wallet is gone. So the player
+-- chooses the chain THEY hold funds on, and is shown only the address that can
+-- receive them.
 --
--- ── Why this is its own table and not an `order_states` row ────────────────
--- An order is a contract between a player and a MERCHANT. Every column on that
--- table is about that relationship — assignment, the merchant snapshot, the
--- UTR, the escrow, the dispute between the two parties — and none of it is true
--- here. Putting a merchant-less deposit in that table would mean a state
--- machine where half the states are unreachable and every consumer of
--- `order_states` has to learn to skip these rows. The two lifecycles are
--- different, so they are different tables.
+-- `usdt_wallet_address` was ONE column with a TRC-20 CHECK on it, which made
+-- Tron the only chain a merchant could serve and made "which chain is this?" a
+-- question the schema could not answer. Two columns say it instead: a merchant
+-- may hold one, the other, or both, and the assignment query filters on the
+-- chain the order asked for.
+ALTER TABLE merchants ADD COLUMN IF NOT EXISTS usdt_address_trc20 TEXT;
+ALTER TABLE merchants ADD COLUMN IF NOT EXISTS usdt_address_bep20 TEXT;
+
+-- Carry the existing addresses across before the old column goes. Its CHECK was
+-- the TRC-20 format, so every value in it is a Tron address by construction.
 --
--- ── The amount is decided HERE, and never read from the callback ───────────
--- BTCPay tells this platform that an invoice settled. It does not decide how
--- many tokens that is worth: `token_paise` is written when the invoice is
--- CREATED, from the rate that was live at that moment, and the credit reads
--- this row. A webhook body is attacker-adjacent input; the amount in it must
--- never be the number that mints tokens.
-CREATE TABLE IF NOT EXISTS usdt_deposits (
-  deposit_id        TEXT PRIMARY KEY,
-  user_id           TEXT NOT NULL,
-  -- BTCPay's own invoice id, once the invoice exists. NULL for the moment
-  -- between writing this row and the API answering — a row with no invoice is
-  -- a deposit that never started, not one that was paid and lost.
-  invoice_id        TEXT,
+-- Guarded on the column still existing: this file is applied REPEATEDLY and
+-- every statement in it has to be idempotent. A bare UPDATE naming a dropped
+-- column is a hard error on the second run, which fails the whole schema apply
+-- — and the second run is every run after the first deployment.
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+              WHERE table_name = 'merchants' AND column_name = 'usdt_wallet_address') THEN
+    UPDATE merchants
+       SET usdt_address_trc20 = usdt_wallet_address
+     WHERE usdt_wallet_address IS NOT NULL AND usdt_address_trc20 IS NULL;
+    ALTER TABLE merchants DROP COLUMN usdt_wallet_address;
+  END IF;
+END $$;
 
-  -- What the player receives, in paise. Integer, like every other money column.
-  token_paise       BIGINT NOT NULL,
-  -- How it splits across their two pockets, decided by the deposit policy at
-  -- creation, exactly as an INR deposit's split is.
-  deposit_allocation_paise BIGINT NOT NULL DEFAULT 0,
-  reserve_allocation_paise BIGINT NOT NULL DEFAULT 0,
-
-  -- What they pay, and the price that decided it. NUMERIC, not BIGINT: USDT has
-  -- six decimals and is not this platform's unit of account. Nothing is
-  -- computed FROM these — they are what the player was quoted and what BTCPay
-  -- was asked for.
-  usdt_amount       NUMERIC(18, 6) NOT NULL,
-  usdt_rate_inr     NUMERIC(18, 6) NOT NULL,
-
-  state             TEXT NOT NULL DEFAULT 'AWAITING_PAYMENT',
-  checkout_link     TEXT,
-  expires_at        TIMESTAMPTZ,
-  settled_at        TIMESTAMPTZ,
-  credited_at       TIMESTAMPTZ,
-  failure_reason    TEXT,
-
-  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-
-  CONSTRAINT usdt_deposits_state_known CHECK (
-    state IN ('AWAITING_PAYMENT', 'PROCESSING', 'SETTLED', 'EXPIRED', 'INVALID')),
-  CONSTRAINT usdt_deposits_amount_positive CHECK (token_paise > 0),
-  CONSTRAINT usdt_deposits_usdt_positive CHECK (usdt_amount > 0),
-  CONSTRAINT usdt_deposits_rate_positive CHECK (usdt_rate_inr > 0),
-  -- The split accounts for the whole amount. A partial split is not a split to
-  -- fall back from, it is a corrupt row — the same rule `depositCreditSplit`
-  -- applies to an INR deposit, here as a constraint so it cannot be written.
-  CONSTRAINT usdt_deposits_split_is_whole CHECK (
-    deposit_allocation_paise >= 0 AND reserve_allocation_paise >= 0
-    AND deposit_allocation_paise + reserve_allocation_paise = token_paise),
-  -- SETTLED is the state that mints tokens, and it must name the moment.
-  CONSTRAINT usdt_deposits_settled_has_time CHECK (
-    state <> 'SETTLED' OR settled_at IS NOT NULL)
-);
-
--- One deposit per BTCPay invoice. A webhook naming an invoice resolves to
--- exactly one row or to none — never to two.
-CREATE UNIQUE INDEX IF NOT EXISTS usdt_deposits_invoice_unique
-  ON usdt_deposits (invoice_id) WHERE invoice_id IS NOT NULL;
--- A player's own list, newest first.
-CREATE INDEX IF NOT EXISTS usdt_deposits_user_idx
-  ON usdt_deposits (user_id, created_at DESC);
--- The sweeper: invoices whose window has passed and that nobody paid.
-CREATE INDEX IF NOT EXISTS usdt_deposits_awaiting_idx
-  ON usdt_deposits (expires_at) WHERE state IN ('AWAITING_PAYMENT', 'PROCESSING');
-
--- Every transition, append-only, with the BTCPay delivery that caused it.
+DO $$ BEGIN
+  -- 34 base58 characters beginning with T. Base58 excludes 0, O, I and l so
+  -- visually similar characters cannot be confused.
+  ALTER TABLE merchants ADD CONSTRAINT merchants_usdt_trc20_format CHECK (
+    usdt_address_trc20 IS NULL
+    OR usdt_address_trc20 ~ '^T[1-9A-HJ-NP-Za-km-z]{33}$');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  -- BEP-20 is an EVM chain, so the address is the ordinary 20-byte hex form.
+  -- Case is not checked: EIP-55 mixed-case is a CHECKSUM, and rejecting a
+  -- lower-case address would refuse the form most wallets copy.
+  ALTER TABLE merchants ADD CONSTRAINT merchants_usdt_bep20_format CHECK (
+    usdt_address_bep20 IS NULL
+    OR usdt_address_bep20 ~ '^0x[0-9a-fA-F]{40}$');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+-- ── Why there is NO "a USDT merchant must hold an address" constraint ───────
 --
--- `tx_id` UNIQUE is the idempotency gate, exactly as it is for an order: a
--- redelivered webhook collides inside the transaction and the whole thing
--- unwinds rather than advancing the deposit a second time. `delivery_id` is
--- BTCPay's own id for that delivery, so an auditor can walk from a credited
--- player back to the exact callback that credited them.
-CREATE TABLE IF NOT EXISTS usdt_deposit_transitions (
-  id          BIGSERIAL PRIMARY KEY,
-  tx_id       TEXT NOT NULL UNIQUE,
-  deposit_id  TEXT NOT NULL REFERENCES usdt_deposits (deposit_id),
-  from_state  TEXT,
-  to_state    TEXT NOT NULL,
-  actor       TEXT,
-  reason      TEXT,
-  delivery_id TEXT,
-  ledger_key  TEXT,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT usdt_deposit_transitions_moves CHECK (from_state IS NULL OR from_state <> to_state)
-);
-CREATE INDEX IF NOT EXISTS usdt_deposit_transitions_deposit_idx
-  ON usdt_deposit_transitions (deposit_id, id);
-CREATE OR REPLACE TRIGGER usdt_deposit_transitions_append_only
-  BEFORE UPDATE OR DELETE ON usdt_deposit_transitions FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+-- It was written and backed out. A merchant is created, an admin puts them on
+-- the USDT rail, and only THEN do they enter a wallet address — so a row-level
+-- check refuses the middle step of the ordinary signup, and the migration fails
+-- outright on every merchant already on the rail without one.
+--
+-- It could not be right anyway. The question is not "does this merchant hold an
+-- address" but "does this merchant hold an address ON THE CHAIN THIS ORDER
+-- ASKED FOR", and a row cannot see the order. The guard belongs in the
+-- assignment query, where it is per-chain and where a merchant with no address
+-- is simply not a candidate. The merchant panel says so on their own screen, so
+-- the symptom is visible rather than silent.
+
+-- A wallet address is an IDENTITY, for the same reason a UPI id is: two
+-- merchants sharing one means money routed to either arrives at one, and no
+-- record afterwards can say which was intended.
+CREATE UNIQUE INDEX IF NOT EXISTS merchants_usdt_trc20_unique
+  ON merchants (usdt_address_trc20) WHERE usdt_address_trc20 IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS merchants_usdt_bep20_unique
+  ON merchants (usdt_address_bep20) WHERE usdt_address_bep20 IS NOT NULL;
+
+-- ── The chain a USDT order is being paid on ────────────────────────────────
+--
+-- Chosen by the PLAYER at creation, from the chain they hold funds on, and
+-- fixed for the life of the order: the merchant snapshot carries the address
+-- for this chain and nothing else, and a chain that changed after assignment
+-- would point a player at an address on a network they cannot reach.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS usdt_chain TEXT;
+
+DO $$ BEGIN
+  ALTER TABLE order_states ADD CONSTRAINT order_states_usdt_chain_known
+    CHECK (usdt_chain IS NULL OR usdt_chain IN ('TRC20', 'BEP20'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  -- The chain and the currency are one fact stated twice, so the row insists
+  -- they agree: a USDT order names a chain, an INR order names none. Without
+  -- this an INR order could carry a chain nothing reads, and a USDT order could
+  -- carry none while the assignment query silently matched no merchant.
+  ALTER TABLE order_states ADD CONSTRAINT order_states_usdt_chain_matches_currency
+    CHECK ((currency = 'USDT') = (usdt_chain IS NOT NULL));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- The assignment path for a USDT buy: merchants on this rail holding an address
+-- on the chain the order asked for.
+CREATE INDEX IF NOT EXISTS merchants_usdt_trc20_live_idx
+  ON merchants (status, merchant_approval_status)
+  WHERE usdt_address_trc20 IS NOT NULL;
+CREATE INDEX IF NOT EXISTS merchants_usdt_bep20_live_idx
+  ON merchants (status, merchant_approval_status)
+  WHERE usdt_address_bep20 IS NOT NULL;
+
+-- ── The chain a USDT order pays on cannot move ─────────────────────────────
+--
+-- The same rule as the payment mode, and the consequence is worse. The merchant
+-- snapshot carries the address for THIS chain and nothing else; repointing the
+-- order afterwards would leave a player holding an address on a network they
+-- did not choose and may not be able to reach. USDT sent on the wrong network
+-- is gone.
+--
+-- Written into the same function so there is ONE trigger deciding what is
+-- frozen on an order, rather than two that could disagree about the order they
+-- fire in.
+CREATE OR REPLACE FUNCTION bb_forbid_order_mode_change() RETURNS trigger AS $$
+BEGIN
+  IF NEW.payment_mode IS DISTINCT FROM OLD.payment_mode THEN
+    RAISE EXCEPTION 'order % was created on the % rail and cannot be moved to %',
+      OLD.order_id, OLD.payment_mode, NEW.payment_mode;
+  END IF;
+  IF OLD.payment_mode_version IS NOT NULL
+     AND NEW.payment_mode_version IS DISTINCT FROM OLD.payment_mode_version THEN
+    RAISE EXCEPTION 'order % is governed by payment mode version % and cannot be re-pointed',
+      OLD.order_id, OLD.payment_mode_version;
+  END IF;
+  IF OLD.usdt_chain IS NOT NULL AND NEW.usdt_chain IS DISTINCT FROM OLD.usdt_chain THEN
+    RAISE EXCEPTION 'order % is being paid on % and cannot be moved to another chain',
+      OLD.order_id, OLD.usdt_chain;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;

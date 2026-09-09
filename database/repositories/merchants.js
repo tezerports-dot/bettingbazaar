@@ -29,6 +29,7 @@
  * `accepted_currencies[1]` rather than an application-layer virtual, so the
  * scalar the panels read cannot drift from the array assignment filters on.
  */
+import { USDT_CHAIN_SPEC } from '../../backend/domains/merchant/merchantCurrency.js';
 import { pgQuery, getPool, connectGuarded } from '../client.js';
 import { randomBytes } from 'node:crypto';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
@@ -47,7 +48,7 @@ const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email
   two_factor_enabled, two_factor_enrolled_at, status, suspension_reason, is_online,
   accepts_deposits, accepts_withdrawals, accepted_currencies, merchant_type,
   bank_account_holder_name, bank_upi_id, bank_name, bank_account_no, bank_ifsc,
-  usdt_wallet_address, qr_code_url,
+  usdt_address_trc20, usdt_address_bep20, qr_code_url,
   min_deposit_paise, max_deposit_paise, min_withdraw_paise, max_withdraw_paise,
   min_order_paise, max_order_paise, cash_denomination_paise,
   total_processed_volume_paise, earnings_paise, total_deposit_amount_paise,
@@ -134,7 +135,11 @@ function toMerchant(row) {
       accountNo: row.bank_account_no,
       ifsc: row.bank_ifsc,
     },
-    usdtWalletAddress: row.usdt_wallet_address,
+    // One address PER CHAIN. USDT sent to a TRC-20 address from a BEP-20
+    // wallet is gone, so which chain an address belongs to is a fact the row
+    // states rather than one a reader infers from its shape.
+    usdtAddressTrc20: row.usdt_address_trc20,
+    usdtAddressBep20: row.usdt_address_bep20,
     qrCodeUrl: row.qr_code_url,
 
     limits: {
@@ -417,6 +422,15 @@ export async function assignmentCandidates({
   // no part — so the clause is absent rather than matching NULL, which would
   // exclude every merchant.
   cashDenominationPaise = null,
+  // On the USDT rail an order names the CHAIN the player will send on, and a
+  // merchant can only be paid on a chain they hold an address for. Applied
+  // here for the same reason the caps and the cash denomination are: a merchant
+  // who cannot receive this order is not a candidate at all.
+  //
+  // A merchant on the USDT rail holding NO address is excluded by this in every
+  // case, which is where the "must hold an address" rule actually lives — a row
+  // constraint could not see WHICH chain the order asked for.
+  usdtChain = null,
 } = {}) {
   const withdrawal = direction === 'WITHDRAWAL';
   const acceptsColumn = withdrawal ? 'accepts_withdrawals' : 'accepts_deposits';
@@ -442,6 +456,19 @@ export async function assignmentCandidates({
     ? null : Number(cashDenominationPaise);
   if (denomination !== null && (!Number.isInteger(denomination) || denomination <= 0)) {
     throw new TypeError(`assignmentCandidates: cashDenominationPaise must be a positive integer of paise, got ${cashDenominationPaise}`);
+  }
+
+  // The column is chosen from a FIXED map, never interpolated from the caller's
+  // string. `usdtChain` reaches this from a request body, and a column name
+  // spliced into SQL is an injection whatever the surrounding clause looks
+  // like. An unknown chain is a THROW, not an empty result: silently matching
+  // nobody would read as "no merchant is available" on a screen.
+  let chainColumn = null;
+  if (usdtChain !== null && usdtChain !== undefined) {
+    chainColumn = USDT_CHAIN_SPEC[usdtChain]?.column ?? null;
+    if (!chainColumn) {
+      throw new TypeError(`assignmentCandidates: unknown usdtChain '${usdtChain}'`);
+    }
   }
 
   const { rows } = await pgQuery(
@@ -481,7 +508,8 @@ export async function assignmentCandidates({
         -- caller is trusted to filter out afterwards.
         AND COALESCE(a.total, 0) < COALESCE(m.max_concurrent_orders, $3)
         AND COALESCE(a.${typeColumn}, 0) < COALESCE(m.${capColumn}, $4)
-        ${denomination === null ? '' : 'AND m.cash_denomination_paise = $5'}`,
+        ${denomination === null ? '' : 'AND m.cash_denomination_paise = $5'}
+        ${chainColumn === null ? '' : `AND m.${chainColumn} IS NOT NULL`}`,
     denomination === null
       ? [String(currency), since, nonNegative(defaultTotalLimit, 3), typeLimit]
       : [String(currency), since, nonNegative(defaultTotalLimit, 3), typeLimit, denomination],
@@ -658,7 +686,7 @@ const UPDATABLE = new Set([
   'status', 'suspension_reason', 'is_online', 'accepts_deposits', 'accepts_withdrawals',
   'accepted_currencies',
   'bank_account_holder_name', 'bank_upi_id', 'bank_name', 'bank_account_no', 'bank_ifsc',
-  'usdt_wallet_address', 'qr_code_url',
+  'usdt_address_trc20', 'usdt_address_bep20', 'qr_code_url',
   'min_deposit_paise', 'max_deposit_paise', 'min_withdraw_paise', 'max_withdraw_paise',
   'min_order_paise', 'max_order_paise', 'cash_denomination_paise',
   'rating', 'last_online_toggle', 'panel_url',
@@ -751,7 +779,7 @@ export async function createMerchant({
   merchantId = null, userId = null, name, publicRef = null,
   username = null, mobile = null, email = null, passwordHash = null,
   currency = 'INR', status = 'PENDING', bankDetails = null,
-  usdtWalletAddress = null, qrCodeUrl = null, panelUrl = '',
+  usdtAddressTrc20 = null, usdtAddressBep20 = null, qrCodeUrl = null, panelUrl = '',
   limits = null, client = null,
 } = {}) {
   if (!name) throw new Error('createMerchant requires a name');
@@ -768,17 +796,17 @@ export async function createMerchant({
        merchant_id, user_id, name, public_ref, username, mobile, email, password_hash,
        accepted_currencies, status,
        bank_account_holder_name, bank_upi_id, bank_name, bank_account_no, bank_ifsc,
-       usdt_wallet_address, qr_code_url, panel_url,
+       usdt_address_trc20, usdt_address_bep20, qr_code_url, panel_url,
        min_deposit_paise, max_deposit_paise, min_withdraw_paise, max_withdraw_paise)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8, ARRAY[$9], $10,
-             $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+             $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
      RETURNING ${COLUMNS}`,
     [id, userId ? String(userId) : null, String(name), ref,
       username || null, mobile || null, email || null, passwordHash,
       String(currency), String(status),
       bankDetails?.accountHolderName || null, bankDetails?.upiId || null,
       bankDetails?.bankName || null, bankDetails?.accountNo || null, bankDetails?.ifsc || null,
-      usdtWalletAddress || null, qrCodeUrl || null, panelUrl || '',
+      usdtAddressTrc20 || null, usdtAddressBep20 || null, qrCodeUrl || null, panelUrl || '',
       rupeesToPaise(l.minDeposit ?? 500), rupeesToPaise(l.maxDeposit ?? 50000),
       rupeesToPaise(l.minWithdraw ?? 500), rupeesToPaise(l.maxWithdraw ?? 50000)],
   );
@@ -991,7 +1019,7 @@ export async function deleteMerchant(merchantId) {
  */
 export async function createMerchantAccount({
   userId, username, mobile, email = null, passwordHash,
-  currency = 'INR', bankDetails = null, usdtWalletAddress = null,
+  currency = 'INR', bankDetails = null, usdtAddressTrc20 = null, usdtAddressBep20 = null,
 }) {
   if (!mobile) throw new Error('createMerchantAccount requires a mobile');
   if (!passwordHash) throw new Error('createMerchantAccount requires a passwordHash');
@@ -1023,7 +1051,7 @@ export async function createMerchantAccount({
     const merchant = await createMerchant({
       merchantId: newMerchantId(), userId: uid, name: username || String(mobile),
       username, mobile, email, passwordHash,
-      currency, status: 'PENDING', bankDetails, usdtWalletAddress,
+      currency, status: 'PENDING', bankDetails, usdtAddressTrc20, usdtAddressBep20,
       client,
     });
 

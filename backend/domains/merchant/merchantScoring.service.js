@@ -111,6 +111,10 @@ export async function selectBestMerchant(orderType, tokenAmount, currency = MERC
   // assigned after a switch keeps the rules it was born under.
   paymentMode = null,
   paymentModeVersion = null,
+  // The chain a USDT order will be paid on. A merchant with no address on it
+  // cannot receive the money, so they are excluded by the candidate query
+  // rather than ranked and then found unusable.
+  usdtChain = null,
 } = {}) {
   const defaults = await getFundingLimits();
   const totalLimit = await totalOrderLimitFor(paymentModeVersion);
@@ -132,6 +136,7 @@ export async function selectBestMerchant(orderType, tokenAmount, currency = MERC
     defaultWithdrawalLimit: defaults.maxWithdrawalOrders,
     defaultTotalLimit: totalLimit,
     cashDenominationPaise,
+    usdtChain,
   });
   if (!candidates.length) return null;
 

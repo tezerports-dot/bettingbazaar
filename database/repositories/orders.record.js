@@ -129,6 +129,11 @@ export function toOrder(r) {
     // worker and every screen branches on this: after a switch both rails run
     // side by side until the last pre-flip order settles.
     paymentMode: r.payment_mode,
+    // On a USDT order, the chain the PLAYER chose to pay on. Fixed at creation:
+    // the merchant snapshot carries the address for this chain and nothing
+    // else, and a chain that moved after assignment would point a player at an
+    // address on a network they cannot reach.
+    usdtChain: r.usdt_chain ?? null,
     paymentModeVersion: r.payment_mode_version === null ? null : Number(r.payment_mode_version),
     // The ATM link serving this order, on the cash rail. The id only — the
     // link itself lives in `cash_link_queue` and is resolved for the ORDER'S
@@ -300,6 +305,14 @@ export async function createOrderRecord({
   // a cash-rail fixture that was in fact a UPI order. `stampForNewOrder` now
   // takes the mode and throws on one it does not know.
   paymentMode = null,
+  // The chain a USDT order is paid on, chosen by the player. A named parameter
+  // and NOT a SETTABLE field, for the same reason `paymentMode` is one: nothing
+  // may change it afterwards. The snapshot carries the merchant's address for
+  // this chain alone, so repointing the order would hand a player an address on
+  // a network they did not choose — and USDT sent on the wrong network is gone.
+  // A trigger refuses the update too; this keeps the allowlist from being one
+  // edit away from permitting it.
+  usdtChain = null,
   ...detail
 }) {
   if (!orderId) throw new Error('createOrderRecord requires an orderId');
@@ -322,9 +335,9 @@ export async function createOrderRecord({
   // switching rails mid-flight cannot change what this order is running under.
   const stamp = await stampForNewOrder(paymentMode);
   const columns = ['order_id', 'user_id', 'order_type', 'state', 'token_amount_paise', 'fiat_amount_paise',
-    'payment_mode', 'payment_mode_version'];
+    'payment_mode', 'payment_mode_version', 'usdt_chain'];
   const params = [String(orderId), String(userId), type, state, tokenPaise, rupeesToPaise(fiatAmountRupees),
-    stamp.mode, stamp.version];
+    stamp.mode, stamp.version, usdtChain];
 
   // The same allowlist `setOrderFields` uses, so a field this create accepts is
   // one an update accepts and vice versa — and an unknown one is refused here

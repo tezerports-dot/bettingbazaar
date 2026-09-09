@@ -31,6 +31,7 @@ import { PAYMENT_MODES } from '#db/repositories/paymentModePolicy.js';
 import { MERCHANT_CURRENCY } from '../merchant/merchantCurrency.js';
 import {
   BUY_DENOMINATIONS_PAISE, MAX_INR_BUY_PAISE, isBuyDenomination,
+  USDT_BUY_DENOMINATIONS_PAISE, isUsdtBuyDenomination,
 } from '../merchant/denominations.js';
 import { rupeesToPaise } from '../../shared/money.js';
 
@@ -361,10 +362,15 @@ export { getRiskRules };
  *
  * ── The three rules, and why each is here ──────────────────────────────────
  *
- * 1. **₹10,000 is the ceiling on any INR buy**, on either rail. Above it the
- *    player buys with USDT. Derived from the denomination list rather than
- *    written as its own number, so the ceiling and the largest buy denomination
- *    cannot drift apart.
+ * 1. **₹10,000 is the ceiling on any INR buy**, on either INR rail. Derived
+ *    from the denomination list rather than written as its own number, so the
+ *    ceiling and the largest buy denomination cannot drift apart.
+ *
+ *    Above it a player buys with USDT — at one of exactly TWO amounts, ₹50,000
+ *    or ₹100,000, for the reason the cash amounts are fixed: a merchant sending
+ *    tokens from their own wallet knows what they are being asked for before
+ *    they accept. Nothing serves the gap between the rails, and the refusal
+ *    names both lists rather than saying "invalid".
  *
  * 2. **On the cash rail the amount must BE a denomination.** Not "within a
  *    range" — a cash machine dispenses one of a fixed set, so an amount between
@@ -376,11 +382,34 @@ export { getRiskRules };
  *    several merchants' entire capacity during a shortage.
  */
 async function assertBuyIsLegal({ userId, tokenAmount, paymentMode, currency }) {
-  // USDT deposits are priced and validated on their own path — the minimum
-  // there is a token count, not a rupee amount — so these rules do not apply.
-  if (currency !== MERCHANT_CURRENCY.INR) return;
-
   const paise = rupeesToPaise(tokenAmount);
+
+  // ── The USDT rail has its own two rules ─────────────────────────────────
+  // Its amounts are FIXED and its concurrency rule is the same one, applied per
+  // currency: a player may hold one open buy on each rail, because the two are
+  // served by different merchants out of different inventory.
+  if (currency === MERCHANT_CURRENCY.USDT) {
+    if (!isUsdtBuyDenomination(paise)) {
+      throw Object.assign(
+        // Both rails' choices, named. A player who asks for ₹30,000 is on
+        // neither list, and "invalid amount" would have them guess.
+        new Error(
+          `A USDT purchase is ₹${USDT_BUY_DENOMINATIONS_PAISE.map((p) => (p / 100).toLocaleString('en-IN')).join(' or ₹')}.`
+          + ` For less, buy with UPI or cash up to ₹${(MAX_INR_BUY_PAISE / 100).toLocaleString('en-IN')}.`,
+        ),
+        { status: 400, code: 'NOT_A_USDT_DENOMINATION' },
+      );
+    }
+    const openUsdt = await db.orders.countOpenDeposits(userId, { currency });
+    if (openUsdt > 0) {
+      throw Object.assign(
+        new Error('You already have a USDT purchase in progress. Finish or cancel it before starting another.'),
+        { status: 409, code: 'BUY_ALREADY_OPEN' },
+      );
+    }
+    return;
+  }
+
 
   if (paise > MAX_INR_BUY_PAISE) {
     throw Object.assign(
@@ -416,8 +445,20 @@ export async function assessFundingOrder({
   const rules = await getRiskRules();
 
   if (type === 'DEPOSIT') {
-    validateTokenPurchase({ amount: tokenAmount, min, max, enforceMultiples: rules.enforceMultiplesOf10 });
+    // The RAIL's own rule first, then the generic bounds.
+    //
+    // Both are true, and when both would refuse an amount the rail's answer is
+    // the useful one. A ₹30,000 USDT buy hit the generic minimum and was told
+    // "Minimum purchase is 50000 BB tokens" — a limit that does not govern that
+    // rail, and a sentence that does not tell the player what they CAN buy. It
+    // now says "₹50,000 or ₹100,000; for less, buy with UPI or cash up to
+    // ₹10,000". Same for a ₹7,777 cash order, which now names the
+    // denominations instead of the multiple-of-ten rule.
+    //
+    // Neither check is removed. The generic bounds still catch everything the
+    // rail rule does not speak to.
     await assertBuyIsLegal({ userId, tokenAmount, paymentMode, currency });
+    validateTokenPurchase({ amount: tokenAmount, min, max, enforceMultiples: rules.enforceMultiplesOf10 });
   } else {
     validateTokenSale({ amount: tokenAmount, min, max, enforceMultiples: rules.enforceMultiplesOf10 });
   }

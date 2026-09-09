@@ -8,6 +8,8 @@ import { tryVerifyJwt } from '../identity/jwt.util.js';
 import { merchantAuth } from '../../middleware/merchantAuth.js';
 import {
   withdrawalLimiter,
+  // Creating a USDT purchase reaches the merchant queue and holds a price.
+  usdtDepositLimiter,
   // Both of these routes shipped with no limit at all. A retry creates a NEW
   // order and, on a sell, locks tokens in escrow; the grace claim extends an
   // order's own deadline. Neither is a login route, so no auth tier covered
@@ -22,6 +24,10 @@ import { markOrderPaid, cancelOrder, claimUtrGrace, retryOrder } from './payment
 // The only shape of an order a player receives. A player sees where to pay and
 // nothing about who they are paying.
 import { toPlayerOrderView, toPlayerOrderViews } from './playerOrderView.js';
+// The ONE system-config payload. The USDT rail's amounts and networks are money
+// rules, so the panel is told them rather than holding its own copy.
+import { systemConfigPayload } from '../configuration/systemConfigPayload.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 // The mirror of it. `deposit/:orderId/confirm` answers a merchant or an admin,
 // so this file needs both projections.
 import { toMerchantOrderView } from '../merchant/merchantOrderView.js';
@@ -85,6 +91,59 @@ router.post('/deposit/create', authenticate, requireLinkedKyc, requireChannelMem
     const result = await requestDeposit({ userId: req.user.userId, tokenAmount: Number(req.body.tokenAmount) });
     res.json({ success: true, message: 'Deposit request created. Waiting for merchant assignment.', ...result });
   } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code }); }
+});
+
+/**
+ * POST /api/payment/usdt/deposit/create — buy above the INR ceiling.
+ *
+ * ── Why this is a separate route from `/deposit/create` ────────────────────
+ * It is a different rail with different rules — two fixed amounts, and a chain
+ * the player must choose — and the two are not interchangeable. One route
+ * branching on a body field would make "which rail am I on" a question every
+ * reader of the handler has to answer, and the failure mode is a request that
+ * silently lands on the wrong one.
+ *
+ * The SERVER still decides what each rail serves: `assertBuyIsLegal` refuses a
+ * ₹5,000 purchase here and a ₹50,000 one on the INR route, whatever a client
+ * asks for.
+ *
+ * `requireLinkedKyc`, matching the INR deposit exactly — money IN needs linked
+ * identity, and holding a player at the door while verification runs in batches
+ * loses the player without protecting anyone. The stricter rule belongs on
+ * withdrawal, where the money leaves.
+ */
+router.post('/usdt/deposit/create',
+  authenticate,
+  requireLinkedKyc,
+  requireChannelMembership({ action: 'add funds' }),
+  usdtDepositLimiter,
+  async (req, res) => {
+    try {
+      const result = await requestDeposit({
+        userId: req.user.userId,
+        tokenAmount: Number(req.body.tokenAmount),
+        usdtChain: req.body.usdtChain,
+        provider: 'USDT',
+      });
+      res.json({ success: true, message: 'USDT purchase created. Waiting for a merchant.', ...result });
+    } catch (err) {
+      res.status(err.status || 500).json({ success: false, message: err.message, code: err.code });
+    }
+  });
+
+/**
+ * GET /api/payment/usdt/rail — the two amounts and the networks.
+ *
+ * From the SERVER, because both are money rules: a panel with its own copy
+ * would offer an amount the gate refuses, or a network no merchant holds.
+ */
+router.get('/usdt/rail', authenticate, async (req, res) => {
+  const cfg = systemConfigPayload(await getSystemConfig());
+  res.json({
+    success: true,
+    denominations: cfg.usdtBuyDenominations,
+    chains: cfg.usdtChains,
+  });
 });
 
 // APPROVED, not merely linked. Every withdrawal here draws from the WINNINGS

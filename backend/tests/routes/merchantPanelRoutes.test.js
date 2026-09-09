@@ -50,9 +50,23 @@ describePg('merchant panel routes', () => {
   /** A reference nothing else in the run has claimed. The registry's key is it. */
   const utr = () => `UTRMP${RUN}${String(seq).padStart(6, '0')}`.toUpperCase();
 
+  // A DIFFERENT wallet address every time. An address is UNIQUE across
+  // merchants — it is an identity, like a UPI id — so a constant collides with
+  // the row the PREVIOUS RUN of this suite left behind. The database is shared
+  // and never reset between files (trap 10).
+  const BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  const trc20 = () => `T${Array.from({ length: 33 },
+    () => BASE58[Math.floor(Math.random() * BASE58.length)]).join('')}`;
+  const bep20 = () => `0x${Array.from({ length: 40 },
+    () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('')}`;
+
   const order = async ({
     type = 'DEPOSIT', state = 'PENDING_QUEUE', tokens = 500,
     betting = 400, reserve = 100, owner = null, merchantId = null, extra = {},
+    // The chain a USDT order is paid on. A named parameter, not part of
+    // `extra`, because it is not settable: the row freezes it and the merchant
+    // snapshot carries the address for this chain alone.
+    usdtChain = null,
   } = {}) => {
     seq += 1;
     const who = owner || await actor({});
@@ -61,6 +75,7 @@ describePg('merchant panel routes', () => {
       orderId, userId: who.userId, type,
       tokenAmountRupees: tokens, fiatAmountRupees: tokens, state,
       depositAllocation: betting, reserveAllocation: reserve,
+      ...(usdtChain ? { usdtChain } : {}),
       ...(merchantId ? { merchantId } : {}),
       ...extra,
     });
@@ -155,7 +170,9 @@ describePg('merchant panel routes', () => {
     // out of the open pool — so the rail is re-checked where the merchant
     // actually takes it.
     const inr = await merchantActor({ tokensRupees: 5000 });
-    const { orderId } = await order({ extra: { currency: 'USDT' } });
+    // A USDT order names the CHAIN the player will send on — the row insists
+    // the two agree, because a USDT order with no chain matches no merchant.
+    const { orderId } = await order({ extra: { currency: 'USDT' }, usdtChain: 'TRC20' });
     const res = await as(app, inr).post(`/accept/${orderId}`).send({});
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/USDT order and you settle in INR/i);
@@ -164,10 +181,39 @@ describePg('merchant panel routes', () => {
   it('refuses a USDT merchant with no wallet address to be paid at', async () => {
     const usdt = await merchantActor({ tokensRupees: 5000 });
     await updateMerchant(usdt.merchantId, { acceptedCurrencies: ['USDT'] });
-    const { orderId } = await order({ extra: { currency: 'USDT' } });
+    const { orderId } = await order({ extra: { currency: 'USDT' }, usdtChain: 'TRC20' });
     const res = await as(app, usdt).post(`/accept/${orderId}`).send({});
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/TRC-20 wallet address/i);
+    expect(res.body.message).toMatch(/Tron \(TRC-20\)/i);
+  });
+
+  it('refuses a USDT merchant who holds the OTHER chain’s address', async () => {
+    // The sharp case, and the reason there are two columns. This merchant is on
+    // the USDT rail and has an address — on Tron. The order is being paid on
+    // BNB Smart Chain. Sending there would put the tokens on a network the
+    // address does not exist on, and they would be gone.
+    const usdt = await merchantActor({ tokensRupees: 5000 });
+    await updateMerchant(usdt.merchantId, {
+      acceptedCurrencies: ['USDT'],
+      usdtAddressTrc20: trc20(),
+    });
+    const { orderId } = await order({ extra: { currency: 'USDT' }, usdtChain: 'BEP20' });
+    const res = await as(app, usdt).post(`/accept/${orderId}`).send({});
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/BNB Smart Chain/i);
+  });
+
+  it('lets a USDT merchant take an order on a chain they DO hold', async () => {
+    // The other half: the subset assertion above passes just as happily if no
+    // USDT merchant can ever accept anything.
+    const usdt = await merchantActor({ tokensRupees: 5000 });
+    await updateMerchant(usdt.merchantId, {
+      acceptedCurrencies: ['USDT'],
+      usdtAddressBep20: bep20(),
+    });
+    const { orderId } = await order({ extra: { currency: 'USDT' }, usdtChain: 'BEP20' });
+    const res = await as(app, usdt).post(`/accept/${orderId}`).send({});
+    expect(res.status, res.body.message).toBe(200);
   });
 
   it('accepts an order and writes the snapshot WITH the transition', async () => {

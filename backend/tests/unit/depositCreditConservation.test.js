@@ -84,6 +84,7 @@ vi.mock('../../middleware/security.js', () => ({
   withdrawalLimiter: passThrough,
   orderRetryLimiter: passThrough,
   utrGraceLimiter: passThrough,
+  usdtDepositLimiter: passThrough,
 }));
 vi.mock('../../middleware/ipDefense.js', () => ({
   createSubnetLimiter: () => (req, res, next) => next(),

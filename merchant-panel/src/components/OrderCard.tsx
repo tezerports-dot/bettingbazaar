@@ -10,7 +10,7 @@
 import React from 'react';
 import { ArrowDownLeft, ArrowUpRight, Check, Clock, Copy, ChevronRight, ShieldCheck } from 'lucide-react';
 import { OrderStatus, type MerchantProfile, type PaymentOrder } from '../types';
-import { counterpartyOf, formatMoney, railCopy, railOf, tokenColumn, truncateMiddle, type MerchantRail } from '../utils/rail';
+import { counterpartyOf, formatMoney, railCopy, railOf, receivingAddressFor, tokenColumn, truncateMiddle, type MerchantRail } from '../utils/rail';
 import { formatCountdown, secondsLeft, URGENT_SECONDS } from '../hooks/useCountdown';
 import { Banner, Button, CopyRow, StatusPill, cardStyle, copyText } from './ui';
 
@@ -39,8 +39,13 @@ export function paymentDestination(
   if (isDeposit) {
     // Money coming in — the merchant's own credentials, which the user pays to.
     if (rail === 'USDT') {
-      const address = merchant?.usdtWalletAddress || '';
-      return address ? { label: 'Your USDT address — user sends here', value: address, sub: copy.networkNote } : null;
+      // The address for THIS order's chain. A merchant may hold both, and
+      // showing the wrong one sends a player's tokens to a network where the
+      // address does not exist — unrecoverable.
+      const receiving = receivingAddressFor(merchant, order.usdtChain);
+      return receiving
+        ? { label: `Your ${receiving.label} address — user sends here`, value: receiving.address, sub: receiving.label }
+        : null;
     }
     const upi = merchant?.settlementDetails?.upiId || merchant?.bankDetails?.upiId || '';
     return upi ? { label: 'Your UPI — user pays here', value: upi } : null;

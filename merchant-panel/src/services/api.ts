@@ -543,14 +543,20 @@ export const updatePreferences = async (preferences: {
 // =======================================================================
 
 // The backend enforces rail exclusivity on this endpoint: an INR merchant may
-// send upiId/qrCodeUrl/bankDetails, a USDT merchant may send only
-// usdtWalletAddress. Sending a field for the wrong rail is a 400, not a silent
-// no-op (backend/domains/merchant/merchant.routes.js PUT /profile).
+// send upiId/qrCodeUrl/bankDetails, a USDT merchant may send only the wallet
+// addresses. Sending a field for the wrong rail is a 400, not a silent no-op
+// (backend/domains/merchant/merchant.routes.js PUT /profile).
+//
+// The two addresses are independent: send one to set it, send an empty string
+// to clear that chain, omit it to leave it alone. Clearing the LAST one is
+// refused — a merchant with no address receives no orders, and that is worth
+// saying rather than accepting silently.
 export const updateProfile = async (data: {
   upiId?: string;
   qrCodeUrl?: string;
   bankDetails?: { accountHolderName?: string; bankName?: string; accountNo?: string; ifsc?: string };
-  usdtWalletAddress?: string;
+  usdtAddressTrc20?: string;
+  usdtAddressBep20?: string;
 }): Promise<any> => {
   const result = await request<any>(ENDPOINTS.PROFILE.UPDATE, {
     method: 'PUT',

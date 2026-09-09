@@ -46,8 +46,19 @@ describePg('the CDM receipt', () => {
   const oid = () => `cdm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}-${seq += 1}`;
 
   const RECEIPT_URL = 'https://cdn.test/cdm-receipt/slip.jpg';
-  const TXN = 'HDFCN12345678';
-  const good = { transactionId: TXN, receiptFileKey: 'cdm-receipt/slip.jpg', receiptCdnUrl: RECEIPT_URL };
+  /**
+   * A DIFFERENT bank reference every time, and different across runs.
+   *
+   * The slip's transaction id is claimed in the same registry as a UTR, so it
+   * belongs to exactly one order — for good. A shared constant made the second
+   * test in the file a duplicate claim, and a constant of any kind would
+   * collide with the previous RUN, because `utr_registry` is append-only and
+   * this database is never reset between suites (trap 10).
+   */
+  const txn = () => `HDFCN${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`.toUpperCase();
+  const slip = (transactionId = txn()) => ({
+    transactionId, receiptFileKey: 'cdm-receipt/slip.jpg', receiptCdnUrl: RECEIPT_URL,
+  });
 
   const payout = async (merchant, player, state = 'COMPLETED') => {
     const orderId = oid();
@@ -83,7 +94,8 @@ describePg('the CDM receipt', () => {
   });
 
   it('records a receipt bound to this merchant and this order', async () => {
-    cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: good.receiptFileKey });
+    cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: 'cdm-receipt/slip.jpg' });
+    const good = slip();
     const merchant = await merchantActor({});
     const player = await actor({});
     const orderId = await payout(merchant, player);
@@ -100,12 +112,39 @@ describePg('the CDM receipt', () => {
     }));
 
     const stored = await getCdmReceipt(orderId);
-    expect(stored.transactionId).toBe(TXN);
+    expect(stored.transactionId).toBe(good.transactionId);
     expect(stored.receiptUrl).toBe(RECEIPT_URL);
   });
 
+  it('REFUSES a bank transaction id already used on another payout', async () => {
+    // A CDM slip's transaction id is a bank's reference for ONE real cash
+    // deposit, exactly as a UTR is for one real transfer. It was recorded and
+    // never claimed, so the same slip could be presented as proof of two
+    // payouts — one deposit, two players marked paid.
+    cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: 'cdm-receipt/slip.jpg' });
+    const good = slip();
+    const merchant = await merchantActor({});
+    const player = await actor({});
+
+    const first = await payout(merchant, player);
+    expect((await as(merchantApp, merchant).post(`/orders/${first}/cdm-receipt`).send(good)).status).toBe(200);
+
+    const second = await payout(merchant, player);
+    const res = await as(merchantApp, merchant).post(`/orders/${second}/cdm-receipt`).send(good);
+    expect(res.status).toBe(409);
+    expect(res.body.reason).toBe('DUPLICATE_UTR');
+    // WHICH payout already holds it — support answering "it says already used"
+    // needs this without a second lookup.
+    expect(res.body.originalOrderId).toBe(first);
+    expect(res.body.message).toMatch(/already been used/i);
+
+    // And the second payout has NO receipt: a refused claim leaves nothing.
+    expect(await getCdmReceipt(second)).toBeFalsy();
+  });
+
   it('never returns the receipt to the merchant who uploaded it', async () => {
-    cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: good.receiptFileKey });
+    cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: 'cdm-receipt/slip.jpg' });
+    const good = slip();
     const merchant = await merchantActor({});
     const player = await actor({});
     const orderId = await payout(merchant, player);
@@ -114,7 +153,7 @@ describePg('the CDM receipt', () => {
     expect(submit.status).toBe(200);
     // They are told WHAT was accepted — that confirmation is the only look they
     // get, because they cannot open it again.
-    expect(submit.body.submitted.transactionId).toBe(TXN);
+    expect(submit.body.submitted.transactionId).toBe(good.transactionId);
     // But never the image itself, even in the response that accepted it.
     expect(JSON.stringify(submit.body)).not.toContain(RECEIPT_URL);
 
@@ -125,7 +164,8 @@ describePg('the CDM receipt', () => {
   });
 
   it('keeps it out of the order record every projection is built from', async () => {
-    cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: good.receiptFileKey });
+    cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: 'cdm-receipt/slip.jpg' });
+    const good = slip();
     const merchant = await merchantActor({});
     const player = await actor({});
     const orderId = await payout(merchant, player);
@@ -136,11 +176,12 @@ describePg('the CDM receipt', () => {
     // admin panel, a route nobody has written yet — can carry it.
     const record = await getOrderRecord(orderId);
     expect(JSON.stringify(record)).not.toContain(RECEIPT_URL);
-    expect(JSON.stringify(record)).not.toContain(TXN);
+    expect(JSON.stringify(record)).not.toContain(good.transactionId);
   });
 
   it('gives it to an admin, and records that they looked', async () => {
-    cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: good.receiptFileKey });
+    cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: 'cdm-receipt/slip.jpg' });
+    const good = slip();
     const merchant = await merchantActor({});
     const player = await actor({});
     const admin = await actor({ isAdmin: true });
@@ -150,11 +191,12 @@ describePg('the CDM receipt', () => {
     const res = await as(adminApp, admin).get(`/orders/${orderId}/cdm-receipt`);
     expect(res.status).toBe(200);
     expect(res.body.receipt.receiptUrl).toBe(RECEIPT_URL);
-    expect(res.body.receipt.transactionId).toBe(TXN);
+    expect(res.body.receipt.transactionId).toBe(good.transactionId);
   });
 
   it('refuses it to a sub-admin without the disputes permission', async () => {
-    cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: good.receiptFileKey });
+    cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: 'cdm-receipt/slip.jpg' });
+    const good = slip();
     const merchant = await merchantActor({});
     const player = await actor({});
     const orderId = await payout(merchant, player);
@@ -172,18 +214,19 @@ describePg('the CDM receipt', () => {
   });
 
   it('refuses a transaction id with no image, and an image with no id', async () => {
-    cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: good.receiptFileKey });
+    cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: 'cdm-receipt/slip.jpg' });
+    const good = slip();
     const merchant = await merchantActor({});
     const player = await actor({});
     const orderId = await payout(merchant, player);
 
     const noImage = await as(merchantApp, merchant).post(`/orders/${orderId}/cdm-receipt`)
-      .send({ transactionId: TXN });
+      .send({ transactionId: txn() });
     expect(noImage.status).toBe(400);
     expect(noImage.body.reason).toBe('RECEIPT_REQUIRED');
 
     const noId = await as(merchantApp, merchant).post(`/orders/${orderId}/cdm-receipt`)
-      .send({ receiptFileKey: good.receiptFileKey });
+      .send({ receiptFileKey: 'cdm-receipt/slip.jpg' });
     expect(noId.status).toBe(400);
     expect(noId.body.reason).toBe('TRANSACTION_ID_REQUIRED');
 
@@ -193,7 +236,8 @@ describePg('the CDM receipt', () => {
   });
 
   it('will not let one merchant attach a receipt to another\'s order', async () => {
-    cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: good.receiptFileKey });
+    cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: 'cdm-receipt/slip.jpg' });
+    const good = slip();
     const owner = await merchantActor({});
     const other = await merchantActor({});
     const player = await actor({});
@@ -219,7 +263,8 @@ describePg('the CDM receipt', () => {
   });
 
   it('tells a merchant which of their own payouts still needs a slip', async () => {
-    cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: good.receiptFileKey });
+    cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: 'cdm-receipt/slip.jpg' });
+    const good = slip();
     const merchant = await merchantActor({});
     const player = await actor({});
 

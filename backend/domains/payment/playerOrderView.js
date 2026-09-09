@@ -68,6 +68,11 @@ export const PLAYER_ORDER_FIELDS = Object.freeze([
   // Not the merchant's rail — the ORDER's, stamped at creation.
   'paymentMode',
 
+  // Which chain THIS player chose to pay on. Their own choice, and the screen
+  // has to keep showing it: a player who picked BEP-20 and is shown a Tron
+  // address has lost their money, so the two are rendered together everywhere.
+  'usdtChain',
+
   // Their own payment evidence, and the deadline for it.
   'utr', 'utrNumber', 'proofScreenshot', 'proofExpiresAt',
   'utrGraceAt', 'expiresAt',
@@ -105,7 +110,12 @@ export const PLAYER_ORDER_FIELDS = Object.freeze([
 export const PLAYER_FORBIDDEN_ORDER_FIELDS = Object.freeze([
   // ── Who they are paying ───────────────────────────────────────────────────
   'merchantSnapshot', 'merchantId',
-  'upiId', 'qrCodeUrl', 'usdtAddress', 'usdtWalletAddress',
+  'upiId', 'qrCodeUrl',
+  // The merchant's stored addresses, as columns. What the player DOES receive
+  // is `payTo.usdtAddress` — the one chain their own order named — which is a
+  // payment destination, the wallet equivalent of the UPI intent. These two are
+  // the merchant's credentials for BOTH chains and are not.
+  'usdtAddressTrc20', 'usdtAddressBep20', 'usdtWalletAddress',
   'bankName', 'accountNo', 'ifsc', 'accountHolder',
   'merchantPanelUrl', 'merchantResponseMinutes',
   // The merchant's credit standing with the platform, and the batch the
@@ -166,6 +176,21 @@ function counterpartyFor(order) {
   if (snapshot.paymentLink) view.paymentLink = snapshot.paymentLink;
   if (snapshot.merchantRef) view.merchantRef = snapshot.merchantRef;
   if (snapshot.expiresAt) view.expiresAt = snapshot.expiresAt;
+
+  // ── The USDT rail's payment destination ────────────────────────────────
+  // A wallet address IS where to pay, exactly as the UPI intent is on the INR
+  // rail — so it belongs in `payTo` and nowhere else in the payload. What stays
+  // out is the merchant's address on the OTHER chain, which is not part of this
+  // order.
+  //
+  // The chain travels WITH the address, always. An address on its own is how
+  // somebody sends on the wrong network and loses the tokens, and this is the
+  // one field on this platform where the mistake cannot be undone.
+  if (snapshot.usdtPayTo && snapshot.usdtChain) {
+    view.usdtAddress = snapshot.usdtPayTo;
+    view.usdtChain = snapshot.usdtChain;
+    if (snapshot.usdtChainLabel) view.usdtChainLabel = snapshot.usdtChainLabel;
+  }
   return Object.keys(view).length ? view : undefined;
 }
 

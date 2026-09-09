@@ -264,21 +264,6 @@ export const burnFromMerchantFloat = (amountPaise, args = {}) =>
 export const merchantDispensedToUser = (amountPaise, args = {}) =>
   move(ACCOUNTS.MERCHANT_FLOAT, ACCOUNTS.USER_FLOAT)(amountPaise, { operation: 'DEPOSIT_DISPENSED', ...args });
 
-/**
- * A player paid the PLATFORM in USDT and tokens were created for them.
- *
- * The other way supply increases, and the reason it needs its own movement:
- * there is no merchant in a USDT deposit. Nobody's float is drawn down, so
- * routing it through `mintToMerchantFloat` and then `merchantDispensedToUser`
- * would post two movements describing a merchant who was never party to it —
- * and MERCHANT_FLOAT would be momentarily wrong in between.
- *
- * The supply ceiling applies unchanged: `postMovement` guards any movement with
- * a negative TOKEN_SUPPLY leg, so this cannot mint past the cap an admin set.
- */
-export const mintToUser = (amountPaise, args = {}) =>
-  move(ACCOUNTS.TOKEN_SUPPLY, ACCOUNTS.USER_FLOAT)(amountPaise, { operation: 'MINT_TO_USER', ...args });
-
 /** A user's tokens went to a merchant (withdrawal settled). */
 export const userPaidMerchant = (amountPaise, args = {}) =>
   move(ACCOUNTS.USER_FLOAT, ACCOUNTS.MERCHANT_FLOAT)(amountPaise, { operation: 'WITHDRAWAL_SETTLED', ...args });

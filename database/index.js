@@ -103,7 +103,6 @@ import * as settlements from './repositories/settlements.js';
 import * as merchantSettlements from './repositories/merchantSettlements.js';
 import * as treasury from './repositories/treasury.js';
 import * as adminIssuance from './repositories/adminIssuance.js';
-import * as usdtDeposits from './repositories/usdtDeposits.js';
 
 /** Mechanism + vocabulary under one name. The caller does not need the split. */
 const merge = (core, api) => Object.freeze({ ...core, ...api });
@@ -135,9 +134,6 @@ export const db = Object.freeze({
   merchantSettlements,
   adminIssuance,
   paymentConfig,
-  // The USDT rail. No merchant is party to one, which is why it is a table of
-  // its own rather than a shape `order_states` has to be taught to skip.
-  usdtDeposits,
   utr,
 
   // Compliance
@@ -172,4 +168,4 @@ export default db;
 export { users, identity, security, telegram, merchants, chat, config };
 export { treasury, settlements, merchantSettlements, adminIssuance, balanceAdjustments };
 export { markets, games, content, engagement, social, referrals };
-export { audit, cashLinks, compliance, depositPolicy, merchantBonusPolicy, paymentModePolicy, operations, paymentConfig, supportDocuments, stats, usdtDeposits, utr };
+export { audit, cashLinks, compliance, depositPolicy, merchantBonusPolicy, paymentModePolicy, operations, paymentConfig, supportDocuments, stats, utr };

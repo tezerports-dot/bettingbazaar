@@ -451,41 +451,78 @@ now a failure rather than a silence.
 
 ---
 
-## A webhook that mints
+## USDT is one token on several chains
 
-The USDT rail has no merchant. Above the ₹10,000 INR ceiling a player pays the
-platform's BTCPay Server directly and the tokens are **minted** — `TOKEN_SUPPLY
-→ USER_FLOAT`, under the same supply cap as any other mint. So
-`POST /api/payment/usdt/webhook` is a route with **no session** that creates
-money, and everything about it follows from that.
+Above the ₹10,000 INR ceiling a player buys with USDT — at exactly **₹50,000 or
+₹100,000**, from a **USDT merchant**, by sending tokens to that merchant's
+wallet and submitting the transaction ID. There is no payment processor and no
+webhook. The counterparty is a person, and the rail is the ordinary order
+lifecycle with a different currency on it.
 
-1. **The HMAC is the whole of the authentication, and it is over the RAW
-   BYTES.** `domains/casino/webhookSignature.js` digests
-   `JSON.stringify(body)` — a re-serialisation — and its own header records
-   that as a known limitation. It is not repeated: `usesRawBody` (one owner,
-   `domains/funding/webhookRawBody.js`) is read by both `server.js` and the
-   webhook's own suite, because a JSON parser reaching that route first makes
-   the digest `[object Object]` and refuses **every legitimate callback** while
-   a route test mounting its own raw parser stays green.
-2. **A missing signature is a REJECT and an unconfigured secret is a REJECT.**
-   Unverifiable and authentic are not the same thing.
-3. **A valid signature does not mean a fresh request.** Anyone who captures one
-   signed body can replay it forever, and BTCPay retries on its own. Freshness
-   is not the HMAC's job: the guarded transition and the UNIQUE `tx_id` on
-   `usdt_deposits` are what stop a second credit, with the wallet's own
-   `dep_complete_<id>` gate underneath.
-4. **The callback names an invoice. It never names an AMOUNT.** `token_paise`
-   is written when the invoice is created, from the rate live at that moment,
-   and the credit reads the ROW. Trap 7 applied to an external system: the
-   number that gates a transfer is read from the rows the write will lock.
-5. **Settled and credited are different facts**, and `credited_at` is what
-   separates them. The gap is the crash window — a player who paid and whose
-   wallet has not moved — and it is a row an operator can find
-   (`GET /api/admin/usdt-deposits/uncredited`) rather than a silence they
-   cannot. Reconciliation READS BTCPay; it does not credit, because a second
-   money path beside the webhook is how `moveDepositMoney` came to exist.
+**The chains are not interchangeable.** USDT sent to a Tron address from a BNB
+Smart Chain wallet is gone — no support desk recovers it, and it is the only
+unrecoverable mistake this platform can make. Everything about the rail follows
+from that:
 
-### Two gates that were measuring the author, not the code
+1. **A merchant holds an address PER CHAIN** (`usdt_address_trc20`,
+   `usdt_address_bep20`), not one "USDT address". A single column made Tron the
+   only usable chain and made *which chain is this?* unanswerable.
+2. **The player picks the network first**, before an order exists, because it
+   decides which merchants can serve it. Asking afterwards would mean
+   reassigning an order already placed.
+3. **The address and its network always travel together** — in the snapshot, in
+   `payTo`, on the screen. An address on its own is the mistake.
+4. **Only the chain the order named.** The merchant's other address is not part
+   of that order and is not sent.
+5. **The chain is frozen on the row** (trigger, not just an allowlist), because
+   the snapshot carries the address for that chain alone.
+6. **A merchant with no address on the order's chain is not a candidate.** That
+   guard is in the assignment query and not a row constraint: a row cannot see
+   which chain an order asked for, and a "must hold an address" CHECK refuses
+   the middle step of ordinary onboarding — the merchant exists, an admin puts
+   them on the rail, and only then do they enter an address.
+
+There is a **gap between the rails** — nothing serves ₹10,001–₹49,999 — and it
+is deliberate. The refusal names both rails' choices, because a player told only
+"invalid amount" tries again and again.
+
+## One payment, one claim
+
+A UTR is a bank's reference for one real transfer. A transaction hash is a
+blockchain's reference for one real transfer. A CDM slip carries the machine's
+reference for one real cash deposit. **They mean the same thing, so they share
+one registry** — `utr_registry`, where a reference belongs to exactly one order,
+for good.
+
+Only the player's UTR was ever claimed. Two other paths wrote a reference into a
+column and claimed nothing:
+
+- **`cdm_transaction_id`** — a merchant's proof they paid out a withdrawal in
+  cash. The same slip could be presented for a second payout.
+- **`usdt_tx_hash`** on a merchant's token purchase — one payment could fund two
+  purchases of the platform's own inventory.
+
+Both were green under every check, because no check looked at the *shape* of the
+problem — a column holding somebody else's reference — only at handlers.
+
+`claimPaymentReference()` is now the one owner, it **throws** rather than
+returning a flag a caller can ignore, and `check:payment-references` fails the
+build on a handler that takes a reference from `req.body` without claiming it —
+matched **per field**, because a first draft only asked whether the file
+contained a claim anywhere and a file with two claims stayed green after one was
+deleted.
+
+Two details worth keeping:
+
+- **A hex hash in two cases is ONE transaction.** References are uppercased
+  before they are claimed and the hash patterns are case-insensitive, so `0xAB…`
+  and `0xab…` collide on the primary key as they must. Matching them
+  case-sensitively would let one payment be claimed twice.
+- **The refusal speaks the submitter's vocabulary.** "This UTR was already used"
+  shown to somebody holding a Tron hash reads as another system's error, and
+  they submit it again.
+
+## Two gates that were measuring the author, not the code
 
 Both were found by adding one router, and both had the same shape: **a gate
 holding its own copy of something the code already states.**
@@ -496,12 +533,13 @@ holding its own copy of something the code already states.**
   `server.js`'s own `import` and `app.use` now — which immediately found five
   routes the table had been missing in the other direction.
 - `check:settable` compared every `set: { … }` in the backend against the
-  ORDER lifecycle's `SETTABLE`. The day a second lifecycle arrived it reported
-  that one's perfectly valid `set` as a field the order writer would refuse: a
-  false failure, which is how a gate loses the reader's trust and gets
-  silenced. A `set` is now checked against **the writer it is handed to**
-  (aliases and ternary callees resolved), and a `set` handed to a writer the
-  gate does not know is reported as unattributed rather than passed.
+  ORDER lifecycle's `SETTABLE`, assuming there is only ever one writer. A
+  second lifecycle briefly existed and the gate reported its perfectly valid
+  `set` as a field the order writer would refuse: a false failure, which is how
+  a gate loses the reader's trust and gets silenced. A `set` is now checked
+  against **the writer it is handed to** (aliases and ternary callees
+  resolved), and a `set` handed to a writer the gate does not know is reported
+  as unattributed rather than passed.
 
 **A gate whose failure mode is "the author forgot to update me" reports the
 author.** Derive what it checks from the thing it is checking.
@@ -525,4 +563,5 @@ author.** Derive what it checks from the thing it is checking.
 | `npm run check:coherence` | Every column the repositories name exists in the schema. |
 | `npm run check:merchant-privacy` | A merchant is told the payout account and the name on it — never the player's phone or UPI ID. |
 | `npm run check:player-privacy` | A player is told where to pay — never the merchant's UPI handle, QR, bank account or the name on it. |
+| `npm run check:payment-references` | Every external payment reference — UTR, chain transaction hash, CDM slip id — is claimed once, through one registry. |
 | `npm run verify:capabilities` | Every claimed capability has its evidence on disk. |

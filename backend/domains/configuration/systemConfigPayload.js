@@ -39,12 +39,13 @@ const DEFAULT_FOOTER_PAGES = Object.freeze(['home', 'results', 'winners', 'promo
  * @returns {object} the full field set — never a partial one
  */
 // The INR peg comes from the one place that owns it.
+import { USDT_CHAINS, USDT_CHAIN_SPEC } from '../merchant/merchantCurrency.js';
 import { INR_TOKEN_RATE } from './tokenRates.js';
 // The legal buy amounts come from the module the risk gate validates against,
 // never from a list written out again here. Two lists drift, and the drift is
 // silent until a player is refused an amount the screen offered them.
 import {
-  BUY_DENOMINATIONS_PAISE, MAX_INR_BUY_PAISE,
+  BUY_DENOMINATIONS_PAISE, MAX_INR_BUY_PAISE, USDT_BUY_DENOMINATIONS_PAISE,
 } from '../merchant/denominations.js';
 
 export function systemConfigPayload(cfg, rail = null) {
@@ -64,6 +65,13 @@ export function systemConfigPayload(cfg, rail = null) {
     paymentMode:         rail?.activeMode ?? null,
     buyDenominations:    BUY_DENOMINATIONS_PAISE.map((p) => p / 100),
     maxInrBuy:           MAX_INR_BUY_PAISE / 100,
+    // The USDT rail's two amounts, and the chains it is served on. From the
+    // SERVER, because both are money rules: a panel with its own copy of either
+    // would offer an amount the gate refuses, or a network no merchant holds.
+    usdtBuyDenominations: USDT_BUY_DENOMINATIONS_PAISE.map((p) => p / 100),
+    usdtChains:           USDT_CHAINS.map((chain) => ({
+      chain, label: USDT_CHAIN_SPEC[chain].label,
+    })),
 
     // Bet limits live in the betLimits subdoc, not on config.value.
     minBet:              cfg?.betLimits?.thirtyMin?.min ?? 10,

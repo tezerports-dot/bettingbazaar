@@ -54,6 +54,12 @@ import { publish as publishDomainEvent, EVENTS as DOMAIN_EVENTS } from '../../se
 // Only the order's own timeline now — the record a dispute is decided from.
 // listMessages/postMessage went with the merchant order chat above.
 import { postSystemMessage } from '#db/repositories/chat.js';
+// Every external payment reference — a UTR, a chain transaction hash, a CDM
+// slip's bank id — is claimed through ONE registry, so the same payment cannot
+// be presented twice.
+import {
+  claimPaymentReference, CDM_REFERENCE_SPEC, MERCHANT_TOKEN_REFERENCE_SPEC,
+} from '../payment/paymentReference.js';
 import cdnService from '../../services/cdn.service.js';
 import { adminToMerchantUsdtRate } from '../configuration/tokenRates.js';
 import { FLAGS, isEnabled } from '../../services/featureFlags.service.js';
@@ -65,7 +71,10 @@ import {
 
 /** Is Postgres the source of truth for the merchant side of a settlement? */
 import { buildBulkPayoutExportRows } from './bulkPayoutExport.js';
-import { MERCHANT_CURRENCY, isTrc20Address, merchantTypeOf } from './merchantCurrency.js';
+import {
+  MERCHANT_CURRENCY, merchantTypeOf,
+  USDT_CHAINS, USDT_CHAIN_SPEC, isUsdtAddress, usdtAddressFor, usdtChainsHeldBy,
+} from './merchantCurrency.js';
 import { toMerchantOrderView, toMerchantOrderViews } from './merchantOrderView.js';
 import { getActivePolicy as getPaymentModePolicy, modeCopy, publicTimers } from '../configuration/paymentMode.service.js';
 import { supplyCashLink, suppliersWithHeadroom } from './cashLink.service.js';
@@ -108,7 +117,11 @@ const formatMerchant = (merchant, user = null) => {
         merchantType,
         acceptedCurrencies:   merchant.acceptedCurrencies,
         bankDetails:          merchant.bankDetails,
-        usdtWalletAddress:    merchant.usdtWalletAddress || '',
+        // One per chain, and the list of chains they can actually be paid on
+        // — which is what decides whether any USDT order reaches them.
+        usdtAddressTrc20:     merchant.usdtAddressTrc20 || '',
+        usdtAddressBep20:     merchant.usdtAddressBep20 || '',
+        usdtChains:           usdtChainsHeldBy(merchant),
         qrCodeUrl:            merchant.qrCodeUrl,
         limits:               merchant.limits,
         minOrder:             merchant.minOrder,
@@ -507,10 +520,10 @@ router.post('/orders/:id/cdm-receipt', merchantAuth, cdmReceiptLimiter, async (r
     try {
         const { transactionId, receiptFileKey, receiptCdnUrl } = req.body || {};
 
-        if (!transactionId || String(transactionId).trim().length < 6) {
+        if (!transactionId || !String(transactionId).trim()) {
             return res.status(400).json({
                 success: false, reason: 'TRANSACTION_ID_REQUIRED',
-                message: 'Enter the bank transaction id from the CDM slip — it is what a dispute is matched against.',
+                message: CDM_REFERENCE_SPEC.hint,
             });
         }
         if (!receiptFileKey) {
@@ -532,6 +545,30 @@ router.post('/orders/:id/cdm-receipt', merchantAuth, cdmReceiptLimiter, async (r
             return res.status(400).json({
                 success: false, reason: 'WRONG_RAIL',
                 message: 'This order was created on the UPI rail and is not settled at a CDM.',
+            });
+        }
+
+        // ── The bank reference is CLAIMED, not merely recorded ───────────
+        // A CDM slip's transaction id is a bank's reference for one real cash
+        // deposit, exactly as a UTR is for one real transfer. It used to be
+        // written into a column with nothing stopping the same id appearing on
+        // a second payout — one deposit presented as two, with every check
+        // green. It goes through the same registry as every other reference,
+        // and a duplicate is refused by name.
+        //
+        // Before the receipt is verified or stored, so a refused id leaves
+        // nothing behind.
+        try {
+            await claimPaymentReference({
+                reference: transactionId,
+                orderId: order.orderId,
+                amountRupees: order.fiatAmount,
+                spec: CDM_REFERENCE_SPEC,
+            });
+        } catch (e) {
+            return res.status(e.status || 400).json({
+                success: false, reason: e.code || 'INVALID_REFERENCE',
+                message: e.message, originalOrderId: e.originalOrderId ?? null,
             });
         }
 
@@ -759,13 +796,20 @@ router.get('/profile', merchantAuth, async (req, res) => {
 
 // FIX B5-d: PUT /profile — merchant edits their own settlement credentials.
 // Rail-exclusive (2026-07-27): an INR merchant may edit UPI/QR/bank and NOT the
-// USDT address; a USDT merchant may edit only the TRC-20 address. Enforced here
-// and not merely hidden in the panel, so a hand-crafted request cannot leave a
-// merchant holding credentials for a rail they do not settle on. Only the admin
+// USDT addresses; a USDT merchant may edit only those. Enforced here and not
+// merely hidden in the panel, so a hand-crafted request cannot leave a merchant
+// holding credentials for a rail they do not settle on. Only the admin
 // (PUT /merchants/:id/capabilities) can change which rail a merchant is on.
+//
+// A USDT merchant holds an address PER CHAIN and may hold one, the other, or
+// both — the chains are separate networks and an address on one cannot receive
+// on the other. Holding both means orders on both chains are offered to them;
+// holding neither means they are offered none, which is why clearing the last
+// one is refused with a sentence rather than accepted silently.
 router.put('/profile', merchantAuth, async (req, res) => {
     try {
-        const { upiId, qrCodeUrl, bankDetails, usdtWalletAddress } = req.body;
+        const { upiId, qrCodeUrl, bankDetails, usdtAddressTrc20, usdtAddressBep20 } = req.body;
+        const submittedAddresses = { TRC20: usdtAddressTrc20, BEP20: usdtAddressBep20 };
 
         const current = await db.merchants.getMerchant(req.merchantId);
         if (!current) return res.status(404).json({ success: false, message: 'Merchant profile not found.' });
@@ -775,21 +819,49 @@ router.put('/profile', merchantAuth, async (req, res) => {
         const update  = {};
 
         const wantsInrFields  = upiId !== undefined || qrCodeUrl !== undefined || bankDetails !== undefined;
-        const wantsUsdtFields = usdtWalletAddress !== undefined;
+        const wantsUsdtFields = USDT_CHAINS.some((chain) => submittedAddresses[chain] !== undefined);
 
         if (isUsdt && wantsInrFields) {
-            return res.status(400).json({ success: false, message: `This is a ${railName} merchant account — UPI, QR and bank details do not apply. Update the USDT wallet address instead.` });
+            return res.status(400).json({ success: false, message: `This is a ${railName} merchant account — UPI, QR and bank details do not apply. Update the USDT wallet addresses instead.` });
         }
         if (!isUsdt && wantsUsdtFields) {
             return res.status(400).json({ success: false, message: `This is a ${railName} merchant account — a USDT wallet address does not apply. Update UPI/bank details instead.` });
         }
 
         if (wantsUsdtFields) {
-            const address = String(usdtWalletAddress || '').trim();
-            if (!isTrc20Address(address)) {
-                return res.status(400).json({ success: false, message: 'Enter a valid TRC-20 (Tron) address — 34 characters starting with "T". USDT sent to a wrong address cannot be recovered.' });
+            // What the merchant will hold AFTER this write: the submitted value
+            // where one was sent, the stored value where it was not. Validating
+            // the submitted fields alone cannot answer "will they still be
+            // reachable on some chain", and clearing the only address a
+            // merchant has is exactly the edit that must be refused.
+            const after = {};
+            for (const chain of USDT_CHAINS) {
+                const spec = USDT_CHAIN_SPEC[chain];
+                const submitted = submittedAddresses[chain];
+                if (submitted === undefined) {
+                    after[chain] = usdtAddressFor(current, chain);
+                    continue;
+                }
+                const address = String(submitted ?? '').trim();
+                // Empty CLEARS that chain — a merchant who stops serving one
+                // network needs a way to say so, and a blank field is how a
+                // panel says it.
+                if (!address) { after[chain] = null; update[spec.field] = null; continue; }
+                if (!isUsdtAddress(chain, address)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: `That is not a valid ${spec.label} address. USDT sent to a wrong address cannot be recovered.`,
+                    });
+                }
+                after[chain] = address;
+                update[spec.field] = address;
             }
-            update.usdtWalletAddress = address;
+            if (!USDT_CHAINS.some((chain) => after[chain])) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Keep at least one wallet address. With none, no order can be assigned to you.',
+                });
+            }
         }
 
         if (upiId !== undefined) {
@@ -948,8 +1020,29 @@ router.post('/admin-token-orders', merchantAuth, async (req, res) => {
         // lookup for today's request followed by an insert. That check-then-act
         // shape is a rate limit that stops nobody who clicks twice: both
         // requests pass the check, both insert.
+        // ── And the merchant's own payment reference ─────────────────────
+        // A merchant buying platform tokens pays the platform in USDT and gives
+        // the transaction hash. Recorded, and never claimed — so one payment
+        // could fund two token purchases, which is the same defect as a reused
+        // UTR pointed at the platform's own inventory.
+        const tokenOrderId = `MAT_${randomBytes(12).toString('hex')}`;
+        if (usdtTxHash) {
+            try {
+                await claimPaymentReference({
+                    reference: usdtTxHash, orderId: tokenOrderId,
+                    userId: req.merchantId, amountRupees: tokenAmount,
+                    spec: MERCHANT_TOKEN_REFERENCE_SPEC,
+                });
+            } catch (e) {
+                return res.status(e.status || 400).json({
+                    success: false, code: e.code || 'INVALID_REFERENCE',
+                    message: e.message, originalOrderId: e.originalOrderId ?? null,
+                });
+            }
+        }
+
         const created = await db.paymentConfig.createTokenOrder({
-            orderId: `MAT_${randomBytes(12).toString('hex')}`,
+            orderId: tokenOrderId,
             merchantId: req.merchantId,
             tokenAmountRupees: tokenAmount,
             usdtRate,
@@ -1028,8 +1121,23 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         if (orderRail !== merchantRail) {
             return res.status(400).json({ success: false, message: `This is a ${orderRail} order and you settle in ${merchantRail}.` });
         }
-        if (merchantRail === MERCHANT_CURRENCY.USDT && !merchant.usdtWalletAddress) {
-            return res.status(400).json({ success: false, message: 'Add your TRC-20 wallet address in Profile before taking USDT orders.' });
+        // The CHAIN, not just the rail. A merchant holding only a TRC-20
+        // address cannot receive a BEP-20 payment: the networks are separate
+        // and the tokens would be gone. The assignment query already excludes
+        // them, but an order can also be claimed from the open pool, so it is
+        // re-checked where the merchant actually takes it.
+        if (merchantRail === MERCHANT_CURRENCY.USDT) {
+            const chain = order.usdtChain;
+            const spec = USDT_CHAIN_SPEC[chain];
+            if (!spec) {
+                return res.status(400).json({ success: false, message: 'This USDT order names no chain and cannot be served.' });
+            }
+            if (!usdtAddressFor(merchant, chain)) {
+                return res.status(400).json({
+                    success: false,
+                    message: `This order pays on ${spec.label}. Add that address in Profile before taking it.`,
+                });
+            }
         }
 
         if (order.type === 'DEPOSIT') {
@@ -1134,7 +1242,8 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
 
         if (isDeposit) {
             const payTo = isUsdtOrder
-                ? `merchant USDT address (TRC-20): ${merchant.usdtWalletAddress || 'See payment details'}`
+                ? `merchant USDT address on ${USDT_CHAIN_SPEC[order.usdtChain]?.label ?? 'the order chain'}: `
+                  + `${usdtAddressFor(merchant, order.usdtChain) || 'See payment details'}`
                 : `merchant UPI: ${merchant.bankDetails?.upiId || 'See payment details'}`;
             await sendSystemMessage(oid,
                 `✅ Order Accepted by Merchant\n` +

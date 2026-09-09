@@ -37,27 +37,6 @@ export function registerCronJobs(rebuildLeaderboard) {
     } catch (e) { console.error('[expiry-worker] cron error:', e.message); }
   });
 
-  // ── USDT invoice expiry sweeper — runs every 5 minutes ─────────────────────
-  //
-  // BTCPay sends `InvoiceExpired`, so this is the BACKSTOP for a delivery that
-  // never arrived — our endpoint down, their queue dropped it, a network that
-  // ate it. Without it a row sits AWAITING_PAYMENT forever, and because a
-  // player may hold only one open invoice at a time, that one lost callback
-  // means they can never buy with USDT again.
-  //
-  // Nothing is refunded and nothing is owed: an expired invoice is the ABSENCE
-  // of a transaction. The player never sent USDT.
-  //
-  // 5 minutes against an invoice window measured in an hour. Tighter would only
-  // add load for rows that are, by definition, waiting.
-  registerRecurring('usdt-invoice-expiry', 5 * 60 * 1000, async () => {
-    try {
-      const { expireUsdtDeposits } = await import('../domains/funding/usdtDeposit.service.js');
-      const { expired } = await expireUsdtDeposits();
-      if (expired > 0) console.log(`[usdt-expiry] Closed ${expired} unpaid invoice(s)`);
-    } catch (e) { console.error('[usdt-expiry] cron error:', e.message); }
-  });
-
   // ── Withdrawal settlement worker — runs every 60 seconds ────────────────────
   // Settles confirmed withdrawals whose dispute-hold window has passed: consumes
   // the player's locked stake and credits the merchant. Until this runs, neither
