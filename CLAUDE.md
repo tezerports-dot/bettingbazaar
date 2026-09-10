@@ -24,6 +24,7 @@ listed below, which hold **data and history, never rules**.
 | Machine-checked capability registry | `platform/capabilities.yaml` (`npm run verify:capabilities`) |
 | What has been security-audited, and what has not | `docs/audit/SECURITY_AUDIT_MAP.md` (`npm run audit:map`) |
 | **How this audit keeps missing things, and the four questions that find them** | `docs/audit/SECURITY_AUDIT_MAP.md` **§0.5 — read before trusting a green check** |
+| **Every defect SHAPE found so far, how wide you must search to see it, and what actually found it** | `docs/audit/SECURITY_AUDIT_MAP.md` **§4.0 — the shape index. Read it before auditing anything.** |
 
 ---
 
@@ -50,7 +51,15 @@ listed below, which hold **data and history, never rules**.
     CALL this; is this check a snapshot or a guarantee; if it fails halfway what
     does the row say; am I fixing the symptom or the cause* — and the gate blind
     spots that were reporting green over live defects.
-12. **If it fixes a vulnerability, sweep for the same SHAPE across the whole
+12. **Read `docs/audit/SECURITY_AUDIT_MAP.md` §4.0 — the shape index — before
+    you start looking for anything.** It lists every defect shape found in this
+    repository, **how wide the search has to be before the shape is visible at
+    all**, and what actually surfaced it. Two radii cannot be reached by reading
+    code — *plus the clock* (what changes between a read and the write it gates)
+    and *plus the business model* (who bears the loss) — and those are where the
+    HIGH findings live. "I read the whole file" is not an answer to "did you
+    check the clock".
+13. **If it fixes a vulnerability, sweep for the same SHAPE across the whole
     codebase and record the result** — including "swept, none found". A fix that
     closes one instance and leaves its siblings is how `setOrderFields` shipped
     the same defect three times (§21). The procedure and the register are in

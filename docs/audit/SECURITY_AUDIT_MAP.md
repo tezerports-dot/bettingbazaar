@@ -647,6 +647,61 @@ Stated plainly so nobody reads a green run as more than it is.
 Every finding, open or closed, with its class sweep. **An entry without a sweep
 is incomplete** (§1).
 
+### 4.0 The shape index — read this before auditing anything
+
+Every finding below is one instance of a SHAPE. The shapes repeat; the files do
+not. This table exists so a session can recognise a shape in thirty seconds
+instead of rediscovering it in an afternoon.
+
+**Two columns matter more than the finding itself.** *Radius* is how wide the
+search has to be before it can see the shape at all — a shape with radius
+"whole backend + panels" is invisible to anyone reading one file carefully, and
+reading that file carefully is what every session does first. *Found by* is the
+honest record of what surfaced it, and it is the column that should worry you:
+**not one HIGH finding was surfaced by a gate.**
+
+| Shape | Radius needed to see it | Found by | Gate | Findings |
+|---|---|---|---|---|
+| A guard whose answer is a SNAPSHOT, relied on by a later request | one path, end to end, **plus the clock** | owner pushback | no — `moneyDecisionsReadTheWallet` names the readers instead | F-018 |
+| A scoped reader widened to an unscoped one to reach a field | one file — but only if you ask *why* the reader was scoped | code read | no | trap 16 |
+| A field name the writer will refuse, written AFTER a commit | one path (handler → writer → `SETTABLE`) | production 500s, three times | **yes** `check:settable` | §21 |
+| A CHECK constraint a handler can violate after money moved | one path + **the schema** | test through a real DB | no — queued | F-003 |
+| Code nothing imports, holding a guard the live path lacks | whole backend, **import graph** | gate blind spot found by hand | partial — `check:dead-code` counts a TEST import as a consumer | §22, F-018 |
+| A panel call that resolves to no route | **backend + panels together** | neither alone | **yes** `check:ui-coverage` | §28 |
+| A panel TYPE that names a field the server never sends | **backend + panels together** | renaming the field and letting `tsc` list the sites | no | §23 |
+| The same payload assembled in two places | whole backend, by VALUE not by file | field-by-field diff | no | §5 |
+| Two live paths for one operation, one of them untested | whole backend | asking which path a real button hits | no | F-017 |
+| A denylist where an allowlist belongs | one file — the shape is visible in the `delete` | code read | **yes** `check:merchant-privacy`, `check:player-privacy` | §24 |
+| An external reference written to a column without being claimed | whole backend, by COLUMN not by handler | asking what the column holds | **yes** `check:payment-references` | §27 |
+| A 5xx handing the caller its own error text | whole backend | grep, then a second sweep for the shape the first had no bucket for | **yes** `check:error-responses` | F-008, F-013 |
+| An authorization TIER check standing in for a PERMISSION check | whole backend | `audit:map` counts | no — queued | F-001 |
+| A recourse path whose actor was inferred from route reachability, not from who bears the loss | one path + **the business model** | owner stating the model | no — not mechanisable | F-019 |
+| A counter incremented in a request handler, for a state also reachable by a sweep or a timeout | whole backend + **the cron paths** | owner asking about expiries | partial — queued | F-021 |
+| State that must survive a restart, held in a process `Map` | one file | code read | no | F-002 |
+| A gate anchored on a string that also matches a DIFFERENT site | the gate's own file vs the file it measures | re-running the gate after moving the site | no — this is the meta-shape | F-018, trap 13 |
+
+**The last row is the one to take personally.** Three separate times a check
+went on passing while measuring something other than what it names:
+`check:dead-code` on a test import, `moneyDecisionsReadTheWallet` on a regex
+that matched two display sites in the same file, and the mutation harness on an
+anchor occurring three times. **A green gate is evidence only if you have
+checked what it is pointed at.**
+
+### 4.0.1 How deep the search has to go, by radius
+
+| Radius | What it means in practice | Which shapes need it |
+|---|---|---|
+| **one file** | Reading the file and asking why each line is as it is | denylist/allowlist, in-process state |
+| **one path** | route → service → repository → **schema**, all four | `SETTABLE`, CHECK-after-commit, snapshot guards |
+| **whole backend** | A grep by VALUE, COLUMN or SHAPE — never by filename | duplicate payloads, unclaimed references, 5xx text, tier-vs-permission |
+| **backend + panels** | The two checked *against each other*, in both directions | dead buttons, lying types, unused endpoints |
+| **plus the clock** | What can change between the read and the write | every snapshot guard, every escrow question |
+| **plus the business model** | Who bears the loss; what the owner actually meant | dispute actors, refusal caps, commission varieties |
+
+The last two rows cannot be reached by reading code. They are why the owner's
+pushback keeps being the thing that finds the defect, and why **"I read the
+whole file" is not an answer to "did you check the clock".**
+
 ### F-001 — sub-admin permission model enforced only in the client
 `PARTIALLY FIXED` · high · broken access control · found 2026-09-10 ·
 **writes gated 2026-09-10; reads proposed, awaiting approval**
@@ -1873,6 +1928,23 @@ and *a merchant says this looks fraudulent*. They need different queues and
 possibly different outcomes, and today an admin sees them mixed. Worth a
 decision, not urgent.
 
+- **Shape:** a recourse path whose *actor* was inferred from who could reach the
+  route rather than from who bears the loss. Both halves were wrong at once —
+  the party with the money at risk was refused, the party without it was
+  granted — and each half read as a sensible permission check on its own.
+- **Sweep query:** every route that changes an order's state, asked *whose loss
+  does this action answer for?* rather than *is the caller authenticated for
+  this order?*
+- **Swept:** yes, whole `backend/domains/**`. The other order-state routes are
+  merchant *work* actions (accept, reject, confirm, flag), where the actor and
+  the loss-bearer are correctly the same party, or admin resolutions where the
+  actor is deliberately neither. No further hits.
+- **No gate possible**, and the reason is worth stating: which party bears the
+  loss on a given action is a fact about the business, not about the code — no
+  grep can see it. The weaker half CAN be gated — an order-state route with no
+  ownership predicate at all — and `orderAccessGuardRoutes.test.js` covers that.
+  The judgement half stays a judgement.
+
 ### F-020 — a disputed withdrawal settled itself anyway
 `FIXED` · **HIGH — real money, and it defeated the control that exists to stop
 exactly this** · found 2026-09-10 while checking what the owner's dispute model
@@ -2021,6 +2093,25 @@ silently.
   mid-batch and leave the rest of the due orders unprocessed (§21).
 - **Tests:** 14 now, and the expiry half is mutation-proven — removing the
   counting from the sweep fails 4.
+
+- **Shape:** a business rule counted from a BUTTON rather than from the OUTCOME.
+  "The merchant rejected it" and "the merchant let it expire" are the same event
+  to the player and were different events to the code, so the cap counted one
+  and not the other — and the merchant who simply stops answering refused
+  without limit while the one who tells you was penalised. Stated for reuse:
+  **any counter, streak or limit whose increment lives in a request handler
+  rather than beside the state change it is really counting** will miss every
+  path to that state which is not a button.
+- **Sweep query:** every counter or streak incremented inside a route handler —
+  `grep -rn "consecutive\|streak\|attempts\|Count + 1\|+= 1" backend/domains`
+  — asked whether the state it counts can also be reached by a sweep, a cron, an
+  admin action or a timeout.
+- **Swept:** yes, whole `backend/domains/**`. `merchantStats` and the KYC
+  submission counter are the other two; both are incremented beside their own
+  state change and have no non-button path into that state. No further hits.
+- **Gate possible:** partially, and it is on the queue — a counter written from
+  a route file when the same column is also written from `paymentProcessing`'s
+  sweeps is mechanically detectable. Not yet written.
 
 ---
 
