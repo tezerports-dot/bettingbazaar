@@ -18,6 +18,7 @@ listed below, which hold **data and history, never rules**.
 | Every realtime event name | `docs/reference/REALTIME_EVENTS.md` |
 | Why a decision was made, dated | `docs/reference/DECISION_LOG.md` |
 | Architecture, portability, capabilities | `docs/reference/ARCHITECTURE.md` |
+| Every workflow, every branch, and what the row says after it | `docs/reference/OPERATIONS_MAP.html` |
 | SLOs, runbooks, on-call | `docs/reference/SRE_AND_OPERATIONS.md` |
 | Branding field → consumer table | `docs/reference/BRANDING.md` |
 | Machine-checked capability registry | `platform/capabilities.yaml` (`npm run verify:capabilities`) |
