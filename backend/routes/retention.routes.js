@@ -23,6 +23,7 @@ import {
   adminAdjustment, getBalanceAdjustments, ADJUSTABLE_FIELDS,
 } from '../domains/wallet/walletAuthority.service.js';
 import { authenticate, isAdmin, isAdminOrSubAdmin } from '../domains/identity/auth.middleware.js';
+import { publicLeaderboard } from '../domains/analytics/leaderboardPublicView.js';
 
 const router = express.Router();
 
@@ -50,7 +51,11 @@ router.get('/leaderboard/:period', async (req, res) => {
     const cache = await db.engagement.getLeaderboard(period);
     res.json({
       success: true,
-      entries: cache?.entries || [],
+      // Through the allowlist. This sent the cached rows WHOLE, and they carry
+      // `userId` — the id every user-scoped API takes — on an endpoint that
+      // needs no authentication. See leaderboardPublicView.js for why that is
+      // about identifier cost rather than about the leaderboard.
+      entries: publicLeaderboard(cache?.entries),
       generatedAt: cache?.generatedAt,
     });
   } catch (err) {

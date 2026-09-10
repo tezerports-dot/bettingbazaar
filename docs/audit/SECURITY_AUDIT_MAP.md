@@ -443,7 +443,16 @@ expose players; the question is how much. A username plus a win amount plus a
 timestamp is a targeting list. `/api/app/bootstrap` and `/r/:code` (open
 redirect) need their own look.
 
-**Status: NOT EXAMINED.**
+**Status: FINDING — F-010, fixed** (2026-09-10). Each public route read for what
+it actually returns:
+
+| Route | Verdict |
+|---|---|
+| `GET /api/leaderboard/:period` | **Leaked `userId`** for the top 50, ordered by net profit — F-010, fixed. |
+| `GET /api/v1/winners` | Clean, and the model for the fix: `realWinners` SELECTs `user_id` and its mapper simply never emits it. |
+| `GET /r/:code` | **Not** an open redirect. The host is hardcoded `t.me`, both components go through `encodeURIComponent`, and the code must match `^[A-Za-z0-9_-]{4,32}$`. |
+| `GET /api/app/bootstrap` | Clean — app name, origins, package ids, compliance booleans. All of it is on the store listing anyway. |
+| `GET /api/v1/content/ai-analysis` | Clean — aggregate cycle results, no player data. |
 
 ### 2.19 Admin 2FA enforcement
 
@@ -749,6 +758,44 @@ inherits it.
   embedded content does not need.
 - **Sweep query:** `grep -rn "<iframe" user-panel/src admin-panel/src merchant-panel/src`
 - **Swept:** yes. This is the **only** iframe in all three panels.
+
+
+### F-010 — the public leaderboard published the internal user id
+`FIXED` · medium · identifier exposure · found and fixed 2026-09-10
+
+`GET /api/leaderboard/:period` needs no authentication and returned the
+repository row whole. Each of the top fifty entries carried `userId` —
+**the internal identifier every user-scoped API takes** — beside the username,
+total staked, total won and net profit.
+
+The leaderboard is not really the problem. **Identifier exposure sets the price
+of every other flaw.** An IDOR against random ids is a theory; the same IDOR
+against fifty ids the platform hands out, ordered by how much money each player
+has, is a script. It is also the join key that makes correlating one player
+across endpoints possible — and this is an iGaming platform, so "the fifty
+biggest winners, with their internal ids and their balances" is a targeting list
+the platform was publishing itself.
+
+The panel never needed it: `userId` was used as a React `key` and nothing else,
+and `rank` is unique within the board.
+
+- **Shape:** an internal identifier reaching an unauthenticated response.
+- **Sweep query:** read every route in §5's unauthenticated list for what it
+  returns, not just whether it should be public.
+- **Swept: yes — all 40.** The table in §2.18 records each. The leaderboard was
+  the only one; `/v1/winners` right beside it already had the correct shape.
+- **Fix:** `backend/domains/analytics/leaderboardPublicView.js` — an allowlist
+  projection, in one file, like `cyclePublicView.js` and the two order views
+  (§24.1). The repository stops emitting `userId` **and** the public boundary
+  filters, because the entries are cached as JSONB in `leaderboard_cache`:
+  stripping only at rebuild would keep publishing it until the next scheduled
+  run. Six tests, and the one that matters asserts the **key set is a subset**
+  of the allowlist (§24.2), so a column added to the aggregate upstream fails
+  without anybody remembering to add a line.
+- **Also fixed here, §23:** the panel's `LeaderboardEntry` declared `_id?` that
+  the server has never sent, so `e._id || e.userId` always fell through — a type
+  that typechecks and is `undefined` at runtime. The interface now mirrors
+  `PUBLIC_LEADERBOARD_FIELDS` with a citing comment.
 
 
 ### 4.1 Sweep result for F-002 (module-scope state)

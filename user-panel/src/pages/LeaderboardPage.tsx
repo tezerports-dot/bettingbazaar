@@ -5,9 +5,21 @@ import { apiClient } from '../services/apiClient';
 
 type Period = 'daily'|'weekly'|'monthly'|'alltime';
 
+// Mirrors PUBLIC_LEADERBOARD_FIELDS in
+// backend/domains/analytics/leaderboardPublicView.js — the allowlist that
+// projects this endpoint. §5 wants the citation; §23 wants the type to match
+// what the server actually sends.
+//
+// `_id` and `userId` were declared here and are GONE. `_id` the server has
+// never sent, so `e._id || e.userId` always fell through — the exact shape §23
+// is about, a type that typechecks and is undefined at runtime. `userId` is no
+// longer published at all: this endpoint needs no authentication, and the
+// internal id is what every user-scoped API takes. `rank` is unique within the
+// board and is the React key now.
 interface LeaderboardEntry {
-  _id?: string; userId?: string; rank?: number; username?: string;
+  rank?: number; username?: string;
   netProfit?: number; totalBets?: number; winRate?: number;
+  wins?: number; totalStaked?: number; totalWon?: number;
 }
 
 export default function LeaderboardPage() {
@@ -73,7 +85,7 @@ export default function LeaderboardPage() {
                   {[entries[1], entries[0], entries[2]].filter(Boolean).map((e,i) => {
                     const realRank = i===0?2:i===1?1:3;
                     return (
-                      <div key={e._id||e.userId} className={`rounded-2xl p-3 text-center border ${realRank===1?'border-yellow-500/50 bg-yellow-500/10':realRank===2?'border-gray-500/40 bg-gray-500/5':'border-orange-700/40 bg-orange-700/5'} ${realRank===1?'mt-0':'mt-4'}`}>
+                      <div key={e.rank} className={`rounded-2xl p-3 text-center border ${realRank===1?'border-yellow-500/50 bg-yellow-500/10':realRank===2?'border-gray-500/40 bg-gray-500/5':'border-orange-700/40 bg-orange-700/5'} ${realRank===1?'mt-0':'mt-4'}`}>
                         <div className="text-3xl mb-1">{medals[realRank-1]}</div>
                         <div className="font-bold text-sm text-white truncate">{e.username}</div>
                         <div className="text-green-400 font-bold text-xs mt-1">₹{(e.netProfit||0).toLocaleString()}</div>
@@ -84,7 +96,7 @@ export default function LeaderboardPage() {
                 </div>
               )}
               {entries.slice(3).map(e => (
-                <div key={e._id||e.userId} className="flex items-center gap-3 bg-dark-800 border border-dark-700 rounded-xl px-4 py-3">
+                <div key={e.rank} className="flex items-center gap-3 bg-dark-800 border border-dark-700 rounded-xl px-4 py-3">
                   <span className="text-gray-500 font-mono text-sm w-6 text-center">#{e.rank}</span>
                   <div className="w-8 h-8 rounded-full bg-dark-600 flex items-center justify-center text-sm font-bold text-gray-400">{(e.username||'?')[0]?.toUpperCase()}</div>
                   <div className="flex-1"><p className="text-sm font-medium">{e.username}</p><p className="text-[10px] text-gray-500">{e.totalBets} bets · {e.winRate}% win rate</p></div>
