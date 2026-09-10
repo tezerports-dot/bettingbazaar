@@ -311,6 +311,15 @@ jobs:
       # registry claims must have its evidence/docs/tests present on disk.
       - name: Capability registry verification
         run: npm run verify:capabilities
+      # The security audit map's numbers are DERIVED from the codebase, not
+      # typed. This fails when they drift — which is the whole point: a new
+      # route with no auth, a new admin route with no permission key, a new SQL
+      # interpolation or a new render sink turns the map red until somebody
+      # re-runs it and READS what changed. The gate cannot judge whether the
+      # change is safe; it makes sure a person is asked. See
+      # docs/audit/SECURITY_AUDIT_MAP.md §0.
+      - name: Security audit map is current
+        run: npm run audit:map -- --check
       # The user panel now carries logic worth testing on its own — origin
       # failover decides which host the app talks to when one stops answering,
       # and a silent regression there is an outage the build would not catch.

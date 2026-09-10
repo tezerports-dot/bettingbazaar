@@ -37,7 +37,8 @@
     "check:orphans": "node scripts/detect-orphan-refs.mjs",
     "check:merchant-privacy": "node scripts/verify-merchant-privacy.mjs",
     "check:player-privacy": "node scripts/verify-player-privacy.mjs",
-    "check:payment-references": "node scripts/verify-payment-references.mjs"
+    "check:payment-references": "node scripts/verify-payment-references.mjs",
+    "audit:map": "node scripts/audit-map.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",
