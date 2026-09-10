@@ -112,6 +112,7 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
           merchantAdminBuyInr: config.usdtPricing?.merchantAdminBuyInr ?? 1, // schema default: 1
         },
         merchantOrderLimits: {
+          maxConsecutiveRejections:  config.merchantOrderLimits?.maxConsecutiveRejections  ?? 3,   // schema default: 3
           minUserTokenPurchaseUsdt:  config.merchantOrderLimits?.minUserTokenPurchaseUsdt  ?? 100, // schema default: 100
           maxUserTokenPurchaseUsdt:  config.merchantOrderLimits?.maxUserTokenPurchaseUsdt  ?? 0,   // 0 = unlimited
           minAdminTokenPurchaseUsdt: config.merchantOrderLimits?.minAdminTokenPurchaseUsdt ?? 100, // schema default: 100

@@ -1824,6 +1824,75 @@ as success.
   without `PAID`, which the merchant confirm never produces. It now says `PAID`,
   which is what the code actually writes.
 
+### F-021 — a merchant could refuse without limit, and be handed the same order back
+`FIXED` · medium · missing control · built 2026-09-10 to the owner's stated model
+
+The dispute side had consequences and the refusal side had none. A merchant
+could decline every order that reached them, and the order could come straight
+back to them, forever.
+
+**Two rules, both now enforced:**
+
+1. **Three CONSECUTIVE rejections suspends the merchant.** Consecutive rather
+   than lifetime, and that distinction is the whole design: a lifetime allowance
+   of three catches every honest merchant eventually, which is the failure mode
+   that gets a control switched off. Any COMPLETED order resets the streak.
+2. **A merchant who refuses an order never sees it again, and never sees another
+   order from that PLAYER.**
+
+**`order_states.rejected_by` could not answer either question.** It is one
+column and it is overwritten, so once a second merchant declines the same order
+the first has vanished. `order_rejections` records the pair — append-only, one
+row per (order, merchant), with the UNIQUE index deciding rather than a pre-read
+two concurrent rejects could both pass.
+
+**The reassignment loop was real, not theoretical.** The reject route requeues
+with `merchantId: null` and then immediately calls `tryAssignMerchant`, which had
+**no exclusion of any kind**. The merchant who had just declined was a full
+candidate for the order they declined.
+
+- **The guard is in the candidate query's WHERE**, as `<> ALL($n)` over a
+  `text[]` — one index-friendly clause however long the list, where an OR chain
+  would grow the statement with the list and defeat the plan cache. Excluded
+  merchants are never candidates, rather than candidates a caller is trusted to
+  drop.
+- **The streak is advanced and read in ONE statement** (`UPDATE … RETURNING`).
+  A read-then-write would let two concurrent rejects both see 2 and both write
+  3, so a merchant could pass the cap without it ever being observed.
+- **The reset is NOT inside `recordCompletedOrder`.** The reject route calls
+  that too, with zero amounts, to move the lifetime counters — resetting there
+  would undo the increment the rejection had just made. It hangs off
+  `updateMerchantStatsOnComplete`'s `success` flag, which the confirm path passes
+  true and the expiry path passes false.
+- **Suspension is a refusal to ASSIGN, not a deletion.** The merchant keeps
+  every order they already hold; taking those away would strand players who are
+  mid-payment on them.
+- **The cap is config, not a literal** — `SystemConfig.merchantOrderLimits
+  .maxConsecutiveRejections`, schema default 3, bounded 1–20. The minimum is 1
+  rather than 0 because a cap of zero is not a cap, it is a ban on declining.
+- **Tests:** `merchantRejectionCapPg.test.js`, nine, mutation-proven three ways —
+  removing the exclusion clause fails 2, removing the streak reset fails 1,
+  raising the cap to 99 fails 2.
+
+**Two tests were vacuous before they were fixed, and that is worth recording.**
+`merchantActor` leaves `is_online` at its schema default of FALSE, so a merchant
+from it is never an assignment candidate — and the first version of "the
+exclusion removed them from the list" passed against a list they had never been
+in. The suite now brings the merchant online first and asserts they ARE a
+candidate before asserting the exclusion removes them. Same shape as F-020's
+fixture: a missing precondition does not weaken a test, it makes it measure
+nothing.
+
+### Still open, and it is a hole in this control
+
+**An EXPIRED order is a refusal the cap cannot see.** A merchant who simply
+never presses reject, and lets the assignment window lapse, is refusing the
+order in every way that matters to the player — and the streak does not move.
+The expiry path calls `updateMerchantStatsOnComplete(merchantId, false, …)`, so
+it is already distinguished from a completion and would be a natural place to
+count it. It is not done here because "letting an order expire" and "declining
+it" may deserve different weights, and that is the owner's call.
+
 ---
 
 ## 5. Derived coverage — regenerated, never typed
@@ -1903,8 +1972,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 391 |
-| Parameters only (safe by construction) | 250 |
+| `pgQuery` call sites | 395 |
+| Parameters only (safe by construction) | 254 |
 | Interpolating into statement text (each needs a reading) | 141 |
 
 ### Panel injection sinks
@@ -1927,7 +1996,8 @@ In the order it should be worked.
 |---|---|---|---|
 | 0 | ~~Decide F-015~~ | §4 | **Done 2026-09-10** — alert plus player notification. The sweep for other silently-returned money-path refusals is still open. |
 | 0 | ~~Decide F-016~~ | §4 | **Done 2026-09-10** — the QR was removed entirely; the dynamic UPI intent already did the job better. |
-| 0 | **Merchant abuse caps — NOT IMPLEMENTED** | §4 | The owner's model has caps on rejects and temporary suspension. `dispute_rate` exists and softly lowers a merchant's assignment score; there is **no reject-rate column, no cap, and no auto-suspension** — `suspendMerchant` is manual-admin only. |
+| 0 | ~~Merchant abuse caps~~ | §4 | **Done 2026-09-10 (F-021)** — 3 consecutive rejections suspends; the pair is barred from the order and the player. |
+| 0 | **Does an EXPIRY count as a refusal?** | §4 | F-021's hole: a merchant who never presses reject and lets the window lapse refuses the order in every way that matters, and the streak does not move. |
 | 0 | State guard on `mirrorSettlement` | §4 | Its UPDATE is `WHERE order_id = $1`. Safe today because its only caller is guarded (F-020), but it would overwrite a state that moved underneath it. |
 | 0 | Split the two meanings of DISPUTED | §4 | F-019 left `DISPUTED` carrying both *the player is owed* and *the merchant smells fraud*. Different queues, possibly different outcomes. |
 | 0 | **Decide F-018 — reserve the merchant's tokens at assignment** | §4 | The root cause. `reserveForSettlement`/`completeReservation`/`cancelReservation` are built and called by nothing. Needs: reserve at assign/accept, complete at confirm, cancel on expiry/reject/reassign. |

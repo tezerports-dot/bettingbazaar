@@ -1425,3 +1425,59 @@ export async function orderCounts({ since = null } = {}) {
     completedValue: rupees(r.completed_paise),
   };
 }
+
+// ── Refusals ─────────────────────────────────────────────────────────────────
+
+/**
+ * Record that a merchant refused an order.
+ *
+ * Append-only, one row per (order, merchant). A second refusal of the same
+ * order by the same merchant is a no-op rather than an error: the UNIQUE index
+ * decides, not a pre-read two concurrent rejects could both pass, and a
+ * duplicate arriving from a retry is not a fault the caller should handle.
+ *
+ * `userId` is stored on the row rather than joined back from `order_states`,
+ * because the pair query below runs inside merchant ASSIGNMENT — the hot path
+ * of every order — and a join there would cost one per assignment.
+ *
+ * @returns {Promise<boolean>} true when this refusal was newly recorded.
+ */
+export async function recordOrderRejection({ orderId, merchantId, userId, reason = '' }) {
+  if (!orderId) throw new Error('recordOrderRejection requires an orderId');
+  if (!merchantId) throw new Error('recordOrderRejection requires a merchantId');
+  if (!userId) throw new Error('recordOrderRejection requires a userId');
+  const { rows } = await pgQuery(
+    `INSERT INTO order_rejections (order_id, merchant_id, user_id, reason)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (order_id, merchant_id) DO NOTHING
+     RETURNING id`,
+    [String(orderId), String(merchantId), String(userId), String(reason).slice(0, 500)],
+    'order_rejection_record',
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Every merchant who may not be given this order.
+ *
+ * Two rules, one answer, because assignment needs a single list:
+ *
+ *   - anybody who already refused THIS order — otherwise the reject route
+ *     requeues and immediately reassigns, and the same merchant can be handed
+ *     it straight back;
+ *   - anybody who refused ANY order from this PLAYER — a merchant who declines
+ *     one person's orders should not keep receiving them, whatever the reason.
+ *
+ * Returns ids, not rows: the caller feeds them to the candidate query's WHERE.
+ */
+export async function merchantsBarredFrom({ orderId, userId }) {
+  if (!orderId && !userId) return [];
+  const { rows } = await pgQuery(
+    `SELECT DISTINCT merchant_id FROM order_rejections
+      WHERE ($1::text IS NOT NULL AND order_id = $1)
+         OR ($2::text IS NOT NULL AND user_id  = $2)`,
+    [orderId ? String(orderId) : null, userId ? String(userId) : null],
+    'order_rejection_barred',
+  );
+  return rows.map((r) => r.merchant_id);
+}

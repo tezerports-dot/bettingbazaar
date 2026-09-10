@@ -357,7 +357,17 @@ async function tryAssignMerchant(order) {
   // The order's OWN rail, not the one live now: on CASH_ATM the amount is a
   // denomination a merchant must be approved for, and the concurrency cap is
   // the one that rail promised them.
+  // Who this order may NOT go to: anybody who already refused it, and anybody
+  // who refused an order from this player before. Read here rather than inside
+  // the scorer because this is the only layer that holds both the order and its
+  // owner — and read on EVERY assignment, not just a reassignment, because the
+  // player-level rule applies to an order the merchant has never seen.
+  const barredMerchantIds = await db.orders.merchantsBarredFrom({
+    orderId: order.orderId, userId: order.userId,
+  });
+
   const merchant = await selectBestMerchant(order.type, order.tokenAmount, order.currency, {
+    barredMerchantIds,
     paymentMode: order.paymentMode,
     paymentModeVersion: order.paymentModeVersion,
     // On USDT, the chain the player chose. A merchant holding only a TRC-20
@@ -1221,6 +1231,20 @@ export async function markOrderPaid(userId, orderId, utrNumber) {
  */
 export async function updateMerchantStatsOnComplete(merchantId, success, detail = {}) {
   if (!merchantId) return;
+
+  // A completed order ends the rejection streak.
+  //
+  // `success` is the discriminator and it is already exactly right: the confirm
+  // path passes true, the expiry path passes false. Without this the cap is a
+  // LIFETIME allowance of three refusals rather than three in a row, and every
+  // honest merchant reaches it eventually — which is the failure mode that
+  // makes an operator switch a control off.
+  //
+  // It is NOT put inside `recordCompletedOrder`: the reject route calls that
+  // too, with zero amounts, to move the lifetime counters — so resetting there
+  // would undo the very increment the rejection just made.
+  if (success) await db.merchants.resetConsecutiveRejections(merchantId);
+
   await db.merchants.recordCompletedOrder(merchantId, {
     direction: detail.direction ?? 'DEPOSIT',
     amountRupees: detail.amountRupees ?? 0,

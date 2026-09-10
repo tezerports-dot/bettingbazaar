@@ -58,7 +58,7 @@ const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email
   merchant_rejection_reason,
   monthly_processed_paise, daily_processed_paise, total_orders_processed,
   stats_last_reset_at,
-  success_rate, avg_response_minutes, dispute_rate, max_concurrent_orders,
+  success_rate, avg_response_minutes, dispute_rate, consecutive_rejections, max_concurrent_orders,
   max_concurrent_deposit_orders, max_concurrent_withdrawal_orders,
   total_orders_completed, total_orders_all, created_at, updated_at`;
 
@@ -184,6 +184,7 @@ function toMerchant(row) {
     successRate: Number(row.success_rate),
     avgResponseMinutes: Number(row.avg_response_minutes),
     disputeRate: Number(row.dispute_rate),
+    consecutiveRejections: toInt(row.consecutive_rejections),
     maxConcurrentOrders: toInt(row.max_concurrent_orders),
     maxConcurrentDepositOrders: toInt(row.max_concurrent_deposit_orders),
     maxConcurrentWithdrawalOrders: toInt(row.max_concurrent_withdrawal_orders),
@@ -421,6 +422,12 @@ export async function assignmentCandidates({
   // no part — so the clause is absent rather than matching NULL, which would
   // exclude every merchant.
   cashDenominationPaise = null,
+  // Merchants who have already refused this order, or any order from this
+  // player. Applied HERE rather than filtered by the caller for the same reason
+  // as the concurrency caps: a merchant who must not be given this order is not
+  // a candidate at all, rather than a candidate the caller is trusted to drop.
+  // An empty list adds no clause, so the ordinary case costs nothing.
+  barredMerchantIds = [],
   // On the USDT rail an order names the CHAIN the player will send on, and a
   // merchant can only be paid on a chain they hold an address for. Applied
   // here for the same reason the caps and the cash denomination are: a merchant
@@ -462,6 +469,11 @@ export async function assignmentCandidates({
   // spliced into SQL is an injection whatever the surrounding clause looks
   // like. An unknown chain is a THROW, not an empty result: silently matching
   // nobody would read as "no merchant is available" on a screen.
+  // De-duplicated and stringified once. `<> ALL($n)` over a text[] is one
+  // index-friendly clause however long the list is — an OR chain would grow the
+  // statement with the list and defeat the plan cache.
+  const barred = [...new Set((barredMerchantIds || []).filter(Boolean).map(String))];
+
   let chainColumn = null;
   if (usdtChain !== null && usdtChain !== undefined) {
     chainColumn = USDT_CHAIN_SPEC[usdtChain]?.column ?? null;
@@ -469,6 +481,15 @@ export async function assignmentCandidates({
       throw new TypeError(`assignmentCandidates: unknown usdtChain '${usdtChain}'`);
     }
   }
+
+  // The parameter list is built ONCE, so the placeholder numbers in the SQL and
+  // the values here cannot drift apart — the shape that put `denomination` at
+  // $5 in one branch and nowhere in the other, and would put `barred` at $5 or
+  // $6 depending on a condition several lines away.
+  const params = [String(currency), since, nonNegative(defaultTotalLimit, 3), typeLimit];
+  if (denomination !== null) params.push(denomination);
+  const barredIndex = params.length + 1;
+  if (barred.length) params.push(barred);
 
   const { rows } = await pgQuery(
     `WITH active AS (
@@ -508,10 +529,9 @@ export async function assignmentCandidates({
         AND COALESCE(a.total, 0) < COALESCE(m.max_concurrent_orders, $3)
         AND COALESCE(a.${typeColumn}, 0) < COALESCE(m.${capColumn}, $4)
         ${denomination === null ? '' : 'AND m.cash_denomination_paise = $5'}
-        ${chainColumn === null ? '' : `AND m.${chainColumn} IS NOT NULL`}`,
-    denomination === null
-      ? [String(currency), since, nonNegative(defaultTotalLimit, 3), typeLimit]
-      : [String(currency), since, nonNegative(defaultTotalLimit, 3), typeLimit, denomination],
+        ${chainColumn === null ? '' : `AND m.${chainColumn} IS NOT NULL`}
+        ${barred.length === 0 ? '' : `AND m.merchant_id <> ALL($${barredIndex})`}`,
+    params,
     'merchant_assignment_candidates',
   );
 
@@ -1161,4 +1181,38 @@ export async function consumeTwoFactorBackupCode(merchantId, { expected, remaini
     [String(merchantId), expected ?? [], remaining ?? []], 'merchant_2fa_consume_backup',
   );
   return rowCount === 1;
+}
+
+/**
+ * A merchant refused an order: advance their streak and say where it stands.
+ *
+ * The increment and the read are ONE statement. A read-then-write would let two
+ * concurrent rejects both see 2 and both write 3, so a merchant could pass the
+ * cap without it ever being observed — the same shape as every other guard in
+ * this repository, and the reason it is expressed as an UPDATE … RETURNING.
+ *
+ * @returns {Promise<number>} the streak AFTER this refusal.
+ */
+export async function bumpConsecutiveRejections(merchantId) {
+  const { rows } = await pgQuery(
+    `UPDATE merchants SET consecutive_rejections = consecutive_rejections + 1, updated_at = now()
+      WHERE merchant_id = $1
+      RETURNING consecutive_rejections`,
+    [String(merchantId)], 'merchant_bump_rejections',
+  );
+  return rows.length ? Number(rows[0].consecutive_rejections) : 0;
+}
+
+/**
+ * A merchant completed an order, so the streak is over.
+ *
+ * Idempotent by construction — setting zero twice is setting zero — so the
+ * completion path can call it without first asking whether there was a streak.
+ */
+export async function resetConsecutiveRejections(merchantId) {
+  await pgQuery(
+    `UPDATE merchants SET consecutive_rejections = 0, updated_at = now()
+      WHERE merchant_id = $1 AND consecutive_rejections <> 0`,
+    [String(merchantId)], 'merchant_reset_rejections',
+  );
 }

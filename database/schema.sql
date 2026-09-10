@@ -3619,3 +3619,50 @@ DROP TABLE IF EXISTS gift_codes;
 -- was one only that unreachable route could mint (F-016).
 DROP INDEX IF EXISTS merchants_qr_code_url_idx;
 ALTER TABLE merchants DROP COLUMN IF EXISTS qr_code_url;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Who has REFUSED an order, and whose order it was.
+--
+-- `order_states.rejected_by` is a single column and is overwritten, so after a
+-- second merchant declines the same order the first one is gone. That is enough
+-- to show the last reason on a screen and not enough to decide anything, and
+-- two rules need to decide something:
+--
+--   1. a rejected order must never be handed back to a merchant who already
+--      refused it — without this the reject route requeues and immediately
+--      reassigns, and the same merchant can receive it again in a loop;
+--   2. a merchant who refuses a player's order does not serve that player
+--      again — the pair is recorded, not just the order.
+--
+-- Append-only and one row per (order, merchant): a merchant cannot refuse the
+-- same order twice, and the UNIQUE index is what says so rather than a pre-read
+-- two concurrent rejects could both pass.
+--
+-- `user_id` is denormalised deliberately. The pair query runs inside merchant
+-- ASSIGNMENT, on the hot path of every order, and joining back to order_states
+-- to recover the player would make the exclusion cost a join per assignment.
+CREATE TABLE IF NOT EXISTS order_rejections (
+  id           BIGSERIAL PRIMARY KEY,
+  order_id     TEXT NOT NULL REFERENCES order_states (order_id) ON DELETE CASCADE,
+  merchant_id  TEXT NOT NULL,
+  user_id      TEXT NOT NULL,
+  reason       TEXT NOT NULL DEFAULT '',
+  rejected_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT order_rejections_once UNIQUE (order_id, merchant_id)
+);
+-- The two reads this table exists for.
+CREATE INDEX IF NOT EXISTS order_rejections_order_idx ON order_rejections (order_id);
+CREATE INDEX IF NOT EXISTS order_rejections_pair_idx  ON order_rejections (user_id, merchant_id);
+
+-- Consecutive refusals, reset by any COMPLETED order.
+--
+-- CONSECUTIVE rather than a rate: a rate over all time forgives a merchant who
+-- is refusing everything today because they served a thousand orders last
+-- month, and it punishes a new merchant for one decline. A streak asks the only
+-- question that matters operationally — is this merchant serving orders right
+-- now — and answers it the same way for everybody.
+ALTER TABLE merchants ADD COLUMN IF NOT EXISTS consecutive_rejections INTEGER NOT NULL DEFAULT 0;
+DO $$ BEGIN
+  ALTER TABLE merchants ADD CONSTRAINT merchants_consecutive_rejections_non_negative
+    CHECK (consecutive_rejections >= 0);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;

@@ -106,6 +106,10 @@ async function totalOrderLimitFor(paymentModeVersion) {
  * in the open sell pool instead of burning retry attempts.
  */
 export async function selectBestMerchant(orderType, tokenAmount, currency = MERCHANT_CURRENCY.INR, {
+  // Merchants this order may not be given to. Defaulted to empty so every
+  // existing caller keeps working, and supplied by `tryAssignMerchant`, which
+  // is the only path that knows the order and the player.
+  barredMerchantIds = [],
   // The rail this ORDER was created on, and the policy version that governs
   // it. Both come off the order row, never from the live policy: an order
   // assigned after a switch keeps the rules it was born under.
@@ -131,6 +135,10 @@ export async function selectBestMerchant(orderType, tokenAmount, currency = MERC
   // counts and the 30-day funding imbalance the ranking needs attached.
   let candidates = await db.merchants.assignmentCandidates({
     currency,
+    // Anybody who refused this order, or any order from this player. Passed to
+    // the QUERY rather than filtered here, so an excluded merchant is never a
+    // candidate at all — see `merchantsBarredFrom`.
+    barredMerchantIds,
     direction: orderType === 'WITHDRAWAL' ? 'WITHDRAWAL' : 'DEPOSIT',
     defaultDepositLimit: defaults.maxDepositOrders,
     defaultWithdrawalLimit: defaults.maxWithdrawalOrders,

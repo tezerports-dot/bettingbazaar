@@ -122,6 +122,17 @@ export const SYSTEM_CONFIG_SPEC = group({
   merchantOrderLimits: group({
     maxConcurrentDepositOrders:    n(1, 1, 10),
     maxConcurrentWithdrawalOrders: n(1, 1, 10),
+    // CONSECUTIVE rejections a merchant may make before they are suspended.
+    // Consecutive, not total: a merchant who declines three in a row is either
+    // gaming the queue or is not in a position to serve it, and either way the
+    // next player should not be the one who finds out. Any COMPLETED order
+    // resets the streak to zero, so an ordinary merchant who occasionally
+    // declines never approaches it.
+    //
+    // The minimum is 1 rather than 0 — a cap of zero would suspend a merchant
+    // on their first decline, which is not a cap but a ban on declining.
+    // Raising it is an operator's call; disabling it is not offered.
+    maxConsecutiveRejections:      n(3, 1, 20),
     minAdminTokenPurchase:     n(50000, 1),
     minUserTokenPurchaseUsdt:  n(100, 100),
     maxUserTokenPurchaseUsdt:  n(0, 0),      // 0 = unlimited
