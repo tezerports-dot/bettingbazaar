@@ -407,7 +407,32 @@ HSTS.
 in an app with a cookie-auth panel. A permissive CORS origin with credentials
 undoes it.
 
-**Status: NOT EXAMINED.**
+**Status: CLEAR, with one documented gap — F-009** (2026-09-10). The headers
+were not read off the config and reasoned about; helmet was **invoked and its
+output captured**, because `useDefaults` merges directives the config file never
+names and reasoning about that is how you get it wrong.
+
+What is actually emitted: `default-src 'self'` · `script-src 'self'` (**no
+`unsafe-inline`, no `unsafe-eval`** — strict, and rare) · `script-src-attr
+'none'` · `object-src 'none'` · `base-uri 'self'` · `form-action 'self'` ·
+`frame-ancestors 'self'` · `upgrade-insecure-requests`, plus
+`X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, HSTS with
+`includeSubDomains`, `X-Frame-Options: SAMEORIGIN`, and COOP/CORP `same-origin`.
+Helmet is mounted **before** the SPA handlers, and Express serves all three
+panels' HTML, so the CSP lands on the document rather than uselessly on JSON.
+
+**CSRF was already analysed here, correctly, and the analysis holds.** The
+session cookie is `httpOnly` + `secure`, but `SameSite=None` in production
+because the Capacitor/Android shell is a different origin — which removes
+SameSite as a defence. CORS does not replace it: for a *simple request* the
+browser SENDS the request and withholds only the response, so the mutation has
+already happened. The mitigation is that **no urlencoded and no multipart parser
+is mounted**, so a hidden auto-submitting form produces an empty `req.body`, and
+anything sending real `application/json` triggers a preflight the allow-list
+rejects. Re-verified rather than trusted: no multipart parser exists, and the
+only `x-www-form-urlencoded` in the tree is **outbound** to Turnstile.
+`server.js` labels this itself as "a vector fix, not a complete CSRF programme" —
+that remains true and remains the honest description.
 
 ### 2.18 Public-route data leakage
 
@@ -690,6 +715,42 @@ Two things made it worse than it reads:
   `res.status(5xx).json({ … message: err.message … })`. Queued in §6.
 
 
+### F-009 — the casino game frame cannot load, and asks for camera and microphone
+`OPEN` · low security / medium functional · CSP and permissions policy
+· found 2026-09-10
+
+Two problems in the same `<iframe>`, found by capturing helmet's real output
+rather than reading the config.
+
+**1. `frame-src` is not set anywhere.** It therefore falls back to `default-src
+'self'`, so an `<iframe>` pointing at a third-party game provider is blocked by
+the platform's own CSP. `user-panel/src/pages/CasinoPage.tsx:95` renders exactly
+that, and `/casino` is a mounted route — a player reaches the page and gets an
+empty frame. `POST /api/game/launch` builds and signs a launch URL that no
+browser will load. This is the CSP being *stricter* than the app, not weaker,
+so it is a functionality defect (§28: built, merged, and unable to work) rather
+than a hole.
+
+**Deliberately not "fixed" here.** The wrong fix is `frame-src https:`, which
+would let any origin be framed and trade a broken feature for a real weakening.
+The right fix is `frame-src` limited to the configured provider origins — and
+those are **admin-set at runtime** (`game_providers.api_url`), which a static
+CSP cannot enumerate. That tension is the decision, and it is the owner's:
+either build the CSP per-response from the enabled providers, or accept a
+narrow static list that an admin cannot extend without a deploy.
+
+**2. The frame is granted `camera` and `microphone`.**
+`allow="fullscreen autoplay camera microphone"` on a frame whose origin is
+supplied by an admin and operated by a third party. No casino game needs either,
+and the grant is the platform's to give — a compromised or hostile provider
+inherits it.
+
+- **Shape:** a permission granted to an embedded third-party origin that the
+  embedded content does not need.
+- **Sweep query:** `grep -rn "<iframe" user-panel/src admin-panel/src merchant-panel/src`
+- **Swept:** yes. This is the **only** iframe in all three panels.
+
+
 ### 4.1 Sweep result for F-002 (module-scope state)
 
 Run 2026-09-10. Recorded because "swept, none found" is worth as much as a hit.
@@ -845,3 +906,4 @@ In the order it should be worked.
 | 12 | Sweep F-007 | §4 | Which other suites only pass in a particular order. |
 | 13 | Finish F-008 | §4 | ~19 admin-side `500 + err.message` sites; each needs reading, some messages are deliberate. |
 | 14 | Gate for the F-008 shape | §4 | Fail on `res.status(5xx).json({ message: err.message })`. |
+| 15 | Decide F-009's `frame-src` | §4 | Per-response CSP from enabled providers, or a static list an admin cannot extend. Owner's call. |
