@@ -47,6 +47,72 @@ Three mechanisms, because prose alone does not.
 
 ---
 
+## 0.5 The failure mode of the AI doing this audit — read this before you start
+
+**Every serious defect in this register was found only after the owner pushed
+back. Not one surfaced from a first pass.** That is not a run of bad luck; it is
+a reproducible failure mode, and it is written here because the next session
+will have it too.
+
+### What it looks like from the inside
+
+The pattern is always the same, and it always feels like competence:
+
+| The step | What it looks like | What it actually was |
+|---|---|---|
+| A gate is green | "This class is covered." | The gate measured something adjacent. `check:dead-code` counted a **test import** as a consumer, so an unused money mechanism read as live (F-018). |
+| A test passes | "This behaviour is proven." | The test drove a route **no screen calls**, while the route users hit had no such test (F-017). |
+| A comment explains a design | "Somebody decided this, so it holds." | The comment described the intent; the code had drifted from it. `merchant.routes.js` said *"the transition is the gate"* while that ordering was losing player money. |
+| Two things do the same job | "Duplication — untidy, low priority." | They had **diverged**, and the one with no tests was the one in production (F-017). |
+| A check exists | "Then the thing it checks is safe." | The check was a **snapshot**. Nothing kept its answer true afterwards (F-018). |
+
+### The four questions that actually found things
+
+Each of these, applied deliberately, produced a real defect in this codebase.
+None of them is expensive. All four were skipped on the first pass.
+
+1. **"Does anything actually CALL this?"**
+   Not "does it exist", not "is it tested". Follow the path from a real button
+   to the code. F-016 (a merchant could not set their own QR), F-017 (the money
+   tests were on a dead route) and F-018 (the reservation mechanism has no
+   callers) are all the same question, unasked.
+
+2. **"Is this check a snapshot or a guarantee?"**
+   A read that gates an action performed *later, in another request* is a
+   snapshot. Ask what could change in between and what stops it. This is F-018
+   exactly, and it is the same shape as §9's display-vs-decision rule one level
+   up.
+
+3. **"If this fails HALFWAY, what does the row say?"**
+   Not "does it error" — what STATE is left, and can the user still act from it.
+   F-017's whole severity was that the order read COMPLETED, which shut the
+   dispute door. §21 is this question written down; it still got missed.
+
+4. **"Am I fixing the symptom or the cause?"**
+   State the chain out loud, upward, until it stops. F-017's fix was real and
+   still only a symptom: the owner asked why an under-funded merchant held the
+   order at all, and that question — not the fix — is what produced F-018.
+
+### The rule that follows
+
+**A finding is not finished when it is fixed. It is finished when you have
+asked what had to be true for it to exist**, and checked whether that thing is
+still true elsewhere. §1's class sweep searches sideways for the same shape;
+this searches *upward* for the cause. Both are required, and the upward one is
+the one that gets skipped, because a passing test at the bottom of the chain
+feels like an answer.
+
+### And the honest version of "verified"
+
+§29 already forbids claiming readiness without naming the gate and its number.
+This adds the other half: **naming a gate is not enough if nobody has asked what
+the gate cannot see.** Every gate in this repository has a blind spot, several
+are recorded above, and at least one of them was actively hiding a defect while
+reporting green. When reporting a class as clear, say what was checked, by what,
+**and what that check is structurally unable to notice.**
+
+---
+
 ## 1. The class sweep — the rule that makes a fix worth something
 
 **A vulnerability is never one line. It is one instance of a shape.**
@@ -1572,6 +1638,75 @@ it is still a job.
 - **Swept:** not yet — the question is which other suites test an unreachable
   route. Queued in §6.
 
+### F-018 — merchant eligibility is checked but never HELD, and the mechanism to hold it is unused
+`OPEN` · **HIGH — this is the root cause F-017 was a symptom of** · design gap ·
+found 2026-09-10 when the owner rejected the F-017 fix as treating a symptom
+
+**The owner's objection was correct and this entry exists because of it.** F-017
+fixed what happens when an under-funded merchant confirms a deposit. The right
+question is why an under-funded merchant is holding a PAID deposit at all.
+
+**Eligibility IS checked, on every path — that part is built and correct:**
+
+| Path | Guard |
+|---|---|
+| Automatic assignment | `merchantScoring` reads the candidates' balances and excludes on them |
+| Admin assign / reassign | `inventoryRefusal()` — `getMerchantTokenBalance() >= tokenAmount` |
+| Merchant accepts from the open pool | `availableTokens < order.tokenAmount → 400` |
+
+**But every one of them is a SNAPSHOT, not a HOLD.** The tokens stay in the
+merchant's `available` pocket, spendable on anything else, for the entire life
+of the order. Between assignment and confirmation the same tokens can be:
+
+- consumed by a **second deposit** the merchant is also serving,
+- paid out to fund a **withdrawal**,
+- removed by an **admin deduction**,
+- spent on the merchant's own token purchase.
+
+The eligibility answer was true when it was given and nothing keeps it true.
+That is the whole distance between "checked" and "guaranteed".
+
+**The mechanism to close it already exists, fully built, and is called by
+NOTHING:**
+
+```
+reserveForSettlement   available → reserved     (at assignment)
+completeReservation    reserved  → settlement   (at confirmation)
+cancelReservation      reserved  → available    (on expiry / reject / reassign)
+```
+
+`grep -rn "reserveForSettlement\|completeReservation\|cancelReservation" backend --include=*.js | grep -v /tests/` returns **nothing**. The merchant wallet's
+three-pocket design — `available` / `reserved` / `settlement`, with
+`liability = reserved + settlement` — exists precisely for this and the deposit
+flow never touches it.
+
+### Why no gate caught it, which is its own finding
+
+`check:dead-code` classifies an export three ways: referenced in its own file
+(`over`, informational), referenced only by **tests** (`testOnly`,
+informational), or referenced by nothing (`dead`, **fails the build**).
+
+These three are imported by `merchantWalletPg.test.js`, so they land in
+`testOnly` and the build stays green. **A test import is counted as a
+consumer.** For a helper that is reasonable; for a money mechanism it is the
+§22 blind spot restated one level up — §22.2 says *"a test that reads a file's
+source is not a consumer of it"*, and this is the same mistake with `import`
+instead of `readFileSync`.
+
+**80 exports are currently in that bucket.** They have never been triaged. At
+least one of them is a money mechanism the platform needs and does not use.
+
+- **Shape:** a guard whose answer is computed once and then relied on later,
+  with nothing preventing the world from changing in between — and, separately,
+  a gate that accepts a test as evidence of use.
+- **Sweep query (the guard):** every `getMerchantTokenBalance` /
+  `getBalances` read whose result gates an action completed by a LATER request.
+- **Sweep query (the gate):** triage all 80 `testOnly` exports; anything that
+  moves money or state is a finding, not an informational row.
+- **Not fixed — it is a design change, not a patch**, and it touches every
+  assignment path plus expiry, rejection and reassignment (each needs its
+  `cancelReservation`). Options are in §6.
+
 ---
 
 ## 5. Derived coverage — regenerated, never typed
@@ -1675,6 +1810,8 @@ In the order it should be worked.
 |---|---|---|---|
 | 0 | ~~Decide F-015~~ | §4 | **Done 2026-09-10** — alert plus player notification. The sweep for other silently-returned money-path refusals is still open. |
 | 0 | ~~Decide F-016~~ | §4 | **Done 2026-09-10** — the QR was removed entirely; the dynamic UPI intent already did the job better. |
+| 0 | **Decide F-018 — reserve the merchant's tokens at assignment** | §4 | The root cause. `reserveForSettlement`/`completeReservation`/`cancelReservation` are built and called by nothing. Needs: reserve at assign/accept, complete at confirm, cancel on expiry/reject/reassign. |
+| 0 | Triage the 80 `testOnly` exports | §4 | `check:dead-code` treats a TEST import as a consumer, which is how an unused money mechanism stayed green. Anything in that bucket that moves money or state is a finding, not an informational row. |
 | 0 | Port F-017's 16 tests | §4 | The ordering defect is FIXED and both live paths now share `moveDepositMoney`. What remains is re-homing the orphan route's 16 real-DB money assertions onto the two reachable doors, then deleting it. |
 | 0 | Gate for the F-014 shape | §4 | Fail on `Math.random()` in a panel outside an allow-list of presentational files, each entry carrying a stated reason. |
 | 1 | Client-side injection (XSS) | 2.14 | Chat, tickets and admin announcements all round-trip through panels; a stored XSS in the admin panel runs with an admin session. |

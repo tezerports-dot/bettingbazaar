@@ -22,6 +22,7 @@ listed below, which hold **data and history, never rules**.
 | Branding field → consumer table | `docs/reference/BRANDING.md` |
 | Machine-checked capability registry | `platform/capabilities.yaml` (`npm run verify:capabilities`) |
 | What has been security-audited, and what has not | `docs/audit/SECURITY_AUDIT_MAP.md` (`npm run audit:map`) |
+| **How this audit keeps missing things, and the four questions that find them** | `docs/audit/SECURITY_AUDIT_MAP.md` **§0.5 — read before trusting a green check** |
 
 ---
 
@@ -40,7 +41,15 @@ listed below, which hold **data and history, never rules**.
 10. If it adds a route, a query, or a panel render of server text, run
     `npm run audit:map` and read the diff — the security audit map's counts are
     derived from the code and CI fails when they drift.
-11. **If it fixes a vulnerability, sweep for the same SHAPE across the whole
+11. **Before trusting any green check, read
+    `docs/audit/SECURITY_AUDIT_MAP.md` §0.5.** It records the failure mode of
+    every AI session that has worked on this repository: every serious defect in
+    the register was found only after the owner pushed back, never on a first
+    pass. It lists the four questions that actually found them — *does anything
+    CALL this; is this check a snapshot or a guarantee; if it fails halfway what
+    does the row say; am I fixing the symptom or the cause* — and the gate blind
+    spots that were reporting green over live defects.
+12. **If it fixes a vulnerability, sweep for the same SHAPE across the whole
     codebase and record the result** — including "swept, none found". A fix that
     closes one instance and leaves its siblings is how `setOrderFields` shipped
     the same defect three times (§21). The procedure and the register are in
