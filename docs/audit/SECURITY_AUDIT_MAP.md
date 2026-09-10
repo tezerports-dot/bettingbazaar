@@ -454,12 +454,22 @@ it actually returns:
 | `GET /api/app/bootstrap` | Clean — app name, origins, package ids, compliance booleans. All of it is on the store listing anyway. |
 | `GET /api/v1/content/ai-analysis` | Clean — aggregate cycle results, no player data. |
 
-### 2.19 Admin 2FA enforcement
+### 2.19 Staff 2FA enforcement
 
-**What.** Whether every admin path really requires the second factor, or only the
-login screen does.
+**What.** Whether the second factor is actually required to hold a privileged
+session, or only checked for accounts that happen to have enrolled.
 
-**Status: NOT EXAMINED.**
+**Why the distinction is the whole thing.** "2FA is mandatory for admins" and
+"an admin who has enrolled must present a code" are different claims. The second
+is a property of the login handler; the first needs a guard that refuses
+privilege to an account with no second factor at all. A policy with no
+enforcement point reads as a control on every page that mentions it.
+
+**How.** Find the predicate that decides who must hold a factor, then find every
+place it is CONSULTED. If the only consumers are the 2FA screens themselves, the
+policy does not gate anything.
+
+**Status: FINDING — F-011** (2026-09-10). See §4.
 
 ### 2.20 Identifier predictability
 
@@ -798,6 +808,64 @@ and `rank` is unique within the board.
   `PUBLIC_LEADERBOARD_FIELDS` with a citing comment.
 
 
+### F-011 — mandatory staff 2FA has no server-side enforcement point
+`OPEN` · high · authentication · found 2026-09-10 · **owner decision, deliberately not fixed**
+
+`requires2FA(user)` in `domains/identity/twoFactor.routes.js` decides who must
+hold a second factor, and it is carefully written — it keys on `isAdmin` /
+`isSubAdmin`, the same flags the route guards use, and its own comment explains
+that deriving the policy from `roles` alone was a real hole.
+
+**It is consulted in three places, all inside that same file** — twice to
+report status, once to refuse a *disable*. **No route guard anywhere reads it.**
+
+And `loginHandler` (`routes.js`) branches like this:
+
+```js
+if (user.twoFactorEnabled) { …issue a challenge, stop here… }
+return issueSession(user, res);   // not enrolled → full admin session, password only
+```
+
+So the second factor is required of accounts that **already enrolled**, and an
+admin who never enrols holds a password-only session over the entire admin
+surface — permanently, and silently. `seedAdmin` does not enrol either, so the
+bootstrapped admin is in exactly that state from the first boot.
+
+The same shape reaches the merchant surface more weakly:
+`issueMerchantSession(merchant, res, { mustEnroll2FA: true })` exists and the
+merchant panel routes on it — but that is a **panel** behaviour. The server
+issues a full merchant session regardless, so a merchant calling the API
+directly is password-only too. Nothing server-side reads `mustEnroll2FA`.
+
+- **Shape:** a security policy whose only consumers are the screens that
+  configure it.
+- **Sweep query:** `grep -rn "requires2FA\|mustEnroll2FA" backend --include=*.js | grep -v /tests/`
+- **Swept: yes.** Three consumers of `requires2FA`, all in `twoFactor.routes.js`;
+  one producer of `mustEnroll2FA` and no server-side consumer.
+
+**Why this is not fixed here.** The obvious fix — refuse a privileged session
+without a second factor — **can lock the owner out of their own platform**, and
+the seeded admin is precisely the account it would lock out first. That is not a
+call to make on somebody's behalf at 3am, and the codebase already shows the
+author weighing it: the merchant comment says a hard refusal "would lock out
+every existing merchant the moment this deploys".
+
+**The shape that resolves it safely**, for whenever it is decided:
+
+1. Keep issuing the session, but stamp the token with whether a factor was
+   presented (a claim, not a lookup — so the check is free and cannot drift).
+2. A guard on the privileged surfaces that, for an account `requires2FA()` says
+   must hold one, permits **only** the enrolment endpoints (`/api/2fa/setup`,
+   `/api/2fa/activate`) and refuses everything else. That is a lockout the owner
+   can walk out of with an authenticator app, not one that needs database
+   surgery.
+3. `mustEnroll2FA` on the admin session too, so the admin panel routes to
+   enrolment the way the merchant panel already does.
+
+The order matters: (1) and (3) are safe to ship on their own and make (2) a
+one-line switch once the owner has enrolled.
+
+
 ### 4.1 Sweep result for F-002 (module-scope state)
 
 Run 2026-09-10. Recorded because "swept, none found" is worth as much as a hit.
@@ -953,4 +1021,5 @@ In the order it should be worked.
 | 12 | Sweep F-007 | §4 | Which other suites only pass in a particular order. |
 | 13 | Finish F-008 | §4 | ~19 admin-side `500 + err.message` sites; each needs reading, some messages are deliberate. |
 | 14 | Gate for the F-008 shape | §4 | Fail on `res.status(5xx).json({ message: err.message })`. |
+| 15 | **Decide F-011 — staff 2FA** | §4 | **Highest open item.** A password-only admin session is the whole platform. Fix shape and the lockout risk are in the entry; steps 1 and 3 are safe to ship alone. |
 | 15 | Decide F-009's `frame-src` | §4 | Per-response CSP from enabled providers, or a static list an admin cannot extend. Owner's call. |
