@@ -45,7 +45,7 @@ import { holdMinutes } from '../payment/withdrawalHold.service.js';
 // other thing a player receives.
 import { toPlayerOrderView } from '../payment/playerOrderView.js';
 // One rule for how a confirmed deposit splits across the user's two pockets.
-import { depositCreditSplit, reportUncreditableDeposit } from '../payment/depositCredit.js';
+import { moveDepositMoney } from '../payment/depositCredit.js';
 import { debitMerchantTokens, creditMerchantTokens } from './merchantWallet.service.js';
 import { getMerchantTokenBalance } from '#db/repositories/merchantWallets.js';
 import { publish as publishDomainEvent, EVENTS as DOMAIN_EVENTS } from '../../services/eventBus.service.js';
@@ -1416,6 +1416,41 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             ...(utrNumber ? { utrNumber: utrNumber.trim() }     : {}),
         };
 
+        // ── DEPOSIT: the money moves BEFORE the status, through the one owner ──
+        //
+        // This route used to run `completeOrder` FIRST — "the transition is the
+        // gate" — and debit the merchant after it. The refusal therefore landed
+        // AFTER the status had committed, and an under-funded merchant pressing
+        // confirm left the order reading COMPLETED with the player never
+        // credited. The player had already sent real money (PAID is what that
+        // state means), the order showed as SUCCESS in their history, nothing
+        // swept it (`expireOrders` skips COMPLETED), and they could not even
+        // raise it: the dispute route refuses anything that is not PAID. §21,
+        // exactly — a write that follows a commit and is allowed to fail.
+        // Proven in backend/tests/routes/depositConfirmUnderfundedPg.test.js.
+        //
+        // `moveDepositMoney` is the ordering that survives a failure at any
+        // point: every movement is keyed on the order id, so a refusal or a
+        // crash leaves a PAID order the next confirm replays as no-ops. That is
+        // also why it carries no compensating refund and this no longer does —
+        // there is nothing to unwind when nothing has been declared finished.
+        //
+        // Double-tap is still handled, just by the thing that was always doing
+        // it: the canonical `mw_dep_deduct_<orderId>` / `dep_complete_<orderId>`
+        // keys, plus `completeOrder`'s own idempotency below.
+        let deposited = null;
+        if (isDeposit) {
+            deposited = await moveDepositMoney(order, {
+                debitMerchantTokens, creditDeposit, creditReserve, releaseUTR,
+            });
+            if (!deposited.ok) {
+                // Reported to the operator and to the player by
+                // `moveDepositMoney` itself (F-015). The order stays PAID, so it
+                // is retryable AND still disputable.
+                return res.status(400).json({ success: false, message: 'Insufficient token inventory to confirm this deposit. Top up your merchant wallet.' });
+            }
+        }
+
         let moved;
         if (isDeposit) {
             moved = await completeOrder(order._id, {
@@ -1455,64 +1490,8 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         }
         Object.assign(order, moved.order);
 
-        if (isDeposit) {
-            // AUDIT FIX F-1 (2026-07-09): tokens must be TRANSFERRED from the
-            // merchant, never minted. Previously the user was credited first
-            // and the merchant debit was best-effort (allowOverdraft + swallowed
-            // error) — so an under-funded merchant confirm minted tokens into
-            // existence. Correct order (mirrors the approve path): debit the
-            // merchant FIRST with a hard $gte guard; only if that succeeds do we
-            // credit the user. If the user credit then fails, refund the merchant
-            // (idempotent) so no tokens are burned either.
-            //
-            // Step 1: debit merchant inventory — hard-fail if insufficient.
-            const { merchant: debited } = await debitMerchantTokens({
-                merchantId: req.merchantId, amount: order.tokenAmount,
-                reason: `Deposit ${order.orderId} confirmed — tokens dispensed to user`,
-                refModel: 'PaymentOrder', refId: order.orderId,
-                txId: `mw_dep_deduct_${order.orderId}`,
-            });
-            if (!debited) {
-                // F-015. The player has ALREADY SENT REAL MONEY — `PAID` is what
-                // that state means — so this refusal cannot be answered to the
-                // merchant alone. The operator is alerted and the player is told
-                // their order is still being worked, through the same reporter
-                // `moveDepositMoney` uses, so the two paths cannot drift on it.
-                await reportUncreditableDeposit(order, order.tokenAmount);
-                return res.status(400).json({ success: false, message: 'Insufficient token inventory to confirm this deposit. Top up your merchant wallet.' });
-            }
-            // Step 2: credit the user — apply the DepositPolicy deposit/reserve
-            // split (Phase X fix X-1/X-2, 2026-07-10). This path previously
-            // credited the FULL tokenAmount to depositBalance with NO reserve
-            // split, so real deposits NEVER funded reserveBalance — leaving
-            // DepositPolicy + the Phase A betReservePercent split dormant in
-            // production, and making the derived ledger (which always posts
-            // order.reserveAllocation) disagree with the actual wallet.
-            // depositAllocation/reserveAllocation are computed by the
-            // paymentOrder pre-save hook from the active DepositPolicy (logged
-            // 90/10 fallback if none configured). Both credits are idempotent
-            // via their canonical keys (dep_complete_/reserve_credit_<orderId>).
-            //
-            // The `?? order.tokenAmount` this used to carry never fired: an
-            // order whose split fields were never written reads 0, not
-            // undefined, so the fallback was dead and a legacy order credited
-            // nothing. domains/payment/depositCredit.js states the rule once,
-            // so the answer no longer depends on how the order was fetched.
-            const { depositCredit, reserveCredit } = depositCreditSplit(order);
-            try {
-                if (depositCredit > 0) await creditDeposit(order.userId, depositCredit, order.orderId);
-                if (reserveCredit > 0) await creditReserve(order.userId, reserveCredit, order.orderId);
-            } catch (walletErr) {
-                console.error('[Merchant confirm] user credit failed — refunding merchant:', walletErr.message);
-                await creditMerchantTokens({
-                    merchantId: req.merchantId, amount: order.tokenAmount,
-                    reason: `Deposit ${order.orderId} confirm reversed — user credit failed`,
-                    refModel: 'PaymentOrder', refId: order.orderId,
-                    txId: `mw_dep_refund_${order.orderId}`,
-                }).catch(e => console.error('[Merchant confirm] CRITICAL: merchant refund failed, manual reconcile needed:', e.message));
-                return res.status(500).json({ success: false, message: 'Wallet credit failed. Please retry.' });
-            }
-        } else {
+        // The deposit's money already moved, above, before the transition.
+        if (!isDeposit) {
             // ── WITHDRAWAL confirm: an ASSERTION, not a settlement ─────────────
             // The merchant is claiming they sent the player fiat. Nothing proves
             // it yet, so nothing settles yet.

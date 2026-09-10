@@ -1455,8 +1455,12 @@ the case §28.2 names: *"either work someone forgot to finish or code to delete.
   back.
 
 ### F-017 — the deposit-confirm money invariants are proven against the door nobody uses
-`OPEN` · medium · test coverage aimed at the wrong path · found 2026-09-10 while
-deleting an orphan route
+`FIXED` · **HIGH — it was hiding a live money-loss defect, now proven and
+fixed** · found 2026-09-10 while deleting an orphan route, fixed the same day
+
+> **Read this first.** The duplication was the symptom. Explaining it turned up
+> the reason it mattered: the untested implementation lost player money, and a
+> test written to demonstrate it did. See "What the duplication was hiding".
 
 There are **two** deposit-confirm implementations, not one:
 
@@ -1488,22 +1492,78 @@ premise.
 and **missed the path merchants actually use**. `reportUncreditableDeposit` is
 exported now and called from both refusals.
 
-**The decision this needs** is not "delete or keep" but which door survives, and
-the tests cannot simply be repointed: 16 assertions drive the route as an
-**admin**, and the merchant route is merchant-only. The admin equivalent is
-`paymentOrder.routes.js`, a third caller. Three options, in the order I would
-take them:
+### What the duplication was hiding
 
-1. **Make the merchant route call `moveDepositMoney`,** then delete the orphan
-   and repoint its tests at the two live doors. One owner for the sequence, and
-   the coverage lands on reachable code. It changes real behaviour: the merchant
-   route carries a compensating `creditMerchantTokens` refund when the user
-   credit fails, which `moveDepositMoney` does not — and `depositCredit.js`'s own
-   header argues for detect-and-repair over compensate-and-hope.
-2. **Wire the orphan to a screen** — the weakest option; it makes an unused door
-   real rather than removing a duplicate.
-3. **Delete the orphan and port its 16 tests onto the two live routes** without
-   unifying the implementations. Coverage lands correctly; the duplication stays.
+The two implementations disagreed about **the order of the money and the
+status**, and only one of them was right.
+
+```
+moveDepositMoney  (the unreachable route, and the admin override)
+    1. debit the merchant        ← refuses here, nothing else has happened
+    2. credit the player
+    3. release the UTR
+    4. caller sets COMPLETED     ← the LAST thing
+
+POST /api/merchant/confirm/:id  (what merchants actually use)
+    1. completeOrder -> COMPLETED   ← the FIRST thing, and it commits
+    2. debit the merchant        ← refuses HERE, after the status is already set
+    3. credit the player         ← never reached
+```
+
+So a merchant with too few tokens pressing confirm produced:
+
+| | |
+|---|---|
+| The order | **COMPLETED** |
+| The merchant's tokens | untouched |
+| The player's wallet | **untouched — they paid real money and got nothing** |
+| The player's order history | reads as a **successful** deposit |
+| `expireOrders` | skips COMPLETED — nothing sweeps it |
+| The dispute route | `if (order.status !== 'PAID') return 400` — **they cannot even raise it** |
+
+That is §21 in its own recorded words: *"the release button marked a disputed
+deposit COMPLETED and never credited the player, then told the admin it had
+failed. The order left the DISPUTED queue, so nothing remained to show it had
+gone wrong."* The same shape, in a fourth place, on the busiest money route.
+
+**Proven, not argued.** `backend/tests/routes/depositConfirmUnderfundedPg.test.js`
+drives the real route against a real database: before the fix the order read
+`COMPLETED` while the player held `0 paise`, and the dispute gate refused them.
+The assertions are written as the CORRECT expectation, so they failed before and
+pass after — a test asserting the observed behaviour would have locked the
+defect in.
+
+**Fixed by option 1**: the merchant route now calls `moveDepositMoney`, so the
+money moves first and the transition is last. One owner for the sequence, and
+the ordering that survives a failure at any point — every movement is keyed on
+the order id, so a refusal or a crash leaves a **PAID** order that is both
+retryable and still disputable.
+
+- **The compensating refund went with it, and that is the point, not a
+  casualty.** The merchant route refunded the merchant when the user credit
+  threw. It needed to, because its ordering had already declared the order
+  finished — there was something to unwind. Under money-first ordering nothing
+  has been declared, so the next confirm simply replays: the keyed debit is a
+  no-op and the credit retries. `depositCredit.js`'s header argues exactly this —
+  detect and repair, never compensate and hope.
+- **Double-tap is still handled**, by what was always handling it: the canonical
+  `mw_dep_deduct_<orderId>` / `dep_complete_<orderId>` keys, plus
+  `completeOrder`'s own idempotency. The old comment conceded this — *"only the
+  canonical txIds on the wallet calls stopped the second one, which means the
+  protection lived in a different domain from the decision."*
+- **F-015's reporting now reaches this path for free**, since it lives inside
+  `moveDepositMoney`. The export added for the inline branch is no longer needed
+  there.
+
+### Still open: where the 16 tests live
+
+The orphan route was NOT deleted. Its 16 real-database assertions —
+conservation, the split, idempotency, a four-way confirm race — are still the
+only ones of their kind, and they cannot simply be repointed: they drive the
+route as an **admin**, and the merchant route is merchant-only (the admin
+equivalent is `paymentOrder.routes.js`, a third caller). Now that both live
+paths share `moveDepositMoney`, porting them is a smaller job than it was, but
+it is still a job.
 
 - **Shape:** two implementations of one money sequence, with the tests on the
   unreachable one.
@@ -1615,7 +1675,7 @@ In the order it should be worked.
 |---|---|---|---|
 | 0 | ~~Decide F-015~~ | §4 | **Done 2026-09-10** — alert plus player notification. The sweep for other silently-returned money-path refusals is still open. |
 | 0 | ~~Decide F-016~~ | §4 | **Done 2026-09-10** — the QR was removed entirely; the dynamic UPI intent already did the job better. |
-| 0 | **Decide F-017** | §4 | Two deposit-confirm implementations; all 16 real-DB money tests are on the unreachable one. Three options in the entry; option 1 changes real behaviour. |
+| 0 | Port F-017's 16 tests | §4 | The ordering defect is FIXED and both live paths now share `moveDepositMoney`. What remains is re-homing the orphan route's 16 real-DB money assertions onto the two reachable doors, then deleting it. |
 | 0 | Gate for the F-014 shape | §4 | Fail on `Math.random()` in a panel outside an allow-list of presentational files, each entry carrying a stated reason. |
 | 1 | Client-side injection (XSS) | 2.14 | Chat, tickets and admin announcements all round-trip through panels; a stored XSS in the admin panel runs with an admin session. |
 | 2 | File upload | 2.15 | Payment proofs are evidence in money disputes. |
