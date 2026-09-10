@@ -23,6 +23,7 @@ import { networkClient } from '../../services/networkClient.js';
 import { verifyWebhookSignature } from './webhookSignature.js';
 // Credentials are ciphertext in the row; they become usable only here.
 import { sealCredential, openProviderSecrets } from './providerCredentials.js';
+import { serverError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -106,7 +107,7 @@ router.get('/providers', async (req, res) => {
     }
     res.json({ success: true, providers: grouped });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'GET /api/game/providers', 'Games are unavailable right now.');
   }
 });
 

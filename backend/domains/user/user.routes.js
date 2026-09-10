@@ -56,6 +56,7 @@ import { getSystemConfig } from '#db/repositories/config.js';
 import { systemConfigPayload } from '../configuration/systemConfigPayload.js';
 import { INR_TOKEN_RATE } from '../configuration/tokenRates.js';
 import { getActivePolicy as getActivePaymentModePolicy } from '#db/repositories/paymentModePolicy.js';
+import { serverError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -720,7 +721,7 @@ router.get('/v1/wallet/ledger', authenticate, async (req, res) => { // paginated
     const result = await getUserLedger(req.user.userId, Number(page), Number(limit));
     res.json({ success: true, ...result });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'GET /v1/wallet/ledger');
   }
 });
 
@@ -743,7 +744,7 @@ router.get('/v1/tokens/rate', async (req, res) => {
       updatedAt:      null,
     });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'GET /v1/tokens/rate');
   }
 });
 
@@ -765,7 +766,7 @@ router.get('/v1/token/rates', async (req, res) => {
       sellRate: INR_TOKEN_RATE,
     });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'GET /v1/token/rates');
   }
 });
 

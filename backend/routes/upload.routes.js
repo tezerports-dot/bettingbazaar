@@ -6,6 +6,7 @@ import { db } from '#db';
 import cdnService from '../services/cdn.service.js';
 import { authenticate, isAdmin } from '../domains/identity/auth.middleware.js';
 import { merchantAuth } from '../middleware/merchantAuth.js';
+import { serverError, callerError } from '../shared/httpError.js';
 // Order chat. An attachment that is not recorded is an upload nobody can find.
 
 const router = express.Router();
@@ -225,13 +226,22 @@ router.post('/user/profile/picture/confirm-upload', authenticate, async (req, re
   try {
     const { fileKey, cdnUrl } = req.body;
     if (!fileKey || !cdnUrl) return res.status(400).json({ success: false, message: 'fileKey and cdnUrl are required' });
-    const verified = await cdnService.verifyUploadedObject({
-      fileKey, cdnUrl, expectedUserId: req.user.userId.toString(), expectedCategory: 'profile'
-    });
+    // Split deliberately. `verifyUploadedObject` refuses with messages written
+    // for the caller — the key is not theirs, the bytes are not the type they
+    // claimed — and those are the caller's mistake, so 400 with the wording
+    // intact. Anything else is ours, and says nothing.
+    let verified;
+    try {
+      verified = await cdnService.verifyUploadedObject({
+        fileKey, cdnUrl, expectedUserId: req.user.userId.toString(), expectedCategory: 'profile'
+      });
+    } catch (err) {
+      return callerError(res, err);
+    }
     await db.users.updateUser(req.user.userId, { profilePic: verified.cdnUrl });
     res.json({ success: true, cdnUrl: verified.cdnUrl });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'POST /user/profile/picture/confirm-upload');
   }
 });
 

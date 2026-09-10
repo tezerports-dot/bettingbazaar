@@ -377,9 +377,26 @@ did fetch.
 spreads a row. **A spread defeats a key scan** (`CLAUDE.md` §24) — `{ ...order }`
 names one permitted key and carries thirty forbidden ones.
 
-**Status: NOT EXAMINED** as a systematic sweep. Spot-verified: game-provider
-routes never read a credential; `authenticate` deliberately does not load 2FA
-secrets onto `req.user`.
+**Status: CLEAR for credentials; FINDING for internal errors — F-008**
+(2026-09-10).
+
+**Credentials: clear, and the design is the reason.** All 27 reads of a
+credential column across the whole data layer live in a function whose *name*
+says what it returns — `getUserCredentials`, `getMerchantCredentials`,
+`getActiveConfigSecrets`, `getActiveConfigWithSecrets`, `getLiveBotSecrets`,
+`getBotSecrets`, `getProviderSecrets`, `getGatewaySecrets`, `getPendingAadhaar`,
+`exportPending`. The ORDINARY mappers (`toUser`, `toMerchant`, …) emit none of
+them, so a handler that spreads a whole row cannot leak a password hash however
+careless the spread — which is the guarantee §24 says a key scan alone cannot
+give you.
+
+Every caller of those readers was then traced. The one that looked worst is
+fine: `POST /api/game/launch` builds
+`{ ...listed, ...openProviderSecrets(...) }` — decrypted provider credentials
+spread into a local — but it uses them to sign and returns only
+`{ success, launchUrl, sessionId }`.
+
+**Internal error text: not clear.** See F-008.
 
 ### 2.17 Transport, cookies, headers
 
@@ -628,6 +645,51 @@ code under test.
 - **Swept:** not yet. Queued in §6.
 
 
+### F-008 — an unexpected failure told the caller what broke, and told nobody else
+`PARTIALLY FIXED` · medium (four sites were unauthenticated) · information
+disclosure · found 2026-09-10
+
+`res.status(500).json({ success: false, message: err.message })` hands whatever
+went wrong straight to whoever asked. From a Postgres driver that is a
+constraint name, a column list, sometimes a statement fragment; from `fs` a
+path; from a fetch an internal hostname and port.
+
+Two things made it worse than it reads:
+
+1. **Four of the sites need no authentication at all** — `GET /api/v1/tokens/rate`,
+   `GET /api/v1/token/rates`, `GET /api/game/providers`, `GET /api/support/status`.
+   Breaking one query there returns a piece of the schema to the open internet.
+2. **None of those sites logged the error.** It went to the caller and nowhere
+   else: the one party who could act on the failure never saw it, and the one
+   party who should not, did.
+
+- **Shape:** an *unexpected* failure answered with its own message, where a
+  *deliberate* refusal and an internal fault are not distinguished.
+- **Sweep query:**
+  `grep -rnE 'message:\s*(err|e|error)\??\.message' backend --include=*.js | grep -v /tests/`
+- **Swept: yes — 38 sites.** They split in two, and the split is the point:
+  - **~13 are correct and must not change.** A refusal somebody *wrote* for a
+    caller to read — "That code is not valid", "A QR code must be uploaded here
+    first", "This UTR was already used" — carries a `status` and often a `code`,
+    and its wording is the feature. `callerError()` is for those.
+  - **~25 are `500` with an internal message.** Six were player- or
+    world-reachable and are **fixed**; the remaining ~19 are behind admin auth
+    and are queued rather than changed in the same pass, because several of
+    their messages may be deliberate and each needs reading.
+- **Fix:** one owner, `backend/shared/httpError.js`, with the two cases as two
+  *separate functions* so a handler has to say which kind of failure it is
+  holding rather than defaulting into leaking. `serverError()` logs in full and
+  answers with nothing; `callerError()` takes the status and code from the error
+  so a handler cannot drift from them.
+- **A detail worth keeping:** the profile-picture confirm path was not simply
+  converted. `verifyUploadedObject` throws messages the caller *should* read
+  ("Uploaded object owner mismatch", "does not match its declared type") and
+  those are the caller's mistake — so that path now answers `400` with the
+  wording intact and reserves `500` for everything else.
+- **Gate possible:** yes, and straightforward — fail on
+  `res.status(5xx).json({ … message: err.message … })`. Queued in §6.
+
+
 ### 4.1 Sweep result for F-002 (module-scope state)
 
 Run 2026-09-10. Recorded because "swept, none found" is worth as much as a hit.
@@ -781,3 +843,5 @@ In the order it should be worked.
 | 10 | Gate for the F-003 shape | §4 | A CHECK a handler can violate after a commit. |
 | 11 | Gate for the F-006 shape | §4 | Any `*_url` / `*_link` written from `req.body` must pass through `shared/storedUrl.js`. |
 | 12 | Sweep F-007 | §4 | Which other suites only pass in a particular order. |
+| 13 | Finish F-008 | §4 | ~19 admin-side `500 + err.message` sites; each needs reading, some messages are deliberate. |
+| 14 | Gate for the F-008 shape | §4 | Fail on `res.status(5xx).json({ message: err.message })`. |

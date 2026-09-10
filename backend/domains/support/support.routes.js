@@ -35,6 +35,7 @@ import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { authenticate } from '../identity/auth.middleware.js';
 import { db } from '#db';
 import { answer, ragStatus } from './ragService.js';
+import { serverError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -60,7 +61,7 @@ router.get('/status', async (req, res) => {
   try {
     res.json({ success: true, ...(await ragStatus()) });
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message });
+    return serverError(res, e, 'GET /api/support/status');
   }
 });
 
