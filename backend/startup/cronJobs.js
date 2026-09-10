@@ -37,6 +37,25 @@ export function registerCronJobs(rebuildLeaderboard) {
     } catch (e) { console.error('[expiry-worker] cron error:', e.message); }
   });
 
+  // ── Deposit escrow sweep — runs every 5 minutes ─────────────────────────────
+  // The net under every path that takes a merchant's tokens for a buy order.
+  // Releases holds whose order has finished, and REPORTS orders that still owe
+  // tokens with no hold behind them (see sweepDepositHolds for why the second
+  // is reported and not repaired).
+  //
+  // Five minutes, not sixty seconds: both faults are rare by construction, and
+  // the 15-minute grace means a faster sweep would find nothing new while
+  // joining two large tables on every pass.
+  registerRecurring('deposit-escrow-sweep', 5 * 60 * 1000, async () => {
+    try {
+      const { sweepDepositHolds } = await import('../domains/merchant/depositEscrow.service.js');
+      const report = await sweepDepositHolds();
+      if (report.released || report.unheld || report.failures) {
+        console.warn('[deposit-escrow] sweep:', JSON.stringify(report));
+      }
+    } catch (e) { console.error('[deposit-escrow] cron error:', e.message); }
+  });
+
   // ── Withdrawal settlement worker — runs every 60 seconds ────────────────────
   // Settles confirmed withdrawals whose dispute-hold window has passed: consumes
   // the player's locked stake and credits the merchant. Until this runs, neither

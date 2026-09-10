@@ -85,19 +85,28 @@ const SITES = [
     ],
   },
   {
+    // ── This gate is no longer a READ ────────────────────────────────────────
+    // It compared a balance and then accepted the order in a later statement.
+    // Any such pair is a snapshot however good the number is, and two merchants
+    // claiming from the open pool in the same instant both passed it. Taking
+    // the HOLD is the question: its refusal is in the reserve leg's own
+    // `UPDATE … WHERE available_paise + $n >= 0` under the merchant's row lock.
+    //
+    // So what is asserted here is that no balance READ has come back to this
+    // gate — the entry is kept in this file precisely so that reintroducing one
+    // fails.
     name: 'merchant accept guard',
     file: 'domains/merchant/merchant.routes.js',
-    gates: [/availableTokens < order\.tokenAmount/],
-    // The order excludes ITSELF from the subtraction. Without that argument a
-    // merchant holding exactly enough for the order already assigned to them
-    // is refused their own order — the amount is subtracted once and then
-    // demanded again. Asserted here because it is not visible from the gate.
-    source: /await getMerchantSpendableTokens\(\s*merchant\.merchantId, \{ excludeOrderId: order\.orderId \}/,
+    gates: [/if \(!held\.ok\) \{/],
+    source: /const held = await holdDepositTokens\(order, merchant\.merchantId/,
     forbidden: [
       /\(merchant\.tokenBalance \|\| 0\) < order\.tokenAmount/,
-      // `getMerchantTokenBalance` is the DISPLAY reader — the raw pocket. It
-      // must not come back to a gate that admits an order (F-018).
+      // Every reader, by name. All three answer "what does this merchant have",
+      // and admission needs "are these tokens now MINE" — which only a write
+      // can answer (F-018).
       /await getMerchantTokenBalance\(/,
+      /getMerchantSpendableTokens\(/,
+      /getAvailablePaiseFor\(/,
     ],
   },
   {
@@ -142,13 +151,17 @@ const SITES = [
     // The manual-assign and reassign gate. It is the only assignment path with
     // no concurrency query behind it, so it is the only thing standing between
     // a merchant and a second order they cannot fund.
+    // Same change, at the manual-assign gate — the one assignment path with no
+    // concurrency query behind it, so the only thing between a merchant and an
+    // order they cannot fund.
     name: 'queue-manager inventory refusal',
     file: 'domains/merchant/merchant.assignment.routes.js',
-    gates: [/if \(balance >= tokenAmount\) return null;/],
-    source: /await getMerchantSpendableTokens\(merchantId, \{ excludeOrderId \}\)/,
+    gates: [/const held = await holdDepositTokens\(order, merchantId, \{ actor \}\);\s*\n\s*if \(held\.ok\) return null;/],
+    source: /async function inventoryRefusal\(order, merchantId/,
     forbidden: [
-      // The raw pocket, at the gate. See F-018.
       /await getMerchantTokenBalance\(/,
+      /getMerchantSpendableTokens\(/,
+      /getAvailablePaiseFor\(merchantId/,
     ],
   },
   {

@@ -146,7 +146,7 @@ describePg('merchant panel routes', () => {
     const { orderId } = await order({ tokens: 500 });
     const res = await as(app, poor).post(`/accept/${orderId}`).send({});
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/insufficient uncommitted token balance/i);
+    expect(res.body.message).toMatch(/token balance cannot cover this buy order/i);
     expect((await getOrderRecord(orderId)).state).toBe('PENDING_QUEUE');
   });
 
@@ -157,6 +157,12 @@ describePg('merchant panel routes', () => {
     // subtracted the first order from the second's answer. The player on the
     // losing order pays and is never credited.
     const m = await merchantActor({ tokensRupees: 1_000 });
+    // The concurrency cap is raised OUT OF THE WAY on purpose. At its default
+    // of 1 the second accept is refused for having too many orders open, which
+    // is a different rule entirely — the test would pass while proving nothing
+    // about whether the tokens are held. Lifting it leaves the hold as the only
+    // thing that can refuse.
+    await updateMerchant(m.merchantId, { maxConcurrentDepositOrders: 10 });
     const first  = await order({ tokens: 600, betting: 500, reserve: 100 });
     const second = await order({ tokens: 600, betting: 500, reserve: 100 });
 
@@ -164,7 +170,7 @@ describePg('merchant panel routes', () => {
 
     const res = await as(app, m).post(`/accept/${second.orderId}`).send({});
     expect(res.status, 'took a second order it cannot fund').toBe(400);
-    expect(res.body.message).toMatch(/insufficient uncommitted token balance/i);
+    expect(res.body.message).toMatch(/token balance cannot cover this buy order/i);
     // Still claimable by somebody who CAN serve it — refusing this merchant is
     // not the same as failing the order.
     expect((await getOrderRecord(second.orderId)).state).toBe('PENDING_QUEUE');

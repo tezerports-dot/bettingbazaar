@@ -39,6 +39,7 @@ import {
 } from '../configuration/tokenRates.js';
 import { debitWinningsForWithdrawal, refundWithdrawal, getBalances } from '../wallet/walletAuthority.service.js';
 import { selectBestMerchant } from '../merchant/merchantScoring.service.js';
+import { holdForOrder, releaseForOrder } from '../merchant/depositEscrow.service.js';
 import { claimLinkFor } from '../merchant/cashLink.service.js';
 import {
   MERCHANT_CURRENCY, merchantTypeOf, usdtAddressFor,
@@ -243,6 +244,32 @@ export async function tryClaimCashLink(order) {
   const claim = await claimLinkFor(order);
   if (!claim.ok) return false;
 
+  // ── The cash rail attaches a merchant HERE, so it holds their tokens here ──
+  // This is the FOURTH route by which an order becomes a merchant's, and it
+  // does not go through `tryAssignMerchant` — a cash order is matched to the
+  // link a merchant has already produced at a machine, not scored against a
+  // candidate list. It was missed on the first pass of this work precisely
+  // because it is the path that looks least like an assignment.
+  //
+  // A cash buy owes the merchant's tokens exactly as a UPI buy does: the player
+  // draws notes and the merchant hands over tokens. Without the hold the cash
+  // rail kept the whole defect the UPI rail had just lost.
+  if (order.type === 'DEPOSIT') {
+    const held = await holdForOrder(order, claim.link.merchantId, { actor: 'cash-link' });
+    if (!held.ok) {
+      // The link is given back for the same reason as below: it was claimed
+      // before this could fail, and a consumed link on an unassigned order is
+      // two people waiting on nothing.
+      await db.cashLinks.releaseClaim({ linkId: claim.link.linkId, orderId: order.orderId })
+        .catch((e) => console.error(`[cashLink] could not release ${claim.link.linkId}:`, e.message));
+      console.warn(
+        `[cashLink] ${order.orderId}: merchant ${claim.link.merchantId} could not hold `
+        + `${order.tokenAmount} tokens (${held.reason}); link returned to the queue.`,
+      );
+      return false;
+    }
+  }
+
   const moved = await assignOrderState(order.orderId, {
     set: {
       merchantId: claim.link.merchantId,
@@ -267,6 +294,10 @@ export async function tryClaimCashLink(order) {
     // error the player sees.
     await db.cashLinks.releaseClaim({ linkId: claim.link.linkId, orderId: order.orderId })
       .catch((e) => console.error(`[cashLink] could not release ${claim.link.linkId}:`, e.message));
+    // …and the tokens held two blocks up have nothing to hold for either.
+    if (order.type === 'DEPOSIT') {
+      await releaseForOrder(order, { actor: 'cash-link', reason: 'Cash link assignment did not take' });
+    }
     return false;
   }
 
@@ -401,6 +432,36 @@ async function tryAssignMerchant(order) {
   const expiresAt = new Date(Date.now() + await getOrderExpiryMs(order));
   const snapshot  = buildMerchantSnapshot(merchant, expiresAt, order);
 
+  // ── The HOLD is the gate on the MERCHANT ────────────────────────────────
+  // The transition below gates the ORDER — exactly one caller may move one
+  // order out of PENDING_QUEUE. It says nothing about the merchant, so two
+  // DIFFERENT orders racing for the same merchant both passed it, and both were
+  // assigned to somebody who could fund one. Measured: two 600-token orders on
+  // a merchant holding 1,000.
+  //
+  // `selectBestMerchant` above reads a balance and this line acts on it in a
+  // separate statement — a snapshot, however accurate the number. The hold is
+  // the guarantee: its refusal is in the reserve leg's own UPDATE … WHERE
+  // under the merchant's row lock, so the second of two racing orders is
+  // refused by the database and there is no window to lose.
+  //
+  // Taken BEFORE the transition, deliberately. A hold on an order that then
+  // fails to move is released two lines down and the tokens come straight back;
+  // a transition that moves an order whose tokens were never held leaves a
+  // player promised a merchant who cannot pay them.
+  if (order.type === 'DEPOSIT') {
+    const held = await holdForOrder(order, merchant.merchantId, { actor: 'assignment' });
+    if (!held.ok) {
+      // Not an error and not a retry — this merchant cannot serve it. The order
+      // stays queued and the next sweep offers it to somebody else.
+      console.warn(
+        `[assignment] ${order.orderId}: merchant ${merchant.merchantId} could not hold `
+        + `${order.tokenAmount} tokens (${held.reason}); leaving the order queued.`,
+      );
+      return false;
+    }
+  }
+
   // The transition is the gate. Two assignment passes racing the same queued
   // order — the synchronous attempt at creation and the retry loop, which do
   // overlap — both used to pass a `status === 'PENDING_QUEUE'` read and both
@@ -415,7 +476,16 @@ async function tryAssignMerchant(order) {
       rateUsed,
     },
   });
-  if (!moved.ok || moved.idempotent) return false;
+  if (!moved.ok || moved.idempotent) {
+    // The order did not move, so the hold taken above has nothing to hold FOR.
+    // Released here rather than left to the sweep: the tokens are wanted by the
+    // next candidate, and the sweep is the safety net for the paths that forget,
+    // not the ordinary way a hold ends.
+    if (order.type === 'DEPOSIT') {
+      await releaseForOrder(order, { actor: 'assignment', reason: 'Assignment did not take' });
+    }
+    return false;
+  }
 
   // Keep the caller's in-memory copy consistent with what was written, so the
   // emitters below describe the row that exists rather than a hoped-for one.
@@ -1297,6 +1367,13 @@ export async function cancelOrder(actorId, isAdmin, orderId) {
   if (!cancelled.idempotent && order.type === 'WITHDRAWAL' && order.escrowLocked) {
     await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
   }
+  // A PENDING_QUEUE deposit has no merchant, so ordinarily no hold — but an
+  // order that was rejected and requeued sits in exactly this state, and if the
+  // reject path ever fails to release, the hold is still live. Releasing here
+  // costs one query and closes that overlap; it is a no-op when there is none.
+  if (!cancelled.idempotent && order.type === 'DEPOSIT') {
+    await releaseForOrder(order, { actor: 'cancel', reason: 'Order cancelled' });
+  }
 
   await emitWalletUpdate(order.userId);
   return cancelled.order ?? order;
@@ -1348,6 +1425,16 @@ export async function expireOrders() {
       if (order.type === 'WITHDRAWAL' && order.escrowLocked) {
         await refundWithdrawal(order.userId, order.tokenAmount, order.orderId)
           .catch(e => console.error('[expireOrders] escrow release failed:', e.message));
+      }
+
+      // …and the other side of the same idea for a DEPOSIT. The merchant's
+      // tokens were held the moment the order became theirs; the window has
+      // closed, so they come back. Unconditional on `merchantId` because an
+      // order that never reached a merchant simply has no hold and this is a
+      // no-op — asking first would be a second place that has to agree about
+      // when a hold exists.
+      if (order.type === 'DEPOSIT') {
+        await releaseForOrder(order, { actor: 'expiry', reason: 'Order expired' });
       }
 
       // Scoring: the merchant did not complete it.

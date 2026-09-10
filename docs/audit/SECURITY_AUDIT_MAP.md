@@ -1694,7 +1694,7 @@ it is still a job.
   route. Queued in §6.
 
 ### F-018 — merchant eligibility is checked but never HELD
-`FIXED` · **HIGH — this is the root cause F-017 was a symptom of** · design gap ·
+`FIXED (in two passes — the first pass did not fix it)` · **HIGH — this is the root cause F-017 was a symptom of** · design gap ·
 found 2026-09-10 when the owner rejected the F-017 fix as treating a symptom ·
 fixed 2026-09-10
 
@@ -1855,6 +1855,119 @@ dropped — each killed by exactly the test that names it.
 - **Not a withdrawal problem.** On a SELL the merchant *receives* tokens and
   pays fiat, which the platform does not hold, so there is no token-side
   commitment to subtract. Deposit-only is correct, not an omission.
+
+### The first fix was not a fix, and the owner said so
+
+Everything above this line describes `getSpendablePaiseFor` — available minus
+the buy orders already in flight, wired into all five decision sites, tested,
+mutation-proved, every gate green. The owner's response was that it would not
+LOCK anything, so double-spending was still possible, and that a real escrow
+auto-releases on any outcome and leaves ledger data.
+
+**All four points were right, and the first was demonstrable in about ten
+minutes.** Two 600-token buy orders fired together at a merchant holding 1,000:
+
+```
+assigned=true,true   toThisMerchant=2   available=1,000 tokens
+```
+
+Both assigned. The check was more accurate and still a check. `tryAssignMerchant`
+reads a balance and calls `assignOrderState` in a separate statement, and the
+comment beside that transition says *"the transition is the gate"* — it gates the
+ORDER, so exactly one caller moves one order out of PENDING_QUEUE. It says
+nothing about the MERCHANT, so two different orders racing one merchant both pass.
+
+This is §0.5 question 2 — *is this check a snapshot or a guarantee?* — asked of
+the code and not of the fix. It is now trap 18 in `CLAUDE.md`.
+
+### …and the mechanism already existed, unused, for the second time in one finding
+
+`merchant_settlements` implements this exactly: a RESERVED → SETTLED/CANCELLED/
+REVERSED state machine, a two-lock ordering, a ledger entry per transition, a
+reconciler, and `findUnexplainedSettlementPockets` — a stranded-reservation
+detector. `POCKET_PLAN[DEPOSIT]` was written in full:
+
+```
+reserve   available -a, reserved +a
+complete  reserved  -a                 tokens dispensed
+cancel    reserved  -a, available +a   released automatically
+```
+
+**`DIRECTIONS.DEPOSIT` appeared three times in the entire codebase, all three
+inside that module's own definitions.** Not one caller, not one test. The
+withdrawal half is live; the deposit half was built, merged and never called.
+
+Both of the objections recorded above are answered by code that was already
+there: `cancel` returns the tokens on its own, and the detector that "could not
+exist" is an exported function.
+
+**How it was missed is the lesson worth keeping.** The search was for
+`reserveForSettlement` — the helper in `merchantWallets.core.js` — which is
+genuinely dead. Finding it dead was taken as proof the CONCEPT was unused. The
+concept had two implementations and the search found the wrong one.
+**Searching by function name answers a question about that name; the question
+was about reservations.**
+
+### What the second pass does
+
+`domains/merchant/depositEscrow.service.js` is the caller that module was
+missing. The hold is taken at ATTACHMENT — the moment an order becomes a
+merchant's — by all FOUR routes that attach one:
+
+| Route | Where |
+|---|---|
+| Automatic assignment | `tryAssignMerchant`, before the transition |
+| Admin assign / reassign | `inventoryRefusal`, which no longer reads a balance |
+| Merchant claims from the open pool | the accept handler, after every cheaper refusal |
+| **A cash link is claimed** | `tryClaimCashLink` |
+
+**The fourth was missed on the first pass of the second pass**, and the owner's
+next question — "list the automatic assignment rules for both rails" — is what
+surfaced it. A cash order is matched to a link a merchant produced at a machine
+rather than scored against a candidate list, so it does not go through
+`tryAssignMerchant` and looks least like an assignment. The cash rail would have
+kept the entire defect the UPI rail had just lost.
+
+Release is automatic on every terminal outcome (reject, expiry, cancellation,
+reassignment, a failed transition on any of the four paths); the confirm
+CONSUMES the hold before the wallet debit, so the merchant is not charged twice.
+
+**One live hold per order is a database fact**, not a convention:
+`merchant_settlements_one_live_deposit`, a partial unique index over
+`(order_id) WHERE direction='DEPOSIT' AND state='RESERVED'`. Dropping it broke
+NO test on the first attempt — every case was sequential and the service's
+pre-read covered them, so the index was load-bearing and unmeasured, which reads
+exactly like a pass. A true two-merchant race test was added and now kills it.
+
+**The derived figure became the invariant.** With real holds, `available`
+already excludes committed tokens, so `getSpendablePaiseFor` must EQUAL
+`available` — and it does, because it nets the ledger rather than testing
+existence, so the reserve's own DEBIT cancels the order's claim. Where the two
+diverge, an order owes tokens nothing is holding. That is `findUnheldDepositOrders`,
+swept every five minutes beside `findStrandedDepositHolds`. A stranded hold is
+RELEASED; an unheld order is **reported, never silently re-held** — re-taking it
+would hide the path that forgot.
+
+Admin deductions needed no change: every other movement targets `available`, so
+`reserved` is reachable only through the settlement state machine, and no
+production caller passes `allowNegativeAvailable`.
+
+**Proven:** `depositEscrowPg.test.js`, 18 against a real database — the pockets,
+the atomic refusal, idempotency, a two-merchant race on one order, the cash rail,
+every release path, the dispense not returning tokens, re-attachment after a
+release, the invariant, and both sweeps. Mutation-proved four ways (the
+assignment hold, the cash-link hold, the release, the unique index), each killed
+by exactly the test that names it.
+
+**Three of these tests were flaky before they were right**, all trap 10 and all
+worth recording: a suite that raises `max_order` on its own fixtures makes every
+one of them a candidate for its own later tests (84 merchants and 80 orders of
+residue were found in the local database); a buy order left `PENDING_QUEUE` is
+not inert, because the next run's `supplyCashLink` hands its link to the
+longest-waiting order — which was this suite's leftover; and the denomination
+ladder has five rungs, every one used by another suite, so a cash test cannot
+own one. The fixtures clean up after themselves now, and the assertions are
+about ONE merchant's pocket rather than about who won.
 
 ### Still open, and separable — the gate that accepts a test as a consumer
 
@@ -2192,9 +2305,9 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 396 |
-| Parameters only (safe by construction) | 254 |
-| Interpolating into statement text (each needs a reading) | 142 |
+| `pgQuery` call sites | 399 |
+| Parameters only (safe by construction) | 255 |
+| Interpolating into statement text (each needs a reading) | 144 |
 
 ### Panel injection sinks
 

@@ -165,7 +165,9 @@ wrong owner gets working code deleted by the next reader.
 | The rail an ORDER runs under | `order_states.payment_mode`, stamped at creation by `stampForNewOrder` and **immutable by trigger**. Every worker and screen branches on the order's own value, never the current policy. |
 | Merchant earnings | `merchant_commission_policies` + `merchant_commission_rates` (one row per variety), read by `domains/merchant/merchantCommission.service.js`, which owns no numbers. Platform-funded from `MERCHANT_BONUS_POOL`, never deducted from users. Do not reintroduce `commissionRate`, a buy/sell spread, or a deposit-triggered commission. See §26. |
 | Merchant token balance mutations | `domains/merchant/merchantWallet.service.js` exclusively — idempotent `tx_id`. |
-| What a merchant may take on NEXT | `getSpendablePaiseFor()` in `merchantWallets.core.js` — available MINUS the open buy orders they are already serving, derived from `order_states` netted against the wallet ledger, never stored. **Every gate that ADMITS an order reads this**; `getAvailablePaiseFor`/`getMerchantTokenBalance` are the display readers and answer a different question. See §9 and F-018. |
+| A merchant's tokens on a BUY order | **HELD, in `merchant_settlements` (`direction='DEPOSIT'`), through `domains/merchant/depositEscrow.service.js` — the one owner.** Taken at ATTACHMENT by all three routes that attach a merchant (auto-assignment, admin assign/reassign, claiming from the open pool); released automatically on every terminal outcome; consumed by the confirm. At most one live hold per order, enforced by `merchant_settlements_one_live_deposit`. **No gate may ADMIT an order by reading a balance** — a read in one statement acted on in another is a snapshot, and two orders arriving together both passed it. Taking the hold IS the check. See §9 and F-018. |
+| Whether a merchant's held tokens can be taken by anything else | **No.** Every other movement touches `available`; `reserved` is reachable only through the settlement state machine. An admin deduction is `legs: { available: -a }`, so it cannot reach a player's promised tokens, and no production caller passes `allowNegativeAvailable`. |
+| Whether a merchant is owed a hold they do not have | `findUnheldDepositOrders()` + `findStrandedDepositHolds()`, swept every 5 minutes by `sweepDepositHolds`. A stranded hold is RELEASED; an unheld order is **reported, never silently re-held** — re-taking it hides the path that forgot. `getSpendablePaiseFor()` is the same question as an invariant: with universal holds it must EQUAL `available`, and any divergence is an unheld order. It is no longer a gate. |
 | Wallet balance mutations (player) | `domains/wallet/walletAuthority.service.js` exclusively, **including a bet's stake lock**. A route may not move a balance. |
 | Wallet balance READS | `walletAuthority.getBalances()`, reading the `wallets` row. No second copy of a balance exists or may be introduced. **Every read is classified display or decision** — see §9. |
 | Money in/out of the ecosystem | `domains/funding/fundingAuthority.service.js`; rails are adapters in `providerRegistry.js`. Never owns accounting. |
@@ -614,7 +616,17 @@ it achieves.
     balance. Net DEBIT against CREDIT rather than testing existence — a movement
     REVERSED by `reverseMovement` puts the tokens back and restores the
     obligation together, and a boolean sees only the first row.
-18. **A silent no-op after a committed ledger write strands money.**
+18. **A guard you can pass twice is not a guard, however good its number is.**
+    F-018's first fix made the assignment check read a MORE ACCURATE balance —
+    available minus the orders already in flight — and left it a read. Two buy
+    orders arriving in the same instant both passed it and were both assigned to
+    a merchant who could fund one; measured, not theorised. **A number read in
+    one statement and acted on in another is a snapshot no matter how good the
+    number is.** The only fix is a write the database serialises: the guard goes
+    in the `UPDATE`'s own `WHERE` under a row lock, and the caller learns the
+    answer from whether the write landed. This is §0.5 question 2, and it was
+    asked of the code and not of the fix.
+19. **A silent no-op after a committed ledger write strands money.**
     `creditMerchantTokens` returns `{merchant: null}` for an id with no merchant
     row — it does not throw. The commission engine wrote its ledger event first,
     so the pool was debited, the platform recorded the merchant as owed, the
@@ -843,7 +855,7 @@ in through a deposit and went out through a withdrawal.
    underscore, so a pattern has to guess where the id ends.
 6. **Never partial-issue.** Paying what the pool holds while recording the full
    high-water mark under-pays permanently. Skip until the pool is funded.
-7. **Check the merchant exists before posting.** See trap 18.
+7. **Check the merchant exists before posting.** See trap 19.
 
 ---
 

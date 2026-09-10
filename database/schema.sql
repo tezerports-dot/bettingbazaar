@@ -343,6 +343,25 @@ CREATE INDEX IF NOT EXISTS merchant_settlements_merchant_idx
 CREATE INDEX IF NOT EXISTS merchant_settlements_order_idx
   ON merchant_settlements (order_id);
 
+-- ── One live deposit reservation per order ──────────────────────────────────
+-- A deposit reservation HOLDS the merchant's tokens for one player's buy order.
+-- Two live reservations for the same order would hold twice the tokens for one
+-- promise, and a reassignment that opened the new merchant's hold before
+-- cancelling the old one would do exactly that.
+--
+-- Written as a partial unique index rather than checked in the service, because
+-- the service cannot check it without a read-then-write race: the reassign path
+-- and the retry path can arrive in the same instant. Here the second one is
+-- refused by the database (§19 — make the impossible row impossible), and the
+-- caller reads that refusal as "already held" rather than opening a second.
+--
+-- Scoped to RESERVED and to DEPOSIT: a settled or cancelled reservation is
+-- history and an order may accumulate several across reassignments, while the
+-- WITHDRAWAL direction is a different pocket and a different question.
+CREATE UNIQUE INDEX IF NOT EXISTS merchant_settlements_one_live_deposit
+  ON merchant_settlements (order_id)
+  WHERE direction = 'DEPOSIT' AND state = 'RESERVED';
+
 -- Every state change, append-only. The settlements table holds the CURRENT
 -- state; this holds how it got there, and it is the only place a duplicate
 -- transition can be detected durably — `tx_id` UNIQUE is the idempotency gate,

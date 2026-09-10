@@ -46,8 +46,12 @@ import { holdMinutes } from '../payment/withdrawalHold.service.js';
 import { toPlayerOrderView } from '../payment/playerOrderView.js';
 // One rule for how a confirmed deposit splits across the user's two pockets.
 import { moveDepositMoney } from '../payment/depositCredit.js';
+import {
+  holdForOrder as holdDepositTokens,
+  dispenseForOrder as dispenseDepositHold,
+  releaseForOrder as releaseDepositHold,
+} from './depositEscrow.service.js';
 import { debitMerchantTokens, creditMerchantTokens } from './merchantWallet.service.js';
-import { getMerchantSpendableTokens } from '#db/repositories/merchantWallets.js';
 import { publish as publishDomainEvent, EVENTS as DOMAIN_EVENTS } from '../../services/eventBus.service.js';
 // Order chat. Every write here named a model registered nowhere, so the thread
 // echoed over the socket and never survived a reload.
@@ -1222,21 +1226,8 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
             // From the WALLET, not the merchant record. This gate admits an
             // order the merchant then has to fund; deciding it from a stored
             // copy is how one came to be accepted that could not be served.
-            // SPENDABLE, not the raw pocket: the open pool is claimed
-            // first-come, so a merchant could take two orders seconds apart
-            // and read their full balance both times (F-018).
-            //
-            // THIS order is excluded from the subtraction. When it was already
-            // ASSIGNED to this merchant it is in a committing state under their
-            // id, so counting it would subtract the amount and then require it
-            // again — refusing a merchant holding exactly enough for their own
-            // order. Excluded, the one comparison below is right whether the
-            // order came from the open pool or off their own plate.
-            const availableTokens = await getMerchantSpendableTokens(
-                merchant.merchantId, { excludeOrderId: order.orderId },
-            );
-            if (merchant.acceptsDeposits === false || availableTokens < order.tokenAmount) {
-                return res.status(400).json({ success: false, message: 'Merchant has insufficient uncommitted token balance or deposit capability for this buy order.' });
+            if (merchant.acceptsDeposits === false) {
+                return res.status(400).json({ success: false, message: 'Merchant is not enabled for buy orders.' });
             }
         } else if (merchant.acceptsWithdrawals === false) {
             return res.status(400).json({ success: false, message: 'Merchant is not enabled for sell orders.' });
@@ -1269,6 +1260,50 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
             return res.status(400).json({ success: false, message: `Merchant has reached ${order.type} active order limit (${typeLimit}).` });
         }
 
+        // ── The HOLD is the check, and it is taken LAST ─────────────────────
+        // This was a balance read followed, in a later statement, by the accept
+        // — a snapshot, so two merchants claiming from the open pool in the
+        // same instant both passed it. Taking the hold IS asking the question:
+        // its refusal lives in the reserve leg's own
+        // `UPDATE … WHERE available_paise + $n >= 0` under the merchant's row
+        // lock, so the second claimant is refused by the database.
+        //
+        // Placed after every cheaper refusal above so that none of them has a
+        // hold to unwind — the only thing that can fail after this point is the
+        // transition itself, and that has exactly one release, below.
+        //
+        // One call covers both doors. An order already ASSIGNED to this
+        // merchant is already held by them and comes back `idempotent`, not
+        // charged a second time; one claimed from the open pool takes its hold
+        // here.
+        let heldFresh = false;
+        if (order.type === 'DEPOSIT') {
+            const held = await holdDepositTokens(order, merchant.merchantId, {
+                actor: `merchant:${req.merchantId}`,
+            });
+            if (!held.ok) {
+                // 409 when somebody else took it, 400 when this merchant cannot
+                // fund it. The distinction is not cosmetic: losing a race for an
+                // order is a CONFLICT and the merchant should try the next one,
+                // while an inventory shortfall is theirs to act on by topping
+                // up. Collapsing both into 400 also silently changed what the
+                // panel sees for the ordinary case of two merchants claiming
+                // the same order at once, which is the common event here.
+                const conflict = held.reason === 'held_by_another';
+                return res.status(conflict ? 409 : 400).json({
+                    success: false,
+                    message: conflict
+                        ? 'Another merchant is already serving this buy order.'
+                        : 'Your available token balance cannot cover this buy order. Top up, or finish an order you are already serving.',
+                });
+            }
+            // Only a hold TAKEN here may be released here. An order that was
+            // already this merchant's arrives holding its tokens from
+            // assignment, and releasing that on a lost accept race would strip
+            // a live order of its funding.
+            heldFresh = !held.idempotent;
+        }
+
         const wasAssigned = Boolean(order.assignedAt);
         const now        = new Date();
         const expiresAt  = new Date(now.getTime() + 15 * 60 * 1000); // 15-min window starts on accept
@@ -1297,6 +1332,16 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
                 ...(responseMinutes === null ? {} : { merchantResponseMinutes: responseMinutes }),
             },
         });
+        if ((!accepted.ok || accepted.idempotent) && heldFresh) {
+            // The accept did not take, so the tokens this call held have nothing
+            // to hold for. Released immediately rather than left to the sweep:
+            // the next claimant wants them now, and the sweep exists for the
+            // paths that forget, not as the ordinary way a hold ends.
+            await releaseDepositHold(order, {
+                actor: `merchant:${req.merchantId}`,
+                reason: 'Accept did not take',
+            });
+        }
         if (!accepted.ok || accepted.idempotent) {
             // Two merchants racing the same queued order both used to pass the
             // status read above and both used to save; the second overwrote the
@@ -1453,6 +1498,25 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         // keys, plus `completeOrder`'s own idempotency below.
         let deposited = null;
         if (isDeposit) {
+            // ── The hold is CONSUMED here, before the wallet debit ──────────
+            // The tokens were moved `available → reserved` when this order
+            // became this merchant's. `moveDepositMoney` debits `available`,
+            // so with the hold still standing the merchant is charged twice:
+            // once by the hold they cannot spend and once by the debit. The
+            // dispense (`reserved -a`) is what turns the hold INTO the payment.
+            //
+            // Before the debit and not after, for the §21 reason: if the debit
+            // fails the order stays PAID and retryable with the tokens already
+            // out of `reserved` and back in `available`, which is where the
+            // retry needs them. The other order strands the retry against its
+            // own hold.
+            const dispensed = await dispenseDepositHold(order, { actor: `merchant:${req.merchantId}` });
+            if (!dispensed.ok) {
+                return res.status(409).json({
+                    success: false,
+                    message: 'This order\'s token hold could not be released for payment. Try again in a moment.',
+                });
+            }
             deposited = await moveDepositMoney(order, {
                 debitMerchantTokens, creditDeposit, creditReserve, releaseUTR,
             });
@@ -1700,6 +1764,27 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
             });
         }
         Object.assign(order, requeued.order);
+
+        // ── The hold comes off BEFORE anything tries to take a new one ──────
+        // This merchant held the player's tokens from the moment the order was
+        // theirs. They have declined, so the tokens are theirs again.
+        //
+        // The ordering is load-bearing, not tidiness: the reassignment further
+        // down calls `tryAssignMerchant`, which takes a hold of its own, and
+        // `merchant_settlements_one_live_deposit` permits exactly one live hold
+        // per order. Release after reassignment and the new merchant's hold is
+        // refused as `held_by_another` — the order would be reassigned with
+        // nobody's tokens behind it, and the FIRST merchant's still locked.
+        //
+        // Looked up by ORDER, not by merchant, which is why it still works here:
+        // `requeueOrder` has just set `merchantId` to null, and a release keyed
+        // on the merchant would have had nothing to look with.
+        if (order.type === 'DEPOSIT') {
+            await releaseDepositHold(order, {
+                actor: `merchant:${req.merchantId}`,
+                reason: `Rejected by the merchant: ${reason}`,
+            });
+        }
 
         // A refusal, through the one owner. It records the pair — so this order
         // never returns to this merchant, and this merchant never sees this

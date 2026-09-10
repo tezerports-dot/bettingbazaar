@@ -498,6 +498,110 @@ export async function reconcileSettlements(merchantId) {
   };
 }
 
+/**
+ * The LIVE deposit reservation for an order, if it has one.
+ *
+ * At most one can exist — `merchant_settlements_one_live_deposit` makes that a
+ * database fact rather than a convention — so this returns a row or null and
+ * never a list the caller has to reason about.
+ *
+ * Exported because three callers need the same answer and must not each write
+ * their own predicate: the escrow service (is this order already held?), the
+ * reassign path (whose hold do I have to cancel?), and the stranded-hold sweep.
+ */
+export async function liveDepositSettlementFor(orderId) {
+  const { rows } = await pgQuery(
+    `SELECT * FROM merchant_settlements
+      WHERE order_id = $1 AND direction = 'DEPOSIT' AND state = 'RESERVED'`,
+    [String(orderId)], 'merchant_settlement_live_deposit',
+  );
+  return rowToSettlement(rows[0]);
+}
+
+/**
+ * Deposit reservations still holding tokens for an order that has FINISHED.
+ *
+ * The safety net that makes this design survivable. Every terminal path
+ * releases its own hold, and the day one of them is added without the release
+ * — or one throws after the order has moved — the tokens sit in `reserved`
+ * doing nothing. This finds them by joining the hold against the order, so a
+ * forgotten release is a DELAY the sweep corrects, never a permanent loss.
+ *
+ * It is deliberately NOT the same question as `findUnexplainedSettlementPockets`,
+ * which compares the POCKETS against the settlements. That one catches a
+ * reservation whose money went missing; this one catches money whose reservation
+ * outlived its reason. Both are needed and neither implies the other.
+ */
+export async function findStrandedDepositHolds({ olderThanMinutes = 15, limit = 200 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT s.settlement_id, s.merchant_id, s.order_id, s.amount_paise, s.created_at,
+            o.state AS order_state
+       FROM merchant_settlements s
+       JOIN order_states o ON o.order_id = s.order_id
+      WHERE s.direction = 'DEPOSIT'
+        AND s.state = 'RESERVED'
+        AND o.state IN ('COMPLETED','CANCELLED','FAILED','REJECTED','PENDING_QUEUE')
+        AND s.updated_at < now() - make_interval(mins => $1)
+      ORDER BY s.updated_at ASC
+      LIMIT ${Math.min(Math.max(Number(limit) || 200, 1), 1000)}`,
+    [Math.max(Number(olderThanMinutes) || 0, 0)], 'merchant_settlement_stranded_deposits',
+  );
+  return rows.map((r) => ({
+    settlementId: String(r.settlement_id),
+    merchantId:   String(r.merchant_id),
+    orderId:      String(r.order_id),
+    amountPaise:  toPaise(r.amount_paise),
+    orderState:   r.order_state,
+    heldSince:    r.created_at,
+  }));
+}
+
+/**
+ * Buy orders that OWE a merchant's tokens with nothing holding them.
+ *
+ * The inverse of `findStrandedDepositHolds`, and the more dangerous of the two.
+ * A stranded hold locks tokens that should be free — visible to the merchant,
+ * annoying, recoverable. An UNHELD order is a promise to a player with nothing
+ * behind it: the merchant can spend those tokens on anything, and the player
+ * finds out at the end.
+ *
+ * Three ways an order lands here, and all three are worth catching:
+ *   - it predates the hold mechanism (every order open at deploy time);
+ *   - a compensating re-hold failed after a refused reassignment;
+ *   - a path that attaches a merchant was added without taking a hold, which is
+ *     the one that will happen again.
+ *
+ * Deliberately NOT limited to orders whose merchant still exists: an order
+ * pointing at a deleted merchant is unheld in the way that matters most, and
+ * `order_states.merchant_id` has no foreign key (trap 18).
+ */
+export async function findUnheldDepositOrders({ olderThanMinutes = 5, limit = 200 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT o.order_id, o.merchant_id, o.state, o.token_amount_paise, o.updated_at
+       FROM order_states o
+      WHERE o.order_type = 'DEPOSIT'
+        AND o.state IN ('ASSIGNED','PROCESSING','PAID')
+        AND o.merchant_id IS NOT NULL
+        AND o.updated_at < now() - make_interval(mins => $1)
+        AND NOT EXISTS (
+          SELECT 1 FROM merchant_settlements s
+           WHERE s.order_id = o.order_id
+             AND s.direction = 'DEPOSIT'
+             AND s.state = 'RESERVED'
+        )
+      ORDER BY o.updated_at ASC
+      LIMIT ${Math.min(Math.max(Number(limit) || 200, 1), 1000)}`,
+    [Math.max(Number(olderThanMinutes) || 0, 0)], 'merchant_settlement_unheld_deposits',
+  );
+  return rows.map((r) => ({
+    orderId:     String(r.order_id),
+    merchantId:  String(r.merchant_id),
+    orderState:  r.state,
+    amountPaise: toPaise(r.token_amount_paise),
+    since:       r.updated_at,
+  }));
+}
+
 /** Every merchant whose committed pockets are not explained by its settlements. */
 export async function findUnexplainedSettlementPockets() {
   const { rows } = await pgQuery(

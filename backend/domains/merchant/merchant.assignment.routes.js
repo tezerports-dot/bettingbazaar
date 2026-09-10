@@ -33,7 +33,10 @@ import { buildMerchantSnapshot, merchantDisplayRef } from '../payment/paymentPro
 import { toPlayerOrderView } from '../payment/playerOrderView.js';
 import { emitAdminUpdate, emitMerchantUpdate, emitOrderUpdate } from '../notification/realtimeEmitters.js';
 // Inventory eligibility is a MONEY read, so it reads the wallet.
-import { getMerchantSpendableTokens } from '#db/repositories/merchantWallets.js';
+import {
+  holdForOrder as holdDepositTokens,
+  releaseForOrder as releaseDepositHold,
+} from './depositEscrow.service.js';
 import { getAvailablePaiseFor, getSpendablePaiseFor } from '#db/repositories/merchantWallets.core.js';
 import { paiseToRupees } from '../../shared/money.js';
 import { getSystemConfig } from '#db/repositories/config.js';
@@ -85,19 +88,29 @@ async function poolRefusal(merchantId, action = 'assigning') {
  * a merchant handed an order they cannot fund leaves a player waiting for a
  * payment that will never arrive.
  */
-async function inventoryRefusal(merchantId, tokenAmount, { excludeOrderId = null } = {}) {
-  // SPENDABLE, not the raw pocket. A queue manager assigning by hand is the
-  // one path with no concurrency query behind it, so this gate was the only
-  // thing standing between a merchant and a second order they cannot fund —
-  // and it was asking what they hold, not what is still uncommitted (F-018).
-  const balance = await getMerchantSpendableTokens(merchantId, { excludeOrderId });
-  if (balance >= tokenAmount) return null;
+async function inventoryRefusal(order, merchantId, { actor = 'admin' } = {}) {
+  // A WITHDRAWAL moves tokens TOWARD the merchant. There is nothing of theirs
+  // to hold, so there is nothing to refuse on.
+  if (order.type !== 'DEPOSIT') return null;
+
+  // ── This no longer READS a balance; it TAKES the tokens ──────────────────
+  // It used to read a number and let the caller assign in a separate
+  // statement — a snapshot, and a queue manager assigning by hand is the one
+  // path with no concurrency query behind it. Taking the hold IS the check,
+  // and its refusal is in the reserve leg's own `UPDATE … WHERE` under the
+  // merchant's row lock, so two admins assigning at once cannot both win.
+  //
+  // The caller must release it if what follows fails. Every caller does, and
+  // `findUnheldDepositOrders` is the net under the one that some day will not.
+  const held = await holdDepositTokens(order, merchantId, { actor });
+  if (held.ok) return null;
   return {
     status: 400,
-    message: `Merchant has insufficient uncommitted inventory (${balance} < ${tokenAmount}). `
-           + 'Top up merchant inventory, or wait for their open buy orders to finish.',
-    merchantBalance: balance,
-    required: tokenAmount,
+    message: held.reason === 'held_by_another'
+      ? 'Another merchant already holds the tokens for this order. Release that assignment first.'
+      : `Merchant cannot hold ${order.tokenAmount} tokens for this order. `
+        + 'Top up their inventory, or wait for the buy orders they are already serving to finish.',
+    required: order.tokenAmount,
   };
 }
 
@@ -173,11 +186,6 @@ router.post('/payment-orders/:id/reassign', authenticate, isAdminOrSubAdminOrQue
     const pooled = await poolRefusal(merchant.merchantId, 'reassigning');
     if (pooled) return res.status(pooled.status).json({ success: false, ...pooled });
 
-    const funded = await inventoryRefusal(merchant.merchantId, order.tokenAmount, {
-      excludeOrderId: order.orderId,
-    });
-    if (funded) return res.status(funded.status).json({ success: false, ...funded });
-
     const expiresAt = new Date(Date.now() + ASSIGN_WINDOW_MS);
 
     // Captured before the move, for the audit entry below: afterwards the row
@@ -185,6 +193,50 @@ router.post('/payment-orders/:id/reassign', authenticate, isAdminOrSubAdminOrQue
     // answer left in it.
     const previousMerchantId = order.merchantId;
     const previousState = order.status;
+
+    // ── The hold has to CHANGE HANDS, and only one may exist at a time ──────
+    // `merchant_settlements_one_live_deposit` permits exactly one live hold per
+    // order, so taking the new merchant's before releasing the old one is
+    // refused outright — the whole point of the index. The old hold therefore
+    // comes off first, which opens a gap where the order is assigned to a
+    // merchant holding nothing.
+    //
+    // That gap is closed by COMPENSATION rather than by hoping: every failure
+    // after the release puts the previous merchant's hold back. A reassignment
+    // that is refused must leave the order exactly as it found it, funded by
+    // the merchant who still has it — an admin pressing a button that fails is
+    // the most ordinary thing on this screen, and it must not be the thing that
+    // strips a live order of its funding.
+    const restorePreviousHold = async (why) => {
+      if (order.type !== 'DEPOSIT' || !previousMerchantId) return;
+      const back = await holdDepositTokens(order, previousMerchantId, {
+        actor: `admin:${req.user.userId}`,
+      });
+      if (!back.ok) {
+        // Loud, because the order is now live with nobody's tokens behind it.
+        // `findUnheldDepositOrders` will also see it, but an operator watching
+        // this screen should not have to wait for a sweep to learn it.
+        console.error(
+          `[reassign] ${order.orderId}: ${why}, and the previous merchant's hold `
+          + `could not be restored (${back.reason}). The order is unfunded.`,
+        );
+      }
+    };
+
+    if (order.type === 'DEPOSIT' && previousMerchantId) {
+      await releaseDepositHold(order, {
+        actor: `admin:${req.user.userId}`,
+        reason: `Reassigned away from ${previousMerchantId}`,
+      });
+    }
+
+    const funded = await inventoryRefusal(order, merchant.merchantId, {
+      actor: `admin:${req.user.userId}`,
+    });
+    if (funded) {
+      await restorePreviousHold('the new merchant could not hold the tokens');
+      return res.status(funded.status).json({ success: false, ...funded });
+    }
 
     // An assignee change, not a lifecycle move — the order stays ASSIGNED.
     const moved = await reassignOrder(order.orderId, {
@@ -197,6 +249,15 @@ router.post('/payment-orders/:id/reassign', authenticate, isAdminOrSubAdminOrQue
       },
     });
     if (!moved.ok) {
+      // The order did not move, so the NEW merchant's hold has nothing to hold
+      // for, and the OLD merchant still has the order. Both halves are undone.
+      if (order.type === 'DEPOSIT') {
+        await releaseDepositHold(order, {
+          actor: `admin:${req.user.userId}`,
+          reason: 'Reassignment did not take',
+        });
+        await restorePreviousHold('the reassignment transition was refused');
+      }
       return res.status(409).json({ success: false, message: `Order is ${moved.status ?? 'missing'}, cannot reassign` });
     }
     Object.assign(order, moved.order);
@@ -517,8 +578,8 @@ router.post('/queue/assign/:orderId', authenticate, isAdminOrSubAdminOrQueueMana
     const pooled = await poolRefusal(merchant.merchantId, 'assigning');
     if (pooled) return res.status(pooled.status).json({ success: false, ...pooled });
 
-    const funded = await inventoryRefusal(merchant.merchantId, order.tokenAmount, {
-      excludeOrderId: order.orderId,
+    const funded = await inventoryRefusal(order, merchant.merchantId, {
+      actor: `admin:${req.user.userId}`,
     });
     if (funded) return res.status(funded.status).json({ success: false, ...funded });
 
@@ -534,6 +595,16 @@ router.post('/queue/assign/:orderId', authenticate, isAdminOrSubAdminOrQueueMana
       },
     });
     if (!assigned.ok || assigned.idempotent) {
+      // The hold taken by `inventoryRefusal` above has nothing to hold for.
+      // Released here rather than left to the sweep: the tokens are wanted by
+      // whoever the order goes to instead, and the sweep is the net under the
+      // paths that forget, not the ordinary way a hold ends.
+      if (order.type === 'DEPOSIT') {
+        await releaseDepositHold(order, {
+          actor: `admin:${req.user.userId}`,
+          reason: 'Assignment did not take',
+        });
+      }
       return res.status(409).json({
         success: false,
         message: `Order status is ${assigned.status ?? 'missing'}, cannot assign`,
