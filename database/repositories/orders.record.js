@@ -964,10 +964,30 @@ export async function scrubExpiredProofs() {
   return rowCount;
 }
 
+/**
+ * Withdrawals whose hold window has closed and which may now settle.
+ *
+ * ── `state = 'PAID'` is the load-bearing line ───────────────────────────────
+ * It excludes a DISPUTED order, and without it this query returned them. The
+ * player's dispute writes the reason and moves the state; it does NOT touch
+ * `merchant_credit_status`, so the row stayed HELD, stayed due, and the worker
+ * settled it — consuming the player's locked stake and crediting the merchant
+ * WHILE the dispute was open and unresolved.
+ *
+ * That is the hold's whole purpose defeated. The window exists so that until it
+ * closes neither side has moved, which is what makes a dispute a REVERSAL
+ * rather than a clawback. Settling underneath one turns it into an argument
+ * about money that has already gone.
+ *
+ * The guard is here, in the WHERE, rather than in the caller: a pre-read in
+ * `settleHold` is a window two callers can both pass, and this is a money path.
+ * `settleHold` carries the same condition for callers that reach it directly.
+ */
 export async function findDueHolds({ limit = 200 } = {}) {
   const { rows } = await pgQuery(
     `SELECT * FROM order_states
       WHERE merchant_credit_status = 'HELD'
+        AND state = 'PAID'
         AND merchant_credit_hold_until IS NOT NULL
         AND merchant_credit_hold_until <= now()
       ORDER BY merchant_credit_hold_until ASC

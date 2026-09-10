@@ -1761,6 +1761,69 @@ and *a merchant says this looks fraudulent*. They need different queues and
 possibly different outcomes, and today an admin sees them mixed. Worth a
 decision, not urgent.
 
+### F-020 — a disputed withdrawal settled itself anyway
+`FIXED` · **HIGH — real money, and it defeated the control that exists to stop
+exactly this** · found 2026-09-10 while checking what the owner's dispute model
+implies for a sell
+
+**The hold is the sell rail's whole safety design.** A merchant asserting they
+sent the money settles nothing: the order reaches `PAID`, the merchant's credit
+is `HELD`, the player's stake stays locked, and a worker settles it once the
+window closes. Until it closes neither side has moved — which is what makes a
+dispute a **reversal** rather than a clawback.
+
+The player's reason for disputing a sell is precisely this: *the merchant
+clicked paid and nothing arrived in my bank.*
+
+**And the worker paid the merchant anyway.** The dispute writes
+`disputeReason`, `disputeRaisedAt`, `disputeRaisedBy` and moves the STATE. It
+deliberately does not touch `merchant_credit_status`. But:
+
+- `findDueHolds` selected on `merchant_credit_status = 'HELD'` and the deadline,
+  **with no filter on state at all**;
+- `settleHold` guarded only on `merchantCreditStatus !== 'HELD'`;
+- `mirrorSettlement`'s UPDATE is `WHERE order_id = $1` — no state guard either.
+
+So a disputed withdrawal stayed HELD, stayed due, and settled on schedule: the
+player's locked stake consumed, the merchant credited, **while the dispute was
+open and unresolved.** The dispute then concerned money that had already gone —
+the exact thing the hold exists to prevent.
+
+### The test passed for the wrong reason first, and that is the part to keep
+
+The first version of the proof **passed**, and it was wrong. It set
+`escrowLocked: true` on the row and left `lockedBalance` at zero, so
+`settleHold` reached `releaseWithdrawal`, which threw *"lockedBalance would go
+negative"*, the settlement reversed, and every assertion read that as the
+dispute having stopped it. In production, where the stake is real, it proceeded.
+
+It was caught by asking **why** a green result was green — §0.5's own rule
+landing on the file written to demonstrate §0.5's point. With a genuinely locked
+stake the test failed immediately, naming `RELEASED`.
+
+**The lesson, stated for the next reader: a fixture that omits a precondition
+does not weaken a test, it INVERTS it** — the code under test fails for a reason
+that has nothing to do with the property, and the assertion reads that failure
+as success.
+
+- **Shape:** a guard placed on one field of a row while the thing that changes
+  is a different field of the same row.
+- **Fix:** `AND state = 'PAID'` in `findDueHolds`'s WHERE — where a money guard
+  belongs — plus an explicit `if (order.state === 'DISPUTED') return false;` in
+  `settleHold`, because it is exported and callable directly.
+- **Both guards are pinned INDEPENDENTLY.** Each covers the other, so a test
+  that only drove the sweep could not tell you when one regressed; there is a
+  separate test that calls `settleHold` directly. Removing either now fails
+  exactly one test.
+- **Swept:** `mirrorSettlement` still has no state guard in its UPDATE and is
+  reached only from `settleHold`, which is now guarded. Recorded rather than
+  changed — adding a second guard there needs a decision about what a settlement
+  whose order moved underneath it should do, and that is not this fix.
+- **A fixture elsewhere was aligned, not relaxed.** `newDomains.test.js` built a
+  held withdrawal with no state, so it sat at the default — a HELD credit
+  without `PAID`, which the merchant confirm never produces. It now says `PAID`,
+  which is what the code actually writes.
+
 ---
 
 ## 5. Derived coverage — regenerated, never typed
@@ -1864,6 +1927,8 @@ In the order it should be worked.
 |---|---|---|---|
 | 0 | ~~Decide F-015~~ | §4 | **Done 2026-09-10** — alert plus player notification. The sweep for other silently-returned money-path refusals is still open. |
 | 0 | ~~Decide F-016~~ | §4 | **Done 2026-09-10** — the QR was removed entirely; the dynamic UPI intent already did the job better. |
+| 0 | **Merchant abuse caps — NOT IMPLEMENTED** | §4 | The owner's model has caps on rejects and temporary suspension. `dispute_rate` exists and softly lowers a merchant's assignment score; there is **no reject-rate column, no cap, and no auto-suspension** — `suspendMerchant` is manual-admin only. |
+| 0 | State guard on `mirrorSettlement` | §4 | Its UPDATE is `WHERE order_id = $1`. Safe today because its only caller is guarded (F-020), but it would overwrite a state that moved underneath it. |
 | 0 | Split the two meanings of DISPUTED | §4 | F-019 left `DISPUTED` carrying both *the player is owed* and *the merchant smells fraud*. Different queues, possibly different outcomes. |
 | 0 | **Decide F-018 — reserve the merchant's tokens at assignment** | §4 | The root cause. `reserveForSettlement`/`completeReservation`/`cancelReservation` are built and called by nothing. Needs: reserve at assign/accept, complete at confirm, cancel on expiry/reject/reassign. |
 | 0 | Triage the 80 `testOnly` exports | §4 | `check:dead-code` treats a TEST import as a consumer, which is how an unused money mechanism stayed green. Anything in that bucket that moves money or state is a finding, not an informational row. |

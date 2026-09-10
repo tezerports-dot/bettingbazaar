@@ -1057,9 +1057,17 @@ describePg('the domains written from scratch', () => {
 
   // ══════════════════════════════════════════════════════════════════════════
   describe('withdrawal holds — the settlement sweep', () => {
+    // `state: 'PAID'` is not decoration. A HELD credit is only ever produced by
+    // the merchant confirm, which reaches PAID in the same call — so HELD
+    // without PAID is a row the platform cannot make. This fixture omitted it
+    // and therefore sat at the default state, which stopped mattering the
+    // moment `findDueHolds` started excluding anything that is not PAID (it had
+    // to: a DISPUTED withdrawal was being settled underneath an open dispute).
+    // Adding it makes the fixture match what the code actually writes.
     const heldOrder = async (id, overrides = {}) => orderRecord.createOrderRecord({
       orderId: id, userId: `hu-${ID}`, type: 'WITHDRAWAL', tokenAmountRupees: 500,
       merchantId: `hm-${ID}`, escrowLocked: true, escrowStatus: 'LOCKED',
+      state: 'PAID',
       merchantCreditStatus: 'HELD',
       merchantCreditHoldUntil: new Date(Date.now() - 60_000),
       ...overrides,
