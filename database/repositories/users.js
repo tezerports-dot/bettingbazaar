@@ -53,6 +53,7 @@ const COLUMNS = `
   joining_number, referral_code, referral_clicks, referred_by,
   status, kyc_status, kyc_submission_count, wallet_address, profile_pic, warning_count,
   payment_flagged, payment_flag_reason, payment_flagged_at, payment_flag_count,
+  consecutive_payment_failures,
   is_admin, is_sub_admin, is_queue_manager, is_mediator,
   sub_admin_role, sub_admin_permissions, phantom_access,
   two_factor_enabled, two_factor_secret, two_factor_pending_secret,
@@ -78,6 +79,7 @@ const UPDATABLE = Object.freeze(new Set([
   'username', 'password_hash', 'referral_code', 'referral_clicks', 'referred_by',
   'status', 'kyc_status', 'wallet_address', 'profile_pic', 'warning_count',
   'payment_flagged', 'payment_flag_reason', 'payment_flagged_at', 'payment_flag_count',
+  'consecutive_payment_failures',
   'is_admin', 'is_sub_admin', 'is_queue_manager', 'is_mediator',
   'sub_admin_role', 'sub_admin_permissions', 'phantom_access',
   'two_factor_enabled', 'two_factor_secret', 'two_factor_pending_secret',
@@ -144,6 +146,7 @@ function toUser(row) {
     paymentFlagReason: row.payment_flag_reason,
     paymentFlaggedAt: row.payment_flagged_at,
     paymentFlagCount: row.payment_flag_count,
+    consecutivePaymentFailures: row.consecutive_payment_failures,
     isAdmin: row.is_admin,
     isSubAdmin: row.is_sub_admin,
     isQueueManager: row.is_queue_manager,
@@ -391,6 +394,40 @@ export async function bumpReferralClicks(userId, by = 1) {
  * `maxWarnings = 0` means never auto-block, which is a real setting and not the
  * same as a threshold of zero.
  */
+/**
+ * A player did not pay for a buy order. Advance the streak and report it.
+ *
+ * ONE statement, and the streak is READ FROM THE ROW IT WRITES — the same shape
+ * as the merchant's `bumpConsecutiveRejections`. A read followed by a write
+ * would let two expiring orders in the same sweep both see 4 and both decide
+ * they were the fifth, or both see 4 and neither act.
+ */
+export async function bumpConsecutivePaymentFailures(userId) {
+  const { rows } = await pgQuery(
+    `UPDATE users SET consecutive_payment_failures = consecutive_payment_failures + 1,
+                      updated_at = now()
+      WHERE user_id = $1
+      RETURNING consecutive_payment_failures`,
+    [String(userId)], 'user_bump_payment_failures',
+  );
+  return rows.length ? Number(rows[0].consecutive_payment_failures) : 0;
+}
+
+/**
+ * A player paid. The streak goes back to zero.
+ *
+ * Called from the deposit-credit path, which is the one place both confirm
+ * routes agree the money actually arrived — not from the order reaching PAID,
+ * which is only the player SAYING they paid.
+ */
+export async function resetConsecutivePaymentFailures(userId) {
+  await pgQuery(
+    `UPDATE users SET consecutive_payment_failures = 0, updated_at = now()
+      WHERE user_id = $1 AND consecutive_payment_failures <> 0`,
+    [String(userId)], 'user_reset_payment_failures',
+  );
+}
+
 export async function flagPaymentWarning(userId, { reason, maxWarnings = 0 }) {
   const { rows } = await pgQuery(
     `UPDATE users SET

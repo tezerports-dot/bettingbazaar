@@ -99,9 +99,23 @@ describePg('the security monitor', () => {
   });
 
   it('records a 403 as well as a 401', async () => {
-    const before = (await recorded()).length;
-    await request(app).get(`/forbidden-${RUN}`).expect(403);
-    await eventually((rows) => rows.length > before, 'an audit row for the 403');
+    // ── Asserted on THIS request's own row, not on a count ────────────────
+    // It used to take `recorded().length` as a baseline and wait for the total
+    // to rise. That is a claim about every process touching the audit table,
+    // and the suite shares one: rows from other files land between the baseline
+    // and the check, and the query is capped, so a busy page could show the
+    // same length or fewer. It failed on roughly every run.
+    //
+    // The path already carries this suite's RUN token, so the row this request
+    // produced is identifiable on its own (trap 10 — assert the delta you
+    // created, never a global).
+    const path = `/forbidden-${RUN}`;
+    await request(app).get(path).expect(403);
+
+    const hit = await eventually(
+      (rows) => rows.find((e) => e.details?.path === path),
+      'the audit row for the 403');
+    expect(hit.details.statusCode).toBe(403);
   });
 
   it('does not record a 404 or a success', async () => {

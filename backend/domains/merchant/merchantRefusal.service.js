@@ -33,15 +33,45 @@
  * the cap is three IN A ROW and not three ever. A lifetime allowance catches
  * every honest merchant eventually, which is the failure mode that gets a
  * control switched off.
+ *
+ * ── Whose fault is an expiry? It depends on the direction ───────────────────
+ * The first version of this control counted EVERY expired assignment against
+ * the merchant, and on a BUY order that is the wrong party. A buy expires at
+ * ASSIGNED or PROCESSING because **the player never paid** — the merchant was
+ * standing by, did nothing wrong, and took a strike for it. Three players who
+ * changed their minds and an honest merchant is suspended.
+ *
+ * So the direction decides:
+ *
+ *   BUY, expired before PAID    the PLAYER did not pay. Not a refusal at all;
+ *                               it counts against the player instead.
+ *   BUY, PAID and unanswered    the player HAS paid and the merchant has
+ *                               neither approved nor rejected. That is the
+ *                               merchant's failure, and it is the one this
+ *                               control is actually for.
+ *   SELL, expired               the merchant did not pay the player. Theirs.
+ *   Either, DECLINED            they pressed the button. Theirs.
+ *
+ * The caller decides which of these it is holding, because only the caller
+ * knows the order. This module refuses to guess: passing an order that expired
+ * unpaid as a refusal is a caller bug, not something to be silently reclassified
+ * here.
  */
 import { db } from '#db';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { sendAlert } from '../../services/alerting.service.js';
 
-/** How a merchant failed to serve an order. Both count the same. */
+/**
+ * How a merchant failed to serve an order. All three count the same.
+ *
+ * `UNANSWERED` is the buy rail's version of `EXPIRED`, and it exists because
+ * the two were being confused in a way that punished the wrong party — see
+ * "Whose fault is an expiry" below.
+ */
 export const REFUSAL = Object.freeze({
-  DECLINED: 'DECLINED',
-  EXPIRED:  'EXPIRED',
+  DECLINED:   'DECLINED',
+  EXPIRED:    'EXPIRED',
+  UNANSWERED: 'UNANSWERED',
 });
 
 /**

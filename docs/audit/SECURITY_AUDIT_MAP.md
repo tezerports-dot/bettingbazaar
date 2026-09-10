@@ -2305,9 +2305,9 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 399 |
-| Parameters only (safe by construction) | 255 |
-| Interpolating into statement text (each needs a reading) | 144 |
+| `pgQuery` call sites | 402 |
+| Parameters only (safe by construction) | 257 |
+| Interpolating into statement text (each needs a reading) | 145 |
 
 ### Panel injection sinks
 

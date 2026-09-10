@@ -133,6 +133,27 @@ export const SYSTEM_CONFIG_SPEC = group({
     // on their first decline, which is not a cap but a ban on declining.
     // Raising it is an operator's call; disabling it is not offered.
     maxConsecutiveRejections:      n(3, 1, 20),
+    // How long a merchant has to answer a buy order the player has ALREADY
+    // PAID for, before the platform treats the silence as a refusal and sends
+    // the order to an admin.
+    //
+    // This is the only clock on the merchant that matters, because it is the
+    // only window in which the player's money is already gone. The assignment
+    // window before it expires the order harmlessly; this one cannot, so the
+    // order goes to a human instead.
+    //
+    // A floor of 5 minutes, because a merchant checking a bank app needs
+    // longer than a page refresh; a ceiling of a day, because a player who has
+    // paid should never be waiting longer than that for a person to look.
+    paidResponseMinutes:           n(30, 5, 1440),
+    // CONSECUTIVE payment failures by one PLAYER before they are flagged for
+    // review. A buy order that expires with no payment is one of these.
+    //
+    // Flagged, not blocked: a player who abandons a few purchases is ordinary,
+    // and the platform's answer to a pattern is a human looking at it. The
+    // block, where it happens at all, stays with the warning count an admin
+    // sets.
+    maxConsecutivePlayerPaymentFailures: n(5, 1, 50),
     minAdminTokenPurchase:     n(50000, 1),
     minUserTokenPurchaseUsdt:  n(100, 100),
     maxUserTokenPurchaseUsdt:  n(0, 0),      // 0 = unlimited

@@ -143,11 +143,14 @@ describePg('merchant panel routes', () => {
     // a stored copy of the balance is how one came to be accepted that could
     // not be served.
     const poor = await merchantActor({ tokensRupees: 100 });
-    const { orderId } = await order({ tokens: 500 });
+    const { orderId } = await order({ tokens: 500, state: 'ASSIGNED', merchantId: poor.merchantId });
     const res = await as(app, poor).post(`/accept/${orderId}`).send({});
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/token balance cannot cover this buy order/i);
-    expect((await getOrderRecord(orderId)).state).toBe('PENDING_QUEUE');
+    // ASSIGNED, not PENDING_QUEUE: a buy reaches a merchant by being assigned,
+    // and a refused accept leaves it exactly where it was for the expiry sweep
+    // or a queue manager to move on. Nothing about the order is consumed.
+    expect((await getOrderRecord(orderId)).state).toBe('ASSIGNED');
   });
 
   it('counts the orders the merchant is ALREADY serving against them', async () => {
@@ -163,17 +166,17 @@ describePg('merchant panel routes', () => {
     // about whether the tokens are held. Lifting it leaves the hold as the only
     // thing that can refuse.
     await updateMerchant(m.merchantId, { maxConcurrentDepositOrders: 10 });
-    const first  = await order({ tokens: 600, betting: 500, reserve: 100 });
-    const second = await order({ tokens: 600, betting: 500, reserve: 100 });
+    const first  = await order({ tokens: 600, betting: 500, reserve: 100, state: 'ASSIGNED', merchantId: m.merchantId });
+    const second = await order({ tokens: 600, betting: 500, reserve: 100, state: 'ASSIGNED', merchantId: m.merchantId });
 
     expect((await as(app, m).post(`/accept/${first.orderId}`).send({})).status).toBe(200);
 
     const res = await as(app, m).post(`/accept/${second.orderId}`).send({});
     expect(res.status, 'took a second order it cannot fund').toBe(400);
     expect(res.body.message).toMatch(/token balance cannot cover this buy order/i);
-    // Still claimable by somebody who CAN serve it — refusing this merchant is
-    // not the same as failing the order.
-    expect((await getOrderRecord(second.orderId)).state).toBe('PENDING_QUEUE');
+    // Untouched and still assignable elsewhere — refusing this merchant is not
+    // the same as failing the order.
+    expect((await getOrderRecord(second.orderId)).state).toBe('ASSIGNED');
   });
 
   it('does not charge an assigned order against itself', async () => {
@@ -193,7 +196,7 @@ describePg('merchant panel routes', () => {
   it('refuses a merchant who has turned deposits off', async () => {
     const m = await merchantActor({ tokensRupees: 5000 });
     await updateMerchant(m.merchantId, { acceptsDeposits: false });
-    const { orderId } = await order();
+    const { orderId } = await order({ state: 'ASSIGNED', merchantId: m.merchantId });
     expect((await as(app, m).post(`/accept/${orderId}`).send({})).status).toBe(400);
   });
 
@@ -213,7 +216,7 @@ describePg('merchant panel routes', () => {
     const inr = await merchantActor({ tokensRupees: 5000 });
     // A USDT order names the CHAIN the player will send on — the row insists
     // the two agree, because a USDT order with no chain matches no merchant.
-    const { orderId } = await order({ extra: { currency: 'USDT' }, usdtChain: 'TRC20' });
+    const { orderId } = await order({ extra: { currency: 'USDT' }, usdtChain: 'TRC20', state: 'ASSIGNED', merchantId: inr.merchantId });
     const res = await as(app, inr).post(`/accept/${orderId}`).send({});
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/USDT order and you settle in INR/i);
@@ -222,7 +225,7 @@ describePg('merchant panel routes', () => {
   it('refuses a USDT merchant with no wallet address to be paid at', async () => {
     const usdt = await merchantActor({ tokensRupees: 5000 });
     await updateMerchant(usdt.merchantId, { acceptedCurrencies: ['USDT'] });
-    const { orderId } = await order({ extra: { currency: 'USDT' }, usdtChain: 'TRC20' });
+    const { orderId } = await order({ extra: { currency: 'USDT' }, usdtChain: 'TRC20', state: 'ASSIGNED', merchantId: usdt.merchantId });
     const res = await as(app, usdt).post(`/accept/${orderId}`).send({});
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/Tron \(TRC-20\)/i);
@@ -238,7 +241,7 @@ describePg('merchant panel routes', () => {
       acceptedCurrencies: ['USDT'],
       usdtAddressTrc20: trc20(),
     });
-    const { orderId } = await order({ extra: { currency: 'USDT' }, usdtChain: 'BEP20' });
+    const { orderId } = await order({ extra: { currency: 'USDT' }, usdtChain: 'BEP20', state: 'ASSIGNED', merchantId: usdt.merchantId });
     const res = await as(app, usdt).post(`/accept/${orderId}`).send({});
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/BNB Smart Chain/i);
@@ -252,7 +255,7 @@ describePg('merchant panel routes', () => {
       acceptedCurrencies: ['USDT'],
       usdtAddressBep20: bep20(),
     });
-    const { orderId } = await order({ extra: { currency: 'USDT' }, usdtChain: 'BEP20' });
+    const { orderId } = await order({ extra: { currency: 'USDT' }, usdtChain: 'BEP20', state: 'ASSIGNED', merchantId: usdt.merchantId });
     const res = await as(app, usdt).post(`/accept/${orderId}`).send({});
     expect(res.status, res.body.message).toBe(200);
   });
@@ -261,7 +264,7 @@ describePg('merchant panel routes', () => {
     // An order cannot be found PROCESSING without the merchant details the
     // player is about to be shown.
     const m = await merchantActor({ tokensRupees: 5000 });
-    const { orderId } = await order();
+    const { orderId } = await order({ state: 'ASSIGNED', merchantId: m.merchantId });
     const res = await as(app, m).post(`/accept/${orderId}`).send({});
     expect(res.status, res.body.message).toBe(200);
 
@@ -273,10 +276,19 @@ describePg('merchant panel routes', () => {
     expect(new Date(row.expiresAt).getTime()).toBeGreaterThan(Date.now());
   });
 
-  it('LETS EXACTLY ONE MERCHANT WIN a race for a queued order', async () => {
-    // Both used to pass the status read and both used to save. The second
-    // overwrote the first's merchantId and snapshot, so the player was shown
-    // one merchant's payment details while the other held the order.
+  it('a QUEUED buy cannot be claimed at all — buys are assigned, never fought over', async () => {
+    // ── This replaces a test that proved the race was fair ────────────────
+    // It used to fire four merchants at one PENDING_QUEUE buy and assert that
+    // exactly one won. That the race was fair was true; that there was a race
+    // was the defect. There is no open pool for buy orders and never was —
+    // every buy goes through `tryAssignMerchant`, which RANKS the eligible
+    // merchants so the biggest holder takes the biggest order. This handler
+    // nevertheless admitted an unassigned buy, so anyone holding its id could
+    // claim it first-come, which rewards whoever polls hardest and throws the
+    // ranking away.
+    //
+    // The sell pool is a different thing and stays: a withdrawal nobody is free
+    // for waits in the open rather than burning retry attempts.
     const contenders = await Promise.all(
       Array.from({ length: 4 }, () => merchantActor({ tokensRupees: 5000 })),
     );
@@ -285,13 +297,25 @@ describePg('merchant panel routes', () => {
     const results = await Promise.all(
       contenders.map((m) => as(app, m).post(`/accept/${orderId}`).send({})),
     );
-    const winners = results.filter((r) => r.status === 200);
-    expect(winners, 'more than one merchant took the same order').toHaveLength(1);
-    expect(results.filter((r) => r.status === 409).length).toBeGreaterThanOrEqual(1);
+    expect(results.filter((r) => r.status === 200), 'a queued buy was claimable').toHaveLength(0);
+    expect(results.every((r) => r.status === 409)).toBe(true);
 
+    // Untouched, and still there for the assignment sweep to hand out properly.
     const row = await getOrderRecord(orderId);
-    expect(row.state).toBe('PROCESSING');
-    expect(contenders.map((m) => m.merchantId)).toContain(row.merchantId);
+    expect(row.state).toBe('PENDING_QUEUE');
+    expect(row.merchantId ?? null).toBeNull();
+  });
+
+  it('a SELL may still be claimed from the open pool', async () => {
+    // The other half of the same rule, asserted so that "buys are assigned"
+    // cannot be quietly widened into "nothing is ever claimed". A withdrawal
+    // that no merchant was free for sits in the open pool by design.
+    const m = await merchantActor({ tokensRupees: 50_000 });
+    await updateMerchant(m.merchantId, { acceptsWithdrawals: true });
+    const { orderId } = await order({ type: 'WITHDRAWAL', betting: 0, reserve: 0 });
+
+    expect((await as(app, m).post(`/accept/${orderId}`).send({})).status).toBe(200);
+    expect((await getOrderRecord(orderId)).state).toBe('PROCESSING');
   });
 
   it('DERIVES the active-order limit from the orders, not from a counter', async () => {
@@ -300,10 +324,14 @@ describePg('merchant panel routes', () => {
     const m = await merchantActor({ tokensRupees: 50_000 });
     await updateMerchant(m.merchantId, { maxConcurrentDepositOrders: 1 });
 
-    const first = await order();
-    const second = await order();
-
+    // The second order is created AFTER the first is accepted, because two
+    // orders assigned at once to a cap-of-one merchant is a state assignment
+    // would never produce — and the accept would then be refused for holding
+    // two, which is the cap firing on the fixture rather than on the behaviour.
+    const first = await order({ state: 'ASSIGNED', merchantId: m.merchantId });
     expect((await as(app, m).post(`/accept/${first.orderId}`).send({})).status).toBe(200);
+
+    const second = await order({ state: 'ASSIGNED', merchantId: m.merchantId });
     const blocked = await as(app, m).post(`/accept/${second.orderId}`).send({});
     expect(blocked.status).toBe(400);
     expect(blocked.body.message).toMatch(/active order limit \(1\)/i);

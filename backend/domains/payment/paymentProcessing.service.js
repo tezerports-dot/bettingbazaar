@@ -55,7 +55,7 @@ import { referenceSpecFor, claimPaymentReference } from './paymentReference.js';
 // move is refused by the database rather than by whichever check ran first.
 import {
   assignOrder as assignOrderState, markOrderPaid as markOrderPaidState,
-  cancelOrder as cancelOrderState,
+  cancelOrder as cancelOrderState, disputeOrder as disputeOrderState,
 } from './orderLifecycle.service.js';
 import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import { getSystemConfig } from '#db/repositories/config.js';
@@ -1380,6 +1380,109 @@ export async function cancelOrder(actorId, isAdmin, orderId) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// sweepUnansweredPaidDeposits — the merchant's own clock
+// ═════════════════════════════════════════════════════════════════════════════
+/**
+ * A buy order the player has PAID for and the merchant has not answered.
+ *
+ * ── The window nobody was watching ─────────────────────────────────────────
+ * `expireOrders` covers PENDING_QUEUE, ASSIGNED and PROCESSING and CANCELS what
+ * it finds, and it stops short of PAID on purpose: cancelling an order the
+ * player has already paid for strands the payment. That is right, and it left
+ * the case with no owner at all. A merchant who neither approves nor rejects a
+ * PAID buy simply kept it — nothing swept it, nothing counted it against them,
+ * and the only route out was the player noticing and pressing dispute. **The
+ * one window where the player's money is already gone was the one window with
+ * no clock on it.**
+ *
+ * ── Three things happen, in this order, and the order matters ──────────────
+ * 1. The order moves to DISPUTED, which is the admin review queue. NOT
+ *    cancelled and NOT reassigned: the player paid THIS merchant's account, so
+ *    only a person can decide whether the money arrived. Reassigning would ask
+ *    a second merchant to hand over tokens for a payment they never received.
+ * 2. The merchant's silence is recorded as a refusal — the same streak and the
+ *    same cap as pressing reject, because to the player they are the same
+ *    event and only one of them is honest about it.
+ * 3. The player is told it is being reviewed. They have been waiting on money
+ *    they already sent; silence is the one thing this path must not add to.
+ *
+ * The transition is FIRST because it is the guarded one: exactly one caller
+ * moves the order, so two instances running this cron cannot both record a
+ * refusal for the same silence.
+ *
+ * **The merchant's HOLD stays.** DISPUTED is a committing state, so their
+ * tokens remain reserved — they still owe them, and a resolution in the
+ * player's favour will take them.
+ */
+export async function sweepUnansweredPaidDeposits() {
+  const config = await getSystemConfig();
+  // schema default: 30
+  const minutes = config?.merchantOrderLimits?.paidResponseMinutes ?? 30;
+
+  const due = await db.orders.findUnansweredPaidDeposits({ olderThanMinutes: minutes });
+  if (!due.length) return 0;
+
+  let handled = 0;
+  for (const order of due) {
+    try {
+      const moved = await disputeOrderState(order.orderId, {
+        expectFrom: 'PAID',
+        set: {
+          disputeReason: `The merchant did not answer within ${minutes} minutes of the payment being submitted.`,
+          disputeRaisedAt: new Date(),
+          // 'system', not 'user': a player who has raised no dispute must not
+          // appear in the record as having raised one. The distinction decides
+          // what the admin screen is looking at.
+          disputeRaisedBy: 'system',
+        },
+      });
+      // The loser of a race between two cron instances gets `idempotent` and
+      // skips, so one silence produces one refusal.
+      if (!moved.ok || moved.idempotent) continue;
+      handled += 1;
+
+      const { recordMerchantRefusal, REFUSAL } =
+        await import('../merchant/merchantRefusal.service.js');
+      await recordMerchantRefusal({
+        orderId: order.orderId,
+        merchantId: order.merchantId,
+        userId: String(order.userId),
+        reason: `No answer within ${minutes} minutes of a submitted payment.`,
+        kind: REFUSAL.UNANSWERED,
+      });
+
+      console.error(
+        `[paid-timeout] ${order.orderId}: merchant ${order.merchantId} did not answer a paid `
+        + `buy order for ${minutes} minutes. Sent to the admin queue.`,
+      );
+
+      // The player learns it is being looked at — and learns nothing about the
+      // merchant, which §24 forbids on a player-facing message.
+      const { notify } = await import('../communication/communication.service.js');
+      await notify({
+        userId: String(order.userId),
+        type: 'ORDER_UPDATE',
+        title: 'Your purchase is being reviewed',
+        message: 'We have not had confirmation for your payment yet, so our team is checking it. '
+               + 'You do not need to do anything or pay again.',
+        meta: { orderId: order.orderId },
+      }).catch(() => {});
+
+      emitOrderUpdate(String(order.userId), 'order_disputed', {
+        orderId: order.orderId, status: 'DISPUTED', server_ts: Date.now(),
+      });
+      emitAdminUpdate('queue_order_update', {
+        orderId: order.orderId, status: 'DISPUTED', server_ts: Date.now(),
+      });
+    } catch (error) {
+      // One bad order must not take down the rest of the batch.
+      console.error(`[paid-timeout] ${order.orderId} failed:`, error);
+    }
+  }
+  return handled;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // expireOrders  — cron worker (called from cronJobs.js or setInterval)
 // ═════════════════════════════════════════════════════════════════════════════
 export async function expireOrders() {
@@ -1443,26 +1546,45 @@ export async function expireOrders() {
           direction: order.type, amountRupees: order.tokenAmount,
         }).catch(() => {});
 
-        // AND it counts as a refusal, exactly as pressing reject does.
+        // ── Whose failure was this? The DIRECTION decides ──────────────────
+        // An expired assignment used to count against the merchant in every
+        // case, and on a BUY that is the wrong party. A buy expires at ASSIGNED
+        // or PROCESSING because THE PLAYER NEVER PAID — the merchant was
+        // standing by, did nothing wrong, and took a strike for it. Three
+        // players who changed their minds and an honest merchant is suspended,
+        // which is precisely the failure mode that gets a control switched off.
         //
-        // To the player waiting, a merchant who let the window lapse and one
-        // who declined are the same event. Counting only the button was the
-        // hole in the first version of the cap: a merchant who never pressed it
-        // refused without limit, the streak never moved, and they were handed
-        // the next order and the next. Counting only the polite refusal
-        // penalises the merchant who tells you.
+        // A SELL expiring IS the merchant's: they had the order and did not pay
+        // the player. And a BUY the merchant sits on AFTER the player has paid
+        // is theirs too — that one is swept separately, from PAID, because it
+        // must not be cancelled (see `sweepUnansweredPaidDeposits`).
         //
         // `PENDING_QUEUE` orders reach this loop too and have no merchant —
         // the `order.merchantId` guard above is what keeps this to assignments
         // somebody actually held.
-        const { recordMerchantRefusal, REFUSAL } =
-          await import('../merchant/merchantRefusal.service.js');
-        await recordMerchantRefusal({
-          orderId: order.orderId,
-          merchantId: order.merchantId,
-          userId: String(order.userId),
-          kind: REFUSAL.EXPIRED,
-        });
+        const playerNeverPaid = order.type === 'DEPOSIT';
+        if (playerNeverPaid) {
+          // The PLAYER's failure. Counted against them, through the one owner
+          // of "this player did not pay" — the same function the merchant's
+          // red-flag button calls, so one player has one count however the
+          // failure was noticed.
+          const { recordPlayerPaymentFailure } =
+            await import('./playerPaymentFailure.service.js');
+          await recordPlayerPaymentFailure({
+            orderId: order.orderId,
+            userId: String(order.userId),
+            reason: 'The buy order expired before any payment was made.',
+          });
+        } else {
+          const { recordMerchantRefusal, REFUSAL } =
+            await import('../merchant/merchantRefusal.service.js');
+          await recordMerchantRefusal({
+            orderId: order.orderId,
+            merchantId: order.merchantId,
+            userId: String(order.userId),
+            kind: REFUSAL.EXPIRED,
+          });
+        }
       }
 
       emitOrderUpdate(String(order.userId), 'order_expired', {

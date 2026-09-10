@@ -3681,6 +3681,22 @@ CREATE INDEX IF NOT EXISTS order_rejections_pair_idx  ON order_rejections (user_
 -- question that matters operationally — is this merchant serving orders right
 -- now — and answers it the same way for everybody.
 ALTER TABLE merchants ADD COLUMN IF NOT EXISTS consecutive_rejections INTEGER NOT NULL DEFAULT 0;
+
+-- ── A player's consecutive unpaid buy orders ─────────────────────────────────
+-- The mirror of `merchants.consecutive_rejections`, and it exists for the same
+-- reason: a pattern is a different fact from a total. A player who abandons the
+-- occasional purchase is ordinary; one who places five in a row and pays for
+-- none of them is holding merchant inventory hostage — every one of those
+-- orders reserved a merchant's tokens for the length of its window.
+--
+-- CONSECUTIVE, so any completed buy sets it back to zero. A lifetime total
+-- would eventually catch every long-standing player, which is the shape that
+-- gets a control switched off rather than tuned.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS consecutive_payment_failures INTEGER NOT NULL DEFAULT 0;
+DO $$ BEGIN
+  ALTER TABLE users ADD CONSTRAINT users_consecutive_payment_failures_non_negative
+    CHECK (consecutive_payment_failures >= 0);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN
   ALTER TABLE merchants ADD CONSTRAINT merchants_consecutive_rejections_non_negative
     CHECK (consecutive_rejections >= 0);

@@ -100,7 +100,7 @@ describePg('a buy order HOLDS the merchant\'s tokens', () => {
   });
 
   const orders = [];
-  const buy = async (tokens, { state = 'PENDING_QUEUE', merchantId = null } = {}) => {
+  const buy = async (tokens, { state = 'PENDING_QUEUE', merchantId = null, paymentMode = null } = {}) => {
     seq += 1;
     const who = await actor({});
     const orderId = `ESC-${RUN}-${seq}`;
@@ -110,6 +110,10 @@ describePg('a buy order HOLDS the merchant\'s tokens', () => {
       tokenAmountRupees: tokens, fiatAmountRupees: tokens, state,
       depositAllocation: tokens, reserveAllocation: 0,
       ...(merchantId ? { merchantId } : {}),
+      // The rail is FORCED on the order rather than switched on the platform.
+      // `stampForNewOrder` allows it precisely so a test can build a cash order
+      // without moving the live policy under every other suite.
+      ...(paymentMode ? { paymentMode } : {}),
     });
     return getOrderRecord(orderId);
   };
@@ -238,6 +242,15 @@ describePg('a buy order HOLDS the merchant\'s tokens', () => {
       const a = await buy(BIG);
       const b = await buy(BIG);
 
+      // The baseline is taken AFTER the merchant exists and BEFORE these two
+      // orders, and the assertions below are deltas from it. An online merchant
+      // holding 200,000 tokens with a raised order cap is the most attractive
+      // candidate in a shared database, and other suites' assignment sweeps run
+      // in parallel — measured: this merchant picked up somebody else's order
+      // mid-test and the absolute pocket assertion failed on roughly one run in
+      // three. Trap 10 again: take a baseline, assert the delta.
+      const base = await pockets(m.merchantId);
+
       await Promise.all([tryAssignMerchant(a), tryAssignMerchant(b)]);
 
       const rows = await Promise.all([a.orderId, b.orderId].map((id) => getOrderRecord(id)));
@@ -256,34 +269,52 @@ describePg('a buy order HOLDS the merchant\'s tokens', () => {
       // the queue, so it is what is asserted.
       const after = await pockets(m.merchantId);
       expect(mine.length, 'both orders went to a merchant who can fund one').toBeLessThanOrEqual(1);
-      expect(after.reserved, 'reserved more than the merchant holds')
+      expect(after.reserved - base.reserved, 'reserved more than these orders are worth')
         .toBe(mine.length * BIG * 100);
-      expect(after.available).toBe((200_000 - (mine.length * BIG)) * 100);
+      expect(base.available - after.available).toBe(mine.length * BIG * 100);
       expect(after.available, 'the wallet went negative').toBeGreaterThanOrEqual(0);
     });
 
-    it('the loser of a hold is left QUEUED — the hold refuses the merchant, never the order', async () => {
-      // Sequential and self-contained: one merchant, funded for exactly one
-      // order, offered two. No other merchant can serve BIG, so the second
-      // order has nowhere else to go and its fate is unambiguous.
+    it('a merchant whose tokens are all held is no longer a candidate', async () => {
+      // Asked of the CANDIDATE QUERY with every other merchant barred, not of
+      // `tryAssignMerchant`. Assignment ranks across the whole database and this
+      // suite cannot own that: a merchant funded for exactly one BIG order is
+      // out-ranked by anyone holding more, so "my merchant won" was a claim
+      // about every other suite's fixtures. Scoped, the question is the one the
+      // hold actually answers.
+      const m = await merchant(BIG);
+      const only = async () => {
+        const all = await assignmentCandidates({ currency: 'INR', direction: 'DEPOSIT' });
+        const barred = all.map((c) => String(c.merchantId)).filter((id) => id !== m.merchantId);
+        return selectBestMerchant('DEPOSIT', BIG, 'INR', { barredMerchantIds: barred });
+      };
+
+      expect((await only())?.merchantId, 'not a candidate even before holding — vacuous')
+        .toBe(m.merchantId);
+
+      const order = await buy(BIG, { state: 'ASSIGNED', merchantId: m.merchantId });
+      expect((await holdForOrder(order, m.merchantId)).ok).toBe(true);
+
+      expect(await only(), 'a merchant with every token held was still offered an order')
+        .toBeNull();
+    });
+
+    it('the order the hold refused is left QUEUED, never failed', async () => {
       const m = await merchant(BIG);
       const a = await buy(BIG);
       const b = await buy(BIG);
 
-      expect(await tryAssignMerchant(a), 'the first order was not assigned — vacuous').toBe(true);
-      expect(String((await getOrderRecord(a.orderId)).merchantId)).toBe(m.merchantId);
+      // Both handed to the merchant in turn; the second cannot be funded.
+      await holdForOrder(a, m.merchantId);
+      const refused = await holdForOrder(b, m.merchantId);
+      expect(refused.ok).toBe(false);
+      expect(refused.reason).toBe('insufficient');
 
-      // The merchant's tokens are now entirely held, so the second is refused.
-      await tryAssignMerchant(b);
-      const loser = await getOrderRecord(b.orderId);
-
-      // Still assignable, with no merchant attached and nothing consumed. The
-      // retry loop and the expiry sweep both pick it up from here; what must
-      // NOT happen is the order failing because one merchant was short.
-      expect(loser.state).toBe('PENDING_QUEUE');
-      expect(loser.merchantId ?? null).toBeNull();
-      expect(await liveDepositSettlementFor(loser.orderId)).toBeNull();
-      expect((await pockets(m.merchantId)).reserved).toBe(BIG * 100);
+      // The ORDER is untouched — still assignable, nothing consumed. The hold
+      // refuses the merchant, never the order: somebody else may still serve it.
+      const row = await getOrderRecord(b.orderId);
+      expect(row.state).toBe('PENDING_QUEUE');
+      expect(await liveDepositSettlementFor(b.orderId)).toBeNull();
     });
 
     it('ranks on what is LEFT, not on what the merchant holds', async () => {
@@ -325,64 +356,68 @@ describePg('a buy order HOLDS the merchant\'s tokens', () => {
      * `tryAssignMerchant`, so it was missed on the first pass of this work and
      * the cash rail kept the whole defect the UPI rail had just lost.
      *
-     * ₹40,000 is a WITHDRAWAL-only tier — the INR buy ceiling is ₹10,000 — so
-     * a link at it is never claimed out from under this test by a buy order
-     * some other suite left waiting. That is a property of the denomination
-     * ladder, not a quiet hour (the same reason `cashLinkRoutes.test.js` uses it).
+     * ₹10,000 — `MAX_CASH_BUY_PAISE`, the largest a machine dispenses in one
+     * go and so the largest tier a cash BUY can legally be.
+     *
+     * A first draft used ₹40,000 because `cashLinkRoutes.test.js` does, and
+     * that was wrong twice over. ₹40,000 is a WITHDRAWAL leg tier: no cash buy
+     * can exist at it, so the order this test built was not a legal order. And
+     * that suite uses it precisely BECAUSE no buy can exist there — its links
+     * are safe from the matcher for exactly that reason. Creating a ₹40,000 buy
+     * took the property away from them, and three of their cases started failing
+     * in the full run while both files passed alone.
+     *
+     * **A test may not spend another suite's invariant.**
      */
-    const DENOM = 4_000_000;
+    const DENOM = 1_000_000;
 
     it('holds the merchant\'s tokens when a cash link is claimed', async () => {
-      const { supplyCashLink } = await import('../../domains/merchant/cashLink.service.js');
-      const { getActivePolicy, publishPolicyVersion, PAYMENT_MODES } =
-        await import('#db/repositories/paymentModePolicy.js');
+      // ── The link is supplied through the REPOSITORY, not the service ──────
+      // `supplyCashLink` refuses unless the platform is on the cash rail, so
+      // the first version of this test published a CASH_ATM policy and restored
+      // it in a `finally`. That policy is GLOBAL and vitest runs files in
+      // parallel: `cashLinkRoutes.test.js` sets the rail in its own `beforeAll`
+      // and this test moved it underneath, so three of its cases failed while
+      // both files passed alone. A test may own its rows; it may not own the
+      // platform.
+      //
+      // The subject here is `tryClaimCashLink` taking a hold, and supply is
+      // only the fixture, so it goes in the way `cashLinkQueuePg` does — the
+      // repository, which asks nothing about the rail.
+      const { supplyLink } = await import('#db/repositories/cashLinks.js');
       const { tryClaimCashLink } = await import('../../domains/payment/paymentProcessing.service.js');
 
-      const restore = await getActivePolicy();
-      await publishPolicyVersion({
-        activeMode: PAYMENT_MODES.CASH_ATM,
-        justification: 'Deposit escrow cash-rail test.', changedByName: 'test setup',
+      const m = await merchant(50_000, { cashDenominationPaise: DENOM });
+      const order = await buy(DENOM / 100, { paymentMode: 'CASH_ATM' });
+
+      const supplied = await supplyLink({
+        linkId: `esc-lnk-${RUN}-${seq}`, merchantId: m.merchantId,
+        denominationPaise: DENOM, paymentLink: 'upi://pay?pa=atm@bank&am=40000',
+        expiresAt: new Date(Date.now() + 5 * 60_000),
       });
-      try {
-        const m = await merchant(50_000, { cashDenominationPaise: DENOM });
-        const order = await buy(DENOM / 100);
+      expect(supplied.ok, `link not supplied: ${supplied.reason}`).toBe(true);
 
-        // The real merchant row, not a hand-built object: `supplyCashLink`
-        // reads `cashDenominationPaise` off it to decide which queue the link
-        // joins, and a fixture that supplied its own would be testing the
-        // fixture.
-        const { getMerchant } = await import('#db/repositories/merchants.js');
-        const supplied = await supplyCashLink({
-          merchantId: m.merchantId,
-          merchant: await getMerchant(m.merchantId),
-          paymentLink: 'upi://pay?pa=atm@bank&am=40000',
-        });
-        expect(supplied.ok, `link not supplied: ${supplied.reason}`).toBe(true);
+      // ── Asserted about the ORDER's OWN merchant, whoever that turns out ──
+      // The denomination ladder has five rungs and every one is used by some
+      // other suite, which leaves its own live links behind. So this order can
+      // be handed SOMEBODY ELSE'S link — measured: the claim succeeded and this
+      // merchant's pocket never moved, because a stranger's link won. Both
+      // earlier drafts were wrong in the same way, once about which order won
+      // and once about which link did.
+      //
+      // The invariant does not depend on either: whichever merchant's link a
+      // cash buy claims, THAT merchant's tokens are held for it, once.
+      expect(await tryClaimCashLink(order), 'no link was claimed — vacuous').toBe(true);
 
-        const before = await pockets(m.merchantId);
+      const row = await getOrderRecord(order.orderId);
+      expect(row.merchantId, 'the claim attached nobody').toBeTruthy();
 
-        // ── Asserted about the POCKET, not about which order won the link ────
-        // Supplying a link hands it to the longest-waiting buy order at that
-        // denomination, and the ladder has only five rungs — every one of them
-        // used by some other suite, which leaves its own waiting orders behind.
-        // So this test cannot own a denomination, and demanding that ITS order
-        // win made it pass alone and fail in the full run.
-        //
-        // What the fix actually promises is about the merchant: a cash link
-        // claimed by ANY order holds the supplying merchant's tokens, once.
-        // That is true whoever the order belongs to.
-        await tryClaimCashLink(order);
-
-        const after = await pockets(m.merchantId);
-        expect(after.reserved - before.reserved,
-          'a cash buy attached this merchant without holding their tokens').toBe(DENOM);
-        expect(before.available - after.available).toBe(DENOM);
-      } finally {
-        await publishPolicyVersion({
-          activeMode: restore.activeMode,
-          justification: 'Restore after deposit escrow cash-rail test.', changedByName: 'test teardown',
-        });
-      }
+      const held = await liveDepositSettlementFor(order.orderId);
+      expect(held, 'a cash buy attached a merchant without holding their tokens').not.toBeNull();
+      expect(String(held.merchantId), 'the hold is against a different merchant than the order')
+        .toBe(String(row.merchantId));
+      expect(held.amountPaise).toBe(DENOM);
+      expect((await pockets(row.merchantId)).reserved).toBeGreaterThanOrEqual(DENOM);
     });
   });
 

@@ -221,5 +221,21 @@ export async function moveDepositMoney(order, {
   if (reserveCredit > 0) await creditReserve(order.userId, reserveCredit, order.orderId);
   await releaseUTR(order.orderId);
 
+  // ── The player's unpaid streak is cleared HERE, and only here ─────────────
+  // This is the one point on the platform where the money is known to have
+  // arrived: both confirm routes reach it, and reaching it means a merchant
+  // looked at the payment and released their tokens for it.
+  //
+  // Deliberately NOT when the order reaches PAID. PAID is the player SAYING
+  // they paid — clearing the count there would let anyone wipe their record by
+  // submitting a false UTR, which is exactly the behaviour the count exists to
+  // notice.
+  //
+  // Imported where it is used, like `sendAlert` and `notify` below: this module
+  // is the deposit SPLIT rule and takes its money movers as arguments, so a
+  // static import would give it a dependency its callers cannot substitute.
+  const { clearPlayerPaymentFailures } = await import('./playerPaymentFailure.service.js');
+  await clearPlayerPaymentFailures(order.userId);
+
   return { ok: true, depositCredit, reserveCredit, total };
 }

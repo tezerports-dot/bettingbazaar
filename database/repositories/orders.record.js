@@ -561,6 +561,51 @@ export async function getCdmReceipt(orderId) {
 }
 
 /**
+ * Buy orders the PLAYER has paid for and the merchant has not answered.
+ *
+ * ── Why this is its own query and not part of the expiry sweep ─────────────
+ * `findExpiredOrders` covers PENDING_QUEUE, ASSIGNED and PROCESSING, and
+ * CANCELS what it finds. It deliberately stops short of PAID, because
+ * cancelling an order the player has already paid for strands the payment —
+ * and that is right.
+ *
+ * But it left the case with no owner at all. A merchant who neither approves
+ * nor rejects a PAID buy simply keeps it: nothing swept it, nothing counted it
+ * against them, and the only route out was the player noticing and pressing
+ * dispute. The one window where the player's money is ALREADY GONE was the one
+ * window with no clock on it.
+ *
+ * So these are found separately and handled differently: the order goes to an
+ * admin rather than being cancelled, and the silence counts against the
+ * merchant exactly as pressing reject would.
+ *
+ * Measured from `paid_at`, not from `expires_at`. The order's deadline was the
+ * window to PAY, which the player met; what is being timed here is the
+ * merchant's answer, and it starts when the payment was asserted.
+ */
+export async function findUnansweredPaidDeposits({ olderThanMinutes = 30, limit = 200 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT order_id, merchant_id, user_id, token_amount_paise, paid_at
+       FROM order_states
+      WHERE order_type = 'DEPOSIT'
+        AND state = 'PAID'
+        AND merchant_id IS NOT NULL
+        AND paid_at IS NOT NULL
+        AND paid_at < now() - make_interval(mins => $1)
+      ORDER BY paid_at ASC
+      LIMIT ${Math.min(Math.max(Number(limit) || 200, 1), 1000)}`,
+    [Math.max(Number(olderThanMinutes) || 0, 0)], 'orders_unanswered_paid_deposits',
+  );
+  return rows.map((r) => ({
+    orderId:     String(r.order_id),
+    merchantId:  String(r.merchant_id),
+    userId:      String(r.user_id),
+    tokenAmount: rupees(r.token_amount_paise),
+    paidAt:      r.paid_at,
+  }));
+}
+
+/**
  * Settled cash withdrawals whose receipt never arrived.
  *
  * The merchant's confirm completes the order and the receipt is chased after —

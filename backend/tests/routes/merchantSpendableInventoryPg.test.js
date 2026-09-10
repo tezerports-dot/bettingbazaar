@@ -22,7 +22,7 @@
  * AND through each gate that consumes it — a number that is right in the
  * repository and unread by the route it protects is worth nothing.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { pgConfigured, applySchema, closePg } from '#db/client.js';
 import { createOrderRecord, setOrderFields } from '#db/repositories/orders.record.js';
 import { updateMerchant, assignmentCandidates } from '#db/repositories/merchants.js';
@@ -49,6 +49,7 @@ describePg('a merchant can only take on what they have not already promised', ()
    * merchant from it is never a candidate at all — and "the filter excluded
    * them" would pass against a list they had never been in.
    */
+  const made = [];
   const onlineMerchant = async (tokensRupees) => {
     const m = await merchantActor({ tokensRupees });
     await updateMerchant(m.merchantId, {
@@ -56,8 +57,25 @@ describePg('a merchant can only take on what they have not already promised', ()
       minOrder: 0, maxOrder: 1_000_000,
       maxConcurrentDepositOrders: 10, maxConcurrentWithdrawalOrders: 10,
     });
+    made.push(m.merchantId);
     return m;
   };
+
+  /**
+   * Every merchant this suite makes goes OFFLINE after the test that made it.
+   *
+   * They carry a raised `maxOrder` and a large balance, which makes them the
+   * most attractive candidates in the whole shared database — and they were
+   * being left online for good. Another suite's assignment test, running in
+   * parallel, had ITS order taken by one of these and failed on roughly one run
+   * in three with an id it had never heard of. Trap 10: a fixture left running
+   * is shared state as surely as a row.
+   */
+  afterEach(async () => {
+    for (const id of made.splice(0)) {
+      await updateMerchant(id, { isOnline: false }).catch(() => {});
+    }
+  });
 
   /** A buy order sitting in `state`, held by `merchantId`. */
   const buyOrder = async (merchantId, tokensRupees, state = 'ASSIGNED', owner = null) => {

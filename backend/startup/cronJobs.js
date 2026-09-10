@@ -37,6 +37,23 @@ export function registerCronJobs(rebuildLeaderboard) {
     } catch (e) { console.error('[expiry-worker] cron error:', e.message); }
   });
 
+  // ── The merchant's own clock, on a PAID buy — every 2 minutes ───────────────
+  // The expiry worker cancels orders nobody paid for. This one handles the
+  // opposite case: the player DID pay and the merchant has said nothing. It
+  // cannot cancel — the money is already gone — so it sends the order to the
+  // admin queue and counts the silence against the merchant.
+  //
+  // Two minutes rather than sixty seconds: the window it enforces is measured
+  // in tens of minutes, so a sweep landing a minute late is invisible, and this
+  // one writes to three places per order it finds.
+  registerRecurring('paid-order-timeout', 2 * 60 * 1000, async () => {
+    try {
+      const { sweepUnansweredPaidDeposits } = await import('../domains/payment/paymentProcessing.service.js');
+      const n = await sweepUnansweredPaidDeposits();
+      if (n > 0) console.warn(`[paid-timeout] ${n} paid order(s) went to the admin queue unanswered`);
+    } catch (e) { console.error('[paid-timeout] cron error:', e.message); }
+  });
+
   // ── Deposit escrow sweep — runs every 5 minutes ─────────────────────────────
   // The net under every path that takes a merchant's tokens for a buy order.
   // Releases holds whose order has finished, and REPORTS orders that still owe

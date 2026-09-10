@@ -53,6 +53,25 @@ describePg('a merchant who keeps refusing', () => {
     return { orderId, who };
   };
 
+  /**
+   * An ASSIGNED **sell** this merchant is expected to pay out.
+   *
+   * The direction matters to the cap now: a sell that lapses is the merchant
+   * failing to pay the player, which is theirs; a buy that lapses is the player
+   * failing to pay, which is not.
+   */
+  const assignedSell = async (merchantId, owner = null) => {
+    seq += 1;
+    const who = owner || await actor({});
+    const orderId = `REJ-${RUN}-w${seq}`;
+    await createOrderRecord({
+      orderId, userId: who.userId, type: 'WITHDRAWAL',
+      tokenAmountRupees: 500, fiatAmountRupees: 500, state: 'ASSIGNED',
+      merchantId,
+    });
+    return { orderId, who };
+  };
+
   const reject = (m, orderId, reason = 'Cannot serve this right now') =>
     as(app, m).post(`/reject/${orderId}`).send({ reason });
 
@@ -129,17 +148,29 @@ describePg('a merchant who keeps refusing', () => {
     });
   });
 
-  describe('an EXPIRED assignment counts exactly the same', () => {
+  describe('an EXPIRED SELL counts exactly the same as pressing reject', () => {
     /**
-     * The hole the first version of this cap had.
+     * The hole the first version of this cap had, and the over-correction that
+     * followed it.
      *
      * A merchant who never presses reject and simply lets the window close has
-     * refused the order in every way that matters to the player — and the
-     * streak did not move, so they refused without limit. Counting only the
-     * button penalises the merchant who tells you.
+     * refused the order in every way that matters — and the streak did not
+     * move, so they refused without limit. Counting only the button penalises
+     * the merchant who tells you. That was the hole, and it was closed.
+     *
+     * Closing it by counting EVERY expiry then charged the wrong party. A BUY
+     * order expires at ASSIGNED or PROCESSING because **the player never
+     * paid** — the merchant was standing by, did nothing wrong, and took a
+     * strike for it. Three players who changed their minds and an honest
+     * merchant was suspended.
+     *
+     * So the direction decides. These cases are all SELL orders, where the
+     * merchant had the order and did not pay the player. The buy side is in
+     * `playerPaymentFailurePg.test.js`, which asserts the opposite: the streak
+     * must NOT move.
      */
     const expired = async (merchantId, owner = null) => {
-      const { orderId, who } = await assigned(merchantId, owner);
+      const { orderId, who } = await assignedSell(merchantId, owner);
       // The deadline in the past is what makes the sweep consider it due. It is
       // set separately because `createOrderRecord` fills `expiresAt` from the
       // assignment window, not from the caller.

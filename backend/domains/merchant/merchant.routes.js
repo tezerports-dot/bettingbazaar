@@ -1191,6 +1191,29 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         if (!['PENDING_QUEUE', 'ASSIGNED'].includes(order.status)) {
             return res.status(400).json({ success: false, message: `Order cannot be accepted in status: ${order.status}` });
         }
+        // ── A BUY is ASSIGNED, never CLAIMED ────────────────────────────────
+        // There is no open pool for buy orders and there never was one: every
+        // buy goes through `tryAssignMerchant`, which ranks the eligible
+        // merchants and hands the order to one of them. This handler
+        // nevertheless admitted a PENDING_QUEUE deposit, which made an
+        // unassigned buy claimable first-come by anyone who knew its id — the
+        // only surface on the buy side where two merchants could race for one
+        // order.
+        //
+        // Nothing needs that. A merchant with capacity is offered work by the
+        // queue; making them compete for it rewards whoever polls hardest, and
+        // it defeats the ranking that exists so the biggest holder takes the
+        // biggest order. The sell pool is different and stays: a withdrawal
+        // nobody is free for waits in the open rather than burning retries, and
+        // that is a deliberate choice recorded in `selectBestMerchant`.
+        //
+        // So a buy may only be accepted by the merchant it was ASSIGNED to.
+        if (order.type === 'DEPOSIT' && order.status === 'PENDING_QUEUE') {
+            return res.status(409).json({
+                success: false,
+                message: 'Buy orders are assigned automatically. This one has not been assigned to you.',
+            });
+        }
 
         const merchant = await db.merchants.getMerchant(req.merchantId);
         if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found.' });
