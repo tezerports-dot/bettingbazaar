@@ -488,33 +488,15 @@ const MUTATIONS = [
     to: `        AND $1 = $1 OR regexp_replace(i.phone`,
   },
 
-  // ── A bulk payout is N confirms, and must behave like N confirms ─────────
-  // It was one raw UPDATE to COMPLETED: no hold, no transition row, no escrow
-  // flags. The orders read COMPLETED with the player's stake still locked and
-  // the merchant's tokens never credited.
-  {
-    id: 'M86', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
-    test: 'backend/tests/routes/merchantBulkPayoutRoutes.test.js',
-    why: 'a bulk payout skips the withdrawal hold and completes on the merchant\'s word alone',
-    from: `            const moved = holdFor > 0`,
-    to: `            const moved = false`,
-  },
-  {
-    id: 'M87', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
-    test: 'backend/tests/routes/merchantBulkPayoutRoutes.test.js',
-    why: 'the batch is no longer scoped to the merchant, so anyone\'s order can be swept in',
-    from: `            const order = await db.orders.getMerchantOrder(rawId, req.merchantId);`,
-    to: `            const order = await db.orders.getOrderRecord(rawId);`,
-  },
-  {
-    id: 'M88', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
-    test: 'backend/tests/routes/merchantBulkPayoutRoutes.test.js',
-    why: 'the count is read from a field nothing returns, so a batch reports undefined again',
-    from: `            count:    completed.length,
-            held:     holdFor > 0,`,
-    to: `            count:    undefined,
-            held:     holdFor > 0,`,
-  },
+  // M86-M88 were here — the three bulk-payout mutants. Deleted 2026-09-10 with
+  // the feature itself: the code they mutate and the suite that killed them are
+  // both gone, and a mutation naming a file that no longer exists is what this
+  // harness refuses to run with (which is how it caught their removal).
+  //
+  // Not repointed at anything. The behaviour they guarded — that a batch takes
+  // the withdrawal hold, stays scoped to the merchant, and reports a real count
+  // — has no successor to point at, because merchants now close payouts one at
+  // a time through /confirm/:id, whose own guarantees are covered elsewhere.
 
   // ── A merchant never learns who the player is ───────────────────────────
   // The projection was a denylist that stripped the player's payout details
