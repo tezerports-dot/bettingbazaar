@@ -18,7 +18,7 @@ export const SystemSettings: React.FC = () => {
     maintenanceMode: false,
     maintenanceMessage: '',
     registrationEnabled: true,
-    minDeposit: 100,
+    minDeposit: 500,  // schema default: 500
     minWithdrawal: 100,
     minBet: 10,
     maxBet: 50000,
@@ -76,7 +76,7 @@ export const SystemSettings: React.FC = () => {
           maintenanceMode: response.data.maintenanceMode || false,
           maintenanceMessage: response.data.maintenanceMessage || '',
           registrationEnabled: response.data.registrationEnabled !== false,
-          minDeposit: response.data.minDeposit || 100,
+          minDeposit: response.data.minDeposit || 500,  // schema default: 500
           minWithdrawal: response.data.minWithdrawal || 100,
           minBet: response.data.minBet || 10,
           maxBet: response.data.maxBet || 50000,

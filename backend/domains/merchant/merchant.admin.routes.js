@@ -204,29 +204,32 @@ router.put('/merchants/:merchantId/activate', authenticate, isAdmin, async (req,
 });
 
 /**
- * Set the order range an admin will route to this merchant.
+ * Set this merchant's concurrency cap and, on the cash rail, their tier.
  *
- * ── One owner for the value ─────────────────────────────────────────────────
- * This wrote `merchantLimits.perTransactionLimit` onto the ACCOUNT, while the
- * merchant record carried `minOrder`/`maxOrder` for the same thing — two
- * owners for one number, which the assignment service read from the merchant
- * and this route wrote to the account. Changing a limit here therefore changed
- * nothing about which orders the merchant was offered.
+ * ── The order RANGE is gone, and nothing replaced it ────────────────────────
+ * This route used to write `minOrder`/`maxOrder`. Two owners had already been
+ * collapsed into one here — `merchantLimits.perTransactionLimit` on the account
+ * versus the merchant row — and the surviving one turned out to gate nothing:
+ * `assignmentCandidates` never named either column, and the only filter on them
+ * was in the admin's available-merchants LIST, a screen. An admin could set a
+ * range, be told it saved, and the merchant would be offered exactly the same
+ * orders. §3: an admin-editable field with no consumer is a violation, so both
+ * are removed rather than given one.
  *
- * The merchant row owns it. That is the row assignment reads, and the row that
- * refuses a range excluding every amount.
+ * What they were reaching for has owners already. The CEILING is the tokens the
+ * merchant holds, and it is enforced rather than checked: the deposit escrow
+ * reserves them the moment an order becomes theirs (F-018). The FLOOR is the
+ * platform's — `SystemConfig.minDeposit` / `minWithdrawal`, 500 tokens, the
+ * same for everyone, because a small order still takes real inventory out of
+ * circulation for the length of its window.
  */
 router.put('/merchants/:merchantId/limits', authenticate, isAdmin, async (req, res) => {
   try {
     const { merchantId } = req.params;
-    const { minOrder, maxOrder, perTransactionLimit, minTransaction, cashDenomination } = req.body;
+    const { cashDenomination } = req.body;
 
     // The panel sends either spelling. Both mean the same range.
     const patch = {};
-    const nextMax = maxOrder ?? perTransactionLimit;
-    const nextMin = minOrder ?? minTransaction;
-    if (nextMin !== undefined) patch.minOrder = Number(nextMin);
-    if (nextMax !== undefined) patch.maxOrder = Number(nextMax);
 
     // ── The cash rail's amount: ONE denomination, or none ────────────────────
     // The range above governs the UPI rail. On the cash rail a merchant stands
@@ -286,8 +289,6 @@ router.put('/merchants/:merchantId/limits', authenticate, isAdmin, async (req, r
     if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
 
     const limits = {
-      minOrder: merchant.minOrder,
-      maxOrder: merchant.maxOrder,
       cashDenomination: merchant.cashDenomination,
     };
 
@@ -325,7 +326,7 @@ router.put('/merchants/:merchantId/limits', authenticate, isAdmin, async (req, r
 router.put('/merchants/:merchantId/capabilities', authenticate, isAdmin, async (req, res) => {
   try {
     const { merchantId } = req.params;
-    const { acceptsDeposits, acceptsWithdrawals, acceptedCurrencies, merchantType, minOrder, maxOrder } = req.body;
+    const { acceptsDeposits, acceptsWithdrawals, acceptedCurrencies, merchantType } = req.body;
 
     const merchant = await db.merchants.getMerchant(merchantId);
     if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
@@ -359,14 +360,6 @@ router.put('/merchants/:merchantId/capabilities', authenticate, isAdmin, async (
     }
     if (typeof acceptsDeposits === 'boolean')    patch.acceptsDeposits = acceptsDeposits;
     if (typeof acceptsWithdrawals === 'boolean') patch.acceptsWithdrawals = acceptsWithdrawals;
-    if (minOrder !== undefined) {
-      if (!(Number(minOrder) >= 0)) return res.status(400).json({ success: false, message: 'minOrder must be >= 0.' });
-      patch.minOrder = Number(minOrder);
-    }
-    if (maxOrder !== undefined) {
-      if (!(Number(maxOrder) > 0)) return res.status(400).json({ success: false, message: 'maxOrder must be > 0.' });
-      patch.maxOrder = Number(maxOrder);
-    }
 
     // The range and the rail are checked by the ROW as well. These messages
     // exist so an admin gets one they can act on rather than a constraint name.
@@ -385,7 +378,6 @@ router.put('/merchants/:merchantId/capabilities', authenticate, isAdmin, async (
     const capabilities = {
       acceptsDeposits: updated.acceptsDeposits, acceptsWithdrawals: updated.acceptsWithdrawals,
       merchantType: updated.merchantType, acceptedCurrencies: updated.acceptedCurrencies,
-      minOrder: updated.minOrder, maxOrder: updated.maxOrder,
     };
 
     // Not swallowed. This is the record of an admin changing which orders a

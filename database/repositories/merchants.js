@@ -51,7 +51,7 @@ const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email
   bank_account_holder_name, bank_upi_id, bank_name, bank_account_no, bank_ifsc,
   usdt_address_trc20, usdt_address_bep20,
   min_deposit_paise, max_deposit_paise, min_withdraw_paise, max_withdraw_paise,
-  min_order_paise, max_order_paise, cash_denomination_paise,
+  cash_denomination_paise,
   total_processed_volume_paise, earnings_paise, total_deposit_amount_paise,
   total_withdrawal_amount_paise, total_deposits_processed, total_withdrawals_processed,
   rating, last_online_toggle, panel_url,
@@ -134,8 +134,6 @@ function toMerchant(row) {
       minWithdraw: rupees(row.min_withdraw_paise),
       maxWithdraw: rupees(row.max_withdraw_paise),
     },
-    minOrder: rupees(row.min_order_paise),
-    maxOrder: rupees(row.max_order_paise),
     // The ONE denomination this merchant is approved for on the cash rail, or
     // null when they are not approved for it. Exposed in paise as well as
     // rupees because the queue matches on the exact integer — a rupee float
@@ -706,7 +704,7 @@ const UPDATABLE = new Set([
   'bank_account_holder_name', 'bank_upi_id', 'bank_name', 'bank_account_no', 'bank_ifsc',
   'usdt_address_trc20', 'usdt_address_bep20',
   'min_deposit_paise', 'max_deposit_paise', 'min_withdraw_paise', 'max_withdraw_paise',
-  'min_order_paise', 'max_order_paise', 'cash_denomination_paise',
+  'cash_denomination_paise',
   'rating', 'last_online_toggle', 'panel_url',
   'merchant_approval_status', 'merchant_approved_by', 'merchant_approved_at',
   'merchant_rejection_reason',
@@ -737,23 +735,18 @@ const NESTED_TO_COLUMN = Object.freeze({
   'limits.maxDeposit': 'max_deposit_paise',
   'limits.minWithdraw': 'min_withdraw_paise',
   'limits.maxWithdraw': 'max_withdraw_paise',
-  // The order range, under the name every OTHER part of the system uses for
-  // it. `toMerchant` returns `minOrder`/`maxOrder`, merchant assignment filters
-  // candidates on `minOrder`/`maxOrder`, and the admin route sends
-  // `minOrder`/`maxOrder` — but the write path derived its names from the
-  // column list, so it accepted only `minOrderPaise`. Every call to
-  // PUT /api/admin/merchants/:merchantId/limits therefore threw "refusing to
-  // write unknown or protected column(s)" and 500'd, and the panel showed
-  // "Failed to save limits" on a save that had never been possible. A field
-  // must be writable under the name it is readable under.
-  minOrder: 'min_order_paise',
-  maxOrder: 'max_order_paise',
+  // `minOrder`/`maxOrder` were here too, and are gone with their columns. The
+  // lesson they left is worth keeping: a field must be WRITABLE under the name
+  // it is READABLE under. They were readable as `minOrder` and writable only as
+  // `minOrderPaise`, so every save 500'd with "refusing to write unknown or
+  // protected column(s)" and the panel said "Failed to save limits" on a save
+  // that had never once been possible.
 });
 
 /** Columns holding money, so a caller passing rupees gets paise stored. */
 const MONEY_COLUMNS = new Set([
   'min_deposit_paise', 'max_deposit_paise', 'min_withdraw_paise',
-  'max_withdraw_paise', 'min_order_paise', 'max_order_paise',
+  'max_withdraw_paise',
 ]);
 
 /** Flatten `{ bankDetails: { upiId } }` into the dotted names above. */

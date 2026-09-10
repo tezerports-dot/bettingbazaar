@@ -54,7 +54,6 @@ describePg('a merchant can only take on what they have not already promised', ()
     const m = await merchantActor({ tokensRupees });
     await updateMerchant(m.merchantId, {
       isOnline: true, acceptsDeposits: true, acceptsWithdrawals: true,
-      minOrder: 0, maxOrder: 1_000_000,
       maxConcurrentDepositOrders: 10, maxConcurrentWithdrawalOrders: 10,
     });
     made.push(m.merchantId);

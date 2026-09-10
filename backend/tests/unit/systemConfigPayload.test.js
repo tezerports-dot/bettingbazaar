@@ -57,7 +57,13 @@ describe('the system-config payload', () => {
   it('still fills an ABSENT value with its declared default', () => {
     // The other half: `??` must not turn into "pass everything through".
     const empty = systemConfigPayload(null);
-    expect(empty.minDeposit).toBe(100);
+    // 500 on BOTH sides. The buy floor was 100 and the sell floor 500 — one
+    // policy written as two numbers, and they had drifted. A buy order holds a
+    // merchant's tokens for the length of its window (F-018), so the floor
+    // exists to stop the queue filling with orders too small to be worth the
+    // inventory they take out of circulation, and that is the same argument in
+    // either direction.
+    expect(empty.minDeposit).toBe(500);
     expect(empty.minWithdrawal).toBe(500);
     expect(empty.payoutMultiplier).toBe(2);
     expect(empty.minBet).toBe(10);

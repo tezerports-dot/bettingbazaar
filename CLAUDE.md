@@ -154,7 +154,8 @@ wrong owner gets working code deleted by the next reader.
 | Resolved-cycle history feed | `domains/markets/cycleHistory.service.js` — the one query behind every cycle-history read. Window is **per type**, `limit` rows each; capped at 1,440 for one type and 200 when several are requested together (three deep windows is ~864 KB against socket.io's 1 MB default). Rows project through `publicCycleView`. |
 | Analytics window depth | `ANALYTICS_WINDOW` in `user-panel/src/constants.ts`. A **target**, not a display cap; the server ceiling is enforced independently in `cycleHistory.service.js`. |
 | Deposit/withdrawal limits, platform-wide | `SystemConfig` |
-| Per-merchant order min/max | `merchants.min_order` / `max_order` |
+| The FLOOR on any order | `SystemConfig.minDeposit` / `minWithdrawal` — **both 500 tokens**, the same rule read from either end. The buy floor was 100 and the sell floor 500: one policy written as two numbers, drifted. A floor exists because every buy HOLDS a merchant's tokens for the length of its window (F-018), so an order too small to be worth that inventory still takes it out of circulation. |
+| The CEILING on any order | **The tokens the merchant holds**, and it is ENFORCED rather than checked — the deposit escrow reserves them at assignment. There is no per-merchant order range: `merchants.min_order`/`max_order` were **removed 2026-09-10**, along with their columns, their admin route fields and their panel inputs. Nothing read them. `assignmentCandidates` never named either column; the only filter on them lived in an admin SCREEN, while a comment in `merchant.routes.js` said assignment filtered on them and was believed twice. Do not reintroduce a per-merchant range. |
 | Consecutive-refusal cap, and who may not serve whom | `domains/merchant/merchantRefusal.service.js` — the ONE owner of "a merchant did not serve this order". **Whose fault an expiry is depends on the DIRECTION**: a BUY that expires before PAID is the PLAYER not paying and is not a refusal at all; a BUY that is PAID and unanswered, a SELL that expires, and any decline are the merchant's. Counting every expiry against the merchant suspended honest merchants for players who changed their minds. **There is no timer on any of it**: a suspension and a bar are lifted by an admin or sub-admin who reads the reason and reinstates, and `approveMerchant` zeroes `consecutive_rejections` in the same statement — left standing at the cap, the reinstated merchant is re-suspended by the very next refusal and the admin's decision lasts one order. A decline and an EXPIRED assignment are the same event and count identically, against the same streak and the same bar; they mix, so two lapses and a decline is three. The cap is `SystemConfig.merchantOrderLimits.maxConsecutiveRejections` (schema default 3); the pairs are `order_rejections`, applied in `assignmentCandidates`' WHERE so a barred merchant is never a candidate. The streak advances and is read in one `UPDATE … RETURNING`, and only a COMPLETED order resets it. See F-021. |
 | Merchant settlement rail | `merchants.accepted_currencies` — **exactly one** entry, `INR` or `USDT`. Vocabulary in `domains/merchant/merchantCurrency.js` (`MERCHANT_CURRENCIES`, `merchantTypeOf`, `isUsdtAddress`). Do not re-declare the rail strings or a second address pattern. |
 | Which rail an order settles on | `order_states.currency`, matched against the merchant's rail at assignment and at accept. |
@@ -262,8 +263,11 @@ matching defaults are not one owner; they are one bug waiting for the next field
 ## 6. Configuration ownership
 
 - `SystemConfig` owns platform-wide operational limits.
-- `merchants.min_order` / `max_order` own per-merchant caps — not hardcoded
-  defaults; each merchant has their own.
+- **There are no per-merchant order caps.** A merchant's ceiling is the tokens
+  they hold, enforced by the deposit escrow; the floor is platform-wide. The
+  columns that claimed otherwise were removed once it was clear nothing read
+  them — §3, an admin-editable field with no consumer is a violation, and a
+  column nothing reads is the next reader's false lead.
 - Every config field exposed by an admin route has its default in exactly one
   place: the column `DEFAULT` in `database/schema.sql`, or the single exported
   constant the repository applies when a JSONB key is absent. Every server-side

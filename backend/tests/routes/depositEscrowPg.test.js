@@ -53,7 +53,6 @@ describePg('a buy order HOLDS the merchant\'s tokens', () => {
     const m = await merchantActor({ tokensRupees });
     await updateMerchant(m.merchantId, {
       isOnline: true, acceptsDeposits: true, acceptsWithdrawals: true,
-      minOrder: 0, maxOrder: 1_000_000,
       maxConcurrentDepositOrders: 10, maxConcurrentWithdrawalOrders: 10,
       ...extra,
     });

@@ -1402,8 +1402,6 @@ CREATE TABLE IF NOT EXISTS merchants (
   max_deposit_paise  BIGINT NOT NULL DEFAULT 5000000,
   min_withdraw_paise BIGINT NOT NULL DEFAULT 50000,
   max_withdraw_paise BIGINT NOT NULL DEFAULT 5000000,
-  min_order_paise    BIGINT NOT NULL DEFAULT 50000,
-  max_order_paise    BIGINT NOT NULL DEFAULT 5000000,
 
   -- ── Lifetime totals, in paise where they are money ────────────────────────
   total_processed_volume_paise  BIGINT NOT NULL DEFAULT 0,
@@ -1469,10 +1467,9 @@ CREATE TABLE IF NOT EXISTS merchants (
   CONSTRAINT merchants_dispute_rate_range CHECK (dispute_rate >= 0 AND dispute_rate <= 1),
   CONSTRAINT merchants_limits_ordered CHECK (
     min_deposit_paise  <= max_deposit_paise
-    AND min_withdraw_paise <= max_withdraw_paise
-    AND min_order_paise    <= max_order_paise),
+    AND min_withdraw_paise <= max_withdraw_paise),
   CONSTRAINT merchants_limits_non_negative CHECK (
-    min_deposit_paise >= 0 AND min_withdraw_paise >= 0 AND min_order_paise >= 0),
+    min_deposit_paise >= 0 AND min_withdraw_paise >= 0),
   CONSTRAINT merchants_concurrency_positive CHECK (
     max_concurrent_orders > 0
     AND (max_concurrent_deposit_orders    IS NULL OR max_concurrent_deposit_orders    BETWEEN 1 AND 10)
@@ -3692,6 +3689,41 @@ ALTER TABLE merchants ADD COLUMN IF NOT EXISTS consecutive_rejections INTEGER NO
 -- CONSECUTIVE, so any completed buy sets it back to zero. A lifetime total
 -- would eventually catch every long-standing player, which is the shape that
 -- gets a control switched off rather than tuned.
+-- ── Per-merchant order min/max: removed ─────────────────────────────────────
+-- Two admin-editable numbers that gated nothing. `assignmentCandidates` never
+-- named either column; the only filter on them was in the admin's
+-- available-merchants LIST, a screen — while a comment in merchant.routes.js
+-- stated that assignment filtered on them, and was believed.
+--
+-- Both questions they were reaching for have owners. The CEILING is the tokens
+-- the merchant holds, and the deposit escrow ENFORCES it by reserving them at
+-- assignment rather than checking a number (F-018). The FLOOR is platform-wide:
+-- SystemConfig.minDeposit / minWithdrawal, 500 tokens for everyone.
+--
+-- Dropped rather than left in place, per §3: an admin-editable field with no
+-- consumer is a violation, and a column nothing reads is the next reader's
+-- false lead.
+--
+-- The CONSTRAINTS are rebuilt BEFORE the columns go, and that order is
+-- load-bearing: `DROP COLUMN` cascades to every constraint naming the column,
+-- and `merchants_limits_non_negative` also guards `min_deposit_paise` and
+-- `min_withdraw_paise`. Dropping the column first would have taken those two
+-- guards with it, silently — a schema that still reads correct and no longer
+-- refuses a negative deposit floor.
+ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_limits_ordered;
+ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_limits_non_negative;
+ALTER TABLE merchants DROP COLUMN IF EXISTS min_order_paise;
+ALTER TABLE merchants DROP COLUMN IF EXISTS max_order_paise;
+DO $$ BEGIN
+  ALTER TABLE merchants ADD CONSTRAINT merchants_limits_ordered CHECK (
+    min_deposit_paise <= max_deposit_paise
+    AND min_withdraw_paise <= max_withdraw_paise);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE merchants ADD CONSTRAINT merchants_limits_non_negative CHECK (
+    min_deposit_paise >= 0 AND min_withdraw_paise >= 0);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
 ALTER TABLE users ADD COLUMN IF NOT EXISTS consecutive_payment_failures INTEGER NOT NULL DEFAULT 0;
 DO $$ BEGIN
   ALTER TABLE users ADD CONSTRAINT users_consecutive_payment_failures_non_negative

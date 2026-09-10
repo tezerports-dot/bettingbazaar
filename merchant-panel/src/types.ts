@@ -309,8 +309,6 @@ export interface MerchantProfile {
   avgResponseMinutes?: number;
   disputeRate?: number;        // ratio 0-1
   totalOrdersCompleted?: number;
-  minOrder?: number;
-  maxOrder?: number;
   
   stats?: {
     todayVolume?: number;

@@ -129,7 +129,7 @@ const SITES = [
   {
     name: 'queue-manager assignment list',
     file: 'domains/merchant/merchant.assignment.routes.js',
-    gates: [/m\.walletAvailableTokens < amount/],
+    gates: [/return m\.walletAvailableTokens >= amount;/],
     // SPENDABLE, because this list is what a queue manager assigns FROM.
     //
     // The regex used to be `getAvailablePaiseFor\(merchants\.map`, and after

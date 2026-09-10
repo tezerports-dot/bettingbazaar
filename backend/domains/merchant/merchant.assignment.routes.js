@@ -366,7 +366,6 @@ router.get('/queue/available-merchants', authenticate, isAdminOrSubAdminOrQueueM
           monthlyProcessed:     m.merchantStats?.monthlyProcessed     || 0,
           totalOrdersProcessed: m.merchantStats?.totalOrdersProcessed || 0,
         },
-        limits: { minOrder: m.minOrder || 0, maxOrder: m.maxOrder || 50000 },
       }))
       .filter((m) => {
         if (amount <= 0) return true;
@@ -374,10 +373,7 @@ router.get('/queue/available-merchants', authenticate, isAdminOrSubAdminOrQueueM
         // seen must not be offered for an assignment. `null` here is "no wallet
         // row", which is a different thing from a zero balance.
         if (m.walletAvailableTokens === null) return false;
-        if (m.walletAvailableTokens < amount) return false;
-        if (amount > m.limits.maxOrder) return false;
-        if (m.limits.minOrder > 0 && amount < m.limits.minOrder) return false;
-        return true;
+        return m.walletAvailableTokens >= amount;
       })
       .sort((a, b) => b.walletAvailableTokens - a.walletAvailableTokens);
 

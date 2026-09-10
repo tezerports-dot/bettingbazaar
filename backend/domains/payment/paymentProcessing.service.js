@@ -642,7 +642,7 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
     min: Math.min(...USDT_BUY_DENOMINATIONS_PAISE) / 100,
     max: Math.max(...USDT_BUY_DENOMINATIONS_PAISE) / 100,
   };
-  const minDeposit = currency === MERCHANT_CURRENCY.USDT ? usdtBounds.min : (cfg?.minDeposit || 100);
+  const minDeposit = currency === MERCHANT_CURRENCY.USDT ? usdtBounds.min : (cfg?.minDeposit || 500); // schema default: 500
   const maxDeposit = currency === MERCHANT_CURRENCY.USDT ? usdtBounds.max : (cfg?.maxDeposit || 50000);
 
   const railNow = await getActivePaymentModePolicy();

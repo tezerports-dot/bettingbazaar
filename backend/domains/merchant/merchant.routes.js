@@ -124,8 +124,6 @@ const formatMerchant = (merchant, user = null) => {
         usdtAddressBep20:     merchant.usdtAddressBep20 || '',
         usdtChains:           usdtChainsHeldBy(merchant),
         limits:               merchant.limits,
-        minOrder:             merchant.minOrder,
-        maxOrder:             merchant.maxOrder,
         tokenBalance:         merchant.tokenBalance,
         earnings:             merchant.earnings,
         totalProcessedVolume: merchant.totalProcessedVolume,
@@ -976,15 +974,22 @@ router.put('/preferences', merchantAuth, async (req, res) => {
  *
  * It was also writing the wrong fields. This route set
  * `limits.minDeposit`/`maxDeposit`/`minWithdraw`/`maxWithdraw`, and NOTHING
- * reads those for any decision. Merchant assignment filters on `minOrder` and
- * `maxOrder` (merchant.assignment.routes.js), which only the admin route
- * writes. So a merchant could set their limits, be told it saved, and be
- * offered exactly the same orders as before.
+ * reads those for any decision. So a merchant could set their limits, be told
+ * it saved, and be offered exactly the same orders as before.
  *
- * The four columns are left in place rather than dropped: separate deposit and
- * withdrawal ranges are plausibly wanted once merchants have account varieties
- * (cash over the counter, UPI P2P, bank transfer with bulk payouts), and that
- * is a schema decision to take with that work, not a side effect of this one.
+ * ── And the fields it pointed at instead were no better ────────────────────
+ * This comment used to end "merchant assignment filters on `minOrder` and
+ * `maxOrder`". **It did not.** `assignmentCandidates` never named either
+ * column; the only filter on them was in the admin's available-merchants LIST,
+ * a screen. A comment stating the intent while the code had drifted from it,
+ * and it read as authoritative enough to be believed twice.
+ *
+ * Both columns are gone now, and nothing replaced them, because the two things
+ * they were trying to express already have owners: a merchant's CEILING is the
+ * tokens they hold, enforced by the deposit escrow that reserves them the
+ * moment an order becomes theirs (F-018), and the FLOOR is the platform's —
+ * `SystemConfig.minDeposit` / `minWithdrawal`, 500 tokens, the same for
+ * everyone.
  */
 /**
  * What a merchant must send, in USDT, for `tokenAmount` platform tokens.

@@ -86,7 +86,7 @@ export function systemConfigPayload(cfg, rail = null) {
     maxBet:              cfg?.betLimits?.thirtyMin?.max ?? 100000,
     maxFullDayBet:       cfg?.betLimits?.fullDay?.max   ?? 500000,
 
-    minDeposit:          cfg?.minDeposit    ?? 100,
+    minDeposit:          cfg?.minDeposit    ?? 500,  // schema default: 500
     maxDeposit:          cfg?.maxDeposit    ?? 50000,
     minWithdrawal:       cfg?.minWithdrawal ?? 500,
     maxWithdrawal:       cfg?.maxWithdrawal ?? 50000,

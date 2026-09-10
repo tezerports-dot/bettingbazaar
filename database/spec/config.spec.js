@@ -108,7 +108,17 @@ export const SYSTEM_CONFIG_SPEC = group({
     fullDay:   group({ min: n(100, 0), max: n(500000, 0) }),
   }),
 
-  minDeposit:            n(100, 0),
+  // ── The platform floor on a BUY, in tokens ──────────────────────────────
+  // 500, the same as `minWithdrawal`, because it is the same rule read from
+  // either end: no order below 500 tokens, whichever way it points. It was 100
+  // on the buy side and 500 on the sell side — one number for the same policy,
+  // written twice and drifted.
+  //
+  // A floor exists at all because every buy order HOLDS a merchant's tokens for
+  // the length of its window (F-018). An order small enough to be free to place
+  // still takes real inventory out of circulation while it waits, so the floor
+  // is what stops the queue being filled with them.
+  minDeposit:            n(500, 0),
   maxDeposit:            n(50000, 0),
   minWithdrawal:         n(500, 0),
   maxWithdrawal:         n(50000, 0),

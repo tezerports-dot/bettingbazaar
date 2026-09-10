@@ -36,10 +36,10 @@ export const MerchantsList: React.FC = () => {
 
   // Limits edit
   // M-01 fix: initial values are 0; openDetails() populates from merchant.limits schema.
-  // GOVERNANCE §5: UI fallbacks must equal Merchant schema defaults (minOrder:500, maxOrder:50000).
+  // GOVERNANCE §5: UI fallbacks must equal the schema defaults.
   // Merchant.limits.minDeposit default=500, maxDeposit default=50000 per merchant.model.js.
-  const [limitsForm, setLimitsForm]   = useState<{ minOrder: number; maxOrder: number; maxConcurrentOrders: number; cashDenomination: number | null }>(
-    { minOrder: 500, maxOrder: 50000, maxConcurrentOrders: 3, cashDenomination: null },
+  const [limitsForm, setLimitsForm]   = useState<{ maxConcurrentOrders: number; cashDenomination: number | null }>(
+    { maxConcurrentOrders: 3, cashDenomination: null },
   );
   // The wallet top-up amount is NOT a limit. It lived on `limitsForm` as
   // `dailyCap`, so it was posted to the limits endpoint — which ignores it —
@@ -135,8 +135,6 @@ export const MerchantsList: React.FC = () => {
         setRail(mData.merchantType ?? mData.acceptedCurrencies?.[0] ?? 'INR');
         setLimitsForm({
           // M-01 fix: use Merchant.limits from schema defaults (500 / 50000) — GOVERNANCE §5
-          minOrder: mData.minOrder ?? mData.merchantLimits?.minOrder ?? 500,
-          maxOrder: mData.maxOrder ?? mData.merchantLimits?.maxOrder ?? 50000,
           // null is a real state: not approved for the cash rail at all.
           cashDenomination: mData.cashDenomination ?? null,
           maxConcurrentOrders: mData.maxConcurrentOrders ?? 3, // schema default: 3
@@ -565,21 +563,19 @@ export const MerchantsList: React.FC = () => {
 
               <div className="border-t border-dark-600 pt-4 space-y-4">
                 <p className="text-sm font-semibold text-gray-300">Order Limits</p>
-                {/* M-01: per GOVERNANCE §1 — per-merchant caps live on Merchant.limits */}
+                {/* Per-merchant min/max order amounts are GONE. A merchant's
+                    ceiling is the tokens they hold — enforced by the escrow,
+                    which reserves them the moment an order becomes theirs — and
+                    the floor is the platform's, SystemConfig.minDeposit /
+                    minWithdrawal, the same 500 tokens for everyone. Two numbers
+                    an admin could edit here changed nothing: assignment never
+                    read them. */}
                 <p className="text-xs text-gray-400">
-                  Min/max order amounts used when assigning payment orders.
-                  Buy-token capacity = merchant&apos;s current token wallet balance.
-                  Sell-token capacity = merchant&apos;s lifetime initial token top-up.
-                  Both are enforced by the queue assignment logic — edit min/max here.
+                  A merchant&apos;s buy capacity is their uncommitted token balance —
+                  held automatically when an order is assigned, so it cannot be
+                  spent twice. The minimum order is set platform-wide in System
+                  Settings, not per merchant.
                 </p>
-                <div>
-                  <label htmlFor="min-order" className="label">Min Order Amount (Rs.)</label>
-                  <input id="min-order" name="minOrder" type="number" min="0" value={limitsForm.minOrder} onChange={(e) => setLimitsForm(f => ({ ...f, minOrder: Number(e.target.value) || 0 }))} className="input" />
-                </div>
-                <div>
-                  <label htmlFor="max-order" className="label">Max Order Amount (Rs.)</label>
-                  <input id="max-order" name="maxOrder" type="number" min="0" value={limitsForm.maxOrder} onChange={(e) => setLimitsForm(f => ({ ...f, maxOrder: Number(e.target.value) || 0 }))} className="input" />
-                </div>
                 {/* The cash rail deals in fixed amounts because a merchant is
                     standing at an ATM: the machine dispenses one of these and
                     nothing between them. A merchant is approved for exactly

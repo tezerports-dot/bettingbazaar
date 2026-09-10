@@ -95,7 +95,7 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
         maxBet:                config.betLimits?.thirtyMin?.max   || 100000,
         max30MinBet:           config.betLimits?.thirtyMin?.max   || 100000,
         maxFullDayBet:         config.betLimits?.fullDay?.max     || 500000,
-        minDeposit:            config.minDeposit            || 100,
+        minDeposit:            config.minDeposit            || 500,  // schema default: 500
         maxDeposit:            config.maxDeposit            || 50000,
         minWithdrawal:         config.minWithdrawal         || 500,
         maxWithdrawal:         config.maxWithdrawal         || 50000,
@@ -428,7 +428,7 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
         minBet:          updatedConfig.betLimits?.thirtyMin?.min   || 10,
         maxBet:          updatedConfig.betLimits?.thirtyMin?.max   || 100000,
         maxFullDayBet:   updatedConfig.betLimits?.fullDay?.max     || 500000,
-        minDeposit:      updatedConfig.minDeposit            || 100,
+        minDeposit:      updatedConfig.minDeposit            || 500,  // schema default: 500
         maxDeposit:      updatedConfig.maxDeposit            || 50000,
         minWithdrawal:   updatedConfig.minWithdrawal         || 500,
         maxWithdrawal:   updatedConfig.maxWithdrawal         || 50000,
