@@ -1741,7 +1741,9 @@ Same reasoning as trap 4 (derive real pools from `bets`) and trap 6
    **does not write `completed_at` at all**. Five separate routes set it
    themselves with a `setOrderFields` call after the transition commits: exactly
    the §21 shape, a second write that can be absent on a genuinely completed
-   order. `merchant_wallet_entries` cannot have that problem — the debit row is
+   order. Checked: all four `completeOrder` callers do set it today, and
+   `mirrorSettlementState` sets it by its own `CASE` — **no live gap**, but
+   keeping that true is five authors' job and the sixth path fails nothing. `merchant_wallet_entries` cannot have that problem — the debit row is
    written by `applyMerchantMovement` inside the same transaction as the balance
    change, so "the ledger says these tokens left" and "`available` is lower" are
    the same fact. Netting DEBIT against CREDIT on the order's `ref_id` also

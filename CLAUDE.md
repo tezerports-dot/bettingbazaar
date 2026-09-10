@@ -594,9 +594,12 @@ it achieves.
     writer sets `state`, `updated_at` and `merchant_id` and nothing else. Five
     separate routes set `completedAt` themselves, in a `setOrderFields` call
     AFTER the transition commits — the §21 shape, a second write that can be
-    absent on a genuinely completed order. So `completed_at IS NOT NULL` is not
-    the same question as "this order completed", and a money gate must never
-    rest on it. Where you need "has this money actually moved", ask the ledger:
+    absent on a genuinely completed order. **Checked 2026-09-10: all four
+    `completeOrder` callers do set it, and `mirrorSettlementState` sets it by
+    its own `CASE`, so there is no live gap today.** The point is that keeping
+    it true is five separate authors' job, and the fifth completion path added
+    without it fails nothing. So `completed_at IS NOT NULL` is not the same
+    question as "this order completed", and a money gate must never rest on it. Where you need "has this money actually moved", ask the ledger:
     `merchant_wallet_entries` is written by `applyMerchantMovement` inside the
     same transaction as the balance change, so it cannot disagree with the
     balance. Net DEBIT against CREDIT rather than testing existence — a movement
