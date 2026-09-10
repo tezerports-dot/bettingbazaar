@@ -84,6 +84,107 @@ route under `/api/admin` carries `isAdminOrSubAdmin` without a permission key or
 an explicit, reasoned entry in an allow list — so the next such route is a
 failure rather than a silence.
 
+### 2.2 CONFIRMED — account recovery keeps its half-finished state in process memory
+
+**Severity: medium (availability + integrity of the recovery path, on >1 replica).**
+
+`recoverySessions` in `backend/domains/telegram/telegram.routes.js:413` is a bare
+`Map`, holding the Aadhaar a player sent to the recovery bot until they send
+their contact card in a second message:
+
+```js
+const recoverySessions = new Map();   // telegramUserId -> { aadhaar, at }
+```
+
+**This platform is built for horizontal scale and says so.**
+`startup/realtimeBridge.js` calls itself "THE keystone for horizontal scale";
+`startup/validateEnv.js` requires `REDIS_URL` "at >1 replica"; cron is
+leader-locked; admin seeding is idempotent "so two instances booting together
+seed ONE admin"; the rate limiters take a Redis store. Every other piece of
+cross-request state was moved off the process. **This one was not**, and it sits
+in the identity-recovery path.
+
+Three consequences behind a load balancer:
+
+1. **Recovery silently fails.** The Aadhaar message lands on instance A and the
+   contact message on instance B, which has no session and answers *"Please send
+   your 12-digit Aadhaar number first."* The player has just sent it. Retrying
+   lands them on a random instance, so it works intermittently and looks like
+   their mistake — the worst shape a failure can take on a path somebody reaches
+   only because they have already lost access to their account.
+2. **`recoverySessions.clear()` at 10,000 entries wipes every in-flight
+   recovery**, not just old ones. It is a size cap with no LRU behind it.
+3. **A restart or deploy drops every in-flight recovery.**
+
+There is also a data-handling point. §2 of `CLAUDE.md` says an Aadhaar is held as
+an HMAC plus AES-256-GCM ciphertext. Here it is a plaintext string in the heap
+for up to ten minutes — the one place in the platform where that is true.
+
+**Fix:** move it to the store everything else uses. A short-TTL row (or a Redis
+key) keyed on the Telegram user id, holding the Aadhaar the way the rest of the
+platform holds one, with the TTL doing the expiry instead of a sweep and a cap.
+
+---
+
+### 2.3 CLEAR — SQL injection
+
+**392 `pgQuery` call sites** examined: 250 pass parameters only, 142 interpolate
+something into the SQL text. Every one of the 142 was traced. **None can carry a
+request-supplied value into SQL.** They are, exhaustively:
+
+- **Module-level column constants** — `${COLUMNS}`, `${IDENTITY_COLUMNS}`,
+  `${BOT_PUBLIC}`, `${PENDING_COLUMNS}`, and `qualified('c')` /
+  `COLUMNS.split(',').map(...)` derived from them.
+- **Allowlist-mapped column names.** `toColumns(patch, 'updateUser')`,
+  `setOrderFields`, `columnFor(field)` and `columnFor(pocket)` all **throw** on a
+  key they do not know; `content.js`, `engagement.js` and `games.js` iterate the
+  allowlist and pick from the patch, so a caller-supplied key never reaches the
+  SQL at all — the strongest of the three shapes.
+- **Ternaries between two literals** — `detailed ? 'enhanced_audit_logs' :
+  'audit_logs'`, `withdrawal ? 'accepts_withdrawals' : 'accepts_deposits'`,
+  the `sideClause` behind `side === 'WINNING' || side === 'LOSING'`.
+- **Fixed spec objects** — `PRUNABLE[name].table` / `.where` in `operations.js`.
+- **`$n` placeholders** built from `params.length`, including the guards in both
+  wallet movers (`${column} = ${column} + ${placeholder}`).
+- **Numerically clamped limits** — every `LIMIT ${...}` is
+  `Math.min(Math.max(Number(x) || d, 1), cap)`, and `embeddingDim()` is
+  integer-validated and capped at 4096.
+
+No raw `client.query` / `pool.query` outside `#db` interpolates a value either
+(`check:db-boundary` keeps SQL confined; this checked what the confined SQL does).
+
+---
+
+### 2.4 CLEAR — the Telegram identity root
+
+This is what a session is ultimately minted from, so it was read end to end.
+
+- **Both webhooks** verify `X-Telegram-Bot-Api-Secret-Token` with
+  `crypto.timingSafeEqual` behind a length check, and answer a terse `401` that
+  tells a prober nothing about which half was wrong.
+- **The OTP is `crypto.randomInt(0, 1_000_000)`** — a CSPRNG with no modulo bias,
+  and the file says why it is not `randomBytes % 1000000`. Stored as an
+  HMAC-keyed hash, never plaintext.
+- **Single use is atomic.** `consumeLoginCode` puts `consumed_at IS NULL AND
+  expires_at > now() AND attempts < $3` inside the `UPDATE`'s own `WHERE`, so two
+  concurrent redemptions cannot both win. A wrong code charges an attempt and
+  **burns the code outright at the cap**, so a live code cannot be guessed at for
+  the rest of its window.
+- **No enumeration oracle anywhere.** `/otp/request` returns the same sentence
+  whether or not the number exists and swallows errors *after* logging, because a
+  500 would itself separate the two cases. `/otp/verify` returns one message for
+  wrong, expired, already-used and out-of-attempts.
+- **The login link token is 32 random bytes**, stored hashed, single-use through
+  the same `consumed_at IS NULL` clause.
+- **Every path re-reads the user row** and re-checks `isBlocked` / `status`,
+  rather than trusting the claim minted five minutes earlier. All three entry
+  points (link, OTP, staff password) call the same `issueSession`, so they cannot
+  drift into granting different claims.
+
+Noted and dismissed: `/api/telegram/exchange` carries no rate limiter where
+`/otp/verify` does. A 256-bit single-use token is not brute-forceable and the
+redemption is atomic, so this is a difference, not a gap.
+
 ---
 
 ## 3. Examined and found sound
@@ -155,14 +256,13 @@ skips the limiter and the captcha is the classic way this control is lost.
 
 ---
 
-## 4. NOT YET EXAMINED
+## 4. COVERAGE
 
-Nothing below has been looked at. By `CLAUDE.md` §29 that means nothing about it
-is claimed either way.
+Ticked items have been examined and have a section above. **Nothing unticked has
+been looked at** — by `CLAUDE.md` §29 that means nothing about those is claimed
+in either direction.
 
-- [ ] **SQL injection** — every `pgQuery` call site, for interpolation instead of
-      parameters. (`check:db-boundary` proves SQL is confined to `#db`; it does
-      not prove the SQL inside is parameterised.)
+- [x] **SQL injection** — DONE, §2.3. Clear: 392 call sites traced.
 - [ ] **The three panels' frontends** — XSS (`dangerouslySetInnerHTML`,
       `innerHTML`), token storage, whether any screen is gated only in the client,
       modals that render fields they should not have.
@@ -172,8 +272,8 @@ is claimed either way.
       response body across all 319 routes, not only the ones already known.
 - [ ] **CORS, cookies, security headers** — `SameSite`, `Secure`, `httpOnly`,
       CSP, the allowed-origin list.
-- [ ] **Telegram auth flows** — `POST /otp/request`, `/otp/verify`, `/exchange`,
-      and both webhooks. This is the platform's identity root.
+- [x] **Telegram auth flows** — done, §2.4 (sound) and §2.2 (the recovery-session
+      finding).
 - [ ] **The remaining public routes** — `/api/app/bootstrap`, `/r/:code` (open
       redirect), `/leaderboard/:period`, `/v1/winners`, `/v1/content/ai-analysis`
       (player identity leakage in a public list).
