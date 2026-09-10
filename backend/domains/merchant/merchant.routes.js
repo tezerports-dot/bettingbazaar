@@ -78,7 +78,7 @@ import { getActivePolicy as getPaymentModePolicy, modeCopy, publicTimers } from 
 import { supplyCashLink, suppliersWithHeadroom } from './cashLink.service.js';
 import { PAYMENT_MODES } from '#db/repositories/paymentModePolicy.js';
 import { getSystemConfig } from '#db/repositories/config.js';
-import { sendAlert } from '../../services/alerting.service.js';
+import { recordMerchantRefusal, REFUSAL } from './merchantRefusal.service.js';
 import { assertCdnAssetUrl } from '../../shared/storedUrl.js';
 import { assertStaffPassword } from '../identity/passwordPolicy.js';
 
@@ -1689,51 +1689,22 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
         }
         Object.assign(order, requeued.order);
 
-        // ── The refusal is RECORDED before anything else uses it ────────────
+        // A refusal, through the one owner. It records the pair — so this order
+        // never returns to this merchant, and this merchant never sees this
+        // PLAYER again — advances the consecutive streak, and suspends at the
+        // cap. An EXPIRED assignment lands in the same function and counts the
+        // same, which is what stops a merchant refusing without limit simply by
+        // never pressing this button.
         //
-        // Two rules read this row and neither can be answered from the order:
-        // `order_states.rejected_by` is one column and is overwritten, so after
-        // a second merchant declines, the first is gone.
-        //
-        //   1. this order is never handed back to a merchant who refused it —
-        //      without the record, the reassignment below can return it to the
-        //      merchant who just declined, in a loop;
-        //   2. this merchant does not serve this PLAYER again.
-        //
-        // Written first, so the reassignment a few lines down already sees it.
-        await db.orders.recordOrderRejection({
+        // Called BEFORE the reassignment below, so that reassignment already
+        // sees the bar.
+        await recordMerchantRefusal({
             orderId: order.orderId,
             merchantId: req.merchantId,
             userId: String(order.userId),
             reason,
+            kind: REFUSAL.DECLINED,
         });
-
-        // ── Three in a row and the merchant stops receiving orders ──────────
-        //
-        // CONSECUTIVE, and the streak is advanced and read in ONE statement: a
-        // read-then-write would let two concurrent rejects both see 2 and both
-        // write 3, so a merchant could pass the cap without it being observed.
-        //
-        // Suspension is a REFUSAL TO ASSIGN, not a deletion — the merchant
-        // keeps every order they already hold, because taking those away would
-        // strand players who are mid-payment on them. `assignmentCandidates`
-        // filters on `status = 'ACTIVE'`, so suspending is what stops the next
-        // one arriving.
-        const cfg = await getSystemConfig();
-        const rejectionCap = cfg?.merchantOrderLimits?.maxConsecutiveRejections ?? 3; // schema default: 3
-        const streak = await db.merchants.bumpConsecutiveRejections(req.merchantId);
-        if (streak >= rejectionCap) {
-            await db.merchants.suspendMerchant(
-                req.merchantId,
-                `Suspended automatically after ${streak} consecutive rejections.`,
-                { actor: 'rejection-cap' },
-            );
-            sendAlert(
-                `merchant-rejection-cap-${req.merchantId}`,
-                'A merchant was suspended for consecutive rejections',
-                { merchantId: String(req.merchantId), streak, cap: rejectionCap },
-            ).catch(() => { /* alerting is best-effort by design */ });
-        }
 
         // The lifetime counter moves; there is no active count to decrement.
         // It is derived from the orders, so requeuing one IS the decrement —

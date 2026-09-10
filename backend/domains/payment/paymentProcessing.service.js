@@ -1355,6 +1355,27 @@ export async function expireOrders() {
         await updateMerchantStatsOnComplete(order.merchantId, false, {
           direction: order.type, amountRupees: order.tokenAmount,
         }).catch(() => {});
+
+        // AND it counts as a refusal, exactly as pressing reject does.
+        //
+        // To the player waiting, a merchant who let the window lapse and one
+        // who declined are the same event. Counting only the button was the
+        // hole in the first version of the cap: a merchant who never pressed it
+        // refused without limit, the streak never moved, and they were handed
+        // the next order and the next. Counting only the polite refusal
+        // penalises the merchant who tells you.
+        //
+        // `PENDING_QUEUE` orders reach this loop too and have no merchant —
+        // the `order.merchantId` guard above is what keeps this to assignments
+        // somebody actually held.
+        const { recordMerchantRefusal, REFUSAL } =
+          await import('../merchant/merchantRefusal.service.js');
+        await recordMerchantRefusal({
+          orderId: order.orderId,
+          merchantId: order.merchantId,
+          userId: String(order.userId),
+          kind: REFUSAL.EXPIRED,
+        });
       }
 
       emitOrderUpdate(String(order.userId), 'order_expired', {

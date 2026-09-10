@@ -22,6 +22,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
 import { createOrderRecord, getOrderRecord, merchantsBarredFrom } from '#db/repositories/orders.record.js';
 import { getMerchant, assignmentCandidates, updateMerchant } from '#db/repositories/merchants.js';
+import { setOrderFields } from '#db/repositories/orders.record.js';
+import { expireOrders } from '../../domains/payment/paymentProcessing.service.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -124,6 +126,85 @@ describePg('a merchant who keeps refusing', () => {
       const row = await getMerchant(m.merchantId);
       expect(row.consecutiveRejections).toBe(1);
       expect(row.status).toBe('ACTIVE');
+    });
+  });
+
+  describe('an EXPIRED assignment counts exactly the same', () => {
+    /**
+     * The hole the first version of this cap had.
+     *
+     * A merchant who never presses reject and simply lets the window close has
+     * refused the order in every way that matters to the player — and the
+     * streak did not move, so they refused without limit. Counting only the
+     * button penalises the merchant who tells you.
+     */
+    const expired = async (merchantId, owner = null) => {
+      const { orderId, who } = await assigned(merchantId, owner);
+      // The deadline in the past is what makes the sweep consider it due. It is
+      // set separately because `createOrderRecord` fills `expiresAt` from the
+      // assignment window, not from the caller.
+      await setOrderFields(orderId, { expiresAt: new Date(Date.now() - 60 * 1000) });
+      return { orderId, who };
+    };
+
+    it('advances the streak', async () => {
+      const m = await onlineMerchant();
+      await expired(m.merchantId);
+      await expireOrders();
+      expect((await getMerchant(m.merchantId)).consecutiveRejections).toBe(1);
+    });
+
+    it('bars the pair, so the order cannot come back to them', async () => {
+      const m = await onlineMerchant();
+      const { orderId, who } = await expired(m.merchantId);
+      await expireOrders();
+
+      const barred = await merchantsBarredFrom({ orderId, userId: who.userId });
+      expect(barred, 'an expiry left the merchant eligible for the same order').toContain(m.merchantId);
+    });
+
+    it('reaches the cap by expiry ALONE — the bypass is closed', async () => {
+      // Three lapses, no button ever pressed.
+      const m = await onlineMerchant();
+      for (let i = 0; i < 3; i += 1) {
+        await expired(m.merchantId);
+        await expireOrders();
+      }
+      expect((await getMerchant(m.merchantId)).status).toBe('SUSPENDED');
+    });
+
+    it('MIXES with rejections, because they are the same event', async () => {
+      // Two lapses and one decline is still three refusals in a row. A cap that
+      // counted them in separate buckets would let a merchant alternate and
+      // never reach either.
+      const m = await onlineMerchant();
+      await expired(m.merchantId);
+      await expireOrders();
+      await expired(m.merchantId);
+      await expireOrders();
+      expect((await getMerchant(m.merchantId)).status).toBe('ACTIVE');
+
+      const third = await assigned(m.merchantId);
+      await reject(m, third.orderId);
+      expect((await getMerchant(m.merchantId)).status).toBe('SUSPENDED');
+    });
+
+    it('an order nobody held does not blame anybody', async () => {
+      // PENDING_QUEUE orders reach the same sweep and have no merchant. A
+      // refusal recorded against a null merchant would be a row nothing can
+      // read, and a streak advanced on nobody.
+      seq += 1;
+      const who = await actor({});
+      const orderId = `REJ-${RUN}-unheld-${seq}`;
+      await createOrderRecord({
+        orderId, userId: who.userId, type: 'DEPOSIT',
+        tokenAmountRupees: 500, fiatAmountRupees: 500, state: 'PENDING_QUEUE',
+        depositAllocation: 450, reserveAllocation: 50,
+      });
+      await setOrderFields(orderId, { expiresAt: new Date(Date.now() - 60 * 1000) });
+
+      await expect(expireOrders()).resolves.toBeGreaterThanOrEqual(0);
+      expect(await merchantsBarredFrom({ orderId })).toHaveLength(0);
     });
   });
 

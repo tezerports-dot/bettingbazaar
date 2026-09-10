@@ -1883,15 +1883,32 @@ candidate before asserting the exclusion removes them. Same shape as F-020's
 fixture: a missing precondition does not weaken a test, it makes it measure
 nothing.
 
-### Still open, and it is a hole in this control
+### The hole this control shipped with, closed the same day
 
-**An EXPIRED order is a refusal the cap cannot see.** A merchant who simply
-never presses reject, and lets the assignment window lapse, is refusing the
-order in every way that matters to the player — and the streak does not move.
-The expiry path calls `updateMerchantStatsOnComplete(merchantId, false, …)`, so
-it is already distinguished from a completion and would be a natural place to
-count it. It is not done here because "letting an order expire" and "declining
-it" may deserve different weights, and that is the owner's call.
+**An EXPIRED order was a refusal the cap could not see.** A merchant who never
+pressed reject and simply let the assignment window lapse refused without limit:
+the streak never moved, and they were handed the next order and the next.
+Counting only the button **penalises the merchant who tells you**.
+
+Both now go through one owner — `domains/merchant/merchantRefusal.service.js`,
+`recordMerchantRefusal({ …, kind: DECLINED | EXPIRED })` — and count
+identically, against the same streak and the same bar. It is a module rather
+than the same five steps written in two places because §5 says exactly what
+happens otherwise: the same payload assembled twice drifts, and it drifts
+silently.
+
+- **They MIX.** Two lapses and one decline is three refusals in a row. Separate
+  buckets would let a merchant alternate and never reach either cap.
+- **An order nobody held blames nobody.** `PENDING_QUEUE` orders reach the same
+  sweep and have no merchant; the `order.merchantId` guard keeps this to
+  assignments somebody actually took. Pinned by its own test, because a refusal
+  recorded against a null merchant is a row nothing can read.
+- **The service never throws.** It runs after the order has already moved — the
+  requeue has committed on one path, the cancellation on the other — so an
+  exception would turn a completed action into a 500, or take down a sweep
+  mid-batch and leave the rest of the due orders unprocessed (§21).
+- **Tests:** 14 now, and the expiry half is mutation-proven — removing the
+  counting from the sweep fails 4.
 
 ---
 
@@ -1997,7 +2014,7 @@ In the order it should be worked.
 | 0 | ~~Decide F-015~~ | §4 | **Done 2026-09-10** — alert plus player notification. The sweep for other silently-returned money-path refusals is still open. |
 | 0 | ~~Decide F-016~~ | §4 | **Done 2026-09-10** — the QR was removed entirely; the dynamic UPI intent already did the job better. |
 | 0 | ~~Merchant abuse caps~~ | §4 | **Done 2026-09-10 (F-021)** — 3 consecutive rejections suspends; the pair is barred from the order and the player. |
-| 0 | **Does an EXPIRY count as a refusal?** | §4 | F-021's hole: a merchant who never presses reject and lets the window lapse refuses the order in every way that matters, and the streak does not move. |
+| 0 | ~~Does an EXPIRY count as a refusal?~~ | §4 | **Yes, decided and done 2026-09-10** — identically, through one owner, and they mix. |
 | 0 | State guard on `mirrorSettlement` | §4 | Its UPDATE is `WHERE order_id = $1`. Safe today because its only caller is guarded (F-020), but it would overwrite a state that moved underneath it. |
 | 0 | Split the two meanings of DISPUTED | §4 | F-019 left `DISPUTED` carrying both *the player is owed* and *the merchant smells fraud*. Different queues, possibly different outcomes. |
 | 0 | **Decide F-018 — reserve the merchant's tokens at assignment** | §4 | The root cause. `reserveForSettlement`/`completeReservation`/`cancelReservation` are built and called by nothing. Needs: reserve at assign/accept, complete at confirm, cancel on expiry/reject/reassign. |
