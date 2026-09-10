@@ -33,8 +33,8 @@ import { buildMerchantSnapshot, merchantDisplayRef } from '../payment/paymentPro
 import { toPlayerOrderView } from '../payment/playerOrderView.js';
 import { emitAdminUpdate, emitMerchantUpdate, emitOrderUpdate } from '../notification/realtimeEmitters.js';
 // Inventory eligibility is a MONEY read, so it reads the wallet.
-import { getMerchantTokenBalance } from '#db/repositories/merchantWallets.js';
-import { getAvailablePaiseFor } from '#db/repositories/merchantWallets.core.js';
+import { getMerchantSpendableTokens } from '#db/repositories/merchantWallets.js';
+import { getAvailablePaiseFor, getSpendablePaiseFor } from '#db/repositories/merchantWallets.core.js';
 import { paiseToRupees } from '../../shared/money.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 
@@ -85,12 +85,17 @@ async function poolRefusal(merchantId, action = 'assigning') {
  * a merchant handed an order they cannot fund leaves a player waiting for a
  * payment that will never arrive.
  */
-async function inventoryRefusal(merchantId, tokenAmount) {
-  const balance = await getMerchantTokenBalance(merchantId);
+async function inventoryRefusal(merchantId, tokenAmount, { excludeOrderId = null } = {}) {
+  // SPENDABLE, not the raw pocket. A queue manager assigning by hand is the
+  // one path with no concurrency query behind it, so this gate was the only
+  // thing standing between a merchant and a second order they cannot fund —
+  // and it was asking what they hold, not what is still uncommitted (F-018).
+  const balance = await getMerchantSpendableTokens(merchantId, { excludeOrderId });
   if (balance >= tokenAmount) return null;
   return {
     status: 400,
-    message: `Merchant has insufficient inventory (${balance} < ${tokenAmount}). Top up merchant inventory first.`,
+    message: `Merchant has insufficient uncommitted inventory (${balance} < ${tokenAmount}). `
+           + 'Top up merchant inventory, or wait for their open buy orders to finish.',
     merchantBalance: balance,
     required: tokenAmount,
   };
@@ -168,7 +173,9 @@ router.post('/payment-orders/:id/reassign', authenticate, isAdminOrSubAdminOrQue
     const pooled = await poolRefusal(merchant.merchantId, 'reassigning');
     if (pooled) return res.status(pooled.status).json({ success: false, ...pooled });
 
-    const funded = await inventoryRefusal(merchant.merchantId, order.tokenAmount);
+    const funded = await inventoryRefusal(merchant.merchantId, order.tokenAmount, {
+      excludeOrderId: order.orderId,
+    });
     if (funded) return res.status(funded.status).json({ success: false, ...funded });
 
     const expiresAt = new Date(Date.now() + ASSIGN_WINDOW_MS);
@@ -261,7 +268,13 @@ router.get('/queue/available-merchants', authenticate, isAdminOrSubAdminOrQueueM
     // The token figure comes from the WALLET, in one batched read, because this
     // list is what a queue manager assigns from — the number they see has to be
     // the number the transfer will find.
-    const availablePaise = await getAvailablePaiseFor(merchants.map((m) => m.merchantId));
+    //
+    // SPENDABLE, because the filter below GATES an assignment (§9): a merchant
+    // whose tokens are already promised to an open buy order must not be
+    // offered as able to take another. The raw pocket is kept beside it, so a
+    // queue manager can see WHY a merchant with a healthy balance is missing
+    // from the list rather than concluding the screen is broken.
+    const spendablePaise = await getSpendablePaiseFor(merchants.map((m) => m.merchantId));
 
     const rows = merchants
       .map((m) => ({
@@ -276,9 +289,17 @@ router.get('/queue/available-merchants', authenticate, isAdminOrSubAdminOrQueueM
         // The same figure twice, the second under a name that says where it
         // came from: the filter below gates an assignment, and a reader should
         // not have to trace back to see that it reads the wallet.
-        tokenBalance: paiseToRupees(availablePaise.get(String(m.merchantId)) ?? 0),
-        walletAvailableTokens: availablePaise.has(String(m.merchantId))
-          ? paiseToRupees(availablePaise.get(String(m.merchantId)))
+        tokenBalance: paiseToRupees(spendablePaise.get(String(m.merchantId))?.spendable ?? 0),
+        walletAvailableTokens: spendablePaise.has(String(m.merchantId))
+          ? paiseToRupees(spendablePaise.get(String(m.merchantId)).spendable)
+          : null,
+        // The two halves of the figure above, so a merchant absent from this
+        // list is explainable on the screen instead of only in the database.
+        walletHeldTokens: spendablePaise.has(String(m.merchantId))
+          ? paiseToRupees(spendablePaise.get(String(m.merchantId)).available)
+          : null,
+        walletCommittedTokens: spendablePaise.has(String(m.merchantId))
+          ? paiseToRupees(spendablePaise.get(String(m.merchantId)).committed)
           : null,
         merchantStats: {
           monthlyProcessed:     m.merchantStats?.monthlyProcessed     || 0,
@@ -496,7 +517,9 @@ router.post('/queue/assign/:orderId', authenticate, isAdminOrSubAdminOrQueueMana
     const pooled = await poolRefusal(merchant.merchantId, 'assigning');
     if (pooled) return res.status(pooled.status).json({ success: false, ...pooled });
 
-    const funded = await inventoryRefusal(merchant.merchantId, order.tokenAmount);
+    const funded = await inventoryRefusal(merchant.merchantId, order.tokenAmount, {
+      excludeOrderId: order.orderId,
+    });
     if (funded) return res.status(funded.status).json({ success: false, ...funded });
 
     const expiresAt = new Date(Date.now() + ASSIGN_WINDOW_MS);

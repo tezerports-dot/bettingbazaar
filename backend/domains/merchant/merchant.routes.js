@@ -47,7 +47,7 @@ import { toPlayerOrderView } from '../payment/playerOrderView.js';
 // One rule for how a confirmed deposit splits across the user's two pockets.
 import { moveDepositMoney } from '../payment/depositCredit.js';
 import { debitMerchantTokens, creditMerchantTokens } from './merchantWallet.service.js';
-import { getMerchantTokenBalance } from '#db/repositories/merchantWallets.js';
+import { getMerchantSpendableTokens } from '#db/repositories/merchantWallets.js';
 import { publish as publishDomainEvent, EVENTS as DOMAIN_EVENTS } from '../../services/eventBus.service.js';
 // Order chat. Every write here named a model registered nowhere, so the thread
 // echoed over the socket and never survived a reload.
@@ -1222,9 +1222,21 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
             // From the WALLET, not the merchant record. This gate admits an
             // order the merchant then has to fund; deciding it from a stored
             // copy is how one came to be accepted that could not be served.
-            const availableTokens = await getMerchantTokenBalance(merchant.merchantId);
+            // SPENDABLE, not the raw pocket: the open pool is claimed
+            // first-come, so a merchant could take two orders seconds apart
+            // and read their full balance both times (F-018).
+            //
+            // THIS order is excluded from the subtraction. When it was already
+            // ASSIGNED to this merchant it is in a committing state under their
+            // id, so counting it would subtract the amount and then require it
+            // again — refusing a merchant holding exactly enough for their own
+            // order. Excluded, the one comparison below is right whether the
+            // order came from the open pool or off their own plate.
+            const availableTokens = await getMerchantSpendableTokens(
+                merchant.merchantId, { excludeOrderId: order.orderId },
+            );
             if (merchant.acceptsDeposits === false || availableTokens < order.tokenAmount) {
-                return res.status(400).json({ success: false, message: 'Merchant has insufficient token balance or deposit capability for this buy order.' });
+                return res.status(400).json({ success: false, message: 'Merchant has insufficient uncommitted token balance or deposit capability for this buy order.' });
             }
         } else if (merchant.acceptsWithdrawals === false) {
             return res.status(400).json({ success: false, message: 'Merchant is not enabled for sell orders.' });

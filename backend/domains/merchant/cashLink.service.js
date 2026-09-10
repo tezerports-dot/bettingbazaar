@@ -31,7 +31,7 @@ import { db } from '#db';
 import {
   PAYMENT_MODES, getActivePolicy, concurrencyCapFor,
 } from '#db/repositories/paymentModePolicy.js';
-import { getAvailablePaiseFor } from '#db/repositories/merchantWallets.core.js';
+import { getSpendablePaiseFor } from '#db/repositories/merchantWallets.core.js';
 import { emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import { assertPaymentIntent } from '../../shared/storedUrl.js';
 
@@ -54,16 +54,19 @@ export async function suppliersWithHeadroom(denominationPaise) {
   if (!candidates.length) return [];
 
   // One batched read, so every candidate is judged against the same instant.
-  const available = await getAvailablePaiseFor(candidates.map((c) => c.merchantId));
+  // SPENDABLE, not the raw pocket: a merchant already serving a buy order has
+  // those tokens promised, and telling them to walk to a machine for work they
+  // cannot fund wastes the trip. See F-018.
+  const spendable = await getSpendablePaiseFor(candidates.map((c) => c.merchantId));
   const needed = Number(denominationPaise);
 
   return candidates.filter((c) => {
     // A merchant with NO wallet row is excluded, not treated as empty: no row
     // means the money system has never seen them, which is a different thing
     // from having nothing and routes differently.
-    const now = available.get(String(c.merchantId));
-    if (now === undefined) return false;
-    return now + c.soonPaise >= needed;
+    const row = spendable.get(String(c.merchantId));
+    if (row === undefined) return false;
+    return row.spendable + c.soonPaise >= needed;
   }).map((c) => c.merchantId);
 }
 

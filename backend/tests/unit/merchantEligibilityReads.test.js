@@ -112,7 +112,7 @@ describe('the assignment routes no longer read the mirror', () => {
   });
 
   it('routes every gate through the authority reader', () => {
-    expect(source).toMatch(/import \{ getMerchantTokenBalance \}/);
+    expect(source).toMatch(/import \{ getMerchantSpendableTokens \}/);
     // ── Counted differently, on purpose ──────────────────────────────────
     // This asserted THREE calls, one per assign path, because the guard was
     // copy-pasted into each handler. Three copies of a rule that decides which
@@ -120,10 +120,17 @@ describe('the assignment routes no longer read the mirror', () => {
     // and a test that counts the copies makes consolidating them look like a
     // regression. There is one `inventoryRefusal` helper now, so what is
     // asserted is that it reads the wallet and that every assign path calls it.
-    expect(source).toMatch(/async function inventoryRefusal\([\s\S]*?await getMerchantTokenBalance\(/);
+    // SPENDABLE, not the raw pocket. `getMerchantTokenBalance` answers "what
+    // does this merchant hold" and admission needs "what have they not already
+    // promised"; the difference is the orders in flight, and reading the first
+    // where the second belongs is F-018.
+    expect(source).toMatch(/async function inventoryRefusal\([\s\S]*?await getMerchantSpendableTokens\(/);
 
     // One call site, inside the helper — not a second gate that skipped it.
-    expect([...source.matchAll(/await getMerchantTokenBalance\(/g)]).toHaveLength(1);
+    expect([...source.matchAll(/await getMerchantSpendableTokens\(/g)]).toHaveLength(1);
+    // And the display reader has no business in this file at all: every
+    // balance it reads decides an assignment.
+    expect([...source.matchAll(/await getMerchantTokenBalance\(/g)]).toHaveLength(0);
 
     // EVERY assign path gates — asserted as a relation, not three magic
     // numbers. It used to read `toHaveLength(3)` three times, which meant that
@@ -148,6 +155,6 @@ describe('the assignment routes no longer read the mirror', () => {
     // The refusal quotes the number it refused against, and it comes from the
     // same read that decided — quoting anything else makes an operator chase a
     // discrepancy that is not there.
-    expect(source).toMatch(/const balance = await getMerchantTokenBalance\(merchantId\);[\s\S]*?merchantBalance: balance,/);
+    expect(source).toMatch(/const balance = await getMerchantSpendableTokens\(merchantId, \{ excludeOrderId \}\);[\s\S]*?merchantBalance: balance,/);
   });
 });

@@ -66,8 +66,8 @@ const SITES = [
   {
     name: 'merchant assignment',
     file: 'domains/merchant/merchantScoring.service.js',
-    gates: [/availablePaise\.get\(String\(m\.merchantId\)\) \?\? -1\) >= neededPaise/],
-    source: /await getAvailablePaiseFor\(candidates\.map/,
+    gates: [/candidates\.filter\(\(m\) => paiseOf\(m\) >= neededPaise\)/],
+    source: /await getSpendablePaiseFor\(candidates\.map/,
     forbidden: [
       // The eligibility query must not gain a balance predicate. The merchant
       // row has no balance column, so one written here would be reading
@@ -76,14 +76,29 @@ const SITES = [
       /baseQuery\.tokenBalance/,
       /token_balance/,
       /m\.tokenBalance\s*[<>]/,
+      // The RAW pocket, at a site that GATES an assignment. It answers "what
+      // does this merchant hold", and admission needs "what have they not
+      // already promised" — the two differ by exactly the orders in flight,
+      // which is the whole of F-018. Forbidden by name so a later edit cannot
+      // quietly swap the reader back and stay green.
+      /getAvailablePaiseFor/,
     ],
   },
   {
     name: 'merchant accept guard',
     file: 'domains/merchant/merchant.routes.js',
     gates: [/availableTokens < order\.tokenAmount/],
-    source: /await getMerchantTokenBalance\(merchant\.merchantId\)/,
-    forbidden: [/\(merchant\.tokenBalance \|\| 0\) < order\.tokenAmount/],
+    // The order excludes ITSELF from the subtraction. Without that argument a
+    // merchant holding exactly enough for the order already assigned to them
+    // is refused their own order — the amount is subtracted once and then
+    // demanded again. Asserted here because it is not visible from the gate.
+    source: /await getMerchantSpendableTokens\(\s*merchant\.merchantId, \{ excludeOrderId: order\.orderId \}/,
+    forbidden: [
+      /\(merchant\.tokenBalance \|\| 0\) < order\.tokenAmount/,
+      // `getMerchantTokenBalance` is the DISPLAY reader — the raw pocket. It
+      // must not come back to a gate that admits an order (F-018).
+      /await getMerchantTokenBalance\(/,
+    ],
   },
   {
     // ── This entry pointed at a file NOTHING IMPORTED ────────────────────────
@@ -106,7 +121,15 @@ const SITES = [
     name: 'queue-manager assignment list',
     file: 'domains/merchant/merchant.assignment.routes.js',
     gates: [/m\.walletAvailableTokens < amount/],
-    source: /await getAvailablePaiseFor\(merchants\.map/,
+    // SPENDABLE, because this list is what a queue manager assigns FROM.
+    //
+    // The regex used to be `getAvailablePaiseFor\(merchants\.map`, and after
+    // this site moved to the spendable reader it still MATCHED — the two pool
+    // LISTINGS further down the same file call it with the same argument name,
+    // and they are display reads that correctly keep it. The assertion went on
+    // passing while measuring a different site than the one it names. Anchored
+    // on the reader that only the gating site uses.
+    source: /await getSpendablePaiseFor\(merchants\.map/,
     forbidden: [
       /if \(m\.tokenBalance < amount\)/,
       // The pool and candidate listings quote a balance too, and an admin
@@ -114,6 +137,29 @@ const SITES = [
       // `tokenBalance` there showed them a number no transfer would find.
       /tokenBalance: m\.tokenBalance/,
     ],
+  },
+  {
+    // The manual-assign and reassign gate. It is the only assignment path with
+    // no concurrency query behind it, so it is the only thing standing between
+    // a merchant and a second order they cannot fund.
+    name: 'queue-manager inventory refusal',
+    file: 'domains/merchant/merchant.assignment.routes.js',
+    gates: [/if \(balance >= tokenAmount\) return null;/],
+    source: /await getMerchantSpendableTokens\(merchantId, \{ excludeOrderId \}\)/,
+    forbidden: [
+      // The raw pocket, at the gate. See F-018.
+      /await getMerchantTokenBalance\(/,
+    ],
+  },
+  {
+    // Who is told to walk to a cash machine. A merchant already serving a buy
+    // order has those tokens promised; sending them out for work they cannot
+    // fund wastes a trip they cannot get back.
+    name: 'cash link suppliers',
+    file: 'domains/merchant/cashLink.service.js',
+    gates: [/return row\.spendable \+ c\.soonPaise >= needed;/],
+    source: /await getSpendablePaiseFor\(candidates\.map/,
+    forbidden: [/getAvailablePaiseFor/],
   },
 ];
 

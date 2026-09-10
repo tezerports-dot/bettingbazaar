@@ -29,6 +29,7 @@ import { pgConfigured, applySchema, closePg } from '#db/client.js';
 import { getBalancesPaise } from '#db/repositories/wallets.core.js';
 import { createOrderRecord, getOrderRecord, setOrderFields, getMerchantOrder } from '#db/repositories/orders.record.js';
 import { updateMerchant, getMerchant } from '#db/repositories/merchants.js';
+import { assignOrder } from '#db/repositories/orders.core.js';
 import { getMerchantTokenBalance } from '../../domains/merchant/merchantWallet.service.js';
 import { mountRouter, actor, merchantActor, as, request } from './_harness.js';
 
@@ -145,8 +146,42 @@ describePg('merchant panel routes', () => {
     const { orderId } = await order({ tokens: 500 });
     const res = await as(app, poor).post(`/accept/${orderId}`).send({});
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/insufficient token balance/i);
+    expect(res.body.message).toMatch(/insufficient uncommitted token balance/i);
     expect((await getOrderRecord(orderId)).state).toBe('PENDING_QUEUE');
+  });
+
+  it('counts the orders the merchant is ALREADY serving against them', async () => {
+    // F-018, at the route. The open pool is claimed first-come, so a merchant
+    // holding 1,000 tokens could take a 600 order and then take a second 600
+    // seconds later — both reads saw the full balance, because nothing
+    // subtracted the first order from the second's answer. The player on the
+    // losing order pays and is never credited.
+    const m = await merchantActor({ tokensRupees: 1_000 });
+    const first  = await order({ tokens: 600, betting: 500, reserve: 100 });
+    const second = await order({ tokens: 600, betting: 500, reserve: 100 });
+
+    expect((await as(app, m).post(`/accept/${first.orderId}`).send({})).status).toBe(200);
+
+    const res = await as(app, m).post(`/accept/${second.orderId}`).send({});
+    expect(res.status, 'took a second order it cannot fund').toBe(400);
+    expect(res.body.message).toMatch(/insufficient uncommitted token balance/i);
+    // Still claimable by somebody who CAN serve it — refusing this merchant is
+    // not the same as failing the order.
+    expect((await getOrderRecord(second.orderId)).state).toBe('PENDING_QUEUE');
+  });
+
+  it('does not charge an assigned order against itself', async () => {
+    // The other half of the same subtraction. A merchant holding exactly the
+    // order's amount must still be able to accept the order already ASSIGNED
+    // to them — counting it would subtract the tokens and then demand them
+    // again, and the merchant could never accept anything.
+    const m = await merchantActor({ tokensRupees: 500 });
+    const { orderId } = await order({ tokens: 500 });
+    await assignOrder({ orderId, merchantId: m.merchantId, actor: 'test' });
+    expect((await getOrderRecord(orderId)).state).toBe('ASSIGNED');
+
+    expect((await as(app, m).post(`/accept/${orderId}`).send({})).status,
+      'refused a merchant their own order').toBe(200);
   });
 
   it('refuses a merchant who has turned deposits off', async () => {

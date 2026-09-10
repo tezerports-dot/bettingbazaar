@@ -300,6 +300,25 @@ export const QueueDashboard: React.FC = () => {
                       </div>
                       <p className="text-sm text-gray-400">{(m as any).mobile||'—'}</p>
                       <div className="text-xs text-gray-400 space-y-0.5">
+                        {/* The number an assignment is actually gated on, and
+                            the two halves it comes from. A merchant serving an
+                            open buy order has those tokens promised, so they
+                            can drop off this list while still holding a healthy
+                            balance — without both figures on screen that reads
+                            as the page being broken. Backend: F-018,
+                            getSpendablePaiseFor. */}
+                        <div className="flex justify-between">
+                          <span>Spendable</span>
+                          <span>{((m as any).walletAvailableTokens ?? 0).toLocaleString()} BB</span>
+                        </div>
+                        {((m as any).walletCommittedTokens ?? 0) > 0 && (
+                          <div className="flex justify-between text-gray-500">
+                            <span>Held · committed</span>
+                            <span>
+                              {((m as any).walletHeldTokens ?? 0).toLocaleString()} · −{((m as any).walletCommittedTokens ?? 0).toLocaleString()}
+                            </span>
+                          </div>
+                        )}
                         <div className="flex justify-between"><span>Daily vol.</span><span>₹{(m.merchantStats?.dailyProcessed||0).toLocaleString()}</span></div>
                         <div className="flex justify-between"><span>Total orders</span><span>{m.merchantStats?.totalOrdersProcessed||0}</span></div>
                         <div className="flex justify-between"><span>Accepts</span>

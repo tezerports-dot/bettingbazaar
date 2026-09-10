@@ -156,6 +156,7 @@ wrong owner gets working code deleted by the next reader.
 | The rail an ORDER runs under | `order_states.payment_mode`, stamped at creation by `stampForNewOrder` and **immutable by trigger**. Every worker and screen branches on the order's own value, never the current policy. |
 | Merchant earnings | `merchant_commission_policies` + `merchant_commission_rates` (one row per variety), read by `domains/merchant/merchantCommission.service.js`, which owns no numbers. Platform-funded from `MERCHANT_BONUS_POOL`, never deducted from users. Do not reintroduce `commissionRate`, a buy/sell spread, or a deposit-triggered commission. See §26. |
 | Merchant token balance mutations | `domains/merchant/merchantWallet.service.js` exclusively — idempotent `tx_id`. |
+| What a merchant may take on NEXT | `getSpendablePaiseFor()` in `merchantWallets.core.js` — available MINUS the open buy orders they are already serving, derived from `order_states` netted against the wallet ledger, never stored. **Every gate that ADMITS an order reads this**; `getAvailablePaiseFor`/`getMerchantTokenBalance` are the display readers and answer a different question. See §9 and F-018. |
 | Wallet balance mutations (player) | `domains/wallet/walletAuthority.service.js` exclusively, **including a bet's stake lock**. A route may not move a balance. |
 | Wallet balance READS | `walletAuthority.getBalances()`, reading the `wallets` row. No second copy of a balance exists or may be introduced. **Every read is classified display or decision** — see §9. |
 | Money in/out of the ecosystem | `domains/funding/fundingAuthority.service.js`; rails are adapters in `providerRegistry.js`. Never owns accounting. |
@@ -589,7 +590,19 @@ it achieves.
     `getOrderRecord(id)` to get at a field. Nothing else changed, no check went
     red, and **any merchant could attach their slip to any payout**. When a
     handler needs more of a row, widen the SCOPED reader — never reach past it.
-17. **A silent no-op after a committed ledger write strands money.**
+17. **`transition()` does not write `completed_at`.** The one order lifecycle
+    writer sets `state`, `updated_at` and `merchant_id` and nothing else. Five
+    separate routes set `completedAt` themselves, in a `setOrderFields` call
+    AFTER the transition commits — the §21 shape, a second write that can be
+    absent on a genuinely completed order. So `completed_at IS NOT NULL` is not
+    the same question as "this order completed", and a money gate must never
+    rest on it. Where you need "has this money actually moved", ask the ledger:
+    `merchant_wallet_entries` is written by `applyMerchantMovement` inside the
+    same transaction as the balance change, so it cannot disagree with the
+    balance. Net DEBIT against CREDIT rather than testing existence — a movement
+    REVERSED by `reverseMovement` puts the tokens back and restores the
+    obligation together, and a boolean sees only the first row.
+18. **A silent no-op after a committed ledger write strands money.**
     `creditMerchantTokens` returns `{merchant: null}` for an id with no merchant
     row — it does not throw. The commission engine wrote its ledger event first,
     so the pool was debited, the platform recorded the merchant as owed, the
@@ -818,7 +831,7 @@ in through a deposit and went out through a withdrawal.
    underscore, so a pattern has to guess where the id ends.
 6. **Never partial-issue.** Paying what the pool holds while recording the full
    high-water mark under-pays permanently. Skip until the pool is funded.
-7. **Check the merchant exists before posting.** See trap 17.
+7. **Check the merchant exists before posting.** See trap 18.
 
 ---
 

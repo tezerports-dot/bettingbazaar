@@ -28,7 +28,7 @@
 
 import { db } from '#db';
 import { MERCHANT_CURRENCY } from './merchantCurrency.js';
-import { getAvailablePaiseFor } from '#db/repositories/merchantWallets.core.js';
+import { getSpendablePaiseFor } from '#db/repositories/merchantWallets.core.js';
 import { rupeesToPaise } from '../../shared/money.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import {
@@ -94,6 +94,10 @@ async function totalOrderLimitFor(paymentModeVersion) {
  *
  * DEPOSIT (user buys tokens): merchants must hold enough tokens; the largest
  * spendable inventory wins, so the biggest holder takes the biggest fit.
+ * SPENDABLE means the wallet's available pocket MINUS the buy orders this
+ * merchant is already serving — a commitment they have taken on and not yet
+ * discharged. Ranking on the raw pocket handed the biggest holder every order
+ * in the queue and left the last few unfundable (F-018).
  *
  * The token figure comes from `merchant_wallets`, which is where every token
  * movement actually happens — NOT from a field on the merchant record. This
@@ -152,17 +156,22 @@ export async function selectBestMerchant(orderType, tokenAmount, currency = MERC
     // One batched read, so every candidate is judged against the same instant.
     // A read per candidate would be N round trips on the hot path of a money
     // movement, and would judge each at a slightly different moment.
-    const availablePaise = await getAvailablePaiseFor(candidates.map((m) => m.merchantId));
+    // SPENDABLE, not available: what the merchant holds MINUS the buy orders
+    // already on their plate. The raw pocket says a merchant holding 10,000
+    // who has just taken an 8,000 order can serve another 10,000, and the
+    // player finds out otherwise after paying. See F-018.
+    const spendablePaise = await getSpendablePaiseFor(candidates.map((m) => m.merchantId));
     const neededPaise = rupeesToPaise(tokenAmount);
 
     // A merchant with NO wallet row is EXCLUDED, not sorted last. No row means
     // the money system has never seen them, which is a different thing from
     // being empty and routes differently: an empty merchant may be topped up,
-    // an unknown one should not be handed an order at all.
-    candidates = candidates.filter((m) => (availablePaise.get(String(m.merchantId)) ?? -1) >= neededPaise);
+    // an unknown one should not be handed an order at all. `undefined` here is
+    // that case; `-1` keeps it below every possible `neededPaise`.
+    const paiseOf = (m) => spendablePaise.get(String(m.merchantId))?.spendable ?? -1;
+    candidates = candidates.filter((m) => paiseOf(m) >= neededPaise);
     if (!candidates.length) return null;
 
-    const paiseOf = (m) => availablePaise.get(String(m.merchantId)) ?? 0;
     candidates.sort((a, b) => {
       // Ranked on the SAME number the filter used, so the merchant chosen is
       // the one that actually holds the most.

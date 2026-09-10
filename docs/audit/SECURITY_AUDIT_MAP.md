@@ -1638,9 +1638,10 @@ it is still a job.
 - **Swept:** not yet — the question is which other suites test an unreachable
   route. Queued in §6.
 
-### F-018 — merchant eligibility is checked but never HELD, and the mechanism to hold it is unused
-`OPEN` · **HIGH — this is the root cause F-017 was a symptom of** · design gap ·
-found 2026-09-10 when the owner rejected the F-017 fix as treating a symptom
+### F-018 — merchant eligibility is checked but never HELD
+`FIXED` · **HIGH — this is the root cause F-017 was a symptom of** · design gap ·
+found 2026-09-10 when the owner rejected the F-017 fix as treating a symptom ·
+fixed 2026-09-10
 
 **The owner's objection was correct and this entry exists because of it.** F-017
 fixed what happens when an under-funded merchant confirms a deposit. The right
@@ -1696,16 +1697,125 @@ instead of `readFileSync`.
 **80 exports are currently in that bucket.** They have never been triaged. At
 least one of them is a money mechanism the platform needs and does not use.
 
+### The escrow already existed, and pointed one way only
+
+The owner's answer to "how should the commitment be tracked" was *"I think we
+have escrow system already implemented throughout the buy sell orders already"*.
+Verified rather than assumed: every `escrowLocked` / `escrowStatus` /
+`escrowAmount` site and all 21 `lockWithdrawal` / `releaseWithdrawal` /
+`refundWithdrawal` calls are guarded by `order.type === 'WITHDRAWAL'`.
+
+So the escrow is real and it is **one-sided**. It holds a PLAYER's tokens the
+instant they place a SELL, so they cannot spend or re-sell what is already
+promised. There has never been a counterpart on the BUY side, where the tokens
+at risk are the merchant's. **The platform protected itself from the player and
+not the player from the merchant** — and that asymmetry is the finding, more
+than any single call site.
+
+### The fix: DERIVED, not a fourth pocket
+
+`getSpendablePaiseFor()` in `merchantWallets.core.js` is the one owner:
+
+```
+spendable = available − Σ over the merchant's open DEPOSIT orders of
+              max(order amount − what has already left the wallet for it, 0)
+```
+
+**Why not `reserveForSettlement`, which exists and would have been the obvious
+move.** A reserved pocket needs a release on every path an order can end —
+approve, reject, expire, reassign, dispute-refund, and any path added later —
+and **missing one locks the merchant's tokens forever**. `reconcileMerchant`
+cannot detect that: it compares the pockets against the ledger sum, and a
+stranded reservation is perfectly consistent, so it reports `ok` while the
+tokens sit dead. Derived, there is nothing to release and nothing to strand.
+Same reasoning as trap 4 (derive real pools from `bets`) and trap 6
+(reconstruct counters from rows, never accumulate them).
+
+**Two things the query has to get right, and the first draft got wrong:**
+
+1. **`DISPUTED` means opposite things depending on where it came from.** From
+   PAID the merchant still owes the tokens; from COMPLETED they have already
+   gone. The state column reads identically either way.
+2. **The discriminator is the LEDGER, not `completed_at`.** The first draft used
+   `completed_at IS NULL` — and `transition()`, the one order lifecycle writer,
+   **does not write `completed_at` at all**. Five separate routes set it
+   themselves with a `setOrderFields` call after the transition commits: exactly
+   the §21 shape, a second write that can be absent on a genuinely completed
+   order. `merchant_wallet_entries` cannot have that problem — the debit row is
+   written by `applyMerchantMovement` inside the same transaction as the balance
+   change, so "the ledger says these tokens left" and "`available` is lower" are
+   the same fact. Netting DEBIT against CREDIT on the order's `ref_id` also
+   handles what a boolean could not: a debit REVERSED by `reverseMovement`
+   restores the tokens **and** the obligation together.
+
+### The five decision sites, all switched
+
+| Path | Now reads |
+|---|---|
+| Automatic assignment (filter AND rank) | `getSpendablePaiseFor(candidates)` |
+| Admin assign / reassign (`inventoryRefusal`) | `getMerchantSpendableTokens(id, {excludeOrderId})` |
+| Merchant accepts from the open pool | `getMerchantSpendableTokens(id, {excludeOrderId})` |
+| Queue-manager available-merchants list | `getSpendablePaiseFor(merchants)` |
+| Cash-link supplier broadcast | `getSpendablePaiseFor(candidates)` |
+
+`excludeOrderId` is not an optimisation. A merchant accepting an order already
+ASSIGNED to them is asked "can you fund this?" while that order is already in
+the committed total — without the exclusion the amount is subtracted once and
+demanded again, and a merchant holding exactly enough is refused their own
+order. Excluded, one comparison is correct on both paths.
+
+**The pool LISTINGS keep `getAvailablePaiseFor`** — §9 display reads, and so do
+the six reporting reads in `merchant.admin.routes.js` (a balance quoted back
+after a credit, a refusal message, an analytics tile). Swept and classified:
+no sixth decision site exists.
+
+### The gate that reported the author
+
+`moneyDecisionsReadTheWallet.test.js`'s queue-manager entry anchored on
+`await getAvailablePaiseFor\(merchants\.map`. After that site moved to the
+spendable reader **the assertion still matched** — the two pool listings further
+down the same file call the old reader with the same argument name. It went on
+passing while measuring a different site than the one it names. Re-anchored on
+the reader only the gating site uses, and every decision site now **forbids the
+display reader by name**, so a later edit cannot quietly swap it back.
+
+### Proven
+
+`merchantSpendableInventoryPg.test.js` (18) — the derivation, the state matrix
+walked through `ALLOWED_FROM` rather than written into the column, both dispute
+origins driven through a real wallet debit, and the owner's own scenario:
+a merchant holding 10,000 takes the 8,000 order and is then refused a 5,000 one,
+while a 2,000 one still fits. Plus 3 in `merchantPanelRoutes.test.js` at the
+accept route. Mutation-proved four ways — the subtraction removed, the ranking
+switched back to the raw pocket, the accept gate switched back, the exclusion
+dropped — each killed by exactly the test that names it.
+
 - **Shape:** a guard whose answer is computed once and then relied on later,
-  with nothing preventing the world from changing in between — and, separately,
-  a gate that accepts a test as evidence of use.
-- **Sweep query (the guard):** every `getMerchantTokenBalance` /
-  `getBalances` read whose result gates an action completed by a LATER request.
+  with nothing preventing the world from changing in between.
+- **Swept:** every `getMerchantTokenBalance` / `getAvailablePaiseFor` read in
+  the backend, classified display vs decision. Five decisions found, five fixed;
+  eight display reads confirmed display. **No further instances.**
+- **Not a withdrawal problem.** On a SELL the merchant *receives* tokens and
+  pays fiat, which the platform does not hold, so there is no token-side
+  commitment to subtract. Deposit-only is correct, not an omission.
+
+### Still open, and separable — the gate that accepts a test as a consumer
+
+`check:dead-code` classifies an export referenced only by tests as `testOnly`
+(informational) rather than `dead` (fails the build). **A test import is counted
+as a consumer** — the §22 blind spot restated one level up, with `import`
+instead of `readFileSync`. That is how a fully built money mechanism sat unused
+and green.
+
+`reserveForSettlement` / `completeReservation` / `cancelReservation` are still
+in that bucket and are now confirmed to have **no production caller and no
+production need** — the derived approach replaces them. They should be deleted
+or given a stated `ORPHAN_ALLOW` reason; leaving a money mechanism in the repo
+that nothing calls is how the next session concludes the platform holds
+reservations it does not.
+
 - **Sweep query (the gate):** triage all 80 `testOnly` exports; anything that
-  moves money or state is a finding, not an informational row.
-- **Not fixed — it is a design change, not a patch**, and it touches every
-  assignment path plus expiry, rejection and reassignment (each needs its
-  `cancelReservation`). Options are in §6.
+  moves money or state is a finding, not an informational row. **Not done.**
 
 ### F-019 — the dispute belonged to the wrong party, in both directions at once
 `FIXED` · **HIGH** · authorization / recourse · found 2026-09-10 when the owner
@@ -1989,9 +2099,9 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 395 |
+| `pgQuery` call sites | 396 |
 | Parameters only (safe by construction) | 254 |
-| Interpolating into statement text (each needs a reading) | 141 |
+| Interpolating into statement text (each needs a reading) | 142 |
 
 ### Panel injection sinks
 
