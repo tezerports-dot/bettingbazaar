@@ -259,7 +259,7 @@ splittable into separate repos with no governance change.
 game page:
 
 `/` (GamePage) · `/casino` · `/crash` · `/sports` · `/wallet` · `/invite` · `/vip` ·
-`/gift-code` · `/recover-account` · `/profile` · `/history` · `/my-bets` · `/results` ·
+`/recover-account` · `/profile` · `/history` · `/my-bets` · `/results` ·
 `/promo` · `/rules` · `/faq` · `/support` · `/winners` · `/merchant/*` → external redirect
 
 Notable client services:
@@ -785,7 +785,6 @@ Anything in the user panel is W+P+A today; merchant and admin are W only.
 | **Wallet** — total/deposit/winnings split, add funds, withdraw, ledger, order links, bank setup | `/wallet` | `/api/v1/user/profile`, `/api/payment/orders`, `/api/v1/wallet/ledger` | `user_balance_update`, `order_*` |
 | Referral / invite — code, share, team, commissions (**F1 only**) | `/invite` | `/api/referral/me`, `/team`, `/commissions`, `/apply` | — |
 | VIP — tier, progress, benefits | `/vip` | `/api/vip/config`, `/api/vip/my`, `/api/bonuses/my` | — |
-| Gift code redemption | `/gift-code` | `POST /api/giftcode/redeem` | — |
 | **Account recovery** — REMOVED 2026-08-25. There is no in-app recovery screen and no `/api/auth/check-aadhaar`, `/recover` or `/recover/status`. Recovery runs entirely in a SECOND Telegram bot and requires the same mobile AND the same Aadhaar to match. | — | — | — |
 | Profile — username, avatar, bank/UPI, KYC status, sign-out. **No password, no email** — the only editable field is the username; Aadhaar and mobile are proved, not typed. | `/profile` | profile, bank, avatar-upload endpoints | `kyc_update` |
 | Transaction / order history — timeline, filters, proof & dispute links | `/history` | `/api/payment/orders`, `/order/:id` | `order_update` |
@@ -884,7 +883,6 @@ hidden from default navigation until Payments Operations approves the rollout.
 | Feature | Route |
 |---|---|
 | Announcements | `/admin/#/promotions/announcements` |
-| Gift codes — generator, list, redemptions | `/admin/#/promotions/gift-codes` |
 | FAQ manager | `/admin/#/content/faq` |
 | Content slides | `/admin/#/content/slides` |
 | Support links | `/admin/#/content/support` |

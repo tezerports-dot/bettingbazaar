@@ -72,7 +72,6 @@ const MENU_SECTIONS = [
   ] },
   { title: 'Finance', items: [
     { label: 'Wallet', icon: '💳', path: '/wallet' },
-    { label: 'Gift Code', icon: '🎁', path: '/gift-code' },
   ] },
   { title: 'Info', items: [
     { label: 'Pro Tips', icon: '💡', path: '/promo' },

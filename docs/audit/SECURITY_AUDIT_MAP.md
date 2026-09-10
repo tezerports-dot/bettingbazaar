@@ -478,7 +478,34 @@ policy does not gate anything.
 **Why it matters.** It sets the cost of every other flaw. An IDOR on random
 128-bit ids is theoretical; the same IDOR on sequential ids is a script.
 
-**Status: NOT EXAMINED.**
+**Status: EXAMINED 2026-09-10 — CLEAR except F-014.** What was actually
+checked, so a later reader knows what this claim covers:
+
+| Identifier | How it is made | Verdict |
+|---|---|---|
+| Order ids (`DEP_`, `WD_`, `MAT_`, `clk_`) | `crypto.randomBytes(12)` hex — 96 bits | fine |
+| Every repository row id | `randomBytes(12)` in `users/engagement/content/social/referrals.js` | fine |
+| Telegram login token | `randomBytes(32).toString('base64url')` — 256 bits | fine |
+| Webhook secrets | `randomBytes(32)` hex | fine |
+| Sign-in OTP | `crypto.randomInt(0, 1e6)` — **and 5 attempts, enforced in the UPDATE's own WHERE**, with the attempt charged against the live row and the row consumed at the cap | fine, and the attempt cap is what makes 20 bits enough |
+| Referral code | 8 chars of a 31-char Crockford-ish alphabet from `randomBytes` — ~39 bits, with a slight modulo bias (256 % 31 = 8) | fine; a referral code is public by design and is not a bearer credential |
+| `BIGSERIAL` primary keys | sequential | fine — none is a route parameter; every route keys on the random public id |
+| Client idempotency keys (`Math.random`) | `k-<ms>-<random>` from the panels | **fine, and worth recording so it is not re-flagged**: the server builds `bet_${userId}_${clientKey}`, so the key is scoped by user and a guessed one cannot reach another player's bet |
+| Confetti angles/delays | `Math.random` | fine — §11, UI-only |
+| **Gift codes** | **`Math.random()` in the admin panel** | **F-014** |
+
+Two unscoped `getOrderRecord(req.params.id)` reads were checked against trap
+§20.16 and are both correct: `POST /merchant/accept/:id` must read unscoped
+because an unassigned order is claimable from the open pool, and it follows with
+an explicit `order.merchantId !== req.merchantId → 403`; the other is an admin
+reassign route, where unscoped is the point.
+
+Also found here and not a security finding, but a §14 dead artifact:
+`user-panel/src/services/realBackend.ts:877` `resetMerchantPassword` returns
+`'Merchant@' + Math.floor(100000 + Math.random() * 900000)`, `console.warn`s
+"No backend route", and sets nothing. Nothing calls it. `check:dead-code` cannot
+see it because it scans exported NAMES and this is a class method — the same
+blind spot §22 describes for default exports.
 
 ### 2.21 Dead and unreachable code
 
@@ -736,7 +763,41 @@ code under test.
 - **Shape:** a test asserting something about global state it did not set.
   `CLAUDE.md` trap 10 names the same hazard from the other side — never assert a
   global invariant over a shared table; take a baseline and assert the delta.
-- **Swept:** not yet. Queued in §6.
+
+**Swept 2026-09-10 — two more instances found, both fixed, and both were caught
+by running the suite TWICE rather than once.** That is the method this class
+needs: the shared database is never reset, so a suite that passes on a clean run
+and fails on the next is the signature, and a single green run cannot see it.
+
+1. **The telegram retention count, and my own change made it.** Adding
+   `telegram_recovery_sessions` to `sweepExpired` meant `telegramPg.test.js`
+   asserted an exact count over a table another file also writes. Rows that file
+   left LIVE with a 600-second TTL are EXPIRED ten minutes later, so the next
+   run's sweep counted them: the assertion drifted 1 → 16 across four runs.
+   Fixed on both sides — the recovery file removes every row it creates, and the
+   count now drains first, so it measures its own deletions rather than the
+   history of the database.
+
+2. **`merchantTokenSupplyRoutes.test.js`, where the safeguard was defeated by
+   its own sanitiser.** The file builds a unique 64-hex tx hash precisely
+   because `utr_registry` keeps a reference for GOOD (§27) — a hash used once
+   can never be used again, on any database it has run against. But it built it
+   as ``` `${RUN}${seq}`.replace(/[^0-9a-f]/gi, '') ``` padded with `'a'`, and
+   `RUN` is `Math.random().toString(36)` — **base 36**, of whose 36 symbols that
+   character class strips 20. Measured: ~45% of runs keep three characters or
+   fewer of real uniqueness and ~3% keep one or none, at which point the
+   "unique" hash is a run of `a`s identical to what an earlier degenerate run
+   already claimed. The file then 409s on a database it passed against
+   yesterday. Now `randomBytes(32).toString('hex')` — hex by construction, so
+   there is nothing to filter.
+
+   **Worth keeping as a general lesson: sanitising a value into a format can
+   remove the property the value was there for.** The author knew about trap 10
+   and wrote the guard; the guard silently threw away most of its own entropy.
+
+`cashLinkRoutes.test.js` itself is still OPEN — it depends on a payment-mode
+policy an earlier file leaves behind, which needs the file to establish its own
+rather than a cleanup elsewhere.
 
 
 ### F-008 — an unexpected failure told the caller what broke, and told nobody else
@@ -1134,6 +1195,78 @@ Two things make it more than bookkeeping:
   converted site silent with every check still green, which is the half of
   F-008 that was worse than the disclosure.
 
+### F-014 — a bearer credential for real money, minted by `Math.random()` in a panel
+`FIXED by removal` · medium · weak randomness / one-owner violation · found and
+removed 2026-09-10 · found by examining class 2.20
+
+```tsx
+// admin-panel/src/Pages/Promotions/GiftCodes.tsx:61
+const generate = () => setForm(f => ({ ...f, code: Math.random().toString(36).slice(2,10).toUpperCase() }));
+```
+
+A gift code is a **bearer credential**: presenting the string credited real
+money to the presenter's `depositBalance` out of `BONUS_POOL`. It was generated
+client-side, by a non-CSPRNG, in a panel — three separate problems in one line.
+
+Four connected facts made it a finding rather than a lint:
+
+1. **`Math.random()` is V8's xorshift128+**, not a CSPRNG. Its 128-bit state is
+   recoverable from a small number of outputs; codes minted in one admin session
+   are not independent of each other. Length was never the issue — predictability
+   was.
+2. **Nothing on the server set a floor.** `createGiftCode` accepted any non-empty
+   string, so a hand-typed campaign code was equally acceptable.
+3. **Redemption had no route-level rate limit** — only the global `/api/`
+   backstop of 1,000 per 15 minutes per IP.
+4. **The refusal was an oracle.** `NOT_FOUND` was distinguishable from
+   `INACTIVE`, `EXPIRED`, `FULLY_REDEEMED` and `ALREADY_REDEEMED` — good UX, and
+   also a positive-existence signal for walking the code space.
+
+Together: ~4,000 guesses an hour per IP against a space nothing bounded, for a
+string that pays out. Bounded in loss by `max_uses` and by the pool, so not
+catastrophic — but the whole point of a promotional code is that it reaches the
+person it was meant for.
+
+**It is also a §2 violation independent of any of that.** A security value's
+owner is never a panel. Every other identifier on this platform comes from
+`crypto.randomBytes` on the server (see the table in §2.20); this one did not.
+
+- **Shape:** a security-relevant value generated in a frontend, by
+  `Math.random()`.
+- **Sweep query:** `grep -rn "Math.random" user-panel/src admin-panel/src merchant-panel/src`
+- **Swept: yes — 9 hits, and the classification is the useful part.**
+  - **The gift code** — this finding.
+  - **`resetMerchantPassword`** (`user-panel/src/services/realBackend.ts:877`)
+    builds `'Merchant@' + Math.floor(100000 + Math.random() * 900000)`,
+    `console.warn`s *"No backend route"*, and **sets nothing**. Nothing calls it.
+    A §14 dead artifact rather than a live weakness — but note **why no gate saw
+    it**: `check:dead-code` scans exported NAMES, and this is a class method, the
+    same blind spot §22 records for default exports.
+  - **Idempotency keys** (`admin-panel/src/services/api.ts:48`,
+    `user-panel/src/services/realBackend.ts:494`) — **benign, and recorded here
+    so nobody re-flags them.** The server builds `bet_${userId}_${clientKey}`, so
+    the key is scoped by user; a guessed one cannot reach another player's bet,
+    and a same-user collision needs a millisecond tie *and* a 52-bit match.
+  - **Confetti geometry** (`BettingCard.tsx`) — §11, UI-only.
+- **Fix: removed entirely**, on the owner's decision — the feature was not worth
+  the surface. Routes, repository functions, both tables, both panel screens,
+  every nav entry, the `GIFT_CODE` bonus record type and every doc reference are
+  gone. `check:ui-coverage` and `check:dead-code` prove nothing is left pointing
+  at any of it.
+- **What deliberately stays:** `bonus_grants` rows with `ref_model = 'GiftCode'`.
+  That is money that actually moved, and the ledger is append-only (§19) — a
+  payout is not unmade by retiring the thing that triggered it. Those rows read
+  correctly without the tables, because a grant carries its own `kind` and
+  `amount_paise` and never joins back to the code.
+- **The `GIFT_CODE` record type was removed too, and that is the load-bearing
+  part of the cleanup.** A mapped record type with no route behind it is a pool
+  the treasury can be asked to fund for a reason nobody can trigger — the same
+  defect as an admin-editable field with no consumer (§3). The test that used
+  `GIFT_CODE` as its example of a *mapped* type now asserts it is `undefined`.
+- **Gate possible:** yes, and it is worth having — fail on `Math.random()` in any
+  panel outside an allow-list of presentational files. Queued in §6, because the
+  allow-list needs stated reasons per entry rather than being a silencer (§22.1).
+
 ---
 
 ## 5. Derived coverage — regenerated, never typed
@@ -1149,9 +1282,9 @@ Two things make it more than bookkeeping:
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 316 |
+| Route declarations in `backend/**` | 310 |
 | Reachable with **no auth middleware** | 40 |
-| Gated `isAdminOrSubAdmin` with **no permission key** | 47 |
+| Gated `isAdminOrSubAdmin` with **no permission key** | 44 |
 | — of those, **writes** (non-GET) | 0 |
 | Carrying an explicit permission key | 22 |
 
@@ -1213,16 +1346,16 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 395 |
-| Parameters only (safe by construction) | 253 |
-| Interpolating into statement text (each needs a reading) | 142 |
+| `pgQuery` call sites | 391 |
+| Parameters only (safe by construction) | 250 |
+| Interpolating into statement text (each needs a reading) | 141 |
 
 ### Panel injection sinks
 
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
-| `user-panel` | 90 | 0 | 0 |
-| `admin-panel` | 90 | 0 | 0 |
+| `user-panel` | 89 | 0 | 0 |
+| `admin-panel` | 89 | 0 | 0 |
 | `merchant-panel` | 38 | 0 | 0 |
 
 <!-- END GENERATED -->
@@ -1235,18 +1368,19 @@ In the order it should be worked.
 
 | # | Class | §2 | Why now |
 |---|---|---|---|
+| 0 | Gate for the F-014 shape | §4 | Fail on `Math.random()` in a panel outside an allow-list of presentational files, each entry carrying a stated reason. |
 | 1 | Client-side injection (XSS) | 2.14 | Chat, tickets and admin announcements all round-trip through panels; a stored XSS in the admin panel runs with an admin session. |
 | 2 | File upload | 2.15 | Payment proofs are evidence in money disputes. |
 | 3 | Secrets in responses | 2.16 | A spread defeats a key scan; needs a real sweep, not spot checks. |
 | 4 | Transport, cookies, headers | 2.17 | `SameSite` is most of the CSRF defence for the cookie-auth panel. |
 | 5 | Public-route data leakage | 2.18 | Leaderboards and winners are designed to expose players — how much? |
 | 6 | Admin 2FA enforcement | 2.19 | |
-| 7 | Identifier predictability | 2.20 | Sets the cost of every other flaw. |
+| 7 | ~~Identifier predictability~~ | 2.20 | **Done 2026-09-10** — clear except F-014; the per-identifier table is in §2.20. |
 | 8 | Money-path concurrency | 2.6 | Partial today; deserves a dedicated pass. |
 | 9 | Gate for F-001 | §4 | Closes the class, not the instance. |
 | 10 | Gate for the F-003 shape | §4 | A CHECK a handler can violate after a commit. |
 | 11 | Gate for the F-006 shape | §4 | Any `*_url` / `*_link` written from `req.body` must pass through `shared/storedUrl.js`. |
-| 12 | Sweep F-007 | §4 | Which other suites only pass in a particular order. |
+| 12 | Sweep F-007 | §4 | **Swept 2026-09-10** — two instances found and fixed (see F-007). `cashLinkRoutes.test.js` itself still open. The method that finds these is running the suite TWICE; a single green run cannot see the class. |
 | 13 | ~~Finish F-008~~ | §4 | **Done 2026-09-10.** All 21 remaining sites converted; the sweep returns zero. |
 | 14 | ~~Gate for the F-008 **and F-013** shapes~~ | §4 | **Done 2026-09-10** — `check:error-responses`, one gate for both forms, proved against all four cases including the deleted-log case. |
 | 14b | ~~Decide F-013~~ | §4 | **Done 2026-09-10.** All 30 sites through `respondError`; the panel-read fields ride the refusal branch by name. |

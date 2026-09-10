@@ -11,7 +11,7 @@ import {
   UserCheck, FileText, Palette, Settings, ChevronLeft, ChevronRight,
   TrendingUp, ShieldCheck, HelpCircle, Image as ImageIcon,
   MessageCircle, Shield, History, Scale, Upload, Search, Sun, Moon, Bell,
-  Zap, Gift, SlidersHorizontal, Trophy, Star, Gamepad2, Bot, FileSpreadsheet, Share2,
+  Zap, SlidersHorizontal, Trophy, Star, Gamepad2, Bot, FileSpreadsheet, Share2,
   type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag, ToggleLeft, Banknote, Hourglass,
   Coins, Ghost} from 'lucide-react';
 import { useAuthStore } from '../services/auth';
@@ -101,7 +101,6 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/chat-management',          icon: MessageCircle, label: 'Chat & Support',  title: 'Chat & Support',  sub: 'Public chat moderation & support console', permission: 'canModerateChatPublic' },
     { path: '/support-assistant',        icon: BookOpenCheck, label: 'Support Assistant', title: 'Support Assistant', sub: 'Knowledge base the assistant answers players from', adminOnly: true },
     { path: '/promotions/announcements', icon: Bell,          label: 'Announcements',   title: 'Announcements',   sub: 'Platform-wide notices & popups', permission: 'canManageContent' },
-    { path: '/promotions/gift-codes',    icon: Gift,          label: 'Gift Codes',      title: 'Gift Codes',      sub: 'Promo & gift code campaigns', permission: 'canManageContent' },
   ] },
   { key: 'content', label: 'Content & Branding', items: [
     { path: '/content/faq',     icon: HelpCircle,    label: 'FAQ Manager',      title: 'FAQ Manager',     sub: 'Help centre questions & categories', permission: 'canManageContent' },

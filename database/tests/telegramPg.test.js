@@ -483,6 +483,13 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
 
   describe('the sweep reclaims space and decides nothing', () => {
     it('removes only expired rows, and counts what it actually deleted', async () => {
+      // Drain first. These counts are EXACT, and `sweepExpired` deletes across
+      // the whole table — so without this the assertion is a global invariant
+      // over a shared database, which trap §20.10 says never to write. It found
+      // its own instance: a session another file left live with a 600-second
+      // TTL is expired by the next run, and the count came back 16.
+      await sweepExpired();
+
       await createUser({ userId: 'u-1', username: 'a', mobile: '9990000001' });
       await upsertPendingLink({ telegramUserId: 't-live' });
       await upsertPendingLink({ telegramUserId: 't-dead' });
@@ -525,6 +532,11 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
       // reporting a total it accumulated.
       expect(await sweepExpired())
         .toEqual({ pendingLinks: 0, loginTokens: 0, loginCodes: 0, recoverySessions: 0 });
+
+      // The live row this test made is removed rather than left to expire: see
+      // the drain above for why a leftover here comes back as somebody else's
+      // failure ten minutes later.
+      await pgQuery("DELETE FROM telegram_recovery_sessions WHERE telegram_user_id = 't-rec-live'");
     });
   });
 });

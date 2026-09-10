@@ -39,7 +39,6 @@ import { AppAssetsPage } from './Pages/AppAssets/AppAssetsPage';
 // UTR REMOVED: import { UTRManager } from './Pages/Finance/UTRManager';
 // ── NEW FEATURE PAGES ──────────────────────────────────────────────────────
 import { PaymentControlCenter } from './Pages/Payment/PaymentControlCenter';
-import { GiftCodes }      from './Pages/Promotions/GiftCodes';
 import { AnnouncementsPage } from './Pages/Promotions/AnnouncementsPage';
 import { BalanceAdjustment } from './Pages/Users/BalanceAdjustment';
 import { GameProviders }           from './Pages/GameProviders/GameProviders';
@@ -406,11 +405,6 @@ const App: React.FC = () => {
         } />
 
         {/* ── PROMOTIONS — canManageContent sub-admins can manage these ── */}
-        <Route path="/promotions/gift-codes" element={
-          <PermRoute permission="canManageContent">
-            <Layout><GiftCodes /></Layout>
-          </PermRoute>
-        } />
         <Route path="/promotions/announcements" element={
           <PermRoute permission="canManageContent">
             <Layout><AnnouncementsPage /></Layout>

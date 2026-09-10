@@ -71,7 +71,7 @@ API directly:
 | `GET /api/admin/merchant-platform/:merchantId/wallet-ledger` | A merchant's money movements |
 | `GET /api/admin/transactions` · `/system/config` | Platform-wide ledger and configuration |
 | `GET /api/admin/analytics/*` (5) · `/operations/*` (2) · `/deposit-policy/*` · `/payment-mode/*` · `/merchant-commission-policy/*` | Policy, margins, operational posture |
-| `GET /api/admin/giftcodes/:code/redemptions` · `/giftcodes/unpaid` | Promotion liabilities |
+| ~~`GET /api/admin/giftcodes/:code/redemptions` · `/giftcodes/unpaid`~~ | Promotion liabilities — **routes removed 2026-09-10 with the gift-code feature (F-014)** |
 
 **Not yet decided:** which key each route should carry. That is an owner
 decision about the role model, not a mechanical fix — `canViewAnalytics` and

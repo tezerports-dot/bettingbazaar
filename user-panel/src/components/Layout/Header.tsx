@@ -41,7 +41,6 @@ const menuSections: MenuSection[] = [
     auth: true,
     items: [
       { label: 'Wallet',         icon: '💳', path: '/wallet',    requireAuth: true },
-      { label: 'Gift Code',      icon: '🎁', path: '/gift-code', requireAuth: true },
     ],
   },
   {

@@ -294,7 +294,7 @@ describePg('the domains written from scratch', () => {
   });
 
   // ══════════════════════════════════════════════════════════════════════════
-  describe('engagement — check-ins, gift codes, notifications', () => {
+  describe('engagement — check-ins, notifications', () => {
     it('claims a check-in ONCE a day, however many taps arrive', async () => {
       const user = `u-${ID}`;
       const claims = await Promise.all(
@@ -324,40 +324,6 @@ describePg('the domains written from scratch', () => {
       const after = await engagement.claimCheckIn(user, { rewardRupees: 5 });
       expect(after.checkIn.currentStreak).toBe(1);
       expect(after.checkIn.longestStreak).toBe(2);
-    });
-
-    it('pays a single-use gift code exactly ONCE under a storm', async () => {
-      // The document model's check-then-increment let two concurrent
-      // redemptions both pass, and a single-use code paid out twice.
-      await engagement.createGiftCode({ code: `GC${ID}`, amountRupees: 100, maxUses: 1 });
-      const attempts = await Promise.all(
-        Array.from({ length: 15 }, (_, i) => engagement.redeemGiftCode(`GC${ID}`, `u-${ID}-${i}`)),
-      );
-      expect(attempts.filter((a) => a.ok)).toHaveLength(1);
-      expect((await engagement.getGiftCode(`GC${ID}`)).usedCount).toBe(1);
-    });
-
-    it('lets one player redeem a multi-use code only once', async () => {
-      await engagement.createGiftCode({ code: `GM${ID}`, amountRupees: 50, maxUses: 5 });
-      const first = await engagement.redeemGiftCode(`GM${ID}`, `u-${ID}`);
-      expect(first.ok).toBe(true);
-      expect(await engagement.redeemGiftCode(`GM${ID}`, `u-${ID}`))
-        .toMatchObject({ ok: false, reason: 'ALREADY_REDEEMED' });
-      // …and a failed attempt does not consume a use.
-      expect((await engagement.getGiftCode(`GM${ID}`)).usedCount).toBe(1);
-    });
-
-    it('distinguishes why a code was refused', async () => {
-      expect(await engagement.redeemGiftCode(`NOPE${ID}`, 'u1')).toMatchObject({ reason: 'NOT_FOUND' });
-
-      await engagement.createGiftCode({
-        code: `GX${ID}`, amountRupees: 10, expiresAt: new Date(Date.now() - 1000),
-      });
-      expect(await engagement.redeemGiftCode(`GX${ID}`, 'u1')).toMatchObject({ reason: 'EXPIRED' });
-
-      await engagement.createGiftCode({ code: `GI${ID}`, amountRupees: 10 });
-      await engagement.setGiftCodeActive(`GI${ID}`, false);
-      expect(await engagement.redeemGiftCode(`GI${ID}`, 'u1')).toMatchObject({ reason: 'INACTIVE' });
     });
 
     it('keeps a bonus record nothing can edit', async () => {

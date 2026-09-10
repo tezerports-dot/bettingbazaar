@@ -55,13 +55,13 @@ all they may be deletion candidates instead.
 
 | Route | Why it is uncertain |
 |---|---|
-| ⚠ `/admin/giftcodes` | The Gift Codes screen is `canManageContent`, but a gift code is money leaving the platform, not content. `canManageContent` is what the panel says; I would not choose it. |
-| ⚠ `/admin/giftcodes/:code/redemptions` | Same, plus it lists **who redeemed** — player identity attached to a payout. |
-| ⚠ `/admin/giftcodes/unpaid` | Same, and it is an outstanding-liability figure. |
 
-**My recommendation for C:** a gift code is a payout instrument. `canManageContent`
-lets whoever edits FAQ pages read who was paid and what is owed. I would give
-these `canViewTransactions` at minimum, or full admin. Your call.
+**C is resolved, not decided.** All three routes were gift-code routes, and
+the gift-code feature was REMOVED on 2026-09-10 (F-014). The question they
+raised — a payout instrument sitting behind `canManageContent`, so whoever
+edits FAQ pages can read who was paid — no longer has a subject. It is kept
+here because the shape recurs: when a new admin screen moves money, its
+permission key is a money key, whatever the nav group it lands in.
 
 ---
 

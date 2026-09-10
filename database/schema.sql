@@ -2035,37 +2035,6 @@ CREATE TABLE IF NOT EXISTS check_ins (
   CONSTRAINT check_ins_longest_is_high_water CHECK (longest_streak >= current_streak)
 );
 
-CREATE TABLE IF NOT EXISTS gift_codes (
-  code        TEXT PRIMARY KEY,
-  amount_paise BIGINT NOT NULL,
-  bonus_type  TEXT NOT NULL DEFAULT 'DEPOSIT',
-  max_uses    INTEGER NOT NULL DEFAULT 1,
-  used_count  INTEGER NOT NULL DEFAULT 0,
-  expires_at  TIMESTAMPTZ,
-  is_active   BOOLEAN NOT NULL DEFAULT TRUE,
-  note        TEXT NOT NULL DEFAULT '',
-  created_by  TEXT,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT gift_codes_amount_positive CHECK (amount_paise > 0),
-  -- The redemption cap is a property of the ROW. A check-then-increment in the
-  -- application lets two concurrent redemptions both read the same used_count
-  -- and both pass, which is how a single-use code pays out twice.
-  CONSTRAINT gift_codes_within_cap CHECK (used_count >= 0 AND used_count <= max_uses),
-  CONSTRAINT gift_codes_uses_positive CHECK (max_uses > 0)
-);
-
-CREATE TABLE IF NOT EXISTS gift_code_redemptions (
-  id          BIGSERIAL PRIMARY KEY,
-  code        TEXT NOT NULL REFERENCES gift_codes (code) ON DELETE CASCADE,
-  user_id     TEXT NOT NULL,
-  amount_paise BIGINT NOT NULL,
-  redeemed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  -- One redemption per player per code, decided by the index rather than by a
-  -- pre-read two concurrent requests can both pass.
-  CONSTRAINT gift_code_redemptions_once UNIQUE (code, user_id)
-);
-CREATE INDEX IF NOT EXISTS gift_code_redemptions_user_idx ON gift_code_redemptions (user_id, redeemed_at DESC);
-
 -- Every bonus a player was granted, and why. Append-only: this is the record a
 -- player disputes against.
 CREATE TABLE IF NOT EXISTS bonus_records (
@@ -3613,3 +3582,25 @@ CREATE INDEX IF NOT EXISTS merchants_usdt_bep20_live_idx
 --
 -- The checks themselves are in `bb_forbid_order_mode_change()` above, with the
 -- rail and the chain.
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Gift codes, DROPPED 2026-09-10 with the feature (F-014).
+--
+-- The code was a BEARER CREDENTIAL — presenting the string credited real money
+-- from the promotional pool — and it was minted client-side by the admin
+-- panel's `Math.random().toString(36)`, which is neither a CSPRNG nor a value
+-- this platform owned (§2: one owner per value, and a security value's owner is
+-- never a panel). Redemption was authenticated but carried no route-level rate
+-- limit and answered NOT_FOUND distinguishably from every other refusal, which
+-- is an enumeration oracle over a space nothing bounded.
+--
+-- Removed rather than hardened, on the owner's decision: the feature was not
+-- worth the surface.
+--
+-- What deliberately STAYS: `bonus_grants` rows with `ref_model = 'GiftCode'`.
+-- Those are money that actually moved, and the ledger is append-only (§19) — a
+-- payout is not unmade by retiring the thing that triggered it. They read
+-- correctly without these tables, because a grant row carries its own `kind`
+-- and `amount_paise` and never joins back to the code.
+DROP TABLE IF EXISTS gift_code_redemptions;
+DROP TABLE IF EXISTS gift_codes;

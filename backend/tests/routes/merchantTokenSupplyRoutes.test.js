@@ -26,13 +26,12 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg } from '#db/client.js';
 import { getTokenOrder } from '#db/repositories/paymentConfig.js';
 import { mountRouter, merchantActor, as, request } from './_harness.js';
+import { randomBytes } from 'node:crypto';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
 describePg('merchant token supply routes', () => {
   let app;
-  const RUN = Math.random().toString(36).slice(2, 8);
-  let seq = 0;
 
   beforeAll(async () => {
     await applySchema();
@@ -45,15 +44,24 @@ describePg('merchant token supply routes', () => {
   /**
    * A 64-hex-character transaction, unique per call.
    *
-   * Every one has to be different: the registry is the point, and a constant
-   * would collide with the row a PREVIOUS RUN of this file left behind. The
-   * database is shared and never reset between files (trap 10).
+   * Every one has to be different: the registry is the point, and `utr_registry`
+   * keeps a reference for GOOD (§27), so a hash this file has already used can
+   * never be used again — on any database it has ever run against. The database
+   * is shared and never reset between files (trap 10).
+   *
+   * ── Why this is `randomBytes` and not a filtered `RUN` ─────────────────────
+   * It used to be `${RUN}${seq}`.replace(/[^0-9a-f]/gi, '') padded with 'a'.
+   * `RUN` is `Math.random().toString(36)` — BASE 36 — and that character class
+   * strips 20 of its 36 symbols. About 45% of runs were left with three
+   * characters or fewer of real uniqueness and about 3% with one or none, at
+   * which point the "unique" hash is a run of 'a's identical to the one an
+   * earlier degenerate run already claimed. The file then fails with a 409 on a
+   * database it had passed against the day before.
+   *
+   * The safeguard was defeated by its own sanitiser. Generating hex rather than
+   * filtering down to it removes the failure mode instead of narrowing it.
    */
-  const txHash = () => {
-    seq += 1;
-    const tail = `${RUN}${seq}`.replace(/[^0-9a-f]/gi, '');
-    return (tail + 'a'.repeat(64)).slice(0, 64);
-  };
+  const txHash = () => randomBytes(32).toString('hex');
 
   // The quote figures are NOT asserted as literals. `usdtPricing` is a shared
   // configuration document, so pinning a number here would make this file

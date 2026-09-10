@@ -29,7 +29,25 @@ describePg('telegram recovery sessions', () => {
   const tgId = () => `rec-${RUN}-${(seq += 1)}`;
 
   beforeAll(async () => { await applySchema(); }, 60_000);
-  afterAll(async () => { await closePg(); });
+
+  /**
+   * Every row this file creates is removed, including the ones a test
+   * deliberately leaves live.
+   *
+   * Not tidiness — trap §20.10. The test database is NOT reset between runs, so
+   * a live session with a 600-second TTL is an EXPIRED session ten minutes
+   * later, and the retention count in `telegramPg.test.js` then reports a
+   * deletion nothing in that test created. Four leftovers a run had accumulated
+   * to sixteen before this was caught. `tgId()` namespaces every id to this
+   * run, so the prefix delete cannot touch another file's rows.
+   */
+  afterAll(async () => {
+    await pgQuery(
+      "DELETE FROM telegram_recovery_sessions WHERE telegram_user_id LIKE $1",
+      [`rec-${RUN}-%`],
+    );
+    await closePg();
+  });
 
   it('is readable by a DIFFERENT caller than the one that wrote it', async () => {
     // The whole point. A Map is readable only by the process that wrote it;

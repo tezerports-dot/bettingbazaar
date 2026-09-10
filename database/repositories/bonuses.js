@@ -41,7 +41,6 @@ import { grantBonus, clawBackBonus, getGrant, BONUS_KIND } from './bonuses.core.
  * did not. An absent type is a refusal, not a default — see `grant`.
  */
 export const KIND_FROM_RECORD_TYPE = Object.freeze({
-  GIFT_CODE:           'PROMO',
   CHECK_IN:            'PROMO',
   LEVEL_UP:            'PROMO',
   FIRST_DEPOSIT:       'PROMO',
