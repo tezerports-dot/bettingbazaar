@@ -1308,8 +1308,8 @@ owner is never a panel. Every other identifier on this platform comes from
   allow-list needs stated reasons per entry rather than being a silencer (§22.1).
 
 ### F-015 — the deposit that cannot be credited tells the platform nothing
-`OPEN` · low-medium · observability on the money path · found 2026-09-10 while
-examining class 2.6
+`FIXED` · low-medium · observability on the money path · found and fixed
+2026-09-10 while examining class 2.6
 
 ```js
 // backend/domains/payment/depositCredit.js:116
@@ -1366,9 +1366,82 @@ severity split between them matters:
   `grep -rn "reason: '" backend/domains/payment backend/domains/merchant --include=*.js | grep -v /tests/`
 - **Swept:** not yet — the question is which other refusals on a money path are
   returned and never reported. Queued in §6.
-- **Not fixed:** it is a judgement call about what the platform should do when a
-  paid deposit cannot complete — alert only, or alert plus tell the player — and
-  that is the owner's, not mine.
+- **Fixed: alert AND tell the player** (owner's decision, 2026-09-10).
+  `reportUncreditableDeposit()` in `depositCredit.js`, so both call sites get it
+  from the one place the money decision already lives.
+- **Three choices in it that a later reader should not undo:**
+  1. **Nothing in the reporting may throw.** It runs immediately before a
+     refusal the caller must still return; an exception here would turn a clean
+     400 into a 500 and lose the reason the caller branches on. Reporting a
+     problem must never create a worse one.
+  2. **The alert key is per MERCHANT** — not global, not per order. `sendAlert`
+     holds a 10-minute cooldown per key: a global key would swallow a second
+     merchant running dry, a per-order key would defeat the cooldown and page on
+     every retry. One merchant being short IS one incident.
+  3. **`console.error` as well as the alert**, because `sendAlert` returns
+     silently when no webhook is configured — by design — and a deployment
+     without one must still leave the operator a record, or the whole fix is
+     conditional on a setting nobody may have set.
+- **What the player is told, and what they are not.** That we have their payment,
+  that it is being completed, and that a dispute is the route out if it does not
+  clear. Not the merchant, not "out of tokens": §24 points both ways, and telling
+  a player their counterparty is short invites them to think the money is gone
+  when the order is retryable and the payment is claimed.
+- **Tests:** `backend/tests/unit/depositUncreditableReport.test.js`, six, and
+  mutation-proven — removing the reporting call fails 3, and keying the alert per
+  ORDER instead of per merchant fails 1. It also pins the mirror: a healthy
+  deposit reports NOTHING, because an alert on a working path trains whoever
+  reads them to ignore the channel.
+
+### F-016 — a UPI merchant cannot set the QR players are meant to scan
+`OPEN` · low security / medium functional · shipped-means-reachable (§28) ·
+found 2026-09-10 verifying Mode A / Mode B completeness
+
+Two halves that only bite together, which is why neither gate saw it:
+
+1. `POST /api/merchant/qr/upload-url` is a complete presigned-upload path —
+   MIME allowlist, 5 MB cap, `category: 'merchant-qr'` — and **no screen calls
+   it.** It is on `check:ui-coverage --unused`.
+2. `ProfileSettings.tsx` offers a **plain text box**, "Payment QR image URL",
+   placeholder `https://…`, that PUTs whatever is typed.
+
+Separately each looks fine. Together they are a dead end, because F-006's fix
+correctly bound the stored value to the platform's own CDN
+(`assertCdnAssetUrl`) — so the text box now rejects every URL a merchant could
+type, and the only thing that mints an acceptable URL is the route with no UI.
+The refusal even reads *"A QR code must be uploaded here first"*, and there is
+nowhere to upload it.
+
+**The code says so itself.** The comment above the validation reads: *"An upload
+route exists (POST /api/merchant/qr/upload-url) but nothing bound the stored
+value to it, so the upload was a suggestion."* The fix bound the value and left
+the suggestion unbuilt.
+
+**Severity, stated honestly.** Mode A still works: the player is given
+`payTo.paymentLink`, the `upi://pay` intent built from the merchant's UPI ID, so
+they can still pay. What is lost is the scannable image the design intends —
+degraded, not broken. It is recorded as *functional* rather than a hole because
+nothing is exposed; the merchant simply cannot complete their own profile.
+
+**Why no gate caught it.** `check:ui-coverage` fails on a panel call reaching no
+route — the reverse direction. A route no panel calls is `--unused`, which is
+triage and not failure, correctly, because webhooks and SSE live there. This is
+the case §28.2 names: *"either work someone forgot to finish or code to delete."*
+
+- **Shape:** a stored value constrained to something only an unreachable route
+  can produce.
+- **Sweep query:** compare `check:ui-coverage --unused` against
+  `services/cdn.service.js`'s upload categories.
+- **Swept: yes — this is the only one.** The other three categories are all
+  reachable: CDM receipt and reject-proof both go through
+  `merchant-panel/src/constants.ts` with a working presigned-PUT helper the QR
+  screen could reuse as-is, and branding uploads through the admin panel.
+- **Also on `--unused`, and a different question:**
+  `POST /api/payment/deposit/:orderId/confirm` is a second deposit-confirm route
+  (`paymentActorAuth`) that nothing calls — the merchant panel uses
+  `POST /api/merchant/confirm/:id`. Both go through `moveDepositMoney`, so the
+  MONEY has one owner and §5 is satisfied; what is left is an unreachable route.
+  Delete or wire, not both.
 
 ---
 
@@ -1471,7 +1544,8 @@ In the order it should be worked.
 
 | # | Class | §2 | Why now |
 |---|---|---|---|
-| 0 | **Decide F-015** | §4 | A paid deposit that cannot be credited reports to nobody but the merchant. Alert only, or alert plus tell the player? Plus the sweep for other silently-returned money-path refusals. |
+| 0 | ~~Decide F-015~~ | §4 | **Done 2026-09-10** — alert plus player notification. The sweep for other silently-returned money-path refusals is still open. |
+| 0 | **Decide F-016** | §4 | A UPI merchant cannot set their QR: the upload route has no UI and the text box now rejects everything typeable. Wire the existing presigned helper, or drop the field. |
 | 0 | Gate for the F-014 shape | §4 | Fail on `Math.random()` in a panel outside an allow-list of presentational files, each entry carrying a stated reason. |
 | 1 | Client-side injection (XSS) | 2.14 | Chat, tickets and admin announcements all round-trip through panels; a stored XSS in the admin panel runs with an admin session. |
 | 2 | File upload | 2.15 | Payment proofs are evidence in money disputes. |

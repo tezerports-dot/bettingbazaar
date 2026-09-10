@@ -70,6 +70,94 @@ export function depositCreditSplit(order) {
 }
 
 /**
+ * A deposit that cannot be credited is REPORTED — F-015.
+ *
+ * ── Why this exists ─────────────────────────────────────────────────────────
+ * `{ ok: false, reason: 'merchant_insufficient' }` was returned and nothing in
+ * the platform read it. Both call sites answered 400 and did nothing else: no
+ * alert, no notification, not one log line.
+ *
+ * The money was never at risk — the refusal happens BEFORE the order advances,
+ * every movement is keyed on the order id, and the order stays PAID and
+ * retryable. What was wrong is who found out. `PAID` means the player has
+ * ALREADY SENT REAL MONEY and submitted a UTR, and at that moment the merchant
+ * was told (they see the 400 and can top up), while the player saw an order
+ * that simply stopped and the platform learned nothing at all. `expireOrders`
+ * deliberately does not cover PAID — auto-cancelling a paid order would strand
+ * the payment — so nothing swept it either, and the only route out was the
+ * player noticing and pressing dispute.
+ *
+ * The argument for fixing it was eight lines below the call site: the sibling
+ * branch, for the rarer and less consequential case of a refused transition,
+ * carries the comment "It must be loud rather than silent" and logs. Within one
+ * function the exotic failure shouted and the ordinary one was quiet.
+ *
+ * ── How an order reaches a merchant who cannot fund it ───────────────────────
+ * Assignment is a check-then-act — `inventoryRefusal()` reads the balance and
+ * the caller assigns in a separate statement — but `maxConcurrentDepositOrders`
+ * defaults to 1, so that race needs two assignments in the same instant. The
+ * ordinary path needs no race at all: the balance falls between assignment and
+ * confirmation because the merchant funded a withdrawal, an admin deducted, or
+ * a token order settled.
+ *
+ * ── Three deliberate choices ────────────────────────────────────────────────
+ * 1. **Nothing here may throw.** This runs on the money path, immediately
+ *    before a refusal the caller must still return. A reporting failure that
+ *    became an exception would turn a clean 400 into a 500 and lose the reason
+ *    the caller needs — reporting a problem must never create a worse one.
+ * 2. **The alert key is per MERCHANT, not global and not per order.**
+ *    `sendAlert` holds a 10-minute cooldown per key. A global key would swallow
+ *    a second merchant running dry; a per-order key would defeat the cooldown
+ *    entirely and page on every retry. One merchant being short IS one
+ *    incident, however many orders hit it.
+ * 3. **`console.error` as well as the alert**, because `sendAlert` returns
+ *    silently when no webhook is configured — by design — and a deployment
+ *    without one must still leave the operator a record.
+ */
+async function reportUncreditableDeposit(order, total) {
+  try {
+    console.error(
+      `[deposit-credit] ${order.orderId}: merchant ${order.merchantId} cannot cover ${total} tokens.`
+      + ' The player has already paid; this order stays PAID and retryable.',
+    );
+
+    const { sendAlert } = await import('../../services/alerting.service.js');
+    // Not awaited into the money path's latency: fire it and let it settle.
+    sendAlert(
+      `deposit-uncreditable-${order.merchantId}`,
+      'A paid deposit cannot be credited — merchant is out of tokens',
+      {
+        merchantId: String(order.merchantId),
+        orderId: String(order.orderId),
+        tokensRequired: total,
+        note: 'The player has already sent payment. Top the merchant up or reassign.',
+      },
+    ).catch(() => { /* alerting is best-effort by design */ });
+
+    // Through the one owner (§2). Never write a notification row directly.
+    const { notify } = await import('../communication/communication.service.js');
+    await notify({
+      userId: order.userId,
+      type: 'WARNING',
+      title: 'Your deposit is taking longer than usual',
+      // Says what is true and what happens next, and names neither the merchant
+      // nor the reason: who the player paid is not theirs to have (§24), and
+      // "the merchant is out of tokens" invites them to think their money is
+      // gone. It is not — the order is retryable and the payment is claimed.
+      message: 'We have your payment and your order is being completed. '
+        + 'This can take a little longer than usual. If it has not cleared shortly, '
+        + 'raise a dispute from the order and our team will settle it.',
+      relatedId: String(order.orderId),
+      relatedType: 'PaymentOrder',
+    });
+  } catch (e) {
+    // Reached only if the reporting itself breaks. Logged, never rethrown — see
+    // choice 1 above.
+    console.error(`[deposit-credit] reporting failed for ${order?.orderId}:`, e?.message || e);
+  }
+}
+
+/**
  * Move the money for a confirmed deposit. THE one place it happens.
  *
  * ── Why this is a function and not two copies ───────────────────────────────
@@ -113,7 +201,10 @@ export async function moveDepositMoney(order, {
     refModel: 'PaymentOrder', refId: order.orderId,
     txId: `mw_dep_deduct_${order.orderId}`,
   });
-  if (!debited) return { ok: false, reason: 'merchant_insufficient', depositCredit, reserveCredit, total };
+  if (!debited) {
+    await reportUncreditableDeposit(order, total);
+    return { ok: false, reason: 'merchant_insufficient', depositCredit, reserveCredit, total };
+  }
 
   // Both keyed on the ORDER ID, not on a message. A sentence here would make a
   // second key for the same deposit and open the idempotency gate.
