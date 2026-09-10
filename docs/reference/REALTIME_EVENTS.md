@@ -71,7 +71,6 @@ reuse a name on a different transport for a different meaning.
 | `queue_order_update` | SSE | server→admin | `disputeResolution.admin.routes.js` and others |
 | `queue_snapshot` | SSE | server→admin | on connect to the admin stream |
 | `merchant_orders_snapshot` | SSE | server→merchant | on connect to the merchant stream |
-| `bulk_payout_completed` | SSE | server→admin | `merchant.routes.js` |
 
 ### Merchant lifecycle
 

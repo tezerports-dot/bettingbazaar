@@ -111,8 +111,6 @@ export function toOrder(r) {
     cancelReason: r.cancel_reason, cancelledAt: r.cancelled_at,
     warningIssued: r.warning_issued,
     paidAt: r.paid_at, completedAt: r.completed_at, expiresAt: r.expires_at,
-    bulkPayoutDate: r.bulk_payout_date, bulkPaidAt: r.bulk_paid_at,
-    bulkPayoutBatch: r.bulk_payout_batch,
 
     // The tamper-evidence tag, READ-ONLY. It is written once by `openOrder`
     // with the row and never updated, and `SETTABLE` below deliberately does
@@ -254,8 +252,6 @@ const SETTABLE = Object.freeze({
   cancelReason: 'cancel_reason', cancelledAt: 'cancelled_at',
   warningIssued: 'warning_issued',
   paidAt: 'paid_at', completedAt: 'completed_at', expiresAt: 'expires_at',
-  bulkPayoutDate: 'bulk_payout_date', bulkPaidAt: 'bulk_paid_at',
-  bulkPayoutBatch: 'bulk_payout_batch',
 
   // The label grouping the siblings of one split withdrawal. Settable because
   // it is written with the row like any other detail; it decides nothing.
@@ -1159,50 +1155,12 @@ export async function releaseUtr(utr, orderId) {
   return rowCount > 0;
 }
 
-/**
- * A merchant's withdrawals scheduled for one day's bulk payout.
- *
- * `bulk_payout_date` is a DATE, so the window is a day rather than a
- * timestamp range that has to be built by the caller — three call sites were
- * each computing their own IST midnight, and a difference of one in any of them
- * would have paid a different set of orders.
+/*
+ * istToday() and bulkPayoutBatch() were REMOVED 2026-09-10, with the merchant
+ * bulk-payout routes that were their only callers. Nothing in production ever
+ * wrote `bulk_payout_date`, so the batch query they served returned an empty
+ * set on every day the platform has run.
  */
-/**
- * Today's payout date, as the DATABASE reckons it.
- *
- * `bulk_payout_date` is a DATE in IST, and three route handlers each built
- * their own IST midnight from `new Date()`. A server running in UTC is five and
- * a half hours behind, so between 18:30 and midnight UTC each of them could
- * disagree about which day it is — and a batch listed under one date and paid
- * under another pays a different set of orders than the merchant reviewed.
- *
- * There is one owner of that value now, and it is the same clock the column is
- * compared against.
- */
-export async function istToday() {
-  const { rows } = await pgQuery(
-    "SELECT CAST(now() AT TIME ZONE 'Asia/Kolkata' AS DATE) AS today", [], 'order_ist_today',
-  );
-  // A DATE comes back as a JS Date at local midnight; the ISO date part is the
-  // day itself, free of whatever offset the app server happens to run in.
-  const d = rows[0].today;
-  return d instanceof Date
-    ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-    : String(d);
-}
-
-export async function bulkPayoutBatch({ merchantId, payoutDate }) {
-  const { rows } = await pgQuery(
-    `SELECT * FROM order_states
-      WHERE merchant_id = $1
-        AND order_type = 'WITHDRAWAL'
-        AND state IN ('PAID', 'COMPLETED', 'ASSIGNED', 'PROCESSING')
-        AND bulk_payout_date = $2::date
-      ORDER BY created_at ASC`,
-    [String(merchantId), payoutDate], 'order_bulk_batch',
-  );
-  return rows.map(toOrder);
-}
 
 /*
  * bulkCompleteWithdrawals was REMOVED 2026-09-08.

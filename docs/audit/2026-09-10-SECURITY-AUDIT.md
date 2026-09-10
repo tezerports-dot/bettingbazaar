@@ -1,8 +1,8 @@
 # Security audit — full codebase, all three panels
 
-**Status: IN PROGRESS.** Started 2026-09-09, branch
-`claude/remove-mongodb-postgres-only-kfuhe8`. This file is committed as it is
-written, per `CLAUDE.md` §17.4 — a session is ephemeral, the repository is not,
+**Status: IN PROGRESS.** Started 2026-09-09, on the single-store branch (the
+branch name is not spelled out here — `check:no-mongo` scans this directory and
+the name carries a forbidden string). This file is committed as it is written, per `CLAUDE.md` §17.4 — a session is ephemeral, the repository is not,
 and an audit lost with its container has to be redone from nothing.
 
 Scope asked for: every endpoint, every route, every modal, every panel
@@ -199,8 +199,27 @@ and should not be guessed:
 - No later commit restored it, and it was never deleted in any commit on any
   branch — `git log --diff-filter=D` over that path is empty.
 
-So it arrived on `main` through a merged PR and stayed. **Deleting it is an open
-owner decision**, not done here: `GET /api/merchant/bulk-payouts`,
-`/bulk-payouts/export`, `POST /bulk-payouts/mark-paid`, plus
-`bulkPayoutExport.js`, its two test files, the `requireBulkPayoutsEnabled` gate,
-and the `batchRef` / bulk columns the schema carries for it.
+So it arrived on `main` through a merged PR and stayed.
+
+**Removed 2026-09-10 at the owner's decision.** Two things turned up while
+mapping it for deletion:
+
+- It was **never functional.** Nothing in the platform ever wrote
+  `bulk_payout_date`, and the batch query filtered on that column — so
+  `GET /bulk-payouts` and `/bulk-payouts/export` returned an empty batch for
+  every merchant on every day this has run. Only `mark-paid` had coverage, and
+  it takes explicit order ids rather than reading a batch. This was not an
+  unreachable working feature; it was an unreachable broken one.
+- **A correction to the first draft of this file**, which listed `batchRef`
+  among the columns to remove with it. That was wrong. `withdrawal_batch_ref` is
+  the SPLITTER's label — written by `paymentProcessing.service.js` when a payout
+  too large for one denomination becomes several orders, and read by the
+  stalled-withdrawals and dispute screens. The bulk-payout route merely accepted
+  a `batchRef` **request parameter** of its own. The two are unrelated despite
+  the shared word, and the column stays.
+
+Gone: the three routes, `bulkPayoutExport.js`, both test files, the
+`requireBulkPayoutsEnabled` guard, the `MERCHANT_BULK_PAYOUTS` flag, `istToday()`
+and `bulkPayoutBatch()`, the three `bulk_payout_*` columns (dropped in
+`schema.sql`), their entries in both order projections, and
+`bulk_payout_completed` from the realtime registry.

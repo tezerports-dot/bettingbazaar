@@ -2602,9 +2602,21 @@ ALTER TABLE order_states ADD COLUMN IF NOT EXISTS warning_issued BOOLEAN NOT NUL
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS bulk_payout_date DATE;
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS bulk_paid_at TIMESTAMPTZ;
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS bulk_payout_batch TEXT;
+-- Merchant bulk payouts, DROPPED 2026-09-10 with the feature.
+--
+-- `bulk_payout_date` had no writer anywhere in the platform, so the batch query
+-- that filtered on it matched nothing on every day this has run and the two
+-- read routes returned an empty batch to a panel that never called them.
+-- Dropped rather than left in place, for the same reason as the split-leg
+-- columns further down: a column nothing writes is a column the next reader has
+-- to work out the status of. Do not accommodate; remove.
+--
+-- NOT to be confused with `withdrawal_batch_ref`, which is added below and
+-- stays: that is the SPLITTER's label for the siblings of one oversized
+-- withdrawal, and two admin screens read it.
+ALTER TABLE order_states DROP COLUMN IF EXISTS bulk_payout_date;
+ALTER TABLE order_states DROP COLUMN IF EXISTS bulk_paid_at;
+ALTER TABLE order_states DROP COLUMN IF EXISTS bulk_payout_batch;
 
 DO $$ BEGIN
   ALTER TABLE order_states ADD CONSTRAINT order_states_currency_known

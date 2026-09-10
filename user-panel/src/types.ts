@@ -289,8 +289,9 @@ export interface PaymentOrder {
   // ── What this interface stopped declaring, and why ────────────────────────
   // `merchantId`, `merchantSnapshot`, `merchantProfit`, `depositAllocation`,
   // `reserveAllocation`, `platformFeeRate`, `requiresVideoKYC`,
-  // `requiresReview`, `warningIssued`, `redFlagged`, `bulkPayoutDate` and
-  // `bulkPayoutBatch`.
+  // `requiresReview`, `warningIssued` and `redFlagged`. (`bulkPayoutDate` and
+  // `bulkPayoutBatch` were named here too, until the bulk-payout feature and
+  // its columns were removed on 2026-09-10.)
   //
   // None of them is sent to a player, and several must never be: the merchant's
   // identity and credentials, the platform's own treasury split and fee, and the

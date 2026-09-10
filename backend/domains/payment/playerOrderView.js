@@ -122,7 +122,6 @@ export const PLAYER_FORBIDDEN_ORDER_FIELDS = Object.freeze([
   // platform pays them in. Neither is about this player's order.
   'merchantCreditStatus', 'merchantCreditHoldUntil',
   'merchantCreditReversedAt', 'merchantCreditReversedReason',
-  'bulkPayoutDate', 'bulkPaidAt', 'bulkPayoutBatch',
   // The merchant's own evidence upload when they reject. `rejectedReason` is
   // the player's answer; the image behind it is the merchant's document and can
   // be a bank statement with their name on it.

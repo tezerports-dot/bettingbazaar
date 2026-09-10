@@ -147,18 +147,52 @@ visible rather than scope creep:
   (11 tests, real database), which also asserts the quote a merchant is shown is
   the quote that gets written.
 
+
+### 3.0.2 Removed 2026-09-10 — merchant bulk payouts
+
+Deleted at the owner's decision, having been reported as a rejected feature that
+was still present. Provenance first, because "which change put this back" is
+answerable from git and should not be guessed: it was introduced by `0cb9c85`
+("Reachability: things that were built, merged, and never once ran", #171),
+merged to `main`, which is this branch's own branch point. No later commit
+restored it and no commit on any branch had ever deleted it.
+
+It was also **not a working feature that was dropped**. Nothing in the platform
+ever wrote `bulk_payout_date`, and the batch query filtered on that column — so
+`GET /bulk-payouts` and `/bulk-payouts/export` returned an empty batch for every
+merchant on every day this has run, and no panel called either one to notice.
+Only `mark-paid` had test coverage, and it takes explicit order ids rather than
+reading a batch.
+
+Removed: the three routes, `bulkPayoutExport.js`, both test files, the
+`requireBulkPayoutsEnabled` guard, the `MERCHANT_BULK_PAYOUTS` flag,
+`istToday()` and `bulkPayoutBatch()` in the orders repository, the three
+`bulk_payout_*` columns (dropped in `schema.sql`, following the split-leg
+precedent), their entries in both order projections, and the
+`bulk_payout_completed` event from the realtime registry.
+
+**`withdrawal_batch_ref` was kept** and is unrelated despite the name: it is the
+splitter's label for the siblings of one oversized withdrawal, written by
+`paymentProcessing.service.js` and read by the stalled-withdrawals and dispute
+screens.
+
+A merchant closes payouts one at a time through `/confirm/:id`, which takes the
+withdrawal hold, writes the transition and moves the escrow flags.
+
 ### 3.1 Code — small, and each item is verifiable
 
 | Item | Why it is open |
 |---|---|
-| **3 endpoints built with no UI** | By `CLAUDE.md` §28, a backend feature with no UI is not shipped. What is left is merchant **bulk payouts** — `GET /api/merchant/bulk-payouts`, `/bulk-payouts/export`, `POST /bulk-payouts/mark-paid`. Verified absent from all three panels. Either a screen to finish or code to delete — an owner decision, not a technical one. Token orders and phantom agents were the other seven and now have screens (§3.0). |
+| ~~Endpoints built with no UI~~ | **Closed 2026-09-10.** Token orders and phantom agents got screens (§3.0.1); merchant **bulk payouts** was deleted outright at the owner's decision — see §3.0.2. `check:ui-coverage -- --unused` now lists only endpoints that legitimately have no UI. |
 | **No mutation run covers B8** | The commission engine's new guards are test-covered but not mutation-proven. The harness owns the files it names while running (`CLAUDE.md` trap 12). |
 | **Route constants in two panels** | The admin and user panels write route paths as literals (`CLAUDE.md` §8). Open work, not a rule being broken silently. |
 | **Brand colour literals** | `#D4AF37` still appears in panel sources instead of `var(--brand-primary)` (`CLAUDE.md` §4). Merchant panel is already at zero. Re-count before quoting a number. |
 
-`npm run check:ui-coverage -- --unused` lists 24 endpoints with no UI; 21 of them
-legitimately have none (health, metrics, webhooks, SSE, assetlinks, the versioned
-`/api/v1` aliases). The 3 above are the real ones.
+`npm run check:ui-coverage -- --unused` lists the remainder, and every one of
+them legitimately has no UI: health and metrics probes, the Telegram and casino
+webhooks, the SSE streams, `assetlinks.json`, and the versioned `/api/v1`
+aliases of routes the panels already call under another path. Re-run it before
+quoting a number.
 
 ### 3.2 Operator settings the cash rail needs
 

@@ -83,7 +83,6 @@ export const MERCHANT_ORDER_FIELDS = Object.freeze([
   'assignedAt', 'processingAt', 'merchantPanelUrl', 'merchantResponseMinutes',
   'approvedAt', 'rejectedAt', 'cancelledAt',
   'paidAt', 'completedAt', 'expiresAt',
-  'bulkPayoutDate', 'bulkPaidAt', 'bulkPayoutBatch',
 
   'createdAt', 'updatedAt',
 ]);

@@ -62,7 +62,6 @@ import {
 } from '../payment/paymentReference.js';
 import cdnService from '../../services/cdn.service.js';
 import { adminToMerchantUsdtRate } from '../configuration/tokenRates.js';
-import { FLAGS, isEnabled } from '../../services/featureFlags.service.js';
 import { rupeesToPaise } from '../../shared/money.js';
 import { MONEY_PATHS } from '#db/moneyPaths.js';
 import {
@@ -70,7 +69,6 @@ import {
 } from '#db/repositories/merchantSettlements.js';
 
 /** Is Postgres the source of truth for the merchant side of a settlement? */
-import { buildBulkPayoutExportRows } from './bulkPayoutExport.js';
 import {
   MERCHANT_CURRENCY, merchantTypeOf, formatOrderFiat,
   USDT_CHAINS, USDT_CHAIN_SPEC, isUsdtAddress, usdtAddressFor, usdtChainsHeldBy,
@@ -88,10 +86,6 @@ const router     = express.Router();
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
-async function requireBulkPayoutsEnabled(req, res, next) {
-    if (await isEnabled(FLAGS.MERCHANT_BULK_PAYOUTS)) return next();
-    return res.status(403).json({ success: false, message: 'Merchant bulk payouts are not enabled.' });
-}
 
 
 
@@ -1908,184 +1902,24 @@ router.post('/orders/:id/red-flag', merchantAuth, async (req, res) => {
     }
 });
 
-// ─── BULK PAYOUTS (FIX B5-c) ─────────────────────────────────────────────────
+// Merchant BULK PAYOUTS was here — three routes, removed 2026-09-10 at the
+// owner's decision. It is not a feature that was working and got dropped:
 //
-// Token sell (WITHDRAWAL) orders grouped by bulkPayoutDate.
-// Merchant downloads CSV/Excel to process bank transfers, then marks batch paid.
+//   NOTHING in production ever wrote `bulk_payout_date`. The batch query
+//   filtered on it, so `GET /bulk-payouts` and `/bulk-payouts/export` returned
+//   an empty batch for every merchant on every day the platform has run, and
+//   no panel called either of them to notice. Only `mark-paid` had coverage,
+//   and it takes explicit order ids rather than reading the batch.
 //
-
-// GET /api/merchant/bulk-payouts?date=YYYY-MM-DD
-// Returns all WITHDRAWAL orders for a given day's bulk payout batch.
-router.get('/bulk-payouts', merchantAuth, requireBulkPayoutsEnabled, async (req, res) => {
-    try {
-        const { date } = req.query;
-
-        // `bulk_payout_date` is a DATE, so the batch is a day rather than a
-        // timestamp range each call site computes for itself — three of them
-        // built their own IST midnight, and a difference of one in any would
-        // have paid a different set of orders.
-        const payoutDate = date || await db.orders.istToday();
-        const orders = await db.orders.bulkPayoutBatch({
-            merchantId: req.merchantId, payoutDate,
-        });
-
-        const totalFiat   = orders.reduce((s, o) => s + (o.fiatAmount || 0), 0);
-        const totalTokens = orders.reduce((s, o) => s + (o.tokenAmount || 0), 0);
-
-        res.json({
-            success: true,
-            // The date the batch was actually read for. This said
-            // `targetDate.toISOString()` and `targetDate` did not exist — the
-            // handler threw a ReferenceError after doing all its work.
-            date:    payoutDate,
-            orders: toMerchantOrderViews(orders),
-            summary: {
-                count:       orders.length,
-                totalFiat,
-                totalTokens,
-            },
-        });
-    } catch (err) {
-        console.error('GET /merchant/bulk-payouts error:', err);
-        res.status(500).json({ success: false, message: 'Failed to fetch bulk payouts.' });
-    }
-});
-
-// GET /api/merchant/bulk-payouts/export?date=YYYY-MM-DD
-// Returns CSV-formatted JSON rows for bank upload (NEFT/IMPS/RTGS batch file).
-router.get('/bulk-payouts/export', merchantAuth, requireBulkPayoutsEnabled, async (req, res) => {
-    try {
-        const { date } = req.query;
-
-        const payoutDate = date || await db.orders.istToday();
-        const orders = await db.orders.bulkPayoutBatch({
-            merchantId: req.merchantId, payoutDate,
-        });
-
-        // Format rows for bank CSV upload
-        // Standard Indian bank bulk transfer format
-        const rows = buildBulkPayoutExportRows(orders);
-
-        const dateStr  = payoutDate;
-        const totalAmt = orders.reduce((s, o) => s + (o.amount || 0), 0);
-
-        res.json({
-            success:   true,
-            date:      dateStr,
-            filename:  `bulk_payout_${dateStr}.csv`,
-            rows,
-            summary: {
-                count:      rows.length,
-                totalAmount: totalAmt,
-            },
-        });
-    } catch (err) {
-        console.error('GET /merchant/bulk-payouts/export error:', err);
-        res.status(500).json({ success: false, message: 'Failed to export bulk payouts.' });
-    }
-});
-
-// POST /api/merchant/bulk-payouts/mark-paid
-// Mark a batch of withdrawal orders as bulk-paid.
-// Body: { orderIds: string[], batchRef?: string }
-router.post('/bulk-payouts/mark-paid', merchantAuth, requireBulkPayoutsEnabled, async (req, res) => {
-    try {
-        const { orderIds, batchRef } = req.body;
-        if (!Array.isArray(orderIds) || orderIds.length === 0) {
-            return res.status(400).json({ success: false, message: 'orderIds array is required.' });
-        }
-
-        const paidAt  = new Date();
-        const batchId = batchRef || `BATCH_${Date.now()}`;
-
-        // ── A bulk payout is N CONFIRMS, not a different operation ───────────
-        //
-        // This was one raw UPDATE straight to COMPLETED, and every guarantee a
-        // single confirm provides was missing from it:
-        //
-        //   the withdrawal HOLD was skipped, so the player's stake was consumed
-        //   and the merchant's tokens released the instant the merchant said
-        //   so — which is exactly the loss `withdrawalHold.service.js` exists to
-        //   close, since confirm is an assertion and not evidence;
-        //
-        //   no `order_transitions` row was written, so a batch of payouts left
-        //   no trace in the append-only history a dispute is decided from;
-        //
-        //   the escrow flags were never touched, so the settlement worker would
-        //   never pick these orders up — the player's money stayed locked and
-        //   the merchant's tokens were never credited. The orders read COMPLETED
-        //   with the value still frozen on both sides, and nothing was looking.
-        //
-        // So each order goes through the same two calls the single confirm
-        // makes. Not one transaction across the batch, deliberately: these are
-        // independent payouts and one bad order must not roll back nine good
-        // ones. Partial success is a real outcome and the response already
-        // reports it.
-        const holdFor = await holdMinutes();
-        const completed = [];
-        const skipped = [];
-
-        for (const rawId of [...new Set(orderIds.filter(Boolean).map(String))]) {
-            // Scoped to THIS merchant by the query, not by a filter afterwards.
-            const order = await db.orders.getMerchantOrder(rawId, req.merchantId);
-            if (!order || order.type !== 'WITHDRAWAL') { skipped.push(rawId); continue; }
-
-            const carried = {
-                bulkPaidAt: paidAt,
-                bulkPayoutBatch: batchId,
-            };
-
-            // The same branch the single confirm takes, for the same reason:
-            // under a hold a withdrawal only reaches PAID (asserted, not
-            // settled) and the worker completes it once the window passes.
-            const moved = holdFor > 0
-                ? await markOrderPaidState(order.orderId, {
-                    expectFrom: ['PROCESSING', 'ASSIGNED'],
-                    set: {
-                        ...carried,
-                        merchantCreditStatus:    'HELD',
-                        merchantCreditHoldUntil: new Date(paidAt.getTime() + holdFor * 60 * 1000),
-                        escrowLocked:            true,
-                    },
-                })
-                : await completeOrder(order.orderId, {
-                    expectFrom: 'PROCESSING',
-                    set: {
-                        ...carried, completedAt: paidAt,
-                        merchantCreditStatus: 'RELEASED', escrowLocked: false,
-                    },
-                });
-
-            if (moved.ok && !moved.idempotent) completed.push(order.orderId);
-            else skipped.push(rawId);
-        }
-
-        // Notify admins
-        if (global.sseManager) {
-            global.sseManager.broadcastToAdmins('bulk_payout_completed', {
-                merchantId: req.merchantId,
-                batchId,
-                count:      completed.length,
-                paidAt,
-            });
-        }
-
-        res.json({
-            success:  true,
-            // `count` read `result.modifiedCount`, a field the repository never
-            // returned — so every batch reported `undefined` orders paid.
-            message:  `${completed.length} order(s) marked as paid.`,
-            batchId,
-            count:    completed.length,
-            held:     holdFor > 0,
-            orderIds: completed,
-            skipped,
-        });
-    } catch (err) {
-        console.error('POST /merchant/bulk-payouts/mark-paid error:', err);
-        res.status(500).json({ success: false, message: 'Failed to mark orders as paid.' });
-    }
-});
+// The columns, the repository readers, the CSV builder, the feature flag and
+// the `bulk_payout_completed` event go with it. `withdrawal_batch_ref` STAYS —
+// that is the withdrawal SPLITTER's label (a payout too large for one
+// denomination becomes several orders) and two admin screens read it. The two
+// are unrelated despite both being called a batch.
+//
+// A merchant closes payouts one at a time through `/confirm/:id`, which is the
+// path that takes the withdrawal hold, writes the transition and moves the
+// escrow flags.
 
 // ─── EARNINGS & STATS ────────────────────────────────────────────────────────
 
