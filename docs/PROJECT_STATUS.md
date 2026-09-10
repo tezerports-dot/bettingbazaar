@@ -56,6 +56,7 @@ what the B-numbers refer to.
 | The switch reaches an admin screen and a merchant banner | `c2ea5ee` |
 | One owner for the order window, and it is the rail — not a global config number | `8f794b4` |
 | Player order projection became an allowlist — every player response had been carrying the merchant's bank details whole | `0f6a6ce` |
+| A merchant's inventory is HELD by the orders they already hold — the escrow existed on the SELL side only, so a merchant could be assigned more buy orders than their tokens could cover | `0ad68fb` |
 
 ### 2.2 Built — Mode B, the cash rail
 
