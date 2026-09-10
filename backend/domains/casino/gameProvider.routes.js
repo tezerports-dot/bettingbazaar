@@ -245,7 +245,7 @@ router.post('/launch', authenticate, async (req, res) => {
     res.json({ success: true, launchUrl, sessionId });
   } catch (err) {
     console.error('Game launch error:', err);
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'POST /launch');
   }
 });
 
@@ -274,7 +274,13 @@ router.post('/wallet/:providerKey', async (req, res) => {
     const secrets = await db.games.getProviderSecrets(providerKey);
     if (!secrets) return res.status(404).json({ success: false });
 
-    const verdict = verifyWebhookSignature(openProviderSecrets(secrets).webhookSecret, req.headers, req.body);
+    // `req.rawBody` is the exact buffer, stashed by the scoped parser in
+    // server.js. The verifier checks it first and the re-serialisation second,
+    // so a provider that signs the real bytes verifies and one whose serialiser
+    // happened to match ours keeps working.
+    const verdict = verifyWebhookSignature(
+      openProviderSecrets(secrets).webhookSecret, req.headers, req.body, req.rawBody,
+    );
     if (!verdict.ok) return res.status(verdict.status).json({ success: false, message: verdict.message });
 
     // Normalise the payload — every supplier spells these differently.

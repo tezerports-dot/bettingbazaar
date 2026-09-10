@@ -5,6 +5,7 @@ import contentService from './content.service.js';
 import { generatePresignedUploadUrl } from '../../services/cdn.service.js';
 import { db } from '#db';
 import { assertCdnAssetUrl } from '../../shared/storedUrl.js';
+import { serverError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -113,8 +114,7 @@ router.put('/content/faq/:faqId', authenticate, isAdmin, async (req, res) => {
     if (!faq) return res.status(404).json({ success: false, message: 'FAQ not found' });
     res.json({ success: true, message: 'FAQ updated successfully', faq });
   } catch (error) {
-    console.error('Update FAQ error:', error);
-    res.status(500).json({ success: false, message: error.message || 'Failed to update FAQ' });
+    return serverError(res, error, 'PUT /content/faq', 'Failed to update FAQ');
   }
 });
 

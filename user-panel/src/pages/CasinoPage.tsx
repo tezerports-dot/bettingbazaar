@@ -92,7 +92,11 @@ const CasinoPage: React.FC = () => {
         <span style={{ color: 'var(--text)', fontSize: 12, fontWeight: 700 }}>🎰 {activeGameName}</span>
         <button onClick={() => setGameUrl(null)} style={{ color: 'var(--text2)', fontSize: 12, border: '1px solid var(--line2)', padding: '4px 12px', borderRadius: 8, background: 'var(--surface2)', cursor: 'pointer' }}>✕ Close</button>
       </div>
-      <iframe ref={iframeRef} src={gameUrl} style={{ flex: 1, width: '100%', border: 0 }} allow="fullscreen autoplay camera microphone" allowFullScreen title={activeGameName} />
+      {/* `camera microphone` were granted here too. The origin is admin-supplied
+          and third-party-operated, no casino game needs either, and the grant is
+          the platform's to give — a hostile or compromised provider inherited
+          it. Audit F-009. */}
+      <iframe ref={iframeRef} src={gameUrl} style={{ flex: 1, width: '100%', border: 0 }} allow="fullscreen autoplay" allowFullScreen title={activeGameName} />
     </div>
   );
 

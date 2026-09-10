@@ -6,6 +6,7 @@ import { brandingPayload, broadcastBranding } from '../../domains/branding/brand
 import { generateBrandingUploadUrl, isS3Configured, uploadBufferToS3, deleteFile, verifyUploadedObject } from '../../services/cdn.service.js';
 import path_node from 'path';
 import fs_node from 'fs';
+import { serverError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -247,8 +248,7 @@ router.post('/branding/upload-url', authenticate, isAdmin, async (req, res) => {
       expiresAt: result.expiresAt,
     });
   } catch (error) {
-    console.error('❌ Branding upload-url error:', error);
-    res.status(500).json({ success: false, message: error.message || 'Failed to generate upload URL' });
+    return serverError(res, error, 'POST /branding/upload-url', 'Failed to generate upload URL');
   }
 });
 
@@ -301,8 +301,7 @@ router.post('/branding/confirm-upload', authenticate, isAdmin, async (req, res) 
     }
     res.json({ success: true, image, cdnUrl, fileKey });
   } catch (error) {
-    console.error('❌ Branding confirm-upload error:', error);
-    res.status(500).json({ success: false, message: error.message || 'Failed to confirm upload' });
+    return serverError(res, error, 'POST /branding/confirm-upload', 'Failed to confirm upload');
   }
 });
 

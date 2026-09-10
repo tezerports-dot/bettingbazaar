@@ -25,6 +25,7 @@
 import express from 'express';
 import { db } from '#db';
 import { authenticate, isAdmin, isAdminOrSubAdmin } from '../domains/identity/auth.middleware.js';
+import { serverError } from '../shared/httpError.js';
 
 const router = express.Router();
 
@@ -103,7 +104,7 @@ router.post('/redeem', authenticate, async (req, res) => {
 router.get('/admin/giftcodes', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
     res.json({ success: true, codes: await db.engagement.listGiftCodes({ limit: 500 }) });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+  } catch (err) { return serverError(res, err, 'GET /admin/giftcodes'); }
 });
 
 router.post('/admin/giftcodes', authenticate, isAdmin, async (req, res) => {
@@ -127,7 +128,7 @@ router.post('/admin/giftcodes', authenticate, isAdmin, async (req, res) => {
     res.json({ success: true, giftCode });
   } catch (err) {
     if (err.code === '23505') return res.status(400).json({ success: false, message: 'Code already exists' });
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'POST /admin/giftcodes');
   }
 });
 
@@ -148,7 +149,7 @@ router.delete('/admin/giftcodes/:code', authenticate, isAdmin, async (req, res) 
       details: { usedCount: updated.usedCount, maxUses: updated.maxUses },
     });
     res.json({ success: true, giftCode: updated });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+  } catch (err) { return serverError(res, err, 'DELETE /admin/giftcodes/:code'); }
 });
 
 router.get('/admin/giftcodes/:code/redemptions', authenticate, isAdminOrSubAdmin, async (req, res) => {
@@ -157,7 +158,7 @@ router.get('/admin/giftcodes/:code/redemptions', authenticate, isAdminOrSubAdmin
       success: true,
       redemptions: await db.engagement.listRedemptions({ code: req.params.code, limit: 500 }),
     });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+  } catch (err) { return serverError(res, err, 'GET /admin/giftcodes/:code/redemptions'); }
 });
 
 /**
@@ -169,7 +170,7 @@ router.get('/admin/giftcodes/:code/redemptions', authenticate, isAdminOrSubAdmin
 router.get('/admin/giftcodes/unpaid', authenticate, isAdminOrSubAdmin, async (req, res) => {
   try {
     res.json({ success: true, unpaid: await db.engagement.findUnpaidRedemptions() });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+  } catch (err) { return serverError(res, err, 'GET /admin/giftcodes/unpaid'); }
 });
 
 export default router;

@@ -198,7 +198,26 @@ const JSON_LIMIT = process.env.JSON_BODY_LIMIT || '1mb';
 const _tightJson = express.json({ limit: JSON_LIMIT });
 const _assetJson = express.json({ limit: process.env.ASSET_JSON_LIMIT || '8mb' });
 const _ASSET_UPLOAD_PATHS = new Set(['/api/admin/app-assets/upload']);
-app.use((req, res, next) => (_ASSET_UPLOAD_PATHS.has(req.path) ? _assetJson : _tightJson)(req, res, next));
+// ── The provider wallet callback needs the bytes it was signed over ────────
+// Its HMAC is computed over the request BODY, and a digest taken over a
+// re-serialisation of the parsed body only matches when our serialiser happens
+// to agree with the provider's — key order, whitespace, unicode escaping.
+// `verify` stashes the exact buffer so the signature can be checked against it
+// (webhookSignature.js accepts either, so nothing that verified before stops).
+//
+// SCOPED to that path on purpose. Keeping a raw copy of every request body
+// doubles what a 1 MB upload holds in memory, for a check only one route makes.
+// The Telegram webhooks do NOT need it — they authenticate with a secret HEADER,
+// not a body digest.
+const _RAW_BODY_PREFIX = '/api/game/wallet/';
+const _rawJson = express.json({
+  limit: JSON_LIMIT,
+  verify: (req, _res, buf) => { req.rawBody = buf; },
+});
+app.use((req, res, next) => {
+  if (req.path.startsWith(_RAW_BODY_PREFIX)) return _rawJson(req, res, next);
+  return (_ASSET_UPLOAD_PATHS.has(req.path) ? _assetJson : _tightJson)(req, res, next);
+});
 // NO urlencoded body parser — deliberately. This is CSRF defence, not cleanup.
 //
 // Auth cookies are issued with `sameSite: 'none'` in production (routes.js),

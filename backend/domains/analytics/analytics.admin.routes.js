@@ -11,6 +11,7 @@ import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/
 import { db } from '#db';
 // Analytics Platform trends (Phase 012 — Enterprise Services tier)
 import { growthTrend, businessTrend, revenueTrend, riskTrend } from './analyticsPlatform.service.js';
+import { serverError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -176,7 +177,7 @@ router.get('/analytics/deposit-dashboard', authenticate, isAdminOrSubAdmin, asyn
     });
   } catch (err) {
     console.error('[deposit-dashboard]', err.message);
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'GET /analytics/deposit-dashboard');
   }
 });
 
@@ -200,7 +201,7 @@ router.get('/analytics/withdrawal-dashboard', authenticate, isAdminOrSubAdmin, a
     });
   } catch (err) {
     console.error('[withdrawal-dashboard]', err.message);
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'GET /analytics/withdrawal-dashboard');
   }
 });
 
@@ -231,7 +232,7 @@ router.get('/analytics/merchant-funding', authenticate, isAdminOrSubAdmin, async
     });
   } catch (err) {
     console.error('[merchant-funding]', err.message);
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'GET /analytics/merchant-funding');
   }
 });
 

@@ -47,6 +47,7 @@ import { releaseUTR } from '../../middleware/utrValidation.js';
 // may act on the order, so a route cannot be added without both.
 import { orderAccessGuard } from '../../middleware/order-crypto-access.js';
 import { emitWalletUpdate, emitAdminUpdate, emitOrderUpdate } from '../notification/realtimeEmitters.js';
+import { serverError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -547,7 +548,7 @@ router.post('/order/:orderId/dispute', authenticate, orderAccessGuard, async (re
       message: 'Dispute raised. Admin will review shortly.',
       order: forPlayer(disputed.order ?? order),
     });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+  } catch (err) { return serverError(res, err, 'POST /order/:orderId/dispute'); }
 });
 
 router.post('/order/:orderId/status', authenticate, orderAccessGuard, async (req, res) => {

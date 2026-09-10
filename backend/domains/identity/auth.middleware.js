@@ -33,6 +33,7 @@ import { setContextUser } from '../../middleware/requestContext.js'; // X-6
 import { signToken, verifyJwt, JWT_SECRET, JWT_EXPIRES_IN } from './jwt.util.js';
 import { isChallengeToken } from './twoFactorChallenge.js';
 import { getSystemConfig } from '#db/repositories/config.js';
+import { serverError } from '../../shared/httpError.js';
 
 // JWT_SECRET / JWT_EXPIRES_IN now come from jwt.util.js (imported above), which
 // fail-fasts on a missing secret and owns the 24h default. Re-exported at the
@@ -767,7 +768,7 @@ export const checkResourcePermission = (resource, action) => {
       
       next();
     } catch (error) {
-      res.status(500).json({ success: false, message: error.message });
+      return serverError(res, error, 'auth.middleware:checkResourcePermission');
     }
   };
 };
@@ -793,7 +794,7 @@ export const isMerchantApproved = async (req, res, next) => {
     // merchantAuth already verified status — just forward
     next();
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    return serverError(res, error, 'auth.middleware:isMerchantApproved');
   }
 };
 

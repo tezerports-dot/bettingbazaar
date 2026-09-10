@@ -25,6 +25,7 @@ import {
   setChannelStatus, deactivateContact,
   getPendingLink, getPendingAadhaar, upsertPendingLink, deletePendingLink,
   issueLoginToken, consumeLoginToken, sweepExpired, issueLoginCode, consumeLoginCode,
+  putRecoverySession, getRecoverySession,
 } from '../repositories/telegram.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -507,11 +508,23 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
       await pgQuery(`UPDATE telegram_login_codes SET expires_at = now() - interval '1 s'
                       WHERE mobile_hash = 'dead-code'`);
 
-      expect(await sweepExpired()).toEqual({ pendingLinks: 1, loginTokens: 1, loginCodes: 1 });
+      // Held recovery sessions expire on the same pass. This assertion is the
+      // reason the table was added to the sweep at all: the exact shape below
+      // went red the moment telegram_recovery_sessions existed, which is what
+      // it is for.
+      await putRecoverySession({ telegramUserId: 't-rec-live', aadhaarHashes: ['h'], ttlSeconds: 600 });
+      await putRecoverySession({ telegramUserId: 't-rec-dead', aadhaarHashes: ['h'], ttlSeconds: 600 });
+      await pgQuery(`UPDATE telegram_recovery_sessions SET expires_at = now() - interval '1 s'
+                      WHERE telegram_user_id = 't-rec-dead'`);
+
+      expect(await sweepExpired())
+        .toEqual({ pendingLinks: 1, loginTokens: 1, loginCodes: 1, recoverySessions: 1 });
       expect(await getPendingLink('t-live')).not.toBeNull();
+      expect(await getRecoverySession('t-rec-live')).not.toBeNull();
       // Reconstructed per pass: a second pass finds nothing, rather than
       // reporting a total it accumulated.
-      expect(await sweepExpired()).toEqual({ pendingLinks: 0, loginTokens: 0, loginCodes: 0 });
+      expect(await sweepExpired())
+        .toEqual({ pendingLinks: 0, loginTokens: 0, loginCodes: 0, recoverySessions: 0 });
     });
   });
 });

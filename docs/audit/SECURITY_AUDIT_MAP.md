@@ -559,7 +559,7 @@ routed.
   Not yet written.
 
 ### F-002 — account recovery holds its half-finished state in process memory
-`OPEN` · medium · distributed-state · found 2026-09-10
+`FIXED` · medium · distributed-state · found 2026-09-10 · fixed 2026-09-10
 
 `recoverySessions` (`backend/domains/telegram/telegram.routes.js:413`) is a bare
 `Map` holding the Aadhaar a player sent to the recovery bot until their second
@@ -575,7 +575,29 @@ heap as plaintext, against `CLAUDE.md` §2.
 - **Sweep query:**
   `grep -rn "^const .* = new \(Map\|Set\)(\|^let .* = new \(Map\|Set\)(\|global\." backend --include=*.js | grep -v tests`
 - **Swept:** see §4.1 below.
-- **Not fixed** — small change, but it is the identity-recovery path.
+- **Fix:** `telegram_recovery_sessions` — one row per Telegram id, `expires_at`
+  in the row, `ON CONFLICT DO UPDATE` so a corrected typo replaces rather than
+  being refused, and a `cardinality(aadhaar_hashes) > 0` CHECK so an empty array
+  cannot read as a live session that can never match.
+- **It came out stronger than the Map, not merely equivalent**, and that was not
+  the plan — it fell out of reading what the consumer actually does.
+  `attemptRecovery` only ever *compared* the Aadhaar, so it never needed the
+  number: the route now calls `hashAadhaarCandidates` at the bot boundary and
+  stores **HMAC candidates, never the digits**. The plaintext lives for the
+  length of one function call. The heap copy this finding was about does not
+  exist in any form now, and what is at rest is stronger than the AES-256-GCM
+  ciphertext onboarding holds.
+- **Expiry is in the SELECT, not left to the sweep** — `expires_at > now()` in
+  the read — so a sweep that is late, failed or was never scheduled cannot make
+  a stale Aadhaar usable. The retention sweep only reclaims space.
+- **Consumed on every outcome**, success or failure, so a wrong contact share
+  cannot be retried against an Aadhaar the sender already proved.
+- **What the fix broke, and why that was the tests working.** Two structural
+  tests in `telegramRecoverySafety.test.js` and the exact-shape retention count
+  in `telegramPg.test.js` went red. None was a false alarm: the first two pinned
+  the *old* location of the hashing and the Map's own housekeeping, and the third
+  exists precisely so a new expiring table cannot be reclaimed silently — its
+  comment says so. All three were re-pinned on the new shape rather than relaxed.
 - **Gate possible:** partly. A gate could flag new module-scope `Map`s in
   request-handling files; it cannot tell a rebuildable cache from a workflow step,
   so it would need an allow-list with stated reasons.
@@ -614,7 +636,7 @@ but no newly-onboarded player could fund an account.
   restating the same condition; none found beyond this one.
 
 ### F-005 — casino webhook verifies a re-serialisation, not the raw body
-`OPEN` · low · signature robustness · found 2026-09-10
+`FIXED` · low · signature robustness · found 2026-09-10 · fixed 2026-09-10
 
 `verifyWebhookSignature` computes the HMAC over `JSON.stringify(req.body)` — the
 parsed body re-serialised — rather than the raw bytes the supplier signed. Key
@@ -627,6 +649,14 @@ recorded so it is not rediscovered as a suspected hole.
 - **Shape:** verifying a signature over a re-encoding of the signed bytes.
 - **Sweep query:** `grep -rn "createHmac" backend --include=*.js | grep -v tests`
 - **Swept:** yes — this is the only webhook signature verifier.
+- **Fix:** `verifyWebhookSignature` now accepts **either** — raw bytes first,
+  the re-serialisation second. A superset of the old behaviour, so no supplier
+  already working is broken by the change; a supplier signing the bytes they
+  actually sent now verifies too.
+- **The raw body is captured for that path only.** `express.json`'s `verify`
+  hook stashes `req.rawBody`, scoped by prefix to `/api/game/wallet/`. Retaining
+  the raw buffer for every request on the platform to fix one verifier would
+  trade a robustness defect for a memory cost on every route.
 
 ### F-006 — a URL from a request body, stored and later rendered to somebody else
 `FIXED` · high (two of the five are payment instructions shown to players)
@@ -710,8 +740,10 @@ code under test.
 
 
 ### F-008 — an unexpected failure told the caller what broke, and told nobody else
-`PARTIALLY FIXED` · medium (four sites were unauthenticated) · information
-disclosure · found 2026-09-10
+`FIXED for the plain shape` · medium (four sites were unauthenticated) ·
+information disclosure · found 2026-09-10 · plain shape closed 2026-09-10.
+**A second shape fell out of the re-sweep and is carried separately as F-013 —
+read that entry before treating this one as closed.**
 
 `res.status(500).json({ success: false, message: err.message })` hands whatever
 went wrong straight to whoever asked. From a Postgres driver that is a
@@ -737,9 +769,17 @@ Two things made it worse than it reads:
     first", "This UTR was already used" — carries a `status` and often a `code`,
     and its wording is the feature. `callerError()` is for those.
   - **~25 are `500` with an internal message.** Six were player- or
-    world-reachable and are **fixed**; the remaining ~19 are behind admin auth
-    and are queued rather than changed in the same pass, because several of
-    their messages may be deliberate and each needs reading.
+    world-reachable and were fixed first; the rest were queued, because several
+    of their messages may be deliberate and each needed reading. **That queue is
+    now empty** — 21 further sites across 9 files were read and converted on
+    2026-09-10, and the sweep query returns **zero** outside `httpError.js`
+    itself.
+  - **A correction to the first pass, recorded rather than quietly amended.**
+    The "six player- or world-reachable" count was wrong: `POST
+    /api/payment/order/:orderId/dispute` is player-facing and was in the queued
+    pile. The miscount came from reading the route table rather than each
+    router's own mounts. It changes nothing now that all of them are converted,
+    but it is the kind of error a register exists to keep visible.
 - **Fix:** one owner, `backend/shared/httpError.js`, with the two cases as two
   *separate functions* so a handler has to say which kind of failure it is
   holding rather than defaulting into leaking. `serverError()` logs in full and
@@ -750,13 +790,20 @@ Two things made it worse than it reads:
   ("Uploaded object owner mismatch", "does not match its declared type") and
   those are the caller's mistake — so that path now answers `400` with the
   wording intact and reserves `500` for everything else.
+- **The last two sites are middleware, not routes**, and are worth naming:
+  `checkResourcePermission` and the merchant-auth forward in
+  `auth.middleware.js`. A leak in an *authorisation* middleware answers before
+  any handler runs, on every route the middleware guards — so it is the widest
+  instance of the shape and the last one a route-by-route reading would find.
 - **Gate possible:** yes, and straightforward — fail on
-  `res.status(5xx).json({ … message: err.message … })`. Queued in §6.
+  `res.status(5xx).json({ … message: err.message … })`. Queued in §6. **The gate
+  must cover F-013's shape too**, or it will report this class as closed while
+  the larger half of it is still open.
 
 
 ### F-009 — the casino game frame cannot load, and asks for camera and microphone
-`OPEN` · low security / medium functional · CSP and permissions policy
-· found 2026-09-10
+`PARTIALLY FIXED` — part 2 fixed, part 1 is an open decision · low security /
+medium functional · CSP and permissions policy · found 2026-09-10
 
 Two problems in the same `<iframe>`, found by capturing helmet's real output
 rather than reading the config.
@@ -788,6 +835,13 @@ inherits it.
   embedded content does not need.
 - **Sweep query:** `grep -rn "<iframe" user-panel/src admin-panel/src merchant-panel/src`
 - **Swept:** yes. This is the **only** iframe in all three panels.
+- **Part 2 is fixed** (2026-09-10): the frame is now
+  `allow="fullscreen autoplay"`. Removing a grant cannot break a game that never
+  had a use for it, and the grant was the platform's to give — a hostile or
+  compromised provider inherited it for free.
+- **Part 1 is still open, and deliberately.** It is a decision about how CSP and
+  runtime-configurable provider origins reconcile, not a patch. Leaving it
+  recorded as open is the honest state: `/casino` renders an empty frame today.
 
 
 ### F-010 — the public leaderboard published the internal user id
@@ -994,6 +1048,65 @@ F-002 — `behavioralRateLimit`'s Redis-first-with-fallback, and `alerting`'s
 F-002 currently has.
 <!-- END SWEEP F-002 -->
 
+### F-013 — the same leak, written as a status fallback — the shape F-008's sweep had no bucket for
+`OPEN` · medium · information disclosure · found 2026-09-10 by re-running F-008's
+own sweep query after F-008 was closed
+
+```js
+res.status(err.status || 500).json({ success: false, message: err.message })
+```
+
+**26 sites, 9 files.** This is not a set of sites the F-008 sweep missed — they
+were all *in* the 38 it found. It is a set the sweep **classified wrongly**, and
+that distinction is the whole finding.
+
+F-008 split its hits in two: a deliberate refusal somebody wrote for a caller to
+read (keep the wording), or an internal fault answered with its own message
+(replace it). This shape is **neither, because it is both** — the very same
+expression is a correct caller-error when the thrown error carries `.status` and
+a raw internal leak when it does not. A binary sort had nowhere to put it, so it
+went in the "carries a status, therefore deliberate" pile and left with a clean
+bill.
+
+**The rule that follows:** *when a sweep sorts its hits into buckets, the hit
+that satisfies two buckets at once is the one to look at hardest.* A sweep that
+counts is worth little; a sweep that classifies is only worth as much as its
+classifier.
+
+Two things make it more than bookkeeping:
+
+1. **It is on the money path, unauthenticated by nothing but a player login.**
+   `POST /api/payment/deposit/create` and `POST /api/payment/withdrawal/create`
+   are both this shape. `requestDeposit`/`requestWithdrawal` reach the repository
+   layer, so an unexpected Postgres fault — a constraint name, a column list, a
+   statement fragment — is returned verbatim to any signed-up player.
+2. **Those two catch blocks do not log.** Same second half as F-008, on the two
+   busiest routes on the platform: the failure reaches the one party who must not
+   see it and never reaches the party who could fix it. A deposit path failing in
+   production would be invisible in the logs while every affected player is
+   holding the reason.
+
+- **Shape:** one expression serving both the deliberate-refusal and the
+  unexpected-fault case, discriminated by a property the thrower may simply not
+  have set.
+- **Sweep query:**
+  `grep -rnE 'status\((err|error|e)\??\.(status|statusCode)\s*\|\|\s*500\)' backend --include=*.js`
+- **Swept: yes — 30 hits, and they are not all defects.** The four in
+  `reporting.admin.routes.js` already do the right thing inline —
+  `message: error.status ? error.message : 'Failed to build …'` — which is the
+  discrimination the other 26 are missing. One more is the route test harness.
+  **The correct pattern already exists in this codebase**; this is adoption, not
+  design.
+- **Reach:** ~6 player-facing (payment, support), ~4 merchant-facing (upload,
+  merchant admin), the rest admin.
+- **Not fixed — it needs a decision, not a patch**, because 4 of the 26 attach
+  extra fields to the refusal (`cutoffPassed`, `balance`, `code`,
+  `originalOrderId`) that a blunt conversion would drop, and those fields are
+  read by the panels. See §6.
+- **Gate possible:** yes, and it must be the *same* gate as F-008's. A gate
+  matching only the plain `status(500)` form would go green over all 26 of these
+  and report the class closed.
+
 ---
 
 ## 5. Derived coverage — regenerated, never typed
@@ -1073,8 +1186,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 392 |
-| Parameters only (safe by construction) | 250 |
+| `pgQuery` call sites | 395 |
+| Parameters only (safe by construction) | 253 |
 | Interpolating into statement text (each needs a reading) | 142 |
 
 ### Panel injection sinks
@@ -1107,7 +1220,8 @@ In the order it should be worked.
 | 10 | Gate for the F-003 shape | §4 | A CHECK a handler can violate after a commit. |
 | 11 | Gate for the F-006 shape | §4 | Any `*_url` / `*_link` written from `req.body` must pass through `shared/storedUrl.js`. |
 | 12 | Sweep F-007 | §4 | Which other suites only pass in a particular order. |
-| 13 | Finish F-008 | §4 | ~19 admin-side `500 + err.message` sites; each needs reading, some messages are deliberate. |
-| 14 | Gate for the F-008 shape | §4 | Fail on `res.status(5xx).json({ message: err.message })`. |
+| 13 | ~~Finish F-008~~ | §4 | **Done 2026-09-10.** All 21 remaining sites converted; the sweep returns zero. |
+| 14 | Gate for the F-008 **and F-013** shapes | §4 | One gate, both forms. A gate matching only `res.status(5xx).json({ message: err.message })` goes green over all 26 F-013 sites and reports the class closed. |
+| 14b | **Decide F-013** | §4 | 26 sites of `status(err.status \|\| 500)` + raw message, including `deposit/create` and `withdrawal/create`, neither of which logs. Needs a decision because 4 sites attach extra fields the panels read. |
 | 15 | **Decide F-011 — staff 2FA** | §4 | **Highest open item.** A password-only admin session is the whole platform. Fix shape and the lockout risk are in the entry; steps 1 and 3 are safe to ship alone. |
 | 15 | Decide F-009's `frame-src` | §4 | Per-response CSP from enabled providers, or a static list an admin cannot extend. Owner's call. |

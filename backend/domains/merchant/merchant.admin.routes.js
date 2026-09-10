@@ -13,6 +13,7 @@ import { CASH_DENOMINATIONS_PAISE, isCashDenomination } from './denominations.js
 import { rupeesToPaise } from '../../shared/money.js';
 import { assertExternalHttpsUrl } from '../../shared/storedUrl.js';
 import { assertStaffPassword } from '../identity/passwordPolicy.js';
+import { serverError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -1053,7 +1054,7 @@ router.get('/merchants/:merchantId/profit-engine', authenticate, isAdmin, async 
     });
   } catch (err) {
     console.error('[profit-engine]', err.message);
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'GET /merchants/:merchantId/profit-engine');
   }
 });
 

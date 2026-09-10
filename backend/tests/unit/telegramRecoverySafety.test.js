@@ -49,7 +49,17 @@ describe('recovery requires two independent factors', () => {
   it('honours HMAC rotation when comparing', () => {
     // hashAadhaarCandidates covers retired secrets, so a rotation does not lock
     // every existing player out of recovery.
-    expect(svc).toMatch(/hashAadhaarCandidates\(aadhaar\)/);
+    //
+    // The call site moved to the BOT BOUNDARY when the held session became a
+    // database row: the route hashes the Aadhaar the moment it arrives and the
+    // service receives candidates only, so the plaintext lives for one function
+    // call and is never stored. Both halves are pinned — the route must still
+    // produce every candidate, and the service must compare against all of them
+    // rather than picking one.
+    expect(routes).toMatch(/hashAadhaarCandidates\(aadhaar\)/);
+    expect(svc).not.toMatch(/aadhaar:/);
+    expect(svc).toMatch(/aadhaarHashes/);
+    expect(svc).toMatch(/candidates/);
   });
 
   it('rejects a forwarded contact card', () => {
@@ -131,10 +141,28 @@ describe('the recovery bot is isolated from the primary bot', () => {
     expect(handler).not.toMatch(/[^y]\bsendMessage\(/);
   });
 
-  it('bounds the in-memory conversation state', () => {
-    // An Aadhaar must not sit in memory indefinitely, and /start floods must
-    // not grow the map without limit.
-    expect(routes).toMatch(/RECOVERY_SESSION_MS/);
-    expect(routes).toMatch(/recoverySessions\.clear\(\)/);
+  it('bounds the held recovery session', () => {
+    // The held Aadhaar used to be an in-process Map, which is unbounded under a
+    // /start flood, lost on restart, and — with more than one API instance —
+    // wrong: the contact share can land on a different process than the Aadhaar
+    // did. It is a row with an expiry now, so the three properties that matter
+    // are pinned on the store rather than on a Map's housekeeping.
+    expect(routes).toMatch(/RECOVERY_SESSION_SECONDS/);
+    expect(routes).toMatch(/putRecoverySession/);
+    // Consumed on EVERY outcome, not just success: otherwise a wrong contact
+    // share could be retried against an Aadhaar the sender already proved.
+    expect(routes).toMatch(/deleteRecoverySession/);
+    // No process-local copy may survive alongside the row — that is the second
+    // owner the move exists to remove.
+    expect(routes).not.toMatch(/new Map\(\)[^\n]*recover|recoverySessions/i);
+  });
+
+  it('expires the held session in the statement, not on a sweep', () => {
+    // A sweep that is late, failed or never scheduled must not be able to make
+    // a stale Aadhaar usable. The read carries its own expiry predicate; the
+    // sweep only reclaims space.
+    const repo = read('../../../database/repositories/telegram.js');
+    const getter = repo.slice(repo.indexOf('export async function getRecoverySession'));
+    expect(getter.slice(0, 400)).toMatch(/expires_at > now\(\)/);
   });
 });

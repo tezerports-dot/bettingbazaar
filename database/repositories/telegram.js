@@ -1020,6 +1020,62 @@ export async function consumeLoginCode({ mobileHash, codeHash, maxAttempts = 5 }
   return null;
 }
 
+// ── Recovery sessions ────────────────────────────────────────────────────────
+//
+// The Aadhaar a person sent the recovery bot, held until their contact share
+// arrives. HASHES only — `attemptRecovery` compares and never reads the number,
+// so the plaintext is not stored anywhere (schema.sql explains why this is not
+// merged into `telegram_pending_links`).
+
+/**
+ * Start or replace a recovery session.
+ *
+ * Replaces on conflict rather than refusing: sending the bot a second Aadhaar
+ * means correcting a typo, and a person who has already lost their account
+ * should not also be told they must wait out a TTL to fix one.
+ */
+export async function putRecoverySession({ telegramUserId, aadhaarHashes, ttlSeconds }) {
+  if (!telegramUserId) throw new Error('putRecoverySession requires a telegramUserId');
+  if (!Array.isArray(aadhaarHashes) || !aadhaarHashes.length) {
+    throw new Error('putRecoverySession requires at least one aadhaar hash');
+  }
+  const { rows } = await pgQuery(
+    `INSERT INTO telegram_recovery_sessions (telegram_user_id, aadhaar_hashes, expires_at)
+     VALUES ($1, $2, now() + ($3 || ' seconds')::interval)
+     ON CONFLICT (telegram_user_id) DO UPDATE
+       SET aadhaar_hashes = EXCLUDED.aadhaar_hashes,
+           created_at     = now(),
+           expires_at     = EXCLUDED.expires_at
+     RETURNING expires_at`,
+    [String(telegramUserId), aadhaarHashes.map(String), String(Math.max(Number(ttlSeconds) || 600, 1))],
+    'tg_recovery_put',
+  );
+  return { expiresAt: rows[0].expires_at };
+}
+
+/**
+ * The live session, or null.
+ *
+ * Expiry is in the STATEMENT, so a sweep that is late, failed or never
+ * scheduled cannot make a stale session usable.
+ */
+export async function getRecoverySession(telegramUserId) {
+  const { rows } = await pgQuery(
+    `SELECT aadhaar_hashes, expires_at FROM telegram_recovery_sessions
+      WHERE telegram_user_id = $1 AND expires_at > now()`,
+    [String(telegramUserId)], 'tg_recovery_get',
+  );
+  return rows[0] ? { aadhaarHashes: rows[0].aadhaar_hashes, expiresAt: rows[0].expires_at } : null;
+}
+
+/** Consume it. Called whether the attempt succeeded or failed — one try per send. */
+export async function deleteRecoverySession(telegramUserId) {
+  await pgQuery(
+    'DELETE FROM telegram_recovery_sessions WHERE telegram_user_id = $1',
+    [String(telegramUserId)], 'tg_recovery_delete',
+  );
+}
+
 // ── Retention ────────────────────────────────────────────────────────────────
 
 /**
@@ -1041,7 +1097,14 @@ export async function sweepExpired() {
     `DELETE FROM telegram_login_tokens WHERE expires_at <= now()`, [], 'tg_sweep_tokens');
   const codes = await pgQuery(
     `DELETE FROM telegram_login_codes WHERE expires_at <= now()`, [], 'tg_sweep_codes');
-  return { pendingLinks: pending.rowCount ?? 0, loginTokens: tokens.rowCount ?? 0, loginCodes: codes.rowCount ?? 0 };
+  const recovery = await pgQuery(
+    `DELETE FROM telegram_recovery_sessions WHERE expires_at <= now()`, [], 'tg_sweep_recovery');
+  return {
+    pendingLinks: pending.rowCount ?? 0,
+    loginTokens: tokens.rowCount ?? 0,
+    loginCodes: codes.rowCount ?? 0,
+    recoverySessions: recovery.rowCount ?? 0,
+  };
 }
 
 /** Run `fn` in a transaction — for the two swaps that must be all-or-nothing. */

@@ -68,3 +68,54 @@ describe('game provider webhook signature', () => {
       .toEqual({ ok: true });
   });
 });
+
+describe('the raw bytes the provider actually signed', () => {
+  // The digest used to be taken ONLY over JSON.stringify(body), a
+  // re-serialisation. Key order, whitespace and unicode escaping all have to
+  // match the provider's serialiser for a legitimate call to verify — so a
+  // correct caller could be rejected. Both encodings are accepted now.
+  const raw = '{"amount":100,"transactionId":"t1"}';
+  const reordered = '{ "transactionId":"t1",  "amount":100 }';
+  const parsed = JSON.parse(raw);
+  const sign = (payload) => crypto.createHmac('sha256', SECRET).update(payload).digest('hex');
+
+  it('accepts a signature over the RAW bytes, whatever key order they used', () => {
+    // Signed over bytes whose key order and spacing differ from ours. Before
+    // this, every callback from such a provider was a 401.
+    const parsedFromReordered = JSON.parse(reordered);
+    const verdict = verifyWebhookSignature(
+      SECRET, { 'x-signature': sign(reordered) }, parsedFromReordered, reordered,
+    );
+    expect(verdict).toEqual({ ok: true });
+  });
+
+  it('still accepts a signature over the re-serialisation — nothing regresses', () => {
+    const verdict = verifyWebhookSignature(
+      SECRET, { 'x-signature': sign(JSON.stringify(parsed)) }, parsed, raw,
+    );
+    expect(verdict).toEqual({ ok: true });
+  });
+
+  it('works when no raw body was captured at all', () => {
+    const verdict = verifyWebhookSignature(
+      SECRET, { 'x-signature': sign(JSON.stringify(parsed)) }, parsed, undefined,
+    );
+    expect(verdict).toEqual({ ok: true });
+  });
+
+  it('accepting two encodings does NOT accept a wrong signature', () => {
+    // The point being asserted: an attacker aiming at either message still has
+    // to produce an HMAC under a secret they do not hold.
+    for (const bad of [sign('something else'), 'deadbeef', crypto.createHmac('sha256', 'wrong-secret').update(raw).digest('hex')]) {
+      expect(verifyWebhookSignature(SECRET, { 'x-signature': bad }, parsed, raw))
+        .toMatchObject({ ok: false, status: 401 });
+    }
+  });
+
+  it('an empty raw buffer falls through to the re-serialisation rather than matching', () => {
+    const verdict = verifyWebhookSignature(
+      SECRET, { 'x-signature': sign(JSON.stringify(parsed)) }, parsed, Buffer.alloc(0),
+    );
+    expect(verdict).toEqual({ ok: true });
+  });
+});

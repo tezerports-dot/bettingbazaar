@@ -35,6 +35,7 @@ import { listTemplates, saveTemplate } from '../../domains/telegram/telegramTemp
 import { buildExport, applyImport, kycStats } from '../../domains/identity/kycBulk.service.js';
 import { disburse, programmeStats } from '../../domains/referral/referral.service.js';
 import { rupeesToPaise, paiseToRupees } from '../../shared/money.js';
+import { serverError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -72,7 +73,7 @@ router.get('/telegram/config', authenticate, isAdmin, async (req, res) => {
       history,
     });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'GET /telegram/config');
   }
 });
 
@@ -158,7 +159,7 @@ router.post('/telegram/config', authenticate, isAdmin, async (req, res) => {
     });
   } catch (err) {
     console.error('[admin/telegram] activation failed:', err.message);
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'POST /telegram/config');
   }
 });
 
@@ -245,7 +246,7 @@ router.post('/telegram/channel', authenticate, isAdmin, async (req, res) => {
     });
   } catch (err) {
     console.error('[admin/telegram] channel flip failed:', err.message);
-    return res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'POST /telegram/channel');
   }
 });
 
@@ -371,7 +372,7 @@ router.get('/kyc/bulk/stats', authenticate, isAdmin, async (req, res) => {
   try {
     res.json({ success: true, ...(await kycStats()) });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'GET /kyc/bulk/stats');
   }
 });
 
@@ -438,7 +439,7 @@ router.get('/referral/stats', authenticate, isAdmin, async (req, res) => {
       active: s.active,
     });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'GET /referral/stats');
   }
 });
 

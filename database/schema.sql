@@ -1043,6 +1043,44 @@ CREATE TABLE IF NOT EXISTS telegram_pending_links (
 );
 CREATE INDEX IF NOT EXISTS telegram_pending_links_expiry_idx ON telegram_pending_links (expires_at);
 
+-- ── Telegram: a recovery in progress ─────────────────────────────────────────
+--
+-- Account recovery is two messages: the Aadhaar, then the contact share. This
+-- holds the first while the platform waits for the second.
+--
+-- It replaces a process-local `Map` in telegram.routes.js (audit F-002). That
+-- worked on one machine and failed on more than one: the two messages land on
+-- different instances, the second finds no session, and the bot answers "please
+-- send your Aadhaar first" to somebody who just did — intermittently, looking
+-- like their mistake, on the one path a person reaches BECAUSE they have
+-- already lost access. It also cleared itself wholesale at 10,000 entries,
+-- wiping live recoveries rather than old ones, and a deploy dropped every one.
+--
+-- ── It stores HASHES, not the Aadhaar ───────────────────────────────────────
+-- `attemptRecovery` only ever computes `hashAadhaarCandidates(aadhaar)` and
+-- compares — it never needs the number itself. So the number is hashed at the
+-- moment it arrives and the plaintext is never stored anywhere, which is
+-- stronger than the ciphertext `telegram_pending_links` holds for onboarding.
+-- An array because the HMAC secret can be rotated and both candidates must be
+-- comparable.
+--
+-- NOT merged into `telegram_pending_links`: that table's `step` CHECK is the
+-- ONBOARDING state machine, and both are keyed on `telegram_user_id`. A person
+-- recovering from a fresh Telegram account could be onboarding on that same id,
+-- and one row cannot own two workflows (CLAUDE.md §7).
+CREATE TABLE IF NOT EXISTS telegram_recovery_sessions (
+  telegram_user_id TEXT PRIMARY KEY,
+  aadhaar_hashes   TEXT[] NOT NULL,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at       TIMESTAMPTZ NOT NULL,
+  CONSTRAINT telegram_recovery_sessions_has_hashes
+    CHECK (cardinality(aadhaar_hashes) > 0)
+);
+-- The reads all filter on it, so expiry is a property of the QUERY and never
+-- depends on the sweep having run (same posture as the login-code tables).
+CREATE INDEX IF NOT EXISTS telegram_recovery_sessions_expiry_idx
+  ON telegram_recovery_sessions (expires_at);
+
 -- ── Telegram: the bridge from a chat to a browser session ────────────────────
 --
 -- A bearer credential for the seconds it lives, travelling through a chat the
