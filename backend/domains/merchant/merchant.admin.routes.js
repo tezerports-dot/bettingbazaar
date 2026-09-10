@@ -12,6 +12,7 @@ import { requireIdempotencyKey } from '../../middleware/idempotencyKey.js';
 import { CASH_DENOMINATIONS_PAISE, isCashDenomination } from './denominations.js';
 import { rupeesToPaise } from '../../shared/money.js';
 import { assertExternalHttpsUrl } from '../../shared/storedUrl.js';
+import { assertStaffPassword } from '../identity/passwordPolicy.js';
 
 const router = express.Router();
 
@@ -539,6 +540,15 @@ router.post('/merchants/create', authenticate, isAdmin, async (req, res) => {
     // fix as the self-signup path, and for the same reason: a failure on the
     // second write left an account flagged as a merchant with no merchant
     // record behind it, holding a mobile nobody could reuse.
+    // The same floor as merchant self-signup. An admin creating the account is
+    // not a reason for a weaker password — it is the same credential, on the
+    // same rail, holding the same float.
+    try {
+      assertStaffPassword(password, { mobile, username }, 'merchant');
+    } catch (e) {
+      return res.status(e.status || 400).json({ success: false, code: e.code, message: e.message });
+    }
+
     const created = await db.merchants.createMerchantAccount({
       userId: db.users.newUserId(),
       username, mobile, email: email || null,

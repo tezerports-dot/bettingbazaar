@@ -79,6 +79,7 @@ import { supplyCashLink, suppliersWithHeadroom } from './cashLink.service.js';
 import { PAYMENT_MODES } from '#db/repositories/paymentModePolicy.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { assertCdnAssetUrl } from '../../shared/storedUrl.js';
+import { assertStaffPassword } from '../identity/passwordPolicy.js';
 
 const router     = express.Router();
 // JWT secret + expiry owned by jwt.util.js — removed a '|| fallback-secret'
@@ -172,6 +173,15 @@ router.post('/auth/signup', async (req, res) => {
         // The mobile's uniqueness is decided by the index, not by a prior
         // lookup: two applications on the same number arriving together both
         // pass a check, and only one INSERT can win.
+        // A merchant holds platform float and sees the account a payout pays.
+        // Same floor as a sub-admin, for the same reason: no second factor is
+        // required of them either, so the password is the whole credential.
+        try {
+            assertStaffPassword(password, { mobile, username }, 'merchant');
+        } catch (e) {
+            return res.status(e.status || 400).json({ success: false, code: e.code, message: e.message });
+        }
+
         const created = await db.merchants.createMerchantAccount({
             userId: db.users.newUserId(),
             username, mobile,

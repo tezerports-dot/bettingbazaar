@@ -809,7 +809,26 @@ and `rank` is unique within the board.
 
 
 ### F-011 — mandatory staff 2FA has no server-side enforcement point
-`OPEN` · high · authentication · found 2026-09-10 · **owner decision, deliberately not fixed**
+`PARTIALLY FIXED` · high · authentication · found 2026-09-10 · steps 1 and 3
+shipped at the owner's direction; step 2 (the guard) remains their switch
+
+**Shipped 2026-09-10.** The session token now carries `amr` — `['pwd','otp']`
+when a factor was presented, `['pwd']` when it was not — as a CLAIM rather than
+a lookup, minted in `issueSession`, which is the only place a session is made.
+Nothing gates on it yet; it is what makes the guard a one-line check when it is
+switched on. And `issueSession` now returns `mustEnroll2FA` for any account
+`requires2FA()` covers that has not enrolled, so the admin panel can route to
+enrolment the way the merchant panel already does.
+
+**Also shipped: the password floor** (see F-012), because the two are the same
+credential and fixing one without the other leaves the chain intact.
+
+**Still open — step 2, the guard.** An account that must hold a factor should
+reach only `/api/2fa/setup` and `/api/2fa/activate` until it enrols. Not
+switched on because it locks out every staff account that has not enrolled, the
+seeded admin first. It is now a small, safe change: `amr` is on the token and
+the panel prompts.
+
 
 `requires2FA(user)` in `domains/identity/twoFactor.routes.js` decides who must
 hold a second factor, and it is carefully written — it keys on `isAdmin` /
@@ -865,6 +884,58 @@ every existing merchant the moment this deploys".
 The order matters: (1) and (3) are safe to ship on their own and make (2) a
 one-line switch once the owner has enrolled.
 
+
+### F-012 — any password was accepted for a staff account
+`FIXED` · high · authentication · found and fixed 2026-09-10
+
+`POST /api/admin/sub-admins`, merchant signup, admin-creates-merchant and the
+seeded admin each took whatever `password` they were given and hashed it. There
+was **no strength rule anywhere in the backend** — one character was accepted.
+
+Found by asking what F-001 and F-011 connect to rather than reading them
+separately, and the connection is the finding: an admin mints a sub-admin with a
+one-character password → nothing makes it enrol a second factor (F-011) → its
+token lasts 24 hours → and it reaches 51 admin routes with no permission key
+checked (F-001), including every player's financial history. **The weakest
+credential the platform can mint reads the whole player base.**
+
+What does NOT make it worse, stated so the severity is not overstated: online
+brute force is bounded — admin login carries a pace limiter, a subnet limiter
+and a captcha, hashing is argon2id, and the login limiters count failures only.
+The realistic path is a reused password found in a breach corpus, or a phished
+one, and a length floor is what makes both meaningfully harder.
+
+- **Shape:** a credential-setting endpoint with no policy behind it.
+- **Sweep query:** `grep -rn "hashPassword(" backend --include=*.js | grep -v /tests/`
+- **Swept: yes — 8 sites, and the split matters.** Five SET a new password and
+  are now gated: sub-admin create, merchant signup, admin-creates-merchant, and
+  `seedAdmin` (×2). **Two RE-HASH an already-verified password** to upgrade a
+  legacy bcrypt hash on login — `routes.js:103` and `merchant.routes.js:239` —
+  and are deliberately NOT gated, because a floor there would lock out every
+  existing account whose password predates the rule. The eighth is the utility's
+  own doc comment.
+- **Fix:** one owner, `backend/domains/identity/passwordPolicy.js`. Length floor
+  of 12, no composition requirements (NIST SP 800-63B advises against them —
+  they produce `Password1!`), plus refusals for shapes weak at any length.
+- **`seedAdmin` WARNS instead of refusing**, deliberately: refusing to boot on a
+  weak seed password bricks a running deployment on the deploy that adds the
+  rule. The routes that create accounts refuse; the seeder tells the operator to
+  change what already exists.
+
+**Two things the tests caught that are worth keeping:**
+
+- **The first blocklist matched as a SUBSTRING** and refused
+  `a-long-enough-password-123` — a 26-character passphrase — because "password"
+  appears inside it. That is exactly the composition-rule mistake the policy's
+  own header warns against, arriving through the back door: it punishes a long
+  memorable phrase while a short cryptic one passes. It matches the alphabetic
+  CORE now (digits and punctuation stripped), so `password123` is refused and a
+  real passphrase is not.
+- **A test helper that could not tell a crash from a refusal.** It returned every
+  caught error, so when the refactor above left a `ReferenceError` in the context
+  check, every `toBeTruthy()` assertion still passed and the file went green
+  while the function was broken. The pg route suite caught it. The helper now
+  re-throws anything that is not a `WEAK_PASSWORD` refusal.
 
 ### 4.1 Sweep result for F-002 (module-scope state)
 
