@@ -30,6 +30,7 @@
  * scalar the panels read cannot drift from the array assignment filters on.
  */
 import { USDT_CHAIN_SPEC } from '../../backend/domains/merchant/merchantCurrency.js';
+import { nonNegative } from '../numbers.js';
 import { pgQuery, getPool, connectGuarded } from '../client.js';
 import { randomBytes } from 'node:crypto';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
@@ -68,20 +69,6 @@ const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email
  * runtime rather than at load — derived from COLUMNS so the two cannot drift.
  */
 const M_COLUMNS = COLUMNS.split(',').map((c) => `m.${c.trim()}`).join(', ');
-
-/**
- * A non-negative number, where ZERO is a real answer.
- *
- * `Number(x) || fallback` substitutes the fallback for 0, because 0 is falsy.
- * That is harmless for a page size — a limit of zero is nonsense anyway — and
- * wrong for anything an operator might deliberately set to nothing: a
- * concurrency cap of 0 means "assign to nobody while I investigate", and `||`
- * silently re-opens the tap at the default.
- */
-const nonNegative = (value, fallback) => {
-  const n = Number(value);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
-};
 
 /** node-postgres returns BIGINT as a STRING. Cast once, here, at the boundary. */
 const toInt = (v) => (v === null || v === undefined ? null : Number(v));
@@ -394,11 +381,23 @@ export async function cashSuppliersFor(denominationPaise, { lookaheadSeconds = 1
      SELECT m.merchant_id, COALESCE(r.soon, 0) AS soon
        FROM merchants m
        LEFT JOIN releasing r ON r.merchant_id = m.merchant_id
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*)::int AS total
+           FROM order_states o
+          WHERE o.merchant_id = m.merchant_id
+            AND o.state IN ('ASSIGNED', 'PROCESSING', 'PAID')
+       ) a ON TRUE
       WHERE m.status = 'ACTIVE'
         AND m.merchant_approval_status = 'APPROVED'
         AND m.is_online
         AND m.accepts_deposits
-        AND m.cash_denomination_paise = $1`,
+        AND m.cash_denomination_paise = $1
+        -- Under their concurrency cap. This list decides who is TOLD to walk to
+        -- a cash machine, and a merchant already holding an order cannot serve
+        -- another on this rail — the notes are the same notes. Telling them
+        -- anyway costs them the trip, which is the one thing this rail cannot
+        -- give back.
+        AND COALESCE(a.total, 0) < COALESCE(m.max_concurrent_orders, 1)`,
     [denomination, lookahead], 'cash_suppliers_for_denomination',
   );
   return rows.map((r) => ({
@@ -970,6 +969,17 @@ export async function approveMerchant(merchantId, { actor = null } = {}) {
        merchant_approval_status = 'APPROVED', status = 'ACTIVE',
        merchant_approved_by = $2, merchant_approved_at = now(),
        merchant_rejection_reason = NULL, suspension_reason = NULL,
+       -- ── The streak goes back to zero with the reinstatement ──────────────
+       -- There is no timer on a refusal suspension: an admin reads the reason
+       -- and, if it holds up, reinstates the merchant on the spot. That only
+       -- works if the count comes back with them. Left standing at the cap,
+       -- the merchant is ACTIVE with three strikes already against them and
+       -- the very next refusal — however ordinary — suspends them again
+       -- instantly, so the admin's decision would last exactly one order.
+       --
+       -- In the SAME statement as the reinstatement, so there is no instant at
+       -- which the merchant is tradeable and the counter still says suspend.
+       consecutive_rejections = 0,
        updated_at = now()
      WHERE merchant_id = $1 RETURNING ${COLUMNS}`,
     [String(merchantId), actor ? String(actor) : null], 'merchant_approve',

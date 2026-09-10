@@ -34,6 +34,7 @@ import {
 import { getSpendablePaiseFor } from '#db/repositories/merchantWallets.core.js';
 import { emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import { assertPaymentIntent } from '../../shared/storedUrl.js';
+import { MERCHANT_CURRENCY } from './merchantCurrency.js';
 
 /** How far ahead a releasing hold counts as headroom. */
 const HEADROOM_LOOKAHEAD_SECONDS = 120;
@@ -201,10 +202,25 @@ export async function claimLinkFor(order) {
     : null) ?? await getActivePolicy();
 
   const denominationPaise = Math.round(Number(order.tokenAmount) * 100);
+
+  // The concurrency caps this ORDER is held to, from the rail it was created
+  // on — not the live policy, for the same reason assignment reads the order's
+  // own version: an order claimed after a switch keeps the rules it was born
+  // under. On the cash rail the answer is ONE either way, because the notes a
+  // merchant is holding are the same notes.
+  const cap = concurrencyCapFor(policy);
+
   const claim = await db.cashLinks.claimLinkForOrder({
     orderId: order.orderId,
     denominationPaise,
     minRemainingSeconds: policy.linkMinRemainingSeconds,
+    // Everything the query needs to ask "may this merchant serve THIS order,
+    // right now" — the same question assignmentCandidates asks on the UPI rail
+    // and this rail never asked at all.
+    userId: order.userId ?? null,
+    currency: order.currency || MERCHANT_CURRENCY.INR, // schema default: 'INR'
+    maxDepositOrders: cap,
+    maxTotalOrders: cap,
   });
 
   // A claim removes an order from the waiting count, so what merchants are

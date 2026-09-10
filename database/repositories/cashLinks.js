@@ -47,6 +47,7 @@
  * be left stale by a crash.
  */
 import { pgQuery, withTransaction } from '../client.js';
+import { nonNegative } from '../numbers.js';
 
 const toLink = (r) => (r ? {
   linkId: r.link_id,
@@ -130,6 +131,22 @@ export async function supplyLink({
  */
 export async function claimLinkForOrder({
   orderId, denominationPaise, minRemainingSeconds,
+  // ── Who the link's merchant must still BE, at claim time ──────────────────
+  // A link is supplied minutes before it is claimed, and everything about its
+  // merchant can change in between: an admin can suspend or block them, the
+  // refusal cap can suspend them, they can go offline, stop accepting buys, or
+  // fill up with other orders. None of that was re-checked — this query matched
+  // on denomination, LIVE and expiry alone, so a SUSPENDED merchant kept being
+  // handed players through a link they left behind.
+  //
+  // Passing the order's own facts rather than a pre-filtered merchant list, for
+  // the same reason `assignmentCandidates` takes them: a merchant who must not
+  // serve this order is not a candidate at all, rather than a candidate the
+  // caller is trusted to drop afterwards.
+  userId = null,
+  currency = 'INR',
+  maxDepositOrders = 1,
+  maxTotalOrders = 1,
 }) {
   if (!orderId) throw new Error('claimLinkForOrder requires an orderId');
   const remaining = Number(minRemainingSeconds);
@@ -141,12 +158,46 @@ export async function claimLinkForOrder({
     return await withTransaction(async (client) => {
       const { rows: found } = await client.query(
         `SELECT l.link_id FROM cash_link_queue l
+          JOIN merchants m ON m.merchant_id = l.merchant_id
+          LEFT JOIN LATERAL (
+            SELECT COUNT(*)::int AS total,
+                   COUNT(*) FILTER (WHERE o.order_type = 'DEPOSIT')::int AS deposits
+              FROM order_states o
+             WHERE o.merchant_id = l.merchant_id
+               AND o.state IN ('ASSIGNED', 'PROCESSING', 'PAID')
+          ) a ON TRUE
           WHERE l.status = 'LIVE'
             AND l.denomination_paise = $1
             -- The floor, applied HERE rather than by the caller. A link with
             -- seconds left is worse than none: the player cannot reach the
             -- machine, but now believes they have been served.
             AND l.expires_at > now() + make_interval(secs => $2)
+            -- ── The merchant, as they are NOW and not as they were at supply ──
+            -- Every one of these is a rule the UPI rail has enforced in
+            -- assignmentCandidates all along. The cash rail enforced none of
+            -- them, so an admin blocking a merchant, or the refusal cap
+            -- suspending one, did not stop orders reaching them.
+            AND m.status = 'ACTIVE'
+            AND m.merchant_approval_status = 'APPROVED'
+            AND m.is_online
+            AND m.accepts_deposits
+            AND m.merchant_type = $3
+            -- Their own approved denomination, re-read. An admin can move a
+            -- merchant to a different tier after they supplied the link.
+            AND m.cash_denomination_paise = $1
+            AND COALESCE(a.total, 0)    < COALESCE(m.max_concurrent_orders, $4)
+            AND COALESCE(a.deposits, 0) < COALESCE(m.max_concurrent_deposit_orders, $5)
+            -- ── The refusal bar (F-021), which the cash rail did not have ────
+            -- A merchant who refused THIS order must not be handed it again,
+            -- and a merchant who refused THIS PLAYER must not be given their
+            -- next one. Both pairs live in order_rejections; the UPI rail
+            -- applies them in its candidate query and this rail applied
+            -- neither, so the whole rule was absent wherever cash was live.
+            AND NOT EXISTS (
+              SELECT 1 FROM order_rejections r
+               WHERE r.merchant_id = l.merchant_id
+                 AND (r.order_id = $6 OR ($7::text IS NOT NULL AND r.user_id = $7::text))
+            )
           ORDER BY
             -- A merchant whose LAST trip was wasted goes first.
             --
@@ -173,7 +224,11 @@ export async function claimLinkForOrder({
             l.expires_at ASC
           LIMIT 1
           FOR UPDATE OF l SKIP LOCKED`,
-        [Number(denominationPaise), remaining],
+        [
+          Number(denominationPaise), remaining, String(currency),
+          nonNegative(maxTotalOrders, 1), nonNegative(maxDepositOrders, 1),
+          String(orderId), userId === null || userId === undefined ? null : String(userId),
+        ],
       );
       if (!found.length) return { ok: false, reason: 'NO_LINK_AVAILABLE' };
 

@@ -24,7 +24,7 @@
  * In the database tier because these are properties of the table and its
  * locking, and proving them means concurrent transactions rather than routes.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import {
   supplyLink, claimLinkForOrder, expireDueLinks, cancelLink,
@@ -39,17 +39,55 @@ describePg('the ATM cash-link queue', () => {
   const uid = (p) => `${p}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}-${seq += 1}`;
   const inMinutes = (m) => new Date(Date.now() + m * 60_000);
 
-  // A merchant row is needed only as a foreign identity here; the queue does
-  // not join it, deliberately (the denomination is copied at supply time).
-  const merchant = () => uid('mch');
+  /**
+   * A REAL, eligible merchant row.
+   *
+   * This used to be `uid('mch')` — a bare string — under the comment "the queue
+   * does not join it, deliberately". That deliberate non-join WAS the gap: a
+   * link is supplied minutes before it is claimed, and nothing re-checked who
+   * its merchant had become in between. An admin could block a merchant, or the
+   * refusal cap suspend one, and orders kept reaching them through a link they
+   * had left behind.
+   *
+   * The claim joins `merchants` now, so the fixture has to be a merchant rather
+   * than an identity — aligned to the invariant rather than the invariant
+   * relaxed to the fixture. Every field set here is one the claim query reads,
+   * which is also what makes the eligibility tests below able to turn each of
+   * them off in turn.
+   */
+  const merchant = async ({ denominationPaise = 100_000, ...overrides } = {}) => {
+    const merchantId = uid('mch');
+    await pgQuery(
+      `INSERT INTO merchants
+         (merchant_id, name, public_ref, mobile, status, merchant_approval_status,
+          is_online, accepts_deposits, accepted_currencies, cash_denomination_paise,
+          max_concurrent_orders, max_concurrent_deposit_orders)
+       VALUES ($1, 'CLQ merchant', $2, $3, 'ACTIVE', 'APPROVED',
+               TRUE, TRUE, ARRAY['INR'], $4, 5, 5)`,
+      [merchantId, `CLQ${seq}${Math.random().toString(36).slice(2, 6)}`.toUpperCase(),
+        `9${String(seq).padStart(4, '0')}${String(Date.now()).slice(-5)}`.slice(0, 10), denominationPaise],
+      'clq_test_merchant',
+    );
+    if (Object.keys(overrides).length) {
+      const sets = Object.keys(overrides).map((k, i) => `${k} = $${i + 2}`).join(', ');
+      await pgQuery(
+        `UPDATE merchants SET ${sets} WHERE merchant_id = $1`,
+        [merchantId, ...Object.values(overrides)], 'clq_test_merchant_patch',
+      );
+    }
+    return merchantId;
+  };
 
-  const orderAt = async (denominationPaise, state = 'PENDING_QUEUE') => {
+  // `userId` is a parameter because the refusal bar is a PAIR — a merchant who
+  // refused this player must not be given their next order either — and that
+  // cannot be tested with every order belonging to the same person.
+  const orderAt = async (denominationPaise, state = 'PENDING_QUEUE', userId = 'clq-user') => {
     const orderId = uid('ord');
     await pgQuery(
       `INSERT INTO order_states
          (order_id, user_id, order_type, state, token_amount_paise, payment_mode)
-       VALUES ($1, 'clq-user', 'DEPOSIT', $2, $3, 'CASH_ATM')`,
-      [orderId, state, denominationPaise],
+       VALUES ($1, $4, 'DEPOSIT', $2, $3, 'CASH_ATM')`,
+      [orderId, state, denominationPaise, userId],
     );
     return orderId;
   };
@@ -73,7 +111,7 @@ describePg('the ATM cash-link queue', () => {
   afterAll(async () => { await closePg(); });
 
   it('lets one merchant hold exactly one live link', async () => {
-    const m = merchant();
+    const m = await merchant({ denominationPaise: 500_000 });
     const first = await supplyLink({
       linkId: uid('lnk'), merchantId: m, denominationPaise: 500_000,
       paymentLink: 'upi://pay?am=5000', expiresAt: inMinutes(2),
@@ -115,7 +153,7 @@ describePg('the ATM cash-link queue', () => {
     const links = [];
     for (let i = 0; i < 4; i += 1) {
       const r = await supplyLink({
-        linkId: uid('lnk'), merchantId: merchant(), denominationPaise: denomination,
+        linkId: uid('lnk'), merchantId: await merchant({ denominationPaise: denomination }), denominationPaise: denomination,
         paymentLink: `upi://pay?am=1000&i=${i}`, expiresAt: inMinutes(5),
       });
       expect(r.ok).toBe(true);
@@ -138,7 +176,7 @@ describePg('the ATM cash-link queue', () => {
   it('runs out rather than handing the same link to a fifth order', async () => {
     const denomination = 4_000_000;
     const r = await supplyLink({
-      linkId: uid('lnk'), merchantId: merchant(), denominationPaise: denomination,
+      linkId: uid('lnk'), merchantId: await merchant({ denominationPaise: denomination }), denominationPaise: denomination,
       paymentLink: 'upi://pay?am=40000', expiresAt: inMinutes(5),
     });
     expect(r.ok).toBe(true);
@@ -158,7 +196,7 @@ describePg('the ATM cash-link queue', () => {
   it('stamps the order in the same transaction as the claim', async () => {
     const denomination = 50_000;
     const supplied = await supplyLink({
-      linkId: uid('lnk'), merchantId: merchant(), denominationPaise: denomination,
+      linkId: uid('lnk'), merchantId: await merchant({ denominationPaise: denomination }), denominationPaise: denomination,
       paymentLink: 'upi://pay?am=500', expiresAt: inMinutes(5),
     });
     const orderId = await orderAt(denomination);
@@ -174,7 +212,7 @@ describePg('the ATM cash-link queue', () => {
   it('refuses to give an order a second link, and returns the first one to the queue', async () => {
     const denomination = 50_000;
     await supplyLink({
-      linkId: uid('lnk'), merchantId: merchant(), denominationPaise: denomination,
+      linkId: uid('lnk'), merchantId: await merchant({ denominationPaise: denomination }), denominationPaise: denomination,
       paymentLink: 'upi://pay?am=500', expiresAt: inMinutes(5),
     });
     const orderId = await orderAt(denomination);
@@ -182,7 +220,7 @@ describePg('the ATM cash-link queue', () => {
 
     // A second link for the same order would send the player two places.
     const spare = await supplyLink({
-      linkId: uid('lnk'), merchantId: merchant(), denominationPaise: denomination,
+      linkId: uid('lnk'), merchantId: await merchant({ denominationPaise: denomination }), denominationPaise: denomination,
       paymentLink: 'upi://pay?am=500', expiresAt: inMinutes(5),
     });
     const again = await claimLinkForOrder({ orderId, denominationPaise: denomination, minRemainingSeconds: 60 });
@@ -208,7 +246,7 @@ describePg('the ATM cash-link queue', () => {
     // this table has, because nothing looks wrong anywhere.
     const denomination = 100_000;
     const supplied = await supplyLink({
-      linkId: uid('lnk'), merchantId: merchant(), denominationPaise: denomination,
+      linkId: uid('lnk'), merchantId: await merchant({ denominationPaise: denomination }), denominationPaise: denomination,
       paymentLink: 'upi://pay?am=1000', expiresAt: inMinutes(5),
     });
     expect(supplied.ok).toBe(true);
@@ -237,7 +275,7 @@ describePg('the ATM cash-link queue', () => {
     const denomination = 1_000_000;
     // Alive, but only 30 seconds left.
     await supplyLink({
-      linkId: uid('lnk'), merchantId: merchant(), denominationPaise: denomination,
+      linkId: uid('lnk'), merchantId: await merchant({ denominationPaise: denomination }), denominationPaise: denomination,
       paymentLink: 'upi://pay?am=10000', expiresAt: new Date(Date.now() + 30_000),
     });
 
@@ -265,7 +303,7 @@ describePg('the ATM cash-link queue', () => {
     // what other cases happened to leave behind — the same defect that let M98
     // survive a full-tier run earlier on this branch.
     const mine = await supplyLink({
-      linkId: uid('lnk'), merchantId: merchant(), denominationPaise: 100_000,
+      linkId: uid('lnk'), merchantId: await merchant({ denominationPaise: 100_000 }), denominationPaise: 100_000,
       paymentLink: 'upi://pay?am=1000', expiresAt: inMinutes(5),
     });
     expect(mine.ok).toBe(true);
@@ -294,7 +332,7 @@ describePg('the ATM cash-link queue', () => {
     // out in one amount. A relation like ">= the order" would look reasonable
     // and quietly promise a player four times what they paid for.
     const big = await supplyLink({
-      linkId: uid('lnk'), merchantId: merchant(), denominationPaise: 4_000_000,
+      linkId: uid('lnk'), merchantId: await merchant({ denominationPaise: 4_000_000 }), denominationPaise: 4_000_000,
       paymentLink: 'upi://pay?am=40000', expiresAt: inMinutes(1),
     });
     expect(big.ok).toBe(true);
@@ -320,7 +358,7 @@ describePg('the ATM cash-link queue', () => {
   });
 
   it('expires what is due, idempotently, and owes the merchant nothing', async () => {
-    const m = merchant();
+    const m = await merchant({ denominationPaise: 50_000 });
     const stale = await supplyLink({
       linkId: uid('lnk'), merchantId: m, denominationPaise: 50_000,
       paymentLink: 'upi://pay?am=500', expiresAt: new Date(Date.now() + 500),
@@ -344,10 +382,142 @@ describePg('the ATM cash-link queue', () => {
     expect(fresh.ok).toBe(true);
   });
 
+  /**
+   * ── Who the link's merchant must still BE, at claim time ──────────────────
+   *
+   * A link is supplied minutes before it is claimed, and this query used to
+   * match on denomination, LIVE and expiry alone — it did not join `merchants`
+   * at all, under a comment saying so deliberately. So everything that can stop
+   * a merchant serving stopped nothing here: an admin blocking them, the
+   * consecutive-refusal cap suspending them, going offline, turning buys off,
+   * filling up with other orders, or having refused this very player before.
+   *
+   * The UPI rail enforced every one of these in `assignmentCandidates` the whole
+   * time. Two paths to the same decision, one of them with none of the rules —
+   * the §5 shape, and the reason each is asserted separately below rather than
+   * as one "ineligible merchant" case: a single test would pass while five of
+   * the six predicates were missing.
+   */
+  describe('the merchant must still be eligible when the link is CLAIMED', () => {
+    const DEN = 100_000;
+
+    // Each case supplies ONE link and asserts it is refused. Earlier tests in
+    // this file leave LIVE links at the same tier behind, and the claim would
+    // happily take one of THOSE and report success — the assertion would fail
+    // while the predicate under test was working perfectly. The queue is
+    // emptied first so the only link that can be claimed is the one the case
+    // made (trap 10, inside a single file).
+    beforeEach(async () => {
+      await pgQuery("DELETE FROM cash_link_queue WHERE status = 'LIVE'", [], 'clq_test_clear');
+    });
+
+    const linkFrom = async (merchantId) => {
+      const supplied = await supplyLink({
+        linkId: uid('lnk'), merchantId, denominationPaise: DEN,
+        paymentLink: 'upi://pay?am=1000', expiresAt: inMinutes(5),
+      });
+      expect(supplied.ok, 'the link was not supplied — the test proves nothing').toBe(true);
+      return supplied;
+    };
+
+    const claim = (orderId, userId = 'clq-user') => claimLinkForOrder({
+      orderId, denominationPaise: DEN, minRemainingSeconds: 30,
+      userId, currency: 'INR', maxDepositOrders: 1, maxTotalOrders: 1,
+    });
+
+    it('claims normally while the merchant is eligible — the control', async () => {
+      // Without this, every case below could pass because the fixture never
+      // produced a claimable link at all.
+      const m = await merchant({ denominationPaise: DEN });
+      await linkFrom(m);
+      expect((await claim(await orderAt(DEN))).ok).toBe(true);
+    });
+
+    // The statuses are the ones `merchants_status_known` actually allows —
+    // ACTIVE, SUSPENDED, INACTIVE, PENDING, REJECTED. There is no BLOCKED on a
+    // merchant; that value belongs to `users`. A first draft of this table used
+    // it and the UPDATE was refused by the CHECK, which is the database being
+    // right about a vocabulary the test had invented.
+    //
+    // SUSPENDED carries its reason in the same statement, because
+    // `merchants_suspension_reason_present` refuses a suspension nobody can
+    // explain — a merchant cannot be stopped without an appealable cause.
+    it.each([
+      ['suspended by an admin',        { status: "'SUSPENDED'", suspension_reason: "'admin action'" }],
+      ['deactivated by an admin',      { status: "'INACTIVE'" }],
+      ['rejected',                     { status: "'REJECTED'" }],
+      ['approval withdrawn',           { merchant_approval_status: "'SUSPENDED'" }],
+      ['gone offline',                 { is_online: 'FALSE' }],
+      ['stopped accepting buy orders', { accepts_deposits: 'FALSE' }],
+      ['moved to another tier',        { cash_denomination_paise: '50000' }],
+    ])('refuses the link of a merchant %s', async (_label, patch) => {
+      const m = await merchant({ denominationPaise: DEN });
+      await linkFrom(m);
+      const sets = Object.entries(patch).map(([c, v]) => `${c} = ${v}`).join(', ');
+      await pgQuery(`UPDATE merchants SET ${sets} WHERE merchant_id = $1`,
+        [m], 'clq_test_ineligible');
+
+      const got = await claim(await orderAt(DEN));
+      expect(got.ok, 'an ineligible merchant was handed a player').toBe(false);
+      expect(got.reason).toBe('NO_LINK_AVAILABLE');
+    });
+
+    it('refuses a merchant already at their concurrency cap', async () => {
+      // Their OWN cap, set to one. `COALESCE(m.max_concurrent_orders, $n)`
+      // means the merchant's column wins over the rail default, so a fixture
+      // left at the helper's default of 5 would pass this test while holding
+      // one order — proving nothing about the cap.
+      const m = await merchant({ denominationPaise: DEN, max_concurrent_orders: 1 });
+      await linkFrom(m);
+      // One order already on their plate. On this rail the cap is ONE, because
+      // the notes they are holding are the same notes.
+      await pgQuery(
+        `INSERT INTO order_states
+           (order_id, user_id, order_type, state, token_amount_paise, payment_mode, merchant_id)
+         VALUES ($1, 'clq-other', 'DEPOSIT', 'PROCESSING', $2, 'CASH_ATM', $3)`,
+        [uid('ord'), DEN, m], 'clq_test_busy',
+      );
+      expect((await claim(await orderAt(DEN))).ok).toBe(false);
+    });
+
+    it('refuses a merchant who already refused THIS ORDER', async () => {
+      const m = await merchant({ denominationPaise: DEN });
+      await linkFrom(m);
+      const orderId = await orderAt(DEN);
+      await pgQuery(
+        `INSERT INTO order_rejections (order_id, merchant_id, user_id, reason)
+         VALUES ($1, $2, 'clq-user', 'declined')`,
+        [orderId, m], 'clq_test_refused_order',
+      );
+      expect((await claim(orderId)).ok, 'an order came back to the merchant who refused it')
+        .toBe(false);
+    });
+
+    it('refuses a merchant who already refused THIS PLAYER', async () => {
+      // A different ORDER, the same player. This is the half of F-021 that
+      // stops a merchant declining one player's orders over and over.
+      const m = await merchant({ denominationPaise: DEN });
+      await linkFrom(m);
+      // A REAL earlier order of theirs: `order_rejections.order_id` is a foreign
+      // key, so a fabricated id is refused — the audit row cannot point at an
+      // order that never existed.
+      const earlier = await orderAt(DEN, 'CANCELLED', 'barred-player');
+      await pgQuery(
+        `INSERT INTO order_rejections (order_id, merchant_id, user_id, reason)
+         VALUES ($1, $2, 'barred-player', 'declined')`,
+        [earlier, m], 'clq_test_refused_player',
+      );
+      expect((await claim(await orderAt(DEN, 'PENDING_QUEUE', 'barred-player'), 'barred-player')).ok,
+        'a merchant was given another order from a player they had refused').toBe(false);
+      // …and is still available to everybody else.
+      expect((await claim(await orderAt(DEN), 'someone-else')).ok).toBe(true);
+    });
+  });
+
   it('claims from the merchant whose last trip was wasted, first', async () => {
     const denomination = 4_000_000;
-    const wasted = merchant();
-    const fresh = merchant();
+    const wasted = await merchant({ denominationPaise: denomination });
+    const fresh = await merchant({ denominationPaise: denomination });
 
     // The wasted merchant drove out and nobody took it.
     const dead = await supplyLink({
@@ -405,7 +575,7 @@ describePg('the ATM cash-link queue', () => {
     // An order that HAS a link is served, and advertising it would send a
     // merchant to an ATM for work that no longer exists.
     await supplyLink({
-      linkId: uid('lnk'), merchantId: merchant(), denominationPaise: denomination,
+      linkId: uid('lnk'), merchantId: await merchant({ denominationPaise: denomination }), denominationPaise: denomination,
       paymentLink: 'upi://pay?am=5000', expiresAt: inMinutes(5),
     });
     const claim = await claimLinkForOrder({
@@ -439,7 +609,7 @@ describePg('the ATM cash-link queue', () => {
 
     await orderAt(denomination);
     const supplied = await supplyLink({
-      linkId: uid('lnk'), merchantId: merchant(), denominationPaise: denomination,
+      linkId: uid('lnk'), merchantId: await merchant({ denominationPaise: denomination }), denominationPaise: denomination,
       paymentLink: 'upi://pay?am=10000', expiresAt: inMinutes(5),
     });
     expect(supplied.ok).toBe(true);
@@ -456,7 +626,7 @@ describePg('the ATM cash-link queue', () => {
   });
 
   it('refuses an empty link and one that expires in the past', async () => {
-    const m = merchant();
+    const m = await merchant({ denominationPaise: 50_000 });
     const empty = await supplyLink({
       linkId: uid('lnk'), merchantId: m, denominationPaise: 50_000,
       paymentLink: '   ', expiresAt: inMinutes(2),
