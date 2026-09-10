@@ -137,10 +137,16 @@ function facts() {
     routes: {
       total: all.length,
       unauthenticated: unauth.length,
-      unauthenticatedList: unauth.map((r) => `${r.method} ${r.path}  (${r.file}:${r.line})`).sort(),
+      // File, NOT file:line. A line number moves whenever anything above it
+      // moves — adding an import churned five entries once — so including it
+      // makes the gate fire on edits that changed no route at all. A gate that
+      // cries wolf trains its reader to regenerate without looking, which is
+      // precisely the failure it exists to prevent. It fires when a route
+      // APPEARS, VANISHES or CHANGES SHAPE, and not otherwise.
+      unauthenticatedList: unauth.map((r) => `${r.method} ${r.path}  (${r.file})`).sort(),
       subAdminNoPermissionKey: subAdminNoKey.length,
       subAdminNoPermissionKeyWrites: subAdminNoKey.filter((r) => r.method !== 'GET')
-        .map((r) => `${r.method} ${r.path}  (${r.file}:${r.line})`).sort(),
+        .map((r) => `${r.method} ${r.path}  (${r.file})`).sort(),
       withPermissionKey: all.filter((r) => r.mw.some((m) => PERM.test(m))).length,
     },
     sql: (({ sites, ...rest }) => rest)(sql()),

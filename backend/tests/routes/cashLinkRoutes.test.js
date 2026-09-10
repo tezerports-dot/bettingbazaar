@@ -115,17 +115,17 @@ describePg('a merchant supplying an ATM cash link', () => {
 
   it('refuses a second live link, and lets them supply again once it is cancelled', async () => {
     const m = await cashMerchant();
-    const first = await as(app, m).post('/cash-links').send({ paymentLink: 'upi://pay?am=5000' });
+    const first = await as(app, m).post('/cash-links').send({ paymentLink: 'upi://pay?pa=atm&am=5000' });
     expect(first.status).toBe(200);
 
-    const second = await as(app, m).post('/cash-links').send({ paymentLink: 'upi://pay?am=5000' });
+    const second = await as(app, m).post('/cash-links').send({ paymentLink: 'upi://pay?pa=atm&am=5000' });
     expect(second.status).toBe(409);
     expect(second.body.reason).toBe('LINK_ALREADY_LIVE');
 
     const cancelled = await as(app, m).delete(`/cash-links/${first.body.link.linkId}`);
     expect(cancelled.status).toBe(200);
 
-    const third = await as(app, m).post('/cash-links').send({ paymentLink: 'upi://pay?am=5000' });
+    const third = await as(app, m).post('/cash-links').send({ paymentLink: 'upi://pay?pa=atm&am=5000' });
     expect(third.status).toBe(200);
   });
 
@@ -133,7 +133,7 @@ describePg('a merchant supplying an ATM cash link', () => {
     const m = await merchantActor({ tokensRupees: 50_000 });
     await updateMerchant(m.merchantId, { cashDenominationPaise: null, isOnline: true });
 
-    const res = await as(app, m).post('/cash-links').send({ paymentLink: 'upi://pay?am=5000' });
+    const res = await as(app, m).post('/cash-links').send({ paymentLink: 'upi://pay?pa=atm&am=5000' });
     expect(res.status).toBe(400);
     expect(res.body.reason).toBe('NOT_APPROVED_FOR_CASH');
 
@@ -147,7 +147,7 @@ describePg('a merchant supplying an ATM cash link', () => {
   it('will not let one merchant cancel another\'s link', async () => {
     const owner = await cashMerchant();
     const other = await cashMerchant();
-    const supplied = await as(app, owner).post('/cash-links').send({ paymentLink: 'upi://pay?am=5000' });
+    const supplied = await as(app, owner).post('/cash-links').send({ paymentLink: 'upi://pay?pa=atm&am=5000' });
     expect(supplied.status).toBe(200);
 
     const stolen = await as(app, other).delete(`/cash-links/${supplied.body.link.linkId}`);
@@ -187,13 +187,44 @@ describePg('a merchant supplying an ATM cash link', () => {
     expect(fundedView.body.worthGoing).toBe(true);
   });
 
+  it('refuses a link that is not a payment, and one that names no payee', async () => {
+    // The link is handed to a waiting player as WHERE TO PAY, and it used to be
+    // stored raw — any string at all reached their screen. Two refusals, both
+    // by name, because a merchant standing at a machine has to know what to fix:
+    //
+    //   not a UPI intent  — an http link to a page the merchant controls would
+    //                       otherwise be shown to the player as a payment
+    //   no `pa=` payee    — a UPI intent naming nobody cannot be paid by
+    //                       anyone, and the player is at a machine on a
+    //                       two-minute window
+    //
+    // The fixtures elsewhere in this file carry `pa=atm` for the same reason:
+    // an intent without one is not a link any ATM produces.
+    const m = await cashMerchant();
+
+    const notAPayment = await as(app, m).post('/cash-links')
+      .send({ paymentLink: 'https://merchant-controlled.example/pay' });
+    expect(notAPayment.status).toBe(400);
+    expect(notAPayment.body.reason).toBe('INVALID_LINK');
+    expect(notAPayment.body.message).toMatch(/UPI/);
+
+    const noPayee = await as(app, m).post('/cash-links')
+      .send({ paymentLink: 'upi://pay?am=5000' });
+    expect(noPayee.status).toBe(400);
+    expect(noPayee.body.reason).toBe('INVALID_LINK');
+    expect(noPayee.body.message).toMatch(/payee/);
+
+    // Neither attempt may leave a link behind for a player to be handed.
+    expect(await getLiveLinkFor(m.merchantId)).toBeNull();
+  });
+
   it('refuses an empty link, and refuses anyone without a merchant token', async () => {
     const m = await cashMerchant();
     const empty = await as(app, m).post('/cash-links').send({ paymentLink: '   ' });
     expect(empty.status).toBe(400);
     expect(empty.body.reason).toBe('LINK_REQUIRED');
 
-    const anon = await request(app).post('/cash-links').send({ paymentLink: 'upi://pay?am=5000' });
+    const anon = await request(app).post('/cash-links').send({ paymentLink: 'upi://pay?pa=atm&am=5000' });
     expect([401, 403]).toContain(anon.status);
   });
 
@@ -204,7 +235,7 @@ describePg('a merchant supplying an ATM cash link', () => {
       justification: 'Back to UPI mid-suite.', changedByName: 'test',
     });
 
-    const res = await as(app, m).post('/cash-links').send({ paymentLink: 'upi://pay?am=5000' });
+    const res = await as(app, m).post('/cash-links').send({ paymentLink: 'upi://pay?pa=atm&am=5000' });
     expect(res.status).toBe(400);
     expect(res.body.reason).toBe('WRONG_RAIL');
 

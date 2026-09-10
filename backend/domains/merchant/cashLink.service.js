@@ -33,6 +33,7 @@ import {
 } from '#db/repositories/paymentModePolicy.js';
 import { getAvailablePaiseFor } from '#db/repositories/merchantWallets.core.js';
 import { emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
+import { assertPaymentIntent } from '../../shared/storedUrl.js';
 
 /** How far ahead a releasing hold counts as headroom. */
 const HEADROOM_LOOKAHEAD_SECONDS = 120;
@@ -145,13 +146,34 @@ export async function supplyCashLink({ merchantId, merchant, paymentLink }) {
     };
   }
 
+  // ── It has to BE a payment link ──────────────────────────────────────────
+  // Stored raw and handed to a waiting player as WHERE TO PAY, this accepted
+  // any string at all — an http link to a page the merchant controls, or
+  // nothing resembling a payment.
+  //
+  // Checked HERE, last, and not at the top of the function: the refusals above
+  // are about the merchant's STATE (wrong rail, not approved, already holding a
+  // link) and each is a bigger problem than the link's format. A merchant on
+  // the UPI rail needs to be told that, not told their link is malformed.
+  //
+  // An EMPTY link deliberately falls through to `supplyLink`, which owns
+  // LINK_REQUIRED and its wording. One owner per refusal.
+  let link = String(paymentLink ?? '').trim();
+  if (link) {
+    try {
+      link = assertPaymentIntent(link);
+    } catch (e) {
+      return { ok: false, reason: 'INVALID_LINK', message: e.message };
+    }
+  }
+
   // The expiry comes from the policy, and it is computed HERE rather than sent
   // by the merchant: a client-supplied lifetime is a client that can keep a
   // link alive as long as it likes.
   const expiresAt = new Date(Date.now() + policy.linkExpirySeconds * 1000);
 
   const result = await db.cashLinks.supplyLink({
-    linkId: newLinkId(), merchantId, denominationPaise, paymentLink, expiresAt,
+    linkId: newLinkId(), merchantId, denominationPaise, paymentLink: link, expiresAt,
   });
   if (!result.ok) return result;
 

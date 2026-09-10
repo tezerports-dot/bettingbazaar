@@ -11,6 +11,7 @@ import * as issuance from '#db/repositories/adminIssuance.js';
 import { requireIdempotencyKey } from '../../middleware/idempotencyKey.js';
 import { CASH_DENOMINATIONS_PAISE, isCashDenomination } from './denominations.js';
 import { rupeesToPaise } from '../../shared/money.js';
+import { assertExternalHttpsUrl } from '../../shared/storedUrl.js';
 
 const router = express.Router();
 
@@ -929,7 +930,14 @@ router.put('/merchants/:merchantId/panel-url', authenticate, isAdmin, async (req
 
     // The panel URL lives on the merchant record. It was written to the
     // account, which nothing reads.
-    const merchant = await db.merchants.updateMerchant(merchantId, { panelUrl: panelUrl || '' });
+    // Stored by an admin, followed by a merchant — the condition under which a
+    // downgrade to http is somebody else's problem. Empty clears it.
+    let safePanelUrl = '';
+    if (String(panelUrl ?? '').trim()) {
+      try { safePanelUrl = assertExternalHttpsUrl(panelUrl, 'panel URL'); }
+      catch (e) { return res.status(400).json({ success: false, message: e.message }); }
+    }
+    const merchant = await db.merchants.updateMerchant(merchantId, { panelUrl: safePanelUrl });
     if (!merchant) {
       return res.status(404).json({ success: false, message: 'Merchant not found' });
     }

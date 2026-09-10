@@ -3,7 +3,7 @@
 import { express, authenticate, isAdmin, isAdminOrSubAdmin } from './_adminShared.js';
 import { db } from '#db';
 import { brandingPayload, broadcastBranding } from '../../domains/branding/brandingPayload.js';
-import { generateBrandingUploadUrl, isS3Configured, uploadBufferToS3, deleteFile } from '../../services/cdn.service.js';
+import { generateBrandingUploadUrl, isS3Configured, uploadBufferToS3, deleteFile, verifyUploadedObject } from '../../services/cdn.service.js';
 import path_node from 'path';
 import fs_node from 'fs';
 
@@ -259,8 +259,28 @@ router.post('/branding/confirm-upload', authenticate, isAdmin, async (req, res) 
     if (!fileKey || !cdnUrl) {
       return res.status(400).json({ success: false, message: 'fileKey and cdnUrl are required' });
     }
+    // ── The URL recorded must be the object that was uploaded ─────────────
+    // Both values came from the request body and were stored unread, so this
+    // handler recorded whatever it was handed — a link to another site included
+    // — and branding renders in ALL THREE panels. `verifyUploadedObject` is the
+    // check that already existed for the profile-picture path and was simply
+    // not wired here: it re-derives the URL from the key and refuses a
+    // mismatch, confirms the object carries this admin's id and the right
+    // category prefix, and reads the first 8 KB to check the bytes are the type
+    // they claim to be.
+    let verified;
+    try {
+      // The key is `branding/<category>/…` (generateBrandingUploadUrl), so the
+      // prefix asserted is `branding` — the category inside it is the admin's
+      // own choice and not a trust boundary.
+      verified = await verifyUploadedObject({
+        fileKey, cdnUrl, expectedUserId: String(req.user.userId), expectedCategory: 'branding',
+      });
+    } catch (e) {
+      return res.status(400).json({ success: false, message: e.message });
+    }
     const image = await db.content.addImage({
-      url:        cdnUrl,
+      url:        verified.cdnUrl,
       title:      title || fileKey,
       category:   category || 'logo',
       fileSize:   fileSize || null,

@@ -78,6 +78,7 @@ import { getActivePolicy as getPaymentModePolicy, modeCopy, publicTimers } from 
 import { supplyCashLink, suppliersWithHeadroom } from './cashLink.service.js';
 import { PAYMENT_MODES } from '#db/repositories/paymentModePolicy.js';
 import { getSystemConfig } from '#db/repositories/config.js';
+import { assertCdnAssetUrl } from '../../shared/storedUrl.js';
 
 const router     = express.Router();
 // JWT secret + expiry owned by jwt.util.js — removed a '|| fallback-secret'
@@ -868,7 +869,24 @@ router.put('/profile', merchantAuth, async (req, res) => {
             update['bankDetails.upiId'] = upiId;
         }
         if (qrCodeUrl !== undefined) {
-            update.qrCodeUrl = qrCodeUrl;
+            // ── The QR must be one WE hold ───────────────────────────────
+            // This wrote the string through untouched, and `qrCodeUrl` is on
+            // the player's allowlist (playerOrderView.js) — it is shown to them
+            // as WHERE TO PAY. An upload route exists
+            // (POST /api/merchant/qr/upload-url) but nothing bound the stored
+            // value to it, so the upload was a suggestion: any URL at all was
+            // accepted and rendered.
+            //
+            // An off-platform image in the payment screen hands every player
+            // assigned to this merchant to a third party — their IP, their user
+            // agent, and the moment they were shown a payment screen — which is
+            // §24 pointed the wrong way. And a payment instruction hosted
+            // elsewhere can change after anybody reviews it.
+            //
+            // Empty clears it; anything else must be on this platform's CDN.
+            update.qrCodeUrl = String(qrCodeUrl).trim()
+                ? assertCdnAssetUrl(qrCodeUrl, 'QR code')
+                : null;
         }
         if (bankDetails) {
             if (bankDetails.accountHolderName !== undefined) update['bankDetails.accountHolderName'] = bankDetails.accountHolderName;

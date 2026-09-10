@@ -4,6 +4,7 @@ import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/
 import contentService from './content.service.js';
 import { generatePresignedUploadUrl } from '../../services/cdn.service.js';
 import { db } from '#db';
+import { assertCdnAssetUrl } from '../../shared/storedUrl.js';
 
 const router = express.Router();
 
@@ -279,10 +280,19 @@ router.post('/promo', authenticate, isAdminOrSubAdmin, async (req, res) => {
       });
     }
 
+    // Same check as the edit path below, and it has to be on BOTH: a validator
+    // wired to one of two writers is the shape CLAUDE.md §5 keeps warning
+    // about, and the create path is the one an attacker would reach for.
+    let safeFileUrl = null;
+    if (String(fileUrl ?? '').trim()) {
+      try { safeFileUrl = assertCdnAssetUrl(fileUrl, 'slide image'); }
+      catch (e) { return res.status(400).json({ success: false, message: e.message }); }
+    }
+
     const promo = await db.content.upsertPromo({
       title, description,
       location: String(location || 'HOME').toUpperCase(),
-      mediaType: media, fileUrl: fileUrl || null,
+      mediaType: media, fileUrl: safeFileUrl,
       priority: Number(priority) || 0,
       status: resolved, isActive: resolved === 'PUBLISHED',
       createdBy: req.user.userId,
@@ -300,7 +310,14 @@ router.put('/promo/:id', authenticate, isAdminOrSubAdmin, async (req, res) => {
     const patch = {};
     if (title !== undefined)       patch.title = String(title);
     if (description !== undefined) patch.description = String(description);
-    if (fileUrl !== undefined)     patch.fileUrl = fileUrl || null;
+    // A promo slide is rendered to every player. Stored raw, this accepted a
+    // link to any site — and by the permission gap recorded as F-001 every
+    // sub-admin can write one, whatever their keys say. Empty clears it.
+    if (fileUrl !== undefined) {
+      try {
+        patch.fileUrl = String(fileUrl ?? '').trim() ? assertCdnAssetUrl(fileUrl, 'slide image') : null;
+      } catch (e) { return res.status(400).json({ success: false, message: e.message }); }
+    }
     if (priority !== undefined)    patch.priority = Number(priority) || 0;
     if (location !== undefined)    patch.location = String(location).toUpperCase();
     if (mediaType !== undefined)   patch.mediaType = String(mediaType).toUpperCase();

@@ -327,7 +327,16 @@ panels. A stored XSS in the admin panel runs with an admin session.
 **How.** `npm run audit:map` counts the sinks per panel. Every one needs a
 reading: what reaches it, and is it sanitised at the point of render.
 
-**Status: NOT EXAMINED.**
+**Status: CLEAR** (2026-09-10). Zero `dangerouslySetInnerHTML` and zero
+`.innerHTML =` across all 218 panel files; no `eval`, `new Function` or
+`document.write`; every `window.location.href =` assigns a hardcoded literal.
+`javascript:` URLs in a dynamic `href` are neutralised by React 19's
+`sanitizeURL` — **verified in the shipped production build**
+(`case "href": … value = sanitizeURL("" + value)`), not assumed from the version
+number. Recorded as a dependency: the panels rely on a framework behaviour for
+this, and any value that ever reaches a non-React surface (an email, the bot, a
+PDF, a webview) has nothing behind it. The `javascript:` WAF rule that would be
+the second layer is behind `FLAGS.WAF_FILTER`, **default off**.
 
 ### 2.15 File upload
 
@@ -344,7 +353,16 @@ tampering with a money decision.
 bytes are type-checked on arrival, whether the object is bound to the order and
 actor that requested it (this codebase does bind — see `verifyUploadedObject`).
 
-**Status: NOT EXAMINED.**
+**Status: FINDING — F-006, fixed** (2026-09-10). The pipeline itself is strong:
+MIME allowlist with no wildcards, extension↔MIME cross-check, an explicit
+blocklist that names `.svg` / `.html` / `.js` with the reason ("XSS via CDN"),
+the stored key's extension derived from the MIME rather than the filename,
+filename charset and traversal checks, S3 enforcing both `ContentType` and
+`ContentLength` on the presigned URL, and **magic-byte verification of the first
+8 KB after upload**, with the object bound to uploader, order and category.
+
+What was wrong was not the pipeline but who called it: six routes issue
+presigned URLs and only one bound the stored URL back to the object. See F-006.
 
 ### 2.16 Secrets in responses
 
@@ -529,6 +547,87 @@ recorded so it is not rediscovered as a suspected hole.
 - **Sweep query:** `grep -rn "createHmac" backend --include=*.js | grep -v tests`
 - **Swept:** yes — this is the only webhook signature verifier.
 
+### F-006 — a URL from a request body, stored and later rendered to somebody else
+`FIXED` · high (two of the five are payment instructions shown to players)
+· stored-URL binding · found and fixed 2026-09-10
+
+`PUT /api/merchant/profile` wrote `qrCodeUrl` straight through:
+`update.qrCodeUrl = qrCodeUrl`. No check that it was a URL, on this platform's
+CDN, or related to anything the merchant had uploaded. An upload route exists
+(`POST /api/merchant/qr/upload-url`) but **nothing bound the stored value to
+it** — so the upload was a suggestion, and any string was accepted.
+
+`qrCodeUrl` is on the player's allowlist (`playerOrderView.js`). It is shown to
+them as **where to pay**.
+
+What that costs, worst first:
+
+1. **It leaks the player to a third party.** Every player assigned to that
+   merchant loads an image from a host of the merchant's choosing, which learns
+   their IP, their user agent, and the moment they were shown a payment screen.
+   §24 is about not publishing identity across the P2P boundary; this publishes
+   the *player's*, to somebody the platform never chose.
+2. **A payment instruction hosted elsewhere can change after anyone reviews it.**
+   Approving a QR you do not host approves a URL, not an image.
+3. **The byte check is skipped.** `verifyUploadedObject` reads the first 8 KB and
+   matches magic bytes; a URL that never went through the upload flow was never
+   a file this platform saw.
+
+- **Shape:** *a URL accepted from a request body and stored for later rendering,
+  without being bound to an object this platform holds.*
+- **Sweep query:**
+  `grep -rn "\(logoUrl\|qrCodeUrl\|cdnUrl\|panelUrl\|fileUrl\|paymentLink\)" backend --include=*.js | grep -v "/tests/" | grep "req\.body\|update\.\|patch\."`
+- **Swept: yes — and the sweep found four more.** The QR was not the worst.
+
+| Site | Reaches | Was | Now |
+|---|---|---|---|
+| `merchants.qr_code_url` | **players** — where to pay | any string | must be on this platform's CDN |
+| `cash_links.payment_link` | **players** — where to pay (ATM rail) | any string, stored raw | must be a `upi:` intent **naming a payee** |
+| `promos.file_url` | **players** — every slide | any string, on BOTH create and edit | must be on this platform's CDN |
+| branding `confirm-upload` | **all three panels** | caller-supplied `cdnUrl`, recorded unread | bound via `verifyUploadedObject` |
+| `merchants.panel_url` | a merchant | any string | `https:` only |
+| profile picture | the player themselves | — | **already correct**: bound via `verifyUploadedObject` |
+
+The last row is why this was fixable cleanly: `verifyUploadedObject` already did
+exactly the right thing — re-derives the URL from the key and refuses a
+mismatch, confirms the object carries the right owner and category prefix, reads
+the bytes — and one path used it. The others simply never called it.
+
+- **Fix:** one owner, `backend/shared/storedUrl.js`, with three assertions
+  (`assertCdnAssetUrl`, `assertPaymentIntent`, `assertExternalHttpsUrl`), wired
+  into all five sites. 16 unit tests plus a route test through a real database.
+- **Two details worth keeping:**
+  - The CDN check compares **parsed origins**, never `startsWith`. A prefix test
+    on `https://cdn.example.com` accepts `https://cdn.example.com.evil.test/x`.
+    There is a test for exactly that.
+  - It **fails closed** with no CDN configured: with no CDN there is no such
+    thing as "our own asset", so there is nothing it can honestly accept.
+- **Validation is on WRITE, not read.** Rows written before this keep rendering;
+  refusing them at read time would blank a live merchant's payment screen to fix
+  a problem they did not cause. The gate is the door, not the window.
+- **Gate possible:** yes, and worth writing — a check that any column named
+  `*_url` / `*_link` written from `req.body` passes through this module. Not yet
+  written; queued in §6.
+
+### F-007 — `cashLinkRoutes.test.js` only passes when another file runs first
+`OPEN` · low · test isolation · found 2026-09-10
+
+Three tests in that file fail when it is run alone and pass in the full suite —
+it depends on the payment-mode policy some earlier file leaves behind rather
+than establishing its own.
+
+Found while fixing F-006, and worth separating carefully: **these failures are
+not caused by F-006's change.** Verified by stashing the change and re-running —
+the same three fail on the untouched tree. Recorded rather than fixed so that the
+next person who runs one file and sees red does not go looking for a bug in the
+code under test.
+
+- **Shape:** a test asserting something about global state it did not set.
+  `CLAUDE.md` trap 10 names the same hazard from the other side — never assert a
+  global invariant over a shared table; take a baseline and assert the delta.
+- **Swept:** not yet. Queued in §6.
+
+
 ### 4.1 Sweep result for F-002 (module-scope state)
 
 Run 2026-09-10. Recorded because "swept, none found" is worth as much as a hit.
@@ -592,55 +691,55 @@ new route and decide. Each of the three questions is defined in §2.
 
 <details><summary>Every route with no auth middleware (read each one before dismissing it)</summary>
 
-- `GET /admin/events  (backend/routes/sse.routes.js:222)`
-- `GET /announcements  (backend/routes/retention.routes.js:154)`
-- `GET /assetlinks.json  (backend/routes/wellKnown.routes.js:57)`
-- `GET /bootstrap  (backend/routes/app-bootstrap.routes.js:14)`
-- `GET /categories  (backend/domains/gameRegistry/gameRegistry.routes.js:72)`
-- `GET /cycles/:cycleId  (backend/domains/user/user.routes.js:95)`
-- `GET /cycles/active  (backend/domains/user/user.routes.js:78)`
-- `GET /events  (backend/routes/sse.routes.js:82)`
-- `GET /games  (backend/domains/gameRegistry/gameRegistry.routes.js:45)`
-- `GET /health  (backend/routes.js:355)`
-- `GET /leaderboard/:period  (backend/routes/retention.routes.js:44)`
-- `GET /me  (backend/routes.js:277)`
-- `GET /merchant/events  (backend/routes/sse.routes.js:135)`
-- `GET /providers  (backend/domains/casino/gameProvider.routes.js:94)`
-- `GET /public-config  (backend/domains/telegram/telegram.routes.js:515)`
-- `GET /r/:code  (backend/routes/referralRedirect.routes.js:51)`
-- `GET /stats  (backend/routes/sse.routes.js:274)`
-- `GET /status  (backend/domains/support/support.routes.js:59)`
-- `GET /v1/branding  (backend/domains/user/user.routes.js:651)`
-- `GET /v1/content/ai-analysis  (backend/domains/user/user.routes.js:583)`
-- `GET /v1/content/faq  (backend/domains/user/user.routes.js:529)`
-- `GET /v1/content/promo/:location  (backend/domains/user/user.routes.js:510)`
-- `GET /v1/content/support-links  (backend/domains/user/user.routes.js:559)`
-- `GET /v1/game/cycle/:type/:startTime  (backend/domains/user/user.routes.js:111)`
-- `GET /v1/game/cycles/history  (backend/domains/user/user.routes.js:135)`
-- `GET /v1/system/config  (backend/domains/user/user.routes.js:482)`
-- `GET /v1/system/time  (backend/domains/user/user.routes.js:498)`
-- `GET /v1/token/rates  (backend/domains/user/user.routes.js:755)`
-- `GET /v1/tokens/rate  (backend/domains/user/user.routes.js:732)`
-- `GET /v1/winners  (backend/routes/winners.routes.js:30)`
-- `POST /auth/login  (backend/domains/merchant/merchant.routes.js:207)`
-- `POST /auth/login/2fa  (backend/domains/merchant/merchant.routes.js:311)`
-- `POST /auth/signup  (backend/domains/merchant/merchant.routes.js:156)`
-- `POST /exchange  (backend/domains/telegram/telegram.routes.js:684)`
-- `POST /logout  (backend/routes.js:325)`
-- `POST /otp/request  (backend/domains/telegram/telegram.routes.js:621)`
-- `POST /otp/verify  (backend/domains/telegram/telegram.routes.js:645)`
-- `POST /recovery/webhook  (backend/domains/telegram/telegram.routes.js:425)`
-- `POST /wallet/:providerKey  (backend/domains/casino/gameProvider.routes.js:268)`
-- `POST /webhook  (backend/domains/telegram/telegram.routes.js:110)`
+- `GET /admin/events  (backend/routes/sse.routes.js)`
+- `GET /announcements  (backend/routes/retention.routes.js)`
+- `GET /assetlinks.json  (backend/routes/wellKnown.routes.js)`
+- `GET /bootstrap  (backend/routes/app-bootstrap.routes.js)`
+- `GET /categories  (backend/domains/gameRegistry/gameRegistry.routes.js)`
+- `GET /cycles/:cycleId  (backend/domains/user/user.routes.js)`
+- `GET /cycles/active  (backend/domains/user/user.routes.js)`
+- `GET /events  (backend/routes/sse.routes.js)`
+- `GET /games  (backend/domains/gameRegistry/gameRegistry.routes.js)`
+- `GET /health  (backend/routes.js)`
+- `GET /leaderboard/:period  (backend/routes/retention.routes.js)`
+- `GET /me  (backend/routes.js)`
+- `GET /merchant/events  (backend/routes/sse.routes.js)`
+- `GET /providers  (backend/domains/casino/gameProvider.routes.js)`
+- `GET /public-config  (backend/domains/telegram/telegram.routes.js)`
+- `GET /r/:code  (backend/routes/referralRedirect.routes.js)`
+- `GET /stats  (backend/routes/sse.routes.js)`
+- `GET /status  (backend/domains/support/support.routes.js)`
+- `GET /v1/branding  (backend/domains/user/user.routes.js)`
+- `GET /v1/content/ai-analysis  (backend/domains/user/user.routes.js)`
+- `GET /v1/content/faq  (backend/domains/user/user.routes.js)`
+- `GET /v1/content/promo/:location  (backend/domains/user/user.routes.js)`
+- `GET /v1/content/support-links  (backend/domains/user/user.routes.js)`
+- `GET /v1/game/cycle/:type/:startTime  (backend/domains/user/user.routes.js)`
+- `GET /v1/game/cycles/history  (backend/domains/user/user.routes.js)`
+- `GET /v1/system/config  (backend/domains/user/user.routes.js)`
+- `GET /v1/system/time  (backend/domains/user/user.routes.js)`
+- `GET /v1/token/rates  (backend/domains/user/user.routes.js)`
+- `GET /v1/tokens/rate  (backend/domains/user/user.routes.js)`
+- `GET /v1/winners  (backend/routes/winners.routes.js)`
+- `POST /auth/login  (backend/domains/merchant/merchant.routes.js)`
+- `POST /auth/login/2fa  (backend/domains/merchant/merchant.routes.js)`
+- `POST /auth/signup  (backend/domains/merchant/merchant.routes.js)`
+- `POST /exchange  (backend/domains/telegram/telegram.routes.js)`
+- `POST /logout  (backend/routes.js)`
+- `POST /otp/request  (backend/domains/telegram/telegram.routes.js)`
+- `POST /otp/verify  (backend/domains/telegram/telegram.routes.js)`
+- `POST /recovery/webhook  (backend/domains/telegram/telegram.routes.js)`
+- `POST /wallet/:providerKey  (backend/domains/casino/gameProvider.routes.js)`
+- `POST /webhook  (backend/domains/telegram/telegram.routes.js)`
 
 </details>
 
 <details><summary>Writes any sub-admin can make without holding a permission key</summary>
 
-- `POST /promo  (backend/domains/cms/content.admin.routes.js:267)`
-- `POST /promo/upload-url  (backend/domains/cms/content.admin.routes.js:226)`
-- `PUT /merchants/:merchantId/scoring  (backend/domains/merchant/merchant.assignment.routes.js:547)`
-- `PUT /promo/:id  (backend/domains/cms/content.admin.routes.js:297)`
+- `POST /promo  (backend/domains/cms/content.admin.routes.js)`
+- `POST /promo/upload-url  (backend/domains/cms/content.admin.routes.js)`
+- `PUT /merchants/:merchantId/scoring  (backend/domains/merchant/merchant.assignment.routes.js)`
+- `PUT /promo/:id  (backend/domains/cms/content.admin.routes.js)`
 
 </details>
 
@@ -680,3 +779,5 @@ In the order it should be worked.
 | 8 | Money-path concurrency | 2.6 | Partial today; deserves a dedicated pass. |
 | 9 | Gate for F-001 | §4 | Closes the class, not the instance. |
 | 10 | Gate for the F-003 shape | §4 | A CHECK a handler can violate after a commit. |
+| 11 | Gate for the F-006 shape | §4 | Any `*_url` / `*_link` written from `req.body` must pass through `shared/storedUrl.js`. |
+| 12 | Sweep F-007 | §4 | Which other suites only pass in a particular order. |
