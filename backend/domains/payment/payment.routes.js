@@ -511,27 +511,57 @@ router.get('/order/:orderId/status', authenticate, orderAccessGuard, async (req,
   }
 });
 
-// ─── POST /api/payment/order/:orderId/dispute — user raises dispute (Section 2B) ─
-// User can dispute DEPOSIT order that is PAID but merchant isn't confirming.
+// ─── POST /api/payment/order/:orderId/dispute — the ONLY dispute entry point ──
+//
+// A dispute is the PLAYER's instrument and nobody else's. It is available on
+// BOTH directions — a buy the merchant will not confirm, and a sell whose money
+// never arrived — and from BOTH states a player can be wronged in:
+//
+//   PAID       the player has paid and the merchant is not confirming
+//   COMPLETED  the order says it finished and, from the player's side, it did
+//              not — which is precisely when a dispute is needed
+//
+// This route used to refuse anything that was not PAID, which read as a
+// tightening and was the opposite: a defect that moved an order to COMPLETED
+// without paying the player ALSO removed their only recourse, and the order
+// left every queue that would have shown it. `ALLOWED_FROM` has always admitted
+// DISPUTED from PROCESSING, PAID and COMPLETED — its own comment says "that is
+// precisely when disputes happen" — so the rule table was right and this route
+// was narrower than it.
 router.post('/order/:orderId/dispute', authenticate, orderAccessGuard, async (req, res) => {
   try {
     const { reason } = req.body;
     if (!reason?.trim()) return res.status(400).json({ success: false, message: 'reason is required' });
 
     const order = req.p2pOrder;
-    if (order.status !== 'PAID')
-      return res.status(400).json({ success: false, message: 'Can only dispute PAID orders' });
+    const DISPUTABLE = ['PAID', 'COMPLETED'];
+    if (!DISPUTABLE.includes(order.status)) {
+      return res.status(400).json({
+        success: false,
+        // Names the states, because "cannot dispute" alone sends a player to
+        // support to ask which ones they are.
+        message: 'A dispute can be raised once an order is paid or completed.',
+      });
+    }
 
     // Require at least 10 minutes since paidAt before dispute is allowed.
     // This check stays a pre-read: it is a policy about elapsed time, not about
     // the state, and the transition below is what settles the race.
-    const paidAt   = order.paidAt ? new Date(order.paidAt).getTime() : 0;
-    const tenMin   = 10 * 60 * 1000;
-    if (Date.now() - paidAt < tenMin)
-      return res.status(400).json({ success: false, message: 'Please wait at least 10 minutes before raising a dispute' });
+    //
+    // It applies to a PAID order only. A COMPLETED one has already had its
+    // outcome declared, so there is nothing left to wait for — making somebody
+    // wait ten minutes to report that a finished order did not pay them is the
+    // window a defect hides in.
+    if (order.status === 'PAID') {
+      const paidAt = order.paidAt ? new Date(order.paidAt).getTime() : 0;
+      const tenMin = 10 * 60 * 1000;
+      if (Date.now() - paidAt < tenMin) {
+        return res.status(400).json({ success: false, message: 'Please wait at least 10 minutes before raising a dispute' });
+      }
+    }
 
     const disputed = await disputeOrder(order.orderId, {
-      expectFrom: 'PAID',
+      expectFrom: DISPUTABLE,
       set: {
         disputeReason:   reason.trim(),
         disputeRaisedAt: new Date(),

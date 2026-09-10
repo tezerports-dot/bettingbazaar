@@ -635,11 +635,16 @@ describePg('payment routes', () => {
     }
   });
 
-  it('only disputes a PAID order', async () => {
-    const { orderId, who } = await depositOrder({ state: 'PENDING_QUEUE' });
-    const res = await as(app, who).post(`/order/${orderId}/dispute`).send({ reason: 'nobody is paying me' });
+  it('disputes a PAID or COMPLETED order, and nothing earlier', async () => {
+    // This asserted `only dispute PAID` until 2026-09-10, which read as a
+    // tightening and was the opposite: a defect that moved an order to
+    // COMPLETED without paying the player ALSO removed their only recourse.
+    // The full model, and who owns it, is pinned in disputeOwnershipPg.test.js.
+    const early = await depositOrder({ state: 'PENDING_QUEUE' });
+    const res = await as(app, early.who).post(`/order/${early.orderId}/dispute`)
+      .send({ reason: 'nobody is paying me' });
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/only dispute PAID/i);
+    expect(res.body.message).toMatch(/paid or completed/i);
   });
 
   it('makes a player wait ten minutes before disputing', async () => {

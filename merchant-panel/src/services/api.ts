@@ -465,15 +465,27 @@ export const rejectOrder = async (orderId: string, reason: string): Promise<Paym
 };
 
 // =======================================================================
-// DISPUTE
+// ESCALATION
 // =======================================================================
 
-// Raise a dispute for an order.
-export const raiseDispute = async (orderId: string, reason?: string): Promise<PaymentOrder> => {
-  // Uses the new merchant dispute endpoint (Section 2C)
-  const data = await request<any>(`/api/merchant/order/${orderId}/dispute`, {
+/**
+ * Send an order to an admin because something about it is wrong.
+ *
+ * This used to POST the merchant DISPUTE endpoint, which was deleted on
+ * 2026-09-10: a dispute is the PLAYER's instrument — the party who is owed —
+ * and a merchant who is short simply does not confirm. What a merchant is
+ * entitled to assert is that a transaction FAILED, and they have three ways of
+ * saying it: decline before payment, reject with proof after the player claims
+ * they paid, and this — a red flag on an order that looks fraudulent or cannot
+ * be processed.
+ *
+ * The endpoint it now calls was already in ENDPOINTS and had no caller at all,
+ * so the panel had the right route defined and the wrong one wired.
+ */
+export const redFlagOrder = async (orderId: string, reason?: string): Promise<PaymentOrder> => {
+  const data = await request<any>(ENDPOINTS.ORDERS_EXTRA.RED_FLAG(orderId), {
     method: 'POST',
-    body: JSON.stringify({ reason: reason || 'Merchant raised dispute' }),
+    body: JSON.stringify({ reason: reason || 'Flagged by merchant for admin review' }),
   });
   return data.order || data;
 };
@@ -651,7 +663,7 @@ export const api = {
   
   
   // Dispute
-  raiseDispute,
+  redFlagOrder,
   
   // Stats
   getEarnings,

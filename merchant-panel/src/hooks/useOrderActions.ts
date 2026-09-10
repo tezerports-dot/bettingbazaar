@@ -12,7 +12,7 @@
 //              stored values are sent back with the confirmation. Confirming an
 //              order the user has not evidenced is refused before the request.
 //              WITHDRAWAL (PROCESSING → COMPLETED) — no reference required.
-//   dispute  POST /order/:id/dispute {reason} → DISPUTED
+//   redFlag  POST /orders/:id/red-flag {reason} → flagged + DISPUTED for review
 //   payment-not-received
 //            POST /orders/:id/reject {reason, proofFileKey, proofCdnUrl}
 //              PAID|PROCESSING → CANCELLED. Different from `reject` above,
@@ -139,13 +139,16 @@ export function useOrderActions(
       });
     },
 
-    onDispute: (order) => setConfirmRequest({
-      title: 'Raise a dispute?',
-      body: 'An admin will review this order. Only raise a dispute if something is genuinely wrong.',
-      confirmLabel: 'Raise dispute',
+    // A merchant reports that an order is wrong; they do not DISPUTE it. The
+    // dispute is the instrument of the party who is owed, which on this
+    // platform is always the player.
+    onRedFlag: (order) => setConfirmRequest({
+      title: 'Send this order to an admin?',
+      body: 'Use this when an order looks fraudulent or cannot be processed. An admin will review it.',
+      confirmLabel: 'Flag for review',
       tone: 'dispute',
-      reasonLabel: 'What went wrong?',
-      onConfirm: (reason) => run(() => api.raiseDispute(orderRef(order), reason), 'Dispute raised — an admin will review'),
+      reasonLabel: 'What is wrong with it?',
+      onConfirm: (reason) => run(() => api.redFlagOrder(orderRef(order), reason), 'Flagged — an admin will review'),
     }),
 
     // Replaced by the screen that owns the detail drawer.

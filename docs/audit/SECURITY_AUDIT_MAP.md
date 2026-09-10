@@ -1707,6 +1707,60 @@ least one of them is a money mechanism the platform needs and does not use.
   assignment path plus expiry, rejection and reassignment (each needs its
   `cancelReservation`). Options are in §6.
 
+### F-019 — the dispute belonged to the wrong party, in both directions at once
+`FIXED` · **HIGH** · authorization / recourse · found 2026-09-10 when the owner
+stated the intended model
+
+Two halves of one mistake, and they compounded:
+
+| | Was | Should be, and now is |
+|---|---|---|
+| **Player** | `if (order.status !== 'PAID') return 400` | may dispute from **PAID or COMPLETED**, on **both** buys and sells |
+| **Merchant** | a full dispute route admitting `PROCESSING`, `PAID`, `COMPLETED` | **no dispute at all** — decline, reject-with-proof, or red-flag |
+
+**A dispute is the instrument of the party who is OWED**, and on this platform
+that is always the player. A merchant who is short simply does not confirm; what
+they are entitled to assert is that a transaction FAILED.
+
+**Why the player half is the severe one.** An order reading `COMPLETED` is the
+shape a player has no other way to challenge — and the narrower rule meant any
+defect that moved an order to `COMPLETED` without paying them **also removed
+their only recourse**, while the order left every queue that would have shown
+it. That is not hypothetical: it is exactly what F-017 did, and the reason F-017
+was severe rather than untidy.
+
+**The rule table was right the whole time.** `ALLOWED_FROM` has always admitted
+`DISPUTED` from `PROCESSING`, `PAID` and `COMPLETED`, with the comment *"A
+dispute can be raised on anything not yet final, including COMPLETED — that is
+precisely when disputes happen."* The routes were narrower than the rule on one
+side and wider on the other. **The rule table describes the TRANSITION; who may
+ask for it is a route's job**, and there is now one route that does.
+
+- **The ten-minute wait now applies to a `PAID` order only.** It exists so a
+  player does not dispute a deposit the merchant is still working. A `COMPLETED`
+  order has had its outcome declared, so there is nothing left to wait for —
+  making somebody wait to report that a finished order did not pay them is the
+  window a defect hides in.
+- **The merchant panel had the right route defined and the wrong one wired.**
+  `ENDPOINTS.ORDERS_EXTRA.RED_FLAG` existed in `constants.ts` **with no caller**,
+  while the Dispute button POSTed the dispute route. The button is now Flag and
+  calls red-flag. Another built-and-unused path, found the same way as F-018.
+- **Red-flag deliberately STAYS and is not a dispute.** A merchant reporting a
+  suspicious order is not claiming they are owed; they are saying this must not
+  settle until somebody looks. It does move the order to `DISPUTED` so it lands
+  in the admin queue, which is one state serving two questions — noted below.
+- **Tests:** `backend/tests/routes/disputeOwnershipPg.test.js`, nine, against a
+  real database, and mutation-proven: narrowing the player back to `PAID` fails
+  three. Two existing suites asserted the old model and were repointed rather
+  than relaxed — one asserted `only dispute PAID`, the other tested the merchant
+  dispute route that no longer exists.
+
+**Open question this leaves** (§7 — one state field per logical question):
+`DISPUTED` now carries two different meanings — *a player says they are owed*
+and *a merchant says this looks fraudulent*. They need different queues and
+possibly different outcomes, and today an admin sees them mixed. Worth a
+decision, not urgent.
+
 ---
 
 ## 5. Derived coverage — regenerated, never typed
@@ -1722,7 +1776,7 @@ least one of them is a money mechanism the platform needs and does not use.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 309 |
+| Route declarations in `backend/**` | 308 |
 | Reachable with **no auth middleware** | 40 |
 | Gated `isAdminOrSubAdmin` with **no permission key** | 44 |
 | — of those, **writes** (non-GET) | 0 |
@@ -1810,6 +1864,7 @@ In the order it should be worked.
 |---|---|---|---|
 | 0 | ~~Decide F-015~~ | §4 | **Done 2026-09-10** — alert plus player notification. The sweep for other silently-returned money-path refusals is still open. |
 | 0 | ~~Decide F-016~~ | §4 | **Done 2026-09-10** — the QR was removed entirely; the dynamic UPI intent already did the job better. |
+| 0 | Split the two meanings of DISPUTED | §4 | F-019 left `DISPUTED` carrying both *the player is owed* and *the merchant smells fraud*. Different queues, possibly different outcomes. |
 | 0 | **Decide F-018 — reserve the merchant's tokens at assignment** | §4 | The root cause. `reserveForSettlement`/`completeReservation`/`cancelReservation` are built and called by nothing. Needs: reserve at assign/accept, complete at confirm, cancel on expiry/reject/reassign. |
 | 0 | Triage the 80 `testOnly` exports | §4 | `check:dead-code` treats a TEST import as a consumer, which is how an unused money mechanism stayed green. Anything in that bucket that moves money or state is a finding, not an informational row. |
 | 0 | Port F-017's 16 tests | §4 | The ordering defect is FIXED and both live paths now share `moveDepositMoney`. What remains is re-homing the orphan route's 16 real-DB money assertions onto the two reachable doors, then deleting it. |

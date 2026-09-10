@@ -23,7 +23,7 @@ export interface OrderActions {
   onRelease: (order: PaymentOrder) => void;
   /** Withdrawal: record that the payout has been sent. */
   onPayout: (order: PaymentOrder) => void;
-  onDispute: (order: PaymentOrder) => void;
+  onRedFlag: (order: PaymentOrder) => void;
   onOpen: (order: PaymentOrder) => void;
 }
 
@@ -265,8 +265,8 @@ export const OrderCard: React.FC<{
             <Button tone="ok" onClick={() => actions.onRelease(order)} style={{ flex: 1 }}>
               <ShieldCheck size={16} /> Confirm &amp; release
             </Button>
-            <Button variant="outline" tone="dispute" title="Send to an admin to decide" onClick={() => actions.onDispute(order)}>
-              Dispute
+            <Button variant="outline" tone="dispute" title="Send to an admin to review" onClick={() => actions.onRedFlag(order)}>
+              Flag
             </Button>
           </div>
         )}
@@ -291,8 +291,8 @@ export const OrderCard: React.FC<{
             <Button tone="ok" onClick={() => actions.onPayout(order)} style={{ flex: 1 }}>
               <ArrowUpRight size={16} /> Mark payout sent
             </Button>
-            <Button variant="outline" tone="dispute" title="Cannot process" onClick={() => actions.onDispute(order)}>
-              Dispute
+            <Button variant="outline" tone="dispute" title="Cannot process — send to an admin" onClick={() => actions.onRedFlag(order)}>
+              Flag
             </Button>
           </div>
         )}

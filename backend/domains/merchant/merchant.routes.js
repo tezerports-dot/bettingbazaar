@@ -1750,67 +1750,26 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
     }
 });
 
-// ─── POST /api/merchant/order/:id/dispute — merchant raises dispute ────────────────────────────────────
-router.post('/order/:id/dispute', merchantAuth, async (req, res) => {
-    try {
-        const { reason } = req.body;
-        if (!reason?.trim()) return res.status(400).json({ success: false, message: 'A reason is required.' });
-
-        const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
-        if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
-
-        // ASSIGNED is deliberately absent: the rule table admits a dispute from
-        // PROCESSING, PAID or COMPLETED only, and an order nobody has started
-        // working on has nothing to dispute yet. This route accepted ASSIGNED
-        // and Postgres would have refused it — the disagreement no
-        // reconciliation can tell apart from real drift.
-        // ── `updatedAt` is not a settable column ────────────────────────────
-        // `setOrderFields` refuses it — the UPDATE maintains `updated_at`
-        // itself — and it runs AFTER the transition has committed. So this
-        // route moved the order to DISPUTED, threw, and returned a 500: the
-        // merchant was told the dispute failed while the order sat DISPUTED
-        // with no reason, no raiser and no timestamp. Retrying did the same
-        // thing, so the order could never acquire the reason it needed. The
-        // merchant panel's dispute button calls this.
-        //
-        // `expectFrom` is left as the caller's stated intent, but note it is
-        // VALIDATED and not ENFORCED (orderLifecycle.service.js): ALLOWED_FROM
-        // admits DISPUTED from PROCESSING, PAID and COMPLETED, and that is what
-        // actually governs. A merchant disputing a PAID order — the ordinary
-        // case — is admitted, as it should be.
-        const disputed = await disputeOrder(order._id, {
-            expectFrom: ['PROCESSING', 'PAID', 'COMPLETED'],
-            set: {
-                disputeReason:   reason.trim(),
-                disputeRaisedAt: new Date(),
-                disputeRaisedBy: 'merchant',
-            },
-        });
-        if (!disputed.ok) {
-            return res.status(409).json({ success: false, message: `Cannot raise dispute in ${disputed.status ?? 'unknown'} status.` });
-        }
-        Object.assign(order, disputed.order);
-
-        // Notify admin SSE (GOVERNANCE §11: order_disputed)
-        emitAdminUpdate('order_disputed', {
-            orderId:   order._id,
-            raisedBy:  'merchant',
-            reason:    reason.trim(),
-            server_ts: Date.now(),
-        });
-        emitOrderUpdate(order.userId.toString(), 'order_update', {
-            orderId:   order.orderId,
-            _id:       order._id,
-            status:    'DISPUTED',
-            server_ts: Date.now(),
-        });
-
-        res.json({ success: true, message: 'Dispute raised. Admin will review.', order: toMerchantOrderView(order) });
-    } catch (err) {
-        console.error('POST /merchant/order/:id/dispute error:', err);
-        res.status(500).json({ success: false, message: 'Failed to raise dispute.' });
-    }
-});
+// ─── The merchant dispute route was DELETED 2026-09-10 ───────────────────────
+//
+// A dispute is the PLAYER's instrument and nobody else's. A merchant has two
+// answers available to them and they are both already here:
+//
+//   POST /reject/:id        decline before payment — back to the queue
+//   POST /reject-paid/:id   the player says they paid and the money did not
+//                           arrive — reason of 10+ characters and a proof image
+//
+// Both say "this transaction failed, and here is why", which is the whole of
+// what a merchant is entitled to assert. Raising a DISPUTE is different: it is
+// the instrument for the party who is OWED, and on this platform that is always
+// the player — a merchant who is short simply does not confirm.
+//
+// Leaving both meant the merchant could move an order to DISPUTED themselves,
+// including from COMPLETED, which parks a settled order in the admin queue on
+// one side's say-so. `ALLOWED_FROM` still admits DISPUTED from PROCESSING, PAID
+// and COMPLETED — correctly, because those are the states a PLAYER disputes
+// from, and the rule table describes the transition rather than who may ask for
+// it. Who may ask is a route's job, and there is now one route that does.
 // ─── ORDER CHAT — REMOVED ────────────────────────────────────────────────────
 //
 // `GET|POST /api/merchant/chat/:id` are gone, with the four upload presigns

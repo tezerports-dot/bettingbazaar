@@ -111,8 +111,8 @@ export const OrderDetail: React.FC<{
       <Button tone="ok" onClick={() => actions.onRelease(order)} style={{ flex: 1, padding: 14, fontSize: 14 }}>
         <ShieldCheck size={16} /> Confirm &amp; release
       </Button>
-      <Button variant="outline" tone="dispute" onClick={() => actions.onDispute(order)} style={{ padding: '14px 18px', fontSize: 14 }}>
-        Dispute
+      <Button variant="outline" tone="dispute" onClick={() => actions.onRedFlag(order)} style={{ padding: '14px 18px', fontSize: 14 }}>
+        Flag
       </Button>
     </>
   ) : canPayout ? (
@@ -120,8 +120,8 @@ export const OrderDetail: React.FC<{
       <Button tone="ok" onClick={() => actions.onPayout(order)} style={{ flex: 1, padding: 14, fontSize: 14 }}>
         <Check size={16} /> Mark payout sent
       </Button>
-      <Button variant="outline" tone="dispute" onClick={() => actions.onDispute(order)} style={{ padding: '14px 18px', fontSize: 14 }}>
-        Dispute
+      <Button variant="outline" tone="dispute" onClick={() => actions.onRedFlag(order)} style={{ padding: '14px 18px', fontSize: 14 }}>
+        Flag
       </Button>
     </>
   ) : undefined;

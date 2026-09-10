@@ -59,13 +59,20 @@ describePg('disputes are raised and resolved, not half-written', () => {
     return orderId;
   };
 
-  describe('a merchant raises a dispute', () => {
+  describe('a merchant flags an order instead of disputing it', () => {
+    // The merchant dispute route was DELETED on 2026-09-10. A dispute is the
+    // instrument of the party who is OWED, which here is always the player; a
+    // merchant asserts that a transaction FAILED — decline, reject with proof,
+    // or red-flag. This block therefore tests the ESCALATION they do have, and
+    // that the row it produces is still complete enough to rule on, which is
+    // what this file has always been about. Ownership is pinned separately in
+    // disputeOwnershipPg.test.js.
     it('records the reason, the raiser and the time', async () => {
       const merchant = await merchantActor({});
       const player = await actor({});
       const orderId = await order({ player, merchant });
 
-      const res = await as(merchantApp, merchant).post(`/order/${orderId}/dispute`)
+      const res = await as(merchantApp, merchant).post(`/orders/${orderId}/red-flag`)
         .send({ reason: 'The player never sent the money' });
 
       expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -73,20 +80,20 @@ describePg('disputes are raised and resolved, not half-written', () => {
       expect(row.status).toBe('DISPUTED');
       // The half that used to be lost. DISPUTED with a null reason is a dispute
       // nobody can rule on.
-      expect(row.disputeReason).toBe('The player never sent the money');
-      expect(row.disputeRaisedBy).toBe('merchant');
-      expect(row.disputeRaisedAt).toBeTruthy();
+      expect(row.disputeReason).toMatch(/The player never sent the money/);
+      expect(row.redFlagged).toBe(true);
+      expect(row.disputeRaisedAt ?? row.redFlaggedAt).toBeTruthy();
     });
 
     it('admits a PAID order — the ordinary case', async () => {
-      // A player says they paid and the merchant disagrees: that is PAID, and
-      // it is exactly when a dispute is raised. ALLOWED_FROM admits DISPUTED
-      // from PROCESSING, PAID and COMPLETED.
+      // A player says they paid and the merchant's statement disagrees. The
+      // merchant cannot claim they are owed; they can say this should not
+      // settle until somebody looks at it.
       const merchant = await merchantActor({});
       const player = await actor({});
       const orderId = await order({ player, merchant, state: 'PAID' });
 
-      const res = await as(merchantApp, merchant).post(`/order/${orderId}/dispute`)
+      const res = await as(merchantApp, merchant).post(`/orders/${orderId}/red-flag`)
         .send({ reason: 'UTR 999888777666 is not in my statement' });
 
       expect(res.status, JSON.stringify(res.body)).toBe(200);
