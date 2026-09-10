@@ -1394,8 +1394,8 @@ severity split between them matters:
   reads them to ignore the channel.
 
 ### F-016 — a UPI merchant cannot set the QR players are meant to scan
-`OPEN` · low security / medium functional · shipped-means-reachable (§28) ·
-found 2026-09-10 verifying Mode A / Mode B completeness
+`FIXED by removal` · low security / medium functional · shipped-means-reachable
+(§28) · found and removed 2026-09-10 verifying Mode A / Mode B completeness
 
 Two halves that only bite together, which is why neither gate saw it:
 
@@ -1436,12 +1436,81 @@ the case §28.2 names: *"either work someone forgot to finish or code to delete.
   reachable: CDM receipt and reject-proof both go through
   `merchant-panel/src/constants.ts` with a working presigned-PUT helper the QR
   screen could reuse as-is, and branding uploads through the admin panel.
-- **Also on `--unused`, and a different question:**
-  `POST /api/payment/deposit/:orderId/confirm` is a second deposit-confirm route
-  (`paymentActorAuth`) that nothing calls — the merchant panel uses
-  `POST /api/merchant/confirm/:id`. Both go through `moveDepositMoney`, so the
-  MONEY has one owner and §5 is satisfied; what is left is an unreachable route.
-  Delete or wire, not both.
+- **Fixed by removing the QR entirely** (owner's decision, 2026-09-10), which
+  is the better answer than wiring the upload: `upiPaymentLink()` already builds
+  a **dynamic** `upi://pay?pa=…&am=…&tn=…&tr=<orderId>` per order, with that
+  order's amount in it, so the player taps and their own UPI app opens filled
+  in. A stored image is a SECOND, STATIC way of saying the same thing, and being
+  static it cannot carry the amount — which is the whole point. A merchant now
+  supplies a UPI ID on the INR rail and nothing else.
+  Route, CDN category, profile field, `merchants.qr_code_url`, the snapshot
+  field, both panel types and every doc reference are gone.
+- `assertCdnAssetUrl` deliberately STAYS: the carousel slide images use it, so
+  removing the QR created no dead code, and the shape it refuses is general.
+- One fixture keeps `qrCodeUrl` on purpose —
+  `playerOrderPrivacyRoutes.test.js` plants it in the snapshot and asserts the
+  player projection drops it. It is a regression guard now rather than a live
+  field: the projection is an ALLOWLIST (§24.1), and what is being proved is
+  that an unknown key is dropped, which must still hold if anybody puts a QR
+  back.
+
+### F-017 — the deposit-confirm money invariants are proven against the door nobody uses
+`OPEN` · medium · test coverage aimed at the wrong path · found 2026-09-10 while
+deleting an orphan route
+
+There are **two** deposit-confirm implementations, not one:
+
+| Route | Auth | How it moves the money | Real-DB money tests |
+|---|---|---|---|
+| `POST /api/payment/deposit/:orderId/confirm` | `paymentActorAuth` (merchant **or** admin) | calls `moveDepositMoney()` | **16**, in `paymentRoutes.test.js` — conservation, the split, idempotency, a 4-way confirm race |
+| `POST /api/merchant/confirm/:id` | `merchantAuth` | **reimplements** debit-then-credit inline, sharing only `depositCreditSplit()` | authorization and validation only |
+
+**The first is on `check:ui-coverage --unused` — no screen calls it. The second
+is what the merchant panel uses.** So every assertion that a deposit conserves,
+that a double-tap credits once, and that four racing confirms do not overpay is
+made against code no merchant reaches, while the code they do reach has none of
+them.
+
+This is §22.2 at the level of a route rather than a module: *a test that names a
+path is not evidence until something imports that path.* It is also §28 — a
+route test proves a handler works and can never prove anything calls it.
+
+**A correction, recorded rather than quietly amended.** In commit `46e05ea` I
+described these as *"both go through `moveDepositMoney`, so the MONEY always had
+one owner (§5)"*. That is **wrong**. Only the unreachable route and the admin
+queue override call `moveDepositMoney`; the merchant route has its own sequence.
+The owner's decision to delete the orphan was taken on that description, so the
+deletion was reverted pending this entry rather than carried out on a wrong
+premise.
+
+**It had a live consequence, now fixed.** F-015's reporting was added inside
+`moveDepositMoney`, so it covered the admin override and the unreachable route
+and **missed the path merchants actually use**. `reportUncreditableDeposit` is
+exported now and called from both refusals.
+
+**The decision this needs** is not "delete or keep" but which door survives, and
+the tests cannot simply be repointed: 16 assertions drive the route as an
+**admin**, and the merchant route is merchant-only. The admin equivalent is
+`paymentOrder.routes.js`, a third caller. Three options, in the order I would
+take them:
+
+1. **Make the merchant route call `moveDepositMoney`,** then delete the orphan
+   and repoint its tests at the two live doors. One owner for the sequence, and
+   the coverage lands on reachable code. It changes real behaviour: the merchant
+   route carries a compensating `creditMerchantTokens` refund when the user
+   credit fails, which `moveDepositMoney` does not — and `depositCredit.js`'s own
+   header argues for detect-and-repair over compensate-and-hope.
+2. **Wire the orphan to a screen** — the weakest option; it makes an unused door
+   real rather than removing a duplicate.
+3. **Delete the orphan and port its 16 tests onto the two live routes** without
+   unifying the implementations. Coverage lands correctly; the duplication stays.
+
+- **Shape:** two implementations of one money sequence, with the tests on the
+  unreachable one.
+- **Sweep query:** cross `check:ui-coverage --unused` against the files the
+  route-test suites import.
+- **Swept:** not yet — the question is which other suites test an unreachable
+  route. Queued in §6.
 
 ---
 
@@ -1458,7 +1527,7 @@ the case §28.2 names: *"either work someone forgot to finish or code to delete.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 310 |
+| Route declarations in `backend/**` | 309 |
 | Reachable with **no auth middleware** | 40 |
 | Gated `isAdminOrSubAdmin` with **no permission key** | 44 |
 | — of those, **writes** (non-GET) | 0 |
@@ -1545,7 +1614,8 @@ In the order it should be worked.
 | # | Class | §2 | Why now |
 |---|---|---|---|
 | 0 | ~~Decide F-015~~ | §4 | **Done 2026-09-10** — alert plus player notification. The sweep for other silently-returned money-path refusals is still open. |
-| 0 | **Decide F-016** | §4 | A UPI merchant cannot set their QR: the upload route has no UI and the text box now rejects everything typeable. Wire the existing presigned helper, or drop the field. |
+| 0 | ~~Decide F-016~~ | §4 | **Done 2026-09-10** — the QR was removed entirely; the dynamic UPI intent already did the job better. |
+| 0 | **Decide F-017** | §4 | Two deposit-confirm implementations; all 16 real-DB money tests are on the unreachable one. Three options in the entry; option 1 changes real behaviour. |
 | 0 | Gate for the F-014 shape | §4 | Fail on `Math.random()` in a panel outside an allow-list of presentational files, each entry carrying a stated reason. |
 | 1 | Client-side injection (XSS) | 2.14 | Chat, tickets and admin announcements all round-trip through panels; a stored XSS in the admin panel runs with an admin session. |
 | 2 | File upload | 2.15 | Payment proofs are evidence in money disputes. |

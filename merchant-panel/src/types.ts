@@ -285,12 +285,10 @@ export interface MerchantProfile {
     accountNo?: string;
     ifsc?: string;
   };
-  qrCodeUrl?: string;
 
   // Settlement details
   settlementDetails?: {
     upiId?: string;
-    upiQrCodeUrl?: string;
     accountName?: string;
     accountNumber?: string;
     ifsc?: string;

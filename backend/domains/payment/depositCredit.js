@@ -72,6 +72,15 @@ export function depositCreditSplit(order) {
 /**
  * A deposit that cannot be credited is REPORTED — F-015.
  *
+ * EXPORTED because `moveDepositMoney` is not the only path that debits a
+ * merchant for a deposit. `POST /api/merchant/confirm/:id` — the route the
+ * merchant panel actually uses — reimplements the same debit-then-credit
+ * sequence inline and has its own `if (!debited)` refusal, so a reporter living
+ * only inside `moveDepositMoney` would cover the ADMIN override and miss the
+ * common path entirely. That the two paths are separate at all is a §5 problem
+ * in its own right and is recorded as F-017; this export makes the reporting
+ * correct in the meantime rather than waiting on that decision.
+ *
  * ── Why this exists ─────────────────────────────────────────────────────────
  * `{ ok: false, reason: 'merchant_insufficient' }` was returned and nothing in
  * the platform read it. Both call sites answered 400 and did nothing else: no
@@ -114,7 +123,7 @@ export function depositCreditSplit(order) {
  *    silently when no webhook is configured — by design — and a deployment
  *    without one must still leave the operator a record.
  */
-async function reportUncreditableDeposit(order, total) {
+export async function reportUncreditableDeposit(order, total) {
   try {
     console.error(
       `[deposit-credit] ${order.orderId}: merchant ${order.merchantId} cannot cover ${total} tokens.`

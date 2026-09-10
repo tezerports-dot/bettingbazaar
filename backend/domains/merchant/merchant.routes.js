@@ -45,7 +45,7 @@ import { holdMinutes } from '../payment/withdrawalHold.service.js';
 // other thing a player receives.
 import { toPlayerOrderView } from '../payment/playerOrderView.js';
 // One rule for how a confirmed deposit splits across the user's two pockets.
-import { depositCreditSplit } from '../payment/depositCredit.js';
+import { depositCreditSplit, reportUncreditableDeposit } from '../payment/depositCredit.js';
 import { debitMerchantTokens, creditMerchantTokens } from './merchantWallet.service.js';
 import { getMerchantTokenBalance } from '#db/repositories/merchantWallets.js';
 import { publish as publishDomainEvent, EVENTS as DOMAIN_EVENTS } from '../../services/eventBus.service.js';
@@ -118,7 +118,6 @@ const formatMerchant = (merchant, user = null) => {
         usdtAddressTrc20:     merchant.usdtAddressTrc20 || '',
         usdtAddressBep20:     merchant.usdtAddressBep20 || '',
         usdtChains:           usdtChainsHeldBy(merchant),
-        qrCodeUrl:            merchant.qrCodeUrl,
         limits:               merchant.limits,
         minOrder:             merchant.minOrder,
         maxOrder:             merchant.maxOrder,
@@ -819,7 +818,7 @@ router.get('/profile', merchantAuth, async (req, res) => {
 // one is refused with a sentence rather than accepted silently.
 router.put('/profile', merchantAuth, async (req, res) => {
     try {
-        const { upiId, qrCodeUrl, bankDetails, usdtAddressTrc20, usdtAddressBep20 } = req.body;
+        const { upiId, bankDetails, usdtAddressTrc20, usdtAddressBep20 } = req.body;
         const submittedAddresses = { TRC20: usdtAddressTrc20, BEP20: usdtAddressBep20 };
 
         const current = await db.merchants.getMerchant(req.merchantId);
@@ -829,7 +828,7 @@ router.put('/profile', merchantAuth, async (req, res) => {
         const railName = isUsdt ? 'USDT' : 'INR';
         const update  = {};
 
-        const wantsInrFields  = upiId !== undefined || qrCodeUrl !== undefined || bankDetails !== undefined;
+        const wantsInrFields  = upiId !== undefined || bankDetails !== undefined;
         const wantsUsdtFields = USDT_CHAINS.some((chain) => submittedAddresses[chain] !== undefined);
 
         if (isUsdt && wantsInrFields) {
@@ -877,26 +876,6 @@ router.put('/profile', merchantAuth, async (req, res) => {
 
         if (upiId !== undefined) {
             update['bankDetails.upiId'] = upiId;
-        }
-        if (qrCodeUrl !== undefined) {
-            // ── The QR must be one WE hold ───────────────────────────────
-            // This wrote the string through untouched, and `qrCodeUrl` is on
-            // the player's allowlist (playerOrderView.js) — it is shown to them
-            // as WHERE TO PAY. An upload route exists
-            // (POST /api/merchant/qr/upload-url) but nothing bound the stored
-            // value to it, so the upload was a suggestion: any URL at all was
-            // accepted and rendered.
-            //
-            // An off-platform image in the payment screen hands every player
-            // assigned to this merchant to a third party — their IP, their user
-            // agent, and the moment they were shown a payment screen — which is
-            // §24 pointed the wrong way. And a payment instruction hosted
-            // elsewhere can change after anybody reviews it.
-            //
-            // Empty clears it; anything else must be on this platform's CDN.
-            update.qrCodeUrl = String(qrCodeUrl).trim()
-                ? assertCdnAssetUrl(qrCodeUrl, 'QR code')
-                : null;
         }
         if (bankDetails) {
             if (bankDetails.accountHolderName !== undefined) update['bankDetails.accountHolderName'] = bankDetails.accountHolderName;
@@ -1494,6 +1473,12 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
                 txId: `mw_dep_deduct_${order.orderId}`,
             });
             if (!debited) {
+                // F-015. The player has ALREADY SENT REAL MONEY — `PAID` is what
+                // that state means — so this refusal cannot be answered to the
+                // merchant alone. The operator is alerted and the player is told
+                // their order is still being worked, through the same reporter
+                // `moveDepositMoney` uses, so the two paths cannot drift on it.
+                await reportUncreditableDeposit(order, order.tokenAmount);
                 return res.status(400).json({ success: false, message: 'Insufficient token inventory to confirm this deposit. Top up your merchant wallet.' });
             }
             // Step 2: credit the user — apply the DepositPolicy deposit/reserve

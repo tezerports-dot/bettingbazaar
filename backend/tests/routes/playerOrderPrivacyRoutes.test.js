@@ -55,6 +55,12 @@ describePg('what a player is told about a merchant', () => {
   // carries both and the assertions below refuse both as stored columns.
   const MERCHANT_USDT_TRC20 = 'TQ5NMqJjW8sT1u9dCUnMcGbmVpFmvbwrsi';
   const MERCHANT_USDT_BEP20 = '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0';
+  // The QR was REMOVED from the platform on 2026-09-10 — a merchant supplies a
+  // UPI ID and `upiPaymentLink()` builds a dynamic intent per order. This value
+  // deliberately STAYS in the fixture: it is now a regression guard rather than
+  // a live field. The player projection is an ALLOWLIST (§24.1), so the property
+  // being proved is that an unknown key planted in the snapshot is dropped —
+  // which is exactly what must still hold if anybody ever puts a QR back.
   const MERCHANT_QR   = 'https://cdn.example/qr/ravi.png';
 
   const SNAPSHOT = {

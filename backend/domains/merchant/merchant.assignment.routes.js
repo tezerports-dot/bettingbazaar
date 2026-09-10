@@ -44,7 +44,7 @@ const router = express.Router();
  * ── The snapshot builder lived here TWICE ───────────────────────────────────
  * A second `buildSnapshot` and a second `merchantDisplayRef` stood in this file
  * beside the pair in `paymentProcessing.service.js`, and they had already
- * drifted: this copy never wrote `qrCodeUrl` or `merchantType`, so an order
+ * drifted: this copy never wrote `merchantType`, so an order
  * assigned by an admin carried a different snapshot from the same order
  * assigned automatically. §1 — one owner per value. Both now come from the
  * service that assigns orders on its own.

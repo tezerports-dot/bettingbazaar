@@ -245,30 +245,11 @@ router.post('/user/profile/picture/confirm-upload', authenticate, async (req, re
   }
 });
 
-// ─── POST /api/upload/merchant/qr/upload-url — Merchant QR code image upload ─
-// Merchant uploads a QR image; we return a presigned S3 URL for direct upload.
-// After upload, merchant calls PUT /api/merchant/profile with { qrCodeUrl: cdnUrl }.
-router.post('/merchant/qr/upload-url', merchantAuth, async (req, res) => {
-  try {
-    const { fileName, contentType, fileSize } = req.body;
-    if (!hasValidUploadInput(fileName, contentType, fileSize)) return res.status(400).json({ success: false, message: 'fileName and contentType are required' });
-
-    const QR_ALLOWED = ['image/jpeg', 'image/png', 'image/webp'];
-    const cleanMime  = contentType.toLowerCase().split(';')[0].trim();
-    if (!QR_ALLOWED.includes(cleanMime))
-      return res.status(400).json({ success: false, message: 'Only JPG, PNG, WebP allowed for QR code images' });
-    if (fileSize > 5 * 1024 * 1024)
-      return res.status(400).json({ success: false, message: 'Max file size is 5 MB' });
-
-    const uploadData = await cdnService.generatePresignedUploadUrl({
-      fileName, contentType, fileSize,
-      category: 'merchant-qr', userId: req.merchantId.toString(),
-    });
-    res.json({ success: true, ...uploadData });
-  } catch (err) {
-    console.error('Merchant QR upload-url error:', err.message);
-    res.status(503).json({ success: false, message: 'CDN storage is not configured. File upload is unavailable.' });
-  }
-});
+// The merchant QR upload route lived here and was DELETED 2026-09-10 with the
+// QR itself. A merchant supplies a UPI ID and nothing else on the INR rail:
+// `upiPaymentLink()` builds a dynamic `upi://pay` intent per order, with that
+// order's amount already in it, so the player taps and their own UPI app opens
+// filled in. A stored QR image was a second, static way to say the same thing —
+// and being static it could not carry the amount, which is the whole point.
 
 export default router;

@@ -11,7 +11,6 @@
  * carried:
  *
  *     upiId          the merchant's UPI handle
- *     qrCodeUrl      their own QR image
  *     bankName       ┐
  *     accountNo      │ their BANK ACCOUNT
  *     ifsc           │
@@ -110,7 +109,7 @@ export const PLAYER_ORDER_FIELDS = Object.freeze([
 export const PLAYER_FORBIDDEN_ORDER_FIELDS = Object.freeze([
   // ── Who they are paying ───────────────────────────────────────────────────
   'merchantSnapshot', 'merchantId',
-  'upiId', 'qrCodeUrl',
+  'upiId',
   // The merchant's stored addresses, as columns. What the player DOES receive
   // is `payTo.usdtAddress` — the one chain their own order named — which is a
   // payment destination, the wallet equivalent of the UPI intent. These two are

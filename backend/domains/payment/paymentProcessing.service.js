@@ -175,7 +175,6 @@ function buildMerchantSnapshot(merchant, expiresAt, order = null) {
     // decided from what was true at assignment.
     merchantType:  merchantTypeOf(merchant),
     upiId,
-    qrCodeUrl:     merchant.qrCodeUrl                      || '',
     bankName:      merchant.bankDetails?.bankName          || '',
     accountNo:     merchant.bankDetails?.accountNo         || '',
     ifsc:          merchant.bankDetails?.ifsc              || '',

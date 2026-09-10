@@ -48,7 +48,7 @@ const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email
   two_factor_enabled, two_factor_enrolled_at, status, suspension_reason, is_online,
   accepts_deposits, accepts_withdrawals, accepted_currencies, merchant_type,
   bank_account_holder_name, bank_upi_id, bank_name, bank_account_no, bank_ifsc,
-  usdt_address_trc20, usdt_address_bep20, qr_code_url,
+  usdt_address_trc20, usdt_address_bep20,
   min_deposit_paise, max_deposit_paise, min_withdraw_paise, max_withdraw_paise,
   min_order_paise, max_order_paise, cash_denomination_paise,
   total_processed_volume_paise, earnings_paise, total_deposit_amount_paise,
@@ -140,7 +140,6 @@ function toMerchant(row) {
     // states rather than one a reader infers from its shape.
     usdtAddressTrc20: row.usdt_address_trc20,
     usdtAddressBep20: row.usdt_address_bep20,
-    qrCodeUrl: row.qr_code_url,
 
     limits: {
       minDeposit: rupees(row.min_deposit_paise),
@@ -686,7 +685,7 @@ const UPDATABLE = new Set([
   'status', 'suspension_reason', 'is_online', 'accepts_deposits', 'accepts_withdrawals',
   'accepted_currencies',
   'bank_account_holder_name', 'bank_upi_id', 'bank_name', 'bank_account_no', 'bank_ifsc',
-  'usdt_address_trc20', 'usdt_address_bep20', 'qr_code_url',
+  'usdt_address_trc20', 'usdt_address_bep20',
   'min_deposit_paise', 'max_deposit_paise', 'min_withdraw_paise', 'max_withdraw_paise',
   'min_order_paise', 'max_order_paise', 'cash_denomination_paise',
   'rating', 'last_online_toggle', 'panel_url',
@@ -779,7 +778,7 @@ export async function createMerchant({
   merchantId = null, userId = null, name, publicRef = null,
   username = null, mobile = null, email = null, passwordHash = null,
   currency = 'INR', status = 'PENDING', bankDetails = null,
-  usdtAddressTrc20 = null, usdtAddressBep20 = null, qrCodeUrl = null, panelUrl = '',
+  usdtAddressTrc20 = null, usdtAddressBep20 = null, panelUrl = '',
   limits = null, client = null,
 } = {}) {
   if (!name) throw new Error('createMerchant requires a name');
@@ -796,17 +795,17 @@ export async function createMerchant({
        merchant_id, user_id, name, public_ref, username, mobile, email, password_hash,
        accepted_currencies, status,
        bank_account_holder_name, bank_upi_id, bank_name, bank_account_no, bank_ifsc,
-       usdt_address_trc20, usdt_address_bep20, qr_code_url, panel_url,
+       usdt_address_trc20, usdt_address_bep20, panel_url,
        min_deposit_paise, max_deposit_paise, min_withdraw_paise, max_withdraw_paise)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8, ARRAY[$9], $10,
-             $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+             $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
      RETURNING ${COLUMNS}`,
     [id, userId ? String(userId) : null, String(name), ref,
       username || null, mobile || null, email || null, passwordHash,
       String(currency), String(status),
       bankDetails?.accountHolderName || null, bankDetails?.upiId || null,
       bankDetails?.bankName || null, bankDetails?.accountNo || null, bankDetails?.ifsc || null,
-      usdtAddressTrc20 || null, usdtAddressBep20 || null, qrCodeUrl || null, panelUrl || '',
+      usdtAddressTrc20 || null, usdtAddressBep20 || null, panelUrl || '',
       rupeesToPaise(l.minDeposit ?? 500), rupeesToPaise(l.maxDeposit ?? 50000),
       rupeesToPaise(l.minWithdraw ?? 500), rupeesToPaise(l.maxWithdraw ?? 50000)],
   );

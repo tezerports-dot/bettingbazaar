@@ -3,8 +3,11 @@
  * A URL that is stored and later rendered to somebody else.
  *
  * Five fields did this with no validation, and two of them are PAYMENT
- * INSTRUCTIONS shown to a player: a merchant's QR image, and the ATM cash
- * link. An upload route existed for the QR, but nothing bound the stored value
+ * INSTRUCTIONS shown to a player. The QR that motivated `assertCdnAssetUrl` was
+ * removed on 2026-09-10 — a merchant supplies a UPI ID and the intent is built
+ * per order — but the validator stays, because the carousel slide images go
+ * through it and the shape it refuses is general. An upload route existed for
+ * the QR, but nothing bound the stored value
  * to it — the merchant sent whatever string they liked to
  * `PUT /api/merchant/profile` and the player's payment screen rendered it.
  *
@@ -28,40 +31,40 @@ afterAll(() => {
 
 describe('assertCdnAssetUrl — an asset WE hold, and nothing else', () => {
   it('accepts an object on the configured CDN', () => {
-    const url = 'https://cdn.example.com/merchant-qr/1700000000-abcdef.png';
-    expect(assertCdnAssetUrl(url, 'QR code')).toBe(url);
+    const url = 'https://cdn.example.com/carousel/1700000000-abcdef.png';
+    expect(assertCdnAssetUrl(url, 'slide image')).toBe(url);
   });
 
   it('REFUSES a host that merely starts with the CDN origin', () => {
     // The reason this compares parsed origins instead of using startsWith.
     // `https://cdn.example.com.evil.test/x.png` passes a prefix test and is
     // somebody else's server.
-    expect(() => assertCdnAssetUrl('https://cdn.example.com.evil.test/x.png', 'QR code'))
+    expect(() => assertCdnAssetUrl('https://cdn.example.com.evil.test/x.png', 'slide image'))
       .toThrow(/uploaded here first/);
   });
 
   it('refuses an unrelated host', () => {
-    expect(() => assertCdnAssetUrl('https://evil.test/qr.png', 'QR code')).toThrow(/uploaded here first/);
+    expect(() => assertCdnAssetUrl('https://evil.test/qr.png', 'slide image')).toThrow(/uploaded here first/);
   });
 
   it('refuses credentials embedded in the URL', () => {
     // Never legitimate for an asset, and a known way to make a hostile link
     // read as a familiar one.
-    expect(() => assertCdnAssetUrl('https://a:b@cdn.example.com/x.png', 'QR code')).toThrow(/not accepted/);
+    expect(() => assertCdnAssetUrl('https://a:b@cdn.example.com/x.png', 'slide image')).toThrow(/not accepted/);
   });
 
   it('refuses a scheme that is not http(s) on our origin', () => {
-    expect(() => assertCdnAssetUrl('javascript:alert(1)', 'QR code')).toThrow();
-    expect(() => assertCdnAssetUrl('data:image/png;base64,AAAA', 'QR code')).toThrow();
+    expect(() => assertCdnAssetUrl('javascript:alert(1)', 'slide image')).toThrow();
+    expect(() => assertCdnAssetUrl('data:image/png;base64,AAAA', 'slide image')).toThrow();
   });
 
   it('refuses empty and refuses garbage', () => {
-    expect(() => assertCdnAssetUrl('', 'QR code')).toThrow(/required/);
-    expect(() => assertCdnAssetUrl('not a url', 'QR code')).toThrow(/not a valid URL/);
+    expect(() => assertCdnAssetUrl('', 'slide image')).toThrow(/required/);
+    expect(() => assertCdnAssetUrl('not a url', 'slide image')).toThrow(/not a valid URL/);
   });
 
   it('carries a 400 and a code, so a route can answer without inventing one', () => {
-    try { assertCdnAssetUrl('https://evil.test/x.png', 'QR code'); }
+    try { assertCdnAssetUrl('https://evil.test/x.png', 'slide image'); }
     catch (e) { expect(e.status).toBe(400); expect(e.code).toBe('UNSAFE_URL'); }
   });
 
@@ -72,7 +75,7 @@ describe('assertCdnAssetUrl — an asset WE hold, and nothing else', () => {
     const saved = process.env.CDN_URL;
     delete process.env.CDN_URL;
     try {
-      expect(() => assertCdnAssetUrl('https://cdn.example.com/x.png', 'QR code'))
+      expect(() => assertCdnAssetUrl('https://cdn.example.com/x.png', 'slide image'))
         .toThrow(/not configured/);
     } finally { process.env.CDN_URL = saved; }
   });

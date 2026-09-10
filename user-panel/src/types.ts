@@ -196,7 +196,6 @@ export interface MerchantProfile {
     accountNo: string;
     ifsc: string;
   };
-  qrCodeUrl?: string;
   limits: {
     minDeposit: number;
     maxDeposit: number;

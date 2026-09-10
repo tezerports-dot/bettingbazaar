@@ -351,7 +351,6 @@ router.put('/merchants/:merchantId/capabilities', authenticate, isAdmin, async (
         if (nextRail === MERCHANT_CURRENCY.USDT) {
           patch.bankUpiId = null; patch.bankAccountNo = null;
           patch.bankIfsc = null; patch.bankAccountHolderName = null;
-          patch.qrCodeUrl = null;
         } else {
           patch.usdtAddressTrc20 = null; patch.usdtAddressBep20 = null;
         }

@@ -40,7 +40,6 @@ const ProfileSettings: React.FC = () => {
 
   const [form, setForm] = useState({
     upiId: '',
-    qrCodeUrl: '',
     accountHolderName: '',
     bankName: '',
     accountNo: '',
@@ -57,7 +56,6 @@ const ProfileSettings: React.FC = () => {
     if (!merchant) return;
     setForm({
       upiId: merchant.bankDetails?.upiId ?? merchant.settlementDetails?.upiId ?? '',
-      qrCodeUrl: merchant.settlementDetails?.upiQrCodeUrl ?? '',
       accountHolderName: merchant.bankDetails?.accountHolderName ?? merchant.settlementDetails?.accountName ?? '',
       bankName: merchant.bankDetails?.bankName ?? merchant.settlementDetails?.bankName ?? '',
       accountNo: merchant.bankDetails?.accountNo ?? merchant.settlementDetails?.accountNumber ?? '',
@@ -121,7 +119,6 @@ const ProfileSettings: React.FC = () => {
             }
           : {
               upiId: form.upiId.trim(),
-              qrCodeUrl: form.qrCodeUrl.trim(),
               bankDetails: {
                 accountHolderName: form.accountHolderName.trim(),
                 bankName: form.bankName.trim(),
@@ -396,15 +393,6 @@ const ProfileSettings: React.FC = () => {
                 spellCheck={false}
                 autoCapitalize="none"
                 className="bb-mono"
-                style={inputStyle}
-              />
-            </Field>
-            <Field label="Payment QR image URL" hint="Shown to users alongside your UPI ID.">
-              <input
-                value={form.qrCodeUrl}
-                onChange={(e) => setForm((f) => ({ ...f, qrCodeUrl: e.target.value }))}
-                placeholder="https://…"
-                spellCheck={false}
                 style={inputStyle}
               />
             </Field>

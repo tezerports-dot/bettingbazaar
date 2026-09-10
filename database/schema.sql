@@ -1375,7 +1375,6 @@ CREATE TABLE IF NOT EXISTS merchants (
   -- and USDT sent to a corrupted address is unrecoverable, so the format is
   -- checked by the row rather than trusted to the caller.
   usdt_wallet_address      TEXT,
-  qr_code_url              TEXT,
 
   -- ── Limits and thresholds, in integer paise ───────────────────────────────
   -- The document store held these as rupee floats. Every one of them is
@@ -3604,3 +3603,19 @@ CREATE INDEX IF NOT EXISTS merchants_usdt_bep20_live_idx
 -- and `amount_paise` and never joins back to the code.
 DROP TABLE IF EXISTS gift_code_redemptions;
 DROP TABLE IF EXISTS gift_codes;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- The merchant QR, DROPPED 2026-09-10 with the feature.
+--
+-- A stored QR image was a SECOND, STATIC way of saying what `upiPaymentLink()`
+-- already says dynamically and better. On the INR rail a merchant supplies a UPI
+-- ID and nothing else: the link is built per order, with THAT order's amount
+-- already in it (`upi://pay?pa=…&am=…&tn=…&tr=<orderId>`), so the player taps it
+-- and their own UPI app opens filled in.
+--
+-- A stored image cannot carry the amount, which is the whole point — and it was
+-- unreachable besides: its upload route had no UI, while the profile field that
+-- stored it was constrained to this platform's CDN, so the only acceptable value
+-- was one only that unreachable route could mint (F-016).
+DROP INDEX IF EXISTS merchants_qr_code_url_idx;
+ALTER TABLE merchants DROP COLUMN IF EXISTS qr_code_url;
