@@ -150,6 +150,7 @@ wrong owner gets working code deleted by the next reader.
 | Money in/out of the ecosystem | `domains/funding/fundingAuthority.service.js`; rails are adapters in `providerRegistry.js`. Never owns accounting. |
 | Settlement ledger / accounting events | `accounting_events`, written ONLY via `domains/revenue/revenueSettlement.service.js`. Append-only double-entry, integer paise, unique idempotency keys, balances always derived from postings and never stored. |
 | External payment references (UTR, chain tx hash, CDM slip) | `utr_registry` via `claimPaymentReference()`. One reference, one order, for good. See §27. |
+| What a failed request tells its caller | `backend/shared/httpError.js`. `serverError` logs in full and answers with nothing; `callerError` keeps a refusal's own wording; `respondError` routes a `catch` that holds either, on the PRESENCE of `err.status` and never its value. A handler may not phrase a 5xx itself. |
 | Order lifecycle state | `order_states.state` — `PENDING_QUEUE, ASSIGNED, PROCESSING, PAID, COMPLETED, DISPUTED, CANCELLED, FAILED, REJECTED`, enforced by CHECK. |
 | Which fields the lifecycle may write | `SETTABLE` in the order writer. See §21. |
 | Dispute resolution | `order_states` embedded dispute fields. There is no separate dispute table. |
@@ -939,5 +940,6 @@ the thing being claimed.**
 | `npm run check:merchant-privacy` | A merchant is told the payout account — never the player's phone or UPI ID. |
 | `npm run check:player-privacy` | A player is told where to pay — never the merchant's handle, QR or bank account. |
 | `npm run check:payment-references` | Every external payment reference is claimed once, through one registry. |
+| `npm run check:error-responses` | No 5xx hands the caller its own error text, and `serverError` still logs. |
 | `npm run verify:capabilities` | Every claimed capability has its evidence on disk. |
 | `npm run audit:map -- --check` | The security audit map's counts still match the code. |

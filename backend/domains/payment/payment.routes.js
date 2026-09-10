@@ -47,7 +47,7 @@ import { releaseUTR } from '../../middleware/utrValidation.js';
 // may act on the order, so a route cannot be added without both.
 import { orderAccessGuard } from '../../middleware/order-crypto-access.js';
 import { emitWalletUpdate, emitAdminUpdate, emitOrderUpdate } from '../notification/realtimeEmitters.js';
-import { serverError } from '../../shared/httpError.js';
+import { serverError, respondError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -93,7 +93,7 @@ router.post('/deposit/create', authenticate, requireLinkedKyc, requireChannelMem
   try {
     const result = await requestDeposit({ userId: req.user.userId, tokenAmount: Number(req.body.tokenAmount) });
     res.json({ success: true, message: 'Deposit request created. Waiting for merchant assignment.', ...result });
-  } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code }); }
+  } catch (err) { return respondError(res, err, 'POST /payment/deposit/create'); }
 });
 
 /**
@@ -130,7 +130,7 @@ router.post('/usdt/deposit/create',
       });
       res.json({ success: true, message: 'USDT purchase created. Waiting for a merchant.', ...result });
     } catch (err) {
-      res.status(err.status || 500).json({ success: false, message: err.message, code: err.code });
+      return respondError(res, err, 'POST /payment/usdt/deposit/create');
     }
   });
 
@@ -151,7 +151,13 @@ router.post('/withdrawal/create', authenticate, requireApprovedKyc, requireChann
   try {
     const result = await requestWithdrawal({ userId: req.user.userId, tokenAmount: Number(req.body.tokenAmount) });
     res.json({ success: true, message: 'Withdrawal request created. Waiting for merchant assignment.', ...result });
-  } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code, cutoffPassed: err.cutoffPassed, balance: err.balance }); }
+  } catch (err) {
+    // cutoffPassed and balance are read by the withdrawal screen, so they ride
+    // the REFUSAL branch — an unclassified fault has no business setting them.
+    return respondError(res, err, 'POST /payment/withdrawal/create', {
+      passthrough: ['cutoffPassed', 'balance'],
+    });
+  }
 });
 
 /**
@@ -207,12 +213,11 @@ router.post('/order/:orderId/utr-grace', authenticate, utrGraceLimiter, orderAcc
     const order = await claimUtrGrace(req.user.userId, req.params.orderId);
     res.json({ success: true, expiresAt: order.expiresAt, graceTakenAt: order.utrGraceAt });
   } catch (err) {
-    res.status(err.status || 500).json({
-      success: false, message: err.message, code: err.code,
-      // On a second claim the player is told the deadline they actually have,
-      // so the screen can correct itself rather than showing a countdown that
-      // disagrees with the server.
-      ...(err.expiresAt ? { expiresAt: err.expiresAt } : {}),
+    // expiresAt: on a second claim the player is told the deadline they actually
+    // have, so the screen can correct itself rather than showing a countdown
+    // that disagrees with the server. Refusal branch only.
+    return respondError(res, err, 'POST /payment/order/:orderId/utr-grace', {
+      passthrough: ['expiresAt'],
     });
   }
 });
@@ -227,7 +232,11 @@ router.post('/order/:orderId/mark-paid', authenticate, orderAccessGuard, async (
     if (!utrNumber?.trim()) return res.status(400).json({ success: false, message: 'utrNumber is required' });
     const order = await markOrderPaid(req.user.userId, req.params.orderId, utrNumber);
     res.json({ success: true, message: 'Payment marked. Awaiting merchant review.', order: forPlayer(order) });
-  } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message, code: err.code, originalOrderId: err.originalOrderId }); }
+  } catch (err) {
+    return respondError(res, err, 'POST /payment/order/:orderId/mark-paid', {
+      passthrough: ['originalOrderId'],
+    });
+  }
 });
 
 /**
@@ -466,7 +475,7 @@ router.post('/order/cancel', authenticate, async (req, res) => {
   try {
     await cancelOrder(req.user.userId, req.user.isAdmin, req.body.orderId);
     res.json({ success: true, message: 'Order cancelled' });
-  } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message }); }
+  } catch (err) { return respondError(res, err, 'POST /payment/order/cancel'); }
 });
 
 // ─── GET /api/payment/order/:orderId/status — lightweight poll (Section 2B) ──

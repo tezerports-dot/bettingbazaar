@@ -287,6 +287,16 @@ jobs:
       # Two of the three used to write the reference and claim nothing.
       - name: One payment, one claim
         run: npm run check:payment-references
+      # F-008 and F-013, as ONE gate on purpose. An unexpected failure — a
+      # Postgres constraint name, an fs path, an internal host from a fetch —
+      # is logged in full and answered with nothing; a refusal somebody WROTE
+      # for the caller keeps its wording. The two shapes are checked together
+      # because a gate written for `res.status(500).json({ message: err.message })`
+      # alone goes green over 26 sites of `res.status(err.status || 500)` and
+      # reports the class closed — §29, absence of a failing check is not
+      # evidence when no check covers the thing being claimed.
+      - name: An unexpected failure describes itself to nobody
+        run: npm run check:error-responses
       # Items 5+58: architecture validation — circular imports and governance
       # boundary violations (domain core importing routes, wallet importing
       # products) fail the build instead of waiting for human review.

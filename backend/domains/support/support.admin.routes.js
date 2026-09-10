@@ -19,17 +19,18 @@ import {
   ragStatus, ingestKnowledgeBase, ingestDocument,
   listIngestedDocuments, removeDocument,
 } from './ragService.js';
+import { respondError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
 router.get('/support/status', authenticate, isAdmin, async (req, res) => {
   try { res.json({ success: true, ...(await ragStatus()) }); }
-  catch (e) { res.status(e.status || 500).json({ success: false, message: e.message }); }
+  catch (e) { return respondError(res, e, 'GET /admin/support/status'); }
 });
 
 router.post('/support/ingest/knowledge-base', authenticate, isAdmin, async (req, res) => {
   try { res.json({ success: true, ...(await ingestKnowledgeBase()) }); }
-  catch (e) { res.status(e.status || 500).json({ success: false, message: e.message }); }
+  catch (e) { return respondError(res, e, 'POST /admin/support/ingest/knowledge-base'); }
 });
 
 router.post('/support/ingest', authenticate, isAdmin, async (req, res) => {
@@ -46,13 +47,13 @@ router.post('/support/ingest', authenticate, isAdmin, async (req, res) => {
     });
     res.json({ success: true, ...result });
   } catch (e) {
-    res.status(e.status || 500).json({ success: false, message: e.message });
+    return respondError(res, e, 'POST /admin/support/ingest');
   }
 });
 
 router.get('/support/documents', authenticate, isAdmin, async (req, res) => {
   try { res.json({ success: true, documents: await listIngestedDocuments() }); }
-  catch (e) { res.status(e.status || 500).json({ success: false, message: e.message }); }
+  catch (e) { return respondError(res, e, 'GET /admin/support/documents'); }
 });
 
 router.delete('/support/documents/:docId', authenticate, isAdmin, async (req, res) => {
@@ -60,7 +61,7 @@ router.delete('/support/documents/:docId', authenticate, isAdmin, async (req, re
     const removed = await removeDocument(String(req.params.docId));
     res.json({ success: true, removedChunks: removed });
   } catch (e) {
-    res.status(e.status || 500).json({ success: false, message: e.message });
+    return respondError(res, e, 'DELETE /admin/support/documents/:docId');
   }
 });
 

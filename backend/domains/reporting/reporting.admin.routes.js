@@ -11,6 +11,7 @@ import { financialReport, settlementReport, merchantReport, regulatoryLedgerExpo
 // worker thread so serializing it doesn't block the event loop (and every
 // concurrent request, money paths included). Small exports stay inline.
 import { runCpuTask, shouldOffloadCsv } from '../../services/workerPool.service.js';
+import { respondError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -27,7 +28,7 @@ router.get('/reports/financial', authenticate, isAdminOrSubAdmin, async (req, re
     const report = await financialReport(period(req));
     res.json({ success: true, report });
   } catch (error) {
-    res.status(error.status || 500).json({ success: false, message: error.status ? error.message : 'Failed to build financial report' });
+    return respondError(res, error, 'GET /admin/reports/financial', { message: 'Failed to build financial report' });
   }
 });
 
@@ -37,7 +38,7 @@ router.get('/reports/settlement', authenticate, isAdminOrSubAdmin, async (req, r
     const days = await settlementReport(period(req));
     res.json({ success: true, days });
   } catch (error) {
-    res.status(error.status || 500).json({ success: false, message: error.status ? error.message : 'Failed to build settlement report' });
+    return respondError(res, error, 'GET /admin/reports/settlement', { message: 'Failed to build settlement report' });
   }
 });
 
@@ -47,7 +48,7 @@ router.get('/reports/merchants', authenticate, isAdminOrSubAdmin, async (req, re
     const merchants = await merchantReport(period(req));
     res.json({ success: true, merchants });
   } catch (error) {
-    res.status(error.status || 500).json({ success: false, message: error.status ? error.message : 'Failed to build merchant report' });
+    return respondError(res, error, 'GET /admin/reports/merchants', { message: 'Failed to build merchant report' });
   }
 });
 
@@ -66,7 +67,7 @@ router.get('/reports/ledger-export', authenticate, isAdmin, async (req, res) => 
     }
     res.json({ success: true, rows });
   } catch (error) {
-    res.status(error.status || 500).json({ success: false, message: error.status ? error.message : 'Failed to build ledger export' });
+    return respondError(res, error, 'GET /admin/reports/regulatory-ledger', { message: 'Failed to build ledger export' });
   }
 });
 

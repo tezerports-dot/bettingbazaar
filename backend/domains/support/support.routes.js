@@ -35,7 +35,7 @@ import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { authenticate } from '../identity/auth.middleware.js';
 import { db } from '#db';
 import { answer, ragStatus } from './ragService.js';
-import { serverError } from '../../shared/httpError.js';
+import { serverError, respondError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -78,7 +78,7 @@ router.post('/ask', authenticate, askLimiter, async (req, res) => {
     });
     res.json({ success: true, ...result });
   } catch (e) {
-    res.status(e.status || 500).json({ success: false, message: e.message });
+    return respondError(res, e, 'POST /support/ask');
   }
 });
 

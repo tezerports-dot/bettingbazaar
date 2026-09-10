@@ -13,7 +13,7 @@ import { CASH_DENOMINATIONS_PAISE, isCashDenomination } from './denominations.js
 import { rupeesToPaise } from '../../shared/money.js';
 import { assertExternalHttpsUrl } from '../../shared/storedUrl.js';
 import { assertStaffPassword } from '../identity/passwordPolicy.js';
-import { serverError } from '../../shared/httpError.js';
+import { serverError, respondError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -710,7 +710,7 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
 
   } catch (error) {
     console.error('❌ Admin fund merchant error:', error);
-    res.status(error.status || 500).json({ success: false, message: error.message || 'Failed to fund merchant wallet' });
+    return respondError(res, error, 'POST /admin/merchants/:merchantId/fund', { message: 'Failed to fund merchant wallet' });
   }
 });
 
@@ -816,7 +816,7 @@ router.post('/merchant-token-orders/:orderId/approve', authenticate, isAdmin, as
     });
   } catch (error) {
     console.error('POST /admin/merchant-token-orders/:orderId/approve error:', error);
-    res.status(error.status || 500).json({ success: false, message: error.message || 'Failed to approve merchant token order' });
+    return respondError(res, error, 'POST /admin/merchant-token-orders/:orderId/approve', { message: 'Failed to approve merchant token order' });
   }
 });
 
@@ -920,10 +920,7 @@ router.post('/merchants/:merchantId/deduct', authenticate, isAdmin, async (req, 
     // Idempotency-Key — the one refusal that tells the caller exactly what to
     // do — into "the server broke", on a money route where a 500 also reads as
     // "it may have half-applied". Nothing had moved.
-    res.status(error.status || 500).json({
-      success: false,
-      message: error.status ? error.message : 'Failed to deduct merchant wallet',
-    });
+    return respondError(res, error, 'POST /admin/merchants/:merchantId/deduct');
   }
 });
 

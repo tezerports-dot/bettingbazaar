@@ -6,7 +6,7 @@ import { db } from '#db';
 import cdnService from '../services/cdn.service.js';
 import { authenticate, isAdmin } from '../domains/identity/auth.middleware.js';
 import { merchantAuth } from '../middleware/merchantAuth.js';
-import { serverError, callerError } from '../shared/httpError.js';
+import { serverError, callerError, respondError } from '../shared/httpError.js';
 // Order chat. An attachment that is not recorded is an upload nobody can find.
 
 const router = express.Router();
@@ -95,7 +95,7 @@ router.post('/merchant/order-reject-proof/:orderId/upload-url', merchantAuth, as
     res.json({ success: true, ...uploadData });
   } catch (error) {
     console.error('❌ Merchant reject-proof upload URL error:', error);
-    res.status(error.status || 500).json({ success: false, message: error.message || 'Failed to generate upload URL' });
+    return respondError(res, error, 'POST /upload/merchant/order-reject-proof/:orderId/upload-url', { message: 'Failed to generate upload URL' });
   }
 });
 
@@ -143,7 +143,7 @@ router.post('/merchant/cdm-receipt/:orderId/upload-url', merchantAuth, async (re
     res.json({ success: true, ...uploadData });
   } catch (error) {
     console.error('❌ CDM receipt upload URL error:', error);
-    res.status(error.status || 500).json({ success: false, message: error.message || 'Failed to generate upload URL' });
+    return respondError(res, error, 'POST /upload/merchant/cdm-receipt/:orderId/upload-url', { message: 'Failed to generate upload URL' });
   }
 });
 

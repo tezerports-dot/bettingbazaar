@@ -1049,8 +1049,8 @@ F-002 currently has.
 <!-- END SWEEP F-002 -->
 
 ### F-013 — the same leak, written as a status fallback — the shape F-008's sweep had no bucket for
-`OPEN` · medium · information disclosure · found 2026-09-10 by re-running F-008's
-own sweep query after F-008 was closed
+`FIXED` · medium · information disclosure · found 2026-09-10 by re-running
+F-008's own sweep query after F-008 was closed · fixed 2026-09-10
 
 ```js
 res.status(err.status || 500).json({ success: false, message: err.message })
@@ -1099,13 +1099,40 @@ Two things make it more than bookkeeping:
   design.
 - **Reach:** ~6 player-facing (payment, support), ~4 merchant-facing (upload,
   merchant admin), the rest admin.
-- **Not fixed — it needs a decision, not a patch**, because 4 of the 26 attach
-  extra fields to the refusal (`cutoffPassed`, `balance`, `code`,
-  `originalOrderId`) that a blunt conversion would drop, and those fields are
-  read by the panels. See §6.
-- **Gate possible:** yes, and it must be the *same* gate as F-008's. A gate
-  matching only the plain `status(500)` form would go green over all 26 of these
-  and report the class closed.
+- **Fix:** `respondError(res, err, where, { message, passthrough })` in
+  `shared/httpError.js`, and **all 30 sites converted** — the 26 defects plus
+  the 4 already-correct `reporting.admin.routes.js` sites, which discriminated
+  properly but still logged nothing on the 500 branch. The sweep query returns
+  zero outside the owner file.
+- **The discriminator is the PRESENCE of `.status`, never its value**, and that
+  is a deliberate choice worth stating. Several services throw a real 503 whose
+  wording is the feature — `USDT_RATE_UNSET`, "Funding provider is not active",
+  "RAG retrieval not configured" — and §25's rule that a refusal names its own
+  reason applies to a 5xx exactly as to a 400. What separates the two cases is
+  whether anybody *decided* the answer; an unset `.status` is how "nobody did"
+  reads. A Postgres error carries `.code` (a SQLSTATE) but never a `.status`, so
+  it cannot pass as a refusal.
+- **The fields the panels read are kept, and kept on the refusal branch only.**
+  `passthrough` names them per site — `cutoffPassed`/`balance` on withdrawal
+  creation, `originalOrderId` on mark-paid, `expiresAt` on the UTR grace claim —
+  and copies each only when the thrower actually set it. An absent key is not
+  the same answer as `null` to a panel branching on it, and an unclassified
+  fault has no business populating any of them.
+- **Gate:** `npm run check:error-responses`
+  (`scripts/verify-error-responses.mjs`) — **one gate for F-008 and F-013
+  together**, which is the point rather than a convenience. A gate written for
+  the plain `status(500)` form alone goes green over all 26 fallback sites and
+  reports the class CLOSED, which is worse than no gate (§29). It brackets each
+  `.json(` payload rather than regex-spanning it, blanks comments first
+  (trap §24.6), leaves the discriminated `err.status ? … : …` form alone, and
+  excludes `httpError.js` by path the way `verify-no-mongo.mjs` excludes itself.
+- **The gate was proved against all four cases before being trusted**, not
+  merely observed to pass: the plain 500 form caught, the `|| 500` fallback
+  caught, the correct discriminated form left quiet, and — the half easiest to
+  lose — deleting the `console.error` from `serverError()` caught. A future edit
+  that keeps the signature and drops the logging would otherwise leave every
+  converted site silent with every check still green, which is the half of
+  F-008 that was worse than the disclosure.
 
 ---
 
@@ -1221,7 +1248,7 @@ In the order it should be worked.
 | 11 | Gate for the F-006 shape | §4 | Any `*_url` / `*_link` written from `req.body` must pass through `shared/storedUrl.js`. |
 | 12 | Sweep F-007 | §4 | Which other suites only pass in a particular order. |
 | 13 | ~~Finish F-008~~ | §4 | **Done 2026-09-10.** All 21 remaining sites converted; the sweep returns zero. |
-| 14 | Gate for the F-008 **and F-013** shapes | §4 | One gate, both forms. A gate matching only `res.status(5xx).json({ message: err.message })` goes green over all 26 F-013 sites and reports the class closed. |
-| 14b | **Decide F-013** | §4 | 26 sites of `status(err.status \|\| 500)` + raw message, including `deposit/create` and `withdrawal/create`, neither of which logs. Needs a decision because 4 sites attach extra fields the panels read. |
+| 14 | ~~Gate for the F-008 **and F-013** shapes~~ | §4 | **Done 2026-09-10** — `check:error-responses`, one gate for both forms, proved against all four cases including the deleted-log case. |
+| 14b | ~~Decide F-013~~ | §4 | **Done 2026-09-10.** All 30 sites through `respondError`; the panel-read fields ride the refusal branch by name. |
 | 15 | **Decide F-011 — staff 2FA** | §4 | **Highest open item.** A password-only admin session is the whole platform. Fix shape and the lockout risk are in the entry; steps 1 and 3 are safe to ship alone. |
 | 15 | Decide F-009's `frame-src` | §4 | Per-response CSP from enabled providers, or a static list an admin cannot extend. Owner's call. |

@@ -38,6 +38,7 @@
     "check:merchant-privacy": "node scripts/verify-merchant-privacy.mjs",
     "check:player-privacy": "node scripts/verify-player-privacy.mjs",
     "check:payment-references": "node scripts/verify-payment-references.mjs",
+    "check:error-responses": "node scripts/verify-error-responses.mjs",
     "audit:map": "node scripts/audit-map.mjs"
   },
   "dependencies": {
