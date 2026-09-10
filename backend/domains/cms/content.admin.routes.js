@@ -1,6 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /** content.admin.routes.js — FAQ, support links, promo, announcements */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import { express, authenticate, isAdmin, isAdminOrSubAdmin, hasAnyPermission } from '../../routes/admin/_adminShared.js';
 import contentService from './content.service.js';
 import { generatePresignedUploadUrl } from '../../services/cdn.service.js';
 import { db } from '#db';
@@ -224,7 +224,13 @@ const promoStatus = (value) => PROMO_STATUS[String(value || '').toUpperCase()] ?
  * this category, and the extension blocklist independently refuses SVG and
  * HTML, which would otherwise be stored XSS served from the CDN origin.
  */
-router.post('/promo/upload-url', authenticate, isAdminOrSubAdmin, async (req, res) => {
+// A promo slide is published to every player. Gated on the CONTENT key rather
+// than bare `isAdminOrSubAdmin`, which asked only whether the caller was a
+// sub-admin and never which of the nine keys they hold (audit F-001) — the
+// admin panel already gates its Content screens on this key, so the server was
+// the half that was missing. `canManageSupport` is accepted alongside it
+// because utils/permissions.ts documents it as a back-compat alias.
+router.post('/promo/upload-url', authenticate, hasAnyPermission(['canManageContent', 'canManageSupport']), async (req, res) => {
   try {
     const { fileName, contentType, fileSize } = req.body || {};
     if (typeof fileName !== 'string' || !fileName.trim()
@@ -265,7 +271,7 @@ router.get('/promo', authenticate, isAdminOrSubAdmin, async (req, res) => {
   }
 });
 
-router.post('/promo', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.post('/promo', authenticate, hasAnyPermission(['canManageContent', 'canManageSupport']), async (req, res) => {
   try {
     const { title, description, location, mediaType, fileUrl, priority, status } = req.body;
     const resolved = promoStatus(status) ?? 'DRAFT';
@@ -304,7 +310,7 @@ router.post('/promo', authenticate, isAdminOrSubAdmin, async (req, res) => {
   }
 });
 
-router.put('/promo/:id', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.put('/promo/:id', authenticate, hasAnyPermission(['canManageContent', 'canManageSupport']), async (req, res) => {
   try {
     const { title, description, location, mediaType, fileUrl, priority, status } = req.body;
     const patch = {};

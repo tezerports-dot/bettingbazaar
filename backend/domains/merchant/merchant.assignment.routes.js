@@ -21,7 +21,7 @@
  * enforced server-side in every assign and reassign endpoint here, not just in
  * the list the picker renders.
  */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin, isAdminOrSubAdminOrQueueManager } from '../../routes/admin/_adminShared.js';
+import { express, authenticate, isAdmin, isAdminOrSubAdmin, isAdminOrSubAdminOrQueueManager, hasPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 // The order state machine — the expected state is in the update's filter, so
 // two admins assigning the same order produce one winner, not a silent overwrite.
@@ -544,7 +544,13 @@ router.post('/queue/assign/:orderId', authenticate, isAdminOrSubAdminOrQueueMana
 });
 
 // ─── PUT /api/admin/merchants/:merchantId/scoring — admin sets maxConcurrentOrders ──
-router.put('/merchants/:merchantId/scoring', authenticate, isAdminOrSubAdmin, async (req, res) => {
+// `canManageMerchants`, not bare `isAdminOrSubAdmin`. These caps decide how many
+// orders a merchant may hold at once, which shapes WHERE A PLAYER'S MONEY IS
+// ROUTED — and the gate below asked only whether the caller was a sub-admin,
+// never which of the nine permission keys they hold. The admin panel gates the
+// Merchants screen on this key already; the server did not, so the model was a
+// client-side control for this route (audit F-001).
+router.put('/merchants/:merchantId/scoring', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const { maxConcurrentOrders, maxConcurrentDepositOrders, maxConcurrentWithdrawalOrders } = req.body || {};
     const patch = {};

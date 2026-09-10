@@ -515,7 +515,27 @@ Every finding, open or closed, with its class sweep. **An entry without a sweep
 is incomplete** (§1).
 
 ### F-001 — sub-admin permission model enforced only in the client
-`OPEN` · high · broken access control · found 2026-09-10
+`PARTIALLY FIXED` · high · broken access control · found 2026-09-10 ·
+**writes gated 2026-09-10; reads proposed, awaiting approval**
+
+**The four writes are gated.** `PUT /api/admin/merchants/:merchantId/scoring` —
+the one that shapes where a player's money is routed — now requires
+`canManageMerchants`, and the three promo writes require `canManageContent` (or
+its documented `canManageSupport` alias). `npm run audit:map` reports **0**
+sub-admin writes without a permission key.
+
+**The 47 reads are proposed, not shipped**, because the owner confirmed
+sub-admin accounts are IN USE: gating a read a colleague depends on blanks their
+screen mid-shift. The table is `docs/audit/SUBADMIN-PERMISSION-PROPOSAL.md`.
+
+Its rows are not guesses. The admin panel's `NAV_GROUPS` already declares which
+key each screen requires, so where a route is reached from a screen the proposed
+key **is the key that screen is already gated on** — the server was the half
+that was missing. 33 rows are confirmed that way; 11 map to screens the panel
+already marks `adminOnly`; 3 are flagged ⚠ for the owner because no screen calls
+them and the panel's own answer looks wrong (the gift-code reads sit under
+`canManageContent`, which lets whoever edits FAQ pages read who was paid).
+
 
 `hasPermission()` is correct and applied to some routes; the rest are gated by
 bare `isAdminOrSubAdmin`, which asks only *are you a sub-admin* and never *which
@@ -991,9 +1011,9 @@ F-002 currently has.
 |---|---|
 | Route declarations in `backend/**` | 316 |
 | Reachable with **no auth middleware** | 40 |
-| Gated `isAdminOrSubAdmin` with **no permission key** | 51 |
-| — of those, **writes** (non-GET) | 4 |
-| Carrying an explicit permission key | 18 |
+| Gated `isAdminOrSubAdmin` with **no permission key** | 47 |
+| — of those, **writes** (non-GET) | 0 |
+| Carrying an explicit permission key | 22 |
 
 A count moving is not by itself a defect — it is a prompt to read the
 new route and decide. Each of the three questions is defined in §2.
@@ -1045,10 +1065,7 @@ new route and decide. Each of the three questions is defined in §2.
 
 <details><summary>Writes any sub-admin can make without holding a permission key</summary>
 
-- `POST /promo  (backend/domains/cms/content.admin.routes.js)`
-- `POST /promo/upload-url  (backend/domains/cms/content.admin.routes.js)`
-- `PUT /merchants/:merchantId/scoring  (backend/domains/merchant/merchant.assignment.routes.js)`
-- `PUT /promo/:id  (backend/domains/cms/content.admin.routes.js)`
+- _none_
 
 </details>
 

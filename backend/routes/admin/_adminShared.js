@@ -18,9 +18,9 @@
  * routes changed instead.
  */
 import express from 'express';
-import { authenticate, isAdmin, isAdminOrSubAdmin, hasPermission } from '../../domains/identity/auth.middleware.js';
+import { authenticate, isAdmin, isAdminOrSubAdmin, hasPermission, hasAnyPermission } from '../../domains/identity/auth.middleware.js';
 
-export { express, authenticate, isAdmin, isAdminOrSubAdmin, hasPermission };
+export { express, authenticate, isAdmin, isAdminOrSubAdmin, hasPermission, hasAnyPermission };
 
 export const isAdminOrSubAdminOrQueueManager = (req, res, next) => {
   if (!req.user || (!req.user.isAdmin && !req.user.isSubAdmin && !req.user.isQueueManager)) {
