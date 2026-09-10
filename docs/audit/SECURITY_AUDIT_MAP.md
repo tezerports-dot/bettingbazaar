@@ -196,9 +196,49 @@ statements is a race; the guard belongs *inside* the `UPDATE`'s `WHERE`. Idempot
 must be a unique constraint, not a prior read. Never mock the boundary that
 carries money (`CLAUDE.md` §1) — test through it against a real database.
 
-**Status: PARTIAL.** Covered by `check:balance-reads`, the pg suites, and the
-mutation harness. A dedicated concurrency re-verification pass has **not** been
-run in this audit.
+**Status: EXAMINED 2026-09-10 — the core holds; one reporting gap (F-015).**
+
+**What was read, and what it says.** Every balance-mutating write in the
+platform was traced to its guard:
+
+| Path | How the guard is enforced | Verdict |
+|---|---|---|
+| Player wallet (`wallets.core.js`) | relative deltas (`col = col + $n`) with `AND col + $n >= 0` **in the UPDATE's WHERE**, ledger row in the same transaction, UNIQUE `tx_id` colliding inside it | correct |
+| Merchant wallet (`merchantWallets.core.js`) | `SELECT … FOR UPDATE` on the row, same WHERE-clause guard, same in-transaction ledger | correct |
+| Treasury (`treasury.js`) | reads `balanceBefore` in JS and writes an ABSOLUTE `balance_paise` — which would be a lost update — but the read is `SELECT … FOR UPDATE … ORDER BY account`, so the row is held for the whole transaction and the ordering removes the deadlock | correct, and the ORDER BY is load-bearing |
+| Bonuses (`bonuses.core.js`) | pool movement first, then `applyMovementWithin`; refuses rather than partial-issuing | correct |
+| Cycle pools | derived from `bets`, never stored on the `cycles` row (trap 4) | correct |
+
+**What was newly PROVEN rather than read.** `merchantWalletPg.test.js` contained
+**no concurrent exercise at all**, and the merchant's available balance is what
+gates every deposit completion — a player has already sent real money by the
+time `moveDepositMoney` asks whether the merchant can cover it. The design was
+documented as correct and nothing had demonstrated it.
+
+`database/tests/merchantWalletConcurrencyPg.test.js` now does, and it is
+**mutation-proven rather than merely green**:
+
+- guard deleted from the UPDATE's WHERE → **2 tests fail** (the balance lands at
+  −50,000 with five confirmations paid from tokens that never existed);
+- a `tx_id` collision made to report success → **1 test fails**.
+
+It also guards the two ways a concurrency test lies. It asserts the pool can
+actually hold its own fan-out, because a pool of one serialises the callers and
+turns the whole file into a check that measures nothing (§24.6); and it
+namespaces every merchant id, truncates nothing and asserts only over its own
+rows (trap §20.10) — unlike the two sibling files, which TRUNCATE the shared
+table and are safe only because `fileParallelism` is false.
+
+**One thing the cleanup taught, worth keeping.** The file's first draft deleted
+its own ledger rows in `afterAll` and the append-only trigger refused it. The
+cleanup was changed to fit the invariant rather than the invariant worked
+around: a ledger row is not a test fixture, and a suite that can delete one has
+taught itself a capability production must never have.
+
+**Still not covered, stated plainly (§29).** Settlement under concurrent bet
+placement, and the crash-resume path, are exercised by `settlementEnginePg` and
+`betPg` but not under a deliberate storm. This pass proved the wallet layer both
+of those sit on; it did not prove the engine above it.
 
 ### 2.7 Privacy — both directions
 
@@ -1267,6 +1307,69 @@ owner is never a panel. Every other identifier on this platform comes from
   panel outside an allow-list of presentational files. Queued in §6, because the
   allow-list needs stated reasons per entry rather than being a silencer (§22.1).
 
+### F-015 — the deposit that cannot be credited tells the platform nothing
+`OPEN` · low-medium · observability on the money path · found 2026-09-10 while
+examining class 2.6
+
+```js
+// backend/domains/payment/depositCredit.js:116
+if (!debited) return { ok: false, reason: 'merchant_insufficient', … };
+```
+
+**Nothing in the codebase reads that reason.** Both call sites answer the same
+`400 { message: 'Merchant insufficient token balance' }` and do nothing else —
+no `sendAlert`, no notification, no log line.
+
+**The money is safe and that is not in question.** `moveDepositMoney` refuses
+BEFORE the order advances, every movement is keyed on the order id, and the
+order stays PAID and retryable. No tokens are created and the player is not
+debited twice. This is a reporting finding, not a ledger one.
+
+**What makes it worth fixing anyway is the state the player is left in.** PAID
+means the player has already sent real money and submitted a UTR. At that
+moment:
+
+- the **merchant** is told clearly, and can act on it by topping up;
+- the **player** is told nothing and sees an order that simply does not advance;
+- the **platform** learns nothing at all;
+- `expireOrders` deliberately does not cover PAID — correctly, since
+  auto-cancelling a paid order would strand the payment — so nothing sweeps it;
+- the only route out is the player noticing and pressing dispute.
+
+**The strongest argument is eight lines further down the same function.** The
+sibling branch — the order moved but the transition was refused — carries the
+comment *"It must be loud rather than silent"* and calls `console.error`. That
+case is rarer and less consequential than this one, and it is the one that
+shouts. Within a single function, the ordinary failure is quiet and the exotic
+one is loud.
+
+**How an order reaches a merchant who cannot fund it.** Two ways, and the
+severity split between them matters:
+
+1. **A check-then-act at assignment.** `inventoryRefusal()` reads
+   `getMerchantTokenBalance` and the caller assigns in a separate statement —
+   no lock, no guard in the WHERE. `listAssignableMerchants` deliberately does
+   not filter on balance (its comment explains why: the balance lives in
+   `merchant_wallets` and a predicate here would be the old stored-`tokenBalance`
+   defect one layer down), so every assignment path decides this way.
+   **Heavily mitigated, and this should not be overstated:**
+   `maxConcurrentDepositOrders` defaults to **1**, so a merchant holds one active
+   deposit at a time and the race needs two assignments in the same instant.
+2. **Ordinary drift, which needs no race at all.** The balance can fall between
+   assignment and confirmation because the merchant funded a withdrawal, an
+   admin deducted, or a token order settled. This is the common path and no
+   concurrency guard would prevent it.
+
+- **Shape:** a money-path failure whose only report is an HTTP status to the one
+  party who caused it.
+- **Sweep query:**
+  `grep -rn "reason: '" backend/domains/payment backend/domains/merchant --include=*.js | grep -v /tests/`
+- **Swept:** not yet — the question is which other refusals on a money path are
+  returned and never reported. Queued in §6.
+- **Not fixed:** it is a judgement call about what the platform should do when a
+  paid deposit cannot complete — alert only, or alert plus tell the player — and
+  that is the owner's, not mine.
+
 ---
 
 ## 5. Derived coverage — regenerated, never typed
@@ -1368,6 +1471,7 @@ In the order it should be worked.
 
 | # | Class | §2 | Why now |
 |---|---|---|---|
+| 0 | **Decide F-015** | §4 | A paid deposit that cannot be credited reports to nobody but the merchant. Alert only, or alert plus tell the player? Plus the sweep for other silently-returned money-path refusals. |
 | 0 | Gate for the F-014 shape | §4 | Fail on `Math.random()` in a panel outside an allow-list of presentational files, each entry carrying a stated reason. |
 | 1 | Client-side injection (XSS) | 2.14 | Chat, tickets and admin announcements all round-trip through panels; a stored XSS in the admin panel runs with an admin session. |
 | 2 | File upload | 2.15 | Payment proofs are evidence in money disputes. |
@@ -1376,7 +1480,7 @@ In the order it should be worked.
 | 5 | Public-route data leakage | 2.18 | Leaderboards and winners are designed to expose players — how much? |
 | 6 | Admin 2FA enforcement | 2.19 | |
 | 7 | ~~Identifier predictability~~ | 2.20 | **Done 2026-09-10** — clear except F-014; the per-identifier table is in §2.20. |
-| 8 | Money-path concurrency | 2.6 | Partial today; deserves a dedicated pass. |
+| 8 | ~~Money-path concurrency~~ | 2.6 | **Done 2026-09-10** — every balance write traced to its guard, and the merchant wallet now has a mutation-proven concurrency suite. Settlement-under-storm and crash-resume remain uncovered; §2.6 says so. |
 | 9 | Gate for F-001 | §4 | Closes the class, not the instance. |
 | 10 | Gate for the F-003 shape | §4 | A CHECK a handler can violate after a commit. |
 | 11 | Gate for the F-006 shape | §4 | Any `*_url` / `*_link` written from `req.body` must pass through `shared/storedUrl.js`. |
