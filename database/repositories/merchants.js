@@ -59,7 +59,8 @@ const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email
   merchant_rejection_reason,
   monthly_processed_paise, daily_processed_paise, total_orders_processed,
   stats_last_reset_at,
-  success_rate, avg_response_minutes, dispute_rate, consecutive_rejections, max_concurrent_orders,
+  success_rate, avg_response_minutes, dispute_rate, consecutive_rejections,
+  consecutive_expiries, assignment_paused_at, assignment_pause_reason, max_concurrent_orders,
   max_concurrent_deposit_orders, max_concurrent_withdrawal_orders,
   total_orders_completed, total_orders_all, created_at, updated_at`;
 
@@ -170,6 +171,9 @@ function toMerchant(row) {
     avgResponseMinutes: Number(row.avg_response_minutes),
     disputeRate: Number(row.dispute_rate),
     consecutiveRejections: toInt(row.consecutive_rejections),
+    consecutiveExpiries: toInt(row.consecutive_expiries),
+    assignmentPausedAt: row.assignment_paused_at,
+    assignmentPauseReason: row.assignment_pause_reason,
     maxConcurrentOrders: toInt(row.max_concurrent_orders),
     maxConcurrentDepositOrders: toInt(row.max_concurrent_deposit_orders),
     maxConcurrentWithdrawalOrders: toInt(row.max_concurrent_withdrawal_orders),
@@ -389,6 +393,7 @@ export async function cashSuppliersFor(denominationPaise, { lookaheadSeconds = 1
         AND m.merchant_approval_status = 'APPROVED'
         AND m.is_online
         AND m.accepts_deposits
+        AND m.assignment_paused_at IS NULL
         AND m.cash_denomination_paise = $1
         -- Under their concurrency cap. This list decides who is TOLD to walk to
         -- a cash machine, and a merchant already holding an order cannot serve
@@ -520,6 +525,13 @@ export async function assignmentCandidates({
         AND m.is_online
         AND m.${acceptsColumn}
         AND m.merchant_type = $1
+        -- Paused pending a conversation. Three buy orders in a row expired with
+        -- nobody paying, which says nothing about this merchant's honesty and
+        -- quite a lot about whether they are reachable — so no further player is
+        -- sent to find out until an admin has asked. In the WHERE, like every
+        -- other rule here: a merchant who must not be given an order is not a
+        -- candidate at all.
+        AND m.assignment_paused_at IS NULL
         -- The concurrency caps, applied where the counts are. A merchant at
         -- their limit is not a candidate at all, rather than a candidate the
         -- caller is trusted to filter out afterwards.
@@ -939,6 +951,84 @@ export async function resetPeriodicStats(merchantId, { period = 'daily', notRese
  * it. Raised here as a plain argument error rather than a constraint violation,
  * because the caller can fix it and a 500 does not say so.
  */
+/**
+ * Another buy order for this merchant expired with nobody having paid.
+ *
+ * Advanced and read in ONE statement, for the same reason the refusal streak
+ * is: two orders expiring in the same sweep must not both read 2 and both
+ * decide they were the third.
+ *
+ * This is NOT `consecutive_rejections`. An expiry is not a refusal — the
+ * merchant did nothing — so it must never reach the suspension cap. What three
+ * in a row means is that something about this merchant may be broken, which is
+ * a different question with a different answer.
+ */
+export async function bumpConsecutiveExpiries(merchantId) {
+  const { rows } = await pgQuery(
+    `UPDATE merchants SET consecutive_expiries = consecutive_expiries + 1, updated_at = now()
+      WHERE merchant_id = $1
+      RETURNING consecutive_expiries`,
+    [String(merchantId)], 'merchant_bump_expiries',
+  );
+  return rows.length ? Number(rows[0].consecutive_expiries) : 0;
+}
+
+/** A completed order says the merchant is working. The expiry run ends. */
+export async function resetConsecutiveExpiries(merchantId) {
+  await pgQuery(
+    `UPDATE merchants SET consecutive_expiries = 0, updated_at = now()
+      WHERE merchant_id = $1 AND consecutive_expiries <> 0`,
+    [String(merchantId)], 'merchant_reset_expiries',
+  );
+}
+
+/**
+ * Stop assigning new orders to this merchant until somebody has spoken to them.
+ *
+ * NOT a suspension. A suspension says the merchant did something wrong; this
+ * says the platform cannot tell whether they are working, and will not send
+ * another player to find out. They keep every order they already hold — taking
+ * those away would strand players who are mid-payment on them — and they keep
+ * their account, their balance and their history.
+ *
+ * It has no timer, by the same decision as a suspension: an admin reads the
+ * reason, talks to the merchant, and lifts it. A clock cannot tell whether the
+ * QR was fixed.
+ */
+export async function pauseAssignment(merchantId, reason) {
+  if (!String(reason ?? '').trim()) throw new Error('pauseAssignment requires a reason');
+  const { rows } = await pgQuery(
+    `UPDATE merchants
+        SET assignment_paused_at = COALESCE(assignment_paused_at, now()),
+            assignment_pause_reason = $2,
+            updated_at = now()
+      WHERE merchant_id = $1
+      RETURNING ${COLUMNS}`,
+    [String(merchantId), String(reason).trim().slice(0, 500)], 'merchant_pause_assignment',
+  );
+  return toMerchant(rows[0]);
+}
+
+/**
+ * An admin has looked into it. Assignment resumes.
+ *
+ * The COUNTER goes back to zero in the same statement. Left standing at three,
+ * the merchant is assignable again and the very next expiry — however
+ * ordinary — pauses them on the spot, so the admin's decision would last one
+ * order. The same reasoning as `approveMerchant` and the refusal streak.
+ */
+export async function resumeAssignment(merchantId) {
+  const { rows } = await pgQuery(
+    `UPDATE merchants
+        SET assignment_paused_at = NULL, assignment_pause_reason = NULL,
+            consecutive_expiries = 0, updated_at = now()
+      WHERE merchant_id = $1
+      RETURNING ${COLUMNS}`,
+    [String(merchantId)], 'merchant_resume_assignment',
+  );
+  return toMerchant(rows[0]);
+}
+
 export async function suspendMerchant(merchantId, reason, { actor = null } = {}) {
   if (!String(reason ?? '').trim()) throw new Error('suspendMerchant requires a reason');
   return updateMerchant(merchantId, {
@@ -973,6 +1063,13 @@ export async function approveMerchant(merchantId, { actor = null } = {}) {
        -- In the SAME statement as the reinstatement, so there is no instant at
        -- which the merchant is tradeable and the counter still says suspend.
        consecutive_rejections = 0,
+       -- …and the expiry pause, for the same reason. An admin who has just
+       -- reinstated a merchant has answered a strictly larger question than
+       -- "can this merchant be paid", so leaving them unassignable would make
+       -- the reinstatement mean nothing.
+       consecutive_expiries = 0,
+       assignment_paused_at = NULL,
+       assignment_pause_reason = NULL,
        updated_at = now()
      WHERE merchant_id = $1 RETURNING ${COLUMNS}`,
     [String(merchantId), actor ? String(actor) : null], 'merchant_approve',

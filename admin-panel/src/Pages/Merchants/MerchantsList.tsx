@@ -155,6 +155,27 @@ export const MerchantsList: React.FC = () => {
     finally { setOrdersLoading(false); }
   };
 
+  /**
+   * Lift an assignment pause.
+   *
+   * The reason is shown BEFORE the confirm rather than after, because the whole
+   * point of the pause is that somebody reads it and calls the merchant — an
+   * admin who clears it without seeing why has skipped the only step that
+   * fixes anything.
+   */
+  const handleResumeAssignment = async (merchantId: string, reason?: string) => {
+    const ok = window.confirm(
+      `${reason || 'This merchant is paused from new assignments.'}\n\n`
+      + 'Have you checked with them that they can be paid? Resume assignment?',
+    );
+    if (!ok) return;
+    try {
+      await api.merchants.resumeAssignment(merchantId);
+      toast.success('Assignment resumed');
+      loadMerchants();
+    } catch { toast.error('Failed to resume assignment'); }
+  };
+
   const handleSuspend  = async (merchantId: string) => { try { await api.merchants.suspend(merchantId, 'Suspended by admin'); toast.success('Suspended'); loadMerchants(); } catch { toast.error('Failed'); } };
   const handleActivate = async (merchantId: string) => { try { await api.merchants.activate(merchantId); toast.success('Activated'); loadMerchants(); } catch { toast.error('Failed'); } };
 
@@ -318,6 +339,21 @@ export const MerchantsList: React.FC = () => {
             <button onClick={() => setConfirmAction({ type: 'suspend', merchant: m })} className="p-1.5 hover:bg-red-600/20 text-red-500 rounded-sm" title="Suspend"><Ban size={14}/></button>
           ) : (
             <button onClick={() => setConfirmAction({ type: 'activate', merchant: m })} className="p-1.5 hover:bg-green-600/20 text-green-500 rounded-sm" title="Activate"><CheckCircle size={14}/></button>
+          )}
+          {/* Paused, not suspended. Three buy orders in a row expired with
+              nobody paying, which usually means nobody CAN pay this merchant —
+              a dead QR, a closed UPI handle, a bank refusing. They are not
+              accused of anything and keep every order they hold; they are just
+              not sent new ones until somebody has asked. There is no timer on
+              purpose: a clock cannot tell whether the QR was fixed. */}
+          {(m as any).assignmentPausedAt && (
+            <button
+              onClick={() => handleResumeAssignment(m._id, (m as any).assignmentPauseReason)}
+              className="px-2 py-1 bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 rounded-sm text-xs font-medium"
+              title={(m as any).assignmentPauseReason || 'Paused from new assignments'}
+            >
+              Paused · resume
+            </button>
           )}
         </div>
       ),

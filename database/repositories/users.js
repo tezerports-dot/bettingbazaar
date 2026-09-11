@@ -53,7 +53,7 @@ const COLUMNS = `
   joining_number, referral_code, referral_clicks, referred_by,
   status, kyc_status, kyc_submission_count, wallet_address, profile_pic, warning_count,
   payment_flagged, payment_flag_reason, payment_flagged_at, payment_flag_count,
-  consecutive_payment_failures,
+  consecutive_payment_failures, order_lock_until,
   is_admin, is_sub_admin, is_queue_manager, is_mediator,
   sub_admin_role, sub_admin_permissions, phantom_access,
   two_factor_enabled, two_factor_secret, two_factor_pending_secret,
@@ -79,7 +79,7 @@ const UPDATABLE = Object.freeze(new Set([
   'username', 'password_hash', 'referral_code', 'referral_clicks', 'referred_by',
   'status', 'kyc_status', 'wallet_address', 'profile_pic', 'warning_count',
   'payment_flagged', 'payment_flag_reason', 'payment_flagged_at', 'payment_flag_count',
-  'consecutive_payment_failures',
+  'consecutive_payment_failures', 'order_lock_until',
   'is_admin', 'is_sub_admin', 'is_queue_manager', 'is_mediator',
   'sub_admin_role', 'sub_admin_permissions', 'phantom_access',
   'two_factor_enabled', 'two_factor_secret', 'two_factor_pending_secret',
@@ -147,6 +147,7 @@ function toUser(row) {
     paymentFlaggedAt: row.payment_flagged_at,
     paymentFlagCount: row.payment_flag_count,
     consecutivePaymentFailures: row.consecutive_payment_failures,
+    orderLockUntil: row.order_lock_until,
     isAdmin: row.is_admin,
     isSubAdmin: row.is_sub_admin,
     isQueueManager: row.is_queue_manager,
@@ -414,18 +415,71 @@ export async function bumpConsecutivePaymentFailures(userId) {
 }
 
 /**
- * A player paid. The streak goes back to zero.
+ * A player paid. The streak goes back to zero, and so does any cool-off.
  *
  * Called from the deposit-credit path, which is the one place both confirm
  * routes agree the money actually arrived — not from the order reaching PAID,
  * which is only the player SAYING they paid.
+ *
+ * The LOCK is cleared with the streak, and that is the point of clearing it
+ * here rather than letting it run out: a player who was locked, waited, and
+ * then paid for a real order has answered the only question the lock asked.
+ * Leaving it to expire would keep them out for the rest of the hour after they
+ * had already put it right.
  */
 export async function resetConsecutivePaymentFailures(userId) {
   await pgQuery(
-    `UPDATE users SET consecutive_payment_failures = 0, updated_at = now()
-      WHERE user_id = $1 AND consecutive_payment_failures <> 0`,
+    `UPDATE users SET consecutive_payment_failures = 0, order_lock_until = NULL,
+                      updated_at = now()
+      WHERE user_id = $1
+        AND (consecutive_payment_failures <> 0 OR order_lock_until IS NOT NULL)`,
     [String(userId)], 'user_reset_payment_failures',
   );
+}
+
+/**
+ * Stop this player opening new orders for a while.
+ *
+ * The deadline is computed BY THE DATABASE (`now() + interval`), not by the app
+ * server. Three instances with drifting clocks would each write a different
+ * deadline for the same cool-off, and the one that read it back would compare
+ * it against its own clock again — so a player could be locked for fifty
+ * minutes or seventy depending on which server answered.
+ *
+ * Extends rather than replaces: `GREATEST` keeps the later of the two, so a
+ * player who earns a second lock while serving the first does not have it
+ * shortened by the new one.
+ */
+export async function lockOrderCreation(userId, minutes) {
+  const mins = Math.max(Number(minutes) || 0, 0);
+  if (!mins) return null;
+  const { rows } = await pgQuery(
+    `UPDATE users
+        SET order_lock_until = GREATEST(
+              COALESCE(order_lock_until, now()), now() + make_interval(mins => $2)),
+            updated_at = now()
+      WHERE user_id = $1
+      RETURNING order_lock_until`,
+    [String(userId), mins], 'user_lock_order_creation',
+  );
+  return rows[0]?.order_lock_until ?? null;
+}
+
+/**
+ * Is this player in a cool-off, and until when?
+ *
+ * Compared against the DATABASE's clock for the same reason it was written with
+ * it. Returns the deadline when the lock is live and `null` when it is not, so
+ * a caller can tell the player the time rather than "try again later" — which
+ * is the difference between a rule and a brush-off.
+ */
+export async function orderLockFor(userId) {
+  const { rows } = await pgQuery(
+    `SELECT order_lock_until FROM users
+      WHERE user_id = $1 AND order_lock_until IS NOT NULL AND order_lock_until > now()`,
+    [String(userId)], 'user_order_lock',
+  );
+  return rows[0]?.order_lock_until ?? null;
 }
 
 export async function flagPaymentWarning(userId, { reason, maxWarnings = 0 }) {

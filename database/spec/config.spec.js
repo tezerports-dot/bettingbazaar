@@ -156,14 +156,27 @@ export const SYSTEM_CONFIG_SPEC = group({
     // longer than a page refresh; a ceiling of a day, because a player who has
     // paid should never be waiting longer than that for a person to look.
     paidResponseMinutes:           n(30, 5, 1440),
-    // CONSECUTIVE payment failures by one PLAYER before they are flagged for
-    // review. A buy order that expires with no payment is one of these.
+    // ── Three unpaid buy orders in a row, from either side ─────────────────
+    // An expired buy is NOBODY's fault: the player did not pay and the merchant
+    // did nothing wrong. Neither of these is a punishment for it. They are two
+    // different questions the same event answers.
     //
-    // Flagged, not blocked: a player who abandons a few purchases is ordinary,
-    // and the platform's answer to a pattern is a human looking at it. The
-    // block, where it happens at all, stays with the warning count an admin
-    // sets.
-    maxConsecutivePlayerPaymentFailures: n(5, 1, 50),
+    // THE PLAYER: three in a row and they cannot open a new order for an hour.
+    // Every one of those orders held a merchant's tokens for its full window,
+    // so a player cycling through them is taking inventory out of circulation
+    // that other players needed. The cool-off is short and lifts itself.
+    maxConsecutivePlayerPaymentFailures: n(3, 1, 50),
+    playerOrderLockMinutes:              n(60, 1, 1440),
+    // THE MERCHANT: three in a row and they stop being assigned until an admin
+    // has spoken to them. If three different players were each sent to the same
+    // merchant and none of them could pay, the likeliest explanation is that
+    // something about that merchant is broken — a dead QR, a closed handle, a
+    // bank refusing. Nothing else on the platform can see that, because each
+    // failure on its own looks like an ordinary abandoned purchase.
+    //
+    // Counted separately from `maxConsecutiveRejections` on purpose: an expiry
+    // is not a refusal, and mixing them would suspend an honest merchant.
+    maxConsecutiveMerchantExpiries:      n(3, 1, 20),
     minAdminTokenPurchase:     n(50000, 1),
     minUserTokenPurchaseUsdt:  n(100, 100),
     maxUserTokenPurchaseUsdt:  n(0, 0),      // 0 = unlimited

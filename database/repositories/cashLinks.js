@@ -181,6 +181,10 @@ export async function claimLinkForOrder({
             AND m.merchant_approval_status = 'APPROVED'
             AND m.is_online
             AND m.accepts_deposits
+            -- Paused pending a conversation about three expired orders in a
+            -- row. The UPI rail stops assigning to them; a link they left
+            -- behind must not be the way round it.
+            AND m.assignment_paused_at IS NULL
             AND m.merchant_type = $3
             -- Their own approved denomination, re-read. An admin can move a
             -- merchant to a different tier after they supplied the link.

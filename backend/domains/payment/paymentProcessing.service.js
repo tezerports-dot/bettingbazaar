@@ -601,7 +601,33 @@ function startPendingRetryLoop(orderId) {
  *   decide nothing else: the retry is an ORDINARY order, and the only thing
  *   that treats it differently is the queue ordering.
  */
+/**
+ * Is this player inside a cool-off, and if so, refuse by NAME and by CLOCK.
+ *
+ * Three buy orders in a row expired with nobody paying, so they cannot open
+ * another for an hour. Refused BEFORE anything is written, and refused the same
+ * way on both rails — a player who can still place a sell while buys are locked
+ * would just have found the way around it.
+ *
+ * The message carries the TIME. "Try again later" is the shape a player reads
+ * as the app being broken, and they retry immediately and repeatedly; a time
+ * they can look at is a rule they can follow.
+ */
+async function assertNotInCoolOff(userId) {
+  const until = await db.users.orderLockFor(userId);
+  if (!until) return;
+  throw Object.assign(
+    new Error(
+      'Three of your orders in a row expired without payment, so new orders are paused '
+      + `until ${new Date(until).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}. `
+      + 'Paying for an order clears this straight away.',
+    ),
+    { status: 429, code: 'ORDER_COOL_OFF', retryAt: until },
+  );
+}
+
 export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
+  await assertNotInCoolOff(userId);
   const cfg        = await getSystemConfig();
 
   // ── Which rail is this buy on, and on which chain ───────────────────────
@@ -797,6 +823,9 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
  *   The priority goes on all of them: they are all second attempts.
  */
 export async function createWithdrawalOrder(userId, tokenAmount, attempt = {}) {
+  // The same cool-off. A player locked out of buying who could still sell has
+  // simply found the way around it.
+  await assertNotInCoolOff(userId);
   const cfg         = await getSystemConfig();
   const minWithdraw = cfg?.minWithdrawal || 500;
   const maxWithdraw = cfg?.maxWithdrawal || 50000;
@@ -1315,6 +1344,14 @@ export async function updateMerchantStatsOnComplete(merchantId, success, detail 
   // would undo the very increment the rejection just made.
   if (success) await db.merchants.resetConsecutiveRejections(merchantId);
 
+  // …and the EXPIRY run ends too, for the same reason and separately.
+  //
+  // Separately because they count different things: a refusal is the merchant's
+  // doing, an expiry is nobody's. One completed order proves the merchant is
+  // reachable and can be paid, which is the exact question the expiry streak
+  // was asking — so it answers that one whether or not there were refusals.
+  if (success) await db.merchants.resetConsecutiveExpiries(merchantId);
+
   await db.merchants.recordCompletedOrder(merchantId, {
     direction: detail.direction ?? 'DEPOSIT',
     amountRupees: detail.amountRupees ?? 0,
@@ -1562,17 +1599,25 @@ export async function expireOrders() {
         // `PENDING_QUEUE` orders reach this loop too and have no merchant —
         // the `order.merchantId` guard above is what keeps this to assignments
         // somebody actually held.
-        const playerNeverPaid = order.type === 'DEPOSIT';
-        if (playerNeverPaid) {
-          // The PLAYER's failure. Counted against them, through the one owner
-          // of "this player did not pay" — the same function the merchant's
-          // red-flag button calls, so one player has one count however the
-          // failure was noticed.
+        const nobodyPaid = order.type === 'DEPOSIT';
+        if (nobodyPaid) {
+          // ── Nobody is at fault, and TWO things are still worth knowing ────
+          // The player did not pay and the merchant did nothing. Neither is
+          // penalised for it. But three in a row means something on each side:
+          // a player cycling through orders is holding merchant inventory that
+          // other players needed, and a MERCHANT three of whose players could
+          // not pay is probably one nobody can pay — a dead QR, a closed
+          // handle. That second one is invisible any other way, because each
+          // failure on its own looks like an ordinary abandoned purchase.
+          //
+          // Both counts are advanced by one function, so an expiry cannot be
+          // recorded against one party and forgotten against the other.
           const { recordPlayerPaymentFailure } =
             await import('./playerPaymentFailure.service.js');
           await recordPlayerPaymentFailure({
             orderId: order.orderId,
             userId: String(order.userId),
+            merchantId: order.merchantId ?? null,
             reason: 'The buy order expired before any payment was made.',
           });
         } else {

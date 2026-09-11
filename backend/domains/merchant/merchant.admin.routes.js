@@ -490,6 +490,65 @@ router.put('/merchants/:merchantId/approve', authenticate, isAdmin, async (req, 
   }
 });
 
+/**
+ * Lift an assignment pause after speaking to the merchant.
+ *
+ * The merchant was paused because three buy orders in a row expired with nobody
+ * paying — which says nothing about their honesty and quite a lot about whether
+ * anyone can actually pay them. There is no timer on it, deliberately: a clock
+ * cannot tell whether the QR was fixed, and an admin who has just had the
+ * conversation can.
+ *
+ * SEPARATE from approve/suspend, because it answers a different question (§7).
+ * `approveMerchant` is about whether this merchant is allowed to trade at all;
+ * this is about whether the platform currently believes they are reachable.
+ * Folding it into approve would mean lifting a pause required un-suspending a
+ * merchant nobody had suspended.
+ *
+ * The expiry streak is zeroed with it, in the same statement — left at three,
+ * the next ordinary expiry pauses them again and this decision lasts one order.
+ */
+router.put('/merchants/:merchantId/resume-assignment', authenticate, isAdmin, async (req, res) => {
+  try {
+    const { merchantId } = req.params;
+    const { note } = req.body ?? {};
+
+    const before = await db.merchants.getMerchant(merchantId);
+    if (!before) return res.status(404).json({ success: false, message: 'Merchant not found' });
+    if (!before.assignmentPausedAt) {
+      // 200, not an error: an admin clearing a pause that a completed order has
+      // already cleared has got what they wanted.
+      return res.json({ success: true, message: 'This merchant was not paused.', alreadyActive: true });
+    }
+
+    const merchant = await db.merchants.resumeAssignment(merchantId);
+
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, action: 'MERCHANT_ASSIGNMENT_RESUMED', category: 'MERCHANT',
+      targetType: 'Merchant', targetId: merchantId, targetName: merchant.name,
+      // What they were paused FOR travels into the record, because the row no
+      // longer carries it once the pause is lifted.
+      details: {
+        pausedAt: before.assignmentPausedAt,
+        pausedReason: before.assignmentPauseReason,
+        expiriesAtPause: before.consecutiveExpiries,
+        note: note ? String(note).slice(0, 500) : null,
+      },
+    });
+
+    if (global.sseManager) {
+      global.sseManager.broadcastToAdmins('merchant_assignment_resumed', {
+        merchantId, resumedAt: new Date(),
+      });
+    }
+
+    res.json({ success: true, message: 'Assignment resumed for this merchant.' });
+  } catch (error) {
+    console.error('Resume merchant assignment error:', error);
+    res.status(500).json({ success: false, message: 'Failed to resume assignment' });
+  }
+});
+
 // Reject merchant — FIX B6-b: new endpoint (previously missing)
 router.put('/merchants/:merchantId/reject', authenticate, isAdmin, async (req, res) => {
   try {

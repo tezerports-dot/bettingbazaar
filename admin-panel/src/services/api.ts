@@ -298,6 +298,15 @@ export const merchants = {
     return res.data;
   },
 
+  // Lift an assignment pause after speaking to the merchant. Three buy orders
+  // in a row expired with nobody paying, which usually means nobody CAN pay
+  // them — a dead QR, a closed UPI handle. It is not a suspension and they were
+  // not accused of anything; an admin who has had the conversation clears it.
+  resumeAssignment: async (merchantId: string, note?: string) => {
+    const res = await api.put(`/api/admin/merchants/${merchantId}/resume-assignment`, { note });
+    return res.data;
+  },
+
   // FIX A3: Reject route -- backend PUT /merchants/:id/reject added in Batch 1
   reject: async (merchantId: string, reason: string) => {
     const res = await api.put(`/api/admin/merchants/${merchantId}/reject`, { reason });

@@ -1,32 +1,41 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * A buy order nobody paid for is the PLAYER's failure, not the merchant's.
+ * A buy order nobody paid for is NOBODY's failure — and it still tells us two
+ * things.
  *
- * ── The party who failed and the party who was charged were different ───────
- * Every expired assignment used to advance the merchant's consecutive-refusal
- * streak. On a BUY that is the wrong person: the order expires at ASSIGNED or
- * PROCESSING because the player never paid, and the merchant — who was standing
- * by with their tokens held for it — took the strike. Three players who changed
- * their minds suspended a merchant who had done nothing.
+ * ── Two wrong answers came before the right one ────────────────────────────
+ * Every expired assignment first advanced the MERCHANT's refusal streak, which
+ * suspended honest merchants for three players who changed their minds. The fix
+ * moved the strike to the PLAYER, which was wrong the other way: the player
+ * abandoned a purchase, which is an ordinary thing to do.
  *
- * It is not free, though, and that is why the count moved rather than
- * disappearing: every one of those orders HELD a merchant's tokens for the
- * length of its window. Real inventory, unavailable to anybody else, released
- * only when the order died.
+ * Nobody is at fault. The event is still worth counting, because it answers two
+ * different questions:
  *
- * ── What is asserted ───────────────────────────────────────────────────────
- * 1. A lapsed buy does NOT touch the merchant — no streak, no bar.
- * 2. It DOES advance the player's, and flags them at the cap.
- * 3. Flagged, not blocked. The platform's answer to a pattern is a person.
- * 4. Paying resets it — and only really paying, not merely claiming to.
+ *   THE PLAYER, three in a row — every one of those orders HELD a merchant's
+ *   tokens for its window (F-018), so a player cycling through them takes
+ *   supply other players needed. They cannot open a new order for an hour. The
+ *   cool-off lifts itself, and paying clears it early.
+ *
+ *   THE MERCHANT, three in a row — the one nothing else could see. Three
+ *   different players sent to the same merchant, none able to pay, most likely
+ *   means that MERCHANT cannot be paid: a dead QR, a closed handle. One order
+ *   at a time it looks like an ordinary abandonment. They stop being assigned
+ *   until an admin has spoken to them — not suspended, and lifted by a person,
+ *   because a clock cannot tell whether the QR was fixed.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg } from '#db/client.js';
 import { createOrderRecord, setOrderFields, merchantsBarredFrom, getOrderRecord } from '#db/repositories/orders.record.js';
-import { getMerchant, updateMerchant } from '#db/repositories/merchants.js';
+import {
+  getMerchant, updateMerchant, assignmentCandidates, resumeAssignment,
+} from '#db/repositories/merchants.js';
 import { getUser } from '#db/repositories/users.js';
 import { setConfigPath, getSystemConfig, invalidateConfigCache } from '#db/repositories/config.js';
-import { expireOrders, sweepUnansweredPaidDeposits } from '../../domains/payment/paymentProcessing.service.js';
+import {
+  expireOrders, sweepUnansweredPaidDeposits, updateMerchantStatsOnComplete,
+  createDepositOrder, createWithdrawalOrder,
+} from '../../domains/payment/paymentProcessing.service.js';
 import { clearPlayerPaymentFailures } from '../../domains/payment/playerPaymentFailure.service.js';
 import { actor, merchantActor } from './_harness.js';
 
@@ -96,41 +105,148 @@ describePg('a buy order nobody paid for', () => {
     expect((await getUser(who.userId)).consecutivePaymentFailures).toBe(1);
   });
 
-  it('flags the player at the cap — and does not block them', async () => {
-    // Lowered so the test states the RULE rather than repeating five orders,
-    // and restored after: the suite shares this document with every other file
-    // (trap 10 — the config is as shared as any table).
-    //
-    // Through `setConfigPath`, the one owner of a config write. Reading the
-    // whole document and writing it back would clobber any field another suite
-    // changed while this one ran.
-    const PATH = 'merchantOrderLimits.maxConsecutivePlayerPaymentFailures';
+  /**
+   * The cap this test needs, set explicitly.
+   *
+   * `getSystemConfig` reads a STORED document and only falls back to the spec
+   * default for keys the document does not carry — so changing a default in
+   * `config.spec.js` does not change a database that already has the key. (That
+   * is true of a real deployment too, not just this suite: an existing
+   * installation keeps the old number until somebody sets it.) A test that
+   * relied on the default would pass or fail depending on what every other
+   * suite had left behind.
+   */
+  const withPlayerCap = async (value, run) => {
+    const key = 'merchantOrderLimits.maxConsecutivePlayerPaymentFailures';
     const before = (await getSystemConfig())?.merchantOrderLimits
-      ?.maxConsecutivePlayerPaymentFailures ?? 5; // schema default: 5
-    await setConfigPath('system', PATH, 2, { actor: 'test', reason: 'player failure cap test' });
+      ?.maxConsecutivePlayerPaymentFailures ?? 3;   // schema default: 3
+    await setConfigPath('system', key, value, { actor: 'test', reason: 'player cap test' });
     invalidateConfigCache('system');
-    try {
-      const m = await merchant();
-      const who = await actor({});
-
-      await lapsedBuy(m.merchantId, who);
-      await expireOrders();
-      expect((await getUser(who.userId)).paymentFlagged ?? false,
-        'flagged before reaching the cap').toBe(false);
-
-      await lapsedBuy(m.merchantId, who);
-      await expireOrders();
-
-      const row = await getUser(who.userId);
-      expect(row.consecutivePaymentFailures).toBe(2);
-      expect(row.paymentFlagged, 'the cap was reached and nobody was told').toBe(true);
-      // Flagged is a hand raised, not a door closed. An abandoned purchase is
-      // an ordinary thing to do; the answer to a PATTERN of them is a person.
-      expect(row.isBlocked ?? false, 'the player was auto-blocked').toBe(false);
-    } finally {
-      await setConfigPath('system', PATH, before, { actor: 'test', reason: 'restore' });
+    try { await run(); } finally {
+      await setConfigPath('system', key, before, { actor: 'test', reason: 'restore' });
       invalidateConfigCache('system');
     }
+  };
+
+  it('locks the player out of new orders after THREE in a row', async () => {
+    await withPlayerCap(3, async () => {
+    const m = await merchant();
+    const who = await actor({});
+
+    for (let i = 1; i <= 2; i += 1) {
+      await lapsedBuy(m.merchantId, who);
+      await expireOrders();
+      expect((await getUser(who.userId)).orderLockUntil ?? null,
+        `locked after only ${i}`).toBeNull();
+    }
+
+    await lapsedBuy(m.merchantId, who);
+    await expireOrders();
+
+    const row = await getUser(who.userId);
+    expect(row.consecutivePaymentFailures).toBe(3);
+    expect(row.orderLockUntil, 'three in a row and nothing happened').toBeTruthy();
+    // Roughly an hour out. Asserted as a WINDOW, not a value: the deadline is
+    // computed by the database's clock and read back through this one, and
+    // demanding they agree to the second is asserting about NTP.
+    const minutes = (new Date(row.orderLockUntil) - Date.now()) / 60_000;
+    expect(minutes).toBeGreaterThan(55);
+    expect(minutes).toBeLessThan(65);
+    // Flagged for an admin to see — and NOT blocked. The lock is an hour and
+    // lifts itself; closing an account stays a person's decision.
+    expect(row.paymentFlagged).toBe(true);
+    expect(row.isBlocked ?? false, 'the player was auto-blocked').toBe(false);
+    });
+  });
+
+  it('refuses a new order while the cool-off is running, and names the time', async () => {
+    await withPlayerCap(3, async () => {
+      const m = await merchant();
+      const who = await actor({});
+      for (let i = 0; i < 3; i += 1) {
+        await lapsedBuy(m.merchantId, who);
+        await expireOrders();
+      }
+
+      await expect(createDepositOrder(who.userId, 500))
+        .rejects.toMatchObject({ code: 'ORDER_COOL_OFF', status: 429 });
+      // The SELL side too — a player locked out of buying who could still sell
+      // has simply found the way around it.
+      await expect(createWithdrawalOrder(who.userId, 500))
+        .rejects.toMatchObject({ code: 'ORDER_COOL_OFF' });
+    });
+  });
+
+  describe('and the half that finds a BROKEN merchant', () => {
+    /**
+     * Anil's QR has stopped working.
+     *
+     * Ravi is assigned Anil, tries to pay, cannot, gives up. Then Priya. Then
+     * Sameer. Three different players, none of whom did anything wrong, and
+     * Anil never pressed a button — so nothing about any single one of those
+     * orders looks like anything but an ordinary abandoned purchase.
+     *
+     * The pattern is the only evidence, and it points at Anil.
+     */
+    const threeDifferentPlayersFailOn = async (merchantId) => {
+      for (let i = 0; i < 3; i += 1) {
+        await lapsedBuy(merchantId, await actor({}));   // a DIFFERENT player each time
+        await expireOrders();
+      }
+    };
+
+    it('pauses the merchant after three, without suspending them', async () => {
+      const anil = await merchant();
+      await threeDifferentPlayersFailOn(anil.merchantId);
+
+      const row = await getMerchant(anil.merchantId);
+      expect(row.consecutiveExpiries).toBe(3);
+      expect(row.assignmentPausedAt, 'three players could not pay and nobody noticed').toBeTruthy();
+      expect(row.assignmentPauseReason).toMatch(/QR|UPI|bank/i);
+
+      // NOT a suspension, and NOT a refusal. Anil did nothing wrong: he keeps
+      // his account, his standing and his refusal streak untouched.
+      expect(row.status).toBe('ACTIVE');
+      expect(row.consecutiveRejections).toBe(0);
+    });
+
+    it('stops sending him new orders while paused', async () => {
+      const anil = await merchant();
+      const candidate = async () => (await assignmentCandidates({
+        currency: 'INR', direction: 'DEPOSIT',
+      })).some((c) => String(c.merchantId) === anil.merchantId);
+
+      expect(await candidate(), 'not a candidate even before pausing — vacuous').toBe(true);
+      await threeDifferentPlayersFailOn(anil.merchantId);
+      expect(await candidate(), 'a merchant nobody can pay was still being assigned').toBe(false);
+    });
+
+    it('an admin lifts it, and the count goes with it', async () => {
+      const anil = await merchant();
+      await threeDifferentPlayersFailOn(anil.merchantId);
+
+      await resumeAssignment(anil.merchantId);
+
+      const row = await getMerchant(anil.merchantId);
+      expect(row.assignmentPausedAt ?? null).toBeNull();
+      // Zeroed in the same statement. Left at three, the very next ordinary
+      // expiry pauses him again and the admin's decision lasts one order.
+      expect(row.consecutiveExpiries, 'reinstated at the cap — re-paused by the next expiry').toBe(0);
+    });
+
+    it('a completed order clears the run on its own', async () => {
+      // Anil fixes his QR and serves somebody. Nothing needed an admin.
+      const anil = await merchant();
+      await lapsedBuy(anil.merchantId, await actor({}));
+      await expireOrders();
+      await lapsedBuy(anil.merchantId, await actor({}));
+      await expireOrders();
+      expect((await getMerchant(anil.merchantId)).consecutiveExpiries).toBe(2);
+
+      await updateMerchantStatsOnComplete(anil.merchantId, true, { direction: 'DEPOSIT', amountRupees: 500 });
+
+      expect((await getMerchant(anil.merchantId)).consecutiveExpiries).toBe(0);
+    });
   });
 
   describe('the other side of the same clock — a PAID buy nobody answered', () => {

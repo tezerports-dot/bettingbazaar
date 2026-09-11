@@ -3725,6 +3725,50 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS consecutive_payment_failures INTEGER NOT NULL DEFAULT 0;
+
+-- ── The one-hour cool-off after three unpaid buy orders ─────────────────────
+-- A TIMESTAMP, not a boolean. A flag would need something to turn it off, and
+-- that something is a cron job that can fail, lag, or be forgotten — the lock
+-- would outlive its hour and nobody would know why the player cannot buy. A
+-- deadline in the row expires ON ITS OWN: every read compares it to now(), so
+-- an hour after it was set the lock is simply gone, with nothing scheduled and
+-- nothing to go wrong.
+--
+-- Distinct from `is_blocked`, which is an admin's decision about an account and
+-- has no end. This is a cool-off the platform applies by itself and lifts by
+-- itself (§7 — one state field per logical question).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS order_lock_until TIMESTAMPTZ;
+
+-- ── A merchant's consecutive EXPIRIES, which are not refusals ───────────────
+-- Deliberately NOT `consecutive_rejections`. An expired buy order is nobody's
+-- fault: the player did not pay, and the merchant did nothing wrong. Counting
+-- it as a refusal would suspend an honest merchant for three players who
+-- changed their minds.
+--
+-- But three in a row IS a signal worth acting on, and it points at the
+-- MERCHANT: if three different players were each assigned to Anil and none of
+-- them could pay, the likeliest explanation is that something about Anil is
+-- broken — a dead QR, a closed UPI handle, a bank that is rejecting. Nothing
+-- else on the platform would ever notice that, because each individual failure
+-- looks like an ordinary abandoned purchase.
+--
+-- So this counter exists to FIND the problem, and what it triggers is a pause
+-- and a conversation, not a penalty.
+ALTER TABLE merchants ADD COLUMN IF NOT EXISTS consecutive_expiries INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE merchants ADD COLUMN IF NOT EXISTS assignment_paused_at TIMESTAMPTZ;
+ALTER TABLE merchants ADD COLUMN IF NOT EXISTS assignment_pause_reason TEXT;
+DO $$ BEGIN
+  ALTER TABLE merchants ADD CONSTRAINT merchants_consecutive_expiries_non_negative
+    CHECK (consecutive_expiries >= 0);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+-- A pause nobody can explain is one nobody can lift, so the reason travels with
+-- it — the same rule `merchants_suspension_reason_present` already applies to a
+-- suspension.
+DO $$ BEGIN
+  ALTER TABLE merchants ADD CONSTRAINT merchants_assignment_pause_reason_present CHECK (
+    assignment_paused_at IS NULL
+    OR (assignment_pause_reason IS NOT NULL AND assignment_pause_reason <> ''));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN
   ALTER TABLE users ADD CONSTRAINT users_consecutive_payment_failures_non_negative
     CHECK (consecutive_payment_failures >= 0);
