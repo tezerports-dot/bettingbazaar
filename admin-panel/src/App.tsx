@@ -53,6 +53,9 @@ import { MerchantPlatform }   from './Pages/Enterprise/MerchantPlatform';
 import { useAuthStore } from './services/auth';
 import { usePermissions } from './hooks/usePermission';
 import sseService from './services/sse';
+// The obligation gate. Wraps the whole route table rather than each guard —
+// see the file header for why four copies of one rule is the wrong shape.
+import MandatoryTwoFactor from './components/MandatoryTwoFactor';
 // Permission strings in PermRoute must exist in PERMISSION_KEYS (utils/permissions.ts) — GOVERNANCE.md M-1
 
 // ─── Route Guards ─────────────────────────────────────────────────────────────
@@ -172,6 +175,7 @@ const App: React.FC = () => {
           success: { iconTheme: { primary: '#D4AF37', secondary: '#0B0E14' } },
         }}
       />
+      <MandatoryTwoFactor>
       <Routes>
         <Route path="/login" element={<Login />} />
 
@@ -420,6 +424,7 @@ const App: React.FC = () => {
 
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      </MandatoryTwoFactor>
     </Router>
   );
 };

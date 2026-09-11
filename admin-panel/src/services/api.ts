@@ -99,7 +99,17 @@ export const auth = {
       return { success: false, twoFactorRequired: true, challengeToken: res.data.challengeToken as string };
     }
     if (res.data?.success && res.data?.token) {
-      return { success: true, data: { token: res.data.token, admin: res.data.user } };
+      // `mustEnroll2FA` is carried through, not dropped. The server has sent it
+      // since 2026-09-10 — computed from `requires2FA()` so the panel and the
+      // policy cannot disagree — and this mapper returned a fixed
+      // `{token, admin}` shape that discarded it, so an admin who must hold a
+      // second factor and never enrolled was never once asked. The merchant
+      // panel has routed on the same flag all along (F-011).
+      return {
+        success: true,
+        data: { token: res.data.token, admin: res.data.user },
+        mustEnroll2FA: !!res.data.mustEnroll2FA,
+      };
     }
     return res.data;
   },
@@ -108,7 +118,15 @@ export const auth = {
   loginTwoFactor: async (challengeToken: string, code: string) => {
     const res = await api.post<any>('/api/admin/login/2fa', { challengeToken, code });
     if (res.data?.success && res.data?.token) {
-      return { success: true, data: { token: res.data.token, admin: res.data.user } };
+      // Carried here too, though it is always false on this leg by
+      // construction: reaching it means a factor was presented, so the account
+      // is enrolled. Reading the server's answer rather than assuming that
+      // keeps one owner for the question.
+      return {
+        success: true,
+        data: { token: res.data.token, admin: res.data.user },
+        mustEnroll2FA: !!res.data.mustEnroll2FA,
+      };
     }
     return res.data;
   },
@@ -122,7 +140,14 @@ export const auth = {
   verifySession: async () => {
     const res = await api.get<any>('/api/v1/auth/me');
     if (res.data?.success && res.data?.user) {
-      return { success: true, data: { admin: res.data.user } };
+      // Carried for the same reason as on login, and this is the path that
+      // catches an account PROMOTED to staff while holding a session: the
+      // obligation begins at the promotion, not at their next sign-in.
+      return {
+        success: true,
+        data: { admin: res.data.user },
+        mustEnroll2FA: !!res.data.mustEnroll2FA,
+      };
     }
     return res.data;
   },

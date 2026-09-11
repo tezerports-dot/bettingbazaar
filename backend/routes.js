@@ -334,7 +334,21 @@ router.get('/me', async (req, res) => {
         bankDetails: user.bankDetails || null, profilePic: user.profilePic || '',
         status: user.status || 'ACTIVE', joinedAt: user.joinedAt || null,
         lastLogin: user.lastLogin || null, phantomAccess: user.phantomAccess || 'NONE',
-      }
+      },
+      // The same obligation the login response carries, from the same owner.
+      //
+      // It is here because login is not the only moment it can become true: an
+      // account PROMOTED to admin or sub-admin while holding a session owes a
+      // factor from that moment, and a flag established only at login would
+      // leave them on a password-only session over the whole admin surface
+      // until they next signed out. This endpoint is what every panel calls on
+      // load, so it is where a change of status is noticed.
+      //
+      // `requires2FA()` rather than a second reading of the flags, so the
+      // policy has one owner and this cannot disagree with the login response
+      // or with the route guards. False for a player, which is what makes the
+      // panel's gate a decision rather than a wall. F-011.
+      ...(requires2FA(user) && !user.twoFactorEnabled ? { mustEnroll2FA: true } : {}),
     });
   } catch (e) {
     console.error('Auth check error:', e);

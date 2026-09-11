@@ -697,6 +697,45 @@ the books balance.</p>
 <code>penaltyUser</code> and <code>penaltyMerchant</code> append a line to the
 system message saying manual action is required. Nothing is deducted.</p>
 
+<h3>3.1a Signing in, and the factor you are made to hold</h3>
+<p><code>Login.tsx</code> → <code>POST /api/admin/login</code>. Two branches
+beyond the password, and they are different things:</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Account state</th><th>What happens</th></tr></thead>
+<tbody>
+<tr><td>Enrolled in 2FA</td><td>No session. A five-minute challenge, redeemed at <code>/api/admin/login/2fa</code>.</td></tr>
+<tr><td><strong>Must hold a factor, never enrolled</strong></td><td>A real session <em>is</em> issued, carrying <code>mustEnroll2FA</code>. The panel shows the enrolment screen and nothing else until it is done.</td></tr>
+<tr><td>Ordinary account</td><td>Straight through.</td></tr>
+</tbody>
+</table></div>
+<p class="danger"><strong>The second row was doing nothing at all.</strong> The
+server has sent <code>mustEnroll2FA</code> since 2026-09-10 and the merchant
+panel has routed on it all along — the admin panel's API mapper returned a fixed
+<code>{token, admin}</code> shape and <strong>discarded it one function
+later</strong>, so an admin who never enrolled held a password-only session over
+the entire admin surface, permanently and silently. <code>seedAdmin</code> does
+not enrol, so the bootstrapped admin started in exactly that state.
+<code>check:ui-coverage</code> could not see it: the path was correct, and the
+field was thrown away after the response arrived. F-011.</p>
+<p class="note"><strong>The gate wraps the whole route table, not each
+guard.</strong> There are four guards and each checks <code>isAuthenticated</code>
+for itself; adding the obligation to each is four copies of one rule, and the
+fifth guard added next year is the one that forgets. Deleting the wrapper was
+mutated in during the fix and every other test still passed — the component
+worked and nothing put it in the path, which is §28 inside the fix for §28.</p>
+<p class="note"><strong>It is not a lockout.</strong> Enrolment is reachable, it
+is the only thing reachable, and signing out always is. The obligation is
+re-read on every session check, so it also lifts itself when the factor is added
+from another device — and it catches an account <em>promoted</em> to staff
+mid-session, who owes a factor from the promotion rather than from their next
+sign-in.</p>
+<p class="danger"><strong>Still open, and it is the owner's switch:</strong> the
+server does not yet refuse an unenrolled staff session. An account that must
+hold a factor should reach only <code>/api/2fa/setup</code> and
+<code>/api/2fa/activate</code> until it enrols. What changed is that flipping
+that switch now meets an operator already looking at the enrolment screen,
+instead of 403ing every request with nothing on screen to say why.</p>
+
 <h3>3.2 Merchants — <code>/merchants</code></h3>
 <p><code>MerchantsList.tsx</code> → <code>merchant.admin.routes.js</code>.
 Every action here is <code>isAdmin</code>.</p>

@@ -1109,7 +1109,8 @@ and `rank` is unique within the board.
 
 ### F-011 — mandatory staff 2FA has no server-side enforcement point
 `PARTIALLY FIXED` · high · authentication · found 2026-09-10 · steps 1 and 3
-shipped at the owner's direction; step 2 (the guard) remains their switch
+shipped 2026-09-10; the panel half of step 3 was asserted and not actually done
+— shipped 2026-09-11. Step 2 (the server guard) remains the owner's switch.
 
 **Shipped 2026-09-10.** The session token now carries `amr` — `['pwd','otp']`
 when a factor was presented, `['pwd']` when it was not — as a CLAIM rather than
@@ -1122,11 +1123,82 @@ enrolment the way the merchant panel already does.
 **Also shipped: the password floor** (see F-012), because the two are the same
 credential and fixing one without the other leaves the chain intact.
 
-**Still open — step 2, the guard.** An account that must hold a factor should
-reach only `/api/2fa/setup` and `/api/2fa/activate` until it enrols. Not
-switched on because it locks out every staff account that has not enrolled, the
-seeded admin first. It is now a small, safe change: `amr` is on the token and
-the panel prompts.
+**Shipped 2026-09-11 — the panel half, and it was NOT already done.** The note
+above said step 2 was safe because "the panel prompts". It did not. The server
+sent `mustEnroll2FA`; `admin-panel/src/services/api.ts` returned a fixed
+`{ token, admin }` shape and **dropped it one function later**, and the auth
+store had no field for it. So the merchant panel routed on the flag and the
+admin panel never saw it — an admin who never enrolled landed on the dashboard
+with nothing asked of them, exactly as before the server half shipped.
+
+Switching the guard on in that state would not have been a prompt, it would
+have been a lockout: every request 403ing with nothing on screen to say why.
+**The stated precondition for step 2 had not been met, and the note asserting it
+was the only thing saying otherwise.**
+
+Now in place, and this is what makes step 2 safe rather than a lockout:
+
+- the mapper carries `mustEnroll2FA` on both login legs;
+- the store holds it, and PERSISTS it — unlike `pendingChallenge`, and for the
+  opposite reason: it is not a credential, it is an unmet obligation on a
+  session that survives a reload, so leaving it out of `partialize` would make a
+  page refresh the way past the prompt;
+- `MandatoryTwoFactor` wraps the **whole route table**, not each of the four
+  guards. Four copies of one rule is the shape that drifts, and the fifth guard
+  somebody adds next year is the one that forgets it;
+- enrolment is the only thing reachable, and **signing out always is** — a gate
+  an operator cannot leave is a lockout with a friendly face;
+- an account the server reports as already enrolled is released, because the
+  stored obligation can go stale when the factor was added elsewhere.
+
+**Still open — step 2, the guard**, and it remains the owner's switch: the
+server still issues a full staff session to an unenrolled account. What has
+changed is that flipping it now meets an operator who is already looking at the
+enrolment screen.
+
+**Four mutations, and one of them survived first.** Deleting the gate from
+App's route tree left every other test green — the component worked, the store
+held the flag, the mapper carried it, and no admin would ever have been asked,
+because nothing put the gate in the path. That is §28 reproduced inside the fix
+for it: a component test proves a component works and can never prove anything
+mounts it. `App.mount.test.tsx` renders the real App and closes it.
+
+- **Gates:** `admin-panel/src/services/auth.test.ts` (the seam the flag was
+  lost at — the component test mocks the api module wholesale and cannot see
+  it), `MandatoryTwoFactor.test.tsx` (the gate's behaviour),
+  `App.mount.test.tsx` (that it is mounted),
+  `backend/tests/routes/staffTwoFactorEnrolmentPg.test.js` (the server's flag,
+  through the REAL login handler against a real database — a unit test on
+  `requires2FA` would pass while the handler forgot to call it, which is the
+  shape this finding already is).
+- **The obligation is refreshed on every session check, not only at login.**
+  The sweep below asked what else `/api/v1/auth/me` drops, and the answer was
+  nothing — it was not SENDING the flag at all. That is a narrower hole in the
+  same finding: an account PROMOTED to admin or sub-admin while holding a
+  session owes a factor from the promotion, and a flag established only at
+  login left them password-only over the whole admin surface until they next
+  signed out. `/me` now carries it, from the same `requires2FA()`, and
+  `verifySession` lands it in the store — which also lets the obligation CLEAR
+  itself when the server stops asking (enrolled elsewhere, or demoted).
+
+- **Sweep for the same shape** — a field the server sends that a panel mapper
+  discards. Every constructed-literal return in the admin and merchant API
+  services was read against the route that feeds it: **25 in
+  `admin-panel/src/services/api.ts`, 0 in the merchant panel** (it returns the
+  response object whole and cannot have this defect). Twenty-two of the 25 are
+  simple unwrappers lifting one named collection (`res.data.users`,
+  `res.data.cycles`) into `data` — they cannot drop a sibling a consumer reads.
+  Of the three that carry siblings, `queue.getMerchants` already passes
+  `isPoolConfigured` and `system.getConfig` passes `config`. **Swept; `login`
+  was the only instance, and `verifySession` was the same defect waiting for
+  the server to start sending the field.**
+
+- **A test that passed for the wrong reason, caught by the full suite.**
+  `App.mount.test.tsx` stubbed `verifySession` without the flag, so the refresh
+  CLEARED the state the test had just set — and the assertion raced it, passing
+  alone and failing in the full run. A fixture has to answer what the real
+  server answers, and an assertion that can win a race with the code under test
+  is measuring the fixture.
 
 
 `requires2FA(user)` in `domains/identity/twoFactor.routes.js` decides who must
@@ -2446,7 +2518,7 @@ new route and decide. Each of the three questions is defined in §2.
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
 | `user-panel` | 89 | 0 | 0 |
-| `admin-panel` | 89 | 0 | 0 |
+| `admin-panel` | 93 | 0 | 0 |
 | `merchant-panel` | 38 | 0 | 0 |
 
 <!-- END GENERATED -->
