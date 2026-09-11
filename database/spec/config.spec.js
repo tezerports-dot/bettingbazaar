@@ -66,6 +66,23 @@ const s = (def = '') => ({ type: 'string', default: def });
 const sa = (def = []) => ({ type: 'string[]', default: def });
 /** A nested group of settings. */
 const group = (fields) => ({ type: 'group', fields });
+/**
+ * A value the PLATFORM writes, living in this document but not a setting.
+ *
+ * The admin config route derives the fields it will accept from this spec, so
+ * that a setting is editable the moment it is declared and nobody has to
+ * remember to wire it (CLAUDE.md §2). `internal` is the other half of that:
+ * without it, deriving would have handed an operator a text box for
+ * `adminTokenSupply.minted` — the running total of tokens ever issued, checked
+ * against a 10-billion cap. Setting it back to 0 does not correct a count; it
+ * re-authorises minting the entire supply again.
+ *
+ * So the rule is a property of the DECLARATION, not of any route's memory: a
+ * counter the platform maintains is marked here, and every derived accept list
+ * skips it. Bounds and defaults still apply — the value is still validated when
+ * the code that owns it writes it.
+ */
+const internal = (decl) => ({ ...decl, internal: true });
 
 const phaseGroup = (d) => group({
   mergeBeforeEndSec:     n(d.mergeBeforeEndSec, 0),
@@ -125,7 +142,10 @@ export const SYSTEM_CONFIG_SPEC = group({
   maxWinningsWithdrawal: n(500000, 0),
 
   // Minted merchant inventory may never exceed the cap.
-  adminTokenSupply: group({ cap: n(10000000000, 0), minted: n(0, 0) }),
+  // `cap` is a policy an operator sets. `minted` is the running total the
+  // issuance path maintains — see `internal` above for why it must not be a
+  // text box on a settings screen.
+  adminTokenSupply: group({ cap: n(10000000000, 0), minted: internal(n(0, 0)) }),
 
   // Platform defaults for per-type merchant concurrency; a merchant's own
   // override lives on the merchant row.

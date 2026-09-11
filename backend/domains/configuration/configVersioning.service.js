@@ -87,6 +87,62 @@ export async function setConfigField(modelName, field, newValue, actor, opts = {
   });
 }
 
+/**
+ * setConfigFields — one admin save, one transaction, one version row.
+ *
+ * ── Why this exists, and what calling `setConfigField` in a loop did ────────
+ * The System Settings page sends about thirty values in one PUT, and the route
+ * used to write them by calling `setConfigField` once per value. Two things
+ * followed, and both were reachable by an operator typing one wrong number:
+ *
+ *   1. A PARTIAL SAVE. Each call is its own transaction. The spec refuses an
+ *      out-of-range value by throwing, so the writes BEFORE the bad one had
+ *      already committed, the ones after it never ran, and the screen said
+ *      "Failed to update settings". The admin reloads and finds a form half in
+ *      the old state and half in the new, with nothing saying which half. That
+ *      is CLAUDE.md §21 — a write that follows a commit must not be able to
+ *      fail — with the commit and the failure inside the same request.
+ *
+ *   2. THIRTY audit rows for ONE decision. `getFieldHistory` then reads a
+ *      change history in which a single save looks like thirty separate
+ *      changes, and the version number an operator would roll back to is one
+ *      of thirty arbitrary midpoints, most of which are states the platform
+ *      never intentionally ran in.
+ *
+ * `applyConfig` validates the WHOLE patch before it opens a transaction, so a
+ * bad value now fails with nothing written, and the rest lands together or not
+ * at all.
+ *
+ * @param {string} modelName  'SystemConfig'
+ * @param {Array<[string, *]>} entries  dot-path / value pairs
+ * @param {object} actor      { userId, userName }
+ * @param {object} opts       { justification }
+ *
+ * Throws (with `status: 400` and the offending PATH in the message) when the
+ * spec does not declare a field or a value is outside its declared range.
+ */
+export async function setConfigFields(modelName, entries, actor, opts = {}) {
+  const { justification = '' } = opts;
+  const patch = {};
+  for (const [field, value] of entries) {
+    // Build the nested shape `applyConfig` validates against. A later entry for
+    // the same path wins, which is the same thing the loop did.
+    const parts = String(field).split('.');
+    let node = patch;
+    for (const key of parts.slice(0, -1)) {
+      if (!node[key] || typeof node[key] !== 'object') node[key] = {};
+      node = node[key];
+    }
+    node[parts[parts.length - 1]] = value;
+  }
+  return db.config.applyConfig({
+    scope: scopeFor(modelName),
+    patch,
+    actor: actor?.userId ?? null,
+    reason: justification || `Set ${entries.map(([f]) => f).join(', ')}`,
+  });
+}
+
 /** getFieldHistory — every recorded change, newest first. Read-only. */
 export async function getFieldHistory(modelName, field) {
   const history = await db.config.getConfigHistory(scopeFor(modelName));

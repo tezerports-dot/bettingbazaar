@@ -678,6 +678,9 @@ honest record of what surfaced it, and it is the column that should worry you:
 | A recourse path whose actor was inferred from route reachability, not from who bears the loss | one path + **the business model** | owner stating the model | no — not mechanisable | F-019 |
 | A counter incremented in a request handler, for a state also reachable by a sweep or a timeout | whole backend + **the cron paths** | owner asking about expiries | partial — queued | F-021 |
 | State that must survive a restart, held in a process `Map` | one file | code read | no | F-002 |
+| A DECLARED setting that only SOME of the three hand-written lists carry | **spec + route + panel together, by FIELD** | asking whether the number on the screen is the number the worker reads | **yes** `systemConfigEditableRoutes.test.js` loops the spec | F-022 |
+| A batch of writes applied one at a time, where one can be REFUSED | one handler, **plus the validator it calls** | driving the handler with one bad value among good ones | no — the §21 gate reads field names, not transaction boundaries | F-023 |
+| A test that WRITES the shared config row and leaves it | **the whole suite, in run order** | the next suite failing in code the change never touched | no | trap 10 |
 | A gate anchored on a string that also matches a DIFFERENT site | the gate's own file vs the file it measures | re-running the gate after moving the site | no — this is the meta-shape | F-018, trap 13 |
 
 **The last row is the one to take personally.** Three separate times a check
@@ -2225,6 +2228,135 @@ silently.
 - **Gate possible:** partially, and it is on the queue — a counter written from
   a route file when the same column is also written from `paymentProcessing`'s
   sweeps is mechanically detectable. Not yet written.
+
+---
+
+### F-022 — eight declared limits an admin could not change, and one that lied
+`FIXED` · medium · admin-editable field with no write path · found 2026-09-11
+
+**The owner's rule, stated plainly:** *"everything should be editable from admin
+nothing should be hardcoded."* This is the sweep that checked it, and it failed.
+
+`SYSTEM_CONFIG_SPEC` declared **twelve** `merchantOrderLimits` fields. The admin
+route would write **four**. The other eight were read by live workers — the
+refusal cap that suspends a merchant, the response window on a PAID buy that
+sends an order to the dispute queue, the player's unpaid-buy threshold and the
+length of the lock it triggers, the expiry count that pauses assignment — and
+could be changed only by editing the spec and redeploying.
+
+**`maxConsecutiveRejections` is the one that mattered**, because it was not
+merely absent — it was *half* present. The GET returned it, so it could be
+RENDERED on the settings screen. The PUT destructured the body and never named
+it, so it was dropped on the floor. An operator raising the cap from 3 to 5
+would have been shown the field, allowed to change it, told the save succeeded,
+and served exactly the old cap on the very next refusal. That is CLAUDE.md §3 in
+both directions at once: an admin-editable field with no consumer, and a
+business number with no admin owner.
+
+**Radius:** spec + route + panel together, **by field**. Reading any one of the
+three shows a coherent list. The defect is only that the three lists differ, and
+each was hand-written.
+
+**The fix is that there is now one list.** Both the GET and the WRITE derive
+their fields from `SYSTEM_CONFIG_SPEC`, and `SystemSettings.tsx` renders the
+operational half from a single declarative array. A field declared in the spec
+is served, accepted and shown without anyone wiring it.
+
+- **Gate:** `backend/tests/routes/systemConfigEditableRoutes.test.js` loops the
+  spec and drives PUT → GET → read-back for **every** declared field. A hand-
+  written list in the test would have had the route's own failure mode; the spec
+  is the only list, so a field declared and not wired fails in the change that
+  declares it.
+- **Mutation-proved:** reverting the write loop to the four USDT names fails the
+  round-trip test by name.
+- **Sweep for the same shape — and it found four more.** Every spec leaf was
+  walked against the route (80 of them) rather than the groups being spot-checked:
+
+  | Also unreachable | Read by | Was it served? | Was it writable? |
+  |---|---|---|---|
+  | `withdrawalHoldMinutes` | `withdrawalHold.service.js` | no | no |
+  | `loadShedding.{enabled,maxInFlight,maxEventLoopLagMs}` | `middleware/loadShed.js` | no | no |
+  | `ipDefense.*` (8 fields) | `middleware/ipDefense.js` | no | no |
+  | `cyclePhases.oneMin.*` (4 fields) | the cycle engine | no | no |
+
+  **Two of them sat under a source comment calling them "admin-editable"** —
+  `loadShed.js:12` and `ipDefense.js:11`, both saying "both admin-editable
+  (SystemConfig.…)". §28's shape: a comment asserting something no code does.
+
+  `queueManagerPool` came up in the same sweep and is **not** a finding — it has
+  its own admin route in `merchant.assignment.routes.js`.
+
+- **The one-minute board is the one that mattered.** Its four phase offsets were
+  declared, defaulted, and run by the engine, and the GET's hand-written
+  `cyclePhases` block rebuilt `thirtyMin` and `fullDay` only. So the board was
+  invisible on both sides. Worse, the ordering validator was called with a
+  hand-passed block length for those same two boards — so once the generic
+  accept pass made `oneMin` writable, it would have been writable **without**
+  §18.3's "phases must fit the block" check, on the 60-second block where an
+  oversized merge is easiest to enter. The ceiling now lives on the cycle META
+  as `maxMergeBeforeEndSec` (a property of the board), and the route validates
+  every declared board.
+
+- **The structural fix, not a longer list.** The PUT derives its accepted fields
+  by walking the spec, the GET spreads the spec-defaulted document, and five
+  key-by-key rebuilds in the GET were deleted — each was a restatement of schema
+  defaults that also SHRANK its group. A setting is now served, accepted and
+  validated by virtue of being declared.
+
+- **`internal` is the other half of deriving.** Without it the first derived
+  accept list would have handed an operator a text box for
+  `adminTokenSupply.minted` — the running total of tokens ever issued, checked
+  against a 10-billion cap. Setting it to 0 does not correct a count; it
+  re-authorises minting the whole supply. It is marked in the spec, because the
+  reason is a property of the declaration rather than of any route's memory, and
+  a test asserts a PUT cannot move it.
+
+---
+
+### F-023 — one bad number in a thirty-field save committed part of it
+`FIXED` · medium · §21 shape, inside a single request · found 2026-09-11 while
+proving F-022
+
+Found by the F-022 test, not by reading: an out-of-bounds value came back as a
+**500**, which is how the second defect became visible.
+
+The System Settings page sends about thirty values in one PUT. The route applied
+them by calling `setConfigField` once per value, and **each call is its own
+transaction**. The spec refuses an out-of-range value by throwing. So an
+operator typing 11 into a field the spec caps at 10:
+
+1. committed every field ordered before the bad one,
+2. never ran the fields after it,
+3. saw *"Failed to update settings"*.
+
+They reload into a form half in the old state and half in the new, and **nothing
+on the screen says which half**. It also wrote thirty audit rows for one
+decision, so `getFieldHistory` describes one save as thirty changes and the
+version an operator would roll back to is one of thirty midpoints the platform
+never intentionally ran in.
+
+**The 500 was the second half of it.** `respondError` routes on the PRESENCE of
+`err.status`, and the spec's validation errors carried none — so a refusal of
+the CALLER's value went to `serverError`, which logs in full and answers with
+nothing by design. The message naming the field and its bound, the only thing
+that tells an operator what to type instead, was swallowed, and they were told
+the platform broke.
+
+**Both fixed at their owners.** `applyConfig` validates the WHOLE patch before
+it opens a transaction, so `setConfigFields` (new) applies one save atomically;
+and the spec's refusals are constructed with `status: 400` at the throw, because
+the cause is a property of the check rather than of who happened to run it —
+every caller using `respondError` now gets the right answer without knowing it
+exists.
+
+- **Mutation-proved, separately:** removing `status` fails both error tests;
+  restoring the per-field loop fails the atomicity test **and only that one**.
+- **Sweep for the same shape:** `grep -rn "for (const .*of .*) {" backend/routes
+  backend/domains` filtered to loops containing an `await` that writes. The
+  other multi-write loops are the settlement writer and the split-withdrawal
+  leg builder, both already inside one transaction, and the notification fan-out,
+  where a partial send is not a partial commit. **Swept; this route was the only
+  instance.**
 
 ---
 

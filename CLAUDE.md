@@ -154,6 +154,9 @@ wrong owner gets working code deleted by the next reader.
 | Resolved-cycle history feed | `domains/markets/cycleHistory.service.js` — the one query behind every cycle-history read. Window is **per type**, `limit` rows each; capped at 1,440 for one type and 200 when several are requested together (three deep windows is ~864 KB against socket.io's 1 MB default). Rows project through `publicCycleView`. |
 | Analytics window depth | `ANALYTICS_WINDOW` in `user-panel/src/constants.ts`. A **target**, not a display cap; the server ceiling is enforced independently in `cycleHistory.service.js`. |
 | Deposit/withdrawal limits, platform-wide | `SystemConfig` |
+| **Whether a business number is admin-editable at all** | `SYSTEM_CONFIG_SPEC` in `database/spec/config.spec.js` — **declaring a field there is what makes it editable.** The PUT in `system.admin.routes.js` derives what it accepts by WALKING the spec; the GET spreads the spec-defaulted document. So a setting is served, accepted and bounds-checked by virtue of being declared, and nobody has to remember to wire it. It was three hand-written lists that disagreed: twelve `merchantOrderLimits` fields declared and **four** writable; `withdrawalHoldMinutes`, both `loadShedding` ceilings and all eight `ipDefense` fields read by live middleware and reachable from nothing — two of them under a comment calling them "admin-editable"; and the one-minute board's four phase offsets run by the engine and invisible to both halves. `maxConsecutiveRejections` was the sharpest: **returned by the GET and dropped by the PUT**, so it was rendered on the settings screen and inert — an operator raising the cap was told it saved and served the old number, §3 in both directions at once. See F-022. |
+| **A value in that document the PLATFORM writes, not an operator** | `internal(…)` in the spec. Deriving an accept list from the spec is only safe if the spec says which entries are not settings: `adminTokenSupply.minted` is the running total of tokens ever issued, checked against a 10-billion cap, and an operator who could set it to 0 would re-authorise minting the whole supply. Mark it at the DECLARATION — the reason belongs to the value, not to any route's memory — and every derived list skips it. |
+| **A board's ceiling on its earliest phase offset** | `maxMergeBeforeEndSec` on the cycle META (`domains/markets/cycleTypes.js`), reached through `MAX_MERGE_BEFORE_END_SEC`. §18.3's "phases must fit the block" is the half the ordering invariant cannot see, and it was two literals passed at one call site covering two of the three boards. The board it omitted was the 60-second one, where an oversized merge is easiest to enter. A new board declares its own value (§18.2). |
 | The FLOOR on any order | `SystemConfig.minDeposit` / `minWithdrawal` — **both 500 tokens**, the same rule read from either end. The buy floor was 100 and the sell floor 500: one policy written as two numbers, drifted. A floor exists because every buy HOLDS a merchant's tokens for the length of its window (F-018), so an order too small to be worth that inventory still takes it out of circulation. |
 | The CEILING on any order | **The tokens the merchant holds**, and it is ENFORCED rather than checked — the deposit escrow reserves them at assignment. There is no per-merchant order range: `merchants.min_order`/`max_order` were **removed 2026-09-10**, along with their columns, their admin route fields and their panel inputs. Nothing read them. `assignmentCandidates` never named either column; the only filter on them lived in an admin SCREEN, while a comment in `merchant.routes.js` said assignment filtered on them and was believed twice. Do not reintroduce a per-merchant range. |
 | Consecutive-refusal cap, and who may not serve whom | `domains/merchant/merchantRefusal.service.js` — the ONE owner of "a merchant did not serve this order". **Whose fault an expiry is depends on the DIRECTION**: a BUY that expires before PAID is the PLAYER not paying and is not a refusal at all; a BUY that is PAID and unanswered, a SELL that expires, and any decline are the merchant's. Counting every expiry against the merchant suspended honest merchants for players who changed their minds. **There is no timer on any of it**: a suspension and a bar are lifted by an admin or sub-admin who reads the reason and reinstates, and `approveMerchant` zeroes `consecutive_rejections` in the same statement — left standing at the cap, the reinstated merchant is re-suspended by the very next refusal and the admin's decision lasts one order. A decline and an EXPIRED assignment are the same event and count identically, against the same streak and the same bar; they mix, so two lapses and a decline is three. The cap is `SystemConfig.merchantOrderLimits.maxConsecutiveRejections` (schema default 3); the pairs are `order_rejections`, applied in `assignmentCandidates`' WHERE so a barred merchant is never a candidate. The streak advances and is read in one `UPDATE … RETURNING`, and only a COMPLETED order resets it. See F-021. |
@@ -469,6 +472,11 @@ unknown board's winner under the wrong name.
 1. One `META` entry in `domains/markets/cycleTypes.js`.
 2. `DEFAULT_CYCLE_PHASES.<phasesKey>` — one declaration, read by the schema
    default and both consumers.
+2a. `maxMergeBeforeEndSec` on the type's `META` entry — the longest the earliest
+   phase may be for THIS board. The ordering invariant below compares phases
+   only with each other; this is the only thing that knows the block's length.
+   Omit it and the admin config route refuses the board's phases by name rather
+   than accepting a merge that fires before the cycle starts.
 3. `SystemConfig.betLimits.<limitsKey>` — declare them even when they equal
    another board's, so retuning one cannot silently retune the other.
 4. The phantom-access enum, so an agent can be scoped without being granted all.
@@ -561,6 +569,26 @@ it achieves.
     well-formed is asserting something about every other process that has ever
     touched that database, including the mutation harness deliberately creating
     malformed data. Take a baseline, create your own rows, assert the delta.
+
+    **CONFIG is the shared table where "create your own rows" is not available.**
+    `config_documents` is ONE row per scope and it holds the platform's live
+    rules, so a suite that writes one is not leaving a stale fixture behind —
+    it is leaving the platform running under different rules for every suite
+    after it, in the same process. A route test that raised
+    `maxConsecutiveRejections` to 4 and stopped there made the rejection-cap
+    suite assert a suspension that correctly did not happen, and
+    `playerOrderLockMinutes` at 61 made the cool-off suite measure a lock longer
+    than the one it had just written: **fourteen failures, in five files, none
+    of which the change had touched.** Worse, the values CLIMBED each run, so
+    the same suite passed locally and failed on the next run of itself.
+
+    A test that writes config takes a baseline in `beforeAll` and puts it back
+    in `afterAll`, outside any assertion — a restore that only runs when the
+    suite passed is the one that matters least. And a test asserting a config
+    round trip must compare against **what was stored a moment ago**, never
+    against the schema default: the row survives between runs, so a field left
+    at the value you were about to write reads back correct against a write
+    that never happened.
 11. **A gate that reads printed prose will eventually read it wrong.** The
     mutation harness decided KILLED vs SURVIVED by regexing vitest's summary line
     out of stdout. That line is prose: its wording depends on the reporter, ANSI
@@ -670,6 +698,28 @@ money, never runs.
 `npm run check:settable` refuses the whole class at build time. It cannot see
 whether the values are right or whether the money moved — those need a test
 through the real database.
+
+**The same shape, inside one request, with no lifecycle involved: a loop of
+single-field writes.** The admin System Settings page sends about thirty values
+in one PUT, and the route applied them by calling `setConfigField` once per
+value. Each call is its own transaction, and the spec refuses an out-of-range
+value by THROWING — so an operator typing 11 into a field capped at 10
+committed every value before it, abandoned every value after it, and was shown
+"Failed to update settings". They reload into a form half in the old state and
+half in the new, with nothing on the screen saying which half. It also wrote
+thirty audit rows for one decision, so the version an operator would roll back
+to is one of thirty midpoints the platform never intentionally ran in.
+
+`setConfigFields` takes the whole save and hands it to `applyConfig`, which
+**validates the entire patch before it opens a transaction**. Where a caller
+holds several values that belong to one decision, write them in one call; a
+loop that commits per field is this section's shape however small each write is.
+
+**And the refusal is the CALLER's, so it carries `status: 400` at the throw.**
+Without it `respondError` routes a spec violation to `serverError`, which logs
+in full and answers with nothing by design — so the message naming the field and
+its bound, the only thing that tells the operator what to type instead, is
+swallowed and they are told the platform broke.
 
 The same shape exists outside the lifecycle: a `NOT NULL` column refuses an
 explicit `null`, and `updateUser` passes values straight through. That is how
