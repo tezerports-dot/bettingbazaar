@@ -44,7 +44,7 @@ const router = express.Router();
  */
 
 // Admin: the full settings, with credential PRESENCE but no credentials.
-router.get('/admin/config', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/admin/config', authenticate, isAdmin, async (req, res) => {
   try {
     res.json({ success: true, config: await db.paymentConfig.getGatewayConfigForAdmin() });
   } catch (err) {

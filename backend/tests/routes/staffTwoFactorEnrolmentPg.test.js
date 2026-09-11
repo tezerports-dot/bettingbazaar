@@ -51,7 +51,9 @@ describePg('a staff session says whether a second factor is still owed', () => {
 
   /** A staff account with a password, enrolled or not. */
   const staff = async ({ isAdmin = false, isSubAdmin = false, enrolled = false } = {}) => {
-    const who = await actor({ isAdmin, isSubAdmin });
+    // EXPLICITLY unenrolled. The harness enrols staff by default now, because
+    // since the guard shipped an unenrolled admin cannot use any other route.
+    const who = await actor({ isAdmin, isSubAdmin, twoFactorEnabled: enrolled });
     await db.users.updateUser(who.userId, {
       passwordHash: await hashPassword(PASSWORD),
       ...(enrolled ? { twoFactorEnabled: true } : {}),
@@ -87,6 +89,66 @@ describePg('a staff session says whether a second factor is still owed', () => {
     // An enrolled account gets the 2FA challenge instead of a session, which is
     // the other branch entirely — either way, it must not be told to enrol.
     expect(res.body.mustEnroll2FA ?? false).toBe(false);
+  });
+
+  // ── The guard itself (F-011 step 2, switched on 2026-09-11) ──────────────
+  // Driven through a route that USES the middleware rather than asserted on the
+  // middleware alone: a unit test on the guard passes while no route is wired
+  // to it, which is the shape this finding already is.
+
+  it('REFUSES an unenrolled admin every route but enrolment', async () => {
+    const express = (await import('express')).default;
+    const cookieParser = (await import('cookie-parser')).default;
+    const { authenticate } = await import('../../domains/identity/auth.middleware.js');
+    const app = express();
+    app.use(express.json()); app.use(cookieParser());
+    app.get('/anything', authenticate, (req, res) => res.json({ success: true, reached: true }));
+    const admin = await staff({ isAdmin: true });
+    const res = await request(app).get('/anything').set('Authorization', admin.auth);
+    expect(res.status, 'an unenrolled admin reached an ordinary admin route').toBe(403);
+    expect(res.body.code).toBe('TWO_FACTOR_ENROLMENT_REQUIRED');
+    expect(res.body.mustEnroll2FA).toBe(true);
+    expect(res.body.reached).toBeUndefined();
+  });
+
+  it('lets that same admin reach the enrolment handshake', async () => {
+    const express = (await import('express')).default;
+    const cookieParser = (await import('cookie-parser')).default;
+    const { authenticateForEnrolment } = await import('../../domains/identity/auth.middleware.js');
+    const app = express();
+    app.use(express.json()); app.use(cookieParser());
+    app.get('/2fa/status', authenticateForEnrolment, (req, res) => res.json({ success: true, reached: true }));
+    // Otherwise the guard is a lockout: no way to stop owing a factor. The
+    // enrolment routes opt out BY NAME rather than this middleware keeping a
+    // list of their paths.
+    const admin = await staff({ isAdmin: true });
+    const res = await request(app).get('/2fa/status').set('Authorization', admin.auth);
+    expect(res.status, 'an unenrolled admin cannot even reach enrolment — that is a lockout').toBe(200);
+    expect(res.body.reached).toBe(true);
+  });
+
+  it('does not refuse an ORDINARY player, who owes nothing', async () => {
+    const express = (await import('express')).default;
+    const cookieParser = (await import('cookie-parser')).default;
+    const { authenticate } = await import('../../domains/identity/auth.middleware.js');
+    const app = express();
+    app.use(express.json()); app.use(cookieParser());
+    app.get('/anything', authenticate, (req, res) => res.json({ success: true, reached: true }));
+    const player = await staff({});
+    const res = await request(app).get('/anything').set('Authorization', player.auth);
+    expect(res.status, 'the guard caught a player — it is keyed on the wrong thing').toBe(200);
+  });
+
+  it('does not refuse an admin who HAS enrolled', async () => {
+    const express = (await import('express')).default;
+    const cookieParser = (await import('cookie-parser')).default;
+    const { authenticate } = await import('../../domains/identity/auth.middleware.js');
+    const app = express();
+    app.use(express.json()); app.use(cookieParser());
+    app.get('/anything', authenticate, (req, res) => res.json({ success: true, reached: true }));
+    const admin = await staff({ isAdmin: true, enrolled: true });
+    const res = await request(app).get('/anything').set('Authorization', admin.auth);
+    expect(res.status).toBe(200);
   });
 
   it('flags on the SESSION CHECK too, not only at login', async () => {

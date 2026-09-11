@@ -6,7 +6,9 @@
  * engine trigger, which is idempotent by construction.
  * Mounted at /api/admin via routes/admin/index.js.
  */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import {
+  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from '../../routes/admin/_adminShared.js';
 import { getMerchantLeaderboard, getMerchantFundingStats, getMerchantPerformanceHistory } from './merchantAnalytics.service.js';
 import { getMerchantWalletLedger } from './merchantWallet.service.js';
 import { runCommissionEngine } from './merchantCommission.service.js';
@@ -14,7 +16,7 @@ import { runCommissionEngine } from './merchantCommission.service.js';
 const router = express.Router();
 
 // GET /api/admin/merchant-platform/leaderboard?days=30&limit=20&sortBy=volume
-router.get('/merchant-platform/leaderboard', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/merchant-platform/leaderboard', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const days   = Math.min(365, Math.max(1, parseInt(req.query.days) || 30));
     const limit  = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
@@ -28,7 +30,9 @@ router.get('/merchant-platform/leaderboard', authenticate, isAdminOrSubAdmin, as
 });
 
 // GET /api/admin/merchant-platform/:merchantId/funding-stats
-router.get('/merchant-platform/:merchantId/funding-stats', authenticate, isAdminOrSubAdmin, async (req, res) => {
+// Same screen as `/merchant-platform/leaderboard` and `/wallet-ledger`, which
+// derive `canManageMerchants` from it.
+router.get('/merchant-platform/:merchantId/funding-stats', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const stats = await getMerchantFundingStats(req.params.merchantId);
     if (!stats) return res.status(404).json({ success: false, message: 'Merchant not found' });
@@ -40,7 +44,9 @@ router.get('/merchant-platform/:merchantId/funding-stats', authenticate, isAdmin
 });
 
 // GET /api/admin/merchant-platform/:merchantId/performance-history?days=30
-router.get('/merchant-platform/:merchantId/performance-history', authenticate, isAdminOrSubAdmin, async (req, res) => {
+// Same screen as `/merchant-platform/leaderboard` and `/wallet-ledger`, which
+// derive `canManageMerchants` from it.
+router.get('/merchant-platform/:merchantId/performance-history', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const days = Math.min(365, Math.max(1, parseInt(req.query.days) || 30));
     const history = await getMerchantPerformanceHistory(req.params.merchantId, { days });
@@ -52,7 +58,7 @@ router.get('/merchant-platform/:merchantId/performance-history', authenticate, i
 });
 
 // GET /api/admin/merchant-platform/:merchantId/wallet-ledger?page=&limit=
-router.get('/merchant-platform/:merchantId/wallet-ledger', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/merchant-platform/:merchantId/wallet-ledger', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const page  = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(200, Math.max(1, parseInt(req.query.limit) || 50));

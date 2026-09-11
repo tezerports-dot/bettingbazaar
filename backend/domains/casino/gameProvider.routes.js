@@ -352,7 +352,7 @@ router.post('/wallet/:providerKey', async (req, res) => {
 // received, which is a stronger guarantee than masking one it did.
 
 // GET /api/admin/game-providers
-router.get('/admin/game-providers', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/admin/game-providers', authenticate, isAdmin, async (req, res) => {
   try {
     await seedProviders();
     res.json({ success: true, providers: await db.games.listProviders() });
@@ -439,7 +439,7 @@ router.post('/admin/game-providers/:key/test', authenticate, isAdmin, async (req
 });
 
 // GET /api/admin/game-transactions — provider callback history
-router.get('/admin/game-transactions', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/admin/game-transactions', authenticate, isAdmin, async (req, res) => {
   try {
     const { providerKey, userId, txType, page = 1, limit = 30 } = req.query;
     // The page and its total come back from one query, so the footer count and

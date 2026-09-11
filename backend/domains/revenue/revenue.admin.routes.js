@@ -8,7 +8,9 @@
  * balance, idempotency, the platform-funded-only bonus rule, the
  * distributable-revenue cap) is enforced in the service, never here.
  */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import {
+  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import {
   getTrialBalance,
@@ -23,7 +25,7 @@ const router = express.Router();
 
 // GET /api/admin/revenue/summary — trial balance, distributable revenue,
 // bonus pool balance, ledger integrity check.
-router.get('/revenue/summary', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/revenue/summary', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const [trial, distributableMinor, bonusPoolMinor] = await Promise.all([
       getTrialBalance(),
@@ -54,7 +56,7 @@ router.get('/revenue/summary', authenticate, isAdminOrSubAdmin, async (req, res)
 });
 
 // GET /api/admin/revenue/ledger?page=&limit=&eventType= — paginated journal.
-router.get('/revenue/ledger', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/revenue/ledger', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const page  = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(200, Math.max(1, parseInt(req.query.limit) || 50));

@@ -1,6 +1,8 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /** content.admin.routes.js — FAQ, support links, promo, announcements */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin, hasAnyPermission } from '../../routes/admin/_adminShared.js';
+import {
+  authenticate, express, hasAnyPermission, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from '../../routes/admin/_adminShared.js';
 import contentService from './content.service.js';
 import { generatePresignedUploadUrl } from '../../services/cdn.service.js';
 import { db } from '#db';
@@ -44,7 +46,7 @@ const STARTER_FAQ = Object.freeze([
     answer: 'Contact support via the Support page. Provide your order ID and payment reference. Issues are resolved within 2 hours.' },
 ]);
 
-router.get('/content/faq', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/content/faq', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     /*
      * The seed used to be a `countDocuments()` followed by an insert, OUTSIDE
@@ -137,7 +139,7 @@ router.delete('/content/faq/:faqId', authenticate, isAdmin, async (req, res) => 
  */
 
 // Get support links
-router.get('/content/support-links', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/content/support-links', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     // The `supportLinks` SCOPE, which is what the public Support page reads.
     // This handler used to read `systemConfig.supportLinks` instead — a second
@@ -257,7 +259,7 @@ router.post('/promo/upload-url', authenticate, hasAnyPermission(['canManageConte
   }
 });
 
-router.get('/promo', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/promo', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     const { location, status } = req.query;
     const promos = await db.content.listPromos({

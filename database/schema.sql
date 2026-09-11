@@ -1470,10 +1470,15 @@ CREATE TABLE IF NOT EXISTS merchants (
     AND min_withdraw_paise <= max_withdraw_paise),
   CONSTRAINT merchants_limits_non_negative CHECK (
     min_deposit_paise >= 0 AND min_withdraw_paise >= 0),
+  -- Positive, and not otherwise bounded — see the note on
+  -- `payment_mode_policies_concurrency_positive`. A per-merchant override is an
+  -- operator's judgement about one merchant's capacity; the platform has no
+  -- opinion about where that stops on the UPI rail, and on the cash rail the
+  -- answer is derived and unreachable from here.
   CONSTRAINT merchants_concurrency_positive CHECK (
     max_concurrent_orders > 0
-    AND (max_concurrent_deposit_orders    IS NULL OR max_concurrent_deposit_orders    BETWEEN 1 AND 10)
-    AND (max_concurrent_withdrawal_orders IS NULL OR max_concurrent_withdrawal_orders BETWEEN 1 AND 10))
+    AND (max_concurrent_deposit_orders    IS NULL OR max_concurrent_deposit_orders    > 0)
+    AND (max_concurrent_withdrawal_orders IS NULL OR max_concurrent_withdrawal_orders > 0))
 );
 
 -- Payment credentials are an IDENTITY, not a preference: two merchants sharing
@@ -3191,9 +3196,37 @@ CREATE INDEX IF NOT EXISTS merchants_cash_denomination_idx
 -- the platform default that column falls back to.
 ALTER TABLE payment_mode_policies
   ADD COLUMN IF NOT EXISTS max_concurrent_orders INTEGER NOT NULL DEFAULT 3;
+-- POSITIVE, not capped at ten.
+--
+-- The ceiling was 1..10 and the owner's model is that the UPI rail's number is
+-- whatever an operator sets — 3, 10, 100 — because a merchant moving bank
+-- balance is not holding anything physical. The only hard number on this
+-- platform is the CASH rail's 1, and that is DERIVED in `concurrencyCapFor`
+-- rather than stored, so no configuration can raise it and this constraint
+-- never governed it.
+--
+-- Zero is still refused: it would stop assigning to anybody, which is a pause,
+-- and a pause has its own control (`assignment_paused_at`).
 DO $$ BEGIN
+  ALTER TABLE payment_mode_policies DROP CONSTRAINT IF EXISTS payment_mode_policies_concurrency_positive;
   ALTER TABLE payment_mode_policies ADD CONSTRAINT payment_mode_policies_concurrency_positive
-    CHECK (max_concurrent_orders BETWEEN 1 AND 10);
+    CHECK (max_concurrent_orders > 0);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- The same widening on `merchants`, as an ALTER rather than only inline.
+--
+-- The inline CONSTRAINT in the CREATE TABLE above governs a database created
+-- fresh and NOTHING ELSE: `CREATE TABLE IF NOT EXISTS` skips the whole
+-- statement on an existing one, so an edit to an inline constraint silently
+-- never reaches a database that already exists — including production. That is
+-- why the thirty other constraint changes in this file are written as guarded
+-- ALTERs, and this one needed to be too.
+DO $$ BEGIN
+  ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_concurrency_positive;
+  ALTER TABLE merchants ADD CONSTRAINT merchants_concurrency_positive CHECK (
+    max_concurrent_orders > 0
+    AND (max_concurrent_deposit_orders    IS NULL OR max_concurrent_deposit_orders    > 0)
+    AND (max_concurrent_withdrawal_orders IS NULL OR max_concurrent_withdrawal_orders > 0));
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- ═══════════════════════════════════════════════════════════════════════════

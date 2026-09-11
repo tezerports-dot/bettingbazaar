@@ -5,7 +5,9 @@
  * export endpoint streams a regulatory CSV.
  * Mounted at /api/admin via routes/admin/index.js.
  */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import {
+  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from '../../routes/admin/_adminShared.js';
 import { financialReport, settlementReport, merchantReport, regulatoryLedgerExport, toCsv } from './reporting.service.js';
 // Item 5: a large regulatory CSV is CPU-bound string work — offload it to a
 // worker thread so serializing it doesn't block the event loop (and every
@@ -23,7 +25,7 @@ function period(req) {
 }
 
 // GET /api/admin/reports/financial?from=&to=
-router.get('/reports/financial', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/reports/financial', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const report = await financialReport(period(req));
     res.json({ success: true, report });
@@ -33,7 +35,7 @@ router.get('/reports/financial', authenticate, isAdminOrSubAdmin, async (req, re
 });
 
 // GET /api/admin/reports/settlement?from=&to=
-router.get('/reports/settlement', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/reports/settlement', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const days = await settlementReport(period(req));
     res.json({ success: true, days });
@@ -43,7 +45,7 @@ router.get('/reports/settlement', authenticate, isAdminOrSubAdmin, async (req, r
 });
 
 // GET /api/admin/reports/merchants?from=&to=
-router.get('/reports/merchants', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/reports/merchants', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const merchants = await merchantReport(period(req));
     res.json({ success: true, merchants });

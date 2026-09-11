@@ -1,6 +1,8 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /** branding.admin.routes.js — Branding config, CDN images, app assets */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin } from './_adminShared.js';
+import {
+  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from './_adminShared.js';
 import { db } from '#db';
 import { brandingPayload, broadcastBranding } from '../../domains/branding/brandingPayload.js';
 import { generateBrandingUploadUrl, isS3Configured, uploadBufferToS3, deleteFile, verifyUploadedObject } from '../../services/cdn.service.js';
@@ -150,7 +152,7 @@ router.post('/branding/images', authenticate, isAdmin, async (req, res) => {
 // Read all CDN images from CDNImage model.  Previously read from
 // SystemConfig.cdnImages — a completely separate collection — so images saved
 // via confirm-upload (logo flow) never appeared here.  Now unified.
-router.get('/branding/images', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/branding/images', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     const { category } = req.query;
     const images = await db.content.listImages({ category: category || null });

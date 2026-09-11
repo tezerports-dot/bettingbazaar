@@ -5,7 +5,9 @@
  * variety of work.
  * Mounted at /api/admin via routes/admin/index.js.
  */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import {
+  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import {
   getActiveCommissionPolicy,
@@ -18,7 +20,7 @@ import {
 const router = express.Router();
 
 // GET /api/admin/merchant-commission-policy — the currently active policy.
-router.get('/merchant-commission-policy', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/merchant-commission-policy', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const policy = await getActiveCommissionPolicy();
     res.json({ success: true, policy: policy || null,
@@ -34,7 +36,7 @@ router.get('/merchant-commission-policy', authenticate, isAdminOrSubAdmin, async
 });
 
 // GET /api/admin/merchant-commission-policy/history — full audit trail.
-router.get('/merchant-commission-policy/history', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/merchant-commission-policy/history', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const history = await getCommissionPolicyHistory();
     res.json({ success: true, history });

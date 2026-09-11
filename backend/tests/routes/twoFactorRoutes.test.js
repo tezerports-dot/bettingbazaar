@@ -167,7 +167,10 @@ describePg('two-factor routes', () => {
   });
 
   it('refuses to disable at all for a role where 2FA is mandatory', async () => {
-    const boss = await actor({ isAdmin: true, roles: ['admin'] });
+    // Explicitly UNENROLLED: the harness enrols staff by default now, because
+    // an unenrolled admin can reach nothing but enrolment. This file is about
+    // the enrolment flow itself, so it needs the account before that point.
+    const boss = await actor({ isAdmin: true, roles: ['admin'], twoFactorEnabled: false });
     await enrol(boss);
     const res = await as(app, boss).post('/disable').send({ otp: '123456' });
     // An admin who can switch off their own second factor does not have one in
@@ -178,7 +181,10 @@ describePg('two-factor routes', () => {
   });
 
   it('reports 2FA as mandatory for an admin and optional for a player', async () => {
-    const boss = await actor({ isAdmin: true, roles: ['admin'] });
+    // Explicitly UNENROLLED: the harness enrols staff by default now, because
+    // an unenrolled admin can reach nothing but enrolment. This file is about
+    // the enrolment flow itself, so it needs the account before that point.
+    const boss = await actor({ isAdmin: true, roles: ['admin'], twoFactorEnabled: false });
     const player = await actor({});
     expect((await as(app, boss).get('/status')).body.mandatory).toBe(true);
     expect((await as(app, player).get('/status')).body.mandatory).toBe(false);

@@ -12,6 +12,19 @@
  * Reading the rail is operational. Changing it changes the workflow every
  * merchant on the platform performs and what every new order asks of a player.
  * Reads are open to sub-admins; the switch is not.
+ *
+ * ── A DELIBERATE exception to F-001 ────────────────────────────────────────
+ * The F-001 sweep converts tier checks (`isAdminOrSubAdmin`) to permission
+ * checks, because a tier check lets a sub-admin granted one capability reach
+ * every other one. These two reads stay a tier check on purpose: which rail the
+ * platform is on is context every operator needs to do their own job — a
+ * disputes manager reading an order has to know whether it settles at a cash
+ * machine — and gating it behind one capability would hide it from the others.
+ *
+ * The sweep derived `isAdmin` here, because the only SCREEN that reads the rail
+ * is admin-only. That is the derivation's blind spot: it sees what screens call,
+ * not what an operator needs. A stated decision beats an inference, and
+ * `paymentModeRoutes.test.js` holds this one.
  */
 import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';

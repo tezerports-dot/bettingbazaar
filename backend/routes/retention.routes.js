@@ -22,7 +22,9 @@ import { db } from '#db';
 import {
   adminAdjustment, getBalanceAdjustments, ADJUSTABLE_FIELDS,
 } from '../domains/wallet/walletAuthority.service.js';
-import { authenticate, isAdmin, isAdminOrSubAdmin } from '../domains/identity/auth.middleware.js';
+import {
+  authenticate, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from '../domains/identity/auth.middleware.js';
 import { publicLeaderboard } from '../domains/analytics/leaderboardPublicView.js';
 
 const router = express.Router();
@@ -165,7 +167,7 @@ router.get('/announcements', async (req, res) => {
   }
 });
 
-router.get('/admin/announcements', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/admin/announcements', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     res.json({ success: true, announcements: await db.content.listAnnouncements({ limit: 200 }) });
   } catch (err) {
@@ -307,7 +309,7 @@ router.post('/admin/balance-adjust', authenticate, isAdmin, async (req, res) => 
   }
 });
 
-router.get('/admin/balance-adjustments', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/admin/balance-adjustments', authenticate, hasPermission('canManageUsers'), async (req, res) => {
   try {
     const { userId, page = 1, limit = 30 } = req.query;
     const { adjustments, total } = await getBalanceAdjustments({ userId: userId || null, page, limit });

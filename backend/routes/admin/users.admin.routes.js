@@ -1,6 +1,8 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /** users.admin.routes.js — User management, balance adjust, block/unblock, phantom, queue managers */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin } from './_adminShared.js';
+import {
+  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from './_adminShared.js';
 import { db } from '#db';
 // Cycle-type vocabulary — phantom access is scoped to one type, or BOTH.
 import { CYCLE_TYPE_VALUES } from '../../domains/markets/cycleTypes.js';
@@ -91,7 +93,7 @@ router.post('/users/:userId/adjust-balance', authenticate, isAdmin, async (req, 
     res.status(500).json({ success: false, message: 'Failed to adjust balance' });
   }
 });
-router.get('/users', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/users', authenticate, hasPermission('canManageUsers'), async (req, res) => {
   try {
     const { status, kycStatus, search, page = 1, limit = 50, cursor } = req.query;
 
@@ -156,7 +158,7 @@ router.get('/users', authenticate, isAdminOrSubAdmin, async (req, res) => {
  * read from the risk rules, not duplicated, so the number an operator edits in
  * System Settings is the number this screen sorts by.
  */
-router.get('/users/flagged', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/users/flagged', authenticate, hasPermission('canManageUsers'), async (req, res) => {
   try {
     const [players, rules] = await Promise.all([
       db.users.listFlaggedPlayers({ limit: Math.min(Number(req.query.limit) || 100, 200) }),
@@ -218,7 +220,7 @@ router.post('/users/:userId/clear-flag', authenticate, isAdmin, async (req, res)
 });
 
 // Get single user
-router.get('/users/:userId', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/users/:userId', authenticate, hasPermission('canManageUsers'), async (req, res) => {
   try {
     const user = await db.users.getUser(req.params.userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
@@ -597,7 +599,7 @@ router.post('/users/:userId/queue-manager', authenticate, isAdmin, async (req, r
  * TypeError — so this endpoint threw for every player who had ever placed a
  * funding order, which is every player who has ever deposited.
  */
-router.get('/users/:userId/transactions', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/users/:userId/transactions', authenticate, hasPermission('canManageUsers'), async (req, res) => {
   try {
     const { userId } = req.params;
     const { page = 1, limit = 50 } = req.query;

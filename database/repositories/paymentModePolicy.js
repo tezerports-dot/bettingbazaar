@@ -322,7 +322,7 @@ export async function publishPolicyVersion({
       return {
         ok: false,
         reason: 'CONCURRENCY_OUT_OF_RANGE',
-        message: 'maxConcurrentOrders must be between 1 and 10. One is the cash rail\'s answer; zero would stop assigning to anybody.',
+        message: 'maxConcurrentOrders must be at least 1. Zero would stop assigning to anybody, which is a pause, and pausing a merchant has its own control. There is no upper bound on the UPI rail — the cash rail\'s answer is 1 and is derived, not configured.',
       };
     }
     if (err.constraint === 'payment_mode_policies_timers_positive') {

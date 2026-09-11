@@ -96,14 +96,36 @@ describePg('the configuration store', () => {
       [{ payoutMultiplier: 0 }, /'payoutMultiplier' must be >= 1/],
       [{ withdrawalHoldMinutes: 100000 }, /'withdrawalHoldMinutes' must be <= 1440/],
       [{ cycleDurationMinutes: 5 }, /'cycleDurationMinutes' must be >= 10/],
-      [{ merchantOrderLimits: { maxConcurrentDepositOrders: 50 } },
-        /'merchantOrderLimits\.maxConcurrentDepositOrders' must be <= 10/],
+      // Concurrency has a FLOOR and no ceiling: on the UPI rail how many orders
+      // a merchant carries is the operator's judgement (3, 10, 100 — they are
+      // moving bank balance, not holding notes), and the cash rail's 1 is
+      // derived in `concurrencyCapFor` where no setting can reach it. The old
+      // 1..10 cap could only ever bind the rail with no physical constraint.
+      [{ merchantOrderLimits: { maxConcurrentDepositOrders: 0 } },
+        /'merchantOrderLimits\.maxConcurrentDepositOrders' must be >= 1/],
     ];
     for (const [patch, message] of bad) {
       await expect(applyConfig({ scope: 'system', docKey: KEY, patch })).rejects.toThrow(message);
     }
     // Nothing was written by any of them.
     expect((await getConfig('system', { docKey: KEY, fresh: true })).version).toBe(0);
+  });
+
+  it('lets an operator set a UPI concurrency well above the old ceiling', async () => {
+    // The other half of the rule above. The refusal list only ever proves what
+    // is refused; deleting the ACCEPTED range would leave it green.
+    //
+    // On the UPI rail this is the operator's judgement about a merchant moving
+    // bank balance. The cash rail's 1 is derived in `concurrencyCapFor`, where
+    // no setting reaches it — so the old 1..10 cap bound only the rail that has
+    // no physical constraint.
+    const res = await applyConfig({
+      scope: 'system', docKey: KEY,
+      patch: { merchantOrderLimits: { maxConcurrentDepositOrders: 100 } },
+    });
+    expect(res.ok, 'an operator cannot set a UPI concurrency above ten').toBe(true);
+    const stored = await getConfig('system', { docKey: KEY, fresh: true });
+    expect(stored.merchantOrderLimits.maxConcurrentDepositOrders).toBe(100);
   });
 
   it('refuses a value of the wrong type rather than coercing it into nonsense', async () => {

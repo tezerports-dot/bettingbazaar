@@ -7,7 +7,9 @@
  * called it, and two summaries of one platform are two answers waiting to
  * disagree. §1 — one owner per value.
  */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import {
+  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 // Analytics Platform trends (Phase 012 — Enterprise Services tier)
 import { growthTrend, businessTrend, revenueTrend, riskTrend } from './analyticsPlatform.service.js';
@@ -38,7 +40,7 @@ async function tokenFlowFor(direction, query = {}) {
 // growth (signups, first-time depositors), business (betting + funding
 // volume), revenue (from the settlement ledger), risk (order failure/
 // dispute signals). All derived, read-only, day-bucketed.
-router.get('/analytics/trends', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/analytics/trends', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const days = Math.min(365, Math.max(1, parseInt(req.query.days) || 30));
     const [growth, business, revenue, risk] = await Promise.all([
@@ -63,7 +65,9 @@ router.get('/analytics/trends', authenticate, isAdminOrSubAdmin, async (req, res
  * Each panel below is now one statement over the rows that actually carry the
  * thing it counts, so the figures within a panel cannot contradict each other.
  */
-router.get('/analytics/dashboard', authenticate, isAdminOrSubAdmin, async (req, res) => {
+// The analytics group, every other route of which derives this from the
+// screens that show it.
+router.get('/analytics/dashboard', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const [core, finance, daily, counts] = await Promise.all([
       db.stats.dashboard(),
@@ -162,7 +166,7 @@ router.get('/analytics/financials', authenticate, isAdmin, async (req, res) => {
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/analytics/deposit-dashboard', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/analytics/deposit-dashboard', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const flow = await tokenFlowFor('DEPOSIT', req.query);
     res.json({
@@ -186,7 +190,7 @@ router.get('/analytics/deposit-dashboard', authenticate, isAdminOrSubAdmin, asyn
 // Shows ONLY TOKEN_REDEMPTION transactions (real user token→INR sells).
 // EXCLUDES merchant reserve/liquidity movements.
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/analytics/withdrawal-dashboard', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/analytics/withdrawal-dashboard', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const flow = await tokenFlowFor('WITHDRAWAL', req.query);
     res.json({
@@ -210,7 +214,7 @@ router.get('/analytics/withdrawal-dashboard', authenticate, isAdminOrSubAdmin, a
 // Shows ONLY MERCHANT_TOPUP / MERCHANT_RESERVE / MERCHANT_LIQUIDITY.
 // Completely separate from user deposit/withdrawal dashboards.
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/analytics/merchant-funding', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/analytics/merchant-funding', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     // Merchant funding is merchant WALLET movement, which is where it has
     // always actually been recorded. The aggregate this replaced grouped a

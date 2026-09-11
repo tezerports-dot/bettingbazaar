@@ -50,7 +50,9 @@ function assertCurrency(req, res) {
 }
 
 // GET /api/admin/deposit-policy/:currency — the currently active policy.
-router.get('/deposit-policy/:currency', authenticate, isAdminOrSubAdmin, async (req, res) => {
+// The deposit policy screen is AdminOnly (`admin-panel/src/App.tsx`), so no
+// sub-admin has ever been shown this. Tightened to match.
+router.get('/deposit-policy/:currency', authenticate, isAdmin, async (req, res) => {
   try {
     const currency = assertCurrency(req, res);
     if (!currency) return;
@@ -66,7 +68,9 @@ router.get('/deposit-policy/:currency', authenticate, isAdminOrSubAdmin, async (
 });
 
 // GET /api/admin/deposit-policy/:currency/history — full audit trail.
-router.get('/deposit-policy/:currency/history', authenticate, isAdminOrSubAdmin, async (req, res) => {
+// The deposit policy screen is AdminOnly (`admin-panel/src/App.tsx`), so no
+// sub-admin has ever been shown this. Tightened to match.
+router.get('/deposit-policy/:currency/history', authenticate, isAdmin, async (req, res) => {
   try {
     const currency = assertCurrency(req, res);
     if (!currency) return;

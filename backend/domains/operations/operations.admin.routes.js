@@ -10,7 +10,9 @@
  * authority + endpoint that edits it. Nothing is configured HERE; this
  * surface points at the platform that configures it.
  */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import {
+  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import { runRetention } from './retention.service.js';
 import { getTrialBalance, getDistributableRevenueMinor } from '../revenue/revenueSettlement.service.js';
@@ -26,7 +28,7 @@ import { FLAGS, isEnabled } from '../../services/featureFlags.service.js';
 const router = express.Router();
 
 // GET /api/admin/operations/overview — the enterprise dashboard payload.
-router.get('/operations/overview', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/operations/overview', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const [trial, distributableMinor, depositPolicy, commissionPolicy, riskRules,
            topMerchants, pendingOrders, openDisputes] = await Promise.all([
@@ -99,7 +101,7 @@ router.get('/operations/overview', authenticate, isAdminOrSubAdmin, async (req, 
 // enforcing "no hardcoded percentages/limits/providers/rules": if a value
 // isn't in this catalog, it isn't configurable and must not exist as a
 // business constant in code (CLAUDE.md §2/§3).
-router.get('/operations/config-catalog', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/operations/config-catalog', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   res.json({ success: true, catalog: [
     { value: 'Deposit/reserve split + reserve usage rules (per currency)', owner: 'Business Policy — DepositPolicy', edit: 'PUT /api/admin/deposit-policy/:currency' },
     { value: 'Merchant Performance Bonus (enabled, %, min matched volume)', owner: 'Business Policy — MerchantBonusPolicy', edit: 'PUT /api/admin/merchant-bonus-policy' },

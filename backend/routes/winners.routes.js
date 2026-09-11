@@ -16,7 +16,9 @@
  */
 import express from 'express';
 import { db } from '#db';
-import { authenticate, isAdmin, isAdminOrSubAdmin } from '../domains/identity/auth.middleware.js';
+import {
+  authenticate, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from '../domains/identity/auth.middleware.js';
 
 const router = express.Router();
 
@@ -51,7 +53,7 @@ router.get('/v1/winners', async (req, res) => {
 
 // ── ADMIN ─────────────────────────────────────────────────────────────────────
 
-router.get('/admin/fake-winners', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/admin/fake-winners', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     // Every entry, including the ones switched off — this is the editor, not
     // the feed.

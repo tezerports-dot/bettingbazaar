@@ -150,8 +150,14 @@ export const SYSTEM_CONFIG_SPEC = group({
   // Platform defaults for per-type merchant concurrency; a merchant's own
   // override lives on the merchant row.
   merchantOrderLimits: group({
-    maxConcurrentDepositOrders:    n(1, 1, 10),
-    maxConcurrentWithdrawalOrders: n(1, 1, 10),
+    // No upper bound. The owner's model: on the UPI rail this is whatever an
+    // operator decides a merchant can carry, because they are moving bank
+    // balance rather than holding notes. The cash rail's 1 is derived in
+    // `concurrencyCapFor` and cannot be raised from configuration at all, so
+    // capping the setting only ever limited the rail that has no physical
+    // constraint.
+    maxConcurrentDepositOrders:    n(1, 1),
+    maxConcurrentWithdrawalOrders: n(1, 1),
     // CONSECUTIVE rejections a merchant may make before they are suspended.
     // Consecutive, not total: a merchant who declines three in a row is either
     // gaming the queue or is not in a position to serve it, and either way the

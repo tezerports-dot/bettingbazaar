@@ -1,6 +1,8 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /** system.admin.routes.js — System config, token rates, withdrawal requests, error logs */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin } from './_adminShared.js';
+import {
+  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from './_adminShared.js';
 import {
   INR_TOKEN_RATE, isSaneUsdtRate, USDT_RATE_MIN_INR, USDT_RATE_MAX_INR,
 } from '../../domains/configuration/tokenRates.js';
@@ -56,7 +58,7 @@ const FOOTER_PAGE_KEYS = [
 // endpoints and rate validation that lived here are gone; rates are no
 // longer admin-editable.
 
-router.get('/transactions', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/transactions', authenticate, hasPermission('canViewTransactions'), async (req, res) => {
   try {
     const { type, field, page = 1, limit = 50 } = req.query;
 
@@ -90,7 +92,7 @@ router.get('/transactions', authenticate, isAdminOrSubAdmin, async (req, res) =>
 
 // Get merchant full profile — :merchantId is always Merchant._id.
 // The merchants list guarantees this. No User._id fallback.
-router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/system/config', authenticate, isAdmin, async (req, res) => {
   try {
     const config = await getSystemConfig();
     res.json({
