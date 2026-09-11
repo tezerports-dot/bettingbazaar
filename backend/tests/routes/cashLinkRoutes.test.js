@@ -20,6 +20,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg } from '#db/client.js';
 import { updateMerchant } from '#db/repositories/merchants.js';
 import { createOrderRecord } from '#db/repositories/orders.record.js';
+import { cancelOrder } from '#db/repositories/orders.core.js';
 import {
   PAYMENT_MODES, getActivePolicy, publishPolicyVersion,
 } from '#db/repositories/paymentModePolicy.js';
@@ -60,12 +61,43 @@ describePg('a merchant supplying an ATM cash link', () => {
   // Through the repository, not raw SQL: the route tier does not reach past
   // #db, and the suite has already put the platform on the cash rail so the
   // order is stamped CASH_ATM by the same stamp production uses.
+  //
+  // Every one is CANCELLED in `afterAll`, and that is not tidiness.
+  //
+  // These rows are buy orders waiting at DENOMINATION, which is exactly what
+  // claims a link the moment it is supplied. Left in PENDING_QUEUE they stay in
+  // the shared database as candidates for the NEXT run of this same file, where
+  // the three supply-mechanics tests above create a link and then look for it.
+  //
+  // The DENOMINATION comment above reasons that no buy order can exist at
+  // ₹40,000, because the INR buy ceiling is ₹10,000. That is true of
+  // PRODUCTION, and the defence still holds against every other suite. It
+  // cannot hold against this one, which creates those very orders through the
+  // repository, beneath the route that enforces the ceiling. Trap 10: create
+  // your own rows — and then put them back.
+  //
+  // ── What is established, and what is not ───────────────────────────────
+  // These three tests DID fail together on a long-lived local database
+  // (`getLiveLinkFor` null; a second supply answering ALREADY_SERVING instead
+  // of LINK_ALREADY_LIVE) while passing 9/9 on a fresh one, so the cause was
+  // accumulated state and not the product. Orders left by an earlier run were
+  // observed being ASSIGNED to a later run's merchants, which is the mechanism.
+  //
+  // But removing this teardown and re-running on a fresh database does NOT
+  // reproduce the failure — six consecutive runs stayed green, with the
+  // PENDING_QUEUE leftovers sitting at a steady three rather than accumulating.
+  // So this cleanup removes a real contamination source and the suite is green
+  // with it; it is not proven to be the whole cause of the flake. Do not read
+  // its presence as a closed case. If these three fail again, the first thing
+  // to look at is what else is holding cash buy orders at DENOMINATION.
+  const created = [];
   const waitingOrder = async (paise = DENOMINATION) => {
     const orderId = oid();
     await createOrderRecord({
       orderId, userId: 'clr-user', type: 'DEPOSIT',
       tokenAmountRupees: paise / 100, fiatAmountRupees: paise / 100,
     });
+    created.push(orderId);
     return orderId;
   };
 
@@ -82,6 +114,11 @@ describePg('a merchant supplying an ATM cash link', () => {
   }, 60_000);
 
   afterAll(async () => {
+    // Before the rail goes back, and outside any assertion — a cleanup that only
+    // runs when the suite passed is the one that matters least (trap 10).
+    for (const orderId of created) {
+      await cancelOrder({ orderId, actor: 'test-cleanup', reason: 'cash-link suite teardown' }).catch(() => {});
+    }
     if (restore) {
       await publishPolicyVersion({
         activeMode: restore.activeMode,
