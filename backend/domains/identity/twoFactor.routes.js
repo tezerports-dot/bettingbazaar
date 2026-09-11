@@ -133,7 +133,23 @@ router.post('/activate', authenticateForEnrolment, twoFactorLimiter, async (req,
   }
 
   const secret = decryptSecret(creds.twoFactorPendingSecret);
-  const result = verifyToken({ secret, token: req.body?.otp });
+  // `code`, which is what every caller sends.
+  //
+  // This read `req.body?.otp` and NOTHING sends `otp`. The admin panel posts
+  // `{ code }` (`services/api.ts` twoFactor.activate), the merchant panel posts
+  // `{ code }`, and the merchant's own 2FA route reads `{ code }` — this file
+  // was the only place using the other name, so `token` was always `undefined`,
+  // `verifyToken` always answered `malformed`, and **admin 2FA enrolment has
+  // never once succeeded**. An operator scanned the QR, typed a correct code,
+  // and was told it was not valid, forever.
+  //
+  // It became a lockout the moment the enforcement guard shipped: staff refused
+  // everywhere, and the one door left open impossible to walk through.
+  //
+  // `twoFactorRoutes.test.js` posted `{ otp }` too, so it proved the handler
+  // works and could never prove a panel calls it correctly — CLAUDE.md §28. The
+  // suite now sends what the panels send.
+  const result = verifyToken({ secret, token: req.body?.code });
   if (!result.valid) {
     return res.status(400).json({
       success: false, code: '2FA_INVALID_CODE',
@@ -186,7 +202,8 @@ router.post('/disable', authenticate, twoFactorLimiter, async (req, res) => {
   // hijacked session cannot quietly strip the protection it is meant to defeat.
   const secret = decryptSecret(creds.twoFactorSecret);
   const result = verifyToken({
-    secret, token: req.body?.otp, lastCounter: creds.twoFactorLastCounter ?? null,
+    // `code`, for the same reason as activate above — both panels post it.
+    secret, token: req.body?.code, lastCounter: creds.twoFactorLastCounter ?? null,
   });
   if (!result.valid) {
     return res.status(400).json({

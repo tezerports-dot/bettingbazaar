@@ -41,7 +41,7 @@ describePg('two-factor routes', () => {
     expect(secret).toBeTruthy();
 
     const otp = totp.generateToken(secret, Date.now());
-    const activated = await as(app, who).post('/activate').send({ otp });
+    const activated = await as(app, who).post('/activate').send({ code: otp });
     expect(activated.status, JSON.stringify(activated.body)).toBe(200);
     return { secret, backupCodes: activated.body.backupCodes };
   }
@@ -75,7 +75,7 @@ describePg('two-factor routes', () => {
 
   it('refuses to activate without a setup first', async () => {
     const who = await actor({});
-    const res = await as(app, who).post('/activate').send({ otp: '123456' });
+    const res = await as(app, who).post('/activate').send({ code: '123456' });
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('2FA_NO_PENDING_SETUP');
   });
@@ -83,7 +83,7 @@ describePg('two-factor routes', () => {
   it('refuses to activate on a wrong code, leaving 2FA off', async () => {
     const who = await actor({});
     await as(app, who).post('/setup').send({});
-    const res = await as(app, who).post('/activate').send({ otp: '000000' });
+    const res = await as(app, who).post('/activate').send({ code: '000000' });
     expect(res.status).toBe(400);
     expect((await getUserCredentials(who.userId)).twoFactorEnabled).toBe(false);
   });
@@ -132,7 +132,7 @@ describePg('two-factor routes', () => {
   it('refuses to disable without a current code', async () => {
     const who = await actor({});
     await enrol(who);
-    const res = await as(app, who).post('/disable').send({ otp: '000000' });
+    const res = await as(app, who).post('/disable').send({ code: '000000' });
     expect(res.status).toBe(400);
     expect((await getUserCredentials(who.userId)).twoFactorEnabled).toBe(true);
   });
@@ -154,7 +154,7 @@ describePg('two-factor routes', () => {
     const spent = (await getUserCredentials(who.userId)).twoFactorLastCounter;
     await updateUser(who.userId, { twoFactorLastCounter: spent - 1 });
 
-    const res = await as(app, who).post('/disable').send({ otp: totp.generateToken(secret, Date.now()) });
+    const res = await as(app, who).post('/disable').send({ code: totp.generateToken(secret, Date.now()) });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
 
     const creds = await getUserCredentials(who.userId);
@@ -172,7 +172,7 @@ describePg('two-factor routes', () => {
     // the enrolment flow itself, so it needs the account before that point.
     const boss = await actor({ isAdmin: true, roles: ['admin'], twoFactorEnabled: false });
     await enrol(boss);
-    const res = await as(app, boss).post('/disable').send({ otp: '123456' });
+    const res = await as(app, boss).post('/disable').send({ code: '123456' });
     // An admin who can switch off their own second factor does not have one in
     // any meaningful sense.
     expect(res.status).toBe(403);
