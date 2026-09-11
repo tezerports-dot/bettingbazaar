@@ -19,6 +19,7 @@ listed below, which hold **data and history, never rules**.
 | Why a decision was made, dated | `docs/reference/DECISION_LOG.md` |
 | Architecture, portability, capabilities | `docs/reference/ARCHITECTURE.md` |
 | Every workflow, every branch, and what the row says after it | `docs/reference/OPERATIONS_MAP.html` |
+| **Every screen, every button, every branch, every outcome — all three panels** | `docs/reference/PANEL_WORKFLOWS.html` (derived from the code; its appendix is generated) |
 | SLOs, runbooks, on-call | `docs/reference/SRE_AND_OPERATIONS.md` |
 | Branding field → consumer table | `docs/reference/BRANDING.md` |
 | Machine-checked capability registry | `platform/capabilities.yaml` (`npm run verify:capabilities`) |
