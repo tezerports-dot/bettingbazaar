@@ -6,11 +6,13 @@
 // Backend contract (backend/domains/merchant/merchant.routes.js):
 //   accept   POST /accept/:id            ASSIGNED|PENDING_QUEUE → PROCESSING
 //   reject   POST /reject/:id  {reason}  → REJECTED, requires a reason
-//   confirm  POST /confirm/:id {proof, utrNumber}
-//              DEPOSIT (PAID → COMPLETED) — the route REQUIRES the reference the
-//              user submitted (utrNumber, min 12 chars) plus their proof, so the
-//              stored values are sent back with the confirmation. Confirming an
-//              order the user has not evidenced is refused before the request.
+//   confirm  POST /confirm/:id {}
+//              DEPOSIT (PAID → COMPLETED) — takes NO body. The route reads the
+//              player's reference off the order row and refuses if it is not
+//              there; it does not accept one from the merchant, because the
+//              reference is the player's and is claimed against this order in
+//              `utr_registry` (CLAUDE.md §27). There is no payment-proof
+//              requirement — proof collection was removed platform-wide.
 //              WITHDRAWAL (PROCESSING → COMPLETED) — no reference required.
 //   redFlag  POST /orders/:id/red-flag {reason} → flagged + DISPUTED for review
 //   payment-not-received
@@ -27,9 +29,6 @@ import { railCopy, type MerchantRail } from '../utils/rail';
 import type { PaymentOrder } from '../types';
 import type { ConfirmRequest } from '../components/ui';
 import type { OrderActions } from '../components/OrderCard';
-
-/** Minimum UTR length the backend accepts on a deposit confirm. */
-const MIN_UTR_LENGTH = 12;
 
 const orderRef = (order: PaymentOrder): string => String(order._id || order.id || order.orderId);
 
@@ -93,22 +92,30 @@ export function useOrderActions(
     }),
 
     onRelease: (order) => {
+      // The reference is the PLAYER's, already stored and already claimed in
+      // `utr_registry`. This checks it is THERE before opening the dialog, so a
+      // merchant is not walked through a confirmation the server will refuse —
+      // it does not re-send it, because the route reads the row.
       const utr = (order.utrNumber || '').trim();
-      if (utr.length < MIN_UTR_LENGTH) {
-        toast.error(`The user has not submitted a valid ${copy.proofLabel} yet — it must be at least ${MIN_UTR_LENGTH} characters.`);
+      if (!utr) {
+        toast.error(`The user has not submitted their ${copy.proofLabel} yet.`);
         return;
       }
-      if (!order.proofScreenshot) {
-        toast.error('The user has not uploaded payment proof yet.');
-        return;
-      }
+      // There is NO payment-screenshot check here, deliberately.
+      //
+      // This used to refuse on `!order.proofScreenshot` with "The user has not
+      // uploaded payment proof yet." Proof collection was removed platform-wide
+      // — no player screen has an upload and the presign route is gone — so
+      // that field is NULL on every order and the toast fired on EVERY deposit,
+      // blaming the player for not supplying something nothing ever asks them
+      // for. The merchant's release button did not work, at all, for anyone.
       setConfirmRequest({
         title: 'Release tokens to the user?',
         body: `Confirm the full amount reached your ${rail === 'USDT' ? 'wallet' : 'account'}. Tokens credit to the user immediately and this cannot be reversed.`,
         confirmLabel: 'Confirm & release',
         tone: 'ok',
         onConfirm: () => run(
-          () => api.confirmPayment(orderRef(order), order.proofScreenshot, utr),
+          () => api.confirmPayment(orderRef(order)),
           'Payment confirmed — tokens released'
         ),
       });
@@ -125,7 +132,7 @@ export function useOrderActions(
         tone: 'ok',
         onConfirm: async () => {
           const settled = await run(
-            () => api.confirmPayment(orderRef(order), undefined, order.utrNumber),
+            () => api.confirmPayment(orderRef(order)),
             'Payout confirmed — order completed'
           );
           // AFTER the confirm, and only if it SUCCEEDED. The receipt is chased

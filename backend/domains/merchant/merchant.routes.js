@@ -1458,23 +1458,52 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
 
 router.post('/confirm/:id', merchantAuth, async (req, res) => {
     try {
-        const { proof, utrNumber } = req.body;
         const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
         if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
 
         const isDeposit = order.type === 'DEPOSIT';
 
         if (isDeposit) {
-            // DEPOSIT confirm: must be in PAID status with valid UTR
+            // DEPOSIT confirm: must be PAID, and the player's reference must be
+            // on the order — READ FROM THE ROW, never from this request body.
+            //
+            // ── Why the body is not asked, and must not be ──────────────────
+            // The reference belongs to the PLAYER. They submit it at mark-paid,
+            // where `claimPaymentReference` binds it to this order in
+            // `utr_registry` for good (§27). The merchant's job is to match it
+            // against their own bank statement and press confirm — not to
+            // restate it.
+            //
+            // This route used to take `utrNumber` from the body and write it
+            // over the stored value. A merchant sending a different string
+            // therefore left the order carrying a reference `utr_registry` had
+            // never claimed, while the claim still pointed at the player's
+            // original — one payment with two references, the exact thing §27
+            // exists to make impossible, and the merchant's string free to be
+            // spent again on another order. The panel happened to echo the
+            // stored value back, so it never showed; a panel is not the guard.
             if (order.status !== 'PAID') {
                 return res.status(400).json({ success: false, message: `Deposit can only be confirmed in PAID status. Current: ${order.status}` });
             }
-            if (!utrNumber || utrNumber.trim().length < 12) {
-                return res.status(400).json({ success: false, message: 'UTR number (minimum 12 characters) is required to confirm a deposit.' });
+            if (!String(order.utrNumber ?? '').trim()) {
+                return res.status(400).json({ success: false, message: 'This order has no payment reference from the user yet.' });
             }
-            if (!proof && !order.proofScreenshot) {
-                return res.status(400).json({ success: false, message: 'Payment proof screenshot is required.' });
-            }
+            // ── NO payment-proof check ──────────────────────────────────────
+            // There used to be one: `if (!proof && !order.proofScreenshot)`.
+            // Payment-proof COLLECTION was removed platform-wide — the presign
+            // route is gone, `mark-paid` takes the reference alone, and no
+            // player screen has an upload — so `order.proofScreenshot` is NULL
+            // on every order created since, and nothing can ever supply one.
+            //
+            // The consumer outlived its producer, and the result was total:
+            // EVERY deposit confirm answered "Payment proof screenshot is
+            // required." The player had already sent real money and been told
+            // "Awaiting merchant review"; the merchant's panel pre-empted the
+            // refusal with a toast blaming the player for not uploading proof
+            // they were never asked for. The only exits were the 30-minute
+            // unanswered-PAID sweep into DISPUTED, or the player disputing.
+            // Found by running a deposit, not by reading one: both handlers
+            // pass their own tests, and it is the PAIR that was broken (§28).
         } else {
             // WITHDRAWAL confirm: must be in PROCESSING status
             if (!['PROCESSING', 'ASSIGNED'].includes(order.status)) {
@@ -1497,10 +1526,6 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         // withdrawal under hold only reaches PAID (asserted, not settled), and a
         // withdrawal with the hold disabled completes inline.
         const holdFor = isDeposit ? 0 : await holdMinutes();
-        const carried = {
-            ...(proof     ? { proofScreenshot: proof }          : {}),
-            ...(utrNumber ? { utrNumber: utrNumber.trim() }     : {}),
-        };
 
         // ── DEPOSIT: the money moves BEFORE the status, through the one owner ──
         //
@@ -1560,13 +1585,12 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         if (isDeposit) {
             moved = await completeOrder(order._id, {
                 expectFrom: 'PAID',
-                set: { ...carried, completedAt: new Date() },
+                set: { completedAt: new Date() },
             });
         } else if (holdFor > 0) {
             moved = await markOrderPaidState(order._id, {
                 expectFrom: ['PROCESSING', 'ASSIGNED'],
                 set: {
-                    ...carried,
                     merchantCreditStatus:    'HELD',
                     merchantCreditHoldUntil: new Date(Date.now() + holdFor * 60 * 1000),
                     escrowLocked:            true,
@@ -1576,7 +1600,7 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             moved = await completeOrder(order._id, {
                 expectFrom: 'PROCESSING',
                 set: {
-                    ...carried, completedAt: new Date(),
+                    completedAt: new Date(),
                     merchantCreditStatus: 'RELEASED', escrowLocked: false,
                 },
             });
@@ -1702,7 +1726,7 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
                 const mins = Math.max(1, Math.round((order.merchantCreditHoldUntil - Date.now()) / 60000));
                 await sendSystemMessage(oid,
                     `💸 Merchant has marked your payout as sent\n` +
-                    `UTR / Ref: ${utrNumber || order.utrNumber || 'Provided separately'}\n` +
+                    `UTR / Ref: ${order.utrNumber || 'Provided separately'}\n` +
                     `📋 Token Sale: ₹${order.fiatAmount} to your bank account\n\n` +
                     `⏳ Settling in about ${mins} minute(s).\n` +
                     `If the money has NOT reached your account by then, raise a dispute on this order — ` +
@@ -1712,7 +1736,7 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             } else {
                 await sendSystemMessage(oid,
                     `💸 Merchant has sent your payout\n` +
-                    `UTR / Ref: ${utrNumber || order.utrNumber || 'Provided separately'}\n` +
+                    `UTR / Ref: ${order.utrNumber || 'Provided separately'}\n` +
                     `📋 Token Sale: ₹${order.fiatAmount} sent to your bank account\n` +
                     `Order COMPLETED. Tokens have been deducted from your balance.`,
                     io

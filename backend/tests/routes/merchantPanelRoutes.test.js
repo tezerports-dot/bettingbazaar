@@ -76,6 +76,12 @@ describePg('merchant panel routes', () => {
       orderId, userId: who.userId, type,
       tokenAmountRupees: tokens, fiatAmountRupees: tokens, state,
       depositAllocation: betting, reserveAllocation: reserve,
+      // A PAID deposit ALWAYS carries the player's reference: `mark-paid` is
+      // what puts the order in this state and it refuses without one. The
+      // confirm reads it off the row, so a fixture without it is not a PAID
+      // deposit any route would ever see. `extra` still overrides, for the
+      // tests that are about its absence.
+      ...(type === 'DEPOSIT' && state === 'PAID' ? { utrNumber: utr() } : {}),
       ...(usdtChain ? { usdtChain } : {}),
       ...(merchantId ? { merchantId } : {}),
       ...extra,
@@ -380,29 +386,54 @@ describePg('merchant panel routes', () => {
     expect((await as(app, theirs).post(`/confirm/${orderId}`).send({ utrNumber: '1234567890123' })).status).toBe(404);
   });
 
-  it('will not confirm a deposit without a usable bank reference', async () => {
+  it('will not confirm a deposit the player has not referenced', async () => {
     const m = await merchantActor({ tokensRupees: 5000 });
-    const { orderId } = await order({ state: 'PAID', merchantId: m.merchantId, extra: { proofScreenshot: 'https://cdn/p.png' } });
-    for (const utrNumber of [undefined, '', 'short', '12345678901']) {
-      const res = await as(app, m).post(`/confirm/${orderId}`).send({ utrNumber });
-      expect(res.status, `accepted utr=${JSON.stringify(utrNumber)}`).toBe(400);
-      expect(res.body.message).toMatch(/UTR number/i);
-    }
+    // The reference is read off the ROW. `mark-paid` is what writes it, so an
+    // order without one is a player who has not submitted yet.
+    const { orderId } = await order({
+      state: 'PAID', merchantId: m.merchantId, extra: { utrNumber: null },
+    });
+    const res = await as(app, m).post(`/confirm/${orderId}`);
+    expect(res.status).toBe(400);
     expect((await getOrderRecord(orderId)).state).toBe('PAID');
   });
 
-  it('will not confirm a deposit with no proof on the order and none supplied', async () => {
+  // These two tests used to say the opposite, and they were green while no
+  // deposit on the platform could be confirmed at all:
+  //
+  //   'will not confirm a deposit without a usable bank reference' drove the
+  //   refusal from the request BODY, asserting a contract where the merchant
+  //   restates the player's reference. The route wrote whatever they sent over
+  //   the stored value, so the order could end up naming a reference
+  //   `utr_registry` had never claimed (§27).
+  //
+  //   'will not confirm a deposit with no proof on the order and none supplied'
+  //   asserted the payment-proof requirement — after proof COLLECTION had been
+  //   removed platform-wide. Nothing could supply one, so the refusal it
+  //   asserted fired on EVERY deposit. The test passed because the handler did
+  //   exactly what it was told; the handler was what was wrong.
+  //
+  // Absence of a failing check is not evidence of correctness when no check
+  // covers the thing being claimed (§29). What covers it now is a test that
+  // follows the money: depositConfirmReachablePg.test.js.
+  it('ignores a payment reference sent by the merchant', async () => {
     const m = await merchantActor({ tokensRupees: 5000 });
     const { orderId } = await order({ state: 'PAID', merchantId: m.merchantId });
-    const res = await as(app, m).post(`/confirm/${orderId}`).send({ utrNumber: utr() });
-    expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/proof screenshot is required/i);
+    const stored = (await getOrderRecord(orderId)).utrNumber;
+
+    const res = await as(app, m).post(`/confirm/${orderId}`)
+      .send({ utrNumber: 'MERCHANTSUPPLIED9', proof: 'https://cdn/forged.png' });
+    expect(res.status, res.body.message).toBe(200);
+
+    const row = await getOrderRecord(orderId);
+    expect(row.utrNumber).toBe(stored);
+    expect(row.proofScreenshot ?? null).toBeNull();
   });
 
   it('will not confirm a deposit that has not been paid', async () => {
     const m = await merchantActor({ tokensRupees: 5000 });
     const { orderId } = await order({ state: 'PROCESSING', merchantId: m.merchantId });
-    const res = await as(app, m).post(`/confirm/${orderId}`).send({ utrNumber: utr(), proof: 'p' });
+    const res = await as(app, m).post(`/confirm/${orderId}`);
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/only be confirmed in PAID status/i);
   });
@@ -414,13 +445,12 @@ describePg('merchant panel routes', () => {
     const m = await merchantActor({ tokensRupees: 5000 });
     const { orderId, who } = await order({
       state: 'PAID', merchantId: m.merchantId, tokens: 500, betting: 400, reserve: 100,
-      extra: { proofScreenshot: 'https://cdn/p.png' },
     });
 
     const merchantBefore = await getMerchantTokenBalance(m.merchantId);
     const before = await getBalancesPaise(who.userId);
 
-    const res = await as(app, m).post(`/confirm/${orderId}`).send({ utrNumber: utr() });
+    const res = await as(app, m).post(`/confirm/${orderId}`);
     expect(res.status, res.body.message).toBe(200);
 
     const after = await getBalancesPaise(who.userId);
@@ -437,14 +467,14 @@ describePg('merchant panel routes', () => {
   it('CREDITS ONCE when a merchant double-taps confirm', async () => {
     const m = await merchantActor({ tokensRupees: 5000 });
     const { orderId, who } = await order({
-      state: 'PAID', merchantId: m.merchantId, extra: { proofScreenshot: 'https://cdn/p.png' },
+      state: 'PAID', merchantId: m.merchantId,
     });
 
-    const first = await as(app, m).post(`/confirm/${orderId}`).send({ utrNumber: utr() });
+    const first = await as(app, m).post(`/confirm/${orderId}`);
     const balance = await getBalancesPaise(who.userId);
     const inventory = await getMerchantTokenBalance(m.merchantId);
 
-    const second = await as(app, m).post(`/confirm/${orderId}`).send({ utrNumber: utr() });
+    const second = await as(app, m).post(`/confirm/${orderId}`);
     expect(first.status).toBe(200);
     // The order is COMPLETED after the first, so the second is refused — the
     // point is only that it moves no money a second time, not the exact code.
@@ -460,29 +490,17 @@ describePg('merchant panel routes', () => {
     const m = await merchantActor({ tokensRupees: 5000 });
     const { orderId, who } = await order({
       state: 'PAID', merchantId: m.merchantId, tokens: 500, betting: 400, reserve: 100,
-      extra: { proofScreenshot: 'https://cdn/p.png' },
     });
     const before = await getBalancesPaise(who.userId);
     const merchantBefore = await getMerchantTokenBalance(m.merchantId);
 
     await Promise.all(Array.from({ length: 4 }, () =>
-      as(app, m).post(`/confirm/${orderId}`).send({ utrNumber: utr() })));
+      as(app, m).post(`/confirm/${orderId}`)));
 
     const after = await getBalancesPaise(who.userId);
     expect(after.depositBalance - before.depositBalance).toBe(400_00);
     expect(after.reserveBalance - before.reserveBalance).toBe(100_00);
     expect(merchantBefore - await getMerchantTokenBalance(m.merchantId)).toBe(500);
-  });
-
-  it('carries the reference and the proof onto the order with the confirm', async () => {
-    const m = await merchantActor({ tokensRupees: 5000 });
-    const { orderId } = await order({ state: 'PAID', merchantId: m.merchantId });
-    await as(app, m).post(`/confirm/${orderId}`).send({ utrNumber: `  ${utr()}  `, proof: 'https://cdn/proof.png' });
-
-    const row = await getOrderRecord(orderId);
-    expect(row.utrNumber).toBe(utr());
-    expect(row.proofScreenshot).toBe('https://cdn/proof.png');
-    expect(row.state).toBe('COMPLETED');
   });
 
   it('will not confirm a withdrawal that is not in flight', async () => {

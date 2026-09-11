@@ -64,7 +64,11 @@ describePg('a merchant confirms a deposit they cannot fund', () => {
       orderId, userId: who.userId, type: 'DEPOSIT',
       tokenAmountRupees: tokens, fiatAmountRupees: tokens, state: 'PAID',
       depositAllocation: tokens * 0.9, reserveAllocation: tokens * 0.1,
-      merchantId, proofScreenshot: 'https://cdn/p.png',
+      merchantId,
+      // The PLAYER's reference, on the row, which is where the confirm reads it
+      // from. It used to be sent in the request body and there is no longer a
+      // body — see depositConfirmReachablePg.test.js.
+      utrNumber: utr(),
     });
     return { orderId, who };
   };
@@ -78,7 +82,7 @@ describePg('a merchant confirms a deposit they cannot fund', () => {
     const { orderId, who } = await paidDeposit(m.merchantId, 5000);
 
     const before = await getBalancesPaise(who.userId);
-    const res = await as(app, m).post(`/confirm/${orderId}`).send({ utrNumber: utr() });
+    const res = await as(app, m).post(`/confirm/${orderId}`);
 
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/insufficient token inventory/i);
@@ -103,7 +107,7 @@ describePg('a merchant confirms a deposit they cannot fund', () => {
     const m = await merchantActor({ tokensRupees: 100 });
     const { orderId, who } = await paidDeposit(m.merchantId, 5000);
 
-    await as(app, m).post(`/confirm/${orderId}`).send({ utrNumber: utr() });
+    await as(app, m).post(`/confirm/${orderId}`);
 
     const row = await getOrderRecord(orderId);
     const balances = await getBalancesPaise(who.userId);
@@ -134,7 +138,7 @@ describePg('a merchant confirms a deposit they cannot fund', () => {
     const m = await merchantActor({ tokensRupees: 100 });
     const { orderId } = await paidDeposit(m.merchantId, 5000);
 
-    await as(app, m).post(`/confirm/${orderId}`).send({ utrNumber: utr() });
+    await as(app, m).post(`/confirm/${orderId}`);
 
     const row = await getOrderRecord(orderId);
     expect(
@@ -150,7 +154,7 @@ describePg('a merchant confirms a deposit they cannot fund', () => {
     const m = await merchantActor({ tokensRupees: 20_000 });
     const { orderId, who } = await paidDeposit(m.merchantId, 5000);
 
-    const res = await as(app, m).post(`/confirm/${orderId}`).send({ utrNumber: utr() });
+    const res = await as(app, m).post(`/confirm/${orderId}`);
     expect(res.status).toBe(200);
 
     expect((await getOrderRecord(orderId)).state).toBe('COMPLETED');

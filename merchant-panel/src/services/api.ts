@@ -347,16 +347,26 @@ export const acceptOrder = async (orderId: string): Promise<PaymentOrder> => {
   return data.order || data;
 };
 
-// FE 4.1 FIX: was sending {transactionProof}, backend reads {proof, utrNumber}
-// -> payment proof always saved as empty string, UTR fraud detection bypassed
-// confirmPayment works for BOTH:
-//   DEPOSIT:    marks order COMPLETED (releases tokens to user after payment received)
-//   WITHDRAWAL: marks order PAID (records that merchant sent money with UTR)
-export const confirmPayment = async (orderId: string, proof?: string, utrNumber?: string): Promise<PaymentOrder> => {
-  const data = await request<any>(ENDPOINTS.ORDERS.CONFIRM(orderId), {
-    method: 'POST',
-    body: JSON.stringify({ proof, utrNumber }),  // correct field names
-  });
+/**
+ * Confirm an order. Works for BOTH:
+ *   DEPOSIT:    PAID → COMPLETED, releasing tokens to the player.
+ *   WITHDRAWAL: PROCESSING → PAID (held) or COMPLETED (hold disabled).
+ *
+ * It sends NO BODY, and that is the point.
+ *
+ * It used to post `{ proof, utrNumber }`. Both were wrong by the time they were
+ * sent. `proof` could only ever be `undefined` — payment-proof collection was
+ * removed platform-wide, so no order has one — and `utrNumber` echoed back the
+ * player's own reference for the server to write over the copy it already had.
+ * That echo was the dangerous half: the reference is claimed against this order
+ * in `utr_registry` (CLAUDE.md §27), and a client sending a different string
+ * would have left the order naming a reference nothing had claimed.
+ *
+ * The route reads the player's reference off the order row and refuses if it is
+ * not there. There is nothing for this caller to supply.
+ */
+export const confirmPayment = async (orderId: string): Promise<PaymentOrder> => {
+  const data = await request<any>(ENDPOINTS.ORDERS.CONFIRM(orderId), { method: 'POST' });
   return data.order || data;
 };
 
