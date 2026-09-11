@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * postgres/merchantPg.js — the merchant record.
  *
@@ -29,6 +29,8 @@
  * `accepted_currencies[1]` rather than an application-layer virtual, so the
  * scalar the panels read cannot drift from the array assignment filters on.
  */
+import { USDT_CHAIN_SPEC } from '../../backend/domains/merchant/merchantCurrency.js';
+import { nonNegative } from '../numbers.js';
 import { pgQuery, getPool, connectGuarded } from '../client.js';
 import { randomBytes } from 'node:crypto';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
@@ -47,9 +49,9 @@ const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email
   two_factor_enabled, two_factor_enrolled_at, status, suspension_reason, is_online,
   accepts_deposits, accepts_withdrawals, accepted_currencies, merchant_type,
   bank_account_holder_name, bank_upi_id, bank_name, bank_account_no, bank_ifsc,
-  usdt_wallet_address, qr_code_url,
+  usdt_address_trc20, usdt_address_bep20,
   min_deposit_paise, max_deposit_paise, min_withdraw_paise, max_withdraw_paise,
-  min_order_paise, max_order_paise,
+  cash_denomination_paise,
   total_processed_volume_paise, earnings_paise, total_deposit_amount_paise,
   total_withdrawal_amount_paise, total_deposits_processed, total_withdrawals_processed,
   rating, last_online_toggle, panel_url,
@@ -57,7 +59,8 @@ const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email
   merchant_rejection_reason,
   monthly_processed_paise, daily_processed_paise, total_orders_processed,
   stats_last_reset_at,
-  success_rate, avg_response_minutes, dispute_rate, max_concurrent_orders,
+  success_rate, avg_response_minutes, dispute_rate, consecutive_rejections,
+  consecutive_expiries, assignment_paused_at, assignment_pause_reason, max_concurrent_orders,
   max_concurrent_deposit_orders, max_concurrent_withdrawal_orders,
   total_orders_completed, total_orders_all, created_at, updated_at`;
 
@@ -67,20 +70,6 @@ const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email
  * runtime rather than at load — derived from COLUMNS so the two cannot drift.
  */
 const M_COLUMNS = COLUMNS.split(',').map((c) => `m.${c.trim()}`).join(', ');
-
-/**
- * A non-negative number, where ZERO is a real answer.
- *
- * `Number(x) || fallback` substitutes the fallback for 0, because 0 is falsy.
- * That is harmless for a page size — a limit of zero is nonsense anyway — and
- * wrong for anything an operator might deliberately set to nothing: a
- * concurrency cap of 0 means "assign to nobody while I investigate", and `||`
- * silently re-opens the tap at the default.
- */
-const nonNegative = (value, fallback) => {
-  const n = Number(value);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
-};
 
 /** node-postgres returns BIGINT as a STRING. Cast once, here, at the boundary. */
 const toInt = (v) => (v === null || v === undefined ? null : Number(v));
@@ -134,8 +123,11 @@ function toMerchant(row) {
       accountNo: row.bank_account_no,
       ifsc: row.bank_ifsc,
     },
-    usdtWalletAddress: row.usdt_wallet_address,
-    qrCodeUrl: row.qr_code_url,
+    // One address PER CHAIN. USDT sent to a TRC-20 address from a BEP-20
+    // wallet is gone, so which chain an address belongs to is a fact the row
+    // states rather than one a reader infers from its shape.
+    usdtAddressTrc20: row.usdt_address_trc20,
+    usdtAddressBep20: row.usdt_address_bep20,
 
     limits: {
       minDeposit: rupees(row.min_deposit_paise),
@@ -143,8 +135,14 @@ function toMerchant(row) {
       minWithdraw: rupees(row.min_withdraw_paise),
       maxWithdraw: rupees(row.max_withdraw_paise),
     },
-    minOrder: rupees(row.min_order_paise),
-    maxOrder: rupees(row.max_order_paise),
+    // The ONE denomination this merchant is approved for on the cash rail, or
+    // null when they are not approved for it. Exposed in paise as well as
+    // rupees because the queue matches on the exact integer — a rupee float
+    // cannot be compared for equality, and this is an equality match.
+    cashDenominationPaise: row.cash_denomination_paise === null
+      ? null : Number(row.cash_denomination_paise),
+    cashDenomination: row.cash_denomination_paise === null
+      ? null : rupees(row.cash_denomination_paise),
 
     totalProcessedVolume: rupees(row.total_processed_volume_paise),
     earnings: rupees(row.earnings_paise),
@@ -172,6 +170,10 @@ function toMerchant(row) {
     successRate: Number(row.success_rate),
     avgResponseMinutes: Number(row.avg_response_minutes),
     disputeRate: Number(row.dispute_rate),
+    consecutiveRejections: toInt(row.consecutive_rejections),
+    consecutiveExpiries: toInt(row.consecutive_expiries),
+    assignmentPausedAt: row.assignment_paused_at,
+    assignmentPauseReason: row.assignment_pause_reason,
     maxConcurrentOrders: toInt(row.max_concurrent_orders),
     maxConcurrentDepositOrders: toInt(row.max_concurrent_deposit_orders),
     maxConcurrentWithdrawalOrders: toInt(row.max_concurrent_withdrawal_orders),
@@ -341,10 +343,102 @@ export async function listAssignableMerchants({
  * and the caller reads it there — a balance predicate in this query would be
  * the same defect as the stored `tokenBalance` filter it replaced.
  */
+/**
+ * Merchants who could supply a link at ONE denomination, with the tokens they
+ * have coming back to them shortly.
+ *
+ * This is who the broadcast reaches. It is a DISPLAY decision, not a transfer
+ * gate — nothing moves money on the strength of it — so it is a batched read
+ * rather than a locked one. What it must not do is send a merchant to an ATM
+ * for work they cannot take: they would drive there, supply a link, and be
+ * refused, and an expired link earns them nothing.
+ *
+ * `soonPaise` is tokens currently HELD on withdrawals they have already paid,
+ * whose hold expires within the lookahead. Those become spendable without the
+ * merchant doing anything, so a merchant who is briefly short is still worth
+ * telling — they will be able to serve by the time they reach the machine.
+ *
+ * The AVAILABLE balance is deliberately NOT read here. `getAvailablePaiseFor`
+ * owns that number; a second reader of the same column is a second answer
+ * waiting to disagree with it.
+ */
+export async function cashSuppliersFor(denominationPaise, { lookaheadSeconds = 120 } = {}) {
+  const denomination = Number(denominationPaise);
+  if (!Number.isInteger(denomination) || denomination <= 0) {
+    throw new TypeError(`cashSuppliersFor: denominationPaise must be a positive integer of paise, got ${denominationPaise}`);
+  }
+  const lookahead = Math.max(Number(lookaheadSeconds) || 0, 0);
+
+  const { rows } = await pgQuery(
+    `WITH releasing AS (
+       SELECT merchant_id,
+              COALESCE(SUM(token_amount_paise), 0) AS soon
+         FROM order_states
+        WHERE merchant_id IS NOT NULL
+          AND merchant_credit_status = 'HELD'
+          AND merchant_credit_hold_until IS NOT NULL
+          AND merchant_credit_hold_until <= now() + make_interval(secs => $2)
+        GROUP BY merchant_id
+     )
+     SELECT m.merchant_id, COALESCE(r.soon, 0) AS soon
+       FROM merchants m
+       LEFT JOIN releasing r ON r.merchant_id = m.merchant_id
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*)::int AS total
+           FROM order_states o
+          WHERE o.merchant_id = m.merchant_id
+            AND o.state IN ('ASSIGNED', 'PROCESSING', 'PAID')
+       ) a ON TRUE
+      WHERE m.status = 'ACTIVE'
+        AND m.merchant_approval_status = 'APPROVED'
+        AND m.is_online
+        AND m.accepts_deposits
+        AND m.assignment_paused_at IS NULL
+        AND m.cash_denomination_paise = $1
+        -- Under their concurrency cap. This list decides who is TOLD to walk to
+        -- a cash machine, and a merchant already holding an order cannot serve
+        -- another on this rail — the notes are the same notes. Telling them
+        -- anyway costs them the trip, which is the one thing this rail cannot
+        -- give back.
+        AND COALESCE(a.total, 0) < COALESCE(m.max_concurrent_orders, 1)`,
+    [denomination, lookahead], 'cash_suppliers_for_denomination',
+  );
+  return rows.map((r) => ({
+    merchantId: r.merchant_id,
+    // BIGINT arrives as a string. Uncast, adding it to a number concatenates.
+    soonPaise: Number(r.soon),
+  }));
+}
+
 export async function assignmentCandidates({
   currency = 'INR', direction = 'DEPOSIT',
   defaultDepositLimit = 1, defaultWithdrawalLimit = 1, defaultTotalLimit = 3,
   imbalanceDays = 30,
+  // On the CASH_ATM rail an order is served at a fixed amount, and a merchant
+  // is approved for exactly ONE. Passing it here rather than filtering after
+  // the query is the same reason the concurrency caps are applied here: a
+  // merchant who cannot serve this amount is not a candidate at all, rather
+  // than a candidate the caller is trusted to drop.
+  //
+  // NULL means the UPI rail, where amounts are a range and this column plays
+  // no part — so the clause is absent rather than matching NULL, which would
+  // exclude every merchant.
+  cashDenominationPaise = null,
+  // Merchants who have already refused this order, or any order from this
+  // player. Applied HERE rather than filtered by the caller for the same reason
+  // as the concurrency caps: a merchant who must not be given this order is not
+  // a candidate at all, rather than a candidate the caller is trusted to drop.
+  // An empty list adds no clause, so the ordinary case costs nothing.
+  barredMerchantIds = [],
+  // On the USDT rail an order names the CHAIN the player will send on, and a
+  // merchant can only be paid on a chain they hold an address for. Applied
+  // here for the same reason the caps and the cash denomination are: a merchant
+  // who cannot receive this order is not a candidate at all.
+  //
+  // A merchant on the USDT rail holding NO address is excluded by this in every
+  // case, which is where the "must hold an address" rule actually lives — a row
+  // constraint could not see WHICH chain the order asked for.
+  usdtChain = null,
 } = {}) {
   const withdrawal = direction === 'WITHDRAWAL';
   const acceptsColumn = withdrawal ? 'accepts_withdrawals' : 'accepts_deposits';
@@ -362,6 +456,42 @@ export async function assignmentCandidates({
   // silently re-opening the tap. The same falsy-zero trap the withdrawal hold
   // window and the settlement lease both had.
   const typeLimit = nonNegative(withdrawal ? defaultWithdrawalLimit : defaultDepositLimit, 1);
+
+  // Normalised once: a denomination that is not a whole positive number of
+  // paise cannot match any row, and binding it would silently return nobody
+  // rather than saying the caller passed something wrong.
+  const denomination = cashDenominationPaise === null || cashDenominationPaise === undefined
+    ? null : Number(cashDenominationPaise);
+  if (denomination !== null && (!Number.isInteger(denomination) || denomination <= 0)) {
+    throw new TypeError(`assignmentCandidates: cashDenominationPaise must be a positive integer of paise, got ${cashDenominationPaise}`);
+  }
+
+  // The column is chosen from a FIXED map, never interpolated from the caller's
+  // string. `usdtChain` reaches this from a request body, and a column name
+  // spliced into SQL is an injection whatever the surrounding clause looks
+  // like. An unknown chain is a THROW, not an empty result: silently matching
+  // nobody would read as "no merchant is available" on a screen.
+  // De-duplicated and stringified once. `<> ALL($n)` over a text[] is one
+  // index-friendly clause however long the list is — an OR chain would grow the
+  // statement with the list and defeat the plan cache.
+  const barred = [...new Set((barredMerchantIds || []).filter(Boolean).map(String))];
+
+  let chainColumn = null;
+  if (usdtChain !== null && usdtChain !== undefined) {
+    chainColumn = USDT_CHAIN_SPEC[usdtChain]?.column ?? null;
+    if (!chainColumn) {
+      throw new TypeError(`assignmentCandidates: unknown usdtChain '${usdtChain}'`);
+    }
+  }
+
+  // The parameter list is built ONCE, so the placeholder numbers in the SQL and
+  // the values here cannot drift apart — the shape that put `denomination` at
+  // $5 in one branch and nowhere in the other, and would put `barred` at $5 or
+  // $6 depending on a condition several lines away.
+  const params = [String(currency), since, nonNegative(defaultTotalLimit, 3), typeLimit];
+  if (denomination !== null) params.push(denomination);
+  const barredIndex = params.length + 1;
+  if (barred.length) params.push(barred);
 
   const { rows } = await pgQuery(
     `WITH active AS (
@@ -395,12 +525,22 @@ export async function assignmentCandidates({
         AND m.is_online
         AND m.${acceptsColumn}
         AND m.merchant_type = $1
+        -- Paused pending a conversation. Three buy orders in a row expired with
+        -- nobody paying, which says nothing about this merchant's honesty and
+        -- quite a lot about whether they are reachable — so no further player is
+        -- sent to find out until an admin has asked. In the WHERE, like every
+        -- other rule here: a merchant who must not be given an order is not a
+        -- candidate at all.
+        AND m.assignment_paused_at IS NULL
         -- The concurrency caps, applied where the counts are. A merchant at
         -- their limit is not a candidate at all, rather than a candidate the
         -- caller is trusted to filter out afterwards.
         AND COALESCE(a.total, 0) < COALESCE(m.max_concurrent_orders, $3)
-        AND COALESCE(a.${typeColumn}, 0) < COALESCE(m.${capColumn}, $4)`,
-    [String(currency), since, nonNegative(defaultTotalLimit, 3), typeLimit],
+        AND COALESCE(a.${typeColumn}, 0) < COALESCE(m.${capColumn}, $4)
+        ${denomination === null ? '' : 'AND m.cash_denomination_paise = $5'}
+        ${chainColumn === null ? '' : `AND m.${chainColumn} IS NOT NULL`}
+        ${barred.length === 0 ? '' : `AND m.merchant_id <> ALL($${barredIndex})`}`,
+    params,
     'merchant_assignment_candidates',
   );
 
@@ -574,9 +714,9 @@ const UPDATABLE = new Set([
   'status', 'suspension_reason', 'is_online', 'accepts_deposits', 'accepts_withdrawals',
   'accepted_currencies',
   'bank_account_holder_name', 'bank_upi_id', 'bank_name', 'bank_account_no', 'bank_ifsc',
-  'usdt_wallet_address', 'qr_code_url',
+  'usdt_address_trc20', 'usdt_address_bep20',
   'min_deposit_paise', 'max_deposit_paise', 'min_withdraw_paise', 'max_withdraw_paise',
-  'min_order_paise', 'max_order_paise',
+  'cash_denomination_paise',
   'rating', 'last_online_toggle', 'panel_url',
   'merchant_approval_status', 'merchant_approved_by', 'merchant_approved_at',
   'merchant_rejection_reason',
@@ -607,23 +747,18 @@ const NESTED_TO_COLUMN = Object.freeze({
   'limits.maxDeposit': 'max_deposit_paise',
   'limits.minWithdraw': 'min_withdraw_paise',
   'limits.maxWithdraw': 'max_withdraw_paise',
-  // The order range, under the name every OTHER part of the system uses for
-  // it. `toMerchant` returns `minOrder`/`maxOrder`, merchant assignment filters
-  // candidates on `minOrder`/`maxOrder`, and the admin route sends
-  // `minOrder`/`maxOrder` — but the write path derived its names from the
-  // column list, so it accepted only `minOrderPaise`. Every call to
-  // PUT /api/admin/merchants/:merchantId/limits therefore threw "refusing to
-  // write unknown or protected column(s)" and 500'd, and the panel showed
-  // "Failed to save limits" on a save that had never been possible. A field
-  // must be writable under the name it is readable under.
-  minOrder: 'min_order_paise',
-  maxOrder: 'max_order_paise',
+  // `minOrder`/`maxOrder` were here too, and are gone with their columns. The
+  // lesson they left is worth keeping: a field must be WRITABLE under the name
+  // it is READABLE under. They were readable as `minOrder` and writable only as
+  // `minOrderPaise`, so every save 500'd with "refusing to write unknown or
+  // protected column(s)" and the panel said "Failed to save limits" on a save
+  // that had never once been possible.
 });
 
 /** Columns holding money, so a caller passing rupees gets paise stored. */
 const MONEY_COLUMNS = new Set([
   'min_deposit_paise', 'max_deposit_paise', 'min_withdraw_paise',
-  'max_withdraw_paise', 'min_order_paise', 'max_order_paise',
+  'max_withdraw_paise',
 ]);
 
 /** Flatten `{ bankDetails: { upiId } }` into the dotted names above. */
@@ -667,7 +802,7 @@ export async function createMerchant({
   merchantId = null, userId = null, name, publicRef = null,
   username = null, mobile = null, email = null, passwordHash = null,
   currency = 'INR', status = 'PENDING', bankDetails = null,
-  usdtWalletAddress = null, qrCodeUrl = null, panelUrl = '',
+  usdtAddressTrc20 = null, usdtAddressBep20 = null, panelUrl = '',
   limits = null, client = null,
 } = {}) {
   if (!name) throw new Error('createMerchant requires a name');
@@ -684,7 +819,7 @@ export async function createMerchant({
        merchant_id, user_id, name, public_ref, username, mobile, email, password_hash,
        accepted_currencies, status,
        bank_account_holder_name, bank_upi_id, bank_name, bank_account_no, bank_ifsc,
-       usdt_wallet_address, qr_code_url, panel_url,
+       usdt_address_trc20, usdt_address_bep20, panel_url,
        min_deposit_paise, max_deposit_paise, min_withdraw_paise, max_withdraw_paise)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8, ARRAY[$9], $10,
              $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
@@ -694,7 +829,7 @@ export async function createMerchant({
       String(currency), String(status),
       bankDetails?.accountHolderName || null, bankDetails?.upiId || null,
       bankDetails?.bankName || null, bankDetails?.accountNo || null, bankDetails?.ifsc || null,
-      usdtWalletAddress || null, qrCodeUrl || null, panelUrl || '',
+      usdtAddressTrc20 || null, usdtAddressBep20 || null, panelUrl || '',
       rupeesToPaise(l.minDeposit ?? 500), rupeesToPaise(l.maxDeposit ?? 50000),
       rupeesToPaise(l.minWithdraw ?? 500), rupeesToPaise(l.maxWithdraw ?? 50000)],
   );
@@ -816,6 +951,84 @@ export async function resetPeriodicStats(merchantId, { period = 'daily', notRese
  * it. Raised here as a plain argument error rather than a constraint violation,
  * because the caller can fix it and a 500 does not say so.
  */
+/**
+ * Another buy order for this merchant expired with nobody having paid.
+ *
+ * Advanced and read in ONE statement, for the same reason the refusal streak
+ * is: two orders expiring in the same sweep must not both read 2 and both
+ * decide they were the third.
+ *
+ * This is NOT `consecutive_rejections`. An expiry is not a refusal — the
+ * merchant did nothing — so it must never reach the suspension cap. What three
+ * in a row means is that something about this merchant may be broken, which is
+ * a different question with a different answer.
+ */
+export async function bumpConsecutiveExpiries(merchantId) {
+  const { rows } = await pgQuery(
+    `UPDATE merchants SET consecutive_expiries = consecutive_expiries + 1, updated_at = now()
+      WHERE merchant_id = $1
+      RETURNING consecutive_expiries`,
+    [String(merchantId)], 'merchant_bump_expiries',
+  );
+  return rows.length ? Number(rows[0].consecutive_expiries) : 0;
+}
+
+/** A completed order says the merchant is working. The expiry run ends. */
+export async function resetConsecutiveExpiries(merchantId) {
+  await pgQuery(
+    `UPDATE merchants SET consecutive_expiries = 0, updated_at = now()
+      WHERE merchant_id = $1 AND consecutive_expiries <> 0`,
+    [String(merchantId)], 'merchant_reset_expiries',
+  );
+}
+
+/**
+ * Stop assigning new orders to this merchant until somebody has spoken to them.
+ *
+ * NOT a suspension. A suspension says the merchant did something wrong; this
+ * says the platform cannot tell whether they are working, and will not send
+ * another player to find out. They keep every order they already hold — taking
+ * those away would strand players who are mid-payment on them — and they keep
+ * their account, their balance and their history.
+ *
+ * It has no timer, by the same decision as a suspension: an admin reads the
+ * reason, talks to the merchant, and lifts it. A clock cannot tell whether the
+ * QR was fixed.
+ */
+export async function pauseAssignment(merchantId, reason) {
+  if (!String(reason ?? '').trim()) throw new Error('pauseAssignment requires a reason');
+  const { rows } = await pgQuery(
+    `UPDATE merchants
+        SET assignment_paused_at = COALESCE(assignment_paused_at, now()),
+            assignment_pause_reason = $2,
+            updated_at = now()
+      WHERE merchant_id = $1
+      RETURNING ${COLUMNS}`,
+    [String(merchantId), String(reason).trim().slice(0, 500)], 'merchant_pause_assignment',
+  );
+  return toMerchant(rows[0]);
+}
+
+/**
+ * An admin has looked into it. Assignment resumes.
+ *
+ * The COUNTER goes back to zero in the same statement. Left standing at three,
+ * the merchant is assignable again and the very next expiry — however
+ * ordinary — pauses them on the spot, so the admin's decision would last one
+ * order. The same reasoning as `approveMerchant` and the refusal streak.
+ */
+export async function resumeAssignment(merchantId) {
+  const { rows } = await pgQuery(
+    `UPDATE merchants
+        SET assignment_paused_at = NULL, assignment_pause_reason = NULL,
+            consecutive_expiries = 0, updated_at = now()
+      WHERE merchant_id = $1
+      RETURNING ${COLUMNS}`,
+    [String(merchantId)], 'merchant_resume_assignment',
+  );
+  return toMerchant(rows[0]);
+}
+
 export async function suspendMerchant(merchantId, reason, { actor = null } = {}) {
   if (!String(reason ?? '').trim()) throw new Error('suspendMerchant requires a reason');
   return updateMerchant(merchantId, {
@@ -839,6 +1052,24 @@ export async function approveMerchant(merchantId, { actor = null } = {}) {
        merchant_approval_status = 'APPROVED', status = 'ACTIVE',
        merchant_approved_by = $2, merchant_approved_at = now(),
        merchant_rejection_reason = NULL, suspension_reason = NULL,
+       -- ── The streak goes back to zero with the reinstatement ──────────────
+       -- There is no timer on a refusal suspension: an admin reads the reason
+       -- and, if it holds up, reinstates the merchant on the spot. That only
+       -- works if the count comes back with them. Left standing at the cap,
+       -- the merchant is ACTIVE with three strikes already against them and
+       -- the very next refusal — however ordinary — suspends them again
+       -- instantly, so the admin's decision would last exactly one order.
+       --
+       -- In the SAME statement as the reinstatement, so there is no instant at
+       -- which the merchant is tradeable and the counter still says suspend.
+       consecutive_rejections = 0,
+       -- …and the expiry pause, for the same reason. An admin who has just
+       -- reinstated a merchant has answered a strictly larger question than
+       -- "can this merchant be paid", so leaving them unassignable would make
+       -- the reinstatement mean nothing.
+       consecutive_expiries = 0,
+       assignment_paused_at = NULL,
+       assignment_pause_reason = NULL,
        updated_at = now()
      WHERE merchant_id = $1 RETURNING ${COLUMNS}`,
     [String(merchantId), actor ? String(actor) : null], 'merchant_approve',
@@ -907,7 +1138,7 @@ export async function deleteMerchant(merchantId) {
  */
 export async function createMerchantAccount({
   userId, username, mobile, email = null, passwordHash,
-  currency = 'INR', bankDetails = null, usdtWalletAddress = null,
+  currency = 'INR', bankDetails = null, usdtAddressTrc20 = null, usdtAddressBep20 = null,
 }) {
   if (!mobile) throw new Error('createMerchantAccount requires a mobile');
   if (!passwordHash) throw new Error('createMerchantAccount requires a passwordHash');
@@ -923,12 +1154,21 @@ export async function createMerchantAccount({
     // The account. `ON CONFLICT DO NOTHING` on the mobile, so a second
     // application on a registered number is REFUSED by the index rather than
     // by a prior lookup two applicants can both pass.
+    // NO `email` column here. `users.email` was removed with the player email
+    // (CLAUDE.md §2: "there are none beyond the mobile"), and this INSERT kept
+    // naming it — so EVERY merchant signup threw `column "email" of relation
+    // "users" does not exist`, was caught, and answered "Signup failed. Please
+    // try again." No merchant could ever self-register, and the message named
+    // nothing an applicant or support could act on.
+    //
+    // The merchant's own email is a different thing and still stored, on
+    // `merchants` — §2 says so explicitly, and `createMerchant` below takes it.
     const account = await client.query(
-      `INSERT INTO users (user_id, username, mobile, password_hash, email, status, kyc_status, roles)
-       VALUES ($1, $2, $3, $4, $5, 'ACTIVE', 'PENDING_SUBMISSION', ARRAY['merchant'])
+      `INSERT INTO users (user_id, username, mobile, password_hash, status, kyc_status, roles)
+       VALUES ($1, $2, $3, $4, 'ACTIVE', 'PENDING_SUBMISSION', ARRAY['merchant'])
        ON CONFLICT (mobile) DO NOTHING
        RETURNING user_id`,
-      [String(userId), username ?? '', String(mobile), passwordHash, email],
+      [String(userId), username ?? '', String(mobile), passwordHash],
     );
     if (!account.rows.length) {
       await client.query('ROLLBACK');
@@ -939,7 +1179,7 @@ export async function createMerchantAccount({
     const merchant = await createMerchant({
       merchantId: newMerchantId(), userId: uid, name: username || String(mobile),
       username, mobile, email, passwordHash,
-      currency, status: 'PENDING', bankDetails, usdtWalletAddress,
+      currency, status: 'PENDING', bankDetails, usdtAddressTrc20, usdtAddressBep20,
       client,
     });
 
@@ -1050,4 +1290,38 @@ export async function consumeTwoFactorBackupCode(merchantId, { expected, remaini
     [String(merchantId), expected ?? [], remaining ?? []], 'merchant_2fa_consume_backup',
   );
   return rowCount === 1;
+}
+
+/**
+ * A merchant refused an order: advance their streak and say where it stands.
+ *
+ * The increment and the read are ONE statement. A read-then-write would let two
+ * concurrent rejects both see 2 and both write 3, so a merchant could pass the
+ * cap without it ever being observed — the same shape as every other guard in
+ * this repository, and the reason it is expressed as an UPDATE … RETURNING.
+ *
+ * @returns {Promise<number>} the streak AFTER this refusal.
+ */
+export async function bumpConsecutiveRejections(merchantId) {
+  const { rows } = await pgQuery(
+    `UPDATE merchants SET consecutive_rejections = consecutive_rejections + 1, updated_at = now()
+      WHERE merchant_id = $1
+      RETURNING consecutive_rejections`,
+    [String(merchantId)], 'merchant_bump_rejections',
+  );
+  return rows.length ? Number(rows[0].consecutive_rejections) : 0;
+}
+
+/**
+ * A merchant completed an order, so the streak is over.
+ *
+ * Idempotent by construction — setting zero twice is setting zero — so the
+ * completion path can call it without first asking whether there was a streak.
+ */
+export async function resetConsecutiveRejections(merchantId) {
+  await pgQuery(
+    `UPDATE merchants SET consecutive_rejections = 0, updated_at = now()
+      WHERE merchant_id = $1 AND consecutive_rejections <> 0`,
+    [String(merchantId)], 'merchant_reset_rejections',
+  );
 }

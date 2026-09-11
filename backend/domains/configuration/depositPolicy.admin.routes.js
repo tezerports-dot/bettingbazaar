@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * depositPolicy.admin.routes.js — admin-facing Deposit Policy management.
  * Domain: Configuration / Business Policy Platform (BBEPS Phase 006).
@@ -50,7 +50,9 @@ function assertCurrency(req, res) {
 }
 
 // GET /api/admin/deposit-policy/:currency — the currently active policy.
-router.get('/deposit-policy/:currency', authenticate, isAdminOrSubAdmin, async (req, res) => {
+// The deposit policy screen is AdminOnly (`admin-panel/src/App.tsx`), so no
+// sub-admin has ever been shown this. Tightened to match.
+router.get('/deposit-policy/:currency', authenticate, isAdmin, async (req, res) => {
   try {
     const currency = assertCurrency(req, res);
     if (!currency) return;
@@ -66,7 +68,9 @@ router.get('/deposit-policy/:currency', authenticate, isAdminOrSubAdmin, async (
 });
 
 // GET /api/admin/deposit-policy/:currency/history — full audit trail.
-router.get('/deposit-policy/:currency/history', authenticate, isAdminOrSubAdmin, async (req, res) => {
+// The deposit policy screen is AdminOnly (`admin-panel/src/App.tsx`), so no
+// sub-admin has ever been shown this. Tightened to match.
+router.get('/deposit-policy/:currency/history', authenticate, isAdmin, async (req, res) => {
   try {
     const currency = assertCurrency(req, res);
     if (!currency) return;
@@ -130,7 +134,7 @@ router.put('/deposit-policy/:currency', authenticate, isAdmin, async (req, res) 
       success: true,
     });
 
-    // BBEPS-registered real-time event — see docs/governance/04-GOVERNANCE.md §11.
+    // BBEPS-registered real-time event — see CLAUDE.md §11.
     if (global.io) global.io.emit('deposit_policy_updated', { currency, policy: doc });
     if (global.sseManager) global.sseManager.broadcast('deposit_policy_updated', { currency, policy: doc });
 

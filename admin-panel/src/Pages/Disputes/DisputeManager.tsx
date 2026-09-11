@@ -1,10 +1,10 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 
 
 import React, { useEffect, useState, useRef } from 'react';
 import {
   AlertTriangle, CheckCircle, RefreshCw, Send,
-  MessageSquare, Scale, Image as ImgIcon, Clock,
+  MessageSquare, Scale, Image as ImgIcon, Clock, Banknote, Eye,
 } from 'lucide-react';
 import { Modal } from '../../components/Modal';
 import { StatusBadge } from '../../components/StatusBadge';
@@ -30,6 +30,23 @@ interface Dispute {
   disputeResolvedBy?: { username: string };
   utrNumber?: string;
   proofScreenshot?: string;
+}
+
+/**
+ * A CDM deposit slip — account number, branch, timestamp, bank reference.
+ *
+ * The strongest evidence in a cash-payout dispute and the least appropriate
+ * thing to hand back to either party, so neither the player nor the merchant
+ * who uploaded it can read one. `toOrder` does not map the columns, which is
+ * what makes that true by construction rather than by every reader remembering
+ * to strip them.
+ */
+interface CdmSlip {
+  orderId: string;
+  merchantId: string;
+  transactionId: string;
+  receiptUrl: string;
+  submittedAt: string;
 }
 
 interface ChatMsg {
@@ -77,6 +94,30 @@ export const DisputeManager: React.FC = () => {
 
   const [filterStatus, setFilterStatus]   = useState('all');
 
+  // The CDM slip for a cash payout. NEVER fetched when the modal opens: every
+  // read is written to the audit log, so loading one because somebody glanced
+  // at a dispute would record a slip view for every order anybody opened, and
+  // "who looked at this player's bank slip" would stop having an answer. It is
+  // a click, and the click is the thing being recorded.
+  const [slip, setSlip]                   = useState<CdmSlip | null>(null);
+  const [slipNote, setSlipNote]           = useState('');
+  const [slipLoading, setSlipLoading]     = useState(false);
+
+  const readSlip = async (orderId: string) => {
+    setSlipLoading(true);
+    setSlip(null);
+    setSlipNote('');
+    try {
+      const res = await api.disputes.getCdmReceipt(orderId);
+      if (res?.receipt) setSlip(res.receipt);
+      // Not an error, and a different fact from "no such order": the merchant's
+      // confirm completes the payout and the slip is chased afterwards, so a
+      // settled order legitimately has none yet.
+      else setSlipNote(res?.message || 'No CDM receipt has been submitted for this order.');
+    } catch { toast.error('Failed to read that receipt'); }
+    finally { setSlipLoading(false); }
+  };
+
   // ── Load disputes list ────────────────────────────────────────────────────
   const load = async () => {
     setIsLoading(true);
@@ -121,6 +162,12 @@ export const DisputeManager: React.FC = () => {
     setResolution('');
     setRefundAmt('');
     setPenaltyAmt('');
+    // Cleared with the rest of the per-dispute state. A slip left behind from
+    // the previously opened dispute would render this player's decision against
+    // another player's bank slip — the same shape as the KYC screen matching
+    // the first row every time, and worse, because this one is evidence.
+    setSlip(null);
+    setSlipNote('');
     await loadChat(d);
   };
 
@@ -301,6 +348,39 @@ export const DisputeManager: React.FC = () => {
               )}
               {selected.utrNumber && (
                 <div className="text-xs"><span className="text-gray-400">UTR: </span><span className="font-mono text-green-400">{selected.utrNumber}</span></div>
+              )}
+
+              {/* On a cash payout the merchant deposits notes at a CDM and the
+                  slip is the evidence this dispute turns on. Offered on every
+                  withdrawal rather than gated on the rail: a UPI-rail payout
+                  simply has none, and the server answers that without recording
+                  a read. */}
+              {selected.type === 'WITHDRAWAL' && (
+                <div className="mt-2 pt-2 border-t border-dark-600">
+                  {slip ? (
+                    <div className="space-y-2">
+                      <div className="text-xs">
+                        <span className="text-gray-400">CDM bank txn: </span>
+                        <span className="font-mono text-green-400">{slip.transactionId}</span>
+                        <span className="text-gray-400"> · {fmtDate(slip.submittedAt)}</span>
+                      </div>
+                      <a href={slip.receiptUrl} target="_blank" rel="noreferrer" className="block">
+                        <img src={slip.receiptUrl} alt="CDM deposit slip" className="w-full max-h-64 object-contain rounded-lg border border-dark-600" />
+                      </a>
+                    </div>
+                  ) : slipNote ? (
+                    <div className="text-xs text-gray-400">{slipNote}</div>
+                  ) : (
+                    <button
+                      onClick={() => void readSlip(selected.orderId)}
+                      disabled={slipLoading}
+                      className="flex items-center gap-1.5 text-xs font-medium text-gold-500 hover:text-gold-400 disabled:opacity-40"
+                    >
+                      <Banknote size={13} /> <Eye size={13} />
+                      {slipLoading ? 'Reading…' : 'Read the CDM slip (recorded against you)'}
+                    </button>
+                  )}
+                </div>
               )}
             </div>
 

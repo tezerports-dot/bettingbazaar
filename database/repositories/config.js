@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * postgres/configPg.js — the platform's admin-editable configuration.
  *
@@ -76,6 +76,27 @@ function withDefaults(node, stored) {
 // ── Validation ───────────────────────────────────────────────────────────────
 
 /**
+ * A spec violation is the CALLER's mistake, so it is marked as one.
+ *
+ * `httpError.respondError` routes on the PRESENCE of `err.status` (CLAUDE.md
+ * §2), so an error thrown from here without one becomes a 500: the admin is
+ * told the server broke when what actually happened is that they typed 11 into
+ * a field the spec caps at 10, and the message naming the field and the bound —
+ * the only thing that makes the mistake fixable — is swallowed by
+ * `serverError`, which answers with nothing by design.
+ *
+ * `status` is set at the throw rather than at each call site because the CAUSE
+ * is a property of the check, not of who happened to run it. Every caller that
+ * uses `respondError` gets the right answer without knowing this exists.
+ */
+function invalidConfig(message) {
+  const err = new Error(message);
+  err.status = 400;
+  err.code = 'CONFIG_INVALID';
+  return err;
+}
+
+/**
  * Check a patch against the spec, returning the flattened set of changes.
  *
  * Throws on the first problem with the PATH that caused it, because "invalid
@@ -84,7 +105,7 @@ function withDefaults(node, stored) {
 function validatePatch(node, patch, path = []) {
   const flat = {};
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
-    throw new Error(`config: expected an object at ${path.join('.') || '<root>'}`);
+    throw invalidConfig(`config: expected an object at ${path.join('.') || '<root>'}`);
   }
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined) continue;
@@ -109,33 +130,33 @@ function coerce(field, value, path) {
   switch (field.type) {
     case 'number': {
       const num = Number(value);
-      if (!Number.isFinite(num)) throw new Error(`config: '${path}' must be a number, got ${JSON.stringify(value)}`);
+      if (!Number.isFinite(num)) throw invalidConfig(`config: '${path}' must be a number, got ${JSON.stringify(value)}`);
       if (field.min !== null && field.min !== undefined && num < field.min) {
-        throw new Error(`config: '${path}' must be >= ${field.min}, got ${num}`);
+        throw invalidConfig(`config: '${path}' must be >= ${field.min}, got ${num}`);
       }
       if (field.max !== null && field.max !== undefined && num > field.max) {
-        throw new Error(`config: '${path}' must be <= ${field.max}, got ${num}`);
+        throw invalidConfig(`config: '${path}' must be <= ${field.max}, got ${num}`);
       }
       return num;
     }
     case 'boolean':
-      if (typeof value !== 'boolean') throw new Error(`config: '${path}' must be true or false, got ${JSON.stringify(value)}`);
+      if (typeof value !== 'boolean') throw invalidConfig(`config: '${path}' must be true or false, got ${JSON.stringify(value)}`);
       return value;
     case 'string':
-      if (typeof value !== 'string') throw new Error(`config: '${path}' must be a string, got ${JSON.stringify(value)}`);
+      if (typeof value !== 'string') throw invalidConfig(`config: '${path}' must be a string, got ${JSON.stringify(value)}`);
       return value;
     case 'string[]':
       if (!Array.isArray(value) || value.some((v) => typeof v !== 'string')) {
-        throw new Error(`config: '${path}' must be an array of strings`);
+        throw invalidConfig(`config: '${path}' must be an array of strings`);
       }
       return value;
     case 'number[]':
       if (!Array.isArray(value) || value.some((v) => !Number.isFinite(Number(v)))) {
-        throw new Error(`config: '${path}' must be an array of numbers`);
+        throw invalidConfig(`config: '${path}' must be an array of numbers`);
       }
       return value.map(Number);
     default:
-      throw new Error(`config: '${path}' has an unknown spec type '${field.type}'`);
+      throw invalidConfig(`config: '${path}' has an unknown spec type '${field.type}'`);
   }
 }
 

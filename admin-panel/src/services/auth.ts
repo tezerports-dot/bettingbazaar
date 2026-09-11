@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Admin } from '../types';
@@ -16,6 +16,19 @@ interface AuthState {
    * not a convenience.
    */
   pendingChallenge: string | null;
+  /**
+   * This account must hold a second factor and has not enrolled one.
+   *
+   * The session is REAL — the server issues it either way today — so this is
+   * not an authentication state, it is an obligation the panel must not let the
+   * operator walk past. It is persisted alongside the session for that reason:
+   * dropping it on a page reload would turn "enrol before you do anything" into
+   * "enrol unless you refresh".
+   *
+   * Cleared only by `clearEnrolment2FA()`, which the enrolment panel calls once
+   * the server has confirmed the factor is ACTIVE.
+   */
+  mustEnroll2FA: boolean;
   login: (
     mobile: string,
     password: string,
@@ -23,6 +36,7 @@ interface AuthState {
   ) => Promise<void>;
   submitTwoFactor: (code: string) => Promise<void>;
   cancelTwoFactor: () => void;
+  clearEnrolment2FA: () => void;
   logout: () => Promise<void>;
   verifySession: () => Promise<void>;
 }
@@ -35,6 +49,7 @@ export const useAuthStore = create<AuthState>()(
       isAuthenticated: false,
       isLoading: false,
       pendingChallenge: null,
+      mustEnroll2FA: false,
 
       login: async (mobile, password, loginType = 'admin') => {
         set({ isLoading: true });
@@ -54,6 +69,7 @@ export const useAuthStore = create<AuthState>()(
               isAuthenticated: true,
               isLoading: false,
               pendingChallenge: null,
+              mustEnroll2FA: !!(response as any).mustEnroll2FA,
             });
           }
         } catch (error) {
@@ -75,6 +91,7 @@ export const useAuthStore = create<AuthState>()(
               isAuthenticated: true,
               isLoading: false,
               pendingChallenge: null,
+              mustEnroll2FA: !!(response as any).mustEnroll2FA,
             });
             return;
           }
@@ -94,12 +111,15 @@ export const useAuthStore = create<AuthState>()(
 
       cancelTwoFactor: () => set({ pendingChallenge: null, isLoading: false }),
 
+      /** The factor is enrolled and ACTIVE on the server. Lift the obligation. */
+      clearEnrolment2FA: () => set({ mustEnroll2FA: false }),
+
       logout: async () => {
         try {
           await api.auth.logout();
         } catch {}
         finally {
-          set({ admin: null, token: null, isAuthenticated: false, pendingChallenge: null });
+          set({ admin: null, token: null, isAuthenticated: false, pendingChallenge: null, mustEnroll2FA: false });
         }
       },
 
@@ -112,7 +132,14 @@ export const useAuthStore = create<AuthState>()(
         try {
           const response = await api.auth.verifySession();
           if (response.success && response.data) {
-            set({ admin: response.data.admin, token, isAuthenticated: true });
+            // Refreshed on every load, not just carried from login: an account
+            // promoted to staff mid-session owes a factor from the promotion.
+            // This also lets the obligation CLEAR itself when the server stops
+            // asking — enrolling from another device, or a demotion.
+            set({
+              admin: response.data.admin, token, isAuthenticated: true,
+              mustEnroll2FA: !!(response as any).mustEnroll2FA,
+            });
           } else {
             set({ isAuthenticated: false, token: null });
           }
@@ -127,7 +154,14 @@ export const useAuthStore = create<AuthState>()(
       // half-authenticated credential; persisting it would leave it in
       // localStorage long after it expired, and restore a login-in-progress
       // the user never came back to finish.
-      partialize: (s) => ({ admin: s.admin, token: s.token, isAuthenticated: s.isAuthenticated }),
+      // `mustEnroll2FA` IS persisted, unlike pendingChallenge above, and for the
+      // opposite reason: it is not a credential, it is an unmet obligation
+      // attached to a session that survives a reload. Leaving it out would make
+      // a page refresh the way past the prompt.
+      partialize: (s) => ({
+        admin: s.admin, token: s.token, isAuthenticated: s.isAuthenticated,
+        mustEnroll2FA: s.mustEnroll2FA,
+      }),
     }
   )
 );

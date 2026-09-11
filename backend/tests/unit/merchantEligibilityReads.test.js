@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * Merchant inventory eligibility reads the WALLET, and nothing else.
  *
@@ -112,7 +112,11 @@ describe('the assignment routes no longer read the mirror', () => {
   });
 
   it('routes every gate through the authority reader', () => {
-    expect(source).toMatch(/import \{ getMerchantTokenBalance \}/);
+    // The gate is a HOLD now, not a read. `inventoryRefusal` moves the tokens
+    // into the merchant's reserved pocket and reports whether that succeeded,
+    // so admission is decided by a write the database serialises rather than by
+    // a number read in one statement and acted on in another.
+    expect(source).toMatch(/holdForOrder as holdDepositTokens/);
     // ── Counted differently, on purpose ──────────────────────────────────
     // This asserted THREE calls, one per assign path, because the guard was
     // copy-pasted into each handler. Three copies of a rule that decides which
@@ -120,10 +124,18 @@ describe('the assignment routes no longer read the mirror', () => {
     // and a test that counts the copies makes consolidating them look like a
     // regression. There is one `inventoryRefusal` helper now, so what is
     // asserted is that it reads the wallet and that every assign path calls it.
-    expect(source).toMatch(/async function inventoryRefusal\([\s\S]*?await getMerchantTokenBalance\(/);
+    expect(source).toMatch(/async function inventoryRefusal\([\s\S]*?await holdDepositTokens\(/);
 
     // One call site, inside the helper — not a second gate that skipped it.
-    expect([...source.matchAll(/await getMerchantTokenBalance\(/g)]).toHaveLength(1);
+    // One place takes a hold to ADMIT an order — inside the helper, not a
+    // second gate that skipped it. The reassign path's compensating re-hold is
+    // a different call with a different name and is deliberately not counted
+    // here: it restores a hold rather than deciding an admission.
+    expect([...source.matchAll(/holdDepositTokens\(order, merchantId/g)]).toHaveLength(1);
+    // No balance READER has any business in this file: every balance it would
+    // read decides an assignment, and a read cannot decide one (F-018).
+    expect([...source.matchAll(/await getMerchantTokenBalance\(/g)]).toHaveLength(0);
+    expect([...source.matchAll(/getMerchantSpendableTokens\(/g)]).toHaveLength(0);
 
     // EVERY assign path gates — asserted as a relation, not three magic
     // numbers. It used to read `toHaveLength(3)` three times, which meant that
@@ -148,6 +160,11 @@ describe('the assignment routes no longer read the mirror', () => {
     // The refusal quotes the number it refused against, and it comes from the
     // same read that decided — quoting anything else makes an operator chase a
     // discrepancy that is not there.
-    expect(source).toMatch(/const balance = await getMerchantTokenBalance\(merchantId\);[\s\S]*?merchantBalance: balance,/);
+    // The refusal names the ORDER's own amount, which is the figure the hold
+    // was refused for. It used to quote the balance it read — and there is no
+    // read any more, so quoting one would mean performing an extra query purely
+    // to put a number in a message, which is how the message and the decision
+    // come to disagree.
+    expect(source).toMatch(/required: order\.tokenAmount,/);
   });
 });

@@ -6,7 +6,7 @@
  *   - "Winners Board" and dead navigation items purged from menuSections.
  *   - ShareModal and AuthModal retained (standalone utilities, not dead routes).
  */
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { useState } from 'react';
 import NotificationBell from './NotificationBell';
 import { useGame } from '../../services/GameContext';
@@ -41,7 +41,6 @@ const menuSections: MenuSection[] = [
     auth: true,
     items: [
       { label: 'Wallet',         icon: '💳', path: '/wallet',    requireAuth: true },
-      { label: 'Gift Code',      icon: '🎁', path: '/gift-code', requireAuth: true },
     ],
   },
   {

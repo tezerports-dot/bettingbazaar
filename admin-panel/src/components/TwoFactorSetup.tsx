@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * TwoFactorSetup — enrol this admin account in TOTP 2FA.
  *
@@ -20,7 +20,18 @@ import OtpAuthQr from './OtpAuthQr';
 
 type Stage = 'loading' | 'idle' | 'scanning' | 'codes' | 'active';
 
-export default function TwoFactorSetup() {
+/**
+ * @param onEnrolled fired once the factor is ACTIVE and the recovery codes have
+ *   been acknowledged. Optional, because the settings page embeds this panel
+ *   with nothing to do afterwards; the mandatory-enrolment gate passes it so it
+ *   knows the obligation has been met and can let the operator through.
+ *
+ *   Deliberately fired at the END — after the codes are confirmed saved, not at
+ *   `activate` — because an operator released at `activate` would navigate away
+ *   from recovery codes shown exactly once, and a lost handset then means a
+ *   permanently locked platform-owner account.
+ */
+export default function TwoFactorSetup({ onEnrolled }: { onEnrolled?: () => void } = {}) {
   const [stage, setStage] = useState<Stage>('loading');
   const [mandatory, setMandatory] = useState(false);
   const [otpauthUri, setOtpauthUri] = useState('');
@@ -36,6 +47,10 @@ export default function TwoFactorSetup() {
       .then((r) => {
         setMandatory(!!r?.mandatory);
         setStage(r?.enabled ? 'active' : 'idle');
+        // Already enrolled — release the gate without making them enrol again.
+        // Reachable when the stored obligation has gone stale: the factor was
+        // added from another device or session since this one logged in.
+        if (r?.enabled) onEnrolled?.();
       })
       .catch(() => setStage('idle'));
   }, []);
@@ -201,7 +216,7 @@ export default function TwoFactorSetup() {
             I have saved these recovery codes.
           </label>
           <button
-            onClick={() => setStage('active')}
+            onClick={() => { setStage('active'); onEnrolled?.(); }}
             disabled={!savedConfirmed}
             className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
           >

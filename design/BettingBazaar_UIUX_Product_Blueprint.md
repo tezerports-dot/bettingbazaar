@@ -87,7 +87,6 @@ Use a consistent chip system: `OPEN / ACTIVE` green; `PENDING / QUEUED` amber; `
 | `#/wallet` | `WalletPage` | total/deposit/winnings balances, add funds, withdraw, transaction ledger, order links, bank setup CTA | profile, payment order, wallet ledger, withdrawals endpoints |
 | `#/invite` | `InvitePage` | referral code, share/copy, team, commissions, referral application status | `/api/referral/me`, `/team`, `/commissions`, `/apply` |
 | `#/vip` | `VIPPage` | current tier/progress, benefits, VIP configuration disclosure | `/api/vip/config`, `/api/vip/my`, `/api/bonuses/my` |
-| `#/gift-code` | `GiftCodePage` | code input, redeem CTA, success summary, redemption error | `POST /api/giftcode/redeem` |
 | `#/recover-account` | `AccountRecoveryPage` | masked Aadhaar check with confirmation, generic anti-enumeration result, recovery request, status polling, safe recovery explanation; raw Aadhaar is POST-body only, never placed in URLs, browser storage, analytics, error telemetry, request metadata, or logs, and must be cleared from component state immediately after submission | `/api/auth/check-aadhaar`, `/recover`, and `/recover/status` must be privacy-safe: strict rate limit, generic responses where applicable, masked Aadhaar input confirmation, no raw Aadhaar in URLs/storage/analytics/telemetry/metadata/server logs, and immediate Aadhaar clearing after each submit |
 | `#/profile` | `ProfilePage` | username (the only editable field — no email, no password; Aadhaar and mobile are proved, not typed), avatar upload, bank/UPI details, KYC **status only** (there is nothing to submit — the bot took the Aadhaar before the account existed), sign-out | profile, bank, upload endpoints |
 | `#/history` | `HistoryPage` | payment/order timeline, filters, order detail, proof/chat/dispute links | `/api/payment/orders`, `/api/payment/order/:id`, status endpoints |
@@ -187,7 +186,6 @@ Use a consistent chip system: `OPEN / ACTIVE` green; `PENDING / QUEUED` amber; `
 | `#/winners-manager` | FakeWinnersManager | fake-winner CRUD, preview, delete confirmation |
 | `#/chat-management` | SupportOperations | designed support operations workspace for knowledge-base ingestion/document management, support status, delete confirmation, permission denial, loading/error/empty states, and audit-friendly document detail |
 | `#/promotions/announcements` | AnnouncementsPage | announcement list/editor/publish/delete |
-| `#/promotions/gift-codes` | GiftCodes | code generator/list/redemptions/delete |
 | `#/content/faq` | FAQManager | FAQ CRUD/order/preview |
 | `#/content/slides` | ContentSlideManager | slide CRUD/order/preview/target location |
 | `#/content/support` | SupportLinks | support link CRUD/order/preview |
@@ -262,11 +260,6 @@ Show a subtle “Live” state, a reconnecting banner after disconnect, and a no
 - `backend/routes/winners.routes.js:103` — `router.post('/admin/fake-winners', authenticate, isAdmin, async (req, res) => {`
 - `backend/routes/winners.routes.js:121` — `router.put('/admin/fake-winners/:id', authenticate, isAdmin, async (req, res) => {`
 - `backend/routes/winners.routes.js:136` — `router.delete('/admin/fake-winners/:id', authenticate, isAdmin, async (req, res) => {`
-- `backend/routes/giftcode.routes.js:9` — `router.post('/redeem', authenticate, async (req, res) => {`
-- `backend/routes/giftcode.routes.js:62` — `router.get('/admin/giftcodes', authenticate, isAdminOrSubAdmin, async (req, res) => {`
-- `backend/routes/giftcode.routes.js:71` — `router.post('/admin/giftcodes', authenticate, isAdmin, async (req, res) => {`
-- `backend/routes/giftcode.routes.js:85` — `router.delete('/admin/giftcodes/:id', authenticate, isAdmin, async (req, res) => {`
-- `backend/routes/giftcode.routes.js:94` — `router.get('/admin/giftcodes/:id/redemptions', authenticate, isAdminOrSubAdmin, async (req, res) => {`
 - `backend/routes/referral.routes.js:18` — `router.get('/me', authenticate, async (req, res) => {`
 - `backend/routes/referral.routes.js:50` — `router.get('/team', authenticate, async (req, res) => {`
 - `backend/routes/referral.routes.js:81` — `router.get('/commissions', authenticate, async (req, res) => {`

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * routes/retention.routes.js — leaderboard, announcements, bonus history, and
  * the manual balance adjustment.
@@ -22,7 +22,10 @@ import { db } from '#db';
 import {
   adminAdjustment, getBalanceAdjustments, ADJUSTABLE_FIELDS,
 } from '../domains/wallet/walletAuthority.service.js';
-import { authenticate, isAdmin, isAdminOrSubAdmin } from '../domains/identity/auth.middleware.js';
+import {
+  authenticate, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from '../domains/identity/auth.middleware.js';
+import { publicLeaderboard } from '../domains/analytics/leaderboardPublicView.js';
 
 const router = express.Router();
 
@@ -50,7 +53,11 @@ router.get('/leaderboard/:period', async (req, res) => {
     const cache = await db.engagement.getLeaderboard(period);
     res.json({
       success: true,
-      entries: cache?.entries || [],
+      // Through the allowlist. This sent the cached rows WHOLE, and they carry
+      // `userId` — the id every user-scoped API takes — on an endpoint that
+      // needs no authentication. See leaderboardPublicView.js for why that is
+      // about identifier cost rather than about the leaderboard.
+      entries: publicLeaderboard(cache?.entries),
       generatedAt: cache?.generatedAt,
     });
   } catch (err) {
@@ -160,7 +167,7 @@ router.get('/announcements', async (req, res) => {
   }
 });
 
-router.get('/admin/announcements', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/admin/announcements', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     res.json({ success: true, announcements: await db.content.listAnnouncements({ limit: 200 }) });
   } catch (err) {
@@ -302,7 +309,7 @@ router.post('/admin/balance-adjust', authenticate, isAdmin, async (req, res) => 
   }
 });
 
-router.get('/admin/balance-adjustments', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/admin/balance-adjustments', authenticate, hasPermission('canManageUsers'), async (req, res) => {
   try {
     const { userId, page = 1, limit = 30 } = req.query;
     const { adjustments, total } = await getBalanceAdjustments({ userId: userId || null, page, limit });

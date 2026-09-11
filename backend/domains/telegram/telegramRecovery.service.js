@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * domains/telegram/telegramRecovery.service.js — regaining an account when the
  * Telegram account behind it is gone.
@@ -47,10 +47,10 @@ import { sendAlert } from '../../services/alerting.service.js';
  * @param {string} args.newTelegramUserId the Telegram account asking for it
  * @param {string} args.phone             from the contact share
  * @param {string} args.contactUserId     Telegram's user_id ON that contact
- * @param {string} args.aadhaar           as typed into the recovery bot
+ * @param {string[]} args.aadhaarHashes    HMAC candidates, hashed at the bot
  * @returns {Promise<{ok: boolean, reason?: string, userId?: string}>}
  */
-export async function attemptRecovery({ newTelegramUserId, phone, contactUserId, aadhaar }) {
+export async function attemptRecovery({ newTelegramUserId, phone, contactUserId, aadhaarHashes }) {
   // Same guard as signup: a forwarded contact card would let someone recover an
   // account using a number they do not hold.
   if (contactUserId && String(contactUserId) !== String(newTelegramUserId)) {
@@ -60,7 +60,10 @@ export async function attemptRecovery({ newTelegramUserId, phone, contactUserId,
   const mobile = normalisePhone(phone);
   if (!mobile) return { ok: false, reason: 'invalid_phone' };
 
-  const candidates = hashAadhaarCandidates(aadhaar);
+  // HASHES, not the number. It is hashed the moment the bot receives it and the
+  // plaintext is never stored or passed on — this function only ever compared,
+  // so it never needed it (audit F-002).
+  const candidates = Array.isArray(aadhaarHashes) ? aadhaarHashes.filter(Boolean) : [];
   if (!candidates.length) return { ok: false, reason: 'invalid_aadhaar' };
 
   const user = await db.users.getUserByMobile(mobile);

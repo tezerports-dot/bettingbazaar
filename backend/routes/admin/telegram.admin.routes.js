@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * routes/admin/telegram.admin.routes.js — operating the Telegram layer.
  *
@@ -35,6 +35,7 @@ import { listTemplates, saveTemplate } from '../../domains/telegram/telegramTemp
 import { buildExport, applyImport, kycStats } from '../../domains/identity/kycBulk.service.js';
 import { disburse, programmeStats } from '../../domains/referral/referral.service.js';
 import { rupeesToPaise, paiseToRupees } from '../../shared/money.js';
+import { serverError, respondError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -72,7 +73,7 @@ router.get('/telegram/config', authenticate, isAdmin, async (req, res) => {
       history,
     });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'GET /telegram/config');
   }
 });
 
@@ -158,7 +159,7 @@ router.post('/telegram/config', authenticate, isAdmin, async (req, res) => {
     });
   } catch (err) {
     console.error('[admin/telegram] activation failed:', err.message);
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'POST /telegram/config');
   }
 });
 
@@ -245,7 +246,7 @@ router.post('/telegram/channel', authenticate, isAdmin, async (req, res) => {
     });
   } catch (err) {
     console.error('[admin/telegram] channel flip failed:', err.message);
-    return res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'POST /telegram/channel');
   }
 });
 
@@ -258,7 +259,7 @@ router.get('/telegram/bots', authenticate, isAdmin, async (req, res) => {
   try {
     res.json({ success: true, bots: await listBots() });
   } catch (err) {
-    res.status(err.status || 500).json({ success: false, message: err.message });
+    return respondError(res, err, 'GET /admin/telegram/bots');
   }
 });
 
@@ -270,7 +271,7 @@ router.post('/telegram/bots', authenticate, isAdmin, async (req, res) => {
     console.warn(`[admin/telegram] bot @${bot.username} registered as ${bot.role} by admin ${req.user.userId}`);
     res.json({ success: true, bot, message: `@${bot.username} is registered and on standby.` });
   } catch (err) {
-    res.status(err.status || 500).json({ success: false, message: err.message });
+    return respondError(res, err, 'POST /admin/telegram/bots');
   }
 });
 
@@ -299,7 +300,7 @@ router.post('/telegram/bots/:id/promote', authenticate, isAdmin, async (req, res
         : `@${result.bot.username} is now the live ${result.bot.role} bot. Existing accounts are unaffected.`,
     });
   } catch (err) {
-    res.status(err.status || 500).json({ success: false, message: err.message });
+    return respondError(res, err, 'POST /admin/telegram/bots/:id/promote');
   }
 });
 
@@ -309,7 +310,7 @@ router.post('/telegram/bots/:id/webhook', authenticate, isAdmin, async (req, res
     const bot = await retryWebhook({ id: req.params.id, webhookBaseUrl: req.body?.webhookBaseUrl });
     res.json({ success: true, bot, message: `Telegram is now delivering to @${bot.username}.` });
   } catch (err) {
-    res.status(err.status || 500).json({ success: false, message: err.message });
+    return respondError(res, err, 'POST /admin/telegram/bots/:id/webhook');
   }
 });
 
@@ -320,7 +321,7 @@ router.post('/telegram/bots/:id/retire', authenticate, isAdmin, async (req, res)
     console.warn(`[admin/telegram] RETIRE @${bot.username} (${bot.role}) by admin ${req.user.userId}`);
     res.json({ success: true, bot, message: `@${bot.username} is retired.` });
   } catch (err) {
-    res.status(err.status || 500).json({ success: false, message: err.message });
+    return respondError(res, err, 'POST /admin/telegram/bots/:id/retire');
   }
 });
 
@@ -332,7 +333,7 @@ router.get('/telegram/templates', authenticate, isAdmin, async (req, res) => {
   try {
     res.json({ success: true, templates: await listTemplates() });
   } catch (err) {
-    res.status(err.status || 500).json({ success: false, message: err.message });
+    return respondError(res, err, 'GET /admin/telegram/templates');
   }
 });
 
@@ -359,7 +360,7 @@ router.put('/telegram/templates/:key', authenticate, isAdmin, async (req, res) =
         : `The "${saved.key}" message is back to the default wording.`,
     });
   } catch (err) {
-    res.status(err.status || 500).json({ success: false, message: err.message });
+    return respondError(res, err, 'PUT /admin/telegram/templates/:key');
   }
 });
 
@@ -371,7 +372,7 @@ router.get('/kyc/bulk/stats', authenticate, isAdmin, async (req, res) => {
   try {
     res.json({ success: true, ...(await kycStats()) });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'GET /kyc/bulk/stats');
   }
 });
 
@@ -398,7 +399,7 @@ router.get('/kyc/bulk/export', authenticate, isAdmin, async (req, res) => {
     return res.send(csv);
   } catch (err) {
     console.error('[admin/kyc] export failed:', err.message);
-    return res.status(err.status || 500).json({ success: false, message: err.message });
+    return respondError(res, err, 'GET /admin/kyc/bulk/export');
   }
 });
 
@@ -412,7 +413,7 @@ router.post('/kyc/bulk/import', authenticate, isAdmin, async (req, res) => {
     res.json({ success: true, ...result });
   } catch (err) {
     console.error('[admin/kyc] import failed:', err.message);
-    res.status(err.status || 500).json({ success: false, message: err.message });
+    return respondError(res, err, 'POST /admin/kyc/bulk/import');
   }
 });
 
@@ -438,7 +439,7 @@ router.get('/referral/stats', authenticate, isAdmin, async (req, res) => {
       active: s.active,
     });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'GET /referral/stats');
   }
 });
 
@@ -478,7 +479,7 @@ router.post('/referral/disburse', authenticate, isAdmin, async (req, res) => {
     });
   } catch (err) {
     console.error('[admin/referral] disbursal failed:', err.message);
-    res.status(err.status || 500).json({ success: false, message: err.message });
+    return respondError(res, err, 'POST /admin/referral/disburse');
   }
 });
 

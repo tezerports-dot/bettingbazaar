@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * domains/telegram/telegram.routes.js — the bot webhook and the session
  * exchange.
@@ -33,6 +33,7 @@ import { sendTemplate } from './telegramTemplates.service.js';
 // One request per 10 seconds per actor — the pace that keeps the code-request
 // endpoint from being used to flood somebody's Telegram.
 import { createLoginPaceLimiter } from '../../middleware/security.js';
+import { hashAadhaarCandidates } from '../identity/aadhaarHash.util.js';
 // Two buckets, because both steps key on the same mobile. One shared bucket
 // would make the code request refuse the code it just sent: type it within ten
 // seconds and the pace answers instead of the handler.
@@ -410,16 +411,29 @@ async function sendLoginLink({ chatId, telegramUserId, userId, cfg }) {
  * The conversation is deliberately tiny: Aadhaar, then contact. There is no
  * channel step and no referral payload — this is not a signup.
  */
-const recoverySessions = new Map();   // telegramUserId -> { aadhaar, at }
-const RECOVERY_SESSION_MS = 10 * 60 * 1000;
+// ── The half-finished recovery lives in the DATABASE ──────────────────────
+// It was a process-local `Map`, and this platform is built for horizontal scale
+// — realtimeBridge.js calls itself "THE keystone for horizontal scale" and
+// validateEnv demands REDIS_URL "at >1 replica". Behind a load balancer the
+// Aadhaar message and the contact message land on different instances, and the
+// second answers "please send your Aadhaar first" to somebody who just did:
+// intermittent, indistinguishable from their own mistake, on the one path a
+// person reaches BECAUSE they have already lost access. Its size cap was also a
+// `clear()` at 10,000, which wiped live recoveries rather than old ones, and a
+// deploy dropped every one in flight. Audit F-002.
+//
+// It stores HASHES. `attemptRecovery` only ever compared, so it never needed
+// the number — the plaintext now exists for the length of one function call and
+// is never stored, which is stronger than the ciphertext onboarding holds.
+const RECOVERY_SESSION_SECONDS = 10 * 60;
 
-function rememberRecovery(id, aadhaar) {
-  // Bounded: a chat that stops halfway must not pin an Aadhaar in memory, and
-  // the map must not grow without limit under a flood of /start messages.
-  const now = Date.now();
-  for (const [k, v] of recoverySessions) if (now - v.at > RECOVERY_SESSION_MS) recoverySessions.delete(k);
-  if (recoverySessions.size > 10_000) recoverySessions.clear();
-  recoverySessions.set(String(id), { aadhaar, at: now });
+async function rememberRecovery(id, aadhaar) {
+  const aadhaarHashes = hashAadhaarCandidates(aadhaar);
+  if (!aadhaarHashes.length) return false;
+  await db.telegram.putRecoverySession({
+    telegramUserId: String(id), aadhaarHashes, ttlSeconds: RECOVERY_SESSION_SECONDS,
+  });
+  return true;
 }
 
 router.post('/recovery/webhook', async (req, res) => {
@@ -443,7 +457,7 @@ router.post('/recovery/webhook', async (req, res) => {
     const { attemptRecovery } = await import('./telegramRecovery.service.js');
 
     if (message.contact) {
-      const held = recoverySessions.get(telegramUserId);
+      const held = await db.telegram.getRecoverySession(telegramUserId);
       if (!held) {
         return sendRecoveryMessage(chatId, 'Please send your 12-digit Aadhaar number first.');
       }
@@ -451,9 +465,11 @@ router.post('/recovery/webhook', async (req, res) => {
         newTelegramUserId: telegramUserId,
         phone: message.contact.phone_number,
         contactUserId: message.contact.user_id,
-        aadhaar: held.aadhaar,
+        aadhaarHashes: held.aadhaarHashes,
       });
-      recoverySessions.delete(telegramUserId);
+      // Consumed whether it succeeded or failed: one attempt per Aadhaar sent,
+      // so a wrong contact share cannot be retried against a held Aadhaar.
+      await db.telegram.deleteRecoverySession(telegramUserId);
 
       if (!result.ok) {
         const copy = {
@@ -485,7 +501,16 @@ router.post('/recovery/webhook', async (req, res) => {
     }
 
     if (isValidAadhaar(text)) {
-      rememberRecovery(telegramUserId, text);
+      // AWAITED. The session is a database row now, and the very next message
+      // reads it — telling the person to share their contact before the write
+      // has landed is a race whose loser is answered "send your Aadhaar first"
+      // after doing exactly that. A failed write must not produce that message
+      // either, so it is answered honestly instead.
+      const remembered = await rememberRecovery(telegramUserId, text);
+      if (!remembered) {
+        return sendRecoveryMessage(chatId,
+          'We could not start recovery just now. Please send your Aadhaar number again in a moment.');
+      }
       return sendRecoveryMessage(chatId,
         'Now tap the button below to share the contact of <b>this</b> Telegram account. '
         + 'It must be the same mobile number your account uses.',

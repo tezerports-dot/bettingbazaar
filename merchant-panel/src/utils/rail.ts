@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
 // Settlement-rail vocabulary for the merchant panel.
 //
@@ -142,14 +142,44 @@ export function tokenColumn(order: PaymentOrder, rail: MerchantRail): { label: s
 }
 
 /**
- * TRC-20 address check — the same format rule the backend enforces
- * (backend/domains/merchant/merchantCurrency.js). Mirrored here only to give
- * immediate feedback in the address form; the backend remains the authority and
- * rejects anything malformed regardless of what the panel allows.
+ * The chains USDT is served on, and how to recognise an address on each.
+ *
+ * The same rules the backend enforces (backend/domains/merchant/
+ * merchantCurrency.js). Mirrored here ONLY to give immediate feedback in the
+ * address form; the backend remains the authority and rejects anything
+ * malformed regardless of what this panel allows.
+ *
+ * Two chains and not one, because they are separate networks: USDT sent to a
+ * Tron address from a BEP-20 wallet is gone. A merchant holds an address for
+ * each chain they are willing to be paid on, and receives orders only on those.
  */
-const TRC20_ADDRESS = /^T[1-9A-HJ-NP-Za-km-z]{33}$/;
-export function isTrc20Address(value: string): boolean {
-  return TRC20_ADDRESS.test((value || '').trim());
+export const USDT_CHAINS = ['TRC20', 'BEP20'] as const;
+export type UsdtChain = typeof USDT_CHAINS[number];
+
+export const USDT_CHAIN_INFO: Record<UsdtChain, {
+  label: string; field: 'usdtAddressTrc20' | 'usdtAddressBep20'; pattern: RegExp; hint: string;
+}> = {
+  // Base58 excludes 0, O, I and l so visually similar characters cannot be
+  // confused. Case-SENSITIVE: base58 case is part of the address.
+  TRC20: {
+    label: 'Tron (TRC-20)',
+    field: 'usdtAddressTrc20',
+    pattern: /^T[1-9A-HJ-NP-Za-km-z]{33}$/,
+    hint: '34 characters starting with “T”',
+  },
+  // An ordinary EVM address. Case is NOT checked — EIP-55 mixed case is a
+  // checksum, and refusing a lower-case one would reject the form most wallets
+  // copy.
+  BEP20: {
+    label: 'BNB Smart Chain (BEP-20)',
+    field: 'usdtAddressBep20',
+    pattern: /^0x[0-9a-fA-F]{40}$/,
+    hint: '“0x” followed by 40 hexadecimal characters',
+  },
+};
+
+export function isUsdtAddress(chain: UsdtChain, value: string): boolean {
+  return USDT_CHAIN_INFO[chain]?.pattern.test((value || '').trim()) ?? false;
 }
 
 /** Middle-ellipsis for long addresses and hashes that must stay recognisable. */
@@ -177,6 +207,24 @@ export function truncateMiddle(value: string, head = 10, tail = 6): string {
 export function counterpartyOf(order: PaymentOrder): { name: string; identified: boolean } {
   const holder = order.userBankDetails?.accountHolderName?.trim();
   if (holder) return { name: holder, identified: true };
-  const reference = String(order.shortId || order.orderId || order._id || '');
+  const reference = String(order.orderId || order._id || '');
   return { name: reference ? `Order ${reference}` : 'Order', identified: false };
+}
+
+
+/**
+ * The merchant's own receiving address for ONE order.
+ *
+ * Keyed on the order's chain, not on "the merchant's USDT address" — there is
+ * no such single thing any more. A merchant may hold both, and showing the
+ * wrong one tells a player to send on a network the address does not exist on.
+ */
+export function receivingAddressFor(
+  merchant: { usdtAddressTrc20?: string; usdtAddressBep20?: string } | null | undefined,
+  chain: string | null | undefined,
+): { address: string; label: string } | null {
+  const info = USDT_CHAIN_INFO[chain as UsdtChain];
+  if (!info) return null;
+  const address = (merchant?.[info.field] || '').trim();
+  return address ? { address, label: info.label } : null;
 }

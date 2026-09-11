@@ -23,7 +23,8 @@ Settlement rail (2026-07-27 decision):
 - A merchant settles on **exactly one** rail — INR (UPI + bank) or USDT (TRC-20),
   never both. `Merchant.acceptedCurrencies` holds exactly one entry (schema
   validator); `merchantType` is a derived read-only virtual, never a second store.
-- Import the rail names and `isTrc20Address` from `merchantCurrency.js`. Do not
+- Import the rail names, the chain table and `isUsdtAddress` from
+  `merchantCurrency.js`. Do not
   re-declare 'INR'/'USDT' string literals or a second address regex (§4).
 - Enforced in `merchantScoring.selectBestMerchant` (assignment), the accept guard
   and open-pool filter in `merchant.routes.js`, and the rail-exclusive

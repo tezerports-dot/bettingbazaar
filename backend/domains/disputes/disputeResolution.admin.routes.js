@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 
 import { express, authenticate, isAdmin, isAdminOrSubAdmin, hasPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
@@ -12,6 +12,123 @@ import { listMessages, postMessage, postSystemMessage } from '#db/repositories/c
 
 const router = express.Router();
 
+
+/**
+ * GET /api/admin/orders/:orderId/cdm-receipt — the only way to read one.
+ *
+ * A CDM slip carries an account number, a branch, a timestamp and a bank
+ * transaction reference. It is the strongest evidence in a cash-payout dispute
+ * and the least appropriate thing to hand back to either party — so neither the
+ * player nor the merchant who uploaded it can see it again.
+ *
+ * The narrowness is enforced in the data layer, not by this handler being
+ * careful: `toOrder` does not map these columns, so no projection built on it
+ * can carry them. `getCdmReceipt` is a separate query and this is its only
+ * caller.
+ *
+ * Gated on `canResolveDisputes`, which is the disputes-manager permission the
+ * rest of this file already uses — an admin holds it, and so does the person
+ * whose job is deciding these.
+ *
+ * Every read is AUDITED. A record nobody may see is one whose access has to be
+ * accountable; without this row, "who looked at this player's bank slip" has
+ * no answer.
+ */
+router.get('/orders/:orderId/cdm-receipt', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
+  try {
+    const receipt = await db.orders.getCdmReceipt(req.params.orderId);
+    if (!receipt) {
+      // A real and expected state, not an error: the merchant's confirm
+      // completes the order and the receipt is chased afterwards, so a settled
+      // order can legitimately have none yet.
+      return res.json({ success: true, receipt: null, message: 'No CDM receipt has been submitted for this order.' });
+    }
+
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, performedByName: req.user.username,
+      performedByRole: 'admin', action: 'CDM_RECEIPT_VIEWED', category: 'FINANCIAL',
+      targetType: 'PaymentOrder', targetId: String(req.params.orderId),
+      details: { merchantId: receipt.merchantId, submittedAt: receipt.submittedAt },
+    });
+
+    res.json({ success: true, receipt });
+  } catch (error) {
+    console.error('Get CDM receipt error:', error);
+    res.status(500).json({ success: false, message: 'Failed to read the CDM receipt' });
+  }
+});
+
+/**
+ * GET /api/admin/orders/cdm-receipts/missing — payouts settled without evidence.
+ *
+ * The merchant's confirm completes the order and the receipt follows, so a
+ * receipt that never arrives blocks nobody and nothing would otherwise notice.
+ * This is what makes the pattern visible: a merchant appearing here repeatedly
+ * is asserting payments they are not evidencing.
+ */
+router.get('/orders/cdm-receipts/missing', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
+  try {
+    // `??`, never `||`. ZERO is meaningful here — it is how an admin asks
+    // "everything missing a receipt right now", which is exactly what they
+    // want during an incident — and `||` treats it as absent and substitutes
+    // the default, silently answering a different question. The same
+    // falsy-zero trap the concurrency caps and the hold window both had.
+    const asked = parseInt(req.query.olderThanMinutes, 10);
+    const olderThanMinutes = Number.isFinite(asked) && asked >= 0 ? asked : 60;
+    const orders = await db.orders.withdrawalsMissingCdmReceipt({ olderThanMinutes });
+    res.json({ success: true, olderThanMinutes, orders });
+  } catch (error) {
+    console.error('List missing CDM receipts error:', error);
+    res.status(500).json({ success: false, message: 'Failed to list payouts missing a receipt' });
+  }
+});
+
+/**
+ * GET /api/admin/orders/stalled-withdrawals — payouts nobody has taken.
+ *
+ * A withdrawal that cannot find a merchant WAITS rather than failing. On the
+ * cash rail that is the only safe answer: a large payout is several separate
+ * withdrawals, and the ones already paid cannot be clawed back, so failing the
+ * outstanding one would mean unwinding a payout that has partly happened.
+ *
+ * The price is a token lock with no deadline, which is exactly why this queue
+ * exists. An order with no deadline and no owner is an order nobody is
+ * answerable for; a payout past the assignment window appears here so somebody
+ * is. The player can also cancel it themselves and take the tokens back — the
+ * two together are what make waiting a decision instead of a leak.
+ *
+ * Deliberately NOT split-specific. A part of a split withdrawal is an ORDINARY
+ * queued withdrawal, so the general question — which payouts have nobody
+ * working them — covers it and every other stuck payout with one query.
+ *
+ * `olderThanMinutes` accepts 0, which is how an admin asks "everything waiting
+ * right now" during an incident. `??`, never `||`, for exactly that reason.
+ */
+router.get('/orders/stalled-withdrawals', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
+  try {
+    const asked = parseInt(req.query.olderThanMinutes, 10);
+    const olderThanMinutes = Number.isFinite(asked) && asked >= 0 ? asked : 25;
+    const orders = await db.orders.stalledWithdrawals({ olderThanMinutes });
+    res.json({
+      success: true,
+      olderThanMinutes,
+      orders: orders.map((o) => ({
+        orderId:    o.orderId,
+        userId:     o.userId,
+        amount:     o.fiatAmount,
+        tokenAmount: o.tokenAmount,
+        createdAt:  o.createdAt,
+        // The label grouping the siblings of one request, when there was one.
+        // It tells an admin that a player asked for a large payout rather than
+        // several small ones — useful context, and nothing more than context.
+        batchRef:   o.withdrawalBatchRef ?? null,
+      })),
+    });
+  } catch (error) {
+    console.error('List stalled withdrawals error:', error);
+    res.status(500).json({ success: false, message: 'Failed to list stalled withdrawals' });
+  }
+});
 
 router.get('/dispute-orders', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
   try {

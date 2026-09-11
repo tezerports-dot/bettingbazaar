@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * OperationsOverview.tsx — the Operations Platform console (Phase 012 APIs,
  * UI shipped Phase C 2026-07-10). Orchestration-only: every number is read
@@ -137,8 +137,10 @@ export const OperationsOverview: React.FC = () => {
             <KV k="Deposit policy" v={overview.policies.depositPolicy
               ? `v${overview.policies.depositPolicy.version} — ${overview.policies.depositPolicy.deposit}/${overview.policies.depositPolicy.reserve}`
               : 'not configured (90/10 fallback)'} />
-            <KV k="Merchant bonus policy" v={overview.policies.merchantBonusPolicy
-              ? `v${overview.policies.merchantBonusPolicy.version} — ${overview.policies.merchantBonusPolicy.enabled ? `ON @ ${overview.policies.merchantBonusPolicy.bonusPercent}%` : 'disabled'}`
+            <KV k="Merchant commission policy" v={overview.policies.merchantCommissionPolicy
+              ? `v${overview.policies.merchantCommissionPolicy.version} — ${overview.policies.merchantCommissionPolicy.enabled
+                  ? `ON, ${overview.policies.merchantCommissionPolicy.pricedVarieties} variety(ies) priced`
+                  : 'disabled'}`
               : 'not configured'} />
           </Section>
 

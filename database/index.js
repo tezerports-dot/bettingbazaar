@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+// GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
  * database/index.js — THE data layer's public API.
  *
@@ -75,7 +75,9 @@ import * as operations from './repositories/operations.js';
 import * as paymentConfig from './repositories/paymentConfig.js';
 import * as supportDocuments from './repositories/supportDocuments.js';
 import * as depositPolicy from './repositories/depositPolicy.js';
-import * as merchantBonusPolicy from './repositories/merchantBonusPolicy.js';
+import * as merchantCommissionPolicy from './repositories/merchantCommissionPolicy.js';
+import * as paymentModePolicy from './repositories/paymentModePolicy.js';
+import * as cashLinks from './repositories/cashLinks.js';
 import * as stats from './repositories/stats.js';
 import * as utr from './repositories/utr.js';
 
@@ -152,7 +154,9 @@ export const db = Object.freeze({
   // Platform
   config,
   depositPolicy,
-  merchantBonusPolicy,
+  merchantCommissionPolicy,
+  paymentModePolicy,
+  cashLinks,
   operations,
   supportDocuments,
   stats,
@@ -164,4 +168,4 @@ export default db;
 export { users, identity, security, telegram, merchants, chat, config };
 export { treasury, settlements, merchantSettlements, adminIssuance, balanceAdjustments };
 export { markets, games, content, engagement, social, referrals };
-export { audit, compliance, depositPolicy, merchantBonusPolicy, operations, paymentConfig, supportDocuments, stats, utr };
+export { audit, cashLinks, compliance, depositPolicy, merchantCommissionPolicy, paymentModePolicy, operations, paymentConfig, supportDocuments, stats, utr };

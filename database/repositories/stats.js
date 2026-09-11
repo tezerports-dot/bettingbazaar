@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+// GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
  * repositories/stats.js — the aggregates the admin panels read.
  *
@@ -217,7 +217,11 @@ export async function leaderboard({ since = null, limit = 50 } = {}) {
   );
   return rows.map((r, i) => ({
     rank: i + 1,
-    userId: r.user_id,
+    // No `userId`. This is cached into `leaderboard_cache` and served by an
+    // UNAUTHENTICATED route, and the internal id is what every user-scoped API
+    // takes — publishing fifty of them sorted by balance prices every other
+    // flaw down. The public boundary filters too (leaderboardPublicView.js);
+    // this stops the cache from carrying it in the first place.
     username: r.username,
     totalBets: r.bets,
     wins: r.wins,

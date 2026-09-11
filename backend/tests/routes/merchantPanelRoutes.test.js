@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * The merchant's own panel: taking an order and confirming it.
  *
@@ -29,6 +29,7 @@ import { pgConfigured, applySchema, closePg } from '#db/client.js';
 import { getBalancesPaise } from '#db/repositories/wallets.core.js';
 import { createOrderRecord, getOrderRecord, setOrderFields, getMerchantOrder } from '#db/repositories/orders.record.js';
 import { updateMerchant, getMerchant } from '#db/repositories/merchants.js';
+import { assignOrder } from '#db/repositories/orders.core.js';
 import { getMerchantTokenBalance } from '../../domains/merchant/merchantWallet.service.js';
 import { mountRouter, actor, merchantActor, as, request } from './_harness.js';
 
@@ -50,9 +51,23 @@ describePg('merchant panel routes', () => {
   /** A reference nothing else in the run has claimed. The registry's key is it. */
   const utr = () => `UTRMP${RUN}${String(seq).padStart(6, '0')}`.toUpperCase();
 
+  // A DIFFERENT wallet address every time. An address is UNIQUE across
+  // merchants — it is an identity, like a UPI id — so a constant collides with
+  // the row the PREVIOUS RUN of this suite left behind. The database is shared
+  // and never reset between files (trap 10).
+  const BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  const trc20 = () => `T${Array.from({ length: 33 },
+    () => BASE58[Math.floor(Math.random() * BASE58.length)]).join('')}`;
+  const bep20 = () => `0x${Array.from({ length: 40 },
+    () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('')}`;
+
   const order = async ({
     type = 'DEPOSIT', state = 'PENDING_QUEUE', tokens = 500,
     betting = 400, reserve = 100, owner = null, merchantId = null, extra = {},
+    // The chain a USDT order is paid on. A named parameter, not part of
+    // `extra`, because it is not settable: the row freezes it and the merchant
+    // snapshot carries the address for this chain alone.
+    usdtChain = null,
   } = {}) => {
     seq += 1;
     const who = owner || await actor({});
@@ -61,6 +76,13 @@ describePg('merchant panel routes', () => {
       orderId, userId: who.userId, type,
       tokenAmountRupees: tokens, fiatAmountRupees: tokens, state,
       depositAllocation: betting, reserveAllocation: reserve,
+      // A PAID deposit ALWAYS carries the player's reference: `mark-paid` is
+      // what puts the order in this state and it refuses without one. The
+      // confirm reads it off the row, so a fixture without it is not a PAID
+      // deposit any route would ever see. `extra` still overrides, for the
+      // tests that are about its absence.
+      ...(type === 'DEPOSIT' && state === 'PAID' ? { utrNumber: utr() } : {}),
+      ...(usdtChain ? { usdtChain } : {}),
       ...(merchantId ? { merchantId } : {}),
       ...extra,
     });
@@ -127,17 +149,60 @@ describePg('merchant panel routes', () => {
     // a stored copy of the balance is how one came to be accepted that could
     // not be served.
     const poor = await merchantActor({ tokensRupees: 100 });
-    const { orderId } = await order({ tokens: 500 });
+    const { orderId } = await order({ tokens: 500, state: 'ASSIGNED', merchantId: poor.merchantId });
     const res = await as(app, poor).post(`/accept/${orderId}`).send({});
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/insufficient token balance/i);
-    expect((await getOrderRecord(orderId)).state).toBe('PENDING_QUEUE');
+    expect(res.body.message).toMatch(/token balance cannot cover this buy order/i);
+    // ASSIGNED, not PENDING_QUEUE: a buy reaches a merchant by being assigned,
+    // and a refused accept leaves it exactly where it was for the expiry sweep
+    // or a queue manager to move on. Nothing about the order is consumed.
+    expect((await getOrderRecord(orderId)).state).toBe('ASSIGNED');
+  });
+
+  it('counts the orders the merchant is ALREADY serving against them', async () => {
+    // F-018, at the route. The open pool is claimed first-come, so a merchant
+    // holding 1,000 tokens could take a 600 order and then take a second 600
+    // seconds later — both reads saw the full balance, because nothing
+    // subtracted the first order from the second's answer. The player on the
+    // losing order pays and is never credited.
+    const m = await merchantActor({ tokensRupees: 1_000 });
+    // The concurrency cap is raised OUT OF THE WAY on purpose. At its default
+    // of 1 the second accept is refused for having too many orders open, which
+    // is a different rule entirely — the test would pass while proving nothing
+    // about whether the tokens are held. Lifting it leaves the hold as the only
+    // thing that can refuse.
+    await updateMerchant(m.merchantId, { maxConcurrentDepositOrders: 10 });
+    const first  = await order({ tokens: 600, betting: 500, reserve: 100, state: 'ASSIGNED', merchantId: m.merchantId });
+    const second = await order({ tokens: 600, betting: 500, reserve: 100, state: 'ASSIGNED', merchantId: m.merchantId });
+
+    expect((await as(app, m).post(`/accept/${first.orderId}`).send({})).status).toBe(200);
+
+    const res = await as(app, m).post(`/accept/${second.orderId}`).send({});
+    expect(res.status, 'took a second order it cannot fund').toBe(400);
+    expect(res.body.message).toMatch(/token balance cannot cover this buy order/i);
+    // Untouched and still assignable elsewhere — refusing this merchant is not
+    // the same as failing the order.
+    expect((await getOrderRecord(second.orderId)).state).toBe('ASSIGNED');
+  });
+
+  it('does not charge an assigned order against itself', async () => {
+    // The other half of the same subtraction. A merchant holding exactly the
+    // order's amount must still be able to accept the order already ASSIGNED
+    // to them — counting it would subtract the tokens and then demand them
+    // again, and the merchant could never accept anything.
+    const m = await merchantActor({ tokensRupees: 500 });
+    const { orderId } = await order({ tokens: 500 });
+    await assignOrder({ orderId, merchantId: m.merchantId, actor: 'test' });
+    expect((await getOrderRecord(orderId)).state).toBe('ASSIGNED');
+
+    expect((await as(app, m).post(`/accept/${orderId}`).send({})).status,
+      'refused a merchant their own order').toBe(200);
   });
 
   it('refuses a merchant who has turned deposits off', async () => {
     const m = await merchantActor({ tokensRupees: 5000 });
     await updateMerchant(m.merchantId, { acceptsDeposits: false });
-    const { orderId } = await order();
+    const { orderId } = await order({ state: 'ASSIGNED', merchantId: m.merchantId });
     expect((await as(app, m).post(`/accept/${orderId}`).send({})).status).toBe(400);
   });
 
@@ -155,7 +220,9 @@ describePg('merchant panel routes', () => {
     // out of the open pool — so the rail is re-checked where the merchant
     // actually takes it.
     const inr = await merchantActor({ tokensRupees: 5000 });
-    const { orderId } = await order({ extra: { currency: 'USDT' } });
+    // A USDT order names the CHAIN the player will send on — the row insists
+    // the two agree, because a USDT order with no chain matches no merchant.
+    const { orderId } = await order({ extra: { currency: 'USDT' }, usdtChain: 'TRC20', state: 'ASSIGNED', merchantId: inr.merchantId });
     const res = await as(app, inr).post(`/accept/${orderId}`).send({});
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/USDT order and you settle in INR/i);
@@ -164,17 +231,46 @@ describePg('merchant panel routes', () => {
   it('refuses a USDT merchant with no wallet address to be paid at', async () => {
     const usdt = await merchantActor({ tokensRupees: 5000 });
     await updateMerchant(usdt.merchantId, { acceptedCurrencies: ['USDT'] });
-    const { orderId } = await order({ extra: { currency: 'USDT' } });
+    const { orderId } = await order({ extra: { currency: 'USDT' }, usdtChain: 'TRC20', state: 'ASSIGNED', merchantId: usdt.merchantId });
     const res = await as(app, usdt).post(`/accept/${orderId}`).send({});
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/TRC-20 wallet address/i);
+    expect(res.body.message).toMatch(/Tron \(TRC-20\)/i);
+  });
+
+  it('refuses a USDT merchant who holds the OTHER chain’s address', async () => {
+    // The sharp case, and the reason there are two columns. This merchant is on
+    // the USDT rail and has an address — on Tron. The order is being paid on
+    // BNB Smart Chain. Sending there would put the tokens on a network the
+    // address does not exist on, and they would be gone.
+    const usdt = await merchantActor({ tokensRupees: 5000 });
+    await updateMerchant(usdt.merchantId, {
+      acceptedCurrencies: ['USDT'],
+      usdtAddressTrc20: trc20(),
+    });
+    const { orderId } = await order({ extra: { currency: 'USDT' }, usdtChain: 'BEP20', state: 'ASSIGNED', merchantId: usdt.merchantId });
+    const res = await as(app, usdt).post(`/accept/${orderId}`).send({});
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/BNB Smart Chain/i);
+  });
+
+  it('lets a USDT merchant take an order on a chain they DO hold', async () => {
+    // The other half: the subset assertion above passes just as happily if no
+    // USDT merchant can ever accept anything.
+    const usdt = await merchantActor({ tokensRupees: 5000 });
+    await updateMerchant(usdt.merchantId, {
+      acceptedCurrencies: ['USDT'],
+      usdtAddressBep20: bep20(),
+    });
+    const { orderId } = await order({ extra: { currency: 'USDT' }, usdtChain: 'BEP20', state: 'ASSIGNED', merchantId: usdt.merchantId });
+    const res = await as(app, usdt).post(`/accept/${orderId}`).send({});
+    expect(res.status, res.body.message).toBe(200);
   });
 
   it('accepts an order and writes the snapshot WITH the transition', async () => {
     // An order cannot be found PROCESSING without the merchant details the
     // player is about to be shown.
     const m = await merchantActor({ tokensRupees: 5000 });
-    const { orderId } = await order();
+    const { orderId } = await order({ state: 'ASSIGNED', merchantId: m.merchantId });
     const res = await as(app, m).post(`/accept/${orderId}`).send({});
     expect(res.status, res.body.message).toBe(200);
 
@@ -186,10 +282,19 @@ describePg('merchant panel routes', () => {
     expect(new Date(row.expiresAt).getTime()).toBeGreaterThan(Date.now());
   });
 
-  it('LETS EXACTLY ONE MERCHANT WIN a race for a queued order', async () => {
-    // Both used to pass the status read and both used to save. The second
-    // overwrote the first's merchantId and snapshot, so the player was shown
-    // one merchant's payment details while the other held the order.
+  it('a QUEUED buy cannot be claimed at all — buys are assigned, never fought over', async () => {
+    // ── This replaces a test that proved the race was fair ────────────────
+    // It used to fire four merchants at one PENDING_QUEUE buy and assert that
+    // exactly one won. That the race was fair was true; that there was a race
+    // was the defect. There is no open pool for buy orders and never was —
+    // every buy goes through `tryAssignMerchant`, which RANKS the eligible
+    // merchants so the biggest holder takes the biggest order. This handler
+    // nevertheless admitted an unassigned buy, so anyone holding its id could
+    // claim it first-come, which rewards whoever polls hardest and throws the
+    // ranking away.
+    //
+    // The sell pool is a different thing and stays: a withdrawal nobody is free
+    // for waits in the open rather than burning retry attempts.
     const contenders = await Promise.all(
       Array.from({ length: 4 }, () => merchantActor({ tokensRupees: 5000 })),
     );
@@ -198,13 +303,25 @@ describePg('merchant panel routes', () => {
     const results = await Promise.all(
       contenders.map((m) => as(app, m).post(`/accept/${orderId}`).send({})),
     );
-    const winners = results.filter((r) => r.status === 200);
-    expect(winners, 'more than one merchant took the same order').toHaveLength(1);
-    expect(results.filter((r) => r.status === 409).length).toBeGreaterThanOrEqual(1);
+    expect(results.filter((r) => r.status === 200), 'a queued buy was claimable').toHaveLength(0);
+    expect(results.every((r) => r.status === 409)).toBe(true);
 
+    // Untouched, and still there for the assignment sweep to hand out properly.
     const row = await getOrderRecord(orderId);
-    expect(row.state).toBe('PROCESSING');
-    expect(contenders.map((m) => m.merchantId)).toContain(row.merchantId);
+    expect(row.state).toBe('PENDING_QUEUE');
+    expect(row.merchantId ?? null).toBeNull();
+  });
+
+  it('a SELL may still be claimed from the open pool', async () => {
+    // The other half of the same rule, asserted so that "buys are assigned"
+    // cannot be quietly widened into "nothing is ever claimed". A withdrawal
+    // that no merchant was free for sits in the open pool by design.
+    const m = await merchantActor({ tokensRupees: 50_000 });
+    await updateMerchant(m.merchantId, { acceptsWithdrawals: true });
+    const { orderId } = await order({ type: 'WITHDRAWAL', betting: 0, reserve: 0 });
+
+    expect((await as(app, m).post(`/accept/${orderId}`).send({})).status).toBe(200);
+    expect((await getOrderRecord(orderId)).state).toBe('PROCESSING');
   });
 
   it('DERIVES the active-order limit from the orders, not from a counter', async () => {
@@ -213,10 +330,14 @@ describePg('merchant panel routes', () => {
     const m = await merchantActor({ tokensRupees: 50_000 });
     await updateMerchant(m.merchantId, { maxConcurrentDepositOrders: 1 });
 
-    const first = await order();
-    const second = await order();
-
+    // The second order is created AFTER the first is accepted, because two
+    // orders assigned at once to a cap-of-one merchant is a state assignment
+    // would never produce — and the accept would then be refused for holding
+    // two, which is the cap firing on the fixture rather than on the behaviour.
+    const first = await order({ state: 'ASSIGNED', merchantId: m.merchantId });
     expect((await as(app, m).post(`/accept/${first.orderId}`).send({})).status).toBe(200);
+
+    const second = await order({ state: 'ASSIGNED', merchantId: m.merchantId });
     const blocked = await as(app, m).post(`/accept/${second.orderId}`).send({});
     expect(blocked.status).toBe(400);
     expect(blocked.body.message).toMatch(/active order limit \(1\)/i);
@@ -265,29 +386,54 @@ describePg('merchant panel routes', () => {
     expect((await as(app, theirs).post(`/confirm/${orderId}`).send({ utrNumber: '1234567890123' })).status).toBe(404);
   });
 
-  it('will not confirm a deposit without a usable bank reference', async () => {
+  it('will not confirm a deposit the player has not referenced', async () => {
     const m = await merchantActor({ tokensRupees: 5000 });
-    const { orderId } = await order({ state: 'PAID', merchantId: m.merchantId, extra: { proofScreenshot: 'https://cdn/p.png' } });
-    for (const utrNumber of [undefined, '', 'short', '12345678901']) {
-      const res = await as(app, m).post(`/confirm/${orderId}`).send({ utrNumber });
-      expect(res.status, `accepted utr=${JSON.stringify(utrNumber)}`).toBe(400);
-      expect(res.body.message).toMatch(/UTR number/i);
-    }
+    // The reference is read off the ROW. `mark-paid` is what writes it, so an
+    // order without one is a player who has not submitted yet.
+    const { orderId } = await order({
+      state: 'PAID', merchantId: m.merchantId, extra: { utrNumber: null },
+    });
+    const res = await as(app, m).post(`/confirm/${orderId}`);
+    expect(res.status).toBe(400);
     expect((await getOrderRecord(orderId)).state).toBe('PAID');
   });
 
-  it('will not confirm a deposit with no proof on the order and none supplied', async () => {
+  // These two tests used to say the opposite, and they were green while no
+  // deposit on the platform could be confirmed at all:
+  //
+  //   'will not confirm a deposit without a usable bank reference' drove the
+  //   refusal from the request BODY, asserting a contract where the merchant
+  //   restates the player's reference. The route wrote whatever they sent over
+  //   the stored value, so the order could end up naming a reference
+  //   `utr_registry` had never claimed (§27).
+  //
+  //   'will not confirm a deposit with no proof on the order and none supplied'
+  //   asserted the payment-proof requirement — after proof COLLECTION had been
+  //   removed platform-wide. Nothing could supply one, so the refusal it
+  //   asserted fired on EVERY deposit. The test passed because the handler did
+  //   exactly what it was told; the handler was what was wrong.
+  //
+  // Absence of a failing check is not evidence of correctness when no check
+  // covers the thing being claimed (§29). What covers it now is a test that
+  // follows the money: depositConfirmReachablePg.test.js.
+  it('ignores a payment reference sent by the merchant', async () => {
     const m = await merchantActor({ tokensRupees: 5000 });
     const { orderId } = await order({ state: 'PAID', merchantId: m.merchantId });
-    const res = await as(app, m).post(`/confirm/${orderId}`).send({ utrNumber: utr() });
-    expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/proof screenshot is required/i);
+    const stored = (await getOrderRecord(orderId)).utrNumber;
+
+    const res = await as(app, m).post(`/confirm/${orderId}`)
+      .send({ utrNumber: 'MERCHANTSUPPLIED9', proof: 'https://cdn/forged.png' });
+    expect(res.status, res.body.message).toBe(200);
+
+    const row = await getOrderRecord(orderId);
+    expect(row.utrNumber).toBe(stored);
+    expect(row.proofScreenshot ?? null).toBeNull();
   });
 
   it('will not confirm a deposit that has not been paid', async () => {
     const m = await merchantActor({ tokensRupees: 5000 });
     const { orderId } = await order({ state: 'PROCESSING', merchantId: m.merchantId });
-    const res = await as(app, m).post(`/confirm/${orderId}`).send({ utrNumber: utr(), proof: 'p' });
+    const res = await as(app, m).post(`/confirm/${orderId}`);
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/only be confirmed in PAID status/i);
   });
@@ -299,13 +445,12 @@ describePg('merchant panel routes', () => {
     const m = await merchantActor({ tokensRupees: 5000 });
     const { orderId, who } = await order({
       state: 'PAID', merchantId: m.merchantId, tokens: 500, betting: 400, reserve: 100,
-      extra: { proofScreenshot: 'https://cdn/p.png' },
     });
 
     const merchantBefore = await getMerchantTokenBalance(m.merchantId);
     const before = await getBalancesPaise(who.userId);
 
-    const res = await as(app, m).post(`/confirm/${orderId}`).send({ utrNumber: utr() });
+    const res = await as(app, m).post(`/confirm/${orderId}`);
     expect(res.status, res.body.message).toBe(200);
 
     const after = await getBalancesPaise(who.userId);
@@ -322,14 +467,14 @@ describePg('merchant panel routes', () => {
   it('CREDITS ONCE when a merchant double-taps confirm', async () => {
     const m = await merchantActor({ tokensRupees: 5000 });
     const { orderId, who } = await order({
-      state: 'PAID', merchantId: m.merchantId, extra: { proofScreenshot: 'https://cdn/p.png' },
+      state: 'PAID', merchantId: m.merchantId,
     });
 
-    const first = await as(app, m).post(`/confirm/${orderId}`).send({ utrNumber: utr() });
+    const first = await as(app, m).post(`/confirm/${orderId}`);
     const balance = await getBalancesPaise(who.userId);
     const inventory = await getMerchantTokenBalance(m.merchantId);
 
-    const second = await as(app, m).post(`/confirm/${orderId}`).send({ utrNumber: utr() });
+    const second = await as(app, m).post(`/confirm/${orderId}`);
     expect(first.status).toBe(200);
     // The order is COMPLETED after the first, so the second is refused — the
     // point is only that it moves no money a second time, not the exact code.
@@ -345,29 +490,17 @@ describePg('merchant panel routes', () => {
     const m = await merchantActor({ tokensRupees: 5000 });
     const { orderId, who } = await order({
       state: 'PAID', merchantId: m.merchantId, tokens: 500, betting: 400, reserve: 100,
-      extra: { proofScreenshot: 'https://cdn/p.png' },
     });
     const before = await getBalancesPaise(who.userId);
     const merchantBefore = await getMerchantTokenBalance(m.merchantId);
 
     await Promise.all(Array.from({ length: 4 }, () =>
-      as(app, m).post(`/confirm/${orderId}`).send({ utrNumber: utr() })));
+      as(app, m).post(`/confirm/${orderId}`)));
 
     const after = await getBalancesPaise(who.userId);
     expect(after.depositBalance - before.depositBalance).toBe(400_00);
     expect(after.reserveBalance - before.reserveBalance).toBe(100_00);
     expect(merchantBefore - await getMerchantTokenBalance(m.merchantId)).toBe(500);
-  });
-
-  it('carries the reference and the proof onto the order with the confirm', async () => {
-    const m = await merchantActor({ tokensRupees: 5000 });
-    const { orderId } = await order({ state: 'PAID', merchantId: m.merchantId });
-    await as(app, m).post(`/confirm/${orderId}`).send({ utrNumber: `  ${utr()}  `, proof: 'https://cdn/proof.png' });
-
-    const row = await getOrderRecord(orderId);
-    expect(row.utrNumber).toBe(utr());
-    expect(row.proofScreenshot).toBe('https://cdn/proof.png');
-    expect(row.state).toBe('COMPLETED');
   });
 
   it('will not confirm a withdrawal that is not in flight', async () => {

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * domains/configuration/systemConfigPayload.js — the one system-config payload.
  *
@@ -39,16 +39,54 @@ const DEFAULT_FOOTER_PAGES = Object.freeze(['home', 'results', 'winners', 'promo
  * @returns {object} the full field set — never a partial one
  */
 // The INR peg comes from the one place that owns it.
+import { USDT_CHAINS, USDT_CHAIN_SPEC } from '../merchant/merchantCurrency.js';
+import { tokensPerUsdt } from './tokenRates.js';
 import { INR_TOKEN_RATE } from './tokenRates.js';
+// The legal buy amounts come from the module the risk gate validates against,
+// never from a list written out again here. Two lists drift, and the drift is
+// silent until a player is refused an amount the screen offered them.
+import {
+  BUY_DENOMINATIONS_PAISE, MAX_CASH_BUY_PAISE, USDT_BUY_DENOMINATIONS_PAISE,
+} from '../merchant/denominations.js';
 
-export function systemConfigPayload(cfg) {
+export function systemConfigPayload(cfg, rail = null) {
   return {
+    // ── The settlement rail, and the amounts it allows ────────────────────
+    // The player app must not decide either of these. It ships as an APK
+    // containing the whole bundle, so a picker built from a client-side list
+    // is a list an attacker can edit — and a list that drifts from the server's
+    // is a player being offered an amount the gate will refuse.
+    //
+    // So the SERVER says what rail is live and which amounts are legal, from
+    // the same module `assessFundingOrder` validates against. The picker
+    // renders what it is told; it does not know the numbers.
+    //
+    // `null` when the rail cannot be read, which a client must render as "not
+    // available" rather than falling back to a guess.
+    paymentMode:         rail?.activeMode ?? null,
+    buyDenominations:    BUY_DENOMINATIONS_PAISE.map((p) => p / 100),
+    // The CASH rail's ceiling, and only the cash rail's. It was published as
+    // `maxInrBuy` and the panel hid the buy button above it on EVERY rail.
+    maxCashBuy:          MAX_CASH_BUY_PAISE / 100,
+    // The USDT rail's three sizes — in TOKENS, which is what a player buys —
+    // and the rate that turns each into the USDT they send. From the SERVER,
+    // because all of it is money rules: a panel with its own copy would offer a
+    // size the gate refuses or quote a price the order will not honour.
+    //
+    // `usdtTokensPerUnit` is null when the admin has not set a rate. The panel
+    // must then offer nothing rather than showing sizes it cannot price.
+    usdtBuyDenominations: USDT_BUY_DENOMINATIONS_PAISE.map((p) => p / 100),
+    usdtTokensPerUnit:    tokensPerUsdt(cfg),
+    usdtChains:           USDT_CHAINS.map((chain) => ({
+      chain, label: USDT_CHAIN_SPEC[chain].label,
+    })),
+
     // Bet limits live in the betLimits subdoc, not on config.value.
     minBet:              cfg?.betLimits?.thirtyMin?.min ?? 10,
     maxBet:              cfg?.betLimits?.thirtyMin?.max ?? 100000,
     maxFullDayBet:       cfg?.betLimits?.fullDay?.max   ?? 500000,
 
-    minDeposit:          cfg?.minDeposit    ?? 100,
+    minDeposit:          cfg?.minDeposit    ?? 500,  // schema default: 500
     maxDeposit:          cfg?.maxDeposit    ?? 50000,
     minWithdrawal:       cfg?.minWithdrawal ?? 500,
     maxWithdrawal:       cfg?.maxWithdrawal ?? 50000,

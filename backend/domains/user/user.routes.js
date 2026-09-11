@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * ════════════════════════════════════════════════════════════════════════════
  * USER & CYCLE ROUTES — user.routes.js  v4.3.0
@@ -55,6 +55,8 @@ import { fetchCycleHistory } from '../markets/cycleHistory.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { systemConfigPayload } from '../configuration/systemConfigPayload.js';
 import { INR_TOKEN_RATE } from '../configuration/tokenRates.js';
+import { getActivePolicy as getActivePaymentModePolicy } from '#db/repositories/paymentModePolicy.js';
+import { serverError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -484,7 +486,7 @@ router.get('/v1/system/config', async (req, res) => {
     // The literal that used to sit here was a copy of the socket's, written with
     // `||` where that one used `??`, so an operator who set a limit to 0 ("no
     // minimum") was served the default over HTTP and the real 0 over the socket.
-    res.json({ success: true, config: systemConfigPayload(await getSystemConfig()) });
+    res.json({ success: true, config: systemConfigPayload(await getSystemConfig(), await getActivePaymentModePolicy()) });
   } catch (error) {
     console.error('System config error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch config' });
@@ -719,7 +721,7 @@ router.get('/v1/wallet/ledger', authenticate, async (req, res) => { // paginated
     const result = await getUserLedger(req.user.userId, Number(page), Number(limit));
     res.json({ success: true, ...result });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'GET /v1/wallet/ledger');
   }
 });
 
@@ -742,7 +744,7 @@ router.get('/v1/tokens/rate', async (req, res) => {
       updatedAt:      null,
     });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'GET /v1/tokens/rate');
   }
 });
 
@@ -764,7 +766,7 @@ router.get('/v1/token/rates', async (req, res) => {
       sellRate: INR_TOKEN_RATE,
     });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'GET /v1/token/rates');
   }
 });
 

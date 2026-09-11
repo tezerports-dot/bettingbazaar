@@ -50,7 +50,9 @@ Use this checklist when performing security reviews of Betting Bazaar. It is wri
 
 - Confirm all balance changes go through the designated wallet authority and ledger path.
 - Search for escaped template interpolation such as ``\${`` in idempotency keys passed to credit/debit functions.
-- For gift codes, coupons, bonuses, promo caps, and first-N-users resources, verify remaining-use checks and consumption happen in one atomic conditional update.
+- For coupons, bonuses, promo caps, and first-N-users resources, verify remaining-use
+  checks and consumption happen in one atomic conditional update. (Gift codes were the
+  original example and were removed in 2026-09-10; the rule is what generalised from them.)
 - Verify withdrawals atomically lock funds and enforce cutoffs server-side against wall-clock time.
 - Verify deposit confirmation cannot be self-confirmed by users and payment references are unique.
 - Confirm dispute resolution cannot double-credit or bypass independent evidence requirements.

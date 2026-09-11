@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * domains/support/support.routes.js — the player's side of support.
  * Mounted at /api/support in server.js.
@@ -35,6 +35,7 @@ import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { authenticate } from '../identity/auth.middleware.js';
 import { db } from '#db';
 import { answer, ragStatus } from './ragService.js';
+import { serverError, respondError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -60,7 +61,7 @@ router.get('/status', async (req, res) => {
   try {
     res.json({ success: true, ...(await ragStatus()) });
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message });
+    return serverError(res, e, 'GET /api/support/status');
   }
 });
 
@@ -77,7 +78,7 @@ router.post('/ask', authenticate, askLimiter, async (req, res) => {
     });
     res.json({ success: true, ...result });
   } catch (e) {
-    res.status(e.status || 500).json({ success: false, message: e.message });
+    return respondError(res, e, 'POST /support/ask');
   }
 });
 

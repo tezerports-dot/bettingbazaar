@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
 // Dashboard — design handoff "BB Merchant Panel.dc.html": availability hero,
 // four KPI tiles, the weekly earnings bars, what is expiring soon, recent
@@ -21,6 +21,7 @@ import { ROUTES } from '../constants';
 import { counterpartyOf, formatMoney, formatMoneyCompact, formatWallet, railCopy, railOf } from '../utils/rail';
 import { OrderStatus, type Earnings, type PaymentOrder, type Stats } from '../types';
 import { Card, CardTitle, Skeleton, StatusPill, cardStyle } from '../components/ui';
+import { SettlementRailBanner } from '../components/SettlementRailBanner';
 
 interface WeeklyPoint { date: string; earnings: number; orders: number; }
 
@@ -139,6 +140,11 @@ const Dashboard: React.FC = () => {
 
   return (
     <div style={{ maxWidth: 1120, margin: '0 auto', display: 'flex', flexDirection: 'column', gap }}>
+      {/* Which settlement workflow is in force. Above the availability hero
+          deliberately: going online under the wrong workflow is the mistake
+          this is here to prevent. */}
+      <SettlementRailBanner />
+
       {/* Availability hero */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap',

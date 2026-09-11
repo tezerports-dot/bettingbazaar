@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * postgres/merchantWalletPg.js — the Postgres merchant token wallet.
  *
@@ -113,6 +113,142 @@ export async function getAvailablePaiseFor(merchantIds = []) {
   // BIGINT arrives as a string; uncast, '900' >= 1000 is true and every
   // eligibility comparison built on this map is wrong.
   return new Map(rows.map((r) => [r.merchant_id, toPaise(r.available)]));
+}
+
+/**
+ * States in which a DEPOSIT order has a claim on the merchant's tokens.
+ *
+ * The merchant has taken the order and has not yet handed the tokens over. The
+ * moment it leaves this set — approved, rejected, expired, reassigned, refunded
+ * after a dispute, or any path added later — the claim ends on its own, because
+ * nothing was written down that has to be undone.
+ *
+ * COMPLETED is absent because the tokens have already left the wallet; counting
+ * them again would charge the merchant twice for one order.
+ *
+ * ── DISPUTED is in the set, and the state alone cannot decide it ────────────
+ * A dispute can be raised from PAID or from COMPLETED, and those are opposite
+ * cases: from PAID the merchant still owes the tokens and a resolution in the
+ * player's favour will take them, so the claim is live; from COMPLETED they
+ * have already gone and counting them would charge for the same order twice.
+ * `order_states.state` cannot tell the two apart — the order arrives at
+ * DISPUTED reading identically either way.
+ *
+ * ── So the STATE says whether an obligation exists; the LEDGER says how much
+ *    of it is already discharged ────────────────────────────────────────────
+ * The first candidate for that second question was `completed_at IS NULL`. It
+ * is wrong, and the way it is wrong is worth writing down: `transition()` — the
+ * one order lifecycle writer — DOES NOT SET `completed_at`. Five separate
+ * routes set it themselves in a `setOrderFields` call AFTER the transition
+ * commits, which is precisely the §21 shape, so the column is a second write
+ * that can be absent on a genuinely completed order. A money gate must not rest
+ * on a field five callers are each responsible for remembering.
+ *
+ * `merchant_wallet_entries` cannot have that problem. The debit row is written
+ * by `applyMerchantMovement` INSIDE the same transaction as the balance change,
+ * so "the ledger says these tokens left" and "`available` is lower" are the
+ * same fact and cannot disagree. Netting DEBIT against CREDIT on the order's
+ * own `ref_id` also handles the case a boolean could not: a debit REVERSED by
+ * `reverseMovement` (a dispute resolved for the merchant) puts the tokens back
+ * in `available` AND restores the obligation, and the net returns to zero on
+ * its own.
+ *
+ * So: committed = the order's amount, minus what has already left the wallet
+ * for that order, floored at zero.
+ */
+const COMMITTING_STATES = ['ASSIGNED', 'PROCESSING', 'PAID', 'DISPUTED'];
+
+/**
+ * What a merchant can actually take on: what they hold, MINUS what the orders
+ * they are already serving will take from them.
+ *
+ * ── The gap this closes (F-018) ─────────────────────────────────────────────
+ * `getAvailablePaiseFor` returns the wallet column and nothing else, so a
+ * merchant holding 10,000 tokens who has just accepted an 8,000 buy order still
+ * reads as 10,000 — and a second order they cannot cover is assigned to them.
+ * Every eligibility gate on the platform asked that question and got that
+ * answer. The player only finds out at the end, having already paid.
+ *
+ * The platform DOES escrow — `lockWithdrawal` holds a player's tokens the
+ * moment they place a SELL, so they cannot spend or re-sell what is already
+ * promised. There has never been a counterpart on the BUY side, where the
+ * tokens at risk are the merchant's.
+ *
+ * ── Why this is DERIVED and not a locked pocket ─────────────────────────────
+ * A `reserved` pocket would need a release on every path an order can end —
+ * approve, reject, expire, reassign, dispute-refund — and MISSING ONE LOCKS
+ * THE MERCHANT'S TOKENS FOREVER. `reconcileMerchant` could not detect it: it
+ * compares pockets against the ledger sum, and a stranded reservation is
+ * perfectly consistent, so it would report `ok` while the tokens sat dead.
+ *
+ * Derived, there is nothing to release. It is the same reasoning as trap 4
+ * (derive real pools from `bets`, never store them on the cycle row) and trap 6
+ * (reconstruct counters from rows, never accumulate them).
+ *
+ * ── One round trip ──────────────────────────────────────────────────────────
+ * A LEFT JOIN over `order_states (merchant_id, state)`, an index that already
+ * exists, so every candidate is judged against the same instant. A read per
+ * candidate would be N round trips on the hot path of a money movement and
+ * would judge each at a slightly different moment.
+ *
+ * ── `excludeOrderId` ────────────────────────────────────────────────────────
+ * One order must not be counted against itself. A merchant ACCEPTING an order
+ * already ASSIGNED to them is asked "can you fund this?", and that order is
+ * already in `COMMITTING_STATES` under their id — without the exclusion the
+ * amount is subtracted once and required again, and a merchant holding exactly
+ * enough is refused their own order. Excluding it makes the single comparison
+ * `spendable >= amount` correct on BOTH paths, so neither needs arithmetic of
+ * its own. It is a no-op for an order in no committing state.
+ *
+ * @returns {Promise<Map<string, {available:number, committed:number, spendable:number}>>}
+ *   paise. `spendable` is floored at zero: a merchant whose commitments exceed
+ *   their balance can take nothing, and a negative would read as credit.
+ */
+export async function getSpendablePaiseFor(merchantIds = [], { excludeOrderId = null } = {}) {
+  const ids = [...new Set(merchantIds.filter(Boolean).map(String))];
+  if (!ids.length) return new Map();
+  const { rows } = await pgQuery(
+    `SELECT w.merchant_id,
+            w.${POCKET_COLUMN[POCKETS.AVAILABLE]} AS available,
+            COALESCE(c.committed, 0)              AS committed
+       FROM merchant_wallets w
+       LEFT JOIN (
+         SELECT o.merchant_id,
+                -- Floored PER ORDER, not on the total: a single order that
+                -- somehow shows more paid out than it was for must not lend
+                -- its surplus to the order beside it.
+                SUM(GREATEST(o.token_amount_paise - COALESCE(e.net_out, 0), 0)) AS committed
+           FROM order_states o
+           LEFT JOIN LATERAL (
+             -- What has actually LEFT the available pocket for this order.
+             -- DEBIT minus CREDIT, so a reversed debit nets back to zero and
+             -- the obligation counts again — which is right, because the
+             -- tokens are back in the pocket beside it.
+             SELECT SUM(CASE WHEN en.entry_type = 'DEBIT'
+                             THEN en.amount_paise ELSE -en.amount_paise END) AS net_out
+               FROM merchant_wallet_entries en
+              WHERE en.ref_model  = 'PaymentOrder'
+                AND en.ref_id     = o.order_id
+                AND en.merchant_id = o.merchant_id
+                AND en.pocket     = '${POCKETS.AVAILABLE}'
+           ) e ON TRUE
+          WHERE o.merchant_id = ANY($1::text[])
+            AND o.order_type = 'DEPOSIT'
+            AND o.state = ANY($2::text[])
+            AND ($3::text IS NULL OR o.order_id <> $3::text)
+          GROUP BY o.merchant_id
+       ) c ON c.merchant_id = w.merchant_id
+      WHERE w.merchant_id = ANY($1::text[])`,
+    [ids, COMMITTING_STATES, excludeOrderId == null ? null : String(excludeOrderId)],
+    'merchant_wallet_spendable',
+  );
+  // BIGINT arrives as a string; uncast, '900' >= 1000 is true and every
+  // eligibility comparison built on this map is wrong.
+  return new Map(rows.map((r) => {
+    const available = toPaise(r.available);
+    const committed = toPaise(r.committed);
+    return [r.merchant_id, { available, committed, spendable: Math.max(0, available - committed) }];
+  }));
 }
 
 export async function withMerchantLock(merchantId, fn) {

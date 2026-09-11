@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router';
 import { AuthProvider, useAuth } from './services/AuthContext';
@@ -7,6 +7,8 @@ import sseService from './services/sse';
 import LoginPage from './pages/LoginPage';
 import Dashboard from './pages/Dashboard';
 import OrderManagement from './pages/OrderManagement';
+import CashLinks from './pages/CashLinks';
+import TokenSupply from './pages/TokenSupply';
 import HistoryViews from './pages/HistoryViews';
 import ProfileSettings from './pages/ProfileSettings';
 import Layout from './components/Layout';
@@ -80,6 +82,8 @@ function AppRoutes() {
       <Route path={ROUTES.LOGIN} element={<LoginPage />} />
       <Route path={ROUTES.DASHBOARD} element={<ProtectedRoute><Shell><Dashboard /></Shell></ProtectedRoute>} />
       <Route path={ROUTES.ORDERS} element={<ProtectedRoute><Shell><OrderManagement /></Shell></ProtectedRoute>} />
+      <Route path={ROUTES.CASH_LINKS} element={<ProtectedRoute><Shell><CashLinks /></Shell></ProtectedRoute>} />
+      <Route path={ROUTES.TOKEN_SUPPLY} element={<ProtectedRoute><Shell><TokenSupply /></Shell></ProtectedRoute>} />
       <Route path={ROUTES.HISTORY} element={<ProtectedRoute><Shell><HistoryViews /></Shell></ProtectedRoute>} />
       <Route path={ROUTES.PROFILE} element={<ProtectedRoute><Shell><ProfileSettings /></Shell></ProtectedRoute>} />
       <Route path="*" element={<Navigate to={ROUTES.LOGIN} replace />} />

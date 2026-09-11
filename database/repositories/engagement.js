@@ -1,14 +1,17 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+// GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
- * repositories/engagement.js — check-ins, gift codes, bonuses, notifications,
+ * repositories/engagement.js — check-ins, bonuses, notifications,
  * the leaderboard and the marketing carousel.
  *
- * Two of these MOVE MONEY — a gift-code redemption and a bonus grant — and both
- * follow the same rule as every other money path here: the cap is enforced by
- * the row, the claim and the check are one statement, and the caller credits
- * the wallet only after this module says the claim succeeded.
+ * One of these MOVES MONEY — a bonus grant — and it follows the same rule as
+ * every other money path here: the cap is enforced by the row, the claim and
+ * the check are one statement, and the caller credits the wallet only after
+ * this module says the claim succeeded.
+ *
+ * Gift codes lived here too until 2026-09-10 and were removed with the feature.
+ * Nothing replaced them: see the schema's DROP at the bottom of schema.sql.
  */
-import { pgQuery, getPool, connectGuarded } from '../client.js';
+import { pgQuery } from '../client.js';
 import { randomBytes } from 'node:crypto';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
 
@@ -69,208 +72,6 @@ export async function claimCheckIn(userId, { rewardRupees = 0 } = {}) {
   return rows[0]
     ? { ok: true, checkIn: toCheckIn(rows[0]) }
     : { ok: false, reason: 'ALREADY_CHECKED_IN_TODAY', checkIn: await getCheckIn(userId) };
-}
-
-// ── Gift codes ──────────────────────────────────────────────────────────────
-
-const toGiftCode = (r) => (r ? {
-  code: r.code, amount: paiseToRupees(Number(r.amount_paise)),
-  amountPaise: Number(r.amount_paise), bonusType: r.bonus_type,
-  maxUses: r.max_uses, usedCount: r.used_count,
-  expiresAt: r.expires_at, isActive: r.is_active, note: r.note,
-  createdBy: r.created_by, createdAt: r.created_at,
-} : null);
-
-export async function createGiftCode({
-  code, amountRupees, bonusType = 'DEPOSIT', maxUses = 1, expiresAt = null,
-  note = '', createdBy = null,
-}) {
-  if (!code) throw new Error('createGiftCode requires a code');
-  const { rows } = await pgQuery(
-    `INSERT INTO gift_codes (code, amount_paise, bonus_type, max_uses, expires_at, note, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-    [String(code).toUpperCase(), rupeesToPaise(amountRupees), String(bonusType),
-      Math.max(Number(maxUses) || 1, 1), expiresAt, String(note), createdBy],
-    'giftcode_create',
-  );
-  return toGiftCode(rows[0]);
-}
-
-export async function getGiftCode(code) {
-  const { rows } = await pgQuery(
-    'SELECT * FROM gift_codes WHERE code = $1', [String(code).toUpperCase()], 'giftcode_get',
-  );
-  return toGiftCode(rows[0]);
-}
-
-/**
- * Redeem a code for a player.
- *
- * ── The two races this closes ───────────────────────────────────────────────
- * A single-use code paid out twice under the document model, because the check
- * ("is used_count < max_uses?") and the increment were separate operations and
- * two requests could both pass the check. And one player could redeem a
- * multi-use code repeatedly, because "has this player already redeemed?" was
- * also a pre-read.
- *
- * Both are now decided by the database in ONE transaction: the redemption row's
- * UNIQUE (code, user_id) refuses the second attempt by the same player, and the
- * gift code's `used_count <= max_uses` CHECK refuses the increment past the cap.
- * The caller credits the wallet only after this returns ok.
- */
-export async function redeemGiftCode(code, userId) {
-  const upper = String(code).toUpperCase();
-  const pool = await getPool();
-  if (!pool) throw new Error('Postgres not configured (DATABASE_URL unset)');
-  const client = await connectGuarded(pool);
-  let failure = null;
-
-  try {
-    await client.query('BEGIN');
-
-    // Claim a use. The WHERE is the entire eligibility rule, evaluated against
-    // the row as it is at this instant — active, unexpired, and under its cap.
-    const claimed = await client.query(
-      `UPDATE gift_codes SET used_count = used_count + 1
-        WHERE code = $1 AND is_active
-          AND (expires_at IS NULL OR expires_at > now())
-          AND used_count < max_uses
-        RETURNING code, amount_paise, bonus_type`,
-      [upper],
-    );
-    if (!claimed.rows.length) {
-      // WHY the refusal, read on THIS client rather than a fresh one.
-      //
-      // The first draft called `getGiftCode` here — a second pooled connection,
-      // requested while still holding the first. Under a redemption storm every
-      // client in the pool ends up doing that at once and the pool deadlocks:
-      // each connection waits for a connection that will not be released until
-      // it gets one. Never ask the pool for a client while holding one.
-      const state = await client.query(
-        `SELECT is_active, expires_at, used_count, max_uses FROM gift_codes WHERE code = $1`,
-        [upper],
-      );
-      await client.query('ROLLBACK');
-      const row = state.rows[0];
-      if (!row) return { ok: false, reason: 'NOT_FOUND' };
-      if (!row.is_active) return { ok: false, reason: 'INACTIVE' };
-      if (row.expires_at && new Date(row.expires_at) <= new Date()) {
-        return { ok: false, reason: 'EXPIRED' };
-      }
-      return { ok: false, reason: 'FULLY_REDEEMED' };
-    }
-
-    // …and record WHO used it. The unique constraint is what stops one player
-    // consuming several uses of the same code.
-    const row = claimed.rows[0];
-    try {
-      const redemption = await client.query(
-        `INSERT INTO gift_code_redemptions (code, user_id, amount_paise)
-         VALUES ($1, $2, $3) RETURNING id, redeemed_at`,
-        [upper, String(userId), row.amount_paise],
-      );
-      await client.query('COMMIT');
-      return {
-        ok: true,
-        redemptionId: Number(redemption.rows[0].id),
-        // The NORMALISED code, so a caller building an idempotency key from it
-        // produces the same key whatever case the player typed.
-        code: row.code,
-        amount: paiseToRupees(Number(row.amount_paise)),
-        amountPaise: Number(row.amount_paise),
-        bonusType: row.bonus_type,
-        redeemedAt: redemption.rows[0].redeemed_at,
-      };
-    } catch (e) {
-      // The use is rolled back with the redemption, so the code is not
-      // consumed by an attempt that did not pay anything out.
-      await client.query('ROLLBACK');
-      if (e.code === '23505') return { ok: false, reason: 'ALREADY_REDEEMED' };
-      throw e;
-    }
-  } catch (error) {
-    failure = error;
-    try { await client.query('ROLLBACK'); } catch { /* already unwound */ }
-    throw error;
-  } finally {
-    client.release(failure ?? undefined);
-  }
-}
-
-export async function listGiftCodes({ activeOnly = false, limit = 200 } = {}) {
-  const { rows } = await pgQuery(
-    `SELECT * FROM gift_codes ${activeOnly ? 'WHERE is_active' : ''}
-      ORDER BY created_at DESC LIMIT $1`,
-    [Math.min(Math.max(Number(limit) || 200, 1), 1000)], 'giftcode_list',
-  );
-  return rows.map(toGiftCode);
-}
-
-export async function setGiftCodeActive(code, isActive) {
-  const { rows } = await pgQuery(
-    'UPDATE gift_codes SET is_active = $2 WHERE code = $1 RETURNING *',
-    [String(code).toUpperCase(), Boolean(isActive)], 'giftcode_set_active',
-  );
-  return toGiftCode(rows[0]);
-}
-
-/**
- * Redemptions whose reward never reached the player.
- *
- * ── Why this exists instead of a compensating delete ────────────────────────
- * The route used to undo a redemption when the credit failed: delete the
- * redemption row, decrement `usedCount`, tell the player nothing happened.
- * Three writes to unwind one, each able to fail on its own, and a crash between
- * any two leaves the code burned with nobody paid.
- *
- * The redemption is committed FIRST and the credit is keyed on it, so a failed
- * credit is retryable rather than reversible — and this query is how it gets
- * retried. It finds redemptions with no matching ledger row: money owed, and
- * the exact list a reconciliation job works through.
- *
- * That is the standard shape for a payout that spans two commits: detect and
- * repair, never compensate and hope.
- */
-export async function findUnpaidRedemptions({ olderThanMinutes = 5, limit = 200 } = {}) {
-  const { rows } = await pgQuery(
-    `SELECT r.id, r.code, r.user_id, r.amount_paise, r.redeemed_at
-       FROM gift_code_redemptions r
-      WHERE r.redeemed_at < now() - ($1 || ' minutes')::interval
-        AND NOT EXISTS (
-          SELECT 1 FROM wallet_ledger l
-           WHERE l.user_id = r.user_id
-             AND l.tx_id = 'giftcode_' || r.code || '_' || r.user_id)
-      ORDER BY r.redeemed_at ASC
-      LIMIT $2`,
-    [String(Math.max(Number(olderThanMinutes) || 5, 0)),
-      Math.min(Math.max(Number(limit) || 200, 1), 1000)],
-    'giftcode_unpaid',
-  );
-  return rows.map((r) => ({
-    id: Number(r.id), code: r.code, userId: r.user_id,
-    amount: paiseToRupees(Number(r.amount_paise)),
-    amountPaise: Number(r.amount_paise),
-    redeemedAt: r.redeemed_at,
-    // The key the credit is made under, so a repair reproduces it exactly and
-    // a replay collides rather than paying twice.
-    txId: `giftcode_${r.code}_${r.user_id}`,
-  }));
-}
-
-export async function listRedemptions({ code = null, userId = null, limit = 200 } = {}) {
-  const where = []; const params = [];
-  if (code) { params.push(String(code).toUpperCase()); where.push(`code = $${params.length}`); }
-  if (userId) { params.push(String(userId)); where.push(`user_id = $${params.length}`); }
-  const { rows } = await pgQuery(
-    `SELECT * FROM gift_code_redemptions
-      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-      ORDER BY redeemed_at DESC LIMIT ${Math.min(Math.max(Number(limit) || 200, 1), 1000)}`,
-    params, 'giftcode_redemptions',
-  );
-  return rows.map((r) => ({
-    id: Number(r.id), code: r.code, userId: r.user_id,
-    amount: paiseToRupees(Number(r.amount_paise)), redeemedAt: r.redeemed_at,
-  }));
 }
 
 // ── Bonus records ───────────────────────────────────────────────────────────
@@ -360,6 +161,38 @@ export async function notify({
   return toNotification(rows[0]);
 }
 
+
+/**
+ * One notification to every merchant that can receive one.
+ *
+ * A single INSERT … SELECT rather than a loop of `notify` calls: the recipient
+ * list is DERIVED from the merchants table in the same statement that writes
+ * the rows, so it cannot go stale between reading who to tell and telling them,
+ * and a fan-out to every merchant is one round trip rather than N.
+ *
+ * `user_id` is nullable on `merchants` — a merchant operated by nobody's player
+ * account has no inbox to write to. Those are skipped here rather than failing
+ * the batch, which is why the merchant panel ALSO reads the live rail on load:
+ * a notification is a record that something changed, never the only way a
+ * merchant can find out what rail they are on.
+ */
+export async function notifyMerchants({
+  kind = 'INFO', title, message = '', actionUrl = null, actionLabel = null,
+  relatedId = null, relatedType = null, statuses = ['ACTIVE'],
+}) {
+  if (!title) throw new Error('notifyMerchants requires a title');
+  const { rows } = await pgQuery(
+    `INSERT INTO notifications
+       (user_id, kind, title, message, action_url, action_label, related_id, related_type)
+     SELECT m.user_id, $1, $2, $3, $4, $5, $6, $7
+       FROM merchants m
+      WHERE m.user_id IS NOT NULL AND m.status = ANY($8)
+     RETURNING user_id`,
+    [String(kind), String(title), String(message), actionUrl, actionLabel,
+      relatedId, relatedType, statuses], 'notification_merchant_fanout',
+  );
+  return rows.map((r) => r.user_id);
+}
 
 /** A player's inbox. Expired notifications are filtered by the READ. */
 export async function listNotifications(userId, { unreadOnly = false, limit = 50 } = {}) {

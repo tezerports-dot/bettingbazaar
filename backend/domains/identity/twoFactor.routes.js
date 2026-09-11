@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * domains/identity/twoFactor.routes.js — enrolment and management of TOTP 2FA.
  *
@@ -25,7 +25,7 @@
  */
 import express from 'express';
 import { db } from '#db';
-import { authenticate } from './auth.middleware.js';
+import { authenticate, authenticateForEnrolment } from './auth.middleware.js';
 import { twoFactorLimiter } from '../../middleware/security.js';
 import {
   generateSecret, buildOtpauthUri, encryptSecret, decryptSecret,
@@ -34,27 +34,17 @@ import {
 
 const router = express.Router();
 
-/** Roles for which 2FA is mandatory rather than optional. */
-const MANDATORY_2FA_ROLES = new Set(['admin', 'subadmin']);
-
-/**
- * Does this account have to hold a second factor?
- *
- * `isAdmin` / `isSubAdmin` are checked FIRST and are authoritative, because
- * that is what the login handler and route guards actually use to grant
- * privilege. Deriving this from `roles` alone was a real hole: an account with
- * `isAdmin: true` and the default `roles: ['user']` — which is how externally
- * created or older admin documents look — would be reported as non-mandatory
- * and allowed to switch its own 2FA off, while the rest of the application
- * treated it as an admin. The policy has to key on the same field the
- * privilege does, or it is guarding a different account than it thinks.
- */
-export function requires2FA(user) {
-  if (!user) return false;
-  if (user.isAdmin === true || user.isSubAdmin === true) return true;
-  const roles = [user.role, ...(user.roles || [])].filter(Boolean);
-  return roles.some((r) => MANDATORY_2FA_ROLES.has(String(r).toLowerCase()));
-}
+// WHO must hold a factor lives in `twoFactorPolicy.js`. It moved there when the
+// auth middleware started asking the same question: the middleware cannot
+// import this file (this file imports the middleware, and `check:deps` refuses
+// the cycle), and two copies of the rule is what §5 warns about.
+//
+// IMPORTED as well as re-exported. `export { x } from './y'` forwards the name
+// to importers and creates NO local binding — so this file's own two callers
+// threw `requires2FA is not defined` at runtime, as a 500, on a route no build
+// step type-checks.
+import { requires2FA, MANDATORY_2FA_ROLES } from './twoFactorPolicy.js';
+export { requires2FA };
 
 /** The effective role name, from the same flags the login handler trusts. */
 function effectiveRole(user) {
@@ -76,7 +66,7 @@ function accountLabel(user) {
 }
 
 // ── Status ──────────────────────────────────────────────────────────────────
-router.get('/status', authenticate, async (req, res) => {
+router.get('/status', authenticateForEnrolment, async (req, res) => {
   const [user, creds] = await Promise.all([
     db.users.getUser(req.user.userId),
     // The recovery codes are CREDENTIALS and are absent from the ordinary
@@ -97,7 +87,7 @@ router.get('/status', authenticate, async (req, res) => {
 });
 
 // ── Step 1: mint a pending secret and hand back a scannable URI ─────────────
-router.post('/setup', authenticate, async (req, res) => {
+router.post('/setup', authenticateForEnrolment, async (req, res) => {
   const user = await db.users.getUser(req.user.userId);
   if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
@@ -130,7 +120,7 @@ router.post('/setup', authenticate, async (req, res) => {
 });
 
 // ── Step 2: prove the app was actually added, then go live ─────────────────
-router.post('/activate', authenticate, twoFactorLimiter, async (req, res) => {
+router.post('/activate', authenticateForEnrolment, twoFactorLimiter, async (req, res) => {
   const user = await db.users.getUser(req.user.userId);
   const creds = await db.users.getUserCredentials(req.user.userId);
   if (!user || !creds) return res.status(404).json({ success: false, message: 'User not found' });
@@ -143,7 +133,23 @@ router.post('/activate', authenticate, twoFactorLimiter, async (req, res) => {
   }
 
   const secret = decryptSecret(creds.twoFactorPendingSecret);
-  const result = verifyToken({ secret, token: req.body?.otp });
+  // `code`, which is what every caller sends.
+  //
+  // This read `req.body?.otp` and NOTHING sends `otp`. The admin panel posts
+  // `{ code }` (`services/api.ts` twoFactor.activate), the merchant panel posts
+  // `{ code }`, and the merchant's own 2FA route reads `{ code }` — this file
+  // was the only place using the other name, so `token` was always `undefined`,
+  // `verifyToken` always answered `malformed`, and **admin 2FA enrolment has
+  // never once succeeded**. An operator scanned the QR, typed a correct code,
+  // and was told it was not valid, forever.
+  //
+  // It became a lockout the moment the enforcement guard shipped: staff refused
+  // everywhere, and the one door left open impossible to walk through.
+  //
+  // `twoFactorRoutes.test.js` posted `{ otp }` too, so it proved the handler
+  // works and could never prove a panel calls it correctly — CLAUDE.md §28. The
+  // suite now sends what the panels send.
+  const result = verifyToken({ secret, token: req.body?.code });
   if (!result.valid) {
     return res.status(400).json({
       success: false, code: '2FA_INVALID_CODE',
@@ -196,7 +202,8 @@ router.post('/disable', authenticate, twoFactorLimiter, async (req, res) => {
   // hijacked session cannot quietly strip the protection it is meant to defeat.
   const secret = decryptSecret(creds.twoFactorSecret);
   const result = verifyToken({
-    secret, token: req.body?.otp, lastCounter: creds.twoFactorLastCounter ?? null,
+    // `code`, for the same reason as activate above — both panels post it.
+    secret, token: req.body?.code, lastCounter: creds.twoFactorLastCounter ?? null,
   });
   if (!result.valid) {
     return res.status(400).json({

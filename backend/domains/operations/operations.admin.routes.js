@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * operations.admin.routes.js — OPERATIONS PLATFORM (BBEPS Phase 012).
  *
@@ -10,7 +10,9 @@
  * authority + endpoint that edits it. Nothing is configured HERE; this
  * surface points at the platform that configures it.
  */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import {
+  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import { runRetention } from './retention.service.js';
 import { getTrialBalance, getDistributableRevenueMinor } from '../revenue/revenueSettlement.service.js';
@@ -18,7 +20,7 @@ import { ACCOUNTS, toRupees } from '../revenue/chartOfAccounts.js';
 import { listProviders } from '../funding/providerRegistry.js';
 import { getRiskRules } from '../risk/riskValidation.service.js';
 import { getActivePolicy } from '../configuration/depositPolicy.service.js';
-import { getActiveBonusPolicy } from '../configuration/merchantBonusPolicy.service.js';
+import { getActiveCommissionPolicy } from '../configuration/merchantCommissionPolicy.service.js';
 import { getMerchantLeaderboard } from '../merchant/merchantAnalytics.service.js';
 import { listChannels } from '../communication/communication.service.js';
 import { FLAGS, isEnabled } from '../../services/featureFlags.service.js';
@@ -26,14 +28,14 @@ import { FLAGS, isEnabled } from '../../services/featureFlags.service.js';
 const router = express.Router();
 
 // GET /api/admin/operations/overview — the enterprise dashboard payload.
-router.get('/operations/overview', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/operations/overview', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
-    const [trial, distributableMinor, depositPolicy, bonusPolicy, riskRules,
+    const [trial, distributableMinor, depositPolicy, commissionPolicy, riskRules,
            topMerchants, pendingOrders, openDisputes] = await Promise.all([
       getTrialBalance(),
       getDistributableRevenueMinor(),
       getActivePolicy('INR'),
-      getActiveBonusPolicy(),
+      getActiveCommissionPolicy(),
       getRiskRules(),
       getMerchantLeaderboard({ days: 7, limit: 5 }),
       db.orders.orderCounts(),
@@ -72,8 +74,11 @@ router.get('/operations/overview', authenticate, isAdminOrSubAdmin, async (req, 
           depositPolicy: depositPolicy
             ? { version: depositPolicy.version, deposit: depositPolicy.depositAllocationPercent, reserve: depositPolicy.reserveAllocationPercent }
             : null,
-          merchantBonusPolicy: bonusPolicy
-            ? { version: bonusPolicy.version, enabled: bonusPolicy.enabled, bonusPercent: bonusPolicy.bonusPercent }
+          merchantCommissionPolicy: commissionPolicy
+            ? { version: commissionPolicy.version, enabled: commissionPolicy.enabled,
+                // How many varieties are priced, not a single rate: there is no
+                // one percentage to show once the rate depends on the work.
+                pricedVarieties: commissionPolicy.rates.length }
             : null,
         },
         // ── Merchant operations (Merchant Platform) ───────────────────────
@@ -95,8 +100,8 @@ router.get('/operations/overview', authenticate, isAdminOrSubAdmin, async (req, 
 // value, its owning authority, and the endpoint that edits it. THE index
 // enforcing "no hardcoded percentages/limits/providers/rules": if a value
 // isn't in this catalog, it isn't configurable and must not exist as a
-// business constant in code (docs/governance/04-GOVERNANCE.md §2/§3).
-router.get('/operations/config-catalog', authenticate, isAdminOrSubAdmin, async (req, res) => {
+// business constant in code (CLAUDE.md §2/§3).
+router.get('/operations/config-catalog', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   res.json({ success: true, catalog: [
     { value: 'Deposit/reserve split + reserve usage rules (per currency)', owner: 'Business Policy — DepositPolicy', edit: 'PUT /api/admin/deposit-policy/:currency' },
     { value: 'Merchant Performance Bonus (enabled, %, min matched volume)', owner: 'Business Policy — MerchantBonusPolicy', edit: 'PUT /api/admin/merchant-bonus-policy' },
@@ -111,7 +116,7 @@ router.get('/operations/config-catalog', authenticate, isAdminOrSubAdmin, async 
     // knob (was hardcoded 2x in gameEngine); the winnings fee % remains separate.
     { value: 'Payout multiplier (winning bet pays stake × N, before fee)', owner: 'Business Policy — SystemConfig.payoutMultiplier (arithmetic in Risk computeWinningsPayout, paid by gameEngine)', edit: 'PUT /api/admin/system/config' },
     // Business Config Audit (2026-07-11): payment order window, was hardcoded 15m.
-    { value: 'Payment order expiry (minutes to pay assigned merchant)', owner: 'Business Policy — SystemConfig.orderExpiryMinutes (read by payment/paymentProcessing)', edit: 'PUT /api/admin/system/config' },
+    { value: 'Payment order expiry (time to pay the assigned merchant)', owner: 'Business Policy — payment_mode_policies.processing_window_seconds, per settlement rail (read by payment/paymentProcessing)', edit: 'POST /api/admin/payment-mode' },
     // Business Config Audit (2026-07-11): cycle phase timings, were hardcoded.
     { value: 'Cycle phase timings (merge/equalizer/close/celebrate offsets, per type)', owner: 'Business Policy — SystemConfig.cyclePhases (read cached by markets/cycleGenerator)', edit: 'PUT /api/admin/system/config' },
     // Phase X X-5: short-block cycle duration, previously hardcoded.

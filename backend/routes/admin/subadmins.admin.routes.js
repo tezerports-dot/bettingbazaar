@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * subadmins.admin.routes.js — sub-admin accounts and their permissions.
  *
@@ -15,6 +15,7 @@ import { express, authenticate, isAdmin } from './_adminShared.js';
 import { db } from '#db';
 // AQ-8: hash via the password authority (argon2id).
 import { hashPassword } from '../../domains/identity/password.util.js';
+import { assertStaffPassword } from '../../domains/identity/passwordPolicy.js';
 
 const router = express.Router();
 
@@ -51,6 +52,15 @@ router.post('/sub-admins', authenticate, isAdmin, async (req, res) => {
     const { username, mobile, password, permissions } = req.body || {};
     if (!mobile || !password) {
       return res.status(400).json({ success: false, message: 'mobile and password are required' });
+    }
+
+    // A sub-admin reads the player base and the ledger, and holds a session for
+    // 24 hours with no second factor required of it — so the password IS the
+    // credential. This took anything at all, including one character.
+    try {
+      assertStaffPassword(password, { mobile, username }, 'sub-admin');
+    } catch (e) {
+      return res.status(e.status || 400).json({ success: false, code: e.code, message: e.message });
     }
 
     const passwordHash = await hashPassword(password); // AQ-8: argon2id (was bcrypt cost 12)

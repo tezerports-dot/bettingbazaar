@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * ════════════════════════════════════════════════════════════════════════════
  * GAME CONTEXT — services/GameContext.tsx  v5.0.0
@@ -46,7 +46,8 @@ interface SysConfig {
 }
 const DEFAULT_SYS_CONFIG: SysConfig = {
   minBet: 10, maxBet: 100000, maxFullDayBet: 500000,
-  minDeposit: 100, maxDeposit: 50000,
+  // schema default: 500 (SystemConfig.minDeposit) — a loading placeholder only.
+  minDeposit: 500, maxDeposit: 50000,
   minWithdrawal: 100, maxWithdrawal: 50000,
   tokenBuyRate: 1, tokenSellRate: 1,
   footerPages: ['home', 'results', 'winners', 'promo', 'profile'], // schema default

@@ -34,7 +34,12 @@
     "check:settable": "node scripts/verify-settable-fields.mjs",
     "check:ui-coverage": "node scripts/verify-ui-coverage.mjs",
     "check:db-boundary": "node scripts/verify-db-boundary.mjs",
-    "check:orphans": "node scripts/detect-orphan-refs.mjs"
+    "check:orphans": "node scripts/detect-orphan-refs.mjs",
+    "check:merchant-privacy": "node scripts/verify-merchant-privacy.mjs",
+    "check:player-privacy": "node scripts/verify-player-privacy.mjs",
+    "check:payment-references": "node scripts/verify-payment-references.mjs",
+    "check:error-responses": "node scripts/verify-error-responses.mjs",
+    "audit:map": "node scripts/audit-map.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
 // Command Center shell — collapsible grouped sidebar + top bar with ⌘K command
 // palette, theme toggle, live status and account menu. Recreated from the
@@ -11,8 +11,9 @@ import {
   UserCheck, FileText, Palette, Settings, ChevronLeft, ChevronRight,
   TrendingUp, ShieldCheck, HelpCircle, Image as ImageIcon,
   MessageCircle, Shield, History, Scale, Upload, Search, Sun, Moon, Bell,
-  Zap, Gift, SlidersHorizontal, Trophy, Star, Gamepad2, Bot, FileSpreadsheet, Share2,
-  type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag} from 'lucide-react';
+  Zap, SlidersHorizontal, Trophy, Star, Gamepad2, Bot, FileSpreadsheet, Share2,
+  type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag, ToggleLeft, Banknote, Hourglass,
+  Coins, Ghost} from 'lucide-react';
 import { useAuthStore } from '../services/auth';
 import { usePermissions } from '../hooks/usePermission';
 import { useThemeStore } from '../services/theme';
@@ -61,6 +62,8 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/users/flagged',       icon: Flag,             label: 'Flagged Players',title: 'Flagged Players',    sub: "A merchant disputed their payment — reason, proof, and the block decision", permission: 'canManageUsers' },
     { path: '/merchants',           icon: Store,            label: 'Merchants',      title: 'Merchants',          sub: 'P2P payment merchants, limits & availability', permission: 'canManageMerchants' },
     { path: '/kyc',                 icon: UserCheck,        label: 'KYC Queue',      title: 'KYC Queue',          sub: 'Accounts awaiting an Aadhaar verdict', permission: 'canVerifyKYC', badge: 'kyc' },
+    { path: '/merchant-token-orders', icon: Coins,           label: 'Token Purchases',title: 'Merchant Token Purchases', sub: 'Merchants buying the float they trade with, paid in USDT', adminOnly: true },
+    { path: '/users/phantom-agents',  icon: Ghost,           label: 'Phantom Agents', title: 'Phantom Agents',     sub: 'Who can place cosmetic bets, and on which boards', adminOnly: true },
   ] },
   // Identity and payout control plane. Full admins only — these release
   // national identity numbers, replace the platform's identity root, and pay
@@ -76,9 +79,12 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/transactions',    icon: FileText, label: 'Transactions',   title: 'Transactions',  sub: 'Ledger of deposits, withdrawals, bets & adjustments', permission: 'canViewTransactions' },
     { path: '/payment-control', icon: Zap,      label: 'Payment System', title: 'Payment System',sub: 'Gateways, limits & platform payment controls', adminOnly: true },
     { path: '/disputes',        icon: Scale,    label: 'Disputes',       title: 'Disputes',      sub: 'Payment order disputes & resolution', permission: 'canResolveDisputes' },
+    { path: '/disputes/cdm-receipts', icon: Banknote, label: 'CDM Slips', title: 'CDM Slips', sub: 'Cash payouts settled without evidence, and the only read of a slip', permission: 'canResolveDisputes' },
+    { path: '/disputes/stalled-withdrawals', icon: Hourglass, label: 'Stalled Payouts', title: 'Stalled Withdrawals', sub: 'Payouts no merchant has taken, and the tokens locked behind them', permission: 'canResolveDisputes' },
   ] },
   { key: 'policy', label: 'Business Policy', items: [
     { path: '/business-policy/deposit', icon: Landmark, label: 'Deposit Policy', title: 'Deposit Policy', sub: 'Versioned deposit / reserve allocation policy', adminOnly: true },
+    { path: '/business-policy/settlement-rail', icon: ToggleLeft, label: 'Settlement Rail', title: 'Settlement Rail', sub: 'Switch between UPI and ATM cash settlement', adminOnly: true },
   ] },
   { key: 'enterprise', label: 'Enterprise Platforms', items: [
     { path: '/revenue',           icon: Landmark, label: 'Revenue & Ledger',  title: 'Revenue & Ledger',    sub: 'Enterprise revenue ledger & settlements', permission: 'canViewAnalytics' },
@@ -95,7 +101,6 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/chat-management',          icon: MessageCircle, label: 'Chat & Support',  title: 'Chat & Support',  sub: 'Public chat moderation & support console', permission: 'canModerateChatPublic' },
     { path: '/support-assistant',        icon: BookOpenCheck, label: 'Support Assistant', title: 'Support Assistant', sub: 'Knowledge base the assistant answers players from', adminOnly: true },
     { path: '/promotions/announcements', icon: Bell,          label: 'Announcements',   title: 'Announcements',   sub: 'Platform-wide notices & popups', permission: 'canManageContent' },
-    { path: '/promotions/gift-codes',    icon: Gift,          label: 'Gift Codes',      title: 'Gift Codes',      sub: 'Promo & gift code campaigns', permission: 'canManageContent' },
   ] },
   { key: 'content', label: 'Content & Branding', items: [
     { path: '/content/faq',     icon: HelpCircle,    label: 'FAQ Manager',      title: 'FAQ Manager',     sub: 'Help centre questions & categories', permission: 'canManageContent' },

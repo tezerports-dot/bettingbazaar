@@ -1,6 +1,6 @@
 # Full Stack & Client Delivery Map
 
-<!-- GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. -->
+<!-- GOVERNANCE: Read CLAUDE.md before editing this file. -->
 
 **What this document is.** One page that answers two questions end to end:
 
@@ -9,9 +9,9 @@
 2. **How does each of the three panels reach a user?** Website, PWA, Android app
    and iOS — what exists today, what does not, and what each remaining target costs.
 
-**What it is not.** It does not restate rules (that is `04-GOVERNANCE.md` §§0–16),
+**What it is not.** It does not restate rules (that is `CLAUDE.md` §§0–16),
 capability status (`platform/capabilities.yaml` + §19), launch gates
-(`LAUNCH_READINESS.md`), or UI design specification (`design/BettingBazaar_UIUX_Product_Blueprint.md`).
+(`docs/PROJECT_STATUS.md`), or UI design specification (`design/BettingBazaar_UIUX_Product_Blueprint.md`).
 It cross-references those rather than duplicating them, per the §19 consolidation note.
 
 **Verified against the tree on 2026-08-26.** Every claim below points at a file
@@ -136,7 +136,7 @@ extends these tiers, never restructures them**.
 \* **Declared, not implemented** — a boundary README + a default-false flag, with
 no placeholder code. This is deliberate (repo rule since Phase 003).
 
-**Single-writer authorities** (§1 of `04-GOVERNANCE.md`, the rule that matters most):
+**Single-writer authorities** (§1 of `CLAUDE.md`, the rule that matters most):
 
 | Value | Sole writer |
 |---|---|
@@ -163,11 +163,11 @@ percentages are integer basis points; floats appear only in storage, never in ma
 (`postgres/dualWrite.js`), a leader-locked 5-minute cron reconciles both directions,
 and `postgres/reverseMirror.js` gives the rollback path zero RPO. Flipping authority
 is an owner-gated production sequence, not a code change —
-`LAUNCH_READINESS.md` §E and `database/DATA_ROLLBACK_PLAN.md` own it.
+`docs/PROJECT_STATUS.md` §E and `database/DATA_ROLLBACK_PLAN.md` own it.
 
 ## 1.6 Realtime — three transports, one namespace
 
-45 event names, registered in `04-GOVERNANCE.md` §11. **One name per logical change**,
+45 event names, registered in `CLAUDE.md` §11. **One name per logical change**,
 unique across all three transports.
 
 | Transport | Audience | Entry point |
@@ -198,7 +198,7 @@ without bound.
 
 **Not built, called out deliberately:** no CAPTCHA / bot-mitigation challenge
 anywhere. Rate limiting is the only automated-abuse control
-(`LAUNCH_READINESS.md` §F).
+(`docs/PROJECT_STATUS.md` §F).
 
 ## 1.8 Build, CI and deploy
 
@@ -259,7 +259,7 @@ splittable into separate repos with no governance change.
 game page:
 
 `/` (GamePage) · `/casino` · `/crash` · `/sports` · `/wallet` · `/invite` · `/vip` ·
-`/gift-code` · `/recover-account` · `/profile` · `/history` · `/my-bets` · `/results` ·
+`/recover-account` · `/profile` · `/history` · `/my-bets` · `/results` ·
 `/promo` · `/rules` · `/faq` · `/support` · `/winners` · `/merchant/*` → external redirect
 
 Notable client services:
@@ -456,7 +456,7 @@ Neither has a manifest, a service worker, or icons. The work per panel:
 > is **shell-only caching** (app shell + hashed assets) with **no data caching and
 > no offline data fallback** — install for the icon, the standalone window and the
 > faster cold start, not for offline use. Record whichever posture is chosen in
-> `04-GOVERNANCE.md` §20.
+> `CLAUDE.md` §20.
 
 Merchant is the stronger candidate of the two: merchants work on phones, orders
 carry expiry countdowns, and a home-screen icon with a standalone window is a real
@@ -785,7 +785,6 @@ Anything in the user panel is W+P+A today; merchant and admin are W only.
 | **Wallet** — total/deposit/winnings split, add funds, withdraw, ledger, order links, bank setup | `/wallet` | `/api/v1/user/profile`, `/api/payment/orders`, `/api/v1/wallet/ledger` | `user_balance_update`, `order_*` |
 | Referral / invite — code, share, team, commissions (**F1 only**) | `/invite` | `/api/referral/me`, `/team`, `/commissions`, `/apply` | — |
 | VIP — tier, progress, benefits | `/vip` | `/api/vip/config`, `/api/vip/my`, `/api/bonuses/my` | — |
-| Gift code redemption | `/gift-code` | `POST /api/giftcode/redeem` | — |
 | **Account recovery** — REMOVED 2026-08-25. There is no in-app recovery screen and no `/api/auth/check-aadhaar`, `/recover` or `/recover/status`. Recovery runs entirely in a SECOND Telegram bot and requires the same mobile AND the same Aadhaar to match. | — | — | — |
 | Profile — username, avatar, bank/UPI, KYC status, sign-out. **No password, no email** — the only editable field is the username; Aadhaar and mobile are proved, not typed. | `/profile` | profile, bank, avatar-upload endpoints | `kyc_update` |
 | Transaction / order history — timeline, filters, proof & dispute links | `/history` | `/api/payment/orders`, `/order/:id` | `order_update` |
@@ -884,7 +883,6 @@ hidden from default navigation until Payments Operations approves the rollout.
 | Feature | Route |
 |---|---|
 | Announcements | `/admin/#/promotions/announcements` |
-| Gift codes — generator, list, redemptions | `/admin/#/promotions/gift-codes` |
 | FAQ manager | `/admin/#/content/faq` |
 | Content slides | `/admin/#/content/slides` |
 | Support links | `/admin/#/content/support` |
@@ -938,7 +936,7 @@ configuration, not new architecture.
 | `REDIS_RATE_LIMITER` | **on** | Redis-shared rate limit counters |
 | `WAF_FILTER` | **on** | OWASP request filter |
 
-**Env-activated seams** (`04-GOVERNANCE.md` §18):
+**Env-activated seams** (`CLAUDE.md` §18):
 
 | Activate with | Turns on |
 |---|---|
@@ -979,7 +977,7 @@ Ordered by how much they block the Android/PWA/website plan.
 
 ### Documentation drift (fix in the same pass)
 
-7. **`README.md` "Security" and `LAUNCH_READINESS.md` §F both state that 2FA is not
+7. **`README.md` "Security" and `docs/PROJECT_STATUS.md` §F both state that 2FA is not
    implemented anywhere.** That is now **false** — TOTP 2FA is built, enforced for
    admins and sub-admins, optional for players, available for merchants, with
    enrolment UI in all three panels (`domains/identity/`, `twoFactor.routes.js`,
@@ -992,7 +990,7 @@ Ordered by how much they block the Android/PWA/website plan.
 
 ### Standing platform gaps (already tracked, repeated for completeness)
 
-10. **No load test has been run.** `LAUNCH_READINESS.md` §D marks it a launch
+10. **No load test has been run.** `docs/PROJECT_STATUS.md` §D marks it a launch
     blocker; `LATENCY.md` explains precisely which numbers are unknown and which
     three existing metrics answer part of the question. Client scale planning
     (how many concurrent SSE/WebSocket connections the fleet holds) depends on it.
@@ -1011,7 +1009,7 @@ Each step is independently shippable and leaves the tree green.
 
 | # | Work | Why here |
 |---|---|---|
-| 1 | Correct the 2FA claims in `README.md` + `LAUNCH_READINESS.md` §F; delete the stale importmap and the conflicting cache-control meta; route or delete `LeaderboardPage` | Cheap, removes active misinformation, unblocks accurate planning |
+| 1 | Correct the 2FA claims in `README.md` + `docs/PROJECT_STATUS.md` §F; delete the stale importmap and the conflicting cache-control meta; route or delete `LeaderboardPage` | Cheap, removes active misinformation, unblocks accurate planning |
 | 2 | User panel `HashRouter` → `BrowserRouter` (+ link-literal sweep, verify the `/{*splat}` fallback and origin failover still behave) | Gates deep links, App Links, shortcuts, SEO, analytics — everything downstream |
 | 3 | Manifest polish: `id`, `screenshots`, `shortcuts`, branded offline screen, `beforeinstallprompt` handling | Turns the existing PWA into an installable product rather than a technicality |
 | 4 | Merchant PWA — manifest + panel-scoped SW (shell-only caching), icons from `Branding.icon`, decision recorded in §20 | Highest-value second client; merchants work on phones |
@@ -1028,7 +1026,7 @@ do not revisit without an explicit owner reversal).
 
 ---
 
-**Related reading:** `04-GOVERNANCE.md` (rules §§0–16; architecture §§17–21) ·
-`LAUNCH_READINESS.md` · `ENV.md` · `RATE_LIMITS.md` · `LATENCY.md` ·
+**Related reading:** `CLAUDE.md` (rules §§0–16; architecture §§17–21) ·
+`docs/PROJECT_STATUS.md` · `ENV.md` · `RATE_LIMITS.md` · `LATENCY.md` ·
 `ANDROID_RELEASE_SETUP.md` · `NATIVE_APP_DISTRIBUTION_POLICY.md` ·
 `design/BettingBazaar_UIUX_Product_Blueprint.md` · `platform/capabilities.yaml`

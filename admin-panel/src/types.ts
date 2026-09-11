@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 // ═══════════════════════════════════════════════════════════════════════════
 // 🎯 COMPLETE TYPE DEFINITIONS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -122,7 +122,7 @@ export interface User {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Mirrors CYCLE_TYPE_VALUES in backend/domains/markets/cycleTypes.js, which is
-// the authority for this vocabulary (04-GOVERNANCE.md §1, §4 citation).
+// the authority for this vocabulary (CLAUDE.md §1, §4 citation).
 export type CycleType = '1_MIN' | '30_MIN' | 'FULL_DAY';
 export type CycleStatus =
   | 'OPEN'
@@ -183,6 +183,39 @@ export interface Bet {
 // snapshot (deposit%/reserve% always sum to 100 within one version). See
 // backend/domains/configuration/depositPolicy.model.js for the source of truth.
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ── Settlement rail ──────────────────────────────────────────────────────────
+// The platform runs ONE of two P2P rails at a time and an admin switches
+// between them. Backend authority: database/repositories/paymentModePolicy.js
+// (payment_mode_policies), whose CHECK is what makes these the only two.
+export type PaymentMode = 'P2P_UPI' | 'CASH_ATM';
+
+export interface PaymentModeTimers {
+  assignmentWaitSeconds: number;
+  processingWindowSeconds: number;
+  utrSubmitSeconds: number;
+  disputeWindowSeconds: number;
+  linkExpirySeconds: number;
+  linkMinRemainingSeconds: number;
+}
+
+export interface PaymentModePolicy extends PaymentModeTimers {
+  _id: string;
+  version: number;
+  status: 'ACTIVE' | 'SUPERSEDED';
+  activeMode: PaymentMode;
+  justification: string;
+  changedBy: string | null;
+  changedByName: string;
+  createdAt: string;
+  supersededAt: string | null;
+}
+
+export interface PaymentModeOption {
+  mode: PaymentMode;
+  label: string;
+  merchantMessage: string;
+}
 
 export type DepositPolicyCurrency = 'INR' | 'USDT';
 

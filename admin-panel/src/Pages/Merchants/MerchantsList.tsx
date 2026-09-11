@@ -1,5 +1,5 @@
 import sseService from '../../services/sse';
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { useEffect, useState } from 'react';
 import { Store, Eye, Ban, CheckCircle, Plus, Settings, History, RefreshCw, DollarSign, ExternalLink } from 'lucide-react';
 import { DataTable } from '../../components/DataTable';
@@ -36,9 +36,11 @@ export const MerchantsList: React.FC = () => {
 
   // Limits edit
   // M-01 fix: initial values are 0; openDetails() populates from merchant.limits schema.
-  // GOVERNANCE §5: UI fallbacks must equal Merchant schema defaults (minOrder:500, maxOrder:50000).
+  // GOVERNANCE §5: UI fallbacks must equal the schema defaults.
   // Merchant.limits.minDeposit default=500, maxDeposit default=50000 per merchant.model.js.
-  const [limitsForm, setLimitsForm]   = useState({ minOrder: 500, maxOrder: 50000, maxConcurrentOrders: 3 });
+  const [limitsForm, setLimitsForm]   = useState<{ maxConcurrentOrders: number; cashDenomination: number | null }>(
+    { maxConcurrentOrders: 3, cashDenomination: null },
+  );
   // The wallet top-up amount is NOT a limit. It lived on `limitsForm` as
   // `dailyCap`, so it was posted to the limits endpoint — which ignores it —
   // and read like a cap the platform enforces. It is neither: it is how many
@@ -133,8 +135,8 @@ export const MerchantsList: React.FC = () => {
         setRail(mData.merchantType ?? mData.acceptedCurrencies?.[0] ?? 'INR');
         setLimitsForm({
           // M-01 fix: use Merchant.limits from schema defaults (500 / 50000) — GOVERNANCE §5
-          minOrder: mData.minOrder ?? mData.merchantLimits?.minOrder ?? 500,
-          maxOrder: mData.maxOrder ?? mData.merchantLimits?.maxOrder ?? 50000,
+          // null is a real state: not approved for the cash rail at all.
+          cashDenomination: mData.cashDenomination ?? null,
           maxConcurrentOrders: mData.maxConcurrentOrders ?? 3, // schema default: 3
           // (the top-up amount lives in its own state — see topUpAmount)
         });
@@ -151,6 +153,27 @@ export const MerchantsList: React.FC = () => {
       else setMerchantOrders([]);
     } catch { setMerchantOrders([]); }
     finally { setOrdersLoading(false); }
+  };
+
+  /**
+   * Lift an assignment pause.
+   *
+   * The reason is shown BEFORE the confirm rather than after, because the whole
+   * point of the pause is that somebody reads it and calls the merchant — an
+   * admin who clears it without seeing why has skipped the only step that
+   * fixes anything.
+   */
+  const handleResumeAssignment = async (merchantId: string, reason?: string) => {
+    const ok = window.confirm(
+      `${reason || 'This merchant is paused from new assignments.'}\n\n`
+      + 'Have you checked with them that they can be paid? Resume assignment?',
+    );
+    if (!ok) return;
+    try {
+      await api.merchants.resumeAssignment(merchantId);
+      toast.success('Assignment resumed');
+      loadMerchants();
+    } catch { toast.error('Failed to resume assignment'); }
   };
 
   const handleSuspend  = async (merchantId: string) => { try { await api.merchants.suspend(merchantId, 'Suspended by admin'); toast.success('Suspended'); loadMerchants(); } catch { toast.error('Failed'); } };
@@ -316,6 +339,21 @@ export const MerchantsList: React.FC = () => {
             <button onClick={() => setConfirmAction({ type: 'suspend', merchant: m })} className="p-1.5 hover:bg-red-600/20 text-red-500 rounded-sm" title="Suspend"><Ban size={14}/></button>
           ) : (
             <button onClick={() => setConfirmAction({ type: 'activate', merchant: m })} className="p-1.5 hover:bg-green-600/20 text-green-500 rounded-sm" title="Activate"><CheckCircle size={14}/></button>
+          )}
+          {/* Paused, not suspended. Three buy orders in a row expired with
+              nobody paying, which usually means nobody CAN pay this merchant —
+              a dead QR, a closed UPI handle, a bank refusing. They are not
+              accused of anything and keep every order they hold; they are just
+              not sent new ones until somebody has asked. There is no timer on
+              purpose: a clock cannot tell whether the QR was fixed. */}
+          {(m as any).assignmentPausedAt && (
+            <button
+              onClick={() => handleResumeAssignment(m._id, (m as any).assignmentPauseReason)}
+              className="px-2 py-1 bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 rounded-sm text-xs font-medium"
+              title={(m as any).assignmentPauseReason || 'Paused from new assignments'}
+            >
+              Paused · resume
+            </button>
           )}
         </div>
       ),
@@ -561,20 +599,46 @@ export const MerchantsList: React.FC = () => {
 
               <div className="border-t border-dark-600 pt-4 space-y-4">
                 <p className="text-sm font-semibold text-gray-300">Order Limits</p>
-                {/* M-01: per GOVERNANCE §1 — per-merchant caps live on Merchant.limits */}
+                {/* Per-merchant min/max order amounts are GONE. A merchant's
+                    ceiling is the tokens they hold — enforced by the escrow,
+                    which reserves them the moment an order becomes theirs — and
+                    the floor is the platform's, SystemConfig.minDeposit /
+                    minWithdrawal, the same 500 tokens for everyone. Two numbers
+                    an admin could edit here changed nothing: assignment never
+                    read them. */}
                 <p className="text-xs text-gray-400">
-                  Min/max order amounts used when assigning payment orders.
-                  Buy-token capacity = merchant&apos;s current token wallet balance.
-                  Sell-token capacity = merchant&apos;s lifetime initial token top-up.
-                  Both are enforced by the queue assignment logic — edit min/max here.
+                  A merchant&apos;s buy capacity is their uncommitted token balance —
+                  held automatically when an order is assigned, so it cannot be
+                  spent twice. The minimum order is set platform-wide in System
+                  Settings, not per merchant.
                 </p>
+                {/* The cash rail deals in fixed amounts because a merchant is
+                    standing at an ATM: the machine dispenses one of these and
+                    nothing between them. A merchant is approved for exactly
+                    ONE, which is why this is a single select and not a set of
+                    checkboxes. ₹40,000 is a withdrawal leg only — no buy is
+                    ever that large. */}
                 <div>
-                  <label htmlFor="min-order" className="label">Min Order Amount (Rs.)</label>
-                  <input id="min-order" name="minOrder" type="number" min="0" value={limitsForm.minOrder} onChange={(e) => setLimitsForm(f => ({ ...f, minOrder: Number(e.target.value) || 0 }))} className="input" />
-                </div>
-                <div>
-                  <label htmlFor="max-order" className="label">Max Order Amount (Rs.)</label>
-                  <input id="max-order" name="maxOrder" type="number" min="0" value={limitsForm.maxOrder} onChange={(e) => setLimitsForm(f => ({ ...f, maxOrder: Number(e.target.value) || 0 }))} className="input" />
+                  <label htmlFor="cash-denomination" className="label">ATM cash denomination</label>
+                  <select
+                    id="cash-denomination" name="cashDenomination" className="input"
+                    value={limitsForm.cashDenomination ?? ''}
+                    onChange={(e) => setLimitsForm(f => ({
+                      ...f, cashDenomination: e.target.value === '' ? null : Number(e.target.value),
+                    }))}
+                  >
+                    <option value="">Not approved for the cash rail</option>
+                    <option value="500">₹500</option>
+                    <option value="1000">₹1,000</option>
+                    <option value="5000">₹5,000</option>
+                    <option value="10000">₹10,000</option>
+                    <option value="40000">₹40,000 &mdash; withdrawal legs only</option>
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">
+                    This merchant will be offered this amount and no other while the
+                    ATM cash rail is live. It cannot be changed while they are holding
+                    an order.
+                  </p>
                 </div>
                 <div>
                   <label htmlFor="max-concurrent" className="label">Max Concurrent Orders (1–10)</label>

@@ -1,9 +1,13 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /** content.admin.routes.js — FAQ, support links, promo, announcements */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import {
+  authenticate, express, hasAnyPermission, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from '../../routes/admin/_adminShared.js';
 import contentService from './content.service.js';
 import { generatePresignedUploadUrl } from '../../services/cdn.service.js';
 import { db } from '#db';
+import { assertCdnAssetUrl } from '../../shared/storedUrl.js';
+import { serverError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -42,7 +46,7 @@ const STARTER_FAQ = Object.freeze([
     answer: 'Contact support via the Support page. Provide your order ID and payment reference. Issues are resolved within 2 hours.' },
 ]);
 
-router.get('/content/faq', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/content/faq', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     /*
      * The seed used to be a `countDocuments()` followed by an insert, OUTSIDE
@@ -112,8 +116,7 @@ router.put('/content/faq/:faqId', authenticate, isAdmin, async (req, res) => {
     if (!faq) return res.status(404).json({ success: false, message: 'FAQ not found' });
     res.json({ success: true, message: 'FAQ updated successfully', faq });
   } catch (error) {
-    console.error('Update FAQ error:', error);
-    res.status(500).json({ success: false, message: error.message || 'Failed to update FAQ' });
+    return serverError(res, error, 'PUT /content/faq', 'Failed to update FAQ');
   }
 });
 
@@ -136,7 +139,7 @@ router.delete('/content/faq/:faqId', authenticate, isAdmin, async (req, res) => 
  */
 
 // Get support links
-router.get('/content/support-links', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/content/support-links', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     // The `supportLinks` SCOPE, which is what the public Support page reads.
     // This handler used to read `systemConfig.supportLinks` instead — a second
@@ -223,7 +226,13 @@ const promoStatus = (value) => PROMO_STATUS[String(value || '').toUpperCase()] ?
  * this category, and the extension blocklist independently refuses SVG and
  * HTML, which would otherwise be stored XSS served from the CDN origin.
  */
-router.post('/promo/upload-url', authenticate, isAdminOrSubAdmin, async (req, res) => {
+// A promo slide is published to every player. Gated on the CONTENT key rather
+// than bare `isAdminOrSubAdmin`, which asked only whether the caller was a
+// sub-admin and never which of the nine keys they hold (audit F-001) — the
+// admin panel already gates its Content screens on this key, so the server was
+// the half that was missing. `canManageSupport` is accepted alongside it
+// because utils/permissions.ts documents it as a back-compat alias.
+router.post('/promo/upload-url', authenticate, hasAnyPermission(['canManageContent', 'canManageSupport']), async (req, res) => {
   try {
     const { fileName, contentType, fileSize } = req.body || {};
     if (typeof fileName !== 'string' || !fileName.trim()
@@ -250,7 +259,7 @@ router.post('/promo/upload-url', authenticate, isAdminOrSubAdmin, async (req, re
   }
 });
 
-router.get('/promo', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/promo', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     const { location, status } = req.query;
     const promos = await db.content.listPromos({
@@ -264,7 +273,7 @@ router.get('/promo', authenticate, isAdminOrSubAdmin, async (req, res) => {
   }
 });
 
-router.post('/promo', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.post('/promo', authenticate, hasAnyPermission(['canManageContent', 'canManageSupport']), async (req, res) => {
   try {
     const { title, description, location, mediaType, fileUrl, priority, status } = req.body;
     const resolved = promoStatus(status) ?? 'DRAFT';
@@ -279,10 +288,19 @@ router.post('/promo', authenticate, isAdminOrSubAdmin, async (req, res) => {
       });
     }
 
+    // Same check as the edit path below, and it has to be on BOTH: a validator
+    // wired to one of two writers is the shape CLAUDE.md §5 keeps warning
+    // about, and the create path is the one an attacker would reach for.
+    let safeFileUrl = null;
+    if (String(fileUrl ?? '').trim()) {
+      try { safeFileUrl = assertCdnAssetUrl(fileUrl, 'slide image'); }
+      catch (e) { return res.status(400).json({ success: false, message: e.message }); }
+    }
+
     const promo = await db.content.upsertPromo({
       title, description,
       location: String(location || 'HOME').toUpperCase(),
-      mediaType: media, fileUrl: fileUrl || null,
+      mediaType: media, fileUrl: safeFileUrl,
       priority: Number(priority) || 0,
       status: resolved, isActive: resolved === 'PUBLISHED',
       createdBy: req.user.userId,
@@ -294,13 +312,20 @@ router.post('/promo', authenticate, isAdminOrSubAdmin, async (req, res) => {
   }
 });
 
-router.put('/promo/:id', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.put('/promo/:id', authenticate, hasAnyPermission(['canManageContent', 'canManageSupport']), async (req, res) => {
   try {
     const { title, description, location, mediaType, fileUrl, priority, status } = req.body;
     const patch = {};
     if (title !== undefined)       patch.title = String(title);
     if (description !== undefined) patch.description = String(description);
-    if (fileUrl !== undefined)     patch.fileUrl = fileUrl || null;
+    // A promo slide is rendered to every player. Stored raw, this accepted a
+    // link to any site — and by the permission gap recorded as F-001 every
+    // sub-admin can write one, whatever their keys say. Empty clears it.
+    if (fileUrl !== undefined) {
+      try {
+        patch.fileUrl = String(fileUrl ?? '').trim() ? assertCdnAssetUrl(fileUrl, 'slide image') : null;
+      } catch (e) { return res.status(400).json({ success: false, message: e.message }); }
+    }
     if (priority !== undefined)    patch.priority = Number(priority) || 0;
     if (location !== undefined)    patch.location = String(location).toUpperCase();
     if (mediaType !== undefined)   patch.mediaType = String(mediaType).toUpperCase();
