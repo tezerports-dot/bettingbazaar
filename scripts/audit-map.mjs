@@ -86,6 +86,27 @@ const AUTH = new Set(['authenticate', 'merchantAuth', 'isAdmin', 'isAdminOrSubAd
   'isAdminOrSubAdminOrQueueManager', 'hasPermission', 'hasAllPermissions', 'hasAnyPermission',
   'canManageSupport', 'orderAccessGuard', 'paymentActorAuth', 'checkResourcePermission',
   'requireChannelMembership', 'optionalAuth']);
+
+/**
+ * A VARIANT of a known guard counts as that guard.
+ *
+ * `authenticateForEnrolment` is `authenticate` with one flag — staff who owe a
+ * second factor may pass, because the routes behind it are the only way to stop
+ * owing one. It authenticates in every other respect, and the hand-written set
+ * above did not know the name, so the two 2FA enrolment routes were reported as
+ * "reachable with no auth middleware" the moment they started using it.
+ *
+ * A false entry on THAT list is worse than a missing one. The list exists to be
+ * read by a person, and §0 of this document is about a map that stops being
+ * evidence and becomes decoration: two routes that are plainly authenticated
+ * sitting under "no auth middleware" teaches the reader to skim it.
+ *
+ * So the check is a prefix, not a lookup — the same reason `check:ui-coverage`
+ * derives its mount prefixes from server.js instead of keeping a table: a gate
+ * whose failure mode is "the author forgot to update me" reports the author
+ * rather than the code (CLAUDE.md §28).
+ */
+const isAuthGuard = (name) => AUTH.has(name) || /^authenticate[A-Z]/.test(name);
 const PERM = /^(hasPermission|hasAnyPermission|hasAllPermissions|checkResourcePermission)$/;
 
 // ── SQL: interpolation into statement text ──────────────────────────────────
@@ -131,7 +152,7 @@ function panels() {
 
 function facts() {
   const all = routes();
-  const unauth = all.filter((r) => !r.mw.some((m) => AUTH.has(m)));
+  const unauth = all.filter((r) => !r.mw.some((m) => isAuthGuard(m)));
   const subAdminNoKey = all.filter((r) => r.mw.includes('isAdminOrSubAdmin') && !r.mw.some((m) => PERM.test(m)));
   return {
     routes: {

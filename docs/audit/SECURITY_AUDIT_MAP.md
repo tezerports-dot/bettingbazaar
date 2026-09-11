@@ -2446,7 +2446,7 @@ exists.
 | Measure | Count |
 |---|---|
 | Route declarations in `backend/**` | 309 |
-| Reachable with **no auth middleware** | 43 |
+| Reachable with **no auth middleware** | 40 |
 | Gated `isAdminOrSubAdmin` with **no permission key** | 2 |
 | — of those, **writes** (non-GET) | 0 |
 | Carrying an explicit permission key | 56 |
@@ -2473,7 +2473,6 @@ new route and decide. Each of the three questions is defined in §2.
 - `GET /public-config  (backend/domains/telegram/telegram.routes.js)`
 - `GET /r/:code  (backend/routes/referralRedirect.routes.js)`
 - `GET /stats  (backend/routes/sse.routes.js)`
-- `GET /status  (backend/domains/identity/twoFactor.routes.js)`
 - `GET /status  (backend/domains/support/support.routes.js)`
 - `GET /v1/branding  (backend/domains/user/user.routes.js)`
 - `GET /v1/content/ai-analysis  (backend/domains/user/user.routes.js)`
@@ -2487,7 +2486,6 @@ new route and decide. Each of the three questions is defined in §2.
 - `GET /v1/token/rates  (backend/domains/user/user.routes.js)`
 - `GET /v1/tokens/rate  (backend/domains/user/user.routes.js)`
 - `GET /v1/winners  (backend/routes/winners.routes.js)`
-- `POST /activate  (backend/domains/identity/twoFactor.routes.js)`
 - `POST /auth/login  (backend/domains/merchant/merchant.routes.js)`
 - `POST /auth/login/2fa  (backend/domains/merchant/merchant.routes.js)`
 - `POST /auth/signup  (backend/domains/merchant/merchant.routes.js)`
@@ -2496,7 +2494,6 @@ new route and decide. Each of the three questions is defined in §2.
 - `POST /otp/request  (backend/domains/telegram/telegram.routes.js)`
 - `POST /otp/verify  (backend/domains/telegram/telegram.routes.js)`
 - `POST /recovery/webhook  (backend/domains/telegram/telegram.routes.js)`
-- `POST /setup  (backend/domains/identity/twoFactor.routes.js)`
 - `POST /wallet/:providerKey  (backend/domains/casino/gameProvider.routes.js)`
 - `POST /webhook  (backend/domains/telegram/telegram.routes.js)`
 
