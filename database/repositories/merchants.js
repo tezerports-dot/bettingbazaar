@@ -1154,12 +1154,21 @@ export async function createMerchantAccount({
     // The account. `ON CONFLICT DO NOTHING` on the mobile, so a second
     // application on a registered number is REFUSED by the index rather than
     // by a prior lookup two applicants can both pass.
+    // NO `email` column here. `users.email` was removed with the player email
+    // (CLAUDE.md §2: "there are none beyond the mobile"), and this INSERT kept
+    // naming it — so EVERY merchant signup threw `column "email" of relation
+    // "users" does not exist`, was caught, and answered "Signup failed. Please
+    // try again." No merchant could ever self-register, and the message named
+    // nothing an applicant or support could act on.
+    //
+    // The merchant's own email is a different thing and still stored, on
+    // `merchants` — §2 says so explicitly, and `createMerchant` below takes it.
     const account = await client.query(
-      `INSERT INTO users (user_id, username, mobile, password_hash, email, status, kyc_status, roles)
-       VALUES ($1, $2, $3, $4, $5, 'ACTIVE', 'PENDING_SUBMISSION', ARRAY['merchant'])
+      `INSERT INTO users (user_id, username, mobile, password_hash, status, kyc_status, roles)
+       VALUES ($1, $2, $3, $4, 'ACTIVE', 'PENDING_SUBMISSION', ARRAY['merchant'])
        ON CONFLICT (mobile) DO NOTHING
        RETURNING user_id`,
-      [String(userId), username ?? '', String(mobile), passwordHash, email],
+      [String(userId), username ?? '', String(mobile), passwordHash],
     );
     if (!account.rows.length) {
       await client.query('ROLLBACK');
